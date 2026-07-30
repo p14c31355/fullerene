@@ -17,22 +17,26 @@ struct ContextSwitchFrame {
     old_context: *mut ProcessContext,
     new_context: *const ProcessContext,
     new_cr3: u64,
+    new_kernel_stack: u64,
 }
 
 impl ContextSwitchFrame {
     const OLD_CONTEXT_OFFSET: usize = core::mem::offset_of!(Self, old_context);
     const NEW_CONTEXT_OFFSET: usize = core::mem::offset_of!(Self, new_context);
     const NEW_CR3_OFFSET: usize = core::mem::offset_of!(Self, new_cr3);
+    const NEW_KERNEL_STACK_OFFSET: usize = core::mem::offset_of!(Self, new_kernel_stack);
 
     const fn new(
         old_context: *mut ProcessContext,
         new_context: *const ProcessContext,
         new_cr3: u64,
+        new_kernel_stack: u64,
     ) -> Self {
         Self {
             old_context,
             new_context,
             new_cr3,
+            new_kernel_stack,
         }
     }
 }
@@ -73,6 +77,10 @@ static_assertions::const_assert_eq!(
     ContextSwitchFrame::NEW_CR3_OFFSET,
     core::mem::size_of::<usize>() * 2
 );
+static_assertions::const_assert_eq!(
+    ContextSwitchFrame::NEW_KERNEL_STACK_OFFSET,
+    core::mem::size_of::<usize>() * 3
+);
 
 /// Save the current kernel continuation and switch to `new_context`.
 ///
@@ -89,11 +97,12 @@ pub unsafe extern "sysv64" fn switch_context(
     old_context: *mut ProcessContext,
     new_context: *const ProcessContext,
     new_cr3: u64,
+    new_kernel_stack: u64,
 ) {
     debug_assert!(!new_context.is_null());
     debug_assert_ne!(new_cr3, 0);
 
-    let frame = ContextSwitchFrame::new(old_context, new_context, new_cr3);
+    let frame = ContextSwitchFrame::new(old_context, new_context, new_cr3, new_kernel_stack);
     unsafe {
         switch_context_trampoline(&frame);
     }
@@ -124,6 +133,10 @@ unsafe extern "sysv64" fn switch_context_trampoline(_frame: *const ContextSwitch
         "mov rax, [rdi + {frame_old}]",
         "mov rsi, [rdi + {frame_new}]",
         "mov rdx, [rdi + {frame_cr3}]",
+        // Keep the new process's kernel-stack top in a scratch register.  A
+        // first user entry builds its iret frame on that process-owned stack,
+        // rather than on the suspended shell stack.
+        "mov r8, [rdi + {frame_kernel_stack}]",
         "test rax, rax",
         "jz 2f",
         "mov [rax + {kernel_rsp}], rsp",
@@ -156,8 +169,12 @@ unsafe extern "sysv64" fn switch_context_trampoline(_frame: *const ContextSwitch
         "cmp byte ptr [rsi + {is_user}], 0",
         "je 5f",
 
-        // Build the complete privilege-transition frame on the current kernel
-        // stack before restoring the initial user register image.
+        // Build the complete privilege-transition frame on the new process's
+        // kernel stack before restoring the initial user register image.
+        "test r8, r8",
+        "jz 6f",
+        "mov rsp, r8",
+        "6:",
         "mov rax, [rsi + {ss}]",
         "push rax",
         "mov rax, [rsi + {rsp}]",
@@ -203,6 +220,7 @@ unsafe extern "sysv64" fn switch_context_trampoline(_frame: *const ContextSwitch
         frame_old = const ContextSwitchFrame::OLD_CONTEXT_OFFSET,
         frame_new = const ContextSwitchFrame::NEW_CONTEXT_OFFSET,
         frame_cr3 = const ContextSwitchFrame::NEW_CR3_OFFSET,
+        frame_kernel_stack = const ContextSwitchFrame::NEW_KERNEL_STACK_OFFSET,
         kernel_rsp = const KERNEL_RSP_OFFSET,
         is_user = const IS_USER_OFFSET,
         rflags = const RFLAGS_OFFSET,
@@ -251,6 +269,7 @@ mod tests {
         assert_eq!(ContextSwitchFrame::OLD_CONTEXT_OFFSET, 0);
         assert_eq!(ContextSwitchFrame::NEW_CONTEXT_OFFSET, 8);
         assert_eq!(ContextSwitchFrame::NEW_CR3_OFFSET, 16);
-        assert_eq!(core::mem::size_of::<ContextSwitchFrame>(), 24);
+        assert_eq!(ContextSwitchFrame::NEW_KERNEL_STACK_OFFSET, 24);
+        assert_eq!(core::mem::size_of::<ContextSwitchFrame>(), 32);
     }
 }

@@ -43,6 +43,11 @@ pub enum IwlState {
     Disconnected,
 }
 
+/// Number of service ticks for which RX beacons remain eligible after the
+/// firmware reports scan completion.  The notification and the final RX DMA
+/// buffers are not guaranteed to reach the host in the same interrupt.
+pub const SCAN_RESULT_GRACE_TICKS: u32 = 512;
+
 // ── Firmware image header ──────────
 
 #[repr(C, packed)]
@@ -92,9 +97,9 @@ pub enum LegacyCmd {
     /// RX MPDU notification (legacy transport). Carries the raw 802.11 frame
     /// preceded by an `iwl_rx_mpdu_res_start` header.
     ReplyRxMpduCmd = 0xc1,
-    /// Urgent scan-complete notification (older firmware).
+    /// Scan-offload completion notification, carrying periodic scan status.
     ScanCompleteUrgent = 0x6d,
-    /// Offloaded scan-complete notification (7265 firmware API).
+    /// LMAC scan iteration completion notification.
     ScanOffloadCompleteNotif = 0xe7,
 }
 
@@ -191,61 +196,141 @@ impl PhyContextCmdV1 {
     }
 }
 
+/// One AC entry in the API-v1 MAC context QoS array.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MacQosAc {
+    pub cw_min: u16,
+    pub cw_max: u16,
+    pub aifsn: u8,
+    pub fifos_mask: u8,
+    pub edca_txop: u16,
+}
+
+/// Station-specific portion of the API-v1 MAC context union.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MacStaData {
+    pub is_assoc: u32,
+    pub dtim_time: u32,
+    pub dtim_tsf: u64,
+    pub beacon_interval: u32,
+    pub beacon_interval_reciprocal: u32,
+    pub dtim_interval: u32,
+    pub dtim_interval_reciprocal: u32,
+    pub listen_interval: u32,
+    pub assoc_id: u32,
+    pub assoc_beacon_arrive_time: u32,
+}
+
 /// MAC_CONTEXT_CMD (0x28) payload for a minimal STA context.
 ///
-/// Without this command the firmware never delivers 802.11 frames
-/// (beacons, probe responses) to the host.  Scan-complete notifications
-/// still arrive because they are command responses, but beacons travel
-/// the REPLY_RX_MPDU_CMD data path which requires an active MAC context.
-///
-/// The layout follows Linux's `iwl_mac_ctx_cmd` (API v1).  Like every
-/// firmware context command, the first 8 bytes are the common
-/// `id_and_color` / `action` header.
+/// This is the packed `MAC_CONTEXT_CMD_API_S_VER_1` layout used by the
+/// 7265 firmware. In particular, the common fields, five AC QoS entries,
+/// and the 44-byte STA union are all part of the command. Sending the old
+/// shortened structure leaves the firmware command queue stopped at this
+/// command, so the subsequent scan request is never executed.
 #[repr(C, packed)]
 pub struct MacContextCmd {
-    /// Context ID and colour (MAC id = 0, colour = 0).
     pub id_and_color: u32,
-    /// Action: 0 = modify, 1 = add.  Use ADD when first establishing the
-    /// MAC context.
     pub action: u32,
-    /// MAC type: 0 = AUX, 1 = STA, 2 = P2P_DEVICE, 3 = P2P_CLIENT, 4 = P2P_GO, 5 = MONITOR
     pub mac_type: u32,
-    /// MAC flags (0 for minimal STA).
-    pub mac_flags: u32,
-    /// TSF ID (0).
-    pub tsf_id: u8,
-    /// Color (0).
-    pub color: u8,
-    /// Reserved.
-    pub reserved: u16,
-    /// MAC address (6 bytes).
-    pub addr: [u8; 6],
-    /// Reserved after address.
-    pub reserved_for_addr: u16,
-    /// RX filter flags.
+    pub tsf_id: u32,
+    pub node_addr: [u8; 6],
+    pub reserved_for_node_addr: u16,
+    pub bssid_addr: [u8; 6],
+    pub reserved_for_bssid_addr: u16,
+    pub cck_rates: u32,
+    pub ofdm_rates: u32,
+    pub protection_flags: u32,
+    pub cck_short_preamble: u32,
+    pub short_slot: u32,
     pub filter_flags: u32,
-    /// MAC data for STA context (variable, but we use a fixed-size block).
-    pub data: [u8; 64],
+    pub qos_flags: u32,
+    pub ac: [MacQosAc; 5],
+    pub sta: MacStaData,
 }
 
 impl MacContextCmd {
     /// Create a minimal STA MAC context that accepts beacons and multicast
     /// frames — enough for passive scanning.
     pub fn sta(mac: [u8; 6]) -> Self {
-        // Linux: MAC_FILTER_ACCEPT_GRP = BIT(3), MAC_FILTER_IN_BEACON = BIT(7)
-        const FILTER_FLAGS: u32 = (1 << 3) | (1 << 7);
+        // Linux API v1: MAC_FILTER_ACCEPT_GRP = BIT(2),
+        // MAC_FILTER_IN_BEACON = BIT(6).
+        const FILTER_FLAGS: u32 = (1 << 2) | (1 << 6);
         Self {
-            id_and_color: 0, // MAC id 0, colour 0
-            action: 1,       // FW_CTXT_ACTION_ADD
-            mac_type: 1,     // IWL_MAC_TYPE_STA
-            mac_flags: 0,
+            id_and_color: 0,
+            action: 1,
+            // FW_MAC_TYPE_BSS_STA.  FW_MAC_TYPE_AUX is 1 and is reserved for
+            // the auxiliary scan station (MAC index 4).
+            mac_type: 5,
             tsf_id: 0,
-            color: 0,
-            reserved: 0,
-            addr: mac,
-            reserved_for_addr: 0,
+            node_addr: mac,
+            reserved_for_node_addr: 0,
+            // Before association there is no AP-specific BSSID. The firmware
+            // uses the broadcast value for this state, as does upstream.
+            bssid_addr: [0xff; 6],
+            reserved_for_bssid_addr: 0,
+            cck_rates: 0x0000_000f,
+            ofdm_rates: 0x0000_00ff,
+            protection_flags: 0,
+            cck_short_preamble: 0x20,
+            short_slot: 0x10,
             filter_flags: FILTER_FLAGS,
-            data: [0u8; 64],
+            qos_flags: 0,
+            // API v1 expects each EDCA entry to name the FIFO owned by that
+            // access category.  Linux fills these masks even when QoS is not
+            // enabled; leaving all five masks at zero makes the firmware
+            // reject MAC_CONTEXT_CMD on the 7265.
+            ac: [
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 1 << 0,
+                    edca_txop: 0,
+                },
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 1 << 1,
+                    edca_txop: 0,
+                },
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 1 << 2,
+                    edca_txop: 0,
+                },
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 1 << 3,
+                    edca_txop: 0,
+                },
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 0,
+                    edca_txop: 0,
+                },
+            ],
+            sta: MacStaData {
+                is_assoc: 0,
+                dtim_time: 0,
+                dtim_tsf: 0,
+                beacon_interval: 100,
+                beacon_interval_reciprocal: 0x028f_5c28,
+                dtim_interval: 0,
+                dtim_interval_reciprocal: 0,
+                listen_interval: 10,
+                assoc_id: 0,
+                assoc_beacon_arrive_time: 0,
+            },
         }
     }
 }
@@ -687,18 +772,24 @@ pub enum WifiInitPhase {
 
 impl From<u8> for WifiInitPhase {
     fn from(v: u8) -> Self {
-        match v {
-            0 => Self::Idle,
-            1 => Self::PciProbe,
-            2 => Self::MmioInit,
-            3 => Self::MmioPollMacClock,
-            4 => Self::DmaAlloc,
-            5 => Self::FwUpload,
-            6 => Self::FwWaitAlive,
-            7 => Self::FwInitCmds,
-            8 => Self::Done,
-            _ => Self::Failed,
-        }
+        // Discriminants are contiguous 0..=9; any value outside that range
+        // (and 9 itself) collapses to `Failed`, matching the prior match.
+        const PHASES: [WifiInitPhase; 10] = [
+            WifiInitPhase::Idle,
+            WifiInitPhase::PciProbe,
+            WifiInitPhase::MmioInit,
+            WifiInitPhase::MmioPollMacClock,
+            WifiInitPhase::DmaAlloc,
+            WifiInitPhase::FwUpload,
+            WifiInitPhase::FwWaitAlive,
+            WifiInitPhase::FwInitCmds,
+            WifiInitPhase::Done,
+            WifiInitPhase::Failed,
+        ];
+        PHASES
+            .get(v as usize)
+            .copied()
+            .unwrap_or(WifiInitPhase::Failed)
     }
 }
 

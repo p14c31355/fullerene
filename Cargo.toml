@@ -12,7 +12,7 @@ panic = "abort"
 opt-level = 3
 lto = true
 codegen-units = 1
-strip = "debuginfo"
+strip = "symbols"
 
 [workspace.package]
 version = "0.1.0"

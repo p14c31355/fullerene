@@ -12,8 +12,12 @@ pub fn ticks_per_us() -> u64 {
     let max_leaf = core::arch::x86_64::__cpuid(0).eax;
     let measured = if max_leaf >= 0x15 {
         let ratio = core::arch::x86_64::__cpuid(0x15);
-        (ratio.eax != 0 && ratio.ebx != 0 && ratio.ecx != 0)
-            .then(|| u64::from(ratio.ecx) * u64::from(ratio.ebx) / u64::from(ratio.eax) / 1_000_000)
+        (ratio.eax != 0 && ratio.ebx != 0 && ratio.ecx != 0).then(|| {
+            // Use u128 for the product so a malformed CPUID leaf cannot
+            // overflow the native u64 multiply (debug builds would panic).
+            (u128::from(ratio.ecx) * u128::from(ratio.ebx) / u128::from(ratio.eax) / 1_000_000)
+                as u64
+        })
     } else {
         None
     }

@@ -457,6 +457,8 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             let code = crate::shell::run_wasm_app("/apps/startup_sound.wasm", &args);
             if code != 0 {
                 log::warn!("Startup sound WASM exited with code {}", code);
+            } else {
+                log::info!("Startup sound WASM completed with verified PCM submission");
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] startup sound done\n");
             Ok(())

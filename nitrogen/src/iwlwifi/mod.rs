@@ -22,12 +22,27 @@ mod rx;
 mod tx;
 pub mod types;
 
+/// Reinterpret a packed command value as a byte slice.
+///
+/// # Safety
+///
+/// `T` must have a stable, padding-free byte layout. The caller must only pass
+/// command structures whose representation is explicitly suitable for the
+/// firmware protocol.
+#[inline(always)]
+unsafe fn as_bytes<T: Sized>(value: &T) -> &[u8] {
+    // SAFETY: enforced by this function's contract.
+    unsafe {
+        core::slice::from_raw_parts(value as *const T as *const u8, core::mem::size_of::<T>())
+    }
+}
+
 // Compatibility alias for callers that imported register constants from
 // `iwlwifi::regs` before the lifecycle split.
 pub use connection_state::{
-    connect_to_ap, force_init_failed, init_wifi_manager, set_wifi_driver_context,
-    start_scan_if_idle, tick_wifi_device, try_init_wifi_device, try_init_wifi_device_step,
-    wifi_init_completed, wifi_state_snapshot,
+    connect_to_ap, force_init_failed, init_wifi_manager, retry_wifi_initialization,
+    set_wifi_driver_context, start_scan_if_idle, tick_wifi_device, try_init_wifi_device,
+    try_init_wifi_device_step, wifi_init_completed, wifi_state_snapshot,
 };
 pub use device::IwlWifiDevice;
 pub use device::try_create_iwl;

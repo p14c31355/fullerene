@@ -1,4 +1,5 @@
 use crate::page_table::allocator::traits::{FrameAllocator, FrameAllocatorExt};
+use crate::page_table::constants::MAX_SYSTEM_MEMORY;
 use crate::page_table::memory_map::MemoryDescriptorValidator;
 use crate::page_table::types::PhysFrame;
 use x86_64::structures::paging::{
@@ -44,12 +45,20 @@ impl BitmapFrameAllocator {
     pub fn init_with_memory_map<T: MemoryDescriptorValidator>(memory_map: &[T]) -> Self {
         let mut max_phys = 0u64;
         for desc in memory_map {
-            let end = desc.get_physical_start() + desc.get_page_count() * 4096;
+            let Some(bytes) = desc.get_page_count().checked_mul(4096) else {
+                continue;
+            };
+            let Some(end) = desc.get_physical_start().checked_add(bytes) else {
+                continue;
+            };
+            if end > MAX_SYSTEM_MEMORY {
+                continue;
+            }
             if end > max_phys {
                 max_phys = end;
             }
         }
-        let total_frames = ((max_phys + 4095) / 4096) as usize;
+        let total_frames = (max_phys / 4096 + u64::from(max_phys % 4096 != 0)) as usize;
         let mut allocator = Self::new(total_frames);
         allocator
             .bitmap
@@ -57,9 +66,17 @@ impl BitmapFrameAllocator {
 
         for desc in memory_map {
             if desc.get_type() == crate::common::EfiMemoryType::EfiConventionalMemory as u32 {
+                let Some(bytes) = desc.get_page_count().checked_mul(4096) else {
+                    continue;
+                };
+                let Some(end) = desc.get_physical_start().checked_add(bytes) else {
+                    continue;
+                };
+                if end > MAX_SYSTEM_MEMORY {
+                    continue;
+                }
                 let start_frame = (desc.get_physical_start() / 4096) as usize;
-                let end_frame =
-                    ((desc.get_physical_start() + desc.get_page_count() * 4096) / 4096) as usize;
+                let end_frame = (end / 4096) as usize;
                 allocator.set_frame_range(start_frame, end_frame, false);
             }
         }
@@ -155,8 +172,12 @@ impl BitmapFrameAllocator {
     /// Allocate a frame from the low memory region (below 1MB).
     pub fn allocate_frame_low(&mut self) -> Option<X86PhysFrame> {
         const LOW_MEMORY_LIMIT: usize = 1024 * 1024 / 4096;
-        let cr3_addr: u64;
-        unsafe { core::arch::asm!("mov rax, cr3", out("rax") cr3_addr, options(nomem, nostack)) };
+        // Read CR3 through the safe `x86_64` API (replaces a `mov rax, cr3`
+        // asm block). The PML4 frame must never be handed back to a caller.
+        let cr3_addr = x86_64::registers::control::Cr3::read()
+            .0
+            .start_address()
+            .as_u64();
         let l4_frame_idx = (cr3_addr / 4096) as usize;
         for frame_idx in 1..LOW_MEMORY_LIMIT.min(self.total_frames) {
             if frame_idx == l4_frame_idx {

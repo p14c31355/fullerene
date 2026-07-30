@@ -27,7 +27,7 @@ pub static PHYSICAL_MEMORY_OFFSET: AtomicUsize = AtomicUsize::new(0);
 /// Set heap range for allocator-related page fault detection
 pub fn set_heap_range(start: usize, size: usize) {
     HEAP_START.store(start, Ordering::SeqCst);
-    HEAP_END.store(start + size, Ordering::SeqCst);
+    HEAP_END.store(start.saturating_add(size), Ordering::SeqCst);
 }
 
 /// Get the current heap range (start, end)

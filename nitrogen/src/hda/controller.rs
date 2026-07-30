@@ -30,6 +30,8 @@ pub struct HdaController {
     dma: DmaEngine,
     /// GCAP value (cached).
     gcap: u32,
+    /// Stream tag assigned to the output stream.
+    stream_tag: u8,
     /// Whether the controller has been fully initialised.
     ready: AtomicBool,
 }
@@ -225,6 +227,7 @@ impl HdaController {
             corb: CorbEngine::new(core::ptr::null_mut(), core::ptr::null_mut(), 256),
             dma: DmaEngine::new(0),
             gcap: 0,
+            stream_tag: 0,
             ready: AtomicBool::new(false),
         }
     }
@@ -412,6 +415,7 @@ impl HdaController {
         let sd_offset = SD_BASE + (iss as usize) * SD_SIZE;
         self.dma = DmaEngine::new(sd_offset);
         unsafe { self.dma.init(mmio, dma_region, stream_tag) };
+        self.stream_tag = stream_tag;
 
         self.ready.store(true, Ordering::Release);
         log::info!("HDA: controller ready");
@@ -458,6 +462,12 @@ impl HdaController {
     pub fn feed_samples(&self, samples: &[u8]) -> usize {
         // Safety: self.mmio is valid if the controller was initialised
         unsafe { self.dma.feed_samples(self.mmio, samples) }
+    }
+
+    /// Start the prepared output stream after PCM prefill.
+    pub fn start_stream(&self) -> bool {
+        // Safety: self.mmio is valid for an initialised controller.
+        unsafe { self.dma.start(self.mmio, self.stream_tag) }
     }
 
     /// Convenience: write PCM at a specific DMA buffer offset.

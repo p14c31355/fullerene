@@ -1,6 +1,6 @@
 # Fullerene Project Rules
 
-## Current implementation snapshot (2026-07-29)
+## Current implementation snapshot (2026-07-30)
 
 The repository currently implements the context-oriented architecture
 described below across the root workspace members. The main runtime path is:
@@ -36,6 +36,46 @@ set. The viewer and Emulsion applications are built as separate nested
 workspaces and copied into the kernel build output. Viewer MP4 access is
 seek-based and Emulsion screen capture is chunked, so neither path requires a
 full media or framebuffer-sized temporary buffer in the host runtime.
+
+The workspace currently contains 20 Cargo members. The latest host validation
+passes `cargo check --workspace --all-targets`; the optional BusyBox build
+status is intentionally silent when its cache/toolchain is unavailable, so an
+optional port does not turn a warning-free Rust check into a warning. The
+vendored BusyBox and VSCodium sources remain outside the architecture audit.
+
+Mouse button ownership is explicit at the Solvent boundary: left-button
+events enter Desktop/WM activation and drag handling, while right-button
+events are routed to the Explorer or desktop context menu without invoking the
+left-button drag path. Popup coordinates are clamped to the negotiated
+framebuffer rather than a fixed 1024×768 assumption.
+
+The iwlwifi lifecycle is retryable: a failed firmware/PCIe initialization is
+cleaned up and returned to `Idle` when the network menu is opened again. A
+successful init still starts scan offload only after the device reports the
+firmware-ready state, and late RX beacons remain accepted through the scan
+completion grace window.
+
+Audio initialization is also retryable until HDA actually becomes ready. PCM
+startup playback now requires DMA/LPIB progress to be observed before reporting
+success; a completion log alone is not treated as proof that the controller
+consumed audio data. Acoustic output still needs a speaker-equipped hardware
+run, because headless QEMU cannot validate the analog path.
+
+The release profile keeps aggressive optimization, single-unit LTO, and abort
+panics, and strips the symbol table from shipped binaries. Debug builds retain
+symbols for diagnosis; this changes artifact metadata, not runtime code paths.
+
+A 2026-07-30 redundancy and correctness audit reduced logic LOC without
+changing runtime contracts: repetitive command-serialisation and font/colour
+tables became table-driven `const` arrays and a shared `as_bytes` helper
+(localised to `nitrogen::iwlwifi`); the kernel memory manager's 37 repeated
+initialisation guards collapsed to a `check_init()?` helper. Correctness fixes
+from the same pass are recorded in `docs/BUG_JOURNAL.md` (Entry 009), notably
+the IPv4 header-checksum byte-order bug, a 2-px framebuffer-scroll stale band,
+and unchecked boot-path arithmetic. The `assembly.rs` hand-coded boot
+transitions remain `asm!` because no safe Rust equivalent exists for the
+CR3/GDT/stack handoff; they are already encapsulated behind safe Rust entry
+points per section 6.
 
 ## 1. Overall Philosophy (Highest Priority)
 

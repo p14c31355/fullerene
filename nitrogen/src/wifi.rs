@@ -311,7 +311,10 @@ pub struct RawPciProbeResult {
 /// Returns raw state that can be used by subsequent init phases.
 pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResult> {
     crate::debug::print("wifi", "start_pci_probe");
-    let (entry, info) = WifiRegistry::probe()?;
+    let Some((entry, info)) = WifiRegistry::probe() else {
+        log::warn!("WiFi: no supported Intel wireless PCI device found");
+        return None;
+    };
     crate::debug::print("wifi", "probe_ok");
 
     // PCI config-space setup uses only the endpoint's standard configuration

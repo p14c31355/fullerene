@@ -18,6 +18,7 @@ const _: () = assert!(
     core::mem::size_of::<HcmdHeaderWide>() + core::mem::size_of::<ScanRequestCmd>()
         <= TFD_LENGTH_MAX
 );
+const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 144);
 
 impl IwlWifiDevice {
     fn init_tx_cmd_queue(&mut self) {
@@ -149,18 +150,8 @@ impl IwlWifiDevice {
         };
         group.key[..16].copy_from_slice(&gtk);
 
-        let pairwise_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &pairwise as *const AddStaKeyCmd as *const u8,
-                core::mem::size_of::<AddStaKeyCmd>(),
-            )
-        };
-        let group_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &group as *const AddStaKeyCmd as *const u8,
-                core::mem::size_of::<AddStaKeyCmd>(),
-            )
-        };
+        let pairwise_bytes = unsafe { super::as_bytes(&pairwise) };
+        let group_bytes = unsafe { super::as_bytes(&group) };
 
         self.send_hcmd(
             LegacyCmd::AddStaKey as u8,
@@ -212,13 +203,7 @@ impl IwlWifiDevice {
                 group_id: group,
                 sequence,
             };
-            let header_bytes = unsafe {
-                core::slice::from_raw_parts(
-                    &hcmd_header as *const HcmdHeader as *const u8,
-                    core::mem::size_of::<HcmdHeader>(),
-                )
-            };
-            full_data.extend_from_slice(header_bytes);
+            full_data.extend_from_slice(unsafe { super::as_bytes(&hcmd_header) });
         } else {
             let hcmd_header = HcmdHeaderWide {
                 opcode,
@@ -228,13 +213,7 @@ impl IwlWifiDevice {
                 reserved: 0,
                 version: 0,
             };
-            let header_bytes = unsafe {
-                core::slice::from_raw_parts(
-                    &hcmd_header as *const HcmdHeaderWide as *const u8,
-                    core::mem::size_of::<HcmdHeaderWide>(),
-                )
-            };
-            full_data.extend_from_slice(header_bytes);
+            full_data.extend_from_slice(unsafe { super::as_bytes(&hcmd_header) });
         }
         full_data.extend_from_slice(data);
         cmd_buf.write_from(&full_data);
@@ -274,6 +253,62 @@ impl IwlWifiDevice {
         Ok(())
     }
 
+    /// Submit an initialization command and wait until the firmware command
+    /// scheduler consumes it.  Linux sends these setup commands
+    /// synchronously; queueing the whole burst lets firmware API 17 report a
+    /// generic SW_ERR at the next command boundary, without identifying the
+    /// command that was actually rejected.
+    fn send_init_hcmd(
+        &mut self,
+        label: &str,
+        opcode: u8,
+        group: u8,
+        data: &[u8],
+    ) -> Result<(), crate::DriverError> {
+        self.send_hcmd(opcode, group, data)?;
+        let target = self.tx_head as u32 & 0xff;
+        let consumed = crate::timing::poll_timeout_us(100_000, || {
+            let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
+            if csr_int & (CSR_INT_BIT_SW_ERR | CSR_INT_BIT_HW_ERR) != 0 {
+                return Some(Err(crate::DriverError::Protocol));
+            }
+            let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD)? & 0xff;
+            self.update_tx_tail(rptr as usize);
+            self.tx_tail_reached(self.tx_head).then_some(Ok(()))
+        });
+        match consumed {
+            Some(Ok(())) => {
+                log::info!(
+                    "iwlwifi: HCMD consumed label={} target={} rptr={}",
+                    label,
+                    target,
+                    self.tx_tail & 0xff
+                );
+                Ok(())
+            }
+            Some(Err(error)) => {
+                log::error!(
+                    "iwlwifi: HCMD rejected label={} target={} CSR_INT={:#010x}",
+                    label,
+                    target,
+                    self.safe_read32(CSR_INT).unwrap_or(!0)
+                );
+                Err(error)
+            }
+            None => {
+                log::error!(
+                    "iwlwifi: HCMD consume timeout label={} target={} rptr={:#010x} CSR_INT={:#010x} FH_INT={:#010x}",
+                    label,
+                    target,
+                    self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0),
+                    self.safe_read32(CSR_INT).unwrap_or(!0),
+                    self.safe_read32(CSR_FH_INT).unwrap_or(!0),
+                );
+                Err(crate::DriverError::Busy)
+            }
+        }
+    }
+
     pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
         self.init_tx_cmd_queue();
         self.init_rx_dma();
@@ -281,30 +316,30 @@ impl IwlWifiDevice {
         // The 7265 modules used here expose two RF chains. Keep the valid TX
         // mask aligned with the two-chain RX scan selection.
         let ant_cfg: [u8; 4] = [0x03, 0, 0, 0];
-        self.send_hcmd(
+        self.send_init_hcmd(
+            "TX_ANT_CONFIG",
             LegacyCmd::TxAntConfig as u8,
             GroupId::Legacy as u8,
             &ant_cfg,
         )?;
         log::info!("iwlwifi: TX antenna config sent");
 
-        // Firmware API 17 uses the pre-v12 station API.  The scan engine
+        // Firmware API 17 uses the pre-v12 station API. The scan engine
         // requires its auxiliary station before accepting an offload request.
-        // ADD_STA is a long-group command, so send_hcmd() emits the required
-        // eight-byte wide header here.
+        // ADD_STA is a legacy-group command and uses the four-byte header.
         const MAC_INDEX_AUX: u8 = 4;
         let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX);
-        let aux_sta_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &aux_sta as *const AddStaCmdV7 as *const u8,
-                core::mem::size_of::<AddStaCmdV7>(),
-            )
-        };
-        self.send_hcmd(LegacyCmd::AddSta as u8, GroupId::Long as u8, aux_sta_bytes)?;
+        let aux_sta_bytes = unsafe { super::as_bytes(&aux_sta) };
+        self.send_init_hcmd(
+            "ADD_STA_AUX",
+            LegacyCmd::AddSta as u8,
+            GroupId::Legacy as u8,
+            aux_sta_bytes,
+        )?;
         log::info!(
             "iwlwifi: auxiliary scan station sent: sta_id={} group=0x{:02x} opcode=0x{:02x}",
             MAC_INDEX_AUX,
-            GroupId::Long as u8,
+            GroupId::Legacy as u8,
             LegacyCmd::AddSta as u8,
         );
 
@@ -316,13 +351,9 @@ impl IwlWifiDevice {
         // second interface actually needs them.
         let phy_id = 0u8;
         let phy = PhyContextCmdV1::add(phy_id);
-        let phy_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &phy as *const PhyContextCmdV1 as *const u8,
-                core::mem::size_of::<PhyContextCmdV1>(),
-            )
-        };
-        self.send_hcmd(
+        let phy_bytes = unsafe { super::as_bytes(&phy) };
+        self.send_init_hcmd(
+            "PHY_CONTEXT",
             LegacyCmd::PhyContext as u8,
             GroupId::Legacy as u8,
             phy_bytes,
@@ -342,15 +373,11 @@ impl IwlWifiDevice {
         // with 0 APs" — the scan ran, beacons were received by the radio,
         // but the firmware dropped them because no MAC context existed.
         let mac_ctx = MacContextCmd::sta(self.mac);
-        let mac_ctx_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &mac_ctx as *const MacContextCmd as *const u8,
-                core::mem::size_of::<MacContextCmd>(),
-            )
-        };
-        self.send_hcmd(
+        let mac_ctx_bytes = unsafe { super::as_bytes(&mac_ctx) };
+        self.send_init_hcmd(
+            "MAC_CONTEXT",
             LegacyCmd::MacContext as u8,
-            GroupId::Long as u8,
+            GroupId::Legacy as u8,
             mac_ctx_bytes,
         )?;
         log::info!(
@@ -370,13 +397,9 @@ impl IwlWifiDevice {
         // the opcode is in the legacy command namespace, the command itself
         // is a LONG_GROUP command and therefore uses the wide HCMD header.
         let scan_config = ScanConfigV1::new(self.mac);
-        let scan_config_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &scan_config as *const ScanConfigV1 as *const u8,
-                core::mem::size_of::<ScanConfigV1>(),
-            )
-        };
-        self.send_hcmd(
+        let scan_config_bytes = unsafe { super::as_bytes(&scan_config) };
+        self.send_init_hcmd(
+            "SCAN_CONFIG",
             LegacyCmd::ScanConfig as u8,
             GroupId::Long as u8,
             scan_config_bytes,
@@ -392,10 +415,26 @@ impl IwlWifiDevice {
         let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);
         let csr_fh_int_before_echo = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
         log::info!(
-            "iwlwifi: command transport before optional echo probe: CSR_INT={:#010x} FH_INT={:#010x}",
+            "iwlwifi: command transport before optional echo probe: CSR_INT={:#010x} FH_INT={:#010x} UCODE_GP1={:#010x} GP_DRIVER={:#010x} RESET={:#010x} GP_CNTRL={:#010x} SCD_RDPTR={} SCD_STATUS={:#010x}",
             csr_int_before_echo,
             csr_fh_int_before_echo,
+            self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0),
+            self.safe_read32(CSR_GP_DRIVER).unwrap_or(!0),
+            self.safe_read32(CSR_RESET).unwrap_or(!0),
+            self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+            self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0),
+            self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0),
         );
+        if csr_int_before_echo & CSR_INT_BIT_SW_ERR != 0 {
+            log::error!(
+                "iwlwifi: firmware SW_ERR is latched after init HCMD submissions (MAC_CONTEXT or an earlier command was rejected)"
+            );
+            unsafe {
+                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), csr_int_before_echo);
+            }
+            self.fw_state = FwState::Error;
+            return Err(crate::DriverError::Protocol);
+        }
         if csr_int_before_echo & CSR_INT_BIT_HW_ERR != 0 {
             log::error!(
                 "iwlwifi: HW_ERR was already set before ECHO probe; initial HCMD submissions triggered the failure"

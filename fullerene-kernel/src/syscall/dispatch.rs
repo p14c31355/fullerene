@@ -1,3 +1,5 @@
+#[cfg(linux_busybox_smoke)]
+use core::sync::atomic::{AtomicU64, Ordering};
 use fullerene_abi::SyscallNumber;
 
 use super::abi;
@@ -12,6 +14,9 @@ use super::process;
 use super::thread;
 use super::time;
 use super::window;
+
+#[cfg(linux_busybox_smoke)]
+static FIRST_LINUX_SYSCALL_PID: AtomicU64 = AtomicU64::new(u64::MAX);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn handle_syscall(
@@ -33,6 +38,20 @@ pub unsafe extern "sysv64" fn handle_syscall(
         .unwrap_or(false);
 
     if dispatch_mode {
+        #[cfg(linux_busybox_smoke)]
+        if let Some(pid) = current_pid
+            && FIRST_LINUX_SYSCALL_PID.swap(pid.0, Ordering::AcqRel) != pid.0
+        {
+            petroleum::serial::serial_log(format_args!(
+                "[LINUX-DIAG] first syscall pid={} nr={} cr3={:#x}\n",
+                pid.0,
+                syscall_num,
+                x86_64::registers::control::Cr3::read()
+                    .0
+                    .start_address()
+                    .as_u64(),
+            ));
+        }
         crate::klog_fmt!(
             "[LINUX-DIAG] syscall enter pid={:?} nr={} args={:#x},{:#x}\n",
             current_pid,

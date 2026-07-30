@@ -4,7 +4,7 @@
 
 use petroleum::mem_debug;
 use x86_64::VirtAddr;
-use x86_64::registers::model_specific::Msr;
+use x86_64::registers::model_specific::{GsBase, KernelGsBase, Msr};
 use x86_64::registers::rflags::RFlags;
 
 /// Per-CPU syscall entry state addressed through `KERNEL_GS_BASE`.
@@ -50,6 +50,21 @@ pub fn set_process_kernel_stack(stack_top: VirtAddr) {
         SYSCALL_ENTRY_STATE.kernel_stack_top = stack_top.as_u64();
     }
     crate::gdt::set_ring0_stack(stack_top);
+}
+
+/// Restore the MSR arrangement expected by a fresh CPL3 entry.
+///
+/// A Linux task normally returns through `sysret`, which executes `swapgs`
+/// before resuming user mode.  Fullerene can instead terminate a task from
+/// inside its syscall and context-switch directly to the shell.  In that
+/// path the CPU is still using the kernel GS base when the next task is
+/// entered, so the next user's `swapgs` would exchange in a zero GS base and
+/// fault before the first syscall.  Make the transition state explicit.
+pub fn prepare_user_entry() {
+    GsBase::write(VirtAddr::new(0));
+    KernelGsBase::write(VirtAddr::new(
+        &raw const SYSCALL_ENTRY_STATE as *const _ as u64,
+    ));
 }
 
 /// System call entry point (naked function for manual assembly handling)
@@ -148,7 +163,6 @@ pub fn setup_syscall() {
     mem_debug!("Syscall: SFMASK written\n");
 
     // Set KERNEL_GS_BASE to the entry state used by the naked assembly.
-    use x86_64::registers::model_specific::KernelGsBase;
     mem_debug!("Syscall: writing KernelGsBase\n");
     KernelGsBase::write(VirtAddr::new(
         &raw const SYSCALL_ENTRY_STATE as *const _ as u64,

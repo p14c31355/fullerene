@@ -508,10 +508,12 @@ impl<T: PixelType + VolatileRead> FramebufferLike for FramebufferWriter<T> {
     fn scroll_up(&self) {
         let bpp = core::mem::size_of::<T>();
         let pixels_per_line = self.info.stride as usize / bpp;
-        let shift_pixels = 10usize.saturating_mul(pixels_per_line);
+        // One text row is FONT_6X10.height (10 px). Shift and clear must use
+        // the same height, otherwise a stale band is left between them.
+        let row_pixels = 10usize.saturating_mul(pixels_per_line);
         let total_pixels = pixels_per_line.saturating_mul(self.info.height as usize);
-        for index in 0..total_pixels.saturating_sub(shift_pixels) {
-            let source = (shift_pixels + index).saturating_mul(bpp);
+        for index in 0..total_pixels.saturating_sub(row_pixels) {
+            let source = (row_pixels + index).saturating_mul(bpp);
             let destination = index.saturating_mul(bpp);
             let value = self
                 .framebuffer
@@ -519,8 +521,8 @@ impl<T: PixelType + VolatileRead> FramebufferLike for FramebufferWriter<T> {
                 .unwrap_or(T::from_u32(self.info.colors.bg));
             let _ = self.framebuffer.write_volatile_at(destination, value);
         }
-        let clear_start = self.info.height.saturating_sub(8) as usize * pixels_per_line;
-        let clear_count = 8usize.saturating_mul(pixels_per_line);
+        let clear_start = self.info.height.saturating_sub(10) as usize * pixels_per_line;
+        let clear_count = row_pixels;
         let value = T::from_u32(self.info.colors.bg);
         for index in 0..clear_count {
             let _ = self
@@ -558,9 +560,9 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u3
 
 /// Generic framebuffer buffer scroll up operation.
 ///
-/// Shifts the entire framebuffer up by 8 scan lines using `T`-sized
-/// volatile accesses (much fewer operations than byte-by-byte).
-/// The last 8 scan lines are filled with `bg_color`.
+/// Shifts the entire framebuffer up by one text row (10 scan lines, matching
+/// FONT_6X10) using `T`-sized volatile accesses (much fewer operations than
+/// byte-by-byte). The freed 10 scan lines are filled with `bg_color`.
 pub unsafe fn scroll_buffer_pixels<T: Copy + VolatileRead>(
     address: u64,
     stride: u32,
@@ -569,7 +571,7 @@ pub unsafe fn scroll_buffer_pixels<T: Copy + VolatileRead>(
 ) {
     let bpp = core::mem::size_of::<T>() as u32;
     let pixels_per_line = (stride / bpp) as usize;
-    let shift_pixels = 10 * pixels_per_line;
+    let row_pixels = 10 * pixels_per_line;
     let total_pixels = pixels_per_line * height as usize;
     let region = unsafe {
         FramebufferRegion::from_address(
@@ -581,16 +583,16 @@ pub unsafe fn scroll_buffer_pixels<T: Copy + VolatileRead>(
     };
 
     // Use volatile copy for MMIO (wider T reduces loop count)
-    for i in 0..(total_pixels.saturating_sub(shift_pixels)) {
+    for i in 0..(total_pixels.saturating_sub(row_pixels)) {
         let value: T = region
-            .read_volatile_at((shift_pixels + i) * core::mem::size_of::<T>())
+            .read_volatile_at((row_pixels + i) * core::mem::size_of::<T>())
             .expect("invalid framebuffer read");
         let _ = region.write_volatile_at(i * core::mem::size_of::<T>(), value);
     }
 
-    // Clear last 8 lines
-    let clear_start = (height.saturating_sub(8) as usize) * pixels_per_line;
-    let clear_count = 8 * pixels_per_line;
+    // Clear the freed last text row (10 lines)
+    let clear_start = (height.saturating_sub(10) as usize) * pixels_per_line;
+    let clear_count = row_pixels;
     for i in 0..clear_count {
         let _ = region.write_volatile_at((clear_start + i) * core::mem::size_of::<T>(), bg_color);
     }

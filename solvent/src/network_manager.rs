@@ -20,6 +20,7 @@ const WIFI_INIT_TIMEOUT_TICKS: u64 = 12_000;
 // the service registered for the network UI, but only start hardware probing
 // after the user explicitly opens the network menu.
 static WIFI_INIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+static WIFI_SCAN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Runtime-owned Wi-Fi lifecycle and UI projection.
 #[allow(dead_code)]
@@ -43,6 +44,10 @@ impl WifiService {
         if nitrogen::iwlwifi::wifi_init_completed() {
             self.init_pending = false;
         } else if now.wrapping_sub(started) >= WIFI_INIT_TIMEOUT_TICKS {
+            log::warn!(
+                "iwlwifi: deferred initialization timed out after {} scheduler ticks",
+                WIFI_INIT_TIMEOUT_TICKS
+            );
             nitrogen::iwlwifi::force_init_failed();
             self.init_pending = false;
         } else {
@@ -116,7 +121,10 @@ impl crate::Service for WifiService {
         #[cfg(not(nitrogen_no_iwlwifi))]
         nitrogen::iwlwifi::tick_wifi_device();
         #[cfg(not(nitrogen_no_iwlwifi))]
-        if nitrogen::iwlwifi::wifi_init_completed() && now % 600 == 0 {
+        if nitrogen::iwlwifi::wifi_init_completed()
+            && WIFI_SCAN_REQUESTED.swap(false, Ordering::Acquire)
+        {
+            log::info!("iwlwifi: scan requested by network menu");
             nitrogen::iwlwifi::start_scan_if_idle();
         }
         for action in core::mem::take(&mut *crate::WIFI_ACTION_QUEUE.lock()) {
@@ -143,7 +151,9 @@ pub fn register_wifi_service() {
 
 #[cfg(not(nitrogen_no_iwlwifi))]
 fn request_wifi_initialization() {
+    let _ = nitrogen::iwlwifi::retry_wifi_initialization();
     WIFI_INIT_REQUESTED.store(true, Ordering::Release);
+    WIFI_SCAN_REQUESTED.store(true, Ordering::Release);
 }
 
 /// Handle a network menu action.

@@ -32,6 +32,8 @@ static WIFI_DEVICE: Mutex<Option<Box<dyn crate::wifi::WifiDriver>>> = Mutex::new
 static WIFI_INIT_COMPLETED: AtomicBool = AtomicBool::new(false);
 static WIFI_INIT_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
+static WIFI_INIT_LAST_ACTIVE_PHASE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
 static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
     mmio_device: None,
     fw_candidate_idx: 0,
@@ -48,6 +50,39 @@ static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
     tx_bufs: Vec::new(),
     rx_bufs: Vec::new(),
 });
+
+fn release_init_resources(ctx: &mut WifiInitContext) {
+    if let Some(pci) = ctx.pci_dev.as_ref() {
+        let command =
+            crate::pci::PciConfigSpace::read_config_word(pci.bus, pci.device, pci.function, 4);
+        crate::pci::PciConfigSpace::write_config_word_raw(
+            pci.bus,
+            pci.device,
+            pci.function,
+            4,
+            command & !0x04,
+        );
+    }
+    // Release DMA-visible memory only after the device can no longer master
+    // the PCI bus.
+    ctx.mmio_device.take();
+    let driver_ctx = ctx.driver_ctx;
+    for mut buffer in ctx.tx_bufs.drain(..).chain(ctx.rx_bufs.drain(..)) {
+        if let Some(driver_ctx) = driver_ctx {
+            buffer.free(driver_ctx);
+        }
+    }
+    for mut ring in ctx
+        .tx_dma_ring
+        .take()
+        .into_iter()
+        .chain(ctx.rx_dma_ring.take())
+    {
+        if let Some(driver_ctx) = driver_ctx {
+            ring.free(driver_ctx);
+        }
+    }
+}
 
 pub fn wifi_init_completed() -> bool {
     WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
@@ -81,45 +116,53 @@ pub fn force_init_failed() {
             return;
         }
     };
-    let _ = ctx.mmio_device.take();
-    // Disable PCI bus-mastering before freeing DMA regions
-    if let Some(ref pci) = ctx.pci_dev {
-        let cmd =
-            crate::pci::PciConfigSpace::read_config_word(pci.bus, pci.device, pci.function, 4);
-        crate::pci::PciConfigSpace::write_config_word_raw(
-            pci.bus,
-            pci.device,
-            pci.function,
-            4,
-            cmd & !0x04,
-        );
-    }
-    let drv = ctx.driver_ctx;
-    for mut buf in ctx.tx_bufs.drain(..) {
-        if let Some(c) = drv {
-            buf.free(c);
-        }
-    }
-    for mut buf in ctx.rx_bufs.drain(..) {
-        if let Some(c) = drv {
-            buf.free(c);
-        }
-    }
-    if let Some(mut ring) = ctx.tx_dma_ring.take() {
-        if let Some(c) = drv {
-            ring.free(c);
-        }
-    }
-    if let Some(mut ring) = ctx.rx_dma_ring.take() {
-        if let Some(c) = drv {
-            ring.free(c);
-        }
-    }
+    release_init_resources(&mut ctx);
     drop(ctx);
     debug::print("iwlwifi", "step: force_init_failed (timeout)");
 }
 
+/// Allow a later network-menu open to retry a failed initialization.
+///
+/// Firmware/PCIe startup can fail transiently when the device is still
+/// waking from platform power management. The old terminal `Failed` state
+/// made the first failure permanent until reboot.
+pub fn retry_wifi_initialization() -> bool {
+    if !WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
+        || get_init_phase() != WifiInitPhase::Failed
+        || WIFI_DEVICE.lock().is_some()
+    {
+        return false;
+    }
+
+    let Some(mut ctx) = WIFI_INIT_CTX.try_lock() else {
+        return false;
+    };
+    release_init_resources(&mut ctx);
+    ctx.fw_candidate_idx = 0;
+    ctx.fw_candidates = &[];
+    ctx.alive_start_tsc = 0;
+    ctx.pci_dev = None;
+    ctx.mmio = core::ptr::null_mut();
+    ctx.driver_ctx = None;
+    ctx.health = None;
+    ctx.hw_rev = 0;
+    ctx.mac = None;
+    drop(ctx);
+
+    WIFI_INIT_LAST_ACTIVE_PHASE.store(
+        WifiInitPhase::Idle as u8,
+        core::sync::atomic::Ordering::Release,
+    );
+    WIFI_INIT_COMPLETED.store(false, core::sync::atomic::Ordering::Release);
+    set_init_phase(WifiInitPhase::Idle);
+    log::info!("iwlwifi: retrying initialization after a previous failure");
+    true
+}
+
 fn set_init_phase(phase: WifiInitPhase) {
+    if phase != WifiInitPhase::Failed {
+        WIFI_INIT_LAST_ACTIVE_PHASE.store(phase as u8, core::sync::atomic::Ordering::Release);
+    }
     WIFI_INIT_PHASE.store(phase as u8, core::sync::atomic::Ordering::Release);
 }
 
@@ -136,10 +179,12 @@ pub fn try_init_wifi_device_step() {
 
     match phase {
         WifiInitPhase::Idle => {
+            log::info!("iwlwifi: initialization state machine starting");
             let driver_ctx_opt = WIFI_DRIVER_CTX.lock();
             let _driver_ctx = match *driver_ctx_opt {
                 Some(c) => c,
                 None => {
+                    log::error!("iwlwifi: initialization failed — driver context is unavailable");
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
@@ -158,10 +203,12 @@ pub fn try_init_wifi_device_step() {
             set_init_phase(WifiInitPhase::PciProbe);
         }
         WifiInitPhase::PciProbe => {
+            log::info!("iwlwifi: PCI probe phase started");
             debug::print("iwlwifi", "step: pci_probe_enter");
             let driver_ctx = match *WIFI_DRIVER_CTX.lock() {
                 Some(c) => c,
                 None => {
+                    log::error!("iwlwifi: PCI probe failed — driver context is unavailable");
                     debug::print("iwlwifi", "step: ERR no_driver_ctx");
                     set_init_phase(WifiInitPhase::Failed);
                     return;
@@ -171,11 +218,25 @@ pub fn try_init_wifi_device_step() {
             let raw = match crate::wifi::probe_pci_only(driver_ctx) {
                 Some(r) => r,
                 None => {
+                    log::warn!("iwlwifi: PCI probe found no usable supported device");
                     debug::print("iwlwifi", "step: no_pci_device");
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
             };
+            log::info!(
+                "iwlwifi: PCI device matched {:04x}:{:04x} at {:02x}:{:02x}.{} BAR0={:#x} hw_rev={:#06x}",
+                raw.pci_dev.vendor_id,
+                raw.device_id,
+                raw.pci_dev.bus,
+                raw.pci_dev.device,
+                raw.pci_dev.function,
+                raw.pci_dev
+                    .read_bar_info(0)
+                    .map(|bar| bar.address)
+                    .unwrap_or(0),
+                raw.hw_rev,
+            );
             {
                 let health = raw.upstream_bridge.map_or_else(
                     || PciHealth::new(&raw.pci_dev),
@@ -199,6 +260,7 @@ pub fn try_init_wifi_device_step() {
             debug::print("iwlwifi", "step: pci_probe_done");
         }
         WifiInitPhase::MmioInit => {
+            log::info!("iwlwifi: MMIO reset/clock request phase started");
             debug::print("iwlwifi", "step: mmio_enter");
 
             // Link training belongs to firmware. Resetting the upstream bridge
@@ -212,6 +274,7 @@ pub fn try_init_wifi_device_step() {
                 }
             };
             if !device_present {
+                log::warn!("iwlwifi: MMIO phase aborted — PCIe device disappeared before reset");
                 debug::print("iwlwifi", "step: ERR device_gone_before_reset");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
@@ -243,6 +306,7 @@ pub fn try_init_wifi_device_step() {
                 }
             };
             if !device_present {
+                log::warn!("iwlwifi: MMIO phase aborted — PCIe device disappeared after reset");
                 debug::print("iwlwifi", "step: ERR device_gone_before_clock");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
@@ -330,12 +394,16 @@ pub fn try_init_wifi_device_step() {
                 }
                 mmio::SafeReadResult::MasterAbort | mmio::SafeReadResult::DeviceGone => {
                     mmio::disarm_mmio_watchdog();
+                    log::warn!(
+                        "iwlwifi: MAC clock probe failed — MMIO read aborted or device disappeared"
+                    );
                     debug::print("iwlwifi", "step: ERR mac_abort_or_gone");
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
             };
             if !mac_acquired {
+                log::warn!("iwlwifi: MAC clock did not become ready");
                 debug::print("iwlwifi", "step: ERR mac_not_ready");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
@@ -346,6 +414,7 @@ pub fn try_init_wifi_device_step() {
                 mmio::SafeReadResult::Value(v) => v,
                 _ => {
                     mmio::disarm_mmio_watchdog();
+                    log::warn!("iwlwifi: CSR HW_REV read failed");
                     debug::print("iwlwifi", "step: ERR hw_rev_read");
                     set_init_phase(WifiInitPhase::Failed);
                     return;
@@ -366,6 +435,7 @@ pub fn try_init_wifi_device_step() {
             );
             if candidates.is_empty() {
                 mmio::disarm_mmio_watchdog();
+                log::error!("iwlwifi: no firmware image matches the detected device/revision");
                 debug::print("iwlwifi", "step: no_fw");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
@@ -399,6 +469,7 @@ pub fn try_init_wifi_device_step() {
             set_init_phase(WifiInitPhase::DmaAlloc);
         }
         WifiInitPhase::DmaAlloc => {
+            log::info!("iwlwifi: allocating DMA rings and RX/TX buffers");
             let (pci_dev, mmio, driver_ctx, health, mac, hw_rev, tx_dma, rx_dma, tx_bufs, rx_bufs) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let pci_dev = match ctx.pci_dev.take() {
@@ -576,6 +647,7 @@ pub fn try_init_wifi_device_step() {
                 scan_results: Vec::new(),
                 scan_channel: 1,
                 scan_pending: false,
+                scan_result_grace_ticks: 0,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
                 tx_dma_ring: tx_dma,
@@ -595,6 +667,7 @@ pub fn try_init_wifi_device_step() {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.mmio_device = Some(Box::new(device));
             }
+            log::info!("iwlwifi: DMA rings and buffers allocated");
             debug::print("iwlwifi", "step: dma_alloc_done");
             set_init_phase(WifiInitPhase::FwUpload);
         }
@@ -702,6 +775,7 @@ pub fn try_init_wifi_device_step() {
             WIFI_INIT_CTX.lock().mmio_device = Some(dev);
             match alive_result {
                 Ok(true) => {
+                    log::info!("iwlwifi: firmware alive notification received");
                     debug::print("iwlwifi", "step: fw_alive");
                     set_init_phase(WifiInitPhase::FwInitCmds);
                 }
@@ -739,6 +813,7 @@ pub fn try_init_wifi_device_step() {
             mmio::disarm_mmio_watchdog();
             match result {
                 Ok(()) => {
+                    log::info!("iwlwifi: firmware initialization commands accepted");
                     debug::print("iwlwifi", "step: fw_init_cmds_ok");
                     set_init_phase(WifiInitPhase::Done);
                 }
@@ -757,34 +832,19 @@ pub fn try_init_wifi_device_step() {
                 }
             }
             WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
+            log::info!("iwlwifi: initialization complete; device is ready for scanning");
             debug::print("iwlwifi", "step: init_done");
         }
         WifiInitPhase::Failed => {
+            let previous = WifiInitPhase::from(
+                WIFI_INIT_LAST_ACTIVE_PHASE.load(core::sync::atomic::Ordering::Acquire),
+            );
+            log::error!("iwlwifi: initialization failed in phase {:?}", previous);
             let mut ctx = WIFI_INIT_CTX.lock();
-            let _ = ctx.mmio_device.take();
-            let drv = ctx.driver_ctx;
-            for mut buf in ctx.tx_bufs.drain(..) {
-                if let Some(c) = drv {
-                    buf.free(c);
-                }
-            }
-            for mut buf in ctx.rx_bufs.drain(..) {
-                if let Some(c) = drv {
-                    buf.free(c);
-                }
-            }
-            if let Some(mut ring) = ctx.tx_dma_ring.take() {
-                if let Some(c) = drv {
-                    ring.free(c);
-                }
-            }
-            if let Some(mut ring) = ctx.rx_dma_ring.take() {
-                if let Some(c) = drv {
-                    ring.free(c);
-                }
-            }
+            release_init_resources(&mut ctx);
             drop(ctx);
             WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
+            log::error!("iwlwifi: initialization failed; device disabled");
             debug::print("iwlwifi", "step: init_failed");
         }
     }
@@ -916,14 +976,25 @@ pub fn connect_to_ap(ssid: &Ssid, password: Option<&str>) {
 
 pub fn start_scan_if_idle() {
     let mut dev_guard = WIFI_DEVICE.lock();
-    if let Some(ref mut dev) = *dev_guard {
-        let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
-        // Only start a scan if the device is ready and not already busy.
-        if dev_ref.device_available()
-            && dev_ref.get_status() == bonder::wifi::WifiStatus::Disconnected
-        {
-            let _ = dev_ref.start_scan();
-        }
+    let Some(ref mut dev) = *dev_guard else {
+        log::warn!("iwlwifi: scan request ignored — no operational device");
+        return;
+    };
+    let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
+    if !dev_ref.device_available() {
+        log::warn!("iwlwifi: scan request ignored — firmware is not ready");
+        return;
+    }
+    // Only start a scan if the device is ready and not already busy.
+    if dev_ref.get_status() != bonder::wifi::WifiStatus::Disconnected {
+        log::info!(
+            "iwlwifi: scan request deferred — current status={:?}",
+            dev_ref.get_status()
+        );
+        return;
+    }
+    if !dev_ref.start_scan() {
+        log::warn!("iwlwifi: scan request failed before firmware submission");
     }
 }
 
@@ -941,24 +1012,20 @@ impl IwlWifiDevice {
         // several seconds for firmware completion and RX delivery.
         self.scan_channel = 0;
         self.scan_pending = true;
+        self.scan_result_grace_ticks = 0;
         self.iwl_state = IwlState::Scanning;
 
         let scan_cmd = ScanRequestCmd::new(self.mac);
-        let cmd_data = unsafe {
-            core::slice::from_raw_parts(
-                &scan_cmd as *const ScanRequestCmd as *const u8,
-                core::mem::size_of::<ScanRequestCmd>(),
-            )
-        };
-        // SCAN_OFFLOAD_REQUEST_CMD (0x51) lives in LONG_GROUP and therefore
-        // uses the wide (8-byte) HCMD header, even though its opcode is in
-        // the legacy command namespace.  Sending it as Legacy produced a
-        // 4-byte header that the firmware did not recognise, so the scan
-        // never ran and the watchdog completed with zero APs.  See the
-        // matching note in `tx.rs` (`send_init_commands`).
-        if let Err(error) =
-            self.send_hcmd(LegacyCmd::ScanRequest as u8, GroupId::Long as u8, cmd_data)
-        {
+        let cmd_data = unsafe { super::as_bytes(&scan_cmd) };
+        // SCAN_OFFLOAD_REQUEST_CMD (0x51) is a legacy-group command and uses
+        // the four-byte HCMD header. SCAN_CFG_CMD above is the exception: it
+        // is sent with the always-long header because its channel database is
+        // a long-group command.
+        if let Err(error) = self.send_hcmd(
+            LegacyCmd::ScanRequest as u8,
+            GroupId::Legacy as u8,
+            cmd_data,
+        ) {
             self.scan_pending = false;
             self.iwl_state = IwlState::Disconnected;
             self.wifi_conn.finish_scan();
@@ -966,7 +1033,7 @@ impl IwlWifiDevice {
         }
 
         log::info!(
-            "iwlwifi: LMAC scan request queued: opcode=0x51 channels={} bytes={}",
+            "iwlwifi: LMAC scan request queued: opcode=0x51 channels={} bytes={} (Klog: waiting for APs)",
             23,
             core::mem::size_of::<ScanRequestCmd>()
         );
@@ -989,6 +1056,26 @@ impl IwlWifiDevice {
                 security,
                 beacon_interval: beacon.beacon_interval,
             };
+            if self
+                .scan_results
+                .iter()
+                .any(|existing| existing.bssid == ap.bssid)
+            {
+                return;
+            }
+            log::info!(
+                "iwlwifi: AP FOUND ssid=\"{}\" bssid={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} channel={} security={} rssi={}dBm",
+                ap.ssid,
+                ap.bssid[0],
+                ap.bssid[1],
+                ap.bssid[2],
+                ap.bssid[3],
+                ap.bssid[4],
+                ap.bssid[5],
+                ap.channel,
+                ap.security.name(),
+                ap.rssi
+            );
             self.wifi_conn.add_scan_result(ap.clone());
             self.scan_results.push(ap);
         }

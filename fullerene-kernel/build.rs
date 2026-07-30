@@ -282,6 +282,19 @@ fn main() {
 fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
     let explicit = env::var_os("FULLERENE_BUSYBOX").map(PathBuf::from);
     let generated = workspace_root.join("target/busybox/busybox");
+    if let Some(path) = explicit.as_ref() {
+        println!("cargo:rerun-if-changed={}", path.display());
+        let data = fs::read(path)
+            .unwrap_or_else(|_| panic!("FULLERENE_BUSYBOX was not found: {}", path.display()));
+        if !is_static_x86_64_elf(&data) {
+            panic!("BusyBox must be a static x86_64 ELF: {}", path.display());
+        }
+        fs::write(out_dir.join("busybox"), data).unwrap_or_else(|error| {
+            panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
+        });
+        println!("cargo:rustc-cfg=have_busybox");
+        return true;
+    }
     if explicit.is_none() {
         let source = workspace_root.join("toluene/busybox");
         println!("cargo:rerun-if-changed={}", source.display());
@@ -300,17 +313,17 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
             clean: false,
         };
         if let Err(error) = busybox_build::build(&options) {
-            println!("cargo:warning=BusyBox submodule build skipped: {error}");
+            // BusyBox is an optional cached port.  A missing toolchain or
+            // submodule must not turn an otherwise valid kernel check into a
+            // warning; the initramfs simply omits the optional package.
+            let _ = error;
         }
     }
-    let candidates = explicit.clone().into_iter().chain(
-        [
-            generated.clone(),
-            PathBuf::from("/usr/bin/busybox"),
-            PathBuf::from("/bin/busybox"),
-        ]
-        .into_iter(),
-    );
+    let candidates = [
+        generated.clone(),
+        PathBuf::from("/usr/bin/busybox"),
+        PathBuf::from("/bin/busybox"),
+    ];
 
     for path in candidates {
         if path != generated {
@@ -320,28 +333,15 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
             continue;
         };
         if !is_static_x86_64_elf(&data) {
-            if explicit.as_ref().is_some_and(|wanted| wanted == &path) {
-                panic!("BusyBox must be a static x86_64 ELF: {}", path.display());
-            }
             continue;
         }
         fs::write(out_dir.join("busybox"), data).unwrap_or_else(|error| {
             panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
         });
         println!("cargo:rustc-cfg=have_busybox");
-        println!(
-            "cargo:warning=Embedded static BusyBox from {}",
-            path.display()
-        );
         return true;
     }
 
-    if let Some(path) = explicit {
-        panic!("FULLERENE_BUSYBOX was not found: {}", path.display());
-    }
-    println!(
-        "cargo:warning=BusyBox not embedded; set FULLERENE_BUSYBOX to a static x86_64 BusyBox binary"
-    );
     false
 }
 

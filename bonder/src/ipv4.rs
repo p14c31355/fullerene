@@ -172,7 +172,11 @@ pub fn build_packet(
     hdr.write_to(&mut hdr_buf);
     // The checksum field is 0 at this point (as set by write_to)
     let cs = checksum(&hdr_buf);
-    hdr.header_checksum = cs.to_be();
+    // `checksum()` returns a native-byte-order u16; `write_to()` serializes
+    // the field via `to_be_bytes()`, so store it in native order here.
+    // Storing `cs.to_be()` would byte-swap twice and emit a little-endian
+    // checksum on x86, which standards-compliant receivers drop.
+    hdr.header_checksum = cs;
 
     // Write the final header into dst
     hdr.write_to(&mut dst[..Ipv4Header::SIZE]);

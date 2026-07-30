@@ -30,7 +30,9 @@ const CORBCTL: usize = 0x004C;
 const RIRBLBASE: usize = 0x0050;
 const RIRBUBASE: usize = 0x0054;
 const RIRBWP: usize = 0x0058;
+const RINTCNT: usize = 0x005A;
 const RIRBCTL: usize = 0x005C;
+const RIRBSTS: usize = 0x005D;
 
 /// Default CORB / RIRB entry counts.
 pub const CORB_ENTRIES: usize = 256;
@@ -46,8 +48,10 @@ pub mod verbs {
     pub const SET_STREAM: u32 = 0x706;
     pub const SET_EAPD: u32 = 0x70C;
     pub const SET_CONNECTION_SELECT: u32 = 0x701;
+    pub const SET_PROC_COEF: u32 = 0x400;
+    pub const SET_COEF_INDEX: u32 = 0x500;
 
-    // ── 12‑bit verbs (payload in lower 8 bits) ──
+    // ── 12‑bit verbs (normally payload in lower 8 bits) ──
     pub const GET_PARAM: u32 = 0xF00;
     pub const GET_CONNECTION_LIST_ENTRY: u32 = 0xF02;
     pub const GET_PIN_SENSE: u32 = 0xF09;
@@ -57,6 +61,7 @@ pub mod verbs {
     pub const GET_SUBSYSTEM_ID: u32 = 0xF20;
     pub const GET_PIN_CTL: u32 = 0xF07;
     pub const GET_EAPD: u32 = 0xF0C;
+    pub const GET_PROC_COEF: u32 = 0xC00;
     pub const SET_POWER_STATE: u32 = 0x705;
 }
 
@@ -174,6 +179,19 @@ impl CorbEngine {
                 mmio_write16(mmio, RIRBWP, 0);
             }
 
+            // RINTCNT is not optional: zero means that the controller has
+            // already reached its response-count threshold.  QEMU (and
+            // some Intel controllers) consequently drops every solicited
+            // response until the host programs a non-zero count.  Use a
+            // generously sized polling batch: this driver polls RIRBWP and
+            // does not use the RIRB interrupt, while QEMU keeps its internal
+            // response counter latched until the interrupt status is
+            // acknowledged.  A 255-response batch covers codec enumeration
+            // without making every verb depend on that interrupt handshake.
+            mmio_write16(mmio, RINTCNT, 0x00FF);
+            // Clear stale response/overrun status before enabling RIRB DMA.
+            mmio_write8(mmio, RIRBSTS, 0x05);
+
             // Program RIRB size and enable RIRB DMA
             let rirb_szcap = mmio_read8(mmio, RIRBCTL + 2) & 0xF0;
             mmio_write8(mmio, RIRBCTL + 2, corb_sz_code | rirb_szcap);
@@ -243,8 +261,16 @@ impl CorbEngine {
             let corb_n = self.corb_entries;
 
             // Encode the verb command word
-            let cmd_val = if verb > 0xF {
-                (verb << 8) | (payload as u32 & 0xFF)
+            let wide_verb = matches!(
+                verb,
+                0x400..=0x5FF | 0x700..=0x7FF | 0xC00..=0xCFF | 0xF00..=0xFFF
+            );
+            let cmd_val = if wide_verb {
+                // The 12-bit verb form uses the low 16 bits for the
+                // parameter when the verb's low byte is zero (for example
+                // SET_PROC_COEF=0x400).  Keeping all 16 bits is required by
+                // Realtek's indexed coefficient registers.
+                (verb << 8) | (payload as u32 & 0xFFFF)
             } else {
                 (verb << 16) | (payload as u32 & 0xFFFF)
             };
@@ -316,12 +342,24 @@ impl CorbEngine {
                                 raw
                             );
                         }
+                        // Keep stale response/overrun status from leaking into
+                        // a subsequent polling batch.  The normal batch
+                        // threshold is deliberately large because this path
+                        // polls RIRBWP instead of servicing RIRB interrupts.
+                        mmio_write8(mmio, RIRBSTS, 0x05);
                         return Some(raw);
                     }
                 }
                 None
             });
-            verb_result.unwrap_or(0xFFFF_FFFF)
+            let result = verb_result.unwrap_or(0xFFFF_FFFF);
+            if result == 0xFFFF_FFFF {
+                // Also release a possible overrun/response-count latch on a
+                // timeout so a later recovery or probe is not wedged behind
+                // stale RIRB status.
+                mmio_write8(mmio, RIRBSTS, 0x05);
+            }
+            result
         }
     }
 }

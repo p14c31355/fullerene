@@ -59,21 +59,32 @@ impl AudioContext {
         if self.init_done {
             return;
         }
-        self.init_done = true;
         let ctrl = match self.hda.as_mut() {
             Some(c) => c,
-            None => return,
+            None => {
+                self.init_done = true;
+                return;
+            }
         };
         if ctrl.is_ready() {
+            self.init_done = true;
             return;
         }
         let Some(corb) = alloc_dma(1) else { return };
-        let Some(rirb) = alloc_dma(1) else { return };
+        let Some(rirb) = alloc_dma(1) else {
+            free_dma(corb);
+            return;
+        };
         let Some(dma) = alloc_dma((DMA_BUF_SIZE as usize + 4095) / 4096) else {
+            free_dma(rirb);
+            free_dma(corb);
             return;
         };
         if !unsafe { ctrl.init(&corb, &rirb, &dma) } {
             log::error!("Sound: HDA init failed");
+            free_dma(dma);
+            free_dma(rirb);
+            free_dma(corb);
             return;
         }
         let gcap = unsafe { core::ptr::read_volatile(ctrl.mmio().add(0x0000) as *const u32) };
@@ -88,6 +99,7 @@ impl AudioContext {
         self.corb = Some(corb);
         self.rirb = Some(rirb);
         self.dma = Some(dma);
+        self.init_done = true;
     }
     pub fn write_samples(&mut self, offset: u32, samples: &[u8]) -> usize {
         self.lazy_init();
@@ -206,9 +218,15 @@ impl AudioContext {
             }
         }
         controller.reset_prefill_tracking();
+        if !controller.start_stream() {
+            log::warn!("Sound: HDA stream failed to start after PCM prefill");
+            return false;
+        }
 
         let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
         let timeout_tsc = tsc_per_ms.saturating_mul(500);
+        let initial_progress = controller.playback_progress().unwrap_or(0);
+        let mut progressed = false;
         let mut completed = 0usize;
         let mut next_half = 2usize;
         while completed < half_count {
@@ -227,6 +245,9 @@ impl AudioContext {
             // A zero-length feed acknowledges BCIS and advances the driver's
             // LPIB tracking without copying data into the DMA buffer.
             let _ = controller.feed_samples(&[]);
+            progressed |= controller
+                .playback_progress()
+                .is_some_and(|progress| progress != initial_progress);
             if next_half < half_count {
                 let start = next_half * half_size;
                 let end = (start + half_size).min(pcm.len());
@@ -248,7 +269,23 @@ impl AudioContext {
             completed += 1;
         }
 
-        log::info!("Sound: startup PCM playback complete ({} bytes)", pcm.len());
+        let (stream_ctl, stream_status, lpib) = controller.debug_stream_status();
+        if !progressed {
+            log::warn!(
+                "Sound: HDA reported completion without DMA progress (CTL=0x{:08x} STS=0x{:02x} LPIB={})",
+                stream_ctl,
+                stream_status,
+                lpib
+            );
+            return false;
+        }
+        log::info!(
+            "Sound: startup PCM playback complete ({} bytes) CTL=0x{:08x} STS=0x{:02x} LPIB={}",
+            pcm.len(),
+            stream_ctl,
+            stream_status,
+            lpib
+        );
         true
     }
 
@@ -289,6 +326,14 @@ fn alloc_dma(pages: usize) -> Option<DmaRegion> {
         virt,
         size: pages * 4096,
     })
+}
+
+fn free_dma(region: DmaRegion) {
+    let pages = region.size / 4096 + usize::from(region.size % 4096 != 0);
+    petroleum::page_table::constants::with_frame_allocator(|allocator| {
+        allocator.free_contiguous_frames(region.phys, pages);
+    });
+    nitrogen::metrics::dma_released(region.size);
 }
 
 static AUDIO_CTX: spin::Mutex<Option<AudioContext>> = spin::Mutex::new(None);

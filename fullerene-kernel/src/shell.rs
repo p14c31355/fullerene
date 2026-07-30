@@ -689,11 +689,22 @@ fn nozzle_services() -> nozzle::ShellServices {
             }
         }),
         write: Some(|ctx, path, content| {
+            crate::klog_fmt!(
+                "[FS-DIAG] shell redirect write begin path={} bytes={}\n",
+                path,
+                content.len()
+            );
             match crate::fs::write_entire_file(path, content.as_bytes()) {
                 Ok(()) => {
+                    crate::klog_fmt!("[FS-DIAG] shell redirect write exit path={} ok\n", path);
                     tline!(ctx.terminal, "Wrote {} bytes to {}", content.len(), path);
                 }
                 Err(e) => {
+                    crate::klog_fmt!(
+                        "[FS-DIAG] shell redirect write error path={} error={:?}\n",
+                        path,
+                        e
+                    );
                     tline!(ctx.terminal, "write: {}: {}", path, e);
                 }
             }
@@ -753,11 +764,11 @@ fn nozzle_services() -> nozzle::ShellServices {
                     }
                     ctx.terminal
                         .write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
-                    let msg = format!(
-                        "ramfs           {:>4}K  {:>4}K  {:>4}K  {:>3}%  /\n",
-                        0, 0, 0, 0
-                    );
-                    ctx.terminal.write_str(&msg);
+                    // ramfs is backed by the kernel heap; per-mount byte
+                    // accounting is not tracked, so report N/A rather than
+                    // fabricating zero columns (the file/dir counts below are real).
+                    ctx.terminal
+                        .write_str("ramfs           N/A   N/A   N/A   N/A  /\n");
                     let msg2 = format!("{} files, {} directories\n", file_count, dir_count);
                     ctx.terminal.write_str(&msg2);
                 }
@@ -979,11 +990,14 @@ fn nozzle_services() -> nozzle::ShellServices {
                     "Linux process started (PID: {})"
                 );
             }
-            "busybox" => launch_cmd!(
-                ctx.terminal,
-                crate::linux::launch::launch_busybox(),
-                "BusyBox shell started (PID: {})"
-            ),
+            "busybox" => {
+                crate::klog_fmt!("[BUSYBOX-DIAG] shell command enter\n");
+                launch_cmd!(
+                    ctx.terminal,
+                    crate::linux::launch::launch_busybox(),
+                    "BusyBox shell started (PID: {})"
+                )
+            }
             "hello_linux" => launch_cmd!(
                 ctx.terminal,
                 crate::linux::launch::launch_test_binary(),
@@ -1501,12 +1515,11 @@ pub fn busybox_smoke() {
         }
 
         fn read_byte(&mut self) -> Option<u8> {
-            // Do not let the scripted Nozzle `exit` terminate the harness
-            // while the interactive BusyBox fixture is still waiting for its
-            // second command. This makes shell resumption observable.
-            while self.input.front() == Some(&b'e')
-                && !crate::linux::launch::busybox_smoke_verified()
-            {
+            // Hold the next shell command while the current BusyBox instance
+            // is alive. Once it exits, the shell consumes the next command;
+            // this runs two sequential BusyBox sessions and catches stale
+            // terminal/process state that only fails on the second launch.
+            while crate::linux::launch::busybox_smoke_input_held() {
                 solvent::runtime_tick_no_fb();
                 crate::process::yield_from_scheduler_stack();
             }
@@ -1520,8 +1533,9 @@ pub fn busybox_smoke() {
         }
     }
 
+    crate::linux::launch::reset_busybox_smoke_harness();
     let services = nozzle_services();
-    let mut terminal = ScriptedTerminal::new("busybox\nexit\n");
+    let mut terminal = ScriptedTerminal::new("busybox\nbusybox\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     crate::linux::launch::mark_busybox_smoke_harness_done();
     if crate::linux::launch::busybox_smoke_complete() {
@@ -1543,19 +1557,25 @@ pub fn busybox_smoke() {
 
 struct KernelTerminal {
     history: alloc::collections::VecDeque<String>,
+    pipe_stdout: Option<String>,
 }
 
 impl KernelTerminal {
     fn new() -> Self {
         Self {
             history: alloc::collections::VecDeque::with_capacity(128),
+            pipe_stdout: None,
         }
     }
 }
 
 impl nozzle::Terminal for KernelTerminal {
     fn write_str(&mut self, s: &str) {
-        kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
+        if let Some(ref mut output) = self.pipe_stdout {
+            output.push_str(s);
+        } else {
+            kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
+        }
     }
 
     fn read_byte(&mut self) -> Option<u8> {
@@ -1572,6 +1592,16 @@ impl nozzle::Terminal for KernelTerminal {
     fn input_available(&self) -> bool {
         nitrogen::ps2::keyboard::input_available()
     }
+
+    fn take_stdout(&mut self) -> Option<String> {
+        self.pipe_stdout.take()
+    }
+
+    fn arm_pipe_stdout(&mut self) {
+        self.pipe_stdout = Some(String::new());
+    }
+
+    fn clear_pipe_stdin(&mut self) {}
 
     fn record_history(&mut self, line: &str) {
         if line.is_empty() || self.history.front().is_some_and(|entry| entry == line) {

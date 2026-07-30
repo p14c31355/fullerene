@@ -474,10 +474,23 @@ impl Desktop {
 
     /// Show the context menu (right‑click on desktop).
     pub fn show_context_menu(&mut self, x: i32, y: i32) {
+        self.show_context_menu_in_bounds(x, y, 1024, 768);
+    }
+
+    /// Show the desktop menu without allowing its popup to extend beyond
+    /// the actual scanout.  The old fixed 1024×768 clamp made the menu
+    /// partly unreachable on smaller displays and was especially confusing
+    /// when the framebuffer was negotiated after desktop initialisation.
+    pub fn show_context_menu_in_bounds(&mut self, x: i32, y: i32, fb_width: u32, fb_height: u32) {
         let items = crate::menu::desktop_context_menu();
-        let mx = (x as u32).min(1024);
-        let my = (y as u32).min(768);
-        self.active_menu = Some(PopupMenu::new(mx, my, items));
+        let menu = PopupMenu::new(0, 0, items);
+        let mx = (x.max(0) as u32).min(fb_width.saturating_sub(menu.width));
+        let my = (y.max(0) as u32).min(fb_height.saturating_sub(menu.height));
+        self.active_menu = Some(PopupMenu {
+            x: mx,
+            y: my,
+            ..menu
+        });
         self.menu_is_system = false;
     }
 
@@ -536,7 +549,14 @@ impl Desktop {
 
     /// Dismiss the active menu.
     pub fn dismiss_menu(&mut self) {
-        self.active_menu = None;
+        if let Some(menu) = self.active_menu.take() {
+            self.push_dirty_rect(crate::scene::DirtyRect::new(
+                menu.x,
+                menu.y,
+                menu.width,
+                menu.height,
+            ));
+        }
     }
 
     /// Check if a point (fb pixel coords) hits a taskbar button.
@@ -952,5 +972,14 @@ mod tests {
         );
         dt.mouse_down(1024, 768);
         assert!(dt.active_menu.is_none()); // dismissed after click
+    }
+
+    #[test]
+    fn context_menu_is_clamped_to_the_scanout() {
+        let mut dt = Desktop::new(0x202020);
+        dt.show_context_menu_in_bounds(999, 999, 320, 400);
+        let menu = dt.active_menu.as_ref().unwrap();
+        assert!(menu.x + menu.width <= 320);
+        assert!(menu.y + menu.height <= 400);
     }
 }

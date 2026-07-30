@@ -3,6 +3,8 @@ use crate::loader::LoadError;
 use crate::process::ProcessId;
 use alloc::boxed::Box;
 use alloc::string::ToString;
+#[cfg(linux_busybox_smoke)]
+use core::sync::atomic::AtomicU8;
 #[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
 use core::sync::atomic::AtomicUsize;
 #[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
@@ -38,6 +40,10 @@ static BUSYBOX_SMOKE_WAITING: AtomicBool = AtomicBool::new(false);
 static BUSYBOX_SMOKE_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_OUTPUT_MATCHED: AtomicUsize = AtomicUsize::new(0);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_LAUNCH_COUNT: AtomicU8 = AtomicU8::new(0);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_HOLD_INPUT: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox is running";
 
@@ -183,9 +189,6 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         "[BUSYBOX-DIAG] create_process_terminal exit window_id={}\n",
         terminal_window.0
     );
-    #[cfg(linux_busybox_smoke)]
-    let argv = ["busybox", "sh"];
-    #[cfg(not(linux_busybox_smoke))]
     let argv = ["busybox", "sh"];
     let envp = [
         "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
@@ -228,8 +231,10 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         BUSYBOX_SMOKE_WAITING.store(false, Ordering::Release);
         BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
         BUSYBOX_SMOKE_WINDOW.store(terminal_window.0, Ordering::Release);
-        // Feed only the first command. The exit command is injected after
-        // BusyBox has reached a real no-input wait.
+        BUSYBOX_SMOKE_LAUNCH_COUNT.fetch_add(1, Ordering::AcqRel);
+        BUSYBOX_SMOKE_HOLD_INPUT.store(true, Ordering::Release);
+        // Feed the command that exercises the shell. The exit command is
+        // injected after BusyBox has reached a real no-input wait.
         solvent::push_process_terminal_input(
             terminal_window,
             b"echo Fullerene BusyBox is running\n",
@@ -297,10 +302,11 @@ pub fn observe_busybox_wait(pid: u64) {
 
 #[cfg(linux_busybox_smoke)]
 pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
-    if BUSYBOX_SMOKE_PID.load(Ordering::Acquire) == pid.0
-        && code == 0
-        && BUSYBOX_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire)
-    {
+    let tracked = BUSYBOX_SMOKE_PID.load(Ordering::Acquire) == pid.0;
+    if tracked {
+        BUSYBOX_SMOKE_HOLD_INPUT.store(false, Ordering::Release);
+    }
+    if tracked && code == 0 && BUSYBOX_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire) {
         let window_id = BUSYBOX_SMOKE_WINDOW.load(Ordering::Acquire);
         let window_closed = if window_id == u64::MAX {
             true
@@ -325,13 +331,25 @@ pub fn busybox_smoke_verified() -> bool {
 }
 
 #[cfg(linux_busybox_smoke)]
+pub fn busybox_smoke_input_held() -> bool {
+    BUSYBOX_SMOKE_HOLD_INPUT.load(Ordering::Acquire)
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn reset_busybox_smoke_harness() {
+    BUSYBOX_SMOKE_LAUNCH_COUNT.store(0, Ordering::Release);
+    BUSYBOX_SMOKE_HOLD_INPUT.store(false, Ordering::Release);
+}
+
+#[cfg(linux_busybox_smoke)]
 pub fn mark_busybox_smoke_harness_done() {
     BUSYBOX_SMOKE_HARNESS_DONE.store(true, Ordering::Release);
 }
 
 #[cfg(linux_busybox_smoke)]
 pub fn busybox_smoke_complete() -> bool {
-    BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
+    BUSYBOX_SMOKE_LAUNCH_COUNT.load(Ordering::Acquire) >= 2
+        && BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
         && BUSYBOX_SMOKE_WINDOW_CLOSED.load(Ordering::Acquire)
         && BUSYBOX_SMOKE_HARNESS_DONE.load(Ordering::Acquire)
 }
@@ -349,7 +367,14 @@ pub fn launch_busybox() -> Result<ProcessId, LoadError> {
     ];
 
     for path in &locations {
-        if crate::contexts::vfs::exists(path) {
+        crate::klog_fmt!("[BUSYBOX-DIAG] path check begin path={}\n", path);
+        let present = crate::contexts::vfs::exists(path);
+        crate::klog_fmt!(
+            "[BUSYBOX-DIAG] path check exit path={} present={}\n",
+            path,
+            present
+        );
+        if present {
             crate::klog_fmt!("[BUSYBOX-DIAG] found at {}\n", path);
             return launch_busybox_with_args(path);
         }

@@ -129,6 +129,11 @@ impl SchedulerContext {
             .map(|(_, p)| f(p))
     }
 
+    /// Snapshot a process state for scheduler handoff diagnostics.
+    pub fn process_state(&self, pid: ProcessId) -> Option<ProcessState> {
+        self.with_process(pid, |process| process.state)
+    }
+
     /// Run a closure on every process.
     pub fn for_each_process<F>(&self, mut f: F)
     where
@@ -472,17 +477,49 @@ impl SchedulerContext {
             .find(|(id, _)| *id == new_pid)
             .map(|(_, process)| process.kernel_stack)
             .filter(|stack| stack.as_u64() != 0);
+        let new_user_first_entry = list
+            .iter()
+            .find(|(id, _)| *id == new_pid)
+            .is_some_and(|(_, process)| process.is_user && process.context.kernel_rsp == 0);
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
+
+        #[cfg(linux_busybox_smoke)]
+        if let Some((pid, process)) = list.iter().find(|(id, _)| *id == new_pid) {
+            if process.name == "busybox" && process.context.kernel_rsp == 0 {
+                petroleum::serial::serial_log(format_args!(
+                    "[LINUX-DIAG] first-entry pid={} old={:?} rip={:#x} rsp={:#x} cr3={:#x} kstack={:#x} cs={:#x} ss={:#x} rflags={:#x}\n",
+                    pid.0,
+                    old_pid.map(|old| old.0),
+                    process.context.rip,
+                    process.context.registers.rsp,
+                    pt.as_u64(),
+                    process.kernel_stack.as_u64(),
+                    process.context.segments.cs,
+                    process.context.segments.ss,
+                    process.context.rflags,
+                ));
+            }
+        }
         drop(guard);
 
         if let Some(new) = new_ctx {
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }
+            if new_user_first_entry {
+                crate::interrupts::syscall::prepare_user_entry();
+            }
             let old = old_ctx.unwrap_or(core::ptr::null_mut());
-            unsafe { switch_context(old, new, pt.as_u64()) };
+            unsafe {
+                switch_context(
+                    old,
+                    new,
+                    pt.as_u64(),
+                    new_kernel_stack.map_or(0, |stack| stack.as_u64()),
+                )
+            };
         }
     }
 

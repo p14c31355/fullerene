@@ -174,7 +174,7 @@ impl GrowingHeap {
             return Err(());
         }
         unsafe { self.heap.lock().extend(additional) };
-        extension.used += additional;
+        extension.used = extension.used.saturating_add(additional);
         Ok(())
     }
 }
