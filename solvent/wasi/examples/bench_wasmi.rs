@@ -87,10 +87,19 @@ fn main() {
     );
     println!("blit_checksum={checksum}");
     if let Some(output) = OUTPUT.get().and_then(|output| output.lock().ok()) {
+        let mut found_bench = false;
         for line in output.split(|&byte| byte == b'\n') {
             if line.starts_with(b"MP4-BENCH ") {
+                found_bench = true;
                 println!("{}", String::from_utf8_lossy(line));
             }
+        }
+        if !found_bench {
+            let start = output.len().saturating_sub(16 * 1024);
+            println!(
+                "diagnostic_tail={}",
+                String::from_utf8_lossy(&output[start..])
+            );
         }
     }
 }

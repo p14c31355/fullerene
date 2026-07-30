@@ -64,7 +64,10 @@ pub fn run(wasm_binary: &[u8], args: &[&str], host: WasiHost) -> i32 {
     // give the viewer a bounded sequence of fuel chunks. The initial chunk
     // and each refill are finite; refills happen only through wait_for_ns.
     if is_mp4 {
-        store.data_mut().fuel_refills_left = 256;
+        // The viewer yields every couple of NALs, while a long H.264 track
+        // can require substantially more than the old 256 refill cap. Keep
+        // the bound finite, but allow a normal multi-minute MP4 to finish.
+        store.data_mut().fuel_refills_left = 2048;
         store.data_mut().fuel_refill_amount = 250_000_000;
     }
     if let Err(error) = store.set_fuel(fuel) {

@@ -11,6 +11,9 @@ const MAX_MP4_PARSE_TIME: Duration = Duration::from_secs(3);
 const MAX_MP4_SAMPLES: u32 = 1_000_000;
 const MAX_PLAYBACK_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_NALS_PER_SAMPLE: usize = 128;
+// Two NALs per host yield keeps the existing WASMI fuel refill granularity
+// safe while avoiding the redundant sample+NAL yield in ordinary MP4s.
+const PLAYBACK_YIELD_NALS: usize = 2;
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SOURCE_IMAGE_WIDTH: u32 = 16_384;
 const MAX_SOURCE_IMAGE_HEIGHT: u32 = 16_384;
@@ -660,6 +663,8 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
     let mut samples = 0u32;
     let mut nals_decoded = 0u64;
     let mut rgb_bytes = 0usize;
+    let mut rgb_buffer = Vec::new();
+    let mut nals_since_yield = PLAYBACK_YIELD_NALS;
     println!("viewer: mp4 playback enter samples={}", sample_count);
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
     // present each decoded frame, and pace it against the track timestamps.
@@ -668,18 +673,24 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         if trace_sample {
             println!("viewer: mp4 sample begin id={}", sample_id);
         }
-        // Yield to the host event loop at the start of every sample so that
-        // decode failures (which skip wait_for_video_time) and long NAL
-        // chains cannot freeze the desktop.
-        unsafe {
-            if trace_sample {
-                println!("viewer: mp4 sample wait begin id={}", sample_id);
+        // Keep the event loop responsive without crossing the WASM/host
+        // boundary twice for the common one-NAL-per-sample case.  The first
+        // sample yields immediately; later samples yield at a bounded NAL
+        // interval, including samples with no decoded output.
+        if nals_since_yield >= PLAYBACK_YIELD_NALS {
+            unsafe {
+                if trace_sample {
+                    println!("viewer: mp4 sample wait begin id={}", sample_id);
+                }
+                wait_for_ns(0);
+                if trace_sample {
+                    println!("viewer: mp4 sample wait exit id={}", sample_id);
+                }
             }
-            wait_for_ns(0);
-            if trace_sample {
-                println!("viewer: mp4 sample wait exit id={}", sample_id);
-                println!("viewer: mp4 sample read begin id={}", sample_id);
-            }
+            nals_since_yield = 0;
+        }
+        if trace_sample {
+            println!("viewer: mp4 sample read begin id={}", sample_id);
         }
         let read_start = Instant::now();
         let sample = match reader.read_sample(track_id, sample_id) {
@@ -766,14 +777,17 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                     "NAL unit is too large",
                 );
             }
-            // Yield to the host before each NAL decode so the event loop
-            // can pump input and render even when decode_nal takes a long
-            // time.  decode_nal itself is pure WASM compute and cannot
-            // call the host, so this is the finest-grained yield point
-            // available.
-            unsafe {
-                wait_for_ns(0);
+            // decode_nal itself is pure WASM compute and cannot call the
+            // host. Yield at a bounded interval so long NAL chains remain
+            // interruptible while ordinary MP4 samples avoid a redundant
+            // host transition after the sample-level yield.
+            if nals_since_yield >= PLAYBACK_YIELD_NALS {
+                unsafe {
+                    wait_for_ns(0);
+                }
+                nals_since_yield = 0;
             }
+            nals_since_yield = nals_since_yield.saturating_add(1);
             let decode_start = Instant::now();
             let decoded = decoder.decode_nal(nal);
             decode_time += decode_start.elapsed();
@@ -785,14 +799,15 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                     continue;
                 }
                 let convert_start = Instant::now();
-                let Some((frame_width, frame_height, rgb)) = yuv420_to_rgb(&frame, 800, 600)
+                let Some((frame_width, frame_height)) =
+                    yuv420_to_rgb(&frame, 800, 600, &mut rgb_buffer)
                 else {
                     continue;
                 };
                 convert_time += convert_start.elapsed();
-                rgb_bytes = rgb.len();
+                rgb_bytes = rgb_buffer.len();
                 if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
-                    std::hint::black_box(&rgb);
+                    std::hint::black_box(&rgb_buffer);
                     continue;
                 }
                 let present_start = Instant::now();
@@ -801,7 +816,7 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                     &title,
                     frame_width,
                     frame_height,
-                    &rgb,
+                    &rgb_buffer,
                 ) {
                     presented_frames = presented_frames.saturating_add(1);
                     if presented_frames == 1 || presented_frames.checked_rem(30) == Some(0) {
@@ -822,11 +837,13 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         decoded_frames = decoded_frames.saturating_add(1);
         if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
             let convert_start = Instant::now();
-            if let Some((frame_width, frame_height, rgb)) = yuv420_to_rgb(&frame, 800, 600) {
+            if let Some((frame_width, frame_height)) =
+                yuv420_to_rgb(&frame, 800, 600, &mut rgb_buffer)
+            {
                 convert_time += convert_start.elapsed();
-                rgb_bytes = rgb.len();
+                rgb_bytes = rgb_buffer.len();
                 if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
-                    std::hint::black_box(&rgb);
+                    std::hint::black_box(&rgb_buffer);
                 } else {
                     let present_start = Instant::now();
                     if present_rgb_frame(
@@ -834,7 +851,7 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                         &title,
                         frame_width,
                         frame_height,
-                        &rgb,
+                        &rgb_buffer,
                     ) {
                         presented_frames = presented_frames.saturating_add(1);
                     }
@@ -938,7 +955,8 @@ fn yuv420_to_rgb(
     frame: &rust_h264::decoder::Frame,
     max_width: usize,
     max_height: usize,
-) -> Option<(u32, u32, Vec<u8>)> {
+    rgb: &mut Vec<u8>,
+) -> Option<(u32, u32)> {
     let source_width = usize::try_from(frame.width).ok()?;
     let source_height = usize::try_from(frame.height).ok()?;
     if source_width == 0 || source_height == 0 {
@@ -953,26 +971,42 @@ fn yuv420_to_rgb(
         return None;
     }
     let rgb_len = width.checked_mul(height)?.checked_mul(3)?;
-    let mut rgb = Vec::with_capacity(rgb_len);
-    let x_map: Vec<usize> = (0..width)
-        .map(|x| x * source_width / width)
-        .collect();
-    let y_map: Vec<usize> = (0..height)
-        .map(|y| y * source_height / height)
-        .collect();
-    for &source_y in &y_map {
-        for &source_x in &x_map {
-            let yi = source_y * source_width + source_x;
-            let ui = (source_y / 2) * uv_width + source_x / 2;
-            let yv = frame.y[yi] as i32;
-            let uv = frame.u[ui] as i32 - 128;
-            let vv = frame.v[ui] as i32 - 128;
-            rgb.push((yv + (359 * vv) / 256).clamp(0, 255) as u8);
-            rgb.push((yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8);
-            rgb.push((yv + (454 * uv) / 256).clamp(0, 255) as u8);
+    rgb.resize(rgb_len, 0);
+    if width == source_width && height == source_height {
+        for source_y in 0..source_height {
+            let y_row = source_y * source_width;
+            let uv_row = (source_y / 2) * uv_width;
+            let rgb_row = source_y * width * 3;
+            for source_x in 0..source_width {
+                let yi = y_row + source_x;
+                let ui = uv_row + source_x / 2;
+                let dst = rgb_row + source_x * 3;
+                let yv = frame.y[yi] as i32;
+                let uv = frame.u[ui] as i32 - 128;
+                let vv = frame.v[ui] as i32 - 128;
+                rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
+                rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
+                rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
+            }
+        }
+    } else {
+        let x_map: Vec<usize> = (0..width).map(|x| x * source_width / width).collect();
+        let y_map: Vec<usize> = (0..height).map(|y| y * source_height / height).collect();
+        for (output_y, &source_y) in y_map.iter().enumerate() {
+            for (output_x, &source_x) in x_map.iter().enumerate() {
+                let yi = source_y * source_width + source_x;
+                let ui = (source_y / 2) * uv_width + source_x / 2;
+                let dst = (output_y * width + output_x) * 3;
+                let yv = frame.y[yi] as i32;
+                let uv = frame.u[ui] as i32 - 128;
+                let vv = frame.v[ui] as i32 - 128;
+                rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
+                rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
+                rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
+            }
         }
     }
-    Some((width as u32, height as u32, rgb))
+    Some((width as u32, height as u32))
 }
 
 fn fit_dimensions(

@@ -66,6 +66,7 @@ fn main() {
     let mut nals = 0u64;
     let mut decoded_frames = 0u32;
     let mut rgb_bytes = 0usize;
+    let mut rgb_buffer = Vec::new();
 
     for sample_id in 1..=sample_count {
         let read_start = Instant::now();
@@ -84,20 +85,20 @@ fn main() {
             if let Some(frame) = output {
                 decoded_frames = decoded_frames.saturating_add(1);
                 let convert_start = Instant::now();
-                let rgb = yuv420_to_rgb(&frame).expect("YUV frame conversion failed");
+                yuv420_to_rgb(&frame, &mut rgb_buffer).expect("YUV frame conversion failed");
                 convert_time += convert_start.elapsed();
-                rgb_bytes = rgb.len();
-                std::hint::black_box(&rgb);
+                rgb_bytes = rgb_buffer.len();
+                std::hint::black_box(&rgb_buffer);
             }
         }
     }
     if let Some(frame) = decoder.flush() {
         decoded_frames = decoded_frames.saturating_add(1);
         let convert_start = Instant::now();
-        let rgb = yuv420_to_rgb(&frame).expect("YUV flush conversion failed");
+        yuv420_to_rgb(&frame, &mut rgb_buffer).expect("YUV flush conversion failed");
         convert_time += convert_start.elapsed();
-        rgb_bytes = rgb.len();
-        std::hint::black_box(&rgb);
+        rgb_bytes = rgb_buffer.len();
+        std::hint::black_box(&rgb_buffer);
     }
     let playback_time = playback_start.elapsed();
 
@@ -125,7 +126,7 @@ fn ms(duration: std::time::Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-fn yuv420_to_rgb(frame: &Frame) -> Option<Vec<u8>> {
+fn yuv420_to_rgb(frame: &Frame, rgb: &mut Vec<u8>) -> Option<()> {
     let width = usize::try_from(frame.width).ok()?;
     let height = usize::try_from(frame.height).ok()?;
     let y_len = width.checked_mul(height)?;
@@ -136,18 +137,19 @@ fn yuv420_to_rgb(frame: &Frame) -> Option<Vec<u8>> {
         return None;
     }
 
-    let mut rgb = Vec::with_capacity(y_len.checked_mul(3)?);
+    rgb.resize(y_len.checked_mul(3)?, 0);
     for source_y in 0..height {
         for source_x in 0..width {
             let yi = source_y * width + source_x;
             let ui = (source_y / 2) * uv_width + source_x / 2;
+            let dst = (source_y * width + source_x) * 3;
             let yv = frame.y[yi] as i32;
             let uv = frame.u[ui] as i32 - 128;
             let vv = frame.v[ui] as i32 - 128;
-            rgb.push((yv + (359 * vv) / 256).clamp(0, 255) as u8);
-            rgb.push((yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8);
-            rgb.push((yv + (454 * uv) / 256).clamp(0, 255) as u8);
+            rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
+            rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
+            rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
         }
     }
-    Some(rgb)
+    Some(())
 }
