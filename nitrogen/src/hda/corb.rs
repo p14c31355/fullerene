@@ -30,7 +30,9 @@ const CORBCTL: usize = 0x004C;
 const RIRBLBASE: usize = 0x0050;
 const RIRBUBASE: usize = 0x0054;
 const RIRBWP: usize = 0x0058;
+const RINTCNT: usize = 0x005A;
 const RIRBCTL: usize = 0x005C;
+const RIRBSTS: usize = 0x005D;
 
 /// Default CORB / RIRB entry counts.
 pub const CORB_ENTRIES: usize = 256;
@@ -174,6 +176,19 @@ impl CorbEngine {
                 mmio_write16(mmio, RIRBWP, 0);
             }
 
+            // RINTCNT is not optional: zero means that the controller has
+            // already reached its response-count threshold.  QEMU (and
+            // some Intel controllers) consequently drops every solicited
+            // response until the host programs a non-zero count.  Use a
+            // generously sized polling batch: this driver polls RIRBWP and
+            // does not use the RIRB interrupt, while QEMU keeps its internal
+            // response counter latched until the interrupt status is
+            // acknowledged.  A 255-response batch covers codec enumeration
+            // without making every verb depend on that interrupt handshake.
+            mmio_write16(mmio, RINTCNT, 0x00FF);
+            // Clear stale response/overrun status before enabling RIRB DMA.
+            mmio_write8(mmio, RIRBSTS, 0x05);
+
             // Program RIRB size and enable RIRB DMA
             let rirb_szcap = mmio_read8(mmio, RIRBCTL + 2) & 0xF0;
             mmio_write8(mmio, RIRBCTL + 2, corb_sz_code | rirb_szcap);
@@ -316,12 +331,24 @@ impl CorbEngine {
                                 raw
                             );
                         }
+                        // Keep stale response/overrun status from leaking into
+                        // a subsequent polling batch.  The normal batch
+                        // threshold is deliberately large because this path
+                        // polls RIRBWP instead of servicing RIRB interrupts.
+                        mmio_write8(mmio, RIRBSTS, 0x05);
                         return Some(raw);
                     }
                 }
                 None
             });
-            verb_result.unwrap_or(0xFFFF_FFFF)
+            let result = verb_result.unwrap_or(0xFFFF_FFFF);
+            if result == 0xFFFF_FFFF {
+                // Also release a possible overrun/response-count latch on a
+                // timeout so a later recovery or probe is not wedged behind
+                // stale RIRB status.
+                mmio_write8(mmio, RIRBSTS, 0x05);
+            }
+            result
         }
     }
 }

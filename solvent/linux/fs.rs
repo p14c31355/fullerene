@@ -571,19 +571,30 @@ pub fn sys_lseek(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
+    let current = match crate::contexts::vfs::position(desc.vfs_fd) {
+        Ok(position) => position,
+        Err(error) => return fs_errno_result(&error),
+    };
+    let size = match crate::contexts::vfs::size(desc.vfs_fd) {
+        Ok(size) => size,
+        Err(error) => return fs_errno_result(&error),
+    };
     let new_offset = match whence {
-        0 => offset,                      // SEEK_SET
-        1 => desc.offset as i64 + offset, // SEEK_CUR
-        2 => -(EINVAL as i64),            // SEEK_END (not fully supported)
+        0 => offset.try_into().ok(), // SEEK_SET
+        1 => current.checked_add_signed(offset),
+        2 => size.checked_add_signed(offset),
         _ => return errno_code(EINVAL),
     };
-    if new_offset < 0 {
+    let Some(new_offset) = new_offset else {
         return errno_code(EINVAL);
+    };
+    if let Err(error) = crate::contexts::vfs::seek(desc.vfs_fd, new_offset) {
+        return fs_errno_result(&error);
     }
     if let Some(d) = rt.fd_table.get_mut(fd) {
-        d.offset = new_offset as u64;
+        d.offset = new_offset;
     }
-    new_offset as u64
+    new_offset
 }
 
 pub fn sys_pread64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {

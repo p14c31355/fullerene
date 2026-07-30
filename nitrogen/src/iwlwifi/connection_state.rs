@@ -966,7 +966,7 @@ impl IwlWifiDevice {
         }
 
         log::info!(
-            "iwlwifi: LMAC scan request queued: opcode=0x51 channels={} bytes={}",
+            "iwlwifi: LMAC scan request queued: opcode=0x51 channels={} bytes={} (Klog: waiting for APs)",
             23,
             core::mem::size_of::<ScanRequestCmd>()
         );
@@ -989,6 +989,26 @@ impl IwlWifiDevice {
                 security,
                 beacon_interval: beacon.beacon_interval,
             };
+            if self
+                .scan_results
+                .iter()
+                .any(|existing| existing.bssid == ap.bssid)
+            {
+                return;
+            }
+            log::info!(
+                "iwlwifi: AP FOUND ssid=\"{}\" bssid={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} channel={} security={} rssi={}dBm",
+                ap.ssid,
+                ap.bssid[0],
+                ap.bssid[1],
+                ap.bssid[2],
+                ap.bssid[3],
+                ap.bssid[4],
+                ap.bssid[5],
+                ap.channel,
+                ap.security.name(),
+                ap.rssi
+            );
             self.wifi_conn.add_scan_result(ap.clone());
             self.scan_results.push(ap);
         }

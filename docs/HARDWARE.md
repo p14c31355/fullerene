@@ -87,6 +87,25 @@ firmware-candidate sequence enough time to finish. Physical
 validation of this follow-up build is still required, so the support level
 remains Alpha.
 
+### Klog Live validation without a serial console
+
+On the real machine, open the network menu once to request deferred iwlwifi
+initialization and the first scan. Open `KLog Live` from the same desktop and
+keep it visible while the scan runs. The three goal checks have these log
+markers:
+
+- Startup audio: `Sound: startup PCM playback complete` and, for HDA,
+  `HDA: controller ready`.
+- BusyBox: `BUSYBOX-DIAG: launch complete`, followed by
+  `LINUX-DIAG: exit ... code=0`; the BusyBox terminal must return to the
+  Fullerene shell after `exit`.
+- Wi-Fi: `iwlwifi: AP FOUND ssid=...`, followed by
+  `iwlwifi: scan complete (N APs found)` with `N > 0`.
+
+These markers are in the persistent kernel log, so serial capture is not
+required. A scan that reaches `scan complete (0 APs found)` is a failed third
+check even if firmware initialization succeeded.
+
 The Realtek RTS5249 reader (`10ec:5249`) is matched by vendor/device identity,
 because PCI class `0xff` is a real vendor-specific class rather than a driver
 wildcard. Boot registers the reader without accessing its device registers.
