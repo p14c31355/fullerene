@@ -60,6 +60,13 @@ pub fn run(wasm_binary: &[u8], args: &[&str], host: WasiHost) -> i32 {
     let ctx = WasiCtx::new(args, host);
 
     let mut store = Store::new(&engine, ctx);
+    // H.264 decode is pure WASM compute and cannot yield during one NAL, so
+    // give the viewer a bounded sequence of fuel chunks. The initial chunk
+    // and each refill are finite; refills happen only through wait_for_ns.
+    if is_mp4 {
+        store.data_mut().fuel_refills_left = 256;
+        store.data_mut().fuel_refill_amount = 250_000_000;
+    }
     if let Err(error) = store.set_fuel(fuel) {
         let msg = format!("wasm: fuel setup failed: {}\n", error);
         write_stderr(msg.as_bytes());

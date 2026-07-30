@@ -140,6 +140,11 @@ pub struct WasiCtx {
     pub env: Vec<Vec<u8>>,
     pub fds: BTreeMap<u32, WasiFd>,
     pub next_fd: u32,
+    /// Bounded compute-budget extensions used by long-running MP4 decode.
+    /// Fuel is replenished only at an explicit host yield point, never while
+    /// a pure WASM computation is running.
+    pub fuel_refills_left: u16,
+    pub fuel_refill_amount: u64,
     pub host: WasiHost,
 }
 
@@ -169,6 +174,8 @@ impl WasiCtx {
             env: Vec::new(),
             fds,
             next_fd: 4,
+            fuel_refills_left: 0,
+            fuel_refill_amount: 0,
             host,
         }
     }
@@ -1047,8 +1054,29 @@ pub fn sched_yield(caller: Caller<'_, WasiCtx>) -> Result<u32, Error> {
     Ok(ESUCCESS)
 }
 
-pub fn fullerene_wait_for_ns(caller: Caller<'_, WasiCtx>, duration_ns: u64) -> Result<u32, Error> {
+pub fn fullerene_wait_for_ns(
+    mut caller: Caller<'_, WasiCtx>,
+    duration_ns: u64,
+) -> Result<u32, Error> {
     (caller.data().wait_for_ns)(duration_ns);
+    // A synchronous MP4 viewer yields before each NAL. Replenish a bounded
+    // amount of fuel at that boundary so a valid long video is not limited to
+    // one global 1e9-instruction budget. A malformed NAL still traps once its
+    // current chunk is exhausted, because no host callback can run inside
+    // decode_nal itself.
+    let refill = {
+        let ctx = caller.data_mut();
+        if ctx.fuel_refills_left == 0 || ctx.fuel_refill_amount == 0 {
+            None
+        } else {
+            ctx.fuel_refills_left -= 1;
+            Some(ctx.fuel_refill_amount)
+        }
+    };
+    if let Some(fuel) = refill {
+        let current = caller.get_fuel().unwrap_or(0);
+        let _ = caller.set_fuel(current.saturating_add(fuel));
+    }
     Ok(ESUCCESS)
 }
 
