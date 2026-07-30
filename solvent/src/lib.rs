@@ -19,6 +19,14 @@ extern crate alloc;
 
 static SCHEDULER_YIELD: spin::Mutex<Option<fn()>> = spin::Mutex::new(None);
 
+/// Set while a synchronous WASM host callback (e.g. `wait_for_ns`,
+/// `read_file_range`) is on the stack.  When set, `tick_core` skips
+/// service ticking (WiFi MMIO, USB polling, etc.) so that a blocking
+/// firmware operation cannot freeze the WASM caller — which is exactly
+/// the code that needs the event loop to keep rendering frames.
+pub static IN_WASM_HOST_CALLBACK: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Install the kernel's cooperative scheduler handoff for terminal polling.
 pub fn install_scheduler_yield(callback: fn()) {
     *SCHEDULER_YIELD.lock() = Some(callback);
@@ -82,8 +90,8 @@ pub use window_api::{
     capture_screen, capture_screen_chunk, capture_screen_scaled, close_window, create_window,
     ensure_editor_window, ensure_terminal_window, force_desktop_redraw, framebuffer_dims,
     invalidate_window, is_klog_live_active, klog_live_surface_geometry, launch_file,
-    mark_klog_live_dirty, resume_rendering, scaled_framebuffer_dims, suspend_rendering,
-    with_window_surface, write_terminal,
+    mark_klog_live_dirty, open_klog_live, resume_rendering, scaled_framebuffer_dims,
+    suspend_rendering, with_window_surface, write_terminal,
 };
 
 pub use lattice::theme::{

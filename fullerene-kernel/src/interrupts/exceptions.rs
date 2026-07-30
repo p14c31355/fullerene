@@ -224,6 +224,10 @@ define_no_err_handler!(debug_handler, 1);
 pub extern "x86-interrupt" fn nmi_handler(mut frame: InterruptStackFrame) {
     if nitrogen::mmio::mmio_watchdog_armed() {
         raw_log!("NMI: MMIO watchdog expired — forcing recovery\n");
+        // The normal desktop renderer may be the code that is stuck.  Paint
+        // the diagnostic before redirecting execution to the recovery path;
+        // this bypasses runtime locks and remains visible without serial.
+        crate::boot_stage::draw_hang_diagnostic(b"IWLWIFI MMIO HANG");
         nitrogen::mmio::mmio_watchdog_nmi_recovery();
         let trampoline =
             x86_64::VirtAddr::from_ptr(nitrogen::mmio::mmio_nmi_recovery_trampoline as *const ());

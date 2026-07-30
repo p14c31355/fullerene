@@ -4,6 +4,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use busybox_build::{BuildOptions, is_static_x86_64_elf};
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -19,6 +21,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
     println!("cargo:rerun-if-env-changed=FULLERENE_LINUX_MUSL_SMOKE");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX");
+    println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_CC");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_SMOKE");
     println!(
         "cargo:rerun-if-changed={}",
@@ -34,7 +37,8 @@ fn main() {
     );
     let linux_musl_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some();
 
-    let have_busybox = embed_busybox(&out_dir);
+    let workspace_root = manifest_dir.parent().unwrap();
+    let have_busybox = embed_busybox(&out_dir, workspace_root);
     if env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some() {
         assert!(
             have_busybox,
@@ -91,7 +95,6 @@ fn main() {
     }
 
     // ── Build application ports from submodule sources ──────────
-    let workspace_root = manifest_dir.parent().unwrap();
     let toluene_dir = workspace_root.join("toluene");
     let ports_dir = workspace_root.join("target").join("ports");
     let count = build_ports_cpio(&toluene_dir, &ports_dir, &out_dir);
@@ -273,13 +276,36 @@ fn main() {
 
 /// Validate and stage a static x86_64 BusyBox binary for the initramfs.
 ///
-/// The binary is deliberately supplied by the build environment instead of
-/// being checked into the Rust workspace.  This keeps the source tree Rust
-/// only and lets a release build choose its BusyBox configuration/version.
-fn embed_busybox(out_dir: &Path) -> bool {
+/// The binary is generated outside the Rust workspace instead of being
+/// checked into it. This keeps the source tree small while allowing a release
+/// build to choose its BusyBox configuration/version.
+fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
     let explicit = env::var_os("FULLERENE_BUSYBOX").map(PathBuf::from);
+    let generated = workspace_root.join("target/busybox/busybox");
+    if explicit.is_none() {
+        let source = workspace_root.join("toluene/busybox");
+        println!("cargo:rerun-if-changed={}", source.display());
+        println!(
+            "cargo:rerun-if-changed={}",
+            source.join("Makefile").display()
+        );
+        let options = BuildOptions {
+            source,
+            // Each Cargo build script gets a private out directory. The
+            // staged binary remains shared, guarded by busybox-build's lock.
+            build_dir: out_dir.join("busybox-build"),
+            output: generated.clone(),
+            compiler: env::var_os("FULLERENE_BUSYBOX_CC"),
+            jobs: None,
+            clean: false,
+        };
+        if let Err(error) = busybox_build::build(&options) {
+            println!("cargo:warning=BusyBox submodule build skipped: {error}");
+        }
+    }
     let candidates = explicit.clone().into_iter().chain(
         [
+            generated.clone(),
             PathBuf::from("/usr/bin/busybox"),
             PathBuf::from("/bin/busybox"),
         ]
@@ -287,16 +313,15 @@ fn embed_busybox(out_dir: &Path) -> bool {
     );
 
     for path in candidates {
-        println!("cargo:rerun-if-changed={}", path.display());
+        if path != generated {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
         let Ok(data) = fs::read(&path) else {
             continue;
         };
         if !is_static_x86_64_elf(&data) {
             if explicit.as_ref().is_some_and(|wanted| wanted == &path) {
-                panic!(
-                    "FULLERENE_BUSYBOX must point to a static x86_64 ELF: {}",
-                    path.display()
-                );
+                panic!("BusyBox must be a static x86_64 ELF: {}", path.display());
             }
             continue;
         }
@@ -318,35 +343,6 @@ fn embed_busybox(out_dir: &Path) -> bool {
         "cargo:warning=BusyBox not embedded; set FULLERENE_BUSYBOX to a static x86_64 BusyBox binary"
     );
     false
-}
-
-fn is_static_x86_64_elf(data: &[u8]) -> bool {
-    if !is_valid_elf(data) || data.get(16..18) != Some(&[2, 0]) {
-        return false;
-    }
-    let e_phoff = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8])) as usize;
-    let e_phentsize = u16::from_le_bytes([data[54], data[55]]) as usize;
-    let e_phnum = u16::from_le_bytes([data[56], data[57]]) as usize;
-    if e_phentsize < 4 {
-        return false;
-    }
-    for index in 0..e_phnum {
-        let Some(offset) =
-            e_phoff.checked_add(index.checked_mul(e_phentsize).unwrap_or(usize::MAX))
-        else {
-            return false;
-        };
-        let Some(entry_end) = offset.checked_add(4) else {
-            return false;
-        };
-        let Some(entry) = data.get(offset..entry_end) else {
-            return false;
-        };
-        if entry == [3, 0, 0, 0] {
-            return false;
-        }
-    }
-    true
 }
 
 fn build_standalone_wasm(rustc: &str, sysroot: &str, source: &Path, output: &Path, label: &str) {

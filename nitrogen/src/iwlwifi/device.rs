@@ -64,8 +64,9 @@ pub struct IwlWifiDevice {
 
     /// Scan results.
     pub scan_results: Vec<AccessPoint>,
-    /// Millisecond-scale scan watchdog. Firmware scan dwell is expressed in
-    /// TUs, so a full-channel scan can take seconds.
+    /// Tick-count scan watchdog.  Firmware scan dwell is expressed in TUs,
+    /// so a full-channel scan can take seconds; the watchdog bounds a wedged
+    /// firmware while allowing enough time for late-arriving beacons.
     pub scan_channel: u32,
     pub scan_pending: bool,
 
@@ -615,7 +616,7 @@ impl IwlWifiDevice {
             pending_wpa_message4: None,
             dhcp: None,
             scan_results: Vec::new(),
-            scan_channel: 1,
+            scan_channel: 0,
             scan_pending: false,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),

@@ -34,7 +34,9 @@ fn has_wasm_viewer() -> bool {
 }
 
 pub fn open(path: &str) {
+    log::info!("viewer: open path={}", path);
     if !has_wasm_viewer() {
+        log::warn!("viewer: /apps/viewer.wasm not found in VFS");
         let mut rt = crate::RUNTIME_CONTEXT.runtime();
         if let Some(rt) = rt.as_mut() {
             show_error_window(
@@ -48,6 +50,7 @@ pub fn open(path: &str) {
     }
 
     let Some(run_wasm) = crate::RUNTIME_CONTEXT.callback_snapshot().run_wasm else {
+        log::warn!("viewer: kernel has no WASM execution callback installed");
         let mut rt = crate::RUNTIME_CONTEXT.runtime();
         if let Some(rt) = rt.as_mut() {
             show_error_window(
@@ -64,8 +67,10 @@ pub fn open(path: &str) {
     // decoding off the compositor/input task.
     // WASI does not synthesize argv[0] for us. The viewer expects the usual
     // argv layout: program name followed by the file to open.
+    log::info!("viewer: invoking run_wasm path={}", path);
     let args = ["/apps/viewer.wasm", path];
     let code = run_wasm("/apps/viewer.wasm", &args);
+    log::info!("viewer: run_wasm returned code={}", code);
     if code != 0 {
         let mut rt = crate::RUNTIME_CONTEXT.runtime();
         if let Some(rt) = rt.as_mut() {

@@ -177,6 +177,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("tasks", "List processes", builtins::cmd_tasks),
         ("windows", "List windows", builtins::cmd_windows),
         ("dmesg", "Show kernel messages", builtins::cmd_dmesg),
+        (
+            "klog_live",
+            "Open the live kernel-log viewer window",
+            builtins::cmd_klog_live
+        ),
         ("hexdump", "Hex dump of text", builtins::cmd_hexdump),
         ("version", "Show version info", builtins::cmd_version),
         ("reboot", "Reboot the system", builtins::cmd_reboot),
@@ -260,9 +265,9 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             builtins::cmd_linux_run
         ),
         (
-            "run_busybox",
+            "busybox",
             "Launch BusyBox shell from the filesystem",
-            builtins::cmd_run_busybox
+            builtins::cmd_busybox
         ),
         ("wasm", "Run a WASM/WASI binary", builtins::cmd_wasm),
         (

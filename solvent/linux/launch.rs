@@ -3,7 +3,7 @@ use crate::loader::LoadError;
 use crate::process::ProcessId;
 use alloc::boxed::Box;
 use alloc::string::ToString;
-#[cfg(linux_musl_smoke)]
+#[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
 use core::sync::atomic::AtomicUsize;
 #[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,11 +27,17 @@ static BUSYBOX_SMOKE_OUTPUT_SEEN: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_EXIT_OK: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_WINDOW_CLOSED: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_HARNESS_DONE: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_WINDOW: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_WAITING: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_OUTPUT_MATCHED: AtomicUsize = AtomicUsize::new(0);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox is running";
 
@@ -145,8 +151,38 @@ pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<Process
 }
 
 fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
-    let data = crate::fs::read_entire_file(path).map_err(|_| LoadError::FileNotFound)?;
-    let terminal_window = solvent::create_process_terminal("BusyBox");
+    crate::klog_fmt!("[BUSYBOX-DIAG] read begin path={}\n", path);
+    let data = match crate::fs::read_entire_file(path) {
+        Ok(d) => {
+            crate::klog_fmt!("[BUSYBOX-DIAG] read exit path={} bytes={}\n", path, d.len());
+            d
+        }
+        Err(error) => {
+            crate::klog_fmt!(
+                "[BUSYBOX-DIAG] read error path={} error={:?}\n",
+                path,
+                error
+            );
+            return Err(LoadError::FileNotFound);
+        }
+    };
+    // Never start an interactive Linux process without its terminal window.
+    // A missing runtime here would otherwise leave BusyBox polling the global
+    // keyboard queue invisibly, which looks like a machine hang on hardware.
+    crate::klog_fmt!("[BUSYBOX-DIAG] create_process_terminal begin\n");
+    let Some(terminal_window) = solvent::create_process_terminal("BusyBox") else {
+        crate::klog_fmt!(
+            "[BUSYBOX-DIAG] create_process_terminal failed — aborting to avoid invisible hang\n"
+        );
+        petroleum::serial::serial_log(format_args!(
+            "[LINUX-DIAG] BusyBox terminal window could not be created\n"
+        ));
+        return Err(LoadError::MappingFailed);
+    };
+    crate::klog_fmt!(
+        "[BUSYBOX-DIAG] create_process_terminal exit window_id={}\n",
+        terminal_window.0
+    );
     #[cfg(linux_busybox_smoke)]
     let argv = ["busybox", "sh"];
     #[cfg(not(linux_busybox_smoke))]
@@ -157,6 +193,7 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         "SHELL=/bin/sh",
         "TERM=xterm",
     ];
+    crate::klog_fmt!("[BUSYBOX-DIAG] loader enter bytes={}\n", data.len());
     let pid = match crate::loader::load_program_with_runtime_args(
         data.as_slice(),
         "busybox",
@@ -164,34 +201,39 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         &envp,
         true,
     ) {
-        Ok(pid) => pid,
+        Ok(pid) => {
+            crate::klog_fmt!("[BUSYBOX-DIAG] loader exit pid={}\n", pid.0);
+            pid
+        }
         Err(error) => {
-            if let Some(window_id) = terminal_window {
-                solvent::close_process_terminal(window_id);
-            }
+            crate::klog_fmt!("[BUSYBOX-DIAG] loader error={:?}\n", error);
+            solvent::close_process_terminal(terminal_window);
             return Err(error);
         }
     };
-    if let Some(window_id) = terminal_window {
-        let _ = crate::process::SCHEDULER.with_process(pid, |process| {
-            if let Some(crate::linux::DispatchMode::Linux(runtime)) = process.dispatch_mode.as_mut()
-            {
-                runtime.terminal_window = Some(window_id);
-            }
-        });
-    }
+    crate::klog_fmt!("[BUSYBOX-DIAG] attach terminal_window to pid={}\n", pid.0);
+    let _ = crate::process::SCHEDULER.with_process(pid, |process| {
+        if let Some(crate::linux::DispatchMode::Linux(runtime)) = process.dispatch_mode.as_mut() {
+            runtime.terminal_window = Some(terminal_window);
+        }
+    });
+    crate::klog_fmt!("[BUSYBOX-DIAG] launch complete pid={}\n", pid.0);
     #[cfg(linux_busybox_smoke)]
     {
         BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
         BUSYBOX_SMOKE_EXIT_OK.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_WINDOW_CLOSED.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_HARNESS_DONE.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_OUTPUT_MATCHED.store(0, Ordering::Release);
         BUSYBOX_SMOKE_WAITING.store(false, Ordering::Release);
         BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
-        if let Some(window_id) = terminal_window {
-            BUSYBOX_SMOKE_WINDOW.store(window_id.0, Ordering::Release);
-            // Feed only the first command. The exit command is injected after
-            // BusyBox has reached a real no-input wait.
-            solvent::push_process_terminal_input(window_id, b"echo Fullerene BusyBox is running\n");
-        }
+        BUSYBOX_SMOKE_WINDOW.store(terminal_window.0, Ordering::Release);
+        // Feed only the first command. The exit command is injected after
+        // BusyBox has reached a real no-input wait.
+        solvent::push_process_terminal_input(
+            terminal_window,
+            b"echo Fullerene BusyBox is running\n",
+        );
         BUSYBOX_SMOKE_PID.store(pid.0, Ordering::Release);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] fixture launched as PID {}\n",
@@ -206,7 +248,7 @@ pub fn observe_busybox_output(pid: u64, bytes: &[u8]) {
     if BUSYBOX_SMOKE_PID.load(Ordering::Acquire) != pid {
         return;
     }
-    let mut matched = 0usize;
+    let mut matched = BUSYBOX_SMOKE_OUTPUT_MATCHED.load(Ordering::Acquire);
     for &byte in bytes {
         matched = if byte == BUSYBOX_SMOKE_OUTPUT[matched] {
             matched + 1
@@ -219,9 +261,10 @@ pub fn observe_busybox_output(pid: u64, bytes: &[u8]) {
             BUSYBOX_SMOKE_OUTPUT_SEEN.store(true, Ordering::Release);
             BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
             BUSYBOX_SMOKE_WAITING.store(true, Ordering::Release);
-            return;
+            matched = 0;
         }
     }
+    BUSYBOX_SMOKE_OUTPUT_MATCHED.store(matched, Ordering::Release);
 }
 
 /// Advance the interactive smoke only after BusyBox has entered a real
@@ -258,6 +301,17 @@ pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
         && code == 0
         && BUSYBOX_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire)
     {
+        let window_id = BUSYBOX_SMOKE_WINDOW.load(Ordering::Acquire);
+        let window_closed = if window_id == u64::MAX {
+            true
+        } else {
+            let window = lattice::window::WindowId(window_id);
+            if solvent::process_terminal_exists(window) {
+                solvent::close_process_terminal(window);
+            }
+            !solvent::process_terminal_exists(window)
+        };
+        BUSYBOX_SMOKE_WINDOW_CLOSED.store(window_closed, Ordering::Release);
         BUSYBOX_SMOKE_EXIT_OK.store(true, Ordering::Release);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] verified output and exit status\n"
@@ -268,6 +322,18 @@ pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
 #[cfg(linux_busybox_smoke)]
 pub fn busybox_smoke_verified() -> bool {
     BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn mark_busybox_smoke_harness_done() {
+    BUSYBOX_SMOKE_HARNESS_DONE.store(true, Ordering::Release);
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn busybox_smoke_complete() -> bool {
+    BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
+        && BUSYBOX_SMOKE_WINDOW_CLOSED.load(Ordering::Acquire)
+        && BUSYBOX_SMOKE_HARNESS_DONE.load(Ordering::Acquire)
 }
 
 /// Launch BusyBox shell from embedded initramfs data.
@@ -284,11 +350,12 @@ pub fn launch_busybox() -> Result<ProcessId, LoadError> {
 
     for path in &locations {
         if crate::contexts::vfs::exists(path) {
-            log::info!("Found BusyBox at {}", path);
+            crate::klog_fmt!("[BUSYBOX-DIAG] found at {}\n", path);
             return launch_busybox_with_args(path);
         }
     }
 
+    crate::klog_fmt!("[BUSYBOX-DIAG] binary not found in any standard location\n");
     Err(LoadError::FileNotFound)
 }
 

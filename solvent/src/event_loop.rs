@@ -117,14 +117,21 @@ pub fn tick_core(now: u64) {
     crate::clock::update_clock();
     chrono_tick(now);
 
-    // Callbacks may acquire runtime locks or register another service.
-    let mut services = core::mem::take(&mut *SERVICES.lock());
-    for service in &mut services {
-        service.tick(now);
+    // Skip service ticking while inside a WASM host callback.  Services
+    // like WifiService can block for seconds on firmware MMIO, which
+    // freezes the WASM caller (e.g. the MP4 viewer's decode loop) that
+    // invoked `wait_for_ns` precisely to let the event loop run.
+    let in_wasm = crate::IN_WASM_HOST_CALLBACK.load(core::sync::atomic::Ordering::Relaxed);
+    if !in_wasm {
+        // Callbacks may acquire runtime locks or register another service.
+        let mut services = core::mem::take(&mut *SERVICES.lock());
+        for service in &mut services {
+            service.tick(now);
+        }
+        let mut registry = SERVICES.lock();
+        services.append(&mut *registry);
+        *registry = services;
     }
-    let mut registry = SERVICES.lock();
-    services.append(&mut *registry);
-    *registry = services;
 
     if now.is_multiple_of(20) {
         let snapshot = NETWORK_SNAPSHOT.lock();

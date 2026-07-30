@@ -206,6 +206,29 @@ pub fn draw_step_hint(hint: &[u8]) {
     fb.draw_text(x, y, hint, 1, 0x8c8c96);
 }
 
+/// Draw a diagnostic splash from an interrupt/recovery path.
+///
+/// Unlike normal boot progress, this deliberately ignores
+/// `BOOT_SCREEN_ACTIVE`: once the desktop owns the scanout, a stuck runtime
+/// or PCIe MMIO operation still needs a visible last-resort diagnostic.  The
+/// framebuffer accessor and renderer are allocation-free and do not acquire
+/// kernel/runtime locks, so this is safe for the watchdog NMI path.
+pub fn draw_hang_diagnostic(label: &[u8]) {
+    let Some(framebuffer) = crate::graphics::discovery::direct_boot_framebuffer() else {
+        return;
+    };
+    let completed = LAST_STAGE
+        .load(Ordering::Acquire)
+        .min(petroleum::graphics::boot_screen::KERNEL_STAGE_COUNT);
+    unsafe {
+        framebuffer.draw_stage(
+            completed,
+            petroleum::graphics::boot_screen::KERNEL_STAGE_COUNT,
+            label,
+        );
+    }
+}
+
 /// Get the last boot stage reached.
 pub fn last_stage() -> Option<BootStage> {
     let raw = LAST_STAGE.load(Ordering::Acquire);

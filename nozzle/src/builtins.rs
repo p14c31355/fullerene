@@ -80,6 +80,7 @@ sys_info_cmd!(cmd_cpuinfo, "cpuinfo");
 sys_info_cmd!(cmd_tasks, "tasks");
 sys_info_cmd!(cmd_windows, "windows");
 sys_info_cmd!(cmd_dmesg, "dmesg");
+sys_info_cmd!(cmd_klog_live, "klog_live");
 
 /// `hexdump` — show hex dump of provided string
 pub fn cmd_hexdump(ctx: &mut CommandContext) -> bool {
@@ -262,7 +263,7 @@ pub fn cmd_mount(ctx: &mut CommandContext) -> bool {
 sys_info_cmd!(cmd_hello_linux, "hello_linux");
 sys_info_cmd!(cmd_hello_rust_linux, "hello_rust_linux");
 sys_info_cmd!(cmd_linux_run, "linux_run");
-sys_info_cmd!(cmd_run_busybox, "run_busybox");
+sys_info_cmd!(cmd_busybox, "busybox");
 sys_info_cmd!(cmd_wasm, "wasm");
 sys_info_cmd!(cmd_emulsion, "emulsion");
 

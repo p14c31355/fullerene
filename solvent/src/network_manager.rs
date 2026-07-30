@@ -6,6 +6,7 @@
 //! connection requests for an external service to consume.
 
 use bonder::wifi::Ssid;
+use core::sync::atomic::{AtomicBool, Ordering};
 use lattice::desktop::DesktopAction;
 
 #[cfg(not(nitrogen_no_iwlwifi))]
@@ -13,6 +14,12 @@ use lattice::desktop::DesktopAction;
 // candidates on 7265-family hardware.  600 scheduler ticks (~1.35 seconds)
 // aborted the state machine before its own alive timeout could run.
 const WIFI_INIT_TIMEOUT_TICKS: u64 = 12_000;
+
+// iwlwifi firmware/MMIO probing is not safe to run unconditionally from the
+// desktop tick: a missing or wedged PCIe endpoint can stall that tick.  Keep
+// the service registered for the network UI, but only start hardware probing
+// after the user explicitly opens the network menu.
+static WIFI_INIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Runtime-owned Wi-Fi lifecycle and UI projection.
 #[allow(dead_code)]
@@ -26,7 +33,7 @@ impl WifiService {
     const fn new() -> Self {
         Self {
             init_started: None,
-            init_pending: true,
+            init_pending: false,
         }
     }
 
@@ -98,6 +105,11 @@ impl crate::Service for WifiService {
         #[cfg(nitrogen_no_iwlwifi)]
         let _ = now;
         #[cfg(not(nitrogen_no_iwlwifi))]
+        if !self.init_pending && WIFI_INIT_REQUESTED.swap(false, Ordering::Acquire) {
+            self.init_pending = true;
+            log::info!("iwlwifi: deferred initialization requested by network menu");
+        }
+        #[cfg(not(nitrogen_no_iwlwifi))]
         if self.init_pending {
             self.advance_init(now);
         }
@@ -125,7 +137,13 @@ impl crate::Service for WifiService {
 pub fn register_wifi_service() {
     use alloc::boxed::Box;
     nitrogen::iwlwifi::init_wifi_manager();
+    log::info!("iwlwifi: service registered; initialization deferred until network menu");
     crate::register_service(Box::new(WifiService::new()));
+}
+
+#[cfg(not(nitrogen_no_iwlwifi))]
+fn request_wifi_initialization() {
+    WIFI_INIT_REQUESTED.store(true, Ordering::Release);
 }
 
 /// Handle a network menu action.
@@ -134,6 +152,8 @@ pub fn register_wifi_service() {
 pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopAction) -> bool {
     match action {
         DesktopAction::ShowNetworkMenu => {
+            #[cfg(not(nitrogen_no_iwlwifi))]
+            request_wifi_initialization();
             let (fw, fh, _) = *crate::FB_DIMS.lock();
             rt.desktop.show_network_menu(fw, fh);
             rt.frame_due = true;

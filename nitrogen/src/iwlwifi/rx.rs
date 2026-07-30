@@ -20,7 +20,12 @@ impl IwlWifiDevice {
         let subtype = (frame[0] >> 4) & 0x0F;
         match (frame_type, subtype) {
             (0, 5) | (0, 8) => {
-                if self.iwl_state == IwlState::Scanning {
+                // Accept beacons both during an active scan and for a short
+                // grace period after the scan-complete notification.  The
+                // firmware can deliver the scan-complete notification before
+                // the last few beacons reach the RX ring, and the old
+                // `iwl_state == Scanning` guard silently discarded them.
+                if self.iwl_state == IwlState::Scanning || self.scan_pending {
                     self.process_scan_result(frame);
                 }
             }
@@ -452,6 +457,7 @@ impl IwlWifiDevice {
         self.finish_pending_wpa_keys();
 
         let rx_tail_before = self.rx_tail;
+        let mut deferred_scan_complete = false;
         mmio::cache_flush_range(
             self.rx_dma_ring.virt(),
             core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE,
@@ -466,7 +472,7 @@ impl IwlWifiDevice {
                 let frame_len = buf.len();
                 let mut frame_data = alloc::vec![0; frame_len];
                 buf.read_into(&mut frame_data);
-                self.process_rx_buffer(&frame_data);
+                self.process_rx_buffer(&frame_data, &mut deferred_scan_complete);
             }
 
             self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
@@ -484,9 +490,28 @@ impl IwlWifiDevice {
             mmio::write_barrier();
         }
 
+        if deferred_scan_complete && self.scan_pending {
+            self.scan_pending = false;
+            self.wifi_conn.finish_scan();
+            self.iwl_state = IwlState::Disconnected;
+            log::info!(
+                "iwlwifi: scan complete ({} APs found)",
+                self.scan_results.len()
+            );
+        }
+
         if self.scan_pending {
+            // Watchdog: allow up to 12 000 ticks for the firmware to complete
+            // a passive scan and deliver beacons.  The previous 4 000-tick
+            // limit could fire in under 4 seconds on hardware with a fast
+            // APIC timer (1 tick ≈ 2.25 ms on this platform, but the period
+            // is hardware-dependent), destroying beacons that arrived just
+            // after the scan-complete notification or while the scan was
+            // still in progress.  23 channels × 110 TU ≈ 2.6 s of dwell,
+            // plus TX/RX latency, so 12 000 ticks (≈ 27 s) gives ample
+            // headroom while still bounding a wedged firmware.
             self.scan_channel += 1;
-            if self.scan_channel > 4000 {
+            if self.scan_channel > 12_000 {
                 self.scan_pending = false;
                 self.wifi_conn.finish_scan();
                 self.iwl_state = IwlState::Disconnected;
@@ -526,112 +551,137 @@ impl IwlWifiDevice {
         }
     }
 
-    /// Decode a legacy iwlwifi RX buffer. Runtime notifications carry an
-    /// iwl_rx_packet header before their payload. The first four bytes are
-    /// len_n_flags; the four-byte command header follows it. Some firmware
-    /// paths expose the 802.11 MPDU directly, so retain a bounded fallback.
-    fn process_rx_buffer(&mut self, data: &[u8]) {
-        // FH_RSCSR_FRAME_SIZE_MSK covers the low 14 bits of len_n_flags. The
-        // packet length includes len_n_flags and the command header.
-        let packet_len = if data.len() >= 8 {
-            let reported =
-                u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize & 0x3fff;
-            if reported >= 8 && reported <= data.len() {
-                reported
-            } else {
-                data.len()
-            }
-        } else {
-            data.len()
-        };
+    /// Decode a legacy iwlwifi RX buffer.
+    ///
+    /// The 7265 firmware packs **multiple** packets into a single 4 KB RX
+    /// buffer (RB), 64-byte aligned.  Each beacon reception produces two
+    /// back-to-back packets: `REPLY_RX_PHY_CMD (0xc0)` followed by
+    /// `REPLY_RX_MPDU_CMD (0xc1)`.  Processing only the first packet (the
+    /// PHY info) silently dropped every beacon, leaving scan results empty
+    /// even though the scan completed successfully.
+    ///
+    /// We now iterate over every packet in the RB, matching the Linux kernel
+    /// `iwl_pcie_rx_handle_rb` loop.  A `0x5555_0000` `len_n_flags` marks the
+    /// end of valid packets.
+    fn process_rx_buffer(&mut self, data: &[u8], deferred_scan_complete: &mut bool) {
+        const FH_RSCSR_FRAME_ALIGN: usize = 64;
+        const FH_RSCSR_FRAME_INVALID: u32 = 0x5555_0000;
 
-        if packet_len >= 8 {
-            let command = data[4];
-            let group = data[5];
-            let sequence = u16::from_le_bytes([data[6], data[7]]);
-            if command == 0xe7 || command == 0x6d {
-                let payload = &data[8..packet_len];
-                log::info!(
-                    "iwlwifi: firmware scan complete notification cmd=0x{:02x} status={} scanned_channels={}",
-                    command,
-                    payload.get(1).copied().unwrap_or(0),
-                    payload.first().copied().unwrap_or(0),
-                );
-                if self.scan_pending {
-                    self.scan_pending = false;
-                    self.wifi_conn.finish_scan();
-                    self.iwl_state = IwlState::Disconnected;
-                    log::info!(
-                        "iwlwifi: scan complete ({} APs found)",
-                        self.scan_results.len()
-                    );
-                }
-                return;
+        let mut offset = 0usize;
+        while offset + 8 <= data.len() {
+            let len_n_flags = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
+
+            if len_n_flags == FH_RSCSR_FRAME_INVALID {
+                break;
             }
 
-            // REPLY_RX_MPDU_CMD (0xc1) has iwl_rx_mpdu_res_start
-            // (byte_count, assist) at payload offset 0, followed by the raw
-            // 802.11 MPDU. The packet's 4-byte length header is not part of
-            // the command payload.
-            if command == 0xc1 && packet_len >= 12 {
-                let payload = &data[8..packet_len];
-                let byte_count = u16::from_le_bytes([payload[0], payload[1]]) as usize;
-                let frame_end = 12usize.saturating_add(byte_count).min(packet_len);
-                log::info!(
-                    "iwlwifi: RX MPDU notification group=0x{:02x} seq=0x{:04x} bytes={} frame_bytes={}",
-                    group,
-                    sequence,
-                    byte_count,
-                    frame_end.saturating_sub(12)
-                );
-                if frame_end >= 36 {
-                    self.process_rx_frame(&data[12..frame_end], false);
-                }
-                return;
+            // The low 14 bits give the payload length (excluding the 4-byte
+            // len_n_flags itself).  Total packet size = payload + 4.
+            let payload_len = (len_n_flags as usize) & 0x3FFF;
+            let total_len = payload_len.checked_add(4).unwrap_or(0);
+            if total_len < 8 || offset + total_len > data.len() {
+                // Malformed — fall back to treating remaining data as a single
+                // packet so the bounded beacon scan can still attempt a match.
+                let remaining = &data[offset..];
+                self.process_single_packet(remaining, deferred_scan_complete);
+                break;
             }
 
-            // REPLY_ERROR payload layout is error_type:u32, cmd_id:u8,
-            // reserved:u8, bad_cmd_seq:u16, error_service:u32.
-            if command == LegacyCmd::ReplyError as u8 && packet_len >= 20 {
-                let payload = &data[8..packet_len];
-                let error_type =
-                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                let bad_cmd = payload[4];
-                let bad_seq = u16::from_le_bytes([payload[6], payload[7]]);
-                let service =
-                    u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
-                log::warn!(
-                    "iwlwifi: firmware command error type={:#010x} cmd=0x{:02x} seq=0x{:04x} service={:#010x}",
-                    error_type,
-                    bad_cmd,
-                    bad_seq,
-                    service,
-                );
-                return;
-            }
+            let packet = &data[offset..offset + total_len];
+            self.process_single_packet(packet, deferred_scan_complete);
 
+            // Advance to the next 64-byte-aligned packet boundary.
+            offset += total_len.next_multiple_of(FH_RSCSR_FRAME_ALIGN);
+        }
+    }
+
+    /// Process one packet extracted from an RX buffer.
+    fn process_single_packet(&mut self, data: &[u8], deferred_scan_complete: &mut bool) {
+        const REPLY_RX_PHY_CMD: u8 = 0xc0;
+
+        if data.len() < 8 {
+            return;
+        }
+        let packet_len = data.len();
+        let command = data[4];
+        let group = data[5];
+        let sequence = u16::from_le_bytes([data[6], data[7]]);
+
+        // Scan-complete notification.
+        if command == LegacyCmd::ScanOffloadCompleteNotif as u8
+            || command == LegacyCmd::ScanCompleteUrgent as u8
+        {
+            let payload = &data[8..packet_len];
             log::info!(
-                "iwlwifi: RX firmware notification cmd=0x{:02x} group=0x{:02x} seq=0x{:04x} packet_len={}",
+                "iwlwifi: firmware scan complete notification cmd=0x{:02x} status={} scanned_channels={}",
                 command,
+                payload.get(1).copied().unwrap_or(0),
+                payload.first().copied().unwrap_or(0),
+            );
+            if self.scan_pending {
+                *deferred_scan_complete = true;
+            }
+            return;
+        }
+
+        // REPLY_RX_PHY_CMD (0xc0) precedes every REPLY_RX_MPDU_CMD.  It
+        // carries PHY metadata (RSSI, noise, rate) and has no 802.11 frame.
+        // Skip it silently — the actual beacon follows in the next packet.
+        if command == REPLY_RX_PHY_CMD {
+            return;
+        }
+
+        // REPLY_RX_MPDU_CMD (0xc1) has iwl_rx_mpdu_res_start
+        // (byte_count, assist) at payload offset 0, followed by the raw
+        // 802.11 MPDU. The packet's 4-byte length header is not part of
+        // the command payload.
+        if command == LegacyCmd::ReplyRxMpduCmd as u8 && packet_len >= 12 {
+            let payload = &data[8..packet_len];
+            let byte_count = u16::from_le_bytes([payload[0], payload[1]]) as usize;
+            let frame_end = 12usize.saturating_add(byte_count).min(packet_len);
+            log::info!(
+                "iwlwifi: RX MPDU notification group=0x{:02x} seq=0x{:04x} bytes={} frame_bytes={}",
                 group,
                 sequence,
-                packet_len,
+                byte_count,
+                frame_end.saturating_sub(12)
             );
+            if frame_end >= 36 {
+                self.process_rx_frame(&data[12..frame_end], false);
+            }
+            return;
         }
 
-        let scan_end = core::cmp::min(packet_len.saturating_sub(24), 128);
-        for offset in 0..=scan_end {
-            let fc = data[offset];
-            let frame_type = (fc & 0x0C) >> 2;
-            let subtype = (fc >> 4) & 0x0F;
-            if frame_type == 0 && (subtype == 5 || subtype == 8) {
-                let candidate = &data[offset..];
-                if candidate.len() >= 24 {
-                    self.process_rx_frame(candidate, false);
-                    return;
-                }
-            }
+        // REPLY_ERROR payload layout is error_type:u32, cmd_id:u8,
+        // reserved:u8, bad_cmd_seq:u16, error_service:u32.
+        if command == LegacyCmd::ReplyError as u8 && packet_len >= 20 {
+            let payload = &data[8..packet_len];
+            let error_type = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            let bad_cmd = payload[4];
+            let bad_seq = u16::from_le_bytes([payload[6], payload[7]]);
+            let service = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+            log::warn!(
+                "iwlwifi: firmware command error type={:#010x} cmd=0x{:02x} seq=0x{:04x} service={:#010x}",
+                error_type,
+                bad_cmd,
+                bad_seq,
+                service,
+            );
+            return;
         }
+
+        log::info!(
+            "iwlwifi: RX firmware notification cmd=0x{:02x} group=0x{:02x} seq=0x{:04x} packet_len={}",
+            command,
+            group,
+            sequence,
+            packet_len,
+        );
     }
 
     /// Complete the WPA transition only after the key commands have left the

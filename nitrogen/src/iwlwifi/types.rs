@@ -89,6 +89,13 @@ pub enum LegacyCmd {
     PowerUp = 0x27,
     ReplyAlive = 0x01,
     ReplyError = 0x02,
+    /// RX MPDU notification (legacy transport). Carries the raw 802.11 frame
+    /// preceded by an `iwl_rx_mpdu_res_start` header.
+    ReplyRxMpduCmd = 0xc1,
+    /// Urgent scan-complete notification (older firmware).
+    ScanCompleteUrgent = 0x6d,
+    /// Offloaded scan-complete notification (7265 firmware API).
+    ScanOffloadCompleteNotif = 0xe7,
 }
 
 /// ADD_STA_KEY command payload used by the 7000-series firmware API.
@@ -180,6 +187,65 @@ impl PhyContextCmdV1 {
             rxchain_info: (0x03 << 1) | (2 << 10) | (2 << 12),
             acquisition_data: 0,
             dsp_cfg_flags: 0,
+        }
+    }
+}
+
+/// MAC_CONTEXT_CMD (0x28) payload for a minimal STA context.
+///
+/// Without this command the firmware never delivers 802.11 frames
+/// (beacons, probe responses) to the host.  Scan-complete notifications
+/// still arrive because they are command responses, but beacons travel
+/// the REPLY_RX_MPDU_CMD data path which requires an active MAC context.
+///
+/// The layout follows Linux's `iwl_mac_ctx_cmd` (API v1).  Like every
+/// firmware context command, the first 8 bytes are the common
+/// `id_and_color` / `action` header.
+#[repr(C, packed)]
+pub struct MacContextCmd {
+    /// Context ID and colour (MAC id = 0, colour = 0).
+    pub id_and_color: u32,
+    /// Action: 0 = modify, 1 = add.  Use ADD when first establishing the
+    /// MAC context.
+    pub action: u32,
+    /// MAC type: 0 = AUX, 1 = STA, 2 = P2P_DEVICE, 3 = P2P_CLIENT, 4 = P2P_GO, 5 = MONITOR
+    pub mac_type: u32,
+    /// MAC flags (0 for minimal STA).
+    pub mac_flags: u32,
+    /// TSF ID (0).
+    pub tsf_id: u8,
+    /// Color (0).
+    pub color: u8,
+    /// Reserved.
+    pub reserved: u16,
+    /// MAC address (6 bytes).
+    pub addr: [u8; 6],
+    /// Reserved after address.
+    pub reserved_for_addr: u16,
+    /// RX filter flags.
+    pub filter_flags: u32,
+    /// MAC data for STA context (variable, but we use a fixed-size block).
+    pub data: [u8; 64],
+}
+
+impl MacContextCmd {
+    /// Create a minimal STA MAC context that accepts beacons and multicast
+    /// frames — enough for passive scanning.
+    pub fn sta(mac: [u8; 6]) -> Self {
+        // Linux: MAC_FILTER_ACCEPT_GRP = BIT(3), MAC_FILTER_IN_BEACON = BIT(7)
+        const FILTER_FLAGS: u32 = (1 << 3) | (1 << 7);
+        Self {
+            id_and_color: 0, // MAC id 0, colour 0
+            action: 1,       // FW_CTXT_ACTION_ADD
+            mac_type: 1,     // IWL_MAC_TYPE_STA
+            mac_flags: 0,
+            tsf_id: 0,
+            color: 0,
+            reserved: 0,
+            addr: mac,
+            reserved_for_addr: 0,
+            filter_flags: FILTER_FLAGS,
+            data: [0u8; 64],
         }
     }
 }
@@ -310,8 +376,13 @@ impl ScanConfigV1 {
             },
             mac_addr,
             bcast_sta_id: 4,
-            // EBS | ACCURATE_EBS | EBS_ADD | PRE_SCAN_PASSIVE2ACTIVE.
-            channel_flags: 0x0f,
+            // PRE_SCAN_PASSIVE2ACTIVE only.  EBS (bits 0-2) is disabled
+            // because it lets the firmware skip channels it considers "empty"
+            // based on energy detection — on some hardware/firmware
+            // combinations this causes every channel to be skipped,
+            // resulting in scan-complete with 0 APs even when APs are
+            // present.
+            channel_flags: 0x08,
             channel_array: SCAN_CHANNELS,
         }
     }

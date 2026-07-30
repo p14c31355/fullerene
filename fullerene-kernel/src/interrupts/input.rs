@@ -3,11 +3,62 @@
 //! This module handles keyboard and mouse interrupts.
 
 use super::apic::send_eoi;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use petroleum::port_read_u8;
 use x86_64::structures::idt::{InterruptStackFrame, InterruptStackFrameValue};
 
 static LAST_KLOG_LIVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static LAST_SCHEDULER_PROGRESS_TICK: AtomicU64 = AtomicU64::new(0);
+static LAST_SCHEDULER_PROGRESS_TSC: AtomicU64 = AtomicU64::new(0);
+static SCHEDULER_STALL_REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Paint a diagnostic even when the scheduler is stuck before the MMIO
+/// watchdog is armed (for example in PCI config access or a contended lock).
+/// This runs from the periodic timer interrupt and only touches atomics plus
+/// the lock-free direct framebuffer diagnostic path.
+fn check_scheduler_progress() {
+    if crate::scheduler_context::SCHEDULER
+        .recovery_target()
+        .is_none()
+    {
+        return;
+    }
+
+    // `scheduler_loop` is also the shell's kernel-side execution context.
+    // After a command handoff, the current user process can legitimately
+    // run (or block in stdin) without advancing the idle-loop tick. Do not
+    // mistake that normal process execution for a scheduler hang.
+    if crate::process::current_pid().is_some() {
+        LAST_SCHEDULER_PROGRESS_TICK.store(
+            crate::scheduler_context::SCHEDULER.current_tick(),
+            Ordering::Release,
+        );
+        LAST_SCHEDULER_PROGRESS_TSC
+            .store(unsafe { core::arch::x86_64::_rdtsc() }, Ordering::Release);
+        SCHEDULER_STALL_REPORTED.store(false, Ordering::Release);
+        return;
+    }
+
+    let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    let current_tick = crate::scheduler_context::SCHEDULER.current_tick();
+    let previous_tick = LAST_SCHEDULER_PROGRESS_TICK.load(Ordering::Acquire);
+    let previous_tsc = LAST_SCHEDULER_PROGRESS_TSC.load(Ordering::Acquire);
+
+    if previous_tsc == 0 || current_tick != previous_tick {
+        LAST_SCHEDULER_PROGRESS_TICK.store(current_tick, Ordering::Release);
+        LAST_SCHEDULER_PROGRESS_TSC.store(now_tsc, Ordering::Release);
+        SCHEDULER_STALL_REPORTED.store(false, Ordering::Release);
+        return;
+    }
+
+    let timeout_tsc = solvent::get_tsc_per_ms().saturating_mul(3_000);
+    if timeout_tsc != 0
+        && now_tsc.wrapping_sub(previous_tsc) >= timeout_tsc
+        && !SCHEDULER_STALL_REPORTED.swap(true, Ordering::AcqRel)
+    {
+        crate::boot_stage::draw_hang_diagnostic(b"SCHEDULER STALLED");
+    }
+}
 
 /// Macro to create input device interrupt handlers
 macro_rules! define_input_interrupt_handler {
@@ -88,6 +139,8 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
             LAST_KLOG_LIVE_GENERATION.store(generation, Ordering::Release);
         }
     }
+
+    check_scheduler_progress();
 
     send_eoi();
 }

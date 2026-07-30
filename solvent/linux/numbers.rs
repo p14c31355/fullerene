@@ -7,6 +7,7 @@ pub const SYS_STAT: u64 = 4;
 pub const SYS_FSTAT: u64 = 5;
 pub const SYS_LSTAT: u64 = 6;
 pub const SYS_POLL: u64 = 7;
+pub const SYS_PPOLL: u64 = 271;
 pub const SYS_LSEEK: u64 = 8;
 pub const SYS_MMAP: u64 = 9;
 pub const SYS_MPROTECT: u64 = 10;

@@ -467,10 +467,14 @@ fn try_mp4_file(path: &str) -> bool {
     println!("MP4 FILE size OK viewer_build={}", VIEWER_BUILD_ID);
     println!("viewer: mp4 header enter");
     let parsing_header = Rc::new(Cell::new(true));
-    let reader = match mp4::Mp4Reader::read_header(
-        BoundedMp4Reader::new(file, Rc::clone(&parsing_header)),
-        size,
-    ) {
+    // Wrap the bounded reader in a large BufReader so that the mp4 crate's
+    // many small header reads (8-byte atom size+type probes) are coalesced
+    // into far fewer real file I/O operations.  Without this, a normal MP4
+    // moov atom exhausts the 16 384-operation I/O budget before parsing
+    // completes, even though the file itself is well-formed.
+    let bounded = BoundedMp4Reader::new(file, Rc::clone(&parsing_header));
+    let buffered = std::io::BufReader::with_capacity(64 * 1024, bounded);
+    let reader = match mp4::Mp4Reader::read_header(buffered, size) {
         Ok(reader) => reader,
         Err(error) => {
             println!("viewer: mp4 header failed");
@@ -612,6 +616,12 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
     // present each decoded frame, and pace it against the track timestamps.
     for sample_id in 1..=sample_count {
+        // Yield to the host event loop at the start of every sample so that
+        // decode failures (which skip wait_for_video_time) and long NAL
+        // chains cannot freeze the desktop.
+        unsafe {
+            wait_for_ns(0);
+        }
         let sample = match reader.read_sample(track_id, sample_id) {
             Ok(Some(sample)) => sample,
             Ok(None) => {
@@ -679,6 +689,14 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
                     "NAL unit is too large",
                 );
             }
+            // Yield to the host before each NAL decode so the event loop
+            // can pump input and render even when decode_nal takes a long
+            // time.  decode_nal itself is pure WASM compute and cannot
+            // call the host, so this is the finest-grained yield point
+            // available.
+            unsafe {
+                wait_for_ns(0);
+            }
             if let Ok(Some(frame)) = decoder.decode_nal(nal) {
                 wait_for_video_time(playback_start, target_ns);
                 if render_video_frame(&mut window_id, &title, &frame) {
@@ -736,12 +754,13 @@ fn present_mp4_failure(
 
 fn wait_for_video_time(start: Instant, target_ns: u64) {
     let target = Duration::from_nanos(target_ns);
-    if let Some(remaining) = target.checked_sub(start.elapsed()) {
-        let remaining_ns = remaining.as_nanos().min(u128::from(u64::MAX)) as u64;
-        if remaining_ns > 0 {
-            unsafe {
-                wait_for_ns(remaining_ns);
-            }
+    let remaining = target.checked_sub(start.elapsed()).unwrap_or_default();
+    let remaining_ns = remaining.as_nanos().min(u128::from(u64::MAX)) as u64;
+    unsafe {
+        if remaining.is_zero() {
+            wait_for_ns(0);
+        } else {
+            wait_for_ns(remaining_ns);
         }
     }
 }

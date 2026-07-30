@@ -131,9 +131,19 @@ fn wasm_wait_for_ns(duration_ns: u64) {
     let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
     let ticks = ((duration_ns as u128 * tsc_per_ms as u128) / 1_000_000) as u64;
     let deadline = unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(ticks);
+    // Mark that we are inside a WASM host callback so tick_core skips
+    // service ticking (WiFi MMIO, USB, etc.) that could block for seconds
+    // and freeze the WASM decode loop.
+    solvent::IN_WASM_HOST_CALLBACK.store(true, core::sync::atomic::Ordering::Relaxed);
     let mut next_tick = 0u64;
-    while unsafe { core::arch::x86_64::_rdtsc() } < deadline {
+    // Guarantee one cooperative event-loop tick, even for a zero-duration
+    // wait, then keep the existing periodic cadence for longer waits.
+    solvent::runtime_tick_no_fb();
+    loop {
         let now = unsafe { core::arch::x86_64::_rdtsc() };
+        if now >= deadline {
+            break;
+        }
         if now >= next_tick {
             solvent::runtime_tick_no_fb();
             next_tick = now.saturating_add(tsc_per_ms.saturating_mul(4));
@@ -141,6 +151,7 @@ fn wasm_wait_for_ns(duration_ns: u64) {
             petroleum::cpu_pause();
         }
     }
+    solvent::IN_WASM_HOST_CALLBACK.store(false, core::sync::atomic::Ordering::Relaxed);
 }
 
 fn wasm_file_size(path: &str) -> Result<u64, genome::FsError> {
@@ -165,7 +176,9 @@ fn wasm_read_file_range(
         offset,
         limit
     );
+    solvent::IN_WASM_HOST_CALLBACK.store(true, core::sync::atomic::Ordering::Relaxed);
     let result = crate::fs::read_file_range(path, offset, limit);
+    solvent::IN_WASM_HOST_CALLBACK.store(false, core::sync::atomic::Ordering::Relaxed);
     crate::klog_fmt!(
         "[WASM-DIAG] read_range callback end path={} offset={} result={:?}\n",
         path,
@@ -883,6 +896,17 @@ fn nozzle_services() -> nozzle::ShellServices {
                     ctx.terminal.write_str("Windowing system not active.\n");
                 }
             }
+            "klog_live" => {
+                if solvent::open_klog_live() {
+                    ctx.terminal.write_str(
+                        "KLog Live window opened. New klog entries appear here \
+                         even when the scheduler is stuck.\n",
+                    );
+                } else {
+                    ctx.terminal
+                        .write_str("KLog Live unavailable (GUI not ready).\n");
+                }
+            }
             "dmesg" => {
                 let klog_len = crate::klog::len();
                 if klog_len > 0 {
@@ -955,7 +979,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                     "Linux process started (PID: {})"
                 );
             }
-            "run_busybox" => launch_cmd!(
+            "busybox" => launch_cmd!(
                 ctx.terminal,
                 crate::linux::launch::launch_busybox(),
                 "BusyBox shell started (PID: {})"
@@ -1458,7 +1482,7 @@ pub fn run_linux_musl_smoke() {
 
 /// Run the static BusyBox shell through the real Nozzle command path.
 #[cfg(linux_busybox_smoke)]
-pub fn run_busybox_smoke() {
+pub fn busybox_smoke() {
     struct ScriptedTerminal {
         input: alloc::collections::VecDeque<u8>,
     }
@@ -1497,9 +1521,10 @@ pub fn run_busybox_smoke() {
     }
 
     let services = nozzle_services();
-    let mut terminal = ScriptedTerminal::new("run_busybox\nexit\n");
+    let mut terminal = ScriptedTerminal::new("busybox\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
-    if crate::linux::launch::busybox_smoke_verified() {
+    crate::linux::launch::mark_busybox_smoke_harness_done();
+    if crate::linux::launch::busybox_smoke_complete() {
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] PASS: output observed, exit=0, shell resumed\n"
         ));
