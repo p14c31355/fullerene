@@ -71,12 +71,20 @@ impl AudioContext {
             return;
         }
         let Some(corb) = alloc_dma(1) else { return };
-        let Some(rirb) = alloc_dma(1) else { return };
+        let Some(rirb) = alloc_dma(1) else {
+            free_dma(corb);
+            return;
+        };
         let Some(dma) = alloc_dma((DMA_BUF_SIZE as usize + 4095) / 4096) else {
+            free_dma(rirb);
+            free_dma(corb);
             return;
         };
         if !unsafe { ctrl.init(&corb, &rirb, &dma) } {
             log::error!("Sound: HDA init failed");
+            free_dma(dma);
+            free_dma(rirb);
+            free_dma(corb);
             return;
         }
         let gcap = unsafe { core::ptr::read_volatile(ctrl.mmio().add(0x0000) as *const u32) };
@@ -318,6 +326,14 @@ fn alloc_dma(pages: usize) -> Option<DmaRegion> {
         virt,
         size: pages * 4096,
     })
+}
+
+fn free_dma(region: DmaRegion) {
+    let pages = region.size / 4096 + usize::from(region.size % 4096 != 0);
+    petroleum::page_table::constants::with_frame_allocator(|allocator| {
+        allocator.free_contiguous_frames(region.phys, pages);
+    });
+    nitrogen::metrics::dma_released(region.size);
 }
 
 static AUDIO_CTX: spin::Mutex<Option<AudioContext>> = spin::Mutex::new(None);

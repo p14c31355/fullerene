@@ -61,7 +61,7 @@ pub mod verbs {
     pub const GET_SUBSYSTEM_ID: u32 = 0xF20;
     pub const GET_PIN_CTL: u32 = 0xF07;
     pub const GET_EAPD: u32 = 0xF0C;
-    pub const GET_PROC_COEF: u32 = 0xD00;
+    pub const GET_PROC_COEF: u32 = 0xC00;
     pub const SET_POWER_STATE: u32 = 0x705;
 }
 
@@ -261,7 +261,11 @@ impl CorbEngine {
             let corb_n = self.corb_entries;
 
             // Encode the verb command word
-            let cmd_val = if verb > 0xF {
+            let wide_verb = matches!(
+                verb,
+                0x400..=0x5FF | 0x700..=0x7FF | 0xC00..=0xCFF | 0xF00..=0xFFF
+            );
+            let cmd_val = if wide_verb {
                 // The 12-bit verb form uses the low 16 bits for the
                 // parameter when the verb's low byte is zero (for example
                 // SET_PROC_COEF=0x400).  Keeping all 16 bits is required by

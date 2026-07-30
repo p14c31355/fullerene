@@ -22,17 +22,16 @@ mod rx;
 mod tx;
 pub mod types;
 
-/// Reinterpret a `Sized` value as a byte slice.
+/// Reinterpret a packed command value as a byte slice.
 ///
-/// # Safety contract (caller responsibility)
+/// # Safety
 ///
-/// `T` must have a stable, defined byte layout (`#[repr(C)]` or
-/// `#[repr(packed)]` with no uninitialized padding read). Every command
-/// structure passed here satisfies that, matching the previous inline casts.
+/// `T` must have a stable, padding-free byte layout. The caller must only pass
+/// command structures whose representation is explicitly suitable for the
+/// firmware protocol.
 #[inline(always)]
-fn as_bytes<T: Sized>(value: &T) -> &[u8] {
-    // SAFETY: `value` is a valid reference to a `Sized` value; the caller
-    // guarantees a stable layout so the byte representation is defined.
+unsafe fn as_bytes<T: Sized>(value: &T) -> &[u8] {
+    // SAFETY: enforced by this function's contract.
     unsafe {
         core::slice::from_raw_parts(value as *const T as *const u8, core::mem::size_of::<T>())
     }

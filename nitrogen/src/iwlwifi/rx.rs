@@ -628,21 +628,37 @@ impl IwlWifiDevice {
         let sequence = u16::from_le_bytes([data[6], data[7]]);
 
         // Scan-complete notification.
-        if command == LegacyCmd::ScanOffloadCompleteNotif as u8
-            || command == LegacyCmd::ScanCompleteUrgent as u8
-        {
+        if command == LegacyCmd::ScanOffloadCompleteNotif as u8 {
             let payload = &data[8..packet_len];
-            let status = if payload.len() >= 4 {
-                u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
+            log::info!(
+                "iwlwifi: firmware scan iteration complete cmd=0x{:02x} scanned_channels={} status={} bt_status={} last_channel={}",
+                command,
+                payload.first().copied().unwrap_or(0),
+                payload.get(1).copied().unwrap_or(u8::MAX),
+                payload.get(2).copied().unwrap_or(u8::MAX),
+                payload.get(3).copied().unwrap_or(0),
+            );
+            if self.scan_pending {
+                *deferred_scan_complete = true;
+            }
+            return;
+        }
+
+        if command == LegacyCmd::ScanCompleteUrgent as u8 {
+            let payload = &data[8..packet_len];
+            let elapsed = if payload.len() >= 8 {
+                u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]])
             } else {
                 u32::MAX
             };
             log::info!(
-                "iwlwifi: firmware scan complete notification cmd=0x{:02x} status={} channel={} band={}",
+                "iwlwifi: firmware scan offload complete cmd=0x{:02x} status={} schedule_line={} iteration={} ebs_status={} elapsed_s={}",
                 command,
-                status,
-                payload.get(4).copied().unwrap_or(0),
-                payload.get(5).copied().unwrap_or(0),
+                payload.get(2).copied().unwrap_or(u8::MAX),
+                payload.first().copied().unwrap_or(u8::MAX),
+                payload.get(1).copied().unwrap_or(u8::MAX),
+                payload.get(3).copied().unwrap_or(u8::MAX),
+                elapsed,
             );
             if self.scan_pending {
                 *deferred_scan_complete = true;

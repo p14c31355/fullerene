@@ -179,7 +179,7 @@ impl DmaEngine {
         );
     }
 
-    /// Whether the DMA engine is running.
+    /// Whether the DMA engine has been initialised and its buffers programmed.
     pub fn is_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
     }
@@ -210,6 +210,7 @@ impl DmaEngine {
         true
     }
 
+    /// Whether RUN has been asserted after PCM prefill and playback started.
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }

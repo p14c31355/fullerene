@@ -97,9 +97,9 @@ pub enum LegacyCmd {
     /// RX MPDU notification (legacy transport). Carries the raw 802.11 frame
     /// preceded by an `iwl_rx_mpdu_res_start` header.
     ReplyRxMpduCmd = 0xc1,
-    /// Urgent scan-complete notification (older firmware).
+    /// Scan-offload completion notification, carrying periodic scan status.
     ScanCompleteUrgent = 0x6d,
-    /// Offloaded scan-complete notification (7265 firmware API).
+    /// LMAC scan iteration completion notification.
     ScanOffloadCompleteNotif = 0xe7,
 }
 
@@ -786,7 +786,10 @@ impl From<u8> for WifiInitPhase {
             WifiInitPhase::Done,
             WifiInitPhase::Failed,
         ];
-        PHASES.get(v as usize).copied().unwrap_or(WifiInitPhase::Failed)
+        PHASES
+            .get(v as usize)
+            .copied()
+            .unwrap_or(WifiInitPhase::Failed)
     }
 }
 

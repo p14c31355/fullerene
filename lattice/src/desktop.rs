@@ -549,7 +549,14 @@ impl Desktop {
 
     /// Dismiss the active menu.
     pub fn dismiss_menu(&mut self) {
-        self.active_menu = None;
+        if let Some(menu) = self.active_menu.take() {
+            self.push_dirty_rect(crate::scene::DirtyRect::new(
+                menu.x,
+                menu.y,
+                menu.width,
+                menu.height,
+            ));
+        }
     }
 
     /// Check if a point (fb pixel coords) hits a taskbar button.

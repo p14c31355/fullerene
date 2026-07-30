@@ -302,10 +302,11 @@ pub fn observe_busybox_wait(pid: u64) {
 
 #[cfg(linux_busybox_smoke)]
 pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
-    if BUSYBOX_SMOKE_PID.load(Ordering::Acquire) == pid.0
-        && code == 0
-        && BUSYBOX_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire)
-    {
+    let tracked = BUSYBOX_SMOKE_PID.load(Ordering::Acquire) == pid.0;
+    if tracked {
+        BUSYBOX_SMOKE_HOLD_INPUT.store(false, Ordering::Release);
+    }
+    if tracked && code == 0 && BUSYBOX_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire) {
         let window_id = BUSYBOX_SMOKE_WINDOW.load(Ordering::Acquire);
         let window_closed = if window_id == u64::MAX {
             true
@@ -318,7 +319,6 @@ pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
         };
         BUSYBOX_SMOKE_WINDOW_CLOSED.store(window_closed, Ordering::Release);
         BUSYBOX_SMOKE_EXIT_OK.store(true, Ordering::Release);
-        BUSYBOX_SMOKE_HOLD_INPUT.store(false, Ordering::Release);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] verified output and exit status\n"
         ));

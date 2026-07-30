@@ -571,18 +571,16 @@ pub fn sys_lseek(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
-    let current = match crate::contexts::vfs::position(desc.vfs_fd) {
-        Ok(position) => position,
-        Err(error) => return fs_errno_result(&error),
-    };
-    let size = match crate::contexts::vfs::size(desc.vfs_fd) {
-        Ok(size) => size,
-        Err(error) => return fs_errno_result(&error),
-    };
     let new_offset = match whence {
         0 => offset.try_into().ok(), // SEEK_SET
-        1 => current.checked_add_signed(offset),
-        2 => size.checked_add_signed(offset),
+        1 => match crate::contexts::vfs::position(desc.vfs_fd) {
+            Ok(current) => current.checked_add_signed(offset),
+            Err(error) => return fs_errno_result(&error),
+        },
+        2 => match crate::contexts::vfs::size(desc.vfs_fd) {
+            Ok(size) => size.checked_add_signed(offset),
+            Err(error) => return fs_errno_result(&error),
+        },
         _ => return errno_code(EINVAL),
     };
     let Some(new_offset) = new_offset else {

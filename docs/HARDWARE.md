@@ -100,11 +100,14 @@ markers:
   `BUSYBOX-DIAG: terminal owner exited ... code=0 terminal closed`; the
   BusyBox terminal must return to the Fullerene shell after `exit`.
 - Wi-Fi: `iwlwifi: AP FOUND ssid=...`, followed by
-  `iwlwifi: scan complete (N APs found)` with `N > 0`.
+  `iwlwifi: scan complete (N APs found)`. When a known test AP is available,
+  require `N > 0`; otherwise successful firmware readiness and scan completion
+  are sufficient.
 
 These markers are in the persistent kernel log, so serial capture is not
-required. A scan that reaches `scan complete (0 APs found)` is a failed third
-check even if firmware initialization succeeded.
+required. A scan that reaches `scan complete (0 APs found)` is valid when no
+known test AP is expected; firmware initialization/readiness and scan
+completion are the health criteria in that case.
 
 The Realtek RTS5249 reader (`10ec:5249`) is matched by vendor/device identity,
 because PCI class `0xff` is a real vendor-specific class rather than a driver

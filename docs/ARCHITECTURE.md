@@ -56,7 +56,7 @@ firmware-ready state, and late RX beacons remain accepted through the scan
 completion grace window.
 
 Audio initialization is also retryable until HDA actually becomes ready. PCM
-startup playback now requires observed DMA/LPIB progress before reporting
+startup playback now requires DMA/LPIB progress to be observed before reporting
 success; a completion log alone is not treated as proof that the controller
 consumed audio data. Acoustic output still needs a speaker-equipped hardware
 run, because headless QEMU cannot validate the analog path.

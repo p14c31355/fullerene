@@ -232,10 +232,9 @@ impl EventHandler for WmEventHandler {
                     match hit_window {
                         Some(window_id) => {
                             rt.desktop.wm.raise_to_top(window_id);
+                            rt.desktop.dismiss_menu();
                             if rt.explorer.as_ref().and_then(|e| e.window_id) == Some(window_id) {
                                 handle_explorer_click(rt, *btn, cx, cy);
-                            } else {
-                                rt.desktop.dismiss_menu();
                             }
                         }
                         None if rt.desktop.active_menu.is_some() => rt.desktop.dismiss_menu(),

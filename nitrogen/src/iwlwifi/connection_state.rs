@@ -52,7 +52,6 @@ static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
 });
 
 fn release_init_resources(ctx: &mut WifiInitContext) {
-    ctx.mmio_device.take();
     if let Some(pci) = ctx.pci_dev.as_ref() {
         let command =
             crate::pci::PciConfigSpace::read_config_word(pci.bus, pci.device, pci.function, 4);
@@ -64,6 +63,9 @@ fn release_init_resources(ctx: &mut WifiInitContext) {
             command & !0x04,
         );
     }
+    // Release DMA-visible memory only after the device can no longer master
+    // the PCI bus.
+    ctx.mmio_device.take();
     let driver_ctx = ctx.driver_ctx;
     for mut buffer in ctx.tx_bufs.drain(..).chain(ctx.rx_bufs.drain(..)) {
         if let Some(driver_ctx) = driver_ctx {
@@ -1014,7 +1016,7 @@ impl IwlWifiDevice {
         self.iwl_state = IwlState::Scanning;
 
         let scan_cmd = ScanRequestCmd::new(self.mac);
-        let cmd_data = super::as_bytes(&scan_cmd);
+        let cmd_data = unsafe { super::as_bytes(&scan_cmd) };
         // SCAN_OFFLOAD_REQUEST_CMD (0x51) is a legacy-group command and uses
         // the four-byte HCMD header. SCAN_CFG_CMD above is the exception: it
         // is sent with the always-long header because its channel database is

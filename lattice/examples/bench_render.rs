@@ -36,12 +36,7 @@ fn disjoint_rects(count: usize) -> Vec<DirtyRect> {
         .map(|i| {
             let col = (i % stride) as u32;
             let row = (i / stride) as u32;
-            DirtyRect::new(
-                col * RECT_SIZE,
-                row * RECT_SIZE,
-                RECT_SIZE,
-                RECT_SIZE,
-            )
+            DirtyRect::new(col * RECT_SIZE, row * RECT_SIZE, RECT_SIZE, RECT_SIZE)
         })
         .collect()
 }
@@ -70,13 +65,7 @@ fn main() {
 
     println!(
         "{} iterations at {}x{}: full={:?} ({:?}/frame), disjoint-dirty={:?} ({:?}/frame)",
-        ITERATIONS,
-        WIDTH,
-        HEIGHT,
-        full_time,
-        full_per_frame,
-        dirty_time,
-        dirty_per_frame,
+        ITERATIONS, WIDTH, HEIGHT, full_time, full_per_frame, dirty_time, dirty_per_frame,
     );
     println!(
         "throughput: full={:.2} Mpix/s, dirty speedup={:.2}x (per-frame cost ratio)",

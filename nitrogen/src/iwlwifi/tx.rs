@@ -150,8 +150,8 @@ impl IwlWifiDevice {
         };
         group.key[..16].copy_from_slice(&gtk);
 
-        let pairwise_bytes = super::as_bytes(&pairwise);
-        let group_bytes = super::as_bytes(&group);
+        let pairwise_bytes = unsafe { super::as_bytes(&pairwise) };
+        let group_bytes = unsafe { super::as_bytes(&group) };
 
         self.send_hcmd(
             LegacyCmd::AddStaKey as u8,
@@ -203,7 +203,7 @@ impl IwlWifiDevice {
                 group_id: group,
                 sequence,
             };
-            full_data.extend_from_slice(super::as_bytes(&hcmd_header));
+            full_data.extend_from_slice(unsafe { super::as_bytes(&hcmd_header) });
         } else {
             let hcmd_header = HcmdHeaderWide {
                 opcode,
@@ -213,7 +213,7 @@ impl IwlWifiDevice {
                 reserved: 0,
                 version: 0,
             };
-            full_data.extend_from_slice(super::as_bytes(&hcmd_header));
+            full_data.extend_from_slice(unsafe { super::as_bytes(&hcmd_header) });
         }
         full_data.extend_from_slice(data);
         cmd_buf.write_from(&full_data);
@@ -273,7 +273,8 @@ impl IwlWifiDevice {
                 return Some(Err(crate::DriverError::Protocol));
             }
             let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD)? & 0xff;
-            (rptr == target).then_some(Ok(()))
+            self.update_tx_tail(rptr as usize);
+            self.tx_tail_reached(self.tx_head).then_some(Ok(()))
         });
         match consumed {
             Some(Ok(())) => {
@@ -281,7 +282,7 @@ impl IwlWifiDevice {
                     "iwlwifi: HCMD consumed label={} target={} rptr={}",
                     label,
                     target,
-                    target
+                    self.tx_tail & 0xff
                 );
                 Ok(())
             }
@@ -328,7 +329,7 @@ impl IwlWifiDevice {
         // ADD_STA is a legacy-group command and uses the four-byte header.
         const MAC_INDEX_AUX: u8 = 4;
         let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX);
-        let aux_sta_bytes = super::as_bytes(&aux_sta);
+        let aux_sta_bytes = unsafe { super::as_bytes(&aux_sta) };
         self.send_init_hcmd(
             "ADD_STA_AUX",
             LegacyCmd::AddSta as u8,
@@ -350,7 +351,7 @@ impl IwlWifiDevice {
         // second interface actually needs them.
         let phy_id = 0u8;
         let phy = PhyContextCmdV1::add(phy_id);
-        let phy_bytes = super::as_bytes(&phy);
+        let phy_bytes = unsafe { super::as_bytes(&phy) };
         self.send_init_hcmd(
             "PHY_CONTEXT",
             LegacyCmd::PhyContext as u8,
@@ -372,7 +373,7 @@ impl IwlWifiDevice {
         // with 0 APs" — the scan ran, beacons were received by the radio,
         // but the firmware dropped them because no MAC context existed.
         let mac_ctx = MacContextCmd::sta(self.mac);
-        let mac_ctx_bytes = super::as_bytes(&mac_ctx);
+        let mac_ctx_bytes = unsafe { super::as_bytes(&mac_ctx) };
         self.send_init_hcmd(
             "MAC_CONTEXT",
             LegacyCmd::MacContext as u8,
@@ -396,7 +397,7 @@ impl IwlWifiDevice {
         // the opcode is in the legacy command namespace, the command itself
         // is a LONG_GROUP command and therefore uses the wide HCMD header.
         let scan_config = ScanConfigV1::new(self.mac);
-        let scan_config_bytes = super::as_bytes(&scan_config);
+        let scan_config_bytes = unsafe { super::as_bytes(&scan_config) };
         self.send_init_hcmd(
             "SCAN_CONFIG",
             LegacyCmd::ScanConfig as u8,
