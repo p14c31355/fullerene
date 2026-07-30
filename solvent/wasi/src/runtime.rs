@@ -82,12 +82,19 @@ pub fn run(wasm_binary: &[u8], args: &[&str], host: WasiHost) -> i32 {
         }
     };
 
-    let instance = match linker.instantiate_and_start(&mut store, &module) {
-        Ok(instance) => instance,
-        Err(e) => {
-            if let Some(code) = store.data().exit_code {
-                return code as i32;
+    let instance = match linker.instantiate(&mut store, &module) {
+        Ok(pre) => match pre.start(&mut store) {
+            Ok(inst) => inst,
+            Err(e) => {
+                if let Some(code) = store.data().exit_code {
+                    return code as i32;
+                }
+                let msg = format!("wasm: pre.start() failed: {}\n", e);
+                write_stderr(msg.as_bytes());
+                return 1;
             }
+        },
+        Err(e) => {
             let msg = format!("wasm: instantiation failed: {}\n", e);
             write_stderr(msg.as_bytes());
             return -1;

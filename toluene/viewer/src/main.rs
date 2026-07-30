@@ -18,6 +18,32 @@ const MAX_SOURCE_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_IMAGE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_QOI_PIXELS: u64 = 8 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Mp4BenchMode {
+    DecodeOnly,
+    DecodeConvert,
+    Full,
+}
+
+impl Mp4BenchMode {
+    fn parse(arg: &str) -> Option<Self> {
+        match arg {
+            "--bench=decode" => Some(Self::DecodeOnly),
+            "--bench=convert" => Some(Self::DecodeConvert),
+            "--bench=full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::DecodeOnly => "decode",
+            Self::DecodeConvert => "decode+convert",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[link(wasm_import_module = "fullerene")]
 unsafe extern "C" {
     fn show_image(width: u32, height: u32, pixels_ptr: *const u8, pixels_len: u32) -> u32;
@@ -43,7 +69,8 @@ fn main() {
     }
 
     let path = &args[1];
-    if is_mp4_path(path) && try_mp4_file(path) {
+    let bench_mode = args.get(2).and_then(|arg| Mp4BenchMode::parse(arg));
+    if is_mp4_path(path) && try_mp4_file_with_mode(path, bench_mode) {
         return;
     }
 
@@ -433,6 +460,10 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
 /// media file into a WASM Vec.  The MP4 metadata is at the beginning of the
 /// sample file, and the reader only seeks to the first sample it needs.
 fn try_mp4_file(path: &str) -> bool {
+    try_mp4_file_with_mode(path, None)
+}
+
+fn try_mp4_file_with_mode(path: &str, bench_mode: Option<Mp4BenchMode>) -> bool {
     println!("viewer: mp4 file stat enter path={path}");
     let size = match std::fs::metadata(path).map(|metadata| metadata.len()) {
         Ok(size) => size,
@@ -488,10 +519,19 @@ fn try_mp4_file(path: &str) -> bool {
     };
     parsing_header.set(false);
     println!("viewer: mp4 header exit");
-    try_mp4_reader(path, size, reader)
+    try_mp4_reader_with_mode(path, size, reader, bench_mode)
 }
 
-fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Reader<R>) -> bool {
+fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, reader: mp4::Mp4Reader<R>) -> bool {
+    try_mp4_reader_with_mode(path, size, reader, None)
+}
+
+fn try_mp4_reader_with_mode<R: Read + Seek>(
+    path: &str,
+    size: u64,
+    mut reader: mp4::Mp4Reader<R>,
+    bench_mode: Option<Mp4BenchMode>,
+) -> bool {
     let duration = reader.duration().as_secs_f64();
     println!("viewer: mp4 duration exit seconds={:.3}", duration);
     let total = duration as u64;
@@ -611,7 +651,15 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
     let title = format!("Video: {}", path);
     let mut window_id = -1;
     let playback_start = Instant::now();
+    let mut read_time = Duration::ZERO;
+    let mut decode_time = Duration::ZERO;
+    let mut convert_time = Duration::ZERO;
+    let mut present_time = Duration::ZERO;
     let mut decoded_frames = 0u32;
+    let mut presented_frames = 0u32;
+    let mut samples = 0u32;
+    let mut nals_decoded = 0u64;
+    let mut rgb_bytes = 0usize;
     println!("viewer: mp4 playback enter samples={}", sample_count);
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
     // present each decoded frame, and pace it against the track timestamps.
@@ -633,6 +681,7 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
                 println!("viewer: mp4 sample read begin id={}", sample_id);
             }
         }
+        let read_start = Instant::now();
         let sample = match reader.read_sample(track_id, sample_id) {
             Ok(Some(sample)) => sample,
             Ok(None) => {
@@ -654,6 +703,8 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
                 );
             }
         };
+        read_time += read_start.elapsed();
+        samples = samples.saturating_add(1);
         if trace_sample {
             println!(
                 "viewer: mp4 sample read exit id={} bytes={}",
@@ -723,17 +774,44 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
             unsafe {
                 wait_for_ns(0);
             }
-            if let Ok(Some(frame)) = decoder.decode_nal(nal) {
+            let decode_start = Instant::now();
+            let decoded = decoder.decode_nal(nal);
+            decode_time += decode_start.elapsed();
+            if let Ok(Some(frame)) = decoded {
+                nals_decoded = nals_decoded.saturating_add(1);
+                decoded_frames = decoded_frames.saturating_add(1);
                 wait_for_video_time(playback_start, target_ns);
-                if render_video_frame(&mut window_id, &title, &frame) {
-                    decoded_frames = decoded_frames.saturating_add(1);
-                    if decoded_frames == 1 || decoded_frames.checked_rem(30) == Some(0) {
+                if bench_mode == Some(Mp4BenchMode::DecodeOnly) {
+                    continue;
+                }
+                let convert_start = Instant::now();
+                let Some((frame_width, frame_height, rgb)) = yuv420_to_rgb(&frame, 800, 600)
+                else {
+                    continue;
+                };
+                convert_time += convert_start.elapsed();
+                rgb_bytes = rgb.len();
+                if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
+                    std::hint::black_box(&rgb);
+                    continue;
+                }
+                let present_start = Instant::now();
+                if present_rgb_frame(
+                    &mut window_id,
+                    &title,
+                    frame_width,
+                    frame_height,
+                    &rgb,
+                ) {
+                    presented_frames = presented_frames.saturating_add(1);
+                    if presented_frames == 1 || presented_frames.checked_rem(30) == Some(0) {
                         println!(
                             "viewer: mp4 playback frame={} sample={} pts_ns={}",
-                            decoded_frames, sample_id, target_ns
+                            presented_frames, sample_id, target_ns
                         );
                     }
                 }
+                present_time += present_start.elapsed();
             }
         }
         if trace_sample {
@@ -741,9 +819,47 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
         }
     }
     if let Some(frame) = decoder.flush() {
-        render_video_frame(&mut window_id, &title, &frame);
+        decoded_frames = decoded_frames.saturating_add(1);
+        if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
+            let convert_start = Instant::now();
+            if let Some((frame_width, frame_height, rgb)) = yuv420_to_rgb(&frame, 800, 600) {
+                convert_time += convert_start.elapsed();
+                rgb_bytes = rgb.len();
+                if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
+                    std::hint::black_box(&rgb);
+                } else {
+                    let present_start = Instant::now();
+                    if present_rgb_frame(
+                        &mut window_id,
+                        &title,
+                        frame_width,
+                        frame_height,
+                        &rgb,
+                    ) {
+                        presented_frames = presented_frames.saturating_add(1);
+                    }
+                    present_time += present_start.elapsed();
+                }
+            }
+        }
     }
-    println!("viewer: mp4 playback exit frames={}", decoded_frames);
+    println!("viewer: mp4 playback exit frames={}", presented_frames);
+    if let Some(mode) = bench_mode {
+        println!(
+            "MP4-BENCH mode={} playback_ms={:.3} read_ms={:.3} decode_ms={:.3} convert_ms={:.3} present_ms={:.3} samples={} nals_with_frames={} decoded_frames={} presented_frames={} rgb_bytes={}",
+            mode.label(),
+            ms(playback_start.elapsed()),
+            ms(read_time),
+            ms(decode_time),
+            ms(convert_time),
+            ms(present_time),
+            samples,
+            nals_decoded,
+            decoded_frames,
+            presented_frames,
+            rgb_bytes,
+        );
+    }
     if decoded_frames == 0 {
         return present_mp4_failure(
             path,
@@ -796,10 +912,13 @@ fn wait_for_video_time(start: Instant, target_ns: u64) {
     }
 }
 
-fn render_video_frame(window_id: &mut i32, title: &str, frame: &rust_h264::decoder::Frame) -> bool {
-    let Some((width, height, rgb)) = yuv420_to_rgb(frame, 800, 600) else {
-        return false;
-    };
+fn present_rgb_frame(
+    window_id: &mut i32,
+    title: &str,
+    width: u32,
+    height: u32,
+    rgb: &[u8],
+) -> bool {
     unsafe {
         if *window_id < 0 {
             *window_id = create_window(title.as_ptr(), title.len() as u32, width, height);
@@ -809,6 +928,10 @@ fn render_video_frame(window_id: &mut i32, title: &str, frame: &rust_h264::decod
         }
         update_window(*window_id, width, height, rgb.as_ptr(), rgb.len() as u32) == 0
     }
+}
+
+fn ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
 }
 
 fn yuv420_to_rgb(

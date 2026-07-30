@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-wasmi = { version = "2.0.0-beta.9", default-features = false, features = ["auto-dispatch", "validate"] }
+wasmi = { version = "0.33", default-features = false }
 carrier = { path = "../../carrier" }
 genome = { path = "../../genome" }
 
