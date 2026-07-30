@@ -151,6 +151,7 @@ pub fn register_wifi_service() {
 
 #[cfg(not(nitrogen_no_iwlwifi))]
 fn request_wifi_initialization() {
+    let _ = nitrogen::iwlwifi::retry_wifi_initialization();
     WIFI_INIT_REQUESTED.store(true, Ordering::Release);
     WIFI_SCAN_REQUESTED.store(true, Ordering::Release);
 }

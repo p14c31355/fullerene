@@ -5,6 +5,11 @@
 > The traits documented here constitute the v0.1 API surface.
 > Internal implementation changes are permitted, but **signature changes to these traits affect all crates and are prohibited after the v0.1 freeze**.
 
+> **Current implementation note (2026-07-30):** the historical draft below
+> used string errors. The implemented `nitrogen::driver_api` traits now return
+> `Result<_, nitrogen::DriverError>`; this document is being migrated to the
+> typed API and should not be used as a source of `&'static str` signatures.
+
 ---
 
 ## 1. DriverContext — Driver Runtime Context
@@ -46,9 +51,9 @@ Block devices such as NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage.
 
 ```rust
 pub trait StorageDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn read_blocks(&self, lba: u64, count: usize, buf: &mut [u8]) -> Result<(), &'static str>;
-    fn write_blocks(&self, lba: u64, count: usize, buf: &[u8]) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), nitrogen::DriverError>;
+    fn read_blocks(&self, lba: u64, count: usize, buf: &mut [u8]) -> Result<(), nitrogen::DriverError>;
+    fn write_blocks(&self, lba: u64, count: usize, buf: &[u8]) -> Result<(), nitrogen::DriverError>;
     fn block_size(&self) -> u32;
     fn total_blocks(&self) -> u64;
 }
@@ -64,9 +69,9 @@ NICs such as Ethernet, Wi-Fi.
 
 ```rust
 pub trait NetworkDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn send(&self, buf: &[u8]) -> Result<(), &'static str>;
-    fn receive(&self, buf: &mut [u8]) -> Result<usize, &'static str>;
+    fn init(&mut self) -> Result<(), nitrogen::DriverError>;
+    fn send(&self, buf: &[u8]) -> Result<(), nitrogen::DriverError>;
+    fn receive(&self, buf: &mut [u8]) -> Result<usize, nitrogen::DriverError>;
     fn mac_address(&self) -> [u8; 6];
 }
 ```
@@ -81,7 +86,7 @@ VGA-compatible, VirtIO-GPU, etc.
 
 ```rust
 pub trait DisplayDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), nitrogen::DriverError>;
     fn framebuffer(&self) -> &[u8];
     fn resolution(&self) -> (usize, usize);
     fn stride(&self) -> usize;
@@ -99,8 +104,8 @@ HDA, AC97, USB audio, etc.
 
 ```rust
 pub trait AudioDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn play(&self, buf: &[u8]) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), nitrogen::DriverError>;
+    fn play(&self, buf: &[u8]) -> Result<(), nitrogen::DriverError>;
 }
 ```
 
@@ -114,7 +119,7 @@ EHCI, XHCI, OHCI, UHCI.
 
 ```rust
 pub trait UsbHostDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), nitrogen::DriverError>;
     fn poll(&self);
 }
 ```

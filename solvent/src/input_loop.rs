@@ -45,14 +45,18 @@ fn mouse_motion_is_stale(previous_poll: u64, now_tsc: u64, tsc_per_ms: u64) -> b
         && now_tsc.wrapping_sub(previous_poll) > tsc_per_ms.saturating_mul(MOUSE_STALE_AFTER_MS)
 }
 
-macro_rules! mouse_edge {
-    ($queue:expr, $buttons:expr, $prev:expr, $bit:expr, $btn:ident) => {
-        if ($buttons & $bit) != 0 && ($prev & $bit) == 0 {
-            $queue.push(Event::Input(InputEvent::MouseDown(MouseButton::$btn)));
-        } else if ($buttons & $bit) == 0 && ($prev & $bit) != 0 {
-            $queue.push(Event::Input(InputEvent::MouseUp(MouseButton::$btn)));
+fn push_mouse_button_edges(queue: &mut resonance::EventQueue, buttons: u8, previous: u8) {
+    for (mask, button) in [
+        (0x01, MouseButton::Left),
+        (0x02, MouseButton::Right),
+        (0x04, MouseButton::Middle),
+    ] {
+        match ((buttons & mask) != 0, (previous & mask) != 0) {
+            (true, false) => queue.push(Event::Input(InputEvent::MouseDown(button))),
+            (false, true) => queue.push(Event::Input(InputEvent::MouseUp(button))),
+            _ => {}
         }
-    };
+    }
 }
 
 pub fn poll_mouse_state() {
@@ -118,9 +122,7 @@ pub fn poll_mouse_state() {
     if buttons != previous
         && let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut()
     {
-        mouse_edge!(queue, buttons, previous, 0x01, Left);
-        mouse_edge!(queue, buttons, previous, 0x02, Right);
-        mouse_edge!(queue, buttons, previous, 0x04, Middle);
+        push_mouse_button_edges(queue, buttons, previous);
     }
     *previous_buttons = buttons;
 }

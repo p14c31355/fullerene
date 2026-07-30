@@ -223,15 +223,33 @@ impl EventHandler for WmEventHandler {
                 }
 
                 if *btn == MouseButton::Right {
+                    // Right-click is a context-menu gesture, not a window
+                    // drag.  Desktop::mouse_down historically had no button
+                    // parameter and therefore sent right-clicks through the
+                    // left-button WM path, which could consume the gesture
+                    // before the Explorer menu was opened.
                     let hit_window = rt.desktop.wm.window_at(cx, cy);
-                    if hit_window.is_none() {
-                        rt.desktop.show_context_menu(cx, cy);
-                        rt.frame_due = true;
-                        return true;
+                    match hit_window {
+                        Some(window_id) => {
+                            rt.desktop.wm.raise_to_top(window_id);
+                            if rt.explorer.as_ref().and_then(|e| e.window_id) == Some(window_id) {
+                                handle_explorer_click(rt, *btn, cx, cy);
+                            } else {
+                                rt.desktop.dismiss_menu();
+                            }
+                        }
+                        None if rt.desktop.active_menu.is_some() => rt.desktop.dismiss_menu(),
+                        None => {
+                            let (width, height, _) = *FB_DIMS.lock();
+                            rt.desktop
+                                .show_context_menu_in_bounds(cx, cy, width, height);
+                        }
                     }
+                    rt.frame_due = true;
+                    return true;
                 }
 
-                if rt.desktop.top_panel.hit_activities_button(cx, cy) {
+                if *btn == MouseButton::Left && rt.desktop.top_panel.hit_activities_button(cx, cy) {
                     rt.shell_state = ShellState::TaskOverview;
                     rt.frame_due = true;
                     return true;

@@ -38,8 +38,18 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`toluene/apps`**: Standalone WASI application sources embedded by the kernel build (`hello_wasi.rs` and `startup_sound.rs`). `toluene/viewer` and `toluene/emulsion` are separate nested application workspaces built by `fullerene-kernel/build.rs`, not members of the root workspace.
 
-The root workspace currently has 19 members. The `default-members` list omits
+The root workspace currently has 20 members. The `default-members` list omits
 the bootloader, ABI/VDSO helper crates, and `solvent/wasi` only to keep the
 usual host development commands focused; `cargo check --workspace` includes
 all members. `toluene/cargo` is a vendored third-party Cargo source tree and is
 not a root-workspace member.
+
+The current owned-source inventory (2026-07-30), excluding `target/` and the
+vendored BusyBox/VSCodium trees, is 1,758 Rust files and approximately
+444,401 Rust LOC. There are 2,163 Rust/C/assembly source files when the
+tracked non-Rust integration sources are included. The kernel's `src/linux`
+entry is a symlink to the shared `solvent/linux` implementation; it is counted
+once by the owned-source figure.
+The large `toluene/busybox` and `toluene/vscodium` trees are vendored inputs,
+not Fullerene-owned architecture layers; changes to their integration belong
+in `fullerene-kernel/build.rs`, the ELF loader, and the runtime terminal bridge.

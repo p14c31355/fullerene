@@ -189,9 +189,6 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         "[BUSYBOX-DIAG] create_process_terminal exit window_id={}\n",
         terminal_window.0
     );
-    #[cfg(linux_busybox_smoke)]
-    let argv = ["busybox", "sh"];
-    #[cfg(not(linux_busybox_smoke))]
     let argv = ["busybox", "sh"];
     let envp = [
         "PATH=/bin:/sbin:/usr/bin:/usr/sbin",

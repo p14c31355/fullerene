@@ -3,6 +3,62 @@
 This document records non-obvious software bugs encountered during
 development, their root cause analysis, and the fix applied.
 
+## Entry 006 — Right-click was consumed by the left-button WM path
+
+### Symptoms
+
+The file-manager context menu could fail to appear, particularly after the
+Explorer window had been focused or moved. Desktop right-clicks also used a
+fixed 1024×768 popup boundary.
+
+### Root cause and fix
+
+Solvent sent every mouse-down through `Desktop::mouse_down`, whose API had no
+button argument. A right-button event could therefore enter the left-button
+window-manager path before Explorer handled it. Right-button routing is now
+handled before that path: it focuses the target window without starting a
+drag, then dispatches Explorer's menu or the desktop menu. Desktop popup
+coordinates are clamped to the actual framebuffer dimensions.
+
+### Regression coverage
+
+Lattice now tests popup bounds, and the workspace host check remains clean.
+
+---
+
+## Entry 007 — Current hardware validation boundary
+
+The 2026-07-30 QEMU headless validation reached `scheduler_loop`. The static
+BusyBox smoke harness launched two sequential interactive shells, rendered
+their output through process terminals, accepted `exit`, and reported PASS.
+The same run completed HDA PCM DMA playback, but headless QEMU cannot prove
+acoustic output. The current development host exposes Intel Ethernet
+`8086:15b8` and no supported Intel wireless controller, so physical iwlwifi
+firmware and AP discovery require validation on the affected machine.
+
+The retry path is now implemented: transient iwlwifi init failure releases
+partial DMA state and permits the next network-menu open to restart the state
+machine. AP discovery remains hardware-dependent until that path is exercised
+on a supported Intel 7260/7265 device.
+
+HDA playback now likewise keeps initialization retryable after allocation or
+codec-route failure and requires a changed LPIB value before reporting PCM
+success. This distinguishes DMA completion from an apparently successful but
+silent startup path; analog output itself remains hardware-dependent.
+
+---
+
+## Entry 008 — Audio completion was weaker than audio progress
+
+`AudioContext::play_pcm` previously returned success after the polling loop
+without checking that the HDA link-position register had moved. The startup
+step consequently could finish with a success-shaped log even when a stream
+was not consuming DMA data. The implementation now records the initial LPIB,
+requires progress, and logs the final stream status on failure. HDA setup also
+does not permanently latch a failed initialization attempt.
+
+---
+
 > Entries are derived from `docs/software.rs` (doc-test format kept for
 > reference in the original source).
 

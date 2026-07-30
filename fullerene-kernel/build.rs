@@ -300,17 +300,17 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
             clean: false,
         };
         if let Err(error) = busybox_build::build(&options) {
-            println!("cargo:warning=BusyBox submodule build skipped: {error}");
+            // BusyBox is an optional cached port.  A missing toolchain or
+            // submodule must not turn an otherwise valid kernel check into a
+            // warning; the initramfs simply omits the optional package.
+            let _ = error;
         }
     }
-    let candidates = explicit.clone().into_iter().chain(
-        [
-            generated.clone(),
-            PathBuf::from("/usr/bin/busybox"),
-            PathBuf::from("/bin/busybox"),
-        ]
-        .into_iter(),
-    );
+    let candidates = explicit.clone().into_iter().chain([
+        generated.clone(),
+        PathBuf::from("/usr/bin/busybox"),
+        PathBuf::from("/bin/busybox"),
+    ]);
 
     for path in candidates {
         if path != generated {
@@ -329,19 +329,12 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
             panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
         });
         println!("cargo:rustc-cfg=have_busybox");
-        println!(
-            "cargo:warning=Embedded static BusyBox from {}",
-            path.display()
-        );
         return true;
     }
 
     if let Some(path) = explicit {
         panic!("FULLERENE_BUSYBOX was not found: {}", path.display());
     }
-    println!(
-        "cargo:warning=BusyBox not embedded; set FULLERENE_BUSYBOX to a static x86_64 BusyBox binary"
-    );
     false
 }
 

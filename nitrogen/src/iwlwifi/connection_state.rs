@@ -51,6 +51,37 @@ static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
     rx_bufs: Vec::new(),
 });
 
+fn release_init_resources(ctx: &mut WifiInitContext) {
+    ctx.mmio_device.take();
+    if let Some(pci) = ctx.pci_dev.as_ref() {
+        let command =
+            crate::pci::PciConfigSpace::read_config_word(pci.bus, pci.device, pci.function, 4);
+        crate::pci::PciConfigSpace::write_config_word_raw(
+            pci.bus,
+            pci.device,
+            pci.function,
+            4,
+            command & !0x04,
+        );
+    }
+    let driver_ctx = ctx.driver_ctx;
+    for mut buffer in ctx.tx_bufs.drain(..).chain(ctx.rx_bufs.drain(..)) {
+        if let Some(driver_ctx) = driver_ctx {
+            buffer.free(driver_ctx);
+        }
+    }
+    for mut ring in ctx
+        .tx_dma_ring
+        .take()
+        .into_iter()
+        .chain(ctx.rx_dma_ring.take())
+    {
+        if let Some(driver_ctx) = driver_ctx {
+            ring.free(driver_ctx);
+        }
+    }
+}
+
 pub fn wifi_init_completed() -> bool {
     WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
 }
@@ -83,42 +114,47 @@ pub fn force_init_failed() {
             return;
         }
     };
-    let _ = ctx.mmio_device.take();
-    // Disable PCI bus-mastering before freeing DMA regions
-    if let Some(ref pci) = ctx.pci_dev {
-        let cmd =
-            crate::pci::PciConfigSpace::read_config_word(pci.bus, pci.device, pci.function, 4);
-        crate::pci::PciConfigSpace::write_config_word_raw(
-            pci.bus,
-            pci.device,
-            pci.function,
-            4,
-            cmd & !0x04,
-        );
-    }
-    let drv = ctx.driver_ctx;
-    for mut buf in ctx.tx_bufs.drain(..) {
-        if let Some(c) = drv {
-            buf.free(c);
-        }
-    }
-    for mut buf in ctx.rx_bufs.drain(..) {
-        if let Some(c) = drv {
-            buf.free(c);
-        }
-    }
-    if let Some(mut ring) = ctx.tx_dma_ring.take() {
-        if let Some(c) = drv {
-            ring.free(c);
-        }
-    }
-    if let Some(mut ring) = ctx.rx_dma_ring.take() {
-        if let Some(c) = drv {
-            ring.free(c);
-        }
-    }
+    release_init_resources(&mut ctx);
     drop(ctx);
     debug::print("iwlwifi", "step: force_init_failed (timeout)");
+}
+
+/// Allow a later network-menu open to retry a failed initialization.
+///
+/// Firmware/PCIe startup can fail transiently when the device is still
+/// waking from platform power management. The old terminal `Failed` state
+/// made the first failure permanent until reboot.
+pub fn retry_wifi_initialization() -> bool {
+    if !WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
+        || get_init_phase() != WifiInitPhase::Failed
+        || WIFI_DEVICE.lock().is_some()
+    {
+        return false;
+    }
+
+    let Some(mut ctx) = WIFI_INIT_CTX.try_lock() else {
+        return false;
+    };
+    release_init_resources(&mut ctx);
+    ctx.fw_candidate_idx = 0;
+    ctx.fw_candidates = &[];
+    ctx.alive_start_tsc = 0;
+    ctx.pci_dev = None;
+    ctx.mmio = core::ptr::null_mut();
+    ctx.driver_ctx = None;
+    ctx.health = None;
+    ctx.hw_rev = 0;
+    ctx.mac = None;
+    drop(ctx);
+
+    WIFI_INIT_LAST_ACTIVE_PHASE.store(
+        WifiInitPhase::Idle as u8,
+        core::sync::atomic::Ordering::Release,
+    );
+    WIFI_INIT_COMPLETED.store(false, core::sync::atomic::Ordering::Release);
+    set_init_phase(WifiInitPhase::Idle);
+    log::info!("iwlwifi: retrying initialization after a previous failure");
+    true
 }
 
 fn set_init_phase(phase: WifiInitPhase) {
@@ -803,28 +839,7 @@ pub fn try_init_wifi_device_step() {
             );
             log::error!("iwlwifi: initialization failed in phase {:?}", previous);
             let mut ctx = WIFI_INIT_CTX.lock();
-            let _ = ctx.mmio_device.take();
-            let drv = ctx.driver_ctx;
-            for mut buf in ctx.tx_bufs.drain(..) {
-                if let Some(c) = drv {
-                    buf.free(c);
-                }
-            }
-            for mut buf in ctx.rx_bufs.drain(..) {
-                if let Some(c) = drv {
-                    buf.free(c);
-                }
-            }
-            if let Some(mut ring) = ctx.tx_dma_ring.take() {
-                if let Some(c) = drv {
-                    ring.free(c);
-                }
-            }
-            if let Some(mut ring) = ctx.rx_dma_ring.take() {
-                if let Some(c) = drv {
-                    ring.free(c);
-                }
-            }
+            release_init_resources(&mut ctx);
             drop(ctx);
             WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
             log::error!("iwlwifi: initialization failed; device disabled");

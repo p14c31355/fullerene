@@ -59,12 +59,15 @@ impl AudioContext {
         if self.init_done {
             return;
         }
-        self.init_done = true;
         let ctrl = match self.hda.as_mut() {
             Some(c) => c,
-            None => return,
+            None => {
+                self.init_done = true;
+                return;
+            }
         };
         if ctrl.is_ready() {
+            self.init_done = true;
             return;
         }
         let Some(corb) = alloc_dma(1) else { return };
@@ -88,6 +91,7 @@ impl AudioContext {
         self.corb = Some(corb);
         self.rirb = Some(rirb);
         self.dma = Some(dma);
+        self.init_done = true;
     }
     pub fn write_samples(&mut self, offset: u32, samples: &[u8]) -> usize {
         self.lazy_init();
@@ -213,6 +217,8 @@ impl AudioContext {
 
         let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
         let timeout_tsc = tsc_per_ms.saturating_mul(500);
+        let initial_progress = controller.playback_progress().unwrap_or(0);
+        let mut progressed = false;
         let mut completed = 0usize;
         let mut next_half = 2usize;
         while completed < half_count {
@@ -231,6 +237,9 @@ impl AudioContext {
             // A zero-length feed acknowledges BCIS and advances the driver's
             // LPIB tracking without copying data into the DMA buffer.
             let _ = controller.feed_samples(&[]);
+            progressed |= controller
+                .playback_progress()
+                .is_some_and(|progress| progress != initial_progress);
             if next_half < half_count {
                 let start = next_half * half_size;
                 let end = (start + half_size).min(pcm.len());
@@ -253,6 +262,15 @@ impl AudioContext {
         }
 
         let (stream_ctl, stream_status, lpib) = controller.debug_stream_status();
+        if !progressed {
+            log::warn!(
+                "Sound: HDA reported completion without DMA progress (CTL=0x{:08x} STS=0x{:02x} LPIB={})",
+                stream_ctl,
+                stream_status,
+                lpib
+            );
+            return false;
+        }
         log::info!(
             "Sound: startup PCM playback complete ({} bytes) CTL=0x{:08x} STS=0x{:02x} LPIB={}",
             pcm.len(),
