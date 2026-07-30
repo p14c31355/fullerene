@@ -52,6 +52,9 @@ log = { workspace = true }
 wasi_runtime = { path = "../solvent/wasi" }
 # shell-words = "1.1"  # Cannot use in no_std kernel
 
+[build-dependencies]
+busybox-build = { path = "../toluene/busybox-build" }
+
 [features]
 default = []
 user_space = []

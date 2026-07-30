@@ -302,8 +302,15 @@ pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
         && BUSYBOX_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire)
     {
         let window_id = BUSYBOX_SMOKE_WINDOW.load(Ordering::Acquire);
-        let window_closed = window_id == u64::MAX
-            || !solvent::process_terminal_exists(lattice::window::WindowId(window_id));
+        let window_closed = if window_id == u64::MAX {
+            true
+        } else {
+            let window = lattice::window::WindowId(window_id);
+            if solvent::process_terminal_exists(window) {
+                solvent::close_process_terminal(window);
+            }
+            !solvent::process_terminal_exists(window)
+        };
         BUSYBOX_SMOKE_WINDOW_CLOSED.store(window_closed, Ordering::Release);
         BUSYBOX_SMOKE_EXIT_OK.store(true, Ordering::Release);
         petroleum::serial::serial_log(format_args!(

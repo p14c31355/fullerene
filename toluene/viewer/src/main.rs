@@ -754,30 +754,13 @@ fn present_mp4_failure(
 
 fn wait_for_video_time(start: Instant, target_ns: u64) {
     let target = Duration::from_nanos(target_ns);
-    match target.checked_sub(start.elapsed()) {
-        Some(remaining) => {
-            let remaining_ns = remaining.as_nanos().min(u128::from(u64::MAX)) as u64;
-            if remaining_ns > 0 {
-                unsafe {
-                    wait_for_ns(remaining_ns);
-                }
-            } else {
-                // Even a zero-duration wait must yield to the host event
-                // loop; otherwise synchronous WASM decode freezes the
-                // desktop until the next frame that happens to call
-                // wait_for_ns with a positive duration.
-                unsafe {
-                    wait_for_ns(0);
-                }
-            }
-        }
-        None => {
-            // Decode is behind real time.  Yield a minimal quantum so the
-            // compositor and input poll run between frames instead of
-            // locking up for the whole video.
-            unsafe {
-                wait_for_ns(0);
-            }
+    let remaining = target.checked_sub(start.elapsed()).unwrap_or_default();
+    let remaining_ns = remaining.as_nanos().min(u128::from(u64::MAX)) as u64;
+    unsafe {
+        if remaining.is_zero() {
+            wait_for_ns(0);
+        } else {
+            wait_for_ns(remaining_ns);
         }
     }
 }

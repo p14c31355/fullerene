@@ -55,9 +55,11 @@ pub struct HdaDiagInfo {
 impl HdaController {
     /// Probe all PCI buses for an HDA controller (class 0x04, subclass 0x03).
     ///
-    /// Returns `(bus, dev, func, BAR0)` for the preferred controller —
-    /// the one with a codec connected (STATESTS bit 0 set).  Falls back
-    /// to the last HDA seen if no codec is detected.
+    /// Returns `(bus, dev, func, BAR0)` for the preferred controller:
+    /// the analog (PCH) controller is always preferred when present,
+    /// regardless of codec presence, since STATESTS is unreliable before
+    /// CRST. Falls back to an Intel/AMD/NVIDIA HDMI/DP audio controller only
+    /// when no analog controller is found.
     ///
     /// `phys_offset` is the physical‑memory offset (virtual = phys + offset).
     pub fn probe(phys_offset: u64) -> Option<(u8, u8, u8, u64)> {
@@ -66,7 +68,9 @@ impl HdaController {
             PciConfigSpace::read_config_word(bus, 0, 0, 0) != 0xFFFF
         }
 
-        /// Identify Intel integrated-GPU HDMI audio controllers.
+        /// Identify GPU HDMI/DP audio controllers. AMD and NVIDIA expose
+        /// their display-audio HDA function with the same PCI HDA class as
+        /// the PCH controller, so classify those vendors as digital too.
         ///
         /// These controllers expose only digital display-port codecs and
         /// cannot drive an analog speaker.  When a PCH analog controller is
@@ -74,35 +78,34 @@ impl HdaController {
         /// to a port nothing is listening on.  The list below is the set of
         /// Intel HDMI audio PCI device IDs observed across Broadwell, Haswell,
         /// Skylake/Kaby Lake, and Coffee Lake platforms.
-        fn is_intel_hdmi_audio(vendor_id: u16, device_id: u16) -> bool {
-            if vendor_id != 0x8086 {
-                return false;
-            }
-            matches!(
-                device_id,
-                0x0a0c
-                    | 0x0c0c
-                    | 0x0d0c
-                    | 0x160c
-                    | 0x190c
-                    | 0x1c0c
-                    | 0x1d0c
-                    | 0x1e0c
-                    | 0x1f0c
-                    | 0x280c
-                    | 0x281c
-                    | 0x9c70
-                    | 0x9d70
-                    | 0xa170
-                    | 0x490d
-                    | 0x4b55
-                    | 0x5c70
-                    | 0x7af0
-                    | 0x51c8
-                    | 0x51cb
-                    | 0x54c8
-                    | 0x7a70
-            )
+        fn is_gpu_hdmi_audio(vendor_id: u16, device_id: u16) -> bool {
+            (vendor_id == 0x1002 || vendor_id == 0x10DE)
+                || (vendor_id == 0x8086
+                    && matches!(
+                        device_id,
+                        0x0a0c
+                            | 0x0c0c
+                            | 0x0d0c
+                            | 0x160c
+                            | 0x190c
+                            | 0x1c0c
+                            | 0x1d0c
+                            | 0x1e0c
+                            | 0x1f0c
+                            | 0x280c
+                            | 0x281c
+                            | 0x9c70
+                            | 0x9d70
+                            | 0xa170
+                            | 0x490d
+                            | 0x4b55
+                            | 0x5c70
+                            | 0x7af0
+                            | 0x51c8
+                            | 0x51cb
+                            | 0x54c8
+                            | 0x7a70
+                    ))
         }
 
         let mut analog_candidate: Option<(u8, u8, u8, u64)> = None;
@@ -121,7 +124,7 @@ impl HdaController {
                 if dev.class_code != 0x04 || dev.subclass != 0x03 {
                     continue;
                 }
-                let is_hdmi = is_intel_hdmi_audio(dev.vendor_id, dev.device_id);
+                let is_hdmi = is_gpu_hdmi_audio(dev.vendor_id, dev.device_id);
                 let kind_label = if is_hdmi { "HDMI" } else { "analog" };
                 let Some(bar0) = dev.read_bar(0) else {
                     continue;
@@ -183,9 +186,7 @@ impl HdaController {
                     // Keep the last analog controller (PCH codecs are usually
                     // at higher device numbers than the GPU HDMI audio).
                     analog_candidate = Some((bus, d, 0, bar0));
-                    if codec_present {
-                        analog_codec_seen = true;
-                    }
+                    analog_codec_seen = codec_present;
                 }
             }
         }

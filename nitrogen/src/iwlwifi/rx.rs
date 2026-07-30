@@ -457,6 +457,7 @@ impl IwlWifiDevice {
         self.finish_pending_wpa_keys();
 
         let rx_tail_before = self.rx_tail;
+        let mut deferred_scan_complete = false;
         mmio::cache_flush_range(
             self.rx_dma_ring.virt(),
             core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE,
@@ -471,7 +472,7 @@ impl IwlWifiDevice {
                 let frame_len = buf.len();
                 let mut frame_data = alloc::vec![0; frame_len];
                 buf.read_into(&mut frame_data);
-                self.process_rx_buffer(&frame_data);
+                self.process_rx_buffer(&frame_data, &mut deferred_scan_complete);
             }
 
             self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
@@ -487,6 +488,16 @@ impl IwlWifiDevice {
                 );
             }
             mmio::write_barrier();
+        }
+
+        if deferred_scan_complete && self.scan_pending {
+            self.scan_pending = false;
+            self.wifi_conn.finish_scan();
+            self.iwl_state = IwlState::Disconnected;
+            log::info!(
+                "iwlwifi: scan complete ({} APs found)",
+                self.scan_results.len()
+            );
         }
 
         if self.scan_pending {
@@ -552,16 +563,9 @@ impl IwlWifiDevice {
     /// We now iterate over every packet in the RB, matching the Linux kernel
     /// `iwl_pcie_rx_handle_rb` loop.  A `0x5555_0000` `len_n_flags` marks the
     /// end of valid packets.
-    fn process_rx_buffer(&mut self, data: &[u8]) {
+    fn process_rx_buffer(&mut self, data: &[u8], deferred_scan_complete: &mut bool) {
         const FH_RSCSR_FRAME_ALIGN: usize = 64;
         const FH_RSCSR_FRAME_INVALID: u32 = 0x5555_0000;
-
-        // Defer the scan-complete state transition until after every packet
-        // in this RB has been processed.  Beacons may arrive in the same RB
-        // as (or just before) the scan-complete notification, and setting
-        // `iwl_state = Disconnected` early would make `process_rx_frame`
-        // discard them.
-        let mut deferred_scan_complete = false;
 
         let mut offset = 0usize;
         while offset + 8 <= data.len() {
@@ -584,25 +588,15 @@ impl IwlWifiDevice {
                 // Malformed — fall back to treating remaining data as a single
                 // packet so the bounded beacon scan can still attempt a match.
                 let remaining = &data[offset..];
-                self.process_single_packet(remaining, &mut deferred_scan_complete);
+                self.process_single_packet(remaining, deferred_scan_complete);
                 break;
             }
 
             let packet = &data[offset..offset + total_len];
-            self.process_single_packet(packet, &mut deferred_scan_complete);
+            self.process_single_packet(packet, deferred_scan_complete);
 
             // Advance to the next 64-byte-aligned packet boundary.
             offset += total_len.next_multiple_of(FH_RSCSR_FRAME_ALIGN);
-        }
-
-        if deferred_scan_complete && self.scan_pending {
-            self.scan_pending = false;
-            self.wifi_conn.finish_scan();
-            self.iwl_state = IwlState::Disconnected;
-            log::info!(
-                "iwlwifi: scan complete ({} APs found)",
-                self.scan_results.len()
-            );
         }
     }
 

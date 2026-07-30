@@ -136,18 +136,16 @@ fn wasm_wait_for_ns(duration_ns: u64) {
     // and freeze the WASM decode loop.
     solvent::IN_WASM_HOST_CALLBACK.store(true, core::sync::atomic::Ordering::Relaxed);
     let mut next_tick = 0u64;
+    // Guarantee one cooperative event-loop tick, even for a zero-duration
+    // wait, then keep the existing periodic cadence for longer waits.
+    solvent::runtime_tick_no_fb();
     loop {
-        // Always pump the event loop at least once per call so that long
-        // synchronous WASM computations (e.g. H.264 decode) can use
-        // `wait_for_ns(0)` as a cooperative yield point.  Without this,
-        // a zero-duration wait was a no-op and the desktop froze while
-        // the viewer decoded a frame.
-        solvent::runtime_tick_no_fb();
         let now = unsafe { core::arch::x86_64::_rdtsc() };
         if now >= deadline {
             break;
         }
         if now >= next_tick {
+            solvent::runtime_tick_no_fb();
             next_tick = now.saturating_add(tsc_per_ms.saturating_mul(4));
         } else {
             petroleum::cpu_pause();

@@ -32,12 +32,10 @@ pub fn run(wasm_binary: &[u8], args: &[&str], host: WasiHost) -> i32 {
         .iter()
         .any(|path| path.to_ascii_lowercase().ends_with(".mp3"));
     let fuel = if is_mp4 {
-        // H.264 decoding every sample is intentionally synchronous.
-        // decode_nal is pure WASM compute and can consume tens of millions
-        // of fuel units per NAL.  We give an effectively unlimited budget
-        // and rely on the viewer's per-NAL `wait_for_ns(0)` yield to keep
-        // the desktop responsive.
-        u64::MAX / 4
+        // H.264 decoding is intentionally synchronous and can consume tens
+        // of millions of fuel units per NAL. Keep enough room for normal
+        // playback while ensuring a compute-only decoder eventually traps.
+        1_000_000_000
     } else if is_mp3 {
         // MP3 metadata scanning is linear but may inspect thousands of
         // frames. Keep it finite while leaving enough room for a long track.

@@ -388,6 +388,23 @@ fn publish_klog_live_geometry(window: &lattice::window::Window) {
 pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
     const COLS: u32 = 100;
     const ROWS: u32 = 30;
+    if let Some(id) = rt.klog_live_window {
+        if let Some(window) = rt
+            .desktop
+            .wm
+            .windows()
+            .iter()
+            .find(|window| window.id == id)
+        {
+            publish_klog_live_geometry(window);
+            rt.klog_live_dirty = true;
+            rt.frame_due = true;
+            rt.desktop.wm.raise_to_top(id);
+            return;
+        }
+        rt.klog_live_window = None;
+        crate::runtime_context::clear_klog_live_surface();
+    }
     let id = rt.desktop.wm.create_titled_window(
         60,
         40,

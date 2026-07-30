@@ -191,8 +191,17 @@ Expected output:
 `busybox` launches a statically linked x86_64 BusyBox as `busybox sh`.
 The kernel's Toluene build step builds the checked-in `toluene/busybox`
 submodule with the Rust build orchestration, validates the static x86_64 ELF,
-and embeds it automatically. Its temporary out-of-tree make directory is
-removed after each build.
+and embeds it automatically. Initialize the submodule and install `make` plus
+either `musl-gcc` (preferred) or `gcc` first:
+
+```bash
+git submodule update --init --recursive
+```
+
+Set `FULLERENE_BUSYBOX` to use an existing static x86_64 BusyBox instead of
+building the submodule, or set `FULLERENE_BUSYBOX_CC` to choose the compiler
+used for the submodule build. Without either override, the build selects
+`musl-gcc` when available and then falls back to `gcc`.
 
 ```bash
 cargo run -p flasks -- --iso-only
@@ -200,8 +209,10 @@ cargo run -p flasks -- --iso-only
 
 This single command performs the static BusyBox release build, kernel
 embedding, and ISO creation. The retained BusyBox artifact is
-`target/busybox/busybox`; the intermediate `target/busybox-build/` directory
-is cleaned up.
+`target/busybox/busybox`. The kernel build keeps its private out-of-tree
+objects under Cargo's `OUT_DIR` for reuse and concurrent-build isolation.
+When invoking the standalone `busybox-build` command, its default
+`target/busybox-build/` directory is retained unless `--clean` is supplied.
 
 Then enter `busybox` in the Nozzle shell. Fullerene opens a focused
 `BusyBox` window and attaches the Linux process's stdin/stdout/stderr to that

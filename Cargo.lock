@@ -555,6 +555,7 @@ dependencies = [
  "bitfield",
  "bitflags 2.11.1",
  "bonder",
+ "busybox-build",
  "embedded-graphics",
  "fullerene-abi",
  "genome",
