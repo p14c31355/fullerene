@@ -18,7 +18,7 @@ const _: () = assert!(
     core::mem::size_of::<HcmdHeaderWide>() + core::mem::size_of::<ScanRequestCmd>()
         <= TFD_LENGTH_MAX
 );
-const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 140);
+const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 144);
 
 impl IwlWifiDevice {
     fn init_tx_cmd_queue(&mut self) {
@@ -308,7 +308,7 @@ impl IwlWifiDevice {
         log::info!(
             "iwlwifi: auxiliary scan station sent: sta_id={} group=0x{:02x} opcode=0x{:02x}",
             MAC_INDEX_AUX,
-            GroupId::Long as u8,
+            GroupId::Legacy as u8,
             LegacyCmd::AddSta as u8,
         );
 

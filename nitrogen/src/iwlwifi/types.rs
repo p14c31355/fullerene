@@ -207,11 +207,27 @@ pub struct MacQosAc {
     pub edca_txop: u16,
 }
 
+/// Station-specific portion of the API-v1 MAC context union.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MacStaData {
+    pub is_assoc: u32,
+    pub dtim_time: u32,
+    pub dtim_tsf: u64,
+    pub beacon_interval: u32,
+    pub beacon_interval_reciprocal: u32,
+    pub dtim_interval: u32,
+    pub dtim_interval_reciprocal: u32,
+    pub listen_interval: u32,
+    pub assoc_id: u32,
+    pub assoc_beacon_arrive_time: u32,
+}
+
 /// MAC_CONTEXT_CMD (0x28) payload for a minimal STA context.
 ///
 /// This is the packed `MAC_CONTEXT_CMD_API_S_VER_1` layout used by the
 /// 7265 firmware. In particular, the common fields, five AC QoS entries,
-/// and the 40-byte STA union are all part of the command. Sending the old
+/// and the 44-byte STA union are all part of the command. Sending the old
 /// shortened structure leaves the firmware command queue stopped at this
 /// command, so the subsequent scan request is never executed.
 #[repr(C, packed)]
@@ -232,8 +248,7 @@ pub struct MacContextCmd {
     pub filter_flags: u32,
     pub qos_flags: u32,
     pub ac: [MacQosAc; 5],
-    /// `iwl_mac_data_sta` union member (10 little-endian u32 fields).
-    pub sta: [u8; 40],
+    pub sta: MacStaData,
 }
 
 impl MacContextCmd {
@@ -246,11 +261,15 @@ impl MacContextCmd {
         Self {
             id_and_color: 0,
             action: 1,
-            mac_type: 1,
+            // FW_MAC_TYPE_BSS_STA.  FW_MAC_TYPE_AUX is 1 and is reserved for
+            // the auxiliary scan station (MAC index 4).
+            mac_type: 5,
             tsf_id: 0,
             node_addr: mac,
             reserved_for_node_addr: 0,
-            bssid_addr: [0; 6],
+            // Before association there is no AP-specific BSSID. The firmware
+            // uses the broadcast value for this state, as does upstream.
+            bssid_addr: [0xff; 6],
             reserved_for_bssid_addr: 0,
             cck_rates: 0x0000_000f,
             ofdm_rates: 0x0000_00ff,
@@ -266,7 +285,18 @@ impl MacContextCmd {
                 fifos_mask: 0,
                 edca_txop: 0,
             }; 5],
-            sta: [0u8; 40],
+            sta: MacStaData {
+                is_assoc: 0,
+                dtim_time: 0,
+                dtim_tsf: 0,
+                beacon_interval: 100,
+                beacon_interval_reciprocal: 0x028f_5c28,
+                dtim_interval: 0,
+                dtim_interval_reciprocal: 0,
+                listen_interval: 10,
+                assoc_id: 0,
+                assoc_beacon_arrive_time: 0,
+            },
         }
     }
 }

@@ -3,6 +3,8 @@ use crate::loader::LoadError;
 use crate::process::ProcessId;
 use alloc::boxed::Box;
 use alloc::string::ToString;
+#[cfg(linux_busybox_smoke)]
+use core::sync::atomic::AtomicU8;
 #[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
 use core::sync::atomic::AtomicUsize;
 #[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
@@ -38,6 +40,10 @@ static BUSYBOX_SMOKE_WAITING: AtomicBool = AtomicBool::new(false);
 static BUSYBOX_SMOKE_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_OUTPUT_MATCHED: AtomicUsize = AtomicUsize::new(0);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_LAUNCH_COUNT: AtomicU8 = AtomicU8::new(0);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_HOLD_INPUT: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox is running";
 
@@ -228,8 +234,10 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         BUSYBOX_SMOKE_WAITING.store(false, Ordering::Release);
         BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
         BUSYBOX_SMOKE_WINDOW.store(terminal_window.0, Ordering::Release);
-        // Feed only the first command. The exit command is injected after
-        // BusyBox has reached a real no-input wait.
+        BUSYBOX_SMOKE_LAUNCH_COUNT.fetch_add(1, Ordering::AcqRel);
+        BUSYBOX_SMOKE_HOLD_INPUT.store(true, Ordering::Release);
+        // Feed the command that exercises the shell. The exit command is
+        // injected after BusyBox has reached a real no-input wait.
         solvent::push_process_terminal_input(
             terminal_window,
             b"echo Fullerene BusyBox is running\n",
@@ -313,6 +321,7 @@ pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
         };
         BUSYBOX_SMOKE_WINDOW_CLOSED.store(window_closed, Ordering::Release);
         BUSYBOX_SMOKE_EXIT_OK.store(true, Ordering::Release);
+        BUSYBOX_SMOKE_HOLD_INPUT.store(false, Ordering::Release);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] verified output and exit status\n"
         ));
@@ -325,13 +334,25 @@ pub fn busybox_smoke_verified() -> bool {
 }
 
 #[cfg(linux_busybox_smoke)]
+pub fn busybox_smoke_input_held() -> bool {
+    BUSYBOX_SMOKE_HOLD_INPUT.load(Ordering::Acquire)
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn reset_busybox_smoke_harness() {
+    BUSYBOX_SMOKE_LAUNCH_COUNT.store(0, Ordering::Release);
+    BUSYBOX_SMOKE_HOLD_INPUT.store(false, Ordering::Release);
+}
+
+#[cfg(linux_busybox_smoke)]
 pub fn mark_busybox_smoke_harness_done() {
     BUSYBOX_SMOKE_HARNESS_DONE.store(true, Ordering::Release);
 }
 
 #[cfg(linux_busybox_smoke)]
 pub fn busybox_smoke_complete() -> bool {
-    BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
+    BUSYBOX_SMOKE_LAUNCH_COUNT.load(Ordering::Acquire) >= 2
+        && BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
         && BUSYBOX_SMOKE_WINDOW_CLOSED.load(Ordering::Acquire)
         && BUSYBOX_SMOKE_HARNESS_DONE.load(Ordering::Acquire)
 }

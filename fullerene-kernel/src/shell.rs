@@ -1501,12 +1501,11 @@ pub fn busybox_smoke() {
         }
 
         fn read_byte(&mut self) -> Option<u8> {
-            // Do not let the scripted Nozzle `exit` terminate the harness
-            // while the interactive BusyBox fixture is still waiting for its
-            // second command. This makes shell resumption observable.
-            while self.input.front() == Some(&b'e')
-                && !crate::linux::launch::busybox_smoke_verified()
-            {
+            // Hold the next shell command while the current BusyBox instance
+            // is alive. Once it exits, the shell consumes the next command;
+            // this runs two sequential BusyBox sessions and catches stale
+            // terminal/process state that only fails on the second launch.
+            while crate::linux::launch::busybox_smoke_input_held() {
                 solvent::runtime_tick_no_fb();
                 crate::process::yield_from_scheduler_stack();
             }
@@ -1520,8 +1519,9 @@ pub fn busybox_smoke() {
         }
     }
 
+    crate::linux::launch::reset_busybox_smoke_harness();
     let services = nozzle_services();
-    let mut terminal = ScriptedTerminal::new("busybox\nexit\n");
+    let mut terminal = ScriptedTerminal::new("busybox\nbusybox\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     crate::linux::launch::mark_busybox_smoke_harness_done();
     if crate::linux::launch::busybox_smoke_complete() {

@@ -8,6 +8,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
+use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::mem_debug;
 use petroleum::page_table::PageTableHelper as _;
 use x86_64::{PhysAddr, VirtAddr};
@@ -541,6 +542,7 @@ pub use crate::scheduler_context::SCHEDULER;
 /// switch is deferred until terminal control has returned to the polling
 /// loop, so no shell/VFS/runtime lock is held across the assembly switch.
 static PENDING_YIELD_TO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static HANDOFF_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 // Use KERNEL_STACK_SIZE from crate::heap
 
@@ -883,11 +885,27 @@ pub fn yield_from_scheduler_stack() {
         return;
     }
     let new_pid = ProcessId(target);
-    let _ = SCHEDULER.yield_to(new_pid);
+    if !SCHEDULER.yield_to(new_pid) {
+        // The shell may observe the newly-created task during the short
+        // interval in which another scheduler path has not yet marked it
+        // Ready. Do not lose the explicit handoff in that race: the next
+        // terminal poll will retry it instead of leaving the shell waiting
+        // forever after a second BusyBox launch.
+        let _ = PENDING_YIELD_TO.compare_exchange(0, target, Ordering::AcqRel, Ordering::Acquire);
+        if !HANDOFF_FAILURE_LOGGED.swap(true, Ordering::AcqRel) {
+            petroleum::serial::serial_log(format_args!(
+                "[LINUX-DIAG] scheduler handoff retry current={} target={} state={:?}\n",
+                SCHEDULER.current_pid(),
+                target,
+                SCHEDULER.process_state(new_pid),
+            ));
+        }
+    }
 }
 
 /// Defer a direct handoff until the shell's current command callback returns.
 pub fn defer_yield_to(pid: ProcessId) {
+    HANDOFF_FAILURE_LOGGED.store(false, Ordering::Release);
     PENDING_YIELD_TO.store(pid.0, core::sync::atomic::Ordering::Release);
 }
 

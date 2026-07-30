@@ -206,6 +206,10 @@ impl AudioContext {
             }
         }
         controller.reset_prefill_tracking();
+        if !controller.start_stream() {
+            log::warn!("Sound: HDA stream failed to start after PCM prefill");
+            return false;
+        }
 
         let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
         let timeout_tsc = tsc_per_ms.saturating_mul(500);

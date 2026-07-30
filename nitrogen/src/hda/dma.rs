@@ -62,6 +62,8 @@ pub struct DmaEngine {
     last_lpib: AtomicU64,
     /// Whether the stream is actively running.
     ready: AtomicBool,
+    /// Whether RUN has been asserted after the caller pre-filled PCM data.
+    running: AtomicBool,
 }
 
 impl DmaEngine {
@@ -75,6 +77,7 @@ impl DmaEngine {
             half_size: 0,
             last_lpib: AtomicU64::new(u64::MAX),
             ready: AtomicBool::new(false),
+            running: AtomicBool::new(false),
         }
     }
 
@@ -162,28 +165,53 @@ impl DmaEngine {
         }
 
         // Store fence: ensure BDL / DMA buffer writes are visible
-        atomic::fence(atomic::Ordering::SeqCst);
-
-        unsafe {
-            // SAFETY: Start stream after fence
-            // Start stream: RUN (bit 1) + IOCE (bit 2) + STREAMTAG (bits 23:20).
-            // Keep the stripe field at zero for the mono PCM stream.
-            mmio_write32(mmio, sd + SD_CTL, ((stream_tag as u32) << 20) | 0x06);
-        }
-
-        log::info!("HDA: stream started ({} B, fmt=0x0010)", audio_size);
-
         self.dma_virt = dma_region.virt;
         self.audio_off = audio_off;
         self.audio_size = audio_size;
         self.half_size = half;
         self.last_lpib.store(0, Ordering::Relaxed);
         self.ready.store(true, Ordering::Release);
+        self.running.store(false, Ordering::Release);
+        log::info!(
+            "HDA: stream prepared ({} B, fmt=0x0010, tag={})",
+            audio_size,
+            stream_tag
+        );
     }
 
     /// Whether the DMA engine is running.
     pub fn is_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
+    }
+
+    /// Start playback after the caller has filled the initial DMA halves.
+    ///
+    /// Starting HDA from `init()` races the first DMA fetch against PCM
+    /// prefill and can produce a completely silent startup sound even though
+    /// the DMA loop later reports completion.
+    pub unsafe fn start(&self, mmio: *mut u8, stream_tag: u8) -> bool {
+        if !self.ready.load(Ordering::Acquire) {
+            return false;
+        }
+        if self.running.swap(true, Ordering::AcqRel) {
+            return true;
+        }
+        atomic::fence(atomic::Ordering::SeqCst);
+        // RUN (bit 1) + IOCE (bit 2) + STREAMTAG (bits 23:20).
+        // Keep the stripe field at zero for the mono PCM stream.
+        unsafe {
+            mmio_write32(
+                mmio,
+                self.sd_offset + SD_CTL,
+                ((stream_tag as u32) << 20) | 0x06,
+            );
+        }
+        log::info!("HDA: stream started after PCM prefill (tag={})", stream_tag);
+        true
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
     }
 
     /// Total audio buffer size (bytes).
@@ -250,7 +278,7 @@ impl DmaEngine {
     /// `mmio` must be a valid MMIO base pointer.
     pub unsafe fn feed_samples(&self, mmio: *mut u8, samples: &[u8]) -> usize {
         unsafe {
-            if !self.ready.load(Ordering::Acquire) {
+            if !self.ready.load(Ordering::Acquire) || !self.running.load(Ordering::Acquire) {
                 return 0;
             }
 
@@ -302,7 +330,7 @@ impl DmaEngine {
     /// `mmio` must be a valid MMIO base pointer.
     pub unsafe fn playback_progress_bytes(&self, mmio: *mut u8) -> Option<u64> {
         unsafe {
-            if !self.ready.load(Ordering::Acquire) {
+            if !self.ready.load(Ordering::Acquire) || !self.running.load(Ordering::Acquire) {
                 return None;
             }
             let sd = self.sd_offset;
@@ -337,7 +365,7 @@ impl DmaEngine {
     /// `mmio` must be a valid MMIO base pointer.
     pub unsafe fn poll(&self, mmio: *mut u8, timeout_tsc: Option<u64>) -> bool {
         unsafe {
-            if !self.ready.load(Ordering::Acquire) {
+            if !self.ready.load(Ordering::Acquire) || !self.running.load(Ordering::Acquire) {
                 return false;
             }
             let sd = self.sd_offset;
