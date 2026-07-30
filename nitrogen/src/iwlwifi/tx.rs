@@ -18,6 +18,7 @@ const _: () = assert!(
     core::mem::size_of::<HcmdHeaderWide>() + core::mem::size_of::<ScanRequestCmd>()
         <= TFD_LENGTH_MAX
 );
+const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 140);
 
 impl IwlWifiDevice {
     fn init_tx_cmd_queue(&mut self) {
@@ -288,10 +289,9 @@ impl IwlWifiDevice {
         )?;
         log::info!("iwlwifi: TX antenna config sent");
 
-        // Firmware API 17 uses the pre-v12 station API.  The scan engine
+        // Firmware API 17 uses the pre-v12 station API. The scan engine
         // requires its auxiliary station before accepting an offload request.
-        // ADD_STA is a long-group command, so send_hcmd() emits the required
-        // eight-byte wide header here.
+        // ADD_STA is a legacy-group command and uses the four-byte header.
         const MAC_INDEX_AUX: u8 = 4;
         let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX);
         let aux_sta_bytes = unsafe {
@@ -300,7 +300,11 @@ impl IwlWifiDevice {
                 core::mem::size_of::<AddStaCmdV7>(),
             )
         };
-        self.send_hcmd(LegacyCmd::AddSta as u8, GroupId::Long as u8, aux_sta_bytes)?;
+        self.send_hcmd(
+            LegacyCmd::AddSta as u8,
+            GroupId::Legacy as u8,
+            aux_sta_bytes,
+        )?;
         log::info!(
             "iwlwifi: auxiliary scan station sent: sta_id={} group=0x{:02x} opcode=0x{:02x}",
             MAC_INDEX_AUX,
@@ -350,7 +354,7 @@ impl IwlWifiDevice {
         };
         self.send_hcmd(
             LegacyCmd::MacContext as u8,
-            GroupId::Long as u8,
+            GroupId::Legacy as u8,
             mac_ctx_bytes,
         )?;
         log::info!(

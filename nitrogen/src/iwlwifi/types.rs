@@ -196,61 +196,77 @@ impl PhyContextCmdV1 {
     }
 }
 
+/// One AC entry in the API-v1 MAC context QoS array.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MacQosAc {
+    pub cw_min: u16,
+    pub cw_max: u16,
+    pub aifsn: u8,
+    pub fifos_mask: u8,
+    pub edca_txop: u16,
+}
+
 /// MAC_CONTEXT_CMD (0x28) payload for a minimal STA context.
 ///
-/// Without this command the firmware never delivers 802.11 frames
-/// (beacons, probe responses) to the host.  Scan-complete notifications
-/// still arrive because they are command responses, but beacons travel
-/// the REPLY_RX_MPDU_CMD data path which requires an active MAC context.
-///
-/// The layout follows Linux's `iwl_mac_ctx_cmd` (API v1).  Like every
-/// firmware context command, the first 8 bytes are the common
-/// `id_and_color` / `action` header.
+/// This is the packed `MAC_CONTEXT_CMD_API_S_VER_1` layout used by the
+/// 7265 firmware. In particular, the common fields, five AC QoS entries,
+/// and the 40-byte STA union are all part of the command. Sending the old
+/// shortened structure leaves the firmware command queue stopped at this
+/// command, so the subsequent scan request is never executed.
 #[repr(C, packed)]
 pub struct MacContextCmd {
-    /// Context ID and colour (MAC id = 0, colour = 0).
     pub id_and_color: u32,
-    /// Action: 0 = modify, 1 = add.  Use ADD when first establishing the
-    /// MAC context.
     pub action: u32,
-    /// MAC type: 0 = AUX, 1 = STA, 2 = P2P_DEVICE, 3 = P2P_CLIENT, 4 = P2P_GO, 5 = MONITOR
     pub mac_type: u32,
-    /// MAC flags (0 for minimal STA).
-    pub mac_flags: u32,
-    /// TSF ID (0).
-    pub tsf_id: u8,
-    /// Color (0).
-    pub color: u8,
-    /// Reserved.
-    pub reserved: u16,
-    /// MAC address (6 bytes).
-    pub addr: [u8; 6],
-    /// Reserved after address.
-    pub reserved_for_addr: u16,
-    /// RX filter flags.
+    pub tsf_id: u32,
+    pub node_addr: [u8; 6],
+    pub reserved_for_node_addr: u16,
+    pub bssid_addr: [u8; 6],
+    pub reserved_for_bssid_addr: u16,
+    pub cck_rates: u32,
+    pub ofdm_rates: u32,
+    pub protection_flags: u32,
+    pub cck_short_preamble: u32,
+    pub short_slot: u32,
     pub filter_flags: u32,
-    /// MAC data for STA context (variable, but we use a fixed-size block).
-    pub data: [u8; 64],
+    pub qos_flags: u32,
+    pub ac: [MacQosAc; 5],
+    /// `iwl_mac_data_sta` union member (10 little-endian u32 fields).
+    pub sta: [u8; 40],
 }
 
 impl MacContextCmd {
     /// Create a minimal STA MAC context that accepts beacons and multicast
     /// frames — enough for passive scanning.
     pub fn sta(mac: [u8; 6]) -> Self {
-        // Linux: MAC_FILTER_ACCEPT_GRP = BIT(3), MAC_FILTER_IN_BEACON = BIT(7)
-        const FILTER_FLAGS: u32 = (1 << 3) | (1 << 7);
+        // Linux API v1: MAC_FILTER_ACCEPT_GRP = BIT(2),
+        // MAC_FILTER_IN_BEACON = BIT(6).
+        const FILTER_FLAGS: u32 = (1 << 2) | (1 << 6);
         Self {
-            id_and_color: 0, // MAC id 0, colour 0
-            action: 1,       // FW_CTXT_ACTION_ADD
-            mac_type: 1,     // IWL_MAC_TYPE_STA
-            mac_flags: 0,
+            id_and_color: 0,
+            action: 1,
+            mac_type: 1,
             tsf_id: 0,
-            color: 0,
-            reserved: 0,
-            addr: mac,
-            reserved_for_addr: 0,
+            node_addr: mac,
+            reserved_for_node_addr: 0,
+            bssid_addr: [0; 6],
+            reserved_for_bssid_addr: 0,
+            cck_rates: 0x0000_000f,
+            ofdm_rates: 0x0000_00ff,
+            protection_flags: 0,
+            cck_short_preamble: 0x20,
+            short_slot: 0x10,
             filter_flags: FILTER_FLAGS,
-            data: [0u8; 64],
+            qos_flags: 0,
+            ac: [MacQosAc {
+                cw_min: 0x000f,
+                cw_max: 0x003f,
+                aifsn: 1,
+                fifos_mask: 0,
+                edca_txop: 0,
+            }; 5],
+            sta: [0u8; 40],
         }
     }
 }
