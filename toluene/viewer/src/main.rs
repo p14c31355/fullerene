@@ -611,7 +611,6 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
     let title = format!("Video: {}", path);
     let mut window_id = -1;
     let playback_start = Instant::now();
-    let mut perf = PlaybackPerf::new();
     let mut decoded_frames = 0u32;
     println!("viewer: mp4 playback enter samples={}", sample_count);
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
@@ -724,41 +723,15 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
             unsafe {
                 wait_for_ns(0);
             }
-            let decode_start = Instant::now();
-            let decoded = decoder.decode_nal(nal);
-            perf.decode_ns = perf
-                .decode_ns
-                .saturating_add(decode_start.elapsed().as_nanos());
-            if let Ok(Some(frame)) = decoded {
-                perf.frames = perf.frames.saturating_add(1);
-                let pace_start = Instant::now();
+            if let Ok(Some(frame)) = decoder.decode_nal(nal) {
                 wait_for_video_time(playback_start, target_ns);
-                perf.pace_ns = perf
-                    .pace_ns
-                    .saturating_add(pace_start.elapsed().as_nanos());
-                let (rendered, convert_ns, host_ns) =
-                    render_video_frame_timed(&mut window_id, &title, &frame);
-                perf.convert_ns = perf.convert_ns.saturating_add(convert_ns);
-                perf.host_ns = perf.host_ns.saturating_add(host_ns);
-                if rendered {
+                if render_video_frame(&mut window_id, &title, &frame) {
                     decoded_frames = decoded_frames.saturating_add(1);
                     if decoded_frames == 1 || decoded_frames.checked_rem(30) == Some(0) {
                         println!(
                             "viewer: mp4 playback frame={} sample={} pts_ns={}",
                             decoded_frames, sample_id, target_ns
                         );
-                    }
-                    if decoded_frames.checked_rem(30) == Some(0) {
-                        println!(
-                            "viewer: mp4 perf frames={} elapsed_ms={} decode_ms={} pace_ms={} convert_ms={} host_ms={}",
-                            perf.frames,
-                            elapsed_ms(perf.elapsed_start.elapsed().as_nanos()),
-                            elapsed_ms(perf.decode_ns),
-                            elapsed_ms(perf.pace_ns),
-                            elapsed_ms(perf.convert_ns),
-                            elapsed_ms(perf.host_ns),
-                        );
-                        perf.reset();
                     }
                 }
             }
@@ -821,65 +794,18 @@ fn wait_for_video_time(start: Instant, target_ns: u64) {
     }
 }
 
-struct PlaybackPerf {
-    elapsed_start: Instant,
-    frames: u32,
-    decode_ns: u128,
-    pace_ns: u128,
-    convert_ns: u128,
-    host_ns: u128,
-}
-
-impl PlaybackPerf {
-    fn new() -> Self {
-        Self {
-            elapsed_start: Instant::now(),
-            frames: 0,
-            decode_ns: 0,
-            pace_ns: 0,
-            convert_ns: 0,
-            host_ns: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.elapsed_start = Instant::now();
-        self.frames = 0;
-        self.decode_ns = 0;
-        self.pace_ns = 0;
-        self.convert_ns = 0;
-        self.host_ns = 0;
-    }
-}
-
-fn elapsed_ms(nanos: u128) -> u64 {
-    (nanos / 1_000_000).min(u128::from(u64::MAX)) as u64
-}
-
 fn render_video_frame(window_id: &mut i32, title: &str, frame: &rust_h264::decoder::Frame) -> bool {
-    render_video_frame_timed(window_id, title, frame).0
-}
-
-fn render_video_frame_timed(
-    window_id: &mut i32,
-    title: &str,
-    frame: &rust_h264::decoder::Frame,
-) -> (bool, u128, u128) {
-    let convert_start = Instant::now();
     let Some((width, height, rgb)) = yuv420_to_rgb(frame, 800, 600) else {
-        return (false, convert_start.elapsed().as_nanos(), 0);
+        return false;
     };
-    let convert_ns = convert_start.elapsed().as_nanos();
     unsafe {
         if *window_id < 0 {
             *window_id = create_window(title.as_ptr(), title.len() as u32, width, height);
         }
         if *window_id < 0 {
-            return (false, convert_ns, 0);
+            return false;
         }
-        let host_start = Instant::now();
-        let result = update_window(*window_id, width, height, rgb.as_ptr(), rgb.len() as u32) == 0;
-        (result, convert_ns, host_start.elapsed().as_nanos())
+        update_window(*window_id, width, height, rgb.as_ptr(), rgb.len() as u32) == 0
     }
 }
 
