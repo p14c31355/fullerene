@@ -689,11 +689,22 @@ fn nozzle_services() -> nozzle::ShellServices {
             }
         }),
         write: Some(|ctx, path, content| {
+            crate::klog_fmt!(
+                "[FS-DIAG] shell redirect write begin path={} bytes={}\n",
+                path,
+                content.len()
+            );
             match crate::fs::write_entire_file(path, content.as_bytes()) {
                 Ok(()) => {
+                    crate::klog_fmt!("[FS-DIAG] shell redirect write exit path={} ok\n", path);
                     tline!(ctx.terminal, "Wrote {} bytes to {}", content.len(), path);
                 }
                 Err(e) => {
+                    crate::klog_fmt!(
+                        "[FS-DIAG] shell redirect write error path={} error={:?}\n",
+                        path,
+                        e
+                    );
                     tline!(ctx.terminal, "write: {}: {}", path, e);
                 }
             }
@@ -986,7 +997,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                     crate::linux::launch::launch_busybox(),
                     "BusyBox shell started (PID: {})"
                 )
-            },
+            }
             "hello_linux" => launch_cmd!(
                 ctx.terminal,
                 crate::linux::launch::launch_test_binary(),
@@ -1546,19 +1557,25 @@ pub fn busybox_smoke() {
 
 struct KernelTerminal {
     history: alloc::collections::VecDeque<String>,
+    pipe_stdout: Option<String>,
 }
 
 impl KernelTerminal {
     fn new() -> Self {
         Self {
             history: alloc::collections::VecDeque::with_capacity(128),
+            pipe_stdout: None,
         }
     }
 }
 
 impl nozzle::Terminal for KernelTerminal {
     fn write_str(&mut self, s: &str) {
-        kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
+        if let Some(ref mut output) = self.pipe_stdout {
+            output.push_str(s);
+        } else {
+            kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
+        }
     }
 
     fn read_byte(&mut self) -> Option<u8> {
@@ -1575,6 +1592,16 @@ impl nozzle::Terminal for KernelTerminal {
     fn input_available(&self) -> bool {
         nitrogen::ps2::keyboard::input_available()
     }
+
+    fn take_stdout(&mut self) -> Option<String> {
+        self.pipe_stdout.take()
+    }
+
+    fn arm_pipe_stdout(&mut self) {
+        self.pipe_stdout = Some(String::new());
+    }
+
+    fn clear_pipe_stdin(&mut self) {}
 
     fn record_history(&mut self, line: &str) {
         if line.is_empty() || self.history.front().is_some_and(|entry| entry == line) {

@@ -395,8 +395,10 @@ impl VfsContext {
     }
 
     fn write_all(&self, fd: u32, mut data: &[u8]) -> Result<(), FsError> {
+        const WRITE_CHUNK: usize = 4096;
         while !data.is_empty() {
-            let written = self.write(fd, data)?;
+            let chunk_len = data.len().min(WRITE_CHUNK);
+            let written = self.write(fd, &data[..chunk_len])?;
             if written == 0 {
                 return Err(FsError::InvalidInput);
             }

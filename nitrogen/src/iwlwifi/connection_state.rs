@@ -32,6 +32,8 @@ static WIFI_DEVICE: Mutex<Option<Box<dyn crate::wifi::WifiDriver>>> = Mutex::new
 static WIFI_INIT_COMPLETED: AtomicBool = AtomicBool::new(false);
 static WIFI_INIT_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
+static WIFI_INIT_LAST_ACTIVE_PHASE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
 static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
     mmio_device: None,
     fw_candidate_idx: 0,
@@ -120,6 +122,9 @@ pub fn force_init_failed() {
 }
 
 fn set_init_phase(phase: WifiInitPhase) {
+    if phase != WifiInitPhase::Failed {
+        WIFI_INIT_LAST_ACTIVE_PHASE.store(phase as u8, core::sync::atomic::Ordering::Release);
+    }
     WIFI_INIT_PHASE.store(phase as u8, core::sync::atomic::Ordering::Release);
 }
 
@@ -793,6 +798,10 @@ pub fn try_init_wifi_device_step() {
             debug::print("iwlwifi", "step: init_done");
         }
         WifiInitPhase::Failed => {
+            let previous = WifiInitPhase::from(
+                WIFI_INIT_LAST_ACTIVE_PHASE.load(core::sync::atomic::Ordering::Acquire),
+            );
+            log::error!("iwlwifi: initialization failed in phase {:?}", previous);
             let mut ctx = WIFI_INIT_CTX.lock();
             let _ = ctx.mmio_device.take();
             let drv = ctx.driver_ctx;

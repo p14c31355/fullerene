@@ -110,7 +110,10 @@ impl RouteFinder {
         let nsteps = ((ac >> 8) & 0x7F) as u8;
         // Use a reasonable gain: offset + nsteps/2 (middle of the range)
         let gain = if nsteps > 0 {
-            offset.saturating_add(nsteps / 2).min(nsteps)
+            offset
+                .saturating_add(nsteps / 2)
+                .min(offset.saturating_add(nsteps))
+                .min(0x7f)
         } else {
             0
         };
@@ -131,7 +134,7 @@ impl RouteFinder {
         };
 
         // Unmute DAC output amp: SetOut + SetLeft + SetRight + gain
-        unsafe {
+        let dac_amp_res = unsafe {
             corb.send_verb(
                 mmio,
                 0,
@@ -140,6 +143,14 @@ impl RouteFinder {
                 0xB000u16 | gain as u16,
             )
         };
+        let dac_amp_read =
+            unsafe { corb.send_verb(mmio, 0, dac, verbs::GET_AMP_GAIN_MUTE, 0xA000) };
+        log::info!(
+            "HDA: DAC 0x{:x} amp write=0x{:08x} read=0x{:08x}",
+            dac,
+            dac_amp_res,
+            dac_amp_read
+        );
 
         // 16-bit signed mono at 48 kHz:
         // bit[7]=0→48kHz, bits[6:4]=1→16-bit, bits[3:0]=0→1ch
@@ -171,7 +182,10 @@ impl RouteFinder {
         let p_offset = (pa & 0x7F) as u8;
         let p_nsteps = ((pa >> 8) & 0x7F) as u8;
         let pgain = if p_nsteps > 0 {
-            p_offset.saturating_add(p_nsteps / 2).min(p_nsteps)
+            p_offset
+                .saturating_add(p_nsteps / 2)
+                .min(p_offset.saturating_add(p_nsteps))
+                .min(0x7f)
         } else {
             0
         };
@@ -311,17 +325,13 @@ impl RouteFinder {
         // amplifier remains disabled on some machines.
         if graph.vendor_id == 0x10ec0286 {
             if graph.get_widget(0x20).is_some() {
-                let index_res = unsafe {
-                    corb.send_verb(mmio, 0, 0x20, verbs::SET_COEF_INDEX, 0x10)
-                };
-                let coef = unsafe {
-                    corb.send_verb(mmio, 0, 0x20, verbs::GET_PROC_COEF, 0)
-                };
+                let index_res =
+                    unsafe { corb.send_verb(mmio, 0, 0x20, verbs::SET_COEF_INDEX, 0x10) };
+                let coef = unsafe { corb.send_verb(mmio, 0, 0x20, verbs::GET_PROC_COEF, 0) };
                 if coef != 0xFFFF_FFFF {
                     let new_coef = (coef & !(1 << 9)) as u16;
-                    let write_res = unsafe {
-                        corb.send_verb(mmio, 0, 0x20, verbs::SET_PROC_COEF, new_coef)
-                    };
+                    let write_res =
+                        unsafe { corb.send_verb(mmio, 0, 0x20, verbs::SET_PROC_COEF, new_coef) };
                     log::info!(
                         "HDA: ALC286 coef idx=0x10 index=0x{:08x} old=0x{:08x} new=0x{:04x} write=0x{:08x}",
                         index_res,
@@ -352,7 +362,13 @@ impl RouteFinder {
 
         if eapd_capable {
             let eapd_res = unsafe { corb.send_verb(mmio, 0, pin, verbs::SET_EAPD, 0x02) };
-            log::info!("HDA: SET_EAPD pin=0x{:x} result=0x{:08x}", pin, eapd_res);
+            let eapd_read = unsafe { corb.send_verb(mmio, 0, pin, verbs::GET_EAPD, 0) };
+            log::info!(
+                "HDA: SET_EAPD pin=0x{:x} result=0x{:08x} read=0x{:08x}",
+                pin,
+                eapd_res,
+                eapd_read
+            );
         }
 
         // Enable pin output (0x40 = OUT_EN bit 6, per Intel HDA spec §7.3.4.9)
@@ -364,6 +380,8 @@ impl RouteFinder {
             pin_ctl_val,
             pin_ctl_res
         );
+        let pin_ctl_read = unsafe { corb.send_verb(mmio, 0, pin, verbs::GET_PIN_CTL, 0) };
+        log::info!("HDA: pin 0x{:x} GET_PIN_CTL=0x{:08x}", pin, pin_ctl_read);
 
         log::info!("HDA: codec configured DAC=0x{:x} Pin=0x{:x}", dac, pin);
     }

@@ -43,11 +43,17 @@ impl From<genome::vfs::FileDescriptor> for FileDesc {
 // ── Public file operations ────────────────────────────────────
 
 pub fn create_file(path: &str, data: &[u8]) -> Result<(), FsError> {
+    // Removable FAT/exFAT adapters are more reliable when large writes are
+    // split into bounded requests.  In particular, passing the whole 64 KiB
+    // dmesg snapshot through one VFS write can be reported as a zero-byte
+    // write by a block-backed filesystem, leaving a newly-created 0-byte file.
+    const WRITE_CHUNK: usize = 4096;
     let fd_info = vfs::create(path)?;
     if !data.is_empty() {
         let mut remaining = data;
         while !remaining.is_empty() {
-            match vfs::write(fd_info.fd, remaining) {
+            let chunk_len = remaining.len().min(WRITE_CHUNK);
+            match vfs::write(fd_info.fd, &remaining[..chunk_len]) {
                 Ok(0) => {
                     let _ = vfs::close(fd_info.fd);
                     return Err(FsError::InvalidInput);

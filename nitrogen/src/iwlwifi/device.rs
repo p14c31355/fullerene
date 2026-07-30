@@ -236,8 +236,8 @@ impl IwlWifiDevice {
 
             match Self::init(device.clone(), ctx) {
                 Ok(s) => return Some(s),
-                Err(_) => {
-                    log::warn!("iwlwifi: init failed");
+                Err(error) => {
+                    log::warn!("iwlwifi: init failed: {:?}", error);
                     continue;
                 }
             }
