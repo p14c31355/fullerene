@@ -194,6 +194,49 @@ pub fn tick_core(now: u64) {
 
 pub fn runtime_tick_no_fb() {
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        // The shell and the synchronous WASM viewer are both entered from
+        // inside the normal event-loop tick.  In that case a nested
+        // runtime_tick_no_fb used to be discarded completely.  That left a
+        // launched Linux process without a scheduler handoff and left the
+        // KLog Live surface stale until the synchronous caller returned.
+        // Pump only input and the already-due compositor work here; do not
+        // re-enter tick_core(), which could recursively launch another file
+        // or shell while the outer tick is still active.
+        crate::poll_mouse_state();
+        crate::poll_keyboard();
+        if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
+            if runtime.klog_live_window.is_some() {
+                runtime.klog_live_dirty = true;
+                runtime.frame_due = true;
+            }
+        }
+        let frame_tsc = TSC_PER_MS
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .saturating_mul(FRAME_INTERVAL_MS);
+        let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
+            if !runtime.frame_due {
+                return false;
+            }
+            let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
+            if now_tsc.wrapping_sub(last) < frame_tsc {
+                return false;
+            }
+            LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
+            runtime.frame_due = false;
+            true
+        });
+        if do_render {
+            // Keep the outer tick marked as suspended while the nested pump
+            // is idle, but release it around the renderer itself because the
+            // renderer uses the same guard to reject recursive frames.
+            RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+            let render_fn = *RENDER_FN.lock();
+            if let Some(render_fn) = render_fn {
+                render_fn();
+            }
+            RENDERING_SUSPENDED.store(true, core::sync::atomic::Ordering::SeqCst);
+        }
         return;
     }
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);

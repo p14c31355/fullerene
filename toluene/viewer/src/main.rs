@@ -616,6 +616,10 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
     // present each decoded frame, and pace it against the track timestamps.
     for sample_id in 1..=sample_count {
+        let trace_sample = sample_id <= 4 || sample_id.checked_rem(128) == Some(0);
+        if trace_sample {
+            println!("viewer: mp4 sample begin id={}", sample_id);
+        }
         // Yield to the host event loop at the start of every sample so that
         // decode failures (which skip wait_for_video_time) and long NAL
         // chains cannot freeze the desktop.
@@ -658,6 +662,14 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
             );
         }
         let nals = rust_h264::nal::parse_avcc(&sample.bytes, length_size);
+        if trace_sample {
+            println!(
+                "viewer: mp4 sample parsed id={} bytes={} nals={}",
+                sample_id,
+                sample.bytes.len(),
+                nals.len()
+            );
+        }
         if nals.len() > MAX_NALS_PER_SAMPLE {
             println!(
                 "viewer: mp4 sample rejected id={} nals>{}",
@@ -709,6 +721,9 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
                     }
                 }
             }
+        }
+        if trace_sample {
+            println!("viewer: mp4 sample exit id={}", sample_id);
         }
     }
     if let Some(frame) = decoder.flush() {
