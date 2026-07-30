@@ -126,7 +126,9 @@ pub enum WasiFd {
 
 const MAX_OPEN_FDS: usize = 128;
 const MAX_WRITE_FILE_BYTES: usize = 64 * 1024 * 1024;
-const FILE_CACHE_BYTES: usize = 256 * 1024;
+// PPBUF-backed media reads are synchronous. Keep each refill short enough
+// that playback does not disappear behind one long removable-media read.
+const FILE_CACHE_BYTES: usize = 64 * 1024;
 const MAX_DISPLAY_RGB_BYTES: u32 = 800 * 600 * 3;
 const MAX_CAPTURE_RGBA_BYTES: u32 = 32 * 1024 * 1024;
 const MAX_CAPTURE_CHUNK_BYTES: u32 = 256 * 1024;

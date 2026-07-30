@@ -384,7 +384,7 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
 
 /// Read a bounded range without materializing the whole file.
 pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>, FsError> {
-    const MAX_RANGE_BYTES: usize = 256 * 1024;
+    const MAX_RANGE_BYTES: usize = 64 * 1024;
     const TIMEOUT_MS: u64 = 15_000;
     if limit > MAX_RANGE_BYTES {
         return Err(FsError::InvalidInput);
@@ -426,9 +426,9 @@ pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>,
         return Err(error);
     }
     let mut result = Vec::with_capacity(target);
-    // WASI keeps a 256 KiB per-descriptor read-ahead cache. Read the matching
-    // range in large VFS requests instead of turning every cache fill into
-    // many small filesystem calls.
+    // WASI keeps a bounded per-descriptor read-ahead cache. Read the matching
+    // range in one VFS request instead of turning every cache fill into many
+    // small filesystem calls, while keeping PPBUF stalls bounded.
     let mut chunk = alloc::vec![0u8; MAX_RANGE_BYTES];
     while result.len() < target {
         if deadline.is_some_and(|deadline| unsafe { core::arch::x86_64::_rdtsc() } >= deadline) {
