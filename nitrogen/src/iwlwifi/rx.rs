@@ -25,7 +25,10 @@ impl IwlWifiDevice {
                 // firmware can deliver the scan-complete notification before
                 // the last few beacons reach the RX ring, and the old
                 // `iwl_state == Scanning` guard silently discarded them.
-                if self.iwl_state == IwlState::Scanning || self.scan_pending {
+                if self.iwl_state == IwlState::Scanning
+                    || self.scan_pending
+                    || self.scan_result_grace_ticks > 0
+                {
                     self.process_scan_result(frame);
                 }
             }
@@ -494,10 +497,21 @@ impl IwlWifiDevice {
             self.scan_pending = false;
             self.wifi_conn.finish_scan();
             self.iwl_state = IwlState::Disconnected;
+            self.scan_result_grace_ticks = SCAN_RESULT_GRACE_TICKS;
             log::info!(
-                "iwlwifi: scan complete ({} APs found)",
-                self.scan_results.len()
+                "iwlwifi: scan completion notification received; accepting late RX beacons for {} ticks",
+                SCAN_RESULT_GRACE_TICKS
             );
+        }
+
+        if self.scan_result_grace_ticks > 0 {
+            self.scan_result_grace_ticks -= 1;
+            if self.scan_result_grace_ticks == 0 {
+                log::info!(
+                    "iwlwifi: scan complete ({} APs found)",
+                    self.scan_results.len()
+                );
+            }
         }
 
         if self.scan_pending {
@@ -515,6 +529,7 @@ impl IwlWifiDevice {
                 self.scan_pending = false;
                 self.wifi_conn.finish_scan();
                 self.iwl_state = IwlState::Disconnected;
+                self.scan_result_grace_ticks = SCAN_RESULT_GRACE_TICKS;
                 let tx_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
                 let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
                 let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
@@ -544,8 +559,8 @@ impl IwlWifiDevice {
                     self.rx_tail,
                 );
                 log::info!(
-                    "iwlwifi: scan complete by host watchdog ({} APs found)",
-                    self.scan_results.len()
+                    "iwlwifi: scan watchdog ended; accepting late RX beacons for {} ticks",
+                    SCAN_RESULT_GRACE_TICKS
                 );
             }
         }
@@ -617,11 +632,17 @@ impl IwlWifiDevice {
             || command == LegacyCmd::ScanCompleteUrgent as u8
         {
             let payload = &data[8..packet_len];
+            let status = if payload.len() >= 4 {
+                u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
+            } else {
+                u32::MAX
+            };
             log::info!(
-                "iwlwifi: firmware scan complete notification cmd=0x{:02x} status={} scanned_channels={}",
+                "iwlwifi: firmware scan complete notification cmd=0x{:02x} status={} channel={} band={}",
                 command,
-                payload.get(1).copied().unwrap_or(0),
-                payload.first().copied().unwrap_or(0),
+                status,
+                payload.get(4).copied().unwrap_or(0),
+                payload.get(5).copied().unwrap_or(0),
             );
             if self.scan_pending {
                 *deferred_scan_complete = true;

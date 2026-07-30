@@ -12,7 +12,8 @@ use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableF
 
 pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let code = args[0] as i32;
-    if rt.terminal_window.is_some() && rt.tid == rt.terminal_owner_tid {
+    let terminal_owner_exit = rt.terminal_window.is_some() && rt.tid == rt.terminal_owner_tid;
+    if terminal_owner_exit {
         if let Some(window_id) = rt.terminal_window.take() {
             solvent::close_process_terminal(window_id);
         }
@@ -34,6 +35,13 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
     if let Some(pid) = process::current_pid() {
         crate::klog_fmt!("[LINUX-DIAG] exit pid={} code={} enter\n", pid.0, code);
+        if terminal_owner_exit {
+            crate::klog_fmt!(
+                "[BUSYBOX-DIAG] terminal owner exited pid={} code={} terminal closed\n",
+                pid.0,
+                code
+            );
+        }
         petroleum::serial::serial_log(format_args!(
             "[LINUX-DIAG] exit pid={} code={} enter\n",
             pid.0, code

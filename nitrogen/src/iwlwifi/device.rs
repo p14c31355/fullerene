@@ -69,6 +69,9 @@ pub struct IwlWifiDevice {
     /// firmware while allowing enough time for late-arriving beacons.
     pub scan_channel: u32,
     pub scan_pending: bool,
+    /// Late RX buffers may contain beacons after the firmware's completion
+    /// notification.  Keep accepting scan frames until this reaches zero.
+    pub scan_result_grace_ticks: u32,
 
     /// TX/RX queues.
     pub tx_queue: VecDeque<Vec<u8>>,
@@ -420,6 +423,7 @@ impl IwlWifiDevice {
             scan_results: Vec::new(),
             scan_channel: 0,
             scan_pending: false,
+            scan_result_grace_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -618,6 +622,7 @@ impl IwlWifiDevice {
             scan_results: Vec::new(),
             scan_channel: 0,
             scan_pending: false,
+            scan_result_grace_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,

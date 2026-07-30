@@ -43,6 +43,11 @@ pub enum IwlState {
     Disconnected,
 }
 
+/// Number of service ticks for which RX beacons remain eligible after the
+/// firmware reports scan completion.  The notification and the final RX DMA
+/// buffers are not guaranteed to reach the host in the same interrupt.
+pub const SCAN_RESULT_GRACE_TICKS: u32 = 512;
+
 // ── Firmware image header ──────────
 
 #[repr(C, packed)]

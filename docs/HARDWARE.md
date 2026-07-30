@@ -97,8 +97,8 @@ markers:
 - Startup audio: `Sound: startup PCM playback complete` and, for HDA,
   `HDA: controller ready`.
 - BusyBox: `BUSYBOX-DIAG: launch complete`, followed by
-  `LINUX-DIAG: exit ... code=0`; the BusyBox terminal must return to the
-  Fullerene shell after `exit`.
+  `BUSYBOX-DIAG: terminal owner exited ... code=0 terminal closed`; the
+  BusyBox terminal must return to the Fullerene shell after `exit`.
 - Wi-Fi: `iwlwifi: AP FOUND ssid=...`, followed by
   `iwlwifi: scan complete (N APs found)` with `N > 0`.
 

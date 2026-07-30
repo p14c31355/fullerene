@@ -44,6 +44,10 @@ impl WifiService {
         if nitrogen::iwlwifi::wifi_init_completed() {
             self.init_pending = false;
         } else if now.wrapping_sub(started) >= WIFI_INIT_TIMEOUT_TICKS {
+            log::warn!(
+                "iwlwifi: deferred initialization timed out after {} scheduler ticks",
+                WIFI_INIT_TIMEOUT_TICKS
+            );
             nitrogen::iwlwifi::force_init_failed();
             self.init_pending = false;
         } else {
