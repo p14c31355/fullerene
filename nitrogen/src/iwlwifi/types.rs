@@ -278,13 +278,47 @@ impl MacContextCmd {
             short_slot: 0x10,
             filter_flags: FILTER_FLAGS,
             qos_flags: 0,
-            ac: [MacQosAc {
-                cw_min: 0x000f,
-                cw_max: 0x003f,
-                aifsn: 1,
-                fifos_mask: 0,
-                edca_txop: 0,
-            }; 5],
+            // API v1 expects each EDCA entry to name the FIFO owned by that
+            // access category.  Linux fills these masks even when QoS is not
+            // enabled; leaving all five masks at zero makes the firmware
+            // reject MAC_CONTEXT_CMD on the 7265.
+            ac: [
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 1 << 0,
+                    edca_txop: 0,
+                },
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 1 << 1,
+                    edca_txop: 0,
+                },
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 1 << 2,
+                    edca_txop: 0,
+                },
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 1 << 3,
+                    edca_txop: 0,
+                },
+                MacQosAc {
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
+                    fifos_mask: 0,
+                    edca_txop: 0,
+                },
+            ],
             sta: MacStaData {
                 is_assoc: 0,
                 dtim_time: 0,

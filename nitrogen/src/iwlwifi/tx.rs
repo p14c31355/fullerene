@@ -396,10 +396,26 @@ impl IwlWifiDevice {
         let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);
         let csr_fh_int_before_echo = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
         log::info!(
-            "iwlwifi: command transport before optional echo probe: CSR_INT={:#010x} FH_INT={:#010x}",
+            "iwlwifi: command transport before optional echo probe: CSR_INT={:#010x} FH_INT={:#010x} UCODE_GP1={:#010x} GP_DRIVER={:#010x} RESET={:#010x} GP_CNTRL={:#010x} SCD_RDPTR={} SCD_STATUS={:#010x}",
             csr_int_before_echo,
             csr_fh_int_before_echo,
+            self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0),
+            self.safe_read32(CSR_GP_DRIVER).unwrap_or(!0),
+            self.safe_read32(CSR_RESET).unwrap_or(!0),
+            self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+            self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0),
+            self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0),
         );
+        if csr_int_before_echo & CSR_INT_BIT_SW_ERR != 0 {
+            log::error!(
+                "iwlwifi: firmware SW_ERR is latched after init HCMD submissions (MAC_CONTEXT or an earlier command was rejected)"
+            );
+            unsafe {
+                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), csr_int_before_echo);
+            }
+            self.fw_state = FwState::Error;
+            return Err(crate::DriverError::Protocol);
+        }
         if csr_int_before_echo & CSR_INT_BIT_HW_ERR != 0 {
             log::error!(
                 "iwlwifi: HW_ERR was already set before ECHO probe; initial HCMD submissions triggered the failure"

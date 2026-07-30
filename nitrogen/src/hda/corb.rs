@@ -48,8 +48,10 @@ pub mod verbs {
     pub const SET_STREAM: u32 = 0x706;
     pub const SET_EAPD: u32 = 0x70C;
     pub const SET_CONNECTION_SELECT: u32 = 0x701;
+    pub const SET_PROC_COEF: u32 = 0x400;
+    pub const SET_COEF_INDEX: u32 = 0x500;
 
-    // ── 12‑bit verbs (payload in lower 8 bits) ──
+    // ── 12‑bit verbs (normally payload in lower 8 bits) ──
     pub const GET_PARAM: u32 = 0xF00;
     pub const GET_CONNECTION_LIST_ENTRY: u32 = 0xF02;
     pub const GET_PIN_SENSE: u32 = 0xF09;
@@ -59,6 +61,7 @@ pub mod verbs {
     pub const GET_SUBSYSTEM_ID: u32 = 0xF20;
     pub const GET_PIN_CTL: u32 = 0xF07;
     pub const GET_EAPD: u32 = 0xF0C;
+    pub const GET_PROC_COEF: u32 = 0xD00;
     pub const SET_POWER_STATE: u32 = 0x705;
 }
 
@@ -259,7 +262,11 @@ impl CorbEngine {
 
             // Encode the verb command word
             let cmd_val = if verb > 0xF {
-                (verb << 8) | (payload as u32 & 0xFF)
+                // The 12-bit verb form uses the low 16 bits for the
+                // parameter when the verb's low byte is zero (for example
+                // SET_PROC_COEF=0x400).  Keeping all 16 bits is required by
+                // Realtek's indexed coefficient registers.
+                (verb << 8) | (payload as u32 & 0xFFFF)
             } else {
                 (verb << 16) | (payload as u32 & 0xFFFF)
             };

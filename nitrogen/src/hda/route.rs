@@ -304,6 +304,42 @@ impl RouteFinder {
             }
         }
 
+        // Realtek ALC286 uses a vendor coefficient to expose the EAPD
+        // control through the normal pin verb.  Linux's ALC269/ALC286
+        // initialization clears bit 9 of coefficient 0x10 before enabling
+        // EAPD; without this, SET_EAPD can be accepted while the internal
+        // amplifier remains disabled on some machines.
+        if graph.vendor_id == 0x10ec0286 {
+            if graph.get_widget(0x20).is_some() {
+                let index_res = unsafe {
+                    corb.send_verb(mmio, 0, 0x20, verbs::SET_COEF_INDEX, 0x10)
+                };
+                let coef = unsafe {
+                    corb.send_verb(mmio, 0, 0x20, verbs::GET_PROC_COEF, 0)
+                };
+                if coef != 0xFFFF_FFFF {
+                    let new_coef = (coef & !(1 << 9)) as u16;
+                    let write_res = unsafe {
+                        corb.send_verb(mmio, 0, 0x20, verbs::SET_PROC_COEF, new_coef)
+                    };
+                    log::info!(
+                        "HDA: ALC286 coef idx=0x10 index=0x{:08x} old=0x{:08x} new=0x{:04x} write=0x{:08x}",
+                        index_res,
+                        coef,
+                        new_coef,
+                        write_res
+                    );
+                } else {
+                    log::warn!(
+                        "HDA: ALC286 coef idx=0x10 read failed index=0x{:08x}",
+                        index_res
+                    );
+                }
+            } else {
+                log::warn!("HDA: ALC286 processing node 0x20 was not enumerated");
+            }
+        }
+
         // ── EAPD & Pin output ─────────────────────────────────────
         let pin_cap = pin_widget.map(|w| w.pin_cap).unwrap_or(0);
         let eapd_capable = pin_cap != 0xFFFF_FFFF && (pin_cap >> 16) & 1 != 0;

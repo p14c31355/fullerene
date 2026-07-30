@@ -979,11 +979,14 @@ fn nozzle_services() -> nozzle::ShellServices {
                     "Linux process started (PID: {})"
                 );
             }
-            "busybox" => launch_cmd!(
-                ctx.terminal,
-                crate::linux::launch::launch_busybox(),
-                "BusyBox shell started (PID: {})"
-            ),
+            "busybox" => {
+                crate::klog_fmt!("[BUSYBOX-DIAG] shell command enter\n");
+                launch_cmd!(
+                    ctx.terminal,
+                    crate::linux::launch::launch_busybox(),
+                    "BusyBox shell started (PID: {})"
+                )
+            },
             "hello_linux" => launch_cmd!(
                 ctx.terminal,
                 crate::linux::launch::launch_test_binary(),

@@ -370,7 +370,14 @@ pub fn launch_busybox() -> Result<ProcessId, LoadError> {
     ];
 
     for path in &locations {
-        if crate::contexts::vfs::exists(path) {
+        crate::klog_fmt!("[BUSYBOX-DIAG] path check begin path={}\n", path);
+        let present = crate::contexts::vfs::exists(path);
+        crate::klog_fmt!(
+            "[BUSYBOX-DIAG] path check exit path={} present={}\n",
+            path,
+            present
+        );
+        if present {
             crate::klog_fmt!("[BUSYBOX-DIAG] found at {}\n", path);
             return launch_busybox_with_args(path);
         }
