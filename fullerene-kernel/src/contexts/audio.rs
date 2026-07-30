@@ -252,7 +252,14 @@ impl AudioContext {
             completed += 1;
         }
 
-        log::info!("Sound: startup PCM playback complete ({} bytes)", pcm.len());
+        let (stream_ctl, stream_status, lpib) = controller.debug_stream_status();
+        log::info!(
+            "Sound: startup PCM playback complete ({} bytes) CTL=0x{:08x} STS=0x{:02x} LPIB={}",
+            pcm.len(),
+            stream_ctl,
+            stream_status,
+            lpib
+        );
         true
     }
 

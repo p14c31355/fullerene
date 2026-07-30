@@ -275,6 +275,61 @@ impl IwlWifiDevice {
         Ok(())
     }
 
+    /// Submit an initialization command and wait until the firmware command
+    /// scheduler consumes it.  Linux sends these setup commands
+    /// synchronously; queueing the whole burst lets firmware API 17 report a
+    /// generic SW_ERR at the next command boundary, without identifying the
+    /// command that was actually rejected.
+    fn send_init_hcmd(
+        &mut self,
+        label: &str,
+        opcode: u8,
+        group: u8,
+        data: &[u8],
+    ) -> Result<(), crate::DriverError> {
+        self.send_hcmd(opcode, group, data)?;
+        let target = self.tx_head as u32 & 0xff;
+        let consumed = crate::timing::poll_timeout_us(100_000, || {
+            let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
+            if csr_int & (CSR_INT_BIT_SW_ERR | CSR_INT_BIT_HW_ERR) != 0 {
+                return Some(Err(crate::DriverError::Protocol));
+            }
+            let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD)? & 0xff;
+            (rptr == target).then_some(Ok(()))
+        });
+        match consumed {
+            Some(Ok(())) => {
+                log::info!(
+                    "iwlwifi: HCMD consumed label={} target={} rptr={}",
+                    label,
+                    target,
+                    target
+                );
+                Ok(())
+            }
+            Some(Err(error)) => {
+                log::error!(
+                    "iwlwifi: HCMD rejected label={} target={} CSR_INT={:#010x}",
+                    label,
+                    target,
+                    self.safe_read32(CSR_INT).unwrap_or(!0)
+                );
+                Err(error)
+            }
+            None => {
+                log::error!(
+                    "iwlwifi: HCMD consume timeout label={} target={} rptr={:#010x} CSR_INT={:#010x} FH_INT={:#010x}",
+                    label,
+                    target,
+                    self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0),
+                    self.safe_read32(CSR_INT).unwrap_or(!0),
+                    self.safe_read32(CSR_FH_INT).unwrap_or(!0),
+                );
+                Err(crate::DriverError::Busy)
+            }
+        }
+    }
+
     pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
         self.init_tx_cmd_queue();
         self.init_rx_dma();
@@ -282,7 +337,8 @@ impl IwlWifiDevice {
         // The 7265 modules used here expose two RF chains. Keep the valid TX
         // mask aligned with the two-chain RX scan selection.
         let ant_cfg: [u8; 4] = [0x03, 0, 0, 0];
-        self.send_hcmd(
+        self.send_init_hcmd(
+            "TX_ANT_CONFIG",
             LegacyCmd::TxAntConfig as u8,
             GroupId::Legacy as u8,
             &ant_cfg,
@@ -300,7 +356,8 @@ impl IwlWifiDevice {
                 core::mem::size_of::<AddStaCmdV7>(),
             )
         };
-        self.send_hcmd(
+        self.send_init_hcmd(
+            "ADD_STA_AUX",
             LegacyCmd::AddSta as u8,
             GroupId::Legacy as u8,
             aux_sta_bytes,
@@ -326,7 +383,8 @@ impl IwlWifiDevice {
                 core::mem::size_of::<PhyContextCmdV1>(),
             )
         };
-        self.send_hcmd(
+        self.send_init_hcmd(
+            "PHY_CONTEXT",
             LegacyCmd::PhyContext as u8,
             GroupId::Legacy as u8,
             phy_bytes,
@@ -352,7 +410,8 @@ impl IwlWifiDevice {
                 core::mem::size_of::<MacContextCmd>(),
             )
         };
-        self.send_hcmd(
+        self.send_init_hcmd(
+            "MAC_CONTEXT",
             LegacyCmd::MacContext as u8,
             GroupId::Legacy as u8,
             mac_ctx_bytes,
@@ -380,7 +439,8 @@ impl IwlWifiDevice {
                 core::mem::size_of::<ScanConfigV1>(),
             )
         };
-        self.send_hcmd(
+        self.send_init_hcmd(
+            "SCAN_CONFIG",
             LegacyCmd::ScanConfig as u8,
             GroupId::Long as u8,
             scan_config_bytes,
