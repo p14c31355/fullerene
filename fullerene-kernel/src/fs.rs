@@ -426,7 +426,10 @@ pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>,
         return Err(error);
     }
     let mut result = Vec::with_capacity(target);
-    let mut chunk = [0u8; 4096];
+    // WASI keeps a 64 KiB per-descriptor cache. Read the matching range in
+    // one large VFS request instead of turning every cache fill into sixteen
+    // 4 KiB filesystem calls.
+    let mut chunk = alloc::vec![0u8; MAX_RANGE_BYTES];
     while result.len() < target {
         if deadline.is_some_and(|deadline| unsafe { core::arch::x86_64::_rdtsc() } >= deadline) {
             let _ = close_file(fd);

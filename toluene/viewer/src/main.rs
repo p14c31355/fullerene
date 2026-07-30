@@ -784,13 +784,15 @@ fn present_mp4_failure(
 fn wait_for_video_time(start: Instant, target_ns: u64) {
     let target = Duration::from_nanos(target_ns);
     let remaining = target.checked_sub(start.elapsed()).unwrap_or_default();
+    if remaining.is_zero() {
+        // The decoder is already behind. update_window() performs a host
+        // event-loop tick after presenting the frame, so another zero-time
+        // wait here would only add an unnecessary WASM/host transition.
+        return;
+    }
     let remaining_ns = remaining.as_nanos().min(u128::from(u64::MAX)) as u64;
     unsafe {
-        if remaining.is_zero() {
-            wait_for_ns(0);
-        } else {
-            wait_for_ns(remaining_ns);
-        }
+        wait_for_ns(remaining_ns);
     }
 }
 
