@@ -126,6 +126,7 @@ pub enum WasiFd {
 
 const MAX_OPEN_FDS: usize = 128;
 const MAX_WRITE_FILE_BYTES: usize = 64 * 1024 * 1024;
+const FILE_CACHE_BYTES: usize = 256 * 1024;
 const MAX_DISPLAY_RGB_BYTES: u32 = 800 * 600 * 3;
 const MAX_CAPTURE_RGBA_BYTES: u32 = 32 * 1024 * 1024;
 const MAX_CAPTURE_CHUNK_BYTES: u32 = 256 * 1024;
@@ -471,7 +472,6 @@ pub fn fd_read(
                     let in_cache = offset >= cache_offset
                         && offset < cache_offset.saturating_add(cache_len as u64);
                     if !in_cache {
-                        const FILE_CACHE_BYTES: usize = 64 * 1024;
                         let fetch_len = (size - offset).min(FILE_CACHE_BYTES as u64) as usize;
                         let read_file_range = caller.data().read_file_range;
                         let fetched = match read_file_range(&path, offset, fetch_len) {

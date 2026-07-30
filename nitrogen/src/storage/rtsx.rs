@@ -34,7 +34,8 @@ const HOST_DMA_DEVICE_TO_HOST: u32 = 1 << 29;
 const HOST_DMA_START: u32 = 1 << 31;
 const HOST_COMMAND_BUFFER_SIZE: usize = 1024;
 const HOST_COMMAND_CHUNK: usize = HOST_COMMAND_BUFFER_SIZE / size_of::<u32>();
-const DATA_BUFFER_SIZE: usize = 512;
+const DATA_BUFFER_BLOCKS: usize = 32;
+const DATA_BUFFER_SIZE: usize = DATA_BUFFER_BLOCKS * 512;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,9 +125,11 @@ const CMD3_SEND_RELATIVE_ADDR: u8 = 3;
 const CMD7_SELECT_CARD: u8 = 7;
 const CMD8_SEND_IF_COND: u8 = 8;
 const CMD9_SEND_CSD: u8 = 9;
+const CMD12_STOP_TRANSMISSION: u8 = 12;
 const CMD13_SEND_STATUS: u8 = 13;
 const CMD16_SET_BLOCKLEN: u8 = 16;
 const CMD17_READ_SINGLE: u8 = 17;
+const CMD18_READ_MULTIPLE: u8 = 18;
 const CMD24_WRITE_SINGLE: u8 = 24;
 const CMD55_APP_CMD: u8 = 55;
 const ACMD6_SET_BUS_WIDTH: u8 = 6;
@@ -158,6 +161,7 @@ pub struct RtsxController {
     host_commands: Option<DmaRegion>,
     data_buffer: Option<DmaRegion>,
     data_path: DataPath,
+    multi_block_dma: Option<bool>,
 }
 
 // Access to the controller is serialized by `CONTROLLER`; its pointer denotes
@@ -260,6 +264,7 @@ impl RtsxController {
         self.prepare_device()?;
         self.data_path =
             DataPath::preferred(self.host_commands.is_some(), self.data_buffer.is_some());
+        self.multi_block_dma = None;
         crate::debug::hint(b"sd_mmio");
         self.mmio.write32(RTSX_BIER, 0);
         crate::debug::hint(b"sd_bier");
@@ -486,16 +491,19 @@ impl RtsxController {
             } else {
                 0
             }
-            | DATA_BUFFER_SIZE as u32
     }
 
     fn run_data_dma(
         &mut self,
         commands: &[RegisterCommand],
         device_to_host: bool,
+        transfer_bytes: usize,
     ) -> Result<(), crate::DriverError> {
+        if transfer_bytes == 0 || transfer_bytes > DATA_BUFFER_SIZE {
+            return Err(crate::DriverError::InvalidArgument);
+        }
         self.load_register_commands(commands)?;
-        let bytes = (commands.len() * size_of::<u32>()) as u32;
+        let command_bytes = (commands.len() * size_of::<u32>()) as u32;
         let command_iova = Self::dma_iova(&self.host_commands)?;
         let data_iova = Self::dma_iova(&self.data_buffer)?;
 
@@ -515,7 +523,7 @@ impl RtsxController {
             (RTSX_HCBAR, command_iova),
             (
                 RTSX_HCBCTLR,
-                HOST_COMMAND_START | HOST_COMMAND_AUTO_RESPONSE | bytes,
+                HOST_COMMAND_START | HOST_COMMAND_AUTO_RESPONSE | command_bytes,
             ),
             (RTSX_HDBAR, data_iova),
             (RTSX_HDBCTLR, Self::data_dma_control(device_to_host)),
@@ -579,17 +587,26 @@ impl RtsxController {
         ]
     }
 
-    fn data_dma_commands(dma_control: u8, sd_config: u8, transfer: u8) -> [RegisterCommand; 14] {
+    fn data_dma_commands(
+        dma_control: u8,
+        sd_config: u8,
+        transfer: u8,
+        blocks: u16,
+        transfer_bytes: usize,
+    ) -> [RegisterCommand; 14] {
+        let [block_count_l, block_count_h] = blocks.to_le_bytes();
+        let [byte_count_3, byte_count_2, byte_count_1, byte_count_0] =
+            (transfer_bytes as u32).to_be_bytes();
         [
-            (HostCommandKind::Write, SD_BLOCK_CNT_L, 0xFF, 1),
-            (HostCommandKind::Write, SD_BLOCK_CNT_H, 0xFF, 0),
+            (HostCommandKind::Write, SD_BLOCK_CNT_L, 0xFF, block_count_l),
+            (HostCommandKind::Write, SD_BLOCK_CNT_H, 0xFF, block_count_h),
             (HostCommandKind::Write, SD_BYTE_CNT_L, 0xFF, 0),
             (HostCommandKind::Write, SD_BYTE_CNT_H, 0xFF, 2),
             (HostCommandKind::Write, IRQSTAT0, 0x80, 0x80),
-            (HostCommandKind::Write, DMATC3, 0xFF, 0),
-            (HostCommandKind::Write, DMATC2, 0xFF, 0),
-            (HostCommandKind::Write, DMATC1, 0xFF, 2),
-            (HostCommandKind::Write, DMATC0, 0xFF, 0),
+            (HostCommandKind::Write, DMATC3, 0xFF, byte_count_3),
+            (HostCommandKind::Write, DMATC2, 0xFF, byte_count_2),
+            (HostCommandKind::Write, DMATC1, 0xFF, byte_count_1),
+            (HostCommandKind::Write, DMATC0, 0xFF, byte_count_0),
             (HostCommandKind::Write, DMACTL, 0x33, dma_control),
             (HostCommandKind::Write, CARD_DATA_SOURCE, 0x01, 0),
             (HostCommandKind::Write, SD_CFG2, 0xFF, sd_config),
@@ -608,14 +625,20 @@ impl RtsxController {
         ]
     }
 
-    fn read_sector_dma_commands(argument: u32) -> [RegisterCommand; 19] {
+    fn read_data_dma_commands(argument: u32, blocks: u16) -> [RegisterCommand; 19] {
         let argument = argument.to_be_bytes();
+        let command_code = if blocks > 1 {
+            CMD18_READ_MULTIPLE
+        } else {
+            CMD17_READ_SINGLE
+        };
+        let transfer_bytes = usize::from(blocks) * 512;
         let command = [
             (
                 HostCommandKind::Write,
                 SD_CMD0,
                 0xFF,
-                SD_CMD_START | CMD17_READ_SINGLE,
+                SD_CMD_START | command_code,
             ),
             (HostCommandKind::Write, SD_CMD1, 0xFF, argument[0]),
             (HostCommandKind::Write, SD_CMD1 + 1, 0xFF, argument[1]),
@@ -626,6 +649,8 @@ impl RtsxController {
             DMA_FROM_CARD,
             SD_NO_CHECK_WAIT_CRC_TO | SD_RSP_R1,
             SD_TM_AUTO_READ_2,
+            blocks,
+            transfer_bytes,
         );
         core::array::from_fn(|index| {
             command
@@ -636,7 +661,7 @@ impl RtsxController {
     }
 
     fn write_sector_dma_commands() -> [RegisterCommand; 14] {
-        Self::data_dma_commands(DMA_TO_CARD, SD_WRITE_CONFIG, SD_TM_AUTO_WRITE_3)
+        Self::data_dma_commands(DMA_TO_CARD, SD_WRITE_CONFIG, SD_TM_AUTO_WRITE_3, 1, 512)
     }
 
     fn ppbuf_read_fast(&mut self, buffer: &mut [u8]) -> Result<(), crate::DriverError> {
@@ -913,7 +938,7 @@ impl RtsxController {
         loop {
             match self.data_path {
                 DataPath::Sdma => {
-                    match self.run_data_dma(&Self::read_sector_dma_commands(argument), true) {
+                    match self.run_data_dma(&Self::read_data_dma_commands(argument, 1), true, 512) {
                         Ok(()) => {
                             self.data_buffer
                                 .as_ref()
@@ -955,7 +980,7 @@ impl RtsxController {
                         .as_mut()
                         .ok_or(crate::DriverError::OutOfMemory)?
                         .write_from(buffer);
-                    match self.run_data_dma(&Self::write_sector_dma_commands(), false) {
+                    match self.run_data_dma(&Self::write_sector_dma_commands(), false, 512) {
                         Ok(()) => break,
                         Err(error) => {
                             self.data_path = DataPath::HostPpbuf;
@@ -989,6 +1014,49 @@ impl RtsxController {
         Err(crate::DriverError::TimedOut)
     }
 
+    fn read_sectors_dma(
+        &mut self,
+        lba: u32,
+        count: u16,
+        buffer: &mut [u8],
+    ) -> Result<(), crate::DriverError> {
+        if count == 0 || usize::from(count) > DATA_BUFFER_BLOCKS {
+            return Err(crate::DriverError::InvalidArgument);
+        }
+        lba.checked_add(u32::from(count) - 1)
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        let bytes = usize::from(count)
+            .checked_mul(512)
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        let destination = buffer
+            .get_mut(..bytes)
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        let argument = self.card_address(lba)?;
+        self.run_data_dma(&Self::read_data_dma_commands(argument, count), true, bytes)?;
+        if count > 1 {
+            self.command(CMD12_STOP_TRANSMISSION, 0, SD_RSP_R1B)?;
+        }
+        self.data_buffer
+            .as_ref()
+            .ok_or(crate::DriverError::OutOfMemory)?
+            .read_into(destination);
+        Ok(())
+    }
+
+    fn recover_after_multiblock_failure(&mut self) -> Result<(), crate::DriverError> {
+        // Stopping the host DMA engine does not necessarily terminate the
+        // card-side CMD18 data state.  Abort it before issuing a CMD17/PPBUF
+        // fallback, otherwise the card can reject every subsequent read.
+        self.stop_transfer();
+        if self.command(CMD12_STOP_TRANSMISSION, 0, SD_RSP_R1B).is_ok() {
+            return Ok(());
+        }
+
+        log::warn!("RTSX: CMD12 recovery failed; reinitializing SD card");
+        self.sd_card = None;
+        self.init_sd_card()
+    }
+
     pub fn read_sectors(
         &mut self,
         lba: u32,
@@ -1002,16 +1070,62 @@ impl RtsxController {
         let destination = buffer
             .get_mut(..bytes)
             .ok_or(crate::DriverError::InvalidArgument)?;
-        destination
-            .chunks_exact_mut(512)
-            .enumerate()
-            .try_for_each(|(index, sector)| {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let mut offset = 0usize;
+        let mut remaining = usize::from(count);
+        while remaining != 0 {
+            if remaining > 1
+                && self.multi_block_dma != Some(false)
+                && self.host_commands.is_some()
+                && self.data_buffer.is_some()
+            {
+                let batch = remaining.min(DATA_BUFFER_BLOCKS);
+                let batch_bytes = batch * 512;
+                let batch_count = batch as u16;
+                let batch_lba = lba
+                    .checked_add(offset as u32)
+                    .ok_or(crate::DriverError::InvalidArgument)?;
+                match self.read_sectors_dma(
+                    batch_lba,
+                    batch_count,
+                    &mut destination[offset * 512..offset * 512 + batch_bytes],
+                ) {
+                    Ok(()) => {
+                        if self.multi_block_dma != Some(true) {
+                            log::info!("RTSX: multi-block SDMA enabled");
+                        }
+                        self.multi_block_dma = Some(true);
+                        offset += batch;
+                        remaining -= batch;
+                        continue;
+                    }
+                    Err(error) => {
+                        self.recover_after_multiblock_failure()?;
+                        self.multi_block_dma = Some(false);
+                        if self.data_path == DataPath::Sdma {
+                            self.data_path = DataPath::HostPpbuf;
+                        }
+                        log::warn!(
+                            "RTSX: multi-block SDMA failed ({error}); falling back to PPBUF"
+                        );
+                    }
+                }
+            }
+
+            for index in 0..remaining {
+                let sector_offset = (offset + index) * 512;
                 self.read_sector(
-                    lba.checked_add(index as u32)
+                    lba.checked_add((offset + index) as u32)
                         .ok_or(crate::DriverError::InvalidArgument)?,
-                    sector,
-                )
-            })
+                    &mut destination[sector_offset..sector_offset + 512],
+                )?;
+            }
+            return Ok(());
+        }
+        Ok(())
     }
 
     pub fn write_sectors(
@@ -1048,6 +1162,7 @@ impl RtsxController {
         self.card_was_present = present;
         if changed && !present {
             self.sd_card = None;
+            self.multi_block_dma = None;
         }
         changed
     }
@@ -1136,6 +1251,7 @@ pub fn init(context: &dyn DriverContext) {
         host_commands,
         data_buffer,
         data_path,
+        multi_block_dma: None,
     });
     log::info!("RTSX: RTS5249 registered; SD initialization deferred");
 }
@@ -1196,9 +1312,9 @@ pub fn is_card_detected() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CMD17_READ_SINGLE, DataPath, HostCommandKind, RtsxController, SD_CFG2, SD_CMD_START,
-        SD_CMD0, SD_CMD1, SD_NO_CHECK_WAIT_CRC_TO, SD_RSP_R1, SD_TM_AUTO_READ_2, SD_TRANSFER,
-        SD_TRANSFER_END, SD_TRANSFER_START, SdCardType,
+        CMD17_READ_SINGLE, CMD18_READ_MULTIPLE, DataPath, HostCommandKind, RtsxController, SD_CFG2,
+        SD_CMD_START, SD_CMD0, SD_CMD1, SD_NO_CHECK_WAIT_CRC_TO, SD_RSP_R1, SD_TM_AUTO_READ_2,
+        SD_TRANSFER, SD_TRANSFER_END, SD_TRANSFER_START, SdCardType,
     };
 
     #[test]
@@ -1224,7 +1340,7 @@ mod tests {
 
     #[test]
     fn sector_dma_setup_uses_ring_buffer_and_completion_check() {
-        let commands = RtsxController::read_sector_dma_commands(0x1234_5678);
+        let commands = RtsxController::read_data_dma_commands(0x1234_5678, 1);
 
         assert_eq!(commands.len(), 19);
         assert_eq!(
@@ -1255,8 +1371,21 @@ mod tests {
         assert_eq!(commands[16].3, SD_NO_CHECK_WAIT_CRC_TO | SD_RSP_R1);
         assert_eq!(commands[17].3, SD_TRANSFER_START | SD_TM_AUTO_READ_2);
         assert_eq!(RtsxController::write_sector_dma_commands()[11].3, 0xA4);
-        assert_eq!(RtsxController::data_dma_control(true), 0xA000_0200);
-        assert_eq!(RtsxController::data_dma_control(false), 0x8000_0200);
+        assert_eq!(RtsxController::data_dma_control(true), 0xA000_0000);
+        assert_eq!(RtsxController::data_dma_control(false), 0x8000_0000);
+    }
+
+    #[test]
+    fn multi_block_dma_setup_uses_cmd18_and_transfer_length() {
+        let commands = RtsxController::read_data_dma_commands(0x1234_5678, 8);
+
+        assert_eq!(commands[0].3, SD_CMD_START | CMD18_READ_MULTIPLE);
+        assert_eq!(commands[5].3, 8);
+        assert_eq!(commands[6].3, 0);
+        assert_eq!(commands[10].3, 0);
+        assert_eq!(commands[11].3, 0);
+        assert_eq!(commands[12].3, 0x10);
+        assert_eq!(commands[13].3, 0);
     }
 
     #[test]
