@@ -1,4 +1,5 @@
 use image::GenericImageView;
+use std::collections::VecDeque;
 use std::cell::Cell;
 use std::io::{self, Cursor, Read, Seek};
 use std::rc::Rc;
@@ -67,6 +68,8 @@ unsafe extern "C" {
     fn video_flush() -> u32;
     fn video_stage_timing(stage: u32) -> u64;
     fn video_close() -> u32;
+    fn video_should_stop() -> u32;
+    fn close_window(window_id: i32) -> u32;
     fn wait_for_ns(duration_ns: u64) -> u32;
 }
 
@@ -663,6 +666,11 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
 
     let title = format!("Video: {}", path);
     let mut window_id = -1;
+    let mut stopped_by_escape = false;
+    // Clear a request that was generated before this viewer became active.
+    unsafe {
+        let _ = video_should_stop();
+    }
     let playback_start = Instant::now();
     let mut read_time = Duration::ZERO;
     let mut decode_time = Duration::ZERO;
@@ -674,11 +682,20 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
     let mut samples = 0u32;
     let mut nals_decoded = 0u64;
     let mut rgb_bytes = 0usize;
+    // H.264 decodes pictures in decode order while MP4 composition offsets
+    // describe presentation order. Keep the small reorder window here so a
+    // decoded frame is paced against the earliest presentation timestamp
+    // that has entered the decoder, not against the packet that released it.
+    let mut pending_presentation_times = VecDeque::new();
     let mut samples_since_yield = PLAYBACK_YIELD_SAMPLES;
     println!("viewer: mp4 playback enter samples={}", sample_count);
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
     // present each decoded frame, and pace it against the track timestamps.
-    for sample_id in 1..=sample_count {
+    'playback: for sample_id in 1..=sample_count {
+        if unsafe { video_should_stop() != 0 } {
+            stopped_by_escape = true;
+            break 'playback;
+        }
         let trace_sample = sample_id <= 4 || sample_id.checked_rem(128) == Some(0);
         if trace_sample {
             println!("viewer: mp4 sample begin id={}", sample_id);
@@ -700,6 +717,10 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                 }
             }
             samples_since_yield = 0;
+        }
+        if unsafe { video_should_stop() != 0 } {
+            stopped_by_escape = true;
+            break 'playback;
         }
         if trace_sample {
             println!("viewer: mp4 sample read begin id={}", sample_id);
@@ -749,12 +770,12 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                 "video sample is too large",
             );
         }
-        let target_ns = if timescale == 0 {
-            0
-        } else {
-            ((sample.start_time as u128).saturating_mul(1_000_000_000) / u128::from(timescale))
-                as u64
-        };
+        let target_ns = sample_presentation_time_ns(
+            sample.start_time,
+            sample.rendering_offset,
+            timescale,
+        );
+        pending_presentation_times.push_back(target_ns);
         let decode_start = Instant::now();
         let frame_count = unsafe {
             video_decode_sample(
@@ -778,9 +799,17 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         nals_decoded = nals_decoded.saturating_add(u64::from(frame_count));
         decoded_frames = decoded_frames.saturating_add(frame_count);
         for _ in 0..frame_count {
+            let frame_target_ns = take_earliest_presentation_time(
+                &mut pending_presentation_times,
+                target_ns,
+            );
             let wait_start = Instant::now();
-            wait_for_video_time(playback_start, target_ns);
+            wait_for_video_time(playback_start, frame_target_ns);
             wait_time += wait_start.elapsed();
+            if unsafe { video_should_stop() != 0 } {
+                stopped_by_escape = true;
+                break 'playback;
+            }
             let frame_info = unsafe { video_frame_info() };
             let frame_width = (frame_info >> 32) as u32;
             let frame_height = frame_info as u32;
@@ -837,7 +866,7 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                 if presented_frames == 1 || presented_frames.checked_rem(30) == Some(0) {
                     println!(
                         "viewer: mp4 playback frame={} sample={} pts_ns={}",
-                        presented_frames, sample_id, target_ns
+                        presented_frames, sample_id, frame_target_ns
                     );
                 }
             }
@@ -846,7 +875,11 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
             println!("viewer: mp4 sample exit id={}", sample_id);
         }
     }
-    let flush_count = unsafe { video_flush() };
+    let flush_count = if stopped_by_escape {
+        0
+    } else {
+        unsafe { video_flush() }
+    };
     if flush_count == u32::MAX {
         return present_mp4_failure(
             path,
@@ -859,6 +892,17 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
     }
     decoded_frames = decoded_frames.saturating_add(flush_count);
     for _ in 0..flush_count {
+        let frame_target_ns = take_earliest_presentation_time(
+            &mut pending_presentation_times,
+            playback_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        );
+        let wait_start = Instant::now();
+        wait_for_video_time(playback_start, frame_target_ns);
+        wait_time += wait_start.elapsed();
+        if unsafe { video_should_stop() != 0 } {
+            stopped_by_escape = true;
+            break;
+        }
         let frame_info = unsafe { video_frame_info() };
         let frame_width = (frame_info >> 32) as u32;
         let frame_height = frame_info as u32;
@@ -908,8 +952,14 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
     );
     unsafe {
         video_close();
+        if window_id >= 0 {
+            let _ = close_window(window_id);
+        }
     }
-    println!("viewer: mp4 playback exit frames={}", presented_frames);
+    println!(
+        "viewer: mp4 playback exit frames={} stopped_by_escape={}",
+        presented_frames, stopped_by_escape
+    );
     if let Some(mode) = bench_mode {
         println!(
             "MP4-BENCH mode={} playback_ms={:.3} read_ms={:.3} decode_ms={:.3} convert_ms={:.3} present_ms={:.3} samples={} nals_with_frames={} decoded_frames={} presented_frames={} rgb_bytes={}",
@@ -976,6 +1026,27 @@ fn wait_for_video_time(start: Instant, target_ns: u64) {
     unsafe {
         wait_for_ns(remaining_ns);
     }
+}
+
+/// Convert an MP4 decode timestamp plus composition-time offset into the
+/// presentation clock used by the viewer. The offset is signed because
+/// B-frames can be displayed after their decode-order timestamp.
+fn sample_presentation_time_ns(start_time: u64, rendering_offset: i32, timescale: u32) -> u64 {
+    if timescale == 0 {
+        return 0;
+    }
+    let timestamp = i128::from(start_time)
+        .saturating_add(i128::from(rendering_offset))
+        .saturating_mul(1_000_000_000)
+        / i128::from(timescale);
+    timestamp.clamp(0, i128::from(u64::MAX)) as u64
+}
+
+fn take_earliest_presentation_time(times: &mut VecDeque<u64>, fallback: u64) -> u64 {
+    let Some((index, _)) = times.iter().enumerate().min_by_key(|(_, time)| **time) else {
+        return fallback;
+    };
+    times.remove(index).unwrap_or(fallback)
 }
 
 fn ms(duration: Duration) -> f64 {
@@ -1421,10 +1492,12 @@ fn print_hex(path: &str, data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_dimensions, mp3_frame, qoi_header_allowed, source_dimensions_allowed, try_image,
+        fit_dimensions, mp3_frame, qoi_header_allowed, sample_presentation_time_ns,
+        source_dimensions_allowed, take_earliest_presentation_time, try_image,
     };
     use image::GenericImageView;
     use image::ImageReader;
+    use std::collections::VecDeque;
     use std::io::Cursor;
 
     #[unsafe(no_mangle)]
@@ -1489,6 +1562,16 @@ mod tests {
 
     #[unsafe(no_mangle)]
     extern "C" fn video_close() -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_should_stop() -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn close_window(_window_id: i32) -> u32 {
         0
     }
 
@@ -1596,6 +1679,22 @@ mod tests {
         assert_eq!(fit_dimensions(1920, 1080, 800, 600), Some((800, 450)));
         assert_eq!(fit_dimensions(1080, 1920, 800, 600), Some((337, 600)));
         assert_eq!(fit_dimensions(320, 240, 800, 600), Some((320, 240)));
+    }
+
+    #[test]
+    fn applies_mp4_composition_offset_to_presentation_time() {
+        assert_eq!(sample_presentation_time_ns(3_000, 500, 1_000), 3_500_000_000);
+        assert_eq!(sample_presentation_time_ns(3_000, -500, 1_000), 2_500_000_000);
+        assert_eq!(sample_presentation_time_ns(0, -1, 1_000), 0);
+    }
+
+    #[test]
+    fn reorders_decode_timestamps_for_b_frames() {
+        let mut times = VecDeque::from([0, 66_666_666, 33_333_333]);
+        assert_eq!(take_earliest_presentation_time(&mut times, 99), 0);
+        assert_eq!(take_earliest_presentation_time(&mut times, 99), 33_333_333);
+        assert_eq!(take_earliest_presentation_time(&mut times, 99), 66_666_666);
+        assert_eq!(take_earliest_presentation_time(&mut times, 99), 99);
     }
 
     #[test]

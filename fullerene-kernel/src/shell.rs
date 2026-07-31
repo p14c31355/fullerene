@@ -253,6 +253,10 @@ fn wasm_video_clock_ns() -> u64 {
     ((tsc as u128 * 1_000_000) / tsc_per_ms as u128) as u64
 }
 
+fn wasm_video_should_stop() -> bool {
+    solvent::take_video_stop_request()
+}
+
 fn wasm_play_pcm(sample_rate: u32, channels: u8, bits_per_sample: u8, pcm: &[u8]) -> i32 {
     if pcm.is_empty() || pcm.len() > 8 * 1024 * 1024 {
         return -1;
@@ -491,6 +495,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
             write_file_chunk: wasm_write_file_chunk,
             get_monotonic_ns: wasm_get_monotonic_ns,
             video_clock_ns: wasm_video_clock_ns,
+            video_should_stop: wasm_video_should_stop,
             screen_dimensions: wasm_screen_dimensions,
             capture_screen: wasm_capture_screen,
             capture_screen_chunk: wasm_capture_screen_chunk,

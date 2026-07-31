@@ -69,6 +69,7 @@ pub type CloseWindow = fn(i32) -> i32;
 pub type PlayPcm = fn(u32, u8, u8, &[u8]) -> i32;
 /// Return accumulated native/kernel video timing in nanoseconds.
 pub type VideoStageTiming = fn(u32) -> u64;
+pub type VideoShouldStop = fn() -> bool;
 
 pub const VIDEO_STAGE_YUV_TO_RGB: u32 = 0;
 pub const VIDEO_STAGE_SCALE: u32 = 1;
@@ -90,6 +91,7 @@ pub struct WasiHost {
     pub write_file_chunk: WriteFileChunk,
     pub get_monotonic_ns: GetMonotonicNs,
     pub video_clock_ns: VideoClockNs,
+    pub video_should_stop: VideoShouldStop,
     pub screen_dimensions: ScreenDimensions,
     pub capture_screen: CaptureScreen,
     pub capture_screen_chunk: CaptureScreenChunk,
@@ -1748,6 +1750,11 @@ pub fn fullerene_video_frame_info(caller: Caller<'_, WasiCtx>) -> Result<u64, Er
         .frame_info()
         .map(|(width, height)| (u64::from(width) << 32) | u64::from(height))
         .unwrap_or(0))
+}
+
+/// Return and clear a pending Escape request from the host keyboard.
+pub fn fullerene_video_should_stop(caller: Caller<'_, WasiCtx>) -> Result<u32, Error> {
+    Ok((caller.data().video_should_stop)() as u32)
 }
 
 /// Convert and optionally present the oldest pending native frame. A

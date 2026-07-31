@@ -67,7 +67,9 @@ pub use event_loop::{
     runtime_tick, runtime_tick_no_fb, set_render_fn, tick_core,
 };
 pub use file::RuntimeFile;
-pub use input_loop::{MOUSE_STATE, MouseState, poll_keyboard, poll_mouse_state};
+pub use input_loop::{
+    MOUSE_STATE, MouseState, poll_keyboard, poll_mouse_state, take_video_stop_request,
+};
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use runtime_context::{
     DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY,

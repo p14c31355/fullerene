@@ -120,6 +120,7 @@ fn host() -> WasiHost {
         write_file_chunk,
         get_monotonic_ns,
         video_clock_ns: get_monotonic_ns,
+        video_should_stop: no_video_stop,
         screen_dimensions,
         capture_screen,
         capture_screen_chunk,
@@ -150,6 +151,10 @@ fn no_stdin() -> Option<u8> {
 fn no_op() {}
 
 fn no_wait(_: u64) {}
+
+fn no_video_stop() -> bool {
+    false
+}
 
 fn file_size(_: &str) -> Result<u64, FsError> {
     MEDIA.get().map(|data| data.len() as u64).ok_or(FsError::Io)

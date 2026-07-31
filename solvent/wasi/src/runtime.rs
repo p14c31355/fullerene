@@ -9,9 +9,9 @@ use crate::wasi::{
     fullerene_screen_dimensions, fullerene_show_error, fullerene_show_image, fullerene_show_text,
     fullerene_update_window, fullerene_video_close, fullerene_video_decode_sample,
     fullerene_video_discard, fullerene_video_flush, fullerene_video_frame_info,
-    fullerene_video_open, fullerene_video_present, fullerene_video_stage_timing,
-    fullerene_wait_for_ns, fullerene_write_file_chunk, path_filestat_get, path_open, proc_exit,
-    random_get, sched_yield,
+    fullerene_video_open, fullerene_video_present, fullerene_video_should_stop,
+    fullerene_video_stage_timing, fullerene_wait_for_ns, fullerene_write_file_chunk,
+    path_filestat_get, path_open, proc_exit, random_get, sched_yield,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -194,6 +194,7 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
         fullerene_video_decode_sample,
     )?;
     linker.func_wrap(fullerene, "video_frame_info", fullerene_video_frame_info)?;
+    linker.func_wrap(fullerene, "video_should_stop", fullerene_video_should_stop)?;
     linker.func_wrap(fullerene, "video_present", fullerene_video_present)?;
     linker.func_wrap(fullerene, "video_discard", fullerene_video_discard)?;
     linker.func_wrap(fullerene, "video_flush", fullerene_video_flush)?;
