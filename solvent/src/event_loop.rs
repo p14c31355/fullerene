@@ -251,8 +251,13 @@ pub fn runtime_tick_no_fb() {
             if !runtime.frame_due {
                 return false;
             }
+            // A video frame has its own presentation deadline in the WASM
+            // viewer. Do not quantize it to the desktop's 17 ms refresh
+            // throttle: that turns a 30 fps stream into alternating short
+            // and long display intervals and is visible as judder.
+            let video_frame_due = runtime.video_dirty_window.is_some();
             let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
-            if now_tsc.wrapping_sub(last) < frame_tsc {
+            if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
                 return false;
             }
             LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
@@ -280,12 +285,13 @@ pub fn runtime_tick_no_fb() {
     let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let due = runtime.frame_due;
         if due {
+            let video_frame_due = runtime.video_dirty_window.is_some();
             let frame_tsc = TSC_PER_MS
                 .load(core::sync::atomic::Ordering::Relaxed)
                 .saturating_mul(FRAME_INTERVAL_MS);
             let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
             let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-            if now_tsc.wrapping_sub(last) < frame_tsc {
+            if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
                 runtime.frame_due = true;
                 return false;
             }
