@@ -91,6 +91,18 @@ pub fn invalidate_window(id: WindowId) {
     nitrogen::debug_status!("WASM", "window_api invalidate exit");
 }
 
+/// Mark a video window surface dirty without enqueueing a general desktop
+/// invalidation. The next render can reuse the existing background back
+/// buffer and redraw only the video window and foreground layers.
+pub fn invalidate_video_window(id: WindowId) {
+    nitrogen::debug_status!("WASM", "video window invalidate enter");
+    if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
+        runtime.video_dirty_window = Some(id);
+        runtime.frame_due = true;
+    }
+    nitrogen::debug_status!("WASM", "video window invalidate exit");
+}
+
 /// Open the live kernel-log viewer window from a non-GUI context (e.g. the
 /// Nozzle shell).  This lets the user open Klog Live before launching a
 /// command that may hang, so the timer-driven lock-free repaint keeps

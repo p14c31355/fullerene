@@ -245,6 +245,24 @@ impl Compositor {
     /// Returns the bounding box that was actually drawn (clipped dirty rect),
     /// so the caller can perform a partial blit instead of a full framebuffer copy.
     pub fn render(scene: &Scene<'_>, target: &mut dyn RenderTarget) -> (u32, u32, u32, u32) {
+        Self::render_internal(scene, target, false)
+    }
+
+    /// Render an incremental video update over an already-composited target.
+    /// The background and desktop icon layers are retained in the RAM-backed
+    /// target, avoiding an expensive wallpaper repaint for every video frame.
+    pub fn render_preserving_background(
+        scene: &Scene<'_>,
+        target: &mut dyn RenderTarget,
+    ) -> (u32, u32, u32, u32) {
+        Self::render_internal(scene, target, true)
+    }
+
+    fn render_internal(
+        scene: &Scene<'_>,
+        target: &mut dyn RenderTarget,
+        preserve_background: bool,
+    ) -> (u32, u32, u32, u32) {
         // Reset draw-call counter
         DRAW_CALLS.store(0, Ordering::Relaxed);
 
@@ -259,14 +277,28 @@ impl Compositor {
         let mut drawn: Option<DirtyRect> = None;
         if scene.dirty_rects.is_empty() {
             let region = DirtyRect::full(fb_width, fb_height);
-            Self::render_region(scene, framebuffer, fb_width, fb_height, region);
+            Self::render_region(
+                scene,
+                framebuffer,
+                fb_width,
+                fb_height,
+                region,
+                preserve_background,
+            );
             drawn = Some(region);
         } else {
             for &dirty in scene.dirty_rects {
                 let Some(region) = Self::clip_region(dirty, fb_width, fb_height) else {
                     continue;
                 };
-                Self::render_region(scene, framebuffer, fb_width, fb_height, region);
+                Self::render_region(
+                    scene,
+                    framebuffer,
+                    fb_width,
+                    fb_height,
+                    region,
+                    preserve_background,
+                );
                 if let Some(bounds) = drawn.as_mut() {
                     bounds.merge(&region);
                 } else {
@@ -296,6 +328,7 @@ impl Compositor {
         fb_width: u32,
         fb_height: u32,
         region: DirtyRect,
+        preserve_background: bool,
     ) {
         let dx = region.x;
         let dy = region.y;
@@ -303,18 +336,28 @@ impl Compositor {
         let dh = region.height;
 
         // ── Layer 0: Desktop background (wallpaper) + icons ───
-        if scene.layered {
-            crate::wallpaper::render_wallpaper(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
-        } else {
-            for row in dy..dy + dh {
-                let start = (row * fb_width + dx) as usize;
-                framebuffer[start..start + dw as usize].fill(scene.bg_color);
+        if !preserve_background {
+            if scene.layered {
+                crate::wallpaper::render_wallpaper(
+                    framebuffer,
+                    fb_width,
+                    fb_height,
+                    dx,
+                    dy,
+                    dw,
+                    dh,
+                );
+            } else {
+                for row in dy..dy + dh {
+                    let start = (row * fb_width + dx) as usize;
+                    framebuffer[start..start + dw as usize].fill(scene.bg_color);
+                }
             }
-        }
 
-        // Draw desktop icons on the background, behind windows
-        if let Some(icons) = scene.desktop_icons {
-            icons.render(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
+            // Draw desktop icons on the background, behind windows
+            if let Some(icons) = scene.desktop_icons {
+                icons.render(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
+            }
         }
 
         // ── Layer 1: Windows ─────────────────────────────

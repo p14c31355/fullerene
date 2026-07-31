@@ -294,7 +294,7 @@ fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixel
     crate::metrics::record_video_window_buffer_copy(
         unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(copy_start),
     );
-    solvent::invalidate_window(window_id);
+    solvent::invalidate_video_window(window_id);
     crate::metrics::mark_video_frame();
     0
 }

@@ -355,7 +355,20 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     }
     rt.clock_changed = false;
 
-    rt.desktop.prepare_frame(fb_width, fb_height);
+    let video_window = rt.video_dirty_window.take();
+    let video_only = video_window.is_some_and(|window_id| {
+        if rt.desktop.prepare_video_frame(window_id) {
+            true
+        } else {
+            // Preserve the video invalidation when another desktop change
+            // requires the normal background-rendering path.
+            rt.desktop.invalidate_window(window_id);
+            false
+        }
+    });
+    if !video_only {
+        rt.desktop.prepare_frame(fb_width, fb_height);
+    }
     let fb_stride = fb_stride_pixels as usize;
     let fb_len = fb_stride.saturating_mul(fb_height as usize);
     let back_len = (fb_width as usize).saturating_mul(fb_height as usize);
@@ -396,7 +409,11 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             // Keep the RAM back buffer cursor-free. Cursor-only updates can
             // then restore clean pixels without reading from GOP memory.
             let cursor = scene.cursor.take();
-            let (_bx, _by, bw, bh) = Compositor::render(&scene, &mut back_target);
+            let (_bx, _by, bw, bh) = if video_only {
+                Compositor::render_preserving_background(&scene, &mut back_target)
+            } else {
+                Compositor::render(&scene, &mut back_target)
+            };
             render_progress(b"RENDER: compositor done");
             render_progress(b"RENDER: system layers");
             match rt.shell_state {
