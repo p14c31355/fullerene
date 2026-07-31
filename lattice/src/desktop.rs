@@ -819,7 +819,19 @@ impl Desktop {
             return false;
         };
         self.dirty_cache.clear();
-        self.dirty_cache.push(crate::wm::window_dirty_rect(window));
+        let title_height = if window.title.is_some() {
+            crate::style::title_bar_height() as i32
+        } else {
+            0
+        };
+        let client_x = window.x.max(0) as u32;
+        let client_y = window.y.saturating_add(title_height).max(0) as u32;
+        self.dirty_cache.push(DirtyRect::new(
+            client_x,
+            client_y,
+            window.width,
+            window.height,
+        ));
         if let Some((previous, current)) = cursor_dirty {
             self.dirty_cache.push(previous);
             self.dirty_cache.push(current);
