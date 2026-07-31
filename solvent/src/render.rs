@@ -106,6 +106,43 @@ fn blit_region_with_brightness(
     region: lattice::scene::DirtyRect,
     brightness: u32,
 ) {
+    // The normal display path is already in the framebuffer's native packed
+    // pixel format.  Copy complete scan-line spans in one operation instead
+    // of issuing one volatile store per pixel.  Besides reducing compositor
+    // time, this shortens the interval in which the GOP scanout can observe
+    // a partially updated video frame.  Brightness adjustments still use the
+    // per-pixel path below because they change the pixel values.
+    if brightness == 100 {
+        for row in region.y as usize..(region.y + region.height) as usize {
+            let src = row * back_width + region.x as usize;
+            let dst = row * framebuffer_stride + region.x as usize;
+            let width = region.width as usize;
+            let (Some(src_end), Some(dst_end)) = (src.checked_add(width), dst.checked_add(width))
+            else {
+                return;
+            };
+            let Some(source) = back.get(src..src_end) else {
+                return;
+            };
+            if dst_end > framebuffer.len() {
+                return;
+            }
+            // SAFETY: both slices were bounds-checked above and the backing
+            // framebuffer region is non-overlapping with the RAM back buffer.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    source.as_ptr(),
+                    framebuffer.as_mut_ptr().add(dst),
+                    width,
+                );
+            }
+        }
+        // The GOP aperture is write-combining memory on supported hardware.
+        // Publish the whole region before returning control to the scanout.
+        unsafe { core::arch::x86_64::_mm_sfence() };
+        return;
+    }
+
     for row in region.y as usize..(region.y + region.height) as usize {
         let src = row * back_width + region.x as usize;
         let dst = row * framebuffer_stride + region.x as usize;
