@@ -97,6 +97,29 @@ fn apply_mouse_move(
     }
 }
 
+/// Apply only pointer motion during a synchronous WASM callback. The normal
+/// dispatcher is intentionally not re-entered there because it may launch
+/// files or mutate the shell recursively; cursor motion itself is safe and
+/// must remain responsive while video playback is running.
+pub(crate) fn apply_pointer_motion(x: i32, y: i32) {
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let Some(runtime) = runtime.as_mut() else {
+        return;
+    };
+    if runtime.shell_state == ShellState::Desktop {
+        apply_mouse_move(
+            &mut runtime.desktop,
+            &mut runtime.cursor_redraw_from,
+            &mut runtime.frame_due,
+            x,
+            y,
+        );
+    } else {
+        let event = Event::Input(InputEvent::MouseMove { x, y });
+        let _ = handle_overlay_event(runtime, &event);
+    }
+}
+
 pub(crate) struct WmEventHandler;
 
 impl EventHandler for WmEventHandler {

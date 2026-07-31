@@ -9,9 +9,11 @@ edition = "2024"
 image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "bmp", "gif", "qoi",
 ] }
-rust_h264 = "0.4"
 mp4 = "0.14"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[dev-dependencies]
+z264 = { version = "0.1.0", default-features = false }
 
 [profile.release]
 opt-level = "s"

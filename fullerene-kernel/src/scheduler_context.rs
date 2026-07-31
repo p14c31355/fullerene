@@ -505,6 +505,15 @@ impl SchedulerContext {
         drop(guard);
 
         if let Some(new) = new_ctx {
+            if new_user_first_entry {
+                #[cfg(linux_busybox_smoke)]
+                crate::klog_fmt!(
+                    "[LINUX-DIAG] user entry prepare pid={} cr3={:#x} kernel_stack={:#x}\n",
+                    new_pid.0,
+                    pt.as_u64(),
+                    new_kernel_stack.map_or(0, |stack| stack.as_u64()),
+                );
+            }
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }

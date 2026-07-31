@@ -11,6 +11,7 @@ rust-version.workspace = true
 wasmi = { version = "0.33", default-features = false }
 carrier = { path = "../../carrier" }
 genome = { path = "../../genome" }
+z264 = { version = "0.1.0", default-features = false }
 
 [lib]
 name = "wasi_runtime"

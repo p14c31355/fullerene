@@ -1,6 +1,6 @@
 //! PS/2 input polling and translation into desktop or Resonance events.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use lattice::desktop::DesktopAction;
 use resonance::{Event, InputEvent, MouseButton};
 use spin::Mutex;
@@ -34,6 +34,22 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
 const MAX_MOUSE_STEP_PX: i32 = 96;
 const MOUSE_STALE_AFTER_MS: u64 = 50;
 static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
+static VIDEO_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Consume an Escape press observed by the low-level keyboard poller.
+///
+/// The synchronous WASM viewer cannot receive the normal desktop event
+/// dispatch while it is presenting a frame, so video playback uses this
+/// small out-of-band request instead.
+pub fn take_video_stop_request() -> bool {
+    VIDEO_STOP_REQUESTED.swap(false, Ordering::AcqRel)
+}
+
+/// Discard an Escape request left over from a previous input epoch before a
+/// new synchronous video playback starts.
+pub fn clear_video_stop_request() {
+    VIDEO_STOP_REQUESTED.store(false, Ordering::Release);
+}
 
 fn scaled_mouse_delta(delta: i16, sensitivity: i16) -> i32 {
     (i32::from(delta) * i32::from(sensitivity)).clamp(-MAX_MOUSE_STEP_PX, MAX_MOUSE_STEP_PX)
@@ -199,12 +215,16 @@ pub fn poll_keyboard() {
             Some(key) => key,
             None => break,
         };
+        let key = scancode_to_resonance_keycode(scancode);
+        if pressed && key == resonance::KeyCode::Escape {
+            VIDEO_STOP_REQUESTED.store(true, Ordering::Release);
+        }
 
         // Fn is usually consumed by the keyboard firmware and is not visible
         // as a PS/2 modifier. The resulting E0 37 Print Screen event is the
         // stable signal for Fn+PrtSc on laptops, so handle it before normal
         // focused-window routing.
-        if scancode_to_resonance_keycode(scancode) == resonance::KeyCode::PrintScreen {
+        if key == resonance::KeyCode::PrintScreen {
             if pressed {
                 if let Some(run_wasm) = RUNTIME_CONTEXT.callback_snapshot().run_wasm {
                     let args = ["/apps/emulsion.wasm", "capture"];
@@ -220,7 +240,7 @@ pub fn poll_keyboard() {
         // routing (Settings, Editor, Explorer, and Terminal) so the shell
         // state machine always receives both key-down and key-up events.
         if matches!(
-            scancode_to_resonance_keycode(scancode),
+            key,
             resonance::KeyCode::SuperLeft | resonance::KeyCode::SuperRight
         ) {
             push_keyboard_event(scancode, pressed);

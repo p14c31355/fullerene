@@ -9,6 +9,15 @@ static BOOT_TIME_US: AtomicU64 = AtomicU64::new(0);
 static FRAME_LAST_US: AtomicU64 = AtomicU64::new(0);
 static FRAME_MAX_US: AtomicU64 = AtomicU64::new(0);
 static HEAP_HIGH_WATER_BYTES: AtomicUsize = AtomicUsize::new(0);
+static VIDEO_PENDING_FRAMES: AtomicU64 = AtomicU64::new(0);
+static VIDEO_WINDOW_BUFFER_COPY_NS: AtomicU64 = AtomicU64::new(0);
+static VIDEO_COMPOSITE_NS: AtomicU64 = AtomicU64::new(0);
+static VIDEO_FRAMEBUFFER_FLUSH_NS: AtomicU64 = AtomicU64::new(0);
+
+pub const VIDEO_STAGE_WINDOW_BUFFER_COPY: u32 = 2;
+pub const VIDEO_STAGE_COMPOSITE: u32 = 3;
+pub const VIDEO_STAGE_FRAMEBUFFER_FLUSH: u32 = 4;
+pub const VIDEO_STAGE_RESET: u32 = u32::MAX;
 
 fn update_max_u64(target: &AtomicU64, candidate: u64) {
     let mut observed = target.load(Ordering::Relaxed);
@@ -43,6 +52,55 @@ fn update_max_usize(target: &AtomicUsize, candidate: usize) {
 fn ticks_to_us(ticks: u64) -> u64 {
     let ticks_per_ms = solvent::get_tsc_per_ms().max(1);
     ((ticks as u128 * 1000) / ticks_per_ms as u128) as u64
+}
+
+fn ticks_to_ns(ticks: u64) -> u64 {
+    let ticks_per_ms = solvent::get_tsc_per_ms().max(1);
+    ((ticks as u128 * 1_000_000) / ticks_per_ms as u128) as u64
+}
+
+/// Mark a window update as originating from the native video pipeline.
+pub fn mark_video_frame() {
+    VIDEO_PENDING_FRAMES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Consume pending video updates before a compositor pass.
+pub fn take_video_frame_count() -> u64 {
+    VIDEO_PENDING_FRAMES.swap(0, Ordering::AcqRel)
+}
+
+pub fn record_video_window_buffer_copy(ticks: u64) {
+    VIDEO_WINDOW_BUFFER_COPY_NS.fetch_add(ticks_to_ns(ticks), Ordering::Relaxed);
+}
+
+pub fn record_video_composite(ticks: u64) {
+    VIDEO_COMPOSITE_NS.fetch_add(ticks_to_ns(ticks), Ordering::Relaxed);
+}
+
+pub fn record_video_framebuffer_flush(ticks: u64) {
+    VIDEO_FRAMEBUFFER_FLUSH_NS.fetch_add(ticks_to_ns(ticks), Ordering::Relaxed);
+}
+
+/// Clear all accumulated kernel-owned video counters.
+pub fn reset_video_metrics() {
+    VIDEO_PENDING_FRAMES.store(0, Ordering::Relaxed);
+    VIDEO_WINDOW_BUFFER_COPY_NS.store(0, Ordering::Relaxed);
+    VIDEO_COMPOSITE_NS.store(0, Ordering::Relaxed);
+    VIDEO_FRAMEBUFFER_FLUSH_NS.store(0, Ordering::Relaxed);
+}
+
+/// Return accumulated kernel-owned video timing in nanoseconds.
+pub fn video_stage_timing(stage: u32) -> u64 {
+    if stage == VIDEO_STAGE_RESET {
+        reset_video_metrics();
+        return 0;
+    }
+    match stage {
+        VIDEO_STAGE_WINDOW_BUFFER_COPY => VIDEO_WINDOW_BUFFER_COPY_NS.load(Ordering::Relaxed),
+        VIDEO_STAGE_COMPOSITE => VIDEO_COMPOSITE_NS.load(Ordering::Relaxed),
+        VIDEO_STAGE_FRAMEBUFFER_FLUSH => VIDEO_FRAMEBUFFER_FLUSH_NS.load(Ordering::Relaxed),
+        _ => 0,
+    }
 }
 
 /// Start boot timing at the first common kernel entry.

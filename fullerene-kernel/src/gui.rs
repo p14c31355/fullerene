@@ -200,13 +200,19 @@ static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
 static FRAMEBUFFER_UNAVAILABLE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Signal present and flush GPU after rendering.
-fn finish_frame() {
+fn finish_frame(video_frames: u64) {
+    let flush_start = unsafe { core::arch::x86_64::_rdtsc() };
     crate::contexts::kernel::with_kernel_mut(|k| {
         if let Some(ref mut renderer) = k.framebuffer.renderer {
             renderer.present();
         }
     });
     crate::graphics::flush_gpu();
+    if video_frames != 0 {
+        crate::metrics::record_video_framebuffer_flush(
+            unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(flush_start),
+        );
+    }
 }
 
 pub fn render() {
@@ -227,8 +233,15 @@ pub fn render() {
         crate::boot_stage::disable_boot_screen();
     }
 
+    let video_frames = crate::metrics::take_video_frame_count();
+    let composite_start = unsafe { core::arch::x86_64::_rdtsc() };
     let framebuffer_available =
         crate::contexts::framebuffer::with_framebuffer(|fb| solvent::render(fb)).is_some();
+    if video_frames != 0 {
+        crate::metrics::record_video_composite(
+            unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(composite_start),
+        );
+    }
     if !framebuffer_available {
         if !FRAMEBUFFER_UNAVAILABLE_LOGGED.swap(true, Ordering::Relaxed) {
             petroleum::serial::serial_log(format_args!(
@@ -240,7 +253,7 @@ pub fn render() {
     }
 
     BOOT_PROGRESS_DONE.store(true, Ordering::Release);
-    finish_frame();
+    finish_frame(video_frames);
     crate::metrics::record_frame_ticks(
         unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
     );
@@ -264,6 +277,12 @@ pub fn runtime_tick(now: u64) {
     let cursor_only = !full_frame && solvent::cursor_update_due();
     if full_frame || cursor_only {
         let frame_start = unsafe { core::arch::x86_64::_rdtsc() };
+        let video_frames = if full_frame {
+            crate::metrics::take_video_frame_count()
+        } else {
+            0
+        };
+        let composite_start = unsafe { core::arch::x86_64::_rdtsc() };
         let rendered = crate::contexts::framebuffer::with_framebuffer(|framebuffer| {
             if full_frame {
                 solvent::render(framebuffer);
@@ -271,10 +290,15 @@ pub fn runtime_tick(now: u64) {
                 solvent::render_cursor_fast(framebuffer);
             }
         });
+        if video_frames != 0 {
+            crate::metrics::record_video_composite(
+                unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(composite_start),
+            );
+        }
         if rendered.is_none() {
             crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
         }
-        finish_frame();
+        finish_frame(video_frames);
         crate::metrics::record_frame_ticks(
             unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
         );

@@ -792,6 +792,54 @@ impl Desktop {
         }
     }
 
+    /// Prepare a frame where only an existing window surface changed.
+    ///
+    /// Returns `false` when another desktop mutation is pending and the
+    /// caller must use the normal background-rendering path.
+    pub fn prepare_video_frame(
+        &mut self,
+        window_id: WindowId,
+        cursor_dirty: Option<(DirtyRect, DirtyRect)>,
+    ) -> bool {
+        if self.needs_full_redraw
+            || !self.wm.dirty_rects.is_empty()
+            || (self.cursor_moved && cursor_dirty.is_none())
+            || self.active_menu.is_some()
+            || self.network_menu_open
+            || self.pwd_dialog_open
+        {
+            return false;
+        }
+        let Some(window) = self
+            .wm
+            .windows()
+            .iter()
+            .find(|window| window.id == window_id)
+        else {
+            return false;
+        };
+        self.dirty_cache.clear();
+        let title_height = if window.title.is_some() {
+            crate::style::title_bar_height() as i32
+        } else {
+            0
+        };
+        let client_x = window.x.max(0) as u32;
+        let client_y = window.y.saturating_add(title_height).max(0) as u32;
+        self.dirty_cache.push(DirtyRect::new(
+            client_x,
+            client_y,
+            window.width,
+            window.height,
+        ));
+        if let Some((previous, current)) = cursor_dirty {
+            self.dirty_cache.push(previous);
+            self.dirty_cache.push(current);
+            self.cursor_moved = false;
+        }
+        true
+    }
+
     // ── scene snapshot ──────────────────────────────────────
 
     /// Build an immutable snapshot for the compositor.

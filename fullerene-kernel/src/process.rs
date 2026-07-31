@@ -885,6 +885,11 @@ pub fn yield_from_scheduler_stack() {
         return;
     }
     let new_pid = ProcessId(target);
+    crate::klog_fmt!(
+        "[LINUX-DIAG] scheduler handoff enter current={} target={}\n",
+        SCHEDULER.current_pid(),
+        target
+    );
     if !SCHEDULER.yield_to(new_pid) {
         // The shell may observe the newly-created task during the short
         // interval in which another scheduler path has not yet marked it
@@ -900,6 +905,12 @@ pub fn yield_from_scheduler_stack() {
                 SCHEDULER.process_state(new_pid),
             ));
         }
+    } else {
+        crate::klog_fmt!(
+            "[LINUX-DIAG] scheduler handoff resumed current={} target={}\n",
+            SCHEDULER.current_pid(),
+            target
+        );
     }
 }
 

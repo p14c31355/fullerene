@@ -245,6 +245,24 @@ impl Compositor {
     /// Returns the bounding box that was actually drawn (clipped dirty rect),
     /// so the caller can perform a partial blit instead of a full framebuffer copy.
     pub fn render(scene: &Scene<'_>, target: &mut dyn RenderTarget) -> (u32, u32, u32, u32) {
+        Self::render_internal(scene, target, false)
+    }
+
+    /// Render an incremental video update over an already-composited target.
+    /// The background and desktop icon layers are retained in the RAM-backed
+    /// target, avoiding an expensive wallpaper repaint for every video frame.
+    pub fn render_preserving_background(
+        scene: &Scene<'_>,
+        target: &mut dyn RenderTarget,
+    ) -> (u32, u32, u32, u32) {
+        Self::render_internal(scene, target, true)
+    }
+
+    fn render_internal(
+        scene: &Scene<'_>,
+        target: &mut dyn RenderTarget,
+        preserve_background: bool,
+    ) -> (u32, u32, u32, u32) {
         // Reset draw-call counter
         DRAW_CALLS.store(0, Ordering::Relaxed);
 
@@ -259,14 +277,28 @@ impl Compositor {
         let mut drawn: Option<DirtyRect> = None;
         if scene.dirty_rects.is_empty() {
             let region = DirtyRect::full(fb_width, fb_height);
-            Self::render_region(scene, framebuffer, fb_width, fb_height, region);
+            Self::render_region(
+                scene,
+                framebuffer,
+                fb_width,
+                fb_height,
+                region,
+                preserve_background,
+            );
             drawn = Some(region);
         } else {
             for &dirty in scene.dirty_rects {
                 let Some(region) = Self::clip_region(dirty, fb_width, fb_height) else {
                     continue;
                 };
-                Self::render_region(scene, framebuffer, fb_width, fb_height, region);
+                Self::render_region(
+                    scene,
+                    framebuffer,
+                    fb_width,
+                    fb_height,
+                    region,
+                    preserve_background,
+                );
                 if let Some(bounds) = drawn.as_mut() {
                     bounds.merge(&region);
                 } else {
@@ -296,6 +328,7 @@ impl Compositor {
         fb_width: u32,
         fb_height: u32,
         region: DirtyRect,
+        preserve_background: bool,
     ) {
         let dx = region.x;
         let dy = region.y;
@@ -303,24 +336,44 @@ impl Compositor {
         let dh = region.height;
 
         // ── Layer 0: Desktop background (wallpaper) + icons ───
-        if scene.layered {
-            crate::wallpaper::render_wallpaper(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
-        } else {
-            for row in dy..dy + dh {
-                let start = (row * fb_width + dx) as usize;
-                framebuffer[start..start + dw as usize].fill(scene.bg_color);
+        if !preserve_background {
+            if scene.layered {
+                crate::wallpaper::render_wallpaper(
+                    framebuffer,
+                    fb_width,
+                    fb_height,
+                    dx,
+                    dy,
+                    dw,
+                    dh,
+                );
+            } else {
+                for row in dy..dy + dh {
+                    let start = (row * fb_width + dx) as usize;
+                    framebuffer[start..start + dw as usize].fill(scene.bg_color);
+                }
             }
-        }
 
-        // Draw desktop icons on the background, behind windows
-        if let Some(icons) = scene.desktop_icons {
-            icons.render(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
+            // Draw desktop icons on the background, behind windows
+            if let Some(icons) = scene.desktop_icons {
+                icons.render(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
+            }
         }
 
         // ── Layer 1: Windows ─────────────────────────────
         for window in scene.windows {
             if !window.minimized {
-                Self::draw_window_clipped(framebuffer, fb_width, fb_height, window, dx, dy, dw, dh);
+                Self::draw_window_clipped(
+                    framebuffer,
+                    fb_width,
+                    fb_height,
+                    window,
+                    dx,
+                    dy,
+                    dw,
+                    dh,
+                    preserve_background,
+                );
             }
         }
         inc_draw_calls();
@@ -501,6 +554,7 @@ impl Compositor {
         cy: u32,
         cw: u32,
         ch: u32,
+        preserve_background: bool,
     ) {
         let src = &win.surface;
         let title_h = crate::style::title_bar_height() as i32;
@@ -530,6 +584,43 @@ impl Compositor {
         let cex = (cx + cw) as i32;
         let cey = (cy + ch) as i32;
         let sp = src.pixels();
+
+        // Video frames normally update a focused window without changing its
+        // geometry. Copy the bulk of the client surface row-wise and leave
+        // only the small rounded-corner strip to the general clipped path.
+        // This avoids per-pixel bounds and corner checks for ~99% of a video
+        // frame while preserving the normal path for all desktop redraws.
+        let fast_client_rows = if preserve_background
+            && win.focused
+            && wdx >= 0
+            && wdy >= 0
+            && sw >= win.width as i32
+            && sh >= win.height as i32
+            && win.title.is_some()
+            && radius > 0
+        {
+            let x0 = (cx as i32).max(wdx) as u32;
+            let x1 = cex.min(wdx + win.width as i32).min(fbw as i32) as u32;
+            let y0 = (cy as i32).max(wdy) as u32;
+            let client_bottom = wdy + win.height as i32;
+            let fast_bottom = client_bottom.saturating_sub(radius);
+            let y1 = cey.min(fast_bottom).min(fbh as i32) as u32;
+            if x0 < x1 && y0 < y1 {
+                let copy_width = (x1 - x0) as usize;
+                let source_x = (x0 as i32 - wdx) as usize;
+                for y in y0..y1 {
+                    let source_start = (y as i32 - wdy) as usize * sw as usize + source_x;
+                    let dest_start = y as usize * fbw as usize + x0 as usize;
+                    fb[dest_start..dest_start + copy_width]
+                        .copy_from_slice(&sp[source_start..source_start + copy_width]);
+                }
+                Some((y0 as i32, y1 as i32))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // A maximized shell is an opaque, focused surface that usually
         // covers almost the entire work area. The general path performs
@@ -563,6 +654,9 @@ impl Compositor {
         for sr in sys..sye {
             let dr = (wdy + sr) as i32;
             if dr < cy as i32 || dr >= cey {
+                continue;
+            }
+            if fast_client_rows.is_some_and(|(y0, y1)| dr >= y0 && dr < y1) {
                 continue;
             }
             let db = (dr as usize) * (fbw as usize);

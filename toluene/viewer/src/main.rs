@@ -1,22 +1,52 @@
 use image::GenericImageView;
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::io::{self, Cursor, Read, Seek};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-const VIEWER_BUILD_ID: &str = "2026-07-27-wasm-pipeline-1";
+const VIEWER_BUILD_ID: &str = "2026-07-31-native-z264-mp4-1";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MP4_IO_OPERATIONS: usize = 16_384;
 const MAX_MP4_PARSE_TIME: Duration = Duration::from_secs(3);
 const MAX_MP4_SAMPLES: u32 = 1_000_000;
 const MAX_PLAYBACK_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
-const MAX_NALS_PER_SAMPLE: usize = 128;
+const VIDEO_REORDER_DEPTH: usize = 16;
+// Keep the event loop responsive without adding a host yield for every
+// sample; native video submission is already one host transition per sample.
+const PLAYBACK_YIELD_SAMPLES: usize = 2;
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SOURCE_IMAGE_WIDTH: u32 = 16_384;
 const MAX_SOURCE_IMAGE_HEIGHT: u32 = 16_384;
 const MAX_SOURCE_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_IMAGE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_QOI_PIXELS: u64 = 8 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Mp4BenchMode {
+    DecodeOnly,
+    DecodeConvert,
+    Full,
+}
+
+impl Mp4BenchMode {
+    fn parse(arg: &str) -> Option<Self> {
+        match arg {
+            "--bench=decode" => Some(Self::DecodeOnly),
+            "--bench=convert" => Some(Self::DecodeConvert),
+            "--bench=full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::DecodeOnly => "decode",
+            Self::DecodeConvert => "decode+convert",
+            Self::Full => "full",
+        }
+    }
+}
 
 #[link(wasm_import_module = "fullerene")]
 unsafe extern "C" {
@@ -31,6 +61,16 @@ unsafe extern "C" {
         pixels_ptr: *const u8,
         pixels_len: u32,
     ) -> i32;
+    fn video_open(config_ptr: *const u8, config_len: u32) -> u32;
+    fn video_decode_sample(sample_ptr: *const u8, sample_len: u32, length_size: u32) -> u32;
+    fn video_frame_info() -> u64;
+    fn video_present(window_id: i32) -> u32;
+    fn video_discard() -> u32;
+    fn video_flush() -> u32;
+    fn video_stage_timing(stage: u32) -> u64;
+    fn video_close() -> u32;
+    fn video_should_stop() -> u32;
+    fn close_window(window_id: i32) -> u32;
     fn wait_for_ns(duration_ns: u64) -> u32;
 }
 
@@ -43,7 +83,8 @@ fn main() {
     }
 
     let path = &args[1];
-    if is_mp4_path(path) && try_mp4_file(path) {
+    let bench_mode = args.get(2).and_then(|arg| Mp4BenchMode::parse(arg));
+    if is_mp4_path(path) && try_mp4_file_with_mode(path, bench_mode) {
         return;
     }
 
@@ -432,7 +473,12 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
 /// Open an MP4 through a seekable WASI file instead of reading the whole
 /// media file into a WASM Vec.  The MP4 metadata is at the beginning of the
 /// sample file, and the reader only seeks to the first sample it needs.
+#[cfg(test)]
 fn try_mp4_file(path: &str) -> bool {
+    try_mp4_file_with_mode(path, None)
+}
+
+fn try_mp4_file_with_mode(path: &str, bench_mode: Option<Mp4BenchMode>) -> bool {
     println!("viewer: mp4 file stat enter path={path}");
     let size = match std::fs::metadata(path).map(|metadata| metadata.len()) {
         Ok(size) => size,
@@ -488,10 +534,19 @@ fn try_mp4_file(path: &str) -> bool {
     };
     parsing_header.set(false);
     println!("viewer: mp4 header exit");
-    try_mp4_reader(path, size, reader)
+    try_mp4_reader_with_mode(path, size, reader, bench_mode)
 }
 
-fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Reader<R>) -> bool {
+fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, reader: mp4::Mp4Reader<R>) -> bool {
+    try_mp4_reader_with_mode(path, size, reader, None)
+}
+
+fn try_mp4_reader_with_mode<R: Read + Seek>(
+    path: &str,
+    size: u64,
+    mut reader: mp4::Mp4Reader<R>,
+    bench_mode: Option<Mp4BenchMode>,
+) -> bool {
     let duration = reader.duration().as_secs_f64();
     println!("viewer: mp4 duration exit seconds={:.3}", duration);
     let total = duration as u64;
@@ -576,10 +631,10 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
         );
     }
 
-    let mut decoder = rust_h264::decoder::Decoder::new();
-    // MP4 stores SPS/PPS in avcC, outside the sample. Feed those parameter
-    // sets first; parsing the sample as if it used a fixed 4-byte prefix can
-    // make malformed/ordinary phone videos take an unbounded decode path.
+    // MP4 stores SPS/PPS in avcC, outside the sample. Build the compact
+    // Annex B configuration once and hand it to native z264. The WASM side
+    // remains responsible for demuxing and pacing, but no longer performs
+    // per-NAL parsing, H.264 reconstruction, or YUV conversion.
     let mut config_stream = Vec::new();
     for nal in avcc
         .sequence_parameter_sets
@@ -593,128 +648,300 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
         "viewer: mp4 decoder config enter bytes={}",
         config_stream.len()
     );
-    for nal in rust_h264::nal::parse_annex_b(&config_stream) {
-        if decoder.decode_nal(&nal).is_err() {
-            println!("viewer: mp4 decoder config failed");
-            return present_mp4_failure(
-                path,
-                size_mb,
-                dur,
-                width,
-                height,
-                "decoder configuration failed",
-            );
-        }
+    let config_code = unsafe { video_open(config_stream.as_ptr(), config_stream.len() as u32) };
+    if config_code != 0 {
+        println!(
+            "viewer: mp4 native decoder config failed code={}",
+            config_code
+        );
+        return present_mp4_failure(
+            path,
+            size_mb,
+            dur,
+            width,
+            height,
+            "decoder configuration failed",
+        );
     }
     println!("viewer: mp4 decoder config exit");
 
     let title = format!("Video: {}", path);
     let mut window_id = -1;
+    let mut stopped_by_escape = false;
+    // Clear a request that was generated before this viewer became active.
+    unsafe {
+        let _ = video_should_stop();
+    }
     let playback_start = Instant::now();
+    let mut read_time = Duration::ZERO;
+    let mut decode_time = Duration::ZERO;
+    let mut convert_time = Duration::ZERO;
+    let mut present_time = Duration::ZERO;
+    let mut wait_time = Duration::ZERO;
     let mut decoded_frames = 0u32;
+    let mut presented_frames = 0u32;
+    let mut samples = 0u32;
+    let mut nals_decoded = 0u64;
+    let mut rgb_bytes = 0usize;
+    // H.264 decodes pictures in decode order while MP4 composition offsets
+    // describe presentation order. Keep the small reorder window here so a
+    // decoded frame is paced against the earliest presentation timestamp
+    // that has entered the decoder, not against the packet that released it.
+    let mut pending_presentation_times = VecDeque::new();
+    let mut failure = None;
+    let mut samples_since_yield = PLAYBACK_YIELD_SAMPLES;
     println!("viewer: mp4 playback enter samples={}", sample_count);
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
     // present each decoded frame, and pace it against the track timestamps.
-    for sample_id in 1..=sample_count {
-        // Yield to the host event loop at the start of every sample so that
-        // decode failures (which skip wait_for_video_time) and long NAL
-        // chains cannot freeze the desktop.
-        unsafe {
-            wait_for_ns(0);
+    'playback: for sample_id in 1..=sample_count {
+        if unsafe { video_should_stop() != 0 } {
+            stopped_by_escape = true;
+            break 'playback;
         }
+        let trace_sample = sample_id <= 4 || sample_id.checked_rem(128) == Some(0);
+        if trace_sample {
+            println!("viewer: mp4 sample begin id={}", sample_id);
+        }
+        // Keep the event loop responsive without crossing the WASM/host
+        // boundary twice for the common one-NAL-per-sample case.  The first
+        // sample yields immediately; later samples yield at a bounded NAL
+        // interval, including samples with no decoded output.
+        if samples_since_yield >= PLAYBACK_YIELD_SAMPLES {
+            unsafe {
+                if trace_sample {
+                    println!("viewer: mp4 sample wait begin id={}", sample_id);
+                }
+                let wait_start = Instant::now();
+                wait_for_ns(0);
+                wait_time += wait_start.elapsed();
+                if trace_sample {
+                    println!("viewer: mp4 sample wait exit id={}", sample_id);
+                }
+            }
+            samples_since_yield = 0;
+        }
+        if unsafe { video_should_stop() != 0 } {
+            stopped_by_escape = true;
+            break 'playback;
+        }
+        if trace_sample {
+            println!("viewer: mp4 sample read begin id={}", sample_id);
+        }
+        let read_start = Instant::now();
         let sample = match reader.read_sample(track_id, sample_id) {
             Ok(Some(sample)) => sample,
             Ok(None) => {
                 println!("viewer: mp4 sample unavailable id={}", sample_id);
-                break;
+                failure = Some("video sample unavailable");
+                break 'playback;
             }
             Err(error) => {
                 println!(
                     "viewer: mp4 sample read failed id={} error={:?}",
                     sample_id, error
                 );
-                return present_mp4_failure(
-                    path,
-                    size_mb,
-                    dur,
-                    width,
-                    height,
-                    "video sample read failed",
-                );
+                failure = Some("video sample read failed");
+                break 'playback;
             }
         };
+        read_time += read_start.elapsed();
+        samples = samples.saturating_add(1);
+        if trace_sample {
+            println!(
+                "viewer: mp4 sample read exit id={} bytes={}",
+                sample_id,
+                sample.bytes.len()
+            );
+        }
         if sample.bytes.len() > MAX_PLAYBACK_SAMPLE_BYTES {
             println!(
                 "viewer: mp4 sample rejected id={} size>{} bytes",
                 sample_id, MAX_PLAYBACK_SAMPLE_BYTES
             );
-            return present_mp4_failure(
-                path,
-                size_mb,
-                dur,
-                width,
-                height,
-                "video sample is too large",
-            );
+            failure = Some("video sample is too large");
+            break 'playback;
         }
-        let nals = rust_h264::nal::parse_avcc(&sample.bytes, length_size);
-        if nals.len() > MAX_NALS_PER_SAMPLE {
-            println!(
-                "viewer: mp4 sample rejected id={} nals>{}",
-                sample_id, MAX_NALS_PER_SAMPLE
-            );
-            return present_mp4_failure(
-                path,
-                size_mb,
-                dur,
-                width,
-                height,
-                "sample has too many NAL units",
-            );
-        }
-        let target_ns = if timescale == 0 {
-            0
-        } else {
-            ((sample.start_time as u128).saturating_mul(1_000_000_000) / u128::from(timescale))
-                as u64
+        let target_ns =
+            sample_presentation_time_ns(sample.start_time, sample.rendering_offset, timescale);
+        push_pending_presentation_time(&mut pending_presentation_times, target_ns);
+        let decode_start = Instant::now();
+        let frame_count = unsafe {
+            video_decode_sample(
+                sample.bytes.as_ptr(),
+                sample.bytes.len() as u32,
+                length_size as u32,
+            )
         };
-        for nal in &nals {
-            if nal.rbsp.len() > MAX_PLAYBACK_SAMPLE_BYTES {
-                return present_mp4_failure(
-                    path,
-                    size_mb,
-                    dur,
-                    width,
-                    height,
-                    "NAL unit is too large",
-                );
+        decode_time += decode_start.elapsed();
+        samples_since_yield = samples_since_yield.saturating_add(1);
+        if frame_count == u32::MAX {
+            failure = Some("native decoder rejected a video sample");
+            break 'playback;
+        }
+        nals_decoded = nals_decoded.saturating_add(u64::from(frame_count));
+        decoded_frames = decoded_frames.saturating_add(frame_count);
+        for _ in 0..frame_count {
+            let frame_target_ns =
+                take_earliest_presentation_time(&mut pending_presentation_times, target_ns);
+            let wait_start = Instant::now();
+            wait_for_video_time(playback_start, frame_target_ns);
+            wait_time += wait_start.elapsed();
+            if unsafe { video_should_stop() != 0 } {
+                stopped_by_escape = true;
+                break 'playback;
             }
-            // Yield to the host before each NAL decode so the event loop
-            // can pump input and render even when decode_nal takes a long
-            // time.  decode_nal itself is pure WASM compute and cannot
-            // call the host, so this is the finest-grained yield point
-            // available.
-            unsafe {
-                wait_for_ns(0);
+            let frame_info = unsafe { video_frame_info() };
+            let frame_width = (frame_info >> 32) as u32;
+            let frame_height = frame_info as u32;
+            if frame_width == 0 || frame_height == 0 {
+                failure = Some("native decoder returned invalid frame dimensions");
+                break 'playback;
             }
-            if let Ok(Some(frame)) = decoder.decode_nal(nal) {
-                wait_for_video_time(playback_start, target_ns);
-                if render_video_frame(&mut window_id, &title, &frame) {
-                    decoded_frames = decoded_frames.saturating_add(1);
-                    if decoded_frames == 1 || decoded_frames.checked_rem(30) == Some(0) {
-                        println!(
-                            "viewer: mp4 playback frame={} sample={} pts_ns={}",
-                            decoded_frames, sample_id, target_ns
-                        );
+            rgb_bytes = frame_width as usize * frame_height as usize * 3;
+            let present_start = Instant::now();
+            let present_code = match bench_mode {
+                Some(Mp4BenchMode::DecodeOnly) => unsafe { video_discard() },
+                Some(Mp4BenchMode::DecodeConvert) => unsafe { video_present(-1) },
+                _ => {
+                    if window_id < 0 {
+                        window_id = unsafe {
+                            create_window(
+                                title.as_ptr(),
+                                title.len() as u32,
+                                frame_width,
+                                frame_height,
+                            )
+                        };
                     }
+                    if window_id < 0 {
+                        u32::MAX
+                    } else {
+                        unsafe { video_present(window_id) }
+                    }
+                }
+            };
+            if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
+                convert_time += present_start.elapsed();
+            } else if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
+                present_time += present_start.elapsed();
+            }
+            if present_code != 0 {
+                failure = Some("native frame presentation failed");
+                break 'playback;
+            }
+            if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
+                presented_frames = presented_frames.saturating_add(1);
+                if presented_frames == 1 || presented_frames.checked_rem(30) == Some(0) {
+                    println!(
+                        "viewer: mp4 playback frame={} sample={} pts_ns={}",
+                        presented_frames, sample_id, frame_target_ns
+                    );
                 }
             }
         }
+        if trace_sample {
+            println!("viewer: mp4 sample exit id={}", sample_id);
+        }
     }
-    if let Some(frame) = decoder.flush() {
-        render_video_frame(&mut window_id, &title, &frame);
+    let mut flush_count = if stopped_by_escape || failure.is_some() {
+        0
+    } else {
+        unsafe { video_flush() }
+    };
+    if flush_count == u32::MAX {
+        failure = Some("native decoder flush failed");
+        flush_count = 0;
     }
-    println!("viewer: mp4 playback exit frames={}", decoded_frames);
+    decoded_frames = decoded_frames.saturating_add(flush_count);
+    for _ in 0..flush_count {
+        let frame_target_ns = take_earliest_presentation_time(
+            &mut pending_presentation_times,
+            playback_start
+                .elapsed()
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64,
+        );
+        let wait_start = Instant::now();
+        wait_for_video_time(playback_start, frame_target_ns);
+        wait_time += wait_start.elapsed();
+        if unsafe { video_should_stop() != 0 } {
+            stopped_by_escape = true;
+            break;
+        }
+        let frame_info = unsafe { video_frame_info() };
+        let frame_width = (frame_info >> 32) as u32;
+        let frame_height = frame_info as u32;
+        if frame_width == 0 || frame_height == 0 {
+            failure = Some("native decoder returned invalid frame dimensions");
+            break;
+        }
+        rgb_bytes = frame_width as usize * frame_height as usize * 3;
+        let present_start = Instant::now();
+        let present_code = match bench_mode {
+            Some(Mp4BenchMode::DecodeOnly) => unsafe { video_discard() },
+            Some(Mp4BenchMode::DecodeConvert) => unsafe { video_present(-1) },
+            _ if window_id >= 0 => unsafe { video_present(window_id) },
+            _ => u32::MAX,
+        };
+        if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
+            convert_time += present_start.elapsed();
+        } else if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
+            present_time += present_start.elapsed();
+        }
+        if present_code != 0 {
+            failure = Some("native frame flush presentation failed");
+            break;
+        }
+        if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
+            presented_frames = presented_frames.saturating_add(1);
+        }
+    }
+    let yuv_to_rgb_ns = unsafe { video_stage_timing(0) };
+    let scale_ns = unsafe { video_stage_timing(1) };
+    let window_buffer_copy_ns = unsafe { video_stage_timing(2) };
+    let composite_ns = unsafe { video_stage_timing(3) };
+    let framebuffer_flush_ns = unsafe { video_stage_timing(4) };
+    println!(
+        "MP4-STAGE frames={} read_demux_ms={:.3} decode_ms={:.3} yuv_to_rgb_ms={:.3} scale_ms={:.3} window_buffer_copy_ms={:.3} composite_ms={:.3} framebuffer_flush_ms={:.3} wait_ms={:.3}",
+        presented_frames,
+        ms(read_time),
+        ms(decode_time),
+        ns_ms(yuv_to_rgb_ns),
+        ns_ms(scale_ns),
+        ns_ms(window_buffer_copy_ns),
+        ns_ms(composite_ns),
+        ns_ms(framebuffer_flush_ns),
+        ms(wait_time),
+    );
+    unsafe {
+        video_close();
+        if window_id >= 0 {
+            let _ = close_window(window_id);
+        }
+    }
+    if let Some(reason) = failure {
+        return present_mp4_failure(path, size_mb, dur, width, height, reason);
+    }
+    println!(
+        "viewer: mp4 playback exit frames={} stopped_by_escape={}",
+        presented_frames, stopped_by_escape
+    );
+    if let Some(mode) = bench_mode {
+        println!(
+            "MP4-BENCH mode={} playback_ms={:.3} read_ms={:.3} decode_ms={:.3} convert_ms={:.3} present_ms={:.3} samples={} nals_with_frames={} decoded_frames={} presented_frames={} rgb_bytes={}",
+            mode.label(),
+            ms(playback_start.elapsed()),
+            ms(read_time),
+            ms(decode_time),
+            ms(convert_time),
+            ms(present_time),
+            samples,
+            nals_decoded,
+            decoded_frames,
+            presented_frames,
+            rgb_bytes,
+        );
+    }
     if decoded_frames == 0 {
         return present_mp4_failure(
             path,
@@ -755,72 +982,59 @@ fn present_mp4_failure(
 fn wait_for_video_time(start: Instant, target_ns: u64) {
     let target = Duration::from_nanos(target_ns);
     let remaining = target.checked_sub(start.elapsed()).unwrap_or_default();
+    if remaining.is_zero() {
+        // The decoder is already behind. update_window() performs a host
+        // event-loop tick after presenting the frame, so another zero-time
+        // wait here would only add an unnecessary WASM/host transition.
+        return;
+    }
     let remaining_ns = remaining.as_nanos().min(u128::from(u64::MAX)) as u64;
     unsafe {
-        if remaining.is_zero() {
-            wait_for_ns(0);
-        } else {
-            wait_for_ns(remaining_ns);
-        }
+        wait_for_ns(remaining_ns);
     }
 }
 
-fn render_video_frame(window_id: &mut i32, title: &str, frame: &rust_h264::decoder::Frame) -> bool {
-    let Some((width, height, rgb)) = yuv420_to_rgb(frame, 800, 600) else {
-        return false;
+/// Convert an MP4 decode timestamp plus composition-time offset into the
+/// presentation clock used by the viewer. The offset is signed because
+/// B-frames can be displayed after their decode-order timestamp.
+fn sample_presentation_time_ns(start_time: u64, rendering_offset: i32, timescale: u32) -> u64 {
+    if timescale == 0 {
+        return 0;
+    }
+    let timestamp = i128::from(start_time)
+        .saturating_add(i128::from(rendering_offset))
+        .saturating_mul(1_000_000_000)
+        / i128::from(timescale);
+    timestamp.clamp(0, i128::from(u64::MAX)) as u64
+}
+
+fn take_earliest_presentation_time(times: &mut VecDeque<u64>, fallback: u64) -> u64 {
+    let Some((index, _)) = times.iter().enumerate().min_by_key(|(_, time)| **time) else {
+        return fallback;
     };
-    unsafe {
-        if *window_id < 0 {
-            *window_id = create_window(title.as_ptr(), title.len() as u32, width, height);
-        }
-        if *window_id < 0 {
-            return false;
-        }
-        update_window(*window_id, width, height, rgb.as_ptr(), rgb.len() as u32) == 0
+    times.remove(index).unwrap_or(fallback)
+}
+
+fn push_pending_presentation_time(times: &mut VecDeque<u64>, timestamp: u64) {
+    times.push_back(timestamp);
+    // OrderedDecoder retains at most this many frames while it waits for
+    // display order. A sample can produce no frame, so timestamps can become
+    // stale; dropping the oldest entries bounds memory and limits the pacing
+    // drift to one reorder window when that happens.
+    while times.len() > VIDEO_REORDER_DEPTH {
+        let _ = times.pop_front();
     }
 }
 
-fn yuv420_to_rgb(
-    frame: &rust_h264::decoder::Frame,
-    max_width: usize,
-    max_height: usize,
-) -> Option<(u32, u32, Vec<u8>)> {
-    let source_width = usize::try_from(frame.width).ok()?;
-    let source_height = usize::try_from(frame.height).ok()?;
-    if source_width == 0 || source_height == 0 {
-        return None;
-    }
-    let (width, height) = fit_dimensions(source_width, source_height, max_width, max_height)?;
-    let y_len = source_width.checked_mul(source_height)?;
-    let uv_width = source_width.div_ceil(2);
-    let uv_height = source_height.div_ceil(2);
-    let uv_len = uv_width.checked_mul(uv_height)?;
-    if frame.y.len() < y_len || frame.u.len() < uv_len || frame.v.len() < uv_len {
-        return None;
-    }
-    let rgb_len = width.checked_mul(height)?.checked_mul(3)?;
-    let mut rgb = Vec::with_capacity(rgb_len);
-    let x_map: Vec<usize> = (0..width)
-        .map(|x| x * source_width / width)
-        .collect();
-    let y_map: Vec<usize> = (0..height)
-        .map(|y| y * source_height / height)
-        .collect();
-    for &source_y in &y_map {
-        for &source_x in &x_map {
-            let yi = source_y * source_width + source_x;
-            let ui = (source_y / 2) * uv_width + source_x / 2;
-            let yv = frame.y[yi] as i32;
-            let uv = frame.u[ui] as i32 - 128;
-            let vv = frame.v[ui] as i32 - 128;
-            rgb.push((yv + (359 * vv) / 256).clamp(0, 255) as u8);
-            rgb.push((yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8);
-            rgb.push((yv + (454 * uv) / 256).clamp(0, 255) as u8);
-        }
-    }
-    Some((width as u32, height as u32, rgb))
+fn ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
 }
 
+fn ns_ms(nanoseconds: u64) -> f64 {
+    nanoseconds as f64 / 1_000_000.0
+}
+
+#[cfg(test)]
 fn fit_dimensions(
     source_width: usize,
     source_height: usize,
@@ -898,7 +1112,9 @@ fn mp3_frame(data: &[u8], start: usize) -> Option<(usize, u32, u32, u32, u32, u3
     const BR_MPEG1: [u32; 16] = [
         0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
     ];
-    const BR_MPEG2: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    const BR_MPEG2: [u32; 16] = [
+        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+    ];
     const SR: [u32; 4] = [44100, 48000, 32000, 0];
     let last = data.len().checked_sub(4)?;
     if start > last {
@@ -916,11 +1132,7 @@ fn mp3_frame(data: &[u8], start: usize) -> Option<(usize, u32, u32, u32, u32, u3
         if ver == 1 || layer != 1 || bi == 0 || bi == 15 || si == 3 {
             continue;
         }
-        let b = if ver == 3 {
-            BR_MPEG1[bi]
-        } else {
-            BR_MPEG2[bi]
-        };
+        let b = if ver == 3 { BR_MPEG1[bi] } else { BR_MPEG2[bi] };
         let s = match ver {
             3 => SR[si],
             2 => SR[si] / 2,
@@ -933,14 +1145,7 @@ fn mp3_frame(data: &[u8], start: usize) -> Option<(usize, u32, u32, u32, u32, u3
         let coefficient = if ver == 3 { 144_000 } else { 72_000 };
         let padding = if (h >> 9) & 1 == 0 { 0 } else { 1 };
         let frame_len = (coefficient * b / s).saturating_add(padding).max(1);
-        return Some((
-            off,
-            b,
-            s,
-            c,
-            if ver == 3 { 1152 } else { 576 },
-            frame_len,
-        ));
+        return Some((off, b, s, c, if ver == 3 { 1152 } else { 576 }, frame_len));
     }
     None
 }
@@ -1263,9 +1468,14 @@ fn print_hex(path: &str, data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_dimensions, mp3_frame, qoi_header_allowed, source_dimensions_allowed, try_image};
+    use super::{
+        VIDEO_REORDER_DEPTH, fit_dimensions, mp3_frame, push_pending_presentation_time,
+        qoi_header_allowed, sample_presentation_time_ns, source_dimensions_allowed,
+        take_earliest_presentation_time, try_image,
+    };
     use image::GenericImageView;
     use image::ImageReader;
+    use std::collections::VecDeque;
     use std::io::Cursor;
 
     #[unsafe(no_mangle)]
@@ -1286,6 +1496,60 @@ mod tests {
         _pixels_ptr: *const u8,
         _pixels_len: u32,
     ) -> i32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_open(_config_ptr: *const u8, _config_len: u32) -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_decode_sample(
+        _sample_ptr: *const u8,
+        _sample_len: u32,
+        _length_size: u32,
+    ) -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_frame_info() -> u64 {
+        (480u64 << 32) | 360
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_present(_window_id: i32) -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_discard() -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_flush() -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_stage_timing(_stage: u32) -> u64 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_close() -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_should_stop() -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn close_window(_window_id: i32) -> u32 {
         0
     }
 
@@ -1393,6 +1657,39 @@ mod tests {
         assert_eq!(fit_dimensions(1920, 1080, 800, 600), Some((800, 450)));
         assert_eq!(fit_dimensions(1080, 1920, 800, 600), Some((337, 600)));
         assert_eq!(fit_dimensions(320, 240, 800, 600), Some((320, 240)));
+    }
+
+    #[test]
+    fn applies_mp4_composition_offset_to_presentation_time() {
+        assert_eq!(
+            sample_presentation_time_ns(3_000, 500, 1_000),
+            3_500_000_000
+        );
+        assert_eq!(
+            sample_presentation_time_ns(3_000, -500, 1_000),
+            2_500_000_000
+        );
+        assert_eq!(sample_presentation_time_ns(0, -1, 1_000), 0);
+    }
+
+    #[test]
+    fn reorders_decode_timestamps_for_b_frames() {
+        let mut times = VecDeque::from([0, 66_666_666, 33_333_333]);
+        assert_eq!(take_earliest_presentation_time(&mut times, 99), 0);
+        assert_eq!(take_earliest_presentation_time(&mut times, 99), 33_333_333);
+        assert_eq!(take_earliest_presentation_time(&mut times, 99), 66_666_666);
+        assert_eq!(take_earliest_presentation_time(&mut times, 99), 99);
+    }
+
+    #[test]
+    fn bounds_pending_presentation_timestamps_to_reorder_depth() {
+        let mut times = VecDeque::new();
+        for timestamp in 0..(VIDEO_REORDER_DEPTH + 4) as u64 {
+            push_pending_presentation_time(&mut times, timestamp);
+        }
+        assert_eq!(times.len(), VIDEO_REORDER_DEPTH);
+        assert_eq!(times.front(), Some(&4));
+        assert_eq!(times.back(), Some(&(VIDEO_REORDER_DEPTH as u64 + 3)));
     }
 
     #[test]

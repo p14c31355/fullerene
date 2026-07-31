@@ -106,6 +106,32 @@ fn blit_region_with_brightness(
     region: lattice::scene::DirtyRect,
     brightness: u32,
 ) {
+    // The framebuffer may be a UEFI GOP/MMIO aperture. Keep volatile stores
+    // even when no brightness conversion is needed; a bulk RAM copy is not a
+    // valid publication primitive for that destination.
+    if brightness == 100 {
+        for row in region.y as usize..(region.y + region.height) as usize {
+            let src = row * back_width + region.x as usize;
+            let dst = row * framebuffer_stride + region.x as usize;
+            let width = region.width as usize;
+            let (Some(src_end), Some(dst_end)) = (src.checked_add(width), dst.checked_add(width))
+            else {
+                return;
+            };
+            let Some(source) = back.get(src..src_end) else {
+                return;
+            };
+            if dst_end > framebuffer.len() {
+                return;
+            }
+            let destination = unsafe { framebuffer.as_mut_ptr().add(dst) };
+            for (column, &pixel) in source.iter().enumerate() {
+                unsafe { core::ptr::write_volatile(destination.add(column), pixel) };
+            }
+        }
+        return;
+    }
+
     for row in region.y as usize..(region.y + region.height) as usize {
         let src = row * back_width + region.x as usize;
         let dst = row * framebuffer_stride + region.x as usize;
@@ -326,9 +352,25 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     let fb_pixels_len = fb_pixels.len();
     *crate::FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
 
+    let video_window = rt.video_dirty_window.take();
+    let video_cursor_dirty = if video_window.is_some() {
+        pending_cursor_origin.and_then(|previous| {
+            let previous = cursor_region(previous, fb_width, fb_height)?;
+            let current = cursor_region(
+                (rt.desktop.cursor.x, rt.desktop.cursor.y),
+                fb_width,
+                fb_height,
+            )?;
+            Some((previous, current))
+        })
+    } else {
+        None
+    };
+
     // A full render may supersede several queued mouse moves. Include the
     // earliest position still visible on the scanout so it cannot ghost.
-    if let Some(previous) = pending_cursor_origin
+    if video_window.is_none()
+        && let Some(previous) = pending_cursor_origin
         && let Some(region) = cursor_region(previous, fb_width, fb_height)
     {
         rt.desktop.push_dirty_rect(region);
@@ -355,7 +397,22 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     }
     rt.clock_changed = false;
 
-    rt.desktop.prepare_frame(fb_width, fb_height);
+    let video_only = video_window.is_some_and(|window_id| {
+        if rt
+            .desktop
+            .prepare_video_frame(window_id, video_cursor_dirty)
+        {
+            true
+        } else {
+            // Preserve the video invalidation when another desktop change
+            // requires the normal background-rendering path.
+            rt.desktop.invalidate_window(window_id);
+            false
+        }
+    });
+    if !video_only {
+        rt.desktop.prepare_frame(fb_width, fb_height);
+    }
     let fb_stride = fb_stride_pixels as usize;
     let fb_len = fb_stride.saturating_mul(fb_height as usize);
     let back_len = (fb_width as usize).saturating_mul(fb_height as usize);
@@ -376,7 +433,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         {
             render_progress(b"RENDER: alloc backbuf");
             let mut back_opt = crate::BACK_BUFFER.lock();
-            if back_opt.as_ref().map_or(true, |b| b.len() < back_len) {
+            let back_buffer_was_reset = back_opt.as_ref().map_or(true, |b| b.len() < back_len);
+            if back_buffer_was_reset {
                 *back_opt = match unsafe { PageBuf::<u32>::alloc_zeroed_for_len(back_len) } {
                     Some(buf) => Some(buf),
                     None => {
@@ -396,7 +454,11 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             // Keep the RAM back buffer cursor-free. Cursor-only updates can
             // then restore clean pixels without reading from GOP memory.
             let cursor = scene.cursor.take();
-            let (_bx, _by, bw, bh) = Compositor::render(&scene, &mut back_target);
+            let (_bx, _by, bw, bh) = if video_only && !back_buffer_was_reset {
+                Compositor::render_preserving_background(&scene, &mut back_target)
+            } else {
+                Compositor::render(&scene, &mut back_target)
+            };
             render_progress(b"RENDER: compositor done");
             render_progress(b"RENDER: system layers");
             match rt.shell_state {
@@ -498,6 +560,21 @@ mod tests {
             50,
         );
         assert_eq!(framebuffer, [0x604020]);
+    }
+
+    #[test]
+    fn blit_preserves_pixels_at_full_brightness() {
+        let back = [0x00c0_8040, 0x0010_2030];
+        let mut framebuffer = [0; 2];
+        blit_region_with_brightness(
+            &back,
+            2,
+            &mut framebuffer,
+            2,
+            lattice::scene::DirtyRect::full(2, 1),
+            100,
+        );
+        assert_eq!(framebuffer, back);
     }
 
     #[test]

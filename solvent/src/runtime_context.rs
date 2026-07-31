@@ -159,6 +159,8 @@ pub struct RuntimeState {
     pub settings_dirty: bool,
     pub klog_live_window: Option<WindowId>,
     pub klog_live_dirty: bool,
+    /// Window whose surface was updated by the native video presenter.
+    pub(crate) video_dirty_window: Option<WindowId>,
     /// Earliest cursor position still drawn on the framebuffer while a redraw
     /// is pending. The full and lightweight render paths both consume it.
     pub(crate) cursor_redraw_from: Option<(i32, i32)>,
@@ -252,6 +254,7 @@ pub fn init() {
         settings_dirty: false,
         klog_live_window: None,
         klog_live_dirty: false,
+        video_dirty_window: None,
         cursor_redraw_from: None,
     });
 }

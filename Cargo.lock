@@ -1777,6 +1777,7 @@ dependencies = [
  "carrier",
  "genome",
  "wasmi",
+ "z264",
 ]
 
 [[package]]
@@ -2080,6 +2081,12 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "z264"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e3de017f350b295f0352c1e4d89ff3653f4b39078fa5b82c39538e923b1514"
 
 [[package]]
 name = "zerocopy"

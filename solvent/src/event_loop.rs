@@ -1,7 +1,8 @@
 //! Event dispatch, timer processing, service ticking, and frame pacing.
 
+use alloc::vec::Vec;
 use lattice::shell_overlay::ShellState;
-use resonance::Event;
+use resonance::{Event, InputEvent};
 use spin::Mutex;
 
 use crate::{
@@ -13,8 +14,50 @@ pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::Atom
 
 static LAST_RENDER_TSC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static TICK_CORE_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn process_pointer_motion_only() {
+    let events = RUNTIME_CONTEXT
+        .event_queue()
+        .as_mut()
+        .map(|queue| {
+            let count = queue.len();
+            (0..count).filter_map(|_| queue.pop()).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut retained = Vec::with_capacity(events.len());
+    for event in events {
+        match event {
+            Event::Input(InputEvent::MouseMove { x, y }) => {
+                crate::handlers::apply_pointer_motion(x, y);
+            }
+            other => retained.push(other),
+        }
+    }
+    if let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut() {
+        for event in retained.into_iter().rev() {
+            queue.push_front(event);
+        }
+    }
+}
+
+struct TickCoreGuard;
+
+impl TickCoreGuard {
+    fn enter() -> Self {
+        TICK_CORE_ACTIVE.store(true, core::sync::atomic::Ordering::Release);
+        Self
+    }
+}
+
+impl Drop for TickCoreGuard {
+    fn drop(&mut self) {
+        TICK_CORE_ACTIVE.store(false, core::sync::atomic::Ordering::Release);
+    }
+}
 
 pub fn chrono_tick(now: u64) {
     let mut runtime = RUNTIME_CONTEXT.runtime();
@@ -110,6 +153,7 @@ fn service_explorer_copy() {
 }
 
 pub fn tick_core(now: u64) {
+    let _tick_core = TickCoreGuard::enter();
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
     crate::poll_mouse_state();
@@ -193,7 +237,61 @@ pub fn tick_core(now: u64) {
 }
 
 pub fn runtime_tick_no_fb() {
-    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    let already_suspended = RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst);
+    let tick_core_active = TICK_CORE_ACTIVE.load(core::sync::atomic::Ordering::Acquire);
+    if already_suspended || tick_core_active {
+        // The shell and the synchronous WASM viewer are both entered from
+        // inside the normal event-loop tick.  In that case a nested
+        // runtime_tick_no_fb used to be discarded completely.  That left a
+        // launched Linux process without a scheduler handoff and left the
+        // KLog Live surface stale until the synchronous caller returned.
+        // Pump only input and the already-due compositor work here; do not
+        // re-enter tick_core(), which could recursively launch another file
+        // or shell while the outer tick is still active.
+        crate::poll_mouse_state();
+        crate::poll_keyboard();
+        process_pointer_motion_only();
+        if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
+            if runtime.klog_live_window.is_some() {
+                runtime.klog_live_dirty = true;
+                runtime.frame_due = true;
+            }
+        }
+        let frame_tsc = TSC_PER_MS
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .saturating_mul(FRAME_INTERVAL_MS);
+        let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
+            if !runtime.frame_due {
+                return false;
+            }
+            // A video frame has its own presentation deadline in the WASM
+            // viewer. Do not quantize it to the desktop's 17 ms refresh
+            // throttle: that turns a 30 fps stream into alternating short
+            // and long display intervals and is visible as judder.
+            let video_frame_due = runtime.video_dirty_window.is_some();
+            let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
+            if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
+                return false;
+            }
+            LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
+            runtime.frame_due = false;
+            true
+        });
+        if do_render {
+            // Keep the outer tick marked as suspended while the nested pump
+            // is idle, but release it around the renderer itself because the
+            // renderer uses the same guard to reject recursive frames.
+            RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+            let render_fn = *RENDER_FN.lock();
+            if let Some(render_fn) = render_fn {
+                render_fn();
+            }
+            RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
+        }
+        if !do_render {
+            RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
+        }
         return;
     }
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -201,12 +299,13 @@ pub fn runtime_tick_no_fb() {
     let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let due = runtime.frame_due;
         if due {
+            let video_frame_due = runtime.video_dirty_window.is_some();
             let frame_tsc = TSC_PER_MS
                 .load(core::sync::atomic::Ordering::Relaxed)
                 .saturating_mul(FRAME_INTERVAL_MS);
             let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
             let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-            if now_tsc.wrapping_sub(last) < frame_tsc {
+            if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
                 runtime.frame_due = true;
                 return false;
             }
