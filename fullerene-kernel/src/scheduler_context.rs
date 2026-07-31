@@ -506,6 +506,7 @@ impl SchedulerContext {
 
         if let Some(new) = new_ctx {
             if new_user_first_entry {
+                #[cfg(linux_busybox_smoke)]
                 crate::klog_fmt!(
                     "[LINUX-DIAG] user entry prepare pid={} cr3={:#x} kernel_stack={:#x}\n",
                     new_pid.0,

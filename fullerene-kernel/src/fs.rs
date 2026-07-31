@@ -429,7 +429,7 @@ pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>,
     // WASI keeps a bounded per-descriptor read-ahead cache. Read the matching
     // range in one VFS request instead of turning every cache fill into many
     // small filesystem calls, while keeping PPBUF stalls bounded.
-    let mut chunk = alloc::vec![0u8; MAX_RANGE_BYTES];
+    let mut chunk = alloc::vec![0u8; target];
     while result.len() < target {
         if deadline.is_some_and(|deadline| unsafe { core::arch::x86_64::_rdtsc() } >= deadline) {
             let _ = close_file(fd);

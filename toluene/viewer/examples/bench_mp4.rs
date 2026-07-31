@@ -8,16 +8,18 @@ use mp4::{Mp4Reader, TrackType};
 use std::fs::File;
 use std::io::BufReader;
 use std::time::Instant;
+use z264::OrderedDecoder;
 use z264::nal::{parse_annex_b, parse_avcc};
-use z264::{Decoder, Frame};
 
-const DEFAULT_PATH: &str =
-    "/home/placeless/ビデオ/【東方】Bad Apple!! ＰＶ【影絵】 [FtutLA63Cp8].mp4";
+#[path = "../../../solvent/wasi/src/video.rs"]
+mod shared_video;
+
+use shared_video::yuv420_to_rgb;
 
 fn main() {
     let path = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| DEFAULT_PATH.to_string());
+        .expect("usage: cargo run --release --example bench_mp4 -- <video.mp4>");
     let size = std::fs::metadata(&path).expect("MP4 stat failed").len();
 
     let header_start = Instant::now();
@@ -43,7 +45,7 @@ fn main() {
     let sample_count = reader.sample_count(track_id).expect("sample count failed");
     let length_size = usize::from(avcc.length_size_minus_one) + 1;
 
-    let mut decoder = Decoder::new();
+    let mut decoder = OrderedDecoder::new();
     let mut config_stream = Vec::new();
     for nal in avcc
         .sequence_parameter_sets
@@ -85,7 +87,7 @@ fn main() {
             let decode_start = Instant::now();
             let output = decoder.decode_nal(&nal).expect("H.264 decode failed");
             decode_time += decode_start.elapsed();
-            if let Some(frame) = output {
+            for frame in output {
                 decoded_frames = decoded_frames.saturating_add(1);
                 let convert_start = Instant::now();
                 yuv420_to_rgb(&frame, &mut rgb_buffer).expect("YUV frame conversion failed");
@@ -95,7 +97,7 @@ fn main() {
             }
         }
     }
-    if let Some(frame) = decoder.flush() {
+    for frame in decoder.flush() {
         decoded_frames = decoded_frames.saturating_add(1);
         let convert_start = Instant::now();
         yuv420_to_rgb(&frame, &mut rgb_buffer).expect("YUV flush conversion failed");
@@ -131,32 +133,4 @@ fn main() {
 
 fn ms(duration: std::time::Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
-}
-
-fn yuv420_to_rgb(frame: &Frame, rgb: &mut Vec<u8>) -> Option<()> {
-    let width = usize::try_from(frame.width).ok()?;
-    let height = usize::try_from(frame.height).ok()?;
-    let y_len = width.checked_mul(height)?;
-    let uv_width = width.div_ceil(2);
-    let uv_height = height.div_ceil(2);
-    let uv_len = uv_width.checked_mul(uv_height)?;
-    if frame.y.len() < y_len || frame.u.len() < uv_len || frame.v.len() < uv_len {
-        return None;
-    }
-
-    rgb.resize(y_len.checked_mul(3)?, 0);
-    for source_y in 0..height {
-        for source_x in 0..width {
-            let yi = source_y * width + source_x;
-            let ui = (source_y / 2) * uv_width + source_x / 2;
-            let dst = (source_y * width + source_x) * 3;
-            let yv = frame.y[yi] as i32;
-            let uv = frame.u[ui] as i32 - 128;
-            let vv = frame.v[ui] as i32 - 128;
-            rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
-            rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
-            rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
-        }
-    }
-    Some(())
 }

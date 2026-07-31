@@ -1,6 +1,6 @@
 use image::GenericImageView;
-use std::collections::VecDeque;
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::io::{self, Cursor, Read, Seek};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -11,6 +11,7 @@ const MAX_MP4_IO_OPERATIONS: usize = 16_384;
 const MAX_MP4_PARSE_TIME: Duration = Duration::from_secs(3);
 const MAX_MP4_SAMPLES: u32 = 1_000_000;
 const MAX_PLAYBACK_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
+const VIDEO_REORDER_DEPTH: usize = 16;
 // Keep the event loop responsive without adding a host yield for every
 // sample; native video submission is already one host transition per sample.
 const PLAYBACK_YIELD_SAMPLES: usize = 2;
@@ -687,6 +688,7 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
     // decoded frame is paced against the earliest presentation timestamp
     // that has entered the decoder, not against the packet that released it.
     let mut pending_presentation_times = VecDeque::new();
+    let mut failure = None;
     let mut samples_since_yield = PLAYBACK_YIELD_SAMPLES;
     println!("viewer: mp4 playback enter samples={}", sample_count);
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
@@ -730,21 +732,16 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
             Ok(Some(sample)) => sample,
             Ok(None) => {
                 println!("viewer: mp4 sample unavailable id={}", sample_id);
-                break;
+                failure = Some("video sample unavailable");
+                break 'playback;
             }
             Err(error) => {
                 println!(
                     "viewer: mp4 sample read failed id={} error={:?}",
                     sample_id, error
                 );
-                return present_mp4_failure(
-                    path,
-                    size_mb,
-                    dur,
-                    width,
-                    height,
-                    "video sample read failed",
-                );
+                failure = Some("video sample read failed");
+                break 'playback;
             }
         };
         read_time += read_start.elapsed();
@@ -761,21 +758,12 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                 "viewer: mp4 sample rejected id={} size>{} bytes",
                 sample_id, MAX_PLAYBACK_SAMPLE_BYTES
             );
-            return present_mp4_failure(
-                path,
-                size_mb,
-                dur,
-                width,
-                height,
-                "video sample is too large",
-            );
+            failure = Some("video sample is too large");
+            break 'playback;
         }
-        let target_ns = sample_presentation_time_ns(
-            sample.start_time,
-            sample.rendering_offset,
-            timescale,
-        );
-        pending_presentation_times.push_back(target_ns);
+        let target_ns =
+            sample_presentation_time_ns(sample.start_time, sample.rendering_offset, timescale);
+        push_pending_presentation_time(&mut pending_presentation_times, target_ns);
         let decode_start = Instant::now();
         let frame_count = unsafe {
             video_decode_sample(
@@ -787,22 +775,14 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         decode_time += decode_start.elapsed();
         samples_since_yield = samples_since_yield.saturating_add(1);
         if frame_count == u32::MAX {
-            return present_mp4_failure(
-                path,
-                size_mb,
-                dur,
-                width,
-                height,
-                "native decoder rejected a video sample",
-            );
+            failure = Some("native decoder rejected a video sample");
+            break 'playback;
         }
         nals_decoded = nals_decoded.saturating_add(u64::from(frame_count));
         decoded_frames = decoded_frames.saturating_add(frame_count);
         for _ in 0..frame_count {
-            let frame_target_ns = take_earliest_presentation_time(
-                &mut pending_presentation_times,
-                target_ns,
-            );
+            let frame_target_ns =
+                take_earliest_presentation_time(&mut pending_presentation_times, target_ns);
             let wait_start = Instant::now();
             wait_for_video_time(playback_start, frame_target_ns);
             wait_time += wait_start.elapsed();
@@ -814,14 +794,8 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
             let frame_width = (frame_info >> 32) as u32;
             let frame_height = frame_info as u32;
             if frame_width == 0 || frame_height == 0 {
-                return present_mp4_failure(
-                    path,
-                    size_mb,
-                    dur,
-                    width,
-                    height,
-                    "native decoder returned invalid frame dimensions",
-                );
+                failure = Some("native decoder returned invalid frame dimensions");
+                break 'playback;
             }
             rgb_bytes = frame_width as usize * frame_height as usize * 3;
             let present_start = Instant::now();
@@ -852,14 +826,8 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                 present_time += present_start.elapsed();
             }
             if present_code != 0 {
-                return present_mp4_failure(
-                    path,
-                    size_mb,
-                    dur,
-                    width,
-                    height,
-                    "native frame presentation failed",
-                );
+                failure = Some("native frame presentation failed");
+                break 'playback;
             }
             if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
                 presented_frames = presented_frames.saturating_add(1);
@@ -875,26 +843,23 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
             println!("viewer: mp4 sample exit id={}", sample_id);
         }
     }
-    let flush_count = if stopped_by_escape {
+    let mut flush_count = if stopped_by_escape || failure.is_some() {
         0
     } else {
         unsafe { video_flush() }
     };
     if flush_count == u32::MAX {
-        return present_mp4_failure(
-            path,
-            size_mb,
-            dur,
-            width,
-            height,
-            "native decoder flush failed",
-        );
+        failure = Some("native decoder flush failed");
+        flush_count = 0;
     }
     decoded_frames = decoded_frames.saturating_add(flush_count);
     for _ in 0..flush_count {
         let frame_target_ns = take_earliest_presentation_time(
             &mut pending_presentation_times,
-            playback_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+            playback_start
+                .elapsed()
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64,
         );
         let wait_start = Instant::now();
         wait_for_video_time(playback_start, frame_target_ns);
@@ -906,6 +871,10 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         let frame_info = unsafe { video_frame_info() };
         let frame_width = (frame_info >> 32) as u32;
         let frame_height = frame_info as u32;
+        if frame_width == 0 || frame_height == 0 {
+            failure = Some("native decoder returned invalid frame dimensions");
+            break;
+        }
         rgb_bytes = frame_width as usize * frame_height as usize * 3;
         let present_start = Instant::now();
         let present_code = match bench_mode {
@@ -920,14 +889,8 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
             present_time += present_start.elapsed();
         }
         if present_code != 0 {
-            return present_mp4_failure(
-                path,
-                size_mb,
-                dur,
-                width,
-                height,
-                "native frame flush presentation failed",
-            );
+            failure = Some("native frame flush presentation failed");
+            break;
         }
         if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
             presented_frames = presented_frames.saturating_add(1);
@@ -955,6 +918,9 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         if window_id >= 0 {
             let _ = close_window(window_id);
         }
+    }
+    if let Some(reason) = failure {
+        return present_mp4_failure(path, size_mb, dur, width, height, reason);
     }
     println!(
         "viewer: mp4 playback exit frames={} stopped_by_escape={}",
@@ -1047,6 +1013,17 @@ fn take_earliest_presentation_time(times: &mut VecDeque<u64>, fallback: u64) -> 
         return fallback;
     };
     times.remove(index).unwrap_or(fallback)
+}
+
+fn push_pending_presentation_time(times: &mut VecDeque<u64>, timestamp: u64) {
+    times.push_back(timestamp);
+    // OrderedDecoder retains at most this many frames while it waits for
+    // display order. A sample can produce no frame, so timestamps can become
+    // stale; dropping the oldest entries bounds memory and limits the pacing
+    // drift to one reorder window when that happens.
+    while times.len() > VIDEO_REORDER_DEPTH {
+        let _ = times.pop_front();
+    }
 }
 
 fn ms(duration: Duration) -> f64 {
@@ -1492,8 +1469,9 @@ fn print_hex(path: &str, data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_dimensions, mp3_frame, qoi_header_allowed, sample_presentation_time_ns,
-        source_dimensions_allowed, take_earliest_presentation_time, try_image,
+        VIDEO_REORDER_DEPTH, fit_dimensions, mp3_frame, push_pending_presentation_time,
+        qoi_header_allowed, sample_presentation_time_ns, source_dimensions_allowed,
+        take_earliest_presentation_time, try_image,
     };
     use image::GenericImageView;
     use image::ImageReader;
@@ -1683,8 +1661,14 @@ mod tests {
 
     #[test]
     fn applies_mp4_composition_offset_to_presentation_time() {
-        assert_eq!(sample_presentation_time_ns(3_000, 500, 1_000), 3_500_000_000);
-        assert_eq!(sample_presentation_time_ns(3_000, -500, 1_000), 2_500_000_000);
+        assert_eq!(
+            sample_presentation_time_ns(3_000, 500, 1_000),
+            3_500_000_000
+        );
+        assert_eq!(
+            sample_presentation_time_ns(3_000, -500, 1_000),
+            2_500_000_000
+        );
         assert_eq!(sample_presentation_time_ns(0, -1, 1_000), 0);
     }
 
@@ -1695,6 +1679,17 @@ mod tests {
         assert_eq!(take_earliest_presentation_time(&mut times, 99), 33_333_333);
         assert_eq!(take_earliest_presentation_time(&mut times, 99), 66_666_666);
         assert_eq!(take_earliest_presentation_time(&mut times, 99), 99);
+    }
+
+    #[test]
+    fn bounds_pending_presentation_timestamps_to_reorder_depth() {
+        let mut times = VecDeque::new();
+        for timestamp in 0..(VIDEO_REORDER_DEPTH + 4) as u64 {
+            push_pending_presentation_time(&mut times, timestamp);
+        }
+        assert_eq!(times.len(), VIDEO_REORDER_DEPTH);
+        assert_eq!(times.front(), Some(&4));
+        assert_eq!(times.back(), Some(&(VIDEO_REORDER_DEPTH as u64 + 3)));
     }
 
     #[test]

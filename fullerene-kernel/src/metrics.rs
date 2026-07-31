@@ -81,13 +81,18 @@ pub fn record_video_framebuffer_flush(ticks: u64) {
     VIDEO_FRAMEBUFFER_FLUSH_NS.fetch_add(ticks_to_ns(ticks), Ordering::Relaxed);
 }
 
+/// Clear all accumulated kernel-owned video counters.
+pub fn reset_video_metrics() {
+    VIDEO_PENDING_FRAMES.store(0, Ordering::Relaxed);
+    VIDEO_WINDOW_BUFFER_COPY_NS.store(0, Ordering::Relaxed);
+    VIDEO_COMPOSITE_NS.store(0, Ordering::Relaxed);
+    VIDEO_FRAMEBUFFER_FLUSH_NS.store(0, Ordering::Relaxed);
+}
+
 /// Return accumulated kernel-owned video timing in nanoseconds.
 pub fn video_stage_timing(stage: u32) -> u64 {
     if stage == VIDEO_STAGE_RESET {
-        VIDEO_PENDING_FRAMES.store(0, Ordering::Relaxed);
-        VIDEO_WINDOW_BUFFER_COPY_NS.store(0, Ordering::Relaxed);
-        VIDEO_COMPOSITE_NS.store(0, Ordering::Relaxed);
-        VIDEO_FRAMEBUFFER_FLUSH_NS.store(0, Ordering::Relaxed);
+        reset_video_metrics();
         return 0;
     }
     match stage {

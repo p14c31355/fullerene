@@ -244,13 +244,10 @@ fn wasm_get_monotonic_ns() -> u64 {
 }
 
 /// High-resolution clock reserved for short native video stage timings.
-/// `wasm_get_monotonic_ns` intentionally follows the scheduler tick after
-/// Solvent starts, but that resolution is too coarse for YUV conversion and
-/// framebuffer copy measurements.
+/// It shares the calibrated TSC source with `wasm_get_monotonic_ns`; the
+/// separate callback keeps video timing independent of future clock changes.
 fn wasm_video_clock_ns() -> u64 {
-    let tsc = unsafe { core::arch::x86_64::_rdtsc() };
-    let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
-    ((tsc as u128 * 1_000_000) / tsc_per_ms as u128) as u64
+    wasm_get_monotonic_ns()
 }
 
 fn wasm_video_should_stop() -> bool {
@@ -390,6 +387,9 @@ fn wasm_close_window(window_id: i32) -> i32 {
 }
 
 fn wasm_video_stage_timing(stage: u32) -> u64 {
+    if stage == crate::metrics::VIDEO_STAGE_RESET {
+        solvent::clear_video_stop_request();
+    }
     crate::metrics::video_stage_timing(stage)
 }
 

@@ -7,6 +7,8 @@ use core::str;
 use wasmi::{AsContext, Caller, Error, Memory};
 use z264::{Frame as H264Frame, OrderedDecoder as H264Decoder};
 
+use crate::video::{fit_video_dimensions, yuv420_to_rgb};
+
 // ── WASI errno ─────────────────────────────────────────────────────
 
 pub const ESUCCESS: u32 = 0;
@@ -195,19 +197,23 @@ impl NativeVideo {
         if nals.len() > MAX_NATIVE_VIDEO_NALS {
             return Err(());
         }
+        let mut produced = 0u32;
         for nal in nals {
             for frame in self.decoder.decode_nal(&nal).map_err(|_| ())? {
                 self.pending.push_back(frame);
+                produced = produced.saturating_add(1);
             }
         }
-        Ok(self.pending.len() as u32)
+        Ok(produced)
     }
 
     fn flush(&mut self) -> u32 {
+        let mut produced = 0u32;
         for frame in self.decoder.flush() {
             self.pending.push_back(frame);
+            produced = produced.saturating_add(1);
         }
-        self.pending.len() as u32
+        produced
     }
 
     fn frame_info(&self) -> Option<(u32, u32)> {
@@ -247,83 +253,6 @@ impl NativeVideo {
         }
         Ok((width, height))
     }
-}
-
-fn fit_video_dimensions(width: u32, height: u32) -> (u32, u32) {
-    if width <= 800 && height <= 600 {
-        return (width, height);
-    }
-    if u64::from(width) * 600 <= u64::from(height) * 800 {
-        (
-            (u64::from(width) * 600 / u64::from(height)).max(1) as u32,
-            600,
-        )
-    } else {
-        (
-            800,
-            (u64::from(height) * 800 / u64::from(width)).max(1) as u32,
-        )
-    }
-}
-
-fn yuv420_to_rgb(frame: &H264Frame, rgb: &mut Vec<u8>) -> Option<(u32, u32, bool)> {
-    let source_width = usize::try_from(frame.width).ok()?;
-    let source_height = usize::try_from(frame.height).ok()?;
-    if source_width == 0 || source_height == 0 {
-        return None;
-    }
-    let (width, height) = fit_video_dimensions(frame.width, frame.height);
-    let width = usize::try_from(width).ok()?;
-    let height = usize::try_from(height).ok()?;
-    let y_len = source_width.checked_mul(source_height)?;
-    let uv_width = source_width.div_ceil(2);
-    let uv_height = source_height.div_ceil(2);
-    let uv_len = uv_width.checked_mul(uv_height)?;
-    if frame.y.len() < y_len || frame.u.len() < uv_len || frame.v.len() < uv_len {
-        return None;
-    }
-    let rgb_len = width.checked_mul(height)?.checked_mul(3)?;
-    rgb.resize(rgb_len, 0);
-    if width == source_width && height == source_height {
-        for source_y in 0..source_height {
-            let y_row = source_y * source_width;
-            let uv_row = (source_y / 2) * uv_width;
-            let rgb_row = source_y * width * 3;
-            for source_x in 0..source_width {
-                let yi = y_row + source_x;
-                let ui = uv_row + source_x / 2;
-                let dst = rgb_row + source_x * 3;
-                let yv = frame.y[yi] as i32;
-                let uv = frame.u[ui] as i32 - 128;
-                let vv = frame.v[ui] as i32 - 128;
-                rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
-                rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
-                rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
-            }
-        }
-    } else {
-        for output_y in 0..height {
-            let source_y = output_y * source_height / height;
-            let uv_row = (source_y / 2) * uv_width;
-            for output_x in 0..width {
-                let source_x = output_x * source_width / width;
-                let yi = source_y * source_width + source_x;
-                let ui = uv_row + source_x / 2;
-                let dst = (output_y * width + output_x) * 3;
-                let yv = frame.y[yi] as i32;
-                let uv = frame.u[ui] as i32 - 128;
-                let vv = frame.v[ui] as i32 - 128;
-                rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
-                rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
-                rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
-            }
-        }
-    }
-    Some((
-        width as u32,
-        height as u32,
-        width != source_width || height != source_height,
-    ))
 }
 
 pub struct WasiCtx {
@@ -1400,11 +1329,7 @@ pub fn clock_time_get(
     Ok(ESUCCESS)
 }
 
-pub fn random_get(
-    mut caller: Caller<'_, WasiCtx>,
-    buf_ptr: u32,
-    buf_len: u32,
-) -> Result<u32, Error> {
+pub fn random_get(caller: Caller<'_, WasiCtx>, buf_ptr: u32, buf_len: u32) -> Result<u32, Error> {
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = (caller, buf_ptr, buf_len);
@@ -1413,6 +1338,7 @@ pub fn random_get(
 
     #[cfg(target_arch = "x86_64")]
     {
+        let mut caller = caller;
         // SAFETY: CPUID leaf 1 is always supported on x86_64.
         let cpuid = core::arch::x86_64::__cpuid(1);
         if (cpuid.ecx & (1 << 30)) == 0 {
@@ -1702,8 +1628,9 @@ pub fn fullerene_video_open(
     memory
         .read(&caller, config_ptr as usize, &mut config)
         .map_err(|_| Error::new("video_open: memory read failed"))?;
-    let video = NativeVideo::open(&config)
-        .map_err(|_| Error::new("video_open: invalid H.264 configuration"))?;
+    let Ok(video) = NativeVideo::open(&config) else {
+        return Ok(EINVAL);
+    };
     (caller.data().video_stage_timing)(VIDEO_STAGE_RESET);
     caller.data_mut().native_video = Some(video);
     Ok(ESUCCESS)

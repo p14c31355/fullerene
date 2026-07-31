@@ -169,6 +169,20 @@ pub struct RtsxController {
 unsafe impl Send for RtsxController {}
 
 impl RtsxController {
+    fn can_batch_multiblock(
+        data_path: DataPath,
+        remaining: usize,
+        multi_block_dma: Option<bool>,
+        host_commands: bool,
+        data_buffer: bool,
+    ) -> bool {
+        remaining > 1
+            && data_path == DataPath::Sdma
+            && multi_block_dma != Some(false)
+            && host_commands
+            && data_buffer
+    }
+
     fn data_path_for_card(card_type: SdCardType, preferred: DataPath) -> DataPath {
         if card_type == SdCardType::Sdxc && preferred == DataPath::Sdma {
             DataPath::HostPpbuf
@@ -1077,11 +1091,13 @@ impl RtsxController {
         let mut offset = 0usize;
         let mut remaining = usize::from(count);
         while remaining != 0 {
-            if remaining > 1
-                && self.multi_block_dma != Some(false)
-                && self.host_commands.is_some()
-                && self.data_buffer.is_some()
-            {
+            if Self::can_batch_multiblock(
+                self.data_path,
+                remaining,
+                self.multi_block_dma,
+                self.host_commands.is_some(),
+                self.data_buffer.is_some(),
+            ) {
                 let batch = remaining.min(DATA_BUFFER_BLOCKS);
                 let batch_bytes = batch * 512;
                 let batch_count = batch as u16;
@@ -1409,5 +1425,30 @@ mod tests {
             RtsxController::data_path_for_card(SdCardType::Sdxc, DataPath::Pio),
             DataPath::Pio
         );
+    }
+
+    #[test]
+    fn multiblock_batching_requires_sdma_data_path() {
+        assert!(RtsxController::can_batch_multiblock(
+            DataPath::Sdma,
+            8,
+            None,
+            true,
+            true,
+        ));
+        assert!(!RtsxController::can_batch_multiblock(
+            DataPath::HostPpbuf,
+            8,
+            None,
+            true,
+            true,
+        ));
+        assert!(!RtsxController::can_batch_multiblock(
+            DataPath::Sdma,
+            8,
+            Some(false),
+            true,
+            true,
+        ));
     }
 }

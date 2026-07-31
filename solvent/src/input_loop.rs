@@ -45,6 +45,12 @@ pub fn take_video_stop_request() -> bool {
     VIDEO_STOP_REQUESTED.swap(false, Ordering::AcqRel)
 }
 
+/// Discard an Escape request left over from a previous input epoch before a
+/// new synchronous video playback starts.
+pub fn clear_video_stop_request() {
+    VIDEO_STOP_REQUESTED.store(false, Ordering::Release);
+}
+
 fn scaled_mouse_delta(delta: i16, sensitivity: i16) -> i32 {
     (i32::from(delta) * i32::from(sensitivity)).clamp(-MAX_MOUSE_STEP_PX, MAX_MOUSE_STEP_PX)
 }

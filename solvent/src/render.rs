@@ -106,12 +106,9 @@ fn blit_region_with_brightness(
     region: lattice::scene::DirtyRect,
     brightness: u32,
 ) {
-    // The normal display path is already in the framebuffer's native packed
-    // pixel format.  Copy complete scan-line spans in one operation instead
-    // of issuing one volatile store per pixel.  Besides reducing compositor
-    // time, this shortens the interval in which the GOP scanout can observe
-    // a partially updated video frame.  Brightness adjustments still use the
-    // per-pixel path below because they change the pixel values.
+    // The framebuffer may be a UEFI GOP/MMIO aperture. Keep volatile stores
+    // even when no brightness conversion is needed; a bulk RAM copy is not a
+    // valid publication primitive for that destination.
     if brightness == 100 {
         for row in region.y as usize..(region.y + region.height) as usize {
             let src = row * back_width + region.x as usize;
@@ -127,19 +124,11 @@ fn blit_region_with_brightness(
             if dst_end > framebuffer.len() {
                 return;
             }
-            // SAFETY: both slices were bounds-checked above and the backing
-            // framebuffer region is non-overlapping with the RAM back buffer.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    source.as_ptr(),
-                    framebuffer.as_mut_ptr().add(dst),
-                    width,
-                );
+            let destination = unsafe { framebuffer.as_mut_ptr().add(dst) };
+            for (column, &pixel) in source.iter().enumerate() {
+                unsafe { core::ptr::write_volatile(destination.add(column), pixel) };
             }
         }
-        // The GOP aperture is write-combining memory on supported hardware.
-        // Publish the whole region before returning control to the scanout.
-        unsafe { core::arch::x86_64::_mm_sfence() };
         return;
     }
 
@@ -444,7 +433,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         {
             render_progress(b"RENDER: alloc backbuf");
             let mut back_opt = crate::BACK_BUFFER.lock();
-            if back_opt.as_ref().map_or(true, |b| b.len() < back_len) {
+            let back_buffer_was_reset = back_opt.as_ref().map_or(true, |b| b.len() < back_len);
+            if back_buffer_was_reset {
                 *back_opt = match unsafe { PageBuf::<u32>::alloc_zeroed_for_len(back_len) } {
                     Some(buf) => Some(buf),
                     None => {
@@ -464,7 +454,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             // Keep the RAM back buffer cursor-free. Cursor-only updates can
             // then restore clean pixels without reading from GOP memory.
             let cursor = scene.cursor.take();
-            let (_bx, _by, bw, bh) = if video_only {
+            let (_bx, _by, bw, bh) = if video_only && !back_buffer_was_reset {
                 Compositor::render_preserving_background(&scene, &mut back_target)
             } else {
                 Compositor::render(&scene, &mut back_target)
@@ -570,6 +560,21 @@ mod tests {
             50,
         );
         assert_eq!(framebuffer, [0x604020]);
+    }
+
+    #[test]
+    fn blit_preserves_pixels_at_full_brightness() {
+        let back = [0x00c0_8040, 0x0010_2030];
+        let mut framebuffer = [0; 2];
+        blit_region_with_brightness(
+            &back,
+            2,
+            &mut framebuffer,
+            2,
+            lattice::scene::DirtyRect::full(2, 1),
+            100,
+        );
+        assert_eq!(framebuffer, back);
     }
 
     #[test]

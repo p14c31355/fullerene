@@ -1,5 +1,6 @@
 //! Event dispatch, timer processing, service ticking, and frame pacing.
 
+use alloc::vec::Vec;
 use lattice::shell_overlay::ShellState;
 use resonance::{Event, InputEvent};
 use spin::Mutex;
@@ -19,28 +20,42 @@ static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 fn process_pointer_motion_only() {
-    let count = RUNTIME_CONTEXT
+    let events = RUNTIME_CONTEXT
         .event_queue()
-        .as_ref()
-        .map_or(0, |queue| queue.len());
-    for _ in 0..count {
-        let event = RUNTIME_CONTEXT
-            .event_queue()
-            .as_mut()
-            .and_then(|queue| queue.pop());
-        let Some(event) = event else {
-            break;
-        };
+        .as_mut()
+        .map(|queue| {
+            let count = queue.len();
+            (0..count).filter_map(|_| queue.pop()).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut retained = Vec::with_capacity(events.len());
+    for event in events {
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
                 crate::handlers::apply_pointer_motion(x, y);
             }
-            other => {
-                if let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut() {
-                    queue.push(other);
-                }
-            }
+            other => retained.push(other),
         }
+    }
+    if let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut() {
+        for event in retained.into_iter().rev() {
+            queue.push_front(event);
+        }
+    }
+}
+
+struct TickCoreGuard;
+
+impl TickCoreGuard {
+    fn enter() -> Self {
+        TICK_CORE_ACTIVE.store(true, core::sync::atomic::Ordering::Release);
+        Self
+    }
+}
+
+impl Drop for TickCoreGuard {
+    fn drop(&mut self) {
+        TICK_CORE_ACTIVE.store(false, core::sync::atomic::Ordering::Release);
     }
 }
 
@@ -138,7 +153,7 @@ fn service_explorer_copy() {
 }
 
 pub fn tick_core(now: u64) {
-    TICK_CORE_ACTIVE.store(true, core::sync::atomic::Ordering::Release);
+    let _tick_core = TickCoreGuard::enter();
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
     crate::poll_mouse_state();
@@ -219,7 +234,6 @@ pub fn tick_core(now: u64) {
     }) {
         crate::ensure_editor_window();
     }
-    TICK_CORE_ACTIVE.store(false, core::sync::atomic::Ordering::Release);
 }
 
 pub fn runtime_tick_no_fb() {

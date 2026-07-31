@@ -596,16 +596,14 @@ impl Compositor {
             && wdy >= 0
             && sw >= win.width as i32
             && sh >= win.height as i32
+            && win.title.is_some()
+            && radius > 0
         {
             let x0 = (cx as i32).max(wdx) as u32;
             let x1 = cex.min(wdx + win.width as i32).min(fbw as i32) as u32;
             let y0 = (cy as i32).max(wdy) as u32;
             let client_bottom = wdy + win.height as i32;
-            let fast_bottom = if win.title.is_some() && radius > 0 {
-                client_bottom.saturating_sub(radius)
-            } else {
-                client_bottom
-            };
+            let fast_bottom = client_bottom.saturating_sub(radius);
             let y1 = cey.min(fast_bottom).min(fbh as i32) as u32;
             if x0 < x1 && y0 < y1 {
                 let copy_width = (x1 - x0) as usize;

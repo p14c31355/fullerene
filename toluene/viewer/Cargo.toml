@@ -13,7 +13,7 @@ mp4 = "0.14"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
-z264 = "0.1.0"
+z264 = { version = "0.1.0", default-features = false }
 
 [profile.release]
 opt-level = "s"

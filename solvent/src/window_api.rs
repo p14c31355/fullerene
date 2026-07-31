@@ -97,7 +97,11 @@ pub fn invalidate_window(id: WindowId) {
 pub fn invalidate_video_window(id: WindowId) {
     nitrogen::debug_status!("WASM", "video window invalidate enter");
     if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
-        runtime.video_dirty_window = Some(id);
+        if let Some(previous) = runtime.video_dirty_window.replace(id)
+            && previous != id
+        {
+            runtime.desktop.invalidate_window(previous);
+        }
         runtime.frame_due = true;
     }
     nitrogen::debug_status!("WASM", "video window invalidate exit");

@@ -68,7 +68,8 @@ pub use event_loop::{
 };
 pub use file::RuntimeFile;
 pub use input_loop::{
-    MOUSE_STATE, MouseState, poll_keyboard, poll_mouse_state, take_video_stop_request,
+    MOUSE_STATE, MouseState, clear_video_stop_request, poll_keyboard, poll_mouse_state,
+    take_video_stop_request,
 };
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use runtime_context::{
