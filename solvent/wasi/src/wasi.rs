@@ -5,7 +5,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::str;
 use wasmi::{AsContext, Caller, Error, Memory};
-use z264::{Decoder as H264Decoder, Frame as H264Frame};
+use z264::{Frame as H264Frame, OrderedDecoder as H264Decoder};
 
 // ── WASI errno ─────────────────────────────────────────────────────
 
@@ -176,7 +176,9 @@ impl NativeVideo {
     fn open(config_annex_b: &[u8]) -> Result<Self, ()> {
         let mut decoder = H264Decoder::new();
         for nal in z264::nal::parse_annex_b(config_annex_b) {
-            decoder.decode_nal(&nal).map_err(|_| ())?;
+            // SPS/PPS do not produce pictures. Any deferred output is not
+            // possible before the first slice, so it can be discarded here.
+            let _ = decoder.decode_nal(&nal).map_err(|_| ())?;
         }
         Ok(Self {
             decoder,
@@ -194,7 +196,7 @@ impl NativeVideo {
             return Err(());
         }
         for nal in nals {
-            if let Some(frame) = self.decoder.decode_nal(&nal).map_err(|_| ())? {
+            for frame in self.decoder.decode_nal(&nal).map_err(|_| ())? {
                 self.pending.push_back(frame);
             }
         }
@@ -202,7 +204,7 @@ impl NativeVideo {
     }
 
     fn flush(&mut self) -> u32 {
-        if let Some(frame) = self.decoder.flush() {
+        for frame in self.decoder.flush() {
             self.pending.push_back(frame);
         }
         self.pending.len() as u32
