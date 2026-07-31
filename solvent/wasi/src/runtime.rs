@@ -7,8 +7,10 @@ use crate::wasi::{
     fd_readdir, fd_seek, fd_write, fullerene_capture_screen, fullerene_capture_screen_chunk,
     fullerene_close_window, fullerene_create_window, fullerene_play_pcm,
     fullerene_screen_dimensions, fullerene_show_error, fullerene_show_image, fullerene_show_text,
-    fullerene_update_window, fullerene_wait_for_ns, fullerene_write_file_chunk, path_filestat_get,
-    path_open, proc_exit, random_get, sched_yield,
+    fullerene_update_window, fullerene_video_close, fullerene_video_decode_sample,
+    fullerene_video_discard, fullerene_video_flush, fullerene_video_frame_info,
+    fullerene_video_open, fullerene_video_present, fullerene_wait_for_ns,
+    fullerene_write_file_chunk, path_filestat_get, path_open, proc_exit, random_get, sched_yield,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -184,6 +186,17 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
     linker.func_wrap(fullerene, "show_error", fullerene_show_error)?;
     linker.func_wrap(fullerene, "create_window", fullerene_create_window)?;
     linker.func_wrap(fullerene, "update_window", fullerene_update_window)?;
+    linker.func_wrap(fullerene, "video_open", fullerene_video_open)?;
+    linker.func_wrap(
+        fullerene,
+        "video_decode_sample",
+        fullerene_video_decode_sample,
+    )?;
+    linker.func_wrap(fullerene, "video_frame_info", fullerene_video_frame_info)?;
+    linker.func_wrap(fullerene, "video_present", fullerene_video_present)?;
+    linker.func_wrap(fullerene, "video_discard", fullerene_video_discard)?;
+    linker.func_wrap(fullerene, "video_flush", fullerene_video_flush)?;
+    linker.func_wrap(fullerene, "video_close", fullerene_video_close)?;
     linker.func_wrap(fullerene, "close_window", fullerene_close_window)?;
     linker.func_wrap(fullerene, "play_pcm", fullerene_play_pcm)?;
 

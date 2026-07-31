@@ -5,13 +5,14 @@
 //! used by the WASM viewer, so decoder cost can be separated from host drawing.
 
 use mp4::{Mp4Reader, TrackType};
-use rust_h264::decoder::{Decoder, Frame};
-use rust_h264::nal::{parse_annex_b, parse_avcc};
 use std::fs::File;
 use std::io::BufReader;
 use std::time::Instant;
+use z264::nal::{parse_annex_b, parse_avcc};
+use z264::{Decoder, Frame};
 
-const DEFAULT_PATH: &str = "/home/placeless/ビデオ/【東方】Bad Apple!! ＰＶ【影絵】 [FtutLA63Cp8].mp4";
+const DEFAULT_PATH: &str =
+    "/home/placeless/ビデオ/【東方】Bad Apple!! ＰＶ【影絵】 [FtutLA63Cp8].mp4";
 
 fn main() {
     let path = std::env::args()
@@ -54,7 +55,9 @@ fn main() {
     }
     let config_start = Instant::now();
     for nal in parse_annex_b(&config_stream) {
-        decoder.decode_nal(&nal).expect("H.264 config decode failed");
+        decoder
+            .decode_nal(&nal)
+            .expect("H.264 config decode failed");
     }
     let config_time = config_start.elapsed();
 
@@ -105,7 +108,11 @@ fn main() {
     println!("file={path}");
     println!("size_bytes={size} resolution={width}x{height} timescale={timescale}");
     println!("samples={samples} nals={nals} decoded_frames={decoded_frames} rgb_bytes={rgb_bytes}");
-    println!("header_ms={:.3} config_ms={:.3}", ms(header_time), ms(config_time));
+    println!(
+        "header_ms={:.3} config_ms={:.3}",
+        ms(header_time),
+        ms(config_time)
+    );
     println!(
         "playback_ms={:.3} read_ms={:.3} decode_ms={:.3} convert_ms={:.3}",
         ms(playback_time),

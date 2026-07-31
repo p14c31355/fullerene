@@ -1,9 +1,11 @@
 use alloc::collections::BTreeMap;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::str;
 use wasmi::{AsContext, Caller, Error, Memory};
+use z264::{Decoder as H264Decoder, Frame as H264Frame};
 
 // ── WASI errno ─────────────────────────────────────────────────────
 
@@ -136,6 +138,148 @@ const MAX_WINDOW_TITLE_BYTES: u32 = 1024;
 const MAX_TEXT_BYTES: u32 = 512 * 1024;
 const MAX_ERROR_BYTES: u32 = 64 * 1024;
 const MAX_AUDIO_BYTES: u32 = 8 * 1024 * 1024;
+const MAX_NATIVE_VIDEO_CONFIG_BYTES: u32 = 64 * 1024;
+const MAX_NATIVE_VIDEO_SAMPLE_BYTES: u32 = 8 * 1024 * 1024;
+const MAX_NATIVE_VIDEO_NALS: usize = 128;
+
+/// Native H.264 state owned by one WASM invocation.
+///
+/// The viewer still owns MP4 demuxing and presentation timing. Compressed
+/// samples cross the host boundary once, while parsing, decoding, YUV→RGB
+/// conversion, and the temporary frame queue stay native. This is important
+/// for wasmi: none of the expensive per-macroblock work is charged to the
+/// interpreter or performed through WASM memory.
+struct NativeVideo {
+    decoder: H264Decoder,
+    pending: VecDeque<H264Frame>,
+    rgb: Vec<u8>,
+}
+
+impl NativeVideo {
+    fn open(config_annex_b: &[u8]) -> Result<Self, ()> {
+        let mut decoder = H264Decoder::new();
+        for nal in z264::nal::parse_annex_b(config_annex_b) {
+            decoder.decode_nal(&nal).map_err(|_| ())?;
+        }
+        Ok(Self {
+            decoder,
+            pending: VecDeque::new(),
+            rgb: Vec::new(),
+        })
+    }
+
+    fn decode_sample(&mut self, sample: &[u8], length_size: usize) -> Result<u32, ()> {
+        let nals = z264::nal::parse_avcc(sample, length_size);
+        if nals.len() > MAX_NATIVE_VIDEO_NALS {
+            return Err(());
+        }
+        for nal in nals {
+            if let Some(frame) = self.decoder.decode_nal(&nal).map_err(|_| ())? {
+                self.pending.push_back(frame);
+            }
+        }
+        Ok(self.pending.len() as u32)
+    }
+
+    fn flush(&mut self) -> u32 {
+        if let Some(frame) = self.decoder.flush() {
+            self.pending.push_back(frame);
+        }
+        self.pending.len() as u32
+    }
+
+    fn frame_info(&self) -> Option<(u32, u32)> {
+        self.pending
+            .front()
+            .map(|frame| fit_video_dimensions(frame.width, frame.height))
+    }
+
+    fn discard(&mut self) -> Result<(), ()> {
+        self.pending.pop_front().map(|_| ()).ok_or(())
+    }
+
+    fn present(&mut self, window_id: i32, update: UpdateWindow) -> Result<(u32, u32), ()> {
+        let frame = self.pending.pop_front().ok_or(())?;
+        let (width, height) = yuv420_to_rgb(&frame, &mut self.rgb).ok_or(())?;
+        if window_id >= 0 && update(window_id, width, height, &self.rgb) != 0 {
+            return Err(());
+        }
+        Ok((width, height))
+    }
+}
+
+fn fit_video_dimensions(width: u32, height: u32) -> (u32, u32) {
+    if width <= 800 && height <= 600 {
+        return (width, height);
+    }
+    if u64::from(width) * 600 <= u64::from(height) * 800 {
+        (
+            (u64::from(width) * 600 / u64::from(height)).max(1) as u32,
+            600,
+        )
+    } else {
+        (
+            800,
+            (u64::from(height) * 800 / u64::from(width)).max(1) as u32,
+        )
+    }
+}
+
+fn yuv420_to_rgb(frame: &H264Frame, rgb: &mut Vec<u8>) -> Option<(u32, u32)> {
+    let source_width = usize::try_from(frame.width).ok()?;
+    let source_height = usize::try_from(frame.height).ok()?;
+    if source_width == 0 || source_height == 0 {
+        return None;
+    }
+    let (width, height) = fit_video_dimensions(frame.width, frame.height);
+    let width = usize::try_from(width).ok()?;
+    let height = usize::try_from(height).ok()?;
+    let y_len = source_width.checked_mul(source_height)?;
+    let uv_width = source_width.div_ceil(2);
+    let uv_height = source_height.div_ceil(2);
+    let uv_len = uv_width.checked_mul(uv_height)?;
+    if frame.y.len() < y_len || frame.u.len() < uv_len || frame.v.len() < uv_len {
+        return None;
+    }
+    let rgb_len = width.checked_mul(height)?.checked_mul(3)?;
+    rgb.resize(rgb_len, 0);
+    if width == source_width && height == source_height {
+        for source_y in 0..source_height {
+            let y_row = source_y * source_width;
+            let uv_row = (source_y / 2) * uv_width;
+            let rgb_row = source_y * width * 3;
+            for source_x in 0..source_width {
+                let yi = y_row + source_x;
+                let ui = uv_row + source_x / 2;
+                let dst = rgb_row + source_x * 3;
+                let yv = frame.y[yi] as i32;
+                let uv = frame.u[ui] as i32 - 128;
+                let vv = frame.v[ui] as i32 - 128;
+                rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
+                rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
+                rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
+            }
+        }
+    } else {
+        for output_y in 0..height {
+            let source_y = output_y * source_height / height;
+            let uv_row = (source_y / 2) * uv_width;
+            for output_x in 0..width {
+                let source_x = output_x * source_width / width;
+                let yi = source_y * source_width + source_x;
+                let ui = uv_row + source_x / 2;
+                let dst = (output_y * width + output_x) * 3;
+                let yv = frame.y[yi] as i32;
+                let uv = frame.u[ui] as i32 - 128;
+                let vv = frame.v[ui] as i32 - 128;
+                rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
+                rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
+                rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
+            }
+        }
+    }
+    Some((width as u32, height as u32))
+}
 
 pub struct WasiCtx {
     pub exit_code: Option<u32>,
@@ -149,6 +293,7 @@ pub struct WasiCtx {
     pub fuel_refills_left: u16,
     pub fuel_refill_amount: u64,
     pub host: WasiHost,
+    native_video: Option<NativeVideo>,
 }
 
 impl WasiCtx {
@@ -180,6 +325,7 @@ impl WasiCtx {
             fuel_refills_left: 0,
             fuel_refill_amount: 0,
             host,
+            native_video: None,
         }
     }
 }
@@ -1484,6 +1630,105 @@ pub fn fullerene_update_window(
         .map_err(|_| Error::new("update_window: memory read failed"))?;
     let code = (caller.data().update_window)(window_id, width, height, &pixels);
     Ok(code as u32)
+}
+
+/// Initialize the native z264 service with the Annex B SPS/PPS stream made
+/// from the MP4 avcC record by the viewer.
+pub fn fullerene_video_open(
+    mut caller: Caller<'_, WasiCtx>,
+    config_ptr: u32,
+    config_len: u32,
+) -> Result<u32, Error> {
+    if config_len == 0 || config_len > MAX_NATIVE_VIDEO_CONFIG_BYTES {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut config = vec![0u8; config_len as usize];
+    memory
+        .read(&caller, config_ptr as usize, &mut config)
+        .map_err(|_| Error::new("video_open: memory read failed"))?;
+    let video = NativeVideo::open(&config)
+        .map_err(|_| Error::new("video_open: invalid H.264 configuration"))?;
+    caller.data_mut().native_video = Some(video);
+    Ok(ESUCCESS)
+}
+
+/// Submit one length-prefixed MP4 sample to native z264. The return value is
+/// the number of decoded frames currently waiting to be consumed.
+pub fn fullerene_video_decode_sample(
+    mut caller: Caller<'_, WasiCtx>,
+    sample_ptr: u32,
+    sample_len: u32,
+    length_size: u32,
+) -> Result<u32, Error> {
+    if sample_len > MAX_NATIVE_VIDEO_SAMPLE_BYTES || !matches!(length_size, 1 | 2 | 4) {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut sample = vec![0u8; sample_len as usize];
+    memory
+        .read(&caller, sample_ptr as usize, &mut sample)
+        .map_err(|_| Error::new("video_decode_sample: memory read failed"))?;
+    let Some(video) = caller.data_mut().native_video.as_mut() else {
+        return Ok(EINVAL);
+    };
+    match video.decode_sample(&sample, length_size as usize) {
+        Ok(count) => Ok(count),
+        Err(()) => Ok(u32::MAX),
+    }
+}
+
+/// Return the dimensions of the oldest pending decoded frame, packed as
+/// `(width << 32) | height`.
+pub fn fullerene_video_frame_info(caller: Caller<'_, WasiCtx>) -> Result<u64, Error> {
+    let Some(video) = caller.data().native_video.as_ref() else {
+        return Ok(0);
+    };
+    Ok(video
+        .frame_info()
+        .map(|(width, height)| (u64::from(width) << 32) | u64::from(height))
+        .unwrap_or(0))
+}
+
+/// Convert and optionally present the oldest pending native frame. A
+/// negative window id performs conversion only, which is used by the decode+
+/// convert benchmark without allocating a WASM RGB buffer.
+pub fn fullerene_video_present(
+    mut caller: Caller<'_, WasiCtx>,
+    window_id: i32,
+) -> Result<u32, Error> {
+    let update = caller.data().update_window;
+    let Some(video) = caller.data_mut().native_video.as_mut() else {
+        return Ok(EINVAL);
+    };
+    match video.present(window_id, update) {
+        Ok(_) => Ok(ESUCCESS),
+        Err(()) => Ok(EIO),
+    }
+}
+
+/// Discard one decoded frame without converting it. This keeps decode-only
+/// benchmarks bounded instead of retaining every frame of a long movie.
+pub fn fullerene_video_discard(mut caller: Caller<'_, WasiCtx>) -> Result<u32, Error> {
+    let Some(video) = caller.data_mut().native_video.as_mut() else {
+        return Ok(EINVAL);
+    };
+    match video.discard() {
+        Ok(()) => Ok(ESUCCESS),
+        Err(()) => Ok(EIO),
+    }
+}
+
+pub fn fullerene_video_flush(mut caller: Caller<'_, WasiCtx>) -> Result<u32, Error> {
+    let Some(video) = caller.data_mut().native_video.as_mut() else {
+        return Ok(EINVAL);
+    };
+    Ok(video.flush())
+}
+
+pub fn fullerene_video_close(mut caller: Caller<'_, WasiCtx>) -> Result<u32, Error> {
+    caller.data_mut().native_video = None;
+    Ok(ESUCCESS)
 }
 
 /// Close a window previously created with `create_window`.

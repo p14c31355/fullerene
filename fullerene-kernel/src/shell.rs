@@ -257,41 +257,30 @@ fn wasm_play_pcm(sample_rate: u32, channels: u8, bits_per_sample: u8, pcm: &[u8]
 }
 
 fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixels: &[u8]) -> i32 {
-    if pixels.len() < 3 {
+    let Some(row_bytes) = (width as usize).checked_mul(3) else {
+        return -1;
+    };
+    let Some(expected_bytes) = row_bytes.checked_mul(height as usize) else {
+        return -1;
+    };
+    if pixels.len() != expected_bytes {
         return -1;
     }
-    let img_w = width as usize;
-    wasm_status("surface blit enter");
     let updated = solvent::with_window_surface(window_id, |surf_pixels, surf_w, surf_h| {
         let draw_h = (height as usize).min(surf_h as usize);
         let draw_w = (width as usize).min(surf_w as usize);
         for y in 0..draw_h {
-            for x in 0..draw_w {
-                let Some(src) = y
-                    .checked_mul(img_w)
-                    .and_then(|offset| offset.checked_add(x))
-                    .and_then(|pixel| pixel.checked_mul(3))
-                else {
-                    return;
-                };
-                let Some(end) = src.checked_add(3) else {
-                    return;
-                };
-                if let Some(rgb) = pixels.get(src..end) {
-                    let color = (rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32;
-                    surf_pixels[y * surf_w as usize + x] = color;
-                }
+            let src_row = &pixels[y * row_bytes..(y + 1) * row_bytes];
+            let dst_row = &mut surf_pixels[y * surf_w as usize..y * surf_w as usize + draw_w];
+            for (dst, rgb) in dst_row.iter_mut().zip(src_row.chunks_exact(3)) {
+                *dst = (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2]);
             }
         }
     });
     if updated.is_none() {
-        wasm_status("surface blit no surface");
         return -1;
     }
-    wasm_status("surface blit exit");
-    wasm_status("window invalidate enter");
     solvent::invalidate_window(window_id);
-    wasm_status("window invalidate exit");
     0
 }
 

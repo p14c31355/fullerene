@@ -4,16 +4,15 @@ use std::io::{self, Cursor, Read, Seek};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-const VIEWER_BUILD_ID: &str = "2026-07-30-wasm-mp4-perf-1";
+const VIEWER_BUILD_ID: &str = "2026-07-31-native-z264-mp4-1";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MP4_IO_OPERATIONS: usize = 16_384;
 const MAX_MP4_PARSE_TIME: Duration = Duration::from_secs(3);
 const MAX_MP4_SAMPLES: u32 = 1_000_000;
 const MAX_PLAYBACK_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
-const MAX_NALS_PER_SAMPLE: usize = 128;
-// Two NALs per host yield keeps the existing WASMI fuel refill granularity
-// safe while avoiding the redundant sample+NAL yield in ordinary MP4s.
-const PLAYBACK_YIELD_NALS: usize = 2;
+// Keep the event loop responsive without adding a host yield for every
+// sample; native video submission is already one host transition per sample.
+const PLAYBACK_YIELD_SAMPLES: usize = 2;
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SOURCE_IMAGE_WIDTH: u32 = 16_384;
 const MAX_SOURCE_IMAGE_HEIGHT: u32 = 16_384;
@@ -60,6 +59,13 @@ unsafe extern "C" {
         pixels_ptr: *const u8,
         pixels_len: u32,
     ) -> i32;
+    fn video_open(config_ptr: *const u8, config_len: u32) -> u32;
+    fn video_decode_sample(sample_ptr: *const u8, sample_len: u32, length_size: u32) -> u32;
+    fn video_frame_info() -> u64;
+    fn video_present(window_id: i32) -> u32;
+    fn video_discard() -> u32;
+    fn video_flush() -> u32;
+    fn video_close() -> u32;
     fn wait_for_ns(duration_ns: u64) -> u32;
 }
 
@@ -462,6 +468,7 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
 /// Open an MP4 through a seekable WASI file instead of reading the whole
 /// media file into a WASM Vec.  The MP4 metadata is at the beginning of the
 /// sample file, and the reader only seeks to the first sample it needs.
+#[cfg(test)]
 fn try_mp4_file(path: &str) -> bool {
     try_mp4_file_with_mode(path, None)
 }
@@ -619,10 +626,10 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         );
     }
 
-    let mut decoder = rust_h264::decoder::Decoder::new();
-    // MP4 stores SPS/PPS in avcC, outside the sample. Feed those parameter
-    // sets first; parsing the sample as if it used a fixed 4-byte prefix can
-    // make malformed/ordinary phone videos take an unbounded decode path.
+    // MP4 stores SPS/PPS in avcC, outside the sample. Build the compact
+    // Annex B configuration once and hand it to native z264. The WASM side
+    // remains responsible for demuxing and pacing, but no longer performs
+    // per-NAL parsing, H.264 reconstruction, or YUV conversion.
     let mut config_stream = Vec::new();
     for nal in avcc
         .sequence_parameter_sets
@@ -636,18 +643,20 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         "viewer: mp4 decoder config enter bytes={}",
         config_stream.len()
     );
-    for nal in rust_h264::nal::parse_annex_b(&config_stream) {
-        if decoder.decode_nal(&nal).is_err() {
-            println!("viewer: mp4 decoder config failed");
-            return present_mp4_failure(
-                path,
-                size_mb,
-                dur,
-                width,
-                height,
-                "decoder configuration failed",
-            );
-        }
+    let config_code = unsafe { video_open(config_stream.as_ptr(), config_stream.len() as u32) };
+    if config_code != 0 {
+        println!(
+            "viewer: mp4 native decoder config failed code={}",
+            config_code
+        );
+        return present_mp4_failure(
+            path,
+            size_mb,
+            dur,
+            width,
+            height,
+            "decoder configuration failed",
+        );
     }
     println!("viewer: mp4 decoder config exit");
 
@@ -663,8 +672,7 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
     let mut samples = 0u32;
     let mut nals_decoded = 0u64;
     let mut rgb_bytes = 0usize;
-    let mut rgb_buffer = Vec::new();
-    let mut nals_since_yield = PLAYBACK_YIELD_NALS;
+    let mut samples_since_yield = PLAYBACK_YIELD_SAMPLES;
     println!("viewer: mp4 playback enter samples={}", sample_count);
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
     // present each decoded frame, and pace it against the track timestamps.
@@ -677,7 +685,7 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         // boundary twice for the common one-NAL-per-sample case.  The first
         // sample yields immediately; later samples yield at a bounded NAL
         // interval, including samples with no decoded output.
-        if nals_since_yield >= PLAYBACK_YIELD_NALS {
+        if samples_since_yield >= PLAYBACK_YIELD_SAMPLES {
             unsafe {
                 if trace_sample {
                     println!("viewer: mp4 sample wait begin id={}", sample_id);
@@ -687,7 +695,7 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                     println!("viewer: mp4 sample wait exit id={}", sample_id);
                 }
             }
-            nals_since_yield = 0;
+            samples_since_yield = 0;
         }
         if trace_sample {
             println!("viewer: mp4 sample read begin id={}", sample_id);
@@ -737,128 +745,146 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                 "video sample is too large",
             );
         }
-        let nals = rust_h264::nal::parse_avcc(&sample.bytes, length_size);
-        if trace_sample {
-            println!(
-                "viewer: mp4 sample parsed id={} bytes={} nals={}",
-                sample_id,
-                sample.bytes.len(),
-                nals.len()
-            );
-        }
-        if nals.len() > MAX_NALS_PER_SAMPLE {
-            println!(
-                "viewer: mp4 sample rejected id={} nals>{}",
-                sample_id, MAX_NALS_PER_SAMPLE
-            );
-            return present_mp4_failure(
-                path,
-                size_mb,
-                dur,
-                width,
-                height,
-                "sample has too many NAL units",
-            );
-        }
         let target_ns = if timescale == 0 {
             0
         } else {
             ((sample.start_time as u128).saturating_mul(1_000_000_000) / u128::from(timescale))
                 as u64
         };
-        for nal in &nals {
-            if nal.rbsp.len() > MAX_PLAYBACK_SAMPLE_BYTES {
+        let decode_start = Instant::now();
+        let frame_count = unsafe {
+            video_decode_sample(
+                sample.bytes.as_ptr(),
+                sample.bytes.len() as u32,
+                length_size as u32,
+            )
+        };
+        decode_time += decode_start.elapsed();
+        samples_since_yield = samples_since_yield.saturating_add(1);
+        if frame_count == u32::MAX {
+            return present_mp4_failure(
+                path,
+                size_mb,
+                dur,
+                width,
+                height,
+                "native decoder rejected a video sample",
+            );
+        }
+        nals_decoded = nals_decoded.saturating_add(u64::from(frame_count));
+        decoded_frames = decoded_frames.saturating_add(frame_count);
+        for _ in 0..frame_count {
+            wait_for_video_time(playback_start, target_ns);
+            let frame_info = unsafe { video_frame_info() };
+            let frame_width = (frame_info >> 32) as u32;
+            let frame_height = frame_info as u32;
+            if frame_width == 0 || frame_height == 0 {
                 return present_mp4_failure(
                     path,
                     size_mb,
                     dur,
                     width,
                     height,
-                    "NAL unit is too large",
+                    "native decoder returned invalid frame dimensions",
                 );
             }
-            // decode_nal itself is pure WASM compute and cannot call the
-            // host. Yield at a bounded interval so long NAL chains remain
-            // interruptible while ordinary MP4 samples avoid a redundant
-            // host transition after the sample-level yield.
-            if nals_since_yield >= PLAYBACK_YIELD_NALS {
-                unsafe {
-                    wait_for_ns(0);
-                }
-                nals_since_yield = 0;
-            }
-            nals_since_yield = nals_since_yield.saturating_add(1);
-            let decode_start = Instant::now();
-            let decoded = decoder.decode_nal(nal);
-            decode_time += decode_start.elapsed();
-            if let Ok(Some(frame)) = decoded {
-                nals_decoded = nals_decoded.saturating_add(1);
-                decoded_frames = decoded_frames.saturating_add(1);
-                wait_for_video_time(playback_start, target_ns);
-                if bench_mode == Some(Mp4BenchMode::DecodeOnly) {
-                    continue;
-                }
-                let convert_start = Instant::now();
-                let Some((frame_width, frame_height)) =
-                    yuv420_to_rgb(&frame, 800, 600, &mut rgb_buffer)
-                else {
-                    continue;
-                };
-                convert_time += convert_start.elapsed();
-                rgb_bytes = rgb_buffer.len();
-                if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
-                    std::hint::black_box(&rgb_buffer);
-                    continue;
-                }
-                let present_start = Instant::now();
-                if present_rgb_frame(
-                    &mut window_id,
-                    &title,
-                    frame_width,
-                    frame_height,
-                    &rgb_buffer,
-                ) {
-                    presented_frames = presented_frames.saturating_add(1);
-                    if presented_frames == 1 || presented_frames.checked_rem(30) == Some(0) {
-                        println!(
-                            "viewer: mp4 playback frame={} sample={} pts_ns={}",
-                            presented_frames, sample_id, target_ns
-                        );
+            rgb_bytes = frame_width as usize * frame_height as usize * 3;
+            let present_start = Instant::now();
+            let present_code = match bench_mode {
+                Some(Mp4BenchMode::DecodeOnly) => unsafe { video_discard() },
+                Some(Mp4BenchMode::DecodeConvert) => unsafe { video_present(-1) },
+                _ => {
+                    if window_id < 0 {
+                        window_id = unsafe {
+                            create_window(
+                                title.as_ptr(),
+                                title.len() as u32,
+                                frame_width,
+                                frame_height,
+                            )
+                        };
+                    }
+                    if window_id < 0 {
+                        u32::MAX
+                    } else {
+                        unsafe { video_present(window_id) }
                     }
                 }
+            };
+            if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
+                convert_time += present_start.elapsed();
+            } else if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
                 present_time += present_start.elapsed();
+            }
+            if present_code != 0 {
+                return present_mp4_failure(
+                    path,
+                    size_mb,
+                    dur,
+                    width,
+                    height,
+                    "native frame presentation failed",
+                );
+            }
+            if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
+                presented_frames = presented_frames.saturating_add(1);
+                if presented_frames == 1 || presented_frames.checked_rem(30) == Some(0) {
+                    println!(
+                        "viewer: mp4 playback frame={} sample={} pts_ns={}",
+                        presented_frames, sample_id, target_ns
+                    );
+                }
             }
         }
         if trace_sample {
             println!("viewer: mp4 sample exit id={}", sample_id);
         }
     }
-    if let Some(frame) = decoder.flush() {
-        decoded_frames = decoded_frames.saturating_add(1);
-        if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
-            let convert_start = Instant::now();
-            if let Some((frame_width, frame_height)) =
-                yuv420_to_rgb(&frame, 800, 600, &mut rgb_buffer)
-            {
-                convert_time += convert_start.elapsed();
-                rgb_bytes = rgb_buffer.len();
-                if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
-                    std::hint::black_box(&rgb_buffer);
-                } else {
-                    let present_start = Instant::now();
-                    if present_rgb_frame(
-                        &mut window_id,
-                        &title,
-                        frame_width,
-                        frame_height,
-                        &rgb_buffer,
-                    ) {
-                        presented_frames = presented_frames.saturating_add(1);
-                    }
-                    present_time += present_start.elapsed();
-                }
-            }
+    let flush_count = unsafe { video_flush() };
+    if flush_count == u32::MAX {
+        return present_mp4_failure(
+            path,
+            size_mb,
+            dur,
+            width,
+            height,
+            "native decoder flush failed",
+        );
+    }
+    decoded_frames = decoded_frames.saturating_add(flush_count);
+    for _ in 0..flush_count {
+        let frame_info = unsafe { video_frame_info() };
+        let frame_width = (frame_info >> 32) as u32;
+        let frame_height = frame_info as u32;
+        rgb_bytes = frame_width as usize * frame_height as usize * 3;
+        let present_start = Instant::now();
+        let present_code = match bench_mode {
+            Some(Mp4BenchMode::DecodeOnly) => unsafe { video_discard() },
+            Some(Mp4BenchMode::DecodeConvert) => unsafe { video_present(-1) },
+            _ if window_id >= 0 => unsafe { video_present(window_id) },
+            _ => u32::MAX,
+        };
+        if bench_mode == Some(Mp4BenchMode::DecodeConvert) {
+            convert_time += present_start.elapsed();
+        } else if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
+            present_time += present_start.elapsed();
         }
+        if present_code != 0 {
+            return present_mp4_failure(
+                path,
+                size_mb,
+                dur,
+                width,
+                height,
+                "native frame flush presentation failed",
+            );
+        }
+        if bench_mode != Some(Mp4BenchMode::DecodeOnly) {
+            presented_frames = presented_frames.saturating_add(1);
+        }
+    }
+    unsafe {
+        video_close();
     }
     println!("viewer: mp4 playback exit frames={}", presented_frames);
     if let Some(mode) = bench_mode {
@@ -929,86 +955,11 @@ fn wait_for_video_time(start: Instant, target_ns: u64) {
     }
 }
 
-fn present_rgb_frame(
-    window_id: &mut i32,
-    title: &str,
-    width: u32,
-    height: u32,
-    rgb: &[u8],
-) -> bool {
-    unsafe {
-        if *window_id < 0 {
-            *window_id = create_window(title.as_ptr(), title.len() as u32, width, height);
-        }
-        if *window_id < 0 {
-            return false;
-        }
-        update_window(*window_id, width, height, rgb.as_ptr(), rgb.len() as u32) == 0
-    }
-}
-
 fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-fn yuv420_to_rgb(
-    frame: &rust_h264::decoder::Frame,
-    max_width: usize,
-    max_height: usize,
-    rgb: &mut Vec<u8>,
-) -> Option<(u32, u32)> {
-    let source_width = usize::try_from(frame.width).ok()?;
-    let source_height = usize::try_from(frame.height).ok()?;
-    if source_width == 0 || source_height == 0 {
-        return None;
-    }
-    let (width, height) = fit_dimensions(source_width, source_height, max_width, max_height)?;
-    let y_len = source_width.checked_mul(source_height)?;
-    let uv_width = source_width.div_ceil(2);
-    let uv_height = source_height.div_ceil(2);
-    let uv_len = uv_width.checked_mul(uv_height)?;
-    if frame.y.len() < y_len || frame.u.len() < uv_len || frame.v.len() < uv_len {
-        return None;
-    }
-    let rgb_len = width.checked_mul(height)?.checked_mul(3)?;
-    rgb.resize(rgb_len, 0);
-    if width == source_width && height == source_height {
-        for source_y in 0..source_height {
-            let y_row = source_y * source_width;
-            let uv_row = (source_y / 2) * uv_width;
-            let rgb_row = source_y * width * 3;
-            for source_x in 0..source_width {
-                let yi = y_row + source_x;
-                let ui = uv_row + source_x / 2;
-                let dst = rgb_row + source_x * 3;
-                let yv = frame.y[yi] as i32;
-                let uv = frame.u[ui] as i32 - 128;
-                let vv = frame.v[ui] as i32 - 128;
-                rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
-                rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
-                rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
-            }
-        }
-    } else {
-        let x_map: Vec<usize> = (0..width).map(|x| x * source_width / width).collect();
-        let y_map: Vec<usize> = (0..height).map(|y| y * source_height / height).collect();
-        for (output_y, &source_y) in y_map.iter().enumerate() {
-            for (output_x, &source_x) in x_map.iter().enumerate() {
-                let yi = source_y * source_width + source_x;
-                let ui = (source_y / 2) * uv_width + source_x / 2;
-                let dst = (output_y * width + output_x) * 3;
-                let yv = frame.y[yi] as i32;
-                let uv = frame.u[ui] as i32 - 128;
-                let vv = frame.v[ui] as i32 - 128;
-                rgb[dst] = (yv + (359 * vv) / 256).clamp(0, 255) as u8;
-                rgb[dst + 1] = (yv - (88 * uv + 183 * vv) / 256).clamp(0, 255) as u8;
-                rgb[dst + 2] = (yv + (454 * uv) / 256).clamp(0, 255) as u8;
-            }
-        }
-    }
-    Some((width as u32, height as u32))
-}
-
+#[cfg(test)]
 fn fit_dimensions(
     source_width: usize,
     source_height: usize,
@@ -1086,7 +1037,9 @@ fn mp3_frame(data: &[u8], start: usize) -> Option<(usize, u32, u32, u32, u32, u3
     const BR_MPEG1: [u32; 16] = [
         0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
     ];
-    const BR_MPEG2: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    const BR_MPEG2: [u32; 16] = [
+        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+    ];
     const SR: [u32; 4] = [44100, 48000, 32000, 0];
     let last = data.len().checked_sub(4)?;
     if start > last {
@@ -1104,11 +1057,7 @@ fn mp3_frame(data: &[u8], start: usize) -> Option<(usize, u32, u32, u32, u32, u3
         if ver == 1 || layer != 1 || bi == 0 || bi == 15 || si == 3 {
             continue;
         }
-        let b = if ver == 3 {
-            BR_MPEG1[bi]
-        } else {
-            BR_MPEG2[bi]
-        };
+        let b = if ver == 3 { BR_MPEG1[bi] } else { BR_MPEG2[bi] };
         let s = match ver {
             3 => SR[si],
             2 => SR[si] / 2,
@@ -1121,14 +1070,7 @@ fn mp3_frame(data: &[u8], start: usize) -> Option<(usize, u32, u32, u32, u32, u3
         let coefficient = if ver == 3 { 144_000 } else { 72_000 };
         let padding = if (h >> 9) & 1 == 0 { 0 } else { 1 };
         let frame_len = (coefficient * b / s).saturating_add(padding).max(1);
-        return Some((
-            off,
-            b,
-            s,
-            c,
-            if ver == 3 { 1152 } else { 576 },
-            frame_len,
-        ));
+        return Some((off, b, s, c, if ver == 3 { 1152 } else { 576 }, frame_len));
     }
     None
 }
@@ -1451,7 +1393,9 @@ fn print_hex(path: &str, data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_dimensions, mp3_frame, qoi_header_allowed, source_dimensions_allowed, try_image};
+    use super::{
+        fit_dimensions, mp3_frame, qoi_header_allowed, source_dimensions_allowed, try_image,
+    };
     use image::GenericImageView;
     use image::ImageReader;
     use std::io::Cursor;
@@ -1474,6 +1418,45 @@ mod tests {
         _pixels_ptr: *const u8,
         _pixels_len: u32,
     ) -> i32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_open(_config_ptr: *const u8, _config_len: u32) -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_decode_sample(
+        _sample_ptr: *const u8,
+        _sample_len: u32,
+        _length_size: u32,
+    ) -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_frame_info() -> u64 {
+        (480u64 << 32) | 360
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_present(_window_id: i32) -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_discard() -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_flush() -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_close() -> u32 {
         0
     }
 
