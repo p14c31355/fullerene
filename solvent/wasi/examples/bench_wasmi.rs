@@ -92,6 +92,8 @@ fn main() {
             if line.starts_with(b"MP4-BENCH ") {
                 found_bench = true;
                 println!("{}", String::from_utf8_lossy(line));
+            } else if line.starts_with(b"MP4-STAGE ") {
+                println!("{}", String::from_utf8_lossy(line));
             }
         }
         if !found_bench {
@@ -117,6 +119,7 @@ fn host() -> WasiHost {
         write_file,
         write_file_chunk,
         get_monotonic_ns,
+        video_clock_ns: get_monotonic_ns,
         screen_dimensions,
         capture_screen,
         capture_screen_chunk,
@@ -127,6 +130,7 @@ fn host() -> WasiHost {
         update_window,
         close_window,
         play_pcm,
+        video_stage_timing,
     }
 }
 
@@ -228,6 +232,10 @@ fn update_window(_: i32, _: u32, _: u32, pixels: &[u8]) -> i32 {
 }
 
 fn close_window(_: i32) -> i32 {
+    0
+}
+
+fn video_stage_timing(_: u32) -> u64 {
     0
 }
 

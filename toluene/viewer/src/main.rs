@@ -65,6 +65,7 @@ unsafe extern "C" {
     fn video_present(window_id: i32) -> u32;
     fn video_discard() -> u32;
     fn video_flush() -> u32;
+    fn video_stage_timing(stage: u32) -> u64;
     fn video_close() -> u32;
     fn wait_for_ns(duration_ns: u64) -> u32;
 }
@@ -667,6 +668,7 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
     let mut decode_time = Duration::ZERO;
     let mut convert_time = Duration::ZERO;
     let mut present_time = Duration::ZERO;
+    let mut wait_time = Duration::ZERO;
     let mut decoded_frames = 0u32;
     let mut presented_frames = 0u32;
     let mut samples = 0u32;
@@ -690,7 +692,9 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
                 if trace_sample {
                     println!("viewer: mp4 sample wait begin id={}", sample_id);
                 }
+                let wait_start = Instant::now();
                 wait_for_ns(0);
+                wait_time += wait_start.elapsed();
                 if trace_sample {
                     println!("viewer: mp4 sample wait exit id={}", sample_id);
                 }
@@ -774,7 +778,9 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
         nals_decoded = nals_decoded.saturating_add(u64::from(frame_count));
         decoded_frames = decoded_frames.saturating_add(frame_count);
         for _ in 0..frame_count {
+            let wait_start = Instant::now();
             wait_for_video_time(playback_start, target_ns);
+            wait_time += wait_start.elapsed();
             let frame_info = unsafe { video_frame_info() };
             let frame_width = (frame_info >> 32) as u32;
             let frame_height = frame_info as u32;
@@ -883,6 +889,23 @@ fn try_mp4_reader_with_mode<R: Read + Seek>(
             presented_frames = presented_frames.saturating_add(1);
         }
     }
+    let yuv_to_rgb_ns = unsafe { video_stage_timing(0) };
+    let scale_ns = unsafe { video_stage_timing(1) };
+    let window_buffer_copy_ns = unsafe { video_stage_timing(2) };
+    let composite_ns = unsafe { video_stage_timing(3) };
+    let framebuffer_flush_ns = unsafe { video_stage_timing(4) };
+    println!(
+        "MP4-STAGE frames={} read_demux_ms={:.3} decode_ms={:.3} yuv_to_rgb_ms={:.3} scale_ms={:.3} window_buffer_copy_ms={:.3} composite_ms={:.3} framebuffer_flush_ms={:.3} wait_ms={:.3}",
+        presented_frames,
+        ms(read_time),
+        ms(decode_time),
+        ns_ms(yuv_to_rgb_ns),
+        ns_ms(scale_ns),
+        ns_ms(window_buffer_copy_ns),
+        ns_ms(composite_ns),
+        ns_ms(framebuffer_flush_ns),
+        ms(wait_time),
+    );
     unsafe {
         video_close();
     }
@@ -957,6 +980,10 @@ fn wait_for_video_time(start: Instant, target_ns: u64) {
 
 fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
+}
+
+fn ns_ms(nanoseconds: u64) -> f64 {
+    nanoseconds as f64 / 1_000_000.0
 }
 
 #[cfg(test)]
@@ -1452,6 +1479,11 @@ mod tests {
 
     #[unsafe(no_mangle)]
     extern "C" fn video_flush() -> u32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn video_stage_timing(_stage: u32) -> u64 {
         0
     }
 

@@ -243,6 +243,16 @@ fn wasm_get_monotonic_ns() -> u64 {
     }
 }
 
+/// High-resolution clock reserved for short native video stage timings.
+/// `wasm_get_monotonic_ns` intentionally follows the scheduler tick after
+/// Solvent starts, but that resolution is too coarse for YUV conversion and
+/// framebuffer copy measurements.
+fn wasm_video_clock_ns() -> u64 {
+    let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
+    ((tsc as u128 * 1_000_000) / tsc_per_ms as u128) as u64
+}
+
 fn wasm_play_pcm(sample_rate: u32, channels: u8, bits_per_sample: u8, pcm: &[u8]) -> i32 {
     if pcm.is_empty() || pcm.len() > 8 * 1024 * 1024 {
         return -1;
@@ -266,6 +276,7 @@ fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixel
     if pixels.len() != expected_bytes {
         return -1;
     }
+    let copy_start = unsafe { core::arch::x86_64::_rdtsc() };
     let updated = solvent::with_window_surface(window_id, |surf_pixels, surf_w, surf_h| {
         let draw_h = (height as usize).min(surf_h as usize);
         let draw_w = (width as usize).min(surf_w as usize);
@@ -280,7 +291,11 @@ fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixel
     if updated.is_none() {
         return -1;
     }
+    crate::metrics::record_video_window_buffer_copy(
+        unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(copy_start),
+    );
     solvent::invalidate_window(window_id);
+    crate::metrics::mark_video_frame();
     0
 }
 
@@ -368,6 +383,10 @@ fn wasm_close_window(window_id: i32) -> i32 {
     } else {
         -1
     }
+}
+
+fn wasm_video_stage_timing(stage: u32) -> u64 {
+    crate::metrics::video_stage_timing(stage)
 }
 
 const WASM_CAPTURE_MAX_WIDTH: u32 = 1920;
@@ -471,6 +490,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
             write_file: wasm_write_file,
             write_file_chunk: wasm_write_file_chunk,
             get_monotonic_ns: wasm_get_monotonic_ns,
+            video_clock_ns: wasm_video_clock_ns,
             screen_dimensions: wasm_screen_dimensions,
             capture_screen: wasm_capture_screen,
             capture_screen_chunk: wasm_capture_screen_chunk,
@@ -481,6 +501,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
             update_window: wasm_update_window,
             close_window: wasm_close_window,
             play_pcm: wasm_play_pcm,
+            video_stage_timing: wasm_video_stage_timing,
         },
     );
     if let Err(error) = crate::fs::finish_file_chunk() {

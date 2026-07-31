@@ -56,6 +56,7 @@ pub type ReadDirectory = fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>;
 pub type WriteFile = fn(&str, &[u8]) -> Result<(), genome::FsError>;
 pub type WriteFileChunk = fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>;
 pub type GetMonotonicNs = fn() -> u64;
+pub type VideoClockNs = fn() -> u64;
 pub type ScreenDimensions = fn() -> (u32, u32);
 pub type CaptureScreen = fn() -> Option<(u32, u32, Vec<u8>)>;
 pub type CaptureScreenChunk = fn(u32, &mut [u8]) -> Option<(u32, u32)>;
@@ -66,6 +67,15 @@ pub type CreateWindow = fn(&str, u32, u32) -> i32;
 pub type UpdateWindow = fn(i32, u32, u32, &[u8]) -> i32;
 pub type CloseWindow = fn(i32) -> i32;
 pub type PlayPcm = fn(u32, u8, u8, &[u8]) -> i32;
+/// Return accumulated native/kernel video timing in nanoseconds.
+pub type VideoStageTiming = fn(u32) -> u64;
+
+pub const VIDEO_STAGE_YUV_TO_RGB: u32 = 0;
+pub const VIDEO_STAGE_SCALE: u32 = 1;
+pub const VIDEO_STAGE_WINDOW_BUFFER_COPY: u32 = 2;
+pub const VIDEO_STAGE_COMPOSITE: u32 = 3;
+pub const VIDEO_STAGE_FRAMEBUFFER_FLUSH: u32 = 4;
+pub const VIDEO_STAGE_RESET: u32 = u32::MAX;
 
 pub struct WasiHost {
     pub write_stdout: WriteBytes,
@@ -79,6 +89,7 @@ pub struct WasiHost {
     pub write_file: WriteFile,
     pub write_file_chunk: WriteFileChunk,
     pub get_monotonic_ns: GetMonotonicNs,
+    pub video_clock_ns: VideoClockNs,
     pub screen_dimensions: ScreenDimensions,
     pub capture_screen: CaptureScreen,
     pub capture_screen_chunk: CaptureScreenChunk,
@@ -89,6 +100,7 @@ pub struct WasiHost {
     pub update_window: UpdateWindow,
     pub close_window: CloseWindow,
     pub play_pcm: PlayPcm,
+    pub video_stage_timing: VideoStageTiming,
 }
 
 // ── WASI whence ───────────────────────────────────────────────────
@@ -153,6 +165,9 @@ struct NativeVideo {
     decoder: H264Decoder,
     pending: VecDeque<H264Frame>,
     rgb: Vec<u8>,
+    yuv_to_rgb_ns: u64,
+    scale_ns: u64,
+    host_update_ns: u64,
 }
 
 impl NativeVideo {
@@ -165,6 +180,9 @@ impl NativeVideo {
             decoder,
             pending: VecDeque::new(),
             rgb: Vec::new(),
+            yuv_to_rgb_ns: 0,
+            scale_ns: 0,
+            host_update_ns: 0,
         })
     }
 
@@ -198,11 +216,30 @@ impl NativeVideo {
         self.pending.pop_front().map(|_| ()).ok_or(())
     }
 
-    fn present(&mut self, window_id: i32, update: UpdateWindow) -> Result<(u32, u32), ()> {
+    fn present(
+        &mut self,
+        window_id: i32,
+        update: UpdateWindow,
+        now: GetMonotonicNs,
+    ) -> Result<(u32, u32), ()> {
         let frame = self.pending.pop_front().ok_or(())?;
-        let (width, height) = yuv420_to_rgb(&frame, &mut self.rgb).ok_or(())?;
-        if window_id >= 0 && update(window_id, width, height, &self.rgb) != 0 {
-            return Err(());
+        let conversion_start = now();
+        let (width, height, scaled) = yuv420_to_rgb(&frame, &mut self.rgb).ok_or(())?;
+        let conversion_ns = now().saturating_sub(conversion_start);
+        if scaled {
+            self.scale_ns = self.scale_ns.saturating_add(conversion_ns);
+        } else {
+            self.yuv_to_rgb_ns = self.yuv_to_rgb_ns.saturating_add(conversion_ns);
+        }
+        if window_id >= 0 {
+            let update_start = now();
+            let code = update(window_id, width, height, &self.rgb);
+            self.host_update_ns = self
+                .host_update_ns
+                .saturating_add(now().saturating_sub(update_start));
+            if code != 0 {
+                return Err(());
+            }
         }
         Ok((width, height))
     }
@@ -225,7 +262,7 @@ fn fit_video_dimensions(width: u32, height: u32) -> (u32, u32) {
     }
 }
 
-fn yuv420_to_rgb(frame: &H264Frame, rgb: &mut Vec<u8>) -> Option<(u32, u32)> {
+fn yuv420_to_rgb(frame: &H264Frame, rgb: &mut Vec<u8>) -> Option<(u32, u32, bool)> {
     let source_width = usize::try_from(frame.width).ok()?;
     let source_height = usize::try_from(frame.height).ok()?;
     if source_width == 0 || source_height == 0 {
@@ -278,7 +315,11 @@ fn yuv420_to_rgb(frame: &H264Frame, rgb: &mut Vec<u8>) -> Option<(u32, u32)> {
             }
         }
     }
-    Some((width as u32, height as u32))
+    Some((
+        width as u32,
+        height as u32,
+        width != source_width || height != source_height,
+    ))
 }
 
 pub struct WasiCtx {
@@ -294,6 +335,7 @@ pub struct WasiCtx {
     pub fuel_refill_amount: u64,
     pub host: WasiHost,
     native_video: Option<NativeVideo>,
+    video_sample_scratch: Vec<u8>,
 }
 
 impl WasiCtx {
@@ -326,6 +368,7 @@ impl WasiCtx {
             fuel_refill_amount: 0,
             host,
             native_video: None,
+            video_sample_scratch: Vec::new(),
         }
     }
 }
@@ -1209,21 +1252,29 @@ pub fn fullerene_wait_for_ns(
     (caller.data().wait_for_ns)(duration_ns);
     // A synchronous MP4 viewer yields before each NAL. Replenish a bounded
     // amount of fuel at that boundary so a valid long video is not limited to
-    // one global 1e9-instruction budget. A malformed NAL still traps once its
-    // current chunk is exhausted, because no host callback can run inside
-    // decode_nal itself.
-    let refill = {
-        let ctx = caller.data_mut();
-        if ctx.fuel_refills_left == 0 || ctx.fuel_refill_amount == 0 {
-            None
-        } else {
-            ctx.fuel_refills_left -= 1;
-            Some(ctx.fuel_refill_amount)
-        }
-    };
-    if let Some(fuel) = refill {
+    // one global 1e9-instruction budget. Do not call set_fuel at every yield:
+    // the viewer also yields with wait_for_ns(0) every few samples, and the
+    // previous unconditional refill paid the host-side fuel update cost
+    // thousands of times even while plenty of fuel remained. A malformed NAL
+    // still traps once its current chunk is exhausted, because no host
+    // callback can run inside decode_nal itself.
+    let refill_amount = caller.data().fuel_refill_amount;
+    if caller.data().fuel_refills_left != 0 && refill_amount != 0 {
         let current = caller.get_fuel().unwrap_or(0);
-        let _ = caller.set_fuel(current.saturating_add(fuel));
+        if current < refill_amount {
+            let should_refill = {
+                let ctx = caller.data_mut();
+                if ctx.fuel_refills_left == 0 {
+                    false
+                } else {
+                    ctx.fuel_refills_left -= 1;
+                    true
+                }
+            };
+            if should_refill {
+                let _ = caller.set_fuel(current.saturating_add(refill_amount));
+            }
+        }
     }
     Ok(ESUCCESS)
 }
@@ -1649,6 +1700,7 @@ pub fn fullerene_video_open(
         .map_err(|_| Error::new("video_open: memory read failed"))?;
     let video = NativeVideo::open(&config)
         .map_err(|_| Error::new("video_open: invalid H.264 configuration"))?;
+    (caller.data().video_stage_timing)(VIDEO_STAGE_RESET);
     caller.data_mut().native_video = Some(video);
     Ok(ESUCCESS)
 }
@@ -1665,17 +1717,25 @@ pub fn fullerene_video_decode_sample(
         return Ok(EINVAL);
     }
     let memory = get_memory(&caller)?;
-    let mut sample = vec![0u8; sample_len as usize];
+    // Reuse the host-side sample buffer across MP4 samples. Allocating a new
+    // Vec for all 6572 Bad Apple samples adds allocator churn without helping
+    // the decoder; the sample is consumed before the next host call returns.
+    let mut sample = core::mem::take(&mut caller.data_mut().video_sample_scratch);
+    sample.resize(sample_len as usize, 0);
     memory
         .read(&caller, sample_ptr as usize, &mut sample)
         .map_err(|_| Error::new("video_decode_sample: memory read failed"))?;
-    let Some(video) = caller.data_mut().native_video.as_mut() else {
-        return Ok(EINVAL);
+    let result = {
+        let Some(video) = caller.data_mut().native_video.as_mut() else {
+            caller.data_mut().video_sample_scratch = sample;
+            return Ok(EINVAL);
+        };
+        video
+            .decode_sample(&sample, length_size as usize)
+            .unwrap_or(u32::MAX)
     };
-    match video.decode_sample(&sample, length_size as usize) {
-        Ok(count) => Ok(count),
-        Err(()) => Ok(u32::MAX),
-    }
+    caller.data_mut().video_sample_scratch = sample;
+    Ok(result)
 }
 
 /// Return the dimensions of the oldest pending decoded frame, packed as
@@ -1698,13 +1758,38 @@ pub fn fullerene_video_present(
     window_id: i32,
 ) -> Result<u32, Error> {
     let update = caller.data().update_window;
+    let now = caller.data().video_clock_ns;
     let Some(video) = caller.data_mut().native_video.as_mut() else {
         return Ok(EINVAL);
     };
-    match video.present(window_id, update) {
+    match video.present(window_id, update, now) {
         Ok(_) => Ok(ESUCCESS),
         Err(()) => Ok(EIO),
     }
+}
+
+/// Return accumulated timing for one video pipeline stage in nanoseconds.
+///
+/// Stages 0 and 1 are measured by the native video service. Stage 2 is
+/// supplied by the kernel when available and falls back to the host callback
+/// duration in portable/native benchmarks. Stages 3 and 4 are kernel-owned.
+pub fn fullerene_video_stage_timing(caller: Caller<'_, WasiCtx>, stage: u32) -> Result<u64, Error> {
+    let native = caller.data().native_video.as_ref();
+    let native_value = native.map(|video| match stage {
+        VIDEO_STAGE_YUV_TO_RGB => video.yuv_to_rgb_ns,
+        VIDEO_STAGE_SCALE => video.scale_ns,
+        VIDEO_STAGE_WINDOW_BUFFER_COPY => video.host_update_ns,
+        _ => 0,
+    });
+    if let Some(value) = native_value
+        && (stage == VIDEO_STAGE_YUV_TO_RGB
+            || stage == VIDEO_STAGE_SCALE
+            || (stage == VIDEO_STAGE_WINDOW_BUFFER_COPY
+                && (caller.data().video_stage_timing)(stage) == 0))
+    {
+        return Ok(value);
+    }
+    Ok((caller.data().video_stage_timing)(stage))
 }
 
 /// Discard one decoded frame without converting it. This keeps decode-only
