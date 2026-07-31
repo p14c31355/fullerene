@@ -363,7 +363,17 @@ impl Compositor {
         // ── Layer 1: Windows ─────────────────────────────
         for window in scene.windows {
             if !window.minimized {
-                Self::draw_window_clipped(framebuffer, fb_width, fb_height, window, dx, dy, dw, dh);
+                Self::draw_window_clipped(
+                    framebuffer,
+                    fb_width,
+                    fb_height,
+                    window,
+                    dx,
+                    dy,
+                    dw,
+                    dh,
+                    preserve_background,
+                );
             }
         }
         inc_draw_calls();
@@ -544,6 +554,7 @@ impl Compositor {
         cy: u32,
         cw: u32,
         ch: u32,
+        preserve_background: bool,
     ) {
         let src = &win.surface;
         let title_h = crate::style::title_bar_height() as i32;
@@ -573,6 +584,45 @@ impl Compositor {
         let cex = (cx + cw) as i32;
         let cey = (cy + ch) as i32;
         let sp = src.pixels();
+
+        // Video frames normally update a focused window without changing its
+        // geometry. Copy the bulk of the client surface row-wise and leave
+        // only the small rounded-corner strip to the general clipped path.
+        // This avoids per-pixel bounds and corner checks for ~99% of a video
+        // frame while preserving the normal path for all desktop redraws.
+        let fast_client_rows = if preserve_background
+            && win.focused
+            && wdx >= 0
+            && wdy >= 0
+            && sw >= win.width as i32
+            && sh >= win.height as i32
+        {
+            let x0 = (cx as i32).max(wdx) as u32;
+            let x1 = cex.min(wdx + win.width as i32).min(fbw as i32) as u32;
+            let y0 = (cy as i32).max(wdy) as u32;
+            let client_bottom = wdy + win.height as i32;
+            let fast_bottom = if win.title.is_some() && radius > 0 {
+                client_bottom.saturating_sub(radius)
+            } else {
+                client_bottom
+            };
+            let y1 = cey.min(fast_bottom).min(fbh as i32) as u32;
+            if x0 < x1 && y0 < y1 {
+                let copy_width = (x1 - x0) as usize;
+                let source_x = (x0 as i32 - wdx) as usize;
+                for y in y0..y1 {
+                    let source_start = (y as i32 - wdy) as usize * sw as usize + source_x;
+                    let dest_start = y as usize * fbw as usize + x0 as usize;
+                    fb[dest_start..dest_start + copy_width]
+                        .copy_from_slice(&sp[source_start..source_start + copy_width]);
+                }
+                Some((y0 as i32, y1 as i32))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // A maximized shell is an opaque, focused surface that usually
         // covers almost the entire work area. The general path performs
@@ -606,6 +656,9 @@ impl Compositor {
         for sr in sys..sye {
             let dr = (wdy + sr) as i32;
             if dr < cy as i32 || dr >= cey {
+                continue;
+            }
+            if fast_client_rows.is_some_and(|(y0, y1)| dr >= y0 && dr < y1) {
                 continue;
             }
             let db = (dr as usize) * (fbw as usize);
