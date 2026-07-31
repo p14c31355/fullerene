@@ -326,9 +326,25 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     let fb_pixels_len = fb_pixels.len();
     *crate::FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
 
+    let video_window = rt.video_dirty_window.take();
+    let video_cursor_dirty = if video_window.is_some() {
+        pending_cursor_origin.and_then(|previous| {
+            let previous = cursor_region(previous, fb_width, fb_height)?;
+            let current = cursor_region(
+                (rt.desktop.cursor.x, rt.desktop.cursor.y),
+                fb_width,
+                fb_height,
+            )?;
+            Some((previous, current))
+        })
+    } else {
+        None
+    };
+
     // A full render may supersede several queued mouse moves. Include the
     // earliest position still visible on the scanout so it cannot ghost.
-    if let Some(previous) = pending_cursor_origin
+    if video_window.is_none()
+        && let Some(previous) = pending_cursor_origin
         && let Some(region) = cursor_region(previous, fb_width, fb_height)
     {
         rt.desktop.push_dirty_rect(region);
@@ -355,9 +371,11 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     }
     rt.clock_changed = false;
 
-    let video_window = rt.video_dirty_window.take();
     let video_only = video_window.is_some_and(|window_id| {
-        if rt.desktop.prepare_video_frame(window_id) {
+        if rt
+            .desktop
+            .prepare_video_frame(window_id, video_cursor_dirty)
+        {
             true
         } else {
             // Preserve the video invalidation when another desktop change

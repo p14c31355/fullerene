@@ -1,7 +1,7 @@
 //! Event dispatch, timer processing, service ticking, and frame pacing.
 
 use lattice::shell_overlay::ShellState;
-use resonance::Event;
+use resonance::{Event, InputEvent};
 use spin::Mutex;
 
 use crate::{
@@ -17,6 +17,32 @@ static TICK_CORE_ACTIVE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn process_pointer_motion_only() {
+    let count = RUNTIME_CONTEXT
+        .event_queue()
+        .as_ref()
+        .map_or(0, |queue| queue.len());
+    for _ in 0..count {
+        let event = RUNTIME_CONTEXT
+            .event_queue()
+            .as_mut()
+            .and_then(|queue| queue.pop());
+        let Some(event) = event else {
+            break;
+        };
+        match event {
+            Event::Input(InputEvent::MouseMove { x, y }) => {
+                crate::handlers::apply_pointer_motion(x, y);
+            }
+            other => {
+                if let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut() {
+                    queue.push(other);
+                }
+            }
+        }
+    }
+}
 
 pub fn chrono_tick(now: u64) {
     let mut runtime = RUNTIME_CONTEXT.runtime();
@@ -210,6 +236,7 @@ pub fn runtime_tick_no_fb() {
         // or shell while the outer tick is still active.
         crate::poll_mouse_state();
         crate::poll_keyboard();
+        process_pointer_motion_only();
         if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
             if runtime.klog_live_window.is_some() {
                 runtime.klog_live_dirty = true;

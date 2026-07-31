@@ -233,14 +233,14 @@ fn wasm_read_directory(
 }
 
 fn wasm_get_monotonic_ns() -> u64 {
-    if solvent::is_initialized() {
-        solvent::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed) * 1_000_000
-    } else {
-        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
-        // Use u128 to prevent overflow while maintaining full precision
-        ((tsc as u128 * 1_000_000) / tsc_per_ms as u128) as u64
-    }
+    // The scheduler tick stops advancing while synchronous WASM is nested in
+    // the event loop. Returning GLOBAL_TICK here made std::time::Instant
+    // report zero decode/read/wait time and could distort video pacing. TSC
+    // remains monotonic during the nested callback and is calibrated during
+    // kernel startup.
+    let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
+    ((tsc as u128 * 1_000_000) / tsc_per_ms as u128) as u64
 }
 
 /// High-resolution clock reserved for short native video stage timings.

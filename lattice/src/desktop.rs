@@ -796,10 +796,14 @@ impl Desktop {
     ///
     /// Returns `false` when another desktop mutation is pending and the
     /// caller must use the normal background-rendering path.
-    pub fn prepare_video_frame(&mut self, window_id: WindowId) -> bool {
+    pub fn prepare_video_frame(
+        &mut self,
+        window_id: WindowId,
+        cursor_dirty: Option<(DirtyRect, DirtyRect)>,
+    ) -> bool {
         if self.needs_full_redraw
             || !self.wm.dirty_rects.is_empty()
-            || self.cursor_moved
+            || (self.cursor_moved && cursor_dirty.is_none())
             || self.active_menu.is_some()
             || self.network_menu_open
             || self.pwd_dialog_open
@@ -816,6 +820,11 @@ impl Desktop {
         };
         self.dirty_cache.clear();
         self.dirty_cache.push(crate::wm::window_dirty_rect(window));
+        if let Some((previous, current)) = cursor_dirty {
+            self.dirty_cache.push(previous);
+            self.dirty_cache.push(current);
+            self.cursor_moved = false;
+        }
         true
     }
 
