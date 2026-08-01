@@ -51,15 +51,16 @@ impl XhciContext {
             unsafe {
                 ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, data_len);
             }
+            crate::mmio::cache_flush_range(staging_virt as usize, data_len);
         }
 
         if let Some(slot) = self.device.slots.get_mut(slot_id) {
             let trt = if data_len == 0 {
                 0
             } else if is_in {
-                2 << 16
-            } else {
                 3 << 16
+            } else {
+                2 << 16
             };
             let mut s_trb = Trb::new(trb_type::SETUP_STAGE, slot.ep0_ring.cycle)
                 .with_length(8)
@@ -106,6 +107,7 @@ impl XhciContext {
             .map(|ev| data_len.saturating_sub((ev.remaining() as usize).min(data_len)));
 
         if let Some(actual) = actual.filter(|_| is_in && data_len > 0) {
+            crate::mmio::cache_flush_range(staging_virt as usize, actual);
             unsafe {
                 ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), actual);
             }
@@ -119,7 +121,29 @@ impl XhciContext {
                 }
                 Ok(actual)
             }
-            _ => {
+            (result, transfer_actual) => {
+                let completion = result.as_ref().ok().map(|event| event.completion_code());
+                let remaining = result.as_ref().ok().map(|event| event.remaining());
+                let event_slot = result.as_ref().ok().map(|event| (event.flags >> 24) & 0xFF);
+                let event_endpoint = result.as_ref().ok().map(|event| (event.flags >> 16) & 0x1F);
+                let event_trb = result
+                    .as_ref()
+                    .ok()
+                    .map(|event| u64::from_le_bytes(event.params));
+                log::warn!(
+                    "xHCI: control transfer failed slot={} request={:#04x} bmRequestType={:#04x} length={} completion={:?} event_slot={:?} event_ep={:?} event_trb={:?} remaining={:?} actual={:?} result={:?}",
+                    slot_id,
+                    setup.b_request,
+                    setup.bm_request_type,
+                    data_len,
+                    completion,
+                    event_slot,
+                    event_endpoint,
+                    event_trb,
+                    remaining,
+                    transfer_actual,
+                    result.err(),
+                );
                 if staging_phys != 0 {
                     self.deferred_free_list
                         .push((staging_phys, (data_len + 4095) / 4096));
@@ -179,6 +203,7 @@ impl XhciContext {
             unsafe {
                 ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, len);
             }
+            crate::mmio::cache_flush_range(staging_virt as usize, len);
         }
 
         let db_stream = {
@@ -222,6 +247,7 @@ impl XhciContext {
                 let remainder = ev.remaining() as usize;
                 let xfer_len = len.saturating_sub(remainder.min(len));
                 if dir == UsbDirection::In && xfer_len > 0 {
+                    crate::mmio::cache_flush_range(staging_virt as usize, xfer_len);
                     unsafe {
                         ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), xfer_len);
                     }

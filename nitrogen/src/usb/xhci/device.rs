@@ -47,15 +47,42 @@ impl Dcbaa {
     /// Write the device context pointer for a given slot.
     pub fn set_slot(&mut self, slot_id: u32, phys: u64) {
         if slot_id < 256 {
-            self.entries[slot_id as usize] = phys;
+            unsafe {
+                ptr::write_volatile(&mut self.entries[slot_id as usize], phys);
+            }
+            crate::mmio::cache_flush_range(
+                self.entries.as_ptr() as usize,
+                core::mem::size_of::<[u64; 256]>(),
+            );
         }
     }
 
     /// Clear the device context pointer for a given slot.
     pub fn clear_slot(&mut self, slot_id: u32) {
         if slot_id < 256 {
-            self.entries[slot_id as usize] = 0;
+            unsafe {
+                ptr::write_volatile(&mut self.entries[slot_id as usize], 0);
+            }
+            crate::mmio::cache_flush_range(
+                self.entries.as_ptr() as usize,
+                core::mem::size_of::<[u64; 256]>(),
+            );
         }
+    }
+
+    pub fn slot(&self, slot_id: u32) -> u64 {
+        if slot_id < 256 {
+            unsafe { ptr::read_volatile(&self.entries[slot_id as usize]) }
+        } else {
+            0
+        }
+    }
+
+    pub fn flush_for_device(&self) {
+        crate::mmio::cache_flush_range(
+            self.entries.as_ptr() as usize,
+            core::mem::size_of::<[u64; 256]>(),
+        );
     }
 }
 
@@ -77,6 +104,10 @@ pub struct DeviceContext {
 impl DeviceContext {
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
         let (virt, phys) = dma::alloc_dma_page(ctx)?;
+        // The xHC writes the output context after Address Device.  Publish
+        // the freshly zeroed page so dirty CPU cache lines cannot overwrite
+        // those device writes later.
+        dma::flush_range(virt as *const u8, 4096);
         Some((virt as *mut Self, phys))
     }
 }
@@ -119,6 +150,7 @@ pub struct InputContext {
 impl InputContext {
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
         let (virt, phys) = dma::alloc_dma_page(ctx)?;
+        dma::flush_range(virt as *const u8, 4096);
         Some((virt as *mut Self, phys))
     }
 
@@ -268,6 +300,7 @@ impl Scratchpad {
                 }
             }
         }
+        dma.flush_for_device();
         Some(Self { phys, count })
     }
 }

@@ -18,10 +18,10 @@ pub mod trb_type {
     pub const STATUS_STAGE: u8 = 4;
     pub const LINK: u8 = 6;
     pub const ENABLE_SLOT: u8 = 9;
-    pub const ADDRESS_DEVICE: u8 = 10;
-    pub const CONFIGURE_ENDPOINT: u8 = 11;
-    pub const EVALUATE_CONTEXT: u8 = 12;
-    pub const DISABLE_SLOT: u8 = 13;
+    pub const DISABLE_SLOT: u8 = 10;
+    pub const ADDRESS_DEVICE: u8 = 11;
+    pub const CONFIGURE_ENDPOINT: u8 = 12;
+    pub const EVALUATE_CONTEXT: u8 = 13;
     pub const RESET_ENDPOINT: u8 = 14;
     pub const STOP_ENDPOINT: u8 = 15;
     pub const SET_TR_DEQUEUE: u8 = 16;
@@ -135,6 +135,8 @@ impl Ring {
                 | trb_flag::CYCLE;
             last.params[..8].copy_from_slice(&phys.to_le_bytes());
         }
+        // Publish the initial LINK TRB before the controller is started.
+        dma.flush_for_device();
         Some(Self {
             dma,
             phys,
@@ -186,6 +188,10 @@ impl Ring {
     pub fn enq_index(&self) -> usize {
         self.enq
     }
+
+    pub fn flush_for_device(&self) {
+        self.dma.flush_for_device();
+    }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -218,9 +224,24 @@ impl EventRing {
     }
 
     pub fn has_pending(&self) -> bool {
+        // The xHC writes event TRBs through DMA.  Invalidate the current
+        // cache line before checking its cycle bit.
+        let flags_addr =
+            unsafe { (self.dma.as_mut_ptr() as *const u8).add(self.deq * TRB_SIZE + 12) };
+        mmio::cache_flush(flags_addr as usize);
+        mmio::read_barrier();
         // SAFETY: single-threaded kernel, read-only raw access
-        let entries = unsafe { core::slice::from_raw_parts_mut(self.dma.as_mut_ptr(), self.len) };
+        let entries =
+            unsafe { core::slice::from_raw_parts(self.dma.as_mut_ptr() as *const Trb, self.len) };
         (unsafe { ptr::read_volatile(&entries[self.deq].flags) } & trb_flag::CYCLE) == self.cycle
+    }
+
+    /// Inspect the current event slot without consuming it.  Used only for
+    /// timeout diagnostics when the controller did not report completion.
+    pub fn peek(&self) -> Trb {
+        let entries =
+            unsafe { core::slice::from_raw_parts(self.dma.as_mut_ptr() as *const Trb, self.len) };
+        unsafe { ptr::read_volatile(&entries[self.deq]) }
     }
 
     pub fn pop(&mut self) -> Option<Trb> {
@@ -243,6 +264,10 @@ impl EventRing {
 
     pub fn deq_index(&self) -> usize {
         self.deq
+    }
+
+    pub fn flush_for_device(&self) {
+        self.dma.flush_for_device();
     }
 }
 
@@ -305,6 +330,15 @@ mod tests {
         let trb = Trb::new(trb_type::NORMAL, 1);
         assert_eq!(trb.flags & trb_flag::CYCLE, 1);
         assert_eq!(trb.trb_type(), trb_type::NORMAL);
+    }
+
+    #[test]
+    fn test_command_trb_type_values() {
+        assert_eq!(trb_type::ENABLE_SLOT, 9);
+        assert_eq!(trb_type::DISABLE_SLOT, 10);
+        assert_eq!(trb_type::ADDRESS_DEVICE, 11);
+        assert_eq!(trb_type::CONFIGURE_ENDPOINT, 12);
+        assert_eq!(trb_type::EVALUATE_CONTEXT, 13);
     }
 
     #[test]

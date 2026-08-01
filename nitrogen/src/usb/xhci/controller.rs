@@ -44,6 +44,9 @@ impl XhciContext {
 
         let op_off = cap_regs.caplength as usize;
         let rt_off = cap_regs.rt_offset as usize;
+        // Runtime offset 0x00 is MFINDEX.  Interrupter Register Set 0
+        // starts one 0x20-byte register set later (xHCI §5.5.2).
+        let rt_interrupter_off = rt_off.checked_add(RT_INTERRUPTER_STRIDE)?;
         let db_off = cap_regs.db_offset as usize;
         let hcs1 = cap_regs.hcs_params1();
         let hcc1 = cap_regs.hcc_params1();
@@ -65,7 +68,7 @@ impl XhciContext {
         let rt_len = RT_INTERRUPTER_STRIDE * 2;
         let db_len = (max_slots as usize + 1) * 4;
         if op_len.is_none_or(|len| !in_bar(op_off, len))
-            || !in_bar(rt_off, rt_len)
+            || !in_bar(rt_interrupter_off, rt_len)
             || !in_bar(db_off, db_len)
         {
             log::warn!("xHCI: capability offsets exceed mapped BAR window");
@@ -101,10 +104,10 @@ impl XhciContext {
         crate::debug::hint(b"xh_legok");
 
         let op_base = mmio_base.checked_add(op_off)?;
-        let rt_base = mmio_base.checked_add(rt_off)?;
+        let rt_base = mmio_base.checked_add(rt_interrupter_off)?;
         let db_base = mmio_base.checked_add(db_off)?;
         let op_size = bar_size.checked_sub(op_off)?;
-        let rt_size = bar_size.checked_sub(rt_off)?;
+        let rt_size = bar_size.checked_sub(rt_interrupter_off)?;
         let db_size = bar_size.checked_sub(db_off)?;
         let registers = RegisterContext {
             mmio_base,
@@ -142,6 +145,8 @@ impl XhciContext {
     /// initialise root-hub ports.
     pub fn init(&mut self) -> Result<(), crate::DriverError> {
         log::info!("xHCI: hci_version=0x{:04X}", self.registers.cap.hci_version);
+        log::info!("xHCI: setup-stage TRT mapping active (IN=3, OUT=2)");
+        log::info!("xHCI: output-context DMA preflush active");
 
         if !self.health.is_device_present() {
             log::error!("xHCI: device gone before init");
@@ -380,6 +385,10 @@ impl XhciContext {
 
     fn configure_before_start(&mut self) {
         let op = &self.registers.op;
+        self.rings.command.flush_for_device();
+        self.rings.event.flush_for_device();
+        self.device.dcbaa.flush_for_device();
+        crate::mmio::write_barrier();
         op.set_dcbaap(self.device.dcbaa.phys);
         op.set_crcr(self.rings.command.phys | 1);
         op.set_config(self.device.slots.max_slots);
@@ -402,6 +411,9 @@ impl XhciContext {
         unsafe {
             ptr::write_volatile(erst_virt, ErstEntry::new(self.rings.event.phys, 256));
         }
+        // Publish the segment table before the xHC is started.
+        crate::mmio::cache_flush_range(erst_virt as usize, core::mem::size_of::<ErstEntry>());
+        crate::mmio::write_barrier();
         rt.set_erstsz(1);
         rt.set_erstba(erst_phys);
         rt.set_erdp(self.rings.event.dequeue_ptr());

@@ -11,6 +11,11 @@
 
 use crate::DriverContext;
 
+/// Publish a normal-memory DMA range to the device.
+pub(crate) fn flush_range(ptr: *const u8, len: usize) {
+    crate::mmio::cache_flush_range(ptr as usize, len);
+}
+
 /// Owned DMA allocation.
 ///
 /// Holds a pointer to contiguous zeroed memory and its physical address.
@@ -31,6 +36,10 @@ impl<T> DmaSlice<T> {
     /// Return a raw pointer to the start of the allocation.
     pub fn as_mut_ptr(&self) -> *mut T {
         self.ptr
+    }
+
+    pub(crate) fn flush_for_device(&self) {
+        flush_range(self.ptr.cast::<u8>(), self.len * core::mem::size_of::<T>());
     }
 }
 

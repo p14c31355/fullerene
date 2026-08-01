@@ -272,13 +272,29 @@ pub fn enumerate_mass_storage(
         w_index: 0,
         w_length: 64,
     };
-    let len = host.control_transfer(dev_addr, &setup, &mut desc_buf)?;
+    let len = match host.control_transfer(dev_addr, &setup, &mut desc_buf) {
+        Ok(len) => len,
+        Err(error) => {
+            log::warn!(
+                "USB: device {} GET_DESCRIPTOR(device) failed: {}",
+                dev_addr,
+                error
+            );
+            return Err(error);
+        }
+    };
     if len < 18 {
+        log::warn!(
+            "USB: device {} returned short device descriptor ({} bytes)",
+            dev_addr,
+            len
+        );
         return Err(crate::DriverError::Protocol);
     }
 
     let num_cfgs = desc_buf[17];
     if num_cfgs == 0 {
+        log::warn!("USB: device {} reports zero configurations", dev_addr);
         return Err(crate::DriverError::Protocol);
     }
 
@@ -291,8 +307,29 @@ pub fn enumerate_mass_storage(
         w_index: 0,
         w_length: 256,
     };
-    let cfg_len = host.control_transfer(dev_addr, &setup_cfg_read, &mut cfg_buf)?;
-    let config = parse_mass_storage_config(&cfg_buf, cfg_len)?;
+    let cfg_len = match host.control_transfer(dev_addr, &setup_cfg_read, &mut cfg_buf) {
+        Ok(len) => len,
+        Err(error) => {
+            log::warn!(
+                "USB: device {} GET_DESCRIPTOR(configuration) failed: {}",
+                dev_addr,
+                error
+            );
+            return Err(error);
+        }
+    };
+    let config = match parse_mass_storage_config(&cfg_buf, cfg_len) {
+        Ok(config) => config,
+        Err(error) => {
+            log::info!(
+                "USB: device {} is not a BOT mass-storage interface ({} bytes, {})",
+                dev_addr,
+                cfg_len,
+                error
+            );
+            return Err(error);
+        }
+    };
 
     // Step 3: select the descriptor's actual configuration value.
     let setup_cfg = UsbSetupPacket {
@@ -302,7 +339,15 @@ pub fn enumerate_mass_storage(
         w_index: 0,
         w_length: 0,
     };
-    host.control_transfer(dev_addr, &setup_cfg, &mut [])?;
+    if let Err(error) = host.control_transfer(dev_addr, &setup_cfg, &mut []) {
+        log::warn!(
+            "USB: device {} SET_CONFIGURATION({}) failed: {}",
+            dev_addr,
+            config.value,
+            error
+        );
+        return Err(error);
+    }
 
     // Update device metadata
     if let Some(dev) = host.devices_mut().get_mut(dev_idx) {

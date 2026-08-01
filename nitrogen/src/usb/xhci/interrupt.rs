@@ -124,6 +124,43 @@ pub fn wait_event_type(
     Err(crate::DriverError::TimedOut)
 }
 
+/// Wait for the command completion corresponding to one specific command TRB.
+///
+/// A command completion event contains the physical address of the command
+/// TRB in its parameter field.  Matching only the event type is unsafe: a
+/// stale completion can otherwise be reported as the command currently in
+/// flight, which makes the following command use the wrong controller state.
+pub fn wait_command_completion(
+    ev_ring: &mut EventRing,
+    rt: &RuntimeRegisters,
+    timeout_us: u32,
+    command_phys: u64,
+) -> Result<Trb, crate::DriverError> {
+    let expected = command_phys & !0xF;
+    for _ in 0..timeout_us {
+        if let Some(ev) = ev_ring.pop() {
+            rt.set_erdp(ev_ring.dequeue_ptr());
+            if ev.trb_type() != super::ring::trb_type::COMMAND_COMPLETION_EVENT {
+                continue;
+            }
+            let completed = u64::from_le_bytes(ev.params) & !0xF;
+            if completed == expected {
+                return Ok(ev);
+            }
+            log::warn!(
+                "xHCI: ignoring command completion for unexpected command event_cmd={:#x} expected={:#x} completion={} flags={:#010x}",
+                completed,
+                expected,
+                ev.completion_code(),
+                ev.flags,
+            );
+        } else if timeout_us > 1000 {
+            core::hint::spin_loop();
+        }
+    }
+    Err(crate::DriverError::TimedOut)
+}
+
 /// Process all pending events on the Event Ring, calling `handler` for each.
 ///
 /// Returns the number of events processed.  Updates ERDP after each event.
