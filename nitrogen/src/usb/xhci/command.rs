@@ -12,6 +12,13 @@ impl XhciContext {
         let slot_id = (flags >> 24) & 0xFF;
         let (slot_id, slot) = self.device.slots.alloc_slot(self.driver_ctx, slot_id)?;
         self.device.dcbaa.set_slot(slot_id, slot.dev_ctx_phys);
+        log::info!(
+            "xHCI: slot context published slot={} dcbaa={:#x} dcbaa_entry={:#x} output_ctx={:#x}",
+            slot_id,
+            self.device.dcbaa.phys,
+            self.device.dcbaa.slot(slot_id),
+            slot.dev_ctx_phys,
+        );
         Ok(slot_id)
     }
 
@@ -60,6 +67,19 @@ impl XhciContext {
                 core::mem::size_of::<super::device::InputContext>(),
             );
         }
+
+        log::info!(
+            "xHCI: Address Device submit slot={} dcbaap={:#x} dcbaa_entry={:#x} in_ctx={:#x} output_ctx={:#x}",
+            slot_id,
+            self.registers.op.dcbaap(),
+            self.device.dcbaa.slot(slot_id),
+            in_ctx_phys,
+            self.device
+                .slots
+                .get(slot_id)
+                .map(|slot| slot.dev_ctx_phys)
+                .unwrap_or(0),
+        );
 
         self.send_cmd(
             Trb::new(trb_type::ADDRESS_DEVICE, self.rings.command.cycle)
