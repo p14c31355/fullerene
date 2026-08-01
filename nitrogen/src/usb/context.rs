@@ -88,13 +88,21 @@ impl ControllerManager {
             );
             let usb2_active = read(XUSB2PR);
             let usb3_active = read(USB3_PSSEN);
-            routed |= usb2 != 0 && usb2_active == usb2;
+            // XUSB2PRM/USB3PRM describe the ports that are switchable, not
+            // necessarily the complete current routing bitmap.  Firmware
+            // may already have additional USB2 ports routed to xHCI, so an
+            // exact read-back comparison incorrectly leaves the EHCI
+            // companion active alongside xHCI.
+            let usb2_ok = usb2 == 0 || (usb2_active & usb2) == usb2;
+            let usb3_ok = usb3 == 0 || (usb3_active & usb3) == usb3;
+            routed |= usb2_ok && usb3_ok;
             log::info!(
-                "USB: Intel routing USB2={:#x}/{:#x} USB3={:#x}/{:#x}",
+                "USB: Intel routing USB2={:#x}/{:#x} USB3={:#x}/{:#x} routed={}",
                 usb2_active,
                 usb2,
                 usb3_active,
                 usb3,
+                usb2_ok && usb3_ok,
             );
         }
         routed
