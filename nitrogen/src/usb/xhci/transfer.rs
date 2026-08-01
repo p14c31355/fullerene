@@ -114,13 +114,6 @@ impl XhciContext {
         }
 
         match (res, actual) {
-            (Ok(_), transfer_actual) if data_len == 0 => {
-                if staging_phys != 0 {
-                    self.driver_ctx
-                        .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
-                }
-                Ok(transfer_actual.unwrap_or(0))
-            }
             (Ok(_), Some(actual)) => {
                 if staging_phys != 0 {
                     self.driver_ctx

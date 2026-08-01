@@ -107,7 +107,7 @@ impl XhciContext {
         let rt_base = mmio_base.checked_add(rt_interrupter_off)?;
         let db_base = mmio_base.checked_add(db_off)?;
         let op_size = bar_size.checked_sub(op_off)?;
-        let rt_size = bar_size.checked_sub(rt_off)?;
+        let rt_size = bar_size.checked_sub(rt_interrupter_off)?;
         let db_size = bar_size.checked_sub(db_off)?;
         let registers = RegisterContext {
             mmio_base,
@@ -388,6 +388,7 @@ impl XhciContext {
         self.rings.command.flush_for_device();
         self.rings.event.flush_for_device();
         self.device.dcbaa.flush_for_device();
+        crate::mmio::write_barrier();
         op.set_dcbaap(self.device.dcbaa.phys);
         op.set_crcr(self.rings.command.phys | 1);
         op.set_config(self.device.slots.max_slots);

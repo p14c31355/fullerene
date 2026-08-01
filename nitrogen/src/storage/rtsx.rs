@@ -977,7 +977,7 @@ impl RtsxController {
                     Err(error) => {
                         self.stop_transfer();
                         self.data_path = DataPath::Pio;
-                        log::warn!("RTSX: {error}; falling back to bounded PPBUF PIO");
+                        log::warn!("RTSX: {error}; falling back to bounded PIO");
                     }
                 },
                 DataPath::Pio => match self.read_sector_pio(argument, buffer) {
@@ -1002,10 +1002,26 @@ impl RtsxController {
             .as_ref()
             .ok_or(crate::DriverError::NotReady)?
             .rca;
-        let argument = self.card_address(lba)?;
+        let mut argument = self.card_address(lba)?;
         let mut recovered = false;
         loop {
-            self.command(CMD24_WRITE_SINGLE, argument, SD_RSP_R1)?;
+            if let Err(error) = self.command(CMD24_WRITE_SINGLE, argument, SD_RSP_R1) {
+                if recovered {
+                    return Err(error);
+                }
+                recovered = true;
+                log::warn!("RTSX: SD write command failed ({error}); reinitializing card");
+                self.stop_transfer();
+                self.sd_card = None;
+                self.init_sd_card()?;
+                rca = self
+                    .sd_card
+                    .as_ref()
+                    .ok_or(crate::DriverError::NotReady)?
+                    .rca;
+                argument = self.card_address(lba)?;
+                continue;
+            }
             match self.data_path {
                 DataPath::Sdma => {
                     self.data_buffer
@@ -1025,7 +1041,7 @@ impl RtsxController {
                     Err(error) => {
                         self.stop_transfer();
                         self.data_path = DataPath::Pio;
-                        log::warn!("RTSX: {error}; falling back to bounded PPBUF PIO");
+                        log::warn!("RTSX: {error}; falling back to bounded PIO");
                     }
                 },
                 DataPath::Pio => match self.write_sector_pio(buffer) {
@@ -1041,6 +1057,7 @@ impl RtsxController {
                             .as_ref()
                             .ok_or(crate::DriverError::NotReady)?
                             .rca;
+                        argument = self.card_address(lba)?;
                     }
                     Err(error) => return Err(error),
                 },

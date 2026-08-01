@@ -351,8 +351,12 @@ impl VfsContext {
                         .rsplit_once('/')
                         .map(|(parent, _)| if parent.is_empty() { "/" } else { parent })
                         .unwrap_or("/");
-                    if fs.readdir(parent).is_err() {
-                        return Err(FsError::FileNotFound);
+                    match fs.readdir(parent) {
+                        Ok(_) => {}
+                        Err(FsError::FileNotFound | FsError::PermissionDenied) => {
+                            return Err(FsError::FileNotFound);
+                        }
+                        Err(error) => return Err(error),
                     }
                     fs.create(&remaining, InodeType::File)
                         .ok_or(FsError::PermissionDenied)?;
@@ -855,6 +859,52 @@ pub fn vfs_try_access() -> Option<VfsAccessGuard> {
 mod tests {
     use super::*;
 
+    struct ReaddirErrorFileSystem {
+        error: FsError,
+    }
+
+    impl FileSystem for ReaddirErrorFileSystem {
+        fn open(&mut self, _path: &str, _flags: u32) -> Option<FileDescriptor> {
+            None
+        }
+
+        fn read(&mut self, _fd: u32, _buf: &mut [u8]) -> Result<usize, FsError> {
+            Err(self.error)
+        }
+
+        fn write(&mut self, _fd: u32, _data: &[u8]) -> Result<usize, FsError> {
+            Err(self.error)
+        }
+
+        fn close(&mut self, _fd: u32) -> Result<(), FsError> {
+            Err(self.error)
+        }
+
+        fn seek(&mut self, _fd: u32, _pos: u64) -> Result<(), FsError> {
+            Err(self.error)
+        }
+
+        fn create(&mut self, _path: &str, _kind: InodeType) -> Option<u64> {
+            None
+        }
+
+        fn mkdir(&mut self, _path: &str) -> Result<(), FsError> {
+            Err(self.error)
+        }
+
+        fn unlink(&mut self, _path: &str) -> Result<(), FsError> {
+            Err(self.error)
+        }
+
+        fn readdir(&mut self, _path: &str) -> Result<Vec<VNode>, FsError> {
+            Err(self.error)
+        }
+
+        fn exists(&mut self, _path: &str) -> bool {
+            false
+        }
+    }
+
     #[test]
     fn handle_table_assigns_unique_descriptors_to_local_fd_collisions() {
         let mut table = HandleTable::new();
@@ -900,6 +950,41 @@ mod tests {
         context.read(mounted_file.fd, &mut mounted_data).unwrap();
         assert_eq!(&root_data, b"root");
         assert_eq!(&mounted_data, b"mounted");
+    }
+
+    #[test]
+    fn create_reports_missing_parent_as_file_not_found() {
+        let context = VfsContext::new();
+
+        assert_eq!(
+            context.create("/missing/file").err(),
+            Some(FsError::FileNotFound)
+        );
+    }
+
+    #[test]
+    fn create_preserves_non_directory_parent_error() {
+        let context = VfsContext::new();
+        context.replace_file("/file", b"data").unwrap();
+
+        assert_eq!(
+            context.create("/file/child").err(),
+            Some(FsError::NotADirectory)
+        );
+    }
+
+    #[test]
+    fn create_preserves_backend_readdir_error() {
+        let context = VfsContext::new();
+        context.mkdir("/mnt").unwrap();
+        context
+            .mount(
+                "/mnt",
+                Box::new(ReaddirErrorFileSystem { error: FsError::Io }),
+            )
+            .unwrap();
+
+        assert_eq!(context.create("/mnt/file").err(), Some(FsError::Io));
     }
 
     #[test]

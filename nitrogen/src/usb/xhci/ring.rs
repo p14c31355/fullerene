@@ -231,14 +231,16 @@ impl EventRing {
         mmio::cache_flush(flags_addr as usize);
         mmio::read_barrier();
         // SAFETY: single-threaded kernel, read-only raw access
-        let entries = unsafe { core::slice::from_raw_parts_mut(self.dma.as_mut_ptr(), self.len) };
+        let entries =
+            unsafe { core::slice::from_raw_parts(self.dma.as_mut_ptr() as *const Trb, self.len) };
         (unsafe { ptr::read_volatile(&entries[self.deq].flags) } & trb_flag::CYCLE) == self.cycle
     }
 
     /// Inspect the current event slot without consuming it.  Used only for
     /// timeout diagnostics when the controller did not report completion.
     pub fn peek(&self) -> Trb {
-        let entries = unsafe { core::slice::from_raw_parts_mut(self.dma.as_mut_ptr(), self.len) };
+        let entries =
+            unsafe { core::slice::from_raw_parts(self.dma.as_mut_ptr() as *const Trb, self.len) };
         unsafe { ptr::read_volatile(&entries[self.deq]) }
     }
 
