@@ -380,6 +380,9 @@ impl XhciContext {
 
     fn configure_before_start(&mut self) {
         let op = &self.registers.op;
+        self.rings.command.flush_for_device();
+        self.rings.event.flush_for_device();
+        self.device.dcbaa.flush_for_device();
         op.set_dcbaap(self.device.dcbaa.phys);
         op.set_crcr(self.rings.command.phys | 1);
         op.set_config(self.device.slots.max_slots);
@@ -402,6 +405,9 @@ impl XhciContext {
         unsafe {
             ptr::write_volatile(erst_virt, ErstEntry::new(self.rings.event.phys, 256));
         }
+        // Publish the segment table before the xHC is started.
+        crate::mmio::cache_flush_range(erst_virt as usize, core::mem::size_of::<ErstEntry>());
+        crate::mmio::write_barrier();
         rt.set_erstsz(1);
         rt.set_erstba(erst_phys);
         rt.set_erdp(self.rings.event.dequeue_ptr());

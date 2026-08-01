@@ -51,6 +51,7 @@ impl XhciContext {
             unsafe {
                 ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, data_len);
             }
+            crate::mmio::cache_flush_range(staging_virt as usize, data_len);
         }
 
         if let Some(slot) = self.device.slots.get_mut(slot_id) {
@@ -106,6 +107,7 @@ impl XhciContext {
             .map(|ev| data_len.saturating_sub((ev.remaining() as usize).min(data_len)));
 
         if let Some(actual) = actual.filter(|_| is_in && data_len > 0) {
+            crate::mmio::cache_flush_range(staging_virt as usize, actual);
             unsafe {
                 ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), actual);
             }
@@ -179,6 +181,7 @@ impl XhciContext {
             unsafe {
                 ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, len);
             }
+            crate::mmio::cache_flush_range(staging_virt as usize, len);
         }
 
         let db_stream = {
@@ -222,6 +225,7 @@ impl XhciContext {
                 let remainder = ev.remaining() as usize;
                 let xfer_len = len.saturating_sub(remainder.min(len));
                 if dir == UsbDirection::In && xfer_len > 0 {
+                    crate::mmio::cache_flush_range(staging_virt as usize, xfer_len);
                     unsafe {
                         ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), xfer_len);
                     }

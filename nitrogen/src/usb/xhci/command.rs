@@ -41,6 +41,10 @@ impl XhciContext {
 
         if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
             in_ctx.setup_address_device(root_port, speed_id, ep0_ring_phys);
+            crate::usb::dma::flush_range(
+                in_ctx as *const _ as *const u8,
+                core::mem::size_of::<super::device::InputContext>(),
+            );
         }
 
         self.send_cmd(
@@ -73,6 +77,10 @@ impl XhciContext {
 
         if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
             in_ctx.setup_bulk_endpoint(context_index as u32, mps, bulk_ring_phys);
+            crate::usb::dma::flush_range(
+                in_ctx as *const _ as *const u8,
+                core::mem::size_of::<super::device::InputContext>(),
+            );
         }
 
         let in_ctx_phys = self
