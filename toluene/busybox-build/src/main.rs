@@ -57,7 +57,10 @@ fn main() -> Result<(), String> {
         jobs,
         clean: options.clean,
     })?;
-    println!("Built or reused static BusyBox: {}", output.display());
+    println!(
+        "Built or reused dynamically linked glibc BusyBox: {}",
+        output.display()
+    );
     Ok(())
 }
 
@@ -109,13 +112,13 @@ where
 
 fn print_help() {
     println!(
-        "Build a static x86_64 BusyBox from toluene/busybox\n\n\
+        "Build a dynamically linked glibc x86_64 BusyBox from toluene/busybox\n\n\
 Usage: cargo run --manifest-path toluene/busybox-build/Cargo.toml -- [OPTIONS]\n\n\
 Options:\n  \
 --source PATH       BusyBox source directory\n  \
 --build-dir PATH    out-of-tree build directory\n  \
 --output PATH       output binary (default: target/busybox/busybox)\n  \
---cc COMPILER       C compiler (default: FULLERENE_BUSYBOX_CC, then musl-gcc, then gcc)\n  \
+--cc COMPILER       C compiler (default: FULLERENE_BUSYBOX_CC, then gcc)\n  \
 --jobs N            parallel make jobs\n  \
 --clean             remove the out-of-tree build directory before and after building\n  \
 -h, --help          show this help"

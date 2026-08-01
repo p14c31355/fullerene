@@ -11,6 +11,7 @@ use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableF
 const PAGE_SIZE: u64 = 4096;
 const PAGE_MASK: u64 = PAGE_SIZE - 1;
 const MAX_LINUX_MEMORY: u64 = 128 * 1024 * 1024;
+const MAX_LINUX_BRK: u64 = 256 * 1024 * 1024;
 const USER_ADDRESS_LIMIT: u64 = 0x0000_8000_0000_0000;
 const DEFAULT_MMAP_BASE: u64 = 0x0000_0001_0000_0000;
 const VDSO_SIZE: u64 = PAGE_SIZE;
@@ -201,12 +202,46 @@ fn remove_region(rt: &mut LinuxRuntime, addr: u64, size: u64) -> bool {
     }
 }
 
+/// Release mmap-created regions before an execve image is installed.  The
+/// executable, stack, brk reservation, and VDSO are intentionally not in
+/// `mmap_regions`, so this cannot tear down the process's fixed ABI mappings.
+pub fn reset_mmap_regions(rt: &mut LinuxRuntime) {
+    let regions = rt
+        .mmap_regions
+        .iter()
+        .map(|region| (region.addr, region.size))
+        .collect::<alloc::vec::Vec<_>>();
+    with_current_page_table(|page_table| {
+        for (addr, size) in regions {
+            for index in 0..(size / PAGE_SIZE) {
+                let page = addr + index * PAGE_SIZE;
+                let _ = unmap_and_free(page_table, page as usize);
+            }
+        }
+    });
+    rt.mmap_regions.clear();
+}
+
+fn read_vfs_at(vfs_fd: u32, offset: u64, output: &mut [u8]) -> Result<usize, ()> {
+    let saved = crate::contexts::vfs::position(vfs_fd).map_err(|_| ())?;
+    crate::contexts::vfs::seek(vfs_fd, offset).map_err(|_| ())?;
+    let result = crate::contexts::vfs::read(vfs_fd, output).map_err(|_| ());
+    let _ = crate::contexts::vfs::seek(vfs_fd, saved);
+    result
+}
+
 pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let addr_hint = args[0];
     let length = args[1];
     let prot = args[2] as i32;
     let flags = args[3] as i32;
     let offset = args[5];
+
+    #[cfg(linux_busybox_smoke)]
+    petroleum::serial::serial_log(format_args!(
+        "[linux-mmap] request hint={addr_hint:#x} len={length:#x} prot={prot:#x} flags={flags:#x} fd={} off={offset:#x}\n",
+        args[4] as i32
+    ));
 
     let allowed_prot = PROT_READ | PROT_WRITE | PROT_EXEC;
     if (prot & !allowed_prot) != 0 {
@@ -217,32 +252,39 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     {
         return errno_code(EINVAL);
     }
-    // MAP_FIXED would turn the syscall into an arbitrary page-table overwrite
-    // unless every existing mapping is represented by this runtime.  This
-    // compatibility layer does not implement that operation safely.
-    if (flags & MAP_FIXED) != 0 {
-        return errno_code(EINVAL);
-    }
     if length == 0 {
         return errno_code(EINVAL);
     }
 
     let anon = (flags & MAP_ANONYMOUS) != 0;
-    if !anon {
-        // File-backed mappings are not implemented, and must not accidentally
-        // fall through to the anonymous mapping path.
-        return errno_code(ENOSYS);
-    }
-    if offset != 0 {
+    if (offset & PAGE_MASK) != 0 {
         return errno_code(EINVAL);
     }
+    let file_vfs_fd = if anon {
+        None
+    } else {
+        let fd = args[4] as i32;
+        let Some(desc) = rt.fd_table.get(fd) else {
+            return errno_code(EBADF);
+        };
+        if desc.vfs_fd == 0 || desc.pipe.is_some() {
+            return errno_code(EBADF);
+        }
+        Some(desc.vfs_fd)
+    };
 
     let (_, aligned_len) = match checked_page_range(0, length, false) {
         Ok(range) => range,
         Err(error) => return errno_code(error),
     };
 
-    let hint = if addr_hint == 0 {
+    let fixed = (flags & MAP_FIXED) != 0;
+    let hint = if fixed {
+        match checked_page_range(addr_hint, aligned_len, true) {
+            Ok((addr, _)) => addr,
+            Err(error) => return errno_code(error),
+        }
+    } else if addr_hint == 0 {
         DEFAULT_MMAP_BASE
     } else {
         // A hint is still an address supplied by an untrusted process.  Reject
@@ -256,7 +298,34 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let mapped = with_current_page_table(|page_table| {
         #[cfg(linux_musl_smoke)]
         petroleum::serial::serial_log(format_args!("[linux-smoke] mmap page table acquired\n"));
-        let addr = find_free_anon_region(rt, page_table, aligned_len, hint);
+        let addr = if fixed {
+            if overlaps_reserved_user_mapping(hint, aligned_len) {
+                return Err(EEXIST);
+            }
+            if range_is_mapped(page_table, hint, aligned_len) {
+                // ELF loaders use MAP_FIXED to replace the first, broadly
+                // mapped file segment with subsequent segment protections.
+                // Permit that only for a range already owned by this mmap
+                // runtime; arbitrary replacement of the main image, stack,
+                // VDSO, or brk remains rejected.
+                if !tracked_range_overlaps(rt, hint, aligned_len) {
+                    return Err(EEXIST);
+                }
+                #[cfg(linux_busybox_smoke)]
+                petroleum::serial::serial_log(format_args!(
+                    "[linux-mmap] replace tracked addr={hint:#x} len={aligned_len:#x}\n"
+                ));
+                for index in 0..(aligned_len / PAGE_SIZE) {
+                    let page = hint + index * PAGE_SIZE;
+                    if unmap_and_free(page_table, page as usize).is_err() {
+                        return Err(EEXIST);
+                    }
+                }
+            }
+            hint
+        } else {
+            find_free_anon_region(rt, page_table, aligned_len, hint)
+        };
         #[cfg(linux_musl_smoke)]
         petroleum::serial::serial_log(format_args!(
             "[linux-smoke] mmap selected {addr:#x}, length {aligned_len:#x}\n"
@@ -306,6 +375,26 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 );
             }
 
+            if let Some(vfs_fd) = file_vfs_fd {
+                let file_offset = offset.checked_add(index as u64 * PAGE_SIZE).ok_or(EINVAL)?;
+                let destination = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        petroleum::common::memory::physical_to_virtual(
+                            frame.start_address().as_u64() as usize,
+                        ) as *mut u8,
+                        PAGE_SIZE as usize,
+                    )
+                };
+                if read_vfs_at(vfs_fd, file_offset, destination).is_err() {
+                    for mapped in 0..mapped_pages {
+                        let page = (addr + mapped as u64 * PAGE_SIZE) as usize;
+                        let _ = unmap_and_free(page_table, page);
+                    }
+                    frame_alloc.free_frame(frame);
+                    return Err(EIO);
+                }
+            }
+
             if page_table
                 .map_page(
                     page_vaddr as usize,
@@ -332,6 +421,12 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Ok(addr) => addr,
         Err(error) => return errno_code(error),
     };
+
+    #[cfg(linux_busybox_smoke)]
+    petroleum::serial::serial_log(format_args!(
+        "[linux-mmap] mapped addr={addr:#x} len={aligned_len:#x} file={:?}\n",
+        file_vfs_fd
+    ));
 
     #[cfg(linux_musl_smoke)]
     petroleum::serial::serial_log(format_args!("[linux-smoke] mmap tracking region\n"));
@@ -466,13 +561,19 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let new_brk = args[0];
 
+    #[cfg(linux_busybox_smoke)]
+    petroleum::serial::serial_log(format_args!(
+        "[linux-brk] initial={:#x} current={:#x} request={new_brk:#x}\n",
+        rt.initial_break, rt.program_break
+    ));
+
     if new_brk == 0 {
         return rt.program_break;
     }
 
     if new_brk < rt.initial_break
         || new_brk >= USER_ADDRESS_LIMIT
-        || new_brk - rt.initial_break > MAX_LINUX_MEMORY
+        || new_brk - rt.initial_break > MAX_LINUX_BRK
     {
         return rt.program_break;
     }

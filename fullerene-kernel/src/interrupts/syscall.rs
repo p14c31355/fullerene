@@ -295,7 +295,14 @@ pub fn setup_syscall() {
 
     // Set STAR MSR for CS/SS switching
     // Use fallback selectors if GDT not yet fully initialized
-    let user_cs = crate::gdt::user_code_selector_checked().0 as u64;
+    // SYSRET adds 16 to the user selector stored in STAR for CS and uses the
+    // next selector down (+8) for SS.  Our GDT stores user data at 0x1b and
+    // user code at 0x23, so STAR must contain 0x13; writing 0x23 directly
+    // would select the TSS descriptors (0x2b/0x33) and raise #GP on return.
+    let user_cs = crate::gdt::user_code_selector_checked()
+        .0
+        .checked_sub(16)
+        .expect("user code selector must leave room for SYSRET") as u64;
     let kernel_cs = crate::gdt::code_selector_checked().0 as u64;
     let star_value = (user_cs << 48) | (kernel_cs << 32);
     mem_debug!("Syscall: writing STAR\n");

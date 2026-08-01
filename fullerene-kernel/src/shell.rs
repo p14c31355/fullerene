@@ -1512,6 +1512,8 @@ pub fn run_linux_musl_smoke() {
 /// Run the static BusyBox shell through the real Nozzle command path.
 #[cfg(linux_busybox_smoke)]
 pub fn busybox_smoke() {
+    solvent::set_headless_smoke_active(true);
+
     struct ScriptedTerminal {
         input: alloc::collections::VecDeque<u8>,
     }
@@ -1554,6 +1556,7 @@ pub fn busybox_smoke() {
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     crate::linux::launch::mark_busybox_smoke_harness_done();
     if crate::linux::launch::busybox_smoke_complete() {
+        solvent::set_headless_smoke_active(false);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] PASS: all bundled applets ran, exit=0, shell resumed\n"
         ));

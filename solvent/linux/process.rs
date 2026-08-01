@@ -7,6 +7,7 @@ use super::runtime::{
 use crate::process::{self, ProcessContext, ProcessId};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
 use petroleum::page_table::FrameAllocatorExt;
 use petroleum::page_table::types::PageTableHelper;
@@ -81,21 +82,16 @@ pub(crate) unsafe fn force_user_page_writable(root: PhysAddr, virtual_address: u
     true
 }
 
-/// Give a forked child private copies of every writable user leaf.
-///
-/// The read-only image remains shared, while writable data, TLS, brk reserve,
-/// and stack pages are copied before the child can run. This is deliberately
-/// conservative until shared-leaf lifetime accounting is available in the
-/// process page-table owner.
-unsafe fn copy_child_writable_user_leaves(
-    root: PhysAddr,
-    ranges: &[(u64, u64); 2],
-) -> Result<(), ()> {
+/// Give a forked child private copies of every user leaf in the supplied
+/// ranges.  This includes read-only mmap pages: `execve` must be able to
+/// unmap the child's inherited dynamic-loader mappings without freeing frames
+/// still referenced by the parent.
+unsafe fn copy_child_user_leaves(root: PhysAddr, ranges: &[(u64, u64)]) -> Result<(), ()> {
     unsafe fn walk(
         table: *mut PageTable,
         level: usize,
         virtual_base: u64,
-        ranges: &[(u64, u64); 2],
+        ranges: &[(u64, u64)],
         frame_alloc: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> Result<(), ()> {
         let entry_count = if level == 4 { 256 } else { 512 };
@@ -122,7 +118,6 @@ unsafe fn copy_child_writable_user_leaves(
                 continue;
             }
             if level != 1
-                || !flags.contains(PageTableFlags::WRITABLE)
                 || !ranges
                     .iter()
                     .any(|(start, end)| page_base >= *start && page_base < *end)
@@ -574,11 +569,15 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     unsafe {
         let stack_top = 0x7fff_ffff_f000u64;
         let stack_page = stack_top - 2 * 1024 * 1024;
-        let private_ranges = [
-            (crate::loader::PROGRAM_LOAD_BASE, rt.program_break),
-            (stack_page, stack_top),
-        ];
-        if copy_child_writable_user_leaves(cloned_frame.start_address(), &private_ranges).is_err() {
+        let mut private_ranges = Vec::with_capacity(rt.mmap_regions.len() + 2);
+        private_ranges.push((crate::loader::PROGRAM_LOAD_BASE, rt.program_break));
+        private_ranges.push((stack_page, stack_top));
+        private_ranges.extend(
+            rt.mmap_regions
+                .iter()
+                .map(|region| (region.addr, region.addr.saturating_add(region.size))),
+        );
+        if copy_child_user_leaves(cloned_frame.start_address(), &private_ranges).is_err() {
             return errno_code(ENOMEM);
         }
     }
@@ -652,6 +651,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             child_rt.program_break = rt.program_break;
             child_rt.tls_ptr = rt.tls_ptr;
             child_rt.fd_table.entries = rt.fd_table.entries.clone();
+            child_rt.mmap_regions = rt.mmap_regions.clone();
             child_rt.terminal_window = rt.terminal_window;
             child_rt.terminal_owner_tid = rt.terminal_owner_tid;
             Some(super::runtime::DispatchMode::Linux(alloc::boxed::Box::new(
@@ -690,7 +690,11 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Err(e) => return errno_code(e),
     };
 
-    log::info!("Linux execve: {}", path);
+    log::info!(
+        "Linux execve: {} argv1={}",
+        path,
+        argv.get(1).map(String::as_str).unwrap_or("<none>")
+    );
 
     // Read the binary file
     let data = match crate::fs::read_entire_file(&path) {
@@ -719,6 +723,71 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             return errno_code(ENOEXEC);
         }
     };
+
+    let current_pid = process::current_pid().unwrap_or(ProcessId(0));
+    let dynamic_image =
+        elf.header.e_type == goblin::elf::header::ET_DYN || elf.interpreter.is_some();
+    if dynamic_image {
+        let argv_refs = argv.iter().map(String::as_str).collect::<Vec<_>>();
+        let envp_refs = envp.iter().map(String::as_str).collect::<Vec<_>>();
+        super::memory::reset_mmap_regions(rt);
+        // The old brk pages are private in a forked child, but still contain
+        // the previous image's allocator metadata.  A new dynamic image
+        // starts with a clean heap at the ELF break.
+        zero_existing_writable_user_range(rt.initial_break, rt.program_break);
+        let result = process::SCHEDULER
+            .with_process(current_pid, |p| {
+                let page_table = p.page_table.as_mut().ok_or(ENOEXEC)?;
+                crate::loader::load_linux_image_for_exec(page_table, &data, &argv_refs, &envp_refs)
+                    .map_err(|_| ENOEXEC)
+            })
+            .ok_or(ENOEXEC)
+            .and_then(|result| result);
+        let (entry, rsp, initial_break) = match result {
+            Ok(values) => values,
+            Err(error) => {
+                log::warn!("[EXEC-DIAG] dynamic image load failed path={}", path);
+                return errno_code(error);
+            }
+        };
+        if let Some(p) = process::SCHEDULER.with_process(current_pid, |p| {
+            p.entry_point = x86_64::VirtAddr::new(entry);
+            p.user_stack = x86_64::VirtAddr::new(0x7ffffffff000);
+            p.context.registers = crate::process::GeneralRegisters::default();
+            p.context.registers.rsp = rsp;
+            p.context.rip = entry;
+            p.context.kernel_rsp = 0;
+            p.context.rflags = 0x2;
+            p.context.segments.cs = crate::gdt::user_code()
+                .as_ref()
+                .map(|s| s.0 as u64)
+                .unwrap_or(1);
+            p.context.segments.ss = crate::gdt::user_data()
+                .as_ref()
+                .map(|s| s.0 as u64)
+                .unwrap_or(2);
+        }) {
+            let _ = p;
+        } else {
+            return errno_code(ENOEXEC);
+        }
+        rt.initial_break = initial_break;
+        rt.program_break = initial_break;
+        rt.tls_ptr = 0;
+        rt.signal_pending = 0;
+        // The syscall entry assembly owns the live SYSRET frame. Updating the
+        // scheduler context alone is insufficient: execve replaces the old
+        // user stack before this syscall returns, so return directly to the
+        // interpreter's entry point on the new Linux stack.
+        crate::interrupts::syscall::override_user_return_context(entry, rsp, 0x202);
+        log::info!(
+            "execve: loaded dynamic {} entry=0x{:x} stack=0x{:x}",
+            path,
+            entry,
+            rsp
+        );
+        return 0;
+    }
 
     if elf.header.e_type != goblin::elf::header::ET_EXEC {
         log::warn!(
@@ -773,8 +842,6 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             return errno_code(error);
         }
     }
-
-    let current_pid = process::current_pid().unwrap_or(ProcessId(0));
 
     // ── Replace old process memory ────────────────────────
     // The old brk/TLS pages are already private in the forked child, and the

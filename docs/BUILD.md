@@ -252,6 +252,10 @@ uses the same embedded binary, contract count, and 57-command script as the
 strict QEMU run. The QEMU-only `FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT` flag is
 injected automatically by Flasks for this QEMU path. It is omitted for
 hardware, so the physical image never writes to the `isa-debug-exit` port.
+The BusyBox window shown during this scripted run is a smoke-test terminal, not
+an interactive prompt. It may remain visually unchanged while the script is
+running, but the run must eventually emit both success markers; a window that
+stays there without `PASS` is a failed smoke run.
 
 To debug:
 - QEMU logs are written to `qemu_log.txt` (interrupts and other debug info).

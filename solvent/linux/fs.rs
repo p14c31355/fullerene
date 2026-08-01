@@ -692,16 +692,26 @@ pub fn sys_pread64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if offset < 0 {
         return errno_code(EINVAL);
     }
-    // Temporarily seek, read, restore
+    // Temporarily seek both the Linux descriptor and its VFS handle.  The
+    // dynamic linker uses pread64 for ELF program headers; changing only the
+    // emulated offset makes every non-zero pread read from the old VFS cursor.
     let desc = match rt.fd_table.get(fd) {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
     let saved = desc.offset;
+    let saved_vfs = match crate::contexts::vfs::position(desc.vfs_fd) {
+        Ok(position) => position,
+        Err(error) => return fs_errno_result(&error),
+    };
+    if let Err(error) = crate::contexts::vfs::seek(desc.vfs_fd, offset as u64) {
+        return fs_errno_result(&error);
+    }
     if let Some(d) = rt.fd_table.get_mut(fd) {
         d.offset = offset as u64;
     }
     let result = sys_read(rt, &[fd as u64, buf, count as u64, 0, 0, 0]);
+    let _ = crate::contexts::vfs::seek(desc.vfs_fd, saved_vfs);
     if let Some(d) = rt.fd_table.get_mut(fd) {
         d.offset = saved;
     }

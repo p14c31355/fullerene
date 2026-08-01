@@ -51,9 +51,6 @@ static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox all applets passed";
 const BUSYBOX_SMOKE_APPLET_COUNT: usize =
     include!(concat!(env!("OUT_DIR"), "/busybox-applet-count.rs"));
 #[cfg(linux_busybox_smoke)]
-const BUSYBOX_SMOKE_APPLET_NAMES: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/busybox-applets.txt"));
-#[cfg(linux_busybox_smoke)]
 const BUSYBOX_SMOKE_HELP_CHECK_MARKER: &str = "__FULLERENE_BUSYBOX_HELP_CHECK__";
 
 #[cfg(linux_busybox_smoke)]
@@ -63,8 +60,9 @@ fn busybox_smoke_script() -> alloc::string::String {
 busybox rmdir /tmp/busybox-contract /tmp/busybox-dir || true\n\
 busybox rm -f /tmp/busybox-input || true\n\
 busybox busybox --help >/tmp/busybox-help\n\
-list_count=$(busybox busybox --list | busybox wc -l)\n\
-busybox test \"$list_count\" -eq {count}\n\
+busybox busybox --list >/tmp/busybox-list\n\
+busybox wc -l /tmp/busybox-list >/tmp/busybox-list-count\n\
+busybox grep -q '^{count} ' /tmp/busybox-list-count\n\
 __FULLERENE_BUSYBOX_HELP_CHECK__\n\
 busybox mkdir /tmp/busybox-contract\n\
 busybox printf 'alpha\\nbeta\\nalpha\\n' >/tmp/busybox-input\n\
@@ -181,19 +179,9 @@ echo Fullerene BusyBox all applets passed\n\
 exit 0\n",
         count = BUSYBOX_SMOKE_APPLET_COUNT
     );
-    let mut help_check = alloc::string::String::from(
+    let help_check = alloc::string::String::from(
         "busybox grep -q 'Currently defined functions:' /tmp/busybox-help\n\
-for applet in",
-    );
-    for name in BUSYBOX_SMOKE_APPLET_NAMES.lines() {
-        help_check.push_str(" '");
-        help_check.push_str(name);
-        help_check.push('\'');
-    }
-    help_check.push_str(
-        "; do\n\
-busybox grep -F -q \"$applet\" /tmp/busybox-help\n\
-done",
+busybox awk 'BEGIN { while ((getline name < \"/tmp/busybox-list\") > 0) wanted[name]=1 } { for (name in wanted) if (index($0, name)) found[name]=1 } END { for (name in wanted) if (!(name in found)) exit 1 }' /tmp/busybox-help",
     );
     script.replace(BUSYBOX_SMOKE_HELP_CHECK_MARKER, &help_check)
 }
@@ -557,6 +545,7 @@ pub fn init_initramfs() {
         "/home",
         "/lib",
         "/lib64",
+        "/lib/x86_64-linux-gnu",
         "/mnt",
         "/usr/share",
         "/usr/share/sounds",
@@ -578,6 +567,23 @@ pub fn init_initramfs() {
         let busybox = include_bytes!(concat!(env!("OUT_DIR"), "/busybox"));
         if let Err(error) = crate::fs::write_entire_file("/bin/busybox", busybox) {
             log::warn!("Initramfs: failed to install /bin/busybox: {:?}", error);
+        }
+
+        let interpreter = include_bytes!(concat!(env!("OUT_DIR"), "/busybox-interpreter"));
+        for path in [
+            "/lib64/ld-linux-x86-64.so.2",
+            "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        ] {
+            if let Err(error) = crate::fs::write_entire_file(path, interpreter) {
+                log::warn!("Initramfs: failed to install {}: {:?}", path, error);
+            }
+        }
+        let libc = include_bytes!(concat!(env!("OUT_DIR"), "/busybox-libc"));
+        if let Err(error) = crate::fs::write_entire_file("/lib/x86_64-linux-gnu/libc.so.6", libc) {
+            log::warn!(
+                "Initramfs: failed to install /lib/x86_64-linux-gnu/libc.so.6: {:?}",
+                error
+            );
         }
     }
 

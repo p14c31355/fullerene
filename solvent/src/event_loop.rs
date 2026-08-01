@@ -166,7 +166,7 @@ pub fn tick_core(now: u64) {
     // freezes the WASM caller (e.g. the MP4 viewer's decode loop) that
     // invoked `wait_for_ns` precisely to let the event loop run.
     let in_wasm = crate::IN_WASM_HOST_CALLBACK.load(core::sync::atomic::Ordering::Relaxed);
-    if !in_wasm {
+    if !in_wasm && !crate::HEADLESS_SMOKE_ACTIVE.load(core::sync::atomic::Ordering::Acquire) {
         // Callbacks may acquire runtime locks or register another service.
         let mut services = core::mem::take(&mut *SERVICES.lock());
         for service in &mut services {

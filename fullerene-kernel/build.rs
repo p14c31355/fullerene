@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use busybox_build::{BuildOptions, is_static_x86_64_elf};
+use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_glibc_x86_64_elf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -24,6 +24,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_CC");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_SMOKE");
+    println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_DYNAMIC_LINKER");
+    println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_LIBC");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT");
     println!(
         "cargo:rerun-if-changed={}",
@@ -44,7 +46,7 @@ fn main() {
     if env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some() {
         assert!(
             have_busybox,
-            "FULLERENE_BUSYBOX_SMOKE requires a static BusyBox; set FULLERENE_BUSYBOX"
+            "FULLERENE_BUSYBOX_SMOKE requires a dynamically linked glibc BusyBox; set FULLERENE_BUSYBOX"
         );
         println!("cargo:rustc-cfg=linux_busybox_smoke");
         if env::var_os("FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT").is_some() {
@@ -279,7 +281,8 @@ fn main() {
     }
 }
 
-/// Validate and stage a static x86_64 BusyBox binary for the initramfs.
+/// Validate and stage a dynamically linked glibc x86_64 BusyBox and its
+/// runtime dependencies for the initramfs.
 ///
 /// The binary is generated outside the Rust workspace instead of being
 /// checked into it. This keeps the source tree small while allowing a release
@@ -291,13 +294,17 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
         println!("cargo:rerun-if-changed={}", path.display());
         let data = fs::read(path)
             .unwrap_or_else(|_| panic!("FULLERENE_BUSYBOX was not found: {}", path.display()));
-        if !is_static_x86_64_elf(&data) {
-            panic!("BusyBox must be a static x86_64 ELF: {}", path.display());
+        if !is_dynamic_glibc_x86_64_elf(&data) {
+            panic!(
+                "BusyBox must be a dynamically linked glibc x86_64 ELF: {}",
+                path.display()
+            );
         }
         busybox_build::validate_fullerene_busybox(path).unwrap_or_else(|error| panic!("{error}"));
         fs::write(out_dir.join("busybox"), data).unwrap_or_else(|error| {
             panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
         });
+        stage_busybox_runtime(out_dir, path, &fs::read(out_dir.join("busybox")).unwrap());
         write_busybox_contract(out_dir);
         println!("cargo:rustc-cfg=have_busybox");
         return true;
@@ -342,19 +349,59 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
         let Ok(data) = fs::read(&path) else {
             continue;
         };
-        if !is_static_x86_64_elf(&data) || busybox_build::validate_fullerene_busybox(&path).is_err()
+        if !is_dynamic_glibc_x86_64_elf(&data)
+            || busybox_build::validate_fullerene_busybox(&path).is_err()
         {
             continue;
         }
         fs::write(out_dir.join("busybox"), data).unwrap_or_else(|error| {
             panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
         });
+        stage_busybox_runtime(&out_dir, &path, &fs::read(out_dir.join("busybox")).unwrap());
         write_busybox_contract(&out_dir);
         println!("cargo:rustc-cfg=have_busybox");
         return true;
     }
 
     false
+}
+
+fn stage_busybox_runtime(out_dir: &Path, busybox_path: &Path, busybox_data: &[u8]) {
+    let interpreter = dynamic_glibc_interpreter_path(busybox_data)
+        .expect("validated BusyBox must have an accepted glibc PT_INTERP");
+    let linker = env::var_os("FULLERENE_BUSYBOX_DYNAMIC_LINKER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            [
+                "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+                interpreter,
+            ]
+            .iter()
+            .map(PathBuf::from)
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| {
+                panic!(
+                    "cannot find BusyBox dynamic linker for {}",
+                    busybox_path.display()
+                )
+            })
+        });
+    let libc = env::var_os("FULLERENE_BUSYBOX_LIBC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr/lib/x86_64-linux-gnu/libc.so.6"));
+    for path in [&linker, &libc] {
+        println!("cargo:rerun-if-changed={}", path.display());
+        if !path.is_file() {
+            panic!(
+                "BusyBox runtime dependency was not found: {}",
+                path.display()
+            );
+        }
+    }
+    fs::copy(&linker, out_dir.join("busybox-interpreter"))
+        .unwrap_or_else(|error| panic!("cannot stage {}: {error}", linker.display()));
+    fs::copy(&libc, out_dir.join("busybox-libc"))
+        .unwrap_or_else(|error| panic!("cannot stage {}: {error}", libc.display()));
 }
 
 fn write_busybox_contract(out_dir: &Path) {

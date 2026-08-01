@@ -359,10 +359,12 @@ pub extern "x86-interrupt" fn page_fault_handler(
         kernel_fault_halt(&frame, "Page Fault", "kernel PF");
     } else {
         raw_log!(
-            "PF @ {:#x}: {} {} (user)\n",
+            "PF @ {:#x}: {} {} (user) rip={:#x} rsp={:#x}\n",
             fault_addr.as_u64(),
             if is_present { "prot" } else { "np" },
-            if is_write { "W" } else { "R" }
+            if is_write { "W" } else { "R" },
+            frame.instruction_pointer,
+            frame.stack_pointer
         );
         if petroleum::common::memory::is_user_address(fault_addr) || is_present {
             terminate_and_recover(

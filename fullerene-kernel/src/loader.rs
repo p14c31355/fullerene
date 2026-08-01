@@ -28,7 +28,8 @@ const LINUX_STACK_TOP: u64 = 0x0000_7fff_ffff_f000;
 // Keep the compatibility brk region resident.  Growing brk is metadata-only;
 // page-table mutation from the page-fault handler is deliberately avoided.
 // The Linux syscall layer still caps the logical range at 128 MiB.
-const LINUX_BRK_RESERVE_SIZE: u64 = 8 * 1024 * 1024;
+const LINUX_BRK_RESERVE_SIZE: u64 = 256 * 1024 * 1024;
+const DYNAMIC_LINKER_BASE: u64 = 0x0000_0002_0000_0000;
 
 #[derive(Clone, Copy)]
 struct LinuxImageLayout {
@@ -37,6 +38,7 @@ struct LinuxImageLayout {
     phent: u64,
     phnum: u64,
     entry: u64,
+    at_base: u64,
 }
 
 struct LoadedLinuxImage {
@@ -46,19 +48,13 @@ struct LoadedLinuxImage {
 
 #[derive(Clone, Copy)]
 enum PageChange {
-    New {
-        address: u64,
-    },
-    Flags {
-        address: u64,
-        original: PageTableFlags,
-    },
+    New { address: u64 },
 }
 
 impl PageChange {
     fn address(self) -> u64 {
         match self {
-            Self::New { address } | Self::Flags { address, .. } => address,
+            Self::New { address } => address,
         }
     }
 }
@@ -110,9 +106,6 @@ fn rollback_page_changes(page_table: &mut ProcessPageTable, changes: &[PageChang
                             frame_allocator.deallocate_frame(frame);
                         }
                     }
-                }
-                PageChange::Flags { address, original } => {
-                    let _ = PageTableHelper::set_page_flags(page_table, address as usize, original);
                 }
             }
         }
@@ -189,26 +182,11 @@ fn write_stack_word(
     write_process_bytes(page_table, address, &value.to_ne_bytes())
 }
 
-fn load_elf_segments(
-    page_table: &mut ProcessPageTable,
-    elf: &goblin::elf::Elf<'_>,
-    image_data: &[u8],
-) -> Result<LoadedLinuxImage, LoadError> {
-    let mut changes = Vec::new();
-    let result = load_elf_segments_transaction(page_table, elf, image_data, &mut changes);
-    match result {
-        Ok(layout) => Ok(LoadedLinuxImage { layout, changes }),
-        Err(error) => {
-            rollback_page_changes(page_table, &changes);
-            Err(error)
-        }
-    }
-}
-
 fn load_elf_segments_transaction(
     page_table: &mut ProcessPageTable,
     elf: &goblin::elf::Elf<'_>,
     image_data: &[u8],
+    load_bias: u64,
     changes: &mut Vec<PageChange>,
 ) -> Result<LinuxImageLayout, LoadError> {
     let mut image_end = 0u64;
@@ -230,11 +208,13 @@ fn load_elf_segments_transaction(
             continue;
         }
 
-        let segment_end = ph
-            .p_vaddr
+        let segment_start = load_bias
+            .checked_add(ph.p_vaddr)
+            .ok_or(LoadError::InvalidFormat)?;
+        let segment_end = segment_start
             .checked_add(ph.p_memsz)
             .ok_or(LoadError::InvalidFormat)?;
-        let page_start = align_down(ph.p_vaddr);
+        let page_start = align_down(segment_start);
         let page_end = align_up(segment_end).ok_or(LoadError::InvalidFormat)?;
         if page_end <= page_start {
             return Err(LoadError::InvalidFormat);
@@ -250,21 +230,15 @@ fn load_elf_segments_transaction(
         let requested_flags = segment_page_flags(ph.p_flags);
         let mut page_address = page_start;
         while page_address < page_end {
+            let already_loaded = changes
+                .iter()
+                .any(|change| change.address() == page_address);
             let physical_address =
                 match PageTableHelper::translate_address(page_table, page_address as usize) {
-                    Ok(existing) => {
+                    Ok(existing) if already_loaded => {
                         let current_flags =
                             PageTableHelper::get_page_flags(page_table, page_address as usize)
                                 .map_err(|_| LoadError::MappingFailed)?;
-                        if !changes
-                            .iter()
-                            .any(|change| change.address() == page_address)
-                        {
-                            changes.push(PageChange::Flags {
-                                address: page_address,
-                                original: current_flags,
-                            });
-                        }
                         PageTableHelper::set_page_flags(
                             page_table,
                             page_address as usize,
@@ -272,6 +246,21 @@ fn load_elf_segments_transaction(
                         )
                         .map_err(|_| LoadError::MappingFailed)?;
                         existing
+                    }
+                    Ok(_) => {
+                        // An execve image must not inherit writable loader or
+                        // RELRO state from the previous image. Drop the old
+                        // leaf without freeing its frame (it may still be
+                        // shared with the parent after fork), then install a
+                        // fresh zeroed page.
+                        let _ = PageTableHelper::unmap_page(page_table, page_address as usize)
+                            .map_err(|_| LoadError::MappingFailed)?;
+                        let physical_address =
+                            map_zeroed_page(page_table, page_address, requested_flags)?;
+                        changes.push(PageChange::New {
+                            address: page_address,
+                        });
+                        physical_address
                     }
                     Err(_) => {
                         let physical_address =
@@ -283,16 +272,15 @@ fn load_elf_segments_transaction(
                     }
                 };
 
-            let file_virtual_end = ph
-                .p_vaddr
+            let file_virtual_end = segment_start
                 .checked_add(ph.p_filesz)
                 .ok_or(LoadError::InvalidFormat)?;
-            let copy_start = page_address.max(ph.p_vaddr);
+            let copy_start = page_address.max(segment_start);
             let copy_end = (page_address + PAGE_SIZE).min(file_virtual_end);
             if copy_start < copy_end {
                 let source_offset = ph
                     .p_offset
-                    .checked_add(copy_start - ph.p_vaddr)
+                    .checked_add(copy_start - segment_start)
                     .and_then(|offset| usize::try_from(offset).ok())
                     .ok_or(LoadError::InvalidFormat)?;
                 let copy_len =
@@ -353,7 +341,7 @@ fn load_elf_segments_transaction(
         .find_map(|ph| {
             let load_file_end = ph.p_offset.checked_add(ph.p_filesz)?;
             (elf.header.e_phoff >= ph.p_offset && phdr_file_end <= load_file_end)
-                .then(|| ph.p_vaddr + (elf.header.e_phoff - ph.p_offset))
+                .then(|| load_bias + ph.p_vaddr + (elf.header.e_phoff - ph.p_offset))
         })
         .ok_or(LoadError::InvalidFormat)?;
 
@@ -362,7 +350,10 @@ fn load_elf_segments_transaction(
         phdr,
         phent: u64::from(elf.header.e_phentsize),
         phnum: u64::from(elf.header.e_phnum),
-        entry: elf.entry,
+        entry: load_bias
+            .checked_add(elf.entry)
+            .ok_or(LoadError::InvalidFormat)?,
+        at_base: 0,
     })
 }
 
@@ -373,7 +364,8 @@ fn initialize_linux_stack(
     layout: LinuxImageLayout,
 ) -> Result<u64, LoadError> {
     let mut changes = Vec::new();
-    let result = initialize_linux_stack_transaction(page_table, argv, envp, layout, &mut changes);
+    let result =
+        initialize_linux_stack_transaction(page_table, argv, envp, layout, &mut changes, false);
     if result.is_err() {
         rollback_page_changes(page_table, &changes);
     }
@@ -462,6 +454,7 @@ fn initialize_linux_stack_transaction(
     envp: &[&str],
     layout: LinuxImageLayout,
     changes: &mut Vec<PageChange>,
+    replace_existing: bool,
 ) -> Result<u64, LoadError> {
     if argv.is_empty() {
         return Err(LoadError::InvalidFormat);
@@ -478,7 +471,22 @@ fn initialize_linux_stack_transaction(
     let mut page_address = stack_bottom;
     while page_address < LINUX_STACK_TOP {
         if PageTableHelper::translate_address(page_table, page_address as usize).is_ok() {
-            return Err(LoadError::AddressAlreadyMapped);
+            if !replace_existing {
+                return Err(LoadError::AddressAlreadyMapped);
+            }
+            let physical = PageTableHelper::translate_address(page_table, page_address as usize)
+                .map_err(|_| LoadError::MappingFailed)?;
+            unsafe {
+                ptr::write_bytes(
+                    petroleum::common::memory::physical_to_virtual(physical) as *mut u8,
+                    0,
+                    PAGE_SIZE as usize,
+                );
+            }
+            PageTableHelper::set_page_flags(page_table, page_address as usize, stack_flags)
+                .map_err(|_| LoadError::MappingFailed)?;
+            page_address += PAGE_SIZE;
+            continue;
         }
         map_zeroed_page(page_table, page_address, stack_flags)?;
         changes.push(PageChange::New {
@@ -558,7 +566,7 @@ fn initialize_linux_stack_transaction(
         AT_PAGESZ,
         PAGE_SIZE,
         AT_BASE,
-        0,
+        layout.at_base,
         AT_FLAGS,
         0,
         AT_ENTRY,
@@ -623,6 +631,69 @@ pub fn load_program_with_runtime_args(
     load_program_inner(image_data, name, argv, envp, is_linux)
 }
 
+/// Replace the executable image in an existing Linux process address space.
+///
+/// This is used by the Linux `execve` syscall.  It deliberately shares the
+/// same PT_INTERP/ET_DYN path as the initial process launch so a dynamically
+/// linked BusyBox applet does not take a separate, less complete loader path.
+pub fn load_linux_image_for_exec(
+    page_table: &mut ProcessPageTable,
+    image_data: &[u8],
+    argv: &[&str],
+    envp: &[&str],
+) -> Result<(u64, u64, u64), LoadError> {
+    let elf = goblin::elf::Elf::parse(image_data).map_err(|_| LoadError::InvalidFormat)?;
+    if !matches!(
+        elf.header.e_type,
+        goblin::elf::header::ET_EXEC | goblin::elf::header::ET_DYN
+    ) {
+        return Err(LoadError::NotExecutable);
+    }
+    if elf.header.e_machine != goblin::elf::header::EM_X86_64 {
+        return Err(LoadError::UnsupportedArchitecture);
+    }
+
+    let main_load_bias = if elf.header.e_type == goblin::elf::header::ET_DYN {
+        PROGRAM_LOAD_BASE
+    } else {
+        0
+    };
+    let interpreter_data = elf
+        .interpreter
+        .map(|path| crate::fs::read_entire_file(path).map_err(|_| LoadError::FileNotFound))
+        .transpose()?;
+    let mut changes = Vec::new();
+    let main_layout =
+        load_elf_segments_transaction(page_table, &elf, image_data, main_load_bias, &mut changes)?;
+    let mut layout = main_layout;
+    let start_entry = if let Some(interpreter_data) = interpreter_data.as_deref() {
+        let interpreter =
+            goblin::elf::Elf::parse(interpreter_data).map_err(|_| LoadError::InvalidFormat)?;
+        if interpreter.header.e_type != goblin::elf::header::ET_DYN
+            || interpreter.header.e_machine != goblin::elf::header::EM_X86_64
+            || interpreter.interpreter.is_some()
+        {
+            return Err(LoadError::NotExecutable);
+        }
+        let interpreter_layout = load_elf_segments_transaction(
+            page_table,
+            &interpreter,
+            interpreter_data,
+            DYNAMIC_LINKER_BASE,
+            &mut changes,
+        )?;
+        layout.at_base = DYNAMIC_LINKER_BASE;
+        interpreter_layout.entry
+    } else {
+        layout.entry
+    };
+
+    reserve_linux_brk(page_table, layout.initial_break, &mut changes)?;
+    let rsp =
+        initialize_linux_stack_transaction(page_table, argv, envp, layout, &mut changes, true)?;
+    Ok((start_entry, rsp, layout.initial_break))
+}
+
 fn load_program_inner(
     image_data: &[u8],
     name: &'static str,
@@ -645,21 +716,50 @@ fn load_program_inner(
         elf.interpreter.is_some()
     );
 
-    // The first Linux personality milestone intentionally supports static
-    // x86_64 executables.  A PT_INTERP image would require a dynamic linker,
-    // relocation, and a second ELF load transaction.
-    if elf.header.e_type != goblin::elf::header::ET_EXEC {
+    if !matches!(
+        elf.header.e_type,
+        goblin::elf::header::ET_EXEC | goblin::elf::header::ET_DYN
+    ) {
         return Err(LoadError::NotExecutable);
     }
     if elf.header.e_machine != goblin::elf::header::EM_X86_64 {
         return Err(LoadError::UnsupportedArchitecture);
     }
-    if is_linux && elf.interpreter.is_some() {
-        return Err(LoadError::NotExecutable);
-    }
-
+    let interpreter_data = if is_linux {
+        elf.interpreter
+            .map(|path| crate::fs::read_entire_file(path).map_err(|_| LoadError::FileNotFound))
+            .transpose()?
+    } else {
+        None
+    };
+    let main_load_bias = if elf.header.e_type == goblin::elf::header::ET_DYN {
+        PROGRAM_LOAD_BASE
+    } else {
+        0
+    };
+    let interpreter_entry = interpreter_data
+        .as_deref()
+        .map(|data| {
+            let interpreter =
+                goblin::elf::Elf::parse(data).map_err(|_| LoadError::InvalidFormat)?;
+            if interpreter.header.e_type != goblin::elf::header::ET_DYN
+                || interpreter.header.e_machine != goblin::elf::header::EM_X86_64
+                || interpreter.interpreter.is_some()
+            {
+                return Err(LoadError::NotExecutable);
+            }
+            DYNAMIC_LINKER_BASE
+                .checked_add(interpreter.header.e_entry)
+                .ok_or(LoadError::InvalidFormat)
+        })
+        .transpose()?;
+    let entry = interpreter_entry.unwrap_or(
+        main_load_bias
+            .checked_add(elf.header.e_entry)
+            .ok_or(LoadError::InvalidFormat)?,
+    );
     let entry_point_address =
-        x86_64::VirtAddr::try_new(elf.header.e_entry).map_err(|_| LoadError::InvalidFormat)?;
+        x86_64::VirtAddr::try_new(entry).map_err(|_| LoadError::InvalidFormat)?;
     if !petroleum::is_user_address(entry_point_address) {
         return Err(LoadError::UnsupportedArchitecture);
     }
@@ -669,16 +769,48 @@ fn load_program_inner(
     crate::klog_fmt!(
         "[LINUX-DIAG] process created pid={} entry={:#x}\n",
         pid.0,
-        elf.entry
+        entry
     );
 
     let load_result = process::SCHEDULER
         .with_process(pid, |p| {
-            let mut loaded = {
+            let mut changes = Vec::new();
+            let main_layout = {
                 let process_page_table = p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
                 crate::klog_fmt!("[LINUX-DIAG] segments begin pid={}\n", pid.0);
-                load_elf_segments(process_page_table, &elf, image_data)?
+                load_elf_segments_transaction(
+                    process_page_table,
+                    &elf,
+                    image_data,
+                    main_load_bias,
+                    &mut changes,
+                )?
             };
+            let mut loaded = LoadedLinuxImage {
+                layout: main_layout,
+                changes,
+            };
+            if let Some(interpreter_data) = interpreter_data.as_deref() {
+                let interpreter = goblin::elf::Elf::parse(interpreter_data)
+                    .map_err(|_| LoadError::InvalidFormat)?;
+                let interpreter_layout = {
+                    let process_page_table =
+                        p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
+                    load_elf_segments_transaction(
+                        process_page_table,
+                        &interpreter,
+                        interpreter_data,
+                        DYNAMIC_LINKER_BASE,
+                        &mut loaded.changes,
+                    )?
+                };
+                loaded.layout.at_base = DYNAMIC_LINKER_BASE;
+                crate::klog_fmt!(
+                    "[LINUX-DIAG] dynamic linker loaded base={:#x} entry={:#x}\n",
+                    DYNAMIC_LINKER_BASE,
+                    interpreter_layout.entry
+                );
+            }
             crate::klog_fmt!(
                 "[LINUX-DIAG] segments exit pid={} break={:#x}\n",
                 pid.0,

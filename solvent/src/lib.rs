@@ -27,6 +27,23 @@ static SCHEDULER_YIELD: spin::Mutex<Option<fn()>> = spin::Mutex::new(None);
 pub static IN_WASM_HOST_CALLBACK: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// Set while a synchronous Linux smoke harness owns the scheduler thread.
+///
+/// The harness still pumps keyboard, mouse, and framebuffer work through
+/// `runtime_tick_no_fb`, but must not run hardware-facing services from that
+/// nested pump.  A service such as iwlwifi can block on firmware/MMIO and
+/// otherwise make the smoke terminal look like a machine-wide hang.
+pub static HEADLESS_SMOKE_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+pub fn set_headless_smoke_active(active: bool) {
+    HEADLESS_SMOKE_ACTIVE.store(active, core::sync::atomic::Ordering::Release);
+}
+
+pub fn headless_smoke_active() -> bool {
+    HEADLESS_SMOKE_ACTIVE.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// Install the kernel's cooperative scheduler handoff for terminal polling.
 pub fn install_scheduler_yield(callback: fn()) {
     *SCHEDULER_YIELD.lock() = Some(callback);

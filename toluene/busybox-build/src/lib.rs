@@ -15,7 +15,7 @@ const LOCK_SUFFIX: &str = ".lock";
 // Bump when configure_for_fullerene changes. The staged output must not reuse
 // a binary built with an older feature configuration merely because the
 // BusyBox source revision stayed the same.
-const BUILD_CONFIG_REVISION: &str = "fullerene-busybox-config-v3";
+const BUILD_CONFIG_REVISION: &str = "fullerene-busybox-config-v4-dynamic-glibc";
 
 /// Applets covered by the Fullerene Linux personality contract.
 ///
@@ -99,7 +99,7 @@ pub struct BuildOptions {
     pub clean: bool,
 }
 
-/// Build, validate, and stage a static x86_64 BusyBox binary.
+/// Build, validate, and stage a dynamically linked glibc x86_64 BusyBox binary.
 ///
 /// A validated output is reused when its marker matches the checked-out
 /// BusyBox revision and Fullerene build configuration. The lock protects the
@@ -142,7 +142,6 @@ pub fn build(options: &BuildOptions) -> Result<(), String> {
         .compiler
         .clone()
         .or_else(|| env::var_os("FULLERENE_BUSYBOX_CC"))
-        .or_else(|| command_available("musl-gcc").then(|| OsString::from("musl-gcc")))
         .unwrap_or_else(|| OsString::from("gcc"));
 
     if options.clean && options.build_dir.exists() {
@@ -178,7 +177,7 @@ pub fn build(options: &BuildOptions) -> Result<(), String> {
     )?;
 
     eprintln!(
-        "Building static BusyBox with {} into {}",
+        "Building dynamically linked glibc BusyBox with {} into {}",
         compiler.to_string_lossy(),
         options.build_dir.display()
     );
@@ -193,9 +192,9 @@ pub fn build(options: &BuildOptions) -> Result<(), String> {
     let built = options.build_dir.join("busybox");
     let data = fs::read(&built)
         .map_err(|error| format!("cannot read built BusyBox {}: {error}", built.display()))?;
-    if !is_static_x86_64_elf(&data) {
+    if !is_dynamic_glibc_x86_64_elf(&data) {
         return Err(format!(
-            "BusyBox output is not a static x86_64 ELF: {}",
+            "BusyBox output is not a dynamically linked glibc x86_64 ELF: {}",
             built.display()
         ));
     }
@@ -249,7 +248,7 @@ fn output_is_current(output: &Path, marker: &Path, source: &Path) -> bool {
     let Some(expected_marker) = build_marker(source) else {
         return false;
     };
-    is_static_x86_64_elf(&data)
+    is_dynamic_glibc_x86_64_elf(&data)
         && fs::read_to_string(marker)
             .map(|stored| stored.trim() == expected_marker.trim())
             .unwrap_or(false)
@@ -300,15 +299,6 @@ fn source_revision(source: &Path) -> Option<String> {
     }
     let revision = String::from_utf8(output.stdout).ok()?.trim().to_owned();
     (!revision.is_empty()).then_some(revision)
-}
-
-fn command_available(command: &str) -> bool {
-    Command::new(command)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 fn run_make(
@@ -362,8 +352,8 @@ fn configure_for_fullerene(path: &Path) -> Result<(), String> {
     let mut config = original.clone();
     for (key, value) in [
         ("CONFIG_BUSYBOX", "y"),
-        ("CONFIG_STATIC", "y"),
-        ("CONFIG_STATIC_LIBGCC", "y"),
+        ("CONFIG_STATIC", "n"),
+        ("CONFIG_STATIC_LIBGCC", "n"),
         ("CONFIG_PIE", "n"),
         ("CONFIG_FEATURE_PREFER_APPLETS", "y"),
         ("CONFIG_FEATURE_SH_STANDALONE", "y"),
@@ -428,43 +418,49 @@ fn set_config_value(config: &mut String, key: &str, value: &str) {
     *config = rewritten;
 }
 
-pub fn is_static_x86_64_elf(data: &[u8]) -> bool {
+pub fn is_dynamic_glibc_x86_64_elf(data: &[u8]) -> bool {
+    dynamic_glibc_interpreter_path(data).is_some()
+}
+
+/// Return the accepted glibc interpreter path recorded by PT_INTERP.
+pub fn dynamic_glibc_interpreter_path(data: &[u8]) -> Option<&'static str> {
     if data.len() < 64
         || !data.starts_with(b"\x7fELF")
         || data.get(4) != Some(&2)
         || data.get(5) != Some(&1)
-        || data.get(18..20) != Some(&[0x3e, 0])
+        || u16::from_le_bytes([data[18], data[19]]) != 0x3e
+        || !matches!(u16::from_le_bytes([data[16], data[17]]), 2 | 3)
     {
-        return false;
+        return None;
     }
-    let e_type = u16::from_le_bytes([data[16], data[17]]);
-    if e_type != 2 && e_type != 3 {
-        return false;
-    }
-    let Some(phoff) = usize::try_from(u64::from_le_bytes(data[32..40].try_into().unwrap())).ok()
-    else {
-        return false;
-    };
+    let phoff = usize::try_from(u64::from_le_bytes(data[32..40].try_into().ok()?)).ok()?;
     let phentsize = usize::from(u16::from_le_bytes([data[54], data[55]]));
     let phnum = usize::from(u16::from_le_bytes([data[56], data[57]]));
-    if phentsize < 4 {
-        return false;
+    if phentsize < 56 {
+        return None;
     }
     for index in 0..phnum {
-        let Some(offset) = phoff.checked_add(index.saturating_mul(phentsize)) else {
-            return false;
-        };
-        let Some(entry_end) = offset.checked_add(4) else {
-            return false;
-        };
-        let Some(entry) = data.get(offset..entry_end) else {
-            return false;
-        };
-        if entry == [3, 0, 0, 0] {
-            return false;
+        let offset = phoff.checked_add(index.checked_mul(phentsize)?)?;
+        let entry = data.get(offset..offset.checked_add(56)?)?;
+        if u32::from_le_bytes(entry[0..4].try_into().ok()?) != 3 {
+            continue;
         }
+        let p_offset = usize::try_from(u64::from_le_bytes(entry[8..16].try_into().ok()?)).ok()?;
+        let p_filesz = usize::try_from(u64::from_le_bytes(entry[32..40].try_into().ok()?)).ok()?;
+        let bytes = data.get(p_offset..p_offset.checked_add(p_filesz)?)?;
+        let nul = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(bytes.len());
+        return match bytes.get(..nul)? {
+            b"/lib64/ld-linux-x86-64.so.2" => Some("/lib64/ld-linux-x86-64.so.2"),
+            b"/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" => {
+                Some("/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2")
+            }
+            _ => None,
+        };
     }
-    true
+    None
 }
 
 fn make_executable(path: &Path) -> Result<(), String> {
@@ -520,7 +516,7 @@ impl Drop for BuildLock {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_static_x86_64_elf, set_config_value};
+    use super::{is_dynamic_glibc_x86_64_elf, set_config_value};
 
     #[test]
     fn config_values_replace_disabled_symbols() {
@@ -532,6 +528,6 @@ mod tests {
 
     #[test]
     fn rejects_non_elf_data() {
-        assert!(!is_static_x86_64_elf(b"not an ELF"));
+        assert!(!is_dynamic_glibc_x86_64_elf(b"not an ELF"));
     }
 }
