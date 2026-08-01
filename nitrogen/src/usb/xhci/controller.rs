@@ -146,6 +146,7 @@ impl XhciContext {
     pub fn init(&mut self) -> Result<(), crate::DriverError> {
         log::info!("xHCI: hci_version=0x{:04X}", self.registers.cap.hci_version);
         log::info!("xHCI: setup-stage TRT mapping active (IN=3, OUT=2)");
+        log::info!("xHCI: output-context DMA preflush active");
 
         if !self.health.is_device_present() {
             log::error!("xHCI: device gone before init");
