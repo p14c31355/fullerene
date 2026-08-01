@@ -58,9 +58,9 @@ impl XhciContext {
             let trt = if data_len == 0 {
                 0
             } else if is_in {
-                2 << 16
-            } else {
                 3 << 16
+            } else {
+                2 << 16
             };
             let mut s_trb = Trb::new(trb_type::SETUP_STAGE, slot.ep0_ring.cycle)
                 .with_length(8)
