@@ -18,10 +18,10 @@ pub mod trb_type {
     pub const STATUS_STAGE: u8 = 4;
     pub const LINK: u8 = 6;
     pub const ENABLE_SLOT: u8 = 9;
-    pub const ADDRESS_DEVICE: u8 = 10;
-    pub const CONFIGURE_ENDPOINT: u8 = 11;
-    pub const EVALUATE_CONTEXT: u8 = 12;
-    pub const DISABLE_SLOT: u8 = 13;
+    pub const DISABLE_SLOT: u8 = 10;
+    pub const ADDRESS_DEVICE: u8 = 11;
+    pub const CONFIGURE_ENDPOINT: u8 = 12;
+    pub const EVALUATE_CONTEXT: u8 = 13;
     pub const RESET_ENDPOINT: u8 = 14;
     pub const STOP_ENDPOINT: u8 = 15;
     pub const SET_TR_DEQUEUE: u8 = 16;
@@ -328,6 +328,15 @@ mod tests {
         let trb = Trb::new(trb_type::NORMAL, 1);
         assert_eq!(trb.flags & trb_flag::CYCLE, 1);
         assert_eq!(trb.trb_type(), trb_type::NORMAL);
+    }
+
+    #[test]
+    fn test_command_trb_type_values() {
+        assert_eq!(trb_type::ENABLE_SLOT, 9);
+        assert_eq!(trb_type::DISABLE_SLOT, 10);
+        assert_eq!(trb_type::ADDRESS_DEVICE, 11);
+        assert_eq!(trb_type::CONFIGURE_ENDPOINT, 12);
+        assert_eq!(trb_type::EVALUATE_CONTEXT, 13);
     }
 
     #[test]
