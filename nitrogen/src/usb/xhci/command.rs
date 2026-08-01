@@ -1,7 +1,7 @@
 //! xHCI command-ring submission and device-slot configuration.
 
 use super::context::XhciContext;
-use super::interrupt::wait_event_type;
+use super::interrupt::wait_command_completion;
 use super::ring::{COMP_SUCCESS, Ring, Trb, trb_type};
 
 impl XhciContext {
@@ -175,11 +175,11 @@ impl XhciContext {
         self.rings.command.enqueue(trb);
         crate::mmio::write_barrier();
         self.registers.doorbell.ring(0, 0);
-        let event = match wait_event_type(
+        let event = match wait_command_completion(
             &mut self.rings.event,
             &self.registers.runtime,
             5_000_000,
-            trb_type::COMMAND_COMPLETION_EVENT,
+            command_phys,
         ) {
             Ok(event) => event,
             Err(error) => {
@@ -215,10 +215,12 @@ impl XhciContext {
             return Err(crate::DriverError::Protocol);
         }
         log::info!(
-            "xHCI: command complete type={} slot={} completion={} flags={:#010x}",
+            "xHCI: command complete type={} slot={} completion={} cmd_phys={:#x} event_cmd={:#x} flags={:#010x}",
             command_type,
             (event.flags >> 24) & 0xFF,
             event.completion_code(),
+            command_phys,
+            u64::from_le_bytes(event.params) & !0xF,
             event.flags,
         );
         Ok(event.flags)
