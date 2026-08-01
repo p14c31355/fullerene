@@ -88,6 +88,10 @@ pub struct DeviceContext {
 impl DeviceContext {
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
         let (virt, phys) = dma::alloc_dma_page(ctx)?;
+        // The xHC writes the output context after Address Device.  Publish
+        // the freshly zeroed page so dirty CPU cache lines cannot overwrite
+        // those device writes later.
+        dma::flush_range(virt as *const u8, 4096);
         Some((virt as *mut Self, phys))
     }
 }
@@ -130,6 +134,7 @@ pub struct InputContext {
 impl InputContext {
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
         let (virt, phys) = dma::alloc_dma_page(ctx)?;
+        dma::flush_range(virt as *const u8, 4096);
         Some((virt as *mut Self, phys))
     }
 
