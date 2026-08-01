@@ -105,6 +105,7 @@ pub const SYS_MKDIRAT: u64 = 258;
 pub const SYS_NEWFSTATAT: u64 = 262;
 pub const SYS_UNLINKAT: u64 = 263;
 pub const SYS_RENAMEAT: u64 = 264;
+pub const SYS_RENAMEAT2: u64 = 316;
 pub const SYS_READLINKAT: u64 = 267;
 pub const SYS_FACCESSAT: u64 = 269;
 pub const SYS_SET_ROBUST_LIST: u64 = 273;

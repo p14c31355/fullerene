@@ -18,11 +18,13 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(linux_musl_smoke)");
     println!("cargo::rustc-check-cfg=cfg(have_busybox)");
     println!("cargo::rustc-check-cfg=cfg(linux_busybox_smoke)");
+    println!("cargo::rustc-check-cfg=cfg(linux_busybox_smoke_qemu_exit)");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
     println!("cargo:rerun-if-env-changed=FULLERENE_LINUX_MUSL_SMOKE");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_CC");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_SMOKE");
+    println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT");
     println!(
         "cargo:rerun-if-changed={}",
         manifest_dir
@@ -45,6 +47,9 @@ fn main() {
             "FULLERENE_BUSYBOX_SMOKE requires a static BusyBox; set FULLERENE_BUSYBOX"
         );
         println!("cargo:rustc-cfg=linux_busybox_smoke");
+        if env::var_os("FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT").is_some() {
+            println!("cargo:rustc-cfg=linux_busybox_smoke_qemu_exit");
+        }
     }
 
     // ── Propagate .driverignore cfg flags from Nitrogen ──────────

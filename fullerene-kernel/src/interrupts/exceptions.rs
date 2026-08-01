@@ -325,6 +325,24 @@ pub extern "x86-interrupt" fn page_fault_handler(
     let is_write = error_code.intersects(PageFaultErrorCode::CAUSED_BY_WRITE);
     let is_user = error_code.intersects(PageFaultErrorCode::USER_MODE);
 
+    let cow_recovered = if is_present && is_write {
+        unsafe {
+            crate::linux::process::force_user_page_writable(
+                x86_64::registers::control::Cr3::read().0.start_address(),
+                fault_addr.as_u64(),
+            )
+        }
+    } else {
+        false
+    };
+    if cow_recovered {
+        unsafe {
+            let (root, flags) = x86_64::registers::control::Cr3::read();
+            x86_64::registers::control::Cr3::write(root, flags);
+        }
+        return;
+    }
+
     if !is_user {
         if !is_present
             && crate::memory_management::try_map_kernel_heap_extension_page(
@@ -340,24 +358,6 @@ pub extern "x86-interrupt" fn page_fault_handler(
         raw_log!("  Fault addr: {:#x}\n", fault_addr.as_u64());
         kernel_fault_halt(&frame, "Page Fault", "kernel PF");
     } else {
-        // Fork currently shares user frames and page tables without a full
-        // COW implementation. A write-protection fault on a present user
-        // page is therefore promoted lazily and retried at the faulting RIP.
-        if is_present && is_write {
-            let (root, current_flags) = x86_64::registers::control::Cr3::read();
-            unsafe {
-                crate::linux::process::force_user_page_writable(
-                    root.start_address(),
-                    fault_addr.as_u64(),
-                );
-                // Flush the complete user TLB after changing a shared
-                // page-table branch. This is stronger than INVLPG here:
-                // forked address spaces may have inherited a cached
-                // translation from the parent.
-                x86_64::registers::control::Cr3::write(root, current_flags);
-            }
-            return;
-        }
         raw_log!(
             "PF @ {:#x}: {} {} (user)\n",
             fault_addr.as_u64(),

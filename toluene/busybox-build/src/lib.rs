@@ -12,6 +12,10 @@ use std::time::Duration;
 
 const SOURCE_MARKER_SUFFIX: &str = ".source-revision";
 const LOCK_SUFFIX: &str = ".lock";
+// Bump when configure_for_fullerene changes. The staged output must not reuse
+// a binary built with an older feature configuration merely because the
+// BusyBox source revision stayed the same.
+const BUILD_CONFIG_REVISION: &str = "fullerene-busybox-config-v3";
 
 /// Applets covered by the Fullerene Linux personality contract.
 ///
@@ -98,8 +102,9 @@ pub struct BuildOptions {
 /// Build, validate, and stage a static x86_64 BusyBox binary.
 ///
 /// A validated output is reused when its marker matches the checked-out
-/// BusyBox revision. The lock protects the shared staged output while each
-/// caller gets its own out-of-tree build directory.
+/// BusyBox revision and Fullerene build configuration. The lock protects the
+/// shared staged output while each caller gets its own out-of-tree build
+/// directory.
 pub fn build(options: &BuildOptions) -> Result<(), String> {
     if let Some(parent) = options.output.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -211,11 +216,7 @@ pub fn build(options: &BuildOptions) -> Result<(), String> {
         )
     })?;
     make_executable(&options.output)?;
-    fs::write(
-        &marker,
-        source_revision(&options.source).unwrap_or_default(),
-    )
-    .map_err(|error| {
+    fs::write(&marker, build_marker(&options.source).unwrap_or_default()).map_err(|error| {
         format!(
             "cannot write BusyBox source marker {}: {error}",
             marker.display()
@@ -237,16 +238,20 @@ fn source_marker_path(output: &Path) -> PathBuf {
     PathBuf::from(format!("{}{}", output.display(), SOURCE_MARKER_SUFFIX))
 }
 
+fn build_marker(source: &Path) -> Option<String> {
+    source_revision(source).map(|revision| format!("{revision}\n{BUILD_CONFIG_REVISION}"))
+}
+
 fn output_is_current(output: &Path, marker: &Path, source: &Path) -> bool {
     let Ok(data) = fs::read(output) else {
         return false;
     };
-    let Some(revision) = source_revision(source) else {
+    let Some(expected_marker) = build_marker(source) else {
         return false;
     };
     is_static_x86_64_elf(&data)
         && fs::read_to_string(marker)
-            .map(|stored| stored.trim() == revision)
+            .map(|stored| stored.trim() == expected_marker.trim())
             .unwrap_or(false)
         && validate_fullerene_busybox(output).is_ok()
 }
@@ -367,6 +372,11 @@ fn configure_for_fullerene(path: &Path) -> Result<(), String> {
         ("CONFIG_FEATURE_EDITING", "y"),
         ("CONFIG_FEATURE_TAB_COMPLETION", "y"),
         ("CONFIG_BUSYBOX_EXEC_PATH", "\"/bin/busybox\""),
+        // The tar applet is part of the contract, so its normal archive
+        // creation path must be present instead of only the dispatcher/help
+        // entry.
+        ("CONFIG_FEATURE_TAR_LONG_OPTIONS", "y"),
+        ("CONFIG_FEATURE_TAR_CREATE", "y"),
     ] {
         set_config_value(&mut config, key, value);
     }

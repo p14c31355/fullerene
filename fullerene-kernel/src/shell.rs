@@ -1557,6 +1557,7 @@ pub fn busybox_smoke() {
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] PASS: all bundled applets ran, exit=0, shell resumed\n"
         ));
+        #[cfg(linux_busybox_smoke_qemu_exit)]
         unsafe {
             x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x11);
         }

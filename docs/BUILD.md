@@ -236,6 +236,23 @@ through the bundled BusyBox shell's standalone applet dispatch. QEMU is
 accepted only with the smoke debug-exit status after the success marker, exit
 status 0, terminal cleanup, and shell resumption.
 
+For the corresponding real-hardware check, build the same smoke image without
+launching QEMU:
+
+```bash
+FULLERENE_BUSYBOX_SMOKE=1 \
+  cargo run -p flasks -- --iso-only
+```
+
+Boot the resulting `fullerene.iso` on the target UEFI machine and keep the
+serial log or Klog Live open. Accept the run only after seeing
+`[busybox-smoke] PASS: all bundled applets ran, exit=0, shell resumed` and
+the BusyBox terminal-owner exit marker with `code=0 terminal closed`. This
+uses the same embedded binary, contract count, and 57-command script as the
+strict QEMU run. The QEMU-only `FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT` flag is
+injected automatically by Flasks for this QEMU path. It is omitted for
+hardware, so the physical image never writes to the `isa-debug-exit` port.
+
 To debug:
 - QEMU logs are written to `qemu_log.txt` (interrupts and other debug info).
 - Use `RUST_LOG=debug cargo run --bin flasks` for more verbose output.

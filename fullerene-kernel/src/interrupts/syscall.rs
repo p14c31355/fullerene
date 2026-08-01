@@ -20,12 +20,59 @@ struct SyscallEntryState {
     kernel_stack_top: u64,
     user_rsp: u64,
     syscall_number: u64,
+    user_rip: u64,
+    user_rflags: u64,
+    user_rbx: u64,
+    user_rcx: u64,
+    user_rdx: u64,
+    user_rsi: u64,
+    user_rdi: u64,
+    user_rbp: u64,
+    user_r8: u64,
+    user_r9: u64,
+    user_r10: u64,
+    user_r11: u64,
+    user_r12: u64,
+    user_r13: u64,
+    user_r14: u64,
+    user_r15: u64,
+    return_override: u64,
+    return_rip: u64,
+    return_rsp: u64,
+    return_rflags: u64,
 }
+
+const _: () = {
+    assert!(core::mem::offset_of!(SyscallEntryState, return_override) == 152);
+    assert!(core::mem::offset_of!(SyscallEntryState, return_rip) == 160);
+    assert!(core::mem::offset_of!(SyscallEntryState, return_rsp) == 168);
+    assert!(core::mem::offset_of!(SyscallEntryState, return_rflags) == 176);
+};
 
 static mut SYSCALL_ENTRY_STATE: SyscallEntryState = SyscallEntryState {
     kernel_stack_top: 0,
     user_rsp: 0,
     syscall_number: 0,
+    user_rip: 0,
+    user_rflags: 0,
+    user_rbx: 0,
+    user_rcx: 0,
+    user_rdx: 0,
+    user_rsi: 0,
+    user_rdi: 0,
+    user_rbp: 0,
+    user_r8: 0,
+    user_r9: 0,
+    user_r10: 0,
+    user_r11: 0,
+    user_r12: 0,
+    user_r13: 0,
+    user_r14: 0,
+    user_r15: 0,
+    return_override: 0,
+    return_rip: 0,
+    return_rsp: 0,
+    return_rflags: 0,
 };
 
 /// Initialize the per-CPU SYSCALL entry state.
@@ -81,6 +128,53 @@ pub fn prepare_kernel_continuation() {
     KernelGsBase::write(VirtAddr::new(0));
 }
 
+/// Return the user return frame for the syscall currently being dispatched.
+///
+/// This is consumed by Linux `clone`: a child created from a process that has
+/// already yielded cannot reuse the parent's original first-entry context.
+/// The syscall entry state is single-CPU state and is valid until the current
+/// syscall handler returns or switches away from this task.
+pub fn current_user_return_context() -> (crate::process::GeneralRegisters, u64, u64) {
+    unsafe {
+        (
+            crate::process::GeneralRegisters {
+                rax: 0,
+                rbx: SYSCALL_ENTRY_STATE.user_rbx,
+                // SYSRET clobbers RCX/R11; the child must start with a
+                // deterministic value for these syscall-clobbered registers.
+                rcx: 0,
+                rdx: SYSCALL_ENTRY_STATE.user_rdx,
+                rsi: SYSCALL_ENTRY_STATE.user_rsi,
+                rdi: SYSCALL_ENTRY_STATE.user_rdi,
+                rbp: SYSCALL_ENTRY_STATE.user_rbp,
+                rsp: SYSCALL_ENTRY_STATE.user_rsp,
+                r8: SYSCALL_ENTRY_STATE.user_r8,
+                r9: SYSCALL_ENTRY_STATE.user_r9,
+                r10: SYSCALL_ENTRY_STATE.user_r10,
+                r11: 0,
+                r12: SYSCALL_ENTRY_STATE.user_r12,
+                r13: SYSCALL_ENTRY_STATE.user_r13,
+                r14: SYSCALL_ENTRY_STATE.user_r14,
+                r15: SYSCALL_ENTRY_STATE.user_r15,
+            },
+            SYSCALL_ENTRY_STATE.user_rip,
+            SYSCALL_ENTRY_STATE.user_rflags,
+        )
+    }
+}
+
+/// Replace the return frame for a successful Linux execve. The current
+/// syscall must return directly into the newly loaded image; returning to the
+/// old libc call would use a stack that execve has just replaced.
+pub fn override_user_return_context(rip: u64, rsp: u64, rflags: u64) {
+    unsafe {
+        SYSCALL_ENTRY_STATE.return_rip = rip;
+        SYSCALL_ENTRY_STATE.return_rsp = rsp;
+        SYSCALL_ENTRY_STATE.return_rflags = rflags;
+        SYSCALL_ENTRY_STATE.return_override = 1;
+    }
+}
+
 /// System call entry point (naked function for manual assembly handling)
 #[unsafe(naked)]
 pub extern "C" fn syscall_entry() {
@@ -90,6 +184,22 @@ pub extern "C" fn syscall_entry() {
         "swapgs",
         "mov gs:[16], rax",
         "mov gs:[8], rsp",
+        "mov gs:[24], rcx",
+        "mov gs:[32], r11",
+        "mov gs:[40], rbx",
+        "mov gs:[48], rcx",
+        "mov gs:[56], rdx",
+        "mov gs:[64], rsi",
+        "mov gs:[72], rdi",
+        "mov gs:[80], rbp",
+        "mov gs:[88], r8",
+        "mov gs:[96], r9",
+        "mov gs:[104], r10",
+        "mov gs:[112], r11",
+        "mov gs:[120], r12",
+        "mov gs:[128], r13",
+        "mov gs:[136], r14",
+        "mov gs:[144], r15",
         "mov rsp, gs:[0]",
         // Keep the process CR3 active. Process page tables share the kernel
         // half, including this stack and the kernel heap, while retaining the
@@ -130,9 +240,34 @@ pub extern "C" fn syscall_entry() {
         "pop rdi",
         "pop r11",
         "pop rcx",
+        "cmp qword ptr gs:[152], 0",
+        "jne 1f",
         "pop qword ptr gs:[8]",
         // RAX remains the syscall result.
         "mov rsp, gs:[8]",
+        "swapgs",
+        "sysretq",
+        "1:",
+        "add rsp, 8",
+        // execve starts a fresh image; do not leak the old syscall caller's
+        // register image into its process-entry ABI.
+        "xor eax, eax",
+        "xor ebx, ebx",
+        "xor edx, edx",
+        "xor esi, esi",
+        "xor edi, edi",
+        "xor ebp, ebp",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
+        "xor r12d, r12d",
+        "xor r13d, r13d",
+        "xor r14d, r14d",
+        "xor r15d, r15d",
+        "mov rcx, gs:[160]",
+        "mov rsp, gs:[168]",
+        "mov r11, gs:[176]",
+        "mov qword ptr gs:[152], 0",
         "swapgs",
         "sysretq"
     );

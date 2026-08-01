@@ -38,7 +38,29 @@ pub(crate) unsafe fn force_user_page_writable(root: PhysAddr, virtual_address: u
             if !flags.contains(PageTableFlags::PRESENT) {
                 return false;
             }
-            entry.set_flags(flags | PageTableFlags::WRITABLE);
+            if level == 3 && flags.contains(PageTableFlags::BIT_9) {
+                let source = entry.addr();
+                let frame_alloc =
+                    unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+                let Some(frame) = X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) else {
+                    return false;
+                };
+                let source_va =
+                    petroleum::common::memory::physical_to_virtual(source.as_u64() as usize)
+                        as *const u8;
+                let dest_va = petroleum::common::memory::physical_to_virtual(
+                    frame.start_address().as_u64() as usize,
+                ) as *mut u8;
+                unsafe {
+                    core::ptr::copy_nonoverlapping(source_va, dest_va, 4096);
+                }
+                let mut private_flags = flags;
+                private_flags.remove(PageTableFlags::BIT_9);
+                private_flags.insert(PageTableFlags::WRITABLE);
+                entry.set_addr(frame.start_address(), private_flags);
+            } else if level == 3 {
+                return false;
+            }
             (flags, entry.addr())
         };
         if flags.contains(PageTableFlags::HUGE_PAGE) || level == 3 {
@@ -57,6 +79,150 @@ pub(crate) unsafe fn force_user_page_writable(root: PhysAddr, virtual_address: u
         };
     }
     true
+}
+
+/// Give a forked child private copies of every writable user leaf.
+///
+/// The read-only image remains shared, while writable data, TLS, brk reserve,
+/// and stack pages are copied before the child can run. This is deliberately
+/// conservative until shared-leaf lifetime accounting is available in the
+/// process page-table owner.
+unsafe fn copy_child_writable_user_leaves(
+    root: PhysAddr,
+    ranges: &[(u64, u64); 2],
+) -> Result<(), ()> {
+    unsafe fn walk(
+        table: *mut PageTable,
+        level: usize,
+        virtual_base: u64,
+        ranges: &[(u64, u64); 2],
+        frame_alloc: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
+    ) -> Result<(), ()> {
+        let entry_count = if level == 4 { 256 } else { 512 };
+        for index in 0..entry_count {
+            let entry = unsafe { &mut (&mut *table)[index] };
+            let flags = entry.flags();
+            if !flags.contains(PageTableFlags::PRESENT) {
+                continue;
+            }
+            let page_base = virtual_base | ((index as u64) << ((level - 1) * 9 + 12));
+            if level > 1 && !flags.contains(PageTableFlags::HUGE_PAGE) {
+                let offset = x86_64::VirtAddr::new(
+                    petroleum::common::memory::get_physical_memory_offset() as u64,
+                );
+                unsafe {
+                    walk(
+                        (offset + entry.addr().as_u64()).as_mut_ptr::<PageTable>(),
+                        level - 1,
+                        page_base,
+                        ranges,
+                        frame_alloc,
+                    )?;
+                }
+                continue;
+            }
+            if level != 1
+                || !flags.contains(PageTableFlags::WRITABLE)
+                || !ranges
+                    .iter()
+                    .any(|(start, end)| page_base >= *start && page_base < *end)
+            {
+                continue;
+            }
+
+            let Some(frame) = X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) else {
+                return Err(());
+            };
+            let source =
+                petroleum::common::memory::physical_to_virtual(entry.addr().as_u64() as usize)
+                    as *const u8;
+            let destination = petroleum::common::memory::physical_to_virtual(
+                frame.start_address().as_u64() as usize,
+            ) as *mut u8;
+            unsafe {
+                core::ptr::copy_nonoverlapping(source, destination, 4096);
+            }
+            entry.set_addr(frame.start_address(), flags);
+        }
+        Ok(())
+    }
+
+    let offset =
+        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+    unsafe {
+        walk(
+            (offset + root.as_u64()).as_mut_ptr::<PageTable>(),
+            4,
+            0,
+            ranges,
+            frame_alloc,
+        )
+    }
+}
+
+unsafe fn user_leaf_info(root: PhysAddr, virtual_address: u64) -> (u64, u64) {
+    let offset =
+        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let mut table = unsafe { &mut *(offset + root.as_u64()).as_mut_ptr::<PageTable>() };
+    let address = x86_64::VirtAddr::new(virtual_address);
+    for (level, index) in [
+        address.p4_index(),
+        address.p3_index(),
+        address.p2_index(),
+        address.p1_index(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let entry = &mut table[index];
+        let flags = entry.flags();
+        if !flags.contains(PageTableFlags::PRESENT) {
+            return (0, flags.bits());
+        }
+        if level == 3 || flags.contains(PageTableFlags::HUGE_PAGE) {
+            return (entry.addr().as_u64(), flags.bits());
+        }
+        table = unsafe { &mut *(offset + entry.addr().as_u64()).as_mut_ptr::<PageTable>() };
+    }
+    (0, 0)
+}
+
+/// Replace a leaf in the current process page-table tree without freeing the
+/// old frame. Forked Linux processes share old leaves with their parent until
+/// execve, so freeing an old child mapping here would invalidate the parent.
+unsafe fn replace_user_leaf_mapping(
+    root: PhysAddr,
+    virtual_address: u64,
+    frame: PhysAddr,
+    flags: PageTableFlags,
+) -> bool {
+    let offset =
+        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let mut table = unsafe { &mut *(offset + root.as_u64()).as_mut_ptr::<PageTable>() };
+    let address = x86_64::VirtAddr::new(virtual_address);
+    for (level, index) in [
+        address.p4_index(),
+        address.p3_index(),
+        address.p2_index(),
+        address.p1_index(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let entry = &mut table[index];
+        if !entry.flags().contains(PageTableFlags::PRESENT)
+            || entry.flags().contains(PageTableFlags::HUGE_PAGE)
+        {
+            return false;
+        }
+        if level == 3 {
+            entry.set_addr(frame, flags);
+            return true;
+        }
+        table = unsafe { &mut *(offset + entry.addr().as_u64()).as_mut_ptr::<PageTable>() };
+    }
+    false
 }
 
 /// Detach the page-table branches covering a small user range before execve
@@ -125,37 +291,22 @@ fn make_user_range_private(start: u64, end: u64) -> Result<(), i32> {
 }
 
 fn replace_user_range_with_zeroed_pages(start: u64, end: u64) -> Result<(), i32> {
-    let offset =
-        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
     let (root_frame, _) = Cr3::read();
-    let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
-    let flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::USER_ACCESSIBLE
-        | PageTableFlags::NO_EXECUTE;
-
     let mut address = start;
     while address < end {
-        let virt = x86_64::VirtAddr::new(address);
-        let frame = X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc).ok_or(ENOMEM)?;
+        let (frame, flags) = unsafe { user_leaf_info(root_frame.start_address(), address) };
+        if frame == 0
+            || flags & PageTableFlags::WRITABLE.bits() == 0
+            || flags & PageTableFlags::USER_ACCESSIBLE.bits() == 0
+        {
+            return Err(ENOMEM);
+        }
         unsafe {
             core::ptr::write_bytes(
-                petroleum::common::memory::physical_to_virtual(
-                    frame.start_address().as_u64() as usize
-                ) as *mut u8,
+                petroleum::common::memory::physical_to_virtual(frame as usize) as *mut u8,
                 0,
                 4096,
             );
-
-            let root =
-                &mut *(offset + root_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
-            let p3_frame = root[virt.p4_index()].frame().map_err(|_| ENOMEM)?;
-            let p3 = &mut *(offset + p3_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
-            let p2_frame = p3[virt.p3_index()].frame().map_err(|_| ENOMEM)?;
-            let p2 = &mut *(offset + p2_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
-            let p1_frame = p2[virt.p2_index()].frame().map_err(|_| ENOMEM)?;
-            let p1 = &mut *(offset + p1_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
-            p1[virt.p1_index()].set_addr(frame.start_address(), flags);
             core::arch::asm!(
                 "invlpg [{}]",
                 in(reg) address,
@@ -165,6 +316,33 @@ fn replace_user_range_with_zeroed_pages(start: u64, end: u64) -> Result<(), i32>
         address += 4096;
     }
     Ok(())
+}
+
+fn zero_existing_writable_user_range(start: u64, end: u64) {
+    let (root_frame, _) = Cr3::read();
+    let mut address = start & !4095;
+    let end = end.saturating_add(4095) & !4095;
+    while address < end {
+        let (frame, flags) = unsafe { user_leaf_info(root_frame.start_address(), address) };
+        if frame != 0
+            && flags & PageTableFlags::WRITABLE.bits() != 0
+            && flags & PageTableFlags::USER_ACCESSIBLE.bits() != 0
+        {
+            unsafe {
+                core::ptr::write_bytes(
+                    petroleum::common::memory::physical_to_virtual(frame as usize) as *mut u8,
+                    0,
+                    4096,
+                );
+                core::arch::asm!(
+                    "invlpg [{}]",
+                    in(reg) address,
+                    options(nostack, preserves_flags)
+                );
+            }
+        }
+        address = address.saturating_add(4096);
+    }
 }
 
 fn copy_user_vector(vector: u64) -> Result<Vec<alloc::string::String>, i32> {
@@ -266,6 +444,7 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     }
     if let Some(pid) = process::current_pid() {
+        rt.fd_table.close_all();
         crate::klog_fmt!("[LINUX-DIAG] exit pid={} code={} enter\n", pid.0, code);
         if terminal_owner_exit {
             crate::klog_fmt!(
@@ -386,6 +565,23 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let cloned_frame = x86_64::structures::paging::PhysFrame::containing_address(
         x86_64::PhysAddr::new(cloned_table as u64),
     );
+    let (user_registers, user_rip, user_rflags) =
+        crate::interrupts::syscall::current_user_return_context();
+
+    // The recursive clone shares user leaf frames. Make the child's writable
+    // user image private before it can resume, so stack/TLS/data writes cannot
+    // corrupt the parent while the shell waits for the child.
+    unsafe {
+        let stack_top = 0x7fff_ffff_f000u64;
+        let stack_page = stack_top - 2 * 1024 * 1024;
+        let private_ranges = [
+            (crate::loader::PROGRAM_LOAD_BASE, rt.program_break),
+            (stack_page, stack_top),
+        ];
+        if copy_child_writable_user_leaves(cloned_frame.start_address(), &private_ranges).is_err() {
+            return errno_code(ENOMEM);
+        }
+    }
 
     let mut child_pt =
         petroleum::page_table::process::ProcessPageTable::new_with_frame(cloned_frame);
@@ -433,7 +629,9 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         context: {
             let mut ctx = parent_ctx.clone();
             // Child returns 0 from clone
-            ctx.registers.rax = 0;
+            ctx.registers = user_registers;
+            ctx.rip = user_rip;
+            ctx.rflags = user_rflags;
             ctx.kernel_rsp = 0;
             ctx
         },
@@ -451,6 +649,8 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         resources: process::ProcessResources::new(),
         dispatch_mode: {
             let mut child_rt = super::runtime::LinuxRuntime::new(child_pid.0, rt.initial_break);
+            child_rt.program_break = rt.program_break;
+            child_rt.tls_ptr = rt.tls_ptr;
             child_rt.fd_table.entries = rt.fd_table.entries.clone();
             child_rt.terminal_window = rt.terminal_window;
             child_rt.terminal_owner_tid = rt.terminal_owner_tid;
@@ -495,16 +695,42 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // Read the binary file
     let data = match crate::fs::read_entire_file(&path) {
         Ok(d) => d,
-        Err(_) => return errno_code(ENOENT),
+        Err(error) => {
+            log::warn!("[EXEC-DIAG] read failed path={} error={:?}", path, error);
+            crate::klog_fmt!(
+                "[LINUX-DIAG] execve read failed path={} error={:?}\n",
+                path,
+                error
+            );
+            return errno_code(ENOENT);
+        }
     };
 
     // Parse ELF with goblin
     let elf = match goblin::elf::Elf::parse(&data) {
         Ok(e) => e,
-        Err(_) => return errno_code(ENOEXEC),
+        Err(error) => {
+            log::warn!("[EXEC-DIAG] parse failed path={} error={:?}", path, error);
+            crate::klog_fmt!(
+                "[LINUX-DIAG] execve parse failed path={} error={:?}\n",
+                path,
+                error
+            );
+            return errno_code(ENOEXEC);
+        }
     };
 
     if elf.header.e_type != goblin::elf::header::ET_EXEC {
+        log::warn!(
+            "[EXEC-DIAG] type failed path={} type={}",
+            path,
+            elf.header.e_type
+        );
+        crate::klog_fmt!(
+            "[LINUX-DIAG] execve type failed path={} type={}\n",
+            path,
+            elf.header.e_type
+        );
         return errno_code(ENOEXEC);
     }
 
@@ -534,41 +760,51 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             return errno_code(ENOMEM);
         };
         if let Err(error) = make_user_range_private(first_segment & !4095, last_segment & !4095) {
+            log::warn!(
+                "[EXEC-DIAG] segment privacy failed path={} error={}",
+                path,
+                error
+            );
+            crate::klog_fmt!(
+                "[LINUX-DIAG] execve segment privacy failed path={} error={}\n",
+                path,
+                error
+            );
             return errno_code(error);
         }
     }
 
     let current_pid = process::current_pid().unwrap_or(ProcessId(0));
 
-    // ── Unmap old process memory ──────────────────────────
-    // Clear the brk region
-    if rt.program_break > rt.initial_break {
-        let num_pages = ((rt.program_break - rt.initial_break + 4095) / 4096) as usize;
-        let _ = process::SCHEDULER.with_process(current_pid, |p| {
-            let Some(page_table) = p.page_table.as_mut() else {
-                return;
-            };
-            let page_table = &mut **page_table;
-            for i in 0..num_pages {
-                let page_vaddr = (rt.initial_break + (i as u64) * 4096) as usize;
-                if PageTableHelper::translate_address(page_table, page_vaddr).is_ok() {
-                    let _ = PageTableHelper::unmap_page(page_table, page_vaddr);
-                }
-            }
-        });
+    // ── Replace old process memory ────────────────────────
+    // The old brk/TLS pages are already private in the forked child, and the
+    // static BusyBox startup can access the inherited FS base before issuing
+    // its first arch_prctl. Keep those pages mapped until process exit while
+    // resetting the logical break below; replacing the ELF segments and
+    // zeroing the new stack is sufficient for exec isolation.
+    let old_break = rt.program_break;
+    if old_break > rt.initial_break {
+        zero_existing_writable_user_range(rt.initial_break, old_break);
     }
 
     // ── Load and map new segments ─────────────────────────
     let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+    let (root_frame, _) = Cr3::read();
     let mapped = process::SCHEDULER.with_process(current_pid, |p| {
         let Some(page_table) = p.page_table.as_mut() else {
             return Err(ENOMEM);
         };
         let page_table = &mut **page_table;
         for &(vaddr, file_off, file_sz, mem_sz, flags) in &segments {
-            let num_pages = ((mem_sz + 4095) / 4096) as usize;
-            for page_idx in 0..num_pages {
-                let page_vaddr = (vaddr + (page_idx as u64) * 4096) as usize;
+            if mem_sz == 0 {
+                continue;
+            }
+            let segment_end = vaddr.checked_add(mem_sz as u64).ok_or(ENOEXEC)?;
+            let file_end = vaddr.checked_add(file_sz as u64).ok_or(ENOEXEC)?;
+            let page_start = vaddr & !4095;
+            let page_end = segment_end.checked_add(4095).ok_or(ENOEXEC)? & !4095;
+            let mut page_vaddr = page_start;
+            while page_vaddr < page_end {
                 let Some(frame) = X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) else {
                     return Err(ENOMEM);
                 };
@@ -579,9 +815,29 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 if (flags & goblin::elf::program_header::PF_X) == 0 {
                     page_flags |= PageTableFlags::NO_EXECUTE;
                 }
-                if PageTableHelper::map_page(
+                let old_frame = unsafe { user_leaf_info(root_frame.start_address(), page_vaddr).0 };
+                if old_frame != 0 {
+                    let replaced = unsafe {
+                        replace_user_leaf_mapping(
+                            root_frame.start_address(),
+                            page_vaddr,
+                            frame.start_address(),
+                            page_flags,
+                        )
+                    };
+                    if !replaced {
+                        return Err(ENOMEM);
+                    }
+                    unsafe {
+                        core::arch::asm!(
+                            "invlpg [{}]",
+                            in(reg) page_vaddr,
+                            options(nostack, preserves_flags)
+                        );
+                    }
+                } else if PageTableHelper::map_page(
                     page_table,
-                    page_vaddr,
+                    page_vaddr as usize,
                     frame.start_address().as_u64() as usize,
                     page_flags,
                     frame_alloc,
@@ -595,53 +851,76 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 let frame_vaddr = petroleum::common::memory::physical_to_virtual(
                     frame.start_address().as_u64() as usize,
                 );
-                let page_offset = page_idx * 4096;
-                if page_offset < file_sz {
-                    let copy_len = (file_sz - page_offset).min(4096);
-                    let src_offset = file_off + page_offset;
-                    if src_offset + copy_len > data.len() {
+                unsafe {
+                    core::ptr::write_bytes(frame_vaddr as *mut u8, 0, 4096);
+                }
+                let copy_start = page_vaddr.max(vaddr);
+                let copy_end = (page_vaddr + 4096).min(file_end);
+                if copy_start < copy_end {
+                    let src_offset = file_off
+                        .checked_add((copy_start - vaddr) as usize)
+                        .ok_or(ENOEXEC)?;
+                    let copy_len = (copy_end - copy_start) as usize;
+                    if src_offset.checked_add(copy_len).ok_or(ENOEXEC)? > data.len() {
                         return Err(ENOEXEC);
                     }
+                    let destination_offset = (copy_start - page_vaddr) as usize;
                     unsafe {
                         core::ptr::copy_nonoverlapping(
                             data[src_offset..src_offset + copy_len].as_ptr(),
-                            frame_vaddr as *mut u8,
+                            (frame_vaddr as *mut u8).add(destination_offset),
                             copy_len,
                         );
-                        if copy_len < 4096 {
-                            core::ptr::write_bytes(
-                                (frame_vaddr as *mut u8).add(copy_len),
-                                0,
-                                4096 - copy_len,
-                            );
-                        }
-                    }
-                } else {
-                    unsafe {
-                        core::ptr::write_bytes(frame_vaddr as *mut u8, 0, 4096);
                     }
                 }
+                page_vaddr += 4096;
             }
         }
         Ok(())
     });
     if mapped != Some(Ok(())) {
+        log::warn!(
+            "[EXEC-DIAG] segment map failed path={} result={:?}",
+            path,
+            mapped
+        );
+        crate::klog_fmt!(
+            "[LINUX-DIAG] execve segment map failed path={} result={:?}\n",
+            path,
+            mapped
+        );
         return errno_code(mapped.unwrap_or(Err(ENOMEM)).unwrap_err());
     }
 
     // ── Allocate a stack ──────────────────────────────────
-    let stack_size: u64 = 2 * 1024 * 1024; // 2MB stack
+    let stack_size: u64 = 256 * 1024; // Keep execve aligned with the ELF loader stack.
     let stack_top_vaddr_default: u64 = 0x7ffffffff000;
     let stack_guard: u64 = 4096; // guard page
     let stack_base = stack_top_vaddr_default - stack_size - stack_guard;
 
     if let Err(error) = make_user_range_private(stack_base + stack_guard, stack_top_vaddr_default) {
+        log::warn!(
+            "[EXEC-DIAG] stack privacy failed path={} error={}",
+            path,
+            error
+        );
+        crate::klog_fmt!(
+            "[LINUX-DIAG] execve stack privacy failed path={} error={}\n",
+            path,
+            error
+        );
         return errno_code(error);
     }
 
     if let Err(error) =
         replace_user_range_with_zeroed_pages(stack_base + stack_guard, stack_top_vaddr_default)
     {
+        log::warn!("[EXEC-DIAG] stack map failed path={} error={}", path, error);
+        crate::klog_fmt!(
+            "[LINUX-DIAG] execve stack map failed path={} error={}\n",
+            path,
+            error
+        );
         return errno_code(error);
     }
 
@@ -697,6 +976,11 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         );
     });
 
+    unsafe {
+        x86_64::registers::model_specific::Msr::new(0xC000_0100).write(0);
+    }
+    crate::interrupts::syscall::override_user_return_context(entry, rsp, 0x2);
+
     0
 }
 
@@ -707,28 +991,35 @@ pub fn sys_wait4(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let _rusage = args[3];
 
     let target_pid = if pid <= 0 {
-        // Wait for any child
-        let current_pid = process::current_pid().unwrap_or(ProcessId(0));
-        let mut found = None;
-        process::SCHEDULER.with_list(|list| {
-            for (id, p) in list.iter() {
-                if p.parent_id == Some(current_pid) && p.state == process::ProcessState::Terminated
-                {
-                    found = Some(*id);
-                    break;
+        // Wait for any child. A blocking context switch resumes inside this
+        // syscall continuation, so re-scan after wakeup instead of returning
+        // zero and making the shell lose the completed child status.
+        loop {
+            let current_pid = process::current_pid().unwrap_or(ProcessId(0));
+            let mut found = None;
+            let mut has_child = false;
+            process::SCHEDULER.with_list(|list| {
+                for (id, p) in list.iter() {
+                    if p.parent_id != Some(current_pid) {
+                        continue;
+                    }
+                    has_child = true;
+                    if p.state == process::ProcessState::Terminated {
+                        found = Some(*id);
+                        break;
+                    }
                 }
+            });
+            if let Some(id) = found {
+                break id;
             }
-        });
-        match found {
-            Some(id) => id,
-            None => {
-                if (options & WNOHANG) != 0 {
-                    return 0; // No child exited yet
-                }
-                // Block waiting
-                process::block_current();
+            if !has_child {
+                return errno_code(ECHILD);
+            }
+            if (options & WNOHANG) != 0 {
                 return 0;
             }
+            process::block_current();
         }
     } else {
         ProcessId(pid as u64)
@@ -748,9 +1039,9 @@ pub fn sys_wait4(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         let _ = unsafe { copy_val_to_user(status, &status_val) };
     }
 
-    // Reap through the scheduler's owner path. Directly retaining from the
-    // Linux syscall would invalidate the round-robin index while a syscall
-    // continuation is suspended on another process's kernel stack.
+    // Reap through the scheduler owner path. Direct list mutation here would
+    // invalidate the round-robin index while a syscall continuation is
+    // suspended on another process's kernel stack.
     process::SCHEDULER.cleanup();
 
     target_pid.0

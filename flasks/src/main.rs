@@ -84,7 +84,7 @@ fn main() -> io::Result<()> {
     }
 
     if args.iso_only {
-        let iso_path = create_iso(&workspace_root, profile)?;
+        let iso_path = create_iso(&workspace_root, profile, false)?;
         println!("ISO rebuilt at {}", iso_path.display());
         return Ok(());
     }
@@ -139,6 +139,7 @@ fn build_uefi_package(
     package: &str,
     features: Option<&str>,
     profile: BuildProfile,
+    qemu_smoke_exit: bool,
 ) -> io::Result<()> {
     let mut args: Vec<&str> = vec![
         "+nightly",
@@ -155,10 +156,14 @@ fn build_uefi_package(
     if let Some(feats) = features {
         args.extend(["--features", feats]);
     }
-    let status = Command::new("cargo")
+    let mut cargo = Command::new("cargo");
+    cargo
         .current_dir(workspace_root)
-        .args(&args)
-        .status()?;
+        .env_remove("FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT");
+    if qemu_smoke_exit && env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some() {
+        cargo.env("FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT", "1");
+    }
+    let status = cargo.args(&args).status()?;
     if !status.success() {
         return Err(io::Error::other(format!("{} build failed", package)));
     }
@@ -178,9 +183,19 @@ menuentry "Fullerene OS" {
     .to_string()
 }
 
-fn create_iso(workspace_root: &PathBuf, profile: BuildProfile) -> io::Result<PathBuf> {
+fn create_iso(
+    workspace_root: &PathBuf,
+    profile: BuildProfile,
+    qemu_smoke_exit: bool,
+) -> io::Result<PathBuf> {
     // --- 1. Build fullerene-kernel (no_std) ---
-    build_uefi_package(workspace_root, "fullerene-kernel", None, profile)?;
+    build_uefi_package(
+        workspace_root,
+        "fullerene-kernel",
+        None,
+        profile,
+        qemu_smoke_exit,
+    )?;
 
     let target_dir = workspace_root
         .join("target")
@@ -255,7 +270,7 @@ fn create_iso_and_setup(
     workspace_root: &PathBuf,
     profile: BuildProfile,
 ) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
-    let iso_path = create_iso(workspace_root, profile)?;
+    let iso_path = create_iso(workspace_root, profile, true)?;
 
     let ovmf_fd_path = workspace_root
         .join("flasks")
