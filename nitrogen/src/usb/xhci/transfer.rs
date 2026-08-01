@@ -114,6 +114,13 @@ impl XhciContext {
         }
 
         match (res, actual) {
+            (Ok(_), transfer_actual) if data_len == 0 => {
+                if staging_phys != 0 {
+                    self.driver_ctx
+                        .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
+                }
+                Ok(transfer_actual.unwrap_or(0))
+            }
             (Ok(_), Some(actual)) => {
                 if staging_phys != 0 {
                     self.driver_ctx
@@ -124,13 +131,22 @@ impl XhciContext {
             (result, transfer_actual) => {
                 let completion = result.as_ref().ok().map(|event| event.completion_code());
                 let remaining = result.as_ref().ok().map(|event| event.remaining());
+                let event_slot = result.as_ref().ok().map(|event| (event.flags >> 24) & 0xFF);
+                let event_endpoint = result.as_ref().ok().map(|event| (event.flags >> 16) & 0x1F);
+                let event_trb = result
+                    .as_ref()
+                    .ok()
+                    .map(|event| u64::from_le_bytes(event.params));
                 log::warn!(
-                    "xHCI: control transfer failed slot={} request={:#04x} bmRequestType={:#04x} length={} completion={:?} remaining={:?} actual={:?} result={:?}",
+                    "xHCI: control transfer failed slot={} request={:#04x} bmRequestType={:#04x} length={} completion={:?} event_slot={:?} event_ep={:?} event_trb={:?} remaining={:?} actual={:?} result={:?}",
                     slot_id,
                     setup.b_request,
                     setup.bm_request_type,
                     data_len,
                     completion,
+                    event_slot,
+                    event_endpoint,
+                    event_trb,
                     remaining,
                     transfer_actual,
                     result.err(),

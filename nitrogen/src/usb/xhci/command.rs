@@ -41,6 +41,20 @@ impl XhciContext {
 
         if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
             in_ctx.setup_address_device(root_port, speed_id, ep0_ring_phys);
+            log::info!(
+                "xHCI: Address Device slot={} port={} speed={} in_ctx={:#x} add={:#x} slot0={:#010x} slot1={:#010x} ep0_1={:#010x} ep0_2={:#010x} ep0_3={:#010x} ep0_4={:#010x}",
+                slot_id,
+                root_port,
+                speed_id,
+                in_ctx_phys,
+                in_ctx.add_flags,
+                in_ctx.slot_ctx[0],
+                in_ctx.slot_ctx[1],
+                in_ctx.ep0_ctx()[1],
+                in_ctx.ep0_ctx()[2],
+                in_ctx.ep0_ctx()[3],
+                in_ctx.ep0_ctx()[4],
+            );
             crate::usb::dma::flush_range(
                 in_ctx as *const _ as *const u8,
                 core::mem::size_of::<super::device::InputContext>(),
@@ -52,6 +66,30 @@ impl XhciContext {
                 .with_data_ptr(in_ctx_phys)
                 .with_flags(slot_id << 24),
         )?;
+
+        let dev_ctx_phys = self
+            .device
+            .slots
+            .get(slot_id)
+            .ok_or(crate::DriverError::InvalidArgument)?
+            .dev_ctx_phys;
+        let dev_ctx = self.driver_ctx.phys_to_virt(dev_ctx_phys) as *const u32;
+        crate::mmio::cache_flush_range(dev_ctx as usize, 64);
+        let out_slot0 = unsafe { core::ptr::read_volatile(dev_ctx) };
+        let out_slot1 = unsafe { core::ptr::read_volatile(dev_ctx.add(1)) };
+        let out_ep0_0 = unsafe { core::ptr::read_volatile(dev_ctx.add(8)) };
+        let out_ep0_1 = unsafe { core::ptr::read_volatile(dev_ctx.add(9)) };
+        let out_ep0_2 = unsafe { core::ptr::read_volatile(dev_ctx.add(10)) };
+        log::info!(
+            "xHCI: Address Device output slot={} ctx={:#x} slot0={:#010x} slot1={:#010x} ep0_0={:#010x} ep0_1={:#010x} ep0_2={:#010x}",
+            slot_id,
+            dev_ctx_phys,
+            out_slot0,
+            out_slot1,
+            out_ep0_0,
+            out_ep0_1,
+            out_ep0_2,
+        );
 
         if let Some(slot) = self.device.slots.get_mut(slot_id) {
             slot.dev_addr = dev_addr;
@@ -147,8 +185,22 @@ impl XhciContext {
             }
         };
         if event.completion_code() != COMP_SUCCESS {
+            log::warn!(
+                "xHCI: command failed type={} slot={} completion={} flags={:#010x}",
+                command_type,
+                (event.flags >> 24) & 0xFF,
+                event.completion_code(),
+                event.flags,
+            );
             return Err(crate::DriverError::Protocol);
         }
+        log::info!(
+            "xHCI: command complete type={} slot={} completion={} flags={:#010x}",
+            command_type,
+            (event.flags >> 24) & 0xFF,
+            event.completion_code(),
+            event.flags,
+        );
         Ok(event.flags)
     }
 }
