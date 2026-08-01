@@ -145,6 +145,7 @@ impl XhciContext {
     /// initialise root-hub ports.
     pub fn init(&mut self) -> Result<(), crate::DriverError> {
         log::info!("xHCI: hci_version=0x{:04X}", self.registers.cap.hci_version);
+        log::info!("xHCI: setup-stage TRT mapping active (IN=3, OUT=2)");
 
         if !self.health.is_device_present() {
             log::error!("xHCI: device gone before init");
