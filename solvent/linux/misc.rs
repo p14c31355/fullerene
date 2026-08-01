@@ -226,6 +226,13 @@ linux_stub!(sys_getgid, 0);
 linux_stub!(sys_geteuid, 0);
 linux_stub!(sys_getegid, 0);
 
+/// Networking is outside the bundled BusyBox contract. Return a normal Linux
+/// ENOSYS result without an unknown-syscall warning when libc probes
+/// socket-based name-service support (for example from `whoami`).
+pub fn sys_socket(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+    errno_code(ENOSYS)
+}
+
 pub fn sys_umask(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let new_mask = args[0] as u32;
     let old = rt.umask;

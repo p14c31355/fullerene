@@ -67,6 +67,20 @@ pub fn prepare_user_entry() {
     ));
 }
 
+/// Restore the GS swap state for a task suspended inside `syscall_entry`.
+///
+/// A task that is entered through `iretq` starts with user GS active and the
+/// syscall state in `KERNEL_GS_BASE`.  A task resumed after its syscall-entry
+/// `swapgs`, however, is already in the kernel half of that exchange.  A raw
+/// context switch does not restore MSRs, so make that state explicit before
+/// returning to the suspended assembly continuation.
+pub fn prepare_kernel_continuation() {
+    GsBase::write(VirtAddr::new(
+        &raw const SYSCALL_ENTRY_STATE as *const _ as u64,
+    ));
+    KernelGsBase::write(VirtAddr::new(0));
+}
+
 /// System call entry point (naked function for manual assembly handling)
 #[unsafe(naked)]
 pub extern "C" fn syscall_entry() {

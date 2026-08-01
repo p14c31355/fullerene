@@ -84,22 +84,8 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if kernel_buf.is_empty() {
         return 0;
     }
-    #[cfg(linux_busybox_smoke)]
-    if count >= 65536 {
-        petroleum::serial::serial_log(format_args!(
-            "[BUSYBOX-READ] fd={} count={} before-vfs\n",
-            fd, count
-        ));
-    }
     match crate::contexts::vfs::read(desc.vfs_fd, &mut kernel_buf) {
         Ok(n) => {
-            #[cfg(linux_busybox_smoke)]
-            if count >= 65536 {
-                petroleum::serial::serial_log(format_args!(
-                    "[BUSYBOX-READ] fd={} n={} after-vfs\n",
-                    fd, n
-                ));
-            }
             if n == 0 {
                 return 0;
             }
@@ -479,7 +465,7 @@ fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), i32> {
         unused: [0; 3],
     };
 
-    unsafe { copy_val_to_user(statbuf, &stat) }.ok();
+    unsafe { copy_val_to_user(statbuf, &stat) }.map_err(|_| EFAULT)?;
     Ok(())
 }
 
@@ -507,6 +493,14 @@ pub fn sys_newfstatat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Ok(_) => 0,
         Err(e) => errno_code(e),
     }
+}
+
+/// BusyBox `touch` uses utimensat after creating/opening the target.  The VFS
+/// metadata layer currently exposes deterministic zero timestamps, so there
+/// is no timestamp state to update yet; acknowledge the valid operation
+/// instead of returning ENOSYS and leaving the file operation half-failed.
+pub fn sys_utimensat(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+    0
 }
 
 /// Internal stat info for a VFS fd.
@@ -537,26 +531,23 @@ pub fn sys_fstat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             st_blocks: 0,
             ..LinuxStat::zeroed()
         };
-        unsafe { copy_val_to_user(statbuf, &stat) }.ok();
-        return 0;
+        return if unsafe { copy_val_to_user(statbuf, &stat) }.is_ok() {
+            0
+        } else {
+            errno_code(EFAULT)
+        };
     }
     let desc = match rt.fd_table.get(fd) {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
     let info = fill_stat_from_fd(desc.vfs_fd);
-    // Get file size
-    let size = {
-        let mut buf = [0u8; 512];
-        let mut total = 0usize;
-        loop {
-            match crate::contexts::vfs::read(desc.vfs_fd, &mut buf) {
-                Ok(0) => break,
-                Ok(n) => total += n,
-                Err(_) => break,
-            }
-        }
-        total
+    // Query the size without consuming the descriptor.  Draining the file
+    // here used to mutate the caller's offset and made metadata calls unsafe
+    // for readers which immediately continued with read/seek operations.
+    let size = match crate::contexts::vfs::size(desc.vfs_fd) {
+        Ok(size) => size,
+        Err(error) => return fs_errno_result(&error),
     };
 
     let stat = LinuxStat {
@@ -573,8 +564,11 @@ pub fn sys_fstat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         st_blocks: (size as i64 + 511) / 512,
         ..LinuxStat::zeroed()
     };
-    unsafe { copy_val_to_user(statbuf, &stat) }.ok();
-    0
+    if unsafe { copy_val_to_user(statbuf, &stat) }.is_ok() {
+        0
+    } else {
+        errno_code(EFAULT)
+    }
 }
 
 pub fn sys_lseek(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {

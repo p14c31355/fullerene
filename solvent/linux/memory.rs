@@ -270,9 +270,12 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         let mut mapped_pages = 0usize;
         let mut page_flags =
             PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
-        if (prot & PROT_WRITE) != 0 {
-            page_flags |= PageTableFlags::WRITABLE;
-        }
+        // Forked Linux processes currently share user page-table branches.
+        // Retaining WRITABLE here prevents a loader's RELRO mprotect from
+        // turning a shared BusyBox data page into a protection-fault loop in
+        // the child. Full per-process COW will restore strict read-only
+        // enforcement once page-table branches are private.
+        page_flags |= PageTableFlags::WRITABLE;
         if (prot & PROT_EXEC) != 0 {
             page_flags.remove(PageTableFlags::NO_EXECUTE);
         }
@@ -401,9 +404,11 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let mut page_flags = PageTableFlags::USER_ACCESSIBLE;
     if prot != PROT_NONE {
         page_flags |= PageTableFlags::PRESENT;
-        if (prot & PROT_WRITE) != 0 {
-            page_flags |= PageTableFlags::WRITABLE;
-        }
+        // Fork currently shares user page-table branches. Keep present user
+        // mappings writable until private COW branches exist; otherwise a
+        // read-only RELRO mapping in one branch causes a protection-fault
+        // loop in another branch that inherited the same leaf tables.
+        page_flags |= PageTableFlags::WRITABLE;
         if (prot & PROT_EXEC) == 0 {
             page_flags |= PageTableFlags::NO_EXECUTE;
         }
@@ -471,78 +476,6 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     {
         return rt.program_break;
     }
-
-    let old_brk = rt.program_break;
-    let align = PAGE_SIZE;
-
-    if new_brk > old_brk {
-        let start_page = (old_brk + align - 1) & !(align - 1);
-        let end_page = (new_brk + align - 1) & !(align - 1);
-
-        if end_page > start_page {
-            let num_pages = ((end_page - start_page) / align) as usize;
-            let mapped = with_current_page_table(|page_table| {
-                let growth = end_page - start_page;
-                if tracked_range_overlaps(rt, start_page, growth)
-                    || range_is_mapped(page_table, start_page, growth)
-                {
-                    return false;
-                }
-
-                let frame_alloc =
-                    unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
-
-                for i in 0..num_pages {
-                    let page_vaddr = start_page + (i as u64) * align;
-                    let frame = match X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
-                        Some(frame) => frame,
-                        None => {
-                            for j in 0..i {
-                                let page = (start_page + (j as u64) * align) as usize;
-                                let _ = unmap_and_free(page_table, page);
-                            }
-                            return false;
-                        }
-                    };
-                    unsafe {
-                        core::ptr::write_bytes(
-                            petroleum::common::memory::physical_to_virtual(
-                                frame.start_address().as_u64() as usize,
-                            ) as *mut u8,
-                            0,
-                            PAGE_SIZE as usize,
-                        );
-                    }
-                    let page_flags = PageTableFlags::PRESENT
-                        | PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE
-                        | PageTableFlags::NO_EXECUTE;
-
-                    if page_table
-                        .map_page(
-                            page_vaddr as usize,
-                            frame.start_address().as_u64() as usize,
-                            page_flags,
-                            frame_alloc,
-                        )
-                        .is_err()
-                    {
-                        frame_alloc.free_frame(frame);
-                        for j in 0..i {
-                            let page = (start_page + (j as u64) * align) as usize;
-                            let _ = unmap_and_free(page_table, page);
-                        }
-                        return false;
-                    }
-                }
-                true
-            });
-            if !mapped {
-                return old_brk;
-            }
-        }
-    }
-    // Note: shrinking (new_brk < old_brk) is intentionally skipped for now
 
     rt.program_break = new_brk;
     new_brk

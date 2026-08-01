@@ -139,6 +139,11 @@ pub fn scheduler_loop() -> ! {
 
         SCHEDULER.update_vdso_all(uptime_us, wall_us);
 
+        // BusyBox smoke is a headless ABI test.  Keep the scheduler and Linux
+        // process path active, but do not run the desktop/event compositor in
+        // parallel with it: that path has its own hardware-facing locks and
+        // is outside the BusyBox contract being tested here.
+        #[cfg(not(linux_busybox_smoke))]
         gui::runtime_tick(SCHEDULER.current_tick());
 
         // Check if the user requested a shell launch (via AppGrid / menu).

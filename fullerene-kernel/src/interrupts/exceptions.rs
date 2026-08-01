@@ -344,12 +344,17 @@ pub extern "x86-interrupt" fn page_fault_handler(
         // COW implementation. A write-protection fault on a present user
         // page is therefore promoted lazily and retried at the faulting RIP.
         if is_present && is_write {
-            let (root, _) = x86_64::registers::control::Cr3::read();
+            let (root, current_flags) = x86_64::registers::control::Cr3::read();
             unsafe {
                 crate::linux::process::force_user_page_writable(
                     root.start_address(),
                     fault_addr.as_u64(),
                 );
+                // Flush the complete user TLB after changing a shared
+                // page-table branch. This is stronger than INVLPG here:
+                // forked address spaces may have inherited a cached
+                // translation from the parent.
+                x86_64::registers::control::Cr3::write(root, current_flags);
             }
             return;
         }

@@ -146,6 +146,7 @@ impl LinuxRuntime {
             SYS_CHMOD => linux_fs::sys_fchmod(self, args),
             SYS_FCHMOD => linux_fs::sys_fchmodat(self, args),
             SYS_CREAT => linux_fs::sys_creat(self, args),
+            SYS_UTIMENSAT => linux_fs::sys_utimensat(self, args),
 
             // Memory
             SYS_MMAP => linux_mem::sys_mmap(self, args),
@@ -209,6 +210,7 @@ impl LinuxRuntime {
             SYS_FSTATFS => linux_misc::sys_fstatfs(self, args),
             SYS_SCHED_GETAFFINITY => linux_misc::sys_sched_getaffinity(self, args),
             SYS_SCHED_SETAFFINITY => linux_misc::sys_sched_setaffinity(self, args),
+            SYS_SOCKET => linux_misc::sys_socket(self, args),
 
             _ => {
                 log::warn!("Linux syscall {} unknown, returning ENOSYS", syscall_no);

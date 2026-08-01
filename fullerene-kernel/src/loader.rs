@@ -25,6 +25,10 @@ pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user progra
 const PAGE_SIZE: u64 = 4096;
 const LINUX_STACK_SIZE: u64 = 256 * 1024;
 const LINUX_STACK_TOP: u64 = 0x0000_7fff_ffff_f000;
+// Keep the compatibility brk region resident.  Growing brk is metadata-only;
+// page-table mutation from the page-fault handler is deliberately avoided.
+// The Linux syscall layer still caps the logical range at 128 MiB.
+const LINUX_BRK_RESERVE_SIZE: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct LinuxImageLayout {
@@ -376,6 +380,29 @@ fn initialize_linux_stack(
     result
 }
 
+fn reserve_linux_brk(
+    page_table: &mut ProcessPageTable,
+    initial_break: u64,
+    changes: &mut Vec<PageChange>,
+) -> Result<(), LoadError> {
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::NO_EXECUTE;
+    let end = initial_break
+        .checked_add(LINUX_BRK_RESERVE_SIZE)
+        .ok_or(LoadError::InvalidFormat)?;
+    let mut address = initial_break;
+    while address < end {
+        if PageTableHelper::translate_address(page_table, address as usize).is_err() {
+            map_zeroed_page(page_table, address, flags)?;
+            changes.push(PageChange::New { address });
+        }
+        address += PAGE_SIZE;
+    }
+    Ok(())
+}
+
 fn splitmix64(mut value: u64) -> u64 {
     value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -647,7 +674,7 @@ fn load_program_inner(
 
     let load_result = process::SCHEDULER
         .with_process(pid, |p| {
-            let loaded = {
+            let mut loaded = {
                 let process_page_table = p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
                 crate::klog_fmt!("[LINUX-DIAG] segments begin pid={}\n", pid.0);
                 load_elf_segments(process_page_table, &elf, image_data)?
@@ -658,6 +685,22 @@ fn load_program_inner(
                 loaded.layout.initial_break
             );
             if is_linux {
+                let reserve_result = {
+                    let process_page_table =
+                        p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
+                    reserve_linux_brk(
+                        process_page_table,
+                        loaded.layout.initial_break,
+                        &mut loaded.changes,
+                    )
+                };
+                if let Err(error) = reserve_result {
+                    if let Some(process_page_table) = p.page_table.as_mut() {
+                        rollback_page_changes(process_page_table, &loaded.changes);
+                    }
+                    return Err(error);
+                }
+
                 let stack_result = {
                     let process_page_table =
                         p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;

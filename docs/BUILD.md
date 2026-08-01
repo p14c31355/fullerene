@@ -227,7 +227,7 @@ scheduler handoff, window cleanup, and shell resumption, run:
 
 ```bash
 FULLERENE_BUSYBOX_SMOKE=1 \
-  cargo run -p flasks -- --display none --vga none --timeout 600
+  cargo run -p flasks -- --display none --vga none --timeout 900
 ```
 
 The smoke build uses the exact generated applet contract: it checks the

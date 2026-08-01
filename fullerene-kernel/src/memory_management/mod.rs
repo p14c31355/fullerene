@@ -185,12 +185,11 @@ pub fn get_memory_manager() -> &'static Mutex<Option<UnifiedMemoryManager>> {
 
 /// Map one page from the statically reserved kernel-heap extension.
 ///
-/// This is intentionally a non-blocking, idle-context-only helper for the
-/// page-fault handler.  A heap extension can fault while `Heap::extend()` is
-/// writing its new free-list node; mapping the page and returning from the
-/// exception lets the CPU continue that instruction.  If a manager lock is
-/// already held, or if the current context is not the idle shell context, we
-/// refuse recovery rather than risking an exception-handler deadlock.
+/// This is intentionally a non-blocking helper for the page-fault handler. A
+/// heap extension can fault while `Heap::extend()` is writing its new
+/// free-list node; mapping the page and returning from the exception lets the
+/// CPU continue that instruction. If the manager lock is already held, refuse
+/// recovery rather than risking an exception-handler deadlock.
 pub fn try_map_kernel_heap_extension_page(address: usize) -> bool {
     if !crate::heap::is_reserved_extension_address(address) {
         return false;

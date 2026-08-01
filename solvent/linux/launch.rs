@@ -117,7 +117,8 @@ which >/tmp/busybox-which\n\
 whoami >/tmp/busybox-whoami\n\
 yes | head -n 1 >/tmp/busybox-yes\n\
 rm -rf /tmp/busybox-contract \"$tmp\" /tmp/busybox-input /tmp/busybox-arch /tmp/busybox-basename /tmp/busybox-cat /tmp/busybox-cksum /tmp/busybox-clear /tmp/busybox-cut /tmp/busybox-date /tmp/busybox-dd /tmp/busybox-dd-err /tmp/busybox-dirname /tmp/busybox-echo /tmp/busybox-env /tmp/busybox-expr /tmp/busybox-fold /tmp/busybox-head /tmp/busybox-hexdump /tmp/busybox-hostname /tmp/busybox-ls /tmp/busybox-md5 /tmp/busybox-mkdir /tmp/busybox-moved /tmp/busybox-od /tmp/busybox-path /tmp/busybox-printf /tmp/busybox-pwd /tmp/busybox-sed /tmp/busybox-seq /tmp/busybox-sha256 /tmp/busybox-sort /tmp/busybox-stat /tmp/busybox-tail /tmp/busybox.tar /tmp/busybox-tee /tmp/busybox-tee-out /tmp/busybox-touch /tmp/busybox-tr /tmp/busybox-tty /tmp/busybox-uname /tmp/busybox-uniq /tmp/busybox-uptime /tmp/busybox-wc /tmp/busybox-which /tmp/busybox-whoami /tmp/busybox-yes /tmp/busybox-help\n\
-echo Fullerene BusyBox all applets passed\n",
+echo Fullerene BusyBox all applets passed\n\
+exit 0\n",
         count = BUSYBOX_SMOKE_APPLET_COUNT
     )
 }
@@ -495,6 +496,7 @@ pub fn init_initramfs() {
 
     // Create a simple /etc/hostname
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");
+    let _ = crate::fs::write_entire_file("/etc/passwd", b"root:x:0:0:root:/root:/bin/sh\n");
 
     #[cfg(have_busybox)]
     {
