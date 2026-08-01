@@ -184,8 +184,13 @@ impl RtsxController {
     }
 
     fn data_path_for_card(card_type: SdCardType, preferred: DataPath) -> DataPath {
-        if card_type == SdCardType::Sdxc && preferred == DataPath::Sdma {
-            DataPath::HostPpbuf
+        if card_type == SdCardType::Sdxc && preferred != DataPath::Pio {
+            // The RTS5249 can leave the host-command engine stuck on SDXC
+            // cards. That path then times out and leaves the next PIO request
+            // with a dirty transfer state. Use the bounded PIO path from the
+            // beginning; it is slower, but remains reliable for filesystem
+            // metadata I/O.
+            DataPath::Pio
         } else {
             preferred
         }
@@ -948,7 +953,8 @@ impl RtsxController {
     }
 
     fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), crate::DriverError> {
-        let argument = self.card_address(lba)?;
+        let mut argument = self.card_address(lba)?;
+        let mut recovered = false;
         loop {
             match self.data_path {
                 DataPath::Sdma => {
@@ -974,18 +980,30 @@ impl RtsxController {
                         log::warn!("RTSX: {error}; falling back to bounded PPBUF PIO");
                     }
                 },
-                DataPath::Pio => return self.read_sector_pio(argument, buffer),
+                DataPath::Pio => match self.read_sector_pio(argument, buffer) {
+                    Ok(()) => return Ok(()),
+                    Err(error) if !recovered => {
+                        recovered = true;
+                        log::warn!("RTSX: SD PIO read failed ({error}); reinitializing card");
+                        self.stop_transfer();
+                        self.sd_card = None;
+                        self.init_sd_card()?;
+                        argument = self.card_address(lba)?;
+                    }
+                    Err(error) => return Err(error),
+                },
             }
         }
     }
 
     fn write_sector(&mut self, lba: u32, buffer: &[u8]) -> Result<(), crate::DriverError> {
-        let rca = self
+        let mut rca = self
             .sd_card
             .as_ref()
             .ok_or(crate::DriverError::NotReady)?
             .rca;
         let argument = self.card_address(lba)?;
+        let mut recovered = false;
         loop {
             self.command(CMD24_WRITE_SINGLE, argument, SD_RSP_R1)?;
             match self.data_path {
@@ -1010,10 +1028,22 @@ impl RtsxController {
                         log::warn!("RTSX: {error}; falling back to bounded PPBUF PIO");
                     }
                 },
-                DataPath::Pio => {
-                    self.write_sector_pio(buffer)?;
-                    break;
-                }
+                DataPath::Pio => match self.write_sector_pio(buffer) {
+                    Ok(()) => break,
+                    Err(error) if !recovered => {
+                        recovered = true;
+                        log::warn!("RTSX: SD PIO write failed ({error}); reinitializing card");
+                        self.stop_transfer();
+                        self.sd_card = None;
+                        self.init_sd_card()?;
+                        rca = self
+                            .sd_card
+                            .as_ref()
+                            .ok_or(crate::DriverError::NotReady)?
+                            .rca;
+                    }
+                    Err(error) => return Err(error),
+                },
             }
         }
         if crate::timing::poll_timeout_us(2_000_000, || {
@@ -1415,7 +1445,7 @@ mod tests {
     fn sdxc_avoids_sdma_data_path() {
         assert_eq!(
             RtsxController::data_path_for_card(SdCardType::Sdxc, DataPath::Sdma),
-            DataPath::HostPpbuf
+            DataPath::Pio
         );
         assert_eq!(
             RtsxController::data_path_for_card(SdCardType::Sdhc, DataPath::Sdma),
@@ -1423,6 +1453,10 @@ mod tests {
         );
         assert_eq!(
             RtsxController::data_path_for_card(SdCardType::Sdxc, DataPath::Pio),
+            DataPath::Pio
+        );
+        assert_eq!(
+            RtsxController::data_path_for_card(SdCardType::Sdxc, DataPath::HostPpbuf),
             DataPath::Pio
         );
     }

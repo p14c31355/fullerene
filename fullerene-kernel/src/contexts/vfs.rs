@@ -344,6 +344,16 @@ impl VfsContext {
             {
                 let (fs, remaining) = vfs.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
                 if !fs.exists(&remaining) {
+                    // FileSystem::create() predates typed creation errors and
+                    // returns only Option, which used to turn a missing
+                    // parent directory into the misleading PermissionDenied.
+                    let parent = remaining
+                        .rsplit_once('/')
+                        .map(|(parent, _)| if parent.is_empty() { "/" } else { parent })
+                        .unwrap_or("/");
+                    if fs.readdir(parent).is_err() {
+                        return Err(FsError::FileNotFound);
+                    }
                     fs.create(&remaining, InodeType::File)
                         .ok_or(FsError::PermissionDenied)?;
                 }
