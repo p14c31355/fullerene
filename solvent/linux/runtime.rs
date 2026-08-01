@@ -269,6 +269,7 @@ pub struct LinuxFileDesc {
     /// For directory fds: the path passed to `open`/`openat`,
     /// used by `getdents64` to read the correct directory.
     pub dir_path: Option<alloc::string::String>,
+    pub is_dir: bool,
     pub pipe: Option<Arc<LinuxPipe>>,
     pub pipe_end: PipeEnd,
 }
@@ -283,6 +284,8 @@ pub enum PipeEnd {
 pub struct LinuxPipe {
     state: Mutex<LinuxPipeState>,
 }
+
+const PIPE_CAPACITY: usize = 64 * 1024;
 
 #[derive(Debug, Default)]
 struct LinuxPipeState {
@@ -331,8 +334,11 @@ impl LinuxPipe {
         if state.readers == 0 {
             return Err(());
         }
-        state.data.extend(input.iter().copied());
-        Ok(input.len())
+        let count = input
+            .len()
+            .min(PIPE_CAPACITY.saturating_sub(state.data.len()));
+        state.data.extend(input[..count].iter().copied());
+        Ok(count)
     }
 }
 
@@ -350,6 +356,7 @@ impl Clone for LinuxFileDesc {
             flags: self.flags,
             offset: self.offset,
             dir_path: self.dir_path.clone(),
+            is_dir: self.is_dir,
             pipe: self.pipe.clone(),
             pipe_end: self.pipe_end,
         }
@@ -390,6 +397,7 @@ impl LinuxFdTable {
                 flags,
                 offset: 0,
                 dir_path: None,
+                is_dir: false,
                 pipe: None,
                 pipe_end: PipeEnd::Read,
             },

@@ -251,8 +251,9 @@ Boot the resulting `fullerene.iso` on the target UEFI machine and keep the
 serial log or Klog Live open. Accept the run only after seeing
 `[busybox-smoke] PASS: all bundled applets ran, exit=0, shell resumed` and
 the BusyBox terminal-owner exit marker with `code=0 terminal closed`. This
-uses the same embedded binary, contract count, and 57-command script as the
-strict QEMU run. The QEMU-only `FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT` flag is
+uses the same embedded binary and generated BusyBox contract
+(`busybox-applets.txt` and its generated count) as the strict QEMU run. The
+QEMU-only `FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT` flag is
 injected automatically by Flasks for this QEMU path. It is omitted for
 hardware, so the physical image never writes to the `isa-debug-exit` port.
 The BusyBox window shown during this scripted run is a smoke-test terminal, not

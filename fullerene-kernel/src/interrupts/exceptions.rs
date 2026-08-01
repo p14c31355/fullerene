@@ -12,6 +12,20 @@ impl Write for RawSerialWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for &b in s.as_bytes() {
             unsafe {
+                let mut timeout = 1_000_000;
+                while timeout > 0 {
+                    let status: u8;
+                    core::arch::asm!(
+                        "in al, dx",
+                        out("al") status,
+                        in("dx") 0x3FDu16,
+                        options(nomem, nostack, preserves_flags),
+                    );
+                    if status & 0x20 != 0 {
+                        break;
+                    }
+                    timeout -= 1;
+                }
                 core::arch::asm!(
                     "out dx, al",
                     in("dx") 0x3F8u16,
@@ -325,7 +339,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
     let is_write = error_code.intersects(PageFaultErrorCode::CAUSED_BY_WRITE);
     let is_user = error_code.intersects(PageFaultErrorCode::USER_MODE);
 
-    let cow_recovered = if is_present && is_write {
+    let cow_recovered = if is_present && is_write && is_user {
         unsafe {
             crate::linux::process::force_user_page_writable(
                 x86_64::registers::control::Cr3::read().0.start_address(),

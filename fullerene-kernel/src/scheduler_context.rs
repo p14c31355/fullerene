@@ -304,11 +304,14 @@ impl SchedulerContext {
                 // A fault/exit recovery path must never re-enter the task it
                 // just marked dead. Prefer a ready task and otherwise use the
                 // scheduler's idle process.
-                next_idx = list
+                let Some(candidate) = list
                     .iter()
                     .position(|(_, process)| process.state == ProcessState::Ready)
                     .or_else(|| list.iter().position(|(_, process)| process.name == "idle"))
-                    .unwrap_or(current_idx);
+                else {
+                    return (Some(list[current_idx].0), ProcessId(0));
+                };
+                next_idx = candidate;
             } else {
                 let start_idx = current_idx;
                 // Round‑robin scan.

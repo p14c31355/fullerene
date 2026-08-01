@@ -17,6 +17,15 @@ use x86_64::structures::paging::{
     FrameAllocator as X86FrameAllocator, OffsetPageTable, PageTable, PageTableFlags, Size4KiB,
 };
 
+fn release_private_frames(frames: &[u64]) {
+    let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+    for &address in frames {
+        if let Some(frame) = petroleum::page_table::PhysFrame::from_start_address(address) {
+            frame_alloc.deallocate_frame(frame);
+        }
+    }
+}
+
 pub(crate) unsafe fn force_user_page_writable(root: PhysAddr, virtual_address: u64) -> bool {
     let offset =
         x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
@@ -64,7 +73,13 @@ pub(crate) unsafe fn force_user_page_writable(root: PhysAddr, virtual_address: u
             }
             (flags, entry.addr())
         };
-        if flags.contains(PageTableFlags::HUGE_PAGE) || level == 3 {
+        if flags.contains(PageTableFlags::HUGE_PAGE) {
+            // A 2 MiB/1 GiB leaf cannot be promoted by the 4 KiB COW path.
+            // Report failure so the page-fault handler diagnoses the fault
+            // instead of retrying the same unchanged mapping forever.
+            return false;
+        }
+        if level == 3 {
             unsafe {
                 core::arch::asm!(
                     "invlpg [{}]",
@@ -79,7 +94,7 @@ pub(crate) unsafe fn force_user_page_writable(root: PhysAddr, virtual_address: u
                 .as_mut_ptr::<x86_64::structures::paging::PageTable>()
         };
     }
-    true
+    false
 }
 
 /// Give a forked child private copies of every user leaf in the supplied
@@ -293,7 +308,7 @@ fn make_user_range_private(start: u64, end: u64) -> Result<(), i32> {
     Ok(())
 }
 
-fn replace_user_range_with_zeroed_pages(start: u64, end: u64) -> Result<(), i32> {
+fn zero_existing_writable_user_pages(start: u64, end: u64) -> Result<(), i32> {
     let (root_frame, _) = Cr3::read();
     let mut address = start;
     while address < end {
@@ -352,8 +367,11 @@ fn copy_user_vector(vector: u64) -> Result<Vec<alloc::string::String>, i32> {
     if vector == 0 {
         return Ok(Vec::new());
     }
+    const MAX_ARG_STRINGS: u64 = 0x7fff;
+    const MAX_ARG_BYTES: usize = 2 * 1024 * 1024;
     let mut values = Vec::new();
-    for index in 0..64u64 {
+    let mut copied_bytes = 0usize;
+    for index in 0..MAX_ARG_STRINGS {
         let slot = vector
             .checked_add(
                 index
@@ -365,7 +383,12 @@ fn copy_user_vector(vector: u64) -> Result<Vec<alloc::string::String>, i32> {
         if pointer == 0 {
             return Ok(values);
         }
-        values.push(unsafe { copy_user_string(pointer, 4096) }?);
+        let value = unsafe { copy_user_string(pointer, 4096) }?;
+        copied_bytes = copied_bytes.checked_add(value.len() + 1).ok_or(E2BIG)?;
+        if copied_bytes > MAX_ARG_BYTES {
+            return Err(E2BIG);
+        }
+        values.push(value);
     }
     Err(E2BIG)
 }
@@ -398,10 +421,7 @@ fn initialize_exec_stack(
 
     cursor = cursor.checked_sub(16).ok_or(EFAULT)?;
     let random_address = cursor;
-    let random = [
-        0x6d, 0x3a, 0x91, 0x27, 0xc4, 0x58, 0xe2, 0x0f, 0x83, 0xb6, 0x44, 0x19, 0xfa, 0x72, 0x0c,
-        0xd1,
-    ];
+    let random = crate::loader::linux_stack_random();
     unsafe { copy_to_user(random_address, &random) }?;
 
     cursor &= !15;
@@ -575,11 +595,15 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // user image private before it can resume, so stack/TLS/data writes cannot
     // corrupt the parent while the shell waits for the child.
     unsafe {
-        let stack_top = 0x7fff_ffff_f000u64;
-        let stack_page = stack_top - 2 * 1024 * 1024;
+        let stack_top = crate::loader::LINUX_STACK_TOP;
+        let stack_page = stack_top - crate::loader::LINUX_STACK_SIZE;
         let mut private_ranges = Vec::with_capacity(rt.mmap_regions.len() + 2);
         private_ranges.push((crate::loader::PROGRAM_LOAD_BASE, rt.program_break));
         private_ranges.push((stack_page, stack_top));
+        private_ranges.push((
+            crate::loader::DYNAMIC_LINKER_BASE,
+            crate::loader::DYNAMIC_LINKER_BASE + crate::loader::DYNAMIC_LINKER_RESERVE_SIZE,
+        ));
         private_ranges.extend(
             rt.mmap_regions
                 .iter()
@@ -751,12 +775,18 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             Ok(values) => values,
             Err(error) => {
                 log::warn!("[EXEC-DIAG] dynamic image load failed path={}", path);
-                return errno_code(error);
+                // The loader is transactional and restores the old image for
+                // ordinary failures. If that rollback ever reports an error,
+                // terminate rather than returning into a partially replaced
+                // address space.
+                let _ = error;
+                process::terminate_process(current_pid, -1);
+                return 0;
             }
         };
         if let Some(p) = process::SCHEDULER.with_process(current_pid, |p| {
             p.entry_point = x86_64::VirtAddr::new(entry);
-            p.user_stack = x86_64::VirtAddr::new(0x7ffffffff000);
+            p.user_stack = x86_64::VirtAddr::new(crate::loader::LINUX_STACK_TOP);
             p.context.registers = crate::process::GeneralRegisters::default();
             p.context.registers.rsp = rsp;
             p.context.rip = entry;
@@ -845,6 +875,18 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             );
             return errno_code(error);
         }
+        let (root_frame, _) = Cr3::read();
+        if unsafe {
+            copy_child_user_leaves(
+                root_frame.start_address(),
+                &[(first_segment & !4095, last_segment & !4095)],
+            )
+        }
+        .is_err()
+        {
+            process::terminate_process(current_pid, -1);
+            return 0;
+        }
     }
 
     // ── Replace old process memory ────────────────────────
@@ -861,6 +903,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // ── Load and map new segments ─────────────────────────
     let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
     let (root_frame, _) = Cr3::read();
+    let mut replaced_frames = Vec::new();
     let mapped = process::SCHEDULER.with_process(current_pid, |p| {
         let Some(page_table) = p.page_table.as_mut() else {
             return Err(ENOMEM);
@@ -888,6 +931,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 }
                 let old_frame = unsafe { user_leaf_info(root_frame.start_address(), page_vaddr).0 };
                 if old_frame != 0 {
+                    replaced_frames.push(old_frame);
                     let replaced = unsafe {
                         replace_user_leaf_mapping(
                             root_frame.start_address(),
@@ -960,12 +1004,15 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             path,
             mapped
         );
-        return errno_code(mapped.unwrap_or(Err(ENOMEM)).unwrap_err());
+        release_private_frames(&replaced_frames);
+        process::terminate_process(current_pid, -1);
+        return 0;
     }
+    release_private_frames(&replaced_frames);
 
     // ── Allocate a stack ──────────────────────────────────
-    let stack_size: u64 = 256 * 1024; // Keep execve aligned with the ELF loader stack.
-    let stack_top_vaddr_default: u64 = 0x7ffffffff000;
+    let stack_size = crate::loader::LINUX_STACK_SIZE;
+    let stack_top_vaddr_default = crate::loader::LINUX_STACK_TOP;
     let stack_guard: u64 = 4096; // guard page
     let stack_base = stack_top_vaddr_default - stack_size - stack_guard;
 
@@ -980,11 +1027,12 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             path,
             error
         );
-        return errno_code(error);
+        process::terminate_process(current_pid, -1);
+        return 0;
     }
 
     if let Err(error) =
-        replace_user_range_with_zeroed_pages(stack_base + stack_guard, stack_top_vaddr_default)
+        zero_existing_writable_user_pages(stack_base + stack_guard, stack_top_vaddr_default)
     {
         log::warn!("[EXEC-DIAG] stack map failed path={} error={}", path, error);
         crate::klog_fmt!(
@@ -992,13 +1040,18 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             path,
             error
         );
-        return errno_code(error);
+        process::terminate_process(current_pid, -1);
+        return 0;
     }
 
     // ── Reset process state ───────────────────────────────
     let rsp = match initialize_exec_stack(stack_top_vaddr_default, &argv, &envp) {
         Ok(rsp) => rsp,
-        Err(error) => return errno_code(error),
+        Err(error) => {
+            let _ = error;
+            process::terminate_process(current_pid, -1);
+            return 0;
+        }
     };
 
     process::SCHEDULER.with_process(current_pid, |p| {
@@ -1050,7 +1103,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     unsafe {
         x86_64::registers::model_specific::Msr::new(0xC000_0100).write(0);
     }
-    crate::interrupts::syscall::override_user_return_context(entry, rsp, 0x2);
+    crate::interrupts::syscall::override_user_return_context(entry, rsp, 0x202);
 
     0
 }

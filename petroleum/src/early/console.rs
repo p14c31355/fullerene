@@ -24,12 +24,18 @@ use spin::Mutex;
 
 // ── Serial port constants ──────────────────────────────────────────────
 const COM1_DATA: u16 = 0x3F8;
+#[cfg(not(any(feature = "std", test)))]
+const COM1_LINE_STATUS: u16 = 0x3FD;
 
 /// Write raw bytes to the serial port (blocking, with timeout).
 unsafe fn write_serial_raw(bytes: &[u8]) {
     #[cfg(not(any(feature = "std", test)))]
     unsafe {
         for &b in bytes {
+            let mut timeout = 1_000_000;
+            while (read_serial_status(COM1_LINE_STATUS) & 0x20) == 0 && timeout > 0 {
+                timeout -= 1;
+            }
             core::arch::asm!(
                 "out dx, al",
                 in("dx") COM1_DATA,
@@ -40,6 +46,21 @@ unsafe fn write_serial_raw(bytes: &[u8]) {
     }
     #[cfg(any(feature = "std", test))]
     let _ = bytes;
+}
+
+#[cfg(not(any(feature = "std", test)))]
+#[inline(always)]
+unsafe fn read_serial_status(port: u16) -> u8 {
+    let value: u8;
+    unsafe {
+        core::arch::asm!(
+            "in al, dx",
+            out("al") value,
+            in("dx") port,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    value
 }
 
 // ── VGA text buffer ────────────────────────────────────────────────────

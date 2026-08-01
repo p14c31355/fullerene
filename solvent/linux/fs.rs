@@ -11,17 +11,6 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;
     let buf = args[1];
     let count = args[2] as usize;
-    if fd == 0 && !rt.fd_table.contains(fd) {
-        let fallback_fd = rt
-            .fd_table
-            .entries
-            .keys()
-            .copied()
-            .find(|candidate| *candidate >= 3);
-        if let Some(fallback_fd) = fallback_fd {
-            return sys_read(rt, &[fallback_fd as u64, buf, count as u64, 0, 0, 0]);
-        }
-    }
     if count == 0 {
         return 0;
     }
@@ -95,8 +84,9 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         && let Some(pipe) = desc.pipe.as_ref()
     {
         let limit = count.min(65536);
+        let mut kernel_buf = alloc::vec![0u8; limit];
         loop {
-            let mut kernel_buf = alloc::vec![0u8; limit];
+            kernel_buf.fill(0);
             if let Some(n) = pipe.read(&mut kernel_buf) {
                 if n == 0 {
                     return 0;
@@ -201,12 +191,26 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             Ok(data) => data,
             Err(_) => return errno_code(EFAULT),
         };
-        let result = pipe
-            .write(&data)
-            .map(|n| n as u64)
-            .unwrap_or_else(|_| errno_code(EPIPE));
-        crate::process::yield_current();
-        return result;
+        let mut written = 0usize;
+        while written < data.len() {
+            match pipe.write(&data[written..]) {
+                Ok(0) => crate::process::yield_current(),
+                Ok(count) => {
+                    written += count;
+                    if written < data.len() {
+                        crate::process::yield_current();
+                    }
+                }
+                Err(_) => {
+                    return if written == 0 {
+                        errno_code(EPIPE)
+                    } else {
+                        written as u64
+                    };
+                }
+            }
+        }
+        return written as u64;
     }
     // Read data from user space into kernel buffer (capped to avoid OOM)
     let limit = count.min(65536);
@@ -376,12 +380,14 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
     let alloc_ret = |rt: &mut LinuxRuntime,
                      vfs_fd: crate::contexts::vfs::FileDescriptor,
                      path: &str,
-                     flags: i32|
+                     flags: i32,
+                     is_dir: bool|
      -> u64 {
         let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
         if let Some(desc) = rt.fd_table.get_mut(fd) {
             let trimmed = path.trim_end_matches('/');
             desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
+            desc.is_dir = is_dir;
         }
         fd as u64
     };
@@ -391,7 +397,13 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
         if create {
             match crate::contexts::vfs::create(path) {
                 Ok(vfs_fd) => {
-                    return alloc_ret(rt, vfs_fd, path, flags);
+                    return alloc_ret(
+                        rt,
+                        vfs_fd,
+                        path,
+                        flags,
+                        crate::contexts::vfs::readdir(path).is_ok(),
+                    );
                 }
                 Err(e) => {
                     // File may already exist; try opening with truncation
@@ -399,21 +411,39 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
                         let _ = crate::contexts::vfs::unlink(path);
                         match crate::contexts::vfs::create(path) {
                             Ok(vfs_fd) => {
-                                return alloc_ret(rt, vfs_fd, path, flags);
+                                return alloc_ret(
+                                    rt,
+                                    vfs_fd,
+                                    path,
+                                    flags,
+                                    crate::contexts::vfs::readdir(path).is_ok(),
+                                );
                             }
                             Err(e2) => return fs_errno_result(&e2),
                         }
                     }
                     // Try opening for read-write if it exists
                     if let Ok(vfs_fd) = crate::contexts::vfs::open(path, 0) {
-                        return alloc_ret(rt, vfs_fd, path, flags);
+                        return alloc_ret(
+                            rt,
+                            vfs_fd,
+                            path,
+                            flags,
+                            crate::contexts::vfs::readdir(path).is_ok(),
+                        );
                     }
                     return fs_errno_result(&e);
                 }
             }
         }
         if let Ok(vfs_fd) = crate::contexts::vfs::open(path, 0) {
-            return alloc_ret(rt, vfs_fd, path, flags);
+            return alloc_ret(
+                rt,
+                vfs_fd,
+                path,
+                flags,
+                crate::contexts::vfs::readdir(path).is_ok(),
+            );
         }
         return errno_code(ENOENT);
     }
@@ -427,6 +457,7 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
                     // Normalize trailing slash so directory lookup works.
                     let trimmed = path.trim_end_matches('/');
                     desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
+                    desc.is_dir = false;
                 }
                 fd as u64
             }
@@ -436,6 +467,7 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
                     if let Some(desc) = rt.fd_table.get_mut(fd) {
                         let trimmed = path.trim_end_matches('/');
                         desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
+                        desc.is_dir = true;
                     }
                     fd as u64
                 } else {
@@ -487,15 +519,7 @@ fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), i32> {
     } else {
         let vfs_fd = crate::contexts::vfs::open(path, 0).map_err(|_| ENOENT)?;
         let info = fill_stat_from_fd(vfs_fd.fd);
-        let mut buf = [0u8; 512];
-        let mut total = 0usize;
-        loop {
-            match crate::contexts::vfs::read(vfs_fd.fd, &mut buf) {
-                Ok(0) => break,
-                Ok(n) => total += n,
-                Err(_) => break,
-            }
-        }
+        let total = crate::contexts::vfs::size(vfs_fd.fd).unwrap_or(0);
         let _ = crate::contexts::vfs::close(vfs_fd.fd);
         (info, total)
     };
@@ -611,7 +635,7 @@ pub fn sys_fstat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         None => return errno_code(EBADF),
     };
     let info = fill_stat_from_fd(desc.vfs_fd);
-    let is_dir = desc.dir_path.is_some();
+    let is_dir = desc.is_dir;
     // Query the size without consuming the descriptor.  Draining the file
     // here used to mutate the caller's offset and made metadata calls unsafe
     // for readers which immediately continued with read/seek operations.
@@ -987,6 +1011,9 @@ pub fn sys_rename(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 }
 
 pub fn sys_renameat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    if args[0] as i64 != -100 || args[2] as i64 != -100 || args[4] != 0 {
+        return errno_code(EINVAL);
+    }
     sys_rename(rt, &[args[1], args[3], 0, 0, 0, 0])
 }
 

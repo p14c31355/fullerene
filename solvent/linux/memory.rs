@@ -80,6 +80,18 @@ fn tracked_range_overlaps(rt: &LinuxRuntime, addr: u64, size: u64) -> bool {
         .any(|region| ranges_overlap(region.addr, region.size, addr, size))
 }
 
+fn tracked_range_contains(rt: &LinuxRuntime, addr: u64, size: u64) -> bool {
+    let Some(end) = addr.checked_add(size) else {
+        return false;
+    };
+    rt.mmap_regions.iter().any(|region| {
+        region
+            .addr
+            .checked_add(region.size)
+            .is_some_and(|region_end| addr >= region.addr && end <= region_end)
+    })
+}
+
 fn range_is_mapped(page_table: &ProcessPageTable, addr: u64, size: u64) -> bool {
     let pages = (size / PAGE_SIZE) as usize;
     (0..pages).any(|index| {
@@ -105,6 +117,22 @@ fn range_is_owned_user_memory(page_table: &ProcessPageTable, addr: u64, size: u6
 
 fn overlaps_reserved_user_mapping(addr: u64, size: u64) -> bool {
     ranges_overlap(addr, size, petroleum::vdso::VDSO_USER_BASE, VDSO_SIZE)
+        || ranges_overlap(
+            addr,
+            size,
+            crate::loader::DYNAMIC_LINKER_BASE,
+            crate::loader::DYNAMIC_LINKER_RESERVE_SIZE,
+        )
+}
+
+fn range_is_fully_mapped(page_table: &ProcessPageTable, addr: u64, size: u64) -> bool {
+    let pages = (size / PAGE_SIZE) as usize;
+    (0..pages).all(|index| {
+        let Some(page) = addr.checked_add(index as u64 * PAGE_SIZE) else {
+            return false;
+        };
+        page_table.translate_address(page as usize).is_ok()
+    })
 }
 
 fn find_free_anon_region(
@@ -119,6 +147,22 @@ fn find_free_anon_region(
             || candidate.checked_add(size).unwrap() > USER_ADDRESS_LIMIT
         {
             return 0;
+        }
+
+        if overlaps_reserved_user_mapping(candidate, size) {
+            let linker_end = crate::loader::DYNAMIC_LINKER_BASE
+                .saturating_add(crate::loader::DYNAMIC_LINKER_RESERVE_SIZE);
+            candidate = if ranges_overlap(
+                candidate,
+                size,
+                crate::loader::DYNAMIC_LINKER_BASE,
+                crate::loader::DYNAMIC_LINKER_RESERVE_SIZE,
+            ) {
+                linker_end
+            } else {
+                petroleum::vdso::VDSO_USER_BASE.saturating_add(VDSO_SIZE)
+            };
+            continue;
         }
 
         if tracked_range_overlaps(rt, candidate, size) {
@@ -202,6 +246,38 @@ fn remove_region(rt: &mut LinuxRuntime, addr: u64, size: u64) -> bool {
     }
 }
 
+fn trim_overlapping_regions(rt: &mut LinuxRuntime, addr: u64, size: u64) -> Result<(), i32> {
+    let end = addr.checked_add(size).ok_or(ENOMEM)?;
+    let mut remaining = heapless::Vec::<LinuxMmapRegion, 64>::new();
+    for region in rt.mmap_regions.iter().copied() {
+        let region_end = region.addr.checked_add(region.size).ok_or(ENOMEM)?;
+        if !ranges_overlap(region.addr, region.size, addr, size) {
+            remaining.push(region).map_err(|_| ENOMEM)?;
+            continue;
+        }
+        if region.addr < addr {
+            remaining
+                .push(LinuxMmapRegion {
+                    addr: region.addr,
+                    size: addr - region.addr,
+                    ..region
+                })
+                .map_err(|_| ENOMEM)?;
+        }
+        if end < region_end {
+            remaining
+                .push(LinuxMmapRegion {
+                    addr: end,
+                    size: region_end - end,
+                    ..region
+                })
+                .map_err(|_| ENOMEM)?;
+        }
+    }
+    rt.mmap_regions = remaining;
+    Ok(())
+}
+
 /// Release mmap-created regions before an execve image is installed.  The
 /// executable, stack, brk reservation, and VDSO are intentionally not in
 /// `mmap_regions`, so this cannot tear down the process's fixed ABI mappings.
@@ -263,6 +339,9 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let file_vfs_fd = if anon {
         None
     } else {
+        if (flags & MAP_SHARED) != 0 && (prot & PROT_WRITE) != 0 {
+            return errno_code(EINVAL);
+        }
         let fd = args[4] as i32;
         let Some(desc) = rt.fd_table.get(fd) else {
             return errno_code(EBADF);
@@ -308,7 +387,10 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 // Permit that only for a range already owned by this mmap
                 // runtime; arbitrary replacement of the main image, stack,
                 // VDSO, or brk remains rejected.
-                if !tracked_range_overlaps(rt, hint, aligned_len) {
+                if !range_is_fully_mapped(page_table, hint, aligned_len)
+                    || !range_is_owned_user_memory(page_table, hint, aligned_len)
+                    || !tracked_range_contains(rt, hint, aligned_len)
+                {
                     return Err(EEXIST);
                 }
                 #[cfg(linux_busybox_smoke)]
@@ -321,6 +403,7 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                         return Err(EEXIST);
                     }
                 }
+                trim_overlapping_regions(rt, hint, aligned_len)?;
             }
             hint
         } else {
@@ -339,12 +422,9 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         let mut mapped_pages = 0usize;
         let mut page_flags =
             PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
-        // Forked Linux processes currently share user page-table branches.
-        // Retaining WRITABLE here prevents a loader's RELRO mprotect from
-        // turning a shared BusyBox data page into a protection-fault loop in
-        // the child. Full per-process COW will restore strict read-only
-        // enforcement once page-table branches are private.
-        page_flags |= PageTableFlags::WRITABLE;
+        if (prot & PROT_WRITE) != 0 {
+            page_flags |= PageTableFlags::WRITABLE;
+        }
         if (prot & PROT_EXEC) != 0 {
             page_flags.remove(PageTableFlags::NO_EXECUTE);
         }
@@ -499,11 +579,9 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let mut page_flags = PageTableFlags::USER_ACCESSIBLE;
     if prot != PROT_NONE {
         page_flags |= PageTableFlags::PRESENT;
-        // Fork currently shares user page-table branches. Keep present user
-        // mappings writable until private COW branches exist; otherwise a
-        // read-only RELRO mapping in one branch causes a protection-fault
-        // loop in another branch that inherited the same leaf tables.
-        page_flags |= PageTableFlags::WRITABLE;
+        if (prot & PROT_WRITE) != 0 {
+            page_flags |= PageTableFlags::WRITABLE;
+        }
         if (prot & PROT_EXEC) == 0 {
             page_flags |= PageTableFlags::NO_EXECUTE;
         }
@@ -530,15 +608,6 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                     let _ = page_table.set_page_flags(*restore_page, *restore_flags);
                 }
                 return Err(ENOMEM);
-            }
-            if (prot & PROT_WRITE) != 0 {
-                let (root, _) = x86_64::registers::control::Cr3::read();
-                unsafe {
-                    crate::linux::process::force_user_page_writable(
-                        root.start_address(),
-                        *page as u64,
-                    );
-                }
             }
         }
         Ok(())
@@ -578,6 +647,66 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return rt.program_break;
     }
 
+    let old_break = rt.program_break;
+    if new_brk > old_break {
+        let start = old_break.saturating_add(PAGE_MASK) & !PAGE_MASK;
+        let end = new_brk.saturating_add(PAGE_MASK) & !PAGE_MASK;
+        let result = with_current_page_table(|page_table| {
+            let flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER_ACCESSIBLE
+                | PageTableFlags::NO_EXECUTE;
+            let frame_alloc =
+                unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+            let mut mapped = alloc::vec::Vec::new();
+            let mut address = start;
+            while address < end {
+                if page_table.translate_address(address as usize).is_err() {
+                    let Some(frame) = X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc)
+                    else {
+                        for old_page in mapped.drain(..) {
+                            if let Ok(frame) = page_table.unmap_page(old_page as usize) {
+                                frame_alloc.free_frame(frame);
+                            }
+                        }
+                        return Err(ENOMEM);
+                    };
+                    unsafe {
+                        core::ptr::write_bytes(
+                            petroleum::common::memory::physical_to_virtual(
+                                frame.start_address().as_u64() as usize,
+                            ) as *mut u8,
+                            0,
+                            PAGE_SIZE as usize,
+                        );
+                    }
+                    if page_table
+                        .map_page(
+                            address as usize,
+                            frame.start_address().as_u64() as usize,
+                            flags,
+                            frame_alloc,
+                        )
+                        .is_err()
+                    {
+                        frame_alloc.free_frame(frame);
+                        for old_page in mapped.drain(..) {
+                            if let Ok(frame) = page_table.unmap_page(old_page as usize) {
+                                frame_alloc.free_frame(frame);
+                            }
+                        }
+                        return Err(ENOMEM);
+                    }
+                    mapped.push(address);
+                }
+                address += PAGE_SIZE;
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            return rt.program_break;
+        }
+    }
     rt.program_break = new_brk;
     new_brk
 }

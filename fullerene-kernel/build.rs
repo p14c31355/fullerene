@@ -301,10 +301,15 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
             );
         }
         busybox_build::validate_fullerene_busybox(path).unwrap_or_else(|error| panic!("{error}"));
-        fs::write(out_dir.join("busybox"), data).unwrap_or_else(|error| {
+        fs::write(out_dir.join("busybox"), &data).unwrap_or_else(|error| {
             panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
         });
-        stage_busybox_runtime(out_dir, path, &fs::read(out_dir.join("busybox")).unwrap());
+        if !stage_busybox_runtime(out_dir, path, &data) {
+            if env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some() {
+                panic!("FULLERENE_BUSYBOX_SMOKE requires BusyBox runtime dependencies");
+            }
+            return false;
+        }
         write_busybox_contract(out_dir);
         println!("cargo:rustc-cfg=have_busybox");
         return true;
@@ -354,10 +359,12 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
         {
             continue;
         }
-        fs::write(out_dir.join("busybox"), data).unwrap_or_else(|error| {
+        fs::write(out_dir.join("busybox"), &data).unwrap_or_else(|error| {
             panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
         });
-        stage_busybox_runtime(&out_dir, &path, &fs::read(out_dir.join("busybox")).unwrap());
+        if !stage_busybox_runtime(&out_dir, &path, &data) {
+            continue;
+        }
         write_busybox_contract(&out_dir);
         println!("cargo:rustc-cfg=have_busybox");
         return true;
@@ -366,42 +373,61 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
     false
 }
 
-fn stage_busybox_runtime(out_dir: &Path, busybox_path: &Path, busybox_data: &[u8]) {
-    let interpreter = dynamic_glibc_interpreter_path(busybox_data)
-        .expect("validated BusyBox must have an accepted glibc PT_INTERP");
+fn stage_busybox_runtime(out_dir: &Path, busybox_path: &Path, busybox_data: &[u8]) -> bool {
+    let Some(interpreter) = dynamic_glibc_interpreter_path(busybox_data) else {
+        println!(
+            "cargo:warning=BusyBox has no accepted glibc PT_INTERP: {}",
+            busybox_path.display()
+        );
+        return false;
+    };
     let linker = env::var_os("FULLERENE_BUSYBOX_DYNAMIC_LINKER")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
+        .or_else(|| {
             [
                 "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+                "/lib64/ld-linux-x86-64.so.2",
+                "/usr/lib64/ld-linux-x86-64.so.2",
+                "/lib/ld-linux-x86-64.so.2",
                 interpreter,
             ]
             .iter()
             .map(PathBuf::from)
             .find(|path| path.is_file())
-            .unwrap_or_else(|| {
-                panic!(
-                    "cannot find BusyBox dynamic linker for {}",
-                    busybox_path.display()
-                )
-            })
         });
     let libc = env::var_os("FULLERENE_BUSYBOX_LIBC")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/usr/lib/x86_64-linux-gnu/libc.so.6"));
+        .or_else(|| {
+            [
+                "/usr/lib/x86_64-linux-gnu/libc.so.6",
+                "/lib/x86_64-linux-gnu/libc.so.6",
+                "/lib64/libc.so.6",
+                "/usr/lib64/libc.so.6",
+                "/usr/lib/libc.so.6",
+            ]
+            .iter()
+            .map(PathBuf::from)
+            .find(|path| path.is_file())
+        });
+    let (Some(linker), Some(libc)) = (linker, libc) else {
+        println!(
+            "cargo:warning=BusyBox runtime dependencies were not found for {}; set FULLERENE_BUSYBOX_DYNAMIC_LINKER and FULLERENE_BUSYBOX_LIBC",
+            busybox_path.display()
+        );
+        return false;
+    };
     for path in [&linker, &libc] {
         println!("cargo:rerun-if-changed={}", path.display());
-        if !path.is_file() {
-            panic!(
-                "BusyBox runtime dependency was not found: {}",
-                path.display()
-            );
-        }
     }
-    fs::copy(&linker, out_dir.join("busybox-interpreter"))
-        .unwrap_or_else(|error| panic!("cannot stage {}: {error}", linker.display()));
-    fs::copy(&libc, out_dir.join("busybox-libc"))
-        .unwrap_or_else(|error| panic!("cannot stage {}: {error}", libc.display()));
+    if let Err(error) = fs::copy(&linker, out_dir.join("busybox-interpreter")) {
+        println!("cargo:warning=cannot stage {}: {error}", linker.display());
+        return false;
+    }
+    if let Err(error) = fs::copy(&libc, out_dir.join("busybox-libc")) {
+        println!("cargo:warning=cannot stage {}: {error}", libc.display());
+        return false;
+    }
+    true
 }
 
 fn write_busybox_contract(out_dir: &Path) {

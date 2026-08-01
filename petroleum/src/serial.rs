@@ -32,7 +32,10 @@ pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &
     {
         for &byte in bytes {
             unsafe {
-                let _ = status_port_addr;
+                let mut timeout = 1_000_000;
+                while (read_port_u8(status_port_addr) & 0x20) == 0 && timeout > 0 {
+                    timeout -= 1;
+                }
                 write_port_u8(port_addr, byte);
             }
         }

@@ -23,13 +23,13 @@ use x86_64::structures::paging::{FrameAllocator, PageTableFlags};
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
 const PAGE_SIZE: u64 = 4096;
-const LINUX_STACK_SIZE: u64 = 256 * 1024;
-const LINUX_STACK_TOP: u64 = 0x0000_7fff_ffff_f000;
-// Keep the compatibility brk region resident.  Growing brk is metadata-only;
-// page-table mutation from the page-fault handler is deliberately avoided.
-// The Linux syscall layer uses the same 64 MiB logical cap.
+pub const LINUX_STACK_SIZE: u64 = 256 * 1024;
+pub const LINUX_STACK_TOP: u64 = 0x0000_7fff_ffff_f000;
+// The Linux syscall layer uses the same 64 MiB logical cap. Pages are mapped
+// by sys_brk as the logical break grows instead of being committed at exec.
 const LINUX_BRK_RESERVE_SIZE: u64 = 64 * 1024 * 1024;
-const DYNAMIC_LINKER_BASE: u64 = 0x0000_0002_0000_0000;
+pub const DYNAMIC_LINKER_BASE: u64 = 0x0000_0002_0000_0000;
+pub const DYNAMIC_LINKER_RESERVE_SIZE: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct LinuxImageLayout {
@@ -48,13 +48,21 @@ struct LoadedLinuxImage {
 
 #[derive(Clone, Copy)]
 enum PageChange {
-    New { address: u64 },
+    New {
+        address: u64,
+    },
+    Replaced {
+        address: u64,
+        old_frame: u64,
+        old_flags: PageTableFlags,
+    },
 }
 
 impl PageChange {
     fn address(self) -> u64 {
         match self {
             Self::New { address } => address,
+            Self::Replaced { address, .. } => address,
         }
     }
 }
@@ -107,6 +115,38 @@ fn rollback_page_changes(page_table: &mut ProcessPageTable, changes: &[PageChang
                         }
                     }
                 }
+                PageChange::Replaced {
+                    address,
+                    old_frame,
+                    old_flags,
+                } => {
+                    if let Ok(frame) = PageTableHelper::unmap_page(page_table, address as usize) {
+                        if let Some(frame) = petroleum::page_table::PhysFrame::from_start_address(
+                            frame.start_address().as_u64(),
+                        ) {
+                            frame_allocator.deallocate_frame(frame);
+                        }
+                    }
+                    let _ = PageTableHelper::map_page(
+                        page_table,
+                        address as usize,
+                        old_frame as usize,
+                        old_flags,
+                        frame_allocator,
+                    );
+                }
+            }
+        }
+    });
+}
+
+fn release_replaced_frames(changes: &[PageChange]) {
+    petroleum::page_table::constants::with_frame_allocator(|frame_allocator| {
+        for change in changes {
+            if let PageChange::Replaced { old_frame, .. } = *change
+                && let Some(frame) = petroleum::page_table::PhysFrame::from_start_address(old_frame)
+            {
+                frame_allocator.deallocate_frame(frame);
             }
         }
     });
@@ -249,17 +289,23 @@ fn load_elf_segments_transaction(
                     }
                     Ok(_) => {
                         // An execve image must not inherit writable loader or
-                        // RELRO state from the previous image. Drop the old
-                        // leaf without freeing its frame (it may still be
-                        // shared with the parent after fork), then install a
-                        // fresh zeroed page.
-                        let _ = PageTableHelper::unmap_page(page_table, page_address as usize)
-                            .map_err(|_| LoadError::MappingFailed)?;
+                        // RELRO state from the previous image. Retain the old
+                        // frame in the transaction so rollback can restore it;
+                        // a successful exec releases it after ownership has
+                        // been established by the Linux fork path.
+                        let old_flags =
+                            PageTableHelper::get_page_flags(page_table, page_address as usize)
+                                .map_err(|_| LoadError::MappingFailed)?;
+                        let old_frame =
+                            PageTableHelper::unmap_page(page_table, page_address as usize)
+                                .map_err(|_| LoadError::MappingFailed)?;
+                        changes.push(PageChange::Replaced {
+                            address: page_address,
+                            old_frame: old_frame.start_address().as_u64(),
+                            old_flags,
+                        });
                         let physical_address =
                             map_zeroed_page(page_table, page_address, requested_flags)?;
-                        changes.push(PageChange::New {
-                            address: page_address,
-                        });
                         physical_address
                     }
                     Err(_) => {
@@ -373,24 +419,18 @@ fn initialize_linux_stack(
 }
 
 fn reserve_linux_brk(
-    page_table: &mut ProcessPageTable,
+    _page_table: &mut ProcessPageTable,
     initial_break: u64,
-    changes: &mut Vec<PageChange>,
+    _changes: &mut Vec<PageChange>,
 ) -> Result<(), LoadError> {
-    let flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::USER_ACCESSIBLE
-        | PageTableFlags::NO_EXECUTE;
-    let end = initial_break
+    let end = align_up(initial_break)
+        .ok_or(LoadError::InvalidFormat)?
         .checked_add(LINUX_BRK_RESERVE_SIZE)
         .ok_or(LoadError::InvalidFormat)?;
-    let mut address = initial_break;
-    while address < end {
-        if PageTableHelper::translate_address(page_table, address as usize).is_err() {
-            map_zeroed_page(page_table, address, flags)?;
-            changes.push(PageChange::New { address });
-        }
-        address += PAGE_SIZE;
+    if !petroleum::is_user_address(
+        x86_64::VirtAddr::try_new(end - 1).map_err(|_| LoadError::InvalidFormat)?,
+    ) {
+        return Err(LoadError::UnsupportedArchitecture);
     }
     Ok(())
 }
@@ -427,7 +467,7 @@ fn hardware_random_u64() -> Option<u64> {
     None
 }
 
-fn linux_stack_random() -> [u8; 16] {
+pub(crate) fn linux_stack_random() -> [u8; 16] {
     let local = 0u8;
     let fallback_seed = unsafe { core::arch::x86_64::_rdtsc() }
         ^ crate::interrupts::TICK_COUNTER
@@ -663,35 +703,55 @@ pub fn load_linux_image_for_exec(
         .map(|path| crate::fs::read_entire_file(path).map_err(|_| LoadError::FileNotFound))
         .transpose()?;
     let mut changes = Vec::new();
-    let main_layout =
-        load_elf_segments_transaction(page_table, &elf, image_data, main_load_bias, &mut changes)?;
-    let mut layout = main_layout;
-    let start_entry = if let Some(interpreter_data) = interpreter_data.as_deref() {
-        let interpreter =
-            goblin::elf::Elf::parse(interpreter_data).map_err(|_| LoadError::InvalidFormat)?;
-        if interpreter.header.e_type != goblin::elf::header::ET_DYN
-            || interpreter.header.e_machine != goblin::elf::header::EM_X86_64
-            || interpreter.interpreter.is_some()
-        {
-            return Err(LoadError::NotExecutable);
-        }
-        let interpreter_layout = load_elf_segments_transaction(
+    let result = (|| {
+        let main_layout = load_elf_segments_transaction(
             page_table,
-            &interpreter,
-            interpreter_data,
-            DYNAMIC_LINKER_BASE,
+            &elf,
+            image_data,
+            main_load_bias,
             &mut changes,
         )?;
-        layout.at_base = DYNAMIC_LINKER_BASE;
-        interpreter_layout.entry
-    } else {
-        layout.entry
-    };
+        let mut layout = main_layout;
+        let start_entry = if let Some(interpreter_data) = interpreter_data.as_deref() {
+            let interpreter =
+                goblin::elf::Elf::parse(interpreter_data).map_err(|_| LoadError::InvalidFormat)?;
+            if interpreter.header.e_type != goblin::elf::header::ET_DYN
+                || interpreter.header.e_machine != goblin::elf::header::EM_X86_64
+                || interpreter.interpreter.is_some()
+            {
+                return Err(LoadError::NotExecutable);
+            }
+            let interpreter_layout = load_elf_segments_transaction(
+                page_table,
+                &interpreter,
+                interpreter_data,
+                DYNAMIC_LINKER_BASE,
+                &mut changes,
+            )?;
+            layout.at_base = DYNAMIC_LINKER_BASE;
+            interpreter_layout.entry
+        } else {
+            layout.entry
+        };
 
-    reserve_linux_brk(page_table, layout.initial_break, &mut changes)?;
-    let rsp =
-        initialize_linux_stack_transaction(page_table, argv, envp, layout, &mut changes, true)?;
-    Ok((start_entry, rsp, layout.initial_break))
+        reserve_linux_brk(page_table, layout.initial_break, &mut changes)?;
+        let rsp =
+            initialize_linux_stack_transaction(page_table, argv, envp, layout, &mut changes, true)?;
+        Ok((start_entry, rsp, layout.initial_break))
+    })();
+    match result {
+        Ok(values) => {
+            // Execve is reached only after Linux fork has copied the child's
+            // user leaves, so replaced frames belong exclusively to this
+            // address space and can be released after commit.
+            release_replaced_frames(&changes);
+            Ok(values)
+        }
+        Err(error) => {
+            rollback_page_changes(page_table, &changes);
+            Err(error)
+        }
+    }
 }
 
 fn load_program_inner(

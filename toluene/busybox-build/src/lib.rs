@@ -167,7 +167,7 @@ pub fn build(options: &BuildOptions) -> Result<(), String> {
         options.jobs,
         &["allnoconfig"],
     )?;
-    configure_for_fullerene(&config_path)?;
+    configure_for_fullerene(&config_path, &options.source)?;
     run_make(
         &options.source,
         &options.build_dir,
@@ -260,25 +260,26 @@ fn output_is_current(output: &Path, marker: &Path, source: &Path) -> bool {
 /// supplied binaries too; otherwise a stale or host-provided BusyBox could
 /// silently reintroduce unsupported commands into `busybox --help`.
 pub fn validate_fullerene_busybox(path: &Path) -> Result<(), String> {
-    let output = Command::new(path)
-        .arg("--list")
-        .output()
-        .map_err(|error| format!("cannot execute BusyBox {}: {error}", path.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "BusyBox --list failed for {} with {}",
-            path.display(),
-            output.status
-        ));
-    }
-    let actual: BTreeSet<&str> = std::str::from_utf8(&output.stdout)
-        .map_err(|error| format!("BusyBox --list output is not UTF-8: {error}"))?
-        .split_whitespace()
+    let data = fs::read(path)
+        .map_err(|error| format!("cannot read BusyBox {}: {error}", path.display()))?;
+    let actual: BTreeSet<String> = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        match Command::new(path).arg("--list").output() {
+            Ok(output) if output.status.success() => std::str::from_utf8(&output.stdout)
+                .map_err(|error| format!("BusyBox --list output is not UTF-8: {error}"))?
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect(),
+            _ => applet_table_from_elf(&data)?,
+        }
+    } else {
+        applet_table_from_elf(&data)?
+    };
+    let expected: BTreeSet<String> = fullerene_busybox_applet_names()
+        .map(str::to_owned)
         .collect();
-    let expected: BTreeSet<&str> = fullerene_busybox_applet_names().collect();
     if actual != expected {
-        let missing: Vec<_> = expected.difference(&actual).copied().collect();
-        let extra: Vec<_> = actual.difference(&expected).copied().collect();
+        let missing: Vec<_> = expected.difference(&actual).cloned().collect();
+        let extra: Vec<_> = actual.difference(&expected).cloned().collect();
         return Err(format!(
             "BusyBox applet contract mismatch for {} (missing: {}; extra: {})",
             path.display(),
@@ -346,7 +347,7 @@ fn run_make(
     Ok(())
 }
 
-fn configure_for_fullerene(path: &Path) -> Result<(), String> {
+fn configure_for_fullerene(path: &Path, source: &Path) -> Result<(), String> {
     let original = fs::read_to_string(path)
         .map_err(|error| format!("cannot read BusyBox config {}: {error}", path.display()))?;
     let mut config = original.clone();
@@ -371,7 +372,9 @@ fn configure_for_fullerene(path: &Path) -> Result<(), String> {
         set_config_value(&mut config, key, value);
     }
     for (_, symbol) in FULLERENE_BUSYBOX_APPLETS {
-        set_config_value(&mut config, &format!("CONFIG_{symbol}"), "y");
+        if busybox_defines_symbol(source, symbol) {
+            set_config_value(&mut config, &format!("CONFIG_{symbol}"), "y");
+        }
     }
     // `sh` is the ash shell selected by the applet contract.  These options
     // are intentionally explicit because allnoconfig otherwise leaves the
@@ -392,6 +395,37 @@ fn configure_for_fullerene(path: &Path) -> Result<(), String> {
             .map_err(|error| format!("cannot write BusyBox config {}: {error}", path.display()))?;
     }
     Ok(())
+}
+
+fn busybox_defines_symbol(source: &Path, symbol: &str) -> bool {
+    let config_name = format!("CONFIG_{symbol}");
+    let config_line = format!("config {symbol}");
+    let mut pending = vec![source.to_owned()];
+    while let Some(path) = pending.pop() {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            let Ok(entries) = fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if entry.file_name() != ".git" {
+                    pending.push(entry.path());
+                }
+            }
+        } else if let Ok(contents) = fs::read_to_string(&path)
+            && contents.lines().any(|line| {
+                let trimmed = line.trim_start_matches('/').trim_start();
+                trimmed.starts_with(&config_line)
+                    || trimmed.contains(&format!("//config:{config_line}"))
+                    || trimmed.contains(&config_name)
+            })
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn set_config_value(config: &mut String, key: &str, value: &str) {
@@ -463,6 +497,30 @@ pub fn dynamic_glibc_interpreter_path(data: &[u8]) -> Option<&'static str> {
     None
 }
 
+fn applet_table_from_elf(data: &[u8]) -> Result<BTreeSet<String>, String> {
+    // BusyBox emits its sorted applet-name table as a NUL-separated ELF
+    // string run. The leading `[`/`[[` pair is specific enough to avoid
+    // treating diagnostic prose or shell keywords as the applet table.
+    let marker = b"[\0[[\0arch\0";
+    let start = data
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .ok_or_else(|| "BusyBox applet table was not found in ELF data".to_string())?;
+    let mut actual = BTreeSet::new();
+    for name in data[start..]
+        .split(|byte| *byte == 0)
+        .take_while(|name| !name.is_empty())
+    {
+        let name = std::str::from_utf8(name)
+            .map_err(|error| format!("BusyBox applet table is not UTF-8: {error}"))?;
+        actual.insert(name.to_owned());
+    }
+    if actual.is_empty() {
+        return Err("BusyBox applet table is empty".to_string());
+    }
+    Ok(actual)
+}
+
 fn make_executable(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -516,7 +574,28 @@ impl Drop for BuildLock {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_dynamic_glibc_x86_64_elf, set_config_value};
+    use super::{dynamic_glibc_interpreter_path, is_dynamic_glibc_x86_64_elf, set_config_value};
+
+    fn synthetic_elf(interpreter: &[u8]) -> Vec<u8> {
+        let phoff = 64usize;
+        let interp_offset = phoff + 56;
+        let mut data = vec![0u8; interp_offset + interpreter.len() + 1];
+        data[..4].copy_from_slice(b"\x7fELF");
+        data[4] = 2;
+        data[5] = 1;
+        data[16..18].copy_from_slice(&2u16.to_le_bytes());
+        data[18..20].copy_from_slice(&0x3eu16.to_le_bytes());
+        data[32..40].copy_from_slice(&(phoff as u64).to_le_bytes());
+        data[54..56].copy_from_slice(&56u16.to_le_bytes());
+        data[56..58].copy_from_slice(&1u16.to_le_bytes());
+        data[phoff..phoff + 4].copy_from_slice(&3u32.to_le_bytes());
+        data[phoff + 8..phoff + 16].copy_from_slice(&(interp_offset as u64).to_le_bytes());
+        data[phoff + 32..phoff + 40]
+            .copy_from_slice(&((interpreter.len() + 1) as u64).to_le_bytes());
+        data[interp_offset..interp_offset + interpreter.len()].copy_from_slice(interpreter);
+        data[interp_offset + interpreter.len()] = 0;
+        data
+    }
 
     #[test]
     fn config_values_replace_disabled_symbols() {
@@ -529,5 +608,26 @@ mod tests {
     #[test]
     fn rejects_non_elf_data() {
         assert!(!is_dynamic_glibc_x86_64_elf(b"not an ELF"));
+    }
+
+    #[test]
+    fn accepts_supported_dynamic_glibc_interpreters() {
+        for path in [
+            b"/lib64/ld-linux-x86-64.so.2".as_slice(),
+            b"/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2".as_slice(),
+        ] {
+            assert_eq!(
+                dynamic_glibc_interpreter_path(&synthetic_elf(path)),
+                Some(std::str::from_utf8(path).unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_dynamic_interpreter() {
+        assert_eq!(
+            dynamic_glibc_interpreter_path(&synthetic_elf(b"/lib/ld-musl-x86_64.so.1")),
+            None
+        );
     }
 }

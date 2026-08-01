@@ -43,6 +43,25 @@ struct SyscallEntryState {
 }
 
 const _: () = {
+    assert!(core::mem::offset_of!(SyscallEntryState, kernel_stack_top) == 0);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_rsp) == 8);
+    assert!(core::mem::offset_of!(SyscallEntryState, syscall_number) == 16);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_rip) == 24);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_rflags) == 32);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_rbx) == 40);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_rcx) == 48);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_rdx) == 56);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_rsi) == 64);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_rdi) == 72);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_rbp) == 80);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_r8) == 88);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_r9) == 96);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_r10) == 104);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_r11) == 112);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_r12) == 120);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_r13) == 128);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_r14) == 136);
+    assert!(core::mem::offset_of!(SyscallEntryState, user_r15) == 144);
     assert!(core::mem::offset_of!(SyscallEntryState, return_override) == 152);
     assert!(core::mem::offset_of!(SyscallEntryState, return_rip) == 160);
     assert!(core::mem::offset_of!(SyscallEntryState, return_rsp) == 168);
@@ -184,6 +203,9 @@ pub extern "C" fn syscall_entry() {
         "swapgs",
         "mov gs:[16], rax",
         "mov gs:[8], rsp",
+        // SYSCALL overwrites RCX with the return RIP and R11 with RFLAGS.
+        // These slots intentionally do not contain caller values; the return
+        // context exposes zero for both registers.
         "mov gs:[24], rcx",
         "mov gs:[32], r11",
         "mov gs:[40], rbx",

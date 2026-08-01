@@ -447,6 +447,13 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
     let mut child = qemu_cmd.spawn()?;
     let linux_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some()
         || env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some();
+    let qemu_status_is_valid = |status: &std::process::ExitStatus| {
+        if linux_smoke_requested {
+            status.code() == Some(35)
+        } else {
+            status.success()
+        }
+    };
 
     if let Some(timeout_secs) = args.timeout {
         let timeout_duration = std::time::Duration::from_secs(timeout_secs);
@@ -459,12 +466,7 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
         loop {
             match child.try_wait()? {
                 Some(status) => {
-                    let status_is_valid = if linux_smoke_requested {
-                        status.code() == Some(35)
-                    } else {
-                        status.success()
-                    };
-                    if !status_is_valid {
+                    if !qemu_status_is_valid(&status) {
                         return Err(io::Error::other("QEMU execution failed"));
                     }
                     return Ok(());
@@ -484,12 +486,7 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
         }
     } else {
         let qemu_status = child.wait()?;
-        let status_is_valid = if linux_smoke_requested {
-            qemu_status.code() == Some(35)
-        } else {
-            qemu_status.success()
-        };
-        if !status_is_valid {
+        if !qemu_status_is_valid(&qemu_status) {
             return Err(io::Error::other("QEMU execution failed"));
         }
     }

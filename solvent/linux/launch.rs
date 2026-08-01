@@ -57,126 +57,125 @@ const BUSYBOX_SMOKE_HELP_CHECK_MARKER: &str = "__FULLERENE_BUSYBOX_HELP_CHECK__"
 fn busybox_smoke_script() -> alloc::string::String {
     let script = alloc::format!(
         "set -e\n\
-busybox rmdir /tmp/busybox-contract /tmp/busybox-dir || true\n\
-busybox rm -f /tmp/busybox-input || true\n\
-busybox busybox --help >/tmp/busybox-help\n\
-busybox busybox --list >/tmp/busybox-list\n\
-busybox wc -l /tmp/busybox-list >/tmp/busybox-list-count\n\
-busybox grep -q '^{count} ' /tmp/busybox-list-count\n\
-__FULLERENE_BUSYBOX_HELP_CHECK__\n\
-busybox mkdir /tmp/busybox-contract\n\
-busybox printf 'alpha\\nbeta\\nalpha\\n' >/tmp/busybox-input\n\
-busybox '[' 1 -eq 1 ']'\n\
-busybox '[[' 1 -eq 1 ']]'\n\
-busybox arch >/tmp/busybox-arch\n\
-busybox ash -c 'exit 0'\n\
-busybox awk 'BEGIN {{ if (1+1 != 2) exit 1 }}'\n\
-busybox basename /tmp/busybox-input >/tmp/busybox-basename\n\
-busybox test \"$(busybox cat /tmp/busybox-basename)\" = busybox-input\n\
-busybox cat /tmp/busybox-input >/tmp/busybox-cat\n\
-busybox grep -q '^alpha$' /tmp/busybox-cat\n\
-busybox cksum /tmp/busybox-input >/tmp/busybox-cksum\n\
-busybox test -s /tmp/busybox-cksum\n\
-busybox clear\n\
-busybox cp /tmp/busybox-input /tmp/busybox-copy\n\
-busybox test -f /tmp/busybox-copy\n\
-busybox cut -d: -f2 /tmp/busybox-input >/tmp/busybox-cut\n\
-busybox test \"$(busybox wc -c </tmp/busybox-cut)\" -eq 17\n\
-busybox date >/tmp/busybox-date\n\
-busybox test -s /tmp/busybox-date\n\
-busybox dd if=/tmp/busybox-input of=/tmp/busybox-dd bs=1 count=1\n\
-busybox test \"$(busybox wc -c </tmp/busybox-dd)\" -eq 1\n\
-busybox dirname /tmp/busybox-input >/tmp/busybox-dirname\n\
-busybox test \"$(busybox cat /tmp/busybox-dirname)\" = /tmp\n\
-busybox echo smoke >/tmp/busybox-echo\n\
-busybox grep -q '^smoke$' /tmp/busybox-echo\n\
-busybox env -i busybox true >/tmp/busybox-env\n\
-busybox expr 1 + 1 >/tmp/busybox-expr\n\
-busybox test \"$(busybox cat /tmp/busybox-expr)\" = 2\n\
-if busybox false; then busybox echo false-unexpected; exit 1; fi\n\
-busybox fold -w 3 /tmp/busybox-input >/tmp/busybox-fold\n\
-busybox test -s /tmp/busybox-fold\n\
-busybox grep -q alpha /tmp/busybox-input\n\
-busybox head -n 1 /tmp/busybox-input >/tmp/busybox-head\n\
-busybox grep -q '^alpha$' /tmp/busybox-head\n\
-busybox hexdump -C /tmp/busybox-input >/tmp/busybox-hexdump\n\
-busybox test -s /tmp/busybox-hexdump\n\
-busybox hostname >/tmp/busybox-hostname\n\
-busybox test -s /tmp/busybox-hostname\n\
-busybox test -d /\n\
-busybox stat / >/tmp/busybox-root-stat\n\
-busybox test -s /tmp/busybox-root-stat\n\
-busybox ls / >/tmp/busybox-ls\n\
-busybox test -s /tmp/busybox-ls\n\
-busybox md5sum /tmp/busybox-input >/tmp/busybox-md5\n\
-busybox test -s /tmp/busybox-md5\n\
-busybox mkdir /tmp/busybox-dir\n\
-busybox test -d /tmp/busybox-dir\n\
-tmp=$(busybox mktemp /tmp/busybox.XXXXXX)\n\
-busybox test -f \"$tmp\"\n\
-busybox mv /tmp/busybox-copy /tmp/busybox-moved\n\
-busybox test -f /tmp/busybox-moved\n\
-busybox od /tmp/busybox-input >/tmp/busybox-od\n\
-busybox test -s /tmp/busybox-od\n\
-busybox printenv PATH >/tmp/busybox-path\n\
-busybox test -s /tmp/busybox-path\n\
-busybox printf '%s\\n' printf >/tmp/busybox-printf\n\
-busybox grep -q '^printf$' /tmp/busybox-printf\n\
-busybox pwd >/tmp/busybox-pwd\n\
-busybox test -d \"$(busybox cat /tmp/busybox-pwd)\"\n\
-busybox rm /tmp/busybox-moved\n\
-if busybox test -e /tmp/busybox-moved; then exit 1; fi\n\
-busybox rmdir /tmp/busybox-dir\n\
-if busybox test -e /tmp/busybox-dir; then exit 1; fi\n\
-busybox sed -n 's/^alpha$/ok/p' /tmp/busybox-input >/tmp/busybox-sed\n\
-busybox grep -q '^ok$' /tmp/busybox-sed\n\
-busybox seq 1 2 >/tmp/busybox-seq\n\
-busybox test \"$(busybox wc -l </tmp/busybox-seq)\" -eq 2\n\
-busybox sha256sum /tmp/busybox-input >/tmp/busybox-sha256\n\
-busybox test -s /tmp/busybox-sha256\n\
-busybox sh -c 'busybox true'\n\
-busybox sleep 0\n\
-busybox sort /tmp/busybox-input >/tmp/busybox-sort\n\
-busybox grep -q '^alpha$' /tmp/busybox-sort\n\
-busybox stat /tmp/busybox-input >/tmp/busybox-stat\n\
-busybox test -s /tmp/busybox-stat\n\
-busybox tail -n 1 /tmp/busybox-input >/tmp/busybox-tail\n\
-busybox grep -q '^alpha$' /tmp/busybox-tail\n\
-busybox tar -cf /tmp/busybox.tar /tmp/busybox-input\n\
-busybox test -s /tmp/busybox.tar\n\
-busybox tar -tf /tmp/busybox.tar >/tmp/busybox-tar-list\n\
-busybox grep -q 'busybox-input' /tmp/busybox-tar-list\n\
-busybox tee /tmp/busybox-tee </tmp/busybox-input >/tmp/busybox-tee-out\n\
-busybox grep -q '^alpha$' /tmp/busybox-tee-out\n\
-busybox test -f /tmp/busybox-input\n\
-busybox touch /tmp/busybox-touch\n\
-busybox test -f /tmp/busybox-touch\n\
-busybox tr a-z A-Z </tmp/busybox-input >/tmp/busybox-tr\n\
-busybox grep -q '^ALPHA$' /tmp/busybox-tr\n\
-busybox true\n\
-if busybox tty >/tmp/busybox-tty; then\n\
-busybox test -s /tmp/busybox-tty\n\
-else\n\
-tty_status=$?\n\
-busybox test \"$tty_status\" -eq 1\n\
-fi\n\
-busybox uname -a >/tmp/busybox-uname\n\
-busybox test -s /tmp/busybox-uname\n\
-busybox uniq /tmp/busybox-input >/tmp/busybox-uniq\n\
-busybox test \"$(busybox wc -l </tmp/busybox-uniq)\" -eq 3\n\
-busybox uptime >/tmp/busybox-uptime\n\
-busybox test -s /tmp/busybox-uptime\n\
-busybox wc -l /tmp/busybox-input >/tmp/busybox-wc\n\
-busybox grep -q '3' /tmp/busybox-wc\n\
-busybox which busybox >/tmp/busybox-which\n\
-busybox grep -q '/bin/busybox' /tmp/busybox-which\n\
-busybox whoami >/tmp/busybox-whoami\n\
-busybox test \"$(busybox cat /tmp/busybox-whoami)\" = root\n\
-busybox yes | busybox head -n 1 >/tmp/busybox-yes\n\
-busybox test -s /tmp/busybox-yes\n\
-busybox rmdir /tmp/busybox-contract /tmp/busybox-dir || true\n\
-echo Fullerene BusyBox all applets passed\n\
-exit 0\n",
+    busybox rmdir /tmp/busybox-contract /tmp/busybox-dir || true\n\
+    busybox rm -f /tmp/busybox-input || true\n\
+    busybox busybox --help >/tmp/busybox-help\n\
+    busybox busybox --list >/tmp/busybox-list\n\
+    busybox test \"$(busybox wc -l </tmp/busybox-list)\" -eq {count}\n\
+    __FULLERENE_BUSYBOX_HELP_CHECK__\n\
+    busybox mkdir /tmp/busybox-contract\n\
+    busybox printf 'alpha\\nbeta\\nalpha\\n' >/tmp/busybox-input\n\
+    busybox '[' 1 -eq 1 ']'\n\
+    busybox '[[' 1 -eq 1 ']]'\n\
+    busybox arch >/tmp/busybox-arch\n\
+    busybox ash -c 'exit 0'\n\
+    busybox awk 'BEGIN {{ if (1+1 != 2) exit 1 }}'\n\
+    busybox basename /tmp/busybox-input >/tmp/busybox-basename\n\
+    busybox test \"$(busybox cat /tmp/busybox-basename)\" = busybox-input\n\
+    busybox cat /tmp/busybox-input >/tmp/busybox-cat\n\
+    busybox grep -q '^alpha$' /tmp/busybox-cat\n\
+    busybox cksum /tmp/busybox-input >/tmp/busybox-cksum\n\
+    busybox test -s /tmp/busybox-cksum\n\
+    busybox clear\n\
+    busybox cp /tmp/busybox-input /tmp/busybox-copy\n\
+    busybox test -f /tmp/busybox-copy\n\
+    busybox cut -d: -f2 /tmp/busybox-input >/tmp/busybox-cut\n\
+    busybox test \"$(busybox wc -c </tmp/busybox-cut)\" -eq 17\n\
+    busybox date >/tmp/busybox-date\n\
+    busybox test -s /tmp/busybox-date\n\
+    busybox dd if=/tmp/busybox-input of=/tmp/busybox-dd bs=1 count=1\n\
+    busybox test \"$(busybox wc -c </tmp/busybox-dd)\" -eq 1\n\
+    busybox dirname /tmp/busybox-input >/tmp/busybox-dirname\n\
+    busybox test \"$(busybox cat /tmp/busybox-dirname)\" = /tmp\n\
+    busybox echo smoke >/tmp/busybox-echo\n\
+    busybox grep -q '^smoke$' /tmp/busybox-echo\n\
+    busybox env -i /bin/busybox true >/tmp/busybox-env\n\
+    busybox expr 1 + 1 >/tmp/busybox-expr\n\
+    busybox test \"$(busybox cat /tmp/busybox-expr)\" = 2\n\
+    if busybox false; then busybox echo false-unexpected; exit 1; fi\n\
+    busybox fold -w 3 /tmp/busybox-input >/tmp/busybox-fold\n\
+    busybox test -s /tmp/busybox-fold\n\
+    busybox grep -q alpha /tmp/busybox-input\n\
+    busybox head -n 1 /tmp/busybox-input >/tmp/busybox-head\n\
+    busybox grep -q '^alpha$' /tmp/busybox-head\n\
+    busybox hexdump -C /tmp/busybox-input >/tmp/busybox-hexdump\n\
+    busybox test -s /tmp/busybox-hexdump\n\
+    busybox hostname >/tmp/busybox-hostname\n\
+    busybox test -s /tmp/busybox-hostname\n\
+    busybox test -d /\n\
+    busybox stat / >/tmp/busybox-root-stat\n\
+    busybox test -s /tmp/busybox-root-stat\n\
+    busybox ls / >/tmp/busybox-ls\n\
+    busybox test -s /tmp/busybox-ls\n\
+    busybox md5sum /tmp/busybox-input >/tmp/busybox-md5\n\
+    busybox test -s /tmp/busybox-md5\n\
+    busybox mkdir /tmp/busybox-dir\n\
+    busybox test -d /tmp/busybox-dir\n\
+    tmp=$(busybox mktemp /tmp/busybox.XXXXXX)\n\
+    busybox test -f \"$tmp\"\n\
+    busybox mv /tmp/busybox-copy /tmp/busybox-moved\n\
+    busybox test -f /tmp/busybox-moved\n\
+    busybox od /tmp/busybox-input >/tmp/busybox-od\n\
+    busybox test -s /tmp/busybox-od\n\
+    busybox printenv PATH >/tmp/busybox-path\n\
+    busybox test -s /tmp/busybox-path\n\
+    busybox printf '%s\\n' printf >/tmp/busybox-printf\n\
+    busybox grep -q '^printf$' /tmp/busybox-printf\n\
+    busybox pwd >/tmp/busybox-pwd\n\
+    busybox test -d \"$(busybox cat /tmp/busybox-pwd)\"\n\
+    busybox rm /tmp/busybox-moved\n\
+    if busybox test -e /tmp/busybox-moved; then exit 1; fi\n\
+    busybox rmdir /tmp/busybox-dir\n\
+    if busybox test -e /tmp/busybox-dir; then exit 1; fi\n\
+    busybox sed -n 's/^alpha$/ok/p' /tmp/busybox-input >/tmp/busybox-sed\n\
+    busybox grep -q '^ok$' /tmp/busybox-sed\n\
+    busybox seq 1 2 >/tmp/busybox-seq\n\
+    busybox test \"$(busybox wc -l </tmp/busybox-seq)\" -eq 2\n\
+    busybox sha256sum /tmp/busybox-input >/tmp/busybox-sha256\n\
+    busybox test -s /tmp/busybox-sha256\n\
+    busybox sh -c 'busybox true'\n\
+    busybox sleep 0\n\
+    busybox sort /tmp/busybox-input >/tmp/busybox-sort\n\
+    busybox grep -q '^alpha$' /tmp/busybox-sort\n\
+    busybox stat /tmp/busybox-input >/tmp/busybox-stat\n\
+    busybox test -s /tmp/busybox-stat\n\
+    busybox tail -n 1 /tmp/busybox-input >/tmp/busybox-tail\n\
+    busybox grep -q '^alpha$' /tmp/busybox-tail\n\
+    busybox tar -cf /tmp/busybox.tar /tmp/busybox-input\n\
+    busybox test -s /tmp/busybox.tar\n\
+    busybox tar -tf /tmp/busybox.tar >/tmp/busybox-tar-list\n\
+    busybox grep -q 'busybox-input' /tmp/busybox-tar-list\n\
+    busybox tee /tmp/busybox-tee </tmp/busybox-input >/tmp/busybox-tee-out\n\
+    busybox grep -q '^alpha$' /tmp/busybox-tee-out\n\
+    busybox test -f /tmp/busybox-input\n\
+    busybox touch /tmp/busybox-touch\n\
+    busybox test -f /tmp/busybox-touch\n\
+    busybox tr a-z A-Z </tmp/busybox-input >/tmp/busybox-tr\n\
+    busybox grep -q '^ALPHA$' /tmp/busybox-tr\n\
+    busybox true\n\
+    if busybox tty >/tmp/busybox-tty; then\n\
+    busybox test -s /tmp/busybox-tty\n\
+    else\n\
+    tty_status=$?\n\
+    busybox test \"$tty_status\" -eq 1\n\
+    fi\n\
+    busybox uname -a >/tmp/busybox-uname\n\
+    busybox test -s /tmp/busybox-uname\n\
+    busybox uniq /tmp/busybox-input >/tmp/busybox-uniq\n\
+    busybox test \"$(busybox wc -l </tmp/busybox-uniq)\" -eq 3\n\
+    busybox uptime >/tmp/busybox-uptime\n\
+    busybox test -s /tmp/busybox-uptime\n\
+    busybox wc -l /tmp/busybox-input >/tmp/busybox-wc\n\
+    busybox grep -q '3' /tmp/busybox-wc\n\
+    busybox which busybox >/tmp/busybox-which\n\
+    busybox grep -q '/bin/busybox' /tmp/busybox-which\n\
+    busybox whoami >/tmp/busybox-whoami\n\
+    busybox test \"$(busybox cat /tmp/busybox-whoami)\" = root\n\
+    busybox yes | busybox head -n 1 >/tmp/busybox-yes\n\
+    busybox test -s /tmp/busybox-yes\n\
+    busybox rmdir /tmp/busybox-contract /tmp/busybox-dir || true\n\
+    echo Fullerene BusyBox all applets passed\n\
+    exit 0\n",
         count = BUSYBOX_SMOKE_APPLET_COUNT
     );
     let help_check = alloc::string::String::from(
