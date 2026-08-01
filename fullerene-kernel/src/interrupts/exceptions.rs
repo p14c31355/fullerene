@@ -11,10 +11,14 @@ struct RawSerialWriter;
 impl Write for RawSerialWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for &b in s.as_bytes() {
-            while unsafe { core::ptr::read_volatile(0x3FD as *const u8) } & 0x20 == 0 {
-                core::hint::spin_loop();
+            unsafe {
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") 0x3F8u16,
+                    in("al") b,
+                    options(nomem, nostack, preserves_flags),
+                );
             }
-            unsafe { core::ptr::write_volatile(0x3F8 as *mut u8, b) };
         }
         Ok(())
     }
@@ -321,14 +325,6 @@ pub extern "x86-interrupt" fn page_fault_handler(
     let is_write = error_code.intersects(PageFaultErrorCode::CAUSED_BY_WRITE);
     let is_user = error_code.intersects(PageFaultErrorCode::USER_MODE);
 
-    raw_log!(
-        "PF @ {:#x}: {} {} {}\n",
-        fault_addr.as_u64(),
-        if is_present { "prot" } else { "np" },
-        if is_write { "W" } else { "R" },
-        if is_user { "(user)" } else { "(kernel)" }
-    );
-
     if !is_user {
         if !is_present
             && crate::memory_management::try_map_kernel_heap_extension_page(
@@ -344,6 +340,25 @@ pub extern "x86-interrupt" fn page_fault_handler(
         raw_log!("  Fault addr: {:#x}\n", fault_addr.as_u64());
         kernel_fault_halt(&frame, "Page Fault", "kernel PF");
     } else {
+        // Fork currently shares user frames and page tables without a full
+        // COW implementation. A write-protection fault on a present user
+        // page is therefore promoted lazily and retried at the faulting RIP.
+        if is_present && is_write {
+            let (root, _) = x86_64::registers::control::Cr3::read();
+            unsafe {
+                crate::linux::process::force_user_page_writable(
+                    root.start_address(),
+                    fault_addr.as_u64(),
+                );
+            }
+            return;
+        }
+        raw_log!(
+            "PF @ {:#x}: {} {} (user)\n",
+            fault_addr.as_u64(),
+            if is_present { "prot" } else { "np" },
+            if is_write { "W" } else { "R" }
+        );
         if petroleum::common::memory::is_user_address(fault_addr) || is_present {
             terminate_and_recover(
                 &mut frame,

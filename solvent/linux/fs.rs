@@ -84,9 +84,26 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if kernel_buf.is_empty() {
         return 0;
     }
+    #[cfg(linux_busybox_smoke)]
+    if count >= 65536 {
+        petroleum::serial::serial_log(format_args!(
+            "[BUSYBOX-READ] fd={} count={} before-vfs\n",
+            fd, count
+        ));
+    }
     match crate::contexts::vfs::read(desc.vfs_fd, &mut kernel_buf) {
         Ok(n) => {
-            if n > 0 && unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_ok() {
+            #[cfg(linux_busybox_smoke)]
+            if count >= 65536 {
+                petroleum::serial::serial_log(format_args!(
+                    "[BUSYBOX-READ] fd={} n={} after-vfs\n",
+                    fd, n
+                ));
+            }
+            if n == 0 {
+                return 0;
+            }
+            if unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_ok() {
                 // Update offset in FD table
                 if let Some(d) = rt.fd_table.get_mut(fd) {
                     d.offset += n as u64;

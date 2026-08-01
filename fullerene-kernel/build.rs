@@ -289,9 +289,11 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
         if !is_static_x86_64_elf(&data) {
             panic!("BusyBox must be a static x86_64 ELF: {}", path.display());
         }
+        busybox_build::validate_fullerene_busybox(path).unwrap_or_else(|error| panic!("{error}"));
         fs::write(out_dir.join("busybox"), data).unwrap_or_else(|error| {
             panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
         });
+        write_busybox_contract(out_dir);
         println!("cargo:rustc-cfg=have_busybox");
         return true;
     }
@@ -313,10 +315,13 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
             clean: false,
         };
         if let Err(error) = busybox_build::build(&options) {
+            if env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some() {
+                panic!("FULLERENE_BUSYBOX_SMOKE BusyBox build failed: {error}");
+            }
             // BusyBox is an optional cached port.  A missing toolchain or
             // submodule must not turn an otherwise valid kernel check into a
             // warning; the initramfs simply omits the optional package.
-            let _ = error;
+            println!("cargo:warning=BusyBox unavailable: {error}");
         }
     }
     let candidates = [
@@ -332,17 +337,31 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
         let Ok(data) = fs::read(&path) else {
             continue;
         };
-        if !is_static_x86_64_elf(&data) {
+        if !is_static_x86_64_elf(&data) || busybox_build::validate_fullerene_busybox(&path).is_err()
+        {
             continue;
         }
         fs::write(out_dir.join("busybox"), data).unwrap_or_else(|error| {
             panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
         });
+        write_busybox_contract(&out_dir);
         println!("cargo:rustc-cfg=have_busybox");
         return true;
     }
 
     false
+}
+
+fn write_busybox_contract(out_dir: &Path) {
+    let names = busybox_build::fullerene_busybox_applet_names().collect::<Vec<_>>();
+    let contract = names.join("\n");
+    fs::write(out_dir.join("busybox-applets.txt"), format!("{contract}\n"))
+        .unwrap_or_else(|error| panic!("cannot write BusyBox applet contract: {error}"));
+    fs::write(
+        out_dir.join("busybox-applet-count.rs"),
+        format!("{}usize", names.len()),
+    )
+    .unwrap_or_else(|error| panic!("cannot write BusyBox applet count: {error}"));
 }
 
 fn build_standalone_wasm(rustc: &str, sysroot: &str, source: &Path, output: &Path, label: &str) {

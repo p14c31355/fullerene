@@ -10,6 +10,49 @@ use x86_64::PhysAddr;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableFlags, Size4KiB};
 
+pub(crate) unsafe fn force_user_page_writable(root: PhysAddr, virtual_address: u64) -> bool {
+    let offset =
+        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let mut table = unsafe {
+        &mut *(offset + root.as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>()
+    };
+    let address = x86_64::VirtAddr::new(virtual_address);
+    for (level, index) in [
+        address.p4_index(),
+        address.p3_index(),
+        address.p2_index(),
+        address.p1_index(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (flags, next_table) = {
+            let entry = &mut table[index];
+            let flags = entry.flags();
+            if !flags.contains(PageTableFlags::PRESENT) {
+                return false;
+            }
+            entry.set_flags(flags | PageTableFlags::WRITABLE);
+            (flags, entry.addr())
+        };
+        if flags.contains(PageTableFlags::HUGE_PAGE) || level == 3 {
+            unsafe {
+                core::arch::asm!(
+                    "invlpg [{}]",
+                    in(reg) virtual_address,
+                    options(nostack, preserves_flags)
+                );
+            }
+            return true;
+        }
+        table = unsafe {
+            &mut *(offset + next_table.as_u64())
+                .as_mut_ptr::<x86_64::structures::paging::PageTable>()
+        };
+    }
+    true
+}
+
 pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let code = args[0] as i32;
     let terminal_owner_exit = rt.terminal_window.is_some() && rt.tid == rt.terminal_owner_tid;
@@ -130,6 +173,21 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
     let mut child_pt =
         petroleum::page_table::process::ProcessPageTable::new_with_frame(cloned_frame);
+    // `clone_page_table` returns a fully copied PML4, but the helper object
+    // still needs its mapper bound to that new frame before any child-only
+    // mapping is removed or added.  BusyBox's first external applet reaches
+    // this path immediately, so leaving mapper unset turns a normal fork into
+    // a kernel panic.
+    let physical_offset =
+        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let l4_virt = physical_offset + cloned_frame.start_address().as_u64();
+    let mapper = unsafe {
+        x86_64::structures::paging::OffsetPageTable::new(
+            &mut *(l4_virt.as_mut_ptr::<x86_64::structures::paging::PageTable>()),
+            physical_offset,
+        )
+    };
+    child_pt.mapper = Some(mapper);
     let _ = petroleum::initializer::Initializable::init(&mut child_pt);
 
     // Allocate kernel stack
@@ -143,24 +201,12 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
     let child_pid = process::SCHEDULER.allocate_pid();
 
-    // Remove inherited VDSO mapping (parent may have one at VDSO_USER_BASE)
-    let _ = child_pt.unmap_page(petroleum::vdso::VDSO_USER_BASE as usize);
-
-    // Create child VDSO page
-    let child_vdso = {
-        let vdso = petroleum::page_table::constants::with_frame_allocator(|frame_allocator| {
-            crate::vdso::create_vdso_page(&mut child_pt, frame_allocator, child_pid.0)
-        });
-        match vdso {
-            Ok(v) => Some(v),
-            Err(_) => {
-                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
-                crate::memory_management::deallocate_process_page_table(cloned_frame);
-                return errno_code(ENOMEM);
-            }
-        }
-    };
-
+    // Keep the inherited VDSO mapping shared for a forked child. It is
+    // immutable user data, and replacing it here would mutate shared lower
+    // page-table branches while this clone still shares the parent's address
+    // space. A later per-process VDSO allocator can replace this safely once
+    // the full page-table deep-copy path is available.
+    let child_vdso = None;
     let child_process = process::Process {
         id: child_pid,
         name: "linux-child",

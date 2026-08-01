@@ -45,7 +45,82 @@ static BUSYBOX_SMOKE_LAUNCH_COUNT: AtomicU8 = AtomicU8::new(0);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_HOLD_INPUT: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
-static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox is running";
+static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox all applets passed";
+
+#[cfg(linux_busybox_smoke)]
+const BUSYBOX_SMOKE_APPLET_COUNT: usize =
+    include!(concat!(env!("OUT_DIR"), "/busybox-applet-count.rs"));
+
+#[cfg(linux_busybox_smoke)]
+fn busybox_smoke_script() -> alloc::string::String {
+    alloc::format!(
+        "set -e\n\
+busybox busybox --help >/tmp/busybox-help\n\
+list_count=$(busybox busybox --list | busybox wc -l)\n\
+busybox test \"$list_count\" -eq {count}\n\
+mkdir /tmp/busybox-contract\n\
+printf 'alpha\\nbeta\\nalpha\\n' >/tmp/busybox-input\n\
+'[' 1 -eq 1 ']'\n\
+'[[' 1 -eq 1 ']]'\n\
+arch >/tmp/busybox-arch\n\
+ash -c 'exit 0'\n\
+awk 'BEGIN {{ if (1+1 != 2) exit 1 }}'\n\
+basename /tmp/busybox-input >/tmp/busybox-basename\n\
+cat /tmp/busybox-input >/tmp/busybox-cat\n\
+busybox cksum /tmp/busybox-input >/tmp/busybox-cksum\n\
+clear >/tmp/busybox-clear\n\
+cp /tmp/busybox-input /tmp/busybox-copy\n\
+cut -d: -f2 /tmp/busybox-input >/tmp/busybox-cut\n\
+date >/tmp/busybox-date\n\
+dd if=/tmp/busybox-input of=/tmp/busybox-dd bs=1 count=1 2>/tmp/busybox-dd-err\n\
+dirname /tmp/busybox-input >/tmp/busybox-dirname\n\
+echo smoke >/tmp/busybox-echo\n\
+env -i true >/tmp/busybox-env\n\
+expr 1 + 1 >/tmp/busybox-expr\n\
+if false; then echo false-unexpected; exit 1; fi\n\
+fold -w 3 /tmp/busybox-input >/tmp/busybox-fold\n\
+grep -q alpha /tmp/busybox-input\n\
+head -n 1 /tmp/busybox-input >/tmp/busybox-head\n\
+hexdump -C /tmp/busybox-input >/tmp/busybox-hexdump\n\
+hostname >/tmp/busybox-hostname\n\
+ls /tmp >/tmp/busybox-ls\n\
+md5sum /tmp/busybox-input >/tmp/busybox-md5\n\
+mkdir /tmp/busybox-dir\n\
+tmp=$(mktemp /tmp/busybox.XXXXXX)\n\
+mv /tmp/busybox-copy /tmp/busybox-moved\n\
+od -An -tx1 /tmp/busybox-input >/tmp/busybox-od\n\
+printenv PATH >/tmp/busybox-path\n\
+printf '%s\\n' printf >/tmp/busybox-printf\n\
+pwd >/tmp/busybox-pwd\n\
+rm /tmp/busybox-moved\n\
+rmdir /tmp/busybox-dir\n\
+sed -n 's/^alpha$/ok/p' /tmp/busybox-input >/tmp/busybox-sed\n\
+seq 1 2 >/tmp/busybox-seq\n\
+sha256sum /tmp/busybox-input >/tmp/busybox-sha256\n\
+sh -c 'true'\n\
+sleep 0\n\
+sort /tmp/busybox-input >/tmp/busybox-sort\n\
+stat /tmp/busybox-input >/tmp/busybox-stat\n\
+tail -n 1 /tmp/busybox-input >/tmp/busybox-tail\n\
+tar -cf /tmp/busybox.tar /tmp/busybox-input\n\
+tee /tmp/busybox-tee </tmp/busybox-input >/tmp/busybox-tee-out\n\
+test -f /tmp/busybox-input\n\
+touch /tmp/busybox-touch\n\
+tr a-z A-Z </tmp/busybox-input >/tmp/busybox-tr\n\
+true\n\
+tty >/tmp/busybox-tty\n\
+uname -a >/tmp/busybox-uname\n\
+uniq /tmp/busybox-input >/tmp/busybox-uniq\n\
+uptime >/tmp/busybox-uptime\n\
+wc -l /tmp/busybox-input >/tmp/busybox-wc\n\
+which >/tmp/busybox-which\n\
+whoami >/tmp/busybox-whoami\n\
+yes | head -n 1 >/tmp/busybox-yes\n\
+rm -rf /tmp/busybox-contract \"$tmp\" /tmp/busybox-input /tmp/busybox-arch /tmp/busybox-basename /tmp/busybox-cat /tmp/busybox-cksum /tmp/busybox-clear /tmp/busybox-cut /tmp/busybox-date /tmp/busybox-dd /tmp/busybox-dd-err /tmp/busybox-dirname /tmp/busybox-echo /tmp/busybox-env /tmp/busybox-expr /tmp/busybox-fold /tmp/busybox-head /tmp/busybox-hexdump /tmp/busybox-hostname /tmp/busybox-ls /tmp/busybox-md5 /tmp/busybox-mkdir /tmp/busybox-moved /tmp/busybox-od /tmp/busybox-path /tmp/busybox-printf /tmp/busybox-pwd /tmp/busybox-sed /tmp/busybox-seq /tmp/busybox-sha256 /tmp/busybox-sort /tmp/busybox-stat /tmp/busybox-tail /tmp/busybox.tar /tmp/busybox-tee /tmp/busybox-tee-out /tmp/busybox-touch /tmp/busybox-tr /tmp/busybox-tty /tmp/busybox-uname /tmp/busybox-uniq /tmp/busybox-uptime /tmp/busybox-wc /tmp/busybox-which /tmp/busybox-whoami /tmp/busybox-yes /tmp/busybox-help\n\
+echo Fullerene BusyBox all applets passed\n",
+        count = BUSYBOX_SMOKE_APPLET_COUNT
+    )
+}
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
@@ -233,12 +308,11 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         BUSYBOX_SMOKE_WINDOW.store(terminal_window.0, Ordering::Release);
         BUSYBOX_SMOKE_LAUNCH_COUNT.fetch_add(1, Ordering::AcqRel);
         BUSYBOX_SMOKE_HOLD_INPUT.store(true, Ordering::Release);
-        // Feed the command that exercises the shell. The exit command is
-        // injected after BusyBox has reached a real no-input wait.
-        solvent::push_process_terminal_input(
-            terminal_window,
-            b"echo Fullerene BusyBox is running\n",
-        );
+        // Run every applet in the generated contract through the bundled
+        // BusyBox command. The exit command is injected only after the
+        // success marker and a real no-input wait.
+        let script = busybox_smoke_script();
+        solvent::push_process_terminal_input(terminal_window, script.as_bytes());
         BUSYBOX_SMOKE_PID.store(pid.0, Ordering::Release);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] fixture launched as PID {}\n",
@@ -356,7 +430,7 @@ pub fn busybox_smoke_complete() -> bool {
 
 /// Launch BusyBox shell from embedded initramfs data.
 pub fn launch_busybox() -> Result<ProcessId, LoadError> {
-    // Look for busybox in standard locations
+    // Look for in standard locations
     let locations = [
         "/bin/busybox",
         "/sbin/busybox",

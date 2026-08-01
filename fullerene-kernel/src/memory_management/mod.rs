@@ -192,9 +192,7 @@ pub fn get_memory_manager() -> &'static Mutex<Option<UnifiedMemoryManager>> {
 /// already held, or if the current context is not the idle shell context, we
 /// refuse recovery rather than risking an exception-handler deadlock.
 pub fn try_map_kernel_heap_extension_page(address: usize) -> bool {
-    if crate::process::SCHEDULER.current_pid() != 1
-        || !crate::heap::is_reserved_extension_address(address)
-    {
+    if !crate::heap::is_reserved_extension_address(address) {
         return false;
     }
 

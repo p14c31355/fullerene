@@ -1555,7 +1555,7 @@ pub fn busybox_smoke() {
     crate::linux::launch::mark_busybox_smoke_harness_done();
     if crate::linux::launch::busybox_smoke_complete() {
         petroleum::serial::serial_log(format_args!(
-            "[busybox-smoke] PASS: output observed, exit=0, shell resumed\n"
+            "[busybox-smoke] PASS: all bundled applets ran, exit=0, shell resumed\n"
         ));
         unsafe {
             x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x11);

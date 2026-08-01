@@ -1,19 +1,39 @@
 pub const COM1_DATA_PORT: u16 = 0x3F8;
 pub const COM1_STATUS_PORT: u16 = 0x3FD;
 
+#[inline(always)]
+unsafe fn read_port_u8(port: u16) -> u8 {
+    let value: u8;
+    unsafe {
+        core::arch::asm!(
+            "in al, dx",
+            out("al") value,
+            in("dx") port,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    value
+}
+
+#[inline(always)]
+unsafe fn write_port_u8(port: u16, value: u8) {
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") value,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
 pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &[u8]) {
     #[cfg(all(not(feature = "std"), not(test)))]
     {
-        use x86_64::instructions::port::Port;
-        let mut port = Port::<u8>::new(port_addr);
-        let mut status_port = Port::<u8>::new(status_port_addr);
         for &byte in bytes {
             unsafe {
-                let mut timeout = 1000000;
-                while (status_port.read() & 0x20) == 0 && timeout > 0 {
-                    timeout -= 1;
-                }
-                port.write(byte);
+                let _ = status_port_addr;
+                write_port_u8(port_addr, byte);
             }
         }
     }
@@ -71,10 +91,10 @@ impl<S: SerialPortOps> SerialPort<S> {
         #[cfg(all(not(feature = "std"), not(test)))]
         unsafe {
             let mut timeout = 1000000;
-            while (self.ops.line_status_port().read() & 0x20) == 0 && timeout > 0 {
+            while (read_port_u8(COM1_STATUS_PORT) & 0x20) == 0 && timeout > 0 {
                 timeout -= 1;
             }
-            self.ops.data_port().write(byte);
+            write_port_u8(COM1_DATA_PORT, byte);
         }
         #[cfg(any(feature = "std", test))]
         {

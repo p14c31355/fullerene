@@ -485,35 +485,9 @@ impl SchedulerContext {
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
 
-        #[cfg(linux_busybox_smoke)]
-        if let Some((pid, process)) = list.iter().find(|(id, _)| *id == new_pid) {
-            if process.name == "busybox" && process.context.kernel_rsp == 0 {
-                petroleum::serial::serial_log(format_args!(
-                    "[LINUX-DIAG] first-entry pid={} old={:?} rip={:#x} rsp={:#x} cr3={:#x} kstack={:#x} cs={:#x} ss={:#x} rflags={:#x}\n",
-                    pid.0,
-                    old_pid.map(|old| old.0),
-                    process.context.rip,
-                    process.context.registers.rsp,
-                    pt.as_u64(),
-                    process.kernel_stack.as_u64(),
-                    process.context.segments.cs,
-                    process.context.segments.ss,
-                    process.context.rflags,
-                ));
-            }
-        }
         drop(guard);
 
         if let Some(new) = new_ctx {
-            if new_user_first_entry {
-                #[cfg(linux_busybox_smoke)]
-                crate::klog_fmt!(
-                    "[LINUX-DIAG] user entry prepare pid={} cr3={:#x} kernel_stack={:#x}\n",
-                    new_pid.0,
-                    pt.as_u64(),
-                    new_kernel_stack.map_or(0, |stack| stack.as_u64()),
-                );
-            }
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }

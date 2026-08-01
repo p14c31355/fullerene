@@ -657,7 +657,6 @@ fn load_program_inner(
                 pid.0,
                 loaded.layout.initial_break
             );
-
             if is_linux {
                 let stack_result = {
                     let process_page_table =

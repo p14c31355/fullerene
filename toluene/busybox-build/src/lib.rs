@@ -1,5 +1,6 @@
 //! Shared host-side BusyBox build and validation workflow.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
@@ -11,6 +12,78 @@ use std::time::Duration;
 
 const SOURCE_MARKER_SUFFIX: &str = ".source-revision";
 const LOCK_SUFFIX: &str = ".lock";
+
+/// Applets covered by the Fullerene Linux personality contract.
+///
+/// Keep this list deliberately small and explicit.  BusyBox's `defconfig`
+/// enables hundreds of hardware, networking, and service applets which cannot
+/// be meaningful on Fullerene until their corresponding Linux ABI exists.
+/// The generated binary must never advertise an unverified applet through
+/// `busybox --help`.
+pub const FULLERENE_BUSYBOX_APPLETS: &[(&str, &str)] = &[
+    ("[", "TEST1"),
+    ("[[", "TEST2"),
+    ("ash", "ASH"),
+    ("arch", "BB_ARCH"),
+    ("awk", "AWK"),
+    ("basename", "BASENAME"),
+    ("busybox", "BUSYBOX"),
+    ("cat", "CAT"),
+    ("cksum", "CKSUM"),
+    ("clear", "CLEAR"),
+    ("cp", "CP"),
+    ("cut", "CUT"),
+    ("date", "DATE"),
+    ("dd", "DD"),
+    ("dirname", "DIRNAME"),
+    ("echo", "ECHO"),
+    ("env", "ENV"),
+    ("expr", "EXPR"),
+    ("false", "FALSE"),
+    ("fold", "FOLD"),
+    ("grep", "GREP"),
+    ("head", "HEAD"),
+    ("hexdump", "HEXDUMP"),
+    ("hostname", "HOSTNAME"),
+    ("ls", "LS"),
+    ("md5sum", "MD5SUM"),
+    ("mkdir", "MKDIR"),
+    ("mktemp", "MKTEMP"),
+    ("mv", "MV"),
+    ("od", "OD"),
+    ("printenv", "PRINTENV"),
+    ("printf", "PRINTF"),
+    ("pwd", "PWD"),
+    ("rm", "RM"),
+    ("rmdir", "RMDIR"),
+    ("sed", "SED"),
+    ("seq", "SEQ"),
+    ("sha256sum", "SHA256SUM"),
+    ("sh", "SH_IS_ASH"),
+    ("sleep", "SLEEP"),
+    ("sort", "SORT"),
+    ("stat", "STAT"),
+    ("tail", "TAIL"),
+    ("tar", "TAR"),
+    ("tee", "TEE"),
+    ("test", "TEST"),
+    ("touch", "TOUCH"),
+    ("tr", "TR"),
+    ("true", "TRUE"),
+    ("tty", "TTY"),
+    ("uname", "UNAME"),
+    ("uniq", "UNIQ"),
+    ("uptime", "UPTIME"),
+    ("wc", "WC"),
+    ("which", "WHICH"),
+    ("whoami", "WHOAMI"),
+    ("yes", "YES"),
+];
+
+/// Return the applet names in the same order used by the build contract.
+pub fn fullerene_busybox_applet_names() -> impl Iterator<Item = &'static str> {
+    FULLERENE_BUSYBOX_APPLETS.iter().map(|(name, _)| *name)
+}
 
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
@@ -88,9 +161,16 @@ pub fn build(options: &BuildOptions) -> Result<(), String> {
         &options.build_dir,
         &compiler,
         options.jobs,
-        &["defconfig"],
+        &["allnoconfig"],
     )?;
     configure_for_fullerene(&config_path)?;
+    run_make(
+        &options.source,
+        &options.build_dir,
+        &compiler,
+        options.jobs,
+        &["oldconfig"],
+    )?;
 
     eprintln!(
         "Building static BusyBox with {} into {}",
@@ -114,6 +194,7 @@ pub fn build(options: &BuildOptions) -> Result<(), String> {
             built.display()
         ));
     }
+    validate_fullerene_busybox(&built)?;
 
     if let Some(parent) = options.output.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -167,6 +248,41 @@ fn output_is_current(output: &Path, marker: &Path, source: &Path) -> bool {
         && fs::read_to_string(marker)
             .map(|stored| stored.trim() == revision)
             .unwrap_or(false)
+        && validate_fullerene_busybox(output).is_ok()
+}
+
+/// Ensure a candidate binary advertises exactly the applets in the Fullerene
+/// contract.  This check is deliberately performed on reused and externally
+/// supplied binaries too; otherwise a stale or host-provided BusyBox could
+/// silently reintroduce unsupported commands into `busybox --help`.
+pub fn validate_fullerene_busybox(path: &Path) -> Result<(), String> {
+    let output = Command::new(path)
+        .arg("--list")
+        .output()
+        .map_err(|error| format!("cannot execute BusyBox {}: {error}", path.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "BusyBox --list failed for {} with {}",
+            path.display(),
+            output.status
+        ));
+    }
+    let actual: BTreeSet<&str> = std::str::from_utf8(&output.stdout)
+        .map_err(|error| format!("BusyBox --list output is not UTF-8: {error}"))?
+        .split_whitespace()
+        .collect();
+    let expected: BTreeSet<&str> = fullerene_busybox_applet_names().collect();
+    if actual != expected {
+        let missing: Vec<_> = expected.difference(&actual).copied().collect();
+        let extra: Vec<_> = actual.difference(&expected).copied().collect();
+        return Err(format!(
+            "BusyBox applet contract mismatch for {} (missing: {}; extra: {})",
+            path.display(),
+            missing.join(","),
+            extra.join(",")
+        ));
+    }
+    Ok(())
 }
 
 fn source_revision(source: &Path) -> Option<String> {
@@ -207,10 +323,28 @@ fn run_make(
     if let Some(jobs) = jobs {
         command.arg(format!("-j{jobs}"));
     }
+    let mut feeder = None;
+    if targets == ["oldconfig"] {
+        let mut yes = Command::new("yes")
+            .arg("")
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to start config-default feeder: {error}"))?;
+        let stdout = yes
+            .stdout
+            .take()
+            .ok_or_else(|| "config-default feeder has no stdout".to_string())?;
+        command.stdin(Stdio::from(stdout));
+        feeder = Some(yes);
+    }
     let status = command
         .args(targets)
         .status()
         .map_err(|error| format!("failed to start make: {error}"))?;
+    if let Some(mut feeder) = feeder {
+        let _ = feeder.kill();
+        let _ = feeder.wait();
+    }
     if !status.success() {
         return Err(format!("BusyBox make {:?} failed with {status}", targets));
     }
@@ -222,14 +356,34 @@ fn configure_for_fullerene(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("cannot read BusyBox config {}: {error}", path.display()))?;
     let mut config = original.clone();
     for (key, value) in [
+        ("CONFIG_BUSYBOX", "y"),
         ("CONFIG_STATIC", "y"),
         ("CONFIG_STATIC_LIBGCC", "y"),
         ("CONFIG_PIE", "n"),
         ("CONFIG_FEATURE_PREFER_APPLETS", "y"),
         ("CONFIG_FEATURE_SH_STANDALONE", "y"),
+        ("CONFIG_FEATURE_SH_NOFORK", "y"),
         ("CONFIG_FEATURE_SH_EXTRA_QUIET", "y"),
+        ("CONFIG_FEATURE_EDITING", "y"),
+        ("CONFIG_FEATURE_TAB_COMPLETION", "y"),
         ("CONFIG_BUSYBOX_EXEC_PATH", "\"/bin/busybox\""),
-        ("CONFIG_TC", "n"),
+    ] {
+        set_config_value(&mut config, key, value);
+    }
+    for (_, symbol) in FULLERENE_BUSYBOX_APPLETS {
+        set_config_value(&mut config, &format!("CONFIG_{symbol}"), "y");
+    }
+    // `sh` is the ash shell selected by the applet contract.  These options
+    // are intentionally explicit because allnoconfig otherwise leaves the
+    // shell's internal support disabled.
+    for (key, value) in [
+        ("CONFIG_ASH", "y"),
+        ("CONFIG_SHELL_ASH", "y"),
+        ("CONFIG_ASH_OPTIMIZE_FOR_SIZE", "y"),
+        ("CONFIG_ASH_INTERNAL_GLOB", "y"),
+        ("CONFIG_ASH_ECHO", "y"),
+        ("CONFIG_ASH_PRINTF", "y"),
+        ("CONFIG_ASH_TEST", "y"),
     ] {
         set_config_value(&mut config, key, value);
     }

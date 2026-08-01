@@ -431,6 +431,15 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 }
                 return Err(ENOMEM);
             }
+            if (prot & PROT_WRITE) != 0 {
+                let (root, _) = x86_64::registers::control::Cr3::read();
+                unsafe {
+                    crate::linux::process::force_user_page_writable(
+                        root.start_address(),
+                        *page as u64,
+                    );
+                }
+            }
         }
         Ok(())
     });

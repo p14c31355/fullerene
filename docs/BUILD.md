@@ -223,14 +223,18 @@ under the shared Linux personality layer.
 
 For a headless end-to-end check that exercises the Nozzle command, interactive
 BusyBox `sh`, terminal stdin/stdout, blocking input wait, exit status,
-scheduler handoff, window cleanup, and shell resumption. QEMU is allowed to
-exit successfully only after the expected output marker, exit status 0, the
-BusyBox terminal window closing, and the smoke harness returning:
+scheduler handoff, window cleanup, and shell resumption, run:
 
 ```bash
 FULLERENE_BUSYBOX_SMOKE=1 \
-  cargo run -p flasks -- --display none --vga none --timeout 70
+  cargo run -p flasks -- --display none --vga none --timeout 600
 ```
+
+The smoke build uses the exact generated applet contract: it checks the
+`busybox --help`/`--list` dispatcher and count, then runs every listed name
+through the bundled BusyBox shell's standalone applet dispatch. QEMU is
+accepted only with the smoke debug-exit status after the success marker, exit
+status 0, terminal cleanup, and shell resumption.
 
 To debug:
 - QEMU logs are written to `qemu_log.txt` (interrupts and other debug info).

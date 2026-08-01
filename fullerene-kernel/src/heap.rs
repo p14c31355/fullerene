@@ -6,13 +6,13 @@
 use petroleum::page_table::BootInfoFrameAllocator;
 
 /// Initial contiguous heap available before automatic extension.
-pub const HEAP_SIZE: usize = 12 * 1024 * 1024;
+pub const HEAP_SIZE: usize = 32 * 1024 * 1024;
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
 /// Maximum additional heap exposed automatically when an allocation fails.
 pub const HEAP_EXTEND_MAX: usize = 128 * 1024 * 1024;
 
-/// Total static heap buffer: initial 12 MiB + extendable 128 MiB.
+/// Total static heap buffer: initial 32 MiB + extendable 128 MiB.
 pub const HEAP_TOTAL: usize = HEAP_SIZE + HEAP_EXTEND_MAX;
 
 use petroleum::page_table::MemoryDescriptorValidator;
@@ -35,7 +35,7 @@ pub const MAX_DESCRIPTORS: usize = 2048;
 ///
 /// This is deliberately zero initialized so the PE/UEFI image can represent
 /// it as a loader-zero-filled region (BSS); the bytes do not occupy ISO file
-/// space. The first 12 MiB is committed at boot and the extension backing is
+/// space. The initial heap is committed at boot and the extension backing is
 /// exposed page-by-page as the allocator grows.
 #[repr(align(4096))]
 pub struct TotalHeapBuffer(#[allow(dead_code)] pub(crate) [u8; HEAP_TOTAL]);
@@ -92,10 +92,11 @@ pub fn configure_heap_extension() {
 }
 
 fn heap_extension_allowed() -> bool {
-    // Page-fault continuation currently maps reserved heap pages only for the
-    // idle kernel/shell context.  Refuse growth from user or other kernel
-    // processes instead of exposing an unmapped range they cannot recover.
-    crate::process::SCHEDULER.current_pid() == 1
+    // The allocator is a kernel-global resource, even while a Linux process
+    // is current.  Extension pages are mapped by the kernel page-fault path;
+    // denying growth for a user PID turns ordinary BusyBox allocations into
+    // unexplained allocator failures.
+    true
 }
 
 /// Extend the kernel heap by `additional` bytes.
