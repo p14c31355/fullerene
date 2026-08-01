@@ -27,8 +27,8 @@ const LINUX_STACK_SIZE: u64 = 256 * 1024;
 const LINUX_STACK_TOP: u64 = 0x0000_7fff_ffff_f000;
 // Keep the compatibility brk region resident.  Growing brk is metadata-only;
 // page-table mutation from the page-fault handler is deliberately avoided.
-// The Linux syscall layer still caps the logical range at 128 MiB.
-const LINUX_BRK_RESERVE_SIZE: u64 = 256 * 1024 * 1024;
+// The Linux syscall layer uses the same 64 MiB logical cap.
+const LINUX_BRK_RESERVE_SIZE: u64 = 64 * 1024 * 1024;
 const DYNAMIC_LINKER_BASE: u64 = 0x0000_0002_0000_0000;
 
 #[derive(Clone, Copy)]

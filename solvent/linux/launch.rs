@@ -362,25 +362,35 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
     crate::klog_fmt!("[BUSYBOX-DIAG] launch complete pid={}\n", pid.0);
     #[cfg(linux_busybox_smoke)]
     {
-        BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
-        BUSYBOX_SMOKE_EXIT_OK.store(false, Ordering::Release);
+        let launch_number = BUSYBOX_SMOKE_LAUNCH_COUNT.fetch_add(1, Ordering::AcqRel);
+        if launch_number == 0 {
+            BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
+            BUSYBOX_SMOKE_EXIT_OK.store(false, Ordering::Release);
+            BUSYBOX_SMOKE_HARNESS_DONE.store(false, Ordering::Release);
+            BUSYBOX_SMOKE_OUTPUT_MATCHED.store(0, Ordering::Release);
+        }
         BUSYBOX_SMOKE_WINDOW_CLOSED.store(false, Ordering::Release);
-        BUSYBOX_SMOKE_HARNESS_DONE.store(false, Ordering::Release);
-        BUSYBOX_SMOKE_OUTPUT_MATCHED.store(0, Ordering::Release);
         BUSYBOX_SMOKE_WAITING.store(false, Ordering::Release);
         BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
         BUSYBOX_SMOKE_WINDOW.store(terminal_window.0, Ordering::Release);
-        BUSYBOX_SMOKE_LAUNCH_COUNT.fetch_add(1, Ordering::AcqRel);
         BUSYBOX_SMOKE_HOLD_INPUT.store(true, Ordering::Release);
-        // Run every applet in the generated contract through the bundled
-        // BusyBox command. The exit command is injected only after the
-        // success marker and a real no-input wait.
-        let script = busybox_smoke_script();
-        solvent::push_process_terminal_input(terminal_window, script.as_bytes());
+        if launch_number == 0 {
+            // Run every applet in the generated contract through the bundled
+            // BusyBox command. The exit command is injected only after the
+            // success marker and a real no-input wait.
+            let script = busybox_smoke_script();
+            solvent::push_process_terminal_input(terminal_window, script.as_bytes());
+        } else {
+            // The second launch is deliberately a fresh interactive process;
+            // its purpose is to catch stale terminal/page-table state after
+            // the full contract has completed, not to duplicate the contract.
+            solvent::push_process_terminal_input(terminal_window, b"exit\n");
+        }
         BUSYBOX_SMOKE_PID.store(pid.0, Ordering::Release);
         petroleum::serial::serial_log(format_args!(
-            "[busybox-smoke] fixture launched as PID {}\n",
-            pid.0
+            "[busybox-smoke] fixture launched as PID {} pass={}\n",
+            pid.0,
+            launch_number == 0
         ));
     }
     Ok(pid)

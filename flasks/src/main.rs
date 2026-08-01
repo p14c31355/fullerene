@@ -387,11 +387,13 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
         }
     }
 
+    let qemu_accel =
+        env::var("FULLERENE_QEMU_ACCEL").unwrap_or_else(|_| "tcg,thread=single".to_string());
     qemu_args.extend([
         "-serial".to_string(),
         "stdio".to_string(),
         "-accel".to_string(),
-        "tcg,thread=single".to_string(),
+        qemu_accel,
         "-d".to_string(),
         "int,cpu_reset,guest_errors,unimp".to_string(),
         "-D".to_string(),

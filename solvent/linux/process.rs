@@ -102,6 +102,14 @@ unsafe fn copy_child_user_leaves(root: PhysAddr, ranges: &[(u64, u64)]) -> Resul
                 continue;
             }
             let page_base = virtual_base | ((index as u64) << ((level - 1) * 9 + 12));
+            let entry_size = 1u64 << ((level - 1) * 9 + 12);
+            let entry_end = page_base.saturating_add(entry_size);
+            if !ranges
+                .iter()
+                .any(|(start, end)| *start < entry_end && page_base < *end)
+            {
+                continue;
+            }
             if level > 1 && !flags.contains(PageTableFlags::HUGE_PAGE) {
                 let offset = x86_64::VirtAddr::new(
                     petroleum::common::memory::get_physical_memory_offset() as u64,
@@ -690,11 +698,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Err(e) => return errno_code(e),
     };
 
-    log::info!(
-        "Linux execve: {} argv1={}",
-        path,
-        argv.get(1).map(String::as_str).unwrap_or("<none>")
-    );
+    log::info!("Linux execve: {}", path);
 
     // Read the binary file
     let data = match crate::fs::read_entire_file(&path) {

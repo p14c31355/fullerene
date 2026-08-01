@@ -11,7 +11,7 @@ use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableF
 const PAGE_SIZE: u64 = 4096;
 const PAGE_MASK: u64 = PAGE_SIZE - 1;
 const MAX_LINUX_MEMORY: u64 = 128 * 1024 * 1024;
-const MAX_LINUX_BRK: u64 = 256 * 1024 * 1024;
+const MAX_LINUX_BRK: u64 = 64 * 1024 * 1024;
 const USER_ADDRESS_LIMIT: u64 = 0x0000_8000_0000_0000;
 const DEFAULT_MMAP_BASE: u64 = 0x0000_0001_0000_0000;
 const VDSO_SIZE: u64 = PAGE_SIZE;
