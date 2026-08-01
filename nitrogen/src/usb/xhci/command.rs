@@ -111,15 +111,41 @@ impl XhciContext {
 
     /// Enqueue a command TRB and wait for its completion event.
     pub(super) fn send_cmd(&mut self, trb: Trb) -> Result<u32, crate::DriverError> {
+        let command_type = trb.trb_type();
+        let command_index = self.rings.command.enq_index();
+        let command_phys = self.rings.command.phys + (command_index * super::ring::TRB_SIZE) as u64;
         self.rings.command.enqueue(trb);
         crate::mmio::write_barrier();
         self.registers.doorbell.ring(0, 0);
-        let event = wait_event_type(
+        let event = match wait_event_type(
             &mut self.rings.event,
             &self.registers.runtime,
             5_000_000,
             trb_type::COMMAND_COMPLETION_EVENT,
-        )?;
+        ) {
+            Ok(event) => event,
+            Err(error) => {
+                let pending = self.rings.event.peek();
+                log::warn!(
+                    "xHCI: command timeout type={} cmd_phys={:#x} cmd_next={:#x} CRCR={:#x} USBSTS={:#x} USBCMD={:#x} IMAN={:#x} ERSTSZ={:#x} ERSTBA={:#x} ERDP={:#x} ev_phys={:#x} ev_flags={:#x} ev_type={} ev_cc={}",
+                    command_type,
+                    command_phys,
+                    self.rings.command.enqueue_phys(),
+                    self.registers.op.crcr(),
+                    self.registers.op.usbsts(),
+                    self.registers.op.usbcmd(),
+                    self.registers.runtime.iman(),
+                    self.registers.runtime.erstsz(),
+                    self.registers.runtime.erstba(),
+                    self.registers.runtime.erdp(),
+                    self.rings.event.phys,
+                    pending.flags,
+                    pending.trb_type(),
+                    pending.completion_code(),
+                );
+                return Err(error);
+            }
+        };
         if event.completion_code() != COMP_SUCCESS {
             return Err(crate::DriverError::Protocol);
         }

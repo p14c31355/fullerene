@@ -235,6 +235,13 @@ impl EventRing {
         (unsafe { ptr::read_volatile(&entries[self.deq].flags) } & trb_flag::CYCLE) == self.cycle
     }
 
+    /// Inspect the current event slot without consuming it.  Used only for
+    /// timeout diagnostics when the controller did not report completion.
+    pub fn peek(&self) -> Trb {
+        let entries = unsafe { core::slice::from_raw_parts_mut(self.dma.as_mut_ptr(), self.len) };
+        unsafe { ptr::read_volatile(&entries[self.deq]) }
+    }
+
     pub fn pop(&mut self) -> Option<Trb> {
         if !self.has_pending() {
             return None;
