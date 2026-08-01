@@ -121,7 +121,20 @@ impl XhciContext {
                 }
                 Ok(actual)
             }
-            _ => {
+            (result, transfer_actual) => {
+                let completion = result.as_ref().ok().map(|event| event.completion_code());
+                let remaining = result.as_ref().ok().map(|event| event.remaining());
+                log::warn!(
+                    "xHCI: control transfer failed slot={} request={:#04x} bmRequestType={:#04x} length={} completion={:?} remaining={:?} actual={:?} result={:?}",
+                    slot_id,
+                    setup.b_request,
+                    setup.bm_request_type,
+                    data_len,
+                    completion,
+                    remaining,
+                    transfer_actual,
+                    result.err(),
+                );
                 if staging_phys != 0 {
                     self.deferred_free_list
                         .push((staging_phys, (data_len + 4095) / 4096));
