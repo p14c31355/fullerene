@@ -139,7 +139,15 @@ pub fn scheduler_loop() -> ! {
 
         SCHEDULER.update_vdso_all(uptime_us, wall_us);
 
+        // BusyBox smoke is a synchronous ABI test. During the harness, the
+        // nested runtime pump handles only input and rendering; after a
+        // physical smoke run returns, normal desktop ticks resume.
+        #[cfg(not(linux_busybox_smoke))]
         gui::runtime_tick(SCHEDULER.current_tick());
+        #[cfg(linux_busybox_smoke)]
+        if !solvent::headless_smoke_active() {
+            gui::runtime_tick(SCHEDULER.current_tick());
+        }
 
         // Check if the user requested a shell launch (via AppGrid / menu).
         if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false)

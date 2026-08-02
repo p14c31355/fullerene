@@ -84,7 +84,7 @@ fn main() -> io::Result<()> {
     }
 
     if args.iso_only {
-        let iso_path = create_iso(&workspace_root, profile)?;
+        let iso_path = create_iso(&workspace_root, profile, false)?;
         println!("ISO rebuilt at {}", iso_path.display());
         return Ok(());
     }
@@ -139,6 +139,7 @@ fn build_uefi_package(
     package: &str,
     features: Option<&str>,
     profile: BuildProfile,
+    qemu_smoke_exit: bool,
 ) -> io::Result<()> {
     let mut args: Vec<&str> = vec![
         "+nightly",
@@ -155,10 +156,14 @@ fn build_uefi_package(
     if let Some(feats) = features {
         args.extend(["--features", feats]);
     }
-    let status = Command::new("cargo")
+    let mut cargo = Command::new("cargo");
+    cargo
         .current_dir(workspace_root)
-        .args(&args)
-        .status()?;
+        .env_remove("FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT");
+    if qemu_smoke_exit && env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some() {
+        cargo.env("FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT", "1");
+    }
+    let status = cargo.args(&args).status()?;
     if !status.success() {
         return Err(io::Error::other(format!("{} build failed", package)));
     }
@@ -178,9 +183,19 @@ menuentry "Fullerene OS" {
     .to_string()
 }
 
-fn create_iso(workspace_root: &PathBuf, profile: BuildProfile) -> io::Result<PathBuf> {
+fn create_iso(
+    workspace_root: &PathBuf,
+    profile: BuildProfile,
+    qemu_smoke_exit: bool,
+) -> io::Result<PathBuf> {
     // --- 1. Build fullerene-kernel (no_std) ---
-    build_uefi_package(workspace_root, "fullerene-kernel", None, profile)?;
+    build_uefi_package(
+        workspace_root,
+        "fullerene-kernel",
+        None,
+        profile,
+        qemu_smoke_exit,
+    )?;
 
     let target_dir = workspace_root
         .join("target")
@@ -255,7 +270,7 @@ fn create_iso_and_setup(
     workspace_root: &PathBuf,
     profile: BuildProfile,
 ) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
-    let iso_path = create_iso(workspace_root, profile)?;
+    let iso_path = create_iso(workspace_root, profile, true)?;
 
     let ovmf_fd_path = workspace_root
         .join("flasks")
@@ -372,11 +387,13 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
         }
     }
 
+    let qemu_accel =
+        env::var("FULLERENE_QEMU_ACCEL").unwrap_or_else(|_| "tcg,thread=single".to_string());
     qemu_args.extend([
         "-serial".to_string(),
         "stdio".to_string(),
         "-accel".to_string(),
-        "tcg,thread=single".to_string(),
+        qemu_accel,
         "-d".to_string(),
         "int,cpu_reset,guest_errors,unimp".to_string(),
         "-D".to_string(),
@@ -428,6 +445,15 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
     qemu_cmd.env("LD_PRELOAD", ld_preload_path);
 
     let mut child = qemu_cmd.spawn()?;
+    let linux_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some()
+        || env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some();
+    let qemu_status_is_valid = |status: &std::process::ExitStatus| {
+        if linux_smoke_requested {
+            status.code() == Some(35)
+        } else {
+            status.success()
+        }
+    };
 
     if let Some(timeout_secs) = args.timeout {
         let timeout_duration = std::time::Duration::from_secs(timeout_secs);
@@ -440,10 +466,7 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
         loop {
             match child.try_wait()? {
                 Some(status) => {
-                    let linux_smoke_passed = (env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some()
-                        || env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some())
-                        && status.code() == Some(35);
-                    if !status.success() && !linux_smoke_passed {
+                    if !qemu_status_is_valid(&status) {
                         return Err(io::Error::other("QEMU execution failed"));
                     }
                     return Ok(());
@@ -463,10 +486,7 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
         }
     } else {
         let qemu_status = child.wait()?;
-        let linux_smoke_passed = (env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some()
-            || env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some())
-            && qemu_status.code() == Some(35);
-        if !qemu_status.success() && !linux_smoke_passed {
+        if !qemu_status_is_valid(&qemu_status) {
             return Err(io::Error::other("QEMU execution failed"));
         }
     }

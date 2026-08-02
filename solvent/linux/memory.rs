@@ -11,6 +11,7 @@ use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableF
 const PAGE_SIZE: u64 = 4096;
 const PAGE_MASK: u64 = PAGE_SIZE - 1;
 const MAX_LINUX_MEMORY: u64 = 128 * 1024 * 1024;
+const MAX_LINUX_BRK: u64 = 64 * 1024 * 1024;
 const USER_ADDRESS_LIMIT: u64 = 0x0000_8000_0000_0000;
 const DEFAULT_MMAP_BASE: u64 = 0x0000_0001_0000_0000;
 const VDSO_SIZE: u64 = PAGE_SIZE;
@@ -79,6 +80,18 @@ fn tracked_range_overlaps(rt: &LinuxRuntime, addr: u64, size: u64) -> bool {
         .any(|region| ranges_overlap(region.addr, region.size, addr, size))
 }
 
+fn tracked_range_contains(rt: &LinuxRuntime, addr: u64, size: u64) -> bool {
+    let Some(end) = addr.checked_add(size) else {
+        return false;
+    };
+    rt.mmap_regions.iter().any(|region| {
+        region
+            .addr
+            .checked_add(region.size)
+            .is_some_and(|region_end| addr >= region.addr && end <= region_end)
+    })
+}
+
 fn range_is_mapped(page_table: &ProcessPageTable, addr: u64, size: u64) -> bool {
     let pages = (size / PAGE_SIZE) as usize;
     (0..pages).any(|index| {
@@ -104,6 +117,22 @@ fn range_is_owned_user_memory(page_table: &ProcessPageTable, addr: u64, size: u6
 
 fn overlaps_reserved_user_mapping(addr: u64, size: u64) -> bool {
     ranges_overlap(addr, size, petroleum::vdso::VDSO_USER_BASE, VDSO_SIZE)
+        || ranges_overlap(
+            addr,
+            size,
+            crate::loader::DYNAMIC_LINKER_BASE,
+            crate::loader::DYNAMIC_LINKER_RESERVE_SIZE,
+        )
+}
+
+fn range_is_fully_mapped(page_table: &ProcessPageTable, addr: u64, size: u64) -> bool {
+    let pages = (size / PAGE_SIZE) as usize;
+    (0..pages).all(|index| {
+        let Some(page) = addr.checked_add(index as u64 * PAGE_SIZE) else {
+            return false;
+        };
+        page_table.translate_address(page as usize).is_ok()
+    })
 }
 
 fn find_free_anon_region(
@@ -118,6 +147,22 @@ fn find_free_anon_region(
             || candidate.checked_add(size).unwrap() > USER_ADDRESS_LIMIT
         {
             return 0;
+        }
+
+        if overlaps_reserved_user_mapping(candidate, size) {
+            let linker_end = crate::loader::DYNAMIC_LINKER_BASE
+                .saturating_add(crate::loader::DYNAMIC_LINKER_RESERVE_SIZE);
+            candidate = if ranges_overlap(
+                candidate,
+                size,
+                crate::loader::DYNAMIC_LINKER_BASE,
+                crate::loader::DYNAMIC_LINKER_RESERVE_SIZE,
+            ) {
+                linker_end
+            } else {
+                petroleum::vdso::VDSO_USER_BASE.saturating_add(VDSO_SIZE)
+            };
+            continue;
         }
 
         if tracked_range_overlaps(rt, candidate, size) {
@@ -201,12 +246,78 @@ fn remove_region(rt: &mut LinuxRuntime, addr: u64, size: u64) -> bool {
     }
 }
 
+fn trim_overlapping_regions(rt: &mut LinuxRuntime, addr: u64, size: u64) -> Result<(), i32> {
+    let end = addr.checked_add(size).ok_or(ENOMEM)?;
+    let mut remaining = heapless::Vec::<LinuxMmapRegion, 64>::new();
+    for region in rt.mmap_regions.iter().copied() {
+        let region_end = region.addr.checked_add(region.size).ok_or(ENOMEM)?;
+        if !ranges_overlap(region.addr, region.size, addr, size) {
+            remaining.push(region).map_err(|_| ENOMEM)?;
+            continue;
+        }
+        if region.addr < addr {
+            remaining
+                .push(LinuxMmapRegion {
+                    addr: region.addr,
+                    size: addr - region.addr,
+                    ..region
+                })
+                .map_err(|_| ENOMEM)?;
+        }
+        if end < region_end {
+            remaining
+                .push(LinuxMmapRegion {
+                    addr: end,
+                    size: region_end - end,
+                    ..region
+                })
+                .map_err(|_| ENOMEM)?;
+        }
+    }
+    rt.mmap_regions = remaining;
+    Ok(())
+}
+
+/// Release mmap-created regions before an execve image is installed.  The
+/// executable, stack, brk reservation, and VDSO are intentionally not in
+/// `mmap_regions`, so this cannot tear down the process's fixed ABI mappings.
+pub fn reset_mmap_regions(rt: &mut LinuxRuntime) {
+    let regions = rt
+        .mmap_regions
+        .iter()
+        .map(|region| (region.addr, region.size))
+        .collect::<alloc::vec::Vec<_>>();
+    with_current_page_table(|page_table| {
+        for (addr, size) in regions {
+            for index in 0..(size / PAGE_SIZE) {
+                let page = addr + index * PAGE_SIZE;
+                let _ = unmap_and_free(page_table, page as usize);
+            }
+        }
+    });
+    rt.mmap_regions.clear();
+}
+
+fn read_vfs_at(vfs_fd: u32, offset: u64, output: &mut [u8]) -> Result<usize, ()> {
+    let saved = crate::contexts::vfs::position(vfs_fd).map_err(|_| ())?;
+    crate::contexts::vfs::seek(vfs_fd, offset).map_err(|_| ())?;
+    let result = crate::contexts::vfs::read(vfs_fd, output).map_err(|_| ());
+    let _ = crate::contexts::vfs::seek(vfs_fd, saved);
+    result
+}
+
 pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let addr_hint = args[0];
     let length = args[1];
     let prot = args[2] as i32;
     let flags = args[3] as i32;
     let offset = args[5];
+
+    #[cfg(linux_busybox_smoke)]
+    petroleum::serial::serial_log(format_args!(
+        "[linux-mmap] request hint={addr_hint:#x} len={length:#x} prot={prot:#x} flags={flags:#x} fd={} off={offset:#x}\n",
+        args[4] as i32
+    ));
 
     let allowed_prot = PROT_READ | PROT_WRITE | PROT_EXEC;
     if (prot & !allowed_prot) != 0 {
@@ -217,32 +328,42 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     {
         return errno_code(EINVAL);
     }
-    // MAP_FIXED would turn the syscall into an arbitrary page-table overwrite
-    // unless every existing mapping is represented by this runtime.  This
-    // compatibility layer does not implement that operation safely.
-    if (flags & MAP_FIXED) != 0 {
-        return errno_code(EINVAL);
-    }
     if length == 0 {
         return errno_code(EINVAL);
     }
 
     let anon = (flags & MAP_ANONYMOUS) != 0;
-    if !anon {
-        // File-backed mappings are not implemented, and must not accidentally
-        // fall through to the anonymous mapping path.
-        return errno_code(ENOSYS);
-    }
-    if offset != 0 {
+    if (offset & PAGE_MASK) != 0 {
         return errno_code(EINVAL);
     }
+    let file_vfs_fd = if anon {
+        None
+    } else {
+        if (flags & MAP_SHARED) != 0 && (prot & PROT_WRITE) != 0 {
+            return errno_code(EINVAL);
+        }
+        let fd = args[4] as i32;
+        let Some(desc) = rt.fd_table.get(fd) else {
+            return errno_code(EBADF);
+        };
+        if desc.vfs_fd == 0 || desc.pipe.is_some() {
+            return errno_code(EBADF);
+        }
+        Some(desc.vfs_fd)
+    };
 
     let (_, aligned_len) = match checked_page_range(0, length, false) {
         Ok(range) => range,
         Err(error) => return errno_code(error),
     };
 
-    let hint = if addr_hint == 0 {
+    let fixed = (flags & MAP_FIXED) != 0;
+    let hint = if fixed {
+        match checked_page_range(addr_hint, aligned_len, true) {
+            Ok((addr, _)) => addr,
+            Err(error) => return errno_code(error),
+        }
+    } else if addr_hint == 0 {
         DEFAULT_MMAP_BASE
     } else {
         // A hint is still an address supplied by an untrusted process.  Reject
@@ -256,7 +377,38 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let mapped = with_current_page_table(|page_table| {
         #[cfg(linux_musl_smoke)]
         petroleum::serial::serial_log(format_args!("[linux-smoke] mmap page table acquired\n"));
-        let addr = find_free_anon_region(rt, page_table, aligned_len, hint);
+        let addr = if fixed {
+            if overlaps_reserved_user_mapping(hint, aligned_len) {
+                return Err(EEXIST);
+            }
+            if range_is_mapped(page_table, hint, aligned_len) {
+                // ELF loaders use MAP_FIXED to replace the first, broadly
+                // mapped file segment with subsequent segment protections.
+                // Permit that only for a range already owned by this mmap
+                // runtime; arbitrary replacement of the main image, stack,
+                // VDSO, or brk remains rejected.
+                if !range_is_fully_mapped(page_table, hint, aligned_len)
+                    || !range_is_owned_user_memory(page_table, hint, aligned_len)
+                    || !tracked_range_contains(rt, hint, aligned_len)
+                {
+                    return Err(EEXIST);
+                }
+                #[cfg(linux_busybox_smoke)]
+                petroleum::serial::serial_log(format_args!(
+                    "[linux-mmap] replace tracked addr={hint:#x} len={aligned_len:#x}\n"
+                ));
+                for index in 0..(aligned_len / PAGE_SIZE) {
+                    let page = hint + index * PAGE_SIZE;
+                    if unmap_and_free(page_table, page as usize).is_err() {
+                        return Err(EEXIST);
+                    }
+                }
+                trim_overlapping_regions(rt, hint, aligned_len)?;
+            }
+            hint
+        } else {
+            find_free_anon_region(rt, page_table, aligned_len, hint)
+        };
         #[cfg(linux_musl_smoke)]
         petroleum::serial::serial_log(format_args!(
             "[linux-smoke] mmap selected {addr:#x}, length {aligned_len:#x}\n"
@@ -303,6 +455,26 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 );
             }
 
+            if let Some(vfs_fd) = file_vfs_fd {
+                let file_offset = offset.checked_add(index as u64 * PAGE_SIZE).ok_or(EINVAL)?;
+                let destination = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        petroleum::common::memory::physical_to_virtual(
+                            frame.start_address().as_u64() as usize,
+                        ) as *mut u8,
+                        PAGE_SIZE as usize,
+                    )
+                };
+                if read_vfs_at(vfs_fd, file_offset, destination).is_err() {
+                    for mapped in 0..mapped_pages {
+                        let page = (addr + mapped as u64 * PAGE_SIZE) as usize;
+                        let _ = unmap_and_free(page_table, page);
+                    }
+                    frame_alloc.free_frame(frame);
+                    return Err(EIO);
+                }
+            }
+
             if page_table
                 .map_page(
                     page_vaddr as usize,
@@ -329,6 +501,12 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Ok(addr) => addr,
         Err(error) => return errno_code(error),
     };
+
+    #[cfg(linux_busybox_smoke)]
+    petroleum::serial::serial_log(format_args!(
+        "[linux-mmap] mapped addr={addr:#x} len={aligned_len:#x} file={:?}\n",
+        file_vfs_fd
+    ));
 
     #[cfg(linux_musl_smoke)]
     petroleum::serial::serial_log(format_args!("[linux-smoke] mmap tracking region\n"));
@@ -452,48 +630,46 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let new_brk = args[0];
 
+    #[cfg(linux_busybox_smoke)]
+    petroleum::serial::serial_log(format_args!(
+        "[linux-brk] initial={:#x} current={:#x} request={new_brk:#x}\n",
+        rt.initial_break, rt.program_break
+    ));
+
     if new_brk == 0 {
         return rt.program_break;
     }
 
     if new_brk < rt.initial_break
         || new_brk >= USER_ADDRESS_LIMIT
-        || new_brk - rt.initial_break > MAX_LINUX_MEMORY
+        || new_brk - rt.initial_break > MAX_LINUX_BRK
     {
         return rt.program_break;
     }
 
-    let old_brk = rt.program_break;
-    let align = PAGE_SIZE;
-
-    if new_brk > old_brk {
-        let start_page = (old_brk + align - 1) & !(align - 1);
-        let end_page = (new_brk + align - 1) & !(align - 1);
-
-        if end_page > start_page {
-            let num_pages = ((end_page - start_page) / align) as usize;
-            let mapped = with_current_page_table(|page_table| {
-                let growth = end_page - start_page;
-                if tracked_range_overlaps(rt, start_page, growth)
-                    || range_is_mapped(page_table, start_page, growth)
-                {
-                    return false;
-                }
-
-                let frame_alloc =
-                    unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
-
-                for i in 0..num_pages {
-                    let page_vaddr = start_page + (i as u64) * align;
-                    let frame = match X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
-                        Some(frame) => frame,
-                        None => {
-                            for j in 0..i {
-                                let page = (start_page + (j as u64) * align) as usize;
-                                let _ = unmap_and_free(page_table, page);
+    let old_break = rt.program_break;
+    if new_brk > old_break {
+        let start = old_break.saturating_add(PAGE_MASK) & !PAGE_MASK;
+        let end = new_brk.saturating_add(PAGE_MASK) & !PAGE_MASK;
+        let result = with_current_page_table(|page_table| {
+            let flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER_ACCESSIBLE
+                | PageTableFlags::NO_EXECUTE;
+            let frame_alloc =
+                unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+            let mut mapped = alloc::vec::Vec::new();
+            let mut address = start;
+            while address < end {
+                if page_table.translate_address(address as usize).is_err() {
+                    let Some(frame) = X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc)
+                    else {
+                        for old_page in mapped.drain(..) {
+                            if let Ok(frame) = page_table.unmap_page(old_page as usize) {
+                                frame_alloc.free_frame(frame);
                             }
-                            return false;
                         }
+                        return Err(ENOMEM);
                     };
                     unsafe {
                         core::ptr::write_bytes(
@@ -504,37 +680,33 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                             PAGE_SIZE as usize,
                         );
                     }
-                    let page_flags = PageTableFlags::PRESENT
-                        | PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE
-                        | PageTableFlags::NO_EXECUTE;
-
                     if page_table
                         .map_page(
-                            page_vaddr as usize,
+                            address as usize,
                             frame.start_address().as_u64() as usize,
-                            page_flags,
+                            flags,
                             frame_alloc,
                         )
                         .is_err()
                     {
                         frame_alloc.free_frame(frame);
-                        for j in 0..i {
-                            let page = (start_page + (j as u64) * align) as usize;
-                            let _ = unmap_and_free(page_table, page);
+                        for old_page in mapped.drain(..) {
+                            if let Ok(frame) = page_table.unmap_page(old_page as usize) {
+                                frame_alloc.free_frame(frame);
+                            }
                         }
-                        return false;
+                        return Err(ENOMEM);
                     }
+                    mapped.push(address);
                 }
-                true
-            });
-            if !mapped {
-                return old_brk;
+                address += PAGE_SIZE;
             }
+            Ok(())
+        });
+        if result.is_err() {
+            return rt.program_break;
         }
     }
-    // Note: shrinking (new_brk < old_brk) is intentionally skipped for now
-
     rt.program_break = new_brk;
     new_brk
 }

@@ -381,8 +381,6 @@ impl PageTableHelper for ProcessPageTable {
             self.pml4_frame = Some(current_pml4);
         }
 
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: clone_page_table minimal v2\n");
-
         let source_frame = if let Some(frame) = self.allocated_tables.get(&source_table) {
             *frame
         } else if Some(source_table)
@@ -393,28 +391,12 @@ impl PageTableHelper for ProcessPageTable {
         {
             self.pml4_frame.unwrap()
         } else {
-            crate::write_serial_bytes(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: clone_page_table invalid source_table\n",
-            );
             return Err(crate::common::logging::SystemError::InvalidArgument);
         };
-        crate::write_serial_bytes(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: clone_page_table source_frame obtained\n",
-        );
 
         let new_frame = frame_allocator
             .allocate_frame()
             .ok_or(crate::common::logging::SystemError::FrameAllocationFailed)?;
-
-        crate::write_serial_bytes(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: clone_page_table new_frame allocated\n",
-        );
 
         let mapper = self.mapper.as_mut().unwrap();
         let phys_offset = mapper.phys_offset();
@@ -423,34 +405,14 @@ impl PageTableHelper for ProcessPageTable {
         let src_va = phys_offset + source_frame.start_address().as_u64();
         let dst_va = phys_offset + new_frame.start_address().as_u64();
 
-        // Debugging addresses
-        let mut buf = [0u8; 16];
-        let len = crate::serial::format_hex_to_buffer(phys_offset.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: phys_offset: 0x");
-        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-
-        let len = crate::serial::format_hex_to_buffer(src_va.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: src_va: 0x");
-        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-
-        let len = crate::serial::format_hex_to_buffer(dst_va.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: dst_va: 0x");
-        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-
-        // Shallow copy: copy all entries from source to destination
-        // This shares page tables between processes (kernel pages are shared, user pages will be copied on write later)
+        // Keep the fork path lightweight. BusyBox's standalone shell
+        // executes its applets in-process; user writes are promoted lazily
+        // by the kernel's write-protection handler.
         unsafe {
             let src_table = &*(src_va.as_ptr::<PageTable>());
             let dst_table = &mut *(dst_va.as_mut_ptr::<PageTable>());
-
             for i in 0..512 {
-                let entry = src_table[i].clone();
-                if entry.flags().contains(PageTableFlags::PRESENT) {
-                    dst_table[i] = entry;
-                }
+                dst_table[i] = src_table[i].clone();
             }
         }
 
@@ -460,7 +422,6 @@ impl PageTableHelper for ProcessPageTable {
         self.allocated_tables
             .insert(new_frame.start_address().as_u64() as usize, new_frame);
 
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: clone_page_table shallow done\n");
         Ok(new_frame.start_address().as_u64() as usize)
     }
 

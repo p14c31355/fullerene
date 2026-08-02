@@ -230,6 +230,13 @@ impl SchedulerContext {
             procs.retain(|(id, p)| {
                 !matches!(p.state, ProcessState::Terminated) || id.0 as usize == current
             });
+            // Removal can shift every following list index. Re-anchor the
+            // round-robin cursor to the process that owns the live CPU state.
+            let current_index = procs
+                .iter()
+                .position(|(id, _)| id.0 as usize == current)
+                .unwrap_or(0);
+            self.set_schedule_index(current_index);
         }
         for waiter in waiters {
             self.unblock_process(waiter);
@@ -292,26 +299,39 @@ impl SchedulerContext {
 
             // Clamp the schedule index to the valid range in case the process list has shrunk.
             let current_idx = self.schedule_index().min(list.len().saturating_sub(1));
-            let start_idx = current_idx;
             let mut next_idx = current_idx;
-
-            // Round‑robin scan
-            loop {
-                next_idx = (next_idx + 1) % list.len();
-                #[cfg(linux_musl_smoke)]
-                petroleum::serial::serial_log(format_args!(
-                    "[linux-smoke] scan idx={} pid={} state={:?}\n",
-                    next_idx, list[next_idx].0.0, list[next_idx].1.state
-                ));
-                if list[next_idx].1.state == ProcessState::Ready {
-                    break;
-                }
-                if next_idx == start_idx {
-                    // All blocked → fall back to idle
-                    if let Some(idle) = list.iter().position(|(_, p)| p.name == "idle") {
-                        next_idx = idle;
+            if list[current_idx].1.state == ProcessState::Terminated {
+                // A fault/exit recovery path must never re-enter the task it
+                // just marked dead. Prefer a ready task and otherwise use the
+                // scheduler's idle process.
+                let Some(candidate) = list
+                    .iter()
+                    .position(|(_, process)| process.state == ProcessState::Ready)
+                    .or_else(|| list.iter().position(|(_, process)| process.name == "idle"))
+                else {
+                    return (Some(list[current_idx].0), ProcessId(0));
+                };
+                next_idx = candidate;
+            } else {
+                let start_idx = current_idx;
+                // Round‑robin scan.
+                loop {
+                    next_idx = (next_idx + 1) % list.len();
+                    #[cfg(linux_musl_smoke)]
+                    petroleum::serial::serial_log(format_args!(
+                        "[linux-smoke] scan idx={} pid={} state={:?}\n",
+                        next_idx, list[next_idx].0.0, list[next_idx].1.state
+                    ));
+                    if list[next_idx].1.state == ProcessState::Ready {
+                        break;
                     }
-                    break;
+                    if next_idx == start_idx {
+                        // All blocked → fall back to idle.
+                        if let Some(idle) = list.iter().position(|(_, p)| p.name == "idle") {
+                            next_idx = idle;
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -481,44 +501,24 @@ impl SchedulerContext {
             .iter()
             .find(|(id, _)| *id == new_pid)
             .is_some_and(|(_, process)| process.is_user && process.context.kernel_rsp == 0);
+        let new_user_kernel_continuation = list
+            .iter()
+            .find(|(id, _)| *id == new_pid)
+            .is_some_and(|(_, process)| process.is_user && process.context.kernel_rsp != 0);
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
 
-        #[cfg(linux_busybox_smoke)]
-        if let Some((pid, process)) = list.iter().find(|(id, _)| *id == new_pid) {
-            if process.name == "busybox" && process.context.kernel_rsp == 0 {
-                petroleum::serial::serial_log(format_args!(
-                    "[LINUX-DIAG] first-entry pid={} old={:?} rip={:#x} rsp={:#x} cr3={:#x} kstack={:#x} cs={:#x} ss={:#x} rflags={:#x}\n",
-                    pid.0,
-                    old_pid.map(|old| old.0),
-                    process.context.rip,
-                    process.context.registers.rsp,
-                    pt.as_u64(),
-                    process.kernel_stack.as_u64(),
-                    process.context.segments.cs,
-                    process.context.segments.ss,
-                    process.context.rflags,
-                ));
-            }
-        }
         drop(guard);
 
         if let Some(new) = new_ctx {
-            if new_user_first_entry {
-                #[cfg(linux_busybox_smoke)]
-                crate::klog_fmt!(
-                    "[LINUX-DIAG] user entry prepare pid={} cr3={:#x} kernel_stack={:#x}\n",
-                    new_pid.0,
-                    pt.as_u64(),
-                    new_kernel_stack.map_or(0, |stack| stack.as_u64()),
-                );
-            }
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }
             if new_user_first_entry {
                 crate::interrupts::syscall::prepare_user_entry();
+            } else if new_user_kernel_continuation {
+                crate::interrupts::syscall::prepare_kernel_continuation();
             }
             let old = old_ctx.unwrap_or(core::ptr::null_mut());
             unsafe {

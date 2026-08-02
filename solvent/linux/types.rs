@@ -258,7 +258,7 @@ pub struct LinuxSysinfo {
     pub totalhigh: u64,
     pub freehigh: u64,
     pub mem_unit: u32,
-    pub pad: [u8; 20],
+    pub pad: [u8; 0],
 }
 
 impl LinuxSysinfo {
@@ -276,7 +276,7 @@ impl LinuxSysinfo {
             totalhigh: 0,
             freehigh: 0,
             mem_unit: 1,
-            pad: [0u8; 20],
+            pad: [],
         }
     }
 }

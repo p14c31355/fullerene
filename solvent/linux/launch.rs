@@ -45,7 +45,145 @@ static BUSYBOX_SMOKE_LAUNCH_COUNT: AtomicU8 = AtomicU8::new(0);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_HOLD_INPUT: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
-static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox is running";
+static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox all applets passed";
+
+#[cfg(linux_busybox_smoke)]
+const BUSYBOX_SMOKE_APPLET_COUNT: usize =
+    include!(concat!(env!("OUT_DIR"), "/busybox-applet-count.rs"));
+#[cfg(linux_busybox_smoke)]
+const BUSYBOX_SMOKE_HELP_CHECK_MARKER: &str = "__FULLERENE_BUSYBOX_HELP_CHECK__";
+
+#[cfg(linux_busybox_smoke)]
+fn busybox_smoke_script() -> alloc::string::String {
+    let script = alloc::format!(
+        "set -e\n\
+    busybox rmdir /tmp/busybox-contract /tmp/busybox-dir || true\n\
+    busybox rm -f /tmp/busybox-input || true\n\
+    busybox busybox --help >/tmp/busybox-help\n\
+    busybox busybox --list >/tmp/busybox-list\n\
+    busybox test \"$(busybox wc -l </tmp/busybox-list)\" -eq {count}\n\
+    __FULLERENE_BUSYBOX_HELP_CHECK__\n\
+    busybox mkdir /tmp/busybox-contract\n\
+    busybox printf 'alpha\\nbeta\\nalpha\\n' >/tmp/busybox-input\n\
+    busybox '[' 1 -eq 1 ']'\n\
+    busybox '[[' 1 -eq 1 ']]'\n\
+    busybox arch >/tmp/busybox-arch\n\
+    busybox ash -c 'exit 0'\n\
+    busybox awk 'BEGIN {{ if (1+1 != 2) exit 1 }}'\n\
+    busybox basename /tmp/busybox-input >/tmp/busybox-basename\n\
+    busybox test \"$(busybox cat /tmp/busybox-basename)\" = busybox-input\n\
+    busybox cat /tmp/busybox-input >/tmp/busybox-cat\n\
+    busybox grep -q '^alpha$' /tmp/busybox-cat\n\
+    busybox cksum /tmp/busybox-input >/tmp/busybox-cksum\n\
+    busybox test -s /tmp/busybox-cksum\n\
+    busybox clear\n\
+    busybox cp /tmp/busybox-input /tmp/busybox-copy\n\
+    busybox test -f /tmp/busybox-copy\n\
+    busybox cut -d: -f2 /tmp/busybox-input >/tmp/busybox-cut\n\
+    busybox test \"$(busybox wc -c </tmp/busybox-cut)\" -eq 17\n\
+    busybox date >/tmp/busybox-date\n\
+    busybox test -s /tmp/busybox-date\n\
+    busybox dd if=/tmp/busybox-input of=/tmp/busybox-dd bs=1 count=1\n\
+    busybox test \"$(busybox wc -c </tmp/busybox-dd)\" -eq 1\n\
+    busybox dirname /tmp/busybox-input >/tmp/busybox-dirname\n\
+    busybox test \"$(busybox cat /tmp/busybox-dirname)\" = /tmp\n\
+    busybox echo smoke >/tmp/busybox-echo\n\
+    busybox grep -q '^smoke$' /tmp/busybox-echo\n\
+    busybox env -i /bin/busybox true >/tmp/busybox-env\n\
+    busybox expr 1 + 1 >/tmp/busybox-expr\n\
+    busybox test \"$(busybox cat /tmp/busybox-expr)\" = 2\n\
+    if busybox false; then busybox echo false-unexpected; exit 1; fi\n\
+    busybox fold -w 3 /tmp/busybox-input >/tmp/busybox-fold\n\
+    busybox test -s /tmp/busybox-fold\n\
+    busybox grep -q alpha /tmp/busybox-input\n\
+    busybox head -n 1 /tmp/busybox-input >/tmp/busybox-head\n\
+    busybox grep -q '^alpha$' /tmp/busybox-head\n\
+    busybox hexdump -C /tmp/busybox-input >/tmp/busybox-hexdump\n\
+    busybox test -s /tmp/busybox-hexdump\n\
+    busybox hostname >/tmp/busybox-hostname\n\
+    busybox test -s /tmp/busybox-hostname\n\
+    busybox test -d /\n\
+    busybox stat / >/tmp/busybox-root-stat\n\
+    busybox test -s /tmp/busybox-root-stat\n\
+    busybox ls / >/tmp/busybox-ls\n\
+    busybox test -s /tmp/busybox-ls\n\
+    busybox md5sum /tmp/busybox-input >/tmp/busybox-md5\n\
+    busybox test -s /tmp/busybox-md5\n\
+    busybox mkdir /tmp/busybox-dir\n\
+    busybox test -d /tmp/busybox-dir\n\
+    tmp=$(busybox mktemp /tmp/busybox.XXXXXX)\n\
+    busybox test -f \"$tmp\"\n\
+    busybox mv /tmp/busybox-copy /tmp/busybox-moved\n\
+    busybox test -f /tmp/busybox-moved\n\
+    busybox od /tmp/busybox-input >/tmp/busybox-od\n\
+    busybox test -s /tmp/busybox-od\n\
+    busybox printenv PATH >/tmp/busybox-path\n\
+    busybox test -s /tmp/busybox-path\n\
+    busybox printf '%s\\n' printf >/tmp/busybox-printf\n\
+    busybox grep -q '^printf$' /tmp/busybox-printf\n\
+    busybox pwd >/tmp/busybox-pwd\n\
+    busybox test -d \"$(busybox cat /tmp/busybox-pwd)\"\n\
+    busybox rm /tmp/busybox-moved\n\
+    if busybox test -e /tmp/busybox-moved; then exit 1; fi\n\
+    busybox rmdir /tmp/busybox-dir\n\
+    if busybox test -e /tmp/busybox-dir; then exit 1; fi\n\
+    busybox sed -n 's/^alpha$/ok/p' /tmp/busybox-input >/tmp/busybox-sed\n\
+    busybox grep -q '^ok$' /tmp/busybox-sed\n\
+    busybox seq 1 2 >/tmp/busybox-seq\n\
+    busybox test \"$(busybox wc -l </tmp/busybox-seq)\" -eq 2\n\
+    busybox sha256sum /tmp/busybox-input >/tmp/busybox-sha256\n\
+    busybox test -s /tmp/busybox-sha256\n\
+    busybox sh -c 'busybox true'\n\
+    busybox sleep 0\n\
+    busybox sort /tmp/busybox-input >/tmp/busybox-sort\n\
+    busybox grep -q '^alpha$' /tmp/busybox-sort\n\
+    busybox stat /tmp/busybox-input >/tmp/busybox-stat\n\
+    busybox test -s /tmp/busybox-stat\n\
+    busybox tail -n 1 /tmp/busybox-input >/tmp/busybox-tail\n\
+    busybox grep -q '^alpha$' /tmp/busybox-tail\n\
+    busybox tar -cf /tmp/busybox.tar /tmp/busybox-input\n\
+    busybox test -s /tmp/busybox.tar\n\
+    busybox tar -tf /tmp/busybox.tar >/tmp/busybox-tar-list\n\
+    busybox grep -q 'busybox-input' /tmp/busybox-tar-list\n\
+    busybox tee /tmp/busybox-tee </tmp/busybox-input >/tmp/busybox-tee-out\n\
+    busybox grep -q '^alpha$' /tmp/busybox-tee-out\n\
+    busybox test -f /tmp/busybox-input\n\
+    busybox touch /tmp/busybox-touch\n\
+    busybox test -f /tmp/busybox-touch\n\
+    busybox tr a-z A-Z </tmp/busybox-input >/tmp/busybox-tr\n\
+    busybox grep -q '^ALPHA$' /tmp/busybox-tr\n\
+    busybox true\n\
+    if busybox tty >/tmp/busybox-tty; then\n\
+    busybox test -s /tmp/busybox-tty\n\
+    else\n\
+    tty_status=$?\n\
+    busybox test \"$tty_status\" -eq 1\n\
+    fi\n\
+    busybox uname -a >/tmp/busybox-uname\n\
+    busybox test -s /tmp/busybox-uname\n\
+    busybox uniq /tmp/busybox-input >/tmp/busybox-uniq\n\
+    busybox test \"$(busybox wc -l </tmp/busybox-uniq)\" -eq 3\n\
+    busybox uptime >/tmp/busybox-uptime\n\
+    busybox test -s /tmp/busybox-uptime\n\
+    busybox wc -l /tmp/busybox-input >/tmp/busybox-wc\n\
+    busybox grep -q '3' /tmp/busybox-wc\n\
+    busybox which busybox >/tmp/busybox-which\n\
+    busybox grep -q '/bin/busybox' /tmp/busybox-which\n\
+    busybox whoami >/tmp/busybox-whoami\n\
+    busybox test \"$(busybox cat /tmp/busybox-whoami)\" = root\n\
+    busybox yes | busybox head -n 1 >/tmp/busybox-yes\n\
+    busybox test -s /tmp/busybox-yes\n\
+    busybox rmdir /tmp/busybox-contract /tmp/busybox-dir || true\n\
+    echo Fullerene BusyBox all applets passed\n\
+    exit 0\n",
+        count = BUSYBOX_SMOKE_APPLET_COUNT
+    );
+    let help_check = alloc::string::String::from(
+        "busybox grep -q 'Currently defined functions:' /tmp/busybox-help\n\
+busybox awk 'BEGIN { while ((getline name < \"/tmp/busybox-list\") > 0) wanted[name]=1 } { for (name in wanted) if (index($0, name)) found[name]=1 } END { for (name in wanted) if (!(name in found)) exit 1 }' /tmp/busybox-help",
+    );
+    script.replace(BUSYBOX_SMOKE_HELP_CHECK_MARKER, &help_check)
+}
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
@@ -223,26 +361,35 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
     crate::klog_fmt!("[BUSYBOX-DIAG] launch complete pid={}\n", pid.0);
     #[cfg(linux_busybox_smoke)]
     {
-        BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
-        BUSYBOX_SMOKE_EXIT_OK.store(false, Ordering::Release);
+        let launch_number = BUSYBOX_SMOKE_LAUNCH_COUNT.fetch_add(1, Ordering::AcqRel);
+        if launch_number == 0 {
+            BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
+            BUSYBOX_SMOKE_EXIT_OK.store(false, Ordering::Release);
+            BUSYBOX_SMOKE_HARNESS_DONE.store(false, Ordering::Release);
+            BUSYBOX_SMOKE_OUTPUT_MATCHED.store(0, Ordering::Release);
+        }
         BUSYBOX_SMOKE_WINDOW_CLOSED.store(false, Ordering::Release);
-        BUSYBOX_SMOKE_HARNESS_DONE.store(false, Ordering::Release);
-        BUSYBOX_SMOKE_OUTPUT_MATCHED.store(0, Ordering::Release);
         BUSYBOX_SMOKE_WAITING.store(false, Ordering::Release);
         BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
         BUSYBOX_SMOKE_WINDOW.store(terminal_window.0, Ordering::Release);
-        BUSYBOX_SMOKE_LAUNCH_COUNT.fetch_add(1, Ordering::AcqRel);
         BUSYBOX_SMOKE_HOLD_INPUT.store(true, Ordering::Release);
-        // Feed the command that exercises the shell. The exit command is
-        // injected after BusyBox has reached a real no-input wait.
-        solvent::push_process_terminal_input(
-            terminal_window,
-            b"echo Fullerene BusyBox is running\n",
-        );
+        if launch_number == 0 {
+            // Run every applet in the generated contract through the bundled
+            // BusyBox command. The exit command is injected only after the
+            // success marker and a real no-input wait.
+            let script = busybox_smoke_script();
+            solvent::push_process_terminal_input(terminal_window, script.as_bytes());
+        } else {
+            // The second launch is deliberately a fresh interactive process;
+            // its purpose is to catch stale terminal/page-table state after
+            // the full contract has completed, not to duplicate the contract.
+            solvent::push_process_terminal_input(terminal_window, b"exit\n");
+        }
         BUSYBOX_SMOKE_PID.store(pid.0, Ordering::Release);
         petroleum::serial::serial_log(format_args!(
-            "[busybox-smoke] fixture launched as PID {}\n",
-            pid.0
+            "[busybox-smoke] fixture launched as PID {} pass={}\n",
+            pid.0,
+            launch_number == 0
         ));
     }
     Ok(pid)
@@ -356,7 +503,7 @@ pub fn busybox_smoke_complete() -> bool {
 
 /// Launch BusyBox shell from embedded initramfs data.
 pub fn launch_busybox() -> Result<ProcessId, LoadError> {
-    // Look for busybox in standard locations
+    // Look for in standard locations
     let locations = [
         "/bin/busybox",
         "/sbin/busybox",
@@ -407,6 +554,7 @@ pub fn init_initramfs() {
         "/home",
         "/lib",
         "/lib64",
+        "/lib/x86_64-linux-gnu",
         "/mnt",
         "/usr/share",
         "/usr/share/sounds",
@@ -421,12 +569,30 @@ pub fn init_initramfs() {
 
     // Create a simple /etc/hostname
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");
+    let _ = crate::fs::write_entire_file("/etc/passwd", b"root:x:0:0:root:/root:/bin/sh\n");
 
     #[cfg(have_busybox)]
     {
         let busybox = include_bytes!(concat!(env!("OUT_DIR"), "/busybox"));
         if let Err(error) = crate::fs::write_entire_file("/bin/busybox", busybox) {
             log::warn!("Initramfs: failed to install /bin/busybox: {:?}", error);
+        }
+
+        let interpreter = include_bytes!(concat!(env!("OUT_DIR"), "/busybox-interpreter"));
+        for path in [
+            "/lib64/ld-linux-x86-64.so.2",
+            "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        ] {
+            if let Err(error) = crate::fs::write_entire_file(path, interpreter) {
+                log::warn!("Initramfs: failed to install {}: {:?}", path, error);
+            }
+        }
+        let libc = include_bytes!(concat!(env!("OUT_DIR"), "/busybox-libc"));
+        if let Err(error) = crate::fs::write_entire_file("/lib/x86_64-linux-gnu/libc.so.6", libc) {
+            log::warn!(
+                "Initramfs: failed to install /lib/x86_64-linux-gnu/libc.so.6: {:?}",
+                error
+            );
         }
     }
 

@@ -25,25 +25,42 @@ use spin::Mutex;
 // ── Serial port constants ──────────────────────────────────────────────
 const COM1_DATA: u16 = 0x3F8;
 #[cfg(not(any(feature = "std", test)))]
-const COM1_STATUS: u16 = 0x3FD;
+const COM1_LINE_STATUS: u16 = 0x3FD;
 
 /// Write raw bytes to the serial port (blocking, with timeout).
 unsafe fn write_serial_raw(bytes: &[u8]) {
     #[cfg(not(any(feature = "std", test)))]
     unsafe {
-        use x86_64::instructions::port::Port;
-        let mut data = Port::<u8>::new(COM1_DATA);
-        let mut status = Port::<u8>::new(COM1_STATUS);
         for &b in bytes {
-            let mut timeout = 1_000_000u32;
-            while (status.read() & 0x20) == 0 && timeout > 0 {
+            let mut timeout = 1_000_000;
+            while (read_serial_status(COM1_LINE_STATUS) & 0x20) == 0 && timeout > 0 {
                 timeout -= 1;
             }
-            data.write(b);
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") COM1_DATA,
+                in("al") b,
+                options(nomem, nostack, preserves_flags),
+            );
         }
     }
     #[cfg(any(feature = "std", test))]
     let _ = bytes;
+}
+
+#[cfg(not(any(feature = "std", test)))]
+#[inline(always)]
+unsafe fn read_serial_status(port: u16) -> u8 {
+    let value: u8;
+    unsafe {
+        core::arch::asm!(
+            "in al, dx",
+            out("al") value,
+            in("dx") port,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    value
 }
 
 // ── VGA text buffer ────────────────────────────────────────────────────
@@ -165,24 +182,22 @@ impl EarlyConsole {
             return;
         }
         unsafe {
-            use x86_64::instructions::port::Port;
-            let mut divider_lsb = Port::<u8>::new(COM1_DATA);
-            let mut divider_msb = Port::<u8>::new(COM1_DATA + 1);
-            let mut fifo = Port::<u8>::new(COM1_DATA + 2);
-            let mut line_ctrl = Port::<u8>::new(COM1_DATA + 3);
-            let mut modem_ctrl = Port::<u8>::new(COM1_DATA + 4);
-
-            // Set DLAB=1
-            line_ctrl.write(0x80);
-            // Set baud divisor (115200 / 1 = 115200 → divisor=1)
-            divider_lsb.write(0x01);
-            divider_msb.write(0x00);
-            // Clear DLAB, set 8N1
-            line_ctrl.write(0x03);
-            // Enable FIFO, clear, 14-byte threshold
-            fifo.write(0xC7);
-            // RTS/DSR
-            modem_ctrl.write(0x0B);
+            let config: &[(u16, u8)] = &[
+                (COM1_DATA + 3, 0x80),
+                (COM1_DATA, 0x01),
+                (COM1_DATA + 1, 0x00),
+                (COM1_DATA + 3, 0x03),
+                (COM1_DATA + 2, 0xC7),
+                (COM1_DATA + 4, 0x0B),
+            ];
+            for &(port, value) in config {
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") port,
+                    in("al") value,
+                    options(nomem, nostack, preserves_flags),
+                );
+            }
         }
         *init = true;
     }

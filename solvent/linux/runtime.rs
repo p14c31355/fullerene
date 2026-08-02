@@ -10,9 +10,39 @@ use super::time as linux_time;
 use super::types::*;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use petroleum::common::logging::SystemError;
+use spin::Mutex;
 
 use crate::user_memory::{self, UserCopyError};
+
+static VFS_FD_REFS: Mutex<BTreeMap<u32, usize>> = Mutex::new(BTreeMap::new());
+
+fn retain_vfs_fd(fd: u32) {
+    let mut refs = VFS_FD_REFS.lock();
+    *refs.entry(fd).or_insert(0) += 1;
+}
+
+fn release_vfs_fd(fd: u32) {
+    let should_close = {
+        let mut refs = VFS_FD_REFS.lock();
+        match refs.get_mut(&fd) {
+            Some(count) if *count > 1 => {
+                *count -= 1;
+                false
+            }
+            Some(_) => {
+                refs.remove(&fd);
+                true
+            }
+            None => false,
+        }
+    };
+    if should_close {
+        let _ = crate::contexts::vfs::close(fd);
+    }
+}
 
 /// Dispatch mode for the process: which runtime handles its syscalls.
 pub enum DispatchMode {
@@ -118,6 +148,7 @@ impl LinuxRuntime {
             SYS_GETDENTS64 => linux_fs::sys_getdents64(self, args),
             SYS_OPENAT => linux_fs::sys_openat(self, args),
             SYS_NEWFSTATAT => linux_fs::sys_newfstatat(self, args),
+            SYS_STATX => linux_fs::sys_newfstatat(self, args),
             SYS_FACCESSAT => linux_fs::sys_faccessat(self, args),
             SYS_READLINK => linux_fs::sys_readlink(self, args),
             SYS_READLINKAT => linux_fs::sys_readlinkat(self, args),
@@ -128,6 +159,8 @@ impl LinuxRuntime {
             SYS_RMDIR => linux_fs::sys_rmdir(self, args),
             SYS_SYMLINK => linux_fs::sys_symlink(self, args),
             SYS_RENAME => linux_fs::sys_rename(self, args),
+            SYS_RENAMEAT => linux_fs::sys_renameat(self, args),
+            SYS_RENAMEAT2 => linux_fs::sys_renameat(self, args),
             SYS_CHDIR => linux_fs::sys_chdir(self, args),
             SYS_GETCWD => linux_fs::sys_getcwd(self, args),
             SYS_MOUNT => linux_fs::sys_mount(self, args),
@@ -146,6 +179,7 @@ impl LinuxRuntime {
             SYS_CHMOD => linux_fs::sys_fchmod(self, args),
             SYS_FCHMOD => linux_fs::sys_fchmodat(self, args),
             SYS_CREAT => linux_fs::sys_creat(self, args),
+            SYS_UTIMENSAT => linux_fs::sys_utimensat(self, args),
 
             // Memory
             SYS_MMAP => linux_mem::sys_mmap(self, args),
@@ -209,6 +243,7 @@ impl LinuxRuntime {
             SYS_FSTATFS => linux_misc::sys_fstatfs(self, args),
             SYS_SCHED_GETAFFINITY => linux_misc::sys_sched_getaffinity(self, args),
             SYS_SCHED_SETAFFINITY => linux_misc::sys_sched_setaffinity(self, args),
+            SYS_SOCKET => linux_misc::sys_socket(self, args),
 
             _ => {
                 log::warn!("Linux syscall {} unknown, returning ENOSYS", syscall_no);
@@ -224,15 +259,118 @@ pub struct LinuxFdTable {
     next_fd: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LinuxFileDesc {
     pub vfs_fd: u32,
+    vfs_ref: bool,
     pub mount_index: usize,
     pub flags: i32,
     pub offset: u64,
     /// For directory fds: the path passed to `open`/`openat`,
     /// used by `getdents64` to read the correct directory.
     pub dir_path: Option<alloc::string::String>,
+    pub is_dir: bool,
+    pub pipe: Option<Arc<LinuxPipe>>,
+    pub pipe_end: PipeEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipeEnd {
+    Read,
+    Write,
+}
+
+#[derive(Debug)]
+pub struct LinuxPipe {
+    state: Mutex<LinuxPipeState>,
+}
+
+const PIPE_CAPACITY: usize = 64 * 1024;
+
+#[derive(Debug, Default)]
+struct LinuxPipeState {
+    data: VecDeque<u8>,
+    readers: usize,
+    writers: usize,
+}
+
+impl LinuxPipe {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(LinuxPipeState::default()),
+        }
+    }
+
+    pub fn open(&self, end: PipeEnd) {
+        let mut state = self.state.lock();
+        match end {
+            PipeEnd::Read => state.readers += 1,
+            PipeEnd::Write => state.writers += 1,
+        }
+    }
+
+    pub fn close(&self, end: PipeEnd) {
+        let mut state = self.state.lock();
+        match end {
+            PipeEnd::Read => state.readers = state.readers.saturating_sub(1),
+            PipeEnd::Write => state.writers = state.writers.saturating_sub(1),
+        }
+    }
+
+    pub fn read(&self, output: &mut [u8]) -> Option<usize> {
+        let mut state = self.state.lock();
+        if state.data.is_empty() {
+            return (state.writers == 0).then_some(0);
+        }
+        let count = output.len().min(state.data.len());
+        for byte in &mut output[..count] {
+            *byte = state.data.pop_front().expect("pipe length checked");
+        }
+        Some(count)
+    }
+
+    pub fn write(&self, input: &[u8]) -> Result<usize, ()> {
+        let mut state = self.state.lock();
+        if state.readers == 0 {
+            return Err(());
+        }
+        let count = input
+            .len()
+            .min(PIPE_CAPACITY.saturating_sub(state.data.len()));
+        state.data.extend(input[..count].iter().copied());
+        Ok(count)
+    }
+}
+
+impl Clone for LinuxFileDesc {
+    fn clone(&self) -> Self {
+        if let Some(pipe) = &self.pipe {
+            pipe.open(self.pipe_end);
+        } else if self.vfs_ref {
+            retain_vfs_fd(self.vfs_fd);
+        }
+        Self {
+            vfs_fd: self.vfs_fd,
+            vfs_ref: self.vfs_ref,
+            mount_index: self.mount_index,
+            flags: self.flags,
+            offset: self.offset,
+            dir_path: self.dir_path.clone(),
+            is_dir: self.is_dir,
+            pipe: self.pipe.clone(),
+            pipe_end: self.pipe_end,
+        }
+    }
+}
+
+impl Drop for LinuxFileDesc {
+    fn drop(&mut self) {
+        if let Some(pipe) = &self.pipe {
+            pipe.close(self.pipe_end);
+        } else if self.vfs_ref {
+            release_vfs_fd(self.vfs_fd);
+        }
+    }
 }
 
 impl LinuxFdTable {
@@ -245,19 +383,38 @@ impl LinuxFdTable {
 
     /// Allocate a Linux fd, storing the vfs mapping.
     pub fn alloc(&mut self, vfs_fd: u32, mount_index: usize, flags: i32) -> i32 {
+        if vfs_fd != 0 {
+            retain_vfs_fd(vfs_fd);
+        }
         let fd = self.next_fd;
         self.next_fd += 1;
         self.entries.insert(
             fd,
             LinuxFileDesc {
                 vfs_fd,
+                vfs_ref: vfs_fd != 0,
                 mount_index,
                 flags,
                 offset: 0,
                 dir_path: None,
+                is_dir: false,
+                pipe: None,
+                pipe_end: PipeEnd::Read,
             },
         );
         fd
+    }
+
+    pub fn attach_pipe(&mut self, fd: i32, pipe: Arc<LinuxPipe>, end: PipeEnd) {
+        if let Some(desc) = self.entries.get_mut(&fd) {
+            if desc.vfs_ref {
+                release_vfs_fd(desc.vfs_fd);
+                desc.vfs_ref = false;
+            }
+            pipe.open(end);
+            desc.pipe = Some(pipe);
+            desc.pipe_end = end;
+        }
     }
 
     pub fn get(&self, fd: i32) -> Option<&LinuxFileDesc> {
@@ -274,6 +431,10 @@ impl LinuxFdTable {
 
     pub fn contains(&self, fd: i32) -> bool {
         self.entries.contains_key(&fd)
+    }
+
+    pub fn close_all(&mut self) {
+        let _ = core::mem::take(&mut self.entries);
     }
 }
 

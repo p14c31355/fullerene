@@ -1,123 +1,151 @@
 # Fullerene
-> **Fullerene is a Rust operating system for x86_64 UEFI featuring a graphical desktop, multitasking kernel, interactive shell, and real hardware support.**
 
+> A Rust operating system for x86_64 UEFI with a graphical desktop, a multitasking kernel, an interactive shell, and experimental native/Linux application support.
 
----
+![Fullerene desktop](docs/history/fullerene_202607282001_desktop.png)
 
-![Fullerene desktop screenshot](docs/history/fullerene_202607282001_desktop.png)
+[Development history](docs/history) · [Discord community](https://discord.gg/FfAbRaUA26)
 
-[development_history](docs/history)
+Fullerene is a `no_std` Rust operating system under active development. It boots through UEFI, runs a kernel with process/thread scheduling and system calls, provides a Lattice-based desktop, and exposes a Nozzle shell through both the graphical terminal and the serial console.
 
-[Discord Community](https://discord.gg/FfAbRaUA26)  
-The community is still new, but we welcome you!
+The project is developed against QEMU and selected real hardware. Hardware and ABI support is still evolving; see the [support matrix](docs/SUPPORT_MATRIX.md) and [hardware notes](docs/HARDWARE.md) for the current status rather than treating every driver or syscall as production-ready.
 
----
+## What is implemented
 
-Fullerene is an operating system kernel written in Rust, targeting x86_64 architecture with UEFI booting. It explores modern systems programming concepts including process scheduling, virtual memory management, filesystem abstraction, syscall interfaces, GUI compositing, and event-driven shell interaction, all implemented in a safe, no_std environment.
+- **Boot and kernel:** Bellows loads the UEFI kernel and framebuffer configuration. Fullerene Kernel owns memory management, interrupts, process and thread lifecycle, scheduling, system calls, the VFS, initramfs, and framebuffer access.
+- **Desktop and runtime:** Lattice provides compositing, windows, desktop surfaces, terminal rendering, menus, and wallpaper support. Solvent coordinates runtime services, input, events, frame pacing, windows, file browsing, and viewers.
+- **Shell and I/O:** Nozzle provides line editing, history, built-ins, and command dispatch. Carrier defines terminal and pipeline I/O; the shell is available through the GUI terminal and serial output.
+- **Filesystems:** Genome provides the VFS abstraction and memory filesystem, with FAT32 and exFAT backends integrated by the kernel.
+- **Drivers and networking:** Nitrogen contains the hardware and driver layer, including PCI, APIC/PIC, PS/2, VirtIO, USB, NVMe/AHCI mechanisms, HDA audio, framebuffer, Intel wireless, and related device services. Bonder provides Ethernet, IPv4, UDP, DHCP, WPA, and iwlwifi integration.
+- **Userspace and applications:** Fullerene ABI defines the shared syscall contract. Petroleum provides shared bare-metal/syscall utilities, Sealant provides checked memory and MMIO capability types, and Toluene provides the userspace SDK and application binaries. Native ELF, Linux-compatibility, and embedded WASI application paths are present; third-party ports are optional.
+- **Shared primitives:** Resonance provides events and dispatch, Chronoline provides timer management, and the `fullerene-kernel/vdso` crate contains VDSO layout helpers. The VDSO page currently exposes read-only time, uptime, and PID metadata.
 
-Fullerene provides a full-featured kernel with multitasking capabilities, running in QEMU virtual machine. The system includes a bootloader, kernel scheduler, process management, memory allocation, device drivers, GUI windowing system, interactive shell, and user-space support scaffolding.
+## Workspace
 
----
+The repository is a Cargo workspace. Its main architectural crates are:
 
-## Design Goals
+| Crate | Role |
+|---|---|
+| `bellows` | UEFI bootloader |
+| `fullerene-kernel` | Kernel and hardware-policy integration |
+| `flasks` | Build runner, ISO creator, and QEMU launcher |
+| `fullerene-abi` / `vdso` | Shared syscall ABI and VDSO helpers |
+| `petroleum` / `sealant` | Bare-metal utilities and checked memory capabilities |
+| `nitrogen` / `bonder` | Hardware drivers and networking |
+| `genome` / `carrier` | Filesystem/VFS and terminal I/O abstractions |
+| `lattice` / `solvent` | GUI framework and runtime orchestration |
+| `nozzle` / `resonance` / `chronoline` | Shell, event, and timer primitives |
+| `toluene` | Userspace SDK and example binaries |
 
-- **REAL HARDWARE FIRST**
-  - Features are validated on physical machines, not only in QEMU.
+The workspace also contains the `fullerene-tools`, `busybox-build`, and WASI support packages. `toluene/viewer` and `toluene/emulsion` are nested application workspaces built by the kernel build script; vendored sources under `toluene/` are not Fullerene architecture layers.
 
----
+## Quick start
 
-- **Context-oriented architecture** - Large Rust context structures reduce architectural cognitive load.
-- **Minimizing inline assembly maximizes code stability** - Hardware-specific code is isolated to improve maintainability.
-- **Maximizing the use of the bare metal Rust ecosystem** - Prefer reusable no_std crates over custom implementations whenever possible.
+### Prerequisites
 
-## Features
+- Rust nightly pinned by [`rust-toolchain.toml`](rust-toolchain.toml): `nightly-2026-06-01`
+- The `x86_64-unknown-uefi` target and Rust source (installed by the toolchain file)
+- The `wasm32-wasip1` target for embedded WASI applications:
 
-- **UEFI Bootloader (Bellows)**: A no_std UEFI application that loads the kernel ELF, initializes framebuffer graphics via Graphics Output Protocol (GOP), sets up custom configuration tables, and transitions to kernel execution after exiting boot services.
+  ```bash
+  rustup target add --toolchain nightly-2026-06-01 wasm32-wasip1
+  ```
 
-- **Full-Featured Kernel (Fullerene-Kernel)** with components including:
-  - **Memory Management**: Virtual memory with page tables, heap allocation (linked-list allocator), and physical memory tracking
-  - **Process Management**: Full process creation, termination, and per-process resource tracking (fd tables, handle tables with generation counters)
-  - **Scheduler**: Tick-driven round-robin scheduler via `SchedulerContext` (`SCHEDULER` singleton). All scheduling state (process list, tick counter, NMI recovery) is owned by a single struct with an explicit lock hierarchy independent of the `KERNEL` context lock.
-  - **Syscall Interface**: Complete system call implementation for user-kernel communication; VDSO provides zero-copy read-only access to time and PID (no async ring buffer)
-  - **Filesystem**: Abstraction layer via `Genome` (standalone VFS crate) with `MemFileSystem`, FAT32, and exFAT backends
-  - **GUI Windowing System**: Lattice-based compositor, desktop, window management, and font rendering with cursor blink and terminal surface
-  - **Hardware Interfaces**: Keyboard input, serial output, APIC/PIC interrupt handling, VirtIO-GPU support, USB (XHCI/EHCI), NVMe/AHCI storage, Intel WiFi (iwlwifi), HDA audio
-  - **Shell**: Nozzle-based interactive shell with line editing, command history, and extensible built-in commands
+- `qemu-system-x86_64`
+- UEFI firmware (OVMF). Bundled firmware is kept in `flasks/ovmf/`; if it is unavailable, install the system OVMF package and run `--clone-ovmf` to copy `/usr/share/OVMF/OVMF_CODE.fd` and `OVMF_VARS.fd` into the project.
 
-- **Common Library (Petroleum)**: Shared no_std utilities used by both kernel and userspace — page table management, graphics primitives, syscall ABI numbers, VDSO layout definition, serial logging, VirtIO drivers.
-
-- **Memory Capability Boundary (Sealant)**: A no_std library for checked RAM, MMIO, user-memory, DMA, framebuffer, and physical-address capabilities. Range checks make low-level assumptions explicit; actual untyped memory operations remain audited `unsafe` operations.
-
-- **GUI Framework (Lattice)**: A no_std compositing window system providing desktop environment, window manager, scene graph, surface rendering, terminal surface with bitmap font, and cursor support.
-
-- **Event System (Resonance)**: A no_std event-driven framework with dispatcher, event queue, event sources, and typed event handlers for decoupled component communication.
-
-- **Time Management (Chronoline)**: A no_std timer management primitive with deadline tracking, tick-based clock advancement, and sorted timer event queue for scheduler integration.
-
-- **Shell Runtime (Nozzle)**: A no_std interactive shell runtime providing line editor with history, command parser, extensible command interface, prompt, and terminal abstraction. Used by the kernel's shell and accessible via both serial and GUI terminal.
-
-- **I/O Abstraction (Carrier)**: A no_std I/O abstraction layer providing the `Terminal` trait, command dispatch with streaming pipeline support, separating data transport from data processing.
-
-- **File System Framework (Genome)**: A no_std VFS layer providing the `FileSystem` trait, `MemFileSystem`, `Vfs` dispatcher with mount-table routing, and typed `FsError` — all framework-agnostic and used by the kernel through its `VfsContext`.
-
-- **Hardware Abstraction Layer (Nitrogen)**: Driver and hardware abstraction library providing PCI enumeration, APIC/PIC interrupt controllers, PS/2 keyboard/mouse, HDA audio, VirtIO block/net/gpu, USB XHCI, NVMe/AHCI storage, iwlwifi, and framebuffer management.
-
-- **Application Framework (Solvent)**: File explorer, image/audio viewers, menu actions, and handler infrastructure for building user-facing applications on Lattice and Nozzle.
-
-- **Build System (Flasks)**: Automated task runner for building bootloader and kernel, ISO creation (using isobemak crate), and QEMU virtualization with configurable VGA and display backends.
-
-- **Networking (Bonder)**: A no_std network protocol stack with Ethernet, IPv4, UDP socket abstraction, and iwlwifi integration.
-
-- **Userland Placeholder (Toluene)**: Scaffolding for user-space programs in Rust (currently minimal).
-
-The system boots from UEFI firmware, initializes all hardware interfaces, and runs a kernel scheduler that manages multiple processes concurrently. User interaction occurs through a GUI terminal or serial shell interface, with full debugging support via serial logging.
-
-## Quick Start
+Clone submodules when working with optional application ports or the BusyBox integration:
 
 ```bash
-cargo run -q -p flasks -- --vga std
+git submodule update --init --recursive
 ```
 
-For detailed build instructions, QEMU options, and manual build steps, see [docs/BUILD.md](docs/BUILD.md).
+### Build and run in QEMU
+
+The Flasks task runner builds the kernel and bootloader for UEFI, creates `fullerene.iso`, and starts QEMU:
+
+```bash
+cargo run -q -p flasks
+```
+
+By default, Flasks uses the release profile, 4 GiB of guest memory, VirtIO-GPU at `1920x1080`, SDL display output, and serial logs on stdout.
+
+Useful commands:
+
+```bash
+# Use the Bochs-compatible standard VGA device
+cargo run -q -p flasks -- --vga std
+
+# Build fullerene.iso without starting QEMU
+cargo run -q -p flasks -- --iso-only
+
+# Use unoptimized UEFI artifacts while debugging
+cargo run -q -p flasks -- --debug --vga std
+
+# Headless QEMU with serial output only
+cargo run -q -p flasks -- --headless --vga none
+```
+
+Important Flasks options are `--vga <virtio-gpu|std|qxl|cirrus|none>`, `--display <gtk|sdl|none|curses>`, `--resolution <WxH>`, `--headless`, `--timeout <seconds>`, `--iso-only`, `--debug`, and `--clone-ovmf`. QEMU diagnostics are written to `qemu_log.txt`; set `RUST_LOG=debug` for more verbose task-runner logs.
+
+For prerequisites, manual build steps, application ports, BusyBox, smoke tests, and the complete QEMU option reference, see [docs/BUILD.md](docs/BUILD.md).
+
+## Development
+
+Host checks and tests:
+
+```bash
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace
+```
+
+The CI host job excludes the UEFI-only `bellows` and `fullerene-kernel` packages. To mirror that job locally:
+
+```bash
+cargo check --workspace --exclude bellows --exclude fullerene-kernel
+cargo test --workspace --exclude bellows --exclude fullerene-kernel
+cargo clippy --workspace --exclude bellows --exclude fullerene-kernel --all-targets
+```
+
+Build the kernel directly for UEFI with:
+
+```bash
+cargo build -Z build-std=core,alloc \
+  -p fullerene-kernel --target x86_64-unknown-uefi
+```
+
+The kernel build compiles the nested WASI applications. Optional Linux ELF ports are cached when available and are source-built only when explicitly requested:
+
+```bash
+FULLERENE_BUILD_PORTS=1 \
+  cargo build -p fullerene-kernel --target x86_64-unknown-uefi
+```
+
+At runtime, installed packages use the shell commands `app list`, `app install <name> <path-to-elf>`, `app run <name>`, and `app remove <name>`. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for rendering examples, debugging, and the current architecture notes.
 
 ## Documentation
 
 | Document | Description |
-|----------|-------------|
-| [docs/BUILD.md](docs/BUILD.md) | Prerequisites, build instructions, QEMU options, manual build steps |
-| [docs/WORKSPACE.md](docs/WORKSPACE.md) | Cargo workspace structure and crate descriptions |
-| [docs/HARDWARE.md](docs/HARDWARE.md) | Real hardware compatibility notes |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Toolchain, testing, debugging, and development guidelines |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture overview |
-| [docs/api/sealant.md](docs/api/sealant.md) | Checked memory and MMIO capability API |
-| [docs/BUG_JOURNAL.md](docs/BUG_JOURNAL.md) | Investigated hangs and hardware failures |
-
-## TODO / Next Steps
-
-See [docs/fullerene_todo.md](docs/fullerene_todo.md) for the full prioritized checklist aligned with the architecture and improvement roadmap.
-
-Priority convention:
-- **P0** = memory safety / process isolation
-- **P1** = structural improvement (ownership, types, tests)
-- **P2** = developer experience, performance
+|---|---|
+| [BUILD.md](docs/BUILD.md) | Prerequisites, builds, QEMU options, ports, BusyBox, and smoke tests |
+| [WORKSPACE.md](docs/WORKSPACE.md) | Workspace crates and dependency boundaries |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Current ownership and runtime architecture |
+| [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Toolchain, testing, rendering, and debugging |
+| [SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) | Current syscall, filesystem, driver, and port status |
+| [HARDWARE.md](docs/HARDWARE.md) | Real-hardware compatibility notes |
+| [fullerene_todo.md](docs/fullerene_todo.md) | Prioritized development checklist |
+| [API documentation](docs/api) | Crate-level API notes |
 
 ## Contributing
 
-Bug reports, feature suggestions, and pull requests are welcome. Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on submitting contributions.
-
-- Fork the repo and create a feature branch.
-- Ensure tests pass and the build runs in QEMU.
-- Submit a PR with detailed description.
+Bug reports, feature proposals, and pull requests are welcome. See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the repository workflow and contribution guidelines.
 
 ## License
 
-This project is licensed under either of:
+Fullerene is dual-licensed under either of the following, at your option:
 
-- [Apache License, Version 2.0](docs/LICENSE-APACHE)
+- [Apache License 2.0](docs/LICENSE-APACHE)
 - [MIT License](docs/LICENSE-MIT)
 
-at your option.
-
-### Contribution Requirements
-
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Fullerene by you shall be dual-licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, contributions submitted for inclusion in Fullerene are provided under the same dual-license terms.

@@ -186,28 +186,28 @@ Expected output:
 - Shell interface becomes available after scheduler starts running processes (via GUI terminal or serial).
 - System runs multi-tasking kernel with shell interaction available.
 
-### Static BusyBox
+### Dynamically linked glibc BusyBox
 
-`busybox` launches a statically linked x86_64 BusyBox as `busybox sh`.
+`busybox` launches a dynamically linked x86_64 glibc BusyBox as `busybox sh`.
 The kernel's Toluene build step builds the checked-in `toluene/busybox`
-submodule with the Rust build orchestration, validates the static x86_64 ELF,
-and embeds it automatically. Initialize the submodule and install `make` plus
-either `musl-gcc` (preferred) or `gcc` first:
+submodule with the Rust build orchestration, validates its glibc `PT_INTERP`
+and `libc.so.6` dependency, and embeds it automatically. Initialize the
+submodule and install `make` plus `gcc` first:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-Set `FULLERENE_BUSYBOX` to use an existing static x86_64 BusyBox instead of
-building the submodule, or set `FULLERENE_BUSYBOX_CC` to choose the compiler
-used for the submodule build. Without either override, the build selects
-`musl-gcc` when available and then falls back to `gcc`.
+Set `FULLERENE_BUSYBOX` to use an existing dynamically linked glibc x86_64
+BusyBox instead of building the submodule, or set `FULLERENE_BUSYBOX_CC` to
+choose the compiler used for the submodule build. The build defaults to
+`gcc`; a static or musl-linked binary is rejected.
 
 ```bash
 cargo run -p flasks -- --iso-only
 ```
 
-This single command performs the static BusyBox release build, kernel
+This single command performs the dynamic glibc BusyBox release build, kernel
 embedding, and ISO creation. The retained BusyBox artifact is
 `target/busybox/busybox`. The kernel build keeps its private out-of-tree
 objects under Cargo's `OUT_DIR` for reuse and concurrent-build isolation.
@@ -223,14 +223,43 @@ under the shared Linux personality layer.
 
 For a headless end-to-end check that exercises the Nozzle command, interactive
 BusyBox `sh`, terminal stdin/stdout, blocking input wait, exit status,
-scheduler handoff, window cleanup, and shell resumption. QEMU is allowed to
-exit successfully only after the expected output marker, exit status 0, the
-BusyBox terminal window closing, and the smoke harness returning:
+scheduler handoff, window cleanup, and shell resumption, run:
 
 ```bash
 FULLERENE_BUSYBOX_SMOKE=1 \
-  cargo run -p flasks -- --display none --vga none --timeout 70
+  cargo run -p flasks -- --display none --vga none --timeout 900
 ```
+
+When `/dev/kvm` is available, `FULLERENE_QEMU_ACCEL=kvm` may be set to use
+QEMU hardware acceleration; the default remains single-threaded TCG.
+
+The smoke build uses the exact generated applet contract: it checks the
+`busybox --help`/`--list` dispatcher and count, then runs every listed name
+through the bundled BusyBox shell's standalone applet dispatch. QEMU is
+accepted only with the smoke debug-exit status after the success marker, exit
+status 0, terminal cleanup, and shell resumption.
+
+For the corresponding real-hardware check, build the same smoke image without
+launching QEMU:
+
+```bash
+FULLERENE_BUSYBOX_SMOKE=1 \
+  cargo run -p flasks -- --iso-only
+```
+
+Boot the resulting `fullerene.iso` on the target UEFI machine and keep the
+serial log or Klog Live open. Accept the run only after seeing
+`[busybox-smoke] PASS: all bundled applets ran, exit=0, shell resumed` and
+the BusyBox terminal-owner exit marker with `code=0 terminal closed`. This
+uses the same embedded binary and generated BusyBox contract
+(`busybox-applets.txt` and its generated count) as the strict QEMU run. The
+QEMU-only `FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT` flag is
+injected automatically by Flasks for this QEMU path. It is omitted for
+hardware, so the physical image never writes to the `isa-debug-exit` port.
+The BusyBox window shown during this scripted run is a smoke-test terminal, not
+an interactive prompt. It may remain visually unchanged while the script is
+running, but the run must eventually emit both success markers; a window that
+stays there without `PASS` is a failed smoke run.
 
 To debug:
 - QEMU logs are written to `qemu_log.txt` (interrupts and other debug info).

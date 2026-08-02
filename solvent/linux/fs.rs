@@ -1,10 +1,11 @@
 // Linux file system syscall implementations
 use super::numbers::*;
 use super::runtime::{
-    LinuxFileDesc, LinuxRuntime, copy_from_user, copy_to_user, copy_user_string, copy_val_to_user,
-    errno_code, fs_errno_result,
+    LinuxPipe, LinuxRuntime, PipeEnd, copy_from_user, copy_to_user, copy_user_string,
+    copy_val_to_user, errno_code, fs_errno_result,
 };
 use super::types::*;
+use alloc::sync::Arc;
 
 pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;
@@ -14,7 +15,7 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return 0;
     }
     // Stdin: read from keyboard
-    if fd == 0 {
+    if fd == 0 && !rt.fd_table.contains(fd) {
         if let Some(window_id) = rt.terminal_window
             && !solvent::process_terminal_exists(window_id)
         {
@@ -71,7 +72,7 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     }
     // Stdout/stderr: write to serial
-    if fd == 1 || fd == 2 {
+    if (fd == 1 || fd == 2) && !rt.fd_table.contains(fd) {
         return errno_code(EBADF);
     }
     // Read from file descriptor in FD table
@@ -79,6 +80,26 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
+    if desc.pipe_end == PipeEnd::Read
+        && let Some(pipe) = desc.pipe.as_ref()
+    {
+        let limit = count.min(65536);
+        let mut kernel_buf = alloc::vec![0u8; limit];
+        loop {
+            kernel_buf.fill(0);
+            if let Some(n) = pipe.read(&mut kernel_buf) {
+                if n == 0 {
+                    return 0;
+                }
+                return if unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_ok() {
+                    n as u64
+                } else {
+                    errno_code(EFAULT)
+                };
+            }
+            crate::process::yield_current();
+        }
+    }
     let limit = count.min(65536);
     let mut kernel_buf = alloc::vec![0u8; limit];
     if kernel_buf.is_empty() {
@@ -86,7 +107,10 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
     match crate::contexts::vfs::read(desc.vfs_fd, &mut kernel_buf) {
         Ok(n) => {
-            if n > 0 && unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_ok() {
+            if n == 0 {
+                return 0;
+            }
+            if unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_ok() {
                 // Update offset in FD table
                 if let Some(d) = rt.fd_table.get_mut(fd) {
                     d.offset += n as u64;
@@ -107,7 +131,7 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if count == 0 {
         return 0;
     }
-    if fd == 1 || fd == 2 {
+    if (fd == 1 || fd == 2) && !rt.fd_table.contains(fd) {
         // Keep the console fast path allocation-free: it is also used by the
         // allocator's own diagnostics and by very early Linux processes.
         let limit = count.min(4096);
@@ -159,6 +183,35 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
+    if desc.pipe_end == PipeEnd::Write
+        && let Some(pipe) = desc.pipe.as_ref()
+    {
+        let limit = count.min(65536);
+        let data = match unsafe { copy_from_user(buf, limit) } {
+            Ok(data) => data,
+            Err(_) => return errno_code(EFAULT),
+        };
+        let mut written = 0usize;
+        while written < data.len() {
+            match pipe.write(&data[written..]) {
+                Ok(0) => crate::process::yield_current(),
+                Ok(count) => {
+                    written += count;
+                    if written < data.len() {
+                        crate::process::yield_current();
+                    }
+                }
+                Err(_) => {
+                    return if written == 0 {
+                        errno_code(EPIPE)
+                    } else {
+                        written as u64
+                    };
+                }
+            }
+        }
+        return written as u64;
+    }
     // Read data from user space into kernel buffer (capped to avoid OOM)
     let limit = count.min(65536);
     let kernel_buf = match unsafe { copy_from_user(buf, limit) } {
@@ -327,12 +380,14 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
     let alloc_ret = |rt: &mut LinuxRuntime,
                      vfs_fd: crate::contexts::vfs::FileDescriptor,
                      path: &str,
-                     flags: i32|
+                     flags: i32,
+                     is_dir: bool|
      -> u64 {
         let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
         if let Some(desc) = rt.fd_table.get_mut(fd) {
             let trimmed = path.trim_end_matches('/');
             desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
+            desc.is_dir = is_dir;
         }
         fd as u64
     };
@@ -342,7 +397,13 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
         if create {
             match crate::contexts::vfs::create(path) {
                 Ok(vfs_fd) => {
-                    return alloc_ret(rt, vfs_fd, path, flags);
+                    return alloc_ret(
+                        rt,
+                        vfs_fd,
+                        path,
+                        flags,
+                        crate::contexts::vfs::readdir(path).is_ok(),
+                    );
                 }
                 Err(e) => {
                     // File may already exist; try opening with truncation
@@ -350,21 +411,39 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
                         let _ = crate::contexts::vfs::unlink(path);
                         match crate::contexts::vfs::create(path) {
                             Ok(vfs_fd) => {
-                                return alloc_ret(rt, vfs_fd, path, flags);
+                                return alloc_ret(
+                                    rt,
+                                    vfs_fd,
+                                    path,
+                                    flags,
+                                    crate::contexts::vfs::readdir(path).is_ok(),
+                                );
                             }
                             Err(e2) => return fs_errno_result(&e2),
                         }
                     }
                     // Try opening for read-write if it exists
                     if let Ok(vfs_fd) = crate::contexts::vfs::open(path, 0) {
-                        return alloc_ret(rt, vfs_fd, path, flags);
+                        return alloc_ret(
+                            rt,
+                            vfs_fd,
+                            path,
+                            flags,
+                            crate::contexts::vfs::readdir(path).is_ok(),
+                        );
                     }
                     return fs_errno_result(&e);
                 }
             }
         }
         if let Ok(vfs_fd) = crate::contexts::vfs::open(path, 0) {
-            return alloc_ret(rt, vfs_fd, path, flags);
+            return alloc_ret(
+                rt,
+                vfs_fd,
+                path,
+                flags,
+                crate::contexts::vfs::readdir(path).is_ok(),
+            );
         }
         return errno_code(ENOENT);
     }
@@ -378,10 +457,23 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
                     // Normalize trailing slash so directory lookup works.
                     let trimmed = path.trim_end_matches('/');
                     desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
+                    desc.is_dir = false;
                 }
                 fd as u64
             }
-            Err(e) => fs_errno_result(&e),
+            Err(e) => {
+                if crate::contexts::vfs::readdir(path).is_ok() {
+                    let fd = rt.fd_table.alloc(0, 0, flags);
+                    if let Some(desc) = rt.fd_table.get_mut(fd) {
+                        let trimmed = path.trim_end_matches('/');
+                        desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
+                        desc.is_dir = true;
+                    }
+                    fd as u64
+                } else {
+                    fs_errno_result(&e)
+                }
+            }
         }
     } else {
         errno_code(EINVAL)
@@ -407,11 +499,11 @@ pub fn sys_creat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
 pub fn sys_close(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;
-    if LinuxRuntime::is_std_fd(fd) {
+    if LinuxRuntime::is_std_fd(fd) && !rt.fd_table.contains(fd) {
         return 0;
     }
     if let Some(desc) = rt.fd_table.remove(fd) {
-        let _ = crate::contexts::vfs::close(desc.vfs_fd);
+        drop(desc);
         0
     } else {
         errno_code(EBADF)
@@ -420,26 +512,17 @@ pub fn sys_close(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
 /// Return a LinuxStat for a given VFS path.
 fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), i32> {
-    let vfs_fd = crate::contexts::vfs::open(path, 0).map_err(|_| ENOENT)?;
-    let info = fill_stat_from_fd(vfs_fd.fd);
-
     // Check if path is a directory by trying to readdir
     let is_dir = crate::contexts::vfs::readdir(path).is_ok();
-    let size = if is_dir {
-        0
+    let (info, size) = if is_dir {
+        (StatInfo { ino: 0 }, 0)
     } else {
-        let mut buf = [0u8; 512];
-        let mut total = 0usize;
-        loop {
-            match crate::contexts::vfs::read(vfs_fd.fd, &mut buf) {
-                Ok(0) => break,
-                Ok(n) => total += n,
-                Err(_) => break,
-            }
-        }
-        total
+        let vfs_fd = crate::contexts::vfs::open(path, 0).map_err(|_| ENOENT)?;
+        let info = fill_stat_from_fd(vfs_fd.fd);
+        let total = crate::contexts::vfs::size(vfs_fd.fd).unwrap_or(0);
+        let _ = crate::contexts::vfs::close(vfs_fd.fd);
+        (info, total)
     };
-    let _ = crate::contexts::vfs::close(vfs_fd.fd);
 
     let stat = LinuxStat {
         st_dev: 0,
@@ -462,7 +545,7 @@ fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), i32> {
         unused: [0; 3],
     };
 
-    unsafe { copy_val_to_user(statbuf, &stat) }.ok();
+    unsafe { copy_val_to_user(statbuf, &stat) }.map_err(|_| EFAULT)?;
     Ok(())
 }
 
@@ -489,6 +572,27 @@ pub fn sys_newfstatat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     match fill_stat_from_path(&path, statbuf) {
         Ok(_) => 0,
         Err(e) => errno_code(e),
+    }
+}
+
+/// BusyBox `touch` uses utimensat to create a missing target and then update
+/// its timestamps. The VFS metadata layer currently exposes deterministic
+/// zero timestamps, so creation is the meaningful operation until timestamp
+/// storage is added.
+pub fn sys_utimensat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    let path = match unsafe { copy_user_string(args[1], 256) } {
+        Ok(path) => path,
+        Err(error) => return errno_code(error),
+    };
+    if crate::contexts::vfs::exists(&path) {
+        return 0;
+    }
+    match crate::contexts::vfs::create(&path) {
+        Ok(fd) => match crate::contexts::vfs::close(fd.fd) {
+            Ok(()) => 0,
+            Err(error) => fs_errno_result(&error),
+        },
+        Err(error) => fs_errno_result(&error),
     }
 }
 
@@ -520,44 +624,53 @@ pub fn sys_fstat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             st_blocks: 0,
             ..LinuxStat::zeroed()
         };
-        unsafe { copy_val_to_user(statbuf, &stat) }.ok();
-        return 0;
+        return if unsafe { copy_val_to_user(statbuf, &stat) }.is_ok() {
+            0
+        } else {
+            errno_code(EFAULT)
+        };
     }
     let desc = match rt.fd_table.get(fd) {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
     let info = fill_stat_from_fd(desc.vfs_fd);
-    // Get file size
-    let size = {
-        let mut buf = [0u8; 512];
-        let mut total = 0usize;
-        loop {
-            match crate::contexts::vfs::read(desc.vfs_fd, &mut buf) {
-                Ok(0) => break,
-                Ok(n) => total += n,
-                Err(_) => break,
-            }
+    let is_dir = desc.is_dir;
+    // Query the size without consuming the descriptor.  Draining the file
+    // here used to mutate the caller's offset and made metadata calls unsafe
+    // for readers which immediately continued with read/seek operations.
+    let size = if is_dir {
+        0
+    } else {
+        match crate::contexts::vfs::size(desc.vfs_fd) {
+            Ok(size) => size,
+            Err(error) => return fs_errno_result(&error),
         }
-        total
     };
 
     let stat = LinuxStat {
         st_dev: 0,
         st_ino: info.ino,
         st_nlink: 1,
-        st_mode: S_IFREG | 0o644,
+        st_mode: if is_dir {
+            S_IFDIR | 0o755
+        } else {
+            S_IFREG | 0o644
+        },
         st_uid: 0,
         st_gid: 0,
         pad0: 0,
         st_rdev: 0,
-        st_size: size as i64,
+        st_size: if is_dir { 0 } else { size as i64 },
         st_blksize: 4096,
-        st_blocks: (size as i64 + 511) / 512,
+        st_blocks: if is_dir { 0 } else { (size as i64 + 511) / 512 },
         ..LinuxStat::zeroed()
     };
-    unsafe { copy_val_to_user(statbuf, &stat) }.ok();
-    0
+    if unsafe { copy_val_to_user(statbuf, &stat) }.is_ok() {
+        0
+    } else {
+        errno_code(EFAULT)
+    }
 }
 
 pub fn sys_lseek(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -603,16 +716,26 @@ pub fn sys_pread64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if offset < 0 {
         return errno_code(EINVAL);
     }
-    // Temporarily seek, read, restore
+    // Temporarily seek both the Linux descriptor and its VFS handle.  The
+    // dynamic linker uses pread64 for ELF program headers; changing only the
+    // emulated offset makes every non-zero pread read from the old VFS cursor.
     let desc = match rt.fd_table.get(fd) {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
     let saved = desc.offset;
+    let saved_vfs = match crate::contexts::vfs::position(desc.vfs_fd) {
+        Ok(position) => position,
+        Err(error) => return fs_errno_result(&error),
+    };
+    if let Err(error) = crate::contexts::vfs::seek(desc.vfs_fd, offset as u64) {
+        return fs_errno_result(&error);
+    }
     if let Some(d) = rt.fd_table.get_mut(fd) {
         d.offset = offset as u64;
     }
     let result = sys_read(rt, &[fd as u64, buf, count as u64, 0, 0, 0]);
+    let _ = crate::contexts::vfs::seek(desc.vfs_fd, saved_vfs);
     if let Some(d) = rt.fd_table.get_mut(fd) {
         d.offset = saved;
     }
@@ -741,9 +864,13 @@ pub fn sys_getdents64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let (dir_path, start_idx) = match rt.fd_table.get(fd) {
         Some(d) => match d.dir_path.clone() {
             Some(p) => (p, d.offset as usize),
-            None => return errno_code(ENOTDIR),
+            None => {
+                return errno_code(ENOTDIR);
+            }
         },
-        None => return errno_code(EBADF),
+        None => {
+            return errno_code(EBADF);
+        }
     };
 
     let entries = match crate::contexts::vfs::readdir(&dir_path) {
@@ -864,7 +991,31 @@ pub fn sys_rmdir(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 }
 
 linux_stub_errno!(sys_symlink, ENOSYS);
-linux_stub_errno!(sys_rename, ENOSYS);
+
+pub fn sys_rename(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    let old_ptr = args[0];
+    let new_ptr = args[1];
+    let old_path = match unsafe { copy_user_string(old_ptr, 256) } {
+        Ok(p) => p,
+        Err(e) => return errno_code(e),
+    };
+    let new_path = match unsafe { copy_user_string(new_ptr, 256) } {
+        Ok(p) => p,
+        Err(e) => return errno_code(e),
+    };
+    let is_dir = crate::contexts::vfs::readdir(&old_path).is_ok();
+    match crate::contexts::vfs::move_path(&old_path, &new_path, is_dir) {
+        Ok(()) => 0,
+        Err(e) => fs_errno_result(&e),
+    }
+}
+
+pub fn sys_renameat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    if args[0] as i64 != -100 || args[2] as i64 != -100 || args[4] != 0 {
+        return errno_code(EINVAL);
+    }
+    sys_rename(rt, &[args[1], args[3], 0, 0, 0, 0])
+}
 
 pub fn sys_chdir(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[0];
@@ -921,10 +1072,18 @@ pub fn sys_dup(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 pub fn sys_dup2(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let oldfd = args[0] as i32;
     let newfd = args[1] as i32;
-    if LinuxRuntime::is_std_fd(oldfd) && LinuxRuntime::is_std_fd(newfd) {
+    if LinuxRuntime::is_std_fd(oldfd)
+        && LinuxRuntime::is_std_fd(newfd)
+        && !rt.fd_table.contains(oldfd)
+        && !rt.fd_table.contains(newfd)
+    {
         return newfd as u64;
     }
     if oldfd == newfd {
+        return newfd as u64;
+    }
+    if LinuxRuntime::is_std_fd(oldfd) && !rt.fd_table.contains(oldfd) {
+        rt.fd_table.remove(newfd);
         return newfd as u64;
     }
     let desc = match rt.fd_table.get(oldfd) {
@@ -936,13 +1095,7 @@ pub fn sys_dup2(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         rt.fd_table.remove(newfd);
     }
     // Insert at newfd
-    let linux_fd = LinuxFileDesc {
-        vfs_fd: desc.vfs_fd,
-        mount_index: desc.mount_index,
-        flags: desc.flags,
-        offset: desc.offset,
-        dir_path: desc.dir_path.clone(),
-    };
+    let linux_fd = desc.clone();
     rt.fd_table.entries.insert(newfd, linux_fd);
     newfd as u64
 }
@@ -1038,10 +1191,12 @@ pub fn sys_ioctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
 pub fn sys_pipe(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let pipefd = args[0];
-    // Create a pair of pipe fds. For simplicity, create two anonymous files
-    // that read/write to each other. This is a placeholder.
-    let read_fd = rt.fd_table.alloc(1, 0, O_RDONLY);
-    let write_fd = rt.fd_table.alloc(2, 0, O_WRONLY);
+    let pipe = Arc::new(LinuxPipe::new());
+    let read_fd = rt.fd_table.alloc(0, 0, O_RDONLY);
+    let write_fd = rt.fd_table.alloc(0, 0, O_WRONLY);
+    rt.fd_table
+        .attach_pipe(read_fd, pipe.clone(), PipeEnd::Read);
+    rt.fd_table.attach_pipe(write_fd, pipe, PipeEnd::Write);
     let descriptors = [read_fd, write_fd];
     if unsafe { copy_val_to_user(pipefd, &descriptors) }.is_err() {
         rt.fd_table.remove(read_fd);
