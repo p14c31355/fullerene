@@ -795,7 +795,22 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     // `schedule_next` only changes scheduler state; it does not perform the
     // context switch itself.
     if is_current && !is_idle {
+        crate::klog_fmt!(
+            "[LINUX-DIAG] exit scheduling pid={} current_cr3={:#x}\n",
+            pid.0,
+            x86_64::registers::control::Cr3::read()
+                .0
+                .start_address()
+                .as_u64()
+        );
         let (old, next) = SCHEDULER.schedule_next();
+        crate::klog_fmt!(
+            "[LINUX-DIAG] exit scheduled pid={} old={:?} next={} next_state={:?}\n",
+            pid.0,
+            old.map(|value| value.0),
+            next.0,
+            SCHEDULER.with_process(next, |process| process.state)
+        );
         #[cfg(linux_musl_smoke)]
         if let Some((rip, rsp, kernel_rsp, is_user, state)) =
             SCHEDULER.with_process(next, |process| {
@@ -814,8 +829,18 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
             ));
         }
         if old == Some(pid) && next != pid {
+            crate::klog_fmt!(
+                "[LINUX-DIAG] exit context switch enter old={} next={}\n",
+                pid.0,
+                next.0
+            );
             unsafe { SCHEDULER.context_switch(Some(pid), next) };
         }
+        crate::klog_fmt!(
+            "[LINUX-DIAG] exit context switch returned pid={} next={}\n",
+            pid.0,
+            next.0
+        );
         petroleum::halt_loop();
     }
 }
@@ -857,6 +882,31 @@ pub fn current_pid() -> Option<ProcessId> {
         None
     } else {
         Some(ProcessId(pid as u64))
+    }
+}
+
+/// Append a scheduler milestone to a Linux process's GUI terminal when it
+/// has one. This is intentionally best-effort: scheduler diagnostics must
+/// never make a non-GUI process or an exception path depend on the desktop.
+pub fn mark_linux_stage(pid: ProcessId, stage: &str) {
+    let window = SCHEDULER
+        .with_process(pid, |process| match process.dispatch_mode.as_ref() {
+            Some(crate::linux::DispatchMode::Linux(runtime)) => runtime.terminal_window,
+            _ => None,
+        })
+        .flatten();
+    if let Some(window) = window {
+        crate::klog_fmt!(
+            "[BUSYBOX-DIAG] scheduler stage={} pid={} window_id={}\n",
+            stage,
+            pid.0,
+            window.0
+        );
+        solvent::request_frame();
+        solvent::mark_klog_live_dirty();
+        // The next operation may enter a non-returning context switch, so do
+        // not wait for the ordinary event loop to paint this milestone.
+        solvent::flush_frame_no_fb();
     }
 }
 

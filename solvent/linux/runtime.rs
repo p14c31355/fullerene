@@ -72,6 +72,10 @@ pub struct LinuxRuntime {
     pub tid: u64,
     /// GUI terminal attached to this Linux process, when launched by Nozzle.
     pub terminal_window: Option<lattice::window::WindowId>,
+    /// Whether the first user-mode Linux syscall has been observed. This is
+    /// intentionally kept in the runtime so the hardware-visible launch
+    /// diagnostic can distinguish loader setup from user execution.
+    pub diagnostic_first_syscall: bool,
     /// Main Linux thread that owns the GUI terminal. Forked children share it
     /// but must not close the window when they exit.
     pub terminal_owner_tid: u64,
@@ -101,6 +105,7 @@ impl LinuxRuntime {
             initial_break,
             tid,
             terminal_window: None,
+            diagnostic_first_syscall: false,
             terminal_owner_tid: tid,
             child_clear_tid: 0,
             robust_list_head: 0,

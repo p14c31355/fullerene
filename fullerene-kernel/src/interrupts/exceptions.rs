@@ -119,6 +119,24 @@ fn kernel_fault_halt(frame: &InterruptStackFrame, name: &str, extra: &str) -> ! 
     safe_halt()
 }
 
+#[inline(always)]
+fn render_fault_diagnostic() {
+    let _ = crate::klog::try_render_live_surface();
+}
+
+fn page_walk_flags(address: u64) -> [u64; 4] {
+    let (root, _) = x86_64::registers::control::Cr3::read();
+    let mut result = [0u64; 4];
+    let _ = unsafe {
+        crate::memory_management::walk_page_table_entries(
+            root.start_address(),
+            address,
+            |level, entry| result[level] = entry.flags().bits(),
+        )
+    };
+    result
+}
+
 // ── Trampoline for user-mode recovery ──────────────────────────
 
 static mut SCHEDULE_TRAMPOLINE: Option<x86_64::VirtAddr> = None;
@@ -200,6 +218,7 @@ macro_rules! define_no_err_handler {
                     exc_name,
                     frame.instruction_pointer.as_u64()
                 );
+                render_fault_diagnostic();
                 terminate_and_recover(&mut frame, exc_name, 0, 0);
             } else {
                 kernel_fault_halt(&frame, exc_name, "");
@@ -226,6 +245,7 @@ macro_rules! define_err_handler {
                     error_code,
                     frame.instruction_pointer.as_u64()
                 );
+                render_fault_diagnostic();
                 terminate_and_recover(&mut frame, exc_name, 0, error_code);
             } else {
                 raw_log!("  Error code: {:#x}\n", error_code);
@@ -380,6 +400,24 @@ pub extern "x86-interrupt" fn page_fault_handler(
             frame.instruction_pointer,
             frame.stack_pointer
         );
+        let walk = page_walk_flags(fault_addr.as_u64());
+        crate::klog_fmt!(
+            "[FAULT] Page Fault addr={:#x} {} {} user RIP={:#x} RSP={:#x}\n",
+            fault_addr.as_u64(),
+            if is_present { "prot" } else { "np" },
+            if is_write { "W" } else { "R" },
+            frame.instruction_pointer.as_u64(),
+            frame.stack_pointer.as_u64()
+        );
+        crate::klog_fmt!(
+            "[FAULT] Page Fault err={:#x} walk={:#x}/{:#x}/{:#x}/{:#x}\n",
+            error_code.bits(),
+            walk[0],
+            walk[1],
+            walk[2],
+            walk[3]
+        );
+        render_fault_diagnostic();
         if petroleum::common::memory::is_user_address(fault_addr) || is_present {
             terminate_and_recover(
                 &mut frame,

@@ -497,14 +497,6 @@ impl SchedulerContext {
             .find(|(id, _)| *id == new_pid)
             .map(|(_, process)| process.kernel_stack)
             .filter(|stack| stack.as_u64() != 0);
-        let new_user_first_entry = list
-            .iter()
-            .find(|(id, _)| *id == new_pid)
-            .is_some_and(|(_, process)| process.is_user && process.context.kernel_rsp == 0);
-        let new_user_kernel_continuation = list
-            .iter()
-            .find(|(id, _)| *id == new_pid)
-            .is_some_and(|(_, process)| process.is_user && process.context.kernel_rsp != 0);
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
@@ -512,23 +504,59 @@ impl SchedulerContext {
         drop(guard);
 
         if let Some(new) = new_ctx {
+            let new_context = unsafe { &*new };
+            let plan = match crate::context_switch::ContextSwitchPlan::new(
+                old_ctx.unwrap_or(core::ptr::null_mut()),
+                new_context,
+                pt.as_u64(),
+                new_kernel_stack.map_or(0, |stack| stack.as_u64()),
+            ) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    crate::klog_fmt!(
+                        "[FAULT] context-switch plan rejected pid={} error={:?}\n",
+                        new_pid.0,
+                        error
+                    );
+                    crate::process::mark_faulted(
+                        new_pid,
+                        crate::process::FaultRecord {
+                            reason: "invalid first-user context-switch plan",
+                            rip: new_context.rip,
+                            rsp: new_context.registers.rsp,
+                            address: new_kernel_stack.map_or(0, |stack| stack.as_u64()),
+                            error_code: 0,
+                        },
+                    );
+                    return;
+                }
+            };
+            if plan.entry() == crate::context_switch::SwitchEntry::FirstUser {
+                crate::klog_fmt!(
+                    "[CTX-DIAG] plan user entry rip={:#x} rsp={:#x} cs={:#x} rflags={:#x} ss={:#x} image={:#x}\n",
+                    new_context.rip,
+                    new_context.registers.rsp,
+                    new_context.segments.cs,
+                    new_context.rflags,
+                    new_context.segments.ss,
+                    plan.entry_stack()
+                );
+                solvent::mark_klog_live_dirty();
+                solvent::flush_frame_no_fb();
+            }
+            unsafe { crate::context_switch::prepare_entry_image(&plan) };
+            crate::process::mark_linux_stage(new_pid, "context-switch-prep");
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }
-            if new_user_first_entry {
+            if plan.entry() == crate::context_switch::SwitchEntry::FirstUser {
                 crate::interrupts::syscall::prepare_user_entry();
-            } else if new_user_kernel_continuation {
+                crate::process::mark_linux_stage(new_pid, "user-entry-prepared");
+            } else if plan.entry() == crate::context_switch::SwitchEntry::KernelContinuation {
                 crate::interrupts::syscall::prepare_kernel_continuation();
             }
-            let old = old_ctx.unwrap_or(core::ptr::null_mut());
-            unsafe {
-                switch_context(
-                    old,
-                    new,
-                    pt.as_u64(),
-                    new_kernel_stack.map_or(0, |stack| stack.as_u64()),
-                )
-            };
+            crate::process::mark_linux_stage(new_pid, "context-switch-enter");
+            unsafe { switch_context(&plan) };
         }
     }
 

@@ -2,6 +2,7 @@
 //!
 //! This module implements the Fast System Call mechanism using SYSCALL/SYSRET instructions.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::mem_debug;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{GsBase, KernelGsBase, Msr};
@@ -93,6 +94,33 @@ static mut SYSCALL_ENTRY_STATE: SyscallEntryState = SyscallEntryState {
     return_rsp: 0,
     return_rflags: 0,
 };
+
+static FIRST_LINUX_SYSCALL_ENTRY_DIAG: AtomicBool = AtomicBool::new(false);
+
+/// Mark the first Linux SYSCALL instruction before entering Rust dispatch.
+///
+/// The normal dispatcher marker is intentionally later than this checkpoint.
+/// Keeping both lets the Klog Live trace distinguish an `iretq`/user-entry
+/// failure from a fault in the SYSCALL trampoline itself.
+#[inline(never)]
+extern "sysv64" fn syscall_entry_checkpoint() {
+    let is_linux = crate::process::current_pid()
+        .and_then(|pid| {
+            crate::process::SCHEDULER.with_process(pid, |p| {
+                matches!(p.dispatch_mode, Some(crate::linux::DispatchMode::Linux(_)))
+            })
+        })
+        .unwrap_or(false);
+    if is_linux
+        && FIRST_LINUX_SYSCALL_ENTRY_DIAG
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
+        crate::klog_fmt!("[CTX-DIAG] first Linux SYSCALL entry reached\n");
+        solvent::mark_klog_live_dirty();
+        solvent::flush_frame_no_fb();
+    }
+}
 
 /// Initialize the per-CPU SYSCALL entry state.
 ///
@@ -244,6 +272,18 @@ pub extern "C" fn syscall_entry() {
         // The seventh C argument is placed on the stack.  Ten pushes from an
         // aligned kernel-stack top leave RSP correctly aligned before CALL.
         "push r9",
+        // The user frame is now fully saved. Checkpoint the SYSCALL entry
+        // before register shuffling, then reload every value needed below;
+        // the Rust call is allowed to clobber caller-saved registers.
+        "call {syscall_entry_checkpoint}",
+        "mov r9, [rsp + 8]",
+        "mov r8, [rsp + 16]",
+        "mov r10, [rsp + 24]",
+        "mov rdx, [rsp + 32]",
+        "mov rsi, [rsp + 40]",
+        "mov rdi, [rsp + 48]",
+        "mov r11, [rsp + 56]",
+        "mov rcx, [rsp + 64]",
         "mov r9, r8",
         "mov r8, r10",
         "mov rcx, rdx",
@@ -291,7 +331,8 @@ pub extern "C" fn syscall_entry() {
         "mov r11, gs:[176]",
         "mov qword ptr gs:[152], 0",
         "swapgs",
-        "sysretq"
+        "sysretq",
+        syscall_entry_checkpoint = sym syscall_entry_checkpoint,
     );
 }
 
@@ -299,11 +340,16 @@ pub extern "C" fn syscall_entry() {
 pub fn setup_syscall() {
     mem_debug!("Syscall: setup_syscall start\n");
 
-    // Enable SYSCALL/SYSRET with SCE bit in EFER
+    // Enable SYSCALL/SYSRET and the page-table NX bit in EFER. Some UEFI
+    // implementations leave NXE disabled; without it, any PTE containing
+    // NO_EXECUTE (bit 63) is treated as reserved and user accesses fail with
+    // a page-fault error code containing RSVD (0x8).
     mem_debug!("Syscall: writing EFER\n");
     unsafe {
         let current = Msr::new(0xC0000080).read();
-        Msr::new(0xC0000080).write(current | (1 << 0));
+        const EFER_SCE: u64 = 1 << 0;
+        const EFER_NXE: u64 = 1 << 11;
+        Msr::new(0xC0000080).write(current | EFER_SCE | EFER_NXE);
     }
     mem_debug!("Syscall: EFER written\n");
 

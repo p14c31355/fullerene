@@ -189,6 +189,36 @@ fn map_zeroed_page(
     })
 }
 
+/// Ensure that a user-writable mapping has writable ancestors as well as a
+/// writable leaf. x86 rejects a user write when any PML4/PDP/PD/PT entry in
+/// the walk lacks WRITABLE, even if the final PTE has the bit set.
+fn ensure_user_writable_path(
+    page_table: &mut ProcessPageTable,
+    address: u64,
+) -> Result<(), LoadError> {
+    let required =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    let root = page_table
+        .pml4_frame()
+        .ok_or(LoadError::MappingFailed)?
+        .start_address();
+    unsafe {
+        crate::memory_management::walk_page_table_entries(root, address, |_, entry| {
+            entry.set_flags(entry.flags() | required);
+        })
+    }
+    .map_err(|_| LoadError::MappingFailed)?;
+
+    unsafe {
+        core::arch::asm!(
+            "invlpg [{}]",
+            in(reg) address,
+            options(nostack, preserves_flags)
+        );
+    }
+    Ok(())
+}
+
 fn write_process_bytes(
     page_table: &ProcessPageTable,
     address: u64,
@@ -533,6 +563,16 @@ fn initialize_linux_stack_transaction(
             address: page_address,
         });
         page_address += PAGE_SIZE;
+    }
+    // Reassert the complete writable path after all stack pages exist. This
+    // also covers a page-table hierarchy inherited or pre-created before the
+    // Linux image was loaded. Do this for every leaf: the initial RSP is near
+    // the top of the stack, while checking only stack_bottom would not repair
+    // a read-only leaf on the active page.
+    let mut writable_page = stack_bottom;
+    while writable_page < LINUX_STACK_TOP {
+        ensure_user_writable_path(page_table, writable_page)?;
+        writable_page += PAGE_SIZE;
     }
 
     let mut cursor = LINUX_STACK_TOP;

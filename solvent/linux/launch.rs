@@ -327,6 +327,7 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         "[BUSYBOX-DIAG] create_process_terminal exit window_id={}\n",
         terminal_window.0
     );
+    log_busybox_stage(terminal_window, "window-created");
     let argv = ["busybox", "sh"];
     let envp = [
         "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
@@ -335,6 +336,7 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         "TERM=xterm",
     ];
     crate::klog_fmt!("[BUSYBOX-DIAG] loader enter bytes={}\n", data.len());
+    log_busybox_stage(terminal_window, "loader-enter");
     let pid = match crate::loader::load_program_with_runtime_args(
         data.as_slice(),
         "busybox",
@@ -344,6 +346,7 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
     ) {
         Ok(pid) => {
             crate::klog_fmt!("[BUSYBOX-DIAG] loader exit pid={}\n", pid.0);
+            log_busybox_stage(terminal_window, "process-created");
             pid
         }
         Err(error) => {
@@ -358,7 +361,9 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
             runtime.terminal_window = Some(terminal_window);
         }
     });
+    log_busybox_stage(terminal_window, "runtime-attached");
     crate::klog_fmt!("[BUSYBOX-DIAG] launch complete pid={}\n", pid.0);
+    log_busybox_stage(terminal_window, "handoff-ready");
     #[cfg(linux_busybox_smoke)]
     {
         let launch_number = BUSYBOX_SMOKE_LAUNCH_COUNT.fetch_add(1, Ordering::AcqRel);
@@ -393,6 +398,16 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         ));
     }
     Ok(pid)
+}
+
+/// Leave the launch milestone visible in the process window as well as in the
+/// kernel log. Hardware runs often have no serial capture, while a frozen GUI
+/// still preserves the last milestone that was rendered.
+fn log_busybox_stage(window_id: lattice::window::WindowId, stage: &str) {
+    crate::klog_fmt!("[BUSYBOX-DIAG] stage={} window_id={}\n", stage, window_id.0);
+    solvent::request_frame();
+    solvent::mark_klog_live_dirty();
+    solvent::flush_frame_no_fb();
 }
 
 #[cfg(linux_busybox_smoke)]

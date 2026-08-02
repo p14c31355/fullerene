@@ -59,6 +59,19 @@ pub unsafe extern "sysv64" fn handle_syscall(
         });
 
         let ret = if let Some(mut rt) = linux_rt.take() {
+            if !rt.diagnostic_first_syscall {
+                rt.diagnostic_first_syscall = true;
+                if let Some(window_id) = rt.terminal_window {
+                    crate::klog_fmt!(
+                        "[BUSYBOX-DIAG] syscall stage=first-linux-syscall pid={} window_id={}\n",
+                        current_pid.map_or(0, |pid| pid.0),
+                        window_id.0
+                    );
+                    solvent::request_frame();
+                    solvent::mark_klog_live_dirty();
+                    solvent::flush_frame_no_fb();
+                }
+            }
             let result = rt.dispatch(syscall_num, &[arg1, arg2, arg3, arg4, arg5, arg6]);
             if let Some(pid) = current_pid {
                 crate::process::SCHEDULER.with_process(pid, |p| {

@@ -134,6 +134,14 @@ pub fn mark_klog_live_dirty() {
     }
 }
 
+/// Request one compositor frame without requiring a particular window to be
+/// open or invalidated.
+pub fn request_frame() {
+    if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
+        runtime.frame_due = true;
+    }
+}
+
 /// Lock-free state query for the timer-driven Klog Live repaint.
 pub fn is_klog_live_active() -> bool {
     crate::runtime_context::KLOG_LIVE_ACTIVE.load(core::sync::atomic::Ordering::Acquire)
