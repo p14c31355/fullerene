@@ -150,6 +150,22 @@ impl UnifiedMemoryManager {
         Ok(())
     }
 
+    /// Release a device MMIO mapping without returning device-backed frames to
+    /// the RAM allocator.  Verified direct-map aliases are permanent and must
+    /// remain mapped, so they are intentionally left untouched.
+    pub fn unmap_mmio_region(
+        &mut self,
+        physical_addr: usize,
+        virtual_addr: usize,
+        size: usize,
+    ) -> SystemResult<()> {
+        if self.direct_mapping_covers(physical_addr, virtual_addr, size) {
+            return Ok(());
+        }
+        let frame_count = size.checked_add(4095).ok_or(SystemError::InvalidArgument)? / 4096;
+        self.unmap_address(virtual_addr, frame_count)
+    }
+
     // ── FramebufferMapper internals ────────────────────────────
 
     fn map_framebuffer_region(

@@ -102,6 +102,8 @@ mod tests {
             Err(DriverContextError::MmioMappingFailed)
         }
 
+        fn unmap_mmio_region(&self, _phys: usize, _virt: usize, _size: usize) {}
+
         fn map_page(
             &self,
             _virt: usize,

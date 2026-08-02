@@ -18,6 +18,56 @@ use sealant::{MmioRegion, Permissions};
 
 static CONTROLLERS: Mutex<Vec<NvmeController>> = Mutex::new(Vec::new());
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FailedController {
+    bus: u8,
+    device: u8,
+    function: u8,
+}
+
+// A failed controller is quarantined after cleanup.  This prevents a later
+// ioctl from reusing a device whose hardware state or ownership is unknown.
+static FAILED_CONTROLLERS: Mutex<Vec<FailedController>> = Mutex::new(Vec::new());
+
+fn same_device(a: &PciDevice, b: &PciDevice) -> bool {
+    a.bus == b.bus && a.device == b.device && a.function == b.function
+}
+
+fn mark_failed(device: &PciDevice) {
+    let mut failed = FAILED_CONTROLLERS.lock();
+    if !failed.iter().any(|entry| {
+        entry.bus == device.bus
+            && entry.device == device.device
+            && entry.function == device.function
+    }) {
+        failed.push(FailedController {
+            bus: device.bus,
+            device: device.device,
+            function: device.function,
+        });
+    }
+}
+
+fn is_failed(device: &PciDevice) -> bool {
+    FAILED_CONTROLLERS.lock().iter().any(|entry| {
+        entry.bus == device.bus
+            && entry.device == device.device
+            && entry.function == device.function
+    })
+}
+
+fn is_fatal(error: DriverError) -> bool {
+    matches!(
+        error,
+        DriverError::DmaMappingFailed
+            | DriverError::MmioMappingFailed
+            | DriverError::TimedOut
+            | DriverError::Io
+            | DriverError::Protocol
+            | DriverError::DeviceFault
+    )
+}
+
 // ── Controller registers (offset from BAR0) ─────────────────────
 const NVME_CAP: usize = 0x00;
 const NVME_VS: usize = 0x08;
@@ -74,8 +124,9 @@ struct CqEntry {
 /// BAR0-backed controller registers. This is an MMIO resource, not a DMA
 /// buffer; it is assigned once before any controller property or queue access.
 struct NvmeRegisterBlock {
-    #[allow(dead_code)]
+    ctx: &'static dyn DriverContext,
     phys: u64,
+    virt: usize,
     mmio: MmioRegion<'static>,
     size: usize,
 }
@@ -84,76 +135,83 @@ unsafe impl Send for NvmeRegisterBlock {}
 unsafe impl Sync for NvmeRegisterBlock {}
 
 impl NvmeRegisterBlock {
-    fn allocate(ctx: &'static dyn DriverContext, device: &PciDevice) -> Option<Self> {
-        let bar0 = device.read_bar_info(0)?;
+    fn allocate(ctx: &'static dyn DriverContext, device: &PciDevice) -> Result<Self, DriverError> {
+        let bar0 = device.read_bar_info(0).ok_or(DriverError::DeviceNotFound)?;
         if bar0.is_io || !bar0.is_64bit || bar0.address == 0 {
-            return None;
+            return Err(DriverError::InvalidArgument);
         }
         let virt = ctx.phys_to_virt(bar0.address);
         ctx.map_mmio_region(bar0.address as usize, virt, NVME_REGISTER_SPACE_SIZE)
-            .ok()?;
+            .map_err(DriverError::from)?;
         // KernelDriverContext establishes the mapping above and keeps the
         // higher-half direct map alive for the controller lifetime.
-        let mmio = unsafe {
+        let mmio = match unsafe {
             MmioRegion::from_address(virt, NVME_REGISTER_SPACE_SIZE, Permissions::READ_WRITE)
-        }
-        .ok()?;
+        } {
+            Ok(mmio) => mmio,
+            Err(_) => {
+                ctx.unmap_mmio_region(bar0.address as usize, virt, NVME_REGISTER_SPACE_SIZE);
+                return Err(DriverError::MmioMappingFailed);
+            }
+        };
         log::info!(
             "NVMe: BAR0 register block assigned at {:#x} ({} bytes)",
             bar0.address,
             NVME_REGISTER_SPACE_SIZE
         );
-        Some(Self {
+        Ok(Self {
+            ctx,
             phys: bar0.address,
+            virt,
             mmio,
             size: NVME_REGISTER_SPACE_SIZE,
         })
     }
 
-    fn r32(&self, off: usize) -> u32 {
+    fn r32(&self, off: usize) -> Result<u32, DriverError> {
         debug_assert!(off + core::mem::size_of::<u32>() <= self.size);
-        let val = match self.mmio.read_volatile_at::<u32>(off) {
-            Ok(value) => value,
-            Err(error) => {
-                log::warn!("NVMe: invalid MMIO read at {:#x}: {:?}", off, error);
-                return u32::MAX;
-            }
-        };
+        let val = self.mmio.read_volatile_at::<u32>(off).map_err(|error| {
+            log::warn!("NVMe: invalid MMIO read at {:#x}: {:?}", off, error);
+            DriverError::Io
+        })?;
         if val == u32::MAX {
             log::warn!("NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF", off);
         }
-        val
+        Ok(val)
     }
 
-    fn r64(&self, off: usize) -> u64 {
+    fn r64(&self, off: usize) -> Result<u64, DriverError> {
         debug_assert_eq!(off % 8, 0);
         debug_assert!(off + core::mem::size_of::<u64>() <= self.size);
-        let val = match self.mmio.read_volatile_at::<u64>(off) {
-            Ok(value) => value,
-            Err(error) => {
-                log::warn!("NVMe: invalid MMIO read at {:#x}: {:?}", off, error);
-                return u64::MAX;
-            }
-        };
+        let val = self.mmio.read_volatile_at::<u64>(off).map_err(|error| {
+            log::warn!("NVMe: invalid MMIO read at {:#x}: {:?}", off, error);
+            DriverError::Io
+        })?;
         if val == u64::MAX {
             log::warn!(
                 "NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF_FFFF_FFFF",
                 off
             );
         }
-        val
+        Ok(val)
     }
 
-    fn w32(&self, off: usize, value: u32) {
+    fn w32(&self, off: usize, value: u32) -> Result<(), DriverError> {
         debug_assert!(off + core::mem::size_of::<u32>() <= self.size);
-        if let Err(error) = self.mmio.write_volatile_at(off, value) {
+        self.mmio.write_volatile_at(off, value).map_err(|error| {
             log::warn!(
                 "NVMe: invalid MMIO write at {:#x} value={:#x}: {:?}",
                 off,
                 value,
                 error
             );
-        }
+            DriverError::Io
+        })
+    }
+
+    fn unmap(&self) {
+        self.ctx
+            .unmap_mmio_region(self.phys as usize, self.virt, self.size);
     }
 
     fn read(&self, off: usize, width: u8) -> Result<u64, DriverError> {
@@ -204,6 +262,12 @@ impl NvmeRegisterBlock {
     }
 }
 
+impl Drop for NvmeRegisterBlock {
+    fn drop(&mut self) {
+        self.unmap();
+    }
+}
+
 pub struct NvmeController {
     ctx: &'static dyn DriverContext,
     #[allow(dead_code)]
@@ -223,6 +287,7 @@ pub struct NvmeController {
     phase: u16,
     admin_queue_depth: u16,
     controller_timeout_us: u64,
+    hardware_owned: bool,
 }
 
 unsafe impl Send for NvmeController {}
@@ -230,17 +295,23 @@ unsafe impl Sync for NvmeController {}
 
 impl Drop for NvmeController {
     fn drop(&mut self) {
+        // Stop the controller before disabling bus mastering or releasing any
+        // DMA memory it may still reference.
+        self.stop_hardware();
+        let _ = self.device.disable_memory_access();
         if self.submission_queue.size != 0 {
             self.ctx.release_dma_buffer(self.submission_queue);
+            self.submission_queue.size = 0;
         }
         if self.completion_queue.size != 0 {
             self.ctx.release_dma_buffer(self.completion_queue);
+            self.completion_queue.size = 0;
         }
     }
 }
 
 impl NvmeController {
-    pub fn init(ctx: &'static dyn DriverContext, device: PciDevice) -> Option<Self> {
+    pub fn init(ctx: &'static dyn DriverContext, device: PciDevice) -> Result<Self, DriverError> {
         // Assign the controller register block before reading CAP/VS or
         // requesting any NVMe DMA queue memory.
         let registers = NvmeRegisterBlock::allocate(ctx, &device)?;
@@ -270,12 +341,13 @@ impl NvmeController {
             phase: 1,
             admin_queue_depth: 0,
             controller_timeout_us: 500_000,
+            hardware_owned: false,
         };
 
         // CAP and VS are controller properties exposed through the PCI BAR,
         // not DMA buffers.  Read them before programming CC/AQA/ASQ/ACQ.
-        let cap = ctrl.r64(NVME_CAP);
-        let version = ctrl.r32(NVME_VS);
+        let cap = ctrl.r64(NVME_CAP)?;
+        let version = ctrl.r32(NVME_VS)?;
         let max_queue_depth = (cap as u16).saturating_add(1);
         let mps_min = ((cap >> 48) & 0xF) as u8;
         let mps_max = ((cap >> 52) & 0xF) as u8;
@@ -292,7 +364,7 @@ impl NvmeController {
                 version,
                 cap
             );
-            return None;
+            return Err(DriverError::NotSupported);
         }
         ctrl.admin_queue_depth = core::cmp::min(ADMIN_QUEUE_DEPTH, max_queue_depth);
         let timeout_units = ((cap >> 24) & 0xFF) as u64;
@@ -301,15 +373,11 @@ impl NvmeController {
             .filter(|timeout| *timeout != 0)
             .unwrap_or(500_000);
 
-        ctrl.w32(NVME_CC, 0);
-        if crate::timing::wait_timeout_us(ctrl.controller_timeout_us, || {
-            let status = ctrl.r32(NVME_CSTS);
-            status & CSTS_CFS == 0 && status & CSTS_RDY == 0
-        })
-        .is_err()
-        {
+        ctrl.hardware_owned = true;
+        ctrl.w32(NVME_CC, 0)?;
+        if !ctrl.wait_for_status(|status| status & CSTS_CFS == 0 && status & CSTS_RDY == 0) {
             log::info!("NVMe: controller did not leave the ready state");
-            return None;
+            return Err(DriverError::TimedOut);
         }
 
         let device_id = ((ctrl.device.bus as u16) << 8)
@@ -318,10 +386,12 @@ impl NvmeController {
         // NVMe submission and completion queues are independent DMA objects.
         // The kernel owns the physical allocation and IOMMU mapping; the
         // driver only receives CPU and device addresses to program into NVMe.
-        ctrl.submission_queue = ctx.allocate_dma_buffer(device_id, 4096).ok()?;
+        ctrl.submission_queue = ctx
+            .allocate_dma_buffer(device_id, 4096)
+            .map_err(DriverError::from)?;
         ctrl.completion_queue = match ctx.allocate_dma_buffer(device_id, 4096) {
             Ok(queue) => queue,
-            Err(_) => return None,
+            Err(error) => return Err(error.into()),
         };
         let asq_virt = ctx.phys_to_virt(ctrl.submission_queue.phys) as *mut u8;
         let acq_virt = ctx.phys_to_virt(ctrl.completion_queue.phys) as *mut u8;
@@ -338,37 +408,50 @@ impl NvmeController {
         ctrl.w32(
             NVME_AQA,
             ((ctrl.admin_queue_depth - 1) as u32) | (((ctrl.admin_queue_depth - 1) as u32) << 16),
-        );
-        ctrl.w32(NVME_ASQ, ctrl.asq_iova as u32);
-        ctrl.w32(NVME_ASQ + 4, (ctrl.asq_iova >> 32) as u32);
-        ctrl.w32(NVME_ACQ, ctrl.acq_iova as u32);
-        ctrl.w32(NVME_ACQ + 4, (ctrl.acq_iova >> 32) as u32);
+        )?;
+        ctrl.w32(NVME_ASQ, ctrl.asq_iova as u32)?;
+        ctrl.w32(NVME_ASQ + 4, (ctrl.asq_iova >> 32) as u32)?;
+        ctrl.w32(NVME_ACQ, ctrl.acq_iova as u32)?;
+        ctrl.w32(NVME_ACQ + 4, (ctrl.acq_iova >> 32) as u32)?;
 
-        ctrl.w32(NVME_CC, CC_EN | CC_IOCQES | CC_IOSQES);
-        if crate::timing::wait_timeout_us(ctrl.controller_timeout_us, || {
-            let status = ctrl.r32(NVME_CSTS);
-            status & CSTS_CFS == 0 && status & CSTS_RDY != 0
-        })
-        .is_err()
-        {
+        ctrl.w32(NVME_CC, CC_EN | CC_IOCQES | CC_IOSQES)?;
+        if !ctrl.wait_for_status(|status| status & CSTS_CFS == 0 && status & CSTS_RDY != 0) {
             log::info!("NVMe: controller failed to become ready");
-            return None;
+            return Err(DriverError::TimedOut);
         }
 
-        ctrl.w32(NVME_INTMS, 0xFFFFFFFF);
+        ctrl.w32(NVME_INTMS, 0xFFFFFFFF)?;
 
         log::info!("NVMe: controller ready");
-        Some(ctrl)
+        Ok(ctrl)
     }
 
-    fn r32(&self, off: usize) -> u32 {
+    fn r32(&self, off: usize) -> Result<u32, DriverError> {
         self.registers.r32(off)
     }
-    fn r64(&self, off: usize) -> u64 {
+    fn r64(&self, off: usize) -> Result<u64, DriverError> {
         self.registers.r64(off)
     }
-    fn w32(&self, off: usize, v: u32) {
+    fn w32(&self, off: usize, v: u32) -> Result<(), DriverError> {
         self.registers.w32(off, v)
+    }
+
+    fn wait_for_status(&self, condition: impl Fn(u32) -> bool) -> bool {
+        crate::timing::poll_timeout_us(self.controller_timeout_us, || {
+            self.r32(NVME_CSTS).ok().filter(|status| condition(*status))
+        })
+        .is_some()
+    }
+
+    fn stop_hardware(&mut self) {
+        if !self.hardware_owned {
+            return;
+        }
+        let _ = self.registers.w32(NVME_CC, 0);
+        if !self.wait_for_status(|status| status & CSTS_RDY == 0) {
+            log::warn!("NVMe: controller did not become stopped during cleanup");
+        }
+        self.hardware_owned = false;
     }
 
     fn mmio_request(
@@ -432,24 +515,41 @@ pub fn init_device(
         return Err(DriverError::DeviceNotFound);
     }
 
+    if is_failed(&device) {
+        return Err(DriverError::DeviceFault);
+    }
+
     // Initialization requests may be retried by the kernel.  Keep the
     // controller index stable and avoid resetting an already-ready device.
     let existing = {
         let controllers = CONTROLLERS.lock();
-        controllers.iter().position(|controller| {
-            controller.device.bus == device.bus
-                && controller.device.device == device.device
-                && controller.device.function == device.function
-        })
+        controllers
+            .iter()
+            .position(|controller| same_device(&controller.device, &device))
     };
     if let Some(index) = existing {
         return Ok(index);
     }
 
     if !device.enable_memory_access() {
+        // enable_memory_access may have partially updated the PCI command
+        // register before its verification read failed.
+        let _ = device.disable_memory_access();
+        mark_failed(&device);
         return Err(DriverError::DeviceFault);
     }
-    let ctrl = NvmeController::init(ctx, device).ok_or(DriverError::NotReady)?;
+    let ctrl = match NvmeController::init(ctx, device.clone()) {
+        Ok(ctrl) => ctrl,
+        Err(error) => {
+            // NvmeController's failure path has already stopped hardware and
+            // released MMIO/DMA resources before this quarantine is recorded.
+            // If construction failed before the controller object existed,
+            // this also closes the PCI enable window opened above.
+            let _ = device.disable_memory_access();
+            mark_failed(&device);
+            return Err(error);
+        }
+    };
     let mut controllers = CONTROLLERS.lock();
     let index = controllers.len();
     controllers.push(ctrl);
@@ -467,16 +567,34 @@ pub fn request_mmio(
     write: bool,
     value: u64,
 ) -> Result<u64, DriverError> {
-    let controllers = CONTROLLERS.lock();
-    let controller = controllers
-        .iter()
-        .find(|controller| {
-            controller.device.bus == device.bus
-                && controller.device.device == device.device
-                && controller.device.function == device.function
-        })
-        .ok_or(DriverError::NotReady)?;
-    controller.mmio_request(bar, offset, width, write, value)
+    if is_failed(device) {
+        return Err(DriverError::DeviceFault);
+    }
+    let result = {
+        let controllers = CONTROLLERS.lock();
+        let controller = controllers
+            .iter()
+            .find(|controller| same_device(&controller.device, device))
+            .ok_or(DriverError::NotReady)?;
+        controller.mmio_request(bar, offset, width, write, value)
+    };
+    if let Err(error) = result {
+        if is_fatal(error) {
+            let controller = {
+                let mut controllers = CONTROLLERS.lock();
+                controllers
+                    .iter()
+                    .position(|controller| same_device(&controller.device, device))
+                    .map(|index| controllers.remove(index))
+            };
+            // Dropping outside the registry lock performs the ordered device
+            // shutdown, PCI bus-master disable, DMA release, and MMIO unmap.
+            drop(controller);
+            mark_failed(device);
+        }
+        return Err(error);
+    }
+    result
 }
 
 /// Number of controllers that completed initialization.

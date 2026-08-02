@@ -95,6 +95,13 @@ pub trait DriverContext: Send + Sync {
         size: usize,
     ) -> Result<(), DriverContextError>;
 
+    /// Release a mapping previously created by [`map_mmio_region`](Self::map_mmio_region).
+    ///
+    /// Implementations may treat a verified, permanent direct-map alias as a
+    /// no-op.  Drivers must call this before releasing their last reference to
+    /// a controller's register block.
+    fn unmap_mmio_region(&self, _phys: usize, _virt: usize, _size: usize) {}
+
     /// Map a single page with the given flags.
     ///
     /// Used for framebuffer mapping (write-combining, etc.).

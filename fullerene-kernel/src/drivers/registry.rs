@@ -168,6 +168,8 @@ struct DriverRing<T, const CAPACITY: usize> {
 
 #[cfg(not(nitrogen_no_storage))]
 unsafe impl<T: Send, const CAPACITY: usize> Sync for DriverRing<T, CAPACITY> {}
+#[cfg(not(nitrogen_no_storage))]
+unsafe impl<T: Send, const CAPACITY: usize> Send for DriverRing<T, CAPACITY> {}
 
 /// Bounded lock-free SPSC ring used for the generic driver SQ and CQ.
 ///
@@ -347,6 +349,39 @@ mod driver_queue_tests {
         assert_eq!(rejected.unwrap_err().request_id, 99);
         assert_eq!(ring.pop().unwrap().request_id, 0);
     }
+
+    #[test]
+    fn spsc_ring_transfers_entries_concurrently_without_locking() {
+        use std::sync::Arc;
+        use std::thread;
+
+        const COUNT: u64 = 10_000;
+        let ring = Arc::new(DriverRing::<u64, DRIVER_QUEUE_DEPTH>::new());
+        let producer_ring = Arc::clone(&ring);
+        let producer = thread::spawn(move || {
+            for value in 0..COUNT {
+                loop {
+                    if producer_ring.push(value).is_ok() {
+                        break;
+                    }
+                    thread::yield_now();
+                }
+            }
+        });
+
+        for expected in 0..COUNT {
+            loop {
+                if let Some(value) = ring.pop() {
+                    assert_eq!(value, expected);
+                    break;
+                }
+                thread::yield_now();
+            }
+        }
+
+        producer.join().unwrap();
+        assert!(ring.pop().is_none());
+    }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -466,6 +501,11 @@ impl StorageDriver for SdCardStorageCtl {
 #[cfg(not(nitrogen_no_storage))]
 fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
     let request_id = request.request_id;
+    let failure_device = match &request.kind {
+        DriverRequestKind::InitializeNvme { device } | DriverRequestKind::Mmio { device, .. } => {
+            device.clone()
+        }
+    };
     let (result, controller_index) = match request.kind {
         DriverRequestKind::InitializeNvme { device } => (
             nitrogen::storage::nvme::init_device(
@@ -487,6 +527,15 @@ fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
             false,
         ),
     };
+
+    // The concrete driver has already performed its failure cleanup before
+    // returning here.  Only now may the supervisor terminate an explicitly
+    // bound driver process; an ioctl caller is never used as a fallback owner.
+    if let Err(error) = &result {
+        if crate::drivers::supervisor::is_fatal(*error) {
+            crate::drivers::supervisor::kill_failed_driver(&failure_device, *error);
+        }
+    }
 
     match result {
         Ok(value) if controller_index => DriverCompletion {

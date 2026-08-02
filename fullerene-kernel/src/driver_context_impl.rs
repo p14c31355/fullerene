@@ -50,6 +50,13 @@ impl DriverContext for KernelDriverContext {
             .map_err(|_| DriverContextError::MmioMappingFailed)
     }
 
+    fn unmap_mmio_region(&self, phys: usize, virt: usize, size: usize) {
+        let mut mgr = crate::memory_management::get_memory_manager().lock();
+        if let Some(m) = mgr.as_mut() {
+            let _ = m.unmap_mmio_region(phys, virt, size);
+        }
+    }
+
     fn map_page(
         &self,
         virt: usize,
