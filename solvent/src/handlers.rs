@@ -479,7 +479,7 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                 explorer.context_menu.x = (rel_x.max(0) as u32)
                     .min(win_w.saturating_sub(crate::explorer::CONTEXT_MENU_W));
                 explorer.context_menu.y = (rel_y.max(0) as u32)
-                    .min(win_h.saturating_sub(6 * crate::explorer::ROW_HEIGHT));
+                    .min(win_h.saturating_sub(crate::explorer::CONTEXT_MENU_HEIGHT));
                 explorer.selected_index = hit;
                 rt.explorer_dirty = true;
                 rt.frame_due = true;

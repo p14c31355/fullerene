@@ -203,6 +203,12 @@ pub fn super_held() -> bool {
     mods.lsuper || mods.rsuper
 }
 
+/// Return whether either Control key is currently held.
+pub fn ctrl_held() -> bool {
+    let mods = MODIFIERS.lock();
+    mods.lctrl || mods.rctrl
+}
+
 pub fn handle_keyboard_scancode(scancode: u8) {
     let mut ext = EXTENDED_SCANCODE.lock();
     if scancode == 0xE0 {
@@ -328,6 +334,27 @@ pub fn read_char() -> Option<u8> {
 /// process terminal. The normal shell path must continue to use `read_char`.
 pub fn pop_input_char_unchecked() -> Option<u8> {
     interrupt_free(|| INPUT_BUFFER.lock().pop_front())
+}
+
+/// Replace the first queued occurrence of `target` with `replacement`.
+///
+/// This is used for shell shortcuts whose decoded control byte may already
+/// be behind ordinary typed characters in the input queue.
+pub fn replace_input_byte(target: u8, replacement: &[u8]) -> bool {
+    interrupt_free(|| {
+        let mut buffer = INPUT_BUFFER.lock();
+        let Some(index) = buffer.iter().position(|&byte| byte == target) else {
+            return false;
+        };
+        if replacement.len() > 256usize.saturating_sub(buffer.len()).saturating_add(1) {
+            return false;
+        }
+        buffer.remove(index);
+        for (offset, &byte) in replacement.iter().enumerate() {
+            buffer.insert(index + offset, byte);
+        }
+        true
+    })
 }
 
 /// Inject an escape sequence or other synthetic bytes into the terminal input

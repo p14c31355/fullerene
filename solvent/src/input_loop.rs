@@ -282,6 +282,15 @@ pub fn poll_keyboard() {
                 }
                 if runtime.term_window.is_some() && top_id == runtime.term_window && pressed {
                     let key = scancode_to_resonance_keycode(scancode);
+                    if key == resonance::KeyCode::V && nitrogen::ps2::keyboard::ctrl_held() {
+                        // The low-level keyboard translator has already
+                        // queued Ctrl+V as 0x16. Consume that control byte
+                        // and inject the copied absolute path instead.
+                        let path = crate::explorer::shell_clipboard_path();
+                        let replacement = path.as_deref().map(str::as_bytes).unwrap_or(&[]);
+                        let _ = nitrogen::ps2::keyboard::replace_input_byte(0x16, replacement);
+                        continue;
+                    }
                     let sequence = match key {
                         resonance::KeyCode::Up => Some(b"\x1b[A".as_slice()),
                         resonance::KeyCode::Down => Some(b"\x1b[B".as_slice()),
