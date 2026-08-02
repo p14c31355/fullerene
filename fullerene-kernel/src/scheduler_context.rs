@@ -511,6 +511,7 @@ impl SchedulerContext {
                 pt.as_u64(),
                 new_kernel_stack.map_or(0, |stack| stack.as_u64()),
             );
+            unsafe { crate::context_switch::prepare_entry_image(&plan) };
             crate::process::mark_linux_stage(new_pid, "context-switch-prep");
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);

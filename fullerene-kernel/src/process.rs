@@ -898,6 +898,13 @@ pub fn mark_linux_stage(pid: ProcessId, stage: &str) {
     if let Some(window) = window {
         let line = alloc::format!("\n[busybox-diag] {stage}\n");
         solvent::write_process_terminal(window, &line);
+        crate::klog_fmt!(
+            "[BUSYBOX-DIAG] scheduler stage={} pid={} window_id={}\n",
+            stage,
+            pid.0,
+            window.0
+        );
+        solvent::mark_klog_live_dirty();
         // The next operation may enter a non-returning context switch, so do
         // not wait for the ordinary event loop to paint this milestone.
         solvent::flush_frame_no_fb();

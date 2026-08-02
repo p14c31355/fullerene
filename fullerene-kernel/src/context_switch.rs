@@ -1,9 +1,9 @@
 //! Context switching implementation for Fullerene OS.
 //!
-//! Rust builds a complete, testable transition plan before entering the
-//! assembly boundary. The assembly only saves the old kernel continuation,
-//! changes CR3, and transfers control using the already-copied plan. In
-//! particular, it never dereferences a `ProcessContext` after CR3 changes.
+//! Rust builds a complete transition plan and materializes the first-entry
+//! image on the destination kernel stack. The assembly boundary is kept
+//! deliberately dumb: save the old continuation, switch CR3, restore the
+//! prepared image, and use `iretq`/`ret`.
 
 use crate::process::{GeneralRegisters, ProcessContext};
 
@@ -21,10 +21,9 @@ pub enum SwitchEntry {
 
 /// Complete input to the low-level context-switch trampoline.
 ///
-/// This is deliberately a value object rather than a pair of process
-/// pointers. All data needed after CR3 changes is copied here while the old
-/// address space is still active. `old_context` is the sole pointer retained:
-/// it is written before CR3 changes so the old task can resume later.
+/// All data needed after CR3 changes is copied here while the old address
+/// space is still active. `old_context` is the sole pointer retained: it is
+/// written before CR3 changes so the old task can resume later.
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct ContextSwitchPlan {
@@ -34,6 +33,7 @@ pub struct ContextSwitchPlan {
     new_kernel_rsp: u64,
     entry: SwitchEntry,
     _padding: [u8; 7],
+    entry_stack: u64,
     registers: GeneralRegisters,
     rflags: u64,
     rip: u64,
@@ -56,6 +56,13 @@ impl ContextSwitchPlan {
         } else {
             SwitchEntry::FirstKernel
         };
+        let entry_stack = if entry == SwitchEntry::FirstUser {
+            new_kernel_stack
+                .checked_sub(USER_ENTRY_IMAGE_SIZE as u64)
+                .unwrap_or(0)
+        } else {
+            0
+        };
         Self {
             old_context,
             new_cr3,
@@ -63,6 +70,7 @@ impl ContextSwitchPlan {
             new_kernel_rsp: new_context.kernel_rsp,
             entry,
             _padding: [0; 7],
+            entry_stack,
             registers: new_context.registers,
             rflags: new_context.rflags,
             rip: new_context.rip,
@@ -86,64 +94,120 @@ impl ContextSwitchPlan {
     pub fn new_kernel_rsp(&self) -> u64 {
         self.new_kernel_rsp
     }
+
+    pub fn entry_stack(&self) -> u64 {
+        self.entry_stack
+    }
+}
+
+/// Exact memory image consumed by the first-user-entry pop/iret sequence.
+///
+/// The field order intentionally matches the assembly pop order. Keeping it
+/// as a Rust type lets unit tests validate both register order and the iret
+/// frame without executing privileged instructions.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UserEntryImage {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    r11: u64,
+    r10: u64,
+    r9: u64,
+    r8: u64,
+    rbp: u64,
+    rdi: u64,
+    rsi: u64,
+    rdx: u64,
+    rcx: u64,
+    rbx: u64,
+    rax: u64,
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
+const USER_ENTRY_IMAGE_SIZE: usize = core::mem::size_of::<UserEntryImage>();
+
+impl UserEntryImage {
+    fn from_plan(plan: &ContextSwitchPlan) -> Self {
+        let r = plan.registers;
+        Self {
+            r15: r.r15,
+            r14: r.r14,
+            r13: r.r13,
+            r12: r.r12,
+            r11: r.r11,
+            r10: r.r10,
+            r9: r.r9,
+            r8: r.r8,
+            rbp: r.rbp,
+            rdi: r.rdi,
+            rsi: r.rsi,
+            rdx: r.rdx,
+            rcx: r.rcx,
+            rbx: r.rbx,
+            rax: r.rax,
+            rip: plan.rip,
+            cs: plan.cs,
+            rflags: plan.rflags,
+            rsp: r.rsp,
+            ss: plan.ss,
+        }
+    }
+}
+
+/// Materialize the first-user-entry image before changing CR3.
+///
+/// # Safety
+///
+/// `plan.entry_stack()` must point to writable memory in the current address
+/// space and in the destination address space. The process allocator creates
+/// kernel stacks before cloning the process page table, which establishes
+/// this invariant for scheduler-created processes.
+pub unsafe fn prepare_entry_image(plan: &ContextSwitchPlan) {
+    if plan.entry != SwitchEntry::FirstUser || plan.entry_stack == 0 {
+        return;
+    }
+    unsafe {
+        (plan.entry_stack as *mut UserEntryImage).write(UserEntryImage::from_plan(plan));
+    }
 }
 
 const PLAN_OLD_CONTEXT_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, old_context);
 const PLAN_NEW_CR3_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, new_cr3);
-const PLAN_NEW_KERNEL_STACK_OFFSET: usize =
-    core::mem::offset_of!(ContextSwitchPlan, new_kernel_stack);
 const PLAN_NEW_KERNEL_RSP_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, new_kernel_rsp);
 const PLAN_ENTRY_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, entry);
+const PLAN_ENTRY_STACK_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, entry_stack);
 const PLAN_REGISTERS_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, registers);
 const PLAN_RFLAGS_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, rflags);
 const PLAN_RIP_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, rip);
-const PLAN_CS_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, cs);
-const PLAN_SS_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, ss);
 
 const CONTEXT_KERNEL_RSP_OFFSET: usize = core::mem::offset_of!(ProcessContext, kernel_rsp);
-const REG_RAX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rax);
-const REG_RBX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rbx);
-const REG_RCX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rcx);
-const REG_RDX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rdx);
-const REG_RSI_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rsi);
-const REG_RDI_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rdi);
-const REG_RBP_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rbp);
-const REG_RSP_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rsp);
-const REG_R8_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r8);
-const REG_R9_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r9);
-const REG_R10_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r10);
-const REG_R11_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r11);
-const REG_R12_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r12);
-const REG_R13_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r13);
-const REG_R14_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r14);
-const REG_R15_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r15);
+const PLAN_REG_RSP_OFFSET: usize =
+    PLAN_REGISTERS_OFFSET + core::mem::offset_of!(GeneralRegisters, rsp);
 
 static_assertions::const_assert_eq!(PLAN_OLD_CONTEXT_OFFSET, 0);
 static_assertions::const_assert_eq!(PLAN_NEW_CR3_OFFSET, 8);
-static_assertions::const_assert_eq!(PLAN_NEW_KERNEL_STACK_OFFSET, 16);
 static_assertions::const_assert_eq!(PLAN_NEW_KERNEL_RSP_OFFSET, 24);
 static_assertions::const_assert_eq!(PLAN_ENTRY_OFFSET, 32);
-static_assertions::const_assert_eq!(PLAN_REGISTERS_OFFSET, 40);
-static_assertions::const_assert_eq!(PLAN_RFLAGS_OFFSET, 168);
-static_assertions::const_assert_eq!(PLAN_RIP_OFFSET, 176);
-static_assertions::const_assert_eq!(PLAN_CS_OFFSET, 184);
-static_assertions::const_assert_eq!(PLAN_SS_OFFSET, 192);
+static_assertions::const_assert_eq!(PLAN_ENTRY_STACK_OFFSET, 40);
+static_assertions::const_assert_eq!(PLAN_REGISTERS_OFFSET, 48);
+static_assertions::const_assert_eq!(PLAN_RFLAGS_OFFSET, 176);
+static_assertions::const_assert_eq!(PLAN_RIP_OFFSET, 184);
 static_assertions::const_assert_eq!(core::mem::size_of::<ContextSwitchPlan>(), 208);
-
-/// Number of bytes reserved below a new kernel stack for the copied register
-/// image. The iret frame occupies the final 40 bytes below the stack top.
-const ENTRY_SCRATCH_SIZE: u64 = 176;
-const IRET_FRAME_SIZE: u64 = 40;
+static_assertions::const_assert_eq!(USER_ENTRY_IMAGE_SIZE, 160);
 
 /// Save the current kernel continuation and switch according to `plan`.
-///
-/// The plan must remain alive until this function returns. For a first user
-/// entry it does not return until the process is later switched away from.
 ///
 /// # Safety
 ///
 /// The pointers and physical address in `plan` must be valid for the current
-/// scheduler state, and the new kernel stack must be mapped in `new_cr3`.
+/// scheduler state. `prepare_entry_image` must have been called for a first
+/// user entry.
 #[inline(never)]
 pub unsafe extern "sysv64" fn switch_context(plan: &ContextSwitchPlan) {
     debug_assert_ne!(plan.new_cr3, 0);
@@ -153,13 +217,13 @@ pub unsafe extern "sysv64" fn switch_context(plan: &ContextSwitchPlan) {
     core::hint::black_box(plan);
 }
 
-/// Assembly boundary. All process data is read from the plan before CR3 is
-/// changed. The plan's register image is copied to the new kernel stack so
-/// the post-CR3 path needs no old-address-space pointer at all.
+/// Minimal privileged boundary. All process-layout decisions and first-entry
+/// image construction happen in Rust; this code only performs CPU operations
+/// that Rust cannot express.
 #[unsafe(naked)]
 unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchPlan) {
     core::arch::naked_asm!(
-        // Preserve the old continuation and make the switch atomic.
+        // Save the old continuation before changing address spaces.
         "pushfq",
         "cli",
         "push rbp",
@@ -168,48 +232,26 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         "push r13",
         "push r14",
         "push r15",
-
-        // Save the old continuation pointer before any address-space change.
         "mov rax, [rdi + {old_context}]",
         "test rax, rax",
         "jz 1f",
         "mov [rax + {context_kernel_rsp}], rsp",
         "1:",
 
-        // Load all plan fields needed after CR3 changes.
+        // Capture every value needed after CR3 changes.
         "mov rdx, [rdi + {new_cr3}]",
-        "mov r8, [rdi + {new_kernel_stack}]",
         "mov r9, [rdi + {new_kernel_rsp}]",
         "mov r10b, [rdi + {entry}]",
+        "mov r11, [rdi + {entry_stack}]",
 
-        // A suspended kernel continuation already has its complete register
-        // image on the destination stack. No plan dereference follows CR3.
+        // Resume a suspended kernel continuation.
         "cmp r10b, {kernel_continuation}",
-        "je 4f",
+        "je 3f",
 
-        // First user entry: copy the register image and construct the
-        // transition frame while the old address space is still active.
+        // First kernel entry. The kernel entry image does not need an iret
+        // frame, only the initial kernel RSP/RIP/RFLAGS values.
         "cmp r10b, {first_user}",
-        "jne 3f",
-        "mov rax, [rdi + {plan_reg_rsp}]",
-        "mov [r8 - 32], rax",
-        "mov rax, [rdi + {rflags}]",
-        "mov [r8 - 24], rax",
-        "mov rax, [rdi + {rip}]",
-        "mov [r8 - 8], rax",
-        "mov rax, [rdi + {cs}]",
-        "mov [r8 - 16], rax",
-        "mov rax, [rdi + {ss}]",
-        "mov [r8 - 40], rax",
-        "lea rsi, [rdi + {registers}]",
-        "mov rdi, r8",
-        "sub rdi, {scratch_size}",
-        "mov rcx, 16",
-        "rep movsq",
-        "jmp 5f",
-
-        // First kernel entry needs only its initial RSP/RIP/RFLAGS image.
-        "3:",
+        "je 2f",
         "mov rax, [rdi + {plan_reg_rsp}]",
         "mov rcx, [rdi + {rflags}]",
         "mov rsi, [rdi + {rip}]",
@@ -220,35 +262,30 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         "popfq",
         "jmp rsi",
 
-        // First user entry. The copied register block remains at
-        // new_stack - ENTRY_SCRATCH_SIZE and is mapped by the new CR3.
-        "5:",
+        // First user entry. Rust wrote the exact pop/iret image to the new
+        // kernel stack before this CR3 change; no old-space read follows it.
+        "2:",
         "mov cr3, rdx",
-        "mov rsp, r8",
-        "sub rsp, {iret_size}",
-        "mov rsi, r8",
-        "sub rsi, {scratch_size}",
-        "mov rax, [rsi + {reg_rax}]",
-        "mov rbx, [rsi + {reg_rbx}]",
-        "mov rcx, [rsi + {reg_rcx}]",
-        "mov rdx, [rsi + {reg_rdx}]",
-        "mov rdi, [rsi + {reg_rdi}]",
-        "mov rbp, [rsi + {reg_rbp}]",
-        "mov r8, [rsi + {reg_r8}]",
-        "mov r9, [rsi + {reg_r9}]",
-        "mov r10, [rsi + {reg_r10}]",
-        "mov r11, [rsi + {reg_r11}]",
-        "mov r12, [rsi + {reg_r12}]",
-        "mov r13, [rsi + {reg_r13}]",
-        "mov r14, [rsi + {reg_r14}]",
-        "mov r15, [rsi + {reg_r15}]",
-        // RSP is supplied by the iret frame; RSI must be loaded last because
-        // it is also the temporary source pointer.
-        "mov rsi, [rsi + {reg_rsi}]",
+        "mov rsp, r11",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rbp",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
         "iretq",
 
-        // Resume a suspended kernel continuation.
-        "4:",
+        // Kernel continuation restore.
+        "3:",
         "mov cr3, rdx",
         "mov rsp, r9",
         "pop r15",
@@ -262,35 +299,15 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
 
         old_context = const PLAN_OLD_CONTEXT_OFFSET,
         new_cr3 = const PLAN_NEW_CR3_OFFSET,
-        new_kernel_stack = const PLAN_NEW_KERNEL_STACK_OFFSET,
         new_kernel_rsp = const PLAN_NEW_KERNEL_RSP_OFFSET,
         entry = const PLAN_ENTRY_OFFSET,
-        registers = const PLAN_REGISTERS_OFFSET,
+        entry_stack = const PLAN_ENTRY_STACK_OFFSET,
+        plan_reg_rsp = const PLAN_REG_RSP_OFFSET,
+        context_kernel_rsp = const CONTEXT_KERNEL_RSP_OFFSET,
         rflags = const PLAN_RFLAGS_OFFSET,
         rip = const PLAN_RIP_OFFSET,
-        cs = const PLAN_CS_OFFSET,
-        ss = const PLAN_SS_OFFSET,
-        plan_reg_rsp = const PLAN_REGISTERS_OFFSET + REG_RSP_OFFSET,
-        context_kernel_rsp = const CONTEXT_KERNEL_RSP_OFFSET,
-        reg_rax = const REG_RAX_OFFSET,
-        reg_rbx = const REG_RBX_OFFSET,
-        reg_rcx = const REG_RCX_OFFSET,
-        reg_rdx = const REG_RDX_OFFSET,
-        reg_rsi = const REG_RSI_OFFSET,
-        reg_rdi = const REG_RDI_OFFSET,
-        reg_rbp = const REG_RBP_OFFSET,
-        reg_r8 = const REG_R8_OFFSET,
-        reg_r9 = const REG_R9_OFFSET,
-        reg_r10 = const REG_R10_OFFSET,
-        reg_r11 = const REG_R11_OFFSET,
-        reg_r12 = const REG_R12_OFFSET,
-        reg_r13 = const REG_R13_OFFSET,
-        reg_r14 = const REG_R14_OFFSET,
-        reg_r15 = const REG_R15_OFFSET,
         kernel_continuation = const SwitchEntry::KernelContinuation as u8,
         first_user = const SwitchEntry::FirstUser as u8,
-        scratch_size = const ENTRY_SCRATCH_SIZE,
-        iret_size = const IRET_FRAME_SIZE,
     );
 }
 
@@ -305,7 +322,10 @@ mod tests {
         let mut ctx = ProcessContext::default();
         ctx.is_user = is_user;
         ctx.kernel_rsp = kernel_rsp;
+        ctx.registers.rax = 0x01;
+        ctx.registers.rbx = 0x02;
         ctx.registers.rsp = 0x7000;
+        ctx.registers.r15 = 0x15;
         ctx.rip = 0x2000;
         ctx.segments.cs = 0x1b;
         ctx.segments.ss = 0x23;
@@ -320,8 +340,21 @@ mod tests {
         assert_eq!(plan.new_cr3(), 0x123000);
         assert_eq!(plan.new_kernel_stack(), 0x9000);
         assert_eq!(plan.new_kernel_rsp(), 0);
-        assert_eq!(plan.registers.rsp, 0x7000);
-        assert_eq!(plan.rip, 0x2000);
+        assert_eq!(plan.entry_stack(), 0x9000 - USER_ENTRY_IMAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn user_entry_image_matches_pop_and_iret_order() {
+        let ctx = context(true, 0);
+        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x9000);
+        let image = UserEntryImage::from_plan(&plan);
+        assert_eq!(image.r15, 0x15);
+        assert_eq!(image.rbx, 0x02);
+        assert_eq!(image.rax, 0x01);
+        assert_eq!(image.rip, 0x2000);
+        assert_eq!(image.cs, 0x1b);
+        assert_eq!(image.rsp, 0x7000);
+        assert_eq!(image.ss, 0x23);
     }
 
     #[test]
@@ -330,6 +363,7 @@ mod tests {
         let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x9000);
         assert_eq!(plan.entry(), SwitchEntry::KernelContinuation);
         assert_eq!(plan.new_kernel_rsp(), 0xfeed_0000);
+        assert_eq!(plan.entry_stack(), 0);
     }
 
     #[test]
@@ -337,15 +371,16 @@ mod tests {
         let ctx = context(false, 0);
         let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x9000);
         assert_eq!(plan.entry(), SwitchEntry::FirstKernel);
+        assert_eq!(plan.entry_stack(), 0);
     }
 
     #[test]
     fn plan_has_stable_wire_layout() {
         assert_eq!(PLAN_ENTRY_OFFSET, 32);
-        assert_eq!(PLAN_REGISTERS_OFFSET, 40);
-        assert_eq!(PLAN_RFLAGS_OFFSET, 168);
+        assert_eq!(PLAN_ENTRY_STACK_OFFSET, 40);
+        assert_eq!(PLAN_REGISTERS_OFFSET, 48);
+        assert_eq!(PLAN_RFLAGS_OFFSET, 176);
         assert_eq!(core::mem::size_of::<ContextSwitchPlan>(), 208);
-        assert_eq!(ENTRY_SCRATCH_SIZE, 176);
-        assert_eq!(IRET_FRAME_SIZE, 40);
+        assert_eq!(USER_ENTRY_IMAGE_SIZE, 160);
     }
 }

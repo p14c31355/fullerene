@@ -406,6 +406,12 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
 fn show_busybox_stage(window_id: lattice::window::WindowId, stage: &str) {
     let line = alloc::format!("\n[busybox-diag] {stage}\n");
     solvent::write_process_terminal(window_id, &line);
+    crate::klog_fmt!(
+        "[BUSYBOX-DIAG] screen stage={} window_id={}\n",
+        stage,
+        window_id.0
+    );
+    solvent::mark_klog_live_dirty();
 }
 
 #[cfg(linux_busybox_smoke)]
