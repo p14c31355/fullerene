@@ -229,6 +229,16 @@ extern "sysv64" fn context_switch_pre_iret_stage(
     let _ = crate::klog::try_render_live_surface();
 }
 
+/// Last Rust-visible checkpoint after restoring the destination XSAVE image.
+/// This deliberately sits between `xrstor` and `iretq` so hardware-only
+/// failures at either boundary remain distinguishable on machines without
+/// serial capture.
+#[inline(never)]
+extern "sysv64" fn context_switch_after_xsave_stage() {
+    crate::klog_fmt!("[CTX-DIAG] pre-iret xsave restored\n");
+    let _ = crate::klog::try_render_live_surface();
+}
+
 const PLAN_OLD_CONTEXT_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, old_context);
 const PLAN_NEW_CR3_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, new_cr3);
 const PLAN_NEW_KERNEL_RSP_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, new_kernel_rsp);
@@ -402,6 +412,20 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         "mov eax, {xsave_mask_low}",
         "mov edx, {xsave_mask_high}",
         "xrstor [r13]",
+        // Keep the final XSAVE restore and the privilege transition
+        // separately observable on hardware.
+        "call {after_xsave_stage}",
+        // The diagnostic hook may clobber caller-saved registers. Rebuild
+        // the register-image anchor before the final user-register reload.
+        "lea rax, [r12 - {user_register_image_size}]",
+        // The diagnostic hook may use SSE while repainting Klog Live; restore
+        // the destination image once more before returning to user mode.
+        "mov eax, {xsave_mask_low}",
+        "mov edx, {xsave_mask_high}",
+        "xrstor [r13]",
+        // XRSTOR uses EAX/EDX for the feature mask. Rebuild the image
+        // address before using it as the base for the final register reload.
+        "lea rax, [r12 - {user_register_image_size}]",
         "6:",
         // r12 was used as the iret-frame anchor and r13 as the XSAVE pointer.
         // Restore those two user callee-saved registers after XRSTOR.
@@ -461,6 +485,7 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         xsave_mask_low = const crate::fpu::XSAVE_MASK as u32,
         xsave_mask_high = const (crate::fpu::XSAVE_MASK >> 32) as u32,
         pre_iret_stage = sym context_switch_pre_iret_stage,
+        after_xsave_stage = sym context_switch_after_xsave_stage,
         image_rax = const IMAGE_RAX_OFFSET,
         image_r12 = const IMAGE_R12_OFFSET,
         image_r13 = const IMAGE_R13_OFFSET,
