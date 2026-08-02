@@ -497,14 +497,6 @@ impl SchedulerContext {
             .find(|(id, _)| *id == new_pid)
             .map(|(_, process)| process.kernel_stack)
             .filter(|stack| stack.as_u64() != 0);
-        let new_user_first_entry = list
-            .iter()
-            .find(|(id, _)| *id == new_pid)
-            .is_some_and(|(_, process)| process.is_user && process.context.kernel_rsp == 0);
-        let new_user_kernel_continuation = list
-            .iter()
-            .find(|(id, _)| *id == new_pid)
-            .is_some_and(|(_, process)| process.is_user && process.context.kernel_rsp != 0);
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
@@ -512,26 +504,25 @@ impl SchedulerContext {
         drop(guard);
 
         if let Some(new) = new_ctx {
+            let new_context = unsafe { &*new };
+            let plan = crate::context_switch::ContextSwitchPlan::new(
+                old_ctx.unwrap_or(core::ptr::null_mut()),
+                new_context,
+                pt.as_u64(),
+                new_kernel_stack.map_or(0, |stack| stack.as_u64()),
+            );
             crate::process::mark_linux_stage(new_pid, "context-switch-prep");
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }
-            if new_user_first_entry {
+            if plan.entry() == crate::context_switch::SwitchEntry::FirstUser {
                 crate::interrupts::syscall::prepare_user_entry();
                 crate::process::mark_linux_stage(new_pid, "user-entry-prepared");
-            } else if new_user_kernel_continuation {
+            } else if plan.entry() == crate::context_switch::SwitchEntry::KernelContinuation {
                 crate::interrupts::syscall::prepare_kernel_continuation();
             }
             crate::process::mark_linux_stage(new_pid, "context-switch-enter");
-            let old = old_ctx.unwrap_or(core::ptr::null_mut());
-            unsafe {
-                switch_context(
-                    old,
-                    new,
-                    pt.as_u64(),
-                    new_kernel_stack.map_or(0, |stack| stack.as_u64()),
-                )
-            };
+            unsafe { switch_context(&plan) };
         }
     }
 
