@@ -323,6 +323,28 @@ pub fn runtime_tick_no_fb() {
     }
 }
 
+/// Render an already-due frame without polling input, services, or events.
+///
+/// Scheduler diagnostics use this immediately before a context switch. The
+/// normal tick would be too late when the switch enters a faulting or stalled
+/// user transition, and calling the full tick here could recursively launch
+/// work while the shell is yielding.
+pub fn flush_frame_no_fb() {
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let due = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
+        let due = runtime.frame_due;
+        runtime.frame_due = false;
+        due
+    });
+    let render_fn = if due { *RENDER_FN.lock() } else { None };
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+    if let Some(render_fn) = render_fn {
+        render_fn();
+    }
+}
+
 pub fn consume_frame_due() -> bool {
     RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let due = runtime.frame_due;
