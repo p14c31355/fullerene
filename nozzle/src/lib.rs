@@ -235,6 +235,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ),
         ("usb_info", "Show USB device status", builtins::cmd_usb_info),
         (
+            "nvme_init",
+            "Initialize NVMe through the kernel SQ/CQ path",
+            builtins::cmd_nvme_init
+        ),
+        (
             "usb_rescan",
             "Explicitly activate and rescan USB",
             builtins::cmd_usb_rescan

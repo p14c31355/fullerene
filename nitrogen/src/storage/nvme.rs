@@ -200,6 +200,21 @@ pub fn init_device(
     if device.class_code != 0x01 || device.subclass != 0x08 {
         return Err(DriverError::DeviceNotFound);
     }
+
+    // Initialization requests may be retried by the kernel.  Keep the
+    // controller index stable and avoid resetting an already-ready device.
+    let existing = {
+        let controllers = CONTROLLERS.lock();
+        controllers.iter().position(|controller| {
+            controller.device.bus == device.bus
+                && controller.device.device == device.device
+                && controller.device.function == device.function
+        })
+    };
+    if let Some(index) = existing {
+        return Ok(index);
+    }
+
     if !device.enable_memory_access() {
         return Err(DriverError::DeviceFault);
     }

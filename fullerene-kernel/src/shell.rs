@@ -1080,6 +1080,45 @@ fn nozzle_services() -> nozzle::ShellServices {
                         .write_str("SD rescan: storage support not compiled in.\n");
                 }
             }
+            "nvme_init" => {
+                #[cfg(not(nitrogen_no_storage))]
+                {
+                    use nitrogen::pci::PciScanner;
+
+                    let mut scanner = PciScanner::new();
+                    let mut found = false;
+                    if scanner.scan_all_buses().is_ok() {
+                        for device in scanner
+                            .get_devices()
+                            .iter()
+                            .filter(|device| device.class_code == 0x01 && device.subclass == 0x08)
+                        {
+                            found = true;
+                            match crate::drivers::registry::initialize_nvme(device.clone()) {
+                                Ok(index) => {
+                                    tline!(
+                                        ctx.terminal,
+                                        "NVMe init: nvme{} ready (SQ/CQ completion)",
+                                        index
+                                    );
+                                }
+                                Err(error) => {
+                                    tline!(ctx.terminal, "NVMe init: failed: {}", error);
+                                }
+                            }
+                        }
+                    }
+                    if !found {
+                        ctx.terminal
+                            .write_str("NVMe init: no NVMe controller found.\n");
+                    }
+                }
+                #[cfg(nitrogen_no_storage)]
+                {
+                    ctx.terminal
+                        .write_str("NVMe init: storage support not compiled in.\n");
+                }
+            }
             "usb_info" => {
                 use crate::drivers::registry;
                 let count = crate::devfs::list_block_device_names().len();
