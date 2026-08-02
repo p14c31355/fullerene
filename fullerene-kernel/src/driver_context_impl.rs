@@ -90,7 +90,7 @@ impl DriverContext for KernelDriverContext {
 
     fn dma_map(&self, device_id: u16, phys: u64, size: usize) -> Result<u64, DriverContextError> {
         nitrogen::iommu::dma_map(device_id, phys, size)
-            .map_err(|_| DriverContextError::MmioMappingFailed)
+            .map_err(|_| DriverContextError::DmaMappingFailed)
     }
 
     fn dma_unmap(&self, iova: u64, size: usize) {

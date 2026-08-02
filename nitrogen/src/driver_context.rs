@@ -38,6 +38,8 @@ pub enum DriverContextError {
     MmioMappingFailed,
     /// An invalid (null or misaligned) argument was supplied.
     InvalidArgument,
+    /// The kernel could not create or remove a device DMA mapping.
+    DmaMappingFailed,
 }
 
 impl fmt::Display for DriverContextError {
@@ -46,8 +48,21 @@ impl fmt::Display for DriverContextError {
             Self::OutOfMemory => f.write_str("out of memory"),
             Self::MmioMappingFailed => f.write_str("MMIO mapping failed"),
             Self::InvalidArgument => f.write_str("invalid argument"),
+            Self::DmaMappingFailed => f.write_str("DMA mapping failed"),
         }
     }
+}
+
+/// A physically contiguous buffer allocated by the kernel and mapped for a
+/// specific PCI function.  `phys` is used by the CPU; `iova` is the address
+/// programmed into a device queue register.  They are equal only when the
+/// kernel is using identity DMA mappings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaAllocation {
+    pub phys: u64,
+    pub iova: u64,
+    pub size: usize,
+    pub frames: usize,
 }
 
 /// Services that a driver needs from the owning kernel / runtime.
@@ -121,6 +136,47 @@ pub trait DriverContext: Send + Sync {
     /// `iova` must be the value returned by a prior `dma_map` call, and
     /// `size` must match.  Behaviour is undefined otherwise.
     fn dma_unmap(&self, iova: u64, size: usize);
+
+    /// Allocate a physically contiguous DMA buffer and ask the kernel/IOMMU
+    /// to map it for the PCI function identified by `device_id`.
+    ///
+    /// The returned allocation must be released with
+    /// [`release_dma_buffer`](Self::release_dma_buffer).  Keeping this
+    /// operation on the context makes ownership explicit: drivers never
+    /// construct or modify IOMMU page tables themselves.
+    fn allocate_dma_buffer(
+        &self,
+        device_id: u16,
+        size: usize,
+    ) -> Result<DmaAllocation, DriverContextError> {
+        if size == 0 {
+            return Err(DriverContextError::InvalidArgument);
+        }
+        let frames = size
+            .checked_add(4095)
+            .map(|bytes| bytes / 4096)
+            .ok_or(DriverContextError::InvalidArgument)?;
+        let phys = self.allocate_contiguous_frames(frames)?;
+        let iova = match self.dma_map(device_id, phys, size) {
+            Ok(iova) => iova,
+            Err(error) => {
+                self.free_contiguous_frames(phys, frames);
+                return Err(error);
+            }
+        };
+        Ok(DmaAllocation {
+            phys,
+            iova,
+            size,
+            frames,
+        })
+    }
+
+    /// Tear down an allocation returned by [`allocate_dma_buffer`](Self::allocate_dma_buffer).
+    fn release_dma_buffer(&self, allocation: DmaAllocation) {
+        self.dma_unmap(allocation.iova, allocation.size);
+        self.free_contiguous_frames(allocation.phys, allocation.frames);
+    }
 }
 
 /// Simplified page-table flags for driver mapping requests.

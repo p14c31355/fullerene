@@ -12,7 +12,7 @@ use core::ptr;
 use spin::Mutex;
 
 use crate::DriverError;
-use crate::driver_context::DriverContext;
+use crate::driver_context::{DmaAllocation, DriverContext};
 use crate::pci::{PciDevice, PciScanner};
 
 static CONTROLLERS: Mutex<Vec<NvmeController>> = Mutex::new(Vec::new());
@@ -67,26 +67,39 @@ struct CqEntry {
 }
 
 pub struct NvmeController {
+    ctx: &'static dyn DriverContext,
     #[allow(dead_code)]
     device: PciDevice,
     mmio: *mut u32,
     #[allow(dead_code)]
     bar0_phys: u64,
     asq: *mut SqEntry,
-    asq_phys: u64,
+    asq_iova: u64,
+    submission_queue: DmaAllocation,
     #[allow(dead_code)]
     asq_tail: u16,
     acq: *mut CqEntry,
-    acq_phys: u64,
+    acq_iova: u64,
+    completion_queue: DmaAllocation,
     #[allow(dead_code)]
     acq_head: u16,
     #[allow(dead_code)]
     phase: u16,
-    queue_phys: u64,
 }
 
 unsafe impl Send for NvmeController {}
 unsafe impl Sync for NvmeController {}
+
+impl Drop for NvmeController {
+    fn drop(&mut self) {
+        if self.submission_queue.size != 0 {
+            self.ctx.release_dma_buffer(self.submission_queue);
+        }
+        if self.completion_queue.size != 0 {
+            self.ctx.release_dma_buffer(self.completion_queue);
+        }
+    }
+}
 
 impl NvmeController {
     pub fn init(ctx: &'static dyn DriverContext, device: PciDevice) -> Option<Self> {
@@ -106,42 +119,65 @@ impl NvmeController {
             .ok()?;
 
         let mut ctrl = Self {
+            ctx,
             device,
             mmio: bar0_virt,
             bar0_phys,
             asq: ptr::null_mut(),
-            asq_phys: 0,
+            asq_iova: 0,
+            submission_queue: DmaAllocation {
+                phys: 0,
+                iova: 0,
+                size: 0,
+                frames: 0,
+            },
             asq_tail: 0,
             acq: ptr::null_mut(),
-            acq_phys: 0,
+            acq_iova: 0,
+            completion_queue: DmaAllocation {
+                phys: 0,
+                iova: 0,
+                size: 0,
+                frames: 0,
+            },
             acq_head: 0,
             phase: 1,
-            queue_phys: 0,
         };
 
         ctrl.w32(NVME_CC, 0);
         crate::timing::wait_timeout_us(500_000, || (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0).ok();
 
-        let q_phys = ctx.allocate_contiguous_frames(2).ok()?;
-        ctrl.queue_phys = q_phys;
-        let q_virt = ctx.phys_to_virt(q_phys) as *mut u8;
+        let device_id = ((ctrl.device.bus as u16) << 8)
+            | ((ctrl.device.device as u16) << 3)
+            | ctrl.device.function as u16;
+        // NVMe submission and completion queues are independent DMA objects.
+        // The kernel owns the physical allocation and IOMMU mapping; the
+        // driver only receives CPU and device addresses to program into NVMe.
+        ctrl.submission_queue = ctx.allocate_dma_buffer(device_id, 4096).ok()?;
+        ctrl.completion_queue = match ctx.allocate_dma_buffer(device_id, 4096) {
+            Ok(queue) => queue,
+            Err(_) => return None,
+        };
+        let asq_virt = ctx.phys_to_virt(ctrl.submission_queue.phys) as *mut u8;
+        let acq_virt = ctx.phys_to_virt(ctrl.completion_queue.phys) as *mut u8;
         unsafe {
-            ptr::write_bytes(q_virt, 0, 8192);
+            ptr::write_bytes(asq_virt, 0, ctrl.submission_queue.size);
+            ptr::write_bytes(acq_virt, 0, ctrl.completion_queue.size);
         }
 
-        ctrl.asq = q_virt as *mut SqEntry;
-        ctrl.asq_phys = q_phys;
-        ctrl.acq = unsafe { q_virt.add(4096) } as *mut CqEntry;
-        ctrl.acq_phys = q_phys + 4096;
+        ctrl.asq = asq_virt as *mut SqEntry;
+        ctrl.asq_iova = ctrl.submission_queue.iova;
+        ctrl.acq = acq_virt as *mut CqEntry;
+        ctrl.acq_iova = ctrl.completion_queue.iova;
 
         ctrl.w32(
             NVME_AQA,
             ((ADMIN_QUEUE_DEPTH - 1) as u32) | (((ADMIN_QUEUE_DEPTH - 1) as u32) << 16),
         );
-        ctrl.w32(NVME_ASQ, ctrl.asq_phys as u32);
-        ctrl.w32(NVME_ASQ + 4, (ctrl.asq_phys >> 32) as u32);
-        ctrl.w32(NVME_ACQ, ctrl.acq_phys as u32);
-        ctrl.w32(NVME_ACQ + 4, (ctrl.acq_phys >> 32) as u32);
+        ctrl.w32(NVME_ASQ, ctrl.asq_iova as u32);
+        ctrl.w32(NVME_ASQ + 4, (ctrl.asq_iova >> 32) as u32);
+        ctrl.w32(NVME_ACQ, ctrl.acq_iova as u32);
+        ctrl.w32(NVME_ACQ + 4, (ctrl.acq_iova >> 32) as u32);
 
         ctrl.w32(NVME_CC, CC_EN | CC_IOCQES | CC_IOSQES);
         if crate::timing::wait_timeout_us(500_000, || (ctrl.r32(NVME_CSTS) & CSTS_RDY) != 0)

@@ -59,6 +59,7 @@ impl From<DriverContextError> for DriverError {
             DriverContextError::OutOfMemory => Self::OutOfMemory,
             DriverContextError::MmioMappingFailed => Self::MmioMappingFailed,
             DriverContextError::InvalidArgument => Self::InvalidArgument,
+            DriverContextError::DmaMappingFailed => Self::DmaMappingFailed,
         }
     }
 }
