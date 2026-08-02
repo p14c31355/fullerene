@@ -129,9 +129,11 @@ pub fn launch(name: &str) -> Result<u64, PortError> {
                 .map(|pid| pid.0)
                 .map_err(|_| PortError::LaunchFailed)
         }
-        PortRuntime::Linux => crate::linux::launch::launch_linux_binary_named(&path, spec.name)
-            .map(|pid| pid.0)
-            .map_err(|_| PortError::LaunchFailed),
+        PortRuntime::Linux => {
+            crate::solvent_linux::launch::launch_linux_binary_named(&path, spec.name)
+                .map(|pid| pid.0)
+                .map_err(|_| PortError::LaunchFailed)
+        }
     }
 }
 

@@ -107,7 +107,10 @@ extern "sysv64" fn syscall_entry_checkpoint() {
     let is_linux = crate::process::current_pid()
         .and_then(|pid| {
             crate::process::SCHEDULER.with_process(pid, |p| {
-                matches!(p.dispatch_mode, Some(crate::linux::DispatchMode::Linux(_)))
+                matches!(
+                    p.dispatch_mode,
+                    Some(crate::solvent_linux::DispatchMode::Linux(_))
+                )
             })
         })
         .unwrap_or(false);

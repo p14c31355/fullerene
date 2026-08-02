@@ -422,7 +422,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("initramfs", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] initramfs start\n");
             crate::boot_stage::draw_boot_label(b"INITRAMFS");
-            crate::linux::launch::init_initramfs();
+            crate::solvent_linux::launch::init_initramfs();
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] initramfs done\n");
             Ok(())
         }),

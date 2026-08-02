@@ -188,7 +188,7 @@ busybox awk 'BEGIN { while ((getline name < \"/tmp/busybox-list\") > 0) wanted[n
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
-    launch_linux_from_data(crate::linux::test_binary::HELLO_ELF, "hello-linux")
+    launch_linux_from_data(crate::solvent_linux::test_binary::HELLO_ELF, "hello-linux")
 }
 
 /// Launch the ordinary Rust `std` example compiled for static musl Linux.
@@ -383,7 +383,9 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
     };
     crate::klog_fmt!("[BUSYBOX-DIAG] attach terminal_window to pid={}\n", pid.0);
     let _ = crate::process::SCHEDULER.with_process(pid, |process| {
-        if let Some(crate::linux::DispatchMode::Linux(runtime)) = process.dispatch_mode.as_mut() {
+        if let Some(crate::solvent_linux::DispatchMode::Linux(runtime)) =
+            process.dispatch_mode.as_mut()
+        {
             runtime.terminal_window = Some(terminal_window);
         }
     });
@@ -652,9 +654,10 @@ pub fn init_initramfs() {
 
     // Install the embedded Linux ABI fixture at a normal executable path so
     // all Linux/WASI programs use the same `exec <path>` shell interface.
-    if let Err(e) =
-        crate::fs::write_entire_file("/bin/hello_linux", crate::linux::test_binary::HELLO_ELF)
-    {
+    if let Err(e) = crate::fs::write_entire_file(
+        "/bin/hello_linux",
+        crate::solvent_linux::test_binary::HELLO_ELF,
+    ) {
         log::warn!("Initramfs: failed to write /bin/hello_linux: {:?}", e);
     }
 

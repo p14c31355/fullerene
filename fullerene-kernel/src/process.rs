@@ -13,7 +13,7 @@ use petroleum::mem_debug;
 use petroleum::page_table::PageTableHelper as _;
 use x86_64::{PhysAddr, VirtAddr};
 
-use crate::linux::runtime::DispatchMode;
+use crate::solvent_linux::runtime::DispatchMode;
 use crate::vdso::{VdsoPageRef, create_vdso_page};
 
 use crate::syscall::{Handle, HandlePerms, KernelObject};
@@ -895,7 +895,7 @@ pub fn current_pid() -> Option<ProcessId> {
 pub fn mark_linux_stage(pid: ProcessId, stage: &str) {
     let window = SCHEDULER
         .with_process(pid, |process| match process.dispatch_mode.as_ref() {
-            Some(crate::linux::DispatchMode::Linux(runtime)) => runtime.terminal_window,
+            Some(crate::solvent_linux::DispatchMode::Linux(runtime)) => runtime.terminal_window,
             _ => None,
         })
         .flatten();

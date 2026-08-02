@@ -27,7 +27,10 @@ pub unsafe extern "sysv64" fn handle_syscall(
     let dispatch_mode = current_pid
         .and_then(|pid| {
             crate::process::SCHEDULER.with_process(pid, |p| {
-                matches!(p.dispatch_mode, Some(crate::linux::DispatchMode::Linux(_)))
+                matches!(
+                    p.dispatch_mode,
+                    Some(crate::solvent_linux::DispatchMode::Linux(_))
+                )
             })
         })
         .unwrap_or(false);
@@ -47,7 +50,7 @@ pub unsafe extern "sysv64" fn handle_syscall(
             crate::process::SCHEDULER
                 .with_process(pid, |p| {
                     p.dispatch_mode.take().and_then(|mode| {
-                        if let crate::linux::DispatchMode::Linux(rt) = mode {
+                        if let crate::solvent_linux::DispatchMode::Linux(rt) = mode {
                             Some(rt)
                         } else {
                             p.dispatch_mode = Some(mode);
@@ -75,12 +78,12 @@ pub unsafe extern "sysv64" fn handle_syscall(
             let result = rt.dispatch(syscall_num, &[arg1, arg2, arg3, arg4, arg5, arg6]);
             if let Some(pid) = current_pid {
                 crate::process::SCHEDULER.with_process(pid, |p| {
-                    p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(rt));
+                    p.dispatch_mode = Some(crate::solvent_linux::DispatchMode::Linux(rt));
                 });
             }
             result
         } else {
-            crate::linux::errno_code(crate::linux::ENOSYS)
+            crate::solvent_linux::errno_code(crate::solvent_linux::ENOSYS)
         };
         crate::klog_fmt!(
             "[LINUX-DIAG] syscall exit pid={:?} nr={} ret={:#x}\n",

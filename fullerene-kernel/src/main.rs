@@ -189,7 +189,11 @@ pub mod init;
 pub mod initramfs;
 pub mod interrupts;
 pub mod klog;
-pub mod linux;
+// The Linux personality is owned by Solvent.  It is compiled into the
+// kernel through this explicit integration boundary because the current
+// personality still needs kernel-owned process, VFS, loader, and page-table
+// services.  Keeping the source path explicit makes `solvent/linux` the
+// single source of truth without restoring a kernel-owned Linux namespace.
 pub mod loader;
 pub mod memory_management;
 pub mod metrics;
@@ -200,6 +204,7 @@ pub mod scheduler_context;
 pub mod shell;
 pub mod slab;
 pub mod smp;
+pub mod solvent_linux;
 pub mod syscall;
 pub mod task;
 mod user_memory;

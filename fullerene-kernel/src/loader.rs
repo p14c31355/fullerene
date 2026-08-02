@@ -976,10 +976,11 @@ fn load_program_inner(
                 // which also freezes Klog Live immediately after iretq.
                 p.context.rflags = 0x202;
                 crate::klog_fmt!("[LINUX-DIAG] stack exit pid={} rsp={:#x}\n", pid.0, rsp);
-                let runtime = crate::linux::LinuxRuntime::new(p.id.0, loaded.layout.initial_break);
-                p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(alloc::boxed::Box::new(
-                    runtime,
-                )));
+                let runtime =
+                    crate::solvent_linux::LinuxRuntime::new(p.id.0, loaded.layout.initial_break);
+                p.dispatch_mode = Some(crate::solvent_linux::DispatchMode::Linux(
+                    alloc::boxed::Box::new(runtime),
+                ));
             }
             Ok::<(), LoadError>(())
         })

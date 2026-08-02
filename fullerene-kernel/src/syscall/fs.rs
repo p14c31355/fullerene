@@ -7,7 +7,7 @@ use petroleum::common::memory::UserSlice;
 
 use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use super::process::with_current_fd_table;
-use crate::linux::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
+use crate::solvent_linux::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 
 const MAX_IO_BYTES: usize = 65_536;
 const MAX_PATH_BYTES: usize = 256;

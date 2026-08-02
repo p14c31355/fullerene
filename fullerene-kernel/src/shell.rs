@@ -610,7 +610,7 @@ fn exec_path(ctx: &mut nozzle::CommandContext) {
         crate::klog_fmt!("[BUSYBOX-DIAG] shell command enter path={}\n", path);
         launch_cmd!(
             ctx.terminal,
-            crate::linux::launch::launch_busybox(),
+            crate::solvent_linux::launch::launch_busybox(),
             "BusyBox shell started (PID: {})"
         );
         return;
@@ -619,7 +619,7 @@ fn exec_path(ctx: &mut nozzle::CommandContext) {
     tline!(ctx.terminal, "Loading Linux binary: {}", path);
     launch_cmd!(
         ctx.terminal,
-        crate::linux::launch::launch_linux_binary_with_args(path, &ctx.args[2..]),
+        crate::solvent_linux::launch::launch_linux_binary_with_args(path, &ctx.args[2..]),
         "Linux process started (PID: {})"
     );
 }
@@ -1481,7 +1481,7 @@ pub fn run_linux_musl_smoke() {
     let mut terminal =
         ScriptedTerminal::new("exec /bin/rust-std-hello\necho shell-resumed-after-linux\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
-    if crate::linux::launch::smoke_verified() {
+    if crate::solvent_linux::launch::smoke_verified() {
         petroleum::serial::serial_log(format_args!(
             "[linux-smoke] PASS: fixture output observed, exit=0, shell resumed\n"
         ));
@@ -1525,7 +1525,7 @@ pub fn busybox_smoke() {
             // is alive. Once it exits, the shell consumes the next command;
             // this runs two sequential BusyBox sessions and catches stale
             // terminal/process state that only fails on the second launch.
-            while crate::linux::launch::busybox_smoke_input_held() {
+            while crate::solvent_linux::launch::busybox_smoke_input_held() {
                 solvent::runtime_tick_no_fb();
                 crate::process::yield_from_scheduler_stack();
             }
@@ -1539,12 +1539,12 @@ pub fn busybox_smoke() {
         }
     }
 
-    crate::linux::launch::reset_busybox_smoke_harness();
+    crate::solvent_linux::launch::reset_busybox_smoke_harness();
     let services = nozzle_services();
     let mut terminal = ScriptedTerminal::new("exec /bin/busybox\nexec /bin/busybox\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
-    crate::linux::launch::mark_busybox_smoke_harness_done();
-    if crate::linux::launch::busybox_smoke_complete() {
+    crate::solvent_linux::launch::mark_busybox_smoke_harness_done();
+    if crate::solvent_linux::launch::busybox_smoke_complete() {
         solvent::set_headless_smoke_active(false);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] PASS: all bundled applets ran, exit=0, shell resumed\n"

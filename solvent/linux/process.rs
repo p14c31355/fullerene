@@ -481,9 +481,9 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             pid.0, code
         ));
         #[cfg(linux_musl_smoke)]
-        crate::linux::launch::observe_smoke_exit(pid, code);
+        crate::solvent_linux::launch::observe_smoke_exit(pid, code);
         #[cfg(linux_busybox_smoke)]
-        crate::linux::launch::observe_busybox_exit(pid, code);
+        crate::solvent_linux::launch::observe_busybox_exit(pid, code);
         process::terminate_process(pid, code);
     }
     loop {
