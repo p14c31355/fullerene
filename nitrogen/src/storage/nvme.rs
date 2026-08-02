@@ -18,6 +18,8 @@ use crate::pci::{PciDevice, PciScanner};
 static CONTROLLERS: Mutex<Vec<NvmeController>> = Mutex::new(Vec::new());
 
 // ── Controller registers (offset from BAR0) ─────────────────────
+const NVME_CAP: usize = 0x00;
+const NVME_VS: usize = 0x08;
 const NVME_INTMS: usize = 0x0C;
 const NVME_CC: usize = 0x14;
 const NVME_CSTS: usize = 0x1C;
@@ -32,6 +34,7 @@ const CC_IOSQES: u32 = 6 << 16;
 
 // ── CSTS bits ────────────────────────────────────────────────────
 const CSTS_RDY: u32 = 1 << 0;
+const CSTS_CFS: u32 = 1 << 1;
 
 // ── Queue sizes ──────────────────────────────────────────────────
 const ADMIN_QUEUE_DEPTH: u16 = 64;
@@ -85,6 +88,8 @@ pub struct NvmeController {
     acq_head: u16,
     #[allow(dead_code)]
     phase: u16,
+    admin_queue_depth: u16,
+    controller_timeout_us: u64,
 }
 
 unsafe impl Send for NvmeController {}
@@ -106,7 +111,7 @@ impl NvmeController {
         // Do not destructively probe BAR size here. Firmware-provided BARs
         // must remain untouched until the driver owns the device.
         let bar0 = device.read_bar_info(0)?;
-        if bar0.is_io {
+        if bar0.is_io || !bar0.is_64bit {
             return None;
         }
         let bar0_phys = bar0.address;
@@ -142,10 +147,49 @@ impl NvmeController {
             },
             acq_head: 0,
             phase: 1,
+            admin_queue_depth: 0,
+            controller_timeout_us: 500_000,
         };
 
+        // CAP and VS are controller properties exposed through the PCI BAR,
+        // not DMA buffers.  Read them before programming CC/AQA/ASQ/ACQ.
+        let cap = ctrl.r64(NVME_CAP);
+        let version = ctrl.r32(NVME_VS);
+        let max_queue_depth = (cap as u16).saturating_add(1);
+        let mps_min = ((cap >> 48) & 0xF) as u8;
+        let mps_max = ((cap >> 52) & 0xF) as u8;
+        let host_mps = 0u8; // 2^(12 + 0) = 4 KiB pages
+        let nvm_command_set_supported = (cap & (1u64 << 37)) != 0;
+        if version < 0x0001_0000
+            || max_queue_depth < 2
+            || host_mps < mps_min
+            || host_mps > mps_max
+            || !nvm_command_set_supported
+        {
+            log::info!(
+                "NVMe: unsupported controller version={:#x} CAP={:#018x}",
+                version,
+                cap
+            );
+            return None;
+        }
+        ctrl.admin_queue_depth = core::cmp::min(ADMIN_QUEUE_DEPTH, max_queue_depth);
+        let timeout_units = ((cap >> 24) & 0xFF) as u64;
+        ctrl.controller_timeout_us = timeout_units
+            .checked_mul(500_000)
+            .filter(|timeout| *timeout != 0)
+            .unwrap_or(500_000);
+
         ctrl.w32(NVME_CC, 0);
-        crate::timing::wait_timeout_us(500_000, || (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0).ok();
+        if crate::timing::wait_timeout_us(ctrl.controller_timeout_us, || {
+            let status = ctrl.r32(NVME_CSTS);
+            status & CSTS_CFS == 0 && status & CSTS_RDY == 0
+        })
+        .is_err()
+        {
+            log::info!("NVMe: controller did not leave the ready state");
+            return None;
+        }
 
         let device_id = ((ctrl.device.bus as u16) << 8)
             | ((ctrl.device.device as u16) << 3)
@@ -172,7 +216,7 @@ impl NvmeController {
 
         ctrl.w32(
             NVME_AQA,
-            ((ADMIN_QUEUE_DEPTH - 1) as u32) | (((ADMIN_QUEUE_DEPTH - 1) as u32) << 16),
+            ((ctrl.admin_queue_depth - 1) as u32) | (((ctrl.admin_queue_depth - 1) as u32) << 16),
         );
         ctrl.w32(NVME_ASQ, ctrl.asq_iova as u32);
         ctrl.w32(NVME_ASQ + 4, (ctrl.asq_iova >> 32) as u32);
@@ -180,8 +224,11 @@ impl NvmeController {
         ctrl.w32(NVME_ACQ + 4, (ctrl.acq_iova >> 32) as u32);
 
         ctrl.w32(NVME_CC, CC_EN | CC_IOCQES | CC_IOSQES);
-        if crate::timing::wait_timeout_us(500_000, || (ctrl.r32(NVME_CSTS) & CSTS_RDY) != 0)
-            .is_err()
+        if crate::timing::wait_timeout_us(ctrl.controller_timeout_us, || {
+            let status = ctrl.r32(NVME_CSTS);
+            status & CSTS_CFS == 0 && status & CSTS_RDY != 0
+        })
+        .is_err()
         {
             log::info!("NVMe: controller failed to become ready");
             return None;
@@ -197,6 +244,17 @@ impl NvmeController {
         let val = unsafe { ptr::read_volatile(self.mmio.add(off / 4)) };
         if val == 0xFFFF_FFFF {
             log::warn!("NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF", off);
+        }
+        val
+    }
+    fn r64(&self, off: usize) -> u64 {
+        debug_assert_eq!(off % 8, 0);
+        let val = unsafe { ptr::read_volatile(self.mmio.cast::<u64>().add(off / 8)) };
+        if val == u64::MAX {
+            log::warn!(
+                "NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF_FFFF_FFFF",
+                off
+            );
         }
         val
     }
