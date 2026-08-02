@@ -131,6 +131,9 @@ struct UserEntryImage {
 }
 
 const USER_ENTRY_IMAGE_SIZE: usize = core::mem::size_of::<UserEntryImage>();
+const USER_REGISTER_IMAGE_SIZE: u64 = 15 * 8;
+const IRET_FRAME_SIZE: u64 = 5 * 8;
+const PRE_IRET_CALL_STACK_OFFSET: u64 = IRET_FRAME_SIZE + 16;
 const POST_CALL_STACK_OFFSET: u64 = USER_ENTRY_IMAGE_SIZE as u64 + 16;
 
 impl UserEntryImage {
@@ -187,6 +190,25 @@ extern "sysv64" fn context_switch_post_cr3_stage() {
     let _ = crate::klog::try_render_live_surface();
 }
 
+#[inline(never)]
+extern "sysv64" fn context_switch_pre_iret_stage(
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+) {
+    crate::klog_fmt!(
+        "[CTX-DIAG] pre-iret register image restored rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}\n",
+        rip,
+        cs,
+        rflags,
+        rsp,
+        ss
+    );
+    let _ = crate::klog::try_render_live_surface();
+}
+
 const PLAN_OLD_CONTEXT_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, old_context);
 const PLAN_NEW_CR3_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, new_cr3);
 const PLAN_NEW_KERNEL_RSP_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, new_kernel_rsp);
@@ -199,6 +221,21 @@ const PLAN_RIP_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, rip);
 const CONTEXT_KERNEL_RSP_OFFSET: usize = core::mem::offset_of!(ProcessContext, kernel_rsp);
 const PLAN_REG_RSP_OFFSET: usize =
     PLAN_REGISTERS_OFFSET + core::mem::offset_of!(GeneralRegisters, rsp);
+const REG_RAX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rax);
+const REG_RBX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rbx);
+const REG_RCX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rcx);
+const REG_RDX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rdx);
+const REG_RSI_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rsi);
+const REG_RDI_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rdi);
+const REG_RBP_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rbp);
+const REG_R8_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r8);
+const REG_R9_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r9);
+const REG_R10_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r10);
+const REG_R11_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r11);
+const REG_R12_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r12);
+const REG_R13_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r13);
+const REG_R14_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r14);
+const REG_R15_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r15);
 
 static_assertions::const_assert_eq!(PLAN_OLD_CONTEXT_OFFSET, 0);
 static_assertions::const_assert_eq!(PLAN_NEW_CR3_OFFSET, 8);
@@ -299,6 +336,34 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         "pop rcx",
         "pop rbx",
         "pop rax",
+        // Preserve the iret frame while calling Rust, then reload all
+        // caller-saved registers from the image because the hook may clobber
+        // them according to the SysV ABI.
+        "mov rdi, [rsp]",
+        "mov rsi, [rsp + 8]",
+        "mov rdx, [rsp + 16]",
+        "mov rcx, [rsp + 24]",
+        "mov r8, [rsp + 32]",
+        "mov r12, rsp",
+        "add rsp, {pre_iret_call_stack}",
+        "call {pre_iret_stage}",
+        "mov rsp, r12",
+        "lea rsi, [r12 - {user_register_image_size}]",
+        "mov rax, [rsi + {reg_rax}]",
+        "mov rbx, [rsi + {reg_rbx}]",
+        "mov rcx, [rsi + {reg_rcx}]",
+        "mov rdx, [rsi + {reg_rdx}]",
+        "mov rdi, [rsi + {reg_rdi}]",
+        "mov rbp, [rsi + {reg_rbp}]",
+        "mov r8, [rsi + {reg_r8}]",
+        "mov r9, [rsi + {reg_r9}]",
+        "mov r10, [rsi + {reg_r10}]",
+        "mov r11, [rsi + {reg_r11}]",
+        "mov r12, [rsi + {reg_r12}]",
+        "mov r13, [rsi + {reg_r13}]",
+        "mov r14, [rsi + {reg_r14}]",
+        "mov r15, [rsi + {reg_r15}]",
+        "mov rsi, [rsi + {reg_rsi}]",
         "iretq",
 
         // Kernel continuation restore.
@@ -327,6 +392,24 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         first_user = const SwitchEntry::FirstUser as u8,
         post_call_stack = const POST_CALL_STACK_OFFSET,
         post_cr3_stage = sym context_switch_post_cr3_stage,
+        pre_iret_call_stack = const PRE_IRET_CALL_STACK_OFFSET,
+        user_register_image_size = const USER_REGISTER_IMAGE_SIZE,
+        pre_iret_stage = sym context_switch_pre_iret_stage,
+        reg_rax = const REG_RAX_OFFSET,
+        reg_rbx = const REG_RBX_OFFSET,
+        reg_rcx = const REG_RCX_OFFSET,
+        reg_rdx = const REG_RDX_OFFSET,
+        reg_rsi = const REG_RSI_OFFSET,
+        reg_rdi = const REG_RDI_OFFSET,
+        reg_rbp = const REG_RBP_OFFSET,
+        reg_r8 = const REG_R8_OFFSET,
+        reg_r9 = const REG_R9_OFFSET,
+        reg_r10 = const REG_R10_OFFSET,
+        reg_r11 = const REG_R11_OFFSET,
+        reg_r12 = const REG_R12_OFFSET,
+        reg_r13 = const REG_R13_OFFSET,
+        reg_r14 = const REG_R14_OFFSET,
+        reg_r15 = const REG_R15_OFFSET,
     );
 }
 
