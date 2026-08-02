@@ -155,6 +155,53 @@ impl NvmeRegisterBlock {
             );
         }
     }
+
+    fn read(&self, off: usize, width: u8) -> Result<u64, DriverError> {
+        match width {
+            1 => self
+                .mmio
+                .read_volatile_at::<u8>(off)
+                .map(u64::from)
+                .map_err(|_| DriverError::InvalidArgument),
+            2 => self
+                .mmio
+                .read_volatile_at::<u16>(off)
+                .map(u64::from)
+                .map_err(|_| DriverError::InvalidArgument),
+            4 => self
+                .mmio
+                .read_volatile_at::<u32>(off)
+                .map(u64::from)
+                .map_err(|_| DriverError::InvalidArgument),
+            8 => self
+                .mmio
+                .read_volatile_at::<u64>(off)
+                .map_err(|_| DriverError::InvalidArgument),
+            _ => Err(DriverError::InvalidArgument),
+        }
+    }
+
+    fn write(&self, off: usize, width: u8, value: u64) -> Result<(), DriverError> {
+        match width {
+            1 if value <= u8::MAX as u64 => self
+                .mmio
+                .write_volatile_at(off, value as u8)
+                .map_err(|_| DriverError::InvalidArgument),
+            2 if value <= u16::MAX as u64 => self
+                .mmio
+                .write_volatile_at(off, value as u16)
+                .map_err(|_| DriverError::InvalidArgument),
+            4 if value <= u32::MAX as u64 => self
+                .mmio
+                .write_volatile_at(off, value as u32)
+                .map_err(|_| DriverError::InvalidArgument),
+            8 => self
+                .mmio
+                .write_volatile_at(off, value)
+                .map_err(|_| DriverError::InvalidArgument),
+            _ => Err(DriverError::InvalidArgument),
+        }
+    }
 }
 
 pub struct NvmeController {
@@ -323,6 +370,36 @@ impl NvmeController {
     fn w32(&self, off: usize, v: u32) {
         self.registers.w32(off, v)
     }
+
+    fn mmio_request(
+        &self,
+        bar: u8,
+        offset: u32,
+        width: u8,
+        write: bool,
+        value: u64,
+    ) -> Result<u64, DriverError> {
+        if bar != 0 {
+            return Err(DriverError::NotSupported);
+        }
+        if !matches!(width, 1 | 2 | 4 | 8) {
+            return Err(DriverError::InvalidArgument);
+        }
+        let offset = offset as usize;
+        if offset % width as usize != 0
+            || offset
+                .checked_add(width as usize)
+                .is_none_or(|end| end > self.registers.size)
+        {
+            return Err(DriverError::InvalidArgument);
+        }
+        if write {
+            self.registers.write(offset, width, value)?;
+            Ok(0)
+        } else {
+            self.registers.read(offset, width)
+        }
+    }
 }
 
 /// Initialise all NVMe controllers found on the PCI bus.
@@ -377,6 +454,29 @@ pub fn init_device(
     let index = controllers.len();
     controllers.push(ctrl);
     Ok(index)
+}
+
+/// Execute one driver-mediated MMIO request against an initialized NVMe
+/// controller.  The caller owns the generic kernel SQ/CQ transaction; this
+/// function only performs the driver-side dispatch and sealant-checked access.
+pub fn request_mmio(
+    device: &PciDevice,
+    bar: u8,
+    offset: u32,
+    width: u8,
+    write: bool,
+    value: u64,
+) -> Result<u64, DriverError> {
+    let controllers = CONTROLLERS.lock();
+    let controller = controllers
+        .iter()
+        .find(|controller| {
+            controller.device.bus == device.bus
+                && controller.device.device == device.device
+                && controller.device.function == device.function
+        })
+        .ok_or(DriverError::NotReady)?;
+    controller.mmio_request(bar, offset, width, write, value)
 }
 
 /// Number of controllers that completed initialization.

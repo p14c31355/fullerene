@@ -37,7 +37,7 @@
 | 64 | get_window_event | 🧩 Stub |  |
 | 70 | enumerate_devices | 🟡 Partial | PCI only |
 | 71 | open_device | 🟡 Partial | PCI BDF, vendor:device, and nvmeN names |
-| 72 | device_ioctl | 🟡 Partial | PCI access and explicit NVMe initialization |
+| 72 | device_ioctl | 🟡 Partial | PCI access, NVMe initialization, and driver-mediated NVMe BAR0 MMIO |
 | 80 | channel_create | ✅ Full |  |
 | 81 | channel_send | ✅ Full |  |
 | 82 | channel_recv | ✅ Full |  |

@@ -436,6 +436,10 @@ pub mod device_ioctl {
     pub const WRITE_PCI_CONFIG: u64 = 3;
     /// Submit the explicit NVMe controller initialization request.
     pub const INITIALIZE_NVME: u64 = 4;
+    /// Submit a checked MMIO read through the owning driver request queue.
+    pub const READ_MMIO: u64 = 5;
+    /// Submit a checked MMIO write through the owning driver request queue.
+    pub const WRITE_MMIO: u64 = 6;
 }
 
 /// PCI identity returned by `device_ioctl(GET_PCI_INFO, ...)`.
@@ -505,6 +509,49 @@ impl PciConfigRequest {
     }
 }
 
+/// Argument for driver-mediated MMIO read/write requests.
+///
+/// The device handle selects the driver and PCI function.  `bar` is the BAR
+/// owned by that driver, `offset` is a byte offset within the mapped register
+/// block, and `width` is one of the supported volatile access widths.  Reads
+/// replace `value`; writes consume it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct MmioRequest {
+    pub bar: u8,
+    pub width: u8,
+    pub reserved: u16,
+    pub offset: u32,
+    pub value: u64,
+}
+
+impl MmioRequest {
+    pub const BYTE_SIZE: usize = 16;
+
+    pub fn from_ne_bytes(bytes: [u8; Self::BYTE_SIZE]) -> Self {
+        Self {
+            bar: bytes[0],
+            width: bytes[1],
+            reserved: u16::from_ne_bytes([bytes[2], bytes[3]]),
+            offset: u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            value: u64::from_ne_bytes([
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
+            ]),
+        }
+    }
+
+    pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
+        let mut bytes = [0; Self::BYTE_SIZE];
+        bytes[0] = self.bar;
+        bytes[1] = self.width;
+        bytes[2..4].copy_from_slice(&self.reserved.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&self.offset.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&self.value.to_ne_bytes());
+        bytes
+    }
+}
+
 /// Fixed-size window event record returned by `get_window_event`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
@@ -553,6 +600,8 @@ const _: () = {
     assert!(core::mem::align_of::<PciDeviceInfo>() == 2);
     assert!(core::mem::size_of::<PciConfigRequest>() == PciConfigRequest::BYTE_SIZE);
     assert!(core::mem::align_of::<PciConfigRequest>() == 4);
+    assert!(core::mem::size_of::<MmioRequest>() == MmioRequest::BYTE_SIZE);
+    assert!(core::mem::align_of::<MmioRequest>() == 8);
     assert!(core::mem::size_of::<WindowEvent>() == WindowEvent::BYTE_SIZE);
     assert!(WindowEvent::MIN_BYTE_SIZE <= WindowEvent::BYTE_SIZE);
     assert!(core::mem::align_of::<WindowEvent>() == 8);
@@ -561,6 +610,18 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mmio_request_serialization_round_trips() {
+        let request = MmioRequest {
+            bar: 0,
+            width: 4,
+            reserved: 0,
+            offset: 0x1c,
+            value: 0xfeed_beef,
+        };
+        assert_eq!(MmioRequest::from_ne_bytes(request.to_ne_bytes()), request);
+    }
 
     #[test]
     fn syscall_numbers_are_unique_and_round_trip() {

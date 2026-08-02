@@ -14,7 +14,8 @@ this crate.
   feature discovery.
 - `MemoryInfo`, `TimeSpec`, `DeviceInfo`, and `WindowEvent`: fixed-layout
   `#[repr(C)]` records for pointer-based syscall arguments.
-- `device_ioctl::{GET_PCI_INFO, READ_PCI_CONFIG, WRITE_PCI_CONFIG}` and the
+- `device_ioctl::{GET_PCI_INFO, READ_PCI_CONFIG, WRITE_PCI_CONFIG,
+  INITIALIZE_NVME, READ_MMIO, WRITE_MMIO}` and the
   `PciDeviceInfo`/`PciConfigRequest` argument records for native PCI handles.
 
 Every extensible pointer-facing type has a fixed `MIN_BYTE_SIZE`, a current
@@ -61,3 +62,9 @@ write permission.
 the kernel-owned SQ and returns the `nvmeN` controller index after the
 corresponding completion has been written to and consumed from the CQ. Other
 NVMe data-path commands are not accepted yet.
+
+`READ_MMIO` and `WRITE_MMIO` use `MmioRequest`. The request is submitted to the
+same generic driver SQ/CQ; the matched driver performs the volatile access and
+returns the read value through the CQ. The current NVMe driver supports BAR0
+after `INITIALIZE_NVME`, with widths 1, 2, 4, and 8 bytes and naturally aligned
+offsets. MMIO is never exposed as a user-space mapping.

@@ -132,6 +132,61 @@ pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallRe
                 Err(SyscallError::NotSupported)
             }
         }
+        fullerene_abi::device_ioctl::READ_MMIO => {
+            check_handle_permission(h, HandlePerms::READ)?;
+            let request = read_mmio_request(arg, false)?;
+            let device = with_handle_mut(h, |obj| {
+                let device = map_handle!(obj, Device, state);
+                Ok(device.pci.clone())
+            })?;
+            #[cfg(not(nitrogen_no_storage))]
+            {
+                let value = crate::drivers::registry::request_mmio(
+                    device,
+                    request.bar,
+                    request.offset,
+                    request.width,
+                    false,
+                    request.value,
+                )
+                .map_err(SyscallError::from)?;
+                let response = fullerene_abi::MmioRequest { value, ..request };
+                copy_ioctl_out(arg, &response.to_ne_bytes())
+            }
+            #[cfg(nitrogen_no_storage)]
+            {
+                let _ = request;
+                let _ = device;
+                Err(SyscallError::NotSupported)
+            }
+        }
+        fullerene_abi::device_ioctl::WRITE_MMIO => {
+            check_handle_permission(h, HandlePerms::WRITE)?;
+            let request = read_mmio_request(arg, true)?;
+            let device = with_handle_mut(h, |obj| {
+                let device = map_handle!(obj, Device, state);
+                Ok(device.pci.clone())
+            })?;
+            #[cfg(not(nitrogen_no_storage))]
+            {
+                crate::drivers::registry::request_mmio(
+                    device,
+                    request.bar,
+                    request.offset,
+                    request.width,
+                    true,
+                    request.value,
+                )
+                .map_err(SyscallError::from)?;
+                Ok(0)
+            }
+            #[cfg(nitrogen_no_storage)]
+            {
+                let _ = request;
+                let _ = device;
+                Err(SyscallError::NotSupported)
+            }
+        }
         _ => Err(SyscallError::NotSupported),
     }
 }
@@ -159,6 +214,24 @@ fn read_config_request(arg: u64) -> Result<fullerene_abi::PciConfigRequest, Sysc
         || (request.width == 2 && request.offset % 2 != 0)
         || (request.width == 4 && request.offset % 4 != 0)
         || request.offset as usize + request.width as usize > 0x100
+    {
+        return Err(SyscallError::InvalidArgument);
+    }
+    Ok(request)
+}
+
+fn read_mmio_request(arg: u64, write: bool) -> Result<fullerene_abi::MmioRequest, SyscallError> {
+    let slice = UserSlice::new(arg as *mut u8, fullerene_abi::MmioRequest::BYTE_SIZE, false)
+        .map_err(|_| SyscallError::InvalidArgument)?;
+    let mut bytes = [0u8; fullerene_abi::MmioRequest::BYTE_SIZE];
+    unsafe { slice.copy_from_user(&mut bytes) }.map_err(|_| SyscallError::InvalidArgument)?;
+    let request = fullerene_abi::MmioRequest::from_ne_bytes(bytes);
+    if request.reserved != 0
+        || !matches!(request.width, 1 | 2 | 4 | 8)
+        || request.offset % request.width as u32 != 0
+        || (write
+            && request.width < 8
+            && request.value > ((1u64 << (request.width as u32 * 8)) - 1))
     {
         return Err(SyscallError::InvalidArgument);
     }
