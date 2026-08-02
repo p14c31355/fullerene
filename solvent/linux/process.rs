@@ -799,7 +799,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             p.context.registers.rsp = rsp;
             p.context.rip = entry;
             p.context.kernel_rsp = 0;
-            p.context.rflags = 0x2;
+            p.context.rflags = 0x202;
             p.context.segments.cs = crate::gdt::user_code()
                 .as_ref()
                 .map(|s| s.0 as u64)

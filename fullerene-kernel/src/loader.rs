@@ -971,11 +971,10 @@ fn load_program_inner(
 
                 p.user_stack = x86_64::VirtAddr::new(LINUX_STACK_TOP);
                 p.context.registers.rsp = rsp;
-                // Keep maskable interrupts disabled until the user-mode
-                // interrupt return path is proven stable. Klog Live refreshes
-                // from the ordinary runtime/timer path and must not be part
-                // of Linux startup or its context-switch lock boundary.
-                p.context.rflags = 0x2;
+                // Linux starts with maskable interrupts enabled. Keeping IF
+                // clear here makes a user process run without timer ticks,
+                // which also freezes Klog Live immediately after iretq.
+                p.context.rflags = 0x202;
                 crate::klog_fmt!("[LINUX-DIAG] stack exit pid={} rsp={:#x}\n", pid.0, rsp);
                 let runtime = crate::linux::LinuxRuntime::new(p.id.0, loaded.layout.initial_break);
                 p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(alloc::boxed::Box::new(
