@@ -19,7 +19,7 @@ use goblin::elf::program_header::{PF_W, PF_X, PT_LOAD};
 use petroleum::page_table::FrameAllocatorExt;
 use petroleum::page_table::process::ProcessPageTable;
 use petroleum::page_table::types::PageTableHelper;
-use x86_64::structures::paging::{FrameAllocator, PageTableFlags};
+use x86_64::structures::paging::{FrameAllocator, PageTable, PageTableFlags};
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
 const PAGE_SIZE: u64 = 4096;
@@ -187,6 +187,56 @@ fn map_zeroed_page(
         }
         Ok(physical_address)
     })
+}
+
+/// Ensure that a user-writable mapping has writable ancestors as well as a
+/// writable leaf. x86 rejects a user write when any PML4/PDP/PD/PT entry in
+/// the walk lacks WRITABLE, even if the final PTE has the bit set.
+fn ensure_user_writable_path(
+    page_table: &mut ProcessPageTable,
+    address: u64,
+) -> Result<(), LoadError> {
+    let root = page_table
+        .pml4_frame()
+        .ok_or(LoadError::MappingFailed)?
+        .start_address()
+        .as_u64();
+    let offset =
+        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let virtual_address = x86_64::VirtAddr::new(address);
+    let indexes = [
+        virtual_address.p4_index(),
+        virtual_address.p3_index(),
+        virtual_address.p2_index(),
+        virtual_address.p1_index(),
+    ];
+    let required =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    let mut table = (offset + root).as_mut_ptr::<PageTable>();
+
+    for (level, index) in indexes.into_iter().enumerate() {
+        let entry = unsafe { &mut (&mut *table)[index] };
+        let flags = entry.flags();
+        if !flags.contains(PageTableFlags::PRESENT)
+            || (level < 3 && flags.contains(PageTableFlags::HUGE_PAGE))
+        {
+            return Err(LoadError::MappingFailed);
+        }
+        entry.set_flags(flags | required);
+
+        if level < 3 {
+            table = (offset + entry.addr().as_u64()).as_mut_ptr::<PageTable>();
+        }
+    }
+
+    unsafe {
+        core::arch::asm!(
+            "invlpg [{}]",
+            in(reg) address,
+            options(nostack, preserves_flags)
+        );
+    }
+    Ok(())
 }
 
 fn write_process_bytes(
@@ -533,6 +583,16 @@ fn initialize_linux_stack_transaction(
             address: page_address,
         });
         page_address += PAGE_SIZE;
+    }
+    // Reassert the complete writable path after all stack pages exist. This
+    // also covers a page-table hierarchy inherited or pre-created before the
+    // Linux image was loaded. Do this for every leaf: the initial RSP is near
+    // the top of the stack, while checking only stack_bottom would not repair
+    // a read-only leaf on the active page.
+    let mut writable_page = stack_bottom;
+    while writable_page < LINUX_STACK_TOP {
+        ensure_user_writable_path(page_table, writable_page)?;
+        writable_page += PAGE_SIZE;
     }
 
     let mut cursor = LINUX_STACK_TOP;

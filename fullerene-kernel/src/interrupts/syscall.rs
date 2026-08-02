@@ -340,11 +340,16 @@ pub extern "C" fn syscall_entry() {
 pub fn setup_syscall() {
     mem_debug!("Syscall: setup_syscall start\n");
 
-    // Enable SYSCALL/SYSRET with SCE bit in EFER
+    // Enable SYSCALL/SYSRET and the page-table NX bit in EFER. Some UEFI
+    // implementations leave NXE disabled; without it, any PTE containing
+    // NO_EXECUTE (bit 63) is treated as reserved and user accesses fail with
+    // a page-fault error code containing RSVD (0x8).
     mem_debug!("Syscall: writing EFER\n");
     unsafe {
         let current = Msr::new(0xC0000080).read();
-        Msr::new(0xC0000080).write(current | (1 << 0));
+        const EFER_SCE: u64 = 1 << 0;
+        const EFER_NXE: u64 = 1 << 11;
+        Msr::new(0xC0000080).write(current | EFER_SCE | EFER_NXE);
     }
     mem_debug!("Syscall: EFER written\n");
 

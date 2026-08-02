@@ -15,7 +15,7 @@ const LOCK_SUFFIX: &str = ".lock";
 // Bump when configure_for_fullerene changes. The staged output must not reuse
 // a binary built with an older feature configuration merely because the
 // BusyBox source revision stayed the same.
-const BUILD_CONFIG_REVISION: &str = "fullerene-busybox-config-v4-dynamic-glibc";
+const BUILD_CONFIG_REVISION: &str = "fullerene-busybox-config-v5-dynamic-glibc-ash-help";
 
 /// Applets covered by the Fullerene Linux personality contract.
 ///
@@ -387,6 +387,7 @@ fn configure_for_fullerene(path: &Path, source: &Path) -> Result<(), String> {
         ("CONFIG_ASH_ECHO", "y"),
         ("CONFIG_ASH_PRINTF", "y"),
         ("CONFIG_ASH_TEST", "y"),
+        ("CONFIG_ASH_HELP", "y"),
     ] {
         set_config_value(&mut config, key, value);
     }

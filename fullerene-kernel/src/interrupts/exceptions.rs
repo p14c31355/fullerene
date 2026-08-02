@@ -3,6 +3,7 @@
 use core::fmt::Write;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, InterruptStackFrameValue, PageFaultErrorCode};
+use x86_64::structures::paging::{PageTable, PageTableFlags};
 
 // ── Raw serial output (lock-free) ──────────────────────────────
 
@@ -122,6 +123,32 @@ fn kernel_fault_halt(frame: &InterruptStackFrame, name: &str, extra: &str) -> ! 
 #[inline(always)]
 fn render_fault_diagnostic() {
     let _ = crate::klog::try_render_live_surface();
+}
+
+fn page_walk_flags(address: u64) -> [u64; 4] {
+    let (root, _) = x86_64::registers::control::Cr3::read();
+    let offset =
+        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let virtual_address = x86_64::VirtAddr::new(address);
+    let indexes = [
+        virtual_address.p4_index(),
+        virtual_address.p3_index(),
+        virtual_address.p2_index(),
+        virtual_address.p1_index(),
+    ];
+    let mut table = (offset + root.start_address().as_u64()).as_ptr::<PageTable>();
+    let mut result = [0u64; 4];
+    for (level, index) in indexes.into_iter().enumerate() {
+        let entry = unsafe { &(&*table)[index] };
+        result[level] = entry.flags().bits();
+        if !entry.flags().contains(PageTableFlags::PRESENT)
+            || (level < 3 && entry.flags().contains(PageTableFlags::HUGE_PAGE))
+        {
+            break;
+        }
+        table = (offset + entry.addr().as_u64()).as_ptr::<PageTable>();
+    }
+    result
 }
 
 // ── Trampoline for user-mode recovery ──────────────────────────
@@ -387,14 +414,22 @@ pub extern "x86-interrupt" fn page_fault_handler(
             frame.instruction_pointer,
             frame.stack_pointer
         );
+        let walk = page_walk_flags(fault_addr.as_u64());
         crate::klog_fmt!(
-            "[FAULT] Page Fault addr={:#x} {} {} user RIP={:#x} RSP={:#x} err={:#x}\n",
+            "[FAULT] Page Fault addr={:#x} {} {} user RIP={:#x} RSP={:#x}\n",
             fault_addr.as_u64(),
             if is_present { "prot" } else { "np" },
             if is_write { "W" } else { "R" },
             frame.instruction_pointer.as_u64(),
-            frame.stack_pointer.as_u64(),
-            error_code.bits()
+            frame.stack_pointer.as_u64()
+        );
+        crate::klog_fmt!(
+            "[FAULT] Page Fault err={:#x} walk={:#x}/{:#x}/{:#x}/{:#x}\n",
+            error_code.bits(),
+            walk[0],
+            walk[1],
+            walk[2],
+            walk[3]
         );
         render_fault_diagnostic();
         if petroleum::common::memory::is_user_address(fault_addr) || is_present {
