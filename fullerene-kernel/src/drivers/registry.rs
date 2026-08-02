@@ -17,8 +17,8 @@ use alloc::boxed::Box;
 #[cfg(not(nitrogen_no_usb))]
 use core::sync::atomic::AtomicUsize;
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
-use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(not(nitrogen_no_usb))]
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use spin::Mutex;
 
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
@@ -114,6 +114,213 @@ where
 
 #[cfg(not(nitrogen_no_storage))]
 static SD_PROBED: AtomicBool = AtomicBool::new(false);
+
+// NVMe is deliberately exposed through a small software request/completion
+// pair first.  The submission queue accepts only initialization requests at
+// this stage; data-path commands are not silently accepted before the block
+// adapter exists.
+#[cfg(not(nitrogen_no_storage))]
+const NVME_QUEUE_DEPTH: usize = 8;
+
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug)]
+struct NvmeInitRequest {
+    request_id: u64,
+    device: PciDevice,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug, Clone, Copy)]
+struct NvmeInitCompletion {
+    request_id: u64,
+    error: Option<nitrogen::DriverError>,
+    controller_index: Option<usize>,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+struct NvmeRing<T> {
+    entries: alloc::vec::Vec<Option<T>>,
+    head: usize,
+    tail: usize,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+impl<T> NvmeRing<T> {
+    fn new() -> Self {
+        Self {
+            entries: (0..NVME_QUEUE_DEPTH).map(|_| None).collect(),
+            head: 0,
+            tail: 0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.head == self.tail
+    }
+
+    fn is_full(&self) -> bool {
+        self.tail.wrapping_add(1) % self.entries.len() == self.head
+    }
+
+    fn push(&mut self, value: T) -> Result<(), T> {
+        if self.is_full() {
+            return Err(value);
+        }
+        let slot = self.tail;
+        self.entries[slot] = Some(value);
+        self.tail = (self.tail + 1) % self.entries.len();
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        if self.is_empty() {
+            return None;
+        }
+        let slot = self.head;
+        let value = self.entries[slot].take();
+        self.head = (self.head + 1) % self.entries.len();
+        value
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+struct NvmeQueuePair {
+    submission: NvmeRing<NvmeInitRequest>,
+    completion: NvmeRing<NvmeInitCompletion>,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+impl NvmeQueuePair {
+    fn new() -> Self {
+        Self {
+            submission: NvmeRing::new(),
+            completion: NvmeRing::new(),
+        }
+    }
+
+    /// Enqueue the only request type currently supported by the NVMe service.
+    fn submit_initialize(&mut self, request: NvmeInitRequest) -> Result<(), NvmeInitRequest> {
+        self.submission.push(request)
+    }
+
+    fn take_submission(&mut self) -> Option<NvmeInitRequest> {
+        self.submission.pop()
+    }
+
+    fn complete(&mut self, completion: NvmeInitCompletion) -> Result<(), NvmeInitCompletion> {
+        self.completion.push(completion)
+    }
+
+    fn take_completion(&mut self, request_id: u64) -> Option<NvmeInitCompletion> {
+        let completion = self.completion.pop()?;
+        if completion.request_id == request_id {
+            Some(completion)
+        } else {
+            // There is only one synchronous initializer today. Preserve FIFO
+            // semantics if this changes by putting an unrelated completion
+            // back at the head on the next iteration is not possible, so
+            // callers must request completions in submission order.
+            None
+        }
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+static NVME_QUEUES: spin::Once<Mutex<NvmeQueuePair>> = spin::Once::new();
+#[cfg(not(nitrogen_no_storage))]
+static NEXT_NVME_REQUEST: AtomicU64 = AtomicU64::new(1);
+#[cfg(not(nitrogen_no_storage))]
+static NVME_PROCESS_LOCK: spin::Once<Mutex<()>> = spin::Once::new();
+
+#[cfg(not(nitrogen_no_storage))]
+fn nvme_queues() -> &'static Mutex<NvmeQueuePair> {
+    NVME_QUEUES.call_once(|| Mutex::new(NvmeQueuePair::new()))
+}
+
+#[cfg(not(nitrogen_no_storage))]
+fn nvme_process_lock() -> &'static Mutex<()> {
+    NVME_PROCESS_LOCK.call_once(|| Mutex::new(()))
+}
+
+#[cfg(all(test, not(nitrogen_no_storage)))]
+mod nvme_queue_tests {
+    use super::*;
+
+    #[test]
+    fn submission_and_completion_are_independent_fifo_rings() {
+        let mut pair = NvmeQueuePair::new();
+        let device = PciDevice {
+            bus: 0,
+            device: 1,
+            function: 0,
+            handle: 0,
+            vendor_id: 0x8086,
+            device_id: 0x5845,
+            class_code: 0x01,
+            subclass: 0x08,
+            prog_if: 0,
+            header_type: 0,
+        };
+        pair.submit_initialize(NvmeInitRequest {
+            request_id: 7,
+            device,
+        })
+        .unwrap();
+        let request = pair.take_submission().unwrap();
+        assert_eq!(request.request_id, 7);
+        assert!(pair.take_submission().is_none());
+
+        pair.complete(NvmeInitCompletion {
+            request_id: 7,
+            error: None,
+            controller_index: Some(0),
+        })
+        .unwrap();
+        let completion = pair.take_completion(7).unwrap();
+        assert_eq!(completion.controller_index, Some(0));
+        assert!(pair.take_completion(7).is_none());
+    }
+
+    #[test]
+    fn submission_ring_rejects_when_full_without_overwriting_entries() {
+        let mut ring = NvmeRing::new();
+        for request_id in 0..(NVME_QUEUE_DEPTH - 1) as u64 {
+            ring.push(NvmeInitRequest {
+                request_id,
+                device: PciDevice {
+                    bus: 0,
+                    device: 0,
+                    function: 0,
+                    handle: 0,
+                    vendor_id: 0,
+                    device_id: 0,
+                    class_code: 0,
+                    subclass: 0,
+                    prog_if: 0,
+                    header_type: 0,
+                },
+            })
+            .unwrap();
+        }
+        let rejected = ring.push(NvmeInitRequest {
+            request_id: 99,
+            device: PciDevice {
+                bus: 0,
+                device: 0,
+                function: 0,
+                handle: 0,
+                vendor_id: 0,
+                device_id: 0,
+                class_code: 0,
+                subclass: 0,
+                prog_if: 0,
+                header_type: 0,
+            },
+        });
+        assert_eq!(rejected.unwrap_err().request_id, 99);
+        assert_eq!(ring.pop().unwrap().request_id, 0);
+    }
+}
 
 // ────────────────────────────────────────────────────────────
 //  Driver implementations
@@ -224,6 +431,58 @@ impl StorageDriver for SdCardStorageCtl {
     }
     fn total_blocks(&self) -> u64 {
         0
+    }
+}
+
+// -- NVMe initialization service --------------------------------
+
+/// Submit one explicit NVMe initialization request through the kernel-owned
+/// SQ and return its CQ completion.  This is intentionally not registered in
+/// the boot driver attach pipeline: until a real block adapter exists, an
+/// NVMe controller is initialized only by an explicit device operation.
+#[cfg(not(nitrogen_no_storage))]
+pub fn initialize_nvme(device: PciDevice) -> Result<usize, nitrogen::DriverError> {
+    let _process_guard = nvme_process_lock().lock();
+    let request_id = NEXT_NVME_REQUEST.fetch_add(1, Ordering::Relaxed);
+    {
+        let mut queues = nvme_queues().lock();
+        queues
+            .submit_initialize(NvmeInitRequest { request_id, device })
+            .map_err(|_| nitrogen::DriverError::Busy)?;
+    }
+
+    // Consume one SQ entry and produce exactly one CQ entry. Keeping the
+    // queue boundary explicit makes the later interrupt-driven path a
+    // replacement for this processing step, not a second API.
+    let request = nvme_queues()
+        .lock()
+        .take_submission()
+        .ok_or(nitrogen::DriverError::Io)?;
+    let result = nitrogen::storage::nvme::init_device(
+        &crate::driver_context_impl::KernelDriverContext,
+        request.device,
+    );
+    let (controller_index, error) = match result {
+        Ok(index) => (Some(index), None),
+        Err(error) => (None, Some(error)),
+    };
+    nvme_queues()
+        .lock()
+        .complete(NvmeInitCompletion {
+            request_id: request.request_id,
+            error,
+            controller_index,
+        })
+        .map_err(|_| nitrogen::DriverError::Io)?;
+    let completion = nvme_queues()
+        .lock()
+        .take_completion(request_id)
+        .ok_or(nitrogen::DriverError::Io)?;
+    if let Some(index) = completion.controller_index {
+        log::info!("NVMe: initialized nvme{} through SQ/CQ", index);
+        Ok(index)
+    } else {
+        Err(completion.error.unwrap_or(nitrogen::DriverError::Io))
     }
 }
 

@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::ptr;
 use spin::Mutex;
 
+use crate::DriverError;
 use crate::driver_context::DriverContext;
 use crate::pci::{PciDevice, PciScanner};
 
@@ -88,15 +89,20 @@ unsafe impl Send for NvmeController {}
 unsafe impl Sync for NvmeController {}
 
 impl NvmeController {
-    pub fn init(ctx: &dyn DriverContext, device: PciDevice) -> Option<Self> {
-        let bar0 = device.get_bar_info(0)?;
+    pub fn init(ctx: &'static dyn DriverContext, device: PciDevice) -> Option<Self> {
+        // Do not destructively probe BAR size here. Firmware-provided BARs
+        // must remain untouched until the driver owns the device.
+        let bar0 = device.read_bar_info(0)?;
         if bar0.is_io {
             return None;
         }
         let bar0_phys = bar0.address;
+        if bar0_phys == 0 {
+            return None;
+        }
         let bar0_virt = ctx.phys_to_virt(bar0_phys) as *mut u32;
 
-        ctx.map_mmio_region(bar0_phys as usize, bar0_virt as usize, bar0.size as usize)
+        ctx.map_mmio_region(bar0_phys as usize, bar0_virt as usize, 0x4000)
             .ok()?;
 
         let mut ctrl = Self {
@@ -166,7 +172,7 @@ impl NvmeController {
 }
 
 /// Initialise all NVMe controllers found on the PCI bus.
-pub fn init(ctx: &dyn DriverContext) {
+pub fn init(ctx: &'static dyn DriverContext) {
     let mut scanner = PciScanner::new();
     let _ = scanner.scan_all_buses();
     for dev in scanner.get_devices() {
@@ -176,13 +182,35 @@ pub fn init(ctx: &dyn DriverContext) {
                 dev.vendor_id,
                 dev.device_id
             );
-            dev.enable_memory_access();
-            if let Some(ctrl) = NvmeController::init(ctx, dev.clone()) {
-                CONTROLLERS.lock().push(ctrl);
-            }
+            let _ = init_device(ctx, dev.clone());
         }
     }
     if CONTROLLERS.lock().is_empty() {
         log::info!("NVMe: no NVMe devices found");
     }
+}
+
+/// Initialize exactly one NVMe PCI function and return its stable controller
+/// index (`nvme0`, `nvme1`, ...).  The kernel request/completion queues call
+/// this function; the old scan-all entry point remains for standalone users.
+pub fn init_device(
+    ctx: &'static dyn DriverContext,
+    device: PciDevice,
+) -> Result<usize, DriverError> {
+    if device.class_code != 0x01 || device.subclass != 0x08 {
+        return Err(DriverError::DeviceNotFound);
+    }
+    if !device.enable_memory_access() {
+        return Err(DriverError::DeviceFault);
+    }
+    let ctrl = NvmeController::init(ctx, device).ok_or(DriverError::NotReady)?;
+    let mut controllers = CONTROLLERS.lock();
+    let index = controllers.len();
+    controllers.push(ctrl);
+    Ok(index)
+}
+
+/// Number of controllers that completed initialization.
+pub fn controller_count() -> usize {
+    CONTROLLERS.lock().len()
 }

@@ -49,6 +49,10 @@ pub trait DriverContext: Send + Sync {
 
 Block devices such as NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage.
 
+NVMe currently exposes controller initialization through the kernel-owned
+submission/completion queue pair. Data-path block operations remain disabled
+until the kernel publishes a real block-device ownership adapter.
+
 ```rust
 pub trait StorageDriver: Send {
     fn init(&mut self) -> Result<(), nitrogen::DriverError>;

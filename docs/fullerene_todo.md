@@ -112,7 +112,7 @@ You may close them using the "Development" section of the PR, or create new issu
 ### P1-7. Stub syscall audit
 - [x] Linux compat: `mount`, `umount2`, `truncate`, `ftruncate`, `fsync`, `fdatasync` return `ENOSYS` (correct error, not silent success)
 - [x] Linux compat: `fchmod`, `fchmodat` changed from silent success to `ENOSYS`
-- [x] Native syscall stubs: `protect_memory` and `subscribe_event` implemented with real logic; only `device_ioctl` remains `NotSupported` (needs device dispatch infrastructure)
+- [x] Native device syscalls: `open_device` resolves PCI/NVMe identities and `device_ioctl` dispatches PCI identity/config-space operations; unsupported device commands remain explicit
 - [x] Syscall support matrix as test data
 
 ### P1-8. Headless / fake device tests

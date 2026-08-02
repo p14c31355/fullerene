@@ -36,8 +36,8 @@
 | 63 | present_window | ✅ Full |  |
 | 64 | get_window_event | 🧩 Stub |  |
 | 70 | enumerate_devices | 🟡 Partial | PCI only |
-| 71 | open_device | 🧩 Stub |  |
-| 72 | device_ioctl | ❌ Not supported |  |
+| 71 | open_device | 🟡 Partial | PCI BDF, vendor:device, and nvmeN names |
+| 72 | device_ioctl | 🟡 Partial | PCI access and explicit NVMe initialization |
 | 80 | channel_create | ✅ Full |  |
 | 81 | channel_send | ✅ Full |  |
 | 82 | channel_recv | ✅ Full |  |
@@ -89,7 +89,7 @@
 | UEFI Framebuffer | ✅ Full | ✅ Full | Stable |
 | VGA Text Mode | ✅ Full | ✅ Full | Stable |
 | AHCI | ✅ Full | 🟡 Partial | Mechanism only; block adapter pending |
-| NVMe | ✅ Full | ✅ Full | Mechanism only; block adapter pending |
+| NVMe | ✅ Full | ✅ Full | SQ/CQ initialization only; block adapter pending |
 | xHCI | ✅ Full | 🟡 Partial | Beta |
 | eHCI | ✅ Full | ❌ Not supported | Alpha |
 | RTSX | ❌ Not supported | ✅ Full | Alpha |

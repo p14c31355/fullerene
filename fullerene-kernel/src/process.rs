@@ -1062,10 +1062,24 @@ mod tests {
                 flags: 0,
             },
         );
-        let first_handle = first
-            .handle_table
-            .lock()
-            .alloc(KernelObject::Device(crate::syscall::DeviceState {}));
+        let first_handle =
+            first
+                .handle_table
+                .lock()
+                .alloc(KernelObject::Device(crate::syscall::DeviceState {
+                    pci: nitrogen::pci::PciDevice {
+                        bus: 0,
+                        device: 0,
+                        function: 0,
+                        handle: 0,
+                        vendor_id: 0,
+                        device_id: 0,
+                        class_code: 0,
+                        subclass: 0,
+                        prog_if: 0,
+                        header_type: 0,
+                    },
+                }));
 
         assert!(first.fd_table.lock().entries.contains_key(&3));
         assert!(!second.fd_table.lock().entries.contains_key(&3));

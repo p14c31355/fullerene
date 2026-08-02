@@ -423,6 +423,88 @@ impl DeviceInfo {
     }
 }
 
+/// Native device-handle ioctl commands.
+///
+/// The command namespace is deliberately small while device handles are still
+/// being introduced.  Unknown commands must return `NotSupported`.
+pub mod device_ioctl {
+    /// Copy the PCI identity of the opened device to the argument buffer.
+    pub const GET_PCI_INFO: u64 = 1;
+    /// Read a byte, word, or dword from PCI configuration space.
+    pub const READ_PCI_CONFIG: u64 = 2;
+    /// Write a byte, word, or dword to PCI configuration space.
+    pub const WRITE_PCI_CONFIG: u64 = 3;
+    /// Submit the explicit NVMe controller initialization request.
+    pub const INITIALIZE_NVME: u64 = 4;
+}
+
+/// PCI identity returned by `device_ioctl(GET_PCI_INFO, ...)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct PciDeviceInfo {
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub reserved: u8,
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub class_code: u8,
+    pub subclass: u8,
+    pub prog_if: u8,
+    pub header_type: u8,
+    pub reserved_tail: [u8; 4],
+}
+
+impl PciDeviceInfo {
+    pub const BYTE_SIZE: usize = 16;
+
+    pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
+        let mut bytes = [0; Self::BYTE_SIZE];
+        bytes[0] = self.bus;
+        bytes[1] = self.device;
+        bytes[2] = self.function;
+        bytes[4..6].copy_from_slice(&self.vendor_id.to_ne_bytes());
+        bytes[6..8].copy_from_slice(&self.product_id.to_ne_bytes());
+        bytes[8] = self.class_code;
+        bytes[9] = self.subclass;
+        bytes[10] = self.prog_if;
+        bytes[11] = self.header_type;
+        bytes
+    }
+}
+
+/// Argument for PCI config-space read/write ioctls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct PciConfigRequest {
+    pub offset: u16,
+    pub width: u8,
+    pub reserved: u8,
+    pub value: u32,
+}
+
+impl PciConfigRequest {
+    pub const BYTE_SIZE: usize = 8;
+
+    pub fn from_ne_bytes(bytes: [u8; Self::BYTE_SIZE]) -> Self {
+        Self {
+            offset: u16::from_ne_bytes([bytes[0], bytes[1]]),
+            width: bytes[2],
+            reserved: bytes[3],
+            value: u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        }
+    }
+
+    pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
+        let mut bytes = [0; Self::BYTE_SIZE];
+        bytes[0..2].copy_from_slice(&self.offset.to_ne_bytes());
+        bytes[2] = self.width;
+        bytes[3] = self.reserved;
+        bytes[4..8].copy_from_slice(&self.value.to_ne_bytes());
+        bytes
+    }
+}
+
 /// Fixed-size window event record returned by `get_window_event`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
@@ -467,6 +549,10 @@ const _: () = {
     assert!(core::mem::align_of::<TimeSpec>() == 8);
     assert!(core::mem::size_of::<DeviceInfo>() == DeviceInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<DeviceInfo>() == 4);
+    assert!(core::mem::size_of::<PciDeviceInfo>() == PciDeviceInfo::BYTE_SIZE);
+    assert!(core::mem::align_of::<PciDeviceInfo>() == 2);
+    assert!(core::mem::size_of::<PciConfigRequest>() == PciConfigRequest::BYTE_SIZE);
+    assert!(core::mem::align_of::<PciConfigRequest>() == 4);
     assert!(core::mem::size_of::<WindowEvent>() == WindowEvent::BYTE_SIZE);
     assert!(WindowEvent::MIN_BYTE_SIZE <= WindowEvent::BYTE_SIZE);
     assert!(core::mem::align_of::<WindowEvent>() == 8);
