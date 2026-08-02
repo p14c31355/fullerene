@@ -160,63 +160,116 @@ struct DriverCompletion {
 }
 
 #[cfg(not(nitrogen_no_storage))]
-struct DriverRing<T, const CAPACITY: usize> {
-    entries: [UnsafeCell<MaybeUninit<T>>; CAPACITY],
+struct DriverSlot<T> {
+    sequence: AtomicUsize,
+    entry: UnsafeCell<MaybeUninit<T>>,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+impl<T> DriverSlot<T> {
+    const fn new(sequence: usize) -> Self {
+        Self {
+            sequence: AtomicUsize::new(sequence),
+            entry: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+unsafe impl<T: Send> Sync for DriverSlot<T> {}
+#[cfg(not(nitrogen_no_storage))]
+unsafe impl<T: Send> Send for DriverSlot<T> {}
+
+#[cfg(not(nitrogen_no_storage))]
+struct DriverRing<T> {
+    entries: [DriverSlot<T>; DRIVER_QUEUE_DEPTH],
     producer_pos: AtomicUsize,
     consumer_pos: AtomicUsize,
 }
 
 #[cfg(not(nitrogen_no_storage))]
-unsafe impl<T: Send, const CAPACITY: usize> Sync for DriverRing<T, CAPACITY> {}
+unsafe impl<T: Send> Sync for DriverRing<T> {}
 #[cfg(not(nitrogen_no_storage))]
-unsafe impl<T: Send, const CAPACITY: usize> Send for DriverRing<T, CAPACITY> {}
+unsafe impl<T: Send> Send for DriverRing<T> {}
 
-/// Bounded lock-free SPSC ring used for the generic driver SQ and CQ.
+/// Bounded lock-free MPSC ring used for the generic driver SQ and CQ.
 ///
-/// Each ring has exactly one producer and one consumer. The producer owns
-/// `producer_pos`; the consumer owns `consumer_pos`. Cross-side visibility is
-/// established with Acquire/Release loads and stores, so no mutex, spin lock,
-/// or compare-exchange loop is needed. Full/empty states return immediately.
+/// Producers reserve distinct slots with a lock-free CAS retry loop. Each
+/// producer then publishes its slot by releasing the slot sequence number;
+/// the single consumer acquires that sequence before reading the entry. A
+/// full queue returns immediately, so the algorithm never waits on a mutex or
+/// spin lock. The CAS loop is a lock-free reservation operation: if one
+/// producer is delayed, another producer can still make progress.
 #[cfg(not(nitrogen_no_storage))]
-impl<T, const CAPACITY: usize> DriverRing<T, CAPACITY> {
+impl<T> DriverRing<T> {
     const fn new() -> Self {
-        assert!(CAPACITY.is_power_of_two());
         Self {
-            entries: [const { UnsafeCell::new(MaybeUninit::uninit()) }; CAPACITY],
+            entries: [
+                DriverSlot::new(0),
+                DriverSlot::new(1),
+                DriverSlot::new(2),
+                DriverSlot::new(3),
+                DriverSlot::new(4),
+                DriverSlot::new(5),
+                DriverSlot::new(6),
+                DriverSlot::new(7),
+            ],
             producer_pos: AtomicUsize::new(0),
             consumer_pos: AtomicUsize::new(0),
         }
     }
 
     fn push(&self, value: T) -> Result<(), T> {
-        let producer = self.producer_pos.load(Ordering::Relaxed);
-        let consumer = self.consumer_pos.load(Ordering::Acquire);
-        if producer.wrapping_sub(consumer) >= CAPACITY {
-            return Err(value);
+        let mut producer = self.producer_pos.load(Ordering::Relaxed);
+        loop {
+            let slot = &self.entries[producer & (DRIVER_QUEUE_DEPTH - 1)];
+            let sequence = slot.sequence.load(Ordering::Acquire);
+            let difference = sequence.wrapping_sub(producer) as isize;
+            if difference == 0 {
+                match self.producer_pos.compare_exchange_weak(
+                    producer,
+                    producer.wrapping_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        unsafe { (*slot.entry.get()).write(value) };
+                        slot.sequence
+                            .store(producer.wrapping_add(1), Ordering::Release);
+                        return Ok(());
+                    }
+                    Err(next) => producer = next,
+                }
+            } else if difference < 0 {
+                return Err(value);
+            } else {
+                producer = self.producer_pos.load(Ordering::Relaxed);
+            }
         }
-        unsafe { (*self.entries[producer & (CAPACITY - 1)].get()).write(value) };
-        self.producer_pos
-            .store(producer.wrapping_add(1), Ordering::Release);
-        Ok(())
     }
 
     fn pop(&self) -> Option<T> {
         let consumer = self.consumer_pos.load(Ordering::Relaxed);
-        let producer = self.producer_pos.load(Ordering::Acquire);
-        if consumer == producer {
+        let slot = &self.entries[consumer & (DRIVER_QUEUE_DEPTH - 1)];
+        let sequence = slot.sequence.load(Ordering::Acquire);
+        let difference = sequence.wrapping_sub(consumer.wrapping_add(1)) as isize;
+        if difference != 0 {
             return None;
         }
-        let value = unsafe { (*self.entries[consumer & (CAPACITY - 1)].get()).assume_init_read() };
+
         self.consumer_pos
-            .store(consumer.wrapping_add(1), Ordering::Release);
+            .store(consumer.wrapping_add(1), Ordering::Relaxed);
+        let value = unsafe { (*slot.entry.get()).assume_init_read() };
+        slot.sequence
+            .store(consumer.wrapping_add(DRIVER_QUEUE_DEPTH), Ordering::Release);
         Some(value)
     }
 }
 
 #[cfg(not(nitrogen_no_storage))]
 struct DriverQueuePair {
-    submission: DriverRing<DriverRequest, DRIVER_QUEUE_DEPTH>,
-    completion: DriverRing<DriverCompletion, DRIVER_QUEUE_DEPTH>,
+    submission: DriverRing<DriverRequest>,
+    completion: DriverRing<DriverCompletion>,
 }
 
 #[cfg(not(nitrogen_no_storage))]
@@ -259,6 +312,8 @@ static DRIVER_QUEUES: DriverQueuePair = DriverQueuePair::new();
 #[cfg(not(nitrogen_no_storage))]
 static NEXT_DRIVER_REQUEST: AtomicU64 = AtomicU64::new(1);
 #[cfg(not(nitrogen_no_storage))]
+// The generic rings remain MPSC. This gate only serializes the synchronous
+// adapter's CQ consumer so one caller cannot steal another caller's response.
 static DRIVER_IN_FLIGHT: DriverAtomicBool = DriverAtomicBool::new(false);
 
 #[cfg(not(nitrogen_no_storage))]
@@ -308,7 +363,7 @@ mod driver_queue_tests {
 
     #[test]
     fn submission_ring_rejects_when_full_without_overwriting_entries() {
-        let ring = DriverRing::<DriverRequest, DRIVER_QUEUE_DEPTH>::new();
+        let ring = DriverRing::<DriverRequest>::new();
         for request_id in 0..DRIVER_QUEUE_DEPTH as u64 {
             ring.push(DriverRequest {
                 request_id,
@@ -351,35 +406,46 @@ mod driver_queue_tests {
     }
 
     #[test]
-    fn spsc_ring_transfers_entries_concurrently_without_locking() {
+    fn mpsc_ring_transfers_entries_concurrently_without_locking() {
+        use std::collections::BTreeSet;
         use std::sync::Arc;
         use std::thread;
 
-        const COUNT: u64 = 10_000;
-        let ring = Arc::new(DriverRing::<u64, DRIVER_QUEUE_DEPTH>::new());
-        let producer_ring = Arc::clone(&ring);
-        let producer = thread::spawn(move || {
-            for value in 0..COUNT {
-                loop {
-                    if producer_ring.push(value).is_ok() {
-                        break;
+        const PRODUCERS: u64 = 4;
+        const PER_PRODUCER: u64 = 2_500;
+        const COUNT: u64 = PRODUCERS * PER_PRODUCER;
+        let ring = Arc::new(DriverRing::<u64>::new());
+        let mut producers = Vec::new();
+        for producer_id in 0..PRODUCERS {
+            let producer_ring = Arc::clone(&ring);
+            producers.push(thread::spawn(move || {
+                for sequence in 0..PER_PRODUCER {
+                    let value = producer_id * PER_PRODUCER + sequence;
+                    loop {
+                        if producer_ring.push(value).is_ok() {
+                            break;
+                        }
+                        thread::yield_now();
                     }
-                    thread::yield_now();
                 }
-            }
-        });
+            }));
+        }
 
-        for expected in 0..COUNT {
+        let mut values = BTreeSet::new();
+        while values.len() < COUNT as usize {
             loop {
                 if let Some(value) = ring.pop() {
-                    assert_eq!(value, expected);
+                    assert!(values.insert(value));
                     break;
                 }
                 thread::yield_now();
             }
         }
 
-        producer.join().unwrap();
+        for producer in producers {
+            producer.join().unwrap();
+        }
+        assert_eq!(values.len(), COUNT as usize);
         assert!(ring.pop().is_none());
     }
 }
@@ -563,8 +629,9 @@ fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
 fn submit_driver_request(
     kind: DriverRequestKind,
 ) -> Result<DriverCompletion, nitrogen::DriverError> {
-    // Synchronous ioctl callers share one dispatcher, but contention is a
-    // lock-free failure rather than a lock acquisition or a spin wait.
+    // Synchronous ioctl callers share one CQ dispatcher, but contention is a
+    // lock-free failure rather than a lock acquisition or a spin wait. The
+    // underlying SQ/CQ themselves accept multiple producers.
     if DRIVER_IN_FLIGHT
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
