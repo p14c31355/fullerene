@@ -133,8 +133,12 @@ struct UserEntryImage {
 const USER_ENTRY_IMAGE_SIZE: usize = core::mem::size_of::<UserEntryImage>();
 const USER_REGISTER_IMAGE_SIZE: u64 = 15 * 8;
 const IRET_FRAME_SIZE: u64 = 5 * 8;
-const PRE_IRET_CALL_STACK_OFFSET: u64 = IRET_FRAME_SIZE + 16;
-const POST_CALL_STACK_OFFSET: u64 = USER_ENTRY_IMAGE_SIZE as u64 + 16;
+// The diagnostic hooks call into Rust and the direct Klog Live renderer, so
+// their stack usage is much larger than a single return address. Keep a real
+// guard area between that stack and the user-entry image.
+const ENTRY_HOOK_STACK_GAP: u64 = 8192;
+const PRE_IRET_CALL_STACK_OFFSET: u64 = ENTRY_HOOK_STACK_GAP + IRET_FRAME_SIZE;
+const POST_CALL_STACK_OFFSET: u64 = USER_ENTRY_IMAGE_SIZE as u64 + ENTRY_HOOK_STACK_GAP;
 
 impl UserEntryImage {
     fn from_plan(plan: &ContextSwitchPlan) -> Self {
@@ -199,13 +203,12 @@ extern "sysv64" fn context_switch_pre_iret_stage(
     ss: u64,
 ) {
     crate::klog_fmt!(
-        "[CTX-DIAG] pre-iret register image restored rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}\n",
+        "[CTX-DIAG] pre-iret restored rip={:#x} cs={:#x} rflags={:#x}\n",
         rip,
         cs,
-        rflags,
-        rsp,
-        ss
+        rflags
     );
+    crate::klog_fmt!("[CTX-DIAG] pre-iret stack rsp={:#x} ss={:#x}\n", rsp, ss);
     let _ = crate::klog::try_render_live_surface();
 }
 
@@ -437,18 +440,18 @@ mod tests {
     #[test]
     fn first_user_context_builds_user_entry_plan() {
         let ctx = context(true, 0);
-        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x9000);
+        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000);
         assert_eq!(plan.entry(), SwitchEntry::FirstUser);
         assert_eq!(plan.new_cr3(), 0x123000);
-        assert_eq!(plan.new_kernel_stack(), 0x9000);
+        assert_eq!(plan.new_kernel_stack(), 0x10000);
         assert_eq!(plan.new_kernel_rsp(), 0);
-        assert_eq!(plan.entry_stack(), 0x9000 - POST_CALL_STACK_OFFSET);
+        assert_eq!(plan.entry_stack(), 0x10000 - POST_CALL_STACK_OFFSET);
     }
 
     #[test]
     fn user_entry_image_matches_pop_and_iret_order() {
         let ctx = context(true, 0);
-        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x9000);
+        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000);
         let image = UserEntryImage::from_plan(&plan);
         assert_eq!(image.r15, 0x15);
         assert_eq!(image.rbx, 0x02);
@@ -462,7 +465,7 @@ mod tests {
     #[test]
     fn resumed_context_takes_precedence_over_user_flag() {
         let ctx = context(true, 0xfeed_0000);
-        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x9000);
+        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000);
         assert_eq!(plan.entry(), SwitchEntry::KernelContinuation);
         assert_eq!(plan.new_kernel_rsp(), 0xfeed_0000);
         assert_eq!(plan.entry_stack(), 0);
@@ -471,7 +474,7 @@ mod tests {
     #[test]
     fn first_kernel_context_is_distinct_from_user_entry() {
         let ctx = context(false, 0);
-        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x9000);
+        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000);
         assert_eq!(plan.entry(), SwitchEntry::FirstKernel);
         assert_eq!(plan.entry_stack(), 0);
     }
@@ -484,5 +487,6 @@ mod tests {
         assert_eq!(PLAN_RFLAGS_OFFSET, 176);
         assert_eq!(core::mem::size_of::<ContextSwitchPlan>(), 208);
         assert_eq!(USER_ENTRY_IMAGE_SIZE, 160);
+        assert_eq!(ENTRY_HOOK_STACK_GAP, 8192);
     }
 }

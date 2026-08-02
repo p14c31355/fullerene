@@ -511,6 +511,19 @@ impl SchedulerContext {
                 pt.as_u64(),
                 new_kernel_stack.map_or(0, |stack| stack.as_u64()),
             );
+            if plan.entry() == crate::context_switch::SwitchEntry::FirstUser {
+                crate::klog_fmt!(
+                    "[CTX-DIAG] plan user entry rip={:#x} rsp={:#x} cs={:#x} rflags={:#x} ss={:#x} image={:#x}\n",
+                    new_context.rip,
+                    new_context.registers.rsp,
+                    new_context.segments.cs,
+                    new_context.rflags,
+                    new_context.segments.ss,
+                    plan.entry_stack()
+                );
+                solvent::mark_klog_live_dirty();
+                solvent::flush_frame_no_fb();
+            }
             unsafe { crate::context_switch::prepare_entry_image(&plan) };
             crate::process::mark_linux_stage(new_pid, "context-switch-prep");
             if let Some(kernel_stack) = new_kernel_stack {
