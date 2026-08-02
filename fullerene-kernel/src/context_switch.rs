@@ -58,7 +58,7 @@ impl ContextSwitchPlan {
         };
         let entry_stack = if entry == SwitchEntry::FirstUser {
             new_kernel_stack
-                .checked_sub(USER_ENTRY_IMAGE_SIZE as u64)
+                .checked_sub(POST_CALL_STACK_OFFSET)
                 .unwrap_or(0)
         } else {
             0
@@ -131,6 +131,7 @@ struct UserEntryImage {
 }
 
 const USER_ENTRY_IMAGE_SIZE: usize = core::mem::size_of::<UserEntryImage>();
+const POST_CALL_STACK_OFFSET: u64 = USER_ENTRY_IMAGE_SIZE as u64 + 16;
 
 impl UserEntryImage {
     fn from_plan(plan: &ContextSwitchPlan) -> Self {
@@ -175,6 +176,15 @@ pub unsafe fn prepare_entry_image(plan: &ContextSwitchPlan) {
     unsafe {
         (plan.entry_stack as *mut UserEntryImage).write(UserEntryImage::from_plan(plan));
     }
+}
+
+/// Last Rust-visible checkpoint after loading the destination CR3 and stack.
+/// The direct Klog Live repaint is intentional: interrupts are still disabled
+/// at this point, so the ordinary timer-driven repaint cannot run.
+#[inline(never)]
+extern "sysv64" fn context_switch_post_cr3_stage() {
+    crate::klog_fmt!("[CTX-DIAG] post-cr3 kernel stack active\n");
+    let _ = crate::klog::try_render_live_surface();
 }
 
 const PLAN_OLD_CONTEXT_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, old_context);
@@ -266,7 +276,14 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         // kernel stack before this CR3 change; no old-space read follows it.
         "2:",
         "mov cr3, rdx",
+        // Call Rust while the destination kernel stack is active. Keep the
+        // image pointer in a callee-saved register; the hook may clobber all
+        // caller-saved registers, and the image is restored immediately after.
+        "mov r12, r11",
         "mov rsp, r11",
+        "add rsp, {post_call_stack}",
+        "call {post_cr3_stage}",
+        "mov rsp, r12",
         "pop r15",
         "pop r14",
         "pop r13",
@@ -308,6 +325,8 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         rip = const PLAN_RIP_OFFSET,
         kernel_continuation = const SwitchEntry::KernelContinuation as u8,
         first_user = const SwitchEntry::FirstUser as u8,
+        post_call_stack = const POST_CALL_STACK_OFFSET,
+        post_cr3_stage = sym context_switch_post_cr3_stage,
     );
 }
 
@@ -340,7 +359,7 @@ mod tests {
         assert_eq!(plan.new_cr3(), 0x123000);
         assert_eq!(plan.new_kernel_stack(), 0x9000);
         assert_eq!(plan.new_kernel_rsp(), 0);
-        assert_eq!(plan.entry_stack(), 0x9000 - USER_ENTRY_IMAGE_SIZE as u64);
+        assert_eq!(plan.entry_stack(), 0x9000 - POST_CALL_STACK_OFFSET);
     }
 
     #[test]

@@ -896,8 +896,6 @@ pub fn mark_linux_stage(pid: ProcessId, stage: &str) {
         })
         .flatten();
     if let Some(window) = window {
-        let line = alloc::format!("\n[busybox-diag] {stage}\n");
-        solvent::write_process_terminal(window, &line);
         crate::klog_fmt!(
             "[BUSYBOX-DIAG] scheduler stage={} pid={} window_id={}\n",
             stage,
