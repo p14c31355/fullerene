@@ -405,6 +405,7 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
 /// still preserves the last milestone that was rendered.
 fn log_busybox_stage(window_id: lattice::window::WindowId, stage: &str) {
     crate::klog_fmt!("[BUSYBOX-DIAG] stage={} window_id={}\n", stage, window_id.0);
+    solvent::request_frame();
     solvent::mark_klog_live_dirty();
     solvent::flush_frame_no_fb();
 }

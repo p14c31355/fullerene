@@ -110,8 +110,8 @@ pub use window_api::{
     capture_screen, capture_screen_chunk, capture_screen_scaled, close_window, create_window,
     ensure_editor_window, ensure_terminal_window, force_desktop_redraw, framebuffer_dims,
     invalidate_video_window, invalidate_window, is_klog_live_active, klog_live_surface_geometry,
-    launch_file, mark_klog_live_dirty, open_klog_live, resume_rendering, scaled_framebuffer_dims,
-    suspend_rendering, with_window_surface, write_terminal,
+    launch_file, mark_klog_live_dirty, open_klog_live, request_frame, resume_rendering,
+    scaled_framebuffer_dims, suspend_rendering, with_window_surface, write_terminal,
 };
 
 pub use lattice::theme::{

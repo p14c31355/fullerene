@@ -67,6 +67,7 @@ pub unsafe extern "sysv64" fn handle_syscall(
                         current_pid.map_or(0, |pid| pid.0),
                         window_id.0
                     );
+                    solvent::request_frame();
                     solvent::mark_klog_live_dirty();
                     solvent::flush_frame_no_fb();
                 }

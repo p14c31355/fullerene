@@ -108,7 +108,7 @@ fn range_is_owned_user_memory(page_table: &ProcessPageTable, addr: u64, size: u6
         let Some(page) = addr.checked_add(index as u64 * PAGE_SIZE) else {
             return false;
         };
-        let Ok(flags) = page_table.get_page_flags(page as usize) else {
+        let Ok(flags) = PageTableHelper::get_page_flags(page_table, page as usize) else {
             return false;
         };
         flags.contains(PageTableFlags::USER_ACCESSIBLE)
@@ -131,6 +131,98 @@ fn overlaps_reserved_user_mapping(addr: u64, size: u64) -> bool {
 /// relocation.
 fn overlaps_immutable_user_mapping(addr: u64, size: u64) -> bool {
     ranges_overlap(addr, size, petroleum::vdso::VDSO_USER_BASE, VDSO_SIZE)
+}
+
+trait MprotectPageTable {
+    fn range_is_owned_user_memory(&self, addr: u64, size: u64) -> bool;
+    fn get_page_flags(&self, virtual_addr: usize) -> Result<PageTableFlags, ()>;
+    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageTableFlags) -> Result<(), ()>;
+}
+
+impl MprotectPageTable for ProcessPageTable {
+    fn range_is_owned_user_memory(&self, addr: u64, size: u64) -> bool {
+        range_is_owned_user_memory(self, addr, size)
+    }
+
+    fn get_page_flags(&self, virtual_addr: usize) -> Result<PageTableFlags, ()> {
+        PageTableHelper::get_page_flags(self, virtual_addr).map_err(|_| ())
+    }
+
+    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageTableFlags) -> Result<(), ()> {
+        PageTableHelper::set_page_flags(self, virtual_addr, flags).map_err(|_| ())
+    }
+}
+
+fn sys_mprotect_with_page_table<T: MprotectPageTable>(
+    rt: &mut LinuxRuntime,
+    args: &[u64; 6],
+    page_table: &mut T,
+) -> u64 {
+    let addr = args[0];
+    let length = args[1];
+    let prot = args[2] as i32;
+    let allowed_prot = PROT_READ | PROT_WRITE | PROT_EXEC;
+    if (prot & !allowed_prot) != 0 {
+        return errno_code(EINVAL);
+    }
+    let (aligned_addr, aligned_len) = match checked_page_range(addr, length, false) {
+        Ok(range) => range,
+        Err(error) => return errno_code(error),
+    };
+    // The dynamic linker lives in a reserved address range, but glibc must be
+    // able to mprotect its mapped RELRO pages after relocation.  Only the
+    // kernel-owned VDSO is immutable here; mmap/munmap continue to reject the
+    // full reserved set above.
+    if overlaps_immutable_user_mapping(aligned_addr, aligned_len) {
+        return errno_code(EINVAL);
+    }
+
+    let mut page_flags = PageTableFlags::USER_ACCESSIBLE;
+    if prot != PROT_NONE {
+        page_flags |= PageTableFlags::PRESENT;
+        if (prot & PROT_WRITE) != 0 {
+            page_flags |= PageTableFlags::WRITABLE;
+        }
+        if (prot & PROT_EXEC) == 0 {
+            page_flags |= PageTableFlags::NO_EXECUTE;
+        }
+    }
+
+    if !page_table.range_is_owned_user_memory(aligned_addr, aligned_len) {
+        return errno_code(EINVAL);
+    }
+
+    let pages = (aligned_len / PAGE_SIZE) as usize;
+    let mut original_flags = alloc::vec::Vec::with_capacity(pages);
+    for index in 0..pages {
+        let Some(page) = aligned_addr.checked_add(index as u64 * PAGE_SIZE) else {
+            return errno_code(EINVAL);
+        };
+        let page = page as usize;
+        let Ok(flags) = page_table.get_page_flags(page) else {
+            return errno_code(EINVAL);
+        };
+        original_flags.push((page, flags));
+    }
+
+    for (index, (page, _)) in original_flags.iter().enumerate() {
+        if page_table.set_page_flags(*page, page_flags).is_err() {
+            for (restore_page, restore_flags) in original_flags.iter().take(index) {
+                let _ = page_table.set_page_flags(*restore_page, *restore_flags);
+            }
+            return errno_code(ENOMEM);
+        }
+    }
+
+    // Keep the runtime's metadata in sync when the range is an mmap region.
+    if let Some(region) = rt
+        .mmap_regions
+        .iter_mut()
+        .find(|region| region.addr == aligned_addr && region.size == aligned_len)
+    {
+        region.prot = prot;
+    }
+    0
 }
 
 fn range_is_fully_mapped(page_table: &ProcessPageTable, addr: u64, size: u64) -> bool {
@@ -569,74 +661,7 @@ pub fn sys_munmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 }
 
 pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let addr = args[0];
-    let length = args[1];
-    let prot = args[2] as i32;
-    let allowed_prot = PROT_READ | PROT_WRITE | PROT_EXEC;
-    if (prot & !allowed_prot) != 0 {
-        return errno_code(EINVAL);
-    }
-    let (aligned_addr, aligned_len) = match checked_page_range(addr, length, false) {
-        Ok(range) => range,
-        Err(error) => return errno_code(error),
-    };
-    // The dynamic linker lives in a reserved address range, but glibc must be
-    // able to mprotect its mapped RELRO pages after relocation.  Only the
-    // kernel-owned VDSO is immutable here; mmap/munmap continue to reject the
-    // full reserved set above.
-    if overlaps_immutable_user_mapping(aligned_addr, aligned_len) {
-        return errno_code(EINVAL);
-    }
-
-    let mut page_flags = PageTableFlags::USER_ACCESSIBLE;
-    if prot != PROT_NONE {
-        page_flags |= PageTableFlags::PRESENT;
-        if (prot & PROT_WRITE) != 0 {
-            page_flags |= PageTableFlags::WRITABLE;
-        }
-        if (prot & PROT_EXEC) == 0 {
-            page_flags |= PageTableFlags::NO_EXECUTE;
-        }
-    }
-
-    let result = with_current_page_table(|page_table| {
-        if !range_is_owned_user_memory(page_table, aligned_addr, aligned_len) {
-            return Err(EINVAL);
-        }
-
-        let pages = (aligned_len / PAGE_SIZE) as usize;
-        let mut original_flags = alloc::vec::Vec::with_capacity(pages);
-        for index in 0..pages {
-            let page = (aligned_addr + index as u64 * PAGE_SIZE) as usize;
-            let flags = page_table
-                .get_page_flags(page as usize)
-                .map_err(|_| EINVAL)?;
-            original_flags.push((page, flags));
-        }
-
-        for (index, (page, _)) in original_flags.iter().enumerate() {
-            if page_table.set_page_flags(*page, page_flags).is_err() {
-                for (restore_page, restore_flags) in original_flags.iter().take(index) {
-                    let _ = page_table.set_page_flags(*restore_page, *restore_flags);
-                }
-                return Err(ENOMEM);
-            }
-        }
-        Ok(())
-    });
-    if let Err(error) = result {
-        return errno_code(error);
-    }
-
-    // Keep the runtime's metadata in sync when the range is an mmap region.
-    if let Some(region) = rt
-        .mmap_regions
-        .iter_mut()
-        .find(|region| region.addr == aligned_addr && region.size == aligned_len)
-    {
-        region.prot = prot;
-    }
-    0
+    with_current_page_table(|page_table| sys_mprotect_with_page_table(rt, args, page_table))
 }
 
 pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -735,6 +760,32 @@ pub fn sys_madvise(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
 mod tests {
     use super::*;
 
+    struct TestPageTable {
+        pages: alloc::collections::BTreeMap<u64, PageTableFlags>,
+    }
+
+    impl MprotectPageTable for TestPageTable {
+        fn range_is_owned_user_memory(&self, addr: u64, size: u64) -> bool {
+            (0..(size / PAGE_SIZE)).all(|index| {
+                self.pages
+                    .get(&(addr + index * PAGE_SIZE))
+                    .is_some_and(|flags| flags.contains(PageTableFlags::USER_ACCESSIBLE))
+            })
+        }
+
+        fn get_page_flags(&self, virtual_addr: usize) -> Result<PageTableFlags, ()> {
+            self.pages.get(&(virtual_addr as u64)).copied().ok_or(())
+        }
+
+        fn set_page_flags(&mut self, virtual_addr: usize, flags: PageTableFlags) -> Result<(), ()> {
+            let Some(page_flags) = self.pages.get_mut(&(virtual_addr as u64)) else {
+                return Err(());
+            };
+            *page_flags = flags;
+            Ok(())
+        }
+    }
+
     #[test]
     fn rejects_kernel_and_overflowing_ranges() {
         assert_eq!(
@@ -772,5 +823,60 @@ mod tests {
             petroleum::vdso::VDSO_USER_BASE,
             PAGE_SIZE
         ));
+    }
+
+    #[test]
+    fn mprotect_updates_mapped_dynamic_linker_page_but_rejects_vdso() {
+        let initial_flags =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+        let requested_prot = (PROT_READ | PROT_EXEC) as u64;
+        let mut page_table = TestPageTable {
+            pages: alloc::collections::BTreeMap::from([
+                (crate::loader::DYNAMIC_LINKER_BASE, initial_flags),
+                (petroleum::vdso::VDSO_USER_BASE, initial_flags),
+            ]),
+        };
+        let mut runtime = LinuxRuntime::new(1, 0);
+
+        let linker_result = sys_mprotect_with_page_table(
+            &mut runtime,
+            &[
+                crate::loader::DYNAMIC_LINKER_BASE,
+                PAGE_SIZE,
+                requested_prot,
+                0,
+                0,
+                0,
+            ],
+            &mut page_table,
+        );
+        assert_eq!(linker_result, 0);
+        let linker_flags = page_table
+            .pages
+            .get(&crate::loader::DYNAMIC_LINKER_BASE)
+            .copied()
+            .unwrap();
+        assert!(linker_flags.contains(PageTableFlags::PRESENT));
+        assert!(linker_flags.contains(PageTableFlags::USER_ACCESSIBLE));
+        assert!(!linker_flags.contains(PageTableFlags::WRITABLE));
+        assert!(!linker_flags.contains(PageTableFlags::NO_EXECUTE));
+
+        let vdso_result = sys_mprotect_with_page_table(
+            &mut runtime,
+            &[
+                petroleum::vdso::VDSO_USER_BASE,
+                PAGE_SIZE,
+                PROT_READ as u64,
+                0,
+                0,
+                0,
+            ],
+            &mut page_table,
+        );
+        assert_eq!(vdso_result, errno_code(EINVAL));
+        assert_eq!(
+            page_table.pages[&petroleum::vdso::VDSO_USER_BASE],
+            initial_flags
+        );
     }
 }

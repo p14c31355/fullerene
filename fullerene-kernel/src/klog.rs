@@ -36,6 +36,7 @@ struct KLogRing {
 /// emitted while formatting another log message) are forwarded to the
 /// serial port instead of attempting to re-acquire the mutex.
 static IN_KLOG: AtomicBool = AtomicBool::new(false);
+static IN_LIVE_RENDER: AtomicBool = AtomicBool::new(false);
 static KLOG_GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Write a formatted message to the kernel log buffer.
@@ -139,24 +140,28 @@ pub fn try_snapshot_tail(out: &mut [u8]) -> usize {
 /// fallback is called only from the timer interrupt while Klog Live is open,
 /// and deliberately avoids KERNEL/runtime/framebuffer locks.
 pub fn try_render_live_surface() -> bool {
-    let Some((x, y, width, height)) = solvent::klog_live_surface_geometry() else {
-        return false;
-    };
-    let Some(framebuffer) = crate::graphics::discovery::direct_boot_framebuffer() else {
-        return false;
-    };
-    let mut text = [0u8; 2048];
-    let len = try_snapshot_tail(&mut text);
-    if len == 0 {
+    if IN_LIVE_RENDER.swap(true, Ordering::Acquire) {
         return false;
     }
-    if x < 0 || y < 0 {
-        return false;
-    }
-    unsafe {
-        framebuffer.draw_klog_live_surface(x as u32, y as u32, width, height, &text[..len]);
-    }
-    true
+    let rendered = (|| {
+        let Some((x, y, width, height)) = solvent::klog_live_surface_geometry() else {
+            return false;
+        };
+        let Some(framebuffer) = crate::graphics::discovery::direct_boot_framebuffer() else {
+            return false;
+        };
+        let mut text = [0u8; 2048];
+        let len = try_snapshot_tail(&mut text);
+        if len == 0 || x < 0 || y < 0 {
+            return false;
+        }
+        unsafe {
+            framebuffer.draw_klog_live_surface(x as u32, y as u32, width, height, &text[..len]);
+        }
+        true
+    })();
+    IN_LIVE_RENDER.store(false, Ordering::Release);
+    rendered
 }
 
 /// Write kernel log to a string-sink callback without heap allocation.

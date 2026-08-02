@@ -19,6 +19,11 @@ pub enum SwitchEntry {
     FirstKernel = 2,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextSwitchError {
+    FirstUserRequiresKernelStack { stack_top: u64, required: u64 },
+}
+
 /// Complete input to the low-level context-switch trampoline.
 ///
 /// All data needed after CR3 changes is copied here while the old address
@@ -48,7 +53,7 @@ impl ContextSwitchPlan {
         new_context: &ProcessContext,
         new_cr3: u64,
         new_kernel_stack: u64,
-    ) -> Self {
+    ) -> Result<Self, ContextSwitchError> {
         let entry = if new_context.kernel_rsp != 0 {
             SwitchEntry::KernelContinuation
         } else if new_context.is_user {
@@ -57,13 +62,16 @@ impl ContextSwitchPlan {
             SwitchEntry::FirstKernel
         };
         let entry_stack = if entry == SwitchEntry::FirstUser {
-            new_kernel_stack
-                .checked_sub(POST_CALL_STACK_OFFSET)
-                .unwrap_or(0)
+            new_kernel_stack.checked_sub(POST_CALL_STACK_OFFSET).ok_or(
+                ContextSwitchError::FirstUserRequiresKernelStack {
+                    stack_top: new_kernel_stack,
+                    required: POST_CALL_STACK_OFFSET,
+                },
+            )?
         } else {
             0
         };
-        Self {
+        Ok(Self {
             old_context,
             new_cr3,
             new_kernel_stack,
@@ -76,7 +84,7 @@ impl ContextSwitchPlan {
             rip: new_context.rip,
             cs: new_context.segments.cs,
             ss: new_context.segments.ss,
-        }
+        })
     }
 
     pub fn entry(&self) -> SwitchEntry {
@@ -224,21 +232,15 @@ const PLAN_RIP_OFFSET: usize = core::mem::offset_of!(ContextSwitchPlan, rip);
 const CONTEXT_KERNEL_RSP_OFFSET: usize = core::mem::offset_of!(ProcessContext, kernel_rsp);
 const PLAN_REG_RSP_OFFSET: usize =
     PLAN_REGISTERS_OFFSET + core::mem::offset_of!(GeneralRegisters, rsp);
-const REG_RAX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rax);
-const REG_RBX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rbx);
-const REG_RCX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rcx);
-const REG_RDX_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rdx);
-const REG_RSI_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rsi);
-const REG_RDI_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rdi);
-const REG_RBP_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, rbp);
-const REG_R8_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r8);
-const REG_R9_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r9);
-const REG_R10_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r10);
-const REG_R11_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r11);
-const REG_R12_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r12);
-const REG_R13_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r13);
-const REG_R14_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r14);
-const REG_R15_OFFSET: usize = core::mem::offset_of!(GeneralRegisters, r15);
+const IMAGE_RAX_OFFSET: usize = core::mem::offset_of!(UserEntryImage, rax);
+const IMAGE_RCX_OFFSET: usize = core::mem::offset_of!(UserEntryImage, rcx);
+const IMAGE_RDX_OFFSET: usize = core::mem::offset_of!(UserEntryImage, rdx);
+const IMAGE_RSI_OFFSET: usize = core::mem::offset_of!(UserEntryImage, rsi);
+const IMAGE_RDI_OFFSET: usize = core::mem::offset_of!(UserEntryImage, rdi);
+const IMAGE_R8_OFFSET: usize = core::mem::offset_of!(UserEntryImage, r8);
+const IMAGE_R9_OFFSET: usize = core::mem::offset_of!(UserEntryImage, r9);
+const IMAGE_R10_OFFSET: usize = core::mem::offset_of!(UserEntryImage, r10);
+const IMAGE_R11_OFFSET: usize = core::mem::offset_of!(UserEntryImage, r11);
 
 static_assertions::const_assert_eq!(PLAN_OLD_CONTEXT_OFFSET, 0);
 static_assertions::const_assert_eq!(PLAN_NEW_CR3_OFFSET, 8);
@@ -351,22 +353,18 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         "add rsp, {pre_iret_call_stack}",
         "call {pre_iret_stage}",
         "mov rsp, r12",
-        "lea rsi, [r12 - {user_register_image_size}]",
-        "mov rax, [rsi + {reg_rax}]",
-        "mov rbx, [rsi + {reg_rbx}]",
-        "mov rcx, [rsi + {reg_rcx}]",
-        "mov rdx, [rsi + {reg_rdx}]",
-        "mov rdi, [rsi + {reg_rdi}]",
-        "mov rbp, [rsi + {reg_rbp}]",
-        "mov r8, [rsi + {reg_r8}]",
-        "mov r9, [rsi + {reg_r9}]",
-        "mov r10, [rsi + {reg_r10}]",
-        "mov r11, [rsi + {reg_r11}]",
-        "mov r12, [rsi + {reg_r12}]",
-        "mov r13, [rsi + {reg_r13}]",
-        "mov r14, [rsi + {reg_r14}]",
-        "mov r15, [rsi + {reg_r15}]",
-        "mov rsi, [rsi + {reg_rsi}]",
+        // Callee-saved registers survive the hook call, so reload only the
+        // caller-saved registers from the correctly ordered image.
+        "lea rax, [r12 - {user_register_image_size}]",
+        "mov rcx, [rax + {image_rcx}]",
+        "mov rdx, [rax + {image_rdx}]",
+        "mov rdi, [rax + {image_rdi}]",
+        "mov r8, [rax + {image_r8}]",
+        "mov r9, [rax + {image_r9}]",
+        "mov r10, [rax + {image_r10}]",
+        "mov r11, [rax + {image_r11}]",
+        "mov rsi, [rax + {image_rsi}]",
+        "mov rax, [rax + {image_rax}]",
         "iretq",
 
         // Kernel continuation restore.
@@ -398,21 +396,15 @@ unsafe extern "sysv64" fn switch_context_trampoline(_plan: *const ContextSwitchP
         pre_iret_call_stack = const PRE_IRET_CALL_STACK_OFFSET,
         user_register_image_size = const USER_REGISTER_IMAGE_SIZE,
         pre_iret_stage = sym context_switch_pre_iret_stage,
-        reg_rax = const REG_RAX_OFFSET,
-        reg_rbx = const REG_RBX_OFFSET,
-        reg_rcx = const REG_RCX_OFFSET,
-        reg_rdx = const REG_RDX_OFFSET,
-        reg_rsi = const REG_RSI_OFFSET,
-        reg_rdi = const REG_RDI_OFFSET,
-        reg_rbp = const REG_RBP_OFFSET,
-        reg_r8 = const REG_R8_OFFSET,
-        reg_r9 = const REG_R9_OFFSET,
-        reg_r10 = const REG_R10_OFFSET,
-        reg_r11 = const REG_R11_OFFSET,
-        reg_r12 = const REG_R12_OFFSET,
-        reg_r13 = const REG_R13_OFFSET,
-        reg_r14 = const REG_R14_OFFSET,
-        reg_r15 = const REG_R15_OFFSET,
+        image_rax = const IMAGE_RAX_OFFSET,
+        image_rcx = const IMAGE_RCX_OFFSET,
+        image_rdx = const IMAGE_RDX_OFFSET,
+        image_rsi = const IMAGE_RSI_OFFSET,
+        image_rdi = const IMAGE_RDI_OFFSET,
+        image_r8 = const IMAGE_R8_OFFSET,
+        image_r9 = const IMAGE_R9_OFFSET,
+        image_r10 = const IMAGE_R10_OFFSET,
+        image_r11 = const IMAGE_R11_OFFSET,
     );
 }
 
@@ -440,7 +432,7 @@ mod tests {
     #[test]
     fn first_user_context_builds_user_entry_plan() {
         let ctx = context(true, 0);
-        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000);
+        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000).unwrap();
         assert_eq!(plan.entry(), SwitchEntry::FirstUser);
         assert_eq!(plan.new_cr3(), 0x123000);
         assert_eq!(plan.new_kernel_stack(), 0x10000);
@@ -451,7 +443,7 @@ mod tests {
     #[test]
     fn user_entry_image_matches_pop_and_iret_order() {
         let ctx = context(true, 0);
-        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000);
+        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000).unwrap();
         let image = UserEntryImage::from_plan(&plan);
         assert_eq!(image.r15, 0x15);
         assert_eq!(image.rbx, 0x02);
@@ -465,7 +457,7 @@ mod tests {
     #[test]
     fn resumed_context_takes_precedence_over_user_flag() {
         let ctx = context(true, 0xfeed_0000);
-        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000);
+        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000).unwrap();
         assert_eq!(plan.entry(), SwitchEntry::KernelContinuation);
         assert_eq!(plan.new_kernel_rsp(), 0xfeed_0000);
         assert_eq!(plan.entry_stack(), 0);
@@ -474,7 +466,7 @@ mod tests {
     #[test]
     fn first_kernel_context_is_distinct_from_user_entry() {
         let ctx = context(false, 0);
-        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000);
+        let plan = ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0x10000).unwrap();
         assert_eq!(plan.entry(), SwitchEntry::FirstKernel);
         assert_eq!(plan.entry_stack(), 0);
     }
@@ -488,5 +480,33 @@ mod tests {
         assert_eq!(core::mem::size_of::<ContextSwitchPlan>(), 208);
         assert_eq!(USER_ENTRY_IMAGE_SIZE, 160);
         assert_eq!(ENTRY_HOOK_STACK_GAP, 8192);
+        assert_eq!(core::mem::offset_of!(UserEntryImage, r15), 0);
+        assert_eq!(core::mem::offset_of!(UserEntryImage, rax), 112);
+        assert_eq!(
+            core::mem::offset_of!(UserEntryImage, rip),
+            USER_REGISTER_IMAGE_SIZE as usize
+        );
+        assert_eq!(core::mem::offset_of!(UserEntryImage, ss), 152);
+    }
+
+    #[test]
+    fn first_user_context_rejects_missing_or_too_small_kernel_stack() {
+        let ctx = context(true, 0);
+        assert!(matches!(
+            ContextSwitchPlan::new(core::ptr::null_mut(), &ctx, 0x123000, 0),
+            Err(ContextSwitchError::FirstUserRequiresKernelStack {
+                stack_top: 0,
+                required: POST_CALL_STACK_OFFSET,
+            })
+        ));
+        assert!(matches!(
+            ContextSwitchPlan::new(
+                core::ptr::null_mut(),
+                &ctx,
+                0x123000,
+                POST_CALL_STACK_OFFSET - 1
+            ),
+            Err(ContextSwitchError::FirstUserRequiresKernelStack { .. })
+        ));
     }
 }

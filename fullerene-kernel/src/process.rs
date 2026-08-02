@@ -902,6 +902,7 @@ pub fn mark_linux_stage(pid: ProcessId, stage: &str) {
             pid.0,
             window.0
         );
+        solvent::request_frame();
         solvent::mark_klog_live_dirty();
         // The next operation may enter a non-returning context switch, so do
         // not wait for the ordinary event loop to paint this milestone.

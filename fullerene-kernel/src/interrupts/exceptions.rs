@@ -3,7 +3,6 @@
 use core::fmt::Write;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, InterruptStackFrameValue, PageFaultErrorCode};
-use x86_64::structures::paging::{PageTable, PageTableFlags};
 
 // ── Raw serial output (lock-free) ──────────────────────────────
 
@@ -127,27 +126,14 @@ fn render_fault_diagnostic() {
 
 fn page_walk_flags(address: u64) -> [u64; 4] {
     let (root, _) = x86_64::registers::control::Cr3::read();
-    let offset =
-        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
-    let virtual_address = x86_64::VirtAddr::new(address);
-    let indexes = [
-        virtual_address.p4_index(),
-        virtual_address.p3_index(),
-        virtual_address.p2_index(),
-        virtual_address.p1_index(),
-    ];
-    let mut table = (offset + root.start_address().as_u64()).as_ptr::<PageTable>();
     let mut result = [0u64; 4];
-    for (level, index) in indexes.into_iter().enumerate() {
-        let entry = unsafe { &(&*table)[index] };
-        result[level] = entry.flags().bits();
-        if !entry.flags().contains(PageTableFlags::PRESENT)
-            || (level < 3 && entry.flags().contains(PageTableFlags::HUGE_PAGE))
-        {
-            break;
-        }
-        table = (offset + entry.addr().as_u64()).as_ptr::<PageTable>();
-    }
+    let _ = unsafe {
+        crate::memory_management::walk_page_table_entries(
+            root.start_address(),
+            address,
+            |level, entry| result[level] = entry.flags().bits(),
+        )
+    };
     result
 }
 

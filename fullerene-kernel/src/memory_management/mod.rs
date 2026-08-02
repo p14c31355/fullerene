@@ -8,7 +8,10 @@ use spin::Mutex;
 use petroleum::common::logging::{SystemError, SystemResult};
 use petroleum::initializer::{FrameAllocator, Initializable, MemoryManager};
 use petroleum::mem_debug;
-use x86_64::structures::paging::PageTableFlags as PageFlags;
+use x86_64::structures::paging::{
+    PageTable, PageTableFlags as PageFlags, page_table::PageTableEntry,
+};
+use x86_64::{PhysAddr, VirtAddr};
 
 use petroleum::page_table::process::ProcessPageTable;
 use petroleum::page_table::types::PageTableHelper;
@@ -19,6 +22,55 @@ pub mod process_memory;
 
 pub use manager::UnifiedMemoryManager;
 pub use process_memory::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageTableWalkError {
+    NotPresent { level: usize },
+    HugePage { level: usize },
+}
+
+/// Visit the P4-to-P1 entries for one address in a page-table hierarchy.
+///
+/// The caller supplies the physical root because loader code may inspect a
+/// process table before switching CR3, while exception code uses the current
+/// CR3. The callback is invoked in order from P4 through P1.
+///
+/// # Safety
+///
+/// `root` must identify a valid page-table hierarchy accessible through the
+/// configured physical-memory offset. The callback must not retain the entry
+/// reference after it returns.
+pub unsafe fn walk_page_table_entries(
+    root: PhysAddr,
+    address: u64,
+    mut visit: impl FnMut(usize, &mut PageTableEntry),
+) -> Result<(), PageTableWalkError> {
+    let offset = VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let virtual_address = VirtAddr::new(address);
+    let indexes = [
+        virtual_address.p4_index(),
+        virtual_address.p3_index(),
+        virtual_address.p2_index(),
+        virtual_address.p1_index(),
+    ];
+    let mut table = (offset + root.as_u64()).as_mut_ptr::<PageTable>();
+
+    for (level, index) in indexes.into_iter().enumerate() {
+        let entry = unsafe { &mut (&mut *table)[index] };
+        let flags = entry.flags();
+        if !flags.contains(PageFlags::PRESENT) {
+            return Err(PageTableWalkError::NotPresent { level });
+        }
+        if level < 3 && flags.contains(PageFlags::HUGE_PAGE) {
+            return Err(PageTableWalkError::HugePage { level });
+        }
+        visit(level, entry);
+        if level < 3 {
+            table = (offset + entry.addr().as_u64()).as_mut_ptr::<PageTable>();
+        }
+    }
+    Ok(())
+}
 
 /// Configure the PAT MSR with the OS-defined memory type table.
 ///

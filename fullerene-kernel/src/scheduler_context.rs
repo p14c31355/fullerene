@@ -505,12 +505,32 @@ impl SchedulerContext {
 
         if let Some(new) = new_ctx {
             let new_context = unsafe { &*new };
-            let plan = crate::context_switch::ContextSwitchPlan::new(
+            let plan = match crate::context_switch::ContextSwitchPlan::new(
                 old_ctx.unwrap_or(core::ptr::null_mut()),
                 new_context,
                 pt.as_u64(),
                 new_kernel_stack.map_or(0, |stack| stack.as_u64()),
-            );
+            ) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    crate::klog_fmt!(
+                        "[FAULT] context-switch plan rejected pid={} error={:?}\n",
+                        new_pid.0,
+                        error
+                    );
+                    crate::process::mark_faulted(
+                        new_pid,
+                        crate::process::FaultRecord {
+                            reason: "invalid first-user context-switch plan",
+                            rip: new_context.rip,
+                            rsp: new_context.registers.rsp,
+                            address: new_kernel_stack.map_or(0, |stack| stack.as_u64()),
+                            error_code: 0,
+                        },
+                    );
+                    return;
+                }
+            };
             if plan.entry() == crate::context_switch::SwitchEntry::FirstUser {
                 crate::klog_fmt!(
                     "[CTX-DIAG] plan user entry rip={:#x} rsp={:#x} cs={:#x} rflags={:#x} ss={:#x} image={:#x}\n",

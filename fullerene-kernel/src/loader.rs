@@ -19,7 +19,7 @@ use goblin::elf::program_header::{PF_W, PF_X, PT_LOAD};
 use petroleum::page_table::FrameAllocatorExt;
 use petroleum::page_table::process::ProcessPageTable;
 use petroleum::page_table::types::PageTableHelper;
-use x86_64::structures::paging::{FrameAllocator, PageTable, PageTableFlags};
+use x86_64::structures::paging::{FrameAllocator, PageTableFlags};
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
 const PAGE_SIZE: u64 = 4096;
@@ -196,38 +196,18 @@ fn ensure_user_writable_path(
     page_table: &mut ProcessPageTable,
     address: u64,
 ) -> Result<(), LoadError> {
+    let required =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
     let root = page_table
         .pml4_frame()
         .ok_or(LoadError::MappingFailed)?
-        .start_address()
-        .as_u64();
-    let offset =
-        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
-    let virtual_address = x86_64::VirtAddr::new(address);
-    let indexes = [
-        virtual_address.p4_index(),
-        virtual_address.p3_index(),
-        virtual_address.p2_index(),
-        virtual_address.p1_index(),
-    ];
-    let required =
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
-    let mut table = (offset + root).as_mut_ptr::<PageTable>();
-
-    for (level, index) in indexes.into_iter().enumerate() {
-        let entry = unsafe { &mut (&mut *table)[index] };
-        let flags = entry.flags();
-        if !flags.contains(PageTableFlags::PRESENT)
-            || (level < 3 && flags.contains(PageTableFlags::HUGE_PAGE))
-        {
-            return Err(LoadError::MappingFailed);
-        }
-        entry.set_flags(flags | required);
-
-        if level < 3 {
-            table = (offset + entry.addr().as_u64()).as_mut_ptr::<PageTable>();
-        }
+        .start_address();
+    unsafe {
+        crate::memory_management::walk_page_table_entries(root, address, |_, entry| {
+            entry.set_flags(entry.flags() | required);
+        })
     }
+    .map_err(|_| LoadError::MappingFailed)?;
 
     unsafe {
         core::arch::asm!(
