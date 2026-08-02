@@ -447,6 +447,8 @@ pub struct Process {
     pub state: ProcessState,
     /// CPU context for context switching
     pub context: Box<ProcessContext>,
+    /// Per-process x87/SSE/AVX state image used by XSAVE/XRSTOR.
+    pub(crate) fpu_state: Box<crate::fpu::XsaveState>,
     /// Process page table (physical address of level 4 page table)
     pub page_table_phys_addr: PhysAddr,
     /// Process page table mapper
@@ -485,6 +487,7 @@ impl Process {
             name,
             state: ProcessState::Ready,
             context: Box::new(ProcessContext::default()),
+            fpu_state: Box::new(crate::fpu::XsaveState::initial()),
             page_table_phys_addr: PhysAddr::new(0), // Will be set when allocated
             page_table: None,
             kernel_stack: VirtAddr::new(0), // Will be set when allocated
@@ -596,6 +599,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
         name: "idle",
         state: ProcessState::Running,
         context: Box::new(ctx),
+        fpu_state: Box::new(crate::fpu::XsaveState::initial()),
         page_table_phys_addr: PhysAddr::new(0),
         page_table: None,
         kernel_stack: VirtAddr::new(0),

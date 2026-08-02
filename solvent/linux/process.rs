@@ -540,9 +540,16 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
 
     // Get parent info
-    let (parent_pt, parent_ctx) = process::SCHEDULER
-        .with_process(current_pid, |p| (p.page_table_phys_addr, p.context.clone()))
-        .unwrap_or((PhysAddr::new(0), Box::new(ProcessContext::default())));
+    let (parent_pt, parent_ctx, parent_fpu) = process::SCHEDULER
+        .with_process(current_pid, |p| {
+            unsafe { crate::fpu::save(p.fpu_state.as_mut_ptr()) };
+            (p.page_table_phys_addr, p.context.clone(), *p.fpu_state)
+        })
+        .unwrap_or((
+            PhysAddr::new(0),
+            Box::new(ProcessContext::default()),
+            crate::fpu::XsaveState::initial(),
+        ));
 
     // Clone the complete page-table tree. A PML4-only copy is insufficient:
     // execve detaches user branches in the child, and destroying a shallow
@@ -666,6 +673,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             ctx.kernel_rsp = 0;
             ctx
         },
+        fpu_state: Box::new(parent_fpu),
         page_table_phys_addr: x86_64::PhysAddr::new(cloned_table as u64),
         page_table: Some(alloc::boxed::Box::new(child_pt)),
         kernel_stack: kernel_stack_top,

@@ -129,6 +129,12 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     let _ = petroleum::common::logging::init_global_logger();
     log::set_max_level(log::LevelFilter::Info);
     let common_steps = [
+        petroleum::init_step!("FPU/AVX", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] FPU/AVX step start\n");
+            crate::fpu::init();
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] FPU/AVX step done\n");
+            Ok(())
+        }),
         petroleum::init_step!("Interrupts", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Interrupts step start\n");
             crate::interrupts::init();

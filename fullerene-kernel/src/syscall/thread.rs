@@ -25,9 +25,12 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
 
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    let (parent_pt_phys, parent_context) = {
+    let (parent_pt_phys, parent_context, parent_fpu) = {
         crate::process::SCHEDULER
-            .with_process(current_pid, |p| (p.page_table_phys_addr, p.context.clone()))
+            .with_process(current_pid, |p| {
+                unsafe { crate::fpu::save(p.fpu_state.as_mut_ptr()) };
+                (p.page_table_phys_addr, p.context.clone(), *p.fpu_state)
+            })
             .ok_or(SyscallError::NoSuchProcess)?
     };
 
@@ -40,6 +43,7 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
         name: "thread",
         state: ProcessState::Ready,
         context: parent_context.clone(),
+        fpu_state: Box::new(parent_fpu),
         page_table_phys_addr: parent_pt_phys,
         page_table: None,
         kernel_stack: kernel_stack_top,

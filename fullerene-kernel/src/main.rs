@@ -178,6 +178,7 @@ pub mod boot;
 pub mod boot_stage;
 pub mod context_switch;
 pub mod contexts;
+pub mod fpu;
 pub mod fs;
 pub mod gdt;
 pub mod graphics;

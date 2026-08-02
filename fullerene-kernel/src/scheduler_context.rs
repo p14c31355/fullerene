@@ -497,9 +497,18 @@ impl SchedulerContext {
             .find(|(id, _)| *id == new_pid)
             .map(|(_, process)| process.kernel_stack)
             .filter(|stack| stack.as_u64() != 0);
+        let new_xsave = list
+            .iter()
+            .find(|(id, _)| *id == new_pid)
+            .map(|(_, process)| crate::fpu::state_ptr(&process.fpu_state))
+            .unwrap_or(core::ptr::null_mut());
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
+        let old_xsave = old_pid
+            .and_then(|pid| list.iter().find(|(id, _)| *id == pid))
+            .map(|(_, process)| crate::fpu::state_ptr(&process.fpu_state))
+            .unwrap_or(core::ptr::null_mut());
 
         drop(guard);
 
@@ -510,6 +519,8 @@ impl SchedulerContext {
                 new_context,
                 pt.as_u64(),
                 new_kernel_stack.map_or(0, |stack| stack.as_u64()),
+                old_xsave,
+                new_xsave,
             ) {
                 Ok(plan) => plan,
                 Err(error) => {
