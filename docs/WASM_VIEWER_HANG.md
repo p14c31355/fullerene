@@ -34,7 +34,7 @@ SHA-256: 2a1ff09ccd569bd1a1abb1fbccdf51cea786eb4cba4524212cfcbd8421fde600
 シェルから、VFSへマウントしたSD上の画像を次のように開く。
 
 ```text
-wasm /apps/viewer.wasm /mnt/sda/images.jpeg
+exec /apps/viewer.wasm /mnt/sda/images.jpeg
 ```
 
 ファイルマネージャーから開く場合も、同じ `/apps/viewer.wasm` とWASI runtimeを通る。

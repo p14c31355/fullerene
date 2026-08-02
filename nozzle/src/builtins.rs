@@ -178,14 +178,6 @@ pub fn cmd_wallpaper(ctx: &mut CommandContext) -> bool {
     true
 }
 
-/// `badapple` — play Bad Apple!! on PC speaker with framebuffer animation
-pub fn cmd_badapple(ctx: &mut CommandContext) -> bool {
-    ctx.terminal
-        .write_str("Bad Apple!! playing... (press any key to stop)\n");
-    crate::sys_hooks::call_sys_info_hook(ctx, "badapple");
-    true
-}
-
 /// `cd` — change the current working directory
 pub fn cmd_cd(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() < 2 {
@@ -260,12 +252,11 @@ pub fn cmd_mount(ctx: &mut CommandContext) -> bool {
     true
 }
 
-sys_info_cmd!(cmd_hello_linux, "hello_linux");
-sys_info_cmd!(cmd_hello_rust_linux, "hello_rust_linux");
-sys_info_cmd!(cmd_linux_run, "linux_run");
-sys_info_cmd!(cmd_busybox, "busybox");
-sys_info_cmd!(cmd_wasm, "wasm");
-sys_info_cmd!(cmd_emulsion, "emulsion");
+/// `exec` — execute a Linux ELF or WASI binary at a filesystem path
+pub fn cmd_exec(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "exec");
+    true
+}
 
 /// `rm` — remove a file or directory
 pub fn cmd_rm(ctx: &mut CommandContext) -> bool {

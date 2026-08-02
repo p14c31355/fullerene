@@ -205,11 +205,6 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             builtins::cmd_wallpaper
         ),
         ("pci", "List PCI devices", builtins::cmd_pci),
-        (
-            "badapple",
-            "Play Bad Apple!! animation",
-            builtins::cmd_badapple
-        ),
         ("cd", "Change working directory", builtins::cmd_cd),
         ("tree", "Display directory tree", builtins::cmd_tree),
         ("find", "Search for files", builtins::cmd_find),
@@ -250,30 +245,9 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             builtins::cmd_sd_rescan
         ),
         (
-            "hello_linux",
-            "Launch the built-in Linux test binary",
-            builtins::cmd_hello_linux
-        ),
-        (
-            "hello_rust_linux",
-            "Launch the static Rust std/musl Linux example",
-            builtins::cmd_hello_rust_linux
-        ),
-        (
-            "linux_run",
-            "Launch a Linux ELF binary from the filesystem",
-            builtins::cmd_linux_run
-        ),
-        (
-            "busybox",
-            "Launch BusyBox shell from the filesystem",
-            builtins::cmd_busybox
-        ),
-        ("wasm", "Run a WASM/WASI binary", builtins::cmd_wasm),
-        (
-            "emulsion",
-            "Capture the desktop with the Emulsion WASM app",
-            builtins::cmd_emulsion
+            "exec",
+            "Execute a Linux ELF or WASI binary: exec <path>",
+            builtins::cmd_exec
         ),
     )
 }
@@ -315,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_linux_command_dispatches_to_the_kernel_service() {
+    fn exec_command_dispatches_to_the_kernel_service() {
         fn echo_action(ctx: &mut CommandContext, action: &str) {
             ctx.terminal.write_str(action);
         }
@@ -333,7 +307,32 @@ mod tests {
         );
         let mut shell = Shell::new(&mut terminal, default_commands(), services);
 
-        assert!(shell.execute_line("hello_rust_linux"));
-        assert_eq!(terminal.output, "hello_rust_linux");
+        assert!(shell.execute_line("exec /bin/rust-std-hello"));
+        assert_eq!(terminal.output, "exec");
+    }
+
+    #[test]
+    fn help_lists_exec_instead_of_legacy_runtime_commands() {
+        let mut terminal = OneShotTerminal {
+            output: String::new(),
+        };
+        let mut shell = Shell::new(&mut terminal, default_commands(), ShellServices::none());
+
+        assert!(shell.execute_line("help"));
+        assert!(terminal.output.contains("exec"));
+        for legacy in [
+            "badapple",
+            "hello_linux",
+            "hello_rust_linux",
+            "linux_run",
+            "busybox",
+            "wasm",
+            "emulsion",
+        ] {
+            assert!(
+                !terminal.output.contains(legacy),
+                "legacy command: {legacy}"
+            );
+        }
     }
 }

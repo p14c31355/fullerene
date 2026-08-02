@@ -155,7 +155,7 @@ FULLERENE_LINUX_MUSL_SMOKE=1 \
   cargo run -p flasks -- --display none --vga none --timeout 70
 ```
 
-The smoke test dispatches `linux_run /bin/rust_std_hello` through Nozzle. It
+The smoke test dispatches `exec /bin/rust_std_hello` through Nozzle. It
 only asks QEMU to exit successfully after observing the expected stdout,
 exit status 0, and the shell resuming. The end-to-end success markers on the
 serial console are:
@@ -166,19 +166,33 @@ Hello from Rust std on musl!
 ```
 
 Without the smoke environment variable, the same embedded executable can be
-started from the Fullerene shell with `hello_rust_linux`. The source fixture is
+started from the Fullerene shell with `exec /bin/rust-std-hello`. The source fixture is
 kept in `fullerene-kernel/examples/linux_musl_hello.rs`; it uses the official
 `x86_64-unknown-linux-musl` `std` and does not depend on a Fullerene-specific
 standard library. Linux stdout and stderr are mirrored to the serial console
 and the interactive Lattice terminal, so the Hello line appears in the shell
 before the next prompt.
 
-The fixture is also available to `linux_run` under both spellings:
+The fixture is also available to `exec` under both spellings:
 
 ```text
-linux_run /bin/rust-std-hello
-linux_run /bin/rust_std_hello
+exec /bin/rust-std-hello
+exec /bin/rust_std_hello
 ```
+
+Nozzle exposes the Linux and WASI launchers through this single command:
+
+```text
+exec /bin/hello_linux             # embedded Linux ABI fixture
+exec /bin/rust-std-hello          # static Rust std/musl ELF
+exec /bin/busybox                 # interactive BusyBox sh
+exec /apps/hello.wasm             # embedded WASI fixture
+exec /apps/viewer.wasm <image>    # WASI image viewer
+exec /apps/emulsion.wasm         # desktop capture (defaults to capture)
+```
+
+Paths ending in `.wasm` use the WASI runtime; other paths are loaded as Linux
+ELF binaries. BusyBox keeps its dedicated terminal window and starts `sh`.
 
 Expected output:
 - Serial logs from bootloader: Heap init, GOP init, kernel load.
@@ -188,7 +202,8 @@ Expected output:
 
 ### Dynamically linked glibc BusyBox
 
-`busybox` launches a dynamically linked x86_64 glibc BusyBox as `busybox sh`.
+`exec /bin/busybox` launches a dynamically linked x86_64 glibc BusyBox as
+`busybox sh`.
 The kernel's Toluene build step builds the checked-in `toluene/busybox`
 submodule with the Rust build orchestration, validates its glibc `PT_INTERP`
 and `libc.so.6` dependency, and embeds it automatically. Initialize the
@@ -214,7 +229,7 @@ objects under Cargo's `OUT_DIR` for reuse and concurrent-build isolation.
 When invoking the standalone `busybox-build` command, its default
 `target/busybox-build/` directory is retained unless `--clean` is supplied.
 
-Then enter `busybox` in the Nozzle shell. Fullerene opens a focused
+Then enter `exec /bin/busybox` in the Nozzle shell. Fullerene opens a focused
 `BusyBox` window and attaches the Linux process's stdin/stdout/stderr to that
 window, so typing there is delivered to `busybox sh` while the original Nozzle
 terminal remains available. The shell receives a minimal Linux environment
