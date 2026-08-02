@@ -125,6 +125,14 @@ fn overlaps_reserved_user_mapping(addr: u64, size: u64) -> bool {
         )
 }
 
+/// The VDSO is an immutable kernel-owned mapping.  The dynamic linker is
+/// reserved from mmap/munmap placement, but its already-mapped ELF segments
+/// must remain available to the linker itself for RELRO mprotect calls after
+/// relocation.
+fn overlaps_immutable_user_mapping(addr: u64, size: u64) -> bool {
+    ranges_overlap(addr, size, petroleum::vdso::VDSO_USER_BASE, VDSO_SIZE)
+}
+
 fn range_is_fully_mapped(page_table: &ProcessPageTable, addr: u64, size: u64) -> bool {
     let pages = (size / PAGE_SIZE) as usize;
     (0..pages).all(|index| {
@@ -572,7 +580,11 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Ok(range) => range,
         Err(error) => return errno_code(error),
     };
-    if overlaps_reserved_user_mapping(aligned_addr, aligned_len) {
+    // The dynamic linker lives in a reserved address range, but glibc must be
+    // able to mprotect its mapped RELRO pages after relocation.  Only the
+    // kernel-owned VDSO is immutable here; mmap/munmap continue to reject the
+    // full reserved set above.
+    if overlaps_immutable_user_mapping(aligned_addr, aligned_len) {
         return errno_code(EINVAL);
     }
 
@@ -744,5 +756,21 @@ mod tests {
             checked_page_range(0x1000, MAX_LINUX_MEMORY + PAGE_SIZE, false),
             Err(EINVAL)
         );
+    }
+
+    #[test]
+    fn linker_reservation_is_not_immutable_for_mprotect() {
+        assert!(overlaps_reserved_user_mapping(
+            crate::loader::DYNAMIC_LINKER_BASE,
+            PAGE_SIZE
+        ));
+        assert!(!overlaps_immutable_user_mapping(
+            crate::loader::DYNAMIC_LINKER_BASE,
+            PAGE_SIZE
+        ));
+        assert!(overlaps_immutable_user_mapping(
+            petroleum::vdso::VDSO_USER_BASE,
+            PAGE_SIZE
+        ));
     }
 }

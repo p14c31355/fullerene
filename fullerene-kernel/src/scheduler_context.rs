@@ -512,14 +512,17 @@ impl SchedulerContext {
         drop(guard);
 
         if let Some(new) = new_ctx {
+            crate::process::mark_linux_stage(new_pid, "context-switch-prep");
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }
             if new_user_first_entry {
                 crate::interrupts::syscall::prepare_user_entry();
+                crate::process::mark_linux_stage(new_pid, "user-entry-prepared");
             } else if new_user_kernel_continuation {
                 crate::interrupts::syscall::prepare_kernel_continuation();
             }
+            crate::process::mark_linux_stage(new_pid, "context-switch-enter");
             let old = old_ctx.unwrap_or(core::ptr::null_mut());
             unsafe {
                 switch_context(
