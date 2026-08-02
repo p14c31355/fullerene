@@ -14,6 +14,7 @@ use spin::Mutex;
 use crate::DriverError;
 use crate::driver_context::{DmaAllocation, DriverContext};
 use crate::pci::{PciDevice, PciScanner};
+use sealant::{MmioRegion, Permissions};
 
 static CONTROLLERS: Mutex<Vec<NvmeController>> = Mutex::new(Vec::new());
 
@@ -26,6 +27,7 @@ const NVME_CSTS: usize = 0x1C;
 const NVME_AQA: usize = 0x24;
 const NVME_ASQ: usize = 0x28;
 const NVME_ACQ: usize = 0x30;
+const NVME_REGISTER_SPACE_SIZE: usize = 0x4000;
 
 // ── CC bits ──────────────────────────────────────────────────────
 const CC_EN: u32 = 1 << 0;
@@ -69,13 +71,97 @@ struct CqEntry {
     status: u16,
 }
 
+/// BAR0-backed controller registers. This is an MMIO resource, not a DMA
+/// buffer; it is assigned once before any controller property or queue access.
+struct NvmeRegisterBlock {
+    #[allow(dead_code)]
+    phys: u64,
+    mmio: MmioRegion<'static>,
+    size: usize,
+}
+
+unsafe impl Send for NvmeRegisterBlock {}
+unsafe impl Sync for NvmeRegisterBlock {}
+
+impl NvmeRegisterBlock {
+    fn allocate(ctx: &'static dyn DriverContext, device: &PciDevice) -> Option<Self> {
+        let bar0 = device.read_bar_info(0)?;
+        if bar0.is_io || !bar0.is_64bit || bar0.address == 0 {
+            return None;
+        }
+        let virt = ctx.phys_to_virt(bar0.address);
+        ctx.map_mmio_region(bar0.address as usize, virt, NVME_REGISTER_SPACE_SIZE)
+            .ok()?;
+        // KernelDriverContext establishes the mapping above and keeps the
+        // higher-half direct map alive for the controller lifetime.
+        let mmio = unsafe {
+            MmioRegion::from_address(virt, NVME_REGISTER_SPACE_SIZE, Permissions::READ_WRITE)
+        }
+        .ok()?;
+        log::info!(
+            "NVMe: BAR0 register block assigned at {:#x} ({} bytes)",
+            bar0.address,
+            NVME_REGISTER_SPACE_SIZE
+        );
+        Some(Self {
+            phys: bar0.address,
+            mmio,
+            size: NVME_REGISTER_SPACE_SIZE,
+        })
+    }
+
+    fn r32(&self, off: usize) -> u32 {
+        debug_assert!(off + core::mem::size_of::<u32>() <= self.size);
+        let val = match self.mmio.read_volatile_at::<u32>(off) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!("NVMe: invalid MMIO read at {:#x}: {:?}", off, error);
+                return u32::MAX;
+            }
+        };
+        if val == u32::MAX {
+            log::warn!("NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF", off);
+        }
+        val
+    }
+
+    fn r64(&self, off: usize) -> u64 {
+        debug_assert_eq!(off % 8, 0);
+        debug_assert!(off + core::mem::size_of::<u64>() <= self.size);
+        let val = match self.mmio.read_volatile_at::<u64>(off) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!("NVMe: invalid MMIO read at {:#x}: {:?}", off, error);
+                return u64::MAX;
+            }
+        };
+        if val == u64::MAX {
+            log::warn!(
+                "NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF_FFFF_FFFF",
+                off
+            );
+        }
+        val
+    }
+
+    fn w32(&self, off: usize, value: u32) {
+        debug_assert!(off + core::mem::size_of::<u32>() <= self.size);
+        if let Err(error) = self.mmio.write_volatile_at(off, value) {
+            log::warn!(
+                "NVMe: invalid MMIO write at {:#x} value={:#x}: {:?}",
+                off,
+                value,
+                error
+            );
+        }
+    }
+}
+
 pub struct NvmeController {
     ctx: &'static dyn DriverContext,
     #[allow(dead_code)]
     device: PciDevice,
-    mmio: *mut u32,
-    #[allow(dead_code)]
-    bar0_phys: u64,
+    registers: NvmeRegisterBlock,
     asq: *mut SqEntry,
     asq_iova: u64,
     submission_queue: DmaAllocation,
@@ -108,26 +194,14 @@ impl Drop for NvmeController {
 
 impl NvmeController {
     pub fn init(ctx: &'static dyn DriverContext, device: PciDevice) -> Option<Self> {
-        // Do not destructively probe BAR size here. Firmware-provided BARs
-        // must remain untouched until the driver owns the device.
-        let bar0 = device.read_bar_info(0)?;
-        if bar0.is_io || !bar0.is_64bit {
-            return None;
-        }
-        let bar0_phys = bar0.address;
-        if bar0_phys == 0 {
-            return None;
-        }
-        let bar0_virt = ctx.phys_to_virt(bar0_phys) as *mut u32;
-
-        ctx.map_mmio_region(bar0_phys as usize, bar0_virt as usize, 0x4000)
-            .ok()?;
+        // Assign the controller register block before reading CAP/VS or
+        // requesting any NVMe DMA queue memory.
+        let registers = NvmeRegisterBlock::allocate(ctx, &device)?;
 
         let mut ctrl = Self {
             ctx,
             device,
-            mmio: bar0_virt,
-            bar0_phys,
+            registers,
             asq: ptr::null_mut(),
             asq_iova: 0,
             submission_queue: DmaAllocation {
@@ -241,27 +315,13 @@ impl NvmeController {
     }
 
     fn r32(&self, off: usize) -> u32 {
-        let val = unsafe { ptr::read_volatile(self.mmio.add(off / 4)) };
-        if val == 0xFFFF_FFFF {
-            log::warn!("NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF", off);
-        }
-        val
+        self.registers.r32(off)
     }
     fn r64(&self, off: usize) -> u64 {
-        debug_assert_eq!(off % 8, 0);
-        let val = unsafe { ptr::read_volatile(self.mmio.cast::<u64>().add(off / 8)) };
-        if val == u64::MAX {
-            log::warn!(
-                "NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF_FFFF_FFFF",
-                off
-            );
-        }
-        val
+        self.registers.r64(off)
     }
     fn w32(&self, off: usize, v: u32) {
-        unsafe {
-            ptr::write_volatile(self.mmio.add(off / 4), v);
-        }
+        self.registers.w32(off, v)
     }
 }
 
