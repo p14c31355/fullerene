@@ -240,6 +240,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             builtins::cmd_nvme_init
         ),
         (
+            "ahci_init",
+            "Initialize AHCI through the kernel SQ/CQ path",
+            builtins::cmd_ahci_init
+        ),
+        (
             "usb_rescan",
             "Explicitly activate and rescan USB",
             builtins::cmd_usb_rescan

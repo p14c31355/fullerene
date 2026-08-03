@@ -35,9 +35,9 @@
 | 62 | resize_window | ✅ Full |  |
 | 63 | present_window | ✅ Full |  |
 | 64 | get_window_event | 🧩 Stub |  |
-| 70 | enumerate_devices | 🟡 Partial | PCI only |
-| 71 | open_device | 🟡 Partial | PCI BDF, vendor:device, and nvmeN names |
-| 72 | device_ioctl | 🟡 Partial | PCI access, NVMe initialization, and driver-mediated NVMe BAR0 MMIO |
+| 70 | enumerate_devices | 🟡 Partial | PCI and registered block devices; stable names are opened separately |
+| 71 | open_device | 🟡 Partial | PCI BDF, vendor:device, nvmeN, and ahciN names |
+| 72 | device_ioctl | 🟡 Partial | PCI access, AHCI/NVMe initialization, and driver-mediated NVMe BAR0 MMIO |
 | 80 | channel_create | ✅ Full |  |
 | 81 | channel_send | ✅ Full |  |
 | 82 | channel_recv | ✅ Full |  |
@@ -88,7 +88,7 @@
 | PS/2 Mouse | ✅ Full | ✅ Full | Stable |
 | UEFI Framebuffer | ✅ Full | ✅ Full | Stable |
 | VGA Text Mode | ✅ Full | ✅ Full | Stable |
-| AHCI | ✅ Full | 🟡 Partial | Mechanism only; block adapter pending |
+| AHCI | ✅ Full | 🟡 Partial | Boot/shell/ioctl HBA+port init; sector block adapter pending |
 | NVMe | ✅ Full | ✅ Full | SQ/CQ initialization only; block adapter pending |
 | xHCI | ✅ Full | 🟡 Partial | Beta |
 | eHCI | ✅ Full | ❌ Not supported | Alpha |

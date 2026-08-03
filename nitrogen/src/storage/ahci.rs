@@ -292,14 +292,49 @@ pub fn init(ctx: &dyn DriverContext) {
                 dev.vendor_id,
                 dev.device_id
             );
-            dev.enable_memory_access();
-            if let Some(ctrl) = AhciController::init(ctx, dev.clone()) {
-                log::info!("AHCI: controller initialised ({} ports)", ctrl.num_ports);
-                CONTROLLERS.lock().push(ctrl);
-            }
+            let _ = init_device(ctx, dev.clone());
         }
     }
     if CONTROLLERS.lock().is_empty() {
         log::info!("AHCI: no SATA controllers found");
     }
+}
+
+/// Initialize one AHCI PCI function and return its stable controller index.
+pub fn init_device(
+    ctx: &dyn DriverContext,
+    device: PciDevice,
+) -> Result<usize, crate::DriverError> {
+    if device.class_code != 0x01 || device.subclass != 0x06 {
+        return Err(crate::DriverError::DeviceNotFound);
+    }
+
+    let controllers = CONTROLLERS.lock();
+    if let Some(index) = controllers.iter().position(|controller| {
+        controller.device.bus == device.bus
+            && controller.device.device == device.device
+            && controller.device.function == device.function
+    }) {
+        return Ok(index);
+    }
+    drop(controllers);
+
+    if !device.enable_memory_access() {
+        return Err(crate::DriverError::Io);
+    }
+    let controller = AhciController::init(ctx, device).ok_or(crate::DriverError::DeviceFault)?;
+    let mut controllers = CONTROLLERS.lock();
+    let index = controllers.len();
+    log::info!(
+        "AHCI: controller initialized as ahci{} ({} ports)",
+        index,
+        controller.num_ports
+    );
+    controllers.push(controller);
+    Ok(index)
+}
+
+/// Return the number of initialized AHCI controllers.
+pub fn controller_count() -> usize {
+    CONTROLLERS.lock().len()
 }

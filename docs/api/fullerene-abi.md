@@ -12,10 +12,12 @@ this crate.
   negates them.
 - `AbiVersion`, `Capability`, `CapabilitySet`, and `AbiInfo`: version and
   feature discovery.
-- `MemoryInfo`, `TimeSpec`, `DeviceInfo`, and `WindowEvent`: fixed-layout
+- `MemoryInfo`, `TimeSpec`, `DeviceInfo`, `DeviceCapabilityInfo`,
+  `BlockDeviceInfo`, `BlockRequest`, and `WindowEvent`: fixed-layout
   `#[repr(C)]` records for pointer-based syscall arguments.
 - `device_ioctl::{GET_PCI_INFO, READ_PCI_CONFIG, WRITE_PCI_CONFIG,
-  INITIALIZE_NVME, READ_MMIO, WRITE_MMIO}` and the
+  INITIALIZE_NVME, INITIALIZE_AHCI, GET_CAPABILITIES, GET_BLOCK_INFO,
+  READ_BLOCKS, WRITE_BLOCKS, READ_MMIO, WRITE_MMIO}` and the
   `PciDeviceInfo`/`PciConfigRequest` argument records for native PCI handles.
 
 Every extensible pointer-facing type has a fixed `MIN_BYTE_SIZE`, a current
@@ -49,9 +51,11 @@ detect optional kernel facilities at runtime.
 ## Native device handles
 
 `open_device` accepts a PCI BDF such as `02:03.0`, a `vendor:device` pair such
-as `8086:5845`, or a stable NVMe name such as `nvme0`. The initial native ioctl
-surface is intentionally limited to PCI identity and configuration-space
-access; unsupported commands return `NotSupported`.
+as `8086:5845`, a stable storage name such as `nvme0` or `ahci0`, or a
+registered `/dev` block name such as `/dev/sd0`. For a block record returned by
+`enumerate_devices`, its hexadecimal `device_id` is also accepted and resolves
+back to the registered `/dev` name. The returned handle advertises its typed
+operations through `GET_CAPABILITIES`.
 
 `READ_PCI_CONFIG` and `WRITE_PCI_CONFIG` use `PciConfigRequest`. The width is
 1, 2, or 4 bytes and the offset must be naturally aligned. Reads update the
@@ -62,6 +66,15 @@ write permission.
 the kernel-owned SQ and returns the `nvmeN` controller index after the
 corresponding completion has been written to and consumed from the CQ. Other
 NVMe data-path commands are not accepted yet.
+
+`INITIALIZE_AHCI` has the same SQ/CQ behavior for class 01/subclass 06 SATA
+controllers and returns the stable `ahciN` controller index. The current AHCI
+driver initializes the HBA and enumerates ports; sector I/O remains provided by
+registered block-device implementations.
+
+Named block-device handles support `GET_BLOCK_INFO`, `READ_BLOCKS`, and
+`WRITE_BLOCKS`. Block requests use a fixed-size `BlockRequest` record and are
+rejected while the device is leased by a mounted filesystem.
 
 `READ_MMIO` and `WRITE_MMIO` use `MmioRequest`. The request is submitted to the
 same generic driver SQ/CQ; the matched driver performs the volatile access and

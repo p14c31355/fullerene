@@ -448,6 +448,51 @@ pub fn block_device_available(name: &str) -> bool {
         .is_some_and(|entry| !entry.leased)
 }
 
+/// Return the geometry of a registered block device without taking an
+/// exclusive filesystem lease.
+pub fn block_device_info(name: &str) -> Option<(u32, u64)> {
+    let registry = BLOCK_DEVICE_REGISTRY.lock();
+    let entry = registry.get(name)?;
+    let device = entry.device.lock();
+    Some((device.sector_size(), device.total_sectors()))
+}
+
+/// Read sectors through a registered block device. Mounted devices remain
+/// exclusive to their filesystem lease.
+pub fn read_block_device(
+    name: &str,
+    lba: u64,
+    count: u16,
+    buf: &mut [u8],
+) -> Result<(), genome::block::BlockError> {
+    let registry = BLOCK_DEVICE_REGISTRY.lock();
+    let entry = registry
+        .get(name)
+        .ok_or(genome::block::BlockError::Device)?;
+    if entry.leased {
+        return Err(genome::block::BlockError::Busy);
+    }
+    entry.device.lock().read_sectors(lba, count, buf)
+}
+
+/// Write sectors through a registered block device. Mounted devices remain
+/// exclusive to their filesystem lease.
+pub fn write_block_device(
+    name: &str,
+    lba: u64,
+    count: u16,
+    buf: &[u8],
+) -> Result<(), genome::block::BlockError> {
+    let registry = BLOCK_DEVICE_REGISTRY.lock();
+    let entry = registry
+        .get(name)
+        .ok_or(genome::block::BlockError::Device)?;
+    if entry.leased {
+        return Err(genome::block::BlockError::Busy);
+    }
+    entry.device.lock().write_sectors(lba, count, buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

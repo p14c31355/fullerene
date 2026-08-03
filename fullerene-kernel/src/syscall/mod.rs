@@ -229,19 +229,19 @@ mod support_matrix {
             number: 70,
             name: "enumerate_devices",
             support: Support::Partial,
-            notes: "PCI only",
+            notes: "PCI and registered block devices",
         },
         SyscallInfo {
             number: 71,
             name: "open_device",
-            support: Support::Stub,
-            notes: "returns handle but no real device",
+            support: Support::Partial,
+            notes: "PCI identities and named block devices",
         },
         SyscallInfo {
             number: 72,
             name: "device_ioctl",
             support: Support::Partial,
-            notes: "PCI, NVMe init, and driver-mediated NVMe BAR0 MMIO",
+            notes: "PCI, AHCI/NVMe init, capabilities, and block I/O",
         },
         SyscallInfo {
             number: 80,

@@ -133,6 +133,9 @@ enum DriverRequestKind {
     InitializeNvme {
         device: PciDevice,
     },
+    InitializeAhci {
+        device: PciDevice,
+    },
     Mmio {
         device: PciDevice,
         bar: u8,
@@ -577,13 +580,21 @@ impl StorageDriver for SdCardStorageCtl {
 fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
     let request_id = request.request_id;
     let failure_device = match &request.kind {
-        DriverRequestKind::InitializeNvme { device } | DriverRequestKind::Mmio { device, .. } => {
-            device.clone()
-        }
+        DriverRequestKind::InitializeNvme { device }
+        | DriverRequestKind::InitializeAhci { device }
+        | DriverRequestKind::Mmio { device, .. } => device.clone(),
     };
     let (result, controller_index) = match request.kind {
         DriverRequestKind::InitializeNvme { device } => (
             nitrogen::storage::nvme::init_device(
+                &crate::driver_context_impl::KernelDriverContext,
+                device,
+            )
+            .map(|index| index as u64),
+            true,
+        ),
+        DriverRequestKind::InitializeAhci { device } => (
+            nitrogen::storage::ahci::init_device(
                 &crate::driver_context_impl::KernelDriverContext,
                 device,
             )
@@ -679,6 +690,19 @@ pub fn initialize_nvme(device: PciDevice) -> Result<usize, nitrogen::DriverError
     let completion = submit_driver_request(DriverRequestKind::InitializeNvme { device })?;
     if let Some(index) = completion.controller_index {
         log::info!("NVMe: initialized nvme{} through SQ/CQ", index);
+        Ok(index)
+    } else {
+        Err(completion.error.unwrap_or(nitrogen::DriverError::Io))
+    }
+}
+
+/// Submit one explicit AHCI initialization request through the generic
+/// kernel-owned SQ and return its CQ completion.
+#[cfg(not(nitrogen_no_storage))]
+pub fn initialize_ahci(device: PciDevice) -> Result<usize, nitrogen::DriverError> {
+    let completion = submit_driver_request(DriverRequestKind::InitializeAhci { device })?;
+    if let Some(index) = completion.controller_index {
+        log::info!("AHCI: initialized ahci{} through SQ/CQ", index);
         Ok(index)
     } else {
         Err(completion.error.unwrap_or(nitrogen::DriverError::Io))

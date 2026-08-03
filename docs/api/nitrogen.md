@@ -53,7 +53,8 @@ pub trait DriverContext: Send + Sync {
 Block devices such as NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage.
 
 NVMe currently exposes controller initialization through the kernel-owned
-submission/completion queue pair. The NVMe driver separately requests one
+submission/completion queue pair. AHCI exposes the same explicit initialization
+boundary for SATA controllers. The NVMe driver separately requests one
 kernel/IOMMU DMA allocation for its Submission Queue and one for its
 Completion Queue; the returned IOVAs are programmed into the NVMe controller.
 Data-path block operations remain disabled until the kernel publishes a real
