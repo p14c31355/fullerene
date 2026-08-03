@@ -255,16 +255,9 @@ fn wasm_video_should_stop() -> bool {
 }
 
 fn wasm_play_pcm(sample_rate: u32, channels: u8, bits_per_sample: u8, pcm: &[u8]) -> i32 {
-    if pcm.is_empty() || pcm.len() > 8 * 1024 * 1024 {
-        return -1;
-    }
-    let played = crate::contexts::kernel::with_kernel_mut(|kernel| {
-        kernel
-            .audio
-            .play_pcm(sample_rate, channels, bits_per_sample, pcm)
-    })
-    .unwrap_or(false);
-    if played { 0 } else { -1 }
+    crate::contexts::audio::enqueue_play_pcm(sample_rate, channels, bits_per_sample, pcm)
+        .map(|_| 0)
+        .unwrap_or(-1)
 }
 
 fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixels: &[u8]) -> i32 {

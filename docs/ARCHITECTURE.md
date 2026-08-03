@@ -597,9 +597,22 @@ AHCI command lists, xHCI transfer/event rings, EHCI queue heads, and VirtIO
 virtqueues are not conflated with the kernel request ring.
 
 This is a transport boundary, not a claim that every device is block I/O.
-PS/2 input, framebuffer updates, audio streams, and network RX/TX will use
-typed event or stream queues built on the same ownership/completion rules where
-appropriate. They must not be forced into a synchronous block-request shape.
+Audio playback and iwlwifi control work now use typed SQ/CQ pairs as well. The
+Solvent Wi-Fi service and WASM audio callback only enqueue owned requests; the
+kernel scheduler submits a bounded batch, advances DMA/firmware state without
+spinning in the caller, and drains completions independently. Audio CQ entries
+are currently reported to the kernel log, while Wi-Fi CQ entries update the
+driver-owned state and record rejected requests. PS/2 input, framebuffer
+updates, and network data RX/TX should follow the same typed event/stream rule
+as they become asynchronous device capabilities. They must not be forced into
+a synchronous block-request shape.
+
+The scheduler's device phase runs before the Solvent runtime tick. This gives
+service code a non-blocking producer boundary and keeps SQ execution,
+hardware progress, and CQ consumption out of GUI/input callbacks. Legacy
+BlockDevice and device-ioctl calls retain a synchronous compatibility adapter
+until their ABI can return request handles; those adapters use the same owned
+request format and are serialized against concurrent callers.
 
 The kernel device registry preserves `/dev/<name>` identity while transferring
 exclusive block-device ownership to a mounted filesystem. An available entry

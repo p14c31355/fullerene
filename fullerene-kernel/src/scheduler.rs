@@ -139,6 +139,23 @@ pub fn scheduler_loop() -> ! {
 
         SCHEDULER.update_vdso_all(uptime_us, wall_us);
 
+        // Device SQs are submitted by services and consumed here, in the
+        // scheduler context. Their CQs are drained after execution so a GUI
+        // or service tick never performs firmware/MMIO work synchronously.
+        #[cfg(not(nitrogen_no_iwlwifi))]
+        {
+            nitrogen::iwlwifi::process_wifi_submission_queue(16);
+            nitrogen::iwlwifi::consume_wifi_completion_queue(16);
+        }
+        #[cfg(not(nitrogen_no_storage))]
+        {
+            crate::drivers::registry::process_driver_submission_queue(8);
+            crate::drivers::registry::consume_driver_completion_queue(8);
+        }
+        crate::contexts::audio::process_audio_submission_queue(2);
+        crate::contexts::audio::poll_audio_playback();
+        crate::contexts::audio::consume_audio_completion_queue(4);
+
         // BusyBox smoke is a synchronous ABI test. During the harness, the
         // nested runtime pump handles only input and rendering; after a
         // physical smoke run returns, normal desktop ticks resume.

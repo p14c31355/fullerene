@@ -15,6 +15,8 @@
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use alloc::boxed::Box;
 #[cfg(not(nitrogen_no_storage))]
+use alloc::collections::VecDeque;
+#[cfg(not(nitrogen_no_storage))]
 use alloc::vec::Vec;
 #[cfg(not(nitrogen_no_storage))]
 use core::sync::atomic::AtomicBool as DriverAtomicBool;
@@ -197,6 +199,18 @@ struct DriverCompletion {
     tag: Option<u32>,
 }
 
+/// Public view of a completion consumed by the scheduler.
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug)]
+pub struct DriverCompletionInfo {
+    pub request_id: u64,
+    pub error: Option<nitrogen::DriverError>,
+    pub controller_index: Option<usize>,
+    pub value: u64,
+    pub buffer: Option<Vec<u8>>,
+    pub tag: Option<u32>,
+}
+
 #[cfg(not(nitrogen_no_storage))]
 struct DriverSlot<T> {
     sequence: AtomicUsize,
@@ -364,8 +378,66 @@ static NEXT_DRIVER_REQUEST: AtomicU64 = AtomicU64::new(1);
 static DRIVER_IN_FLIGHT: DriverAtomicBool = DriverAtomicBool::new(false);
 
 #[cfg(not(nitrogen_no_storage))]
+static DRIVER_READY_COMPLETIONS: Mutex<VecDeque<DriverCompletion>> = Mutex::new(VecDeque::new());
+
+#[cfg(not(nitrogen_no_storage))]
 fn driver_queues() -> &'static DriverQueuePair {
     &DRIVER_QUEUES
+}
+
+/// Execute driver SQ entries from the kernel scheduler context.
+///
+/// The synchronous `submit_driver_request` adapter remains for legacy
+/// BlockDevice callers, but new control-plane users can enqueue work and let
+/// this function own execution. It never waits for a hardware completion.
+#[cfg(not(nitrogen_no_storage))]
+pub fn process_driver_submission_queue(budget: usize) {
+    for _ in 0..budget {
+        let Some(request) = driver_queues().take_submission() else {
+            break;
+        };
+        let request_id = request.request_id;
+        let completion = execute_driver_request(request);
+        if driver_queues().complete(completion).is_err() {
+            log::error!(
+                "driver queue: completion ring full while finishing request {}",
+                request_id
+            );
+        }
+    }
+}
+
+/// Consume driver CQ entries independently from SQ execution.
+///
+/// Keeping a small ready queue means the scheduler can drain the lock-free CQ
+/// even when the eventual request owner is not running in this tick.
+#[cfg(not(nitrogen_no_storage))]
+pub fn consume_driver_completion_queue(budget: usize) {
+    let mut ready = DRIVER_READY_COMPLETIONS.lock();
+    for _ in 0..budget {
+        let Some(completion) = driver_queues().completion.pop() else {
+            break;
+        };
+        ready.push_back(completion);
+    }
+}
+
+/// Take one scheduler-consumed completion by request id.
+#[cfg(not(nitrogen_no_storage))]
+pub fn take_driver_completion(request_id: u64) -> Option<DriverCompletionInfo> {
+    let mut ready = DRIVER_READY_COMPLETIONS.lock();
+    let position = ready
+        .iter()
+        .position(|completion| completion.request_id == request_id)?;
+    let completion = ready.remove(position)?;
+    Some(DriverCompletionInfo {
+        request_id: completion.request_id,
+        error: completion.error,
+        controller_index: completion.controller_index,
+        value: completion.value,
+        buffer: completion.buffer,
+        tag: completion.tag,
+    })
 }
 
 #[cfg(all(test, not(nitrogen_no_storage)))]

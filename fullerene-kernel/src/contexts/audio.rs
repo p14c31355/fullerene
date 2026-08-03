@@ -1,4 +1,7 @@
 //! AudioContext — HDA controller + PC speaker.
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use nitrogen::hda::HdaController;
 use nitrogen::hda::controller::HdaDiagInfo;
 use nitrogen::hda::dma::{DMA_BUF_SIZE, DmaRegion};
@@ -13,7 +16,38 @@ pub struct AudioContext {
     corb: Option<DmaRegion>,
     rirb: Option<DmaRegion>,
     dma: Option<DmaRegion>,
+    playback: Option<PlaybackState>,
 }
+
+struct PlaybackState {
+    request_id: u64,
+    pcm: Vec<u8>,
+    half_size: usize,
+    half_count: usize,
+    completed: usize,
+    next_half: usize,
+    initial_progress: u64,
+    progressed: bool,
+    deadline_tsc: u64,
+}
+
+enum AudioRequest {
+    PlayPcm {
+        sample_rate: u32,
+        channels: u8,
+        bits_per_sample: u8,
+        pcm: Vec<u8>,
+    },
+}
+
+struct AudioCompletion {
+    request_id: u64,
+    success: bool,
+}
+
+static AUDIO_SQ: spin::Mutex<VecDeque<(u64, AudioRequest)>> = spin::Mutex::new(VecDeque::new());
+static AUDIO_CQ: spin::Mutex<VecDeque<AudioCompletion>> = spin::Mutex::new(VecDeque::new());
+static NEXT_AUDIO_REQUEST: AtomicU64 = AtomicU64::new(1);
 
 impl AudioContext {
     pub const fn new() -> Self {
@@ -31,6 +65,7 @@ impl AudioContext {
             corb: None,
             rirb: None,
             dma: None,
+            playback: None,
         }
     }
     pub fn probe(&mut self) {
@@ -159,6 +194,133 @@ impl AudioContext {
                 c.reset_prefill_tracking();
             }
         }
+    }
+
+    /// Start a PCM request without waiting for the DMA stream to finish.
+    fn start_pcm_async(
+        &mut self,
+        request_id: u64,
+        sample_rate: u32,
+        channels: u8,
+        bits_per_sample: u8,
+        pcm: Vec<u8>,
+    ) -> bool {
+        if self.playback.is_some()
+            || sample_rate != 48_000
+            || channels != 1
+            || bits_per_sample != 16
+            || pcm.is_empty()
+        {
+            return false;
+        }
+
+        self.lazy_init();
+        let Some(controller) = self.hda.as_ref().filter(|c| c.is_ready()) else {
+            log::warn!("Sound: asynchronous playback requested before HDA became ready");
+            return false;
+        };
+        let half_size = controller.dma().half_size() as usize;
+        if half_size == 0 {
+            return false;
+        }
+        let half_count = core::cmp::max(2, pcm.len().div_ceil(half_size));
+
+        for slot in 0..2 {
+            let start = (slot * half_size).min(pcm.len());
+            let end = (start + half_size).min(pcm.len());
+            let offset = (slot * half_size) as u32;
+            let written = controller.write_at(offset, &pcm[start..end]);
+            if written != end - start {
+                log::warn!(
+                    "Sound: asynchronous HDA prefill short write {} / {}",
+                    written,
+                    end - start
+                );
+                return false;
+            }
+            if written < half_size {
+                controller.clear_at(offset + written as u32, half_size - written);
+            }
+        }
+        controller.reset_prefill_tracking();
+        if !controller.start_stream() {
+            log::warn!("Sound: asynchronous HDA stream failed to start");
+            return false;
+        }
+
+        let initial_progress = controller.playback_progress().unwrap_or(0);
+        let timeout_tsc = solvent::get_tsc_per_ms().max(1).saturating_mul(500);
+        self.playback = Some(PlaybackState {
+            request_id,
+            pcm,
+            half_size,
+            half_count,
+            completed: 0,
+            next_half: 2,
+            initial_progress,
+            progressed: false,
+            deadline_tsc: unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(timeout_tsc),
+        });
+        true
+    }
+
+    /// Advance one DMA boundary without spinning. Returns a completion when
+    /// the current request has finished or timed out.
+    fn poll_async_playback(&mut self) -> Option<(u64, bool)> {
+        let state = self.playback.as_mut()?;
+        let now = unsafe { core::arch::x86_64::_rdtsc() };
+        let Some(controller) = self.hda.as_ref().filter(|c| c.is_ready()) else {
+            let request_id = state.request_id;
+            self.playback = None;
+            return Some((request_id, false));
+        };
+        if now >= state.deadline_tsc {
+            let request_id = state.request_id;
+            let (ctl, sts, lpib) = controller.debug_stream_status();
+            log::warn!(
+                "Sound: asynchronous HDA playback timed out (CTL=0x{:08x} STS=0x{:02x} LPIB={})",
+                ctl,
+                sts,
+                lpib
+            );
+            self.playback = None;
+            return Some((request_id, false));
+        }
+        if !controller.poll(Some(0)) {
+            return None;
+        }
+
+        let _ = controller.feed_samples(&[]);
+        state.progressed |= controller
+            .playback_progress()
+            .is_some_and(|progress| progress != state.initial_progress);
+        if state.next_half < state.half_count {
+            let start = state.next_half * state.half_size;
+            let end = (start + state.half_size).min(state.pcm.len());
+            let offset = ((state.next_half % 2) * state.half_size) as u32;
+            let written = controller.write_at(offset, &state.pcm[start..end]);
+            if written != end - start {
+                let request_id = state.request_id;
+                self.playback = None;
+                return Some((request_id, false));
+            }
+            if written < state.half_size {
+                controller.clear_at(offset + written as u32, state.half_size - written);
+            }
+            state.next_half += 1;
+        }
+        state.completed += 1;
+        if state.completed < state.half_count {
+            return None;
+        }
+
+        let request_id = state.request_id;
+        let success = state.progressed;
+        if !success {
+            log::warn!("Sound: asynchronous HDA playback completed without DMA progress");
+        }
+        self.playback = None;
+        Some((request_id, success))
     }
 
     /// Play a complete 48 kHz, mono, signed 16-bit PCM stream.
@@ -356,4 +518,95 @@ where
     F: FnOnce(&AudioContext) -> R,
 {
     AUDIO_CTX.lock().as_ref().map(f)
+}
+
+/// Queue an owned PCM playback request. The caller returns immediately; the
+/// scheduler owns hardware submission and completion delivery.
+pub fn enqueue_play_pcm(
+    sample_rate: u32,
+    channels: u8,
+    bits_per_sample: u8,
+    pcm: &[u8],
+) -> Option<u64> {
+    if pcm.is_empty() || pcm.len() > 8 * 1024 * 1024 {
+        return None;
+    }
+    let mut queue = AUDIO_SQ.lock();
+    if queue.len() >= 8 {
+        log::warn!("Sound: playback request SQ full; dropping request");
+        return None;
+    }
+    let request_id = NEXT_AUDIO_REQUEST.fetch_add(1, Ordering::Relaxed);
+    queue.push_back((
+        request_id,
+        AudioRequest::PlayPcm {
+            sample_rate,
+            channels,
+            bits_per_sample,
+            pcm: pcm.to_vec(),
+        },
+    ));
+    Some(request_id)
+}
+
+/// Submit queued audio requests from the scheduler context.
+pub fn process_audio_submission_queue(budget: usize) {
+    for _ in 0..budget {
+        let Some((request_id, request)) = AUDIO_SQ.lock().pop_front() else {
+            break;
+        };
+        let success = match request {
+            AudioRequest::PlayPcm {
+                sample_rate,
+                channels,
+                bits_per_sample,
+                pcm,
+            } => super::kernel::with_kernel_mut(|kernel| {
+                kernel.audio.start_pcm_async(
+                    request_id,
+                    sample_rate,
+                    channels,
+                    bits_per_sample,
+                    pcm,
+                )
+            })
+            .unwrap_or(false),
+        };
+        if !success {
+            AUDIO_CQ.lock().push_back(AudioCompletion {
+                request_id,
+                success: false,
+            });
+        }
+    }
+}
+
+/// Advance the active HDA stream once and publish completed requests.
+pub fn poll_audio_playback() {
+    if let Some(completion) =
+        super::kernel::with_kernel_mut(|kernel| kernel.audio.poll_async_playback()).flatten()
+    {
+        AUDIO_CQ.lock().push_back(AudioCompletion {
+            request_id: completion.0,
+            success: completion.1,
+        });
+    }
+}
+
+/// Consume audio CQs in scheduler context. Playback has no userspace waiter
+/// yet, so completion is currently observable through the kernel log.
+pub fn consume_audio_completion_queue(budget: usize) {
+    for _ in 0..budget {
+        let Some(completion) = AUDIO_CQ.lock().pop_front() else {
+            break;
+        };
+        if completion.success {
+            log::debug!(
+                "Sound: playback request {} completed",
+                completion.request_id
+            );
+        } else {
+            log::warn!("Sound: playback request {} failed", completion.request_id);
+        }
+    }
 }

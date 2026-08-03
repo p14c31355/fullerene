@@ -1,9 +1,10 @@
 //! Connection state, incremental device initialization, and public Wi-Fi API.
 
 use alloc::boxed::Box;
-use alloc::string::ToString;
+use alloc::collections::VecDeque;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::DriverContext;
@@ -50,6 +51,45 @@ static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
     tx_bufs: Vec::new(),
     rx_bufs: Vec::new(),
 });
+
+/// Typed Wi-Fi driver requests. The scheduler owns execution of this queue;
+/// callers only enqueue control-plane work.
+enum WifiRequest {
+    InitStep,
+    Tick,
+    StartScan,
+    Connect {
+        ssid: Ssid,
+        password: Option<String>,
+    },
+}
+
+enum WifiCompletionKind {
+    InitStep,
+    Tick,
+    StartScan { accepted: bool },
+    Connect { accepted: bool },
+}
+
+struct WifiCompletion {
+    request_id: u64,
+    kind: WifiCompletionKind,
+}
+
+static WIFI_SQ: Mutex<VecDeque<(u64, WifiRequest)>> = Mutex::new(VecDeque::new());
+static WIFI_CQ: Mutex<VecDeque<WifiCompletion>> = Mutex::new(VecDeque::new());
+static NEXT_WIFI_REQUEST: AtomicU64 = AtomicU64::new(1);
+
+fn enqueue_wifi_request(request: WifiRequest) -> Option<u64> {
+    let mut queue = WIFI_SQ.lock();
+    if queue.len() >= 32 {
+        log::warn!("iwlwifi: request SQ full; dropping request");
+        return None;
+    }
+    let id = NEXT_WIFI_REQUEST.fetch_add(1, Ordering::Relaxed);
+    queue.push_back((id, request));
+    Some(id)
+}
 
 fn release_init_resources(ctx: &mut WifiInitContext) {
     if let Some(pci) = ctx.pci_dev.as_ref() {
@@ -173,7 +213,7 @@ fn get_init_phase() -> WifiInitPhase {
 
 // ── Incremental init state machine ─
 
-pub fn try_init_wifi_device_step() {
+fn perform_init_step() {
     let phase = get_init_phase();
     debug::print("iwlwifi", &alloc::format!("step: phase={}", phase as u8));
 
@@ -930,7 +970,7 @@ pub fn try_init_wifi_device() {
     WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
 }
 
-pub fn tick_wifi_device() {
+fn perform_tick() {
     if !WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Relaxed) {
         return;
     }
@@ -966,24 +1006,25 @@ pub fn init_wifi_manager() {
     *WIFI_MANAGER.lock() = Some(WifiManager::new());
 }
 
-pub fn connect_to_ap(ssid: &Ssid, password: Option<&str>) {
+fn perform_connect(ssid: &Ssid, password: Option<&str>) -> bool {
     let mut dev_guard = WIFI_DEVICE.lock();
     if let Some(ref mut dev) = *dev_guard {
         let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
-        let _ = dev_ref.connect(ssid, password);
+        return dev_ref.connect(ssid, password);
     }
+    false
 }
 
-pub fn start_scan_if_idle() {
+fn perform_start_scan_if_idle() -> bool {
     let mut dev_guard = WIFI_DEVICE.lock();
     let Some(ref mut dev) = *dev_guard else {
         log::warn!("iwlwifi: scan request ignored — no operational device");
-        return;
+        return false;
     };
     let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
     if !dev_ref.device_available() {
         log::warn!("iwlwifi: scan request ignored — firmware is not ready");
-        return;
+        return false;
     }
     // Only start a scan if the device is ready and not already busy.
     if dev_ref.get_status() != bonder::wifi::WifiStatus::Disconnected {
@@ -991,10 +1032,96 @@ pub fn start_scan_if_idle() {
             "iwlwifi: scan request deferred — current status={:?}",
             dev_ref.get_status()
         );
-        return;
+        return false;
     }
     if !dev_ref.start_scan() {
         log::warn!("iwlwifi: scan request failed before firmware submission");
+        return false;
+    }
+    true
+}
+
+/// Enqueue one incremental initialization step for scheduler-owned execution.
+pub fn try_init_wifi_device_step() {
+    let _ = enqueue_wifi_request(WifiRequest::InitStep);
+}
+
+/// Enqueue one device service tick for scheduler-owned execution.
+pub fn tick_wifi_device() {
+    let _ = enqueue_wifi_request(WifiRequest::Tick);
+}
+
+/// Enqueue a connection request with owned request data.
+pub fn connect_to_ap(ssid: &Ssid, password: Option<&str>) {
+    let request = WifiRequest::Connect {
+        ssid: ssid.clone(),
+        password: password.map(ToString::to_string),
+    };
+    let _ = enqueue_wifi_request(request);
+}
+
+/// Enqueue a scan request for scheduler-owned execution.
+pub fn start_scan_if_idle() {
+    let _ = enqueue_wifi_request(WifiRequest::StartScan);
+}
+
+/// Move queued Wi-Fi SQ entries through the hardware-facing executor.
+///
+/// This is called by the kernel scheduler, not by the Solvent service. Keeping
+/// the driver lock and firmware interaction here prevents a userspace-facing
+/// service tick from becoming a synchronous hardware operation.
+pub fn process_wifi_submission_queue(budget: usize) {
+    for _ in 0..budget {
+        let Some((request_id, request)) = WIFI_SQ.lock().pop_front() else {
+            break;
+        };
+        let kind = match request {
+            WifiRequest::InitStep => {
+                perform_init_step();
+                WifiCompletionKind::InitStep
+            }
+            WifiRequest::Tick => {
+                perform_tick();
+                WifiCompletionKind::Tick
+            }
+            WifiRequest::StartScan => WifiCompletionKind::StartScan {
+                accepted: perform_start_scan_if_idle(),
+            },
+            WifiRequest::Connect { ssid, password } => WifiCompletionKind::Connect {
+                accepted: perform_connect(&ssid, password.as_deref()),
+            },
+        };
+        WIFI_CQ
+            .lock()
+            .push_back(WifiCompletion { request_id, kind });
+    }
+}
+
+/// Consume completed Wi-Fi requests without running driver work on the caller.
+pub fn consume_wifi_completion_queue(budget: usize) {
+    for _ in 0..budget {
+        let Some(completion) = WIFI_CQ.lock().pop_front() else {
+            break;
+        };
+        match completion.kind {
+            WifiCompletionKind::InitStep | WifiCompletionKind::Tick => {}
+            WifiCompletionKind::StartScan { accepted } => {
+                if !accepted {
+                    log::debug!(
+                        "iwlwifi: scan request {} was not accepted",
+                        completion.request_id
+                    );
+                }
+            }
+            WifiCompletionKind::Connect { accepted } => {
+                if !accepted {
+                    log::debug!(
+                        "iwlwifi: connect request {} was not accepted",
+                        completion.request_id
+                    );
+                }
+            }
+        }
     }
 }
 
