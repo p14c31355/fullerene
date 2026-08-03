@@ -1,6 +1,10 @@
 use core::ffi::c_void;
-
-use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable};
+use petroleum::common::{
+    BellowsError, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+    EfiBootServices, EfiFile, EfiLoadedImageProtocol, EfiMemoryType, EfiSimpleFileSystem,
+    EfiStatus, EfiSystemTable,
+};
+use petroleum::filesystem::{EfiFileWrapper, open_file, read_file_to_memory};
 
 // Module declarations for separated functionality
 pub mod heap;
@@ -17,6 +21,57 @@ const KERNEL_ARGS_PAGES: usize = 256;
 // Standard 4 KiB page size
 const PAGE_SIZE_4K: u64 = 4096;
 
+/// Read the two EFI files needed by the Fullerene installer from the same
+/// UEFI filesystem that launched Bellows. The allocations are intentionally
+/// left alive across ExitBootServices and are handed to the kernel in
+/// `KernelArgs`.
+pub fn read_boot_payloads(
+    bs: &EfiBootServices,
+    image_handle: usize,
+) -> petroleum::common::Result<((usize, usize), (usize, usize))> {
+    let mut loaded_ptr: *mut c_void = core::ptr::null_mut();
+    let status = (bs.handle_protocol)(
+        image_handle,
+        EFI_LOADED_IMAGE_PROTOCOL_GUID.as_ptr(),
+        &mut loaded_ptr,
+    );
+    if EfiStatus::from(status) != EfiStatus::Success || loaded_ptr.is_null() {
+        return Err(BellowsError::FileIo("loaded image protocol unavailable"));
+    }
+    let loaded = unsafe { &*(loaded_ptr as *const EfiLoadedImageProtocol) };
+
+    let mut fs_ptr: *mut c_void = core::ptr::null_mut();
+    let status = (bs.handle_protocol)(
+        loaded.device_handle,
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
+        &mut fs_ptr,
+    );
+    if EfiStatus::from(status) != EfiStatus::Success || fs_ptr.is_null() {
+        return Err(BellowsError::FileIo("boot filesystem protocol unavailable"));
+    }
+    let fs = unsafe { &*(fs_ptr as *const EfiSimpleFileSystem) };
+    let mut root_ptr: *mut EfiFile = core::ptr::null_mut();
+    let status = (fs.open_volume)(fs_ptr as *mut EfiSimpleFileSystem, &mut root_ptr);
+    if EfiStatus::from(status) != EfiStatus::Success || root_ptr.is_null() {
+        return Err(BellowsError::FileIo("boot filesystem volume unavailable"));
+    }
+    let root = EfiFileWrapper::new(root_ptr);
+    let kernel_path = utf16_path("EFI\\BOOT\\KERNEL.EFI");
+    let bootloader_path = utf16_path("EFI\\BOOT\\BOOTX64.EFI");
+    let kernel = open_file(&root, &kernel_path).and_then(|file| read_file_to_memory(bs, &file))?;
+    let bootloader =
+        open_file(&root, &bootloader_path).and_then(|file| read_file_to_memory(bs, &file))?;
+    Ok((bootloader, kernel))
+}
+
+fn utf16_path(path: &str) -> [u16; 32] {
+    let mut result = [0u16; 32];
+    for (index, code) in path.encode_utf16().take(31).enumerate() {
+        result[index] = code;
+    }
+    result
+}
+
 /// Exits boot services and jumps to the kernel's entry point.
 /// This function is the final step of the bootloader.
 pub fn exit_boot_services_and_jump(
@@ -24,6 +79,8 @@ pub fn exit_boot_services_and_jump(
     system_table: *mut EfiSystemTable,
     kernel_phys_start: x86_64::PhysAddr,
     kernel_entry_phys: u64,
+    bootloader_payload: (usize, usize),
+    kernel_payload: (usize, usize),
     _entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
     // Immediate debug prints on entry to pinpoint exact hang location
@@ -365,6 +422,10 @@ pub fn exit_boot_services_and_jump(
                 fb_bpp,
                 fb_stride,
                 fb_pixel_format,
+                bootloader_image_ptr: bootloader_payload.0 as u64,
+                bootloader_image_size: bootloader_payload.1 as u64,
+                kernel_image_ptr: kernel_payload.0 as u64,
+                kernel_image_size: kernel_payload.1 as u64,
             },
         );
 

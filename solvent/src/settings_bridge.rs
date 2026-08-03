@@ -5,9 +5,9 @@
 use crate::{
     DISPLAY_BRIGHTNESS_X100, FB_DIMS, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY, RUNTIME_CONTEXT,
 };
-use alloc::vec;
+use alloc::string::String;
 use lattice::compositor::WINDOW_CORNER_RADIUS;
-use lattice::terminal_surface::{self, Cell as LatticeCell};
+use lattice::painter::Painter;
 use lattice::wallpaper::{self, WallpaperMode};
 use resonance::KeyCode;
 
@@ -22,8 +22,8 @@ pub fn settings_handle_key(scancode: u8, pressed: bool) {
     }
 }
 
-/// Select a settings row from the rendered settings window. Value changes
-/// remain keyboard-driven so a click cannot accidentally alter a setting.
+/// Select a settings row and apply a value change when one of its adjustment
+/// controls is clicked.
 pub(crate) fn settings_handle_mouse(rt: &mut crate::RuntimeState, x: i32, y: i32) -> bool {
     let Some(settings_id) = rt.settings_window else {
         return false;
@@ -31,12 +31,25 @@ pub(crate) fn settings_handle_mouse(rt: &mut crate::RuntimeState, x: i32, y: i32
     let Some(window) = rt.desktop.wm.windows().iter().find(|w| w.id == settings_id) else {
         return false;
     };
+    let relative_x = x - window.x;
     let relative_y = y - window.y - lattice::style::title_bar_height() as i32;
-    let line = relative_y.div_euclid(crate::GLYPH_H as i32);
-    if !(2..=8).contains(&line) || x < window.x || x >= window.x + window.width as i32 {
+    const ROW_Y: i32 = 112;
+    const ROW_HEIGHT: i32 = 42;
+    if relative_x < 28
+        || relative_x >= window.width as i32 - 28
+        || relative_y < ROW_Y
+        || relative_y >= ROW_Y + ROW_HEIGHT * 7
+    {
         return false;
     }
-    *SETTINGS_SELECTED.lock() = (line - 2) as u32;
+    let row = ((relative_y - ROW_Y) / ROW_HEIGHT) as u32;
+    *SETTINGS_SELECTED.lock() = row;
+    // The right side of each card is an adjustment control. Clicking the
+    // value itself advances it; clicking the left half of the control moves
+    // backward. The keyboard Left/Right path uses the same helper.
+    if relative_x >= 440 && relative_x < window.width as i32 - 28 {
+        adjust_setting(rt, row, relative_x < 516);
+    }
     rt.settings_dirty = true;
     rt.frame_due = true;
     true
@@ -59,78 +72,7 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
             *sel = (*sel + 1).min(ROWS - 1);
         }
         KeyCode::Left | KeyCode::Right => {
-            let dec = key == KeyCode::Left;
-            match *sel {
-                0 => {
-                    let next = lattice::style::variant().next(!dec);
-                    lattice::style::set_variant(next);
-                    let (fw, fh, _) = *FB_DIMS.lock();
-                    rt.desktop.relayout_maximized_windows(fw, fh);
-                    rt.desktop.force_full_redraw();
-                    persist_settings();
-                }
-                1 => {
-                    let cur = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed)
-                        as f32)
-                        / 6.0;
-                    let new_val = if dec {
-                        (cur - 0.25).max(0.25)
-                    } else {
-                        (cur + 0.25).min(4.0)
-                    };
-                    MOUSE_SENSITIVITY.store(
-                        (new_val * 6.0) as i16,
-                        core::sync::atomic::Ordering::Relaxed,
-                    );
-                    persist_settings();
-                }
-                2 => {
-                    let cur =
-                        DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed) as i32;
-                    let new_val = if dec {
-                        (cur - 5).max(10)
-                    } else {
-                        (cur + 5).min(100)
-                    };
-                    DISPLAY_BRIGHTNESS_X100
-                        .store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
-                    rt.desktop.force_full_redraw();
-                    persist_settings();
-                }
-                3 => {
-                    lattice::top_panel::toggle_top_panel();
-                    let (fw, fh, _) = *FB_DIMS.lock();
-                    rt.desktop.relayout_maximized_windows(fw, fh);
-                    rt.desktop.force_full_redraw();
-                    persist_settings();
-                }
-                4 => {
-                    let cur = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
-                    let new_val = if cur == 0 { 8 } else { 0 };
-                    WINDOW_CORNER_RADIUS.store(new_val, core::sync::atomic::Ordering::Relaxed);
-                    rt.desktop.force_full_redraw();
-                    persist_settings();
-                }
-                5 => {
-                    let modes = wallpaper::wallpaper_modes();
-                    let cur = wallpaper::get_wallpaper();
-                    let cur_idx = modes.iter().position(|(_, m)| *m == cur).unwrap_or(0);
-                    let next_idx = if dec {
-                        (cur_idx + modes.len() - 1) % modes.len()
-                    } else {
-                        (cur_idx + 1) % modes.len()
-                    };
-                    wallpaper::set_wallpaper(modes[next_idx].1);
-                    rt.desktop.force_full_redraw();
-                    persist_settings();
-                }
-                6 => {
-                    let new_val = !KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed);
-                    KLOG_SAVE_ENABLED.store(new_val, core::sync::atomic::Ordering::Relaxed);
-                    persist_settings();
-                }
-                _ => {}
-            }
+            adjust_setting(rt, *sel, key == KeyCode::Left);
         }
         KeyCode::Escape => {
             if let Some(id) = rt.settings_window.take() {
@@ -147,6 +89,78 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
     rt.frame_due = true;
 }
 
+fn adjust_setting(rt: &mut crate::RuntimeState, row: u32, dec: bool) {
+    match row {
+        0 => {
+            let next = lattice::style::variant().next(!dec);
+            lattice::style::set_variant(next);
+            let (fw, fh, _) = *FB_DIMS.lock();
+            rt.desktop.relayout_maximized_windows(fw, fh);
+            rt.desktop.force_full_redraw();
+            persist_settings();
+        }
+        1 => {
+            let cur = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32) / 6.0;
+            let new_val = if dec {
+                (cur - 0.25).max(0.25)
+            } else {
+                (cur + 0.25).min(4.0)
+            };
+            MOUSE_SENSITIVITY.store(
+                (new_val * 6.0 + 0.5) as i16,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            persist_settings();
+        }
+        2 => {
+            let cur = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed) as i32;
+            let new_val = if dec {
+                (cur - 5).max(10)
+            } else {
+                (cur + 5).min(100)
+            };
+            DISPLAY_BRIGHTNESS_X100.store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
+            rt.desktop.force_full_redraw();
+            persist_settings();
+        }
+        3 => {
+            lattice::top_panel::toggle_top_panel();
+            let (fw, fh, _) = *FB_DIMS.lock();
+            rt.desktop.relayout_maximized_windows(fw, fh);
+            rt.desktop.force_full_redraw();
+            persist_settings();
+        }
+        4 => {
+            let cur = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
+            WINDOW_CORNER_RADIUS.store(
+                if cur == 0 { 8 } else { 0 },
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            rt.desktop.force_full_redraw();
+            persist_settings();
+        }
+        5 => {
+            let modes = wallpaper::wallpaper_modes();
+            let cur = wallpaper::get_wallpaper();
+            let cur_idx = modes.iter().position(|(_, m)| *m == cur).unwrap_or(0);
+            let next_idx = if dec {
+                (cur_idx + modes.len() - 1) % modes.len()
+            } else {
+                (cur_idx + 1) % modes.len()
+            };
+            wallpaper::set_wallpaper(modes[next_idx].1);
+            rt.desktop.force_full_redraw();
+            persist_settings();
+        }
+        6 => {
+            let new_val = !KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed);
+            KLOG_SAVE_ENABLED.store(new_val, core::sync::atomic::Ordering::Relaxed);
+            persist_settings();
+        }
+        _ => {}
+    }
+}
+
 /// Set to `true` to trigger a deferred settings save (outside the runtime lock).
 pub(crate) static PERSIST_PENDING: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
@@ -159,20 +173,6 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
     let settings_id = match rt.settings_window {
         Some(id) => id,
         None => return,
-    };
-    let window = match rt
-        .desktop
-        .wm
-        .windows_mut()
-        .iter_mut()
-        .find(|w| w.id == settings_id)
-    {
-        Some(w) => w,
-        None => {
-            rt.settings_window = None;
-            rt.settings_dirty = false;
-            return;
-        }
     };
 
     let sens = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32) / 6.0;
@@ -193,77 +193,73 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
     };
 
     let klog_save = KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed);
+    let Some(window) = rt
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|w| w.id == settings_id)
+    else {
+        rt.settings_window = None;
+        rt.settings_dirty = false;
+        return;
+    };
 
-    let info = alloc::format!(
-        "{}Settings\n\
-         \n\
-         {}Lattice: {}\n\
-         {}Mouse Sensitivity: {:.2}\n\
-         {}Display Brightness: {}.{:02}\n\
-         {}Top Panel: {}\n\
-         {}Window Corner: {}\n\
-         {}Wallpaper: {}\n\
-         {}SD Klog Save: {}",
-        highlight(sel, 99),
-        highlight(sel, 0),
-        lattice_variant,
-        highlight(sel, 1),
-        sens,
-        highlight(sel, 2),
-        bright / 100,
-        bright % 100,
-        highlight(sel, 3),
-        if top_panel { "ON " } else { "OFF" },
-        highlight(sel, 4),
-        if corner > 0 { "Rounded" } else { "Square " },
-        highlight(sel, 5),
-        wp_name,
-        highlight(sel, 6),
-        if klog_save { "ON " } else { "OFF" },
-    );
+    let width = window.surface.width();
+    let height = window.surface.height();
+    let mut painter = Painter::new(window.surface.pixels_mut(), width, height);
+    painter.fill_rect(0, 0, width, height, 0xF5F8FC);
+    painter.draw_text(32, 24, "Settings", 0x17324D, 26.0);
+    painter.draw_text(32, 58, "Personalize your Fullerene desktop", 0x607080, 15.0);
+    painter.draw_text(32, 88, "Appearance & system", 0x2B76B9, 13.0);
 
-    let cols = 42u32;
-    // Keep the final cell row covered as well. The window surface is 13 rows
-    // high; leaving the last row untouched exposed its creation colour as a
-    // dark strip at the bottom of the light Photon settings window.
-    let total = cols as usize * 13;
-    let colors = lattice::theme::current_colors();
-    let mut cells = vec![
-        LatticeCell {
-            ch: b' ',
-            fg: colors.text,
-            bg: colors.surface
-        };
-        total
+    let values = [
+        String::from(lattice_variant),
+        alloc::format!("{:.2}", sens),
+        alloc::format!("{}.{:02}", bright / 100, bright % 100),
+        String::from(if top_panel { "On" } else { "Off" }),
+        String::from(if corner > 0 { "Rounded" } else { "Square" }),
+        String::from(wp_name),
+        String::from(if klog_save { "On" } else { "Off" }),
+    ];
+    let labels = [
+        "Shell style",
+        "Mouse sensitivity",
+        "Display brightness",
+        "Top panel",
+        "Window corners",
+        "Wallpaper",
+        "SD kernel-log save",
+    ];
+    let descriptions = [
+        "Choose the visual language used by the shell",
+        "Adjust pointer movement speed",
+        "Control scanout brightness",
+        "Show or hide the desktop top panel",
+        "Use rounded or square window corners",
+        "Cycle desktop background styles",
+        "Save kernel logs to removable storage",
     ];
 
-    for (row, line) in info.lines().enumerate() {
-        for (col, ch) in line.bytes().enumerate() {
-            if col < cols as usize {
-                let idx = row * (cols as usize) + col;
-                if idx < total {
-                    cells[idx] = LatticeCell {
-                        ch,
-                        fg: colors.text,
-                        bg: colors.surface,
-                    };
-                }
-            }
-        }
+    for row in 0..7u32 {
+        let y = 112 + row as i32 * 42;
+        let selected_bg = if row == sel { 0xDCEEFF } else { 0xFFFFFF };
+        painter.rounded_rect(28, y, width.saturating_sub(56), 36, 8, selected_bg);
+        painter.draw_text(46, y + 5, labels[row as usize], 0x1F3448, 15.0);
+        painter.draw_text(46, y + 22, descriptions[row as usize], 0x718191, 11.0);
+        painter.rounded_rect(440, y + 5, 152, 26, 13, 0xE8EEF4);
+        painter.draw_text(452, y + 9, "‹", 0x2B76B9, 17.0);
+        painter.draw_text(483, y + 9, &values[row as usize], 0x1F3448, 13.0);
+        painter.draw_text(570, y + 9, "›", 0x2B76B9, 17.0);
     }
 
-    terminal_surface::render(terminal_surface::RenderParams {
-        surface: &mut window.surface,
-        cells: &cells,
-        cols,
-        cursor_col: None,
-        cursor_row: None,
-        cursor_visible: false,
-    });
+    painter.draw_text(
+        32,
+        420,
+        "Click ‹ / › to adjust · Arrow keys also work · Esc closes",
+        0x718191,
+        12.0,
+    );
     rt.desktop.invalidate_window(settings_id);
     rt.settings_dirty = false;
-}
-
-const fn highlight(sel: u32, row: u32) -> &'static str {
-    if row == sel { "> " } else { "  " }
 }

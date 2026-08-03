@@ -18,6 +18,14 @@ pub struct FramebufferProbeResult {
     pub pixel_format: EfiGraphicsPixelFormat,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BootPayloadParams {
+    pub bootloader_ptr: u64,
+    pub bootloader_size: u64,
+    pub kernel_ptr: u64,
+    pub kernel_size: u64,
+}
+
 /// GOP parameters copied before the UEFI world switch.
 ///
 /// This is deliberately a plain, copyable value: it must survive the shallow
@@ -74,6 +82,9 @@ static BOOT_FRAMEBUFFER: Once<BootFramebufferParams> = Once::new();
 #[unsafe(link_section = ".data")]
 static KERNEL_ARGS_VA: Once<u64> = Once::new();
 
+#[unsafe(link_section = ".data")]
+static BOOT_PAYLOADS: Once<BootPayloadParams> = Once::new();
+
 fn store_snapshot<T: Copy + Eq>(slot: &Once<T>, value: T) -> Result<(), BootSnapshotError> {
     let stored = slot.call_once(|| value);
     if *stored == value {
@@ -125,6 +136,27 @@ pub fn store_boot_fb_params(
         "[store_fb] {width}x{height} stride={stride} phys=0x{phys:x} bpp={bpp} fmt={pixel_format}\n"
     ));
     result
+}
+
+pub fn store_boot_payload_params(
+    bootloader_ptr: u64,
+    bootloader_size: u64,
+    kernel_ptr: u64,
+    kernel_size: u64,
+) -> Result<(), BootSnapshotError> {
+    store_snapshot(
+        &BOOT_PAYLOADS,
+        BootPayloadParams {
+            bootloader_ptr,
+            bootloader_size,
+            kernel_ptr,
+            kernel_size,
+        },
+    )
+}
+
+pub(crate) fn boot_payload_params() -> Option<BootPayloadParams> {
+    BOOT_PAYLOADS.get().copied()
 }
 
 /// Return the framebuffer through the bootstrap's direct mapping.

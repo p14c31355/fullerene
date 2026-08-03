@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::vec;
 
 use crate::map_handle;
@@ -20,38 +21,46 @@ pub(crate) fn syscall_enumerate_devices(
 
     let slice = UserSlice::new(buf, buf_size, true).map_err(|_| SyscallError::InvalidArgument)?;
 
-    let mut kernel_buf = vec![0u8; buf_size];
-    let count = kernel::with_kernel(|k| {
-        let devices = match class {
-            1 => &k.pci.devices,
-            _ => {
-                return 0usize;
+    let mut records = vec::Vec::new();
+    let _ = kernel::with_kernel(|k| {
+        for dev in k.pci.devices.iter() {
+            let device_class = pci_device_class(dev);
+            if class as u32 != fullerene_abi::device_class::ANY && class as u32 != device_class {
+                continue;
             }
-        };
-
-        let mut offset = 0;
-        for dev in devices
-            .iter()
-            .take(buf_size / fullerene_abi::DeviceInfo::BYTE_SIZE)
-        {
-            if offset + fullerene_abi::DeviceInfo::BYTE_SIZE > buf_size {
-                break;
-            }
-            let bytes = fullerene_abi::DeviceInfo {
-                class: class as u32,
+            records.push(fullerene_abi::DeviceInfo {
+                class: device_class,
                 device_id: ((dev.bus as u32) << 16)
                     | ((dev.device as u32) << 8)
                     | dev.function as u32,
                 vendor_id: dev.vendor_id as u32,
                 product_id: dev.device_id as u32,
-            }
-            .to_ne_bytes();
-            kernel_buf[offset..offset + bytes.len()].copy_from_slice(&bytes);
-            offset += bytes.len();
+            });
         }
-        devices.len()
-    })
-    .unwrap_or(0);
+    });
+    if class as u32 == fullerene_abi::device_class::ANY
+        || class as u32 == fullerene_abi::device_class::STORAGE
+    {
+        for name in crate::devfs::list_block_device_names() {
+            records.push(fullerene_abi::DeviceInfo {
+                class: fullerene_abi::device_class::STORAGE,
+                device_id: stable_device_id(&name),
+                vendor_id: 0,
+                product_id: 0,
+            });
+        }
+    }
+    let count = records.len();
+    let mut kernel_buf = vec![0u8; buf_size];
+    for (index, record) in records
+        .iter()
+        .take(buf_size / fullerene_abi::DeviceInfo::BYTE_SIZE)
+        .enumerate()
+    {
+        let offset = index * fullerene_abi::DeviceInfo::BYTE_SIZE;
+        kernel_buf[offset..offset + fullerene_abi::DeviceInfo::BYTE_SIZE]
+            .copy_from_slice(&record.to_ne_bytes());
+    }
 
     unsafe { slice.copy_to_user(&kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
     Ok(count as u64)
@@ -63,11 +72,37 @@ pub(crate) fn syscall_open_device(device_id: *const u8) -> SyscallResult {
         return Err(SyscallError::InvalidArgument);
     }
 
-    let device = kernel::with_kernel(|k| find_device(&id_str, k.pci.devices()))
-        .flatten()
-        .ok_or(SyscallError::NoSuchDevice)?;
-
-    alloc_handle(KernelObject::Device(DeviceState { pci: device }))
+    let normalized = id_str.trim_start_matches("/dev/");
+    if let Some(device) =
+        kernel::with_kernel(|k| find_device(normalized, k.pci.devices())).flatten()
+    {
+        return alloc_handle(KernelObject::Device(DeviceState {
+            pci: Some(device),
+            name: None,
+        }));
+    }
+    if crate::devfs::block_device_exists(normalized) {
+        return alloc_handle(KernelObject::Device(DeviceState {
+            pci: None,
+            name: Some(String::from(normalized)),
+        }));
+    }
+    // `enumerate_devices` represents registered block devices with a stable
+    // numeric ID because the legacy DeviceInfo record has no name field.
+    // Resolve that ID here so enumeration followed by open is a complete
+    // round-trip even for callers that do not know the `/dev` spelling.
+    if let Some(id) = parse_hex_u32(normalized) {
+        if let Some(name) = crate::devfs::list_block_device_names()
+            .into_iter()
+            .find(|name| stable_device_id(name) == id)
+        {
+            return alloc_handle(KernelObject::Device(DeviceState {
+                pci: None,
+                name: Some(name),
+            }));
+        }
+    }
+    Err(SyscallError::NoSuchDevice)
 }
 
 pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallResult {
@@ -77,17 +112,18 @@ pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallRe
             check_handle_permission(h, HandlePerms::READ)?;
             with_handle_mut(h, |obj| {
                 let device = map_handle!(obj, Device, state);
+                let pci = device.pci.as_ref().ok_or(SyscallError::NotSupported)?;
                 let info = fullerene_abi::PciDeviceInfo {
-                    bus: device.pci.bus,
-                    device: device.pci.device,
-                    function: device.pci.function,
+                    bus: pci.bus,
+                    device: pci.device,
+                    function: pci.function,
                     reserved: 0,
-                    vendor_id: device.pci.vendor_id,
-                    product_id: device.pci.device_id,
-                    class_code: device.pci.class_code,
-                    subclass: device.pci.subclass,
-                    prog_if: device.pci.prog_if,
-                    header_type: device.pci.header_type,
+                    vendor_id: pci.vendor_id,
+                    product_id: pci.device_id,
+                    class_code: pci.class_code,
+                    subclass: pci.subclass,
+                    prog_if: pci.prog_if,
+                    header_type: pci.header_type,
                     reserved_tail: [0; 4],
                 };
                 copy_ioctl_out(arg, &info.to_ne_bytes())
@@ -97,8 +133,9 @@ pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallRe
             check_handle_permission(h, HandlePerms::READ)?;
             with_handle_mut(h, |obj| {
                 let device = map_handle!(obj, Device, state);
+                let pci = device.pci.as_ref().ok_or(SyscallError::NotSupported)?;
                 let mut request = read_config_request(arg)?;
-                let value = read_pci_config(&device.pci, &request)?;
+                let value = read_pci_config(pci, &request)?;
                 request.value = value;
                 copy_ioctl_out(arg, &request.to_ne_bytes())
             })
@@ -107,21 +144,23 @@ pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallRe
             check_handle_permission(h, HandlePerms::WRITE)?;
             with_handle_mut(h, |obj| {
                 let device = map_handle!(obj, Device, state);
+                let pci = device.pci.as_ref().ok_or(SyscallError::NotSupported)?;
                 let request = read_config_request(arg)?;
                 if !is_safe_pci_config_write(request.offset, request.width) {
                     return Err(SyscallError::InvalidArgument);
                 }
-                write_pci_config(&device.pci, &request)
+                write_pci_config(pci, &request)
             })
         }
         fullerene_abi::device_ioctl::INITIALIZE_NVME => {
             check_handle_permission(h, HandlePerms::WRITE)?;
             let device = with_handle_mut(h, |obj| {
                 let device = map_handle!(obj, Device, state);
-                if device.pci.class_code != 0x01 || device.pci.subclass != 0x08 {
+                let pci = device.pci.as_ref().ok_or(SyscallError::NotSupported)?;
+                if pci.class_code != 0x01 || pci.subclass != 0x08 {
                     return Err(SyscallError::NotSupported);
                 }
-                Ok(device.pci.clone())
+                Ok(pci.clone())
             })?;
             #[cfg(not(nitrogen_no_storage))]
             {
@@ -135,12 +174,102 @@ pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallRe
                 Err(SyscallError::NotSupported)
             }
         }
+        fullerene_abi::device_ioctl::INITIALIZE_AHCI => {
+            check_handle_permission(h, HandlePerms::WRITE)?;
+            let device = with_handle_mut(h, |obj| {
+                let device = map_handle!(obj, Device, state);
+                let pci = device.pci.as_ref().ok_or(SyscallError::NotSupported)?;
+                if pci.class_code != 0x01 || pci.subclass != 0x06 {
+                    return Err(SyscallError::NotSupported);
+                }
+                Ok(pci.clone())
+            })?;
+            #[cfg(not(nitrogen_no_storage))]
+            {
+                let index = crate::drivers::registry::initialize_ahci(device)
+                    .map_err(SyscallError::from)?;
+                Ok(index as u64)
+            }
+            #[cfg(nitrogen_no_storage)]
+            {
+                let _ = device;
+                Err(SyscallError::NotSupported)
+            }
+        }
+        fullerene_abi::device_ioctl::GET_CAPABILITIES => {
+            check_handle_permission(h, HandlePerms::READ)?;
+            with_handle_mut(h, |obj| {
+                let device = map_handle!(obj, Device, state);
+                let info = fullerene_abi::DeviceCapabilityInfo {
+                    class: device_class(device),
+                    reserved: 0,
+                    capabilities: device_capabilities(device),
+                };
+                copy_ioctl_out(arg, &info.to_ne_bytes())
+            })
+        }
+        fullerene_abi::device_ioctl::GET_BLOCK_INFO => {
+            check_handle_permission(h, HandlePerms::READ)?;
+            let name = with_handle_mut(h, |obj| {
+                let device = map_handle!(obj, Device, state);
+                device.name.clone().ok_or(SyscallError::NotSupported)
+            })?;
+            let (sector_size, total_sectors) =
+                crate::devfs::block_device_info(&name).ok_or(SyscallError::NoSuchDevice)?;
+            let info = fullerene_abi::BlockDeviceInfo {
+                sector_size,
+                reserved: 0,
+                total_sectors,
+            };
+            copy_ioctl_out(arg, &info.to_ne_bytes())
+        }
+        fullerene_abi::device_ioctl::READ_BLOCKS | fullerene_abi::device_ioctl::WRITE_BLOCKS => {
+            let write = cmd == fullerene_abi::device_ioctl::WRITE_BLOCKS;
+            check_handle_permission(
+                h,
+                if write {
+                    HandlePerms::WRITE
+                } else {
+                    HandlePerms::READ
+                },
+            )?;
+            let request = read_block_request(arg)?;
+            let name = with_handle_mut(h, |obj| {
+                let device = map_handle!(obj, Device, state);
+                device.name.clone().ok_or(SyscallError::NotSupported)
+            })?;
+            let (sector_size, _) =
+                crate::devfs::block_device_info(&name).ok_or(SyscallError::NoSuchDevice)?;
+            let required = (sector_size as usize)
+                .checked_mul(request.count as usize)
+                .ok_or(SyscallError::Overflow)?;
+            if request.count == 0 || (request.buffer_len as usize) < required {
+                return Err(SyscallError::InvalidArgument);
+            }
+            let slice = UserSlice::new(request.buffer_ptr as *mut u8, required, !write)
+                .map_err(|_| SyscallError::AddressFault)?;
+            let mut buffer = vec![0u8; required];
+            if write {
+                unsafe { slice.copy_from_user(&mut buffer) }
+                    .map_err(|_| SyscallError::AddressFault)?;
+                crate::devfs::write_block_device(&name, request.lba, request.count, &buffer)
+                    .map_err(SyscallError::from)?;
+            } else {
+                crate::devfs::read_block_device(&name, request.lba, request.count, &mut buffer)
+                    .map_err(SyscallError::from)?;
+                unsafe { slice.copy_to_user(&buffer) }.map_err(|_| SyscallError::AddressFault)?;
+            }
+            Ok(required as u64)
+        }
         fullerene_abi::device_ioctl::READ_MMIO => {
             check_handle_permission(h, HandlePerms::READ)?;
             let request = read_mmio_request(arg, false)?;
             let device = with_handle_mut(h, |obj| {
                 let device = map_handle!(obj, Device, state);
-                Ok(device.pci.clone())
+                if device_capabilities(device) & fullerene_abi::device_capability::MMIO_READ == 0 {
+                    return Err(SyscallError::NotSupported);
+                }
+                Ok(device.pci.clone().ok_or(SyscallError::NotSupported)?)
             })?;
             #[cfg(not(nitrogen_no_storage))]
             {
@@ -168,7 +297,10 @@ pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallRe
             let request = read_mmio_request(arg, true)?;
             let device = with_handle_mut(h, |obj| {
                 let device = map_handle!(obj, Device, state);
-                Ok(device.pci.clone())
+                if device_capabilities(device) & fullerene_abi::device_capability::MMIO_WRITE == 0 {
+                    return Err(SyscallError::NotSupported);
+                }
+                Ok(device.pci.clone().ok_or(SyscallError::NotSupported)?)
             })?;
             #[cfg(not(nitrogen_no_storage))]
             {
@@ -332,6 +464,76 @@ fn write_pci_config(
     Ok(0)
 }
 
+fn pci_device_class(device: &nitrogen::pci::PciDevice) -> u32 {
+    match (device.class_code, device.subclass) {
+        (0x01, _) => fullerene_abi::device_class::STORAGE,
+        (0x02, _) => fullerene_abi::device_class::NETWORK,
+        (0x03, _) => fullerene_abi::device_class::DISPLAY,
+        (0x04, _) => fullerene_abi::device_class::AUDIO,
+        (0x0C, 0x03) => fullerene_abi::device_class::USB,
+        (0x09, _) => fullerene_abi::device_class::INPUT,
+        (0x0C, _) => fullerene_abi::device_class::OTHER,
+        _ => fullerene_abi::device_class::OTHER,
+    }
+}
+
+fn stable_device_id(name: &str) -> u32 {
+    let mut hash = 0x811C9DC5u32;
+    for byte in name.bytes() {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    hash
+}
+
+fn device_class(device: &DeviceState) -> u32 {
+    device
+        .pci
+        .as_ref()
+        .map_or(fullerene_abi::device_class::STORAGE, pci_device_class)
+}
+
+fn device_capabilities(device: &DeviceState) -> u64 {
+    if device.name.is_some() {
+        return fullerene_abi::device_capability::BLOCK_INFO
+            | fullerene_abi::device_capability::BLOCK_READ
+            | fullerene_abi::device_capability::BLOCK_WRITE;
+    }
+    let Some(pci) = device.pci.as_ref() else {
+        return 0;
+    };
+    let mut capabilities = fullerene_abi::device_capability::PCI_CONFIG_READ
+        | fullerene_abi::device_capability::PCI_CONFIG_WRITE;
+    match (pci.class_code, pci.subclass) {
+        (0x01, 0x08) => {
+            capabilities |= fullerene_abi::device_capability::NVME_INITIALIZE
+                | fullerene_abi::device_capability::MMIO_READ
+                | fullerene_abi::device_capability::MMIO_WRITE;
+        }
+        (0x01, 0x06) => {
+            capabilities |= fullerene_abi::device_capability::AHCI_INITIALIZE;
+        }
+        _ => {}
+    }
+    capabilities
+}
+
+fn read_block_request(arg: u64) -> Result<fullerene_abi::BlockRequest, SyscallError> {
+    let slice = UserSlice::new(
+        arg as *mut u8,
+        fullerene_abi::BlockRequest::BYTE_SIZE,
+        false,
+    )
+    .map_err(|_| SyscallError::InvalidArgument)?;
+    let mut bytes = [0u8; fullerene_abi::BlockRequest::BYTE_SIZE];
+    unsafe { slice.copy_from_user(&mut bytes) }.map_err(|_| SyscallError::InvalidArgument)?;
+    let request = fullerene_abi::BlockRequest::from_ne_bytes(bytes);
+    if request.reserved != 0 || request.count == 0 || request.buffer_ptr == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+    Ok(request)
+}
+
 fn device_id_matches(id: &str, device: &nitrogen::pci::PciDevice) -> bool {
     let id = id.strip_prefix("pci:").unwrap_or(id);
     let fields: alloc::vec::Vec<&str> = id.split([':', '.', '/']).collect();
@@ -374,6 +576,16 @@ fn find_device(id: &str, devices: &[nitrogen::pci::PciDevice]) -> Option<nitroge
         return devices
             .iter()
             .filter(|device| device.class_code == 0x01 && device.subclass == 0x08)
+            .nth(index)
+            .cloned();
+    }
+    if let Some(index) = normalized
+        .strip_prefix("ahci")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        return devices
+            .iter()
+            .filter(|device| device.class_code == 0x01 && device.subclass == 0x06)
             .nth(index)
             .cloned();
     }
@@ -424,6 +636,13 @@ mod tests {
         ];
         assert_eq!(find_device("nvme0", &devices).map(|d| d.bus), Some(2));
         assert_eq!(find_device("nvme1", &devices).map(|d| d.bus), Some(4));
+    }
+
+    #[test]
+    fn open_device_resolves_ahci_stable_names() {
+        let devices = [pci(2, 3, 0, 0x01, 0x06), pci(4, 5, 1, 0x01, 0x06)];
+        assert_eq!(find_device("ahci0", &devices).map(|d| d.bus), Some(2));
+        assert_eq!(find_device("ahci1", &devices).map(|d| d.bus), Some(4));
     }
 
     #[test]

@@ -1067,7 +1067,7 @@ mod tests {
                 .handle_table
                 .lock()
                 .alloc(KernelObject::Device(crate::syscall::DeviceState {
-                    pci: nitrogen::pci::PciDevice {
+                    pci: Some(nitrogen::pci::PciDevice {
                         bus: 0,
                         device: 0,
                         function: 0,
@@ -1078,7 +1078,8 @@ mod tests {
                         subclass: 0,
                         prog_if: 0,
                         header_type: 0,
-                    },
+                    }),
+                    name: None,
                 }));
 
         assert!(first.fd_table.lock().entries.contains_key(&3));

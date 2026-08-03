@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
@@ -156,7 +157,10 @@ pub struct WindowState {
 /// independent from a mutable global registry and prevents a re-scan from
 /// silently retargeting an existing handle.
 pub struct DeviceState {
-    pub pci: nitrogen::pci::PciDevice,
+    /// PCI identity for hardware-backed handles.
+    pub pci: Option<nitrogen::pci::PciDevice>,
+    /// Stable `/dev` name for named device handles.
+    pub name: Option<String>,
 }
 
 pub struct ChannelInner {

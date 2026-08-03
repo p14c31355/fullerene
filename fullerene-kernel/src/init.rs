@@ -344,6 +344,29 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             let mgr = DRIVER_MGR.call_once(crate::hardware::driver_manager::DriverManager::new);
             mgr.discover_and_attach(&registry, ctx, &present_devices);
 
+            // AHCI initialization is explicit and serialized through the same
+            // kernel-owned SQ/CQ used by the shell and device ioctl paths.
+            // Successful initialization enumerates ATA ports and publishes
+            // their SATA block devices for the installer and /dev clients.
+            #[cfg(not(nitrogen_no_storage))]
+            for device in present_devices
+                .iter()
+                .filter(|device| device.class_code == 0x01 && device.subclass == 0x06)
+            {
+                match crate::drivers::registry::initialize_ahci(device.clone()) {
+                    Ok(index) => log::info!("AHCI: boot controller ahci{} ready", index),
+                    Err(error) => log::warn!(
+                        "AHCI: boot initialization failed for {:02x}:{:02x}.{} ({:04x}:{:04x}): {}",
+                        device.bus,
+                        device.device,
+                        device.function,
+                        device.vendor_id,
+                        device.device_id,
+                        error
+                    ),
+                }
+            }
+
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())
         }),

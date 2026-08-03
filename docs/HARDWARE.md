@@ -120,10 +120,10 @@ Mount FAT or exFAT media with, for example,
 `mount /dev/sd0 /mnt/sdcard`. The mount point is any absolute VFS directory;
 `mount` creates it when absent. Refresh an already-open File Manager to add the
 mounted drive to its sidebar.
-This keeps an uncompleted PCIe load out of the boot path. AHCI and NVMe are not
-attached at boot until their kernel adapters can publish usable block devices;
-their former adapters reset hardware but returned zero-sized placeholder
-devices.
+This keeps an uncompleted PCIe load out of the boot path. AHCI is attached at
+boot through its kernel adapter, runs ATA IDENTIFY, and publishes usable SATA
+disks as `/dev/sataNpN`. NVMe remains initialization-only until its block
+adapter is complete; it is not used as an installation target yet.
 
 PCI resource assignment preserves every non-zero firmware BAR without issuing
 the destructive all-ones size probe. Fullerene probes and assigns only a BAR

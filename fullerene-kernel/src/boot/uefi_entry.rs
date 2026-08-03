@@ -70,6 +70,13 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
         args.fb_pixel_format,
     )
     .expect("boot framebuffer snapshot must be initialized only once");
+    crate::graphics::discovery::store_boot_payload_params(
+        args.bootloader_image_ptr,
+        args.bootloader_image_size,
+        args.kernel_image_ptr,
+        args.kernel_image_size,
+    )
+    .expect("boot payload snapshot must be initialized only once");
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,

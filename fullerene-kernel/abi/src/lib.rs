@@ -423,6 +423,108 @@ impl DeviceInfo {
     }
 }
 
+/// Device classes accepted by `enumerate_devices`.
+pub mod device_class {
+    pub const ANY: u32 = 0;
+    pub const STORAGE: u32 = 1;
+    pub const DISPLAY: u32 = 2;
+    pub const NETWORK: u32 = 3;
+    pub const INPUT: u32 = 4;
+    pub const AUDIO: u32 = 5;
+    pub const USB: u32 = 6;
+    pub const OTHER: u32 = 0xFFFF;
+}
+
+/// Operations advertised by `device_ioctl(GET_CAPABILITIES, ...)`.
+pub mod device_capability {
+    pub const PCI_CONFIG_READ: u64 = 1 << 0;
+    pub const PCI_CONFIG_WRITE: u64 = 1 << 1;
+    pub const NVME_INITIALIZE: u64 = 1 << 2;
+    pub const AHCI_INITIALIZE: u64 = 1 << 3;
+    pub const MMIO_READ: u64 = 1 << 4;
+    pub const MMIO_WRITE: u64 = 1 << 5;
+    pub const BLOCK_INFO: u64 = 1 << 6;
+    pub const BLOCK_READ: u64 = 1 << 7;
+    pub const BLOCK_WRITE: u64 = 1 << 8;
+}
+
+/// Capability flags and class returned for an opened device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct DeviceCapabilityInfo {
+    pub class: u32,
+    pub reserved: u32,
+    pub capabilities: u64,
+}
+
+impl DeviceCapabilityInfo {
+    pub const BYTE_SIZE: usize = 16;
+
+    pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
+        let mut bytes = [0; Self::BYTE_SIZE];
+        bytes[0..4].copy_from_slice(&self.class.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&self.reserved.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&self.capabilities.to_ne_bytes());
+        bytes
+    }
+}
+
+/// Geometry returned for a block-capable device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct BlockDeviceInfo {
+    pub sector_size: u32,
+    pub reserved: u32,
+    pub total_sectors: u64,
+}
+
+impl BlockDeviceInfo {
+    pub const BYTE_SIZE: usize = 16;
+
+    pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
+        let mut bytes = [0; Self::BYTE_SIZE];
+        bytes[0..4].copy_from_slice(&self.sector_size.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&self.reserved.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&self.total_sectors.to_ne_bytes());
+        bytes
+    }
+}
+
+/// User buffer request for block-device reads and writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct BlockRequest {
+    pub lba: u64,
+    pub count: u16,
+    pub reserved: u16,
+    pub buffer_len: u32,
+    pub buffer_ptr: u64,
+}
+
+impl BlockRequest {
+    pub const BYTE_SIZE: usize = 24;
+
+    pub fn from_ne_bytes(bytes: [u8; Self::BYTE_SIZE]) -> Self {
+        Self {
+            lba: u64::from_ne_bytes(bytes[0..8].try_into().unwrap()),
+            count: u16::from_ne_bytes(bytes[8..10].try_into().unwrap()),
+            reserved: u16::from_ne_bytes(bytes[10..12].try_into().unwrap()),
+            buffer_len: u32::from_ne_bytes(bytes[12..16].try_into().unwrap()),
+            buffer_ptr: u64::from_ne_bytes(bytes[16..24].try_into().unwrap()),
+        }
+    }
+
+    pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
+        let mut bytes = [0; Self::BYTE_SIZE];
+        bytes[0..8].copy_from_slice(&self.lba.to_ne_bytes());
+        bytes[8..10].copy_from_slice(&self.count.to_ne_bytes());
+        bytes[10..12].copy_from_slice(&self.reserved.to_ne_bytes());
+        bytes[12..16].copy_from_slice(&self.buffer_len.to_ne_bytes());
+        bytes[16..24].copy_from_slice(&self.buffer_ptr.to_ne_bytes());
+        bytes
+    }
+}
+
 /// Native device-handle ioctl commands.
 ///
 /// The command namespace is deliberately small while device handles are still
@@ -440,6 +542,16 @@ pub mod device_ioctl {
     pub const READ_MMIO: u64 = 5;
     /// Submit a checked MMIO write through the owning driver request queue.
     pub const WRITE_MMIO: u64 = 6;
+    /// Submit the explicit AHCI controller initialization request.
+    pub const INITIALIZE_AHCI: u64 = 7;
+    /// Return the class and operation flags supported by the opened device.
+    pub const GET_CAPABILITIES: u64 = 8;
+    /// Return block geometry for a block-capable device.
+    pub const GET_BLOCK_INFO: u64 = 9;
+    /// Read sectors from a block-capable device into a user buffer.
+    pub const READ_BLOCKS: u64 = 10;
+    /// Write sectors from a user buffer to a block-capable device.
+    pub const WRITE_BLOCKS: u64 = 11;
 }
 
 /// PCI identity returned by `device_ioctl(GET_PCI_INFO, ...)`.
@@ -598,6 +710,12 @@ const _: () = {
     assert!(core::mem::align_of::<TimeSpec>() == 8);
     assert!(core::mem::size_of::<DeviceInfo>() == DeviceInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<DeviceInfo>() == 4);
+    assert!(core::mem::size_of::<DeviceCapabilityInfo>() == DeviceCapabilityInfo::BYTE_SIZE);
+    assert!(core::mem::align_of::<DeviceCapabilityInfo>() == 8);
+    assert!(core::mem::size_of::<BlockDeviceInfo>() == BlockDeviceInfo::BYTE_SIZE);
+    assert!(core::mem::align_of::<BlockDeviceInfo>() == 8);
+    assert!(core::mem::size_of::<BlockRequest>() == BlockRequest::BYTE_SIZE);
+    assert!(core::mem::align_of::<BlockRequest>() == 8);
     assert!(core::mem::size_of::<PciDeviceInfo>() == PciDeviceInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<PciDeviceInfo>() == 2);
     assert!(core::mem::size_of::<PciConfigRequest>() == PciConfigRequest::BYTE_SIZE);
@@ -637,6 +755,18 @@ mod tests {
             PciConfigRequest::from_ne_bytes(request.to_ne_bytes()),
             request
         );
+    }
+
+    #[test]
+    fn block_request_serialization_round_trips() {
+        let request = BlockRequest {
+            lba: 0x1234_5678,
+            count: 8,
+            reserved: 0,
+            buffer_len: 4096,
+            buffer_ptr: 0x7fff_0000,
+        };
+        assert_eq!(BlockRequest::from_ne_bytes(request.to_ne_bytes()), request);
     }
 
     #[test]

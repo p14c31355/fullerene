@@ -1119,6 +1119,45 @@ fn nozzle_services() -> nozzle::ShellServices {
                         .write_str("NVMe init: storage support not compiled in.\n");
                 }
             }
+            "ahci_init" => {
+                #[cfg(not(nitrogen_no_storage))]
+                {
+                    use nitrogen::pci::PciScanner;
+
+                    let mut scanner = PciScanner::new();
+                    let mut found = false;
+                    if scanner.scan_all_buses().is_ok() {
+                        for device in scanner
+                            .get_devices()
+                            .iter()
+                            .filter(|device| device.class_code == 0x01 && device.subclass == 0x06)
+                        {
+                            found = true;
+                            match crate::drivers::registry::initialize_ahci(device.clone()) {
+                                Ok(index) => {
+                                    tline!(
+                                        ctx.terminal,
+                                        "AHCI init: ahci{} ready (SQ/CQ completion)",
+                                        index
+                                    );
+                                }
+                                Err(error) => {
+                                    tline!(ctx.terminal, "AHCI init: failed: {}", error);
+                                }
+                            }
+                        }
+                    }
+                    if !found {
+                        ctx.terminal
+                            .write_str("AHCI init: no SATA controller found.\n");
+                    }
+                }
+                #[cfg(nitrogen_no_storage)]
+                {
+                    ctx.terminal
+                        .write_str("AHCI init: storage support not compiled in.\n");
+                }
+            }
             "usb_info" => {
                 use crate::drivers::registry;
                 let count = crate::devfs::list_block_device_names().len();
@@ -1399,6 +1438,49 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
                 loop {
                     x86_64::instructions::hlt();
+                }
+            }
+            "install_fullerene list" => {
+                solvent::write_terminal("Fullerene installer targets (destructive install):\n");
+                let devices = crate::installer::list_devices();
+                if devices.is_empty() {
+                    solvent::write_terminal("  (no registered block devices)\n");
+                } else {
+                    for device in devices {
+                        solvent::write_terminal(&format!(
+                            "  /dev/{}  {} bytes/sector  {} sectors  {}\n",
+                            device.name,
+                            device.sector_size,
+                            device.total_sectors,
+                            if device.available {
+                                "available"
+                            } else {
+                                "busy"
+                            }
+                        ));
+                    }
+                }
+                solvent::write_terminal(
+                    "To erase and install: install_fullerene <device> --confirm\n",
+                );
+            }
+            _ if cmd.starts_with("install_fullerene ") => {
+                let rest = cmd[18..].trim();
+                let Some(device) = rest.strip_suffix(" --confirm") else {
+                    solvent::write_terminal(
+                        "Installer: missing explicit --confirm; no disk was changed.\n",
+                    );
+                    return;
+                };
+                match crate::installer::install(device) {
+                    Ok(bytes) => solvent::write_terminal(&format!(
+                        "Installer: /dev/{} is ready ({} payload bytes written). Reboot to test it.\n",
+                        device.trim_start_matches("/dev/"),
+                        bytes
+                    )),
+                    Err(error) => {
+                        solvent::write_terminal(&format!("Installer: failed: {}\n", error))
+                    }
                 }
             }
             _ if cmd.starts_with("app_install ") => {

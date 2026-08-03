@@ -55,6 +55,7 @@ fn route_style_launcher(rt: &mut crate::RuntimeState, index: usize) -> bool {
         lattice::common::AppRoute::Clock => {
             crate::menu_actions::open_info_window(rt, crate::menu_actions::InfoWindow::SystemInfo)
         }
+        lattice::common::AppRoute::Installer => crate::installer::open(rt),
         lattice::common::AppRoute::Unknown => return false,
     }
     rt.frame_due = true;
@@ -239,6 +240,11 @@ impl EventHandler for WmEventHandler {
                                     rt.frame_due = true;
                                     return true;
                                 }
+                                lattice::common::AppRoute::Installer => {
+                                    crate::installer::open(rt);
+                                    rt.frame_due = true;
+                                    return true;
+                                }
                                 _ => {}
                             }
                         }
@@ -281,6 +287,15 @@ impl EventHandler for WmEventHandler {
                     && rt.settings_window.is_some()
                     && rt.desktop.wm.window_at(cx, cy) == rt.settings_window
                     && crate::settings_bridge::settings_handle_mouse(rt, cx, cy)
+                {
+                    return true;
+                }
+
+                if *btn == MouseButton::Left
+                    && rt.installer.is_some()
+                    && rt.desktop.wm.window_at(cx, cy)
+                        == rt.installer.as_ref().map(|state| state.window_id)
+                    && crate::installer::handle_mouse(rt, cx, cy)
                 {
                     return true;
                 }
@@ -589,6 +604,12 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
                 Some(lattice::common::AppRoute::Settings) => {
                     // Settings
                     crate::menu_actions::open_settings_window(rt);
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                Some(lattice::common::AppRoute::Installer) => {
+                    crate::installer::open(rt);
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;

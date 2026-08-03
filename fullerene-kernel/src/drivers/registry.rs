@@ -133,6 +133,9 @@ enum DriverRequestKind {
     InitializeNvme {
         device: PciDevice,
     },
+    InitializeAhci {
+        device: PciDevice,
+    },
     Mmio {
         device: PciDevice,
         bar: u8,
@@ -577,13 +580,21 @@ impl StorageDriver for SdCardStorageCtl {
 fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
     let request_id = request.request_id;
     let failure_device = match &request.kind {
-        DriverRequestKind::InitializeNvme { device } | DriverRequestKind::Mmio { device, .. } => {
-            device.clone()
-        }
+        DriverRequestKind::InitializeNvme { device }
+        | DriverRequestKind::InitializeAhci { device }
+        | DriverRequestKind::Mmio { device, .. } => device.clone(),
     };
     let (result, controller_index) = match request.kind {
         DriverRequestKind::InitializeNvme { device } => (
             nitrogen::storage::nvme::init_device(
+                &crate::driver_context_impl::KernelDriverContext,
+                device,
+            )
+            .map(|index| index as u64),
+            true,
+        ),
+        DriverRequestKind::InitializeAhci { device } => (
+            nitrogen::storage::ahci::init_device(
                 &crate::driver_context_impl::KernelDriverContext,
                 device,
             )
@@ -682,6 +693,133 @@ pub fn initialize_nvme(device: PciDevice) -> Result<usize, nitrogen::DriverError
         Ok(index)
     } else {
         Err(completion.error.unwrap_or(nitrogen::DriverError::Io))
+    }
+}
+
+/// Submit one explicit AHCI initialization request through the generic
+/// kernel-owned SQ and return its CQ completion.
+#[cfg(not(nitrogen_no_storage))]
+pub fn initialize_ahci(device: PciDevice) -> Result<usize, nitrogen::DriverError> {
+    let completion = submit_driver_request(DriverRequestKind::InitializeAhci { device })?;
+    if let Some(index) = completion.controller_index {
+        register_ahci_block_devices(index);
+        log::info!("AHCI: initialized ahci{} through SQ/CQ", index);
+        Ok(index)
+    } else {
+        Err(completion.error.unwrap_or(nitrogen::DriverError::Io))
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+fn register_ahci_block_devices(controller_index: usize) {
+    for info in nitrogen::storage::ahci::devices()
+        .into_iter()
+        .filter(|info| info.controller_index == controller_index)
+    {
+        let name = alloc::format!("sata{}p{}", info.controller_index, info.port_index);
+        if crate::devfs::block_device_exists(&name) {
+            continue;
+        }
+        crate::devfs::register_block_device(
+            name.clone(),
+            Box::new(AhciBlockDevice {
+                controller_index: info.controller_index,
+                port_index: info.port_index,
+                sector_size: info.sector_size,
+                total_sectors: info.total_sectors,
+            }),
+        );
+        log::info!(
+            "AHCI: registered /dev/{} ({} bytes/sector, {} sectors)",
+            name,
+            info.sector_size,
+            info.total_sectors
+        );
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+struct AhciBlockDevice {
+    controller_index: usize,
+    port_index: u8,
+    sector_size: u32,
+    total_sectors: u64,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+impl BlockDevice for AhciBlockDevice {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        let required = (count as usize)
+            .checked_mul(self.sector_size as usize)
+            .ok_or(BlockError::LbaOverflow)?;
+        if buf.len() < required {
+            return Err(BlockError::BufferTooSmall {
+                required,
+                provided: buf.len(),
+            });
+        }
+        let end = lba
+            .checked_add(count as u64)
+            .ok_or(BlockError::LbaOverflow)?;
+        if end > self.total_sectors {
+            return Err(BlockError::LbaOverflow);
+        }
+        nitrogen::storage::ahci::read_sectors(
+            self.controller_index,
+            self.port_index,
+            lba,
+            count,
+            &mut buf[..required],
+        )
+        .map_err(ahci_block_error)
+    }
+
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+        let required = (count as usize)
+            .checked_mul(self.sector_size as usize)
+            .ok_or(BlockError::LbaOverflow)?;
+        if buf.len() < required {
+            return Err(BlockError::BufferTooSmall {
+                required,
+                provided: buf.len(),
+            });
+        }
+        let end = lba
+            .checked_add(count as u64)
+            .ok_or(BlockError::LbaOverflow)?;
+        if end > self.total_sectors {
+            return Err(BlockError::LbaOverflow);
+        }
+        nitrogen::storage::ahci::write_sectors(
+            self.controller_index,
+            self.port_index,
+            lba,
+            count,
+            &buf[..required],
+        )
+        .map_err(ahci_block_error)
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.sector_size
+    }
+
+    fn total_sectors(&self) -> u64 {
+        self.total_sectors
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+fn ahci_block_error(error: nitrogen::DriverError) -> BlockError {
+    match error {
+        nitrogen::DriverError::Busy => BlockError::Busy,
+        nitrogen::DriverError::InvalidArgument => BlockError::LbaOverflow,
+        nitrogen::DriverError::TimedOut
+        | nitrogen::DriverError::Io
+        | nitrogen::DriverError::DeviceFault
+        | nitrogen::DriverError::Protocol
+        | nitrogen::DriverError::DeviceNotFound => BlockError::Device,
+        _ => BlockError::Device,
     }
 }
 

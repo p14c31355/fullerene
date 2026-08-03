@@ -187,6 +187,7 @@ pub mod hardware;
 pub mod heap;
 pub mod init;
 pub mod initramfs;
+pub mod installer;
 pub mod interrupts;
 pub mod klog;
 // The Linux personality is owned by Solvent.  It is compiled into the

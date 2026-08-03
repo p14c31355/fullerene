@@ -331,6 +331,9 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     if rt.settings_dirty {
         crate::settings_bridge::render_settings(rt);
     }
+    if rt.installer_dirty {
+        crate::installer::render(rt);
+    }
     if rt.klog_live_dirty {
         crate::menu_actions::render_klog_live(rt);
     }

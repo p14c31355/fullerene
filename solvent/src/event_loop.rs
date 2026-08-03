@@ -219,6 +219,7 @@ pub fn tick_core(now: u64) {
     }
     service_explorer_navigation();
     service_explorer_copy();
+    crate::installer::service_install_request();
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.shell_launch_pending;
         runtime.shell_launch_pending = false;

@@ -142,6 +142,26 @@ pub fn init() {
             }
             result
         }),
+        installer_device_list: Some(|| {
+            crate::installer::list_devices()
+                .into_iter()
+                .map(|device| solvent::InstallerDevice {
+                    name: device.name,
+                    sector_size: device.sector_size,
+                    total_sectors: device.total_sectors,
+                    available: device.available,
+                })
+                .collect()
+        }),
+        installer_run: Some(|name| {
+            crate::installer::install_step(name)
+                .map(|progress| solvent::InstallerProgress {
+                    complete: progress.complete,
+                    written_bytes: progress.written_bytes,
+                    total_bytes: progress.total_bytes,
+                })
+                .map_err(|error| alloc::format!("{}", error))
+        }),
         mounted_drive_list: Some(|| {
             crate::contexts::vfs::with_vfs(|vfs| vfs.mounted_block_devices()).unwrap_or_default()
         }),
