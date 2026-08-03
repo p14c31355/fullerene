@@ -665,7 +665,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let child_vdso = None;
     let child_process = process::Process {
         id: child_pid,
-        name: "linux-child",
+        name: Box::from("linux-child"),
         state: process::ProcessState::Ready,
         context: {
             let mut ctx = parent_ctx.clone();

@@ -441,8 +441,8 @@ impl ProcessResources {
 pub struct Process {
     /// Unique process ID
     pub id: ProcessId,
-    /// Process name
-    pub name: &'static str,
+    /// Owned process name; callers may provide a transient label.
+    pub name: Box<str>,
     /// Current state
     pub state: ProcessState,
     /// CPU context for context switching
@@ -479,12 +479,12 @@ pub struct Process {
 
 impl Process {
     /// Create a new process
-    pub fn new(name: &'static str, entry_point: VirtAddr, is_user: bool) -> Self {
+    pub fn new(name: &str, entry_point: VirtAddr, is_user: bool) -> Self {
         let id = SCHEDULER.allocate_pid();
 
         Self {
             id,
-            name,
+            name: Box::from(name),
             state: ProcessState::Ready,
             context: Box::new(ProcessContext::default()),
             fpu_state: Box::new(crate::fpu::XsaveState::initial()),
@@ -507,7 +507,7 @@ impl Process {
     /// Initialize process context for first execution
     pub fn init_context(&mut self, kernel_stack_top: VirtAddr) {
         petroleum::mem_debug!("Process: init_context for ");
-        petroleum::mem_debug!(self.name);
+        petroleum::mem_debug!(self.name.as_ref());
         petroleum::mem_debug!("\n");
 
         self.context.kernel_rsp = 0;
@@ -596,7 +596,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
 
     let idle = Box::new(Process {
         id: pid,
-        name: "idle",
+        name: Box::from("idle"),
         state: ProcessState::Running,
         context: Box::new(ctx),
         fpu_state: Box::new(crate::fpu::XsaveState::initial()),
@@ -625,7 +625,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
 
 /// Create a new process and add it to the process list
 pub fn create_process(
-    name: &'static str,
+    name: &str,
     entry_point_address: VirtAddr,
     is_user: bool,
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
@@ -735,14 +735,14 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     let is_idle = SCHEDULER
-        .with_process(pid, |process| process.name == "idle")
+        .with_process(pid, |process| process.name.as_ref() == "idle")
         .unwrap_or(false);
     let is_current = SCHEDULER.current_pid() == pid.0 as usize;
     let to_unblock = SCHEDULER
         .with_process(pid, |process| {
             // The idle task owns neither an allocated stack nor a replacement task.
             // It is a scheduler invariant, not a terminable user process.
-            if process.name == "idle" {
+            if process.name.as_ref() == "idle" {
                 return Vec::new();
             }
             process.state = ProcessState::Terminated;
@@ -1036,7 +1036,7 @@ mod tests {
     fn test_process_creation() {
         let addr = VirtAddr::new(0);
         let proc = Process::new("test", addr, false);
-        assert_eq!(proc.name, "test");
+        assert_eq!(proc.name.as_ref(), "test");
         assert_eq!(proc.state, ProcessState::Ready);
     }
 

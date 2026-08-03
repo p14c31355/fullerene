@@ -119,7 +119,7 @@ pub fn init() {
                     };
                     result.push(solvent::ProcessEntry {
                         pid: pid.0,
-                        name: alloc::string::String::from(proc.name),
+                        name: alloc::string::String::from(proc.name.as_ref()),
                         state,
                     });
                 }

@@ -683,17 +683,14 @@ fn initialize_linux_stack_transaction(
 
 /// Load a program from raw bytes and create a process for it using goblin.
 /// If `linux_abi` is true, attaches a LinuxRuntime for Linux ABI emulation.
-pub fn load_program(
-    image_data: &[u8],
-    name: &'static str,
-) -> Result<process::ProcessId, LoadError> {
+pub fn load_program(image_data: &[u8], name: &str) -> Result<process::ProcessId, LoadError> {
     load_program_inner(image_data, name, &[], &[], false)
 }
 
 /// Load a program, optionally with Linux ABI emulation.
 pub fn load_program_with_runtime(
     image_data: &[u8],
-    name: &'static str,
+    name: &str,
     is_linux: bool,
 ) -> Result<process::ProcessId, LoadError> {
     let argv = [name];
@@ -703,7 +700,7 @@ pub fn load_program_with_runtime(
 /// Load a program with an explicit Linux argv/envp stack.
 pub fn load_program_with_runtime_args(
     image_data: &[u8],
-    name: &'static str,
+    name: &str,
     argv: &[&str],
     envp: &[&str],
     is_linux: bool,
@@ -796,7 +793,7 @@ pub fn load_linux_image_for_exec(
 
 fn load_program_inner(
     image_data: &[u8],
-    name: &'static str,
+    name: &str,
     argv: &[&str],
     envp: &[&str],
     is_linux: bool,

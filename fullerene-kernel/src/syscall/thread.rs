@@ -43,7 +43,7 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
 
     let mut thread_process = Process {
         id: child_pid,
-        name: "thread",
+        name: Box::from("thread"),
         state: ProcessState::Ready,
         context: parent_context.clone(),
         fpu_state: Box::new(parent_fpu),

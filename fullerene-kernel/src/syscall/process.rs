@@ -1,7 +1,6 @@
 //! Native process lifecycle syscalls and per-process resource access.
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec;
 use core::alloc::Layout;
 
@@ -181,7 +180,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
 
     let mut child_process = Process {
         id: process::ProcessId(child_pid as u64),
-        name: "child",
+        name: Box::from("child"),
         state: ProcessState::Ready,
         context: parent_context.clone(),
         fpu_state: Box::new(parent_fpu),
@@ -318,10 +317,7 @@ pub(crate) fn syscall_spawn(
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Process names are currently stored for the lifetime of the kernel.
-    // The process table is bounded, so leaking this short label is bounded too.
-    let process_name: &'static str = Box::leak(String::from(name).into_boxed_str());
-    crate::loader::load_program(&image, process_name)
+    crate::loader::load_program(&image, name)
         .map(|pid| pid.0)
         .map_err(|error| match error {
             crate::loader::LoadError::OutOfMemory => SyscallError::OutOfMemory,

@@ -307,7 +307,10 @@ impl SchedulerContext {
                 let Some(candidate) = list
                     .iter()
                     .position(|(_, process)| process.state == ProcessState::Ready)
-                    .or_else(|| list.iter().position(|(_, process)| process.name == "idle"))
+                    .or_else(|| {
+                        list.iter()
+                            .position(|(_, process)| process.name.as_ref() == "idle")
+                    })
                 else {
                     return (Some(list[current_idx].0), ProcessId(0));
                 };
@@ -327,7 +330,10 @@ impl SchedulerContext {
                     }
                     if next_idx == start_idx {
                         // All blocked → fall back to idle.
-                        if let Some(idle) = list.iter().position(|(_, p)| p.name == "idle") {
+                        if let Some(idle) = list
+                            .iter()
+                            .position(|(_, p)| p.name.as_ref() == "idle")
+                        {
                             next_idx = idle;
                         }
                         break;

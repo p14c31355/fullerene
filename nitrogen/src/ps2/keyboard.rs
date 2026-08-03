@@ -354,20 +354,44 @@ pub fn pop_input_char_unchecked() -> Option<u8> {
 /// Replace the first queued occurrence of `target` with `replacement`.
 ///
 /// This is used for shell shortcuts whose decoded control byte may already
-/// be behind ordinary typed characters in the input queue.
+/// be behind ordinary typed characters in the input queue. The replacement is
+/// mirrored in the UTF-8 line buffer while interrupts are disabled.
 pub fn replace_input_byte(target: u8, replacement: &[u8]) -> bool {
+    let Ok(replacement_text) = core::str::from_utf8(replacement) else {
+        return false;
+    };
+
     interrupt_free(|| {
         let mut buffer = INPUT_BUFFER.lock();
         let Some(index) = buffer.iter().position(|&byte| byte == target) else {
             return false;
         };
-        if replacement.len() > 256usize.saturating_sub(buffer.len()).saturating_add(1) {
+
+        let mut string_buffer = INPUT_STRING_BUFFER.lock();
+        let target_char = target as char;
+        let Some((string_index, target_width)) =
+            string_buffer
+                .char_indices()
+                .find_map(|(offset, character)| {
+                    (character == target_char).then_some((offset, character.len_utf8()))
+                })
+        else {
+            return false;
+        };
+
+        if replacement.len() > 256usize.saturating_sub(buffer.len()).saturating_add(1)
+            || replacement_text.len()
+                > 256usize
+                    .saturating_sub(string_buffer.len())
+                    .saturating_add(target_width)
+        {
             return false;
         }
         buffer.remove(index);
         for (offset, &byte) in replacement.iter().enumerate() {
             buffer.insert(index + offset, byte);
         }
+        string_buffer.replace_range(string_index..string_index + target_width, replacement_text);
         true
     })
 }
@@ -496,6 +520,9 @@ pub fn init_keyboard() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn test_scancode_conversion() {
         let m = KeyboardModifiers::default();
@@ -506,10 +533,39 @@ mod tests {
     }
     #[test]
     fn test_buffer_operations() {
+        let _guard = TEST_LOCK.lock();
         init_keyboard();
         assert_eq!(read_char(), None);
         INPUT_BUFFER.lock().push_back(b't');
         assert!(input_available());
         assert_eq!(read_char(), Some(b't'));
+    }
+
+    #[test]
+    fn replacing_input_byte_updates_string_buffer() {
+        let _guard = TEST_LOCK.lock();
+        flush_input();
+        INPUT_BUFFER.lock().extend([b'a', 0x16, b'b']);
+        INPUT_STRING_BUFFER.lock().push_str("a\u{16}b");
+
+        assert!(replace_input_byte(0x16, b"/tmp/file"));
+
+        let bytes: alloc::vec::Vec<_> = INPUT_BUFFER.lock().iter().copied().collect();
+        assert_eq!(bytes, b"a/tmp/fileb");
+        let mut drained = [0u8; 32];
+        let length = drain_line_buffer(&mut drained);
+        assert_eq!(&drained[..length], b"a/tmp/fileb");
+    }
+
+    #[test]
+    fn replacing_input_byte_rejects_invalid_utf8_without_mutating_buffers() {
+        let _guard = TEST_LOCK.lock();
+        flush_input();
+        INPUT_BUFFER.lock().push_back(0x16);
+        INPUT_STRING_BUFFER.lock().push('\u{16}');
+
+        assert!(!replace_input_byte(0x16, &[0xff]));
+        assert_eq!(INPUT_BUFFER.lock().as_slices().0, &[0x16]);
+        assert_eq!(INPUT_STRING_BUFFER.lock().as_str(), "\u{16}");
     }
 }
