@@ -255,6 +255,10 @@ pub fn cmd_mount(ctx: &mut CommandContext) -> bool {
 
 /// `exec` — execute a Linux ELF or WASI binary at a filesystem path
 pub fn cmd_exec(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: exec <path> [args...]\n");
+        return true;
+    }
     crate::sys_hooks::call_sys_info_hook(ctx, "exec");
     true
 }

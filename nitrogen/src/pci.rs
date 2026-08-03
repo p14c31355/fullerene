@@ -380,8 +380,9 @@ impl PciDevice {
     }
 
     /// Disable memory-space access and bus mastering after a driver-owned
-    /// controller has been stopped.  This prevents a failed device from
-    /// issuing further MMIO or DMA while its driver resources are reclaimed.
+    /// controller has been stopped. This must succeed before driver-owned DMA
+    /// buffers or MMIO mappings are reclaimed; callers must quarantine those
+    /// resources when this returns `false`.
     pub fn disable_memory_access(&self) -> bool {
         let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
         if cmd == u16::MAX {

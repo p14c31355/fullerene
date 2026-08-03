@@ -434,8 +434,13 @@ impl MemoryManager for UnifiedMemoryManager {
     fn unmap_address(&mut self, virtual_addr: usize, count: usize) -> SystemResult<()> {
         self.check_init()?;
         for i in 0..count {
-            let _ = self.page_table_manager.unmap_page(virtual_addr + i * 4096);
+            self.page_table_manager
+                .unmap_page(virtual_addr + i * 4096)?;
         }
+        // Flush once more after the complete range is removed. Individual
+        // unmap implementations may flush opportunistically, but this keeps
+        // the MMIO teardown contract explicit at this abstraction boundary.
+        self.page_table_manager.flush_tlb_all()?;
         Ok(())
     }
 

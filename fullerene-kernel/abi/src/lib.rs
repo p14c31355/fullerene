@@ -467,12 +467,14 @@ impl PciDeviceInfo {
         bytes[0] = self.bus;
         bytes[1] = self.device;
         bytes[2] = self.function;
+        bytes[3] = self.reserved;
         bytes[4..6].copy_from_slice(&self.vendor_id.to_ne_bytes());
         bytes[6..8].copy_from_slice(&self.product_id.to_ne_bytes());
         bytes[8] = self.class_code;
         bytes[9] = self.subclass;
         bytes[10] = self.prog_if;
         bytes[11] = self.header_type;
+        bytes[12..16].copy_from_slice(&self.reserved_tail);
         bytes
     }
 }
@@ -621,6 +623,20 @@ mod tests {
             value: 0xfeed_beef,
         };
         assert_eq!(MmioRequest::from_ne_bytes(request.to_ne_bytes()), request);
+    }
+
+    #[test]
+    fn pci_config_request_serialization_round_trips() {
+        let request = PciConfigRequest {
+            offset: 0x10,
+            width: 4,
+            reserved: 0,
+            value: 0xdead_beef,
+        };
+        assert_eq!(
+            PciConfigRequest::from_ne_bytes(request.to_ne_bytes()),
+            request
+        );
     }
 
     #[test]

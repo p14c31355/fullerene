@@ -36,10 +36,6 @@ impl XsaveState {
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.bytes.as_mut_ptr()
     }
-
-    pub fn as_ptr(&self) -> *mut u8 {
-        self.bytes.as_ptr() as *mut u8
-    }
 }
 
 impl Default for XsaveState {
@@ -63,12 +59,18 @@ pub fn mask() -> u64 {
 }
 
 /// Return a process-owned state pointer, or null when the feature is absent.
-pub fn state_ptr(state: &XsaveState) -> *mut u8 {
+pub fn state_ptr(state: &mut XsaveState) -> *mut u8 {
     if enabled() {
-        state.as_ptr()
+        state.as_mut_ptr()
     } else {
         core::ptr::null_mut()
     }
+}
+
+/// Save the live CPU XSAVE state and return the saved image for a child.
+pub fn save_and_snapshot(state: &mut XsaveState) -> XsaveState {
+    unsafe { save(state.as_mut_ptr()) };
+    *state
 }
 
 /// Enable x87/SSE/AVX state management on the boot CPU.

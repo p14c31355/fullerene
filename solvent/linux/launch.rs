@@ -4,6 +4,7 @@ use crate::process::ProcessId;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use spin::Mutex;
 #[cfg(linux_busybox_smoke)]
 use core::sync::atomic::AtomicU8;
 #[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
@@ -45,6 +46,20 @@ static BUSYBOX_SMOKE_OUTPUT_MATCHED: AtomicUsize = AtomicUsize::new(0);
 static BUSYBOX_SMOKE_LAUNCH_COUNT: AtomicU8 = AtomicU8::new(0);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_HOLD_INPUT: AtomicBool = AtomicBool::new(false);
+
+// Process currently stores a static label. Intern each filesystem path once
+// so repeated `exec` calls do not leak a new label allocation per invocation.
+static LINUX_PROCESS_LABELS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+fn intern_linux_process_label(path: &str) -> &'static str {
+    let mut labels = LINUX_PROCESS_LABELS.lock();
+    if let Some(label) = labels.iter().find(|label| **label == path) {
+        return *label;
+    }
+    let label: &'static str = Box::leak(path.to_string().into_boxed_str());
+    labels.push(label);
+    label
+}
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox all applets passed";
 
@@ -211,7 +226,7 @@ pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
 pub fn launch_linux_binary_with_args(path: &str, args: &[&str]) -> Result<ProcessId, LoadError> {
     // General-purpose callers can provide arbitrary paths, so retain a stable
     // process label for the process table.
-    let static_name: &'static str = Box::leak(path.to_string().into_boxed_str());
+    let static_name = intern_linux_process_label(path);
     launch_linux_binary_named_with_args(path, static_name, args)
 }
 

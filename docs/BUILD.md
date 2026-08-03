@@ -155,7 +155,7 @@ FULLERENE_LINUX_MUSL_SMOKE=1 \
   cargo run -p flasks -- --display none --vga none --timeout 70
 ```
 
-The smoke test dispatches `exec /bin/rust_std_hello` through Nozzle. It
+The smoke test dispatches `exec /bin/rust-std-hello` through Nozzle. It
 only asks QEMU to exit successfully after observing the expected stdout,
 exit status 0, and the shell resuming. The end-to-end success markers on the
 serial console are:
@@ -172,13 +172,6 @@ kept in `fullerene-kernel/examples/linux_musl_hello.rs`; it uses the official
 standard library. Linux stdout and stderr are mirrored to the serial console
 and the interactive Lattice terminal, so the Hello line appears in the shell
 before the next prompt.
-
-The fixture is also available to `exec` under both spellings:
-
-```text
-exec /bin/rust-std-hello
-exec /bin/rust_std_hello
-```
 
 Nozzle exposes the Linux and WASI launchers through this single command:
 

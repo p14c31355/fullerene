@@ -92,7 +92,7 @@ impl DriverManager {
                             dev.device_id,
                             e,
                         );
-                        if crate::drivers::supervisor::is_fatal(e) {
+                        if e.is_fatal() {
                             crate::drivers::supervisor::kill_failed_driver(dev, e);
                         }
                     }

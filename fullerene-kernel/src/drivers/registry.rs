@@ -248,6 +248,11 @@ impl<T> DriverRing<T> {
         }
     }
 
+    /// Remove the oldest entry.
+    ///
+    /// The ring has a single-consumer contract. Callers must prevent
+    /// concurrent `pop` calls; the synchronous adapter enforces this with
+    /// `DRIVER_IN_FLIGHT`.
     fn pop(&self) -> Option<T> {
         let consumer = self.consumer_pos.load(Ordering::Relaxed);
         let slot = &self.entries[consumer & (DRIVER_QUEUE_DEPTH - 1)];
@@ -298,10 +303,14 @@ impl DriverQueuePair {
         if completion.request_id == request_id {
             Some(completion)
         } else {
-            // There is only one synchronous initializer today. Preserve FIFO
-            // semantics if this changes by putting an unrelated completion
-            // back at the head on the next iteration is not possible, so
-            // callers must request completions in submission order.
+            // The ring has no push-front operation, so callers must request
+            // completions in submission order. A mismatch means the
+            // single-consumer invariant enforced by DRIVER_IN_FLIGHT broke.
+            log::error!(
+                "driver queue: dropped completion {} while waiting for {}",
+                completion.request_id,
+                request_id
+            );
             None
         }
     }
@@ -598,7 +607,7 @@ fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
     // returning here.  Only now may the supervisor terminate an explicitly
     // bound driver process; an ioctl caller is never used as a fallback owner.
     if let Err(error) = &result {
-        if crate::drivers::supervisor::is_fatal(*error) {
+        if error.is_fatal() {
             crate::drivers::supervisor::kill_failed_driver(&failure_device, *error);
         }
     }

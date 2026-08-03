@@ -296,6 +296,7 @@ mod tests {
     #[test]
     fn exec_command_dispatches_to_the_kernel_service() {
         fn echo_action(ctx: &mut CommandContext, action: &str) {
+            assert_eq!(ctx.args, &["exec", "/bin/rust-std-hello"]);
             ctx.terminal.write_str(action);
         }
 
@@ -310,10 +311,17 @@ mod tests {
             },
             None,
         );
-        let mut shell = Shell::new(&mut terminal, default_commands(), services);
-
-        assert!(shell.execute_line("exec /bin/rust-std-hello"));
+        {
+            let mut shell = Shell::new(&mut terminal, default_commands(), services);
+            assert!(shell.execute_line("exec /bin/rust-std-hello"));
+        }
         assert_eq!(terminal.output, "exec");
+
+        {
+            let mut shell = Shell::new(&mut terminal, default_commands(), services);
+            assert!(shell.execute_line("exec"));
+        }
+        assert!(terminal.output.contains("Usage: exec <path>"));
     }
 
     #[test]

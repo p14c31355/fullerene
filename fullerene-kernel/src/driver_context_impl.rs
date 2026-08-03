@@ -53,7 +53,15 @@ impl DriverContext for KernelDriverContext {
     fn unmap_mmio_region(&self, phys: usize, virt: usize, size: usize) {
         let mut mgr = crate::memory_management::get_memory_manager().lock();
         if let Some(m) = mgr.as_mut() {
-            let _ = m.unmap_mmio_region(phys, virt, size);
+            if let Err(error) = m.unmap_mmio_region(phys, virt, size) {
+                log::warn!(
+                    "MMIO unmap failed phys={:#x} virt={:#x} size={}: {:?}",
+                    phys,
+                    virt,
+                    size,
+                    error
+                );
+            }
         }
     }
 

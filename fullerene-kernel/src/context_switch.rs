@@ -277,6 +277,12 @@ static_assertions::const_assert_eq!(PLAN_OLD_XSAVE_OFFSET, 208);
 static_assertions::const_assert_eq!(PLAN_NEW_XSAVE_OFFSET, 216);
 static_assertions::const_assert_eq!(core::mem::size_of::<ContextSwitchPlan>(), 224);
 static_assertions::const_assert_eq!(USER_ENTRY_IMAGE_SIZE, 160);
+// The hook-gap slot is written relative to the full user-entry image before
+// the register pops and read relative to the iret frame after those pops.
+static_assertions::const_assert_eq!(
+    USER_ENTRY_IMAGE_SIZE as u64,
+    USER_REGISTER_IMAGE_SIZE + IRET_FRAME_SIZE
+);
 
 /// Save the current kernel continuation and switch according to `plan`.
 ///
@@ -605,6 +611,10 @@ mod tests {
         assert_eq!(PLAN_NEW_XSAVE_OFFSET, 216);
         assert_eq!(core::mem::size_of::<ContextSwitchPlan>(), 224);
         assert_eq!(USER_ENTRY_IMAGE_SIZE, 160);
+        assert_eq!(
+            USER_ENTRY_IMAGE_SIZE as u64,
+            USER_REGISTER_IMAGE_SIZE + IRET_FRAME_SIZE
+        );
         assert_eq!(ENTRY_HOOK_STACK_GAP, 8192);
         assert_eq!(core::mem::offset_of!(UserEntryImage, r15), 0);
         assert_eq!(core::mem::offset_of!(UserEntryImage, rax), 112);

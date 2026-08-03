@@ -43,8 +43,16 @@ pub fn set_terminal_input_allowed_preserve(allowed: bool) {
 }
 
 /// Raw key event buffer for non-ASCII key events (e.g. Super, arrows).
-/// Each entry is a (scancode, pressed) tuple.
-pub static RAW_KEY_QUEUE: Mutex<VecDeque<(u8, bool)>> = Mutex::new(VecDeque::new());
+/// Modifier state is captured when the event is queued, not when it is later
+/// drained by the desktop poller.
+#[derive(Debug, Clone, Copy)]
+pub struct RawKeyEvent {
+    pub scancode: u8,
+    pub pressed: bool,
+    pub modifiers: KeyboardModifiers,
+}
+
+pub static RAW_KEY_QUEUE: Mutex<VecDeque<RawKeyEvent>> = Mutex::new(VecDeque::new());
 
 /// Keyboard modifiers state
 #[derive(Debug, Clone, Copy, Default)]
@@ -219,15 +227,8 @@ pub fn handle_keyboard_scancode(scancode: u8) {
     *ext = false;
     drop(ext);
 
-    // Always push raw key events for non‑ASCII handling (shell, etc.)
     let pressed = scancode & 0x80 == 0;
     let base = scancode & 0x7F;
-    {
-        let mut raw = RAW_KEY_QUEUE.lock();
-        if raw.len() < 64 {
-            raw.push_back((if is_ext { base | 0x80 } else { base }, pressed));
-        }
-    }
 
     let mut mods = MODIFIERS.lock();
 
@@ -241,6 +242,20 @@ pub fn handle_keyboard_scancode(scancode: u8) {
         handle_press(base, &mut mods);
     } else {
         handle_release(base, &mut mods);
+    }
+
+    // Always push raw key events for non-ASCII handling (shell, etc.) after
+    // modifier updates so a queued V event retains the Ctrl state that was
+    // true when the interrupt arrived.
+    let event = RawKeyEvent {
+        scancode: if is_ext { base | 0x80 } else { base },
+        pressed,
+        modifiers: *mods,
+    };
+    drop(mods);
+    let mut raw = RAW_KEY_QUEUE.lock();
+    if raw.len() < 64 {
+        raw.push_back(event);
     }
 }
 
@@ -372,8 +387,8 @@ pub fn push_input_bytes(bytes: &[u8]) {
     });
 }
 
-/// Pop a raw key event (scancode, pressed) from the queue.
-pub fn pop_raw_key() -> Option<(u8, bool)> {
+/// Pop a raw key event (including its event-time modifier snapshot).
+pub fn pop_raw_key() -> Option<RawKeyEvent> {
     interrupt_free(|| RAW_KEY_QUEUE.lock().pop_front())
 }
 

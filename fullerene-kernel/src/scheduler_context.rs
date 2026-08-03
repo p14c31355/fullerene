@@ -498,16 +498,16 @@ impl SchedulerContext {
             .map(|(_, process)| process.kernel_stack)
             .filter(|stack| stack.as_u64() != 0);
         let new_xsave = list
-            .iter()
+            .iter_mut()
             .find(|(id, _)| *id == new_pid)
-            .map(|(_, process)| crate::fpu::state_ptr(&process.fpu_state))
+            .map(|(_, process)| crate::fpu::state_ptr(process.fpu_state.as_mut()))
             .unwrap_or(core::ptr::null_mut());
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
         let old_xsave = old_pid
-            .and_then(|pid| list.iter().find(|(id, _)| *id == pid))
-            .map(|(_, process)| crate::fpu::state_ptr(&process.fpu_state))
+            .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
+            .map(|(_, process)| crate::fpu::state_ptr(process.fpu_state.as_mut()))
             .unwrap_or(core::ptr::null_mut());
 
         drop(guard);

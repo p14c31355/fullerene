@@ -22,20 +22,6 @@ struct Binding {
 
 static BINDINGS: Mutex<Vec<Binding>> = Mutex::new(Vec::new());
 
-/// Whether an operation indicates a failed hardware/driver instance rather
-/// than a recoverable caller error.
-pub fn is_fatal(error: DriverError) -> bool {
-    matches!(
-        error,
-        DriverError::DmaMappingFailed
-            | DriverError::MmioMappingFailed
-            | DriverError::TimedOut
-            | DriverError::Io
-            | DriverError::Protocol
-            | DriverError::DeviceFault
-    )
-}
-
 /// Bind a process-backed driver to a PCI function.
 pub fn bind_driver_process(device: &PciDevice, pid: ProcessId) {
     let mut bindings = BINDINGS.lock();

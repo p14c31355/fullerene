@@ -119,11 +119,10 @@ pub(crate) fn syscall_fork() -> SyscallResult {
     ) = {
         process::SCHEDULER
             .with_process(current_pid, |process| {
-                unsafe { crate::fpu::save(process.fpu_state.as_mut_ptr()) };
                 (
                     process.page_table_phys_addr,
                     process.context.clone(),
-                    *process.fpu_state,
+                    crate::fpu::save_and_snapshot(process.fpu_state.as_mut()),
                     process.user_stack,
                     process.entry_point,
                 )

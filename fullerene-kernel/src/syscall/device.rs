@@ -108,6 +108,9 @@ pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallRe
             with_handle_mut(h, |obj| {
                 let device = map_handle!(obj, Device, state);
                 let request = read_config_request(arg)?;
+                if !is_safe_pci_config_write(request.offset, request.width) {
+                    return Err(SyscallError::InvalidArgument);
+                }
                 write_pci_config(&device.pci, &request)
             })
         }
@@ -263,10 +266,20 @@ fn read_pci_config(
         ),
         _ => return Err(SyscallError::InvalidArgument),
     };
-    if value == u32::MAX && request.width == 4 {
+    // All-ones is the absent-device sentinel only for the vendor/device ID
+    // dword. BAR probes and other configuration registers may legally return
+    // 0xFFFF_FFFF.
+    if value == u32::MAX && request.width == 4 && request.offset == 0 {
         return Err(SyscallError::Io);
     }
     Ok(value)
+}
+
+/// Restrict user writes to the harmless cache-line/latency bytes. Command,
+/// BAR, expansion-ROM, interrupt, and capability registers can change address
+/// decoding or DMA ownership and are never writable through this ioctl.
+fn is_safe_pci_config_write(offset: u16, width: u8) -> bool {
+    matches!((offset, width), (0x0C, 1) | (0x0D, 1))
 }
 
 fn write_pci_config(
@@ -328,10 +341,22 @@ fn device_id_matches(id: &str, device: &nitrogen::pci::PciDevice) -> bool {
                 && parse_hex(dev) == Some(device.device)
                 && parse_hex(function) == Some(device.function)
         }
+        [_, bus, dev, function] => {
+            // This four-field form accepts the conventional domain-qualified
+            // PCI spelling (domain:bus:device.function). The raw numeric BDF
+            // fallback below is a separate ioctl byte-per-field encoding, not
+            // the packed BDF used by DriverContext::dma_map.
+            parse_hex(bus) == Some(device.bus)
+                && parse_hex(dev) == Some(device.device)
+                && parse_hex(function) == Some(device.function)
+        }
         [vendor, product] => {
             parse_hex_u16(vendor) == Some(device.vendor_id)
                 && parse_hex_u16(product) == Some(device.device_id)
         }
+        // Raw hexadecimal BDFs use the ioctl identifier's byte-per-field
+        // encoding (bus << 16 | device << 8 | function). This is distinct
+        // from DriverContext::dma_map's packed PCI BDF representation.
         _ => parse_hex_u32(id).is_some_and(|bdf| {
             ((bdf >> 16) as u8) == device.bus
                 && ((bdf >> 8) as u8) == device.device

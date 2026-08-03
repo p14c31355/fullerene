@@ -16,18 +16,42 @@ use crate::driver_context::{DmaAllocation, DriverContext};
 use crate::pci::{PciDevice, PciScanner};
 use sealant::{MmioRegion, Permissions};
 
-static CONTROLLERS: Mutex<Vec<NvmeController>> = Mutex::new(Vec::new());
+struct ControllerRegistry {
+    controllers: Vec<NvmeController>,
+    initializing: Vec<DeviceKey>,
+}
+
+impl ControllerRegistry {
+    const fn new() -> Self {
+        Self {
+            controllers: Vec::new(),
+            initializing: Vec::new(),
+        }
+    }
+}
+
+static CONTROLLERS: Mutex<ControllerRegistry> = Mutex::new(ControllerRegistry::new());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FailedController {
+struct DeviceKey {
     bus: u8,
     device: u8,
     function: u8,
 }
 
+impl DeviceKey {
+    fn from_device(device: &PciDevice) -> Self {
+        Self {
+            bus: device.bus,
+            device: device.device,
+            function: device.function,
+        }
+    }
+}
+
 // A failed controller is quarantined after cleanup.  This prevents a later
 // ioctl from reusing a device whose hardware state or ownership is unknown.
-static FAILED_CONTROLLERS: Mutex<Vec<FailedController>> = Mutex::new(Vec::new());
+static FAILED_CONTROLLERS: Mutex<Vec<DeviceKey>> = Mutex::new(Vec::new());
 
 fn same_device(a: &PciDevice, b: &PciDevice) -> bool {
     a.bus == b.bus && a.device == b.device && a.function == b.function
@@ -40,11 +64,7 @@ fn mark_failed(device: &PciDevice) {
             && entry.device == device.device
             && entry.function == device.function
     }) {
-        failed.push(FailedController {
-            bus: device.bus,
-            device: device.device,
-            function: device.function,
-        });
+        failed.push(DeviceKey::from_device(device));
     }
 }
 
@@ -54,18 +74,6 @@ fn is_failed(device: &PciDevice) -> bool {
             && entry.device == device.device
             && entry.function == device.function
     })
-}
-
-fn is_fatal(error: DriverError) -> bool {
-    matches!(
-        error,
-        DriverError::DmaMappingFailed
-            | DriverError::MmioMappingFailed
-            | DriverError::TimedOut
-            | DriverError::Io
-            | DriverError::Protocol
-            | DriverError::DeviceFault
-    )
 }
 
 // ── Controller registers (offset from BAR0) ─────────────────────
@@ -78,6 +86,10 @@ const NVME_AQA: usize = 0x24;
 const NVME_ASQ: usize = 0x28;
 const NVME_ACQ: usize = 0x30;
 const NVME_REGISTER_SPACE_SIZE: usize = 0x4000;
+const NVME_DOORBELL_BASE: usize = 0x1000;
+// CAP.TO is a device-provided upper bound, not a reason for an ioctl caller
+// to busy-poll indefinitely. Keep each status wait bounded.
+const MAX_CONTROLLER_TIMEOUT_US: u64 = 5_000_000;
 
 // ── CC bits ──────────────────────────────────────────────────────
 const CC_EN: u32 = 1 << 0;
@@ -136,8 +148,16 @@ unsafe impl Sync for NvmeRegisterBlock {}
 
 impl NvmeRegisterBlock {
     fn allocate(ctx: &'static dyn DriverContext, device: &PciDevice) -> Result<Self, DriverError> {
-        let bar0 = device.read_bar_info(0).ok_or(DriverError::DeviceNotFound)?;
+        let bar0 = device.get_bar_info(0).ok_or(DriverError::DeviceNotFound)?;
         if bar0.is_io || !bar0.is_64bit || bar0.address == 0 {
+            return Err(DriverError::InvalidArgument);
+        }
+        if (bar0.size as usize) < NVME_REGISTER_SPACE_SIZE {
+            log::warn!(
+                "NVMe: BAR0 is too small ({:#x} bytes, need {:#x})",
+                bar0.size,
+                NVME_REGISTER_SPACE_SIZE
+            );
             return Err(DriverError::InvalidArgument);
         }
         let virt = ctx.phys_to_virt(bar0.address);
@@ -298,14 +318,25 @@ impl Drop for NvmeController {
         // Stop the controller before disabling bus mastering or releasing any
         // DMA memory it may still reference.
         self.stop_hardware();
-        let _ = self.device.disable_memory_access();
-        if self.submission_queue.size != 0 {
-            self.ctx.release_dma_buffer(self.submission_queue);
-            self.submission_queue.size = 0;
-        }
-        if self.completion_queue.size != 0 {
-            self.ctx.release_dma_buffer(self.completion_queue);
-            self.completion_queue.size = 0;
+        // If PCI refuses to clear Memory Space/Bus Master Enable, keep both
+        // allocations quarantined. Releasing them would let a still-running
+        // controller DMA into memory that has already been reused.
+        if self.device.disable_memory_access() {
+            if self.submission_queue.size != 0 {
+                self.ctx.release_dma_buffer(self.submission_queue);
+                self.submission_queue.size = 0;
+            }
+            if self.completion_queue.size != 0 {
+                self.ctx.release_dma_buffer(self.completion_queue);
+                self.completion_queue.size = 0;
+            }
+        } else {
+            log::error!(
+                "NVMe: PCI bus-master disable failed; quarantining DMA queues for {:02x}:{:02x}.{}",
+                self.device.bus,
+                self.device.device,
+                self.device.function
+            );
         }
     }
 }
@@ -371,7 +402,8 @@ impl NvmeController {
         ctrl.controller_timeout_us = timeout_units
             .checked_mul(500_000)
             .filter(|timeout| *timeout != 0)
-            .unwrap_or(500_000);
+            .unwrap_or(500_000)
+            .min(MAX_CONTROLLER_TIMEOUT_US);
 
         ctrl.hardware_owned = true;
         ctrl.w32(NVME_CC, 0)?;
@@ -386,13 +418,14 @@ impl NvmeController {
         // NVMe submission and completion queues are independent DMA objects.
         // The kernel owns the physical allocation and IOMMU mapping; the
         // driver only receives CPU and device addresses to program into NVMe.
+        let sq_bytes = ctrl.admin_queue_depth as usize * core::mem::size_of::<SqEntry>();
+        let cq_bytes = ctrl.admin_queue_depth as usize * core::mem::size_of::<CqEntry>();
         ctrl.submission_queue = ctx
-            .allocate_dma_buffer(device_id, 4096)
+            .allocate_dma_buffer(device_id, sq_bytes)
             .map_err(DriverError::from)?;
-        ctrl.completion_queue = match ctx.allocate_dma_buffer(device_id, 4096) {
-            Ok(queue) => queue,
-            Err(error) => return Err(error.into()),
-        };
+        ctrl.completion_queue = ctx
+            .allocate_dma_buffer(device_id, cq_bytes)
+            .map_err(DriverError::from)?;
         let asq_virt = ctx.phys_to_virt(ctrl.submission_queue.phys) as *mut u8;
         let acq_virt = ctx.phys_to_virt(ctrl.completion_queue.phys) as *mut u8;
         unsafe {
@@ -477,6 +510,9 @@ impl NvmeController {
             return Err(DriverError::InvalidArgument);
         }
         if write {
+            if offset < NVME_DOORBELL_BASE {
+                return Err(DriverError::InvalidArgument);
+            }
             self.registers.write(offset, width, value)?;
             Ok(0)
         } else {
@@ -499,7 +535,7 @@ pub fn init(ctx: &'static dyn DriverContext) {
             let _ = init_device(ctx, dev.clone());
         }
     }
-    if CONTROLLERS.lock().is_empty() {
+    if CONTROLLERS.lock().controllers.is_empty() {
         log::info!("NVMe: no NVMe devices found");
     }
 }
@@ -519,41 +555,53 @@ pub fn init_device(
         return Err(DriverError::DeviceFault);
     }
 
-    // Initialization requests may be retried by the kernel.  Keep the
-    // controller index stable and avoid resetting an already-ready device.
-    let existing = {
-        let controllers = CONTROLLERS.lock();
-        controllers
+    // Claim the device under the same lock as the existing-controller lookup.
+    // This prevents boot scanning and ioctl retries from initializing one PCI
+    // function twice while the first initializer is outside the lock.
+    let key = DeviceKey::from_device(&device);
+    {
+        let mut registry = CONTROLLERS.lock();
+        if let Some(index) = registry
+            .controllers
             .iter()
             .position(|controller| same_device(&controller.device, &device))
-    };
-    if let Some(index) = existing {
-        return Ok(index);
+        {
+            return Ok(index);
+        }
+        if registry.initializing.iter().any(|entry| *entry == key) {
+            return Err(DriverError::Busy);
+        }
+        registry.initializing.push(key);
     }
 
-    if !device.enable_memory_access() {
-        // enable_memory_access may have partially updated the PCI command
-        // register before its verification read failed.
-        let _ = device.disable_memory_access();
-        mark_failed(&device);
-        return Err(DriverError::DeviceFault);
-    }
-    let ctrl = match NvmeController::init(ctx, device.clone()) {
-        Ok(ctrl) => ctrl,
-        Err(error) => {
-            // NvmeController's failure path has already stopped hardware and
-            // released MMIO/DMA resources before this quarantine is recorded.
-            // If construction failed before the controller object existed,
-            // this also closes the PCI enable window opened above.
+    let result = (|| {
+        if !device.enable_memory_access() {
             let _ = device.disable_memory_access();
             mark_failed(&device);
-            return Err(error);
+            return Err(DriverError::DeviceFault);
         }
-    };
-    let mut controllers = CONTROLLERS.lock();
-    let index = controllers.len();
-    controllers.push(ctrl);
-    Ok(index)
+        match NvmeController::init(ctx, device.clone()) {
+            Ok(ctrl) => Ok(ctrl),
+            Err(error) => {
+                // NvmeController's failure path has already stopped hardware
+                // and released or quarantined its owned resources.
+                let _ = device.disable_memory_access();
+                mark_failed(&device);
+                Err(error)
+            }
+        }
+    })();
+
+    let mut registry = CONTROLLERS.lock();
+    registry.initializing.retain(|entry| *entry != key);
+    match result {
+        Ok(ctrl) => {
+            let index = registry.controllers.len();
+            registry.controllers.push(ctrl);
+            Ok(index)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Execute one driver-mediated MMIO request against an initialized NVMe
@@ -571,21 +619,23 @@ pub fn request_mmio(
         return Err(DriverError::DeviceFault);
     }
     let result = {
-        let controllers = CONTROLLERS.lock();
-        let controller = controllers
+        let registry = CONTROLLERS.lock();
+        let controller = registry
+            .controllers
             .iter()
             .find(|controller| same_device(&controller.device, device))
             .ok_or(DriverError::NotReady)?;
         controller.mmio_request(bar, offset, width, write, value)
     };
     if let Err(error) = result {
-        if is_fatal(error) {
+        if error.is_fatal() {
             let controller = {
-                let mut controllers = CONTROLLERS.lock();
-                controllers
+                let mut registry = CONTROLLERS.lock();
+                registry
+                    .controllers
                     .iter()
                     .position(|controller| same_device(&controller.device, device))
-                    .map(|index| controllers.remove(index))
+                    .map(|index| registry.controllers.remove(index))
             };
             // Dropping outside the registry lock performs the ordered device
             // shutdown, PCI bus-master disable, DMA release, and MMIO unmap.
@@ -599,5 +649,5 @@ pub fn request_mmio(
 
 /// Number of controllers that completed initialization.
 pub fn controller_count() -> usize {
-    CONTROLLERS.lock().len()
+    CONTROLLERS.lock().controllers.len()
 }

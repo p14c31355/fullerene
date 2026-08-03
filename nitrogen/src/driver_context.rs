@@ -75,6 +75,15 @@ pub trait DriverContext: Send + Sync {
     /// In a higher-half kernel this is typically `phys + offset`.
     fn phys_to_virt(&self, phys: u64) -> usize;
 
+    /// Clear newly allocated DMA storage before exposing it to a device.
+    /// Implementations with a synthetic address space may override this hook
+    /// while preserving the zero-initialization contract.
+    fn zero_dma_buffer(&self, phys: u64, bytes: usize) {
+        // SAFETY: the caller owns the allocated frames until the DMA mapping
+        // is returned or the allocation fails.
+        unsafe { core::ptr::write_bytes(self.phys_to_virt(phys) as *mut u8, 0, bytes) };
+    }
+
     /// Allocate a single physical 4 KiB frame.
     ///
     /// Returns the **physical** address of the frame.
@@ -98,9 +107,9 @@ pub trait DriverContext: Send + Sync {
     /// Release a mapping previously created by [`map_mmio_region`](Self::map_mmio_region).
     ///
     /// Implementations may treat a verified, permanent direct-map alias as a
-    /// no-op.  Drivers must call this before releasing their last reference to
+    /// no-op. Drivers must call this before releasing their last reference to
     /// a controller's register block.
-    fn unmap_mmio_region(&self, _phys: usize, _virt: usize, _size: usize) {}
+    fn unmap_mmio_region(&self, phys: usize, virt: usize, size: usize);
 
     /// Map a single page with the given flags.
     ///
@@ -151,6 +160,8 @@ pub trait DriverContext: Send + Sync {
     /// [`release_dma_buffer`](Self::release_dma_buffer).  Keeping this
     /// operation on the context makes ownership explicit: drivers never
     /// construct or modify IOMMU page tables themselves.
+    /// The returned frames are zeroed before they are mapped, so a device
+    /// cannot observe data left by a previous kernel allocation.
     fn allocate_dma_buffer(
         &self,
         device_id: u16,
@@ -164,6 +175,14 @@ pub trait DriverContext: Send + Sync {
             .map(|bytes| bytes / 4096)
             .ok_or(DriverContextError::InvalidArgument)?;
         let phys = self.allocate_contiguous_frames(frames)?;
+        let bytes = match frames.checked_mul(4096) {
+            Some(bytes) => bytes,
+            None => {
+                self.free_contiguous_frames(phys, frames);
+                return Err(DriverContextError::InvalidArgument);
+            }
+        };
+        self.zero_dma_buffer(phys, bytes);
         let iova = match self.dma_map(device_id, phys, size) {
             Ok(iova) => iova,
             Err(error) => {

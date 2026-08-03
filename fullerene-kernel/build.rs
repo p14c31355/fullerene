@@ -1057,8 +1057,8 @@ fn generate_solvent_linux(manifest_dir: &Path, out_dir: &Path) {
 
     let mod_source = fs::read_to_string(linux_dir.join("mod.rs")).unwrap();
     let header = mod_source
-        .split("pub mod fs;")
-        .next()
+        .split_once("pub mod fs;")
+        .map(|(header, _)| header)
         .expect("Solvent Linux module header must declare fs");
 
     let mut modules = fs::read_dir(&linux_dir)

@@ -85,6 +85,8 @@ mod tests {
             (phys + 0xFFFF800000000000) as usize
         }
 
+        fn zero_dma_buffer(&self, _phys: u64, _bytes: usize) {}
+
         fn allocate_frame(&self) -> Result<u64, DriverContextError> {
             Err(DriverContextError::OutOfMemory)
         }

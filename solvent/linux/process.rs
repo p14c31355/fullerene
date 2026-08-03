@@ -542,8 +542,11 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // Get parent info
     let (parent_pt, parent_ctx, parent_fpu) = process::SCHEDULER
         .with_process(current_pid, |p| {
-            unsafe { crate::fpu::save(p.fpu_state.as_mut_ptr()) };
-            (p.page_table_phys_addr, p.context.clone(), *p.fpu_state)
+            (
+                p.page_table_phys_addr,
+                p.context.clone(),
+                crate::fpu::save_and_snapshot(p.fpu_state.as_mut()),
+            )
         })
         .unwrap_or((
             PhysAddr::new(0),
