@@ -106,8 +106,9 @@ UEFI outputs under `target/x86_64-unknown-uefi/debug`.
 
 Boot the generated UEFI ISO on the test machine with the target SATA SSD
 connected. The AHCI probe registers identified disks as `/dev/sataNpN`. The
-desktop's **Install Fullerene** icon opens the installer shell; review the
-listed geometry and then run:
+desktop's **Install Fullerene** icon opens a graphical wizard that lists the
+available disks, shows the destructive warning, and asks for confirmation.
+For headless/debug sessions, the equivalent shell command is:
 
 ```console
 install_fullerene list

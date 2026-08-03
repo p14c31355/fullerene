@@ -18,6 +18,8 @@ pub type VfsTransferCallback = fn(&str, &str, bool) -> Result<(), genome::FsErro
 pub type VfsRemoveCallback = fn(&str, bool) -> Result<(), genome::FsError>;
 pub type MountedDriveListCallback = fn() -> Vec<(String, String)>;
 pub type RunWasmCallback = fn(&str, &[&str]) -> i32;
+pub type InstallerDeviceListCallback = fn() -> Vec<InstallerDevice>;
+pub type InstallerRunCallback = fn(&str) -> Result<u64, String>;
 
 /// Kernel services installed into the Solvent orchestration layer.
 #[derive(Clone, Copy)]
@@ -41,6 +43,8 @@ pub struct SolventCallbacks {
     pub vfs_remove: Option<VfsRemoveCallback>,
     pub process_list: Option<fn() -> Vec<ProcessEntry>>,
     pub device_list: Option<fn() -> Vec<DeviceEntry>>,
+    pub installer_device_list: Option<InstallerDeviceListCallback>,
+    pub installer_run: Option<InstallerRunCallback>,
     pub mounted_drive_list: Option<MountedDriveListCallback>,
     pub usb_poll: Option<fn() -> bool>,
     pub settings_save: Option<fn()>,
@@ -70,6 +74,8 @@ impl SolventCallbacks {
             vfs_remove: None,
             process_list: None,
             device_list: None,
+            installer_device_list: None,
+            installer_run: None,
             mounted_drive_list: None,
             usb_poll: None,
             settings_save: None,
@@ -135,4 +141,13 @@ pub struct DeviceEntry {
     pub name: String,
     pub dev_type: String,
     pub enabled: bool,
+}
+
+/// A block-device target exposed to the graphical installer.
+#[derive(Debug, Clone)]
+pub struct InstallerDevice {
+    pub name: String,
+    pub sector_size: u32,
+    pub total_sectors: u64,
+    pub available: bool,
 }
