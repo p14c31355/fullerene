@@ -52,6 +52,7 @@ const PXCMD_CR: u32 = 1 << 15; // Command List Running
 // ── SATA status (PxSSTS) ────────────────────────────────────────
 const SSTS_DET_MASK: u32 = 0x0F;
 const SSTS_DET_PHY_OK: u32 = 0x03;
+const PHY_WAIT_TIMEOUT_US: u64 = 1_000_000;
 
 // ── Command Header ───────────────────────────────────────────────
 #[repr(C)]
@@ -128,6 +129,8 @@ pub struct AhciController {
     hba_phys: u64,
     /// Number of implemented ports (0–31).
     num_ports: u32,
+    /// Bit mask of ports implemented by the HBA.
+    port_mask: u32,
     ports: Vec<AhciPort>,
 }
 
@@ -166,6 +169,7 @@ impl AhciController {
             hba_mmio: hba_virt,
             hba_phys,
             num_ports: 0,
+            port_mask: 0,
             ports: Vec::new(),
         };
 
@@ -179,23 +183,49 @@ impl AhciController {
 
         let pi = ctrl.r32(HBA_PI);
         ctrl.num_ports = pi.count_ones() as u32;
+        ctrl.port_mask = pi;
+        log::info!(
+            "AHCI: HBA BAR5={:#x} size={:#x} GHC={:#x} PI={:#x}",
+            hba_phys,
+            bar5.size,
+            ctrl.r32(HBA_GHC),
+            pi
+        );
+        ctrl.probe_ports(ctx);
 
+        Some(ctrl)
+    }
+
+    /// Probe implemented ports and publish disks that complete IDENTIFY.
+    ///
+    /// This is also used for an explicit `ahci_init` after boot.  A SATA link
+    /// can become ready after the HBA reset, so a controller that was already
+    /// created must still be allowed to discover newly-ready ports.
+    fn probe_ports(&mut self, ctx: &dyn DriverContext) {
         for i in 0..32 {
-            if (pi >> i) & 1 == 0 {
+            if (self.port_mask >> i) & 1 == 0 {
                 continue;
             }
-            let port_base = 0x100 + (i as usize) * 0x80;
-            let port_mmio = unsafe { ctrl.hba_mmio.add(port_base / 4) };
-            let ssts = unsafe { core::ptr::read_volatile(port_mmio.add(PXSSTS / 4)) };
-            let det = ssts & SSTS_DET_MASK;
-            if det != SSTS_DET_PHY_OK {
-                log::info!("AHCI port {}: no PHY (SSTS={:#x}), skipping init", i, ssts);
+            if self.ports.iter().any(|port| port.index == i as u8) {
                 continue;
             }
-            let Some(mut initialized) = ctrl.init_port(ctx, i) else {
+
+            let ssts = self.wait_for_phy(i as u8);
+            if ssts & SSTS_DET_MASK != SSTS_DET_PHY_OK {
+                log::info!(
+                    "AHCI port {}: no PHY after {} ms (SSTS={:#x}, SERR={:#x}), skipping init",
+                    i,
+                    PHY_WAIT_TIMEOUT_US / 1_000,
+                    ssts,
+                    self.port_serror(i as u8)
+                );
+                continue;
+            }
+
+            let Some(mut initialized) = self.init_port(ctx, i as u8) else {
                 continue;
             };
-            match ctrl.identify_port(&mut initialized) {
+            match self.identify_port(&mut initialized) {
                 Ok((sector_size, total_sectors, lba48)) => {
                     initialized.sector_size = sector_size;
                     initialized.total_sectors = total_sectors;
@@ -206,21 +236,35 @@ impl AhciController {
                         sector_size,
                         total_sectors
                     );
-                    ctrl.ports.push(initialized);
+                    self.ports.push(initialized);
                 }
                 Err(error) => {
-                    ctrl.release_port(ctx, initialized);
+                    self.release_port(ctx, initialized);
                     log::warn!("AHCI port {}: IDENTIFY failed: {}", i, error);
                 }
             }
         }
+    }
 
-        Some(ctrl)
+    fn port_mmio(&self, port: u8) -> *mut u32 {
+        let port_base = 0x100 + (port as usize) * 0x80;
+        unsafe { self.hba_mmio.add(port_base / 4) }
+    }
+
+    fn wait_for_phy(&self, port: u8) -> u32 {
+        let port_mmio = self.port_mmio(port);
+        let _ = crate::timing::wait_timeout_us(PHY_WAIT_TIMEOUT_US, || {
+            Self::r32_port(port_mmio, PXSSTS) & SSTS_DET_MASK == SSTS_DET_PHY_OK
+        });
+        Self::r32_port(port_mmio, PXSSTS)
+    }
+
+    fn port_serror(&self, port: u8) -> u32 {
+        Self::r32_port(self.port_mmio(port), PXSERR)
     }
 
     fn init_port(&self, ctx: &dyn DriverContext, port: u8) -> Option<AhciPort> {
-        let port_base = 0x100 + (port as usize) * 0x80;
-        let port_mmio = unsafe { self.hba_mmio.add(port_base / 4) };
+        let port_mmio = self.port_mmio(port);
 
         let cmd = Self::r32_port(port_mmio, PXCMD);
         Self::w32_port(port_mmio, PXCMD, cmd & !(PXCMD_ST | PXCMD_FRE));
@@ -234,7 +278,7 @@ impl AhciController {
             return None;
         }
 
-        let ssts = Self::r32_port(port_mmio, PXSSTS);
+        let ssts = self.wait_for_phy(port);
         let det = ssts & SSTS_DET_MASK;
         if det != SSTS_DET_PHY_OK {
             log::info!("AHCI port {}: no device (SSTS={:#x})", port, ssts);
@@ -587,12 +631,22 @@ pub fn init_device(
     let key = (device.bus, device.device, device.function);
     {
         let controllers = CONTROLLERS.lock();
-        if let Some(index) = controllers.iter().position(|controller| {
-            let controller = controller.lock();
-            controller.device.bus == device.bus
-                && controller.device.device == device.device
-                && controller.device.function == device.function
-        }) {
+        if let Some((index, controller)) =
+            controllers
+                .iter()
+                .enumerate()
+                .find_map(|(index, controller)| {
+                    let matches = {
+                        let controller_guard = controller.lock();
+                        controller_guard.device.bus == device.bus
+                            && controller_guard.device.device == device.device
+                            && controller_guard.device.function == device.function
+                    };
+                    matches.then(|| (index, Arc::clone(controller)))
+                })
+        {
+            drop(controllers);
+            controller.lock().probe_ports(ctx);
             return Ok(index);
         }
         if !INITIALIZING.lock().insert(key) {
@@ -626,6 +680,14 @@ pub fn init_device(
 /// Return the number of initialized AHCI controllers.
 pub fn controller_count() -> usize {
     CONTROLLERS.lock().len()
+}
+
+/// Return the number of ATA disks currently identified on one controller.
+pub fn device_count(controller_index: usize) -> usize {
+    devices()
+        .into_iter()
+        .filter(|device| device.controller_index == controller_index)
+        .count()
 }
 
 /// Return all ATA disks that completed IDENTIFY during AHCI initialization.

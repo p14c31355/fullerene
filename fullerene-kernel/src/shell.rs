@@ -1135,10 +1135,12 @@ fn nozzle_services() -> nozzle::ShellServices {
                             found = true;
                             match crate::drivers::registry::initialize_ahci(device.clone()) {
                                 Ok(index) => {
+                                    let disks = nitrogen::storage::ahci::device_count(index);
                                     tline!(
                                         ctx.terminal,
-                                        "AHCI init: ahci{} ready (SQ/CQ completion)",
-                                        index
+                                        "AHCI init: ahci{} ready; {} ATA disk(s) registered",
+                                        index,
+                                        disks
                                     );
                                 }
                                 Err(error) => {

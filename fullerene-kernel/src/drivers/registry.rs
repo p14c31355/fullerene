@@ -703,7 +703,12 @@ pub fn initialize_ahci(device: PciDevice) -> Result<usize, nitrogen::DriverError
     let completion = submit_driver_request(DriverRequestKind::InitializeAhci { device })?;
     if let Some(index) = completion.controller_index {
         register_ahci_block_devices(index);
-        log::info!("AHCI: initialized ahci{} through SQ/CQ", index);
+        let disk_count = nitrogen::storage::ahci::device_count(index);
+        log::info!(
+            "AHCI: initialized ahci{} through SQ/CQ ({} ATA disk(s))",
+            index,
+            disk_count
+        );
         Ok(index)
     } else {
         Err(completion.error.unwrap_or(nitrogen::DriverError::Io))
