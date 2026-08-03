@@ -30,6 +30,10 @@ pub(crate) const FRAME_INTERVAL_TICKS: u64 = 8;
 pub(crate) const FRAME_INTERVAL_MS: u64 = 17;
 pub(crate) const FRAME_TIMER_ID: TimerId = TimerId(2);
 
+/// Mouse sensitivity is stored as a fixed-point multiplier in sixths.
+/// Raw `1` is rendered as `0.17` in Settings.
+pub(crate) const MOUSE_SENSITIVITY_MIN_RAW: i16 = 1;
+pub(crate) const MOUSE_SENSITIVITY_MAX_RAW: i16 = 24;
 pub static MOUSE_SENSITIVITY: core::sync::atomic::AtomicI16 = core::sync::atomic::AtomicI16::new(6);
 pub static DISPLAY_BRIGHTNESS_X100: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(100);
@@ -268,8 +272,9 @@ pub fn is_initialized() -> bool {
 }
 
 pub fn apply_settings(sensitivity: f32, brightness_x100: u32, top_panel_enabled: bool) {
+    let raw = ((sensitivity * 6.0) + 0.5) as i16;
     MOUSE_SENSITIVITY.store(
-        (sensitivity * 6.0) as i16,
+        raw.clamp(MOUSE_SENSITIVITY_MIN_RAW, MOUSE_SENSITIVITY_MAX_RAW),
         core::sync::atomic::Ordering::Relaxed,
     );
     DISPLAY_BRIGHTNESS_X100.store(brightness_x100, core::sync::atomic::Ordering::Relaxed);

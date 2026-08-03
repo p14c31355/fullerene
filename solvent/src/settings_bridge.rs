@@ -2,6 +2,7 @@
 //!
 //! Extracted from lib.rs to keep the main module focused on orchestration.
 
+use crate::runtime_context::{MOUSE_SENSITIVITY_MAX_RAW, MOUSE_SENSITIVITY_MIN_RAW};
 use crate::{
     DISPLAY_BRIGHTNESS_X100, FB_DIMS, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY, RUNTIME_CONTEXT,
 };
@@ -100,16 +101,13 @@ fn adjust_setting(rt: &mut crate::RuntimeState, row: u32, dec: bool) {
             persist_settings();
         }
         1 => {
-            let cur = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32) / 6.0;
+            let cur = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
             let new_val = if dec {
-                (cur - 0.25).max(0.25)
+                cur.saturating_sub(1).max(MOUSE_SENSITIVITY_MIN_RAW)
             } else {
-                (cur + 0.25).min(4.0)
+                cur.saturating_add(1).min(MOUSE_SENSITIVITY_MAX_RAW)
             };
-            MOUSE_SENSITIVITY.store(
-                (new_val * 6.0 + 0.5) as i16,
-                core::sync::atomic::Ordering::Relaxed,
-            );
+            MOUSE_SENSITIVITY.store(new_val, core::sync::atomic::Ordering::Relaxed);
             persist_settings();
         }
         2 => {

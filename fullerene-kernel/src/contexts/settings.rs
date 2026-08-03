@@ -34,7 +34,7 @@ use lattice::compositor::WINDOW_CORNER_RADIUS;
 
 #[derive(Debug)]
 pub struct MouseSettings {
-    /// Sensitivity multiplier (0.25 .. 4.0, default 1.0).
+    /// Sensitivity multiplier (0.17 .. 4.0, default 1.0).
     /// Stored as fixed-point × 100: 1.0 → 100.
     sensitivity_x100: AtomicU32,
     /// Whether pointer acceleration is enabled.
@@ -54,9 +54,9 @@ impl MouseSettings {
         self.sensitivity_x100.load(Ordering::Relaxed) as f32 / 100.0
     }
 
-    /// Set sensitivity (clamped to 0.25 .. 4.0).
+    /// Set sensitivity (clamped to 0.17 .. 4.0).
     pub fn set_sensitivity(&self, val: f32) {
-        let clamped = val.clamp(0.25, 4.0);
+        let clamped = val.clamp(1.0 / 6.0, 4.0);
         self.sensitivity_x100
             .store((clamped * 100.0) as u32, Ordering::Relaxed);
     }
