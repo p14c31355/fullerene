@@ -40,7 +40,7 @@ impl InfoWindow {
             Self::LogViewer => ("Log Viewer", 80, 50, 88, 2, 0x101014, 0xD8D8E8),
             Self::KLogLive => ("KLog Live", 60, 40, 100, 2, 0x0d0d14, 0xAADDFF),
             Self::SystemInfo => ("System Info", 140, 90, 52, 2, 0x101820, 0xCCEEFF),
-            Self::About => ("About Fullerene", 150, 80, 46, 2, 0x12203A, 0xE8F3FF),
+            Self::About => ("About Fullerene", 180, 140, 32, 0, 0x1a0d1a, 0xFFCCFF),
         }
     }
 }
@@ -206,17 +206,7 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             .map(|snapshot| snapshot())
             .unwrap_or_else(|| String::from("(metrics callback unavailable)\n")),
         InfoWindow::About => String::from(
-            "        .-''''-.\n\
-      .'  .--.  '.\n\
-     /   /    \\   \\\n\
-    ;   |  ()  |   ;\n\
-    |   |      |   |\n\
-    ;    \\____/    ;\n\
-     \\            /\n\
-      '.        .'\n\
-        '-.__.-'\n\
-\n\
-FULLERENE OS\n============\n\nA microkernel-based operating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
+            "FULLERENE OS\n============\n\nA microkernel-based operating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
         ),
     };
     let (title, x, y, cols, extra_rows, bg, fg) = kind.params();
