@@ -100,6 +100,7 @@ pub enum AppRoute {
     Clock,
     Settings,
     About,
+    Installer,
     Unknown,
 }
 
@@ -139,6 +140,7 @@ pub const fn route_label(route: AppRoute) -> &'static str {
         AppRoute::Clock => "Clock",
         AppRoute::Settings => "Settings",
         AppRoute::About => "About",
+        AppRoute::Installer => "Install Fullerene",
         AppRoute::Unknown => "Unknown",
     }
 }
@@ -156,6 +158,7 @@ pub fn route_for_name(name: &str) -> AppRoute {
         "Clock" => AppRoute::Clock,
         "Settings" => AppRoute::Settings,
         "About" => AppRoute::About,
+        "Install Fullerene" | "Installer" => AppRoute::Installer,
         _ => AppRoute::Unknown,
     }
 }
@@ -169,6 +172,7 @@ pub fn icon_for_route(route: AppRoute) -> &'static crate::icon::SvgIcon {
         AppRoute::Clock => &crate::icon::ICON_CLOCK,
         AppRoute::Settings => &crate::icon::ICON_SETTINGS,
         AppRoute::About => &crate::icon::ICON_ABOUT,
+        AppRoute::Installer => &crate::icon::ICON_INSTALLER,
         AppRoute::Unknown => &crate::icon::ICON_TERMINAL,
     }
 }

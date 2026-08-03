@@ -154,3 +154,7 @@ pub static ICON_SETTINGS: SvgIcon = SvgIcon::from_rgba(include_bytes!(concat!(
 )));
 pub static ICON_ABOUT: SvgIcon =
     SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_about.rgba")));
+pub static ICON_INSTALLER: SvgIcon = SvgIcon::from_rgba(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/icon_installer.rgba"
+)));

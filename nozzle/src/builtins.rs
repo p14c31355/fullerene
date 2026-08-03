@@ -152,6 +152,20 @@ pub fn cmd_run(ctx: &mut CommandContext) -> bool {
 sys_info_cmd!(cmd_taskmon, "taskmon");
 sys_info_cmd!(cmd_devices, "devices");
 
+/// `install_fullerene` — show targets or explicitly install Fullerene.
+pub fn cmd_install_fullerene(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() == 1 {
+        crate::sys_hooks::call_sys_control_hook(ctx, "install_fullerene list");
+    } else if ctx.args.len() == 3 && ctx.args[2] == "--confirm" {
+        let command = alloc::format!("install_fullerene {} --confirm", ctx.args[1]);
+        crate::sys_hooks::call_sys_control_hook(ctx, &command);
+    } else {
+        ctx.terminal
+            .write_str("Usage: install_fullerene [<device> --confirm]\n");
+    }
+    true
+}
+
 /// `theme` — show or change the desktop theme
 pub fn cmd_theme(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() >= 2 {

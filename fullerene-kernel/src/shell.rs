@@ -1440,6 +1440,48 @@ fn nozzle_services() -> nozzle::ShellServices {
                     x86_64::instructions::hlt();
                 }
             }
+            "install_fullerene list" => {
+                solvent::write_terminal("Fullerene installer targets (destructive install):\n");
+                let devices = crate::installer::list_devices();
+                if devices.is_empty() {
+                    solvent::write_terminal("  (no registered block devices)\n");
+                } else {
+                    for device in devices {
+                        solvent::write_terminal(&format!(
+                            "  /dev/{}  {} bytes/sector  {} sectors  {}\n",
+                            device.name,
+                            device.sector_size,
+                            device.total_sectors,
+                            if device.available {
+                                "available"
+                            } else {
+                                "busy"
+                            }
+                        ));
+                    }
+                }
+                solvent::write_terminal(
+                    "To erase and install: install_fullerene <device> --confirm\n",
+                );
+            }
+            _ if cmd.starts_with("install_fullerene ") => {
+                let rest = &cmd[17..];
+                let Some(device) = rest.strip_suffix(" --confirm") else {
+                    solvent::write_terminal(
+                        "Installer: missing explicit --confirm; no disk was changed.\n",
+                    );
+                    return;
+                };
+                match crate::installer::install(device) {
+                    Ok(bytes) => solvent::write_terminal(&format!(
+                        "Installer: /dev/{} is ready ({} payload bytes written). Reboot to test it.\n",
+                        device, bytes
+                    )),
+                    Err(error) => {
+                        solvent::write_terminal(&format!("Installer: failed: {}\n", error))
+                    }
+                }
+            }
             _ if cmd.starts_with("app_install ") => {
                 let rest = &cmd[12..];
                 if let Some((name, source)) = rest.split_once(' ') {

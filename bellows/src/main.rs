@@ -105,11 +105,23 @@ pub unsafe extern "efiapi" fn efi_main(
     }
     petroleum::println!("Exiting boot services and jumping to kernel...");
     petroleum::println!("Bellows: About to exit boot services and jump to kernel.");
+    let payloads = match loader::read_boot_payloads(bs, image_handle) {
+        Ok((bootloader, kernel)) => (bootloader, kernel),
+        Err(error) => {
+            petroleum::bootloader_log!(
+                "Installer payload discovery failed: {:?}; continuing without installer payload",
+                error
+            );
+            ((0, 0), (0, 0))
+        }
+    };
     match exit_boot_services_and_jump(
         image_handle,
         system_table,
         kernel_phys_start,
         kernel_entry_phys,
+        payloads.0,
+        payloads.1,
         entry,
     ) {
         Ok(_) => unreachable!(),

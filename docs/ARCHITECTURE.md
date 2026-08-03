@@ -580,9 +580,10 @@ registration remain separate from filesystem mount policy.
 PCI storage follows the same lifecycle rule. Boot may discover an RTSX
 controller and prepare its service, but card-register MMIO begins only at the
 explicit `sd_rescan` boundary. AHCI and NVMe drivers must not be registered in
-the boot attach pipeline until they expose real block-device ownership; a
-controller reset performed by a placeholder wrapper is not service
-registration.
+the boot attach pipeline until they expose real block-device ownership; AHCI
+now satisfies that boundary by publishing identified ATA disks as
+`/dev/sataNpN`, while NVMe remains initialization-only. A controller reset
+performed by a placeholder wrapper is not service registration.
 
 The kernel device registry preserves `/dev/<name>` identity while transferring
 exclusive block-device ownership to a mounted filesystem. An available entry

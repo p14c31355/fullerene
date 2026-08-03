@@ -51,8 +51,8 @@ detect optional kernel facilities at runtime.
 ## Native device handles
 
 `open_device` accepts a PCI BDF such as `02:03.0`, a `vendor:device` pair such
-as `8086:5845`, a stable storage name such as `nvme0` or `ahci0`, or a
-registered `/dev` block name such as `/dev/sd0`. For a block record returned by
+as `8086:5845`, a stable controller name such as `nvme0` or `ahci0`, or a
+registered `/dev` block name such as `/dev/sata0p0`. For a block record returned by
 `enumerate_devices`, its hexadecimal `device_id` is also accepted and resolves
 back to the registered `/dev` name. The returned handle advertises its typed
 operations through `GET_CAPABILITIES`.
@@ -68,9 +68,9 @@ corresponding completion has been written to and consumed from the CQ. Other
 NVMe data-path commands are not accepted yet.
 
 `INITIALIZE_AHCI` has the same SQ/CQ behavior for class 01/subclass 06 SATA
-controllers and returns the stable `ahciN` controller index. The current AHCI
-driver initializes the HBA and enumerates ports; sector I/O remains provided by
-registered block-device implementations.
+controllers and returns the stable `ahciN` controller index. The AHCI driver
+also identifies ATA disks and registers them as `/dev/sataNpN`; those handles
+support `GET_BLOCK_INFO`, `READ_BLOCKS`, and `WRITE_BLOCKS`.
 
 Named block-device handles support `GET_BLOCK_INFO`, `READ_BLOCKS`, and
 `WRITE_BLOCKS`. Block requests use a fixed-size `BlockRequest` record and are

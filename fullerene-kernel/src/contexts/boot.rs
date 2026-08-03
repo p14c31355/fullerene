@@ -146,6 +146,18 @@ static BOOT: spin::Mutex<Option<BootContext>> = spin::Mutex::new(None);
 pub fn init_boot() {
     *BOOT.lock() = Some(BootContext::empty());
 }
+
+/// Publish the higher-half `KernelArgs` pointer retained by the UEFI entry
+/// path. Bellows keeps the payload allocations alive across ExitBootServices
+/// so the in-session installer can read them later.
+pub fn set_kernel_args(kernel_args: *const petroleum::assembly::KernelArgs) {
+    let mut boot = BOOT.lock();
+    let context = boot.get_or_insert_with(BootContext::empty);
+    context.kernel_args = kernel_args;
+    context.runtime.kernel_args_ptr = kernel_args;
+    context.runtime.runtime_available = !kernel_args.is_null();
+}
+
 pub fn get_boot() -> &'static spin::Mutex<Option<BootContext>> {
     &BOOT
 }

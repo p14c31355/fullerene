@@ -32,6 +32,7 @@ fn render_svg_icons(out_dir: &Path) {
         "files.svg",
         "settings.svg",
         "about.svg",
+        "installer.svg",
     ];
     for svg_name in &svgs {
         let svg_path = icons_dir.join(svg_name);

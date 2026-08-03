@@ -54,11 +54,11 @@ Block devices such as NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage.
 
 NVMe currently exposes controller initialization through the kernel-owned
 submission/completion queue pair. AHCI exposes the same explicit initialization
-boundary for SATA controllers. The NVMe driver separately requests one
-kernel/IOMMU DMA allocation for its Submission Queue and one for its
-Completion Queue; the returned IOVAs are programmed into the NVMe controller.
-Data-path block operations remain disabled until the kernel publishes a real
-block-device ownership adapter.
+boundary for SATA controllers and publishes identified ATA disks through the
+kernel block-device registry as `/dev/sataNpN`. Those devices support bounded
+sector reads and writes; the UEFI installer uses that capability directly.
+The NVMe data path remains initialization-only until a matching block-device
+ownership adapter is added.
 
 ```rust
 pub trait StorageDriver: Send {

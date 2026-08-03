@@ -245,6 +245,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             builtins::cmd_ahci_init
         ),
         (
+            "install_fullerene",
+            "Install Fullerene to a block device after confirmation",
+            builtins::cmd_install_fullerene
+        ),
+        (
             "usb_rescan",
             "Explicitly activate and rescan USB",
             builtins::cmd_usb_rescan

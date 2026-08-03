@@ -24,6 +24,11 @@ pub struct KernelArgs {
     pub fb_bpp: u32,
     pub fb_stride: u32,
     pub fb_pixel_format: u32,
+    /// Bootloader-owned copies retained for the in-session disk installer.
+    pub bootloader_image_ptr: u64,
+    pub bootloader_image_size: u64,
+    pub kernel_image_ptr: u64,
+    pub kernel_image_size: u64,
 }
 
 #[repr(C)]

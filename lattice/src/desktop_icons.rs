@@ -58,6 +58,13 @@ impl DesktopIconLayer {
                 y: 136,
                 size: 64,
                 color: 0x443344,
+            },
+            DesktopIcon {
+                label: String::from("Install Fullerene"),
+                x: 112,
+                y: 136,
+                size: 64,
+                color: 0x23483c,
             }
         ];
 

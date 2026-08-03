@@ -55,6 +55,7 @@ fn route_style_launcher(rt: &mut crate::RuntimeState, index: usize) -> bool {
         lattice::common::AppRoute::Clock => {
             crate::menu_actions::open_info_window(rt, crate::menu_actions::InfoWindow::SystemInfo)
         }
+        lattice::common::AppRoute::Installer => rt.shell_launch_pending = true,
         lattice::common::AppRoute::Unknown => return false,
     }
     rt.frame_due = true;
@@ -236,6 +237,15 @@ impl EventHandler for WmEventHandler {
                                         rt,
                                         crate::menu_actions::InfoWindow::About,
                                     );
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                lattice::common::AppRoute::Installer => {
+                                    // The installer is intentionally entered
+                                    // through the shell command so that the
+                                    // target and destructive confirmation are
+                                    // visible before any disk write.
+                                    rt.shell_launch_pending = true;
                                     rt.frame_due = true;
                                     return true;
                                 }

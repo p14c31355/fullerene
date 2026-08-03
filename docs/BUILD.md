@@ -102,6 +102,24 @@ This still rebuilds `fullerene-kernel` and `bellows`, then writes
 Use `--debug` when unoptimized development artifacts are needed; this writes
 UEFI outputs under `target/x86_64-unknown-uefi/debug`.
 
+### Installing Fullerene on a SATA SSD
+
+Boot the generated UEFI ISO on the test machine with the target SATA SSD
+connected. The AHCI probe registers identified disks as `/dev/sataNpN`. The
+desktop's **Install Fullerene** icon opens the installer shell; review the
+listed geometry and then run:
+
+```console
+install_fullerene list
+install_fullerene /dev/sata0p0 --confirm
+```
+
+Installation is deliberately destructive. It requires a 512-byte-sector disk
+with at least 64 MiB available after LBA 2048, writes a small MBR-partitioned
+FAT32 EFI System Partition, and copies the running ISO's `BOOTX64.EFI` and
+`KERNEL.EFI` payloads into `EFI/BOOT/`. NVMe targets and BIOS-only boots are
+not supported by this installer yet.
+
 ## QEMU Options
 
 Flasks supports dynamic VGA/display configuration via CLI arguments:
