@@ -40,7 +40,7 @@ impl InfoWindow {
             Self::LogViewer => ("Log Viewer", 80, 50, 88, 2, 0x101014, 0xD8D8E8),
             Self::KLogLive => ("KLog Live", 60, 40, 100, 2, 0x0d0d14, 0xAADDFF),
             Self::SystemInfo => ("System Info", 140, 90, 52, 2, 0x101820, 0xCCEEFF),
-            Self::About => ("About Fullerene", 180, 140, 32, 0, 0x1a0d1a, 0xFFCCFF),
+            Self::About => ("About Fullerene", 150, 80, 46, 2, 0x12203A, 0xE8F3FF),
         }
     }
 }
@@ -206,7 +206,17 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             .map(|snapshot| snapshot())
             .unwrap_or_else(|| String::from("(metrics callback unavailable)\n")),
         InfoWindow::About => String::from(
-            "Fullerene OS\n============\n\nA microkernel-based\noperating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
+            "        .-''''-.\n\
+      .'  .--.  '.\n\
+     /   /    \\   \\\n\
+    ;   |  ()  |   ;\n\
+    |   |      |   |\n\
+    ;    \\____/    ;\n\
+     \\            /\n\
+      '.        .'\n\
+        '-.__.-'\n\
+\n\
+FULLERENE OS\n============\n\nA microkernel-based operating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
         ),
     };
     let (title, x, y, cols, extra_rows, bg, fg) = kind.params();
@@ -294,15 +304,13 @@ pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
         }
     }
 
-    let cols = 42u32;
-    let rows = 13u32;
+    let window_width = 620u32;
+    let window_height = 450u32;
     let (fb_width, fb_height, _) = *FB_DIMS.lock();
     let fb_width = fb_width.max(640);
     let fb_height = fb_height.max(480);
     let work_top = rt.desktop.top_panel_offset();
     let work_height = rt.desktop.work_area(fb_width, fb_height).1;
-    let window_width = cols * GLYPH_W;
-    let window_height = rows * GLYPH_H;
     let x = fb_width.saturating_sub(window_width) / 2;
     let y = work_top + work_height.saturating_sub(window_height) / 2;
     let surface_color = lattice::style::current().palette.surface;
