@@ -585,6 +585,22 @@ now satisfies that boundary by publishing identified ATA disks as
 `/dev/sataNpN`, while NVMe remains initialization-only. A controller reset
 performed by a placeholder wrapper is not service registration.
 
+Kernel-to-driver operations use a bounded generic submission/completion ring
+pair. The request owns its payload and identifies a typed device target; the
+completion returns status, byte count, read data, and driver-specific sequence
+state where needed (for example, the USB BOT tag). NVMe/AHCI initialization,
+MMIO requests, and block reads/writes use this common SQ/CQ boundary. The
+storage adapter does not put borrowed user or VFS buffers into the ring: it
+moves data through an owned request buffer and copies read data back only after
+the CQ entry is consumed. Hardware-specific queues remain below this layer:
+AHCI command lists, xHCI transfer/event rings, EHCI queue heads, and VirtIO
+virtqueues are not conflated with the kernel request ring.
+
+This is a transport boundary, not a claim that every device is block I/O.
+PS/2 input, framebuffer updates, audio streams, and network RX/TX will use
+typed event or stream queues built on the same ownership/completion rules where
+appropriate. They must not be forced into a synchronous block-request shape.
+
 The kernel device registry preserves `/dev/<name>` identity while transferring
 exclusive block-device ownership to a mounted filesystem. An available entry
 contains a device lease; a present entry without a lease means mounted or in
