@@ -69,13 +69,13 @@ impl AcpiInfo {
 #[derive(Clone, Copy)]
 pub struct RuntimeInfo {
     pub kernel_args_ptr: *const petroleum::assembly::KernelArgs,
-    pub runtime_available: bool,
+    pub kernel_args_available: bool,
 }
 impl RuntimeInfo {
     pub const fn new() -> Self {
         Self {
             kernel_args_ptr: core::ptr::null(),
-            runtime_available: false,
+            kernel_args_available: false,
         }
     }
 }
@@ -129,7 +129,7 @@ impl BootContext {
         } else {
             (0, 0, 0, 0)
         };
-        Self { memory_map:MemoryMapInfo{entries:memory_map,usable_bytes:0},framebuffer:BootFramebufferInfo{config:FullereneFramebufferConfig{address:a,width:w,height:h,pixel_format:petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,bpp,stride:w*(bpp/8)}},acpi:AcpiInfo{rsdp_address,parsed:false},runtime:RuntimeInfo{kernel_args_ptr:kernel_args,runtime_available:true},framebuffer_config:FullereneFramebufferConfig{address:a,width:w,height:h,pixel_format:petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,bpp,stride:w*(bpp/8)},memory_map_entries:memory_map,rsdp_address,kernel_args }
+        Self { memory_map:MemoryMapInfo{entries:memory_map,usable_bytes:0},framebuffer:BootFramebufferInfo{config:FullereneFramebufferConfig{address:a,width:w,height:h,pixel_format:petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,bpp,stride:w*(bpp/8)}},acpi:AcpiInfo{rsdp_address,parsed:false},runtime:RuntimeInfo{kernel_args_ptr:kernel_args,kernel_args_available:!kernel_args.is_null()},framebuffer_config:FullereneFramebufferConfig{address:a,width:w,height:h,pixel_format:petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,bpp,stride:w*(bpp/8)},memory_map_entries:memory_map,rsdp_address,kernel_args }
     }
     pub fn has_valid_framebuffer(&self) -> bool {
         self.framebuffer.has_valid_fb()
@@ -155,7 +155,7 @@ pub fn set_kernel_args(kernel_args: *const petroleum::assembly::KernelArgs) {
     let context = boot.get_or_insert_with(BootContext::empty);
     context.kernel_args = kernel_args;
     context.runtime.kernel_args_ptr = kernel_args;
-    context.runtime.runtime_available = !kernel_args.is_null();
+    context.runtime.kernel_args_available = !kernel_args.is_null();
 }
 
 pub fn get_boot() -> &'static spin::Mutex<Option<BootContext>> {

@@ -465,14 +465,17 @@ pub fn read_block_device(
     count: u16,
     buf: &mut [u8],
 ) -> Result<(), genome::block::BlockError> {
-    let registry = BLOCK_DEVICE_REGISTRY.lock();
-    let entry = registry
-        .get(name)
-        .ok_or(genome::block::BlockError::Device)?;
-    if entry.leased {
-        return Err(genome::block::BlockError::Busy);
-    }
-    entry.device.lock().read_sectors(lba, count, buf)
+    let device = {
+        let registry = BLOCK_DEVICE_REGISTRY.lock();
+        let entry = registry
+            .get(name)
+            .ok_or(genome::block::BlockError::Device)?;
+        if entry.leased {
+            return Err(genome::block::BlockError::Busy);
+        }
+        Arc::clone(&entry.device)
+    };
+    device.lock().read_sectors(lba, count, buf)
 }
 
 /// Write sectors through a registered block device. Mounted devices remain
@@ -483,14 +486,17 @@ pub fn write_block_device(
     count: u16,
     buf: &[u8],
 ) -> Result<(), genome::block::BlockError> {
-    let registry = BLOCK_DEVICE_REGISTRY.lock();
-    let entry = registry
-        .get(name)
-        .ok_or(genome::block::BlockError::Device)?;
-    if entry.leased {
-        return Err(genome::block::BlockError::Busy);
-    }
-    entry.device.lock().write_sectors(lba, count, buf)
+    let device = {
+        let registry = BLOCK_DEVICE_REGISTRY.lock();
+        let entry = registry
+            .get(name)
+            .ok_or(genome::block::BlockError::Device)?;
+        if entry.leased {
+            return Err(genome::block::BlockError::Busy);
+        }
+        Arc::clone(&entry.device)
+    };
+    device.lock().write_sectors(lba, count, buf)
 }
 
 #[cfg(test)]

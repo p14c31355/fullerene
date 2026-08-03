@@ -266,6 +266,9 @@ pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallRe
             let request = read_mmio_request(arg, false)?;
             let device = with_handle_mut(h, |obj| {
                 let device = map_handle!(obj, Device, state);
+                if device_capabilities(device) & fullerene_abi::device_capability::MMIO_READ == 0 {
+                    return Err(SyscallError::NotSupported);
+                }
                 Ok(device.pci.clone().ok_or(SyscallError::NotSupported)?)
             })?;
             #[cfg(not(nitrogen_no_storage))]
@@ -294,6 +297,9 @@ pub(crate) fn syscall_device_ioctl(handle: u64, cmd: u64, arg: u64) -> SyscallRe
             let request = read_mmio_request(arg, true)?;
             let device = with_handle_mut(h, |obj| {
                 let device = map_handle!(obj, Device, state);
+                if device_capabilities(device) & fullerene_abi::device_capability::MMIO_WRITE == 0 {
+                    return Err(SyscallError::NotSupported);
+                }
                 Ok(device.pci.clone().ok_or(SyscallError::NotSupported)?)
             })?;
             #[cfg(not(nitrogen_no_storage))]
@@ -465,7 +471,8 @@ fn pci_device_class(device: &nitrogen::pci::PciDevice) -> u32 {
         (0x03, _) => fullerene_abi::device_class::DISPLAY,
         (0x04, _) => fullerene_abi::device_class::AUDIO,
         (0x0C, 0x03) => fullerene_abi::device_class::USB,
-        (0x0C, _) => fullerene_abi::device_class::INPUT,
+        (0x09, _) => fullerene_abi::device_class::INPUT,
+        (0x0C, _) => fullerene_abi::device_class::OTHER,
         _ => fullerene_abi::device_class::OTHER,
     }
 }

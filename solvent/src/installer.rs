@@ -184,20 +184,20 @@ fn button_hit(x: i32, y: i32, button_x: i32, button_y: i32) -> bool {
 }
 
 pub(crate) fn service_install_request() {
-    let pending = RUNTIME_CONTEXT.runtime().as_mut().and_then(|rt| {
+    let device = RUNTIME_CONTEXT.runtime().as_mut().and_then(|rt| {
         rt.installer.as_mut().and_then(|state| {
             if state.page == InstallerPage::Installing {
                 if state.install_deferred {
                     state.install_deferred = false;
                     return None;
                 }
-                state.pending_device.take()
+                state.pending_device.clone()
             } else {
                 None
             }
         })
     });
-    let Some(device) = pending else {
+    let Some(device) = device else {
         return;
     };
 
@@ -210,11 +210,18 @@ pub(crate) fn service_install_request() {
         && let Some(state) = rt.installer.as_mut()
     {
         match result {
-            Ok(bytes) => {
+            Ok(progress) if progress.complete => {
                 state.page = InstallerPage::Complete;
+                state.pending_device = None;
                 state.message = format!(
                     "Installation complete. {} payload bytes were written to /dev/{}.",
-                    bytes, device
+                    progress.written_bytes, device
+                );
+            }
+            Ok(progress) => {
+                state.message = format!(
+                    "Installing to /dev/{}… {} / {} bytes",
+                    device, progress.written_bytes, progress.total_bytes
                 );
             }
             Err(error) => {

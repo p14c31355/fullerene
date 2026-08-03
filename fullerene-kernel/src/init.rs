@@ -346,8 +346,8 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
 
             // AHCI initialization is explicit and serialized through the same
             // kernel-owned SQ/CQ used by the shell and device ioctl paths.
-            // The mechanism currently prepares the HBA and enumerates ports;
-            // sector I/O is intentionally left to a future block adapter.
+            // Successful initialization enumerates ATA ports and publishes
+            // their SATA block devices for the installer and /dev clients.
             #[cfg(not(nitrogen_no_storage))]
             for device in present_devices
                 .iter()
@@ -355,7 +355,15 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             {
                 match crate::drivers::registry::initialize_ahci(device.clone()) {
                     Ok(index) => log::info!("AHCI: boot controller ahci{} ready", index),
-                    Err(error) => log::warn!("AHCI: boot initialization failed: {}", error),
+                    Err(error) => log::warn!(
+                        "AHCI: boot initialization failed for {:02x}:{:02x}.{} ({:04x}:{:04x}): {}",
+                        device.bus,
+                        device.device,
+                        device.function,
+                        device.vendor_id,
+                        device.device_id,
+                        error
+                    ),
                 }
             }
 

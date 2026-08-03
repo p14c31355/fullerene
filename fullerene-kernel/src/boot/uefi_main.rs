@@ -69,9 +69,10 @@ pub unsafe extern "C" fn efi_main_stage2(
     // CRITICAL: Set physical memory offset BEFORE initializing the global memory manager
     // to avoid page faults when creating the OffsetPageTable in PageTableManager::init.
     petroleum::set_physical_memory_offset(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE);
-    // `args_ptr` is the higher-half address reconstructed by the transition
-    // code. Preserve it for the installer before the normal init sequence
-    // starts; Bellows' payload allocations remain valid after ExitBootServices.
+    // Preserve the reconstructed boot context for diagnostic consumers after
+    // the normal init sequence starts. Installer payload descriptors were
+    // snapshotted in .data before the world switch and do not rely on this
+    // potentially corrupted transition argument.
     crate::contexts::boot::set_kernel_args(args_ptr);
     debug_serial(b"DEBUG: Physical memory offset set before memory manager init\n");
 

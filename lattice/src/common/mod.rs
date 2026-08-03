@@ -10,8 +10,8 @@ use crate::taskbar::Taskbar;
 use crate::top_panel::TopPanel;
 use crate::window::Window;
 
-pub const PHOTON_LAUNCHER_COUNT: usize = 7;
-pub const PRISM_LAUNCHER_COUNT: usize = 4;
+pub const PHOTON_LAUNCHER_COUNT: usize = 8;
+pub const PRISM_LAUNCHER_COUNT: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellKind {
@@ -104,7 +104,7 @@ pub enum AppRoute {
     Unknown,
 }
 
-pub const APP_GRID_ROUTES: [AppRoute; 7] = [
+pub const APP_GRID_ROUTES: [AppRoute; 8] = [
     AppRoute::Shell,
     AppRoute::Terminal,
     AppRoute::Editor,
@@ -112,6 +112,7 @@ pub const APP_GRID_ROUTES: [AppRoute; 7] = [
     AppRoute::Settings,
     AppRoute::Files,
     AppRoute::About,
+    AppRoute::Installer,
 ];
 
 pub const PHOTON_LAUNCHER_ROUTES: [AppRoute; PHOTON_LAUNCHER_COUNT] = [
@@ -122,6 +123,7 @@ pub const PHOTON_LAUNCHER_ROUTES: [AppRoute; PHOTON_LAUNCHER_COUNT] = [
     AppRoute::Clock,
     AppRoute::Settings,
     AppRoute::About,
+    AppRoute::Installer,
 ];
 
 pub const PRISM_LAUNCHER_ROUTES: [AppRoute; PRISM_LAUNCHER_COUNT] = [
@@ -129,6 +131,7 @@ pub const PRISM_LAUNCHER_ROUTES: [AppRoute; PRISM_LAUNCHER_COUNT] = [
     AppRoute::Files,
     AppRoute::Terminal,
     AppRoute::Settings,
+    AppRoute::Installer,
 ];
 
 pub const fn route_label(route: AppRoute) -> &'static str {
@@ -663,6 +666,6 @@ mod tests {
             &crate::icon::ICON_ABOUT
         ));
         assert_eq!(app_grid_route(4), Some(AppRoute::Settings));
-        assert_eq!(app_grid_route(7), None);
+        assert_eq!(app_grid_route(7), Some(AppRoute::Installer));
     }
 }

@@ -295,12 +295,12 @@ pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
     }
 
     let window_width = 620u32;
-    let window_height = 450u32;
     let (fb_width, fb_height, _) = *FB_DIMS.lock();
     let fb_width = fb_width.max(640);
     let fb_height = fb_height.max(480);
     let work_top = rt.desktop.top_panel_offset();
     let work_height = rt.desktop.work_area(fb_width, fb_height).1;
+    let window_height = 450u32.min(work_height);
     let x = fb_width.saturating_sub(window_width) / 2;
     let y = work_top + work_height.saturating_sub(window_height) / 2;
     let surface_color = lattice::style::current().palette.surface;

@@ -8,15 +8,18 @@
 //! - Serial ATA AHCI 1.3.1 Specification
 //! - Serial ATA Revision 3.0
 
+use alloc::collections::BTreeSet;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ptr;
 use spin::Mutex;
 
 use crate::driver_context::DriverContext;
-use crate::pci::{PciDevice, PciScanner};
+use crate::pci::PciDevice;
 
 /// Global list of discovered AHCI controllers.
-static CONTROLLERS: Mutex<Vec<AhciController>> = Mutex::new(Vec::new());
+static CONTROLLERS: Mutex<Vec<Arc<Mutex<AhciController>>>> = Mutex::new(Vec::new());
+static INITIALIZING: Mutex<BTreeSet<(u8, u8, u8)>> = Mutex::new(BTreeSet::new());
 
 // ── HBA memory register offsets ──────────────────────────────────
 
@@ -109,6 +112,12 @@ struct AhciPort {
     data_buffer_size: usize,
     sector_size: u32,
     total_sectors: u64,
+    lba48: bool,
+}
+
+enum TransferBuffer<'a> {
+    Read(&'a mut [u8]),
+    Write(&'a [u8]),
 }
 
 pub struct AhciController {
@@ -187,9 +196,10 @@ impl AhciController {
                 continue;
             };
             match ctrl.identify_port(&mut initialized) {
-                Ok((sector_size, total_sectors)) => {
+                Ok((sector_size, total_sectors, lba48)) => {
                     initialized.sector_size = sector_size;
                     initialized.total_sectors = total_sectors;
+                    initialized.lba48 = lba48;
                     log::info!(
                         "AHCI port {}: ATA disk ({} bytes/sector, {} sectors)",
                         i,
@@ -199,6 +209,7 @@ impl AhciController {
                     ctrl.ports.push(initialized);
                 }
                 Err(error) => {
+                    ctrl.release_port(ctx, initialized);
                     log::warn!("AHCI port {}: IDENTIFY failed: {}", i, error);
                 }
             }
@@ -320,10 +331,28 @@ impl AhciController {
             data_buffer_size: 4096,
             sector_size: 512,
             total_sectors: 0,
+            lba48: false,
         })
     }
 
-    fn identify_port(&self, port: &mut AhciPort) -> Result<(u32, u64), crate::DriverError> {
+    fn release_port(&self, ctx: &dyn DriverContext, port: AhciPort) {
+        Self::stop_command_engine(port.port_mmio);
+        ctx.free_frame(port.cmd_list_phys);
+        ctx.free_frame(port.fis_phys);
+        ctx.free_frame(port.cmd_table_phys);
+        ctx.free_frame(port.data_buffer_phys);
+    }
+
+    fn stop_command_engine(port_mmio: *mut u32) {
+        let cmd = Self::r32_port(port_mmio, PXCMD);
+        Self::w32_port(port_mmio, PXCMD, cmd & !(PXCMD_ST | PXCMD_FRE));
+        let _ = crate::timing::wait_timeout_us(500_000, || {
+            let status = Self::r32_port(port_mmio, PXCMD);
+            (status & (PXCMD_CR | PXCMD_FR)) == 0
+        });
+    }
+
+    fn identify_port(&self, port: &mut AhciPort) -> Result<(u32, u64, bool), crate::DriverError> {
         Self::issue_command(port, 0xEC, 0, 1, false)?;
         let identify = unsafe { core::slice::from_raw_parts(port.data_buffer, 512) };
         let word = |index: usize| -> u16 {
@@ -355,7 +384,7 @@ impl AhciController {
         {
             return Err(crate::DriverError::NotSupported);
         }
-        Ok((sector_size, total_sectors))
+        Ok((sector_size, total_sectors, lba48))
     }
 
     fn issue_command(
@@ -368,7 +397,10 @@ impl AhciController {
         if count == 0 || count as usize * port.sector_size as usize > port.data_buffer_size {
             return Err(crate::DriverError::InvalidArgument);
         }
-        if lba.checked_add(count as u64).is_none() {
+        let end = lba
+            .checked_add(count as u64)
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        if !port.lba48 && end > (1u64 << 28) {
             return Err(crate::DriverError::InvalidArgument);
         }
         if Self::r32_port(port.port_mmio, PXCI) & 1 != 0 {
@@ -387,9 +419,19 @@ impl AhciController {
             fis[2] = command;
             let lba_bytes = lba.to_le_bytes();
             fis[4..7].copy_from_slice(&lba_bytes[..3]);
-            fis[7] = 1 << 6; // LBA mode, device/head
-            fis[8..11].copy_from_slice(&lba_bytes[3..6]);
-            fis[12..14].copy_from_slice(&count.to_le_bytes());
+            fis[7] = (1 << 6)
+                | if port.lba48 {
+                    0
+                } else {
+                    ((lba >> 24) & 0x0F) as u8
+                }; // LBA mode and LBA[27:24] for legacy ATA
+            if port.lba48 {
+                fis[8..11].copy_from_slice(&lba_bytes[3..6]);
+                fis[12..14].copy_from_slice(&count.to_le_bytes());
+            } else {
+                fis[12] = count as u8;
+                fis[13] = 0;
+            }
             (*port.cmd_table).prdt[0] = PrdtEntry {
                 dba: port.data_buffer_phys as u32,
                 dbau: (port.data_buffer_phys >> 32) as u32,
@@ -406,12 +448,32 @@ impl AhciController {
         })
         .is_err()
         {
+            Self::recover_port(port.port_mmio);
             return Err(crate::DriverError::TimedOut);
         }
         if Self::r32_port(port.port_mmio, PXIS) & PXIS_TFES != 0 {
+            Self::recover_port(port.port_mmio);
             return Err(crate::DriverError::Io);
         }
         Ok(())
+    }
+
+    fn recover_port(port_mmio: *mut u32) {
+        let cmd = Self::r32_port(port_mmio, PXCMD);
+        Self::w32_port(port_mmio, PXCMD, cmd & !PXCMD_ST);
+        let _ = crate::timing::wait_timeout_us(500_000, || {
+            Self::r32_port(port_mmio, PXCMD) & PXCMD_CR == 0
+        });
+        Self::w32_port(port_mmio, PXCI, 0);
+        Self::w32_port(port_mmio, PXSERR, 0xFFFF_FFFF);
+        Self::w32_port(port_mmio, PXIS, 0xFFFF_FFFF);
+        if cmd & PXCMD_ST != 0 {
+            Self::w32_port(
+                port_mmio,
+                PXCMD,
+                Self::r32_port(port_mmio, PXCMD) | PXCMD_ST,
+            );
+        }
     }
 
     fn transfer(
@@ -419,8 +481,7 @@ impl AhciController {
         port_index: u8,
         lba: u64,
         count: u16,
-        buf: &mut [u8],
-        write: bool,
+        mut buffer: TransferBuffer<'_>,
     ) -> Result<(), crate::DriverError> {
         let port_position = self
             .ports
@@ -431,9 +492,14 @@ impl AhciController {
         let bytes = (count as usize)
             .checked_mul(port.sector_size as usize)
             .ok_or(crate::DriverError::InvalidArgument)?;
-        if buf.len() < bytes {
+        let buffer_len = match &buffer {
+            TransferBuffer::Read(buf) => buf.len(),
+            TransferBuffer::Write(buf) => buf.len(),
+        };
+        if buffer_len < bytes {
             return Err(crate::DriverError::InvalidArgument);
         }
+        let write = matches!(&buffer, TransferBuffer::Write(_));
         if lba.checked_add(count as u64).is_none() || lba + count as u64 > port.total_sectors {
             return Err(crate::DriverError::InvalidArgument);
         }
@@ -445,7 +511,7 @@ impl AhciController {
             let chunk = (count as usize - completed).min(per_command as usize) as u16;
             let chunk_bytes = chunk as usize * port.sector_size as usize;
             let offset = completed * port.sector_size as usize;
-            if write {
+            if let TransferBuffer::Write(buf) = &buffer {
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         buf.as_ptr().add(offset),
@@ -456,12 +522,18 @@ impl AhciController {
             }
             Self::issue_command(
                 port,
-                if write { 0x35 } else { 0x25 },
+                if port.lba48 {
+                    if write { 0x35 } else { 0x25 }
+                } else if write {
+                    0xCA
+                } else {
+                    0xC8
+                },
                 lba + completed as u64,
                 chunk,
                 write,
             )?;
-            if !write {
+            if let TransferBuffer::Read(buf) = &mut buffer {
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         port.data_buffer,
@@ -503,27 +575,6 @@ impl AhciController {
 
 // ── Globals ──────────────────────────────────────────────────────
 
-/// Initialise all AHCI controllers found on the PCI bus.
-///
-/// `ctx` provides memory allocation and MMIO mapping services.
-pub fn init(ctx: &dyn DriverContext) {
-    let mut scanner = PciScanner::new();
-    let _ = scanner.scan_all_buses();
-    for dev in scanner.get_devices() {
-        if dev.class_code == 0x01 && dev.subclass == 0x06 {
-            log::info!(
-                "AHCI: found device {:#06x}:{:#06x}",
-                dev.vendor_id,
-                dev.device_id
-            );
-            let _ = init_device(ctx, dev.clone());
-        }
-    }
-    if CONTROLLERS.lock().is_empty() {
-        log::info!("AHCI: no SATA controllers found");
-    }
-}
-
 /// Initialize one AHCI PCI function and return its stable controller index.
 pub fn init_device(
     ctx: &dyn DriverContext,
@@ -533,20 +584,33 @@ pub fn init_device(
         return Err(crate::DriverError::DeviceNotFound);
     }
 
-    let controllers = CONTROLLERS.lock();
-    if let Some(index) = controllers.iter().position(|controller| {
-        controller.device.bus == device.bus
-            && controller.device.device == device.device
-            && controller.device.function == device.function
-    }) {
-        return Ok(index);
+    let key = (device.bus, device.device, device.function);
+    {
+        let controllers = CONTROLLERS.lock();
+        if let Some(index) = controllers.iter().position(|controller| {
+            let controller = controller.lock();
+            controller.device.bus == device.bus
+                && controller.device.device == device.device
+                && controller.device.function == device.function
+        }) {
+            return Ok(index);
+        }
+        if !INITIALIZING.lock().insert(key) {
+            return Err(crate::DriverError::Busy);
+        }
     }
-    drop(controllers);
 
     if !device.enable_memory_access() {
+        INITIALIZING.lock().remove(&key);
         return Err(crate::DriverError::Io);
     }
-    let controller = AhciController::init(ctx, device).ok_or(crate::DriverError::DeviceFault)?;
+    let controller = match AhciController::init(ctx, device) {
+        Some(controller) => controller,
+        None => {
+            INITIALIZING.lock().remove(&key);
+            return Err(crate::DriverError::DeviceFault);
+        }
+    };
     let mut controllers = CONTROLLERS.lock();
     let index = controllers.len();
     log::info!(
@@ -554,7 +618,8 @@ pub fn init_device(
         index,
         controller.num_ports
     );
-    controllers.push(controller);
+    controllers.push(Arc::new(Mutex::new(controller)));
+    INITIALIZING.lock().remove(&key);
     Ok(index)
 }
 
@@ -565,17 +630,22 @@ pub fn controller_count() -> usize {
 
 /// Return all ATA disks that completed IDENTIFY during AHCI initialization.
 pub fn devices() -> Vec<AhciDeviceInfo> {
-    CONTROLLERS
-        .lock()
+    let controllers = CONTROLLERS.lock().clone();
+    controllers
         .iter()
         .enumerate()
         .flat_map(|(controller_index, controller)| {
-            controller.ports.iter().map(move |port| AhciDeviceInfo {
-                controller_index,
-                port_index: port.index,
-                sector_size: port.sector_size,
-                total_sectors: port.total_sectors,
-            })
+            let controller = controller.lock();
+            controller
+                .ports
+                .iter()
+                .map(move |port| AhciDeviceInfo {
+                    controller_index,
+                    port_index: port.index,
+                    sector_size: port.sector_size,
+                    total_sectors: port.total_sectors,
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -592,7 +662,11 @@ pub fn read_sectors(
     let controller = controllers
         .get_mut(controller_index)
         .ok_or(crate::DriverError::DeviceNotFound)?;
-    controller.transfer(port_index, lba, count, buf, false)
+    let controller = Arc::clone(controller);
+    drop(controllers);
+    controller
+        .lock()
+        .transfer(port_index, lba, count, TransferBuffer::Read(buf))
 }
 
 /// Write sectors to an initialized ATA disk.
@@ -603,14 +677,13 @@ pub fn write_sectors(
     count: u16,
     buf: &[u8],
 ) -> Result<(), crate::DriverError> {
-    let mut scratch = Vec::new();
-    scratch
-        .try_reserve(buf.len())
-        .map_err(|_| crate::DriverError::OutOfMemory)?;
-    scratch.extend_from_slice(buf);
-    let mut controllers = CONTROLLERS.lock();
+    let controllers = CONTROLLERS.lock();
     let controller = controllers
-        .get_mut(controller_index)
+        .get(controller_index)
         .ok_or(crate::DriverError::DeviceNotFound)?;
-    controller.transfer(port_index, lba, count, &mut scratch, true)
+    let controller = Arc::clone(controller);
+    drop(controllers);
+    controller
+        .lock()
+        .transfer(port_index, lba, count, TransferBuffer::Write(buf))
 }

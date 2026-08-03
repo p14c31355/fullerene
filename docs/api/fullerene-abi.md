@@ -69,8 +69,7 @@ NVMe data-path commands are not accepted yet.
 
 `INITIALIZE_AHCI` has the same SQ/CQ behavior for class 01/subclass 06 SATA
 controllers and returns the stable `ahciN` controller index. The AHCI driver
-also identifies ATA disks and registers them as `/dev/sataNpN`; those handles
-support `GET_BLOCK_INFO`, `READ_BLOCKS`, and `WRITE_BLOCKS`.
+also identifies ATA disks and registers them as `/dev/sataNpN`.
 
 Named block-device handles support `GET_BLOCK_INFO`, `READ_BLOCKS`, and
 `WRITE_BLOCKS`. Block requests use a fixed-size `BlockRequest` record and are

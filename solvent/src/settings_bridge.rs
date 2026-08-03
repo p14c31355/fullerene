@@ -47,8 +47,8 @@ pub(crate) fn settings_handle_mouse(rt: &mut crate::RuntimeState, x: i32, y: i32
     // The right side of each card is an adjustment control. Clicking the
     // value itself advances it; clicking the left half of the control moves
     // backward. The keyboard Left/Right path uses the same helper.
-    if relative_x >= window.width as i32 - 190 {
-        adjust_setting(rt, row, relative_x < window.width as i32 - 95);
+    if relative_x >= 440 && relative_x < window.width as i32 - 28 {
+        adjust_setting(rt, row, relative_x < 516);
     }
     rt.settings_dirty = true;
     rt.frame_due = true;
@@ -107,7 +107,7 @@ fn adjust_setting(rt: &mut crate::RuntimeState, row: u32, dec: bool) {
                 (cur + 0.25).min(4.0)
             };
             MOUSE_SENSITIVITY.store(
-                (new_val * 6.0) as i16,
+                (new_val * 6.0 + 0.5) as i16,
                 core::sync::atomic::Ordering::Relaxed,
             );
             persist_settings();
@@ -247,10 +247,10 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
         painter.rounded_rect(28, y, width.saturating_sub(56), 36, 8, selected_bg);
         painter.draw_text(46, y + 5, labels[row as usize], 0x1F3448, 15.0);
         painter.draw_text(46, y + 22, descriptions[row as usize], 0x718191, 11.0);
-        painter.rounded_rect(430, y + 5, 182, 26, 13, 0xE8EEF4);
-        painter.draw_text(444, y + 9, "‹", 0x2B76B9, 17.0);
-        painter.draw_text(475, y + 9, &values[row as usize], 0x1F3448, 13.0);
-        painter.draw_text(588, y + 9, "›", 0x2B76B9, 17.0);
+        painter.rounded_rect(440, y + 5, 152, 26, 13, 0xE8EEF4);
+        painter.draw_text(452, y + 9, "‹", 0x2B76B9, 17.0);
+        painter.draw_text(483, y + 9, &values[row as usize], 0x1F3448, 13.0);
+        painter.draw_text(570, y + 9, "›", 0x2B76B9, 17.0);
     }
 
     painter.draw_text(

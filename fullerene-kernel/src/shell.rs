@@ -1465,7 +1465,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                 );
             }
             _ if cmd.starts_with("install_fullerene ") => {
-                let rest = &cmd[17..];
+                let rest = cmd[18..].trim();
                 let Some(device) = rest.strip_suffix(" --confirm") else {
                     solvent::write_terminal(
                         "Installer: missing explicit --confirm; no disk was changed.\n",
@@ -1475,7 +1475,8 @@ fn nozzle_services() -> nozzle::ShellServices {
                 match crate::installer::install(device) {
                     Ok(bytes) => solvent::write_terminal(&format!(
                         "Installer: /dev/{} is ready ({} payload bytes written). Reboot to test it.\n",
-                        device, bytes
+                        device.trim_start_matches("/dev/"),
+                        bytes
                     )),
                     Err(error) => {
                         solvent::write_terminal(&format!("Installer: failed: {}\n", error))

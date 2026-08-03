@@ -747,9 +747,6 @@ struct AhciBlockDevice {
 }
 
 #[cfg(not(nitrogen_no_storage))]
-unsafe impl Send for AhciBlockDevice {}
-
-#[cfg(not(nitrogen_no_storage))]
 impl BlockDevice for AhciBlockDevice {
     fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         let required = (count as usize)
@@ -760,6 +757,12 @@ impl BlockDevice for AhciBlockDevice {
                 required,
                 provided: buf.len(),
             });
+        }
+        let end = lba
+            .checked_add(count as u64)
+            .ok_or(BlockError::LbaOverflow)?;
+        if end > self.total_sectors {
+            return Err(BlockError::LbaOverflow);
         }
         nitrogen::storage::ahci::read_sectors(
             self.controller_index,
@@ -780,6 +783,12 @@ impl BlockDevice for AhciBlockDevice {
                 required,
                 provided: buf.len(),
             });
+        }
+        let end = lba
+            .checked_add(count as u64)
+            .ok_or(BlockError::LbaOverflow)?;
+        if end > self.total_sectors {
+            return Err(BlockError::LbaOverflow);
         }
         nitrogen::storage::ahci::write_sectors(
             self.controller_index,

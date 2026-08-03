@@ -82,21 +82,21 @@
 
 ## Drivers
 
-| Driver | QEMU | Real HW | Status |
-|---|---|---|---|
-| PS/2 Keyboard | ✅ Full | ✅ Full | Stable |
-| PS/2 Mouse | ✅ Full | ✅ Full | Stable |
-| UEFI Framebuffer | ✅ Full | ✅ Full | Stable |
-| VGA Text Mode | ✅ Full | ✅ Full | Stable |
-| AHCI | ✅ Full | 🟡 Partial | ATA IDENTIFY + DMA sector R/W; /dev/sataNpN registration and UEFI installer path |
-| NVMe | ✅ Full | ✅ Full | SQ/CQ initialization only; block adapter pending |
-| xHCI | ✅ Full | 🟡 Partial | Beta |
-| eHCI | ✅ Full | ❌ Not supported | Alpha |
-| RTSX | ❌ Not supported | ✅ Full | Alpha |
-| IWL WiFi | ❌ Not supported | 🟡 Partial | Alpha |
-| VirtIO GPU | ✅ Full | ❌ Not supported | Beta |
-| HDA Audio | 🟡 Partial | 🟡 Partial | Alpha |
-| IOMMU | ✅ Full | 🟡 Partial | Alpha |
+| Driver | QEMU | Real HW | Status | Notes |
+|---|---|---|---|---|
+| PS/2 Keyboard | ✅ Full | ✅ Full | Stable |  |
+| PS/2 Mouse | ✅ Full | ✅ Full | Stable |  |
+| UEFI Framebuffer | ✅ Full | ✅ Full | Stable |  |
+| VGA Text Mode | ✅ Full | ✅ Full | Stable |  |
+| AHCI | ✅ Full | 🟡 Partial | Beta | ATA IDENTIFY + DMA sector R/W; /dev/sataNpN registration and UEFI installer path |
+| NVMe | ✅ Full | ✅ Full | Alpha | SQ/CQ initialization only; block adapter pending |
+| xHCI | ✅ Full | 🟡 Partial | Beta |  |
+| eHCI | ✅ Full | ❌ Not supported | Alpha |  |
+| RTSX | ❌ Not supported | ✅ Full | Alpha |  |
+| IWL WiFi | ❌ Not supported | 🟡 Partial | Alpha |  |
+| VirtIO GPU | ✅ Full | ❌ Not supported | Beta |  |
+| HDA Audio | 🟡 Partial | 🟡 Partial | Alpha |  |
+| IOMMU | ✅ Full | 🟡 Partial | Alpha |  |
 
 ## Application Ports
 

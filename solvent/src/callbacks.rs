@@ -19,7 +19,13 @@ pub type VfsRemoveCallback = fn(&str, bool) -> Result<(), genome::FsError>;
 pub type MountedDriveListCallback = fn() -> Vec<(String, String)>;
 pub type RunWasmCallback = fn(&str, &[&str]) -> i32;
 pub type InstallerDeviceListCallback = fn() -> Vec<InstallerDevice>;
-pub type InstallerRunCallback = fn(&str) -> Result<u64, String>;
+#[derive(Debug, Clone, Copy)]
+pub struct InstallerProgress {
+    pub complete: bool,
+    pub written_bytes: u64,
+    pub total_bytes: u64,
+}
+pub type InstallerRunCallback = fn(&str) -> Result<InstallerProgress, String>;
 
 /// Kernel services installed into the Solvent orchestration layer.
 #[derive(Clone, Copy)]
