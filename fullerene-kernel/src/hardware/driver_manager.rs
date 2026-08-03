@@ -54,9 +54,10 @@ impl DriverManager {
             if dev.class_code == 0x06 {
                 continue;
             }
-            let mut candidates = registry.probe_candidates(ctx, dev);
+            let candidates = registry.probe_candidates(ctx, dev);
+            let had_candidates = !candidates.is_empty();
             let mut attached = false;
-            for candidate in &mut candidates {
+            for mut candidate in candidates {
                 match candidate.attach() {
                     Ok(()) => {
                         log::info!(
@@ -81,16 +82,23 @@ impl DriverManager {
                         break;
                     }
                     Err(e) => {
+                        // Drop the candidate before terminating its bound
+                        // process so its owned hardware resources are
+                        // reclaimed first.
+                        drop(candidate);
                         log::warn!(
                             "DriverManager: attach failed for {:04x}:{:04x} — {}",
                             dev.vendor_id,
                             dev.device_id,
                             e,
                         );
+                        if e.is_fatal() {
+                            crate::drivers::supervisor::kill_failed_driver(dev, e);
+                        }
                     }
                 }
             }
-            if candidates.is_empty() && !attached {
+            if !had_candidates && !attached {
                 log::debug!(
                     "DriverManager: no driver for {:04x}:{:04x} (class {:#04x}) at {:02x}:{:02x}.{}",
                     dev.vendor_id,

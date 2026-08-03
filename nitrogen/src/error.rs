@@ -34,6 +34,21 @@ pub enum DriverError {
     DeviceFault,
 }
 
+impl DriverError {
+    /// A fatal error leaves the device in an unknown state.
+    pub fn is_fatal(self) -> bool {
+        matches!(
+            self,
+            Self::DmaMappingFailed
+                | Self::MmioMappingFailed
+                | Self::TimedOut
+                | Self::Io
+                | Self::Protocol
+                | Self::DeviceFault
+        )
+    }
+}
+
 impl fmt::Display for DriverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -59,6 +74,7 @@ impl From<DriverContextError> for DriverError {
             DriverContextError::OutOfMemory => Self::OutOfMemory,
             DriverContextError::MmioMappingFailed => Self::MmioMappingFailed,
             DriverContextError::InvalidArgument => Self::InvalidArgument,
+            DriverContextError::DmaMappingFailed => Self::DmaMappingFailed,
         }
     }
 }

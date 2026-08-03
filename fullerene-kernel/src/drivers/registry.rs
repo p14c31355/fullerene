@@ -14,11 +14,17 @@
 
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use alloc::boxed::Box;
+#[cfg(not(nitrogen_no_storage))]
+use core::sync::atomic::AtomicBool as DriverAtomicBool;
+#[cfg(not(nitrogen_no_storage))]
+use core::sync::atomic::AtomicU64;
 #[cfg(not(nitrogen_no_usb))]
 use core::sync::atomic::AtomicUsize;
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(not(nitrogen_no_usb))]
+#[cfg(not(nitrogen_no_storage))]
+use core::{cell::UnsafeCell, mem::MaybeUninit};
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use spin::Mutex;
 
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
@@ -114,6 +120,344 @@ where
 
 #[cfg(not(nitrogen_no_storage))]
 static SD_PROBED: AtomicBool = AtomicBool::new(false);
+
+// Drivers are exposed through a small software request/completion pair.  The
+// queue is intentionally independent of any device's hardware DMA queues:
+// it is the kernel-to-driver bridge used by ioctl and shell-facing requests.
+#[cfg(not(nitrogen_no_storage))]
+const DRIVER_QUEUE_DEPTH: usize = 8;
+
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug)]
+enum DriverRequestKind {
+    InitializeNvme {
+        device: PciDevice,
+    },
+    Mmio {
+        device: PciDevice,
+        bar: u8,
+        offset: u32,
+        width: u8,
+        write: bool,
+        value: u64,
+    },
+}
+
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug)]
+struct DriverRequest {
+    request_id: u64,
+    kind: DriverRequestKind,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug, Clone, Copy)]
+struct DriverCompletion {
+    request_id: u64,
+    error: Option<nitrogen::DriverError>,
+    controller_index: Option<usize>,
+    value: u64,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+struct DriverSlot<T> {
+    sequence: AtomicUsize,
+    entry: UnsafeCell<MaybeUninit<T>>,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+impl<T> DriverSlot<T> {
+    const fn new(sequence: usize) -> Self {
+        Self {
+            sequence: AtomicUsize::new(sequence),
+            entry: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+unsafe impl<T: Send> Sync for DriverSlot<T> {}
+#[cfg(not(nitrogen_no_storage))]
+unsafe impl<T: Send> Send for DriverSlot<T> {}
+
+#[cfg(not(nitrogen_no_storage))]
+struct DriverRing<T> {
+    entries: [DriverSlot<T>; DRIVER_QUEUE_DEPTH],
+    producer_pos: AtomicUsize,
+    consumer_pos: AtomicUsize,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+unsafe impl<T: Send> Sync for DriverRing<T> {}
+#[cfg(not(nitrogen_no_storage))]
+unsafe impl<T: Send> Send for DriverRing<T> {}
+
+/// Bounded lock-free MPSC ring used for the generic driver SQ and CQ.
+///
+/// Producers reserve distinct slots with a lock-free CAS retry loop. Each
+/// producer then publishes its slot by releasing the slot sequence number;
+/// the single consumer acquires that sequence before reading the entry. A
+/// full queue returns immediately, so the algorithm never waits on a mutex or
+/// spin lock. The CAS loop is a lock-free reservation operation: if one
+/// producer is delayed, another producer can still make progress.
+#[cfg(not(nitrogen_no_storage))]
+impl<T> DriverRing<T> {
+    const fn new() -> Self {
+        Self {
+            entries: [
+                DriverSlot::new(0),
+                DriverSlot::new(1),
+                DriverSlot::new(2),
+                DriverSlot::new(3),
+                DriverSlot::new(4),
+                DriverSlot::new(5),
+                DriverSlot::new(6),
+                DriverSlot::new(7),
+            ],
+            producer_pos: AtomicUsize::new(0),
+            consumer_pos: AtomicUsize::new(0),
+        }
+    }
+
+    fn push(&self, value: T) -> Result<(), T> {
+        let mut producer = self.producer_pos.load(Ordering::Relaxed);
+        loop {
+            let slot = &self.entries[producer & (DRIVER_QUEUE_DEPTH - 1)];
+            let sequence = slot.sequence.load(Ordering::Acquire);
+            let difference = sequence.wrapping_sub(producer) as isize;
+            if difference == 0 {
+                match self.producer_pos.compare_exchange_weak(
+                    producer,
+                    producer.wrapping_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        unsafe { (*slot.entry.get()).write(value) };
+                        slot.sequence
+                            .store(producer.wrapping_add(1), Ordering::Release);
+                        return Ok(());
+                    }
+                    Err(next) => producer = next,
+                }
+            } else if difference < 0 {
+                return Err(value);
+            } else {
+                producer = self.producer_pos.load(Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Remove the oldest entry.
+    ///
+    /// The ring has a single-consumer contract. Callers must prevent
+    /// concurrent `pop` calls; the synchronous adapter enforces this with
+    /// `DRIVER_IN_FLIGHT`.
+    fn pop(&self) -> Option<T> {
+        let consumer = self.consumer_pos.load(Ordering::Relaxed);
+        let slot = &self.entries[consumer & (DRIVER_QUEUE_DEPTH - 1)];
+        let sequence = slot.sequence.load(Ordering::Acquire);
+        let difference = sequence.wrapping_sub(consumer.wrapping_add(1)) as isize;
+        if difference != 0 {
+            return None;
+        }
+
+        self.consumer_pos
+            .store(consumer.wrapping_add(1), Ordering::Relaxed);
+        let value = unsafe { (*slot.entry.get()).assume_init_read() };
+        slot.sequence
+            .store(consumer.wrapping_add(DRIVER_QUEUE_DEPTH), Ordering::Release);
+        Some(value)
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+struct DriverQueuePair {
+    submission: DriverRing<DriverRequest>,
+    completion: DriverRing<DriverCompletion>,
+}
+
+#[cfg(not(nitrogen_no_storage))]
+impl DriverQueuePair {
+    const fn new() -> Self {
+        Self {
+            submission: DriverRing::new(),
+            completion: DriverRing::new(),
+        }
+    }
+
+    fn submit(&self, request: DriverRequest) -> Result<(), DriverRequest> {
+        self.submission.push(request)
+    }
+
+    fn take_submission(&self) -> Option<DriverRequest> {
+        self.submission.pop()
+    }
+
+    fn complete(&self, completion: DriverCompletion) -> Result<(), DriverCompletion> {
+        self.completion.push(completion)
+    }
+
+    fn take_completion(&self, request_id: u64) -> Option<DriverCompletion> {
+        let completion = self.completion.pop()?;
+        if completion.request_id == request_id {
+            Some(completion)
+        } else {
+            // The ring has no push-front operation, so callers must request
+            // completions in submission order. A mismatch means the
+            // single-consumer invariant enforced by DRIVER_IN_FLIGHT broke.
+            log::error!(
+                "driver queue: dropped completion {} while waiting for {}",
+                completion.request_id,
+                request_id
+            );
+            None
+        }
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+static DRIVER_QUEUES: DriverQueuePair = DriverQueuePair::new();
+#[cfg(not(nitrogen_no_storage))]
+static NEXT_DRIVER_REQUEST: AtomicU64 = AtomicU64::new(1);
+#[cfg(not(nitrogen_no_storage))]
+// The generic rings remain MPSC. This gate only serializes the synchronous
+// adapter's CQ consumer so one caller cannot steal another caller's response.
+static DRIVER_IN_FLIGHT: DriverAtomicBool = DriverAtomicBool::new(false);
+
+#[cfg(not(nitrogen_no_storage))]
+fn driver_queues() -> &'static DriverQueuePair {
+    &DRIVER_QUEUES
+}
+
+#[cfg(all(test, not(nitrogen_no_storage)))]
+mod driver_queue_tests {
+    use super::*;
+
+    #[test]
+    fn submission_and_completion_are_independent_fifo_rings() {
+        let pair = DriverQueuePair::new();
+        let device = PciDevice {
+            bus: 0,
+            device: 1,
+            function: 0,
+            handle: 0,
+            vendor_id: 0x8086,
+            device_id: 0x5845,
+            class_code: 0x01,
+            subclass: 0x08,
+            prog_if: 0,
+            header_type: 0,
+        };
+        pair.submit(DriverRequest {
+            request_id: 7,
+            kind: DriverRequestKind::InitializeNvme { device },
+        })
+        .unwrap();
+        let request = pair.take_submission().unwrap();
+        assert_eq!(request.request_id, 7);
+        assert!(pair.take_submission().is_none());
+
+        pair.complete(DriverCompletion {
+            request_id: 7,
+            error: None,
+            controller_index: Some(0),
+            value: 0,
+        })
+        .unwrap();
+        let completion = pair.take_completion(7).unwrap();
+        assert_eq!(completion.controller_index, Some(0));
+        assert!(pair.take_completion(7).is_none());
+    }
+
+    #[test]
+    fn submission_ring_rejects_when_full_without_overwriting_entries() {
+        let ring = DriverRing::<DriverRequest>::new();
+        for request_id in 0..DRIVER_QUEUE_DEPTH as u64 {
+            ring.push(DriverRequest {
+                request_id,
+                kind: DriverRequestKind::InitializeNvme {
+                    device: PciDevice {
+                        bus: 0,
+                        device: 0,
+                        function: 0,
+                        handle: 0,
+                        vendor_id: 0,
+                        device_id: 0,
+                        class_code: 0,
+                        subclass: 0,
+                        prog_if: 0,
+                        header_type: 0,
+                    },
+                },
+            })
+            .unwrap();
+        }
+        let rejected = ring.push(DriverRequest {
+            request_id: 99,
+            kind: DriverRequestKind::InitializeNvme {
+                device: PciDevice {
+                    bus: 0,
+                    device: 0,
+                    function: 0,
+                    handle: 0,
+                    vendor_id: 0,
+                    device_id: 0,
+                    class_code: 0,
+                    subclass: 0,
+                    prog_if: 0,
+                    header_type: 0,
+                },
+            },
+        });
+        assert_eq!(rejected.unwrap_err().request_id, 99);
+        assert_eq!(ring.pop().unwrap().request_id, 0);
+    }
+
+    #[test]
+    fn mpsc_ring_transfers_entries_concurrently_without_locking() {
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+        use std::thread;
+
+        const PRODUCERS: u64 = 4;
+        const PER_PRODUCER: u64 = 2_500;
+        const COUNT: u64 = PRODUCERS * PER_PRODUCER;
+        let ring = Arc::new(DriverRing::<u64>::new());
+        let mut producers = Vec::new();
+        for producer_id in 0..PRODUCERS {
+            let producer_ring = Arc::clone(&ring);
+            producers.push(thread::spawn(move || {
+                for sequence in 0..PER_PRODUCER {
+                    let value = producer_id * PER_PRODUCER + sequence;
+                    loop {
+                        if producer_ring.push(value).is_ok() {
+                            break;
+                        }
+                        thread::yield_now();
+                    }
+                }
+            }));
+        }
+
+        let mut values = BTreeSet::new();
+        while values.len() < COUNT as usize {
+            loop {
+                if let Some(value) = ring.pop() {
+                    assert!(values.insert(value));
+                    break;
+                }
+                thread::yield_now();
+            }
+        }
+
+        for producer in producers {
+            producer.join().unwrap();
+        }
+        assert_eq!(values.len(), COUNT as usize);
+        assert!(ring.pop().is_none());
+    }
+}
 
 // ────────────────────────────────────────────────────────────
 //  Driver implementations
@@ -225,6 +569,143 @@ impl StorageDriver for SdCardStorageCtl {
     fn total_blocks(&self) -> u64 {
         0
     }
+}
+
+// -- NVMe initialization service --------------------------------
+
+#[cfg(not(nitrogen_no_storage))]
+fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
+    let request_id = request.request_id;
+    let failure_device = match &request.kind {
+        DriverRequestKind::InitializeNvme { device } | DriverRequestKind::Mmio { device, .. } => {
+            device.clone()
+        }
+    };
+    let (result, controller_index) = match request.kind {
+        DriverRequestKind::InitializeNvme { device } => (
+            nitrogen::storage::nvme::init_device(
+                &crate::driver_context_impl::KernelDriverContext,
+                device,
+            )
+            .map(|index| index as u64),
+            true,
+        ),
+        DriverRequestKind::Mmio {
+            device,
+            bar,
+            offset,
+            width,
+            write,
+            value,
+        } => (
+            nitrogen::storage::nvme::request_mmio(&device, bar, offset, width, write, value),
+            false,
+        ),
+    };
+
+    // The concrete driver has already performed its failure cleanup before
+    // returning here.  Only now may the supervisor terminate an explicitly
+    // bound driver process; an ioctl caller is never used as a fallback owner.
+    if let Err(error) = &result {
+        if error.is_fatal() {
+            crate::drivers::supervisor::kill_failed_driver(&failure_device, *error);
+        }
+    }
+
+    match result {
+        Ok(value) if controller_index => DriverCompletion {
+            request_id,
+            error: None,
+            controller_index: Some(value as usize),
+            value: 0,
+        },
+        Ok(value) => DriverCompletion {
+            request_id,
+            error: None,
+            controller_index: None,
+            value,
+        },
+        Err(error) => DriverCompletion {
+            request_id,
+            error: Some(error),
+            controller_index: None,
+            value: 0,
+        },
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+fn submit_driver_request(
+    kind: DriverRequestKind,
+) -> Result<DriverCompletion, nitrogen::DriverError> {
+    // Synchronous ioctl callers share one CQ dispatcher, but contention is a
+    // lock-free failure rather than a lock acquisition or a spin wait. The
+    // underlying SQ/CQ themselves accept multiple producers.
+    if DRIVER_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return Err(nitrogen::DriverError::Busy);
+    }
+
+    let result = (|| {
+        let request_id = NEXT_DRIVER_REQUEST.fetch_add(1, Ordering::Relaxed);
+        driver_queues()
+            .submit(DriverRequest { request_id, kind })
+            .map_err(|_| nitrogen::DriverError::Busy)?;
+
+        // Consume one generic SQ entry, execute it in the matched driver, and
+        // publish exactly one generic CQ entry for the interactive caller.
+        let request = driver_queues()
+            .take_submission()
+            .ok_or(nitrogen::DriverError::Io)?;
+        let completion = execute_driver_request(request);
+        driver_queues()
+            .complete(completion)
+            .map_err(|_| nitrogen::DriverError::Io)?;
+        driver_queues()
+            .take_completion(request_id)
+            .ok_or(nitrogen::DriverError::Io)
+    })();
+    DRIVER_IN_FLIGHT.store(false, Ordering::Release);
+    result
+}
+
+/// Submit one explicit NVMe initialization request through the generic
+/// kernel-owned SQ and return its CQ completion.  Initialization remains
+/// explicit; the boot driver probe does not reset or activate NVMe devices.
+#[cfg(not(nitrogen_no_storage))]
+pub fn initialize_nvme(device: PciDevice) -> Result<usize, nitrogen::DriverError> {
+    let completion = submit_driver_request(DriverRequestKind::InitializeNvme { device })?;
+    if let Some(index) = completion.controller_index {
+        log::info!("NVMe: initialized nvme{} through SQ/CQ", index);
+        Ok(index)
+    } else {
+        Err(completion.error.unwrap_or(nitrogen::DriverError::Io))
+    }
+}
+
+/// Submit an interactive MMIO request through the same generic driver SQ/CQ
+/// used by NVMe initialization.  The NVMe driver currently owns BAR0; future
+/// drivers can add their own request dispatch without changing this queue ABI.
+#[cfg(not(nitrogen_no_storage))]
+pub fn request_mmio(
+    device: PciDevice,
+    bar: u8,
+    offset: u32,
+    width: u8,
+    write: bool,
+    value: u64,
+) -> Result<u64, nitrogen::DriverError> {
+    let completion = submit_driver_request(DriverRequestKind::Mmio {
+        device,
+        bar,
+        offset,
+        width,
+        write,
+        value,
+    })?;
+    completion.error.map_or(Ok(completion.value), Err)
 }
 
 // ────────────────────────────────────────────────────────────

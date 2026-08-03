@@ -307,7 +307,10 @@ impl SchedulerContext {
                 let Some(candidate) = list
                     .iter()
                     .position(|(_, process)| process.state == ProcessState::Ready)
-                    .or_else(|| list.iter().position(|(_, process)| process.name == "idle"))
+                    .or_else(|| {
+                        list.iter()
+                            .position(|(_, process)| process.name.as_ref() == "idle")
+                    })
                 else {
                     return (Some(list[current_idx].0), ProcessId(0));
                 };
@@ -327,7 +330,10 @@ impl SchedulerContext {
                     }
                     if next_idx == start_idx {
                         // All blocked → fall back to idle.
-                        if let Some(idle) = list.iter().position(|(_, p)| p.name == "idle") {
+                        if let Some(idle) = list
+                            .iter()
+                            .position(|(_, p)| p.name.as_ref() == "idle")
+                        {
                             next_idx = idle;
                         }
                         break;
@@ -497,9 +503,18 @@ impl SchedulerContext {
             .find(|(id, _)| *id == new_pid)
             .map(|(_, process)| process.kernel_stack)
             .filter(|stack| stack.as_u64() != 0);
+        let new_xsave = list
+            .iter_mut()
+            .find(|(id, _)| *id == new_pid)
+            .map(|(_, process)| crate::fpu::state_ptr(process.fpu_state.as_mut()))
+            .unwrap_or(core::ptr::null_mut());
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
+        let old_xsave = old_pid
+            .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
+            .map(|(_, process)| crate::fpu::state_ptr(process.fpu_state.as_mut()))
+            .unwrap_or(core::ptr::null_mut());
 
         drop(guard);
 
@@ -510,6 +525,8 @@ impl SchedulerContext {
                 new_context,
                 pt.as_u64(),
                 new_kernel_stack.map_or(0, |stack| stack.as_u64()),
+                old_xsave,
+                new_xsave,
             ) {
                 Ok(plan) => plan,
                 Err(error) => {

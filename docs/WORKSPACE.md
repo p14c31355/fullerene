@@ -49,9 +49,10 @@ vendored BusyBox/VSCodium trees, is 1,759 Rust files and approximately
 444,283 Rust LOC. Of these, the Fullerene-authored source (also excluding the
 `toluene/cargo`, `toluene/freedoom`, and `toluene/netsurf` port inputs) is 395
 Rust files and roughly 101,898 Rust LOC. There are 3,383 Rust/C/assembly source
-files when the tracked non-Rust integration sources are included. The kernel's
-`src/linux` entry is a symlink to the shared `solvent/linux` implementation; it is
-counted once by the owned-source figure.
+files when the tracked non-Rust integration sources are included. The Linux
+personality has a single source tree at `solvent/linux`; the kernel integrates it
+through the explicitly named `solvent_linux` module path, with no kernel-side
+symlink or compatibility alias.
 The large `toluene/busybox` and `toluene/vscodium` trees are vendored inputs,
 not Fullerene-owned architecture layers; changes to their integration belong
 in `fullerene-kernel/build.rs`, the ELF loader, and the runtime terminal bridge.

@@ -449,9 +449,9 @@ fn wasm_capture_screen_chunk(offset: u32, pixels: &mut [u8]) -> Option<(u32, u32
 
 /// Run a WASI application from the kernel without opening a shell window.
 ///
-/// This is also used by the desktop file viewer. The shell `wasm` command
-/// remains as a user-facing entry point, but both paths share the same
-/// runtime setup and host callbacks.
+/// This is also used by the desktop file viewer. The shell `exec` command
+/// is the user-facing entry point, and both paths share the same runtime
+/// setup and host callbacks.
 pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
     crate::klog_fmt!("[WASM-DIAG] run begin path={} argc={}\n", path, args.len());
     wasm_diag_refresh();
@@ -574,6 +574,54 @@ macro_rules! launch_cmd {
 /// Limited to MAX_FILE_SIZE to prevent unbounded memory growth.
 fn read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
     crate::fs::read_entire_file(path)
+}
+
+/// Execute a filesystem-backed Linux ELF or WASI binary.
+///
+/// The shell intentionally has one entry point for these runtimes. The
+/// suffix selects WASI, while the BusyBox path keeps its terminal/window
+/// setup and interactive `sh` arguments. Everything else is loaded as a
+/// Linux ELF.
+fn exec_path(ctx: &mut nozzle::CommandContext) {
+    if ctx.args.len() <= 1 {
+        ctx.terminal.write_str(
+            "Usage: exec <path> [args...]\n\
+             Examples: exec /bin/hello_linux, exec /bin/busybox,\n\
+             exec /apps/hello.wasm\n",
+        );
+        return;
+    }
+
+    let path = ctx.args[1];
+    if path.ends_with(".wasm") {
+        let wasm_args: alloc::vec::Vec<&str> =
+            if path.ends_with("/emulsion.wasm") && ctx.args.len() == 2 {
+                alloc::vec![path, "capture"]
+            } else {
+                ctx.args[1..].to_vec()
+            };
+        tline!(ctx.terminal, "Loading WASM binary: {}", path);
+        let code = run_wasm_app(path, &wasm_args);
+        tline!(ctx.terminal, "WASI process exited with code {}", code);
+        return;
+    }
+
+    if path.rsplit('/').next() == Some("busybox") {
+        crate::klog_fmt!("[BUSYBOX-DIAG] shell command enter path={}\n", path);
+        launch_cmd!(
+            ctx.terminal,
+            crate::solvent_linux::launch::launch_busybox(),
+            "BusyBox shell started (PID: {})"
+        );
+        return;
+    }
+
+    tline!(ctx.terminal, "Loading Linux binary: {}", path);
+    launch_cmd!(
+        ctx.terminal,
+        crate::solvent_linux::launch::launch_linux_binary_with_args(path, &ctx.args[2..]),
+        "Linux process started (PID: {})"
+    );
 }
 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
@@ -994,66 +1042,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                 ctx.terminal.write_str("Usage: run <app_name>\n");
                 ctx.terminal.write_str("Available: toluene, hello\n");
             }
-            "linux_run" => {
-                if ctx.args.len() <= 1 {
-                    return tstr!(ctx.terminal, "Usage: linux_run <path>");
-                }
-                tline!(ctx.terminal, "Loading Linux binary: {}", ctx.args[1]);
-                launch_cmd!(
-                    ctx.terminal,
-                    crate::linux::launch::launch_linux_binary(ctx.args[1]),
-                    "Linux process started (PID: {})"
-                );
-            }
-            "busybox" => {
-                crate::klog_fmt!("[BUSYBOX-DIAG] shell command enter\n");
-                launch_cmd!(
-                    ctx.terminal,
-                    crate::linux::launch::launch_busybox(),
-                    "BusyBox shell started (PID: {})"
-                )
-            }
-            "hello_linux" => launch_cmd!(
-                ctx.terminal,
-                crate::linux::launch::launch_test_binary(),
-                "Test Linux binary started (PID: {})"
-            ),
-            "hello_rust_linux" => {
-                crate::klog_fmt!("[LINUX-DIAG] hello_rust command enter\n");
-                #[cfg(have_linux_musl_hello)]
-                launch_cmd!(
-                    ctx.terminal,
-                    crate::linux::launch::launch_rust_std_hello(),
-                    "Rust std/musl Linux process started (PID: {})"
-                );
-                #[cfg(not(have_linux_musl_hello))]
-                ctx.terminal.write_str(
-                    "Rust std/musl fixture is unavailable. Run \
-                     `rustup target add --toolchain nightly x86_64-unknown-linux-musl`, \
-                     then rebuild the ISO.\n",
-                );
-            }
-            "wasm" => {
-                if ctx.args.len() <= 1 {
-                    return tstr!(ctx.terminal, "Usage: wasm <path> [args...]");
-                }
-                let path = ctx.args[1];
-                let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().skip(1).copied().collect();
-                tline!(ctx.terminal, "Loading WASM binary: {}", path);
-                let code = run_wasm_app(path, &wasm_args);
-                tline!(ctx.terminal, "WASI process exited with code {}", code);
-            }
-            "emulsion" => {
-                let wasm_args = if ctx.args.len() > 1 {
-                    ctx.args[1..].to_vec()
-                } else {
-                    alloc::vec!["capture"]
-                };
-                let mut args = alloc::vec!["/apps/emulsion.wasm"];
-                args.extend(wasm_args);
-                let code = run_wasm_app("/apps/emulsion.wasm", &args);
-                tline!(ctx.terminal, "Emulsion exited with code {}", code);
-            }
+            "exec" => exec_path(ctx),
             "usb_rescan" => {
                 ctx.terminal.write_str(
                 "USB rescan: explicitly activating controller MMIO; this may not return on broken hardware.\n",
@@ -1089,6 +1078,45 @@ fn nozzle_services() -> nozzle::ShellServices {
                 {
                     ctx.terminal
                         .write_str("SD rescan: storage support not compiled in.\n");
+                }
+            }
+            "nvme_init" => {
+                #[cfg(not(nitrogen_no_storage))]
+                {
+                    use nitrogen::pci::PciScanner;
+
+                    let mut scanner = PciScanner::new();
+                    let mut found = false;
+                    if scanner.scan_all_buses().is_ok() {
+                        for device in scanner
+                            .get_devices()
+                            .iter()
+                            .filter(|device| device.class_code == 0x01 && device.subclass == 0x08)
+                        {
+                            found = true;
+                            match crate::drivers::registry::initialize_nvme(device.clone()) {
+                                Ok(index) => {
+                                    tline!(
+                                        ctx.terminal,
+                                        "NVMe init: nvme{} ready (SQ/CQ completion)",
+                                        index
+                                    );
+                                }
+                                Err(error) => {
+                                    tline!(ctx.terminal, "NVMe init: failed: {}", error);
+                                }
+                            }
+                        }
+                    }
+                    if !found {
+                        ctx.terminal
+                            .write_str("NVMe init: no NVMe controller found.\n");
+                    }
+                }
+                #[cfg(nitrogen_no_storage)]
+                {
+                    ctx.terminal
+                        .write_str("NVMe init: storage support not compiled in.\n");
                 }
             }
             "usb_info" => {
@@ -1490,9 +1518,9 @@ pub fn run_linux_musl_smoke() {
 
     let services = nozzle_services();
     let mut terminal =
-        ScriptedTerminal::new("hello_rust_linux\necho shell-resumed-after-linux\nexit\n");
+        ScriptedTerminal::new("exec /bin/rust-std-hello\necho shell-resumed-after-linux\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
-    if crate::linux::launch::smoke_verified() {
+    if crate::solvent_linux::launch::smoke_verified() {
         petroleum::serial::serial_log(format_args!(
             "[linux-smoke] PASS: fixture output observed, exit=0, shell resumed\n"
         ));
@@ -1536,7 +1564,7 @@ pub fn busybox_smoke() {
             // is alive. Once it exits, the shell consumes the next command;
             // this runs two sequential BusyBox sessions and catches stale
             // terminal/process state that only fails on the second launch.
-            while crate::linux::launch::busybox_smoke_input_held() {
+            while crate::solvent_linux::launch::busybox_smoke_input_held() {
                 solvent::runtime_tick_no_fb();
                 crate::process::yield_from_scheduler_stack();
             }
@@ -1550,12 +1578,12 @@ pub fn busybox_smoke() {
         }
     }
 
-    crate::linux::launch::reset_busybox_smoke_harness();
+    crate::solvent_linux::launch::reset_busybox_smoke_harness();
     let services = nozzle_services();
-    let mut terminal = ScriptedTerminal::new("busybox\nbusybox\nexit\n");
+    let mut terminal = ScriptedTerminal::new("exec /bin/busybox\nexec /bin/busybox\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
-    crate::linux::launch::mark_busybox_smoke_harness_done();
-    if crate::linux::launch::busybox_smoke_complete() {
+    crate::solvent_linux::launch::mark_busybox_smoke_harness_done();
+    if crate::solvent_linux::launch::busybox_smoke_complete() {
         solvent::set_headless_smoke_active(false);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] PASS: all bundled applets ran, exit=0, shell resumed\n"

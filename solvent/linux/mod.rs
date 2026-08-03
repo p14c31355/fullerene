@@ -1,4 +1,4 @@
-//! Linux ABI emulation layer for Fullerene.
+// Linux ABI emulation layer for Fullerene.
 
 #[macro_export]
 macro_rules! linux_stub {

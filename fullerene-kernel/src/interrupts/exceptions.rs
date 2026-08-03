@@ -361,7 +361,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
 
     let cow_recovered = if is_present && is_write && is_user {
         unsafe {
-            crate::linux::process::force_user_page_writable(
+            crate::solvent_linux::process::force_user_page_writable(
                 x86_64::registers::control::Cr3::read().0.start_address(),
                 fault_addr.as_u64(),
             )

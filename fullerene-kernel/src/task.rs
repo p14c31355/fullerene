@@ -183,7 +183,7 @@ pub fn block_on<F: Future>(mut future: F) -> F::Output {
 #[derive(Debug, Clone)]
 pub struct TrackedTask {
     pub pid: u64,
-    pub name: &'static str,
+    pub name: alloc::string::String,
     pub state: &'static str,
     pub is_user: bool,
 }
@@ -201,10 +201,10 @@ impl TaskManager {
     }
 
     /// Register a task in the monitor.
-    pub fn register(&self, pid: u64, name: &'static str, is_user: bool) {
+    pub fn register(&self, pid: u64, name: &str, is_user: bool) {
         self.entries.lock().push(TrackedTask {
             pid,
-            name,
+            name: alloc::string::String::from(name),
             state: "ready",
             is_user,
         });
@@ -249,7 +249,7 @@ pub static TASK_MANAGER: TaskManager = TaskManager::new();
 pub fn init_task_manager() {
     crate::process::SCHEDULER.with_list(|list| {
         for (_, proc) in list.iter() {
-            TASK_MANAGER.register(proc.id.0, proc.name, proc.is_user);
+            TASK_MANAGER.register(proc.id.0, &proc.name, proc.is_user);
         }
     });
 }

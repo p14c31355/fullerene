@@ -66,7 +66,7 @@ pub mod virtio;
 #[cfg(not(nitrogen_no_wifi))]
 pub mod wifi;
 
-pub use driver_context::{DriverContext, DriverContextError, PageFlags};
+pub use driver_context::{DmaAllocation, DriverContext, DriverContextError, PageFlags};
 pub use error::DriverError;
 
 #[cfg(test)]
@@ -85,12 +85,14 @@ mod tests {
             (phys + 0xFFFF800000000000) as usize
         }
 
+        fn zero_dma_buffer(&self, _phys: u64, _bytes: usize) {}
+
         fn allocate_frame(&self) -> Result<u64, DriverContextError> {
             Err(DriverContextError::OutOfMemory)
         }
 
         fn allocate_contiguous_frames(&self, _count: usize) -> Result<u64, DriverContextError> {
-            Err(DriverContextError::OutOfMemory)
+            Ok(0x2000)
         }
 
         fn map_mmio_region(
@@ -101,6 +103,8 @@ mod tests {
         ) -> Result<(), DriverContextError> {
             Err(DriverContextError::MmioMappingFailed)
         }
+
+        fn unmap_mmio_region(&self, _phys: usize, _virt: usize, _size: usize) {}
 
         fn map_page(
             &self,
@@ -141,6 +145,10 @@ mod tests {
             alloc::format!("{}", DriverContextError::InvalidArgument),
             "invalid argument"
         );
+        assert_eq!(
+            alloc::format!("{}", DriverContextError::DmaMappingFailed),
+            "DMA mapping failed"
+        );
     }
 
     #[test]
@@ -170,5 +178,10 @@ mod tests {
         assert_eq!(d.phys_to_virt(0x1000), 0xFFFF800000001000);
         assert!(d.allocate_frame().is_err());
         assert!(d.dma_map(0, 0x2000, 4096).is_ok());
+        let allocation = d.allocate_dma_buffer(0x0200, 8193).unwrap();
+        assert_eq!(allocation.phys, 0x2000);
+        assert_eq!(allocation.iova, 0x2000);
+        assert_eq!(allocation.frames, 3);
+        d.release_dma_buffer(allocation);
     }
 }

@@ -43,8 +43,16 @@ pub fn set_terminal_input_allowed_preserve(allowed: bool) {
 }
 
 /// Raw key event buffer for non-ASCII key events (e.g. Super, arrows).
-/// Each entry is a (scancode, pressed) tuple.
-pub static RAW_KEY_QUEUE: Mutex<VecDeque<(u8, bool)>> = Mutex::new(VecDeque::new());
+/// Modifier state is captured when the event is queued, not when it is later
+/// drained by the desktop poller.
+#[derive(Debug, Clone, Copy)]
+pub struct RawKeyEvent {
+    pub scancode: u8,
+    pub pressed: bool,
+    pub modifiers: KeyboardModifiers,
+}
+
+pub static RAW_KEY_QUEUE: Mutex<VecDeque<RawKeyEvent>> = Mutex::new(VecDeque::new());
 
 /// Keyboard modifiers state
 #[derive(Debug, Clone, Copy, Default)]
@@ -203,6 +211,12 @@ pub fn super_held() -> bool {
     mods.lsuper || mods.rsuper
 }
 
+/// Return whether either Control key is currently held.
+pub fn ctrl_held() -> bool {
+    let mods = MODIFIERS.lock();
+    mods.lctrl || mods.rctrl
+}
+
 pub fn handle_keyboard_scancode(scancode: u8) {
     let mut ext = EXTENDED_SCANCODE.lock();
     if scancode == 0xE0 {
@@ -213,15 +227,8 @@ pub fn handle_keyboard_scancode(scancode: u8) {
     *ext = false;
     drop(ext);
 
-    // Always push raw key events for non‑ASCII handling (shell, etc.)
     let pressed = scancode & 0x80 == 0;
     let base = scancode & 0x7F;
-    {
-        let mut raw = RAW_KEY_QUEUE.lock();
-        if raw.len() < 64 {
-            raw.push_back((if is_ext { base | 0x80 } else { base }, pressed));
-        }
-    }
 
     let mut mods = MODIFIERS.lock();
 
@@ -235,6 +242,20 @@ pub fn handle_keyboard_scancode(scancode: u8) {
         handle_press(base, &mut mods);
     } else {
         handle_release(base, &mut mods);
+    }
+
+    // Always push raw key events for non-ASCII handling (shell, etc.) after
+    // modifier updates so a queued V event retains the Ctrl state that was
+    // true when the interrupt arrived.
+    let event = RawKeyEvent {
+        scancode: if is_ext { base | 0x80 } else { base },
+        pressed,
+        modifiers: *mods,
+    };
+    drop(mods);
+    let mut raw = RAW_KEY_QUEUE.lock();
+    if raw.len() < 64 {
+        raw.push_back(event);
     }
 }
 
@@ -330,6 +351,51 @@ pub fn pop_input_char_unchecked() -> Option<u8> {
     interrupt_free(|| INPUT_BUFFER.lock().pop_front())
 }
 
+/// Replace the first queued occurrence of `target` with `replacement`.
+///
+/// This is used for shell shortcuts whose decoded control byte may already
+/// be behind ordinary typed characters in the input queue. The replacement is
+/// mirrored in the UTF-8 line buffer while interrupts are disabled.
+pub fn replace_input_byte(target: u8, replacement: &[u8]) -> bool {
+    let Ok(replacement_text) = core::str::from_utf8(replacement) else {
+        return false;
+    };
+
+    interrupt_free(|| {
+        let mut buffer = INPUT_BUFFER.lock();
+        let Some(index) = buffer.iter().position(|&byte| byte == target) else {
+            return false;
+        };
+
+        let mut string_buffer = INPUT_STRING_BUFFER.lock();
+        let target_char = target as char;
+        let Some((string_index, target_width)) =
+            string_buffer
+                .char_indices()
+                .find_map(|(offset, character)| {
+                    (character == target_char).then_some((offset, character.len_utf8()))
+                })
+        else {
+            return false;
+        };
+
+        if replacement.len() > 256usize.saturating_sub(buffer.len()).saturating_add(1)
+            || replacement_text.len()
+                > 256usize
+                    .saturating_sub(string_buffer.len())
+                    .saturating_add(target_width)
+        {
+            return false;
+        }
+        buffer.remove(index);
+        for (offset, &byte) in replacement.iter().enumerate() {
+            buffer.insert(index + offset, byte);
+        }
+        string_buffer.replace_range(string_index..string_index + target_width, replacement_text);
+        true
+    })
+}
+
 /// Inject an escape sequence or other synthetic bytes into the terminal input
 /// stream. The GUI uses this for non-ASCII keys such as shell arrow history.
 pub fn push_input_bytes(bytes: &[u8]) {
@@ -345,8 +411,8 @@ pub fn push_input_bytes(bytes: &[u8]) {
     });
 }
 
-/// Pop a raw key event (scancode, pressed) from the queue.
-pub fn pop_raw_key() -> Option<(u8, bool)> {
+/// Pop a raw key event (including its event-time modifier snapshot).
+pub fn pop_raw_key() -> Option<RawKeyEvent> {
     interrupt_free(|| RAW_KEY_QUEUE.lock().pop_front())
 }
 
@@ -454,6 +520,9 @@ pub fn init_keyboard() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn test_scancode_conversion() {
         let m = KeyboardModifiers::default();
@@ -464,10 +533,39 @@ mod tests {
     }
     #[test]
     fn test_buffer_operations() {
+        let _guard = TEST_LOCK.lock();
         init_keyboard();
         assert_eq!(read_char(), None);
         INPUT_BUFFER.lock().push_back(b't');
         assert!(input_available());
         assert_eq!(read_char(), Some(b't'));
+    }
+
+    #[test]
+    fn replacing_input_byte_updates_string_buffer() {
+        let _guard = TEST_LOCK.lock();
+        flush_input();
+        INPUT_BUFFER.lock().extend([b'a', 0x16, b'b']);
+        INPUT_STRING_BUFFER.lock().push_str("a\u{16}b");
+
+        assert!(replace_input_byte(0x16, b"/tmp/file"));
+
+        let bytes: alloc::vec::Vec<_> = INPUT_BUFFER.lock().iter().copied().collect();
+        assert_eq!(bytes, b"a/tmp/fileb");
+        let mut drained = [0u8; 32];
+        let length = drain_line_buffer(&mut drained);
+        assert_eq!(&drained[..length], b"a/tmp/fileb");
+    }
+
+    #[test]
+    fn replacing_input_byte_rejects_invalid_utf8_without_mutating_buffers() {
+        let _guard = TEST_LOCK.lock();
+        flush_input();
+        INPUT_BUFFER.lock().push_back(0x16);
+        INPUT_STRING_BUFFER.lock().push('\u{16}');
+
+        assert!(!replace_input_byte(0x16, &[0xff]));
+        assert_eq!(INPUT_BUFFER.lock().as_slices().0, &[0x16]);
+        assert_eq!(INPUT_STRING_BUFFER.lock().as_str(), "\u{16}");
     }
 }

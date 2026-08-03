@@ -151,7 +151,13 @@ pub struct WindowState {
     pub pid: process::ProcessId,
 }
 
-pub struct DeviceState {}
+/// A native device handle currently refers to one discovered PCI function.
+/// Keeping the immutable PCI identity in the handle makes ioctl dispatch
+/// independent from a mutable global registry and prevents a re-scan from
+/// silently retargeting an existing handle.
+pub struct DeviceState {
+    pub pci: nitrogen::pci::PciDevice,
+}
 
 pub struct ChannelInner {
     pub messages: Vec<Vec<u8>>,

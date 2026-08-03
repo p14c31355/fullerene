@@ -14,6 +14,9 @@ this crate.
   feature discovery.
 - `MemoryInfo`, `TimeSpec`, `DeviceInfo`, and `WindowEvent`: fixed-layout
   `#[repr(C)]` records for pointer-based syscall arguments.
+- `device_ioctl::{GET_PCI_INFO, READ_PCI_CONFIG, WRITE_PCI_CONFIG,
+  INITIALIZE_NVME, READ_MMIO, WRITE_MMIO}` and the
+  `PciDeviceInfo`/`PciConfigRequest` argument records for native PCI handles.
 
 Every extensible pointer-facing type has a fixed `MIN_BYTE_SIZE`, a current
 `BYTE_SIZE`, a native-endian serializer, and compile-time size/alignment
@@ -42,3 +45,26 @@ detect optional kernel facilities at runtime.
   versioned structure they write.
 - Toluene depends on `fullerene-abi` directly. Petroleum only re-exports the
   syscall-number type for older callers.
+
+## Native device handles
+
+`open_device` accepts a PCI BDF such as `02:03.0`, a `vendor:device` pair such
+as `8086:5845`, or a stable NVMe name such as `nvme0`. The initial native ioctl
+surface is intentionally limited to PCI identity and configuration-space
+access; unsupported commands return `NotSupported`.
+
+`READ_PCI_CONFIG` and `WRITE_PCI_CONFIG` use `PciConfigRequest`. The width is
+1, 2, or 4 bytes and the offset must be naturally aligned. Reads update the
+request's `value` field in the caller's buffer. Writes require the handle's
+write permission.
+
+`INITIALIZE_NVME` accepts no argument. It submits one initialization request to
+the kernel-owned SQ and returns the `nvmeN` controller index after the
+corresponding completion has been written to and consumed from the CQ. Other
+NVMe data-path commands are not accepted yet.
+
+`READ_MMIO` and `WRITE_MMIO` use `MmioRequest`. The request is submitted to the
+same generic driver SQ/CQ; the matched driver performs the volatile access and
+returns the read value through the CQ. The current NVMe driver supports BAR0
+after `INITIALIZE_NVME`, with widths 1, 2, 4, and 8 bytes and naturally aligned
+offsets. MMIO is never exposed as a user-space mapping.

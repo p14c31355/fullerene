@@ -481,9 +481,9 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             pid.0, code
         ));
         #[cfg(linux_musl_smoke)]
-        crate::linux::launch::observe_smoke_exit(pid, code);
+        crate::solvent_linux::launch::observe_smoke_exit(pid, code);
         #[cfg(linux_busybox_smoke)]
-        crate::linux::launch::observe_busybox_exit(pid, code);
+        crate::solvent_linux::launch::observe_busybox_exit(pid, code);
         process::terminate_process(pid, code);
     }
     loop {
@@ -540,9 +540,19 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
 
     // Get parent info
-    let (parent_pt, parent_ctx) = process::SCHEDULER
-        .with_process(current_pid, |p| (p.page_table_phys_addr, p.context.clone()))
-        .unwrap_or((PhysAddr::new(0), Box::new(ProcessContext::default())));
+    let (parent_pt, parent_ctx, parent_fpu) = process::SCHEDULER
+        .with_process(current_pid, |p| {
+            (
+                p.page_table_phys_addr,
+                p.context.clone(),
+                crate::fpu::save_and_snapshot(p.fpu_state.as_mut()),
+            )
+        })
+        .unwrap_or((
+            PhysAddr::new(0),
+            Box::new(ProcessContext::default()),
+            crate::fpu::XsaveState::initial(),
+        ));
 
     // Clone the complete page-table tree. A PML4-only copy is insufficient:
     // execve detaches user branches in the child, and destroying a shallow
@@ -655,7 +665,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let child_vdso = None;
     let child_process = process::Process {
         id: child_pid,
-        name: "linux-child",
+        name: Box::from("linux-child"),
         state: process::ProcessState::Ready,
         context: {
             let mut ctx = parent_ctx.clone();
@@ -666,6 +676,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             ctx.kernel_rsp = 0;
             ctx
         },
+        fpu_state: Box::new(parent_fpu),
         page_table_phys_addr: x86_64::PhysAddr::new(cloned_table as u64),
         page_table: Some(alloc::boxed::Box::new(child_pt)),
         kernel_stack: kernel_stack_top,
@@ -791,7 +802,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             p.context.registers.rsp = rsp;
             p.context.rip = entry;
             p.context.kernel_rsp = 0;
-            p.context.rflags = 0x2;
+            p.context.rflags = 0x202;
             p.context.segments.cs = crate::gdt::user_code()
                 .as_ref()
                 .map(|s| s.0 as u64)

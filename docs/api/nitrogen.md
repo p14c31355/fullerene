@@ -29,6 +29,8 @@ pub trait DriverContext: Send + Sync {
     fn free_contiguous_frames(&self, phys: u64, count: usize);
     fn dma_map(&self, device_id: u16, phys: u64, size: usize) -> Result<u64, DriverContextError>;
     fn dma_unmap(&self, iova: u64, size: usize);
+    fn allocate_dma_buffer(&self, device_id: u16, size: usize) -> Result<DmaAllocation, DriverContextError>;
+    fn release_dma_buffer(&self, allocation: DmaAllocation);
 }
 ```
 
@@ -36,7 +38,8 @@ pub trait DriverContext: Send + Sync {
 
 | Type | Role |
 |---|---|
-| `nitrogen::driver_context::DriverContextError` | OutOfMemory / MmioMappingFailed / InvalidArgument |
+| `nitrogen::driver_context::DmaAllocation` | Kernel-owned physical buffer plus device-visible IOVA and size |
+| `nitrogen::driver_context::DriverContextError` | OutOfMemory / MmioMappingFailed / DmaMappingFailed / InvalidArgument |
 | `nitrogen::driver_context::PageFlags` | Three flags: writable / write_combining / executable |
 
 **Implementation (kernel side)**: `fullerene-kernel/src/driver_context_impl.rs` — `KernelDriverContext`
@@ -48,6 +51,13 @@ pub trait DriverContext: Send + Sync {
 `nitrogen::driver_api::StorageDriver`
 
 Block devices such as NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage.
+
+NVMe currently exposes controller initialization through the kernel-owned
+submission/completion queue pair. The NVMe driver separately requests one
+kernel/IOMMU DMA allocation for its Submission Queue and one for its
+Completion Queue; the returned IOVAs are programmed into the NVMe controller.
+Data-path block operations remain disabled until the kernel publishes a real
+block-device ownership adapter.
 
 ```rust
 pub trait StorageDriver: Send {

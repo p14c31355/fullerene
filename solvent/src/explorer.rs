@@ -29,6 +29,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use lattice::surface::Surface;
 use lattice::window::WindowId;
+use spin::Mutex;
 
 // ── Layout constants ───────────────────────────────────────────
 pub const GLYPH_W: u32 = 8;
@@ -37,6 +38,7 @@ pub const SIDEBAR_WIDTH: u32 = 140;
 pub const TOOLBAR_HEIGHT: u32 = 24;
 pub const STATUSBAR_HEIGHT: u32 = 20;
 pub const ROW_HEIGHT: u32 = 20;
+pub const CONTEXT_MENU_HEIGHT: u32 = 7 * ROW_HEIGHT;
 pub const CONTEXT_MENU_W: u32 = 150;
 
 pub fn visible_file_rows(surface_height: u32) -> usize {
@@ -98,6 +100,7 @@ pub struct SidebarItem {
 pub enum ExplorerAction {
     Open,
     Copy,
+    CopyPath,
     Paste,
     Rename,
     Delete,
@@ -134,16 +137,32 @@ pub(crate) struct PendingCopy {
 #[derive(Debug, PartialEq, Eq)]
 struct PendingNavigation(String);
 
-const CONTEXT_MENU_ITEMS: &[&str] = &["Open", "Copy", "Paste", "Rename", "Delete", "Properties"];
+const CONTEXT_MENU_ITEMS: &[&str] = &[
+    "Open",
+    "Copy",
+    "Copy path",
+    "Paste",
+    "Rename",
+    "Delete",
+    "Properties",
+];
+
+static SHELL_PATH_CLIPBOARD: Mutex<Option<String>> = Mutex::new(None);
+
+/// Return the path copied from the Explorer for shell insertion.
+pub(crate) fn shell_clipboard_path() -> Option<String> {
+    SHELL_PATH_CLIPBOARD.lock().clone()
+}
 
 fn context_menu_action(idx: usize) -> ExplorerAction {
     match idx {
         0 => ExplorerAction::Open,
         1 => ExplorerAction::Copy,
-        2 => ExplorerAction::Paste,
-        3 => ExplorerAction::Rename,
-        4 => ExplorerAction::Delete,
-        5 => ExplorerAction::Properties,
+        2 => ExplorerAction::CopyPath,
+        3 => ExplorerAction::Paste,
+        4 => ExplorerAction::Rename,
+        5 => ExplorerAction::Delete,
+        6 => ExplorerAction::Properties,
         _ => ExplorerAction::None,
     }
 }
@@ -445,6 +464,15 @@ impl ExplorerContext {
                     self.status_message = Some(format!("Copied {}", name));
                 } else {
                     self.status_message = Some(String::from("Copy: select a file or folder"));
+                }
+                None
+            }
+            ExplorerAction::CopyPath => {
+                if let Some((path, _, _)) = self.selected_entry() {
+                    *SHELL_PATH_CLIPBOARD.lock() = Some(path.clone());
+                    self.status_message = Some(format!("Copied path {}", path));
+                } else {
+                    self.status_message = Some(String::from("Copy path: select a file or folder"));
                 }
                 None
             }
@@ -818,7 +846,7 @@ pub fn handle_context_menu_click(
     }
     let mx = ctx.context_menu.x as i32;
     let my = ctx.context_menu.y as i32;
-    let mh = (CONTEXT_MENU_ITEMS.len() as u32) * ROW_HEIGHT;
+    let mh = CONTEXT_MENU_HEIGHT;
     if rx >= mx && rx < mx + CONTEXT_MENU_W as i32 && ry >= my && ry < my + mh as i32 {
         let idx = ((ry - my) as u32) / ROW_HEIGHT;
         if idx < CONTEXT_MENU_ITEMS.len() as u32 {
@@ -1049,7 +1077,7 @@ fn draw_context_menu(ctx: &ExplorerContext, surface: &mut Surface) {
 
     let mx = ctx.context_menu.x;
     let my = ctx.context_menu.y;
-    let mh = (CONTEXT_MENU_ITEMS.len() as u32) * ROW_HEIGHT;
+    let mh = CONTEXT_MENU_HEIGHT;
 
     // Menu background
     surface.fill_rect(mx, my, CONTEXT_MENU_W, mh, CMENU_BG);
@@ -1107,7 +1135,7 @@ fn draw_text(surface: &mut Surface, text: &str, x: u32, y: u32, fg: u32, bg: u32
 
 #[cfg(test)]
 mod tests {
-    use super::ExplorerContext;
+    use super::{ExplorerAction, ExplorerContext, shell_clipboard_path};
     use crate::VfsEntry;
     use alloc::string::String;
 
@@ -1151,6 +1179,19 @@ mod tests {
             explorer.activate_entry(1).as_deref(),
             Some("/mnt/Bootlog.txt")
         );
+    }
+
+    #[test]
+    fn copy_path_publishes_the_absolute_selected_path() {
+        let mut explorer = ExplorerContext::new();
+        explorer.current_dir = String::from("/mnt/sda");
+        explorer.raw_names = alloc::vec![String::from("tool.elf")];
+        explorer.raw_is_dir = alloc::vec![false];
+        explorer.selected_index = Some(0);
+
+        explorer.dispatch_context_action(ExplorerAction::CopyPath);
+
+        assert_eq!(shell_clipboard_path().as_deref(), Some("/mnt/sda/tool.elf"));
     }
 
     fn explorer_with_entries(count: usize) -> ExplorerContext {

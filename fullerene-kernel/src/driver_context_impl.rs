@@ -50,6 +50,21 @@ impl DriverContext for KernelDriverContext {
             .map_err(|_| DriverContextError::MmioMappingFailed)
     }
 
+    fn unmap_mmio_region(&self, phys: usize, virt: usize, size: usize) {
+        let mut mgr = crate::memory_management::get_memory_manager().lock();
+        if let Some(m) = mgr.as_mut() {
+            if let Err(error) = m.unmap_mmio_region(phys, virt, size) {
+                log::warn!(
+                    "MMIO unmap failed phys={:#x} virt={:#x} size={}: {:?}",
+                    phys,
+                    virt,
+                    size,
+                    error
+                );
+            }
+        }
+    }
+
     fn map_page(
         &self,
         virt: usize,
@@ -90,7 +105,7 @@ impl DriverContext for KernelDriverContext {
 
     fn dma_map(&self, device_id: u16, phys: u64, size: usize) -> Result<u64, DriverContextError> {
         nitrogen::iommu::dma_map(device_id, phys, size)
-            .map_err(|_| DriverContextError::MmioMappingFailed)
+            .map_err(|_| DriverContextError::DmaMappingFailed)
     }
 
     fn dma_unmap(&self, iova: u64, size: usize) {

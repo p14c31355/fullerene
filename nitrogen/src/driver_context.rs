@@ -38,6 +38,8 @@ pub enum DriverContextError {
     MmioMappingFailed,
     /// An invalid (null or misaligned) argument was supplied.
     InvalidArgument,
+    /// The kernel could not create or remove a device DMA mapping.
+    DmaMappingFailed,
 }
 
 impl fmt::Display for DriverContextError {
@@ -46,8 +48,21 @@ impl fmt::Display for DriverContextError {
             Self::OutOfMemory => f.write_str("out of memory"),
             Self::MmioMappingFailed => f.write_str("MMIO mapping failed"),
             Self::InvalidArgument => f.write_str("invalid argument"),
+            Self::DmaMappingFailed => f.write_str("DMA mapping failed"),
         }
     }
+}
+
+/// A physically contiguous buffer allocated by the kernel and mapped for a
+/// specific PCI function.  `phys` is used by the CPU; `iova` is the address
+/// programmed into a device queue register.  They are equal only when the
+/// kernel is using identity DMA mappings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaAllocation {
+    pub phys: u64,
+    pub iova: u64,
+    pub size: usize,
+    pub frames: usize,
 }
 
 /// Services that a driver needs from the owning kernel / runtime.
@@ -59,6 +74,15 @@ pub trait DriverContext: Send + Sync {
     ///
     /// In a higher-half kernel this is typically `phys + offset`.
     fn phys_to_virt(&self, phys: u64) -> usize;
+
+    /// Clear newly allocated DMA storage before exposing it to a device.
+    /// Implementations with a synthetic address space may override this hook
+    /// while preserving the zero-initialization contract.
+    fn zero_dma_buffer(&self, phys: u64, bytes: usize) {
+        // SAFETY: the caller owns the allocated frames until the DMA mapping
+        // is returned or the allocation fails.
+        unsafe { core::ptr::write_bytes(self.phys_to_virt(phys) as *mut u8, 0, bytes) };
+    }
 
     /// Allocate a single physical 4 KiB frame.
     ///
@@ -79,6 +103,13 @@ pub trait DriverContext: Send + Sync {
         virt: usize,
         size: usize,
     ) -> Result<(), DriverContextError>;
+
+    /// Release a mapping previously created by [`map_mmio_region`](Self::map_mmio_region).
+    ///
+    /// Implementations may treat a verified, permanent direct-map alias as a
+    /// no-op. Drivers must call this before releasing their last reference to
+    /// a controller's register block.
+    fn unmap_mmio_region(&self, phys: usize, virt: usize, size: usize);
 
     /// Map a single page with the given flags.
     ///
@@ -121,6 +152,57 @@ pub trait DriverContext: Send + Sync {
     /// `iova` must be the value returned by a prior `dma_map` call, and
     /// `size` must match.  Behaviour is undefined otherwise.
     fn dma_unmap(&self, iova: u64, size: usize);
+
+    /// Allocate a physically contiguous DMA buffer and ask the kernel/IOMMU
+    /// to map it for the PCI function identified by `device_id`.
+    ///
+    /// The returned allocation must be released with
+    /// [`release_dma_buffer`](Self::release_dma_buffer).  Keeping this
+    /// operation on the context makes ownership explicit: drivers never
+    /// construct or modify IOMMU page tables themselves.
+    /// The returned frames are zeroed before they are mapped, so a device
+    /// cannot observe data left by a previous kernel allocation.
+    fn allocate_dma_buffer(
+        &self,
+        device_id: u16,
+        size: usize,
+    ) -> Result<DmaAllocation, DriverContextError> {
+        if size == 0 {
+            return Err(DriverContextError::InvalidArgument);
+        }
+        let frames = size
+            .checked_add(4095)
+            .map(|bytes| bytes / 4096)
+            .ok_or(DriverContextError::InvalidArgument)?;
+        let phys = self.allocate_contiguous_frames(frames)?;
+        let bytes = match frames.checked_mul(4096) {
+            Some(bytes) => bytes,
+            None => {
+                self.free_contiguous_frames(phys, frames);
+                return Err(DriverContextError::InvalidArgument);
+            }
+        };
+        self.zero_dma_buffer(phys, bytes);
+        let iova = match self.dma_map(device_id, phys, size) {
+            Ok(iova) => iova,
+            Err(error) => {
+                self.free_contiguous_frames(phys, frames);
+                return Err(error);
+            }
+        };
+        Ok(DmaAllocation {
+            phys,
+            iova,
+            size,
+            frames,
+        })
+    }
+
+    /// Tear down an allocation returned by [`allocate_dma_buffer`](Self::allocate_dma_buffer).
+    fn release_dma_buffer(&self, allocation: DmaAllocation) {
+        self.dma_unmap(allocation.iova, allocation.size);
+        self.free_contiguous_frames(allocation.phys, allocation.frames);
+    }
 }
 
 /// Simplified page-table flags for driver mapping requests.

@@ -67,7 +67,7 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             // terminal.
             solvent::poll_keyboard();
             #[cfg(linux_busybox_smoke)]
-            crate::linux::launch::observe_busybox_wait(rt.tid);
+            crate::solvent_linux::launch::observe_busybox_wait(rt.tid);
             crate::process::yield_current();
         }
     }
@@ -158,9 +158,9 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 };
             }
             #[cfg(linux_musl_smoke)]
-            crate::linux::launch::observe_smoke_output(rt.tid, &chunk[..chunk_len]);
+            crate::solvent_linux::launch::observe_smoke_output(rt.tid, &chunk[..chunk_len]);
             #[cfg(linux_busybox_smoke)]
-            crate::linux::launch::observe_busybox_output(rt.tid, &chunk[..chunk_len]);
+            crate::solvent_linux::launch::observe_busybox_output(rt.tid, &chunk[..chunk_len]);
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &chunk[..chunk_len]);
             // Linux stdout/stderr belongs on the interactive terminal too.
             // Keep the serial mirror for headless diagnostics and smoke
@@ -338,7 +338,7 @@ fn sys_poll_with_timeout(rt: &mut LinuxRuntime, fds: u64, nfds_arg: u64, timeout
         // the deadline above limits the same cooperative wait.
         solvent::poll_keyboard();
         #[cfg(linux_busybox_smoke)]
-        crate::linux::launch::observe_busybox_wait(rt.tid);
+        crate::solvent_linux::launch::observe_busybox_wait(rt.tid);
         crate::process::yield_current();
     }
 }

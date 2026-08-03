@@ -240,8 +240,8 @@ mod support_matrix {
         SyscallInfo {
             number: 72,
             name: "device_ioctl",
-            support: Support::Stub,
-            notes: "returns NotSupported",
+            support: Support::Partial,
+            notes: "PCI, NVMe init, and driver-mediated NVMe BAR0 MMIO",
         },
         SyscallInfo {
             number: 80,

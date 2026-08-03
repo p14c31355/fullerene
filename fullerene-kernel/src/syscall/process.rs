@@ -1,7 +1,6 @@
 //! Native process lifecycle syscalls and per-process resource access.
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec;
 use core::alloc::Layout;
 
@@ -110,12 +109,19 @@ pub(crate) fn syscall_exit(exit_code: i32) -> SyscallResult {
 pub(crate) fn syscall_fork() -> SyscallResult {
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    let (parent_page_table_phys_addr, parent_context, parent_user_stack, parent_entry_point) = {
+    let (
+        parent_page_table_phys_addr,
+        parent_context,
+        parent_fpu,
+        parent_user_stack,
+        parent_entry_point,
+    ) = {
         process::SCHEDULER
             .with_process(current_pid, |process| {
                 (
                     process.page_table_phys_addr,
                     process.context.clone(),
+                    crate::fpu::save_and_snapshot(process.fpu_state.as_mut()),
                     process.user_stack,
                     process.entry_point,
                 )
@@ -174,9 +180,10 @@ pub(crate) fn syscall_fork() -> SyscallResult {
 
     let mut child_process = Process {
         id: process::ProcessId(child_pid as u64),
-        name: "child",
+        name: Box::from("child"),
         state: ProcessState::Ready,
         context: parent_context.clone(),
+        fpu_state: Box::new(parent_fpu),
         page_table_phys_addr: PhysAddr::new(cloned_table_addr as u64),
         page_table: Some(Box::new(child_page_table)),
         kernel_stack: kernel_stack_top,
@@ -310,10 +317,7 @@ pub(crate) fn syscall_spawn(
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Process names are currently stored for the lifetime of the kernel.
-    // The process table is bounded, so leaking this short label is bounded too.
-    let process_name: &'static str = Box::leak(String::from(name).into_boxed_str());
-    crate::loader::load_program(&image, process_name)
+    crate::loader::load_program(&image, name)
         .map(|pid| pid.0)
         .map_err(|error| match error {
             crate::loader::LoadError::OutOfMemory => SyscallError::OutOfMemory,

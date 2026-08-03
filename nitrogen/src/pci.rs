@@ -379,6 +379,25 @@ impl PciDevice {
         PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4) & 0x06 == 0x06
     }
 
+    /// Disable memory-space access and bus mastering after a driver-owned
+    /// controller has been stopped. This must succeed before driver-owned DMA
+    /// buffers or MMIO mappings are reclaimed; callers must quarantine those
+    /// resources when this returns `false`.
+    pub fn disable_memory_access(&self) -> bool {
+        let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
+        if cmd == u16::MAX {
+            log::warn!(
+                "PCI: unable to read command register while disabling {:02x}:{:02x}.{}",
+                self.bus,
+                self.device,
+                self.function,
+            );
+            return false;
+        }
+        PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd & !0x06);
+        PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4) & 0x06 == 0
+    }
+
     pub fn read_bar(&self, bar_index: u8) -> Option<u64> {
         if let Some(dev) = PrivatePciDevice::new(self.bus, self.device, self.function) {
             dev.read_bar(bar_index)

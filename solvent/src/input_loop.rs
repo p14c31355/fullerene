@@ -200,21 +200,15 @@ pub fn poll_keyboard() {
         } else {
             set_terminal_input_allowed(allowed);
         }
-        // Key repeat is produced by the low-level driver without a new raw
-        // queue entry. Drain those decoded bytes into the focused process
-        // terminal before the normal raw-key loop handles fresh events.
-        if let Some(window_id) = focused_process_terminal {
-            while let Some(byte) = nitrogen::ps2::keyboard::pop_input_char_unchecked() {
-                crate::terminal::push_process_terminal_input(window_id, &[byte]);
-            }
-        }
     }
 
     while nitrogen::ps2::keyboard::raw_key_available() {
-        let (scancode, pressed) = match nitrogen::ps2::keyboard::pop_raw_key() {
-            Some(key) => key,
+        let event = match nitrogen::ps2::keyboard::pop_raw_key() {
+            Some(event) => event,
             None => break,
         };
+        let scancode = event.scancode;
+        let pressed = event.pressed;
         let key = scancode_to_resonance_keycode(scancode);
         if pressed && key == resonance::KeyCode::Escape {
             VIDEO_STOP_REQUESTED.store(true, Ordering::Release);
@@ -264,13 +258,30 @@ pub fn poll_keyboard() {
                     .find(|terminal| Some(terminal.window_id) == top_id)
                     .map(|terminal| terminal.window_id);
                 if let Some(process_terminal_id) = process_terminal_id {
-                    let key = scancode_to_resonance_keycode(scancode);
+                    let ctrl_v = pressed
+                        && key == resonance::KeyCode::V
+                        && (event.modifiers.lctrl || event.modifiers.rctrl);
                     let sequence = match key {
                         resonance::KeyCode::Up if pressed => Some(b"\x1b[A".as_slice()),
                         resonance::KeyCode::Down if pressed => Some(b"\x1b[B".as_slice()),
                         _ => None,
                     };
                     drop(runtime_guard);
+                    if ctrl_v && let Some(path) = crate::explorer::shell_clipboard_path() {
+                        let replaced =
+                            nitrogen::ps2::keyboard::replace_input_byte(0x16, path.as_bytes());
+                        if replaced {
+                            while let Some(byte) =
+                                nitrogen::ps2::keyboard::pop_input_char_unchecked()
+                            {
+                                crate::terminal::push_process_terminal_input(
+                                    process_terminal_id,
+                                    &[byte],
+                                );
+                            }
+                            continue;
+                        }
+                    }
                     if let Some(sequence) = sequence {
                         crate::terminal::push_process_terminal_input(process_terminal_id, sequence);
                     } else if pressed
@@ -281,7 +292,17 @@ pub fn poll_keyboard() {
                     continue;
                 }
                 if runtime.term_window.is_some() && top_id == runtime.term_window && pressed {
-                    let key = scancode_to_resonance_keycode(scancode);
+                    if key == resonance::KeyCode::V
+                        && (event.modifiers.lctrl || event.modifiers.rctrl)
+                        && let Some(path) = crate::explorer::shell_clipboard_path()
+                    {
+                        // The low-level keyboard translator has already
+                        // queued Ctrl+V as 0x16. Consume that control byte
+                        // and inject the copied absolute path instead.
+                        if nitrogen::ps2::keyboard::replace_input_byte(0x16, path.as_bytes()) {
+                            continue;
+                        }
+                    }
                     let sequence = match key {
                         resonance::KeyCode::Up => Some(b"\x1b[A".as_slice()),
                         resonance::KeyCode::Down => Some(b"\x1b[B".as_slice()),
@@ -326,6 +347,22 @@ pub fn poll_keyboard() {
         // VFS-backed file launch must happen outside the runtime lock.
         if let Some(path) = launch_path {
             *crate::window_api::PENDING_LAUNCH.lock() = Some(path);
+        }
+    }
+
+    // Key repeat is produced by the low-level driver without a new raw queue
+    // entry. Drain those decoded bytes after event-time Ctrl+V handling.
+    let focused_process_terminal = RUNTIME_CONTEXT.runtime().as_ref().and_then(|runtime| {
+        let top_id = runtime.desktop.wm.windows().last().map(|window| window.id);
+        runtime
+            .process_terminals
+            .iter()
+            .find(|terminal| Some(terminal.window_id) == top_id)
+            .map(|terminal| terminal.window_id)
+    });
+    if let Some(window_id) = focused_process_terminal {
+        while let Some(byte) = nitrogen::ps2::keyboard::pop_input_char_unchecked() {
+            crate::terminal::push_process_terminal_input(window_id, &[byte]);
         }
     }
 }

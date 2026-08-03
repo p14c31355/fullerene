@@ -1,8 +1,7 @@
 // Linux binary launcher
 use crate::loader::LoadError;
 use crate::process::ProcessId;
-use alloc::boxed::Box;
-use alloc::string::ToString;
+use alloc::vec::Vec;
 #[cfg(linux_busybox_smoke)]
 use core::sync::atomic::AtomicU8;
 #[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
@@ -44,6 +43,7 @@ static BUSYBOX_SMOKE_OUTPUT_MATCHED: AtomicUsize = AtomicUsize::new(0);
 static BUSYBOX_SMOKE_LAUNCH_COUNT: AtomicU8 = AtomicU8::new(0);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_HOLD_INPUT: AtomicBool = AtomicBool::new(false);
+
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox all applets passed";
 
@@ -187,7 +187,7 @@ busybox awk 'BEGIN { while ((getline name < \"/tmp/busybox-list\") > 0) wanted[n
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
-    launch_linux_from_data(crate::linux::test_binary::HELLO_ELF, "hello-linux")
+    launch_linux_from_data(crate::solvent_linux::test_binary::HELLO_ELF, "hello-linux")
 }
 
 /// Launch the ordinary Rust `std` example compiled for static musl Linux.
@@ -203,14 +203,25 @@ pub fn launch_rust_std_hello() -> Result<ProcessId, LoadError> {
 
 /// Launch a Linux ELF binary from the VFS at `path`.
 pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
-    // General-purpose callers can provide arbitrary paths, so retain a stable
-    // process label for the process table.
-    let static_name: &'static str = Box::leak(path.to_string().into_boxed_str());
-    launch_linux_binary_named(path, static_name)
+    launch_linux_binary_with_args(path, &[])
 }
 
-/// Launch a Linux ELF binary from the VFS with a caller-owned static label.
-pub fn launch_linux_binary_named(path: &str, name: &'static str) -> Result<ProcessId, LoadError> {
+/// Launch a Linux ELF from the VFS with command-line arguments.
+pub fn launch_linux_binary_with_args(path: &str, args: &[&str]) -> Result<ProcessId, LoadError> {
+    launch_linux_binary_named_with_args(path, path, args)
+}
+
+/// Launch a Linux ELF binary from the VFS with a process label.
+pub fn launch_linux_binary_named(path: &str, name: &str) -> Result<ProcessId, LoadError> {
+    launch_linux_binary_named_with_args(path, name, &[])
+}
+
+/// Launch a Linux ELF from the VFS with a stable process label and argv.
+pub fn launch_linux_binary_named_with_args(
+    path: &str,
+    name: &str,
+    args: &[&str],
+) -> Result<ProcessId, LoadError> {
     crate::klog_fmt!("[LINUX-DIAG] launch begin path={} name={}\n", path, name);
     let data = match crate::fs::read_entire_file(path) {
         Ok(d) => {
@@ -231,7 +242,7 @@ pub fn launch_linux_binary_named(path: &str, name: &'static str) -> Result<Proce
         }
     };
     crate::klog_fmt!("[LINUX-DIAG] loader enter path={}\n", path);
-    let pid = launch_linux_from_data(&data, name)?;
+    let pid = launch_linux_from_data_with_args(&data, name, args)?;
     crate::klog_fmt!("[LINUX-DIAG] loader exit path={} pid={}\n", path, pid.0);
     #[cfg(linux_musl_smoke)]
     if matches!(path, "/bin/rust-std-hello" | "/bin/rust_std_hello") {
@@ -289,8 +300,19 @@ pub fn smoke_verified() -> bool {
 }
 
 /// Launch a Linux ELF binary from raw bytes.
-pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<ProcessId, LoadError> {
-    let argv = [name];
+pub fn launch_linux_from_data(data: &[u8], name: &str) -> Result<ProcessId, LoadError> {
+    launch_linux_from_data_with_args(data, name, &[])
+}
+
+/// Launch a Linux ELF from raw bytes with user-provided argv entries.
+pub fn launch_linux_from_data_with_args(
+    data: &[u8],
+    name: &str,
+    args: &[&str],
+) -> Result<ProcessId, LoadError> {
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push(name);
+    argv.extend_from_slice(args);
     crate::loader::load_program_with_runtime_args(data, name, &argv, &[], true)
 }
 
@@ -357,7 +379,9 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
     };
     crate::klog_fmt!("[BUSYBOX-DIAG] attach terminal_window to pid={}\n", pid.0);
     let _ = crate::process::SCHEDULER.with_process(pid, |process| {
-        if let Some(crate::linux::DispatchMode::Linux(runtime)) = process.dispatch_mode.as_mut() {
+        if let Some(crate::solvent_linux::DispatchMode::Linux(runtime)) =
+            process.dispatch_mode.as_mut()
+        {
             runtime.terminal_window = Some(terminal_window);
         }
     });
@@ -623,6 +647,15 @@ pub fn init_initramfs() {
 
     // Create /apps directory for WASI applications
     let _ = crate::contexts::vfs::mkdir("/apps");
+
+    // Install the embedded Linux ABI fixture at a normal executable path so
+    // all Linux/WASI programs use the same `exec <path>` shell interface.
+    if let Err(e) = crate::fs::write_entire_file(
+        "/bin/hello_linux",
+        crate::solvent_linux::test_binary::HELLO_ELF,
+    ) {
+        log::warn!("Initramfs: failed to write /bin/hello_linux: {:?}", e);
+    }
 
     // Embed the hello.wasm test binary (built at compile time by build.rs)
     if let Err(e) = crate::fs::write_entire_file(
