@@ -390,6 +390,10 @@ pub(crate) fn render(rt: &mut RuntimeState) {
         InstallerPage::Complete | InstallerPage::Failed => ("Close", true),
     };
     button(&mut painter, 484, BUTTON_Y, label, enabled);
+    // The wizard owns the window surface, so repainting it is not enough to
+    // make the compositor copy the new page into the framebuffer. Mark the
+    // window dirty after every page/progress update.
+    rt.desktop.invalidate_window(id);
     rt.installer_dirty = false;
 }
 
