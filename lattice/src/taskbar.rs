@@ -142,28 +142,46 @@ impl Taskbar {
 
 /// Draw a compact, platform-neutral power glyph.
 pub fn render_power_icon(canvas: &mut crate::painter::Painter<'_>, x: u32, y: u32, color: u32) {
-    // A 20×20 pixel power glyph: a vertical stem and a deliberately
-    // lightweight broken ring, so it remains legible in all three shells.
+    // A 20×20 pixel power glyph. The ring is rasterised as a complete
+    // two-pixel annulus instead of hand-picked arc pixels, which keeps its
+    // stroke thickness consistent around the diagonals as well.
     canvas.fill_rect(x as i32 + 9, y as i32, 2, 9, color);
-    for (dx, dy) in [
-        (5, 3),
-        (4, 4),
-        (3, 5),
-        (2, 7),
-        (2, 10),
-        (3, 12),
-        (5, 14),
-        (7, 15),
-        (12, 15),
-        (14, 14),
-        (16, 12),
-        (17, 10),
-        (17, 7),
-        (16, 5),
-        (15, 4),
-        (14, 3),
-    ] {
-        canvas.set_pixel(x + dx, y + dy, color);
-        canvas.set_pixel(x + dx + 1, y + dy, color);
+    for py in 1..19u32 {
+        for px in 1..19u32 {
+            // Center at (10, 10), outer radius 8px, inner radius 6px.
+            let dx = px as i32 - 10;
+            let dy = py as i32 - 10;
+            let distance = dx * dx + dy * dy;
+            let in_ring = (36..=64).contains(&distance);
+            // Leave the conventional opening at 12 o'clock for the stem.
+            let opening = py <= 4 && (8..=12).contains(&px);
+            if in_ring && !opening {
+                canvas.set_pixel(x + px, y + py, color);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_power_icon;
+    use crate::painter::Painter;
+
+    #[test]
+    fn power_icon_has_a_filled_uniform_ring() {
+        let mut fb = alloc::vec![0u32; 24 * 24];
+        let mut painter = Painter::new(&mut fb, 24, 24);
+        render_power_icon(&mut painter, 2, 2, 0x00FF00);
+
+        // Cardinal points and both diagonal shoulders must be present; the
+        // old sparse arc had visible one-pixel gaps in these locations.
+        for (x, y) in [(4, 12), (20, 12), (7, 7), (17, 7), (7, 17), (17, 17)] {
+            assert_eq!(fb[y * 24 + x], 0x00FF00);
+        }
+        // The opening remains clear while the stem stays two pixels wide.
+        assert_eq!(fb[2 * 24 + 11], 0x00FF00);
+        assert_eq!(fb[2 * 24 + 12], 0x00FF00);
+        assert_eq!(fb[5 * 24 + 10], 0);
+        assert_eq!(fb[5 * 24 + 14], 0);
     }
 }

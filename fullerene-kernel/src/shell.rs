@@ -32,6 +32,14 @@ pub fn system_control(cmd: &str) {
         }
         "shutdown" => {
             petroleum::serial::serial_log(format_args!("Shutdown requested\n"));
+            if acpi_shutdown() {
+                petroleum::serial::serial_log(format_args!("ACPI S5 shutdown issued\n"));
+                return;
+            }
+
+            // QEMU/Bochs fallback.  Do not enter an unconditional HLT loop:
+            // on a physical machine these ports may be ignored, and that
+            // used to turn a failed power-off request into a permanent hang.
             unsafe {
                 x86_64::instructions::port::PortWriteOnly::<u16>::new(0x604).write(0x2000u16);
                 let shutdown_str = b"Shutdown";
@@ -41,12 +49,45 @@ pub fn system_control(cmd: &str) {
                 }
                 x86_64::instructions::port::PortWriteOnly::<u16>::new(0x4004).write(0x3400u16);
             }
-            loop {
-                x86_64::instructions::hlt();
-            }
+            petroleum::serial::serial_log(format_args!(
+                "ACPI unavailable; legacy shutdown ports did not acknowledge\n"
+            ));
         }
         _ => {}
     }
+}
+
+/// Request ACPI S5 soft-off using the firmware-described PM1 control block.
+/// Returns false when the firmware tables do not expose a usable S5 path.
+fn acpi_shutdown() -> bool {
+    let hint = crate::boot::UEFI_RSDP_ADDRESS
+        .load(core::sync::atomic::Ordering::Relaxed)
+        .max(crate::contexts::boot::with_boot(|boot| boot.rsdp_address).unwrap_or(0));
+    let Some(manager) = nitrogen::acpi::manager::AcpiManager::init(hint) else {
+        return false;
+    };
+    let Some(power) = manager.parse_power_info() else {
+        return false;
+    };
+    let Some((sleep_a, sleep_b)) = manager.parse_s5_sleep_types() else {
+        return false;
+    };
+
+    let value_a = (sleep_a << 10) | (1 << 13);
+    let value_b = (sleep_b << 10) | (1 << 13);
+    unsafe {
+        if power.smi_command != 0 && power.acpi_enable != 0 {
+            x86_64::instructions::port::PortWriteOnly::<u8>::new(power.smi_command as u16)
+                .write(power.acpi_enable);
+        }
+        x86_64::instructions::port::PortWriteOnly::<u16>::new(power.pm1a_control as u16)
+            .write(value_a);
+        if power.pm1b_control != 0 {
+            x86_64::instructions::port::PortWriteOnly::<u16>::new(power.pm1b_control as u16)
+                .write(value_b);
+        }
+    }
+    true
 }
 
 fn buffer_wasm_output(data: &[u8]) {

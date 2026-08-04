@@ -10,6 +10,16 @@ pub struct McfgEntry {
     pub base_address: u64,
 }
 
+/// ACPI power-management registers needed to enter the S5 soft-off state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerInfo {
+    pub pm1a_control: u32,
+    pub pm1b_control: u32,
+    pub pm1_control_len: u8,
+    pub smi_command: u32,
+    pub acpi_enable: u8,
+}
+
 /// Standalone ACPI table manager.
 ///
 /// Wraps RSDP discovery and table parsing behind a single struct,
@@ -90,5 +100,121 @@ impl AcpiManager {
     pub fn parse_madt(&self) -> Option<crate::acpi::madt::MadtInfo> {
         let table_phys = self.find_table(b"APIC")?;
         crate::acpi::madt::parse(self.table_bytes(table_phys)?)
+    }
+
+    /// Parse the FADT/FACP fields used by the S5 soft-off transition.
+    pub fn parse_power_info(&self) -> Option<PowerInfo> {
+        let table_phys = self.find_table(b"FACP")?;
+        let bytes = self.table_bytes(table_phys)?;
+        if bytes.len() < 113 {
+            return None;
+        }
+
+        let mut pm1a = u32::from_le_bytes(bytes[64..68].try_into().ok()?);
+        let mut pm1b = u32::from_le_bytes(bytes[68..72].try_into().ok()?);
+
+        // Prefer the legacy I/O addresses, but accept the ACPI 2.0 extended
+        // Generic Address Structures when firmware leaves the legacy fields
+        // empty.  PM1a/PM1b control blocks are at offsets 172 and 184.
+        if pm1a == 0 {
+            pm1a = gas_io_address(bytes, 172).unwrap_or(0) as u32;
+        }
+        if pm1b == 0 {
+            pm1b = gas_io_address(bytes, 184).unwrap_or(0) as u32;
+        }
+
+        let pm1_control_len = bytes[89];
+        if pm1a == 0 || pm1_control_len < 2 {
+            return None;
+        }
+
+        Some(PowerInfo {
+            pm1a_control: pm1a,
+            pm1b_control: pm1b,
+            pm1_control_len,
+            smi_command: u32::from_le_bytes(bytes[48..52].try_into().ok()?),
+            acpi_enable: bytes[52],
+        })
+    }
+
+    /// Read the `_S5_` sleep-type package from the DSDT.
+    pub fn parse_s5_sleep_types(&self) -> Option<(u16, u16)> {
+        let fadt_phys = self.find_table(b"FACP")?;
+        let fadt = self.table_bytes(fadt_phys)?;
+        if fadt.len() < 44 {
+            return None;
+        }
+        let dsdt_phys = if fadt.len() >= 148 {
+            u64::from_le_bytes(fadt[140..148].try_into().ok()?)
+        } else {
+            0
+        };
+        let dsdt_phys = if dsdt_phys != 0 {
+            dsdt_phys
+        } else {
+            u32::from_le_bytes(fadt[40..44].try_into().ok()?) as u64
+        };
+        let dsdt = self.table_bytes(dsdt_phys)?;
+        parse_s5_from_aml(dsdt)
+    }
+}
+
+fn gas_io_address(table: &[u8], offset: usize) -> Option<u64> {
+    let gas = table.get(offset..offset + 12)?;
+    // Generic Address Structure: AddressSpaceId 1 means System I/O.
+    if gas[0] != 1 {
+        return None;
+    }
+    Some(u64::from_le_bytes(gas[4..12].try_into().ok()?))
+}
+
+fn aml_integer(bytes: &[u8], offset: usize) -> Option<(u16, usize)> {
+    match *bytes.get(offset)? {
+        0x00 => Some((0, 1)), // ZeroOp
+        0x01 => Some((1, 1)), // OneOp
+        0x0A => Some((*bytes.get(offset + 1)? as u16, 2)),
+        0x0B => Some((
+            u16::from_le_bytes(bytes.get(offset + 1..offset + 3)?.try_into().ok()?),
+            3,
+        )),
+        _ => None,
+    }
+}
+
+fn parse_s5_from_aml(dsdt: &[u8]) -> Option<(u16, u16)> {
+    let aml = dsdt.get(36..)?;
+    for offset in 0..aml.len().saturating_sub(5) {
+        if aml[offset] != 0x08 || &aml[offset + 1..offset + 5] != b"_S5_" {
+            continue;
+        }
+        let package = offset + 5;
+        if aml.get(package) != Some(&0x12) {
+            continue;
+        }
+        // We only need to advance over the package-length encoding; the
+        // package's first byte is the element count.
+        let pkg_len_bytes = ((aml.get(package + 1)? >> 6) as usize) + 1;
+        let elements = package + 1 + pkg_len_bytes;
+        if *aml.get(elements)? < 2 {
+            continue;
+        }
+        let (a, used) = aml_integer(aml, elements + 1)?;
+        let (b, _) = aml_integer(aml, elements + 1 + used)?;
+        return Some((a, b));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_s5_from_aml;
+
+    #[test]
+    fn parses_s5_sleep_types_from_dsdt_aml() {
+        let mut dsdt = alloc::vec![0u8; 36];
+        dsdt.extend_from_slice(&[
+            0x08, b'_', b'S', b'5', b'_', 0x12, 0x06, 0x02, 0x0A, 0x05, 0x0A, 0x05,
+        ]);
+        assert_eq!(parse_s5_from_aml(&dsdt), Some((5, 5)));
     }
 }
