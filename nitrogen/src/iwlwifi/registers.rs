@@ -192,6 +192,9 @@ pub const TLV_SEC_RT: u32 = 19;
 pub const TLV_SEC_INIT: u32 = 20;
 pub const TLV_SEC_WOWLAN: u32 = 21;
 pub const TLV_DEF_CALIB: u32 = 22;
+/// Firmware TLVs containing the runtime/init error-log SRAM addresses.
+pub const TLV_RUNT_ERRLOG_PTR: u32 = 10;
+pub const TLV_INIT_ERRLOG_PTR: u32 = 13;
 pub const FW_CPU1_CPU2_SEPARATOR_SECTION: u32 = 0xFFFF_CCCC;
 pub const FW_PAGING_SEPARATOR_SECTION: u32 = 0xAAAA_BBBB;
 
@@ -199,3 +202,5 @@ pub const FW_PAGING_SEPARATOR_SECTION: u32 = 0xAAAA_BBBB;
 
 pub const HBUS_TARG_MEM_WADDR: u32 = (0x400 + 0x010) / 4;
 pub const HBUS_TARG_MEM_WDAT: u32 = (0x400 + 0x018) / 4;
+pub const HBUS_TARG_MEM_RADDR: u32 = (0x400 + 0x00C) / 4;
+pub const HBUS_TARG_MEM_RDAT: u32 = (0x400 + 0x01C) / 4;

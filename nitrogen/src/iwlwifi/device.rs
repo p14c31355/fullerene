@@ -43,6 +43,9 @@ pub struct IwlWifiDevice {
     pub fw_state: FwState,
     pub fw_build: u32,
     pub fw_api_ver: u32,
+    /// SRAM pointers supplied by the firmware image for post-crash logs.
+    pub runtime_errlog_ptr: u32,
+    pub init_errlog_ptr: u32,
 
     /// 802.11 state.
     pub iwl_state: IwlState,
@@ -412,6 +415,8 @@ impl IwlWifiDevice {
             fw_state: FwState::NotLoaded,
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
+            runtime_errlog_ptr: 0,
+            init_errlog_ptr: 0,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -611,6 +616,8 @@ impl IwlWifiDevice {
             fw_state: FwState::NotLoaded,
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
+            runtime_errlog_ptr: 0,
+            init_errlog_ptr: 0,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -801,6 +808,8 @@ impl IwlWifiDevice {
 
         self.fw_api_ver = unsafe { core::ptr::read_unaligned(fw_ptr.add(72) as *const u32) };
         self.fw_build = unsafe { core::ptr::read_unaligned(fw_ptr.add(76) as *const u32) };
+        self.runtime_errlog_ptr = 0;
+        self.init_errlog_ptr = 0;
         log::info!(
             "iwlwifi: firmware API v{}, build {}",
             self.fw_api_ver,
@@ -830,6 +839,26 @@ impl IwlWifiDevice {
             }
 
             match tlv_type {
+                TLV_RUNT_ERRLOG_PTR | TLV_INIT_ERRLOG_PTR => {
+                    if tlv_len == 4 {
+                        let pointer: u32 = unsafe {
+                            core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
+                        };
+                        if tlv_type == TLV_RUNT_ERRLOG_PTR {
+                            self.runtime_errlog_ptr = pointer;
+                            log::info!(
+                                "iwlwifi: firmware.error_log_ptr image=runtime addr={:#010x}",
+                                pointer
+                            );
+                        } else {
+                            self.init_errlog_ptr = pointer;
+                            log::info!(
+                                "iwlwifi: firmware.error_log_ptr image=init addr={:#010x}",
+                                pointer
+                            );
+                        }
+                    }
+                }
                 // A regular boot uses only SEC_RT.  SEC_INIT, SEC_WOWLAN,
                 // and DEF_CALIB belong to other firmware images/metadata;
                 // writing them into runtime SRAM prevents the CPU from
@@ -1167,6 +1196,52 @@ impl IwlWifiDevice {
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_MEM_WADDR as usize), address);
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_MEM_WDAT as usize), value);
         }
+    }
+
+    pub(super) fn read_mem32(&mut self, address: u32) -> Option<u32> {
+        unsafe {
+            core::ptr::write_volatile(self.mmio.add(HBUS_TARG_MEM_RADDR as usize), address);
+        }
+        self.safe_read32(HBUS_TARG_MEM_RDAT)
+    }
+
+    /// Read the compact LMAC error table written by firmware after a
+    /// software assertion.  The pointer comes from the firmware TLV rather
+    /// than from a guessed SRAM address.
+    pub(super) fn log_firmware_error_table(&mut self, command: &str) {
+        let (image, base) = if self.runtime_errlog_ptr != 0 {
+            ("runtime", self.runtime_errlog_ptr)
+        } else if self.init_errlog_ptr != 0 {
+            ("init", self.init_errlog_ptr)
+        } else {
+            log::error!(
+                "iwlwifi: firmware.error_log command={} status=pointer_missing runtime=0x00000000 init=0x00000000",
+                command
+            );
+            return;
+        };
+
+        let mut words = [0u32; 30];
+        for (index, word) in words.iter_mut().enumerate() {
+            *word = self
+                .read_mem32(base.saturating_add((index * 4) as u32))
+                .unwrap_or(!0);
+        }
+        log::error!(
+            "iwlwifi: firmware.error_log command={} image={} base={:#010x} valid={:#010x} error_id={:#010x} hcmd={:#010x} last_cmd_id={:#010x} isr0={:#010x} isr1={:#010x} isr2={:#010x} isr3={:#010x} isr4={:#010x}",
+            command,
+            image,
+            base,
+            words[0],
+            words[1],
+            words[23],
+            words[29],
+            words[24],
+            words[25],
+            words[26],
+            words[27],
+            words[28],
+        );
     }
 
     /// Wait for the firmware "alive" response with a TSC-based timeout.

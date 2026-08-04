@@ -332,7 +332,7 @@ impl IwlWifiDevice {
                     "protocol"
                 };
                 log::error!(
-                    "iwlwifi: init.hcmd.error name={} stage=firmware reason={} target={} rptr={:#010x} csr_int={:#010x} fh_int={:#010x} head={} tail={}",
+                    "iwlwifi: init.hcmd.error name={} stage=firmware reason={} consumed=false target={} rptr={:#010x} csr_int={:#010x} fh_int={:#010x} head={} tail={}",
                     label,
                     reason,
                     target,
@@ -342,11 +342,12 @@ impl IwlWifiDevice {
                     self.tx_head,
                     self.tx_tail,
                 );
+                self.log_firmware_error_table(label);
                 Err(error)
             }
             None => {
                 log::error!(
-                    "iwlwifi: init.hcmd.error name={} stage=consume reason=timeout target={} rptr={:#010x} csr_int={:#010x} fh_int={:#010x} head={} tail={}",
+                    "iwlwifi: init.hcmd.error name={} stage=consume reason=timeout consumed=false target={} rptr={:#010x} csr_int={:#010x} fh_int={:#010x} head={} tail={}",
                     label,
                     target,
                     self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0),
@@ -440,14 +441,39 @@ impl IwlWifiDevice {
         let mac_ctx = MacContextCmd::sta(self.mac);
         let mac_ctx_bytes = unsafe { super::as_bytes(&mac_ctx) };
         log::info!(
-            "iwlwifi: init.config name=mac_context action=add mac_type=bss_sta(5) id_color=0 filter=0x44 rates_cck=0x0000000f rates_ofdm=0x000000ff ac0=cw_min:0,cw_max:0,aifsn:0,fifo:0x01 ac1=cw_min:0,cw_max:0,aifsn:0,fifo:0x02 ac2=cw_min:0,cw_max:0,aifsn:0,fifo:0x04 ac3=cw_min:0,cw_max:0,aifsn:0,fifo:0x08 ac4=reserved:zero sta=unassociated,bi:100,dtim:0,listen:10 payload={}",
-            mac_ctx_bytes.len(),
+            "iwlwifi: init.config name=mac_context action=add mac_type=bss_sta(5) id_color=0 filter=0x44"
         );
         log::info!(
-            "iwlwifi: init.payload name=mac_context offset=0 len={} hex={}",
-            mac_ctx_bytes.len(),
-            HexBytes(mac_ctx_bytes),
+            "iwlwifi: init.config name=mac_context rates_cck=0x0000000f rates_ofdm=0x00000015"
         );
+        log::info!(
+            "iwlwifi: init.config name=mac_context ac0=cw_min:15,cw_max:63,aifsn:1,fifo:0x01 ac1=cw_min:15,cw_max:63,aifsn:1,fifo:0x02"
+        );
+        log::info!(
+            "iwlwifi: init.config name=mac_context ac2=cw_min:15,cw_max:63,aifsn:1,fifo:0x04 ac3=cw_min:15,cw_max:63,aifsn:1,fifo:0x08 ac4=reserved:zero"
+        );
+        log::info!(
+            "iwlwifi: init.config name=mac_context sta=unassociated beacon_interval:100 dtim_interval:0 listen_interval:10"
+        );
+        // Keep each raw-payload record short enough for serial consoles and
+        // old log readers. The region labels make the API-v1 layout visible
+        // without requiring a separate decoder.
+        for (region, region_offset, region_bytes) in [
+            ("common", 0usize, &mac_ctx_bytes[0..60]),
+            ("qos_ac", 60usize, &mac_ctx_bytes[60..100]),
+            ("sta", 100usize, &mac_ctx_bytes[100..144]),
+        ] {
+            for (chunk_index, chunk) in region_bytes.chunks(16).enumerate() {
+                log::info!(
+                    "iwlwifi: init.payload name=mac_context region={} offset={} chunk={} len={} hex={}",
+                    region,
+                    region_offset + chunk_index * 16,
+                    chunk_index,
+                    chunk.len(),
+                    HexBytes(chunk),
+                );
+            }
+        }
         self.send_init_hcmd(
             "MAC_CONTEXT",
             LegacyCmd::MacContext as u8,

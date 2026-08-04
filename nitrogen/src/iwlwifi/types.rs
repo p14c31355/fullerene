@@ -267,12 +267,17 @@ impl MacContextCmd {
             tsf_id: 0,
             node_addr: mac,
             reserved_for_node_addr: 0,
-            // Before association there is no AP-specific BSSID. The firmware
-            // uses the broadcast value for this state, as does upstream.
-            bssid_addr: [0xff; 6],
+            // mac80211 keeps the station BSSID zeroed until association. The
+            // firmware accepts that value for an unassociated BSS_STA
+            // context; a broadcast BSSID is a different (and invalid for
+            // this context) address value.
+            bssid_addr: [0; 6],
             reserved_for_bssid_addr: 0,
             cck_rates: 0x0000_000f,
-            ofdm_rates: 0x0000_00ff,
+            // For an unassociated 2.4 GHz STA with no AP basic-rate set,
+            // iwl_mvm_ack_rates() keeps the mandatory 6/12/24 Mbps OFDM
+            // rates: bits 0, 2 and 4 in the OFDM bitmap.
+            ofdm_rates: 0x0000_0015,
             protection_flags: 0,
             // The interface starts before association.  mac80211 leaves
             // both ERP flags clear until the AP advertises them.
@@ -285,33 +290,33 @@ impl MacContextCmd {
             // (AC_NUM + 1) and must stay zero, as in Linux's zeroed command.
             ac: [
                 MacQosAc {
-                    // Before association mac80211 has not supplied EDCA
-                    // parameters yet.  The Linux driver therefore leaves
-                    // these fields zero in the initial MAC_CONTEXT command.
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    // API-v1 firmware defaults: CWmin=0x0f, CWmax=0x3f,
+                    // AIFSN=1. Zero is not a valid EDCA timing value for
+                    // this command even before association.
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
                     fifos_mask: 1 << 0,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
                     fifos_mask: 1 << 1,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
                     fifos_mask: 1 << 2,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 0x000f,
+                    cw_max: 0x003f,
+                    aifsn: 1,
                     fifos_mask: 1 << 3,
                     edca_txop: 0,
                 },

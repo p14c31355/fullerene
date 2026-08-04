@@ -747,6 +747,8 @@ fn perform_init_step() {
                 fw_state: FwState::NotLoaded,
                 fw_build: 0,
                 fw_api_ver: IWL_FW_API_VER,
+                runtime_errlog_ptr: 0,
+                init_errlog_ptr: 0,
                 iwl_state: IwlState::Init,
                 wifi_conn: bonder::wifi::WifiConnection::new(),
                 wpa: bonder::wpa::WpaSupplicant::new(),
