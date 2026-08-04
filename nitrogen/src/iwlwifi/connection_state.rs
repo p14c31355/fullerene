@@ -109,8 +109,33 @@ fn release_wifi_completion() {
 
 fn enqueue_wifi_request(request: WifiRequest) -> Option<u64> {
     let mut queue = WIFI_SQ.lock();
+
+    // InitStep and Tick are level-triggered requests.  Keeping more than one
+    // copy of either request cannot add useful work: the next scheduler pass
+    // observes the same state and performs the same transition/poll.  This is
+    // especially important while firmware or PCIe recovery is taking a long
+    // time; otherwise the service tick can fill the SQ and hide real user
+    // requests (scan/connect) behind dozens of stale polls.
+    let duplicate_periodic_request = match &request {
+        WifiRequest::InitStep => queue
+            .iter()
+            .any(|(_, pending)| matches!(pending, WifiRequest::InitStep)),
+        WifiRequest::Tick => queue
+            .iter()
+            .any(|(_, pending)| matches!(pending, WifiRequest::Tick)),
+        _ => false,
+    };
+    if duplicate_periodic_request {
+        return None;
+    }
+
     if queue.len() >= 32 {
-        log::warn!("iwlwifi: request SQ full; dropping request");
+        // A periodic poll is disposable when the queue is genuinely full.
+        // Keep the warning for action requests, where dropping the request is
+        // user-visible and worth diagnosing.
+        if !matches!(&request, WifiRequest::InitStep | WifiRequest::Tick) {
+            log::warn!("iwlwifi: request SQ full; dropping request");
+        }
         return None;
     }
     let id = NEXT_WIFI_REQUEST.fetch_add(1, Ordering::Relaxed);
@@ -153,6 +178,15 @@ fn release_init_resources(ctx: &mut WifiInitContext) {
 
 pub fn wifi_init_completed() -> bool {
     WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Whether the hardware-facing driver object was successfully installed.
+///
+/// `wifi_init_completed()` also becomes true after a failed initialization so
+/// the lifecycle cannot be retried accidentally.  Callers that only want to
+/// schedule device polls must use this predicate instead.
+pub fn wifi_device_ready() -> bool {
+    WIFI_DEVICE.lock().is_some()
 }
 
 /// Force WiFi init to be marked as failed/completed.
