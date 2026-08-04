@@ -144,16 +144,6 @@ pub fn scheduler_loop() -> ! {
         // or service tick never performs firmware/MMIO work synchronously.
         let device_phase_deadline = unsafe { core::arch::x86_64::_rdtsc() }
             .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(10));
-        #[cfg(not(nitrogen_no_iwlwifi))]
-        {
-            // Wi-Fi initialization already has per-phase MMIO/PCIe
-            // watchdogs. Do not apply the shared short device-phase deadline
-            // here: on real hardware the calibrated TSC/PIT deadline can be
-            // reached before the first request is serviced, leaving the
-            // initialization SQ untouched until the UI timeout fires.
-            nitrogen::iwlwifi::process_wifi_submission_queue(16);
-            nitrogen::iwlwifi::consume_wifi_completion_queue(16);
-        }
         #[cfg(not(nitrogen_no_storage))]
         {
             crate::drivers::registry::process_driver_submission_queue_until(
@@ -177,6 +167,18 @@ pub fn scheduler_loop() -> ! {
         #[cfg(linux_busybox_smoke)]
         if !solvent::headless_smoke_active() {
             gui::runtime_tick(SCHEDULER.current_tick());
+        }
+
+        // The GUI/service tick above is the producer for Wi-Fi requests (the
+        // network menu enqueues InitStep there). Process Wi-Fi after it so a
+        // newly requested initialization does not wait for another scheduler
+        // turn or get stranded behind a lifecycle timeout. Wi-Fi has its own
+        // per-phase MMIO/PCIe watchdogs; do not use the shared storage-device
+        // deadline for this path.
+        #[cfg(not(nitrogen_no_iwlwifi))]
+        {
+            nitrogen::iwlwifi::process_wifi_submission_queue(16);
+            nitrogen::iwlwifi::consume_wifi_completion_queue(16);
         }
 
         // Check if the user requested a shell launch (via AppGrid / menu).

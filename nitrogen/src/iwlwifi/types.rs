@@ -285,30 +285,33 @@ impl MacContextCmd {
             // (AC_NUM + 1) and must stay zero, as in Linux's zeroed command.
             ac: [
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    // Before association mac80211 has not supplied EDCA
+                    // parameters yet.  The Linux driver therefore leaves
+                    // these fields zero in the initial MAC_CONTEXT command.
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 0,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 1,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 2,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 3,
                     edca_txop: 0,
                 },
