@@ -43,6 +43,9 @@ pub struct IwlWifiDevice {
     pub fw_state: FwState,
     pub fw_build: u32,
     pub fw_api_ver: u32,
+    pub phy_config: u32,
+    pub runtime_calib_flow: u32,
+    pub runtime_calib_event: u32,
     /// SRAM pointers supplied by the firmware image for post-crash logs.
     pub runtime_errlog_ptr: u32,
     pub init_errlog_ptr: u32,
@@ -415,6 +418,9 @@ impl IwlWifiDevice {
             fw_state: FwState::NotLoaded,
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
+            phy_config: 0,
+            runtime_calib_flow: 0,
+            runtime_calib_event: 0,
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             iwl_state: IwlState::Init,
@@ -616,6 +622,9 @@ impl IwlWifiDevice {
             fw_state: FwState::NotLoaded,
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
+            phy_config: 0,
+            runtime_calib_flow: 0,
+            runtime_calib_event: 0,
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             iwl_state: IwlState::Init,
@@ -810,6 +819,9 @@ impl IwlWifiDevice {
         self.fw_build = unsafe { core::ptr::read_unaligned(fw_ptr.add(76) as *const u32) };
         self.runtime_errlog_ptr = 0;
         self.init_errlog_ptr = 0;
+        self.phy_config = 0;
+        self.runtime_calib_flow = 0;
+        self.runtime_calib_event = 0;
         log::info!(
             "iwlwifi: firmware API v{}, build {}",
             self.fw_api_ver,
@@ -839,6 +851,35 @@ impl IwlWifiDevice {
             }
 
             match tlv_type {
+                TLV_DEF_CALIB => {
+                    if tlv_len == 12 {
+                        let ucode_type: u32 = unsafe {
+                            core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
+                        };
+                        // IWL_UCODE_REGULAR is image index 1.
+                        if ucode_type == 1 {
+                            self.runtime_calib_flow = unsafe {
+                                core::ptr::read_unaligned(fw_ptr.add(tlv_data_off + 4) as *const u32)
+                            };
+                            self.runtime_calib_event = unsafe {
+                                core::ptr::read_unaligned(fw_ptr.add(tlv_data_off + 8) as *const u32)
+                            };
+                            log::info!(
+                                "iwlwifi: firmware.phy_calibration image=runtime flow={:#010x} event={:#010x}",
+                                self.runtime_calib_flow,
+                                self.runtime_calib_event,
+                            );
+                        }
+                    }
+                }
+                TLV_PHY_SKU => {
+                    if tlv_len == 4 {
+                        self.phy_config = unsafe {
+                            core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
+                        };
+                        log::info!("iwlwifi: firmware.phy_sku config={:#010x}", self.phy_config,);
+                    }
+                }
                 TLV_RUNT_ERRLOG_PTR | TLV_INIT_ERRLOG_PTR => {
                     if tlv_len == 4 {
                         let pointer: u32 = unsafe {

@@ -73,6 +73,8 @@ pub enum GroupId {
 pub enum LegacyCmd {
     Echo = 0x03,
     PhyContext = 0x08,
+    /// PHY configuration and calibration control used before MAC contexts.
+    PhyConfiguration = 0x6a,
     /// Legacy LMAC scan configuration.  The command number is legacy, but
     /// firmware API 17 transports it through the long-command group.
     ScanConfig = 0x0c,
@@ -196,6 +198,15 @@ impl PhyContextCmdV1 {
     }
 }
 
+/// PHY_CONFIGURATION_CMD payload used by the API-v17 runtime firmware.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct PhyConfigurationCmd {
+    pub phy_config: u32,
+    pub calib_flow_trigger: u32,
+    pub calib_event_trigger: u32,
+}
+
 /// One AC entry in the API-v1 MAC context QoS array.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -286,37 +297,36 @@ impl MacContextCmd {
             filter_flags: FILTER_FLAGS,
             qos_flags: 0,
             // API v1 expects each of the four EDCA entries to name the FIFO
-            // owned by that access category.  The fifth entry is reserved
-            // (AC_NUM + 1) and must stay zero, as in Linux's zeroed command.
+            // owned by that access category.  Before association mac80211
+            // has not supplied queue parameters yet, so Linux leaves the
+            // timing values zero and only sets the FIFO masks. The fifth
+            // entry is reserved (AC_NUM + 1) and stays zero.
             ac: [
                 MacQosAc {
-                    // API-v1 firmware defaults: CWmin=0x0f, CWmax=0x3f,
-                    // AIFSN=1. Zero is not a valid EDCA timing value for
-                    // this command even before association.
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 0,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 1,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 2,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 3,
                     edca_txop: 0,
                 },

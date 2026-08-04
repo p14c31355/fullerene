@@ -390,6 +390,36 @@ impl IwlWifiDevice {
             ant_cfg[0]
         );
 
+        // Linux configures the runtime PHY before creating any MAC context.
+        // API-v17 supplies the PHY SKU and calibration triggers in the
+        // firmware TLVs parsed during upload; omitting this command leaves
+        // MAC_CONTEXT rejected even though the transport is healthy.
+        if self.phy_config == 0 {
+            log::error!(
+                "iwlwifi: init.config name=phy_configuration status=missing_firmware_phy_sku"
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+        let phy_config = PhyConfigurationCmd {
+            phy_config: self.phy_config,
+            calib_flow_trigger: self.runtime_calib_flow,
+            calib_event_trigger: self.runtime_calib_event,
+        };
+        let phy_config_bytes = unsafe { super::as_bytes(&phy_config) };
+        self.send_init_hcmd(
+            "PHY_CONFIGURATION",
+            LegacyCmd::PhyConfiguration as u8,
+            GroupId::Legacy as u8,
+            phy_config_bytes,
+        )?;
+        log::info!(
+            "iwlwifi: init.config name=phy_configuration phy_config={:#010x} calib_flow={:#010x} calib_event={:#010x} payload={}",
+            self.phy_config,
+            self.runtime_calib_flow,
+            self.runtime_calib_event,
+            phy_config_bytes.len(),
+        );
+
         // Firmware API 17 uses the pre-v12 station API. The scan engine
         // requires its auxiliary station before accepting an offload request.
         // ADD_STA is a legacy-group command and uses the four-byte header.
@@ -447,10 +477,10 @@ impl IwlWifiDevice {
             "iwlwifi: init.config name=mac_context rates_cck=0x0000000f rates_ofdm=0x00000015"
         );
         log::info!(
-            "iwlwifi: init.config name=mac_context ac0=cw_min:15,cw_max:63,aifsn:1,fifo:0x01 ac1=cw_min:15,cw_max:63,aifsn:1,fifo:0x02"
+            "iwlwifi: init.config name=mac_context ac0=cw_min:0,cw_max:0,aifsn:0,fifo:0x01 ac1=cw_min:0,cw_max:0,aifsn:0,fifo:0x02"
         );
         log::info!(
-            "iwlwifi: init.config name=mac_context ac2=cw_min:15,cw_max:63,aifsn:1,fifo:0x04 ac3=cw_min:15,cw_max:63,aifsn:1,fifo:0x08 ac4=reserved:zero"
+            "iwlwifi: init.config name=mac_context ac2=cw_min:0,cw_max:0,aifsn:0,fifo:0x04 ac3=cw_min:0,cw_max:0,aifsn:0,fifo:0x08 ac4=reserved:zero"
         );
         log::info!(
             "iwlwifi: init.config name=mac_context sta=unassociated beacon_interval:100 dtim_interval:0 listen_interval:10"
