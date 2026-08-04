@@ -170,6 +170,10 @@ pub fn init() {
         launch_shell: Some(|| {
             crate::scheduler::request_shell_launch();
         }),
+        power_control: Some(|action| match action {
+            solvent::PowerAction::Shutdown => crate::shell::system_control("shutdown"),
+            solvent::PowerAction::Reboot => crate::shell::system_control("reboot"),
+        }),
         settings_save: Some(save_runtime_settings),
         kernel_log: Some(|| {
             alloc::string::String::from_utf8_lossy(&crate::klog::snapshot()).into_owned()

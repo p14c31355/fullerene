@@ -31,6 +31,8 @@ pub enum DesktopAction {
     OpenEditor,
     /// Show the WiFi network menu.
     ShowNetworkMenu,
+    /// Show the taskbar power menu.
+    ShowPowerMenu,
     /// Connect to the specified access point by index.
     ConnectAp(usize),
     /// Dismiss the password dialog.
@@ -64,6 +66,7 @@ impl DesktopAction {
             "change_wallpaper" => DesktopAction::ChangeWallpaperSettings,
             "open_editor" => DesktopAction::OpenEditor,
             "show_network_menu" => DesktopAction::ShowNetworkMenu,
+            "show_power_menu" => DesktopAction::ShowPowerMenu,
             _ => return None,
         })
     }
@@ -390,6 +393,17 @@ impl Desktop {
             return;
         }
 
+        // The power control sits between WiFi and the clock.
+        let power_icon_x = self.taskbar.power_icon_x(fb_width);
+        let bar_y = fb_height.saturating_sub(crate::style::taskbar_height()) as i32;
+        if self.cursor.x >= power_icon_x as i32
+            && self.cursor.x < (power_icon_x + crate::taskbar::POWER_STATUS_WIDTH) as i32
+            && self.cursor.y >= bar_y
+        {
+            self.menu_action_pending = Some(DesktopAction::ShowPowerMenu);
+            return;
+        }
+
         // Check taskbar clicks first — restore minimized windows or focus.
         if let Some(tb_id) =
             self.taskbar_window_at(self.cursor.x, self.cursor.y, fb_width, fb_height)
@@ -469,6 +483,22 @@ impl Desktop {
             bar_y.saturating_sub(items.len() as u32 * crate::menu::ITEM_HEIGHT + 4),
             items,
         ));
+        self.menu_is_system = true;
+    }
+
+    /// Show the power menu above the taskbar power button.
+    pub fn show_power_menu(&mut self, fb_width: u32, fb_height: u32) {
+        let items = crate::menu::power_menu_items();
+        let menu = PopupMenu::new(0, 0, items);
+        let button_x = self.taskbar.power_icon_x(fb_width);
+        let x = button_x
+            .saturating_add(crate::taskbar::POWER_STATUS_WIDTH)
+            .saturating_sub(menu.width)
+            .min(fb_width.saturating_sub(menu.width));
+        let y = fb_height
+            .saturating_sub(crate::style::taskbar_height())
+            .saturating_sub(menu.height + 4);
+        self.active_menu = Some(PopupMenu { x, y, ..menu });
         self.menu_is_system = true;
     }
 
@@ -1004,6 +1034,29 @@ mod tests {
         dt.set_cursor(999, 999);
         dt.mouse_down(1024, 768);
         assert!(dt.active_menu.is_none());
+    }
+
+    #[test]
+    fn power_button_opens_restart_and_shutdown_menu() {
+        let mut dt = Desktop::new(0x202020);
+        dt.taskbar.clock_text = String::from("2026 0805 1210");
+        let (fb_width, fb_height) = (1024, 768);
+        let power_x = dt.taskbar.power_icon_x(fb_width);
+        dt.set_cursor(
+            power_x as i32 + 4,
+            fb_height as i32 - crate::style::taskbar_height() as i32 + 4,
+        );
+        dt.mouse_down(fb_width, fb_height);
+        assert_eq!(dt.menu_action_pending, Some(DesktopAction::ShowPowerMenu));
+
+        dt.menu_action_pending = None;
+        dt.show_power_menu(fb_width, fb_height);
+        let menu = dt.active_menu.as_ref().unwrap();
+        assert_eq!(menu.items.len(), 2);
+        assert_eq!(menu.items[0].action, "reboot");
+        assert_eq!(menu.items[1].action, "shutdown");
+        assert!(menu.x + menu.width <= fb_width);
+        assert!(menu.y + menu.height <= fb_height - crate::style::taskbar_height());
     }
 
     #[test]

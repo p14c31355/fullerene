@@ -89,7 +89,21 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
             rt.frame_due = true;
         }
         SysInfo => open_info_window(rt, InfoWindow::SystemInfo),
-        Shutdown | Reboot | Separator => {}
+        ShowPowerMenu => {
+            let (fw, fh, _) = *FB_DIMS.lock();
+            rt.desktop.show_power_menu(fw, fh);
+            rt.frame_due = true;
+        }
+        Shutdown | Reboot => {
+            if let Some(control) = crate::RUNTIME_CONTEXT.callback_snapshot().power_control {
+                control(match action {
+                    Shutdown => crate::PowerAction::Shutdown,
+                    Reboot => crate::PowerAction::Reboot,
+                    _ => unreachable!(),
+                });
+            }
+        }
+        Separator => {}
         ChangeWallpaperSettings => {
             let presets = crate::wallpaper_presets();
             let next = match crate::get_wallpaper() {

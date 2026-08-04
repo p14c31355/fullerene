@@ -14,6 +14,41 @@ const MAX_WASM_OUTPUT_BYTES: usize = 256 * 1024;
 static WASM_OUTPUT: Mutex<Option<String>> = Mutex::new(None);
 static LAST_WASM_OUTPUT_REFRESH: AtomicU64 = AtomicU64::new(u64::MAX);
 
+/// Execute a machine power transition requested by the shell or desktop.
+///
+/// These are the same low-level paths that have always backed the `reboot`
+/// and `shutdown` shell commands, kept in one place so the GUI cannot drift
+/// from the tested shell behavior.
+pub fn system_control(cmd: &str) {
+    match cmd {
+        "reboot" => {
+            petroleum::serial::serial_log(format_args!("Reboot requested\n"));
+            unsafe {
+                let port: u16 = 0x64;
+                while x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02 != 0 {
+                }
+                x86_64::instructions::port::PortWriteOnly::<u8>::new(port).write(0xFEu8);
+            }
+        }
+        "shutdown" => {
+            petroleum::serial::serial_log(format_args!("Shutdown requested\n"));
+            unsafe {
+                x86_64::instructions::port::PortWriteOnly::<u16>::new(0x604).write(0x2000u16);
+                let shutdown_str = b"Shutdown";
+                let mut port = x86_64::instructions::port::PortWriteOnly::<u8>::new(0xB004);
+                for &byte in shutdown_str {
+                    port.write(byte);
+                }
+                x86_64::instructions::port::PortWriteOnly::<u16>::new(0x4004).write(0x3400u16);
+            }
+            loop {
+                x86_64::instructions::hlt();
+            }
+        }
+        _ => {}
+    }
+}
+
 fn buffer_wasm_output(data: &[u8]) {
     let mut output = WASM_OUTPUT.lock();
     let Some(output) = output.as_mut() else {
@@ -1407,33 +1442,10 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
             }
             "reboot" => {
-                petroleum::serial::serial_log(format_args!("Reboot requested via shell\n"));
-                unsafe {
-                    let port: u16 = 0x64;
-                    while x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02
-                        != 0
-                    {}
-                    x86_64::instructions::port::PortWriteOnly::<u8>::new(port).write(0xFEu8);
-                }
+                system_control("reboot");
             }
             "shutdown" => {
-                petroleum::serial::serial_log(format_args!("Shutdown requested via shell\n"));
-                unsafe {
-                    x86_64::instructions::port::PortWriteOnly::<u16>::new(0x604).write(0x2000u16);
-                }
-                unsafe {
-                    let shutdown_str = b"Shutdown";
-                    let mut port = x86_64::instructions::port::PortWriteOnly::<u8>::new(0xB004);
-                    for &byte in shutdown_str {
-                        port.write(byte);
-                    }
-                }
-                unsafe {
-                    x86_64::instructions::port::PortWriteOnly::<u16>::new(0x4004).write(0x3400u16);
-                }
-                loop {
-                    x86_64::instructions::hlt();
-                }
+                system_control("shutdown");
             }
             "install_fullerene list" => {
                 solvent::write_terminal("Fullerene installer targets (destructive install):\n");

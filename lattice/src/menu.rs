@@ -159,6 +159,20 @@ pub fn system_menu_items() -> alloc::vec::Vec<MenuItem> {
     ]
 }
 
+/// Actions shown by the taskbar power button.
+pub fn power_menu_items() -> alloc::vec::Vec<MenuItem> {
+    alloc::vec![
+        MenuItem {
+            label: alloc::string::String::from("Restart"),
+            action: alloc::string::String::from("reboot"),
+        },
+        MenuItem {
+            label: alloc::string::String::from("Shut Down"),
+            action: alloc::string::String::from("shutdown"),
+        },
+    ]
+}
+
 /// Desktop context menu (right‑click on desktop).
 pub fn desktop_context_menu() -> alloc::vec::Vec<MenuItem> {
     alloc::vec![
