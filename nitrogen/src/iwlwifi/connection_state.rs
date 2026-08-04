@@ -261,6 +261,16 @@ pub fn retry_wifi_initialization() -> bool {
 }
 
 fn set_init_phase(phase: WifiInitPhase) {
+    let previous = get_init_phase();
+    if previous != phase {
+        log::info!(
+            "iwlwifi: init.phase from={}({}) to={}({})",
+            previous.name(),
+            previous as u8,
+            phase.name(),
+            phase as u8,
+        );
+    }
     if phase != WifiInitPhase::Failed {
         WIFI_INIT_LAST_ACTIVE_PHASE.store(phase as u8, core::sync::atomic::Ordering::Release);
     }
@@ -280,7 +290,7 @@ fn perform_init_step() {
 
     match phase {
         WifiInitPhase::Idle => {
-            log::info!("iwlwifi: initialization state machine starting");
+            log::info!("iwlwifi: init.begin");
             let driver_ctx_opt = WIFI_DRIVER_CTX.lock();
             let _driver_ctx = match *driver_ctx_opt {
                 Some(c) => c,
@@ -304,7 +314,7 @@ fn perform_init_step() {
             set_init_phase(WifiInitPhase::PciProbe);
         }
         WifiInitPhase::PciProbe => {
-            log::info!("iwlwifi: PCI probe phase started");
+            log::info!("iwlwifi: init.phase.begin name=pci_probe id=1");
             debug::print("iwlwifi", "step: pci_probe_enter");
             let driver_ctx = match *WIFI_DRIVER_CTX.lock() {
                 Some(c) => c,
@@ -361,7 +371,7 @@ fn perform_init_step() {
             debug::print("iwlwifi", "step: pci_probe_done");
         }
         WifiInitPhase::MmioInit => {
-            log::info!("iwlwifi: MMIO reset/clock request phase started");
+            log::info!("iwlwifi: init.phase.begin name=mmio_init id=2");
             debug::print("iwlwifi", "step: mmio_enter");
 
             // Link training belongs to firmware. Resetting the upstream bridge
@@ -570,7 +580,7 @@ fn perform_init_step() {
             set_init_phase(WifiInitPhase::DmaAlloc);
         }
         WifiInitPhase::DmaAlloc => {
-            log::info!("iwlwifi: allocating DMA rings and RX/TX buffers");
+            log::info!("iwlwifi: init.phase.begin name=dma_alloc id=4");
             let (pci_dev, mmio, driver_ctx, health, mac, hw_rev, tx_dma, rx_dma, tx_bufs, rx_bufs) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let pci_dev = match ctx.pci_dev.take() {
@@ -892,6 +902,7 @@ fn perform_init_step() {
             }
         }
         WifiInitPhase::FwInitCmds => {
+            log::info!("iwlwifi: init.phase.begin name=fw_init_cmds id=7");
             let bdf_info = {
                 let ctx = WIFI_INIT_CTX.lock();
                 pci_bdf_from_ctx(&ctx)
@@ -919,7 +930,10 @@ fn perform_init_step() {
                     set_init_phase(WifiInitPhase::Done);
                 }
                 Err(e) => {
-                    log::warn!("iwlwifi: step: init commands failed: {}", e);
+                    log::error!(
+                        "iwlwifi: init.phase.error name=fw_init_cmds id=7 error={}",
+                        e
+                    );
                     set_init_phase(WifiInitPhase::Failed);
                 }
             }
@@ -940,12 +954,16 @@ fn perform_init_step() {
             let previous = WifiInitPhase::from(
                 WIFI_INIT_LAST_ACTIVE_PHASE.load(core::sync::atomic::Ordering::Acquire),
             );
-            log::error!("iwlwifi: initialization failed in phase {:?}", previous);
+            log::error!(
+                "iwlwifi: init.failed phase={}({})",
+                previous.name(),
+                previous as u8
+            );
             let mut ctx = WIFI_INIT_CTX.lock();
             release_init_resources(&mut ctx);
             drop(ctx);
             WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
-            log::error!("iwlwifi: initialization failed; device disabled");
+            log::error!("iwlwifi: init.result status=disabled");
             debug::print("iwlwifi", "step: init_failed");
         }
     }

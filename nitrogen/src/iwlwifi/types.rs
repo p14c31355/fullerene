@@ -774,6 +774,23 @@ pub enum WifiInitPhase {
     Failed = 9,
 }
 
+impl WifiInitPhase {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::PciProbe => "pci_probe",
+            Self::MmioInit => "mmio_init",
+            Self::MmioPollMacClock => "mmio_poll_mac_clock",
+            Self::DmaAlloc => "dma_alloc",
+            Self::FwUpload => "fw_upload",
+            Self::FwWaitAlive => "fw_wait_alive",
+            Self::FwInitCmds => "fw_init_cmds",
+            Self::Done => "done",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 impl From<u8> for WifiInitPhase {
     fn from(v: u8) -> Self {
         // Discriminants are contiguous 0..=9; any value outside that range
