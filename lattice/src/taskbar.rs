@@ -142,21 +142,37 @@ impl Taskbar {
 
 /// Draw a compact, platform-neutral power glyph.
 pub fn render_power_icon(canvas: &mut crate::painter::Painter<'_>, x: u32, y: u32, color: u32) {
-    // A 20×20 pixel power glyph. The ring is rasterised as a complete
-    // two-pixel annulus instead of hand-picked arc pixels, which keeps its
-    // stroke thickness consistent around the diagonals as well.
+    // Keep the stem pixel-crisp, like the WiFi bars, but supersample the
+    // circular part. A 4×4 coverage mask removes the one-pixel stair steps
+    // that are especially visible on the diagonal shoulders.
     canvas.fill_rect(x as i32 + 9, y as i32, 2, 9, color);
-    for py in 1..19u32 {
-        for px in 1..19u32 {
-            // Center at (10, 10), outer radius 8px, inner radius 6px.
-            let dx = px as i32 - 10;
-            let dy = py as i32 - 10;
-            let distance = dx * dx + dy * dy;
-            let in_ring = (36..=64).contains(&distance);
-            // Leave the conventional opening at 12 o'clock for the stem.
-            let opening = py <= 4 && (8..=12).contains(&px);
-            if in_ring && !opening {
-                canvas.set_pixel(x + px, y + py, color);
+    const SCALE: i32 = 4;
+    const SAMPLES: i32 = SCALE * SCALE;
+    const CENTER: i32 = 10 * SCALE;
+    const OUTER_RADIUS: i32 = 9 * SCALE;
+    const INNER_RADIUS: i32 = 7 * SCALE;
+    let outer_squared = OUTER_RADIUS * OUTER_RADIUS;
+    let inner_squared = INNER_RADIUS * INNER_RADIUS;
+
+    for py in 0..20u32 {
+        for px in 0..20u32 {
+            let mut covered = 0i32;
+            for sy in 0..SCALE {
+                for sx in 0..SCALE {
+                    let dx = px as i32 * SCALE + sx - CENTER;
+                    let dy = py as i32 * SCALE + sy - CENTER;
+                    let distance = dx * dx + dy * dy;
+                    let in_ring = distance <= outer_squared && distance >= inner_squared;
+                    // Leave a clean opening at 12 o'clock for the stem.
+                    let opening = dy < 0 && dx.abs() < 3 * SCALE;
+                    if in_ring && !opening {
+                        covered += 1;
+                    }
+                }
+            }
+            if covered > 0 {
+                let alpha = (covered * 255 / SAMPLES) as u32;
+                canvas.blend_pixel(x + px, y + py, (alpha << 24) | (color & 0x00FF_FFFF));
             }
         }
     }
@@ -176,7 +192,7 @@ mod tests {
         // Cardinal points and both diagonal shoulders must be present; the
         // old sparse arc had visible one-pixel gaps in these locations.
         for (x, y) in [(4, 12), (20, 12), (7, 7), (17, 7), (7, 17), (17, 17)] {
-            assert_eq!(fb[y * 24 + x], 0x00FF00);
+            assert_ne!(fb[y * 24 + x], 0);
         }
         // The opening remains clear while the stem stays two pixels wide.
         assert_eq!(fb[2 * 24 + 11], 0x00FF00);
