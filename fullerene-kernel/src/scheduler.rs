@@ -146,8 +146,13 @@ pub fn scheduler_loop() -> ! {
             .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(10));
         #[cfg(not(nitrogen_no_iwlwifi))]
         {
-            nitrogen::iwlwifi::process_wifi_submission_queue_until(16, device_phase_deadline);
-            nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, device_phase_deadline);
+            // Wi-Fi initialization already has per-phase MMIO/PCIe
+            // watchdogs. Do not apply the shared short device-phase deadline
+            // here: on real hardware the calibrated TSC/PIT deadline can be
+            // reached before the first request is serviced, leaving the
+            // initialization SQ untouched until the UI timeout fires.
+            nitrogen::iwlwifi::process_wifi_submission_queue(16);
+            nitrogen::iwlwifi::consume_wifi_completion_queue(16);
         }
         #[cfg(not(nitrogen_no_storage))]
         {

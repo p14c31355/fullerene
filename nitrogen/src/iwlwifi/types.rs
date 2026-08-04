@@ -274,14 +274,15 @@ impl MacContextCmd {
             cck_rates: 0x0000_000f,
             ofdm_rates: 0x0000_00ff,
             protection_flags: 0,
-            cck_short_preamble: 0x20,
-            short_slot: 0x10,
+            // The interface starts before association.  mac80211 leaves
+            // both ERP flags clear until the AP advertises them.
+            cck_short_preamble: 0,
+            short_slot: 0,
             filter_flags: FILTER_FLAGS,
             qos_flags: 0,
-            // API v1 expects each EDCA entry to name the FIFO owned by that
-            // access category.  Linux fills these masks even when QoS is not
-            // enabled; leaving all five masks at zero makes the firmware
-            // reject MAC_CONTEXT_CMD on the 7265.
+            // API v1 expects each of the four EDCA entries to name the FIFO
+            // owned by that access category.  The fifth entry is reserved
+            // (AC_NUM + 1) and must stay zero, as in Linux's zeroed command.
             ac: [
                 MacQosAc {
                     cw_min: 0x000f,
@@ -312,9 +313,9 @@ impl MacContextCmd {
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 0,
                     edca_txop: 0,
                 },
