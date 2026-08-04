@@ -354,7 +354,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 .filter(|device| device.class_code == 0x01 && device.subclass == 0x06)
             {
                 match crate::drivers::registry::initialize_ahci(device.clone()) {
-                    Ok(index) => log::info!("AHCI: boot controller ahci{} ready", index),
+                    Ok(_) => {}
                     Err(error) => log::warn!(
                         "AHCI: boot initialization failed for {:02x}:{:02x}.{} ({:04x}:{:04x}): {}",
                         device.bus,

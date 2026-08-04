@@ -55,6 +55,48 @@ recovery remains a platform mechanism, not a replacement read primitive.
 Real-hardware validation is still required for the complete controller reset,
 port enumeration, and mass-storage path on this machine.
 
+## AHCI SATA storage and rescan behavior
+
+AHCI devices are matched by PCI class `0x01`, subclass `0x06` rather than by a
+vendor/device allowlist. The kernel enables PCI memory decoding, maps BAR5 as
+the HBA register window, performs an HBA reset, reads `GHC` and `PI`, and then
+probes each implemented port. `PI` is a bit mask: a message such as
+`ahci0 (1 ports)` means that one HBA port is implemented, not that one disk was
+identified.
+
+For each implemented port, the driver waits up to one second for
+`PxSSTS.DET == 0x3` (`device present, PHY established`). It then stops the
+command engine, allocates the command list/FIS/command table/DMA buffer,
+starts FIS reception and command processing, and sends ATA `IDENTIFY DEVICE`
+(`0xEC`). A port is published only after IDENTIFY reports a supported sector
+size and a non-zero sector count. Successful disks are registered as
+`/dev/sataNpN`; the port number is the AHCI port number, so a disk on HBA port
+3 may appear as `/dev/sata0p3`.
+
+`ahci_init` is safe to call repeatedly. If the controller already exists, it
+re-probes implemented ports that have not yet completed IDENTIFY and then
+refreshes the kernel block-device registry. This covers SATA links that become
+ready after boot and prevents a controller-only initialization from leaving a
+stale empty `/dev` view. The installer also refreshes its target list when
+moving from Welcome to disk selection.
+
+The following log sequence distinguishes controller readiness from disk
+readiness:
+
+```text
+AHCI: HBA BAR5=... GHC=... PI=...
+AHCI port 3: ATA disk (... bytes/sector, ... sectors)
+AHCI: registered /dev/sata0p3 (... bytes/sector, ... sectors)
+AHCI init: ahci0 ready; 1 ATA disk(s) registered
+```
+
+If the final port message is `no PHY ... (SSTS=..., SERR=...)`, the HBA was
+found but no SATA link reached the PHY-ready state. In that case no AHCI block
+device is registered and the installer correctly reports that no target is
+available. The BAR5, `GHC`, `PI`, `PxSSTS`, and `PxSERR` values should be
+captured before investigating the SATA cable/connector, firmware storage mode,
+or a platform-specific link-reset requirement.
+
 ## Intel iwlwifi 7265-family PCI probe
 
 The supported Intel IDs are `8086:095b`, `8086:095a`, `8086:08b1`, and

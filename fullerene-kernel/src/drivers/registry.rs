@@ -15,6 +15,10 @@
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use alloc::boxed::Box;
 #[cfg(not(nitrogen_no_storage))]
+use alloc::collections::VecDeque;
+#[cfg(not(nitrogen_no_storage))]
+use alloc::vec::Vec;
+#[cfg(not(nitrogen_no_storage))]
 use core::sync::atomic::AtomicBool as DriverAtomicBool;
 #[cfg(not(nitrogen_no_storage))]
 use core::sync::atomic::AtomicU64;
@@ -144,6 +148,38 @@ enum DriverRequestKind {
         write: bool,
         value: u64,
     },
+    BlockIo {
+        target: BlockTarget,
+        lba: u64,
+        count: u16,
+        write: bool,
+        buffer: Vec<u8>,
+    },
+}
+
+/// Driver-independent block target carried by a storage SQ entry.
+///
+/// The request owns all data crossing the queue. Hardware-specific controller
+/// state remains inside Nitrogen and is never exposed as a raw pointer.
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug)]
+enum BlockTarget {
+    Ahci {
+        controller_index: usize,
+        port_index: u8,
+    },
+    Usb {
+        ctrl_type: &'static str,
+        ctrl_idx: usize,
+        dev_addr: u8,
+        block_size: u32,
+        ep_out: u8,
+        ep_out_mps: u16,
+        ep_in: u8,
+        ep_in_mps: u16,
+        tag: u32,
+    },
+    Sd,
 }
 
 #[cfg(not(nitrogen_no_storage))]
@@ -154,12 +190,26 @@ struct DriverRequest {
 }
 
 #[cfg(not(nitrogen_no_storage))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct DriverCompletion {
     request_id: u64,
     error: Option<nitrogen::DriverError>,
     controller_index: Option<usize>,
     value: u64,
+    buffer: Option<Vec<u8>>,
+    tag: Option<u32>,
+}
+
+/// Public view of a completion consumed by the scheduler.
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug)]
+pub struct DriverCompletionInfo {
+    pub request_id: u64,
+    pub error: Option<nitrogen::DriverError>,
+    pub controller_index: Option<usize>,
+    pub value: u64,
+    pub buffer: Option<Vec<u8>>,
+    pub tag: Option<u32>,
 }
 
 #[cfg(not(nitrogen_no_storage))]
@@ -329,8 +379,86 @@ static NEXT_DRIVER_REQUEST: AtomicU64 = AtomicU64::new(1);
 static DRIVER_IN_FLIGHT: DriverAtomicBool = DriverAtomicBool::new(false);
 
 #[cfg(not(nitrogen_no_storage))]
+static DRIVER_READY_COMPLETIONS: Mutex<VecDeque<DriverCompletion>> = Mutex::new(VecDeque::new());
+
+#[cfg(not(nitrogen_no_storage))]
 fn driver_queues() -> &'static DriverQueuePair {
     &DRIVER_QUEUES
+}
+
+/// Execute driver SQ entries from the kernel scheduler context.
+///
+/// The synchronous `submit_driver_request` adapter remains for legacy
+/// BlockDevice callers, but new control-plane users can enqueue work and let
+/// this function own execution. It never waits for a hardware completion.
+#[cfg(not(nitrogen_no_storage))]
+pub fn process_driver_submission_queue(budget: usize) {
+    process_driver_submission_queue_until(budget, u64::MAX);
+}
+
+/// Execute driver SQ entries until either the request or elapsed-time budget
+/// is exhausted.
+#[cfg(not(nitrogen_no_storage))]
+pub fn process_driver_submission_queue_until(budget: usize, deadline_tsc: u64) {
+    for _ in 0..budget {
+        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
+            break;
+        }
+        let Some(request) = driver_queues().take_submission() else {
+            break;
+        };
+        let request_id = request.request_id;
+        let completion = execute_driver_request(request);
+        if driver_queues().complete(completion).is_err() {
+            log::error!(
+                "driver queue: completion ring full while finishing request {}",
+                request_id
+            );
+        }
+    }
+}
+
+/// Consume driver CQ entries independently from SQ execution.
+///
+/// Keeping a small ready queue means the scheduler can drain the lock-free CQ
+/// even when the eventual request owner is not running in this tick.
+#[cfg(not(nitrogen_no_storage))]
+pub fn consume_driver_completion_queue(budget: usize) {
+    consume_driver_completion_queue_until(budget, u64::MAX);
+}
+
+/// Drain driver completions until either the request or elapsed-time budget
+/// is exhausted.
+#[cfg(not(nitrogen_no_storage))]
+pub fn consume_driver_completion_queue_until(budget: usize, deadline_tsc: u64) {
+    let mut ready = DRIVER_READY_COMPLETIONS.lock();
+    for _ in 0..budget {
+        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
+            break;
+        }
+        let Some(completion) = driver_queues().completion.pop() else {
+            break;
+        };
+        ready.push_back(completion);
+    }
+}
+
+/// Take one scheduler-consumed completion by request id.
+#[cfg(not(nitrogen_no_storage))]
+pub fn take_driver_completion(request_id: u64) -> Option<DriverCompletionInfo> {
+    let mut ready = DRIVER_READY_COMPLETIONS.lock();
+    let position = ready
+        .iter()
+        .position(|completion| completion.request_id == request_id)?;
+    let completion = ready.remove(position)?;
+    Some(DriverCompletionInfo {
+        request_id: completion.request_id,
+        error: completion.error,
+        controller_index: completion.controller_index,
+        value: completion.value,
+        buffer: completion.buffer,
+        tag: completion.tag,
+    })
 }
 
 #[cfg(all(test, not(nitrogen_no_storage)))]
@@ -366,6 +494,8 @@ mod driver_queue_tests {
             error: None,
             controller_index: Some(0),
             value: 0,
+            buffer: None,
+            tag: None,
         })
         .unwrap();
         let completion = pair.take_completion(7).unwrap();
@@ -574,7 +704,102 @@ impl StorageDriver for SdCardStorageCtl {
     }
 }
 
-// -- NVMe initialization service --------------------------------
+// -- Generic driver request service -------------------------------
+
+#[cfg(not(nitrogen_no_storage))]
+enum DriverResult {
+    Controller(usize),
+    Value(u64),
+    Block { buffer: Vec<u8>, tag: Option<u32> },
+}
+
+#[cfg(not(nitrogen_no_storage))]
+fn execute_block_io(
+    target: BlockTarget,
+    lba: u64,
+    count: u16,
+    write: bool,
+    mut buffer: Vec<u8>,
+) -> Result<(Vec<u8>, Option<u32>), nitrogen::DriverError> {
+    match target {
+        BlockTarget::Ahci {
+            controller_index,
+            port_index,
+        } => {
+            if write {
+                nitrogen::storage::ahci::write_sectors(
+                    controller_index,
+                    port_index,
+                    lba,
+                    count,
+                    &buffer,
+                )?;
+                buffer.clear();
+            } else {
+                nitrogen::storage::ahci::read_sectors(
+                    controller_index,
+                    port_index,
+                    lba,
+                    count,
+                    &mut buffer,
+                )?;
+            }
+            Ok((buffer, None))
+        }
+        BlockTarget::Usb {
+            ctrl_type,
+            ctrl_idx,
+            dev_addr,
+            block_size,
+            ep_out,
+            ep_out_mps,
+            ep_in,
+            ep_in_mps,
+            tag,
+        } => {
+            let lba = u32::try_from(lba).map_err(|_| nitrogen::DriverError::InvalidArgument)?;
+            let mut tag = tag;
+            with_ctx(|ctx| {
+                if write {
+                    ctx.bot_write(
+                        ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, lba,
+                        count, block_size, &buffer, &mut tag,
+                    )
+                } else {
+                    ctx.bot_read(
+                        ctrl_type,
+                        ctrl_idx,
+                        dev_addr,
+                        ep_out,
+                        ep_out_mps,
+                        ep_in,
+                        ep_in_mps,
+                        lba,
+                        count,
+                        block_size,
+                        &mut buffer,
+                        &mut tag,
+                    )
+                }
+            })
+            .map_err(|_| nitrogen::DriverError::Io)?;
+            if write {
+                buffer.clear();
+            }
+            Ok((buffer, Some(tag)))
+        }
+        BlockTarget::Sd => {
+            let lba = u32::try_from(lba).map_err(|_| nitrogen::DriverError::InvalidArgument)?;
+            if write {
+                nitrogen::storage::rtsx::write_sectors(lba, count, &buffer)?;
+                buffer.clear();
+            } else {
+                nitrogen::storage::rtsx::read_sectors(lba, count, &mut buffer)?;
+            }
+            Ok((buffer, None))
+        }
+    }
+}
 
 #[cfg(not(nitrogen_no_storage))]
 fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
@@ -582,25 +807,20 @@ fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
     let failure_device = match &request.kind {
         DriverRequestKind::InitializeNvme { device }
         | DriverRequestKind::InitializeAhci { device }
-        | DriverRequestKind::Mmio { device, .. } => device.clone(),
+        | DriverRequestKind::Mmio { device, .. } => Some(device.clone()),
+        DriverRequestKind::BlockIo { .. } => None,
     };
-    let (result, controller_index) = match request.kind {
-        DriverRequestKind::InitializeNvme { device } => (
-            nitrogen::storage::nvme::init_device(
-                &crate::driver_context_impl::KernelDriverContext,
-                device,
-            )
-            .map(|index| index as u64),
-            true,
-        ),
-        DriverRequestKind::InitializeAhci { device } => (
-            nitrogen::storage::ahci::init_device(
-                &crate::driver_context_impl::KernelDriverContext,
-                device,
-            )
-            .map(|index| index as u64),
-            true,
-        ),
+    let result = match request.kind {
+        DriverRequestKind::InitializeNvme { device } => nitrogen::storage::nvme::init_device(
+            &crate::driver_context_impl::KernelDriverContext,
+            device,
+        )
+        .map(DriverResult::Controller),
+        DriverRequestKind::InitializeAhci { device } => nitrogen::storage::ahci::init_device(
+            &crate::driver_context_impl::KernelDriverContext,
+            device,
+        )
+        .map(DriverResult::Controller),
         DriverRequestKind::Mmio {
             device,
             bar,
@@ -608,10 +828,16 @@ fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
             width,
             write,
             value,
-        } => (
-            nitrogen::storage::nvme::request_mmio(&device, bar, offset, width, write, value),
-            false,
-        ),
+        } => nitrogen::storage::nvme::request_mmio(&device, bar, offset, width, write, value)
+            .map(DriverResult::Value),
+        DriverRequestKind::BlockIo {
+            target,
+            lba,
+            count,
+            write,
+            buffer,
+        } => execute_block_io(target, lba, count, write, buffer)
+            .map(|(buffer, tag)| DriverResult::Block { buffer, tag }),
     };
 
     // The concrete driver has already performed its failure cleanup before
@@ -619,28 +845,44 @@ fn execute_driver_request(request: DriverRequest) -> DriverCompletion {
     // bound driver process; an ioctl caller is never used as a fallback owner.
     if let Err(error) = &result {
         if error.is_fatal() {
-            crate::drivers::supervisor::kill_failed_driver(&failure_device, *error);
+            if let Some(device) = failure_device {
+                crate::drivers::supervisor::kill_failed_driver(&device, *error);
+            }
         }
     }
 
     match result {
-        Ok(value) if controller_index => DriverCompletion {
+        Ok(DriverResult::Controller(index)) => DriverCompletion {
             request_id,
             error: None,
-            controller_index: Some(value as usize),
+            controller_index: Some(index),
             value: 0,
+            buffer: None,
+            tag: None,
         },
-        Ok(value) => DriverCompletion {
+        Ok(DriverResult::Value(value)) => DriverCompletion {
             request_id,
             error: None,
             controller_index: None,
             value,
+            buffer: None,
+            tag: None,
+        },
+        Ok(DriverResult::Block { buffer, tag }) => DriverCompletion {
+            request_id,
+            error: None,
+            controller_index: None,
+            value: buffer.len() as u64,
+            buffer: Some(buffer),
+            tag,
         },
         Err(error) => DriverCompletion {
             request_id,
             error: Some(error),
             controller_index: None,
             value: 0,
+            buffer: None,
+            tag: None,
         },
     }
 }
@@ -682,6 +924,31 @@ fn submit_driver_request(
     result
 }
 
+/// Submit one owned block I/O request through the generic storage SQ/CQ.
+///
+/// Read data is returned in the completion-owned buffer. Writes return an
+/// empty buffer, and USB BOT returns its next command tag alongside it.
+#[cfg(not(nitrogen_no_storage))]
+fn submit_block_io(
+    target: BlockTarget,
+    lba: u64,
+    count: u16,
+    write: bool,
+    buffer: Vec<u8>,
+) -> Result<(Vec<u8>, Option<u32>), nitrogen::DriverError> {
+    let completion = submit_driver_request(DriverRequestKind::BlockIo {
+        target,
+        lba,
+        count,
+        write,
+        buffer,
+    })?;
+    completion.error.map_or_else(
+        || Ok((completion.buffer.unwrap_or_default(), completion.tag)),
+        Err,
+    )
+}
+
 /// Submit one explicit NVMe initialization request through the generic
 /// kernel-owned SQ and return its CQ completion.  Initialization remains
 /// explicit; the boot driver probe does not reset or activate NVMe devices.
@@ -703,7 +970,12 @@ pub fn initialize_ahci(device: PciDevice) -> Result<usize, nitrogen::DriverError
     let completion = submit_driver_request(DriverRequestKind::InitializeAhci { device })?;
     if let Some(index) = completion.controller_index {
         register_ahci_block_devices(index);
-        log::info!("AHCI: initialized ahci{} through SQ/CQ", index);
+        let disk_count = nitrogen::storage::ahci::device_count(index);
+        log::info!(
+            "AHCI: initialized ahci{} through SQ/CQ ({} ATA disk(s))",
+            index,
+            disk_count
+        );
         Ok(index)
     } else {
         Err(completion.error.unwrap_or(nitrogen::DriverError::Io))
@@ -764,14 +1036,22 @@ impl BlockDevice for AhciBlockDevice {
         if end > self.total_sectors {
             return Err(BlockError::LbaOverflow);
         }
-        nitrogen::storage::ahci::read_sectors(
-            self.controller_index,
-            self.port_index,
+        let (data, _) = submit_block_io(
+            BlockTarget::Ahci {
+                controller_index: self.controller_index,
+                port_index: self.port_index,
+            },
             lba,
             count,
-            &mut buf[..required],
+            false,
+            alloc::vec![0; required],
         )
-        .map_err(ahci_block_error)
+        .map_err(ahci_block_error)?;
+        if data.len() < required {
+            return Err(BlockError::Device);
+        }
+        buf[..required].copy_from_slice(&data[..required]);
+        Ok(())
     }
 
     fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
@@ -790,13 +1070,17 @@ impl BlockDevice for AhciBlockDevice {
         if end > self.total_sectors {
             return Err(BlockError::LbaOverflow);
         }
-        nitrogen::storage::ahci::write_sectors(
-            self.controller_index,
-            self.port_index,
+        submit_block_io(
+            BlockTarget::Ahci {
+                controller_index: self.controller_index,
+                port_index: self.port_index,
+            },
             lba,
             count,
-            &buf[..required],
+            true,
+            buf[..required].to_vec(),
         )
+        .map(|_| ())
         .map_err(ahci_block_error)
     }
 
@@ -892,49 +1176,95 @@ unsafe impl Send for UsbBlockDevice {}
 impl BlockDevice for UsbBlockDevice {
     fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
-        with_ctx(|ctx| {
-            ctx.bot_read(
-                self.ctrl_type,
-                self.ctrl_idx,
-                self.dev_addr,
-                self.ep_out,
-                self.ep_out_mps,
-                self.ep_in,
-                self.ep_in_mps,
-                lba,
-                count,
-                self.block_size,
-                buf,
-                &mut self.tag,
-            )
-        })
-        .map_err(|_| BlockError::Device)
+        let required = (count as usize)
+            .checked_mul(self.block_size as usize)
+            .ok_or(BlockError::LbaOverflow)?;
+        if buf.len() < required {
+            return Err(BlockError::BufferTooSmall {
+                required,
+                provided: buf.len(),
+            });
+        }
+        let (data, tag) = submit_block_io(
+            BlockTarget::Usb {
+                ctrl_type: self.ctrl_type,
+                ctrl_idx: self.ctrl_idx,
+                dev_addr: self.dev_addr,
+                block_size: self.block_size,
+                ep_out: self.ep_out,
+                ep_out_mps: self.ep_out_mps,
+                ep_in: self.ep_in,
+                ep_in_mps: self.ep_in_mps,
+                tag: self.tag,
+            },
+            u64::from(lba),
+            count,
+            false,
+            alloc::vec![0; required],
+        )
+        .map_err(usb_block_error)?;
+        if data.len() < required {
+            return Err(BlockError::Device);
+        }
+        if let Some(tag) = tag {
+            self.tag = tag;
+        }
+        buf[..required].copy_from_slice(&data[..required]);
+        Ok(())
     }
     fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
-        with_ctx(|ctx| {
-            ctx.bot_write(
-                self.ctrl_type,
-                self.ctrl_idx,
-                self.dev_addr,
-                self.ep_out,
-                self.ep_out_mps,
-                self.ep_in,
-                self.ep_in_mps,
-                lba,
-                count,
-                self.block_size,
-                buf,
-                &mut self.tag,
-            )
-        })
-        .map_err(|_| BlockError::Device)
+        let required = (count as usize)
+            .checked_mul(self.block_size as usize)
+            .ok_or(BlockError::LbaOverflow)?;
+        if buf.len() < required {
+            return Err(BlockError::BufferTooSmall {
+                required,
+                provided: buf.len(),
+            });
+        }
+        let (_, tag) = submit_block_io(
+            BlockTarget::Usb {
+                ctrl_type: self.ctrl_type,
+                ctrl_idx: self.ctrl_idx,
+                dev_addr: self.dev_addr,
+                block_size: self.block_size,
+                ep_out: self.ep_out,
+                ep_out_mps: self.ep_out_mps,
+                ep_in: self.ep_in,
+                ep_in_mps: self.ep_in_mps,
+                tag: self.tag,
+            },
+            u64::from(lba),
+            count,
+            true,
+            buf[..required].to_vec(),
+        )
+        .map_err(usb_block_error)?;
+        if let Some(tag) = tag {
+            self.tag = tag;
+        }
+        Ok(())
     }
     fn sector_size(&self) -> u32 {
         self.block_size
     }
     fn total_sectors(&self) -> u64 {
         self.total_blocks
+    }
+}
+
+#[cfg(not(nitrogen_no_usb))]
+fn usb_block_error(error: nitrogen::DriverError) -> BlockError {
+    match error {
+        nitrogen::DriverError::Busy => BlockError::Busy,
+        nitrogen::DriverError::InvalidArgument => BlockError::LbaOverflow,
+        nitrogen::DriverError::TimedOut
+        | nitrogen::DriverError::Io
+        | nitrogen::DriverError::DeviceFault
+        | nitrogen::DriverError::Protocol
+        | nitrogen::DriverError::DeviceNotFound => BlockError::Device,
+        _ => BlockError::Device,
     }
 }
 
@@ -1211,23 +1541,64 @@ unsafe impl Send for SdBlockDev {}
 impl BlockDevice for SdBlockDev {
     fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
-        nitrogen::storage::rtsx::read_sectors(lba, count, buf).map_err(|error| match error {
-            nitrogen::DriverError::Busy => BlockError::Busy,
-            _ => BlockError::Device,
-        })
+        let required = (count as usize)
+            .checked_mul(self.block_size as usize)
+            .ok_or(BlockError::LbaOverflow)?;
+        if buf.len() < required {
+            return Err(BlockError::BufferTooSmall {
+                required,
+                provided: buf.len(),
+            });
+        }
+        let (data, _) = submit_block_io(
+            BlockTarget::Sd,
+            u64::from(lba),
+            count,
+            false,
+            alloc::vec![0; required],
+        )
+        .map_err(sd_block_error)?;
+        if data.len() < required {
+            return Err(BlockError::Device);
+        }
+        buf[..required].copy_from_slice(&data[..required]);
+        Ok(())
     }
     fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
-        nitrogen::storage::rtsx::write_sectors(lba, count, buf).map_err(|error| match error {
-            nitrogen::DriverError::Busy => BlockError::Busy,
-            _ => BlockError::Device,
-        })
+        let required = (count as usize)
+            .checked_mul(self.block_size as usize)
+            .ok_or(BlockError::LbaOverflow)?;
+        if buf.len() < required {
+            return Err(BlockError::BufferTooSmall {
+                required,
+                provided: buf.len(),
+            });
+        }
+        submit_block_io(
+            BlockTarget::Sd,
+            u64::from(lba),
+            count,
+            true,
+            buf[..required].to_vec(),
+        )
+        .map(|_| ())
+        .map_err(sd_block_error)
     }
     fn sector_size(&self) -> u32 {
         self.block_size
     }
     fn total_sectors(&self) -> u64 {
         self.total_blocks
+    }
+}
+
+#[cfg(not(nitrogen_no_storage))]
+fn sd_block_error(error: nitrogen::DriverError) -> BlockError {
+    match error {
+        nitrogen::DriverError::Busy => BlockError::Busy,
+        nitrogen::DriverError::InvalidArgument => BlockError::LbaOverflow,
+        _ => BlockError::Device,
     }
 }
 

@@ -167,7 +167,7 @@ pub fn load_settings<E>(
 
     let bright_x100 = (brightness.clamp(0.1, 1.0) * 100.0) as u32;
     (
-        sensitivity.clamp(0.25, 4.0),
+        sensitivity.clamp(1.0 / 6.0, 4.0),
         bright_x100,
         top_panel,
         window_corner,
@@ -228,5 +228,22 @@ mod tests {
         assert_eq!(loaded.1, 85);
         assert_eq!(loaded.3, false);
         assert_eq!(loaded.5, lattice::style::LatticeVariant::Prism);
+    }
+
+    #[test]
+    fn mouse_sensitivity_allows_the_017_minimum() {
+        let text = format_settings_toml(
+            1.0 / 6.0,
+            100,
+            true,
+            true,
+            false,
+            lattice::style::LatticeVariant::Basalt,
+        );
+        let loaded = load_settings(|_| Ok::<_, ()>(text.into_bytes()));
+        assert!((loaded.0 - (1.0 / 6.0)).abs() < 0.001);
+
+        let clamped = load_settings(|_| Ok::<_, ()>(b"[mouse]\nsensitivity = 0.01\n".to_vec()));
+        assert!((clamped.0 - (1.0 / 6.0)).abs() < 0.001);
     }
 }

@@ -38,6 +38,14 @@ pub(crate) struct InstallerState {
     pub(crate) message: String,
 }
 
+fn discover_devices() -> Vec<crate::InstallerDevice> {
+    RUNTIME_CONTEXT
+        .callback_snapshot()
+        .installer_device_list
+        .map(|list| list())
+        .unwrap_or_default()
+}
+
 pub(crate) fn open(rt: &mut RuntimeState) {
     if let Some(state) = rt.installer.as_ref()
         && rt
@@ -53,11 +61,7 @@ pub(crate) fn open(rt: &mut RuntimeState) {
         return;
     }
 
-    let devices = RUNTIME_CONTEXT
-        .callback_snapshot()
-        .installer_device_list
-        .map(|list| list())
-        .unwrap_or_default();
+    let devices = discover_devices();
     let (fb_width, fb_height, _) = *FB_DIMS.lock();
     let work_top = rt.desktop.top_panel_offset();
     let work_height = rt
@@ -125,6 +129,11 @@ pub(crate) fn handle_mouse(rt: &mut RuntimeState, x: i32, y: i32) -> bool {
     match state.page {
         InstallerPage::Welcome => {
             if button_hit(rel_x, rel_y, 484, BUTTON_Y) {
+                // AHCI may have been initialized from the shell while the
+                // welcome page was open. Refresh here so the target list
+                // reflects the current /dev block-device registry.
+                state.devices = discover_devices();
+                state.selected = None;
                 state.page = InstallerPage::SelectDisk;
             }
         }
@@ -390,6 +399,10 @@ pub(crate) fn render(rt: &mut RuntimeState) {
         InstallerPage::Complete | InstallerPage::Failed => ("Close", true),
     };
     button(&mut painter, 484, BUTTON_Y, label, enabled);
+    // The wizard owns the window surface, so repainting it is not enough to
+    // make the compositor copy the new page into the framebuffer. Mark the
+    // window dirty after every page/progress update.
+    rt.desktop.invalidate_window(id);
     rt.installer_dirty = false;
 }
 

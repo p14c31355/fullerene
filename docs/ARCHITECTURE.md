@@ -585,6 +585,35 @@ now satisfies that boundary by publishing identified ATA disks as
 `/dev/sataNpN`, while NVMe remains initialization-only. A controller reset
 performed by a placeholder wrapper is not service registration.
 
+Kernel-to-driver operations use a bounded generic submission/completion ring
+pair. The request owns its payload and identifies a typed device target; the
+completion returns status, byte count, read data, and driver-specific sequence
+state where needed (for example, the USB BOT tag). NVMe/AHCI initialization,
+MMIO requests, and block reads/writes use this common SQ/CQ boundary. The
+storage adapter does not put borrowed user or VFS buffers into the ring: it
+moves data through an owned request buffer and copies read data back only after
+the CQ entry is consumed. Hardware-specific queues remain below this layer:
+AHCI command lists, xHCI transfer/event rings, EHCI queue heads, and VirtIO
+virtqueues are not conflated with the kernel request ring.
+
+This is a transport boundary, not a claim that every device is block I/O.
+Audio playback and iwlwifi control work now use typed SQ/CQ pairs as well. The
+Solvent Wi-Fi service and WASM audio callback only enqueue owned requests; the
+kernel scheduler submits a bounded batch, advances DMA/firmware state without
+spinning in the caller, and drains completions independently. Audio CQ entries
+are currently reported to the kernel log, while Wi-Fi CQ entries update the
+driver-owned state and record rejected requests. PS/2 input, framebuffer
+updates, and network data RX/TX should follow the same typed event/stream rule
+as they become asynchronous device capabilities. They must not be forced into
+a synchronous block-request shape.
+
+The scheduler's device phase runs before the Solvent runtime tick. This gives
+service code a non-blocking producer boundary and keeps SQ execution,
+hardware progress, and CQ consumption out of GUI/input callbacks. Legacy
+BlockDevice and device-ioctl calls retain a synchronous compatibility adapter
+until their ABI can return request handles; those adapters use the same owned
+request format and are serialized against concurrent callers.
+
 The kernel device registry preserves `/dev/<name>` identity while transferring
 exclusive block-device ownership to a mounted filesystem. An available entry
 contains a device lease; a present entry without a lease means mounted or in
