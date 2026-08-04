@@ -172,6 +172,7 @@ enum BlockTarget {
         ctrl_type: &'static str,
         ctrl_idx: usize,
         dev_addr: u8,
+        block_size: u32,
         ep_out: u8,
         ep_out_mps: u16,
         ep_in: u8,
@@ -392,7 +393,17 @@ fn driver_queues() -> &'static DriverQueuePair {
 /// this function own execution. It never waits for a hardware completion.
 #[cfg(not(nitrogen_no_storage))]
 pub fn process_driver_submission_queue(budget: usize) {
+    process_driver_submission_queue_until(budget, u64::MAX);
+}
+
+/// Execute driver SQ entries until either the request or elapsed-time budget
+/// is exhausted.
+#[cfg(not(nitrogen_no_storage))]
+pub fn process_driver_submission_queue_until(budget: usize, deadline_tsc: u64) {
     for _ in 0..budget {
+        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
+            break;
+        }
         let Some(request) = driver_queues().take_submission() else {
             break;
         };
@@ -413,8 +424,18 @@ pub fn process_driver_submission_queue(budget: usize) {
 /// even when the eventual request owner is not running in this tick.
 #[cfg(not(nitrogen_no_storage))]
 pub fn consume_driver_completion_queue(budget: usize) {
+    consume_driver_completion_queue_until(budget, u64::MAX);
+}
+
+/// Drain driver completions until either the request or elapsed-time budget
+/// is exhausted.
+#[cfg(not(nitrogen_no_storage))]
+pub fn consume_driver_completion_queue_until(budget: usize, deadline_tsc: u64) {
     let mut ready = DRIVER_READY_COMPLETIONS.lock();
     for _ in 0..budget {
+        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
+            break;
+        }
         let Some(completion) = driver_queues().completion.pop() else {
             break;
         };
@@ -729,6 +750,7 @@ fn execute_block_io(
             ctrl_type,
             ctrl_idx,
             dev_addr,
+            block_size,
             ep_out,
             ep_out_mps,
             ep_in,
@@ -740,18 +762,8 @@ fn execute_block_io(
             with_ctx(|ctx| {
                 if write {
                     ctx.bot_write(
-                        ctrl_type,
-                        ctrl_idx,
-                        dev_addr,
-                        ep_out,
-                        ep_out_mps,
-                        ep_in,
-                        ep_in_mps,
-                        lba,
-                        count,
-                        (buffer.len() / count.max(1) as usize) as u32,
-                        &buffer,
-                        &mut tag,
+                        ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, lba,
+                        count, block_size, &buffer, &mut tag,
                     )
                 } else {
                     ctx.bot_read(
@@ -764,7 +776,7 @@ fn execute_block_io(
                         ep_in_mps,
                         lba,
                         count,
-                        (buffer.len() / count.max(1) as usize) as u32,
+                        block_size,
                         &mut buffer,
                         &mut tag,
                     )
@@ -1178,6 +1190,7 @@ impl BlockDevice for UsbBlockDevice {
                 ctrl_type: self.ctrl_type,
                 ctrl_idx: self.ctrl_idx,
                 dev_addr: self.dev_addr,
+                block_size: self.block_size,
                 ep_out: self.ep_out,
                 ep_out_mps: self.ep_out_mps,
                 ep_in: self.ep_in,
@@ -1189,7 +1202,7 @@ impl BlockDevice for UsbBlockDevice {
             false,
             alloc::vec![0; required],
         )
-        .map_err(|_| BlockError::Device)?;
+        .map_err(usb_block_error)?;
         if data.len() < required {
             return Err(BlockError::Device);
         }
@@ -1215,6 +1228,7 @@ impl BlockDevice for UsbBlockDevice {
                 ctrl_type: self.ctrl_type,
                 ctrl_idx: self.ctrl_idx,
                 dev_addr: self.dev_addr,
+                block_size: self.block_size,
                 ep_out: self.ep_out,
                 ep_out_mps: self.ep_out_mps,
                 ep_in: self.ep_in,
@@ -1226,7 +1240,7 @@ impl BlockDevice for UsbBlockDevice {
             true,
             buf[..required].to_vec(),
         )
-        .map_err(|_| BlockError::Device)?;
+        .map_err(usb_block_error)?;
         if let Some(tag) = tag {
             self.tag = tag;
         }
@@ -1237,6 +1251,20 @@ impl BlockDevice for UsbBlockDevice {
     }
     fn total_sectors(&self) -> u64 {
         self.total_blocks
+    }
+}
+
+#[cfg(not(nitrogen_no_usb))]
+fn usb_block_error(error: nitrogen::DriverError) -> BlockError {
+    match error {
+        nitrogen::DriverError::Busy => BlockError::Busy,
+        nitrogen::DriverError::InvalidArgument => BlockError::LbaOverflow,
+        nitrogen::DriverError::TimedOut
+        | nitrogen::DriverError::Io
+        | nitrogen::DriverError::DeviceFault
+        | nitrogen::DriverError::Protocol
+        | nitrogen::DriverError::DeviceNotFound => BlockError::Device,
+        _ => BlockError::Device,
     }
 }
 

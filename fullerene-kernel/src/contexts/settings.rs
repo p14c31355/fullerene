@@ -58,7 +58,7 @@ impl MouseSettings {
     pub fn set_sensitivity(&self, val: f32) {
         let clamped = val.clamp(1.0 / 6.0, 4.0);
         self.sensitivity_x100
-            .store((clamped * 100.0) as u32, Ordering::Relaxed);
+            .store(((clamped * 100.0) + 0.5) as u32, Ordering::Relaxed);
     }
 
     /// Get sensitivity as a raw i16 multiplier for the PS/2 driver
@@ -82,6 +82,20 @@ impl MouseSettings {
 
     pub fn set_acceleration(&self, on: bool) {
         self.acceleration.store(u32::from(on), Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MouseSettings;
+
+    #[test]
+    fn sensitivity_minimum_preserves_nonzero_raw_value() {
+        let settings = MouseSettings::new();
+
+        settings.set_sensitivity(1.0 / 6.0);
+
+        assert_eq!(settings.sensitivity_raw(), 1);
     }
 }
 

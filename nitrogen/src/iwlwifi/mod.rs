@@ -40,8 +40,9 @@ unsafe fn as_bytes<T: Sized>(value: &T) -> &[u8] {
 // Compatibility alias for callers that imported register constants from
 // `iwlwifi::regs` before the lifecycle split.
 pub use connection_state::{
-    connect_to_ap, consume_wifi_completion_queue, force_init_failed, init_wifi_manager,
-    process_wifi_submission_queue, retry_wifi_initialization, set_wifi_driver_context,
+    connect_to_ap, consume_wifi_completion_queue, consume_wifi_completion_queue_until,
+    force_init_failed, init_wifi_manager, process_wifi_submission_queue,
+    process_wifi_submission_queue_until, retry_wifi_initialization, set_wifi_driver_context,
     start_scan_if_idle, tick_wifi_device, try_init_wifi_device, try_init_wifi_device_step,
     wifi_init_completed, wifi_state_snapshot,
 };

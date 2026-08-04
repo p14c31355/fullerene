@@ -202,6 +202,8 @@ impl AhciController {
     /// can become ready after the HBA reset, so a controller that was already
     /// created must still be allowed to discover newly-ready ports.
     fn probe_ports(&mut self, ctx: &dyn DriverContext) {
+        let phy_deadline_tsc = unsafe { core::arch::x86_64::_rdtsc() }
+            .wrapping_add(PHY_WAIT_TIMEOUT_US.saturating_mul(crate::timing::ticks_per_us()));
         for i in 0..32 {
             if (self.port_mask >> i) & 1 == 0 {
                 continue;
@@ -210,7 +212,7 @@ impl AhciController {
                 continue;
             }
 
-            let ssts = self.wait_for_phy(i as u8);
+            let ssts = self.wait_for_phy_until(i as u8, phy_deadline_tsc);
             if ssts & SSTS_DET_MASK != SSTS_DET_PHY_OK {
                 log::info!(
                     "AHCI port {}: no PHY after {} ms (SSTS={:#x}, SERR={:#x}), skipping init",
@@ -222,7 +224,7 @@ impl AhciController {
                 continue;
             }
 
-            let Some(mut initialized) = self.init_port(ctx, i as u8) else {
+            let Some(mut initialized) = self.init_port(ctx, i as u8, phy_deadline_tsc) else {
                 continue;
             };
             match self.identify_port(&mut initialized) {
@@ -251,9 +253,12 @@ impl AhciController {
         unsafe { self.hba_mmio.add(port_base / 4) }
     }
 
-    fn wait_for_phy(&self, port: u8) -> u32 {
+    fn wait_for_phy_until(&self, port: u8, deadline_tsc: u64) -> u32 {
         let port_mmio = self.port_mmio(port);
-        let _ = crate::timing::wait_timeout_us(PHY_WAIT_TIMEOUT_US, || {
+        let now = unsafe { core::arch::x86_64::_rdtsc() };
+        let remaining_tsc = deadline_tsc.saturating_sub(now);
+        let remaining_us = remaining_tsc.div_ceil(crate::timing::ticks_per_us());
+        let _ = crate::timing::wait_timeout_us(remaining_us, || {
             Self::r32_port(port_mmio, PXSSTS) & SSTS_DET_MASK == SSTS_DET_PHY_OK
         });
         Self::r32_port(port_mmio, PXSSTS)
@@ -263,7 +268,12 @@ impl AhciController {
         Self::r32_port(self.port_mmio(port), PXSERR)
     }
 
-    fn init_port(&self, ctx: &dyn DriverContext, port: u8) -> Option<AhciPort> {
+    fn init_port(
+        &self,
+        ctx: &dyn DriverContext,
+        port: u8,
+        phy_deadline_tsc: u64,
+    ) -> Option<AhciPort> {
         let port_mmio = self.port_mmio(port);
 
         let cmd = Self::r32_port(port_mmio, PXCMD);
@@ -278,7 +288,7 @@ impl AhciController {
             return None;
         }
 
-        let ssts = self.wait_for_phy(port);
+        let ssts = self.wait_for_phy_until(port, phy_deadline_tsc);
         let det = ssts & SSTS_DET_MASK;
         if det != SSTS_DET_PHY_OK {
             log::info!("AHCI port {}: no device (SSTS={:#x})", port, ssts);

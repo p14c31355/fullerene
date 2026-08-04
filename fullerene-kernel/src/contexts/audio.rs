@@ -28,7 +28,14 @@ struct PlaybackState {
     next_half: usize,
     initial_progress: u64,
     progressed: bool,
+    timeout_tsc: u64,
     deadline_tsc: u64,
+}
+
+enum StartPcmResult {
+    Started,
+    Busy,
+    Rejected,
 }
 
 enum AudioRequest {
@@ -203,25 +210,23 @@ impl AudioContext {
         sample_rate: u32,
         channels: u8,
         bits_per_sample: u8,
-        pcm: Vec<u8>,
-    ) -> bool {
-        if self.playback.is_some()
-            || sample_rate != 48_000
-            || channels != 1
-            || bits_per_sample != 16
-            || pcm.is_empty()
-        {
-            return false;
+        pcm: &[u8],
+    ) -> StartPcmResult {
+        if self.playback.is_some() {
+            return StartPcmResult::Busy;
+        }
+        if sample_rate != 48_000 || channels != 1 || bits_per_sample != 16 || pcm.is_empty() {
+            return StartPcmResult::Rejected;
         }
 
         self.lazy_init();
         let Some(controller) = self.hda.as_ref().filter(|c| c.is_ready()) else {
             log::warn!("Sound: asynchronous playback requested before HDA became ready");
-            return false;
+            return StartPcmResult::Rejected;
         };
         let half_size = controller.dma().half_size() as usize;
         if half_size == 0 {
-            return false;
+            return StartPcmResult::Rejected;
         }
         let half_count = core::cmp::max(2, pcm.len().div_ceil(half_size));
 
@@ -236,7 +241,7 @@ impl AudioContext {
                     written,
                     end - start
                 );
-                return false;
+                return StartPcmResult::Rejected;
             }
             if written < half_size {
                 controller.clear_at(offset + written as u32, half_size - written);
@@ -245,23 +250,24 @@ impl AudioContext {
         controller.reset_prefill_tracking();
         if !controller.start_stream() {
             log::warn!("Sound: asynchronous HDA stream failed to start");
-            return false;
+            return StartPcmResult::Rejected;
         }
 
         let initial_progress = controller.playback_progress().unwrap_or(0);
         let timeout_tsc = solvent::get_tsc_per_ms().max(1).saturating_mul(500);
         self.playback = Some(PlaybackState {
             request_id,
-            pcm,
+            pcm: pcm.to_vec(),
             half_size,
             half_count,
             completed: 0,
             next_half: 2,
             initial_progress,
             progressed: false,
+            timeout_tsc,
             deadline_tsc: unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(timeout_tsc),
         });
-        true
+        StartPcmResult::Started
     }
 
     /// Advance one DMA boundary without spinning. Returns a completion when
@@ -289,6 +295,9 @@ impl AudioContext {
         if !controller.poll(Some(0)) {
             return None;
         }
+
+        state.deadline_tsc =
+            unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(state.timeout_tsc);
 
         let _ = controller.feed_samples(&[]);
         state.progressed |= controller
@@ -528,7 +537,12 @@ pub fn enqueue_play_pcm(
     bits_per_sample: u8,
     pcm: &[u8],
 ) -> Option<u64> {
-    if pcm.is_empty() || pcm.len() > 8 * 1024 * 1024 {
+    if sample_rate != 48_000
+        || channels != 1
+        || bits_per_sample != 16
+        || pcm.is_empty()
+        || pcm.len() > 8 * 1024 * 1024
+    {
         return None;
     }
     let mut queue = AUDIO_SQ.lock();
@@ -555,28 +569,46 @@ pub fn process_audio_submission_queue(budget: usize) {
         let Some((request_id, request)) = AUDIO_SQ.lock().pop_front() else {
             break;
         };
-        let success = match request {
+        let (result, request) = match request {
             AudioRequest::PlayPcm {
                 sample_rate,
                 channels,
                 bits_per_sample,
                 pcm,
-            } => super::kernel::with_kernel_mut(|kernel| {
-                kernel.audio.start_pcm_async(
-                    request_id,
-                    sample_rate,
-                    channels,
-                    bits_per_sample,
-                    pcm,
+            } => {
+                let result = super::kernel::with_kernel_mut(|kernel| {
+                    kernel.audio.start_pcm_async(
+                        request_id,
+                        sample_rate,
+                        channels,
+                        bits_per_sample,
+                        &pcm,
+                    )
+                })
+                .unwrap_or(StartPcmResult::Rejected);
+                (
+                    result,
+                    AudioRequest::PlayPcm {
+                        sample_rate,
+                        channels,
+                        bits_per_sample,
+                        pcm,
+                    },
                 )
-            })
-            .unwrap_or(false),
+            }
         };
-        if !success {
-            AUDIO_CQ.lock().push_back(AudioCompletion {
-                request_id,
-                success: false,
-            });
+        match result {
+            StartPcmResult::Started => {}
+            StartPcmResult::Busy => {
+                AUDIO_SQ.lock().push_front((request_id, request));
+                break;
+            }
+            StartPcmResult::Rejected => {
+                AUDIO_CQ.lock().push_back(AudioCompletion {
+                    request_id,
+                    success: false,
+                });
+            }
         }
     }
 }

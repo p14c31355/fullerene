@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::DriverContext;
@@ -76,9 +76,36 @@ struct WifiCompletion {
     kind: WifiCompletionKind,
 }
 
+const WIFI_CQ_CAPACITY: usize = 32;
 static WIFI_SQ: Mutex<VecDeque<(u64, WifiRequest)>> = Mutex::new(VecDeque::new());
 static WIFI_CQ: Mutex<VecDeque<WifiCompletion>> = Mutex::new(VecDeque::new());
+static WIFI_CQ_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static NEXT_WIFI_REQUEST: AtomicU64 = AtomicU64::new(1);
+
+fn reserve_wifi_completion() -> bool {
+    loop {
+        let queued = WIFI_CQ.lock().len();
+        let in_flight = WIFI_CQ_IN_FLIGHT.load(Ordering::Acquire);
+        if queued.saturating_add(in_flight) >= WIFI_CQ_CAPACITY {
+            return false;
+        }
+        if WIFI_CQ_IN_FLIGHT
+            .compare_exchange(
+                in_flight,
+                in_flight + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            return true;
+        }
+    }
+}
+
+fn release_wifi_completion() {
+    WIFI_CQ_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+}
 
 fn enqueue_wifi_request(request: WifiRequest) -> Option<u64> {
     let mut queue = WIFI_SQ.lock();
@@ -1071,8 +1098,20 @@ pub fn start_scan_if_idle() {
 /// the driver lock and firmware interaction here prevents a userspace-facing
 /// service tick from becoming a synchronous hardware operation.
 pub fn process_wifi_submission_queue(budget: usize) {
+    process_wifi_submission_queue_until(budget, u64::MAX);
+}
+
+/// Move Wi-Fi SQ entries through the executor until either budget is reached.
+pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
     for _ in 0..budget {
+        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
+            break;
+        }
+        if !reserve_wifi_completion() {
+            break;
+        }
         let Some((request_id, request)) = WIFI_SQ.lock().pop_front() else {
+            release_wifi_completion();
             break;
         };
         let kind = match request {
@@ -1094,12 +1133,21 @@ pub fn process_wifi_submission_queue(budget: usize) {
         WIFI_CQ
             .lock()
             .push_back(WifiCompletion { request_id, kind });
+        release_wifi_completion();
     }
 }
 
 /// Consume completed Wi-Fi requests without running driver work on the caller.
 pub fn consume_wifi_completion_queue(budget: usize) {
+    consume_wifi_completion_queue_until(budget, u64::MAX);
+}
+
+/// Consume Wi-Fi completions until either budget is reached.
+pub fn consume_wifi_completion_queue_until(budget: usize, deadline_tsc: u64) {
     for _ in 0..budget {
+        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
+            break;
+        }
         let Some(completion) = WIFI_CQ.lock().pop_front() else {
             break;
         };
