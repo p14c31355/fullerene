@@ -469,7 +469,11 @@ impl XhciContext {
             if !reset_ok {
                 return false;
             }
-            delay_ms(10);
+            // USB 2.0 reset recovery is specified in milliseconds, but some
+            // hubs/devices do not accept the first SETUP packet immediately
+            // after PED is asserted. Give the device a complete settle
+            // window before Address Device/EP0 traffic begins.
+            delay_ms(50);
         }
 
         let wpr_done = if is_usb3 && !op.portsc(port_idx).ccs() {

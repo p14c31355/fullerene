@@ -381,6 +381,11 @@ pub struct AddStaCmdV7 {
 
 impl AddStaCmdV7 {
     pub fn aux(sta_id: u8) -> Self {
+        // The 7265 non-DQA layout reserves queue 11 for the auxiliary
+        // station.  Linux advertises that queue in tfd_queue_msk even when
+        // the first scan is passive; leaving it zero makes API-v17 firmware
+        // reject the station command before it can return ADD_STA status.
+        const AUX_QUEUE: u32 = 11;
         Self {
             add_modify: 0, // STA_MODE_ADD
             awake_acs: 0,
@@ -400,8 +405,7 @@ impl AddStaCmdV7 {
             sleep_state_flags: 0,
             assoc_id: 0,
             beamform_flags: 0,
-            // Passive discovery does not transmit through the aux station.
-            tfd_queue_msk: 0,
+            tfd_queue_msk: 1 << AUX_QUEUE,
         }
     }
 }

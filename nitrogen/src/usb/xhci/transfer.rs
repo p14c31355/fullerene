@@ -94,6 +94,26 @@ impl XhciContext {
                 Trb::new(trb_type::STATUS_STAGE, slot.ep0_ring.cycle)
                     .with_flags(st_dir | trb_flag::IOC),
             );
+
+            log::info!(
+                "xHCI: control submit slot={} ep0_ring={:#x} setup={:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} data_phys={:#x} data_len={} trt={} data_dir={} status_dir={} enq={}",
+                slot_id,
+                slot.ep0_ring.phys,
+                setup.bm_request_type,
+                setup.b_request,
+                (setup.w_value & 0xff) as u8,
+                (setup.w_value >> 8) as u8,
+                (setup.w_index & 0xff) as u8,
+                (setup.w_index >> 8) as u8,
+                (setup.w_length & 0xff) as u8,
+                (setup.w_length >> 8) as u8,
+                staging_phys,
+                data_len,
+                trt >> 16,
+                is_in as u8,
+                (st_dir != 0) as u8,
+                slot.ep0_ring.enq_index(),
+            );
         }
 
         crate::mmio::write_barrier();
