@@ -1293,7 +1293,9 @@ impl IwlWifiDevice {
         self.scan_result_grace_ticks = 0;
         self.iwl_state = IwlState::Scanning;
 
-        let scan_cmd = ScanRequestCmd::new(self.mac);
+        // Keep this equal to the internal station allocated during firmware
+        // initialization; MAC context index 4 is not a station-table ID.
+        let scan_cmd = ScanRequestCmd::new(self.mac, 1);
         let cmd_data = unsafe { super::as_bytes(&scan_cmd) };
         // SCAN_OFFLOAD_REQUEST_CMD (0x51) is a legacy-group command and uses
         // the four-byte HCMD header. SCAN_CFG_CMD above is the exception: it

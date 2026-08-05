@@ -55,6 +55,8 @@ impl XhciContext {
         }
 
         if let Some(slot) = self.device.slots.get_mut(slot_id) {
+            let setup_index = slot.ep0_ring.enq_index();
+            let ring_cycle = slot.ep0_ring.cycle;
             let trt = if data_len == 0 {
                 0
             } else if is_in {
@@ -74,14 +76,20 @@ impl XhciContext {
             }
             s_trb.flags |= trb_flag::CHAIN | trt;
             slot.ep0_ring.enqueue(s_trb);
+            // Linux queues the complete TD before handing the first TRB to
+            // xHC. Keep SETUP on the opposite cycle while DATA/STATUS are
+            // being written so the controller cannot prefetch a partial TD.
+            slot.ep0_ring
+                .set_cycle(setup_index, ring_cycle ^ trb_flag::CYCLE);
 
             if data_len > 0 {
                 let dir = if is_in { trb_flag::DIR_IN } else { 0 };
+                let short_packet = if is_in { trb_flag::ISP } else { 0 };
                 slot.ep0_ring.enqueue(
                     Trb::new(trb_type::DATA_STAGE, slot.ep0_ring.cycle)
                         .with_data_ptr(staging_phys)
                         .with_length(data_len as u32)
-                        .with_flags(dir | trb_flag::CHAIN),
+                        .with_flags(dir | trb_flag::CHAIN | short_packet),
                 );
             }
 
@@ -94,6 +102,8 @@ impl XhciContext {
                 Trb::new(trb_type::STATUS_STAGE, slot.ep0_ring.cycle)
                     .with_flags(st_dir | trb_flag::IOC),
             );
+            crate::mmio::write_barrier();
+            slot.ep0_ring.set_cycle(setup_index, ring_cycle);
 
             log::info!(
                 "xHCI: control submit slot={} ep0_ring={:#x} setup={:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} data_phys={:#x} data_len={} trt={} data_dir={} status_dir={} enq={}",

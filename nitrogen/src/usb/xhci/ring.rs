@@ -38,6 +38,7 @@ pub const COMP_SHORT_PACKET: u8 = 13;
 pub mod trb_flag {
     pub const CYCLE: u32 = 1 << 0;
     pub const TC: u32 = 1 << 1;
+    pub const ISP: u32 = 1 << 2;
     pub const CHAIN: u32 = 1 << 4;
     pub const IOC: u32 = 1 << 5;
     pub const IDT: u32 = 1 << 6;
@@ -175,6 +176,25 @@ impl Ring {
             self.enq = 0;
             self.cycle ^= 1;
         }
+    }
+
+    /// Change ownership of an already-written TRB without changing the
+    /// software enqueue position. Control transfers use this to keep the
+    /// SETUP TRB invisible until their DATA and STATUS TRBs are complete.
+    pub fn set_cycle(&mut self, index: usize, cycle: u32) {
+        if index >= self.len.saturating_sub(1) {
+            return;
+        }
+        let entries = self.dma.as_mut();
+        unsafe {
+            let flags = ptr::read_volatile(&entries[index].flags);
+            ptr::write_volatile(
+                &mut entries[index].flags,
+                (flags & !trb_flag::CYCLE) | (cycle & trb_flag::CYCLE),
+            );
+        }
+        let flags_addr = &entries[index].flags as *const u32 as *const u8;
+        mmio::cache_flush(flags_addr as usize);
     }
 
     pub fn enqueue_phys(&self) -> u64 {

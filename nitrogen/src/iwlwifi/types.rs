@@ -380,7 +380,7 @@ pub struct AddStaCmdV7 {
 }
 
 impl AddStaCmdV7 {
-    pub fn aux(sta_id: u8) -> Self {
+    pub fn aux(mac_index: u8, sta_id: u8) -> Self {
         // The 7265 non-DQA layout reserves queue 11 for the auxiliary
         // station.  Linux advertises that queue in tfd_queue_msk even when
         // the first scan is passive; leaving it zero makes API-v17 firmware
@@ -390,7 +390,9 @@ impl AddStaCmdV7 {
             add_modify: 0, // STA_MODE_ADD
             awake_acs: 0,
             tid_disable_tx: 0xffff,
-            mac_id_n_color: sta_id as u32,
+            // mac_id_n_color names the AUX MAC context (index 4); sta_id is
+            // an independent entry in the firmware station table.
+            mac_id_n_color: mac_index as u32,
             addr: [0; 6],
             reserved2: 0,
             sta_id,
@@ -452,7 +454,7 @@ pub struct ScanConfigV1 {
 }
 
 impl ScanConfigV1 {
-    pub fn new(mac_addr: [u8; 6]) -> Self {
+    pub fn new(mac_addr: [u8; 6], bcast_sta_id: u8) -> Self {
         // ACTIVATE | ALLOW_CHUB_REQS | SET_TX_CHAINS | SET_RX_CHAINS |
         // SET_AUX_STA_ID | SET_ALL_TIMES | SET_CHANNEL_FLAGS |
         // SET_LEGACY_RATES | SET_MAC_ADDR | CLEAR_FRAGMENTED |
@@ -483,7 +485,7 @@ impl ScanConfigV1 {
                 extended: 90,
             },
             mac_addr,
-            bcast_sta_id: 4,
+            bcast_sta_id,
             // PRE_SCAN_PASSIVE2ACTIVE only.  EBS (bits 0-2) is disabled
             // because it lets the firmware skip channels it considers "empty"
             // based on energy detection — on some hardware/firmware
@@ -580,7 +582,7 @@ pub struct ScanRequestCmd {
 }
 
 impl ScanRequestCmd {
-    pub fn new(mac: [u8; 6]) -> Self {
+    pub fn new(mac: [u8; 6], aux_sta_id: u8) -> Self {
         let mut channels = [ScanChannelCfgLmac {
             // Each entry is explicitly supplied by this request.  The
             // legacy LMAC API marks that form as PARTIAL; FULL is reserved
@@ -636,13 +638,13 @@ impl ScanRequestCmd {
                     rate_n_flags: 0,
                     // The legacy scan engine transmits through the auxiliary
                     // station created during firmware initialization.
-                    sta_id: 4,
+                    sta_id: aux_sta_id,
                     reserved: [0; 3],
                 },
                 ScanReqTxCmd {
                     tx_flags: 0,
                     rate_n_flags: 0,
-                    sta_id: 4,
+                    sta_id: aux_sta_id,
                     reserved: [0; 3],
                 },
             ],

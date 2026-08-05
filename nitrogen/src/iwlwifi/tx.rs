@@ -435,7 +435,10 @@ impl IwlWifiDevice {
         // requires its auxiliary station before accepting an offload request.
         // ADD_STA is a legacy-group command and uses the four-byte header.
         const MAC_INDEX_AUX: u8 = 4;
-        let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX);
+        // The first internal station allocation reserves station 0 for the
+        // BSS/AP path, so the AUX station receives station-table ID 1.
+        const AUX_STA_ID: u8 = 1;
+        let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX, AUX_STA_ID);
         let aux_sta_bytes = unsafe { super::as_bytes(&aux_sta) };
         self.send_init_hcmd(
             "ADD_STA_AUX",
@@ -445,7 +448,7 @@ impl IwlWifiDevice {
         )?;
         log::info!(
             "iwlwifi: init.config name=aux_scan_station sta_id={} group=0x{:02x} opcode=0x{:02x}",
-            MAC_INDEX_AUX,
+            AUX_STA_ID,
             GroupId::Legacy as u8,
             LegacyCmd::AddSta as u8,
         );
@@ -537,7 +540,7 @@ impl IwlWifiDevice {
         // be activated before SCAN_OFFLOAD_REQUEST_CMD is accepted.  Although
         // the opcode is in the legacy command namespace, the command itself
         // is a LONG_GROUP command and therefore uses the wide HCMD header.
-        let scan_config = ScanConfigV1::new(self.mac);
+        let scan_config = ScanConfigV1::new(self.mac, AUX_STA_ID);
         let scan_config_bytes = unsafe { super::as_bytes(&scan_config) };
         self.send_init_hcmd(
             "SCAN_CONFIG",
