@@ -99,8 +99,12 @@ pub const FH_RCSR_RX_CONFIG_REG_IRQ_RBTH_POS: u32 = 4;
 pub const FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS: u32 = 20;
 pub const FH_RCSR_RX_RB_TIMEOUT: u32 = 0x11;
 
-/// Legacy TX queue 4 (the host-command queue) registers.
-pub const IWL_CMD_QUEUE: u32 = 4;
+/// Non-DQA MVM command queue used by the API-v17 firmware.
+///
+/// Linux's `IWL_MVM_CMD_QUEUE` is queue 9. Queue 4 is a data queue in this
+/// layout; using it for HCMDs can appear to work for simple commands but
+/// corrupts the scheduler state when ADD_STA configures the AUX station.
+pub const IWL_CMD_QUEUE: u32 = 9;
 /// Auxiliary/off-channel queue used by the firmware scan station in the
 /// non-DQA transport used by the 7265. Linux v4.9 names this
 /// `IWL_MVM_OFFCHANNEL_QUEUE` and assigns it queue 8; queue 11 belongs to a

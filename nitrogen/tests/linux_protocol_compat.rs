@@ -8,8 +8,9 @@ use std::mem::size_of;
 use std::slice;
 
 use nitrogen::iwlwifi::registers::{
-    IWL_AUX_QUEUE, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES, TX_KEEP_WARM_BYTES,
-    TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET, TX_TFD_RING_BYTES,
+    IWL_AUX_QUEUE, IWL_CMD_QUEUE, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES,
+    TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
+    TX_TFD_RING_BYTES,
 };
 use nitrogen::iwlwifi::types::{AddStaCmdV7, MacContextCmd, ScanConfigV1, ScanRequestCmd};
 use nitrogen::usb::UsbSetupPacket;
@@ -22,6 +23,7 @@ fn bytes<T>(value: &T) -> &[u8] {
 
 #[test]
 fn linux_v49_aux_station_payload_is_wire_compatible() {
+    assert_eq!(IWL_CMD_QUEUE, 9);
     assert_eq!(IWL_AUX_QUEUE, 8);
     assert_eq!(size_of::<AddStaCmdV7>(), 44);
 
