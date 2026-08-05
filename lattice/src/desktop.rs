@@ -497,7 +497,17 @@ impl Desktop {
             menu.height =
                 (menu.items.len() as u32 * ITEM_HEIGHT + MENU_BORDER * 2).min(usable_height);
         }
-        menu.width = menu.width.min(fb_width);
+        if fb_width < MENU_BORDER * 2 {
+            // There is no scanout width in which a non-empty menu can draw
+            // both borders safely. Keep the popup object bounded but hide it
+            // instead of allowing PopupMenu::to_overlays to underflow.
+            menu.items.clear();
+            menu.width = fb_width;
+            menu.height = 0;
+            menu.visible = false;
+        } else {
+            menu.width = menu.width.min(fb_width).max(MENU_BORDER * 2);
+        }
         let button_x = self.taskbar.power_icon_x(fb_width);
         let x = button_x
             .saturating_add(crate::taskbar::POWER_STATUS_WIDTH)
@@ -1078,6 +1088,16 @@ mod tests {
         assert!(menu.x + menu.width <= fb_width);
         assert!(menu.y + menu.height <= usable_height);
         assert!(menu.items.len() <= 1);
+    }
+
+    #[test]
+    fn power_menu_is_hidden_when_framebuffer_is_narrower_than_borders() {
+        let mut dt = Desktop::new(0x202020);
+        dt.show_power_menu(MENU_BORDER, 100);
+        let menu = dt.active_menu.as_ref().unwrap();
+        assert!(!menu.visible);
+        assert!(menu.items.is_empty());
+        assert!(menu.to_overlays().is_empty());
     }
 
     #[test]

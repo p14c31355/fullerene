@@ -404,12 +404,11 @@ pub fn enumerate_mass_storage(
 }
 
 fn decode_ep0_packet_size(raw: u8, super_speed: bool) -> Option<u16> {
-    let decoded = if raw == 9 && super_speed {
-        512
+    if super_speed {
+        (raw == 9).then_some(512)
     } else {
-        raw as u16
-    };
-    matches!(decoded, 8 | 16 | 32 | 64 | 512).then_some(decoded)
+        matches!(raw, 8 | 16 | 32 | 64).then_some(raw as u16)
+    }
 }
 
 /// Parse bulk IN/OUT endpoints from a configuration descriptor buffer.
@@ -649,6 +648,7 @@ mod tests {
     #[test]
     fn decodes_superspeed_ep0_packet_size_without_accepting_usb2_value_nine() {
         assert_eq!(decode_ep0_packet_size(9, true), Some(512));
+        assert_eq!(decode_ep0_packet_size(64, true), None);
         assert_eq!(decode_ep0_packet_size(9, false), None);
         assert_eq!(decode_ep0_packet_size(64, false), Some(64));
     }
