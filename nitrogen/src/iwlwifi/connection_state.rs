@@ -143,7 +143,15 @@ fn enqueue_wifi_request(request: WifiRequest) -> Option<u64> {
         return None;
     }
     let id = NEXT_WIFI_REQUEST.fetch_add(1, Ordering::Relaxed);
-    queue.push_back((id, request));
+    // Initialization is a prerequisite for every other Wi-Fi request.  A
+    // pending periodic Tick must never sit in front of the first InitStep;
+    // this is especially important when the service and device phases are
+    // separated by a GUI tick.
+    if matches!(&request, WifiRequest::InitStep) {
+        queue.push_front((id, request));
+    } else {
+        queue.push_back((id, request));
+    }
     Some(id)
 }
 

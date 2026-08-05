@@ -169,6 +169,14 @@ impl HostController for XhciContext {
         XhciContext::control_transfer(self, dev_addr as u32, setup, buf)
     }
 
+    fn set_control_max_packet_size(
+        &mut self,
+        dev_addr: u8,
+        max_packet_size: u16,
+    ) -> Result<(), crate::DriverError> {
+        XhciContext::evaluate_endpoint0(self, dev_addr as u32, max_packet_size)
+    }
+
     fn bulk_transfer(
         &mut self,
         dev_addr: u8,

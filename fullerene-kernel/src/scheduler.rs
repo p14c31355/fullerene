@@ -164,6 +164,16 @@ pub fn scheduler_loop() -> ! {
         crate::contexts::audio::poll_audio_playback();
         crate::contexts::audio::consume_audio_completion_queue(4);
 
+        // Drain requests left by the preceding GUI tick before entering the
+        // next one. This closes the gap where a nested/runtime-driven tick
+        // can enqueue Wi-Fi initialization while the scheduler has not yet
+        // reached the normal post-GUI device phase.
+        #[cfg(not(nitrogen_no_iwlwifi))]
+        {
+            nitrogen::iwlwifi::process_wifi_submission_queue(16);
+            nitrogen::iwlwifi::consume_wifi_completion_queue(16);
+        }
+
         // BusyBox smoke is a synchronous ABI test. During the harness, the
         // nested runtime pump handles only input and rendering; after a
         // physical smoke run returns, normal desktop ticks resume.

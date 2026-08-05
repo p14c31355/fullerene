@@ -75,6 +75,20 @@ pub trait HostController {
         buf: &mut [u8],
     ) -> Result<usize, crate::DriverError>;
 
+    /// Update the default control endpoint's maximum packet size after the
+    /// first eight bytes of the device descriptor have been read.
+    ///
+    /// EHCI keeps this in its existing control-transfer state, while xHCI
+    /// must publish the new EP0 context with Evaluate Context.  The default
+    /// implementation keeps older host-controller implementations compatible.
+    fn set_control_max_packet_size(
+        &mut self,
+        _dev_addr: u8,
+        _max_packet_size: u16,
+    ) -> Result<(), crate::DriverError> {
+        Ok(())
+    }
+
     /// Perform a USB bulk transfer.
     ///
     /// `endpoint` is the full endpoint address (bit 7 = direction).

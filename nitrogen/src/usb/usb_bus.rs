@@ -263,14 +263,17 @@ pub fn enumerate_mass_storage(
     dev_addr: u8,
     dev_idx: usize,
 ) -> Result<(u8, u16, u8, u16), crate::DriverError> {
-    // Step 1: Get device descriptor (64 bytes for safety)
-    let mut desc_buf = [0u8; 64];
+    // Step 1: Read only the first 8 bytes.  Before this request the host
+    // knows only the USB default EP0 packet size (8 bytes for LS/FS).  Asking
+    // for the full descriptor here makes xHCI issue a multi-packet transfer
+    // before bMaxPacketSize0 has been learned and breaks several FS devices.
+    let mut desc_buf = [0u8; 8];
     let setup = UsbSetupPacket {
         bm_request_type: 0x80,
         b_request: REQ_GET_DESCRIPTOR,
         w_value: (DESC_DEVICE as u16) << 8,
         w_index: 0,
-        w_length: 64,
+        w_length: 8,
     };
     let len = match host.control_transfer(dev_addr, &setup, &mut desc_buf) {
         Ok(len) => len,
@@ -283,7 +286,7 @@ pub fn enumerate_mass_storage(
             return Err(error);
         }
     };
-    if len < 18 {
+    if len < 8 {
         log::warn!(
             "USB: device {} returned short device descriptor ({} bytes)",
             dev_addr,
@@ -292,7 +295,38 @@ pub fn enumerate_mass_storage(
         return Err(crate::DriverError::Protocol);
     }
 
-    let num_cfgs = desc_buf[17];
+    let max_packet_size = desc_buf[7] as u16;
+    if !matches!(max_packet_size, 8 | 16 | 32 | 64) {
+        log::warn!(
+            "USB: device {} reported invalid EP0 max packet size {}",
+            dev_addr,
+            max_packet_size
+        );
+        return Err(crate::DriverError::Protocol);
+    }
+    host.set_control_max_packet_size(dev_addr, max_packet_size)?;
+
+    // Now that EP0 uses the device-reported packet size, retrieve the full
+    // descriptor and inspect its configuration count.
+    let mut full_desc_buf = [0u8; 18];
+    let full_setup = UsbSetupPacket {
+        bm_request_type: 0x80,
+        b_request: REQ_GET_DESCRIPTOR,
+        w_value: (DESC_DEVICE as u16) << 8,
+        w_index: 0,
+        w_length: 18,
+    };
+    let full_len = host.control_transfer(dev_addr, &full_setup, &mut full_desc_buf)?;
+    if full_len < 18 {
+        log::warn!(
+            "USB: device {} returned short full device descriptor ({} bytes)",
+            dev_addr,
+            full_len
+        );
+        return Err(crate::DriverError::Protocol);
+    }
+
+    let num_cfgs = full_desc_buf[17];
     if num_cfgs == 0 {
         log::warn!("USB: device {} reports zero configurations", dev_addr);
         return Err(crate::DriverError::Protocol);
