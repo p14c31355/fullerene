@@ -62,6 +62,9 @@ enum WifiRequest {
         ssid: Ssid,
         password: Option<String>,
     },
+    DataTx {
+        frame: Vec<u8>,
+    },
 }
 
 enum WifiCompletionKind {
@@ -69,6 +72,7 @@ enum WifiCompletionKind {
     Tick,
     StartScan { accepted: bool },
     Connect { accepted: bool },
+    DataTx { accepted: bool },
 }
 
 struct WifiCompletion {
@@ -1099,6 +1103,29 @@ fn perform_connect(ssid: &Ssid, password: Option<&str>) -> bool {
     false
 }
 
+/// Submit a data frame from a protocol/service caller without touching
+/// firmware or MMIO in that caller's context.
+pub fn enqueue_data_frame(frame: &[u8]) -> bool {
+    if frame.is_empty() || frame.len() > MAX_FRAME_SIZE {
+        return false;
+    }
+    enqueue_wifi_request(WifiRequest::DataTx {
+        frame: frame.to_vec(),
+    })
+    .is_some()
+}
+
+fn perform_send_data_frame(frame: &[u8]) -> bool {
+    let mut device = WIFI_DEVICE.lock();
+    let Some(device) = device.as_mut() else {
+        return false;
+    };
+    if !device.device_available() {
+        return false;
+    }
+    device.send_data_frame(frame).is_ok()
+}
+
 fn perform_start_scan_if_idle() -> bool {
     let mut dev_guard = WIFI_DEVICE.lock();
     let Some(ref mut dev) = *dev_guard else {
@@ -1186,6 +1213,9 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
             WifiRequest::Connect { ssid, password } => WifiCompletionKind::Connect {
                 accepted: perform_connect(&ssid, password.as_deref()),
             },
+            WifiRequest::DataTx { frame } => WifiCompletionKind::DataTx {
+                accepted: perform_send_data_frame(&frame),
+            },
         };
         WIFI_CQ
             .lock()
@@ -1222,6 +1252,14 @@ pub fn consume_wifi_completion_queue_until(budget: usize, deadline_tsc: u64) {
                 if !accepted {
                     log::debug!(
                         "iwlwifi: connect request {} was not accepted",
+                        completion.request_id
+                    );
+                }
+            }
+            WifiCompletionKind::DataTx { accepted } => {
+                if !accepted {
+                    log::debug!(
+                        "iwlwifi: data TX request {} was rejected",
                         completion.request_id
                     );
                 }

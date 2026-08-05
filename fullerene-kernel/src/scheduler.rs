@@ -155,6 +155,11 @@ pub fn scheduler_loop() -> ! {
                 device_phase_deadline,
             );
         }
+        #[cfg(not(nitrogen_no_usb))]
+        {
+            crate::drivers::registry::process_usb_submission_queue(1);
+            crate::drivers::registry::consume_usb_completion_queue(1);
+        }
         crate::contexts::audio::process_audio_submission_queue(2);
         crate::contexts::audio::poll_audio_playback();
         crate::contexts::audio::consume_audio_completion_queue(4);

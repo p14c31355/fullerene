@@ -1425,8 +1425,15 @@ impl NetDevice for IwlWifiDevice {
         if frame.len() > MAX_FRAME_SIZE {
             return Err(NetError::FrameTooLarge);
         }
-        self.send_raw_80211_frame(frame)
-            .map_err(|_| NetError::SendFailed)
+        // NetDevice is also used by protocol helpers that may run outside
+        // the device phase.  Treat this method as the compatibility adapter:
+        // it only owns/enqueues the frame.  The scheduler later submits it
+        // through WifiDriver::send_data_frame and publishes a CQ entry.
+        if super::connection_state::enqueue_data_frame(frame) {
+            Ok(())
+        } else {
+            Err(NetError::SendFailed)
+        }
     }
 
     fn poll_frame(&mut self, buf: &mut [u8]) -> Result<Option<usize>, NetError> {
@@ -1514,6 +1521,10 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
 
     fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
         IwlWifiDevice::send_init_commands(self)
+    }
+
+    fn send_data_frame(&mut self, frame: &[u8]) -> Result<(), crate::DriverError> {
+        self.send_raw_80211_frame(frame)
     }
 }
 

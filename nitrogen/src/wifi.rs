@@ -90,6 +90,15 @@ pub trait WifiDriver: Send {
     /// Send post-boot init commands (TX antenna config, RXON, queue setup).
     /// Called by the step-based init after firmware alive is confirmed.
     fn send_init_commands(&mut self) -> Result<(), crate::DriverError>;
+
+    /// Submit one data frame to the hardware TX path.
+    ///
+    /// The owner of a concrete driver may call this only from its scheduler
+    /// executor.  Service-facing callers must enqueue a request first so
+    /// firmware/MMIO work never runs in a GUI or protocol callback.
+    fn send_data_frame(&mut self, _frame: &[u8]) -> Result<(), crate::DriverError> {
+        Err(crate::DriverError::NotSupported)
+    }
 }
 
 // ── Hardware info (from PCI config space, always safe) ───────────────
