@@ -381,11 +381,11 @@ pub struct AddStaCmdV7 {
 
 impl AddStaCmdV7 {
     pub fn aux(mac_index: u8, sta_id: u8) -> Self {
-        // The 7265 non-DQA layout reserves queue 11 for the auxiliary
+        // The 7265 non-DQA layout reserves queue 8 for the auxiliary
         // station.  Linux advertises that queue in tfd_queue_msk even when
         // the first scan is passive; leaving it zero makes API-v17 firmware
         // reject the station command before it can return ADD_STA status.
-        const AUX_QUEUE: u32 = 11;
+        const AUX_QUEUE: u32 = 8;
         Self {
             add_modify: 0, // STA_MODE_ADD
             awake_acs: 0,

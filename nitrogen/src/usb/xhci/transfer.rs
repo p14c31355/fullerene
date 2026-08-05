@@ -42,7 +42,7 @@ pub fn linux_control_transfer_trbs(
 
     let mut setup_trb = Trb::new(trb_type::SETUP_STAGE, cycle)
         .with_length(8)
-        .with_flags(trb_flag::IDT | trb_flag::CHAIN | trt);
+        .with_flags(trb_flag::IDT | trt);
     unsafe {
         ptr::copy_nonoverlapping(
             setup as *const UsbSetupPacket as *const u8,
@@ -57,7 +57,7 @@ pub fn linux_control_transfer_trbs(
         Trb::new(trb_type::DATA_STAGE, cycle)
             .with_data_ptr(data_phys)
             .with_length(data_len as u32)
-            .with_flags(dir | trb_flag::CHAIN | short_packet)
+            .with_flags(dir | short_packet)
     });
 
     let status_dir = if !is_in || data_len == 0 {

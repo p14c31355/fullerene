@@ -57,7 +57,7 @@ impl IwlWifiDevice {
             self.write_prph(SCD_CHAINEXT_EN, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
-            // The scan engine uses the internal station's q11. Configure it
+            // The scan engine uses the internal station's q8. Configure it
             // before ADD_STA_AUX, just as Linux does; the firmware validates
             // the station's tfd_queue_msk against this scheduler entry.
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_AUX, 0);

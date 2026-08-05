@@ -19,19 +19,19 @@ fn bytes<T>(value: &T) -> &[u8] {
 
 #[test]
 fn linux_v49_aux_station_payload_is_wire_compatible() {
-    assert_eq!(IWL_AUX_QUEUE, 11);
+    assert_eq!(IWL_AUX_QUEUE, 8);
     assert_eq!(size_of::<AddStaCmdV7>(), 44);
 
     // Linux v4.9 iwl_mvm_add_aux_sta(): MAC_INDEX_AUX is 4, while the
     // internal station-table entry is allocated as sta_id 1. The queue mask
-    // must advertise q11 before ADD_STA is sent.
+    // must advertise q8 before ADD_STA is sent.
     let payload = AddStaCmdV7::aux(4, 1);
     let actual = bytes(&payload);
     let mut expected = [0u8; 44];
     expected[2..4].copy_from_slice(&0xffffu16.to_le_bytes());
     expected[4..8].copy_from_slice(&4u32.to_le_bytes());
     expected[16] = 1;
-    expected[40..44].copy_from_slice(&(1u32 << 11).to_le_bytes());
+    expected[40..44].copy_from_slice(&(1u32 << 8).to_le_bytes());
     assert_eq!(actual, expected);
 }
 
@@ -66,7 +66,9 @@ fn linux_v49_xhci_control_in_td_has_correct_stage_contract() {
     assert_eq!(td.setup.trb_type(), trb_type::SETUP_STAGE);
     assert_eq!(td.setup.params, [0x80, 0x06, 0, 1, 0, 0, 8, 0]);
     assert_ne!(td.setup.flags & trb_flag::IDT, 0);
-    assert_ne!(td.setup.flags & trb_flag::CHAIN, 0);
+    // Linux 4.9 does not set TRB_CHAIN for control SETUP/DATA TRBs; the
+    // control TD is delimited by the STATUS TRB.
+    assert_eq!(td.setup.flags & trb_flag::CHAIN, 0);
     assert_eq!((td.setup.flags >> 16) & 0x3, 3); // TRB_DATA_IN
 
     let data = td.data.expect("IN control transfer needs DATA stage");
@@ -74,7 +76,7 @@ fn linux_v49_xhci_control_in_td_has_correct_stage_contract() {
     assert_eq!(data.params, 0x1234_5000u64.to_le_bytes());
     assert_ne!(data.flags & trb_flag::DIR_IN, 0);
     assert_ne!(data.flags & trb_flag::ISP, 0);
-    assert_ne!(data.flags & trb_flag::CHAIN, 0);
+    assert_eq!(data.flags & trb_flag::CHAIN, 0);
 
     assert_eq!(td.status.trb_type(), trb_type::STATUS_STAGE);
     assert_eq!(td.status.flags & trb_flag::DIR_IN, 0); // IN data => OUT status
