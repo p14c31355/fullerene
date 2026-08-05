@@ -101,8 +101,11 @@ pub const FH_RCSR_RX_RB_TIMEOUT: u32 = 0x11;
 
 /// Legacy TX queue 4 (the host-command queue) registers.
 pub const IWL_CMD_QUEUE: u32 = 4;
+/// Auxiliary/off-channel queue used by the firmware scan station.
+pub const IWL_AUX_QUEUE: u32 = 11;
 pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
 pub const FH_MEM_CBBC_CMD_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_CMD_QUEUE;
+pub const FH_MEM_CBBC_AUX_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_AUX_QUEUE;
 pub const FH_KW_MEM_ADDR_REG: u32 = (0x1000 + 0x97C) / 4;
 pub const HBUS_TARG_WRPTR: u32 = (0x400 + 0x060) / 4;
 pub const FH_TCSR_CHNL_TX_CONFIG_BASE: u32 = (0x1000 + 0xD00) / 4;
@@ -123,9 +126,14 @@ pub const SCD_CHAINEXT_EN: u32 = SCD_BASE + 0x244;
 pub const SCD_TXFACT: u32 = SCD_BASE + 0x10;
 pub const SCD_GP_CTRL: u32 = SCD_BASE + 0x1A8;
 pub const SCD_EN_CTRL: u32 = SCD_BASE + 0x254;
+pub const SCD_QUEUECHAIN_SEL: u32 = SCD_BASE + 0xE8;
+pub const SCD_AGGR_SEL: u32 = SCD_BASE + 0x248;
 pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_CMD: u32 = 0x600 + IWL_CMD_QUEUE * 8;
+pub const SCD_QUEUE_RDPTR_AUX: u32 = SCD_BASE + 0x68 + IWL_AUX_QUEUE * 4;
+pub const SCD_QUEUE_STATUS_AUX: u32 = SCD_BASE + 0x10C + IWL_AUX_QUEUE * 4;
+pub const SCD_CONTEXT_QUEUE_AUX: u32 = 0x600 + IWL_AUX_QUEUE * 8;
 pub const SCD_QUEUE_STTS_ACTIVE: u32 = 1 << 3;
 pub const SCD_QUEUE_STTS_WSL: u32 = 1 << 4;
 pub const SCD_QUEUE_STTS_FIFO_COMMAND: u32 = 7;
@@ -137,7 +145,12 @@ pub const SCD_GP_CTRL_AUTO_ACTIVE_MODE: u32 = 1 << 18;
 // the same contiguous DMA allocation as the command TFD ring, but outside the
 // ring and keep-warm areas.
 pub const TX_TFD_RING_BYTES: usize = 128 * TX_QUEUE_SIZE;
-pub const TX_KEEP_WARM_OFFSET: usize = TX_TFD_RING_BYTES;
+/// The auxiliary station has its own TFD ring even though the host does not
+/// submit scan frames directly. Linux allocates one ring per scheduler queue;
+/// keeping q11 separate prevents firmware from interpreting q4 descriptors as
+/// scan traffic.
+pub const TX_AUX_TFD_RING_OFFSET: usize = TX_TFD_RING_BYTES;
+pub const TX_KEEP_WARM_OFFSET: usize = TX_AUX_TFD_RING_OFFSET + TX_TFD_RING_BYTES;
 pub const TX_KEEP_WARM_BYTES: usize = 0x1000;
 pub const TX_SCD_BC_OFFSET: usize = TX_KEEP_WARM_OFFSET + TX_KEEP_WARM_BYTES;
 pub const TX_SCD_BC_BYTES: usize = 32 * (256 + 64) * 2;

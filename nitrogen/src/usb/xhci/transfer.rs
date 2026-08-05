@@ -11,6 +11,69 @@ use super::context::XhciContext;
 use super::ring::{COMP_SHORT_PACKET, COMP_SUCCESS, Trb, trb_flag, trb_type};
 use crate::usb::{UsbDirection, UsbSetupPacket};
 
+/// The three TRBs of a Linux-compatible xHCI control-transfer TD.
+///
+/// Keeping this wire-format construction separate from the MMIO submission
+/// path lets the integration tests validate the exact Linux/xHCI contract
+/// without needing a controller or a boot log.
+#[derive(Clone, Copy, Debug)]
+pub struct ControlTransferTrbs {
+    pub setup: Trb,
+    pub data: Option<Trb>,
+    pub status: Trb,
+}
+
+/// Build the control-transfer TD described by xHCI §4.11.2 and used by
+/// Linux's `xhci_queue_ctrl_tx()`.
+pub fn linux_control_transfer_trbs(
+    setup: &UsbSetupPacket,
+    data_phys: u64,
+    cycle: u32,
+) -> ControlTransferTrbs {
+    let data_len = setup.w_length as usize;
+    let is_in = (setup.bm_request_type & 0x80) != 0;
+    let trt = if data_len == 0 {
+        0
+    } else if is_in {
+        3 << 16
+    } else {
+        2 << 16
+    };
+
+    let mut setup_trb = Trb::new(trb_type::SETUP_STAGE, cycle)
+        .with_length(8)
+        .with_flags(trb_flag::IDT | trb_flag::CHAIN | trt);
+    unsafe {
+        ptr::copy_nonoverlapping(
+            setup as *const UsbSetupPacket as *const u8,
+            setup_trb.params.as_mut_ptr(),
+            8,
+        );
+    }
+
+    let data_trb = (data_len > 0).then(|| {
+        let dir = if is_in { trb_flag::DIR_IN } else { 0 };
+        let short_packet = if is_in { trb_flag::ISP } else { 0 };
+        Trb::new(trb_type::DATA_STAGE, cycle)
+            .with_data_ptr(data_phys)
+            .with_length(data_len as u32)
+            .with_flags(dir | trb_flag::CHAIN | short_packet)
+    });
+
+    let status_dir = if !is_in || data_len == 0 {
+        trb_flag::DIR_IN
+    } else {
+        0
+    };
+    let status_trb = Trb::new(trb_type::STATUS_STAGE, cycle).with_flags(status_dir | trb_flag::IOC);
+
+    ControlTransferTrbs {
+        setup: setup_trb,
+        data: data_trb,
+        status: status_trb,
+    }
+}
+
 impl XhciContext {
     /// Perform a control transfer on EP0.
     pub fn control_transfer(
@@ -57,51 +120,19 @@ impl XhciContext {
         if let Some(slot) = self.device.slots.get_mut(slot_id) {
             let setup_index = slot.ep0_ring.enq_index();
             let ring_cycle = slot.ep0_ring.cycle;
-            let trt = if data_len == 0 {
-                0
-            } else if is_in {
-                3 << 16
-            } else {
-                2 << 16
-            };
-            let mut s_trb = Trb::new(trb_type::SETUP_STAGE, slot.ep0_ring.cycle)
-                .with_length(8)
-                .with_flags(trb_flag::IDT);
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    setup as *const UsbSetupPacket as *const u8,
-                    s_trb.params.as_mut_ptr(),
-                    8,
-                );
-            }
-            s_trb.flags |= trb_flag::CHAIN | trt;
-            slot.ep0_ring.enqueue(s_trb);
+            let trbs = linux_control_transfer_trbs(setup, staging_phys, ring_cycle);
+            slot.ep0_ring.enqueue(trbs.setup);
             // Linux queues the complete TD before handing the first TRB to
             // xHC. Keep SETUP on the opposite cycle while DATA/STATUS are
             // being written so the controller cannot prefetch a partial TD.
             slot.ep0_ring
                 .set_cycle(setup_index, ring_cycle ^ trb_flag::CYCLE);
 
-            if data_len > 0 {
-                let dir = if is_in { trb_flag::DIR_IN } else { 0 };
-                let short_packet = if is_in { trb_flag::ISP } else { 0 };
-                slot.ep0_ring.enqueue(
-                    Trb::new(trb_type::DATA_STAGE, slot.ep0_ring.cycle)
-                        .with_data_ptr(staging_phys)
-                        .with_length(data_len as u32)
-                        .with_flags(dir | trb_flag::CHAIN | short_packet),
-                );
+            if let Some(data_trb) = trbs.data {
+                slot.ep0_ring.enqueue(data_trb);
             }
 
-            let st_dir = if !is_in || data_len == 0 {
-                trb_flag::DIR_IN
-            } else {
-                0
-            };
-            slot.ep0_ring.enqueue(
-                Trb::new(trb_type::STATUS_STAGE, slot.ep0_ring.cycle)
-                    .with_flags(st_dir | trb_flag::IOC),
-            );
+            slot.ep0_ring.enqueue(trbs.status);
             crate::mmio::write_barrier();
             slot.ep0_ring.set_cycle(setup_index, ring_cycle);
 
@@ -119,9 +150,9 @@ impl XhciContext {
                 (setup.w_length >> 8) as u8,
                 staging_phys,
                 data_len,
-                trt >> 16,
+                (trbs.setup.flags >> 16) & 0x3,
                 is_in as u8,
-                (st_dir != 0) as u8,
+                ((trbs.status.flags & trb_flag::DIR_IN) != 0) as u8,
                 slot.ep0_ring.enq_index(),
             );
         }

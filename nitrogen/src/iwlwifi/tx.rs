@@ -38,6 +38,7 @@ impl fmt::Display for HexBytes<'_> {
 impl IwlWifiDevice {
     fn init_tx_cmd_queue(&mut self) {
         let ring_phys = self.tx_dma_ring.dma_iova();
+        let aux_ring_phys = ring_phys + TX_AUX_TFD_RING_OFFSET as u64;
         let keep_warm_phys = ring_phys + TX_KEEP_WARM_OFFSET as u64;
         let scd_bc_phys = ring_phys + TX_SCD_BC_OFFSET as u64;
 
@@ -56,6 +57,11 @@ impl IwlWifiDevice {
             self.write_prph(SCD_CHAINEXT_EN, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
+            // The scan engine uses the internal station's q11. Configure it
+            // before ADD_STA_AUX, just as Linux does; the firmware validates
+            // the station's tfd_queue_msk against this scheduler entry.
+            self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_AUX, 0);
+            self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_AUX + 4, 64 | (64 << 16));
         } else {
             log::warn!(
                 "iwlwifi: unable to read SCD SRAM base; command scheduler backing table was not configured"
@@ -67,6 +73,20 @@ impl IwlWifiDevice {
         let scd_gp = self.read_prph(SCD_GP_CTRL).unwrap_or(0);
         self.write_prph(SCD_GP_CTRL, scd_gp | SCD_GP_CTRL_AUTO_ACTIVE_MODE);
         self.write_prph(SCD_QUEUE_RDPTR_CMD, 0);
+        self.write_prph(SCD_QUEUE_RDPTR_AUX, 0);
+        self.write_prph(
+            SCD_QUEUE_STATUS_AUX,
+            1 << 19, // SCD_QUEUE_STTS_REG_POS_SCD_ACT_EN: inactive while configuring
+        );
+        self.write_prph(SCD_QUEUECHAIN_SEL, 1 << IWL_AUX_QUEUE);
+        self.write_prph(SCD_AGGR_SEL, 0);
+        self.write_prph(
+            SCD_QUEUE_STATUS_AUX,
+            SCD_QUEUE_STTS_ACTIVE
+                | 5 // IWL_MVM_TX_FIFO_MCAST
+                | SCD_QUEUE_STTS_WSL
+                | SCD_QUEUE_STTS_MASK,
+        );
         self.write_prph(
             SCD_QUEUE_STATUS_CMD,
             SCD_QUEUE_STTS_ACTIVE
@@ -92,6 +112,10 @@ impl IwlWifiDevice {
                 self.mmio.add(FH_MEM_CBBC_CMD_QUEUE as usize),
                 (ring_phys >> 8) as u32,
             );
+            core::ptr::write_volatile(
+                self.mmio.add(FH_MEM_CBBC_AUX_QUEUE as usize),
+                (aux_ring_phys >> 8) as u32,
+            );
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
             for channel in 0..8 {
                 core::ptr::write_volatile(
@@ -112,13 +136,16 @@ impl IwlWifiDevice {
         let scd_active = self.read_prph(SCD_EN_CTRL);
         let scd_chainext = self.read_prph(SCD_CHAINEXT_EN);
         log::info!(
-            "iwlwifi: legacy TX command queue configured: q={} tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cfg={:#010x} scd_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
+            "iwlwifi: legacy TX queues configured: cmd_q={} cmd_tfd={:#018x} aux_q={} aux_tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cfg={:#010x} scd_status={:#010x} aux_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
             IWL_CMD_QUEUE,
             ring_phys,
+            IWL_AUX_QUEUE,
+            aux_ring_phys,
             keep_warm_phys,
             scd_bc_phys,
             fh_config.unwrap_or(!0),
             scd_status.unwrap_or(!0),
+            self.read_prph(SCD_QUEUE_STATUS_AUX).unwrap_or(!0),
             scd_active.unwrap_or(!0),
             scd_chainext.unwrap_or(!0),
         );
@@ -314,6 +341,14 @@ impl IwlWifiDevice {
         let target = self.tx_head as u32 & 0xff;
         let consumed = crate::timing::poll_timeout_us(100_000, || {
             let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
+            // A live 7265 normally never returns all ones from CSR_INT. It
+            // means the PCIe endpoint has gone away, not that firmware
+            // raised a valid HW_ERR bit. Classify it separately so the error
+            // path does not pretend that the firmware error-table pointers
+            // are meaningful.
+            if csr_int == !0 {
+                return Some(Err(crate::DriverError::DeviceNotFound));
+            }
             if csr_int & (CSR_INT_BIT_SW_ERR | CSR_INT_BIT_HW_ERR) != 0 {
                 return Some(Err(crate::DriverError::Protocol));
             }
@@ -335,7 +370,12 @@ impl IwlWifiDevice {
             }
             Some(Err(error)) => {
                 let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
-                let reason = if csr_int & CSR_INT_BIT_HW_ERR != 0 {
+                let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
+                let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
+                let device_gone = csr_int == !0 || rptr == !0 || fh_int == !0;
+                let reason = if device_gone {
+                    "PCIe_DEVICE_GONE"
+                } else if csr_int & CSR_INT_BIT_HW_ERR != 0 {
                     "HW_ERR"
                 } else if csr_int & CSR_INT_BIT_SW_ERR != 0 {
                     "SW_ERR"
@@ -347,13 +387,20 @@ impl IwlWifiDevice {
                     label,
                     reason,
                     target,
-                    self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0),
+                    rptr,
                     csr_int,
-                    self.safe_read32(CSR_FH_INT).unwrap_or(!0),
+                    fh_int,
                     self.tx_head,
                     self.tx_tail,
                 );
-                self.log_firmware_error_table(label);
+                if device_gone {
+                    log::error!(
+                        "iwlwifi: PCIe endpoint disappeared while waiting for init command {}; firmware error table not readable",
+                        label
+                    );
+                } else {
+                    self.log_firmware_error_table(label);
+                }
                 Err(error)
             }
             None => {
