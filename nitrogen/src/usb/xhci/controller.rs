@@ -451,16 +451,25 @@ impl XhciContext {
         // Device command for this controller instance. Do not let the PED
         // fast path skip that reset on hotplug or after controller reset.
         if first_connection_attempt && op.portsc(port_idx).ccs() {
+            let before = op.portsc(port_idx).0;
             let reset_ok = if is_usb3 {
                 warm_port_reset(op, port_idx).is_ok()
             } else {
                 port_reset(op, port_idx).is_ok()
             };
-            if reset_ok {
-                delay_ms(2);
-            } else {
-                log::debug!("xHCI: port {} initial reset did not complete", port_idx);
+            let after = op.portsc(port_idx).0;
+            log::info!(
+                "xHCI: port {} initial {}reset {} PORTSC {:#010X}->{:#010X}",
+                port_idx,
+                if is_usb3 { "warm " } else { "" },
+                if reset_ok { "completed" } else { "failed" },
+                before,
+                after,
+            );
+            if !reset_ok {
+                return false;
             }
+            delay_ms(10);
         }
 
         let wpr_done = if is_usb3 && !op.portsc(port_idx).ccs() {

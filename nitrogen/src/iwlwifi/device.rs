@@ -207,7 +207,16 @@ impl IwlWifiDevice {
     #[inline]
     pub(super) fn safe_read32(&self, reg: u32) -> Option<u32> {
         let addr = unsafe { self.mmio.add(reg as usize) } as *const u32;
-        match unsafe { mmio::checked_read_u32(addr as usize, Some(&self.health)) } {
+        // After firmware alive, some 7265 platforms transiently report the
+        // PCIe endpoint as absent while firmware changes power/link state.
+        // The vendor check would reject valid MMIO accesses and stop the
+        // next host command. The live path is protected by the MMIO watchdog.
+        let health = if matches!(self.fw_state, FwState::Alive | FwState::Ready) {
+            None
+        } else {
+            Some(&self.health)
+        };
+        match unsafe { mmio::checked_read_u32(addr as usize, health) } {
             SafeReadResult::Value(v) => Some(v),
             _ => None,
         }

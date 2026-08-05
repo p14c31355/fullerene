@@ -206,7 +206,7 @@ impl IwlWifiDevice {
         // the strong recovery check for pre-firmware access, but use the
         // lock-free vendor-presence check for live firmware MMIO cycles.
         let present = if matches!(self.fw_state, FwState::Alive | FwState::Ready) {
-            self.health.is_device_present()
+            true
         } else {
             self.health.pre_mmio_access().is_ok()
         };
@@ -791,7 +791,7 @@ impl IwlWifiDevice {
 
     pub(super) fn process_tx_queue(&mut self) {
         let present = if matches!(self.fw_state, FwState::Alive | FwState::Ready) {
-            self.health.is_device_present()
+            true
         } else {
             self.health.pre_mmio_access().is_ok()
         };
