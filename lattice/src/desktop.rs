@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use crate::cursor::Cursor;
-use crate::menu::PopupMenu;
+use crate::menu::{ITEM_HEIGHT, MENU_BORDER, PopupMenu};
 use crate::network_menu::{self, ApDisplay, NetStatus};
 use crate::scene::{DirtyRect, Scene};
 use crate::window::WindowId;
@@ -31,6 +31,8 @@ pub enum DesktopAction {
     OpenEditor,
     /// Show the WiFi network menu.
     ShowNetworkMenu,
+    /// Show the taskbar power menu.
+    ShowPowerMenu,
     /// Connect to the specified access point by index.
     ConnectAp(usize),
     /// Dismiss the password dialog.
@@ -64,6 +66,7 @@ impl DesktopAction {
             "change_wallpaper" => DesktopAction::ChangeWallpaperSettings,
             "open_editor" => DesktopAction::OpenEditor,
             "show_network_menu" => DesktopAction::ShowNetworkMenu,
+            "show_power_menu" => DesktopAction::ShowPowerMenu,
             _ => return None,
         })
     }
@@ -390,6 +393,17 @@ impl Desktop {
             return;
         }
 
+        // The power control sits between WiFi and the clock.
+        let power_icon_x = self.taskbar.power_icon_x(fb_width);
+        let bar_y = fb_height.saturating_sub(crate::style::taskbar_height()) as i32;
+        if self.cursor.x >= power_icon_x as i32
+            && self.cursor.x < (power_icon_x + crate::taskbar::POWER_STATUS_WIDTH) as i32
+            && self.cursor.y >= bar_y
+        {
+            self.menu_action_pending = Some(DesktopAction::ShowPowerMenu);
+            return;
+        }
+
         // Check taskbar clicks first — restore minimized windows or focus.
         if let Some(tb_id) =
             self.taskbar_window_at(self.cursor.x, self.cursor.y, fb_width, fb_height)
@@ -469,6 +483,38 @@ impl Desktop {
             bar_y.saturating_sub(items.len() as u32 * crate::menu::ITEM_HEIGHT + 4),
             items,
         ));
+        self.menu_is_system = true;
+    }
+
+    /// Show the power menu above the taskbar power button.
+    pub fn show_power_menu(&mut self, fb_width: u32, fb_height: u32) {
+        let items = crate::menu::power_menu_items();
+        let mut menu = PopupMenu::new(0, 0, items);
+        let usable_height = fb_height.saturating_sub(crate::style::taskbar_height());
+        if menu.height > usable_height {
+            let max_items = usable_height.saturating_sub(MENU_BORDER * 2) / ITEM_HEIGHT;
+            menu.items.truncate(max_items as usize);
+            menu.height =
+                (menu.items.len() as u32 * ITEM_HEIGHT + MENU_BORDER * 2).min(usable_height);
+        }
+        if fb_width < MENU_BORDER * 2 {
+            // There is no scanout width in which a non-empty menu can draw
+            // both borders safely. Keep the popup object bounded but hide it
+            // instead of allowing PopupMenu::to_overlays to underflow.
+            menu.items.clear();
+            menu.width = fb_width;
+            menu.height = 0;
+            menu.visible = false;
+        } else {
+            menu.width = menu.width.min(fb_width).max(MENU_BORDER * 2);
+        }
+        let button_x = self.taskbar.power_icon_x(fb_width);
+        let x = button_x
+            .saturating_add(crate::taskbar::POWER_STATUS_WIDTH)
+            .saturating_sub(menu.width)
+            .min(fb_width.saturating_sub(menu.width));
+        let y = usable_height.saturating_sub(menu.height.saturating_add(4));
+        self.active_menu = Some(PopupMenu { x, y, ..menu });
         self.menu_is_system = true;
     }
 
@@ -1004,6 +1050,54 @@ mod tests {
         dt.set_cursor(999, 999);
         dt.mouse_down(1024, 768);
         assert!(dt.active_menu.is_none());
+    }
+
+    #[test]
+    fn power_button_opens_restart_and_shutdown_menu() {
+        let mut dt = Desktop::new(0x202020);
+        dt.taskbar.clock_text = String::from("2026 0805 1210");
+        let (fb_width, fb_height) = (1024, 768);
+        let power_x = dt.taskbar.power_icon_x(fb_width);
+        dt.set_cursor(
+            power_x as i32 + 4,
+            fb_height as i32 - crate::style::taskbar_height() as i32 + 4,
+        );
+        dt.mouse_down(fb_width, fb_height);
+        assert_eq!(dt.menu_action_pending, Some(DesktopAction::ShowPowerMenu));
+
+        dt.menu_action_pending = None;
+        dt.show_power_menu(fb_width, fb_height);
+        let menu = dt.active_menu.as_ref().unwrap();
+        assert_eq!(menu.items.len(), 2);
+        assert_eq!(menu.items[0].action, "reboot");
+        assert_eq!(menu.items[1].action, "shutdown");
+        assert!(menu.x + menu.width <= fb_width);
+        assert!(menu.y + menu.height <= fb_height - crate::style::taskbar_height());
+    }
+
+    #[test]
+    fn power_menu_is_clipped_above_taskbar_on_short_framebuffer() {
+        let mut dt = Desktop::new(0x202020);
+        let (fb_width, fb_height) = (
+            160,
+            crate::style::taskbar_height() + ITEM_HEIGHT + MENU_BORDER * 2,
+        );
+        dt.show_power_menu(fb_width, fb_height);
+        let menu = dt.active_menu.as_ref().unwrap();
+        let usable_height = fb_height - crate::style::taskbar_height();
+        assert!(menu.x + menu.width <= fb_width);
+        assert!(menu.y + menu.height <= usable_height);
+        assert!(menu.items.len() <= 1);
+    }
+
+    #[test]
+    fn power_menu_is_hidden_when_framebuffer_is_narrower_than_borders() {
+        let mut dt = Desktop::new(0x202020);
+        dt.show_power_menu(MENU_BORDER, 100);
+        let menu = dt.active_menu.as_ref().unwrap();
+        assert!(!menu.visible);
+        assert!(menu.items.is_empty());
+        assert!(menu.to_overlays().is_empty());
     }
 
     #[test]

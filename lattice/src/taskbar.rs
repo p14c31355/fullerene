@@ -30,6 +30,13 @@ pub const TASKBAR_ACTIVE_BG: u32 = 0x3A7BD5;
 /// Taskbar button for unfocused window.
 pub const TASKBAR_INACTIVE_BG: u32 = 0x333344;
 
+/// Width reserved for the WiFi status icon.
+pub const WIFI_STATUS_WIDTH: u32 = crate::network_menu::NET_ICON_WIDTH;
+/// Width reserved for the power status icon.
+pub const POWER_STATUS_WIDTH: u32 = 32;
+/// Gap between status icons and the clock.
+pub const STATUS_GAP: u32 = 8;
+
 /// A single taskbar entry (represents a window).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskbarEntry {
@@ -73,12 +80,24 @@ impl Taskbar {
 
     /// Compute the WiFi icon X position based on clock text width.
     pub fn wifi_icon_x(&self, fb_width: u32) -> u32 {
-        let clock_w = if !self.clock_text.is_empty() {
-            (self.clock_text.len() as u32 * 8) + 8
-        } else {
-            0
-        };
-        fb_width.saturating_sub(clock_w + crate::network_menu::NET_ICON_WIDTH + 8)
+        self.clock_x(fb_width)
+            .saturating_sub(STATUS_GAP + POWER_STATUS_WIDTH + STATUS_GAP + WIFI_STATUS_WIDTH)
+    }
+
+    /// Compute the left edge of the clock text in the status area.
+    pub fn clock_x(&self, fb_width: u32) -> u32 {
+        fb_width.saturating_sub(self.clock_text.len() as u32 * 8)
+    }
+
+    /// Compute the power icon X position, between WiFi and the clock.
+    pub fn power_icon_x(&self, fb_width: u32) -> u32 {
+        self.clock_x(fb_width)
+            .saturating_sub(STATUS_GAP + POWER_STATUS_WIDTH)
+    }
+
+    /// Left edge of the rounded right-hand status group used by modern shells.
+    pub fn status_group_x(&self, fb_width: u32) -> u32 {
+        self.wifi_icon_x(fb_width).saturating_sub(STATUS_GAP)
     }
 
     /// Update entries from window list.
@@ -118,5 +137,67 @@ impl Taskbar {
     pub fn render(&self, fb: &mut [u32], fb_width: u32, fb_height: u32) {
         let mut painter = crate::painter::Painter::new(fb, fb_width, fb_height);
         crate::style::style_for(crate::style::variant()).draw_taskbar(&mut painter, self);
+    }
+}
+
+/// Draw a compact, platform-neutral power glyph.
+pub fn render_power_icon(canvas: &mut crate::painter::Painter<'_>, x: u32, y: u32, color: u32) {
+    // Keep the stem pixel-crisp, like the WiFi bars, but supersample the
+    // circular part. A 4×4 coverage mask removes the one-pixel stair steps
+    // that are especially visible on the diagonal shoulders.
+    canvas.fill_rect(x as i32 + 9, y as i32, 2, 9, color);
+    const SCALE: i32 = 4;
+    const SAMPLES: i32 = SCALE * SCALE;
+    const CENTER: i32 = 10 * SCALE;
+    const OUTER_RADIUS: i32 = 9 * SCALE;
+    const INNER_RADIUS: i32 = 7 * SCALE;
+    let outer_squared = OUTER_RADIUS * OUTER_RADIUS;
+    let inner_squared = INNER_RADIUS * INNER_RADIUS;
+
+    for py in 0..20u32 {
+        for px in 0..20u32 {
+            let mut covered = 0i32;
+            for sy in 0..SCALE {
+                for sx in 0..SCALE {
+                    let dx = px as i32 * SCALE + sx - CENTER;
+                    let dy = py as i32 * SCALE + sy - CENTER;
+                    let distance = dx * dx + dy * dy;
+                    let in_ring = distance <= outer_squared && distance >= inner_squared;
+                    // Leave a clean opening at 12 o'clock for the stem.
+                    let opening = dy < 0 && dx.abs() < 3 * SCALE;
+                    if in_ring && !opening {
+                        covered += 1;
+                    }
+                }
+            }
+            if covered > 0 {
+                let alpha = (covered * 255 / SAMPLES) as u32;
+                canvas.blend_pixel(x + px, y + py, (alpha << 24) | (color & 0x00FF_FFFF));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_power_icon;
+    use crate::painter::Painter;
+
+    #[test]
+    fn power_icon_has_a_filled_uniform_ring() {
+        let mut fb = alloc::vec![0u32; 24 * 24];
+        let mut painter = Painter::new(&mut fb, 24, 24);
+        render_power_icon(&mut painter, 2, 2, 0x00FF00);
+
+        // Cardinal points and both diagonal shoulders must be present; the
+        // old sparse arc had visible one-pixel gaps in these locations.
+        for (x, y) in [(4, 12), (20, 12), (7, 7), (17, 7), (7, 17), (17, 17)] {
+            assert_ne!(fb[y * 24 + x], 0);
+        }
+        // The opening remains clear while the stem stays two pixels wide.
+        assert_eq!(fb[2 * 24 + 11], 0x00FF00);
+        assert_eq!(fb[2 * 24 + 12], 0x00FF00);
+        assert_eq!(fb[5 * 24 + 10], 0);
+        assert_eq!(fb[5 * 24 + 14], 0);
     }
 }

@@ -41,10 +41,10 @@ unsafe fn as_bytes<T: Sized>(value: &T) -> &[u8] {
 // `iwlwifi::regs` before the lifecycle split.
 pub use connection_state::{
     connect_to_ap, consume_wifi_completion_queue, consume_wifi_completion_queue_until,
-    force_init_failed, init_wifi_manager, process_wifi_submission_queue,
+    enqueue_data_frame, force_init_failed, init_wifi_manager, process_wifi_submission_queue,
     process_wifi_submission_queue_until, retry_wifi_initialization, set_wifi_driver_context,
     start_scan_if_idle, tick_wifi_device, try_init_wifi_device, try_init_wifi_device_step,
-    wifi_init_completed, wifi_state_snapshot,
+    wifi_device_ready, wifi_init_completed, wifi_state_snapshot,
 };
 pub use device::IwlWifiDevice;
 pub use device::try_create_iwl;

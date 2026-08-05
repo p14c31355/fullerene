@@ -38,6 +38,7 @@ pub const COMP_SHORT_PACKET: u8 = 13;
 pub mod trb_flag {
     pub const CYCLE: u32 = 1 << 0;
     pub const TC: u32 = 1 << 1;
+    pub const ISP: u32 = 1 << 2;
     pub const CHAIN: u32 = 1 << 4;
     pub const IOC: u32 = 1 << 5;
     pub const IDT: u32 = 1 << 6;
@@ -177,6 +178,25 @@ impl Ring {
         }
     }
 
+    /// Change ownership of an already-written TRB without changing the
+    /// software enqueue position. Control transfers use this to keep the
+    /// SETUP TRB invisible until their DATA and STATUS TRBs are complete.
+    pub fn set_cycle(&mut self, index: usize, cycle: u32) {
+        if index >= self.len.saturating_sub(1) {
+            return;
+        }
+        let entries = self.dma.as_mut();
+        unsafe {
+            let flags = ptr::read_volatile(&entries[index].flags);
+            ptr::write_volatile(
+                &mut entries[index].flags,
+                (flags & !trb_flag::CYCLE) | (cycle & trb_flag::CYCLE),
+            );
+        }
+        let flags_addr = &entries[index].flags as *const u32 as *const u8;
+        mmio::cache_flush(flags_addr as usize);
+    }
+
     pub fn enqueue_phys(&self) -> u64 {
         self.phys + self.enq as u64 * TRB_SIZE as u64
     }
@@ -185,12 +205,39 @@ impl Ring {
         self.len.saturating_sub(1)
     }
 
+    /// Reserve a contiguous run of usable TRBs, crossing the link TRB only
+    /// before the run starts. The skipped tail entries are harmless NO_OPs;
+    /// they let the controller follow the normal link TRB and arrive at the
+    /// next cycle without splitting a transfer TD across the link.
+    pub fn reserve_contiguous(&mut self, count: usize) -> bool {
+        let capacity = self.capacity();
+        let Some(start) = contiguous_start(self.enq, capacity, count) else {
+            return false;
+        };
+        if start == 0 && self.enq != 0 {
+            while self.enq < capacity {
+                self.enqueue(Trb::new(trb_type::NO_OP, self.cycle));
+            }
+        }
+        self.enq + count <= capacity
+    }
+
     pub fn enq_index(&self) -> usize {
         self.enq
     }
 
     pub fn flush_for_device(&self) {
         self.dma.flush_for_device();
+    }
+}
+
+const fn contiguous_start(enq: usize, capacity: usize, count: usize) -> Option<usize> {
+    if count == 0 || count > capacity {
+        None
+    } else if enq + count <= capacity {
+        Some(enq)
+    } else {
+        Some(0)
     }
 }
 
@@ -359,6 +406,14 @@ mod tests {
     fn test_trb_with_flags() {
         let trb = Trb::new(trb_type::NORMAL, 1).with_flags(trb_flag::IOC);
         assert!(trb.flags & trb_flag::IOC != 0);
+    }
+
+    #[test]
+    fn contiguous_reservation_wraps_before_link_trb() {
+        assert_eq!(contiguous_start(60, 63, 3), Some(60));
+        assert_eq!(contiguous_start(61, 63, 3), Some(0));
+        assert_eq!(contiguous_start(62, 63, 2), Some(0));
+        assert_eq!(contiguous_start(0, 63, 64), None);
     }
 
     #[test]

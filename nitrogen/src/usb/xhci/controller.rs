@@ -3,7 +3,10 @@
 use super::context::XhciContext;
 use super::device::DeviceContextSet;
 use super::interrupt::InterruptContext;
-use super::port::{MAX_PORT_RETRIES, PortContext, delay_ms, delay_us, ensure_port_ready};
+use super::port::{
+    MAX_PORT_RETRIES, PortContext, delay_ms, delay_us, ensure_port_ready, port_reset,
+    warm_port_reset,
+};
 use super::register::{
     CapabilityRegisters, DoorbellRegisters, OP_PORTSC_BASE, OP_PORTSC_STRIDE, OperationalRegisters,
     RT_INTERRUPTER_STRIDE, RegisterContext, RuntimeRegisters, USBCMD_HCRST, USBCMD_HSEE,
@@ -435,10 +438,53 @@ impl XhciContext {
         let op = &self.registers.op;
         let mut is_usb3 = true;
         let mut wpr_attempted = true;
+        let mut first_connection_attempt = false;
         if let Some(port) = self.ports.get_mut(port_idx) {
             port.refresh(op);
             is_usb3 = port.is_usb3;
             wpr_attempted = port.wpr_attempted;
+            first_connection_attempt = port.retry_count == 0 && !port.done;
+        }
+
+        // A connected port may already expose PED=1 after firmware handoff,
+        // but xHCI still requires a fresh reset before the first Address
+        // Device command for this controller instance. Do not let the PED
+        // fast path skip that reset on hotplug or after controller reset.
+        if first_connection_attempt && op.portsc(port_idx).ccs() {
+            let before = op.portsc(port_idx).0;
+            let reset_ok = if is_usb3 {
+                warm_port_reset(op, port_idx).is_ok()
+            } else {
+                port_reset(op, port_idx).is_ok()
+            };
+            let after = op.portsc(port_idx).0;
+            log::info!(
+                "xHCI: port {} initial {}reset {} PORTSC {:#010X}->{:#010X}",
+                port_idx,
+                if is_usb3 { "warm " } else { "" },
+                if reset_ok { "completed" } else { "failed" },
+                before,
+                after,
+            );
+            if !reset_ok {
+                if let Some(port) = self.ports.get_mut(port_idx) {
+                    port.retry_count = port.retry_count.saturating_add(1);
+                    if port.retry_count >= MAX_PORT_RETRIES {
+                        port.done = true;
+                        log::debug!(
+                            "xHCI: port {} done after {} failed resets",
+                            port_idx,
+                            port.retry_count
+                        );
+                    }
+                }
+                return false;
+            }
+            // USB 2.0 reset recovery is specified in milliseconds, but some
+            // hubs/devices do not accept the first SETUP packet immediately
+            // after PED is asserted. Give the device a complete settle
+            // window before Address Device/EP0 traffic begins.
+            delay_ms(50);
         }
 
         let wpr_done = if is_usb3 && !op.portsc(port_idx).ccs() {

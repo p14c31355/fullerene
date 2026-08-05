@@ -14,13 +14,13 @@
 
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use alloc::boxed::Box;
-#[cfg(not(nitrogen_no_storage))]
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use alloc::collections::VecDeque;
 #[cfg(not(nitrogen_no_storage))]
 use alloc::vec::Vec;
 #[cfg(not(nitrogen_no_storage))]
 use core::sync::atomic::AtomicBool as DriverAtomicBool;
-#[cfg(not(nitrogen_no_storage))]
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use core::sync::atomic::AtomicU64;
 #[cfg(not(nitrogen_no_usb))]
 use core::sync::atomic::AtomicUsize;
@@ -60,6 +60,31 @@ static USB_CTX: Mutex<Option<nitrogen::usb::context::USBContext>> = Mutex::new(N
 /// Used by `poll_usb` to detect new devices without scanning the registry.
 #[cfg(not(nitrogen_no_usb))]
 static LAST_REGISTERED_USB_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// USB hotplug polling is a device operation, so the runtime callback only
+/// enqueues a request. The scheduler executes it and publishes the result in
+/// the CQ; the next callback observes the coalesced change notification.
+#[cfg(not(nitrogen_no_usb))]
+struct UsbPollRequest {
+    request_id: u64,
+}
+
+#[cfg(not(nitrogen_no_usb))]
+struct UsbPollCompletion {
+    request_id: u64,
+    changed: bool,
+}
+
+#[cfg(not(nitrogen_no_usb))]
+static USB_SQ: Mutex<VecDeque<UsbPollRequest>> = Mutex::new(VecDeque::new());
+#[cfg(not(nitrogen_no_usb))]
+static USB_CQ: Mutex<VecDeque<UsbPollCompletion>> = Mutex::new(VecDeque::new());
+#[cfg(not(nitrogen_no_usb))]
+static NEXT_USB_REQUEST: AtomicU64 = AtomicU64::new(1);
+#[cfg(not(nitrogen_no_usb))]
+static USB_POLL_PENDING: AtomicBool = AtomicBool::new(false);
+#[cfg(not(nitrogen_no_usb))]
+static USB_POLL_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Access the USB controller context.  Panics if not initialised.
 #[cfg(not(nitrogen_no_usb))]
@@ -640,9 +665,75 @@ impl UsbHostDriver for UsbHostCtl {
         Ok(())
     }
     fn poll(&self) {
-        poll_usb();
+        let _ = enqueue_usb_poll();
     }
 }
+
+/// Enqueue one coalesced USB hotplug poll from a runtime/service callback.
+#[cfg(not(nitrogen_no_usb))]
+pub fn enqueue_usb_poll() -> bool {
+    if USB_POLL_PENDING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return USB_POLL_CHANGED.swap(false, Ordering::AcqRel);
+    }
+    let request = UsbPollRequest {
+        request_id: NEXT_USB_REQUEST.fetch_add(1, Ordering::Relaxed),
+    };
+    if USB_SQ.lock().len() >= 4 {
+        USB_POLL_PENDING.store(false, Ordering::Release);
+        return USB_POLL_CHANGED.swap(false, Ordering::AcqRel);
+    }
+    USB_SQ.lock().push_back(request);
+    USB_POLL_CHANGED.swap(false, Ordering::AcqRel)
+}
+
+#[cfg(nitrogen_no_usb)]
+pub fn enqueue_usb_poll() -> bool {
+    false
+}
+
+/// Execute USB poll SQ entries in scheduler context.
+#[cfg(not(nitrogen_no_usb))]
+pub fn process_usb_submission_queue(budget: usize) {
+    for _ in 0..budget {
+        let Some(request) = USB_SQ.lock().pop_front() else {
+            break;
+        };
+        let changed = poll_usb();
+        USB_CQ.lock().push_back(UsbPollCompletion {
+            request_id: request.request_id,
+            changed,
+        });
+        USB_POLL_PENDING.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(nitrogen_no_usb)]
+pub fn process_usb_submission_queue(_budget: usize) {}
+
+/// Consume USB poll CQ entries and retain a coalesced change notification for
+/// the next non-blocking runtime callback.
+#[cfg(not(nitrogen_no_usb))]
+pub fn consume_usb_completion_queue(budget: usize) {
+    for _ in 0..budget {
+        let Some(completion) = USB_CQ.lock().pop_front() else {
+            break;
+        };
+        if completion.changed {
+            USB_POLL_CHANGED.store(true, Ordering::Release);
+        }
+        log::debug!(
+            "USB: poll request {} completed (changed={})",
+            completion.request_id,
+            completion.changed
+        );
+    }
+}
+
+#[cfg(nitrogen_no_usb)]
+pub fn consume_usb_completion_queue(_budget: usize) {}
 
 /// Initialise the USB driver (probe phase — called from Driver).
 #[cfg(not(nitrogen_no_usb))]

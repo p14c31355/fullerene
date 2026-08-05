@@ -73,6 +73,8 @@ pub enum GroupId {
 pub enum LegacyCmd {
     Echo = 0x03,
     PhyContext = 0x08,
+    /// PHY configuration and calibration control used before MAC contexts.
+    PhyConfiguration = 0x6a,
     /// Legacy LMAC scan configuration.  The command number is legacy, but
     /// firmware API 17 transports it through the long-command group.
     ScanConfig = 0x0c,
@@ -196,6 +198,15 @@ impl PhyContextCmdV1 {
     }
 }
 
+/// PHY_CONFIGURATION_CMD payload used by the API-v17 runtime firmware.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct PhyConfigurationCmd {
+    pub phy_config: u32,
+    pub calib_flow_trigger: u32,
+    pub calib_event_trigger: u32,
+}
+
 /// One AC entry in the API-v1 MAC context QoS array.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -267,54 +278,62 @@ impl MacContextCmd {
             tsf_id: 0,
             node_addr: mac,
             reserved_for_node_addr: 0,
-            // Before association there is no AP-specific BSSID. The firmware
-            // uses the broadcast value for this state, as does upstream.
-            bssid_addr: [0xff; 6],
+            // mac80211 keeps the station BSSID zeroed until association. The
+            // firmware accepts that value for an unassociated BSS_STA
+            // context; a broadcast BSSID is a different (and invalid for
+            // this context) address value.
+            bssid_addr: [0; 6],
             reserved_for_bssid_addr: 0,
             cck_rates: 0x0000_000f,
-            ofdm_rates: 0x0000_00ff,
+            // For an unassociated 2.4 GHz STA with no AP basic-rate set,
+            // iwl_mvm_ack_rates() keeps the mandatory 6/12/24 Mbps OFDM
+            // rates: bits 0, 2 and 4 in the OFDM bitmap.
+            ofdm_rates: 0x0000_0015,
             protection_flags: 0,
-            cck_short_preamble: 0x20,
-            short_slot: 0x10,
+            // The interface starts before association.  mac80211 leaves
+            // both ERP flags clear until the AP advertises them.
+            cck_short_preamble: 0,
+            short_slot: 0,
             filter_flags: FILTER_FLAGS,
             qos_flags: 0,
-            // API v1 expects each EDCA entry to name the FIFO owned by that
-            // access category.  Linux fills these masks even when QoS is not
-            // enabled; leaving all five masks at zero makes the firmware
-            // reject MAC_CONTEXT_CMD on the 7265.
+            // API v1 expects each of the four EDCA entries to name the FIFO
+            // owned by that access category.  Before association mac80211
+            // has not supplied queue parameters yet, so Linux leaves the
+            // timing values zero and only sets the FIFO masks. The fifth
+            // entry is reserved (AC_NUM + 1) and stays zero.
             ac: [
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 0,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 1,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 2,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 1 << 3,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0x000f,
-                    cw_max: 0x003f,
-                    aifsn: 1,
+                    cw_min: 0,
+                    cw_max: 0,
+                    aifsn: 0,
                     fifos_mask: 0,
                     edca_txop: 0,
                 },
@@ -361,12 +380,19 @@ pub struct AddStaCmdV7 {
 }
 
 impl AddStaCmdV7 {
-    pub fn aux(sta_id: u8) -> Self {
+    pub fn aux(mac_index: u8, sta_id: u8) -> Self {
+        // The 7265 non-DQA layout reserves queue 8 for the auxiliary
+        // station.  Linux advertises that queue in tfd_queue_msk even when
+        // the first scan is passive; leaving it zero makes API-v17 firmware
+        // reject the station command before it can return ADD_STA status.
+        use super::registers::IWL_AUX_QUEUE;
         Self {
             add_modify: 0, // STA_MODE_ADD
             awake_acs: 0,
             tid_disable_tx: 0xffff,
-            mac_id_n_color: sta_id as u32,
+            // mac_id_n_color names the AUX MAC context (index 4); sta_id is
+            // an independent entry in the firmware station table.
+            mac_id_n_color: mac_index as u32,
             addr: [0; 6],
             reserved2: 0,
             sta_id,
@@ -381,8 +407,7 @@ impl AddStaCmdV7 {
             sleep_state_flags: 0,
             assoc_id: 0,
             beamform_flags: 0,
-            // Passive discovery does not transmit through the aux station.
-            tfd_queue_msk: 0,
+            tfd_queue_msk: 1 << IWL_AUX_QUEUE,
         }
     }
 }
@@ -429,7 +454,7 @@ pub struct ScanConfigV1 {
 }
 
 impl ScanConfigV1 {
-    pub fn new(mac_addr: [u8; 6]) -> Self {
+    pub fn new(mac_addr: [u8; 6], bcast_sta_id: u8) -> Self {
         // ACTIVATE | ALLOW_CHUB_REQS | SET_TX_CHAINS | SET_RX_CHAINS |
         // SET_AUX_STA_ID | SET_ALL_TIMES | SET_CHANNEL_FLAGS |
         // SET_LEGACY_RATES | SET_MAC_ADDR | CLEAR_FRAGMENTED |
@@ -460,7 +485,7 @@ impl ScanConfigV1 {
                 extended: 90,
             },
             mac_addr,
-            bcast_sta_id: 4,
+            bcast_sta_id,
             // PRE_SCAN_PASSIVE2ACTIVE only.  EBS (bits 0-2) is disabled
             // because it lets the firmware skip channels it considers "empty"
             // based on energy detection — on some hardware/firmware
@@ -557,7 +582,7 @@ pub struct ScanRequestCmd {
 }
 
 impl ScanRequestCmd {
-    pub fn new(mac: [u8; 6]) -> Self {
+    pub fn new(mac: [u8; 6], aux_sta_id: u8) -> Self {
         let mut channels = [ScanChannelCfgLmac {
             // Each entry is explicitly supplied by this request.  The
             // legacy LMAC API marks that form as PARTIAL; FULL is reserved
@@ -613,13 +638,13 @@ impl ScanRequestCmd {
                     rate_n_flags: 0,
                     // The legacy scan engine transmits through the auxiliary
                     // station created during firmware initialization.
-                    sta_id: 4,
+                    sta_id: aux_sta_id,
                     reserved: [0; 3],
                 },
                 ScanReqTxCmd {
                     tx_flags: 0,
                     rate_n_flags: 0,
-                    sta_id: 4,
+                    sta_id: aux_sta_id,
                     reserved: [0; 3],
                 },
             ],
@@ -768,6 +793,23 @@ pub enum WifiInitPhase {
     FwInitCmds = 7,
     Done = 8,
     Failed = 9,
+}
+
+impl WifiInitPhase {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::PciProbe => "pci_probe",
+            Self::MmioInit => "mmio_init",
+            Self::MmioPollMacClock => "mmio_poll_mac_clock",
+            Self::DmaAlloc => "dma_alloc",
+            Self::FwUpload => "fw_upload",
+            Self::FwWaitAlive => "fw_wait_alive",
+            Self::FwInitCmds => "fw_init_cmds",
+            Self::Done => "done",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 impl From<u8> for WifiInitPhase {

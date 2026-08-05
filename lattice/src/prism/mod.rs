@@ -121,11 +121,12 @@ impl LatticeStyle for PrismStyle {
                 32,
             );
         }
-        let tray_x = width.saturating_sub(168);
+        let tray_x = taskbar.status_group_x(width).min(width.saturating_sub(152));
+        let tray_w = width.saturating_sub(tray_x);
         canvas.rounded_rect(
             tray_x as i32,
             bar_y as i32 + 7,
-            152,
+            tray_w,
             36,
             8,
             palette.taskbar_inactive_bg,
@@ -134,15 +135,21 @@ impl LatticeStyle for PrismStyle {
             canvas.fb,
             width,
             height,
-            tray_x + 10,
+            taskbar.wifi_icon_x(width),
             bar_y + 15,
             taskbar.wifi_connected,
             taskbar.wifi_visible,
             taskbar.wifi_signal,
         );
+        crate::taskbar::render_power_icon(
+            canvas,
+            taskbar.power_icon_x(width) + 6,
+            bar_y + 13,
+            palette.taskbar_text,
+        );
         if !taskbar.clock_text.is_empty() {
             canvas.draw_text(
-                tray_x as i32 + 48,
+                taskbar.clock_x(width) as i32,
                 bar_y as i32 + 17,
                 &taskbar.clock_text,
                 palette.taskbar_text,

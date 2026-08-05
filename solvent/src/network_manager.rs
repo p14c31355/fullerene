@@ -119,7 +119,14 @@ impl crate::Service for WifiService {
             self.advance_init(now);
         }
         #[cfg(not(nitrogen_no_iwlwifi))]
-        nitrogen::iwlwifi::tick_wifi_device();
+        // There is no device to poll before the user requests initialization.
+        // After a failed attempt wifi_init_completed() is also true, but the
+        // driver object is absent. Use the stronger readiness predicate so we
+        // do not keep producing no-op Tick requests that can starve later
+        // scan/connect actions.
+        if self.init_pending || nitrogen::iwlwifi::wifi_device_ready() {
+            nitrogen::iwlwifi::tick_wifi_device();
+        }
         #[cfg(not(nitrogen_no_iwlwifi))]
         if nitrogen::iwlwifi::wifi_init_completed()
             && WIFI_SCAN_REQUESTED.swap(false, Ordering::Acquire)

@@ -14,6 +14,95 @@ const MAX_WASM_OUTPUT_BYTES: usize = 256 * 1024;
 static WASM_OUTPUT: Mutex<Option<String>> = Mutex::new(None);
 static LAST_WASM_OUTPUT_REFRESH: AtomicU64 = AtomicU64::new(u64::MAX);
 
+/// Execute a machine power transition requested by the shell or desktop.
+///
+/// These are the same low-level paths that have always backed the `reboot`
+/// and `shutdown` shell commands, kept in one place so the GUI cannot drift
+/// from the tested shell behavior.
+pub fn system_control(cmd: &str) {
+    match cmd {
+        "reboot" => {
+            petroleum::serial::serial_log(format_args!("Reboot requested\n"));
+            unsafe {
+                let port: u16 = 0x64;
+                const MAX_CONTROLLER_POLLS: usize = 100_000;
+                let mut controller_ready = false;
+                for _ in 0..MAX_CONTROLLER_POLLS {
+                    if x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02 == 0
+                    {
+                        controller_ready = true;
+                        break;
+                    }
+                }
+                if !controller_ready {
+                    petroleum::serial::serial_log(format_args!(
+                        "Reboot failed: keyboard controller did not become ready\n"
+                    ));
+                    return;
+                }
+                x86_64::instructions::port::PortWriteOnly::<u8>::new(port).write(0xFEu8);
+            }
+        }
+        "shutdown" => {
+            petroleum::serial::serial_log(format_args!("Shutdown requested\n"));
+            if acpi_shutdown() {
+                petroleum::serial::serial_log(format_args!("ACPI S5 shutdown issued\n"));
+                return;
+            }
+
+            // QEMU/Bochs fallback.  Do not enter an unconditional HLT loop:
+            // on a physical machine these ports may be ignored, and that
+            // used to turn a failed power-off request into a permanent hang.
+            unsafe {
+                x86_64::instructions::port::PortWriteOnly::<u16>::new(0x604).write(0x2000u16);
+                let shutdown_str = b"Shutdown";
+                let mut port = x86_64::instructions::port::PortWriteOnly::<u8>::new(0xB004);
+                for &byte in shutdown_str {
+                    port.write(byte);
+                }
+                x86_64::instructions::port::PortWriteOnly::<u16>::new(0x4004).write(0x3400u16);
+            }
+            petroleum::serial::serial_log(format_args!(
+                "ACPI unavailable; legacy shutdown ports did not acknowledge\n"
+            ));
+        }
+        _ => {}
+    }
+}
+
+/// Request ACPI S5 soft-off using the firmware-described PM1 control block.
+/// Returns false when the firmware tables do not expose a usable S5 path.
+fn acpi_shutdown() -> bool {
+    let hint = crate::boot::UEFI_RSDP_ADDRESS
+        .load(core::sync::atomic::Ordering::Relaxed)
+        .max(crate::contexts::boot::with_boot(|boot| boot.rsdp_address).unwrap_or(0));
+    let Some(manager) = nitrogen::acpi::manager::AcpiManager::init(hint) else {
+        return false;
+    };
+    let Some(power) = manager.parse_power_info() else {
+        return false;
+    };
+    let Some((sleep_a, sleep_b)) = manager.parse_s5_sleep_types() else {
+        return false;
+    };
+
+    let value_a = (sleep_a << 10) | (1 << 13);
+    let value_b = (sleep_b << 10) | (1 << 13);
+    unsafe {
+        if power.smi_command != 0 && power.acpi_enable != 0 {
+            x86_64::instructions::port::PortWriteOnly::<u8>::new(power.smi_command as u16)
+                .write(power.acpi_enable);
+        }
+        x86_64::instructions::port::PortWriteOnly::<u16>::new(power.pm1a_control as u16)
+            .write(value_a);
+        if power.pm1b_control != 0 {
+            x86_64::instructions::port::PortWriteOnly::<u16>::new(power.pm1b_control as u16)
+                .write(value_b);
+        }
+    }
+    true
+}
+
 fn buffer_wasm_output(data: &[u8]) {
     let mut output = WASM_OUTPUT.lock();
     let Some(output) = output.as_mut() else {
@@ -1407,33 +1496,10 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
             }
             "reboot" => {
-                petroleum::serial::serial_log(format_args!("Reboot requested via shell\n"));
-                unsafe {
-                    let port: u16 = 0x64;
-                    while x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02
-                        != 0
-                    {}
-                    x86_64::instructions::port::PortWriteOnly::<u8>::new(port).write(0xFEu8);
-                }
+                system_control("reboot");
             }
             "shutdown" => {
-                petroleum::serial::serial_log(format_args!("Shutdown requested via shell\n"));
-                unsafe {
-                    x86_64::instructions::port::PortWriteOnly::<u16>::new(0x604).write(0x2000u16);
-                }
-                unsafe {
-                    let shutdown_str = b"Shutdown";
-                    let mut port = x86_64::instructions::port::PortWriteOnly::<u8>::new(0xB004);
-                    for &byte in shutdown_str {
-                        port.write(byte);
-                    }
-                }
-                unsafe {
-                    x86_64::instructions::port::PortWriteOnly::<u16>::new(0x4004).write(0x3400u16);
-                }
-                loop {
-                    x86_64::instructions::hlt();
-                }
+                system_control("shutdown");
             }
             "install_fullerene list" => {
                 solvent::write_terminal("Fullerene installer targets (destructive install):\n");

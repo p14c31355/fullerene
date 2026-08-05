@@ -27,11 +27,19 @@ pub struct InstallerProgress {
 }
 pub type InstallerRunCallback = fn(&str) -> Result<InstallerProgress, String>;
 
+/// Requested machine power transition from the desktop UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerAction {
+    Shutdown,
+    Reboot,
+}
+
 /// Kernel services installed into the Solvent orchestration layer.
 #[derive(Clone, Copy)]
 pub struct SolventCallbacks {
     pub shell_cmd: Option<fn(&str) -> String>,
     pub launch_shell: Option<fn()>,
+    pub power_control: Option<fn(PowerAction)>,
     pub run_wasm: Option<RunWasmCallback>,
     pub heap_extend: Option<fn(usize) -> Result<(), ()>>,
     pub wall_clock: Option<WallClockCallback>,
@@ -63,6 +71,7 @@ impl SolventCallbacks {
         Self {
             shell_cmd: None,
             launch_shell: None,
+            power_control: None,
             run_wasm: None,
             heap_extend: None,
             wall_clock: None,

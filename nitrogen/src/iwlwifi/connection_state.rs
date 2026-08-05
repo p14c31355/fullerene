@@ -62,6 +62,9 @@ enum WifiRequest {
         ssid: Ssid,
         password: Option<String>,
     },
+    DataTx {
+        frame: Vec<u8>,
+    },
 }
 
 enum WifiCompletionKind {
@@ -69,6 +72,7 @@ enum WifiCompletionKind {
     Tick,
     StartScan { accepted: bool },
     Connect { accepted: bool },
+    DataTx { accepted: bool },
 }
 
 struct WifiCompletion {
@@ -109,12 +113,45 @@ fn release_wifi_completion() {
 
 fn enqueue_wifi_request(request: WifiRequest) -> Option<u64> {
     let mut queue = WIFI_SQ.lock();
+
+    // InitStep and Tick are level-triggered requests.  Keeping more than one
+    // copy of either request cannot add useful work: the next scheduler pass
+    // observes the same state and performs the same transition/poll.  This is
+    // especially important while firmware or PCIe recovery is taking a long
+    // time; otherwise the service tick can fill the SQ and hide real user
+    // requests (scan/connect) behind dozens of stale polls.
+    let duplicate_periodic_request = match &request {
+        WifiRequest::InitStep => queue
+            .iter()
+            .any(|(_, pending)| matches!(pending, WifiRequest::InitStep)),
+        WifiRequest::Tick => queue
+            .iter()
+            .any(|(_, pending)| matches!(pending, WifiRequest::Tick)),
+        _ => false,
+    };
+    if duplicate_periodic_request {
+        return None;
+    }
+
     if queue.len() >= 32 {
-        log::warn!("iwlwifi: request SQ full; dropping request");
+        // A periodic poll is disposable when the queue is genuinely full.
+        // Keep the warning for action requests, where dropping the request is
+        // user-visible and worth diagnosing.
+        if !matches!(&request, WifiRequest::InitStep | WifiRequest::Tick) {
+            log::warn!("iwlwifi: request SQ full; dropping request");
+        }
         return None;
     }
     let id = NEXT_WIFI_REQUEST.fetch_add(1, Ordering::Relaxed);
-    queue.push_back((id, request));
+    // Initialization is a prerequisite for every other Wi-Fi request.  A
+    // pending periodic Tick must never sit in front of the first InitStep;
+    // this is especially important when the service and device phases are
+    // separated by a GUI tick.
+    if matches!(&request, WifiRequest::InitStep) {
+        queue.push_front((id, request));
+    } else {
+        queue.push_back((id, request));
+    }
     Some(id)
 }
 
@@ -153,6 +190,15 @@ fn release_init_resources(ctx: &mut WifiInitContext) {
 
 pub fn wifi_init_completed() -> bool {
     WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Whether the hardware-facing driver object was successfully installed.
+///
+/// `wifi_init_completed()` also becomes true after a failed initialization so
+/// the lifecycle cannot be retried accidentally.  Callers that only want to
+/// schedule device polls must use this predicate instead.
+pub fn wifi_device_ready() -> bool {
+    WIFI_DEVICE.lock().is_some()
 }
 
 /// Force WiFi init to be marked as failed/completed.
@@ -227,6 +273,16 @@ pub fn retry_wifi_initialization() -> bool {
 }
 
 fn set_init_phase(phase: WifiInitPhase) {
+    let previous = get_init_phase();
+    if previous != phase {
+        log::info!(
+            "iwlwifi: init.phase from={}({}) to={}({})",
+            previous.name(),
+            previous as u8,
+            phase.name(),
+            phase as u8,
+        );
+    }
     if phase != WifiInitPhase::Failed {
         WIFI_INIT_LAST_ACTIVE_PHASE.store(phase as u8, core::sync::atomic::Ordering::Release);
     }
@@ -246,7 +302,7 @@ fn perform_init_step() {
 
     match phase {
         WifiInitPhase::Idle => {
-            log::info!("iwlwifi: initialization state machine starting");
+            log::info!("iwlwifi: init.begin");
             let driver_ctx_opt = WIFI_DRIVER_CTX.lock();
             let _driver_ctx = match *driver_ctx_opt {
                 Some(c) => c,
@@ -270,7 +326,7 @@ fn perform_init_step() {
             set_init_phase(WifiInitPhase::PciProbe);
         }
         WifiInitPhase::PciProbe => {
-            log::info!("iwlwifi: PCI probe phase started");
+            log::info!("iwlwifi: init.phase.begin name=pci_probe id=1");
             debug::print("iwlwifi", "step: pci_probe_enter");
             let driver_ctx = match *WIFI_DRIVER_CTX.lock() {
                 Some(c) => c,
@@ -327,7 +383,7 @@ fn perform_init_step() {
             debug::print("iwlwifi", "step: pci_probe_done");
         }
         WifiInitPhase::MmioInit => {
-            log::info!("iwlwifi: MMIO reset/clock request phase started");
+            log::info!("iwlwifi: init.phase.begin name=mmio_init id=2");
             debug::print("iwlwifi", "step: mmio_enter");
 
             // Link training belongs to firmware. Resetting the upstream bridge
@@ -536,7 +592,7 @@ fn perform_init_step() {
             set_init_phase(WifiInitPhase::DmaAlloc);
         }
         WifiInitPhase::DmaAlloc => {
-            log::info!("iwlwifi: allocating DMA rings and RX/TX buffers");
+            log::info!("iwlwifi: init.phase.begin name=dma_alloc id=4");
             let (pci_dev, mmio, driver_ctx, health, mac, hw_rev, tx_dma, rx_dma, tx_bufs, rx_bufs) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let pci_dev = match ctx.pci_dev.take() {
@@ -703,6 +759,12 @@ fn perform_init_step() {
                 fw_state: FwState::NotLoaded,
                 fw_build: 0,
                 fw_api_ver: IWL_FW_API_VER,
+                phy_config: 0,
+                phy_sku_tlv_len: None,
+                runtime_calib_flow: 0,
+                runtime_calib_event: 0,
+                runtime_errlog_ptr: 0,
+                init_errlog_ptr: 0,
                 iwl_state: IwlState::Init,
                 wifi_conn: bonder::wifi::WifiConnection::new(),
                 wpa: bonder::wpa::WpaSupplicant::new(),
@@ -858,6 +920,7 @@ fn perform_init_step() {
             }
         }
         WifiInitPhase::FwInitCmds => {
+            log::info!("iwlwifi: init.phase.begin name=fw_init_cmds id=7");
             let bdf_info = {
                 let ctx = WIFI_INIT_CTX.lock();
                 pci_bdf_from_ctx(&ctx)
@@ -885,7 +948,10 @@ fn perform_init_step() {
                     set_init_phase(WifiInitPhase::Done);
                 }
                 Err(e) => {
-                    log::warn!("iwlwifi: step: init commands failed: {}", e);
+                    log::error!(
+                        "iwlwifi: init.phase.error name=fw_init_cmds id=7 error={}",
+                        e
+                    );
                     set_init_phase(WifiInitPhase::Failed);
                 }
             }
@@ -906,12 +972,16 @@ fn perform_init_step() {
             let previous = WifiInitPhase::from(
                 WIFI_INIT_LAST_ACTIVE_PHASE.load(core::sync::atomic::Ordering::Acquire),
             );
-            log::error!("iwlwifi: initialization failed in phase {:?}", previous);
+            log::error!(
+                "iwlwifi: init.failed phase={}({})",
+                previous.name(),
+                previous as u8
+            );
             let mut ctx = WIFI_INIT_CTX.lock();
             release_init_resources(&mut ctx);
             drop(ctx);
             WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
-            log::error!("iwlwifi: initialization failed; device disabled");
+            log::error!("iwlwifi: init.result status=disabled");
             debug::print("iwlwifi", "step: init_failed");
         }
     }
@@ -1042,6 +1112,29 @@ fn perform_connect(ssid: &Ssid, password: Option<&str>) -> bool {
     false
 }
 
+/// Submit a data frame from a protocol/service caller without touching
+/// firmware or MMIO in that caller's context.
+pub fn enqueue_data_frame(frame: &[u8]) -> bool {
+    if frame.is_empty() || frame.len() > MAX_FRAME_SIZE {
+        return false;
+    }
+    enqueue_wifi_request(WifiRequest::DataTx {
+        frame: frame.to_vec(),
+    })
+    .is_some()
+}
+
+fn perform_send_data_frame(frame: &[u8]) -> bool {
+    let mut device = WIFI_DEVICE.lock();
+    let Some(device) = device.as_mut() else {
+        return false;
+    };
+    if !device.device_available() {
+        return false;
+    }
+    device.send_data_frame(frame).is_ok()
+}
+
 fn perform_start_scan_if_idle() -> bool {
     let mut dev_guard = WIFI_DEVICE.lock();
     let Some(ref mut dev) = *dev_guard else {
@@ -1129,6 +1222,9 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
             WifiRequest::Connect { ssid, password } => WifiCompletionKind::Connect {
                 accepted: perform_connect(&ssid, password.as_deref()),
             },
+            WifiRequest::DataTx { frame } => WifiCompletionKind::DataTx {
+                accepted: perform_send_data_frame(&frame),
+            },
         };
         WIFI_CQ
             .lock()
@@ -1169,6 +1265,14 @@ pub fn consume_wifi_completion_queue_until(budget: usize, deadline_tsc: u64) {
                     );
                 }
             }
+            WifiCompletionKind::DataTx { accepted } => {
+                if !accepted {
+                    log::warn!(
+                        "iwlwifi: data TX request {} was rejected",
+                        completion.request_id
+                    );
+                }
+            }
         }
     }
 }
@@ -1190,7 +1294,9 @@ impl IwlWifiDevice {
         self.scan_result_grace_ticks = 0;
         self.iwl_state = IwlState::Scanning;
 
-        let scan_cmd = ScanRequestCmd::new(self.mac);
+        // Keep this equal to the internal station allocated during firmware
+        // initialization; MAC context index 4 is not a station-table ID.
+        let scan_cmd = ScanRequestCmd::new(self.mac, 1);
         let cmd_data = unsafe { super::as_bytes(&scan_cmd) };
         // SCAN_OFFLOAD_REQUEST_CMD (0x51) is a legacy-group command and uses
         // the four-byte HCMD header. SCAN_CFG_CMD above is the exception: it

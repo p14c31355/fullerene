@@ -263,14 +263,17 @@ pub fn enumerate_mass_storage(
     dev_addr: u8,
     dev_idx: usize,
 ) -> Result<(u8, u16, u8, u16), crate::DriverError> {
-    // Step 1: Get device descriptor (64 bytes for safety)
-    let mut desc_buf = [0u8; 64];
+    // Step 1: Read only the first 8 bytes.  Before this request the host
+    // knows only the USB default EP0 packet size (8 bytes for LS/FS).  Asking
+    // for the full descriptor here makes xHCI issue a multi-packet transfer
+    // before bMaxPacketSize0 has been learned and breaks several FS devices.
+    let mut desc_buf = [0u8; 8];
     let setup = UsbSetupPacket {
         bm_request_type: 0x80,
         b_request: REQ_GET_DESCRIPTOR,
         w_value: (DESC_DEVICE as u16) << 8,
         w_index: 0,
-        w_length: 64,
+        w_length: 8,
     };
     let len = match host.control_transfer(dev_addr, &setup, &mut desc_buf) {
         Ok(len) => len,
@@ -283,7 +286,7 @@ pub fn enumerate_mass_storage(
             return Err(error);
         }
     };
-    if len < 18 {
+    if len < 8 {
         log::warn!(
             "USB: device {} returned short device descriptor ({} bytes)",
             dev_addr,
@@ -292,7 +295,43 @@ pub fn enumerate_mass_storage(
         return Err(crate::DriverError::Protocol);
     }
 
-    let num_cfgs = desc_buf[17];
+    // USB 3.x encodes bMaxPacketSize0 as an exponent; the only legal
+    // SuperSpeed value is 9, which represents 512 bytes. USB 2.x values use
+    // the literal packet size and remain unchanged.
+    let raw_max_packet_size = desc_buf[7];
+    let Some(max_packet_size) =
+        decode_ep0_packet_size(raw_max_packet_size, host.is_super_speed(dev_addr))
+    else {
+        log::warn!(
+            "USB: device {} reported invalid EP0 max packet size {}",
+            dev_addr,
+            raw_max_packet_size
+        );
+        return Err(crate::DriverError::Protocol);
+    };
+    host.set_control_max_packet_size(dev_addr, max_packet_size)?;
+
+    // Now that EP0 uses the device-reported packet size, retrieve the full
+    // descriptor and inspect its configuration count.
+    let mut full_desc_buf = [0u8; 18];
+    let full_setup = UsbSetupPacket {
+        bm_request_type: 0x80,
+        b_request: REQ_GET_DESCRIPTOR,
+        w_value: (DESC_DEVICE as u16) << 8,
+        w_index: 0,
+        w_length: 18,
+    };
+    let full_len = host.control_transfer(dev_addr, &full_setup, &mut full_desc_buf)?;
+    if full_len < 18 {
+        log::warn!(
+            "USB: device {} returned short full device descriptor ({} bytes)",
+            dev_addr,
+            full_len
+        );
+        return Err(crate::DriverError::Protocol);
+    }
+
+    let num_cfgs = full_desc_buf[17];
     if num_cfgs == 0 {
         log::warn!("USB: device {} reports zero configurations", dev_addr);
         return Err(crate::DriverError::Protocol);
@@ -362,6 +401,14 @@ pub fn enumerate_mass_storage(
         config.ep_in,
         config.ep_in_mps,
     ))
+}
+
+fn decode_ep0_packet_size(raw: u8, super_speed: bool) -> Option<u16> {
+    if super_speed {
+        (raw == 9).then_some(512)
+    } else {
+        matches!(raw, 8 | 16 | 32 | 64).then_some(raw as u16)
+    }
 }
 
 /// Parse bulk IN/OUT endpoints from a configuration descriptor buffer.
@@ -596,5 +643,13 @@ mod tests {
         let mut config = MSC_CONFIG;
         config[14] = 3;
         assert!(parse_mass_storage_config(&config, config.len()).is_err());
+    }
+
+    #[test]
+    fn decodes_superspeed_ep0_packet_size_without_accepting_usb2_value_nine() {
+        assert_eq!(decode_ep0_packet_size(9, true), Some(512));
+        assert_eq!(decode_ep0_packet_size(64, true), None);
+        assert_eq!(decode_ep0_packet_size(9, false), None);
+        assert_eq!(decode_ep0_packet_size(64, false), Some(64));
     }
 }

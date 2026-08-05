@@ -120,6 +120,56 @@ impl XhciContext {
         Ok(())
     }
 
+    /// Publish the device-reported EP0 maximum packet size.
+    ///
+    /// Address Device starts low/full-speed devices with the USB default
+    /// eight-byte EP0.  After the first descriptor prefix is read, xHCI
+    /// requires an Evaluate Context command before larger control transfers.
+    pub fn evaluate_endpoint0(
+        &mut self,
+        slot_id: u32,
+        max_packet_size: u16,
+    ) -> Result<(), crate::DriverError> {
+        if !matches!(max_packet_size, 8 | 16 | 32 | 64 | 512) {
+            return Err(crate::DriverError::InvalidArgument);
+        }
+        let (ep0_ring_phys, in_ctx_phys) = {
+            let slot = self
+                .device
+                .slots
+                .get(slot_id)
+                .ok_or(crate::DriverError::InvalidArgument)?;
+            (slot.ep0_ring.phys, slot.in_ctx_phys)
+        };
+        if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
+            in_ctx.drop_flags = 0;
+            in_ctx.add_flags = 1 << 1; // EP0 context only; slot context is unchanged.
+            in_ctx.slot_ctx = [0; 8];
+            let ep0 = in_ctx.ep0_ctx_mut();
+            *ep0 = [0; 8];
+            ep0[1] = (u32::from(max_packet_size) << 16) | (3 << 1) | (4 << 3);
+            ep0[2] = ep0_ring_phys as u32 | 1;
+            ep0[3] = (ep0_ring_phys >> 32) as u32;
+            ep0[4] = 8;
+            crate::usb::dma::flush_range(
+                in_ctx as *const _ as *const u8,
+                core::mem::size_of::<super::device::InputContext>(),
+            );
+        }
+        log::info!(
+            "xHCI: Evaluate Context slot={} EP0 max_packet_size={} in_ctx={:#x}",
+            slot_id,
+            max_packet_size,
+            in_ctx_phys
+        );
+        self.send_cmd(
+            Trb::new(trb_type::EVALUATE_CONTEXT, self.rings.command.cycle)
+                .with_data_ptr(in_ctx_phys)
+                .with_flags(slot_id << 24),
+        )?;
+        Ok(())
+    }
+
     /// Configure a bulk endpoint.
     pub fn configure_endpoint_bulk(
         &mut self,

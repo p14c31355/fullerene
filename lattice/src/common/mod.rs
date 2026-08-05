@@ -602,6 +602,12 @@ pub fn draw_basalt_taskbar(canvas: &mut Painter<'_>, taskbar: &Taskbar, spec: &S
         taskbar.wifi_visible,
         taskbar.wifi_signal,
     );
+    crate::taskbar::render_power_icon(
+        canvas,
+        taskbar.power_icon_x(width) + 6,
+        bar_y + 4,
+        palette.taskbar_text,
+    );
     if let Some((source, message)) = taskbar.debug_msgs.last() {
         let text = if source.is_empty() {
             alloc::format!("[{}]", message)
@@ -619,7 +625,7 @@ pub fn draw_basalt_taskbar(canvas: &mut Painter<'_>, taskbar: &Taskbar, spec: &S
     }
     if !taskbar.clock_text.is_empty() {
         canvas.draw_text(
-            width.saturating_sub(100) as i32,
+            taskbar.clock_x(width) as i32,
             bar_y as i32 + 7,
             &taskbar.clock_text,
             palette.taskbar_text,

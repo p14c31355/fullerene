@@ -144,11 +144,6 @@ pub fn scheduler_loop() -> ! {
         // or service tick never performs firmware/MMIO work synchronously.
         let device_phase_deadline = unsafe { core::arch::x86_64::_rdtsc() }
             .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(10));
-        #[cfg(not(nitrogen_no_iwlwifi))]
-        {
-            nitrogen::iwlwifi::process_wifi_submission_queue_until(16, device_phase_deadline);
-            nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, device_phase_deadline);
-        }
         #[cfg(not(nitrogen_no_storage))]
         {
             crate::drivers::registry::process_driver_submission_queue_until(
@@ -160,9 +155,26 @@ pub fn scheduler_loop() -> ! {
                 device_phase_deadline,
             );
         }
+        #[cfg(not(nitrogen_no_usb))]
+        {
+            crate::drivers::registry::process_usb_submission_queue(1);
+            crate::drivers::registry::consume_usb_completion_queue(1);
+        }
         crate::contexts::audio::process_audio_submission_queue(2);
         crate::contexts::audio::poll_audio_playback();
         crate::contexts::audio::consume_audio_completion_queue(4);
+
+        // Drain requests left by the preceding GUI tick before entering the
+        // next one. This closes the gap where a nested/runtime-driven tick
+        // can enqueue Wi-Fi initialization while the scheduler has not yet
+        // reached the normal post-GUI device phase.
+        #[cfg(not(nitrogen_no_iwlwifi))]
+        {
+            let wifi_phase_deadline = unsafe { core::arch::x86_64::_rdtsc() }
+                .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(2));
+            nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
+            nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
+        }
 
         // BusyBox smoke is a synchronous ABI test. During the harness, the
         // nested runtime pump handles only input and rendering; after a
@@ -172,6 +184,20 @@ pub fn scheduler_loop() -> ! {
         #[cfg(linux_busybox_smoke)]
         if !solvent::headless_smoke_active() {
             gui::runtime_tick(SCHEDULER.current_tick());
+        }
+
+        // The GUI/service tick above is the producer for Wi-Fi requests (the
+        // network menu enqueues InitStep there). Process Wi-Fi after it so a
+        // newly requested initialization does not wait for another scheduler
+        // turn or get stranded behind a lifecycle timeout. Wi-Fi has its own
+        // per-phase MMIO/PCIe watchdogs; do not use the shared storage-device
+        // deadline for this path.
+        #[cfg(not(nitrogen_no_iwlwifi))]
+        {
+            let wifi_phase_deadline = unsafe { core::arch::x86_64::_rdtsc() }
+                .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(2));
+            nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
+            nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
         }
 
         // Check if the user requested a shell launch (via AppGrid / menu).

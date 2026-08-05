@@ -165,10 +165,14 @@ pub fn init() {
         mounted_drive_list: Some(|| {
             crate::contexts::vfs::with_vfs(|vfs| vfs.mounted_block_devices()).unwrap_or_default()
         }),
-        usb_poll: Some(|| crate::drivers::registry::poll_usb()),
+        usb_poll: Some(|| crate::drivers::registry::enqueue_usb_poll()),
         shell_cmd: None,
         launch_shell: Some(|| {
             crate::scheduler::request_shell_launch();
+        }),
+        power_control: Some(|action| match action {
+            solvent::PowerAction::Shutdown => crate::shell::system_control("shutdown"),
+            solvent::PowerAction::Reboot => crate::shell::system_control("reboot"),
         }),
         settings_save: Some(save_runtime_settings),
         kernel_log: Some(|| {

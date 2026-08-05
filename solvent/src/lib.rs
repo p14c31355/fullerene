@@ -76,7 +76,7 @@ pub mod viewer;
 mod window_api;
 
 pub use callbacks::{
-    DeviceEntry, InstallerDevice, InstallerProgress, ProcessEntry, ProcessStateKind,
+    DeviceEntry, InstallerDevice, InstallerProgress, PowerAction, ProcessEntry, ProcessStateKind,
     SolventCallbacks, VfsEntry, VfsHandle, exec_shell_command, get_mounted_drives, launch_shell,
 };
 pub use editor_bridge::editor_handle_key;

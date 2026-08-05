@@ -143,11 +143,12 @@ impl LatticeStyle for PhotonStyle {
                 32,
             );
         }
-        let tray_x = width.saturating_sub(168);
+        let tray_x = taskbar.status_group_x(width).min(width.saturating_sub(152));
+        let tray_w = width.saturating_sub(tray_x);
         canvas.rounded_rect(
             tray_x as i32,
             bar_y as i32 + 12,
-            152,
+            tray_w,
             40,
             12,
             palette.taskbar_bg,
@@ -156,15 +157,21 @@ impl LatticeStyle for PhotonStyle {
             canvas.fb,
             width,
             height,
-            tray_x + 14,
+            taskbar.wifi_icon_x(width),
             bar_y + 22,
             taskbar.wifi_connected,
             taskbar.wifi_visible,
             taskbar.wifi_signal,
         );
+        crate::taskbar::render_power_icon(
+            canvas,
+            taskbar.power_icon_x(width) + 6,
+            bar_y + 21,
+            palette.taskbar_text,
+        );
         if !taskbar.clock_text.is_empty() {
             canvas.draw_text(
-                tray_x as i32 + 52,
+                taskbar.clock_x(width) as i32,
                 bar_y as i32 + 25,
                 &taskbar.clock_text,
                 palette.taskbar_text,

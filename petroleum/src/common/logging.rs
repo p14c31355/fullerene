@@ -37,7 +37,11 @@ impl log::Log for FullereneLogger {
             // if invoked from interrupt context while the allocator
             // lock is held by a thread in process context).
             use core::fmt::Write;
-            const BUF_CAP: usize = 256;
+            // Keep enough room for structured driver diagnostics such as a
+            // firmware command summary. Individual callers should still
+            // prefer short, one-record messages because serial/dmesg output
+            // is easier to scan that way.
+            const BUF_CAP: usize = 1024;
             let mut buf = [0u8; BUF_CAP];
             let len = {
                 let mut writer = StackWriter {

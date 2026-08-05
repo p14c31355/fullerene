@@ -666,7 +666,7 @@ impl USBContext {
             )
         };
 
-        self.storage.try_register(Disk {
+        let registered = self.storage.try_register(Disk {
             dev_addr,
             ep_out,
             ep_out_mps,
@@ -677,5 +677,14 @@ impl USBContext {
             ctrl_type: "xHCI",
             ctrl_idx,
         });
+        if registered {
+            log::info!(
+                "USB: xHCI mass-storage device ready ctrl={} slot={} block_size={} total_blocks={}",
+                ctrl_idx,
+                dev_addr,
+                block_size,
+                total_blocks,
+            );
+        }
     }
 }
