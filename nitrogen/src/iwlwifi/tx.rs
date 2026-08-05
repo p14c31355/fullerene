@@ -105,9 +105,10 @@ impl IwlWifiDevice {
                 self.mmio.add(FH_KW_MEM_ADDR_REG as usize),
                 (keep_warm_phys >> 4) as u32,
             );
-            // The 7265 uses a gen1 128-byte TFD and queue 4 for HCMDs. The
-            // previous code rang 0x0bc, which is not HBUS_TARG_WRPTR on this
-            // device and therefore never submitted the scan command.
+            // The 7265 uses a gen1 128-byte TFD and the API-v17 MVM command
+            // queue 9. The previous code rang 0x0bc, which is not
+            // HBUS_TARG_WRPTR on this device and therefore never submitted
+            // the scan command.
             core::ptr::write_volatile(
                 self.mmio.add(FH_MEM_CBBC_CMD_QUEUE as usize),
                 (ring_phys >> 8) as u32,
@@ -117,7 +118,7 @@ impl IwlWifiDevice {
                 (aux_ring_phys >> 8) as u32,
             );
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
-            for channel in 0..8 {
+            for channel in 0..=IWL_CMD_QUEUE {
                 core::ptr::write_volatile(
                     self.mmio
                         .add((FH_TCSR_CHNL_TX_CONFIG_BASE + channel * (0x20 / 4)) as usize),
@@ -486,6 +487,10 @@ impl IwlWifiDevice {
         // The first internal station allocation reserves station 0 for the
         // BSS/AP path, so the AUX station receives station-table ID 1.
         const AUX_STA_ID: u8 = 1;
+        // In Linux's non-DQA path the scheduler queue is initially owned by
+        // station 0; ADD_STA then binds the auxiliary station (sta 1) to the
+        // queue through tfd_queue_msk. Sending sta 1 here makes API-v17
+        // firmware reject SCD_QUEUE_CFG before it can consume ADD_STA.
         let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX, AUX_STA_ID);
         let aux_sta_bytes = unsafe { super::as_bytes(&aux_sta) };
         self.send_init_hcmd(

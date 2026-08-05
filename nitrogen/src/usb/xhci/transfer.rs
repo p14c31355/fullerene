@@ -310,6 +310,18 @@ impl XhciContext {
         match res {
             Ok(ev) => {
                 if !matches!(ev.completion_code(), COMP_SUCCESS | COMP_SHORT_PACKET) {
+                    log::warn!(
+                        "xHCI: bulk transfer failed slot={} endpoint={:#04x} direction={:?} length={} completion={} remaining={} event_slot={} event_ep={} event_trb={:#x}",
+                        slot_id,
+                        endpoint,
+                        dir,
+                        len,
+                        ev.completion_code(),
+                        ev.remaining(),
+                        (ev.flags >> 24) & 0xff,
+                        (ev.flags >> 16) & 0x1f,
+                        u64::from_le_bytes(ev.params),
+                    );
                     self.deferred_free_list.push((staging_phys, staging_pages));
                     return Err(crate::DriverError::Protocol);
                 }
@@ -325,7 +337,15 @@ impl XhciContext {
                     .free_contiguous_frames(staging_phys, staging_pages);
                 Ok(xfer_len)
             }
-            Err(_) => {
+            Err(error) => {
+                log::warn!(
+                    "xHCI: bulk transfer timed out slot={} endpoint={:#04x} direction={:?} length={} error={}",
+                    slot_id,
+                    endpoint,
+                    dir,
+                    len,
+                    error,
+                );
                 self.deferred_free_list.push((staging_phys, staging_pages));
                 Err(crate::DriverError::Protocol)
             }

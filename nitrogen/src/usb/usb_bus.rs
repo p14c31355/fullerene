@@ -84,56 +84,108 @@ pub fn bot_exec_command(
     cbw_raw[14] = cdb.len().min(16) as u8;
     cbw_raw[15..15 + cdb.len().min(16)].copy_from_slice(&cdb[..cdb.len().min(16)]);
 
-    host.bulk_transfer(
+    let cbw_actual = host.bulk_transfer(
         dev_addr,
         ep_out,
         &mut cbw_raw,
         UsbDirection::Out,
         ep_out_mps,
     )?;
+    if cbw_actual != cbw_raw.len() {
+        log::warn!(
+            "USB BOT: short CBW transfer device={} endpoint={:#04x} expected={} actual={}",
+            dev_addr,
+            ep_out,
+            cbw_raw.len(),
+            cbw_actual,
+        );
+        return Err(crate::DriverError::Protocol);
+    }
 
     // ── Phase 2: Data (optional) ──────────────────────────
-    if let Some(buf) = data {
+    // Keep the host-controller result.  A short data phase must not be
+    // accepted merely because the device reports a matching CSW residue.
+    let data_actual = if let Some(buf) = data {
         let (ep, mps) = if dir_in {
             (ep_in, ep_in_mps)
         } else {
             (ep_out, ep_out_mps)
         };
-        match buf {
-            BotBuffer::In(buf) => {
-                host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, mps)?;
-            }
+        Some(match buf {
+            BotBuffer::In(buf) => host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, mps)?,
             BotBuffer::Out(buf) => {
-                // SAFETY: bulk_transfer for OUT only reads the buffer, so creating a
-                // temporary mutable slice from an immutable one is sound.  The enum
-                // wrapper guarantees this path only runs for OUT transfers.
                 let len = buf.len();
                 let mut tmp = alloc::vec![0u8; len];
                 tmp.copy_from_slice(buf);
-                host.bulk_transfer(dev_addr, ep, &mut tmp, UsbDirection::Out, mps)?;
+                host.bulk_transfer(dev_addr, ep, &mut tmp, UsbDirection::Out, mps)?
             }
-        }
-    }
+        })
+    } else {
+        None
+    };
 
     // ── Phase 3: Receive CSW ──────────────────────────────
     let mut csw_raw = [0u8; 13];
-    host.bulk_transfer(dev_addr, ep_in, &mut csw_raw, UsbDirection::In, ep_in_mps)?;
+    let csw_actual =
+        host.bulk_transfer(dev_addr, ep_in, &mut csw_raw, UsbDirection::In, ep_in_mps)?;
+    if csw_actual != csw_raw.len() {
+        log::warn!(
+            "USB BOT: short CSW transfer device={} endpoint={:#04x} expected={} actual={}",
+            dev_addr,
+            ep_in,
+            csw_raw.len(),
+            csw_actual,
+        );
+        return Err(crate::DriverError::Protocol);
+    }
 
     let sig = u32::from_le_bytes([csw_raw[0], csw_raw[1], csw_raw[2], csw_raw[3]]);
     if sig != CSW_SIGNATURE {
+        log::warn!(
+            "USB BOT: invalid CSW signature device={} value={:#010x}",
+            dev_addr,
+            sig
+        );
         return Err(crate::DriverError::Protocol);
     }
     let csw_tag = u32::from_le_bytes([csw_raw[4], csw_raw[5], csw_raw[6], csw_raw[7]]);
     if csw_tag != t {
+        log::warn!(
+            "USB BOT: CSW tag mismatch device={} expected={} actual={}",
+            dev_addr,
+            t,
+            csw_tag,
+        );
         return Err(crate::DriverError::Protocol);
     }
     if csw_raw[12] != 0 {
+        log::warn!(
+            "USB BOT: command failed device={} tag={} status={}",
+            dev_addr,
+            t,
+            csw_raw[12],
+        );
         return Err(crate::DriverError::Protocol);
     }
     // Compute actual bytes transferred (BOT spec §5.2.3).
     let requested = dlen as usize;
     let residue = u32::from_le_bytes([csw_raw[8], csw_raw[9], csw_raw[10], csw_raw[11]]);
-    let actual = requested.saturating_sub(residue as usize);
+    let actual = requested
+        .checked_sub(residue as usize)
+        .ok_or(crate::DriverError::Protocol)?;
+    if let Some(data_actual) = data_actual
+        && data_actual != actual
+    {
+        log::warn!(
+            "USB BOT: data/CSW length mismatch device={} requested={} data_actual={} residue={} csw_actual={}",
+            dev_addr,
+            requested,
+            data_actual,
+            residue,
+            actual,
+        );
+        return Err(crate::DriverError::Protocol);
+    }
     Ok(actual)
 }
 
@@ -388,6 +440,37 @@ pub fn enumerate_mass_storage(
         return Err(error);
     }
 
+    // Linux usb-storage performs the BOT class reset before the first CBW.
+    // Some devices expose the endpoints immediately after SET_CONFIGURATION
+    // but keep their previous BOT state until this request is received.
+    let bot_reset = UsbSetupPacket {
+        bm_request_type: 0x21, // Host-to-device, class, interface
+        b_request: 0xff,       // Mass Storage Reset
+        w_value: 0,
+        w_index: config.interface as u16,
+        w_length: 0,
+    };
+    if let Err(error) = host.control_transfer(dev_addr, &bot_reset, &mut []) {
+        log::warn!(
+            "USB: device {} BOT reset failed interface={} error={}",
+            dev_addr,
+            config.interface,
+            error,
+        );
+        return Err(error);
+    }
+    // The class request completes before some devices have finished clearing
+    // their BOT state. Linux waits in this window before issuing the first
+    // CBW; without it the first CSW can contain stale endpoint data.
+    crate::timing::delay_ms(100);
+    log::info!(
+        "USB: device {} BOT reset complete interface={} bulk_out={:#04x} bulk_in={:#04x}",
+        dev_addr,
+        config.interface,
+        config.ep_out,
+        config.ep_in,
+    );
+
     // Update device metadata
     if let Some(dev) = host.devices_mut().get_mut(dev_idx) {
         dev.device_class = 0x08;
@@ -420,6 +503,7 @@ fn decode_ep0_packet_size(raw: u8, super_speed: bool) -> Option<u16> {
 /// falling back to a speed-appropriate default when the descriptor is missing.
 struct MassStorageConfig {
     value: u8,
+    interface: u8,
     subclass: u8,
     protocol: u8,
     ep_out: u8,
@@ -449,8 +533,11 @@ fn parse_mass_storage_config(
         }
         let dtype = cfg_buf[offset + 1];
         if dtype == 4 && dlen >= 9 {
-            interface = (cfg_buf[offset + 5] == 0x08 && cfg_buf[offset + 7] == 0x50)
-                .then_some((cfg_buf[offset + 6], cfg_buf[offset + 7]));
+            interface = (cfg_buf[offset + 5] == 0x08 && cfg_buf[offset + 7] == 0x50).then_some((
+                cfg_buf[offset + 2],
+                cfg_buf[offset + 6],
+                cfg_buf[offset + 7],
+            ));
             ep_out = None;
             ep_in = None;
         } else if dtype == 5 && dlen >= 7 && interface.is_some() {
@@ -465,11 +552,15 @@ fn parse_mass_storage_config(
                 }
             }
         }
-        if let (Some((subclass, protocol)), Some((out, out_mps)), Some((input, in_mps))) =
-            (interface, ep_out, ep_in)
+        if let (
+            Some((interface_number, subclass, protocol)),
+            Some((out, out_mps)),
+            Some((input, in_mps)),
+        ) = (interface, ep_out, ep_in)
         {
             return Ok(MassStorageConfig {
                 value: cfg_buf[5],
+                interface: interface_number,
                 subclass,
                 protocol,
                 ep_out: out,
