@@ -7,8 +7,11 @@
 use std::mem::size_of;
 use std::slice;
 
-use nitrogen::iwlwifi::registers::{IWL_AUX_QUEUE, TX_AUX_TFD_RING_OFFSET, TX_QUEUE_SIZE};
-use nitrogen::iwlwifi::types::{AddStaCmdV7, ScanConfigV1, ScanRequestCmd};
+use nitrogen::iwlwifi::registers::{
+    IWL_AUX_QUEUE, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES, TX_KEEP_WARM_BYTES,
+    TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET, TX_TFD_RING_BYTES,
+};
+use nitrogen::iwlwifi::types::{AddStaCmdV7, MacContextCmd, ScanConfigV1, ScanRequestCmd};
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
 use nitrogen::usb::xhci::transfer::linux_control_transfer_trbs;
@@ -111,7 +114,16 @@ fn linux_v49_xhci_control_out_and_no_data_status_directions() {
 }
 
 #[test]
-fn linux_aux_ring_is_separate_from_command_ring() {
+fn tx_dma_allocation_covers_every_region() {
     // Linux allocates 256 legacy 128-byte TFDs per scheduler queue.
-    assert_eq!(TX_AUX_TFD_RING_OFFSET, 128 * TX_QUEUE_SIZE);
+    assert_eq!(TX_TFD_RING_BYTES, 128 * TX_QUEUE_SIZE);
+    assert_eq!(TX_AUX_TFD_RING_OFFSET, TX_TFD_RING_BYTES);
+    assert!(TX_KEEP_WARM_OFFSET >= TX_AUX_TFD_RING_OFFSET + TX_TFD_RING_BYTES);
+    assert!(TX_SCD_BC_OFFSET >= TX_KEEP_WARM_OFFSET + TX_KEEP_WARM_BYTES);
+    assert!(TX_SCD_BC_OFFSET + TX_SCD_BC_BYTES <= TX_DMA_ALLOCATION_BYTES);
+}
+
+#[test]
+fn mac_context_payload_matches_api_v1_fixed_offsets() {
+    assert_eq!(size_of::<MacContextCmd>(), 144);
 }

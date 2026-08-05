@@ -454,7 +454,8 @@ impl IwlWifiDevice {
         // MAC_CONTEXT rejected even though the transport is healthy.
         if self.phy_config == 0 {
             log::error!(
-                "iwlwifi: init.config name=phy_configuration status=missing_firmware_phy_sku"
+                "iwlwifi: init.config name=phy_configuration status=missing_firmware_phy_sku tlv_len={:?}",
+                self.phy_sku_tlv_len
             );
             return Err(crate::DriverError::Protocol);
         }
@@ -531,6 +532,7 @@ impl IwlWifiDevice {
         // but the firmware dropped them because no MAC context existed.
         let mac_ctx = MacContextCmd::sta(self.mac);
         let mac_ctx_bytes = unsafe { super::as_bytes(&mac_ctx) };
+        const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 144);
         log::info!(
             "iwlwifi: init.config name=mac_context action=add mac_type=bss_sta(5) id_color=0 filter=0x44"
         );

@@ -89,6 +89,13 @@ pub trait HostController {
         Ok(())
     }
 
+    /// Whether the addressed device is operating at SuperSpeed. This lets
+    /// descriptor parsing distinguish USB 3.x's exponent-encoded EP0 size
+    /// from an invalid USB 2.x literal.
+    fn is_super_speed(&self, _dev_addr: u8) -> bool {
+        false
+    }
+
     /// Perform a USB bulk transfer.
     ///
     /// `endpoint` is the full endpoint address (bit 7 = direction).

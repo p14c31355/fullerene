@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use crate::cursor::Cursor;
-use crate::menu::PopupMenu;
+use crate::menu::{ITEM_HEIGHT, MENU_BORDER, PopupMenu};
 use crate::network_menu::{self, ApDisplay, NetStatus};
 use crate::scene::{DirtyRect, Scene};
 use crate::window::WindowId;
@@ -489,15 +489,21 @@ impl Desktop {
     /// Show the power menu above the taskbar power button.
     pub fn show_power_menu(&mut self, fb_width: u32, fb_height: u32) {
         let items = crate::menu::power_menu_items();
-        let menu = PopupMenu::new(0, 0, items);
+        let mut menu = PopupMenu::new(0, 0, items);
+        let usable_height = fb_height.saturating_sub(crate::style::taskbar_height());
+        if menu.height > usable_height {
+            let max_items = usable_height.saturating_sub(MENU_BORDER * 2) / ITEM_HEIGHT;
+            menu.items.truncate(max_items as usize);
+            menu.height =
+                (menu.items.len() as u32 * ITEM_HEIGHT + MENU_BORDER * 2).min(usable_height);
+        }
+        menu.width = menu.width.min(fb_width);
         let button_x = self.taskbar.power_icon_x(fb_width);
         let x = button_x
             .saturating_add(crate::taskbar::POWER_STATUS_WIDTH)
             .saturating_sub(menu.width)
             .min(fb_width.saturating_sub(menu.width));
-        let y = fb_height
-            .saturating_sub(crate::style::taskbar_height())
-            .saturating_sub(menu.height + 4);
+        let y = usable_height.saturating_sub(menu.height.saturating_add(4));
         self.active_menu = Some(PopupMenu { x, y, ..menu });
         self.menu_is_system = true;
     }
@@ -1057,6 +1063,21 @@ mod tests {
         assert_eq!(menu.items[1].action, "shutdown");
         assert!(menu.x + menu.width <= fb_width);
         assert!(menu.y + menu.height <= fb_height - crate::style::taskbar_height());
+    }
+
+    #[test]
+    fn power_menu_is_clipped_above_taskbar_on_short_framebuffer() {
+        let mut dt = Desktop::new(0x202020);
+        let (fb_width, fb_height) = (
+            160,
+            crate::style::taskbar_height() + ITEM_HEIGHT + MENU_BORDER * 2,
+        );
+        dt.show_power_menu(fb_width, fb_height);
+        let menu = dt.active_menu.as_ref().unwrap();
+        let usable_height = fb_height - crate::style::taskbar_height();
+        assert!(menu.x + menu.width <= fb_width);
+        assert!(menu.y + menu.height <= usable_height);
+        assert!(menu.items.len() <= 1);
     }
 
     #[test]

@@ -44,6 +44,7 @@ pub struct IwlWifiDevice {
     pub fw_build: u32,
     pub fw_api_ver: u32,
     pub phy_config: u32,
+    pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
     pub runtime_calib_event: u32,
     /// SRAM pointers supplied by the firmware image for post-crash logs.
@@ -428,6 +429,7 @@ impl IwlWifiDevice {
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
             phy_config: 0,
+            phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
             runtime_calib_event: 0,
             runtime_errlog_ptr: 0,
@@ -632,6 +634,7 @@ impl IwlWifiDevice {
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
             phy_config: 0,
+            phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
             runtime_calib_event: 0,
             runtime_errlog_ptr: 0,
@@ -829,6 +832,7 @@ impl IwlWifiDevice {
         self.runtime_errlog_ptr = 0;
         self.init_errlog_ptr = 0;
         self.phy_config = 0;
+        self.phy_sku_tlv_len = None;
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
         log::info!(
@@ -882,6 +886,7 @@ impl IwlWifiDevice {
                     }
                 }
                 TLV_PHY_SKU => {
+                    self.phy_sku_tlv_len = Some(tlv_len);
                     if tlv_len == 4 {
                         self.phy_config = unsafe {
                             core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
@@ -1433,6 +1438,15 @@ impl NetDevice for IwlWifiDevice {
         }
         if frame.len() > MAX_FRAME_SIZE {
             return Err(NetError::FrameTooLarge);
+        }
+        // The scheduler currently has no 802.11 data TX queue. Returning
+        // success here would make DHCP and other callers believe a frame was
+        // delivered even though send_raw_80211_frame rejects it later.
+        if frame
+            .first()
+            .is_some_and(|control| (control & 0x0C) >> 2 == 2)
+        {
+            return Err(NetError::SendFailed);
         }
         // NetDevice is also used by protocol helpers that may run outside
         // the device phase.  Treat this method as the compatibility adapter:

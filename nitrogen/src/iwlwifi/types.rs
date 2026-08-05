@@ -385,7 +385,7 @@ impl AddStaCmdV7 {
         // station.  Linux advertises that queue in tfd_queue_msk even when
         // the first scan is passive; leaving it zero makes API-v17 firmware
         // reject the station command before it can return ADD_STA status.
-        const AUX_QUEUE: u32 = 8;
+        use super::registers::IWL_AUX_QUEUE;
         Self {
             add_modify: 0, // STA_MODE_ADD
             awake_acs: 0,
@@ -407,7 +407,7 @@ impl AddStaCmdV7 {
             sleep_state_flags: 0,
             assoc_id: 0,
             beamform_flags: 0,
-            tfd_queue_msk: 1 << AUX_QUEUE,
+            tfd_queue_msk: 1 << IWL_AUX_QUEUE,
         }
     }
 }

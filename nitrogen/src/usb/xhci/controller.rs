@@ -467,6 +467,17 @@ impl XhciContext {
                 after,
             );
             if !reset_ok {
+                if let Some(port) = self.ports.get_mut(port_idx) {
+                    port.retry_count = port.retry_count.saturating_add(1);
+                    if port.retry_count >= MAX_PORT_RETRIES {
+                        port.done = true;
+                        log::debug!(
+                            "xHCI: port {} done after {} failed resets",
+                            port_idx,
+                            port.retry_count
+                        );
+                    }
+                }
                 return false;
             }
             // USB 2.0 reset recovery is specified in milliseconds, but some

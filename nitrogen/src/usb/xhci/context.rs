@@ -20,7 +20,7 @@ use super::ring::RingContext;
 use crate::DriverContext;
 use crate::pci_health::PciHealth;
 use crate::usb::host_controller::HostController;
-use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket};
+use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket, UsbSpeed};
 
 /// Unified xHCI host controller state.
 ///
@@ -175,6 +175,13 @@ impl HostController for XhciContext {
         max_packet_size: u16,
     ) -> Result<(), crate::DriverError> {
         XhciContext::evaluate_endpoint0(self, dev_addr as u32, max_packet_size)
+    }
+
+    fn is_super_speed(&self, dev_addr: u8) -> bool {
+        self.devices
+            .iter()
+            .find(|device| device.address == dev_addr)
+            .is_some_and(|device| device.speed == UsbSpeed::SuperSpeed)
     }
 
     fn bulk_transfer(

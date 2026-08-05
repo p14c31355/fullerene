@@ -23,7 +23,7 @@ lifecycle operations, not device requests, and do not need an SQ/CQ pair.
 | VirtIO | avail/used virtqueue | display is explicitly out of this task's scope | compliant / excluded |
 | iwlwifi control | firmware TX/RX rings and command completion state | typed Wi-Fi SQ/CQ | compliant |
 | iwlwifi data TX | firmware TX ring | `NetDevice::send_frame` enqueues an owned `DataTx` request; the scheduler submits it and consumes its CQ | compliant |
-| iwlwifi data RX | firmware RX ring, drained into the driver's receive queue | `NetDevice::poll_frame` consumes that driver-owned completion buffer | compliant |
+| iwlwifi data RX | firmware RX ring, polled by the driver and drained into its receive queue | `NetDevice::poll_frame` consumes that driver-owned receive buffer directly; no separate `DataRx` SQ/CQ is created | compliant |
 | PIC / IOAPIC | interrupt delivery and EOI/acknowledgement | no request/response device operation | not applicable |
 | IOMMU | page tables and invalidation transactions | mapping is a kernel memory capability operation | not applicable |
 

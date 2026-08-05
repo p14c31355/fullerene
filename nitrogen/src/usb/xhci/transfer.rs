@@ -118,6 +118,14 @@ impl XhciContext {
         }
 
         if let Some(slot) = self.device.slots.get_mut(slot_id) {
+            let td_len = 2 + usize::from(data_len > 0);
+            if !slot.ep0_ring.reserve_contiguous(td_len) {
+                if staging_phys != 0 {
+                    self.driver_ctx
+                        .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
+                }
+                return Err(crate::DriverError::Busy);
+            }
             let setup_index = slot.ep0_ring.enq_index();
             let ring_cycle = slot.ep0_ring.cycle;
             let trbs = linux_control_transfer_trbs(setup, staging_phys, ring_cycle);

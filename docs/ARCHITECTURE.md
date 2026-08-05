@@ -603,10 +603,11 @@ kernel scheduler submits a bounded batch, advances DMA/firmware state without
 spinning in the caller, and drains completions independently. Audio CQ entries
 are currently reported to the kernel log, while Wi-Fi CQ entries update the
 driver-owned state and record rejected requests. PS/2 input and framebuffer
-updates remain outside this transport boundary. Network data RX/TX now follows
-the same typed event/stream rule: frames cross an owned Wi-Fi SQ/CQ, while the
-hardware TX/RX rings remain internal to the driver. It must not be forced into
-a synchronous block-request shape.
+updates remain outside this transport boundary. Wi-Fi data TX crosses an owned
+Wi-Fi SQ/CQ, while RX is polled by the driver, placed in its driver-owned receive
+queue, and consumed by `NetDevice::poll_frame`. The hardware TX/RX rings remain
+internal to the driver; network RX must not be described as a separate `DataRx`
+SQ/CQ or forced into a synchronous block-request shape.
 
 The scheduler's device phase runs before the Solvent runtime tick. This gives
 service code a non-blocking producer boundary and keeps SQ execution,

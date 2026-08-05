@@ -113,14 +113,26 @@ impl AcpiManager {
         let mut pm1a = u32::from_le_bytes(bytes[64..68].try_into().ok()?);
         let mut pm1b = u32::from_le_bytes(bytes[68..72].try_into().ok()?);
 
+        if pm1a > u16::MAX as u32 || pm1b > u16::MAX as u32 {
+            return None;
+        }
+
         // Prefer the legacy I/O addresses, but accept the ACPI 2.0 extended
         // Generic Address Structures when firmware leaves the legacy fields
         // empty.  PM1a/PM1b control blocks are at offsets 172 and 184.
         if pm1a == 0 {
-            pm1a = gas_io_address(bytes, 172).unwrap_or(0) as u32;
+            pm1a = match gas_io_address(bytes, 172) {
+                Some(address) if address <= u16::MAX as u64 => address as u32,
+                Some(_) => return None,
+                None => 0,
+            };
         }
         if pm1b == 0 {
-            pm1b = gas_io_address(bytes, 184).unwrap_or(0) as u32;
+            pm1b = match gas_io_address(bytes, 184) {
+                Some(address) if address <= u16::MAX as u64 => address as u32,
+                Some(_) => return None,
+                None => 0,
+            };
         }
 
         let pm1_control_len = bytes[89];
@@ -128,11 +140,16 @@ impl AcpiManager {
             return None;
         }
 
+        let smi_command = u32::from_le_bytes(bytes[48..52].try_into().ok()?);
+        if smi_command > u16::MAX as u32 {
+            return None;
+        }
+
         Some(PowerInfo {
             pm1a_control: pm1a,
             pm1b_control: pm1b,
             pm1_control_len,
-            smi_command: u32::from_le_bytes(bytes[48..52].try_into().ok()?),
+            smi_command,
             acpi_enable: bytes[52],
         })
     }
@@ -177,6 +194,20 @@ fn aml_integer(bytes: &[u8], offset: usize) -> Option<(u16, usize)> {
             u16::from_le_bytes(bytes.get(offset + 1..offset + 3)?.try_into().ok()?),
             3,
         )),
+        0x0C => Some((
+            u16::try_from(u32::from_le_bytes(
+                bytes.get(offset + 1..offset + 5)?.try_into().ok()?,
+            ))
+            .ok()?,
+            5,
+        )),
+        0x0E => Some((
+            u16::try_from(u64::from_le_bytes(
+                bytes.get(offset + 1..offset + 9)?.try_into().ok()?,
+            ))
+            .ok()?,
+            9,
+        )),
         _ => None,
     }
 }
@@ -200,6 +231,9 @@ fn parse_s5_from_aml(dsdt: &[u8]) -> Option<(u16, u16)> {
         }
         let (a, used) = aml_integer(aml, elements + 1)?;
         let (b, _) = aml_integer(aml, elements + 1 + used)?;
+        if a > 7 || b > 7 {
+            continue;
+        }
         return Some((a, b));
     }
     None
@@ -216,5 +250,24 @@ mod tests {
             0x08, b'_', b'S', b'5', b'_', 0x12, 0x06, 0x02, 0x0A, 0x05, 0x0A, 0x05,
         ]);
         assert_eq!(parse_s5_from_aml(&dsdt), Some((5, 5)));
+    }
+
+    #[test]
+    fn parses_dword_and_qword_s5_values_that_fit_pm1() {
+        let mut dsdt = alloc::vec![0u8; 36];
+        dsdt.extend_from_slice(&[
+            0x08, b'_', b'S', b'5', b'_', 0x12, 0x0E, 0x02, 0x0C, 0x05, 0, 0, 0, 0x0E, 0x05, 0, 0,
+            0, 0, 0, 0, 0, 0,
+        ]);
+        assert_eq!(parse_s5_from_aml(&dsdt), Some((5, 5)));
+    }
+
+    #[test]
+    fn rejects_s5_values_outside_pm1_sleep_type_range() {
+        let mut dsdt = alloc::vec![0u8; 36];
+        dsdt.extend_from_slice(&[
+            0x08, b'_', b'S', b'5', b'_', 0x12, 0x06, 0x02, 0x0A, 0x08, 0x0A, 0x05,
+        ]);
+        assert_eq!(parse_s5_from_aml(&dsdt), None);
     }
 }

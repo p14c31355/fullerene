@@ -295,15 +295,20 @@ pub fn enumerate_mass_storage(
         return Err(crate::DriverError::Protocol);
     }
 
-    let max_packet_size = desc_buf[7] as u16;
-    if !matches!(max_packet_size, 8 | 16 | 32 | 64) {
+    // USB 3.x encodes bMaxPacketSize0 as an exponent; the only legal
+    // SuperSpeed value is 9, which represents 512 bytes. USB 2.x values use
+    // the literal packet size and remain unchanged.
+    let raw_max_packet_size = desc_buf[7];
+    let Some(max_packet_size) =
+        decode_ep0_packet_size(raw_max_packet_size, host.is_super_speed(dev_addr))
+    else {
         log::warn!(
             "USB: device {} reported invalid EP0 max packet size {}",
             dev_addr,
-            max_packet_size
+            raw_max_packet_size
         );
         return Err(crate::DriverError::Protocol);
-    }
+    };
     host.set_control_max_packet_size(dev_addr, max_packet_size)?;
 
     // Now that EP0 uses the device-reported packet size, retrieve the full
@@ -396,6 +401,15 @@ pub fn enumerate_mass_storage(
         config.ep_in,
         config.ep_in_mps,
     ))
+}
+
+fn decode_ep0_packet_size(raw: u8, super_speed: bool) -> Option<u16> {
+    let decoded = if raw == 9 && super_speed {
+        512
+    } else {
+        raw as u16
+    };
+    matches!(decoded, 8 | 16 | 32 | 64 | 512).then_some(decoded)
 }
 
 /// Parse bulk IN/OUT endpoints from a configuration descriptor buffer.
@@ -630,5 +644,12 @@ mod tests {
         let mut config = MSC_CONFIG;
         config[14] = 3;
         assert!(parse_mass_storage_config(&config, config.len()).is_err());
+    }
+
+    #[test]
+    fn decodes_superspeed_ep0_packet_size_without_accepting_usb2_value_nine() {
+        assert_eq!(decode_ep0_packet_size(9, true), Some(512));
+        assert_eq!(decode_ep0_packet_size(9, false), None);
+        assert_eq!(decode_ep0_packet_size(64, false), Some(64));
     }
 }

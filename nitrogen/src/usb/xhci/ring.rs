@@ -205,12 +205,39 @@ impl Ring {
         self.len.saturating_sub(1)
     }
 
+    /// Reserve a contiguous run of usable TRBs, crossing the link TRB only
+    /// before the run starts. The skipped tail entries are harmless NO_OPs;
+    /// they let the controller follow the normal link TRB and arrive at the
+    /// next cycle without splitting a transfer TD across the link.
+    pub fn reserve_contiguous(&mut self, count: usize) -> bool {
+        let capacity = self.capacity();
+        let Some(start) = contiguous_start(self.enq, capacity, count) else {
+            return false;
+        };
+        if start == 0 && self.enq != 0 {
+            while self.enq < capacity {
+                self.enqueue(Trb::new(trb_type::NO_OP, self.cycle));
+            }
+        }
+        self.enq + count <= capacity
+    }
+
     pub fn enq_index(&self) -> usize {
         self.enq
     }
 
     pub fn flush_for_device(&self) {
         self.dma.flush_for_device();
+    }
+}
+
+const fn contiguous_start(enq: usize, capacity: usize, count: usize) -> Option<usize> {
+    if count == 0 || count > capacity {
+        None
+    } else if enq + count <= capacity {
+        Some(enq)
+    } else {
+        Some(0)
     }
 }
 
@@ -379,6 +406,14 @@ mod tests {
     fn test_trb_with_flags() {
         let trb = Trb::new(trb_type::NORMAL, 1).with_flags(trb_flag::IOC);
         assert!(trb.flags & trb_flag::IOC != 0);
+    }
+
+    #[test]
+    fn contiguous_reservation_wraps_before_link_trb() {
+        assert_eq!(contiguous_start(60, 63, 3), Some(60));
+        assert_eq!(contiguous_start(61, 63, 3), Some(0));
+        assert_eq!(contiguous_start(62, 63, 2), Some(0));
+        assert_eq!(contiguous_start(0, 63, 64), None);
     }
 
     #[test]

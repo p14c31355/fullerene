@@ -25,7 +25,20 @@ pub fn system_control(cmd: &str) {
             petroleum::serial::serial_log(format_args!("Reboot requested\n"));
             unsafe {
                 let port: u16 = 0x64;
-                while x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02 != 0 {
+                const MAX_CONTROLLER_POLLS: usize = 100_000;
+                let mut controller_ready = false;
+                for _ in 0..MAX_CONTROLLER_POLLS {
+                    if x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02 == 0
+                    {
+                        controller_ready = true;
+                        break;
+                    }
+                }
+                if !controller_ready {
+                    petroleum::serial::serial_log(format_args!(
+                        "Reboot failed: keyboard controller did not become ready\n"
+                    ));
+                    return;
                 }
                 x86_64::instructions::port::PortWriteOnly::<u8>::new(port).write(0xFEu8);
             }

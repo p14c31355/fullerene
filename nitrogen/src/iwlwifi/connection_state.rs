@@ -760,6 +760,7 @@ fn perform_init_step() {
                 fw_build: 0,
                 fw_api_ver: IWL_FW_API_VER,
                 phy_config: 0,
+                phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
                 runtime_calib_event: 0,
                 runtime_errlog_ptr: 0,
@@ -1266,7 +1267,7 @@ pub fn consume_wifi_completion_queue_until(budget: usize, deadline_tsc: u64) {
             }
             WifiCompletionKind::DataTx { accepted } => {
                 if !accepted {
-                    log::debug!(
+                    log::warn!(
                         "iwlwifi: data TX request {} was rejected",
                         completion.request_id
                     );

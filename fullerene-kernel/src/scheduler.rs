@@ -170,8 +170,10 @@ pub fn scheduler_loop() -> ! {
         // reached the normal post-GUI device phase.
         #[cfg(not(nitrogen_no_iwlwifi))]
         {
-            nitrogen::iwlwifi::process_wifi_submission_queue(16);
-            nitrogen::iwlwifi::consume_wifi_completion_queue(16);
+            let wifi_phase_deadline = unsafe { core::arch::x86_64::_rdtsc() }
+                .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(2));
+            nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
+            nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
         }
 
         // BusyBox smoke is a synchronous ABI test. During the harness, the
@@ -192,8 +194,10 @@ pub fn scheduler_loop() -> ! {
         // deadline for this path.
         #[cfg(not(nitrogen_no_iwlwifi))]
         {
-            nitrogen::iwlwifi::process_wifi_submission_queue(16);
-            nitrogen::iwlwifi::consume_wifi_completion_queue(16);
+            let wifi_phase_deadline = unsafe { core::arch::x86_64::_rdtsc() }
+                .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(2));
+            nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
+            nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
         }
 
         // Check if the user requested a shell launch (via AppGrid / menu).
