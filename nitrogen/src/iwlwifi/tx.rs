@@ -199,9 +199,20 @@ impl IwlWifiDevice {
             return Err(crate::DriverError::InvalidArgument);
         }
 
-        self.health
-            .pre_mmio_access()
-            .map_err(|_| crate::DriverError::DeviceNotFound)?;
+        // Once firmware has reported alive, retraining the PCIe link in the
+        // generic health path is unsafe: the 7265 can legitimately report a
+        // transient link-down state while its command scheduler is running,
+        // and retraining at that point resets/disconnects the endpoint.  Keep
+        // the strong recovery check for pre-firmware access, but use the
+        // lock-free vendor-presence check for live firmware MMIO cycles.
+        let present = if matches!(self.fw_state, FwState::Alive | FwState::Ready) {
+            self.health.is_device_present()
+        } else {
+            self.health.pre_mmio_access().is_ok()
+        };
+        if !present {
+            return Err(crate::DriverError::DeviceNotFound);
+        }
         let sequence = ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff);
 
         let used = self.tx_head.wrapping_sub(self.tx_tail);
@@ -779,7 +790,12 @@ impl IwlWifiDevice {
     }
 
     pub(super) fn process_tx_queue(&mut self) {
-        if self.health.pre_mmio_access().is_err() {
+        let present = if matches!(self.fw_state, FwState::Alive | FwState::Ready) {
+            self.health.is_device_present()
+        } else {
+            self.health.pre_mmio_access().is_ok()
+        };
+        if !present {
             return;
         }
 

@@ -3,7 +3,10 @@
 use super::context::XhciContext;
 use super::device::DeviceContextSet;
 use super::interrupt::InterruptContext;
-use super::port::{MAX_PORT_RETRIES, PortContext, delay_ms, delay_us, ensure_port_ready};
+use super::port::{
+    MAX_PORT_RETRIES, PortContext, delay_ms, delay_us, ensure_port_ready, port_reset,
+    warm_port_reset,
+};
 use super::register::{
     CapabilityRegisters, DoorbellRegisters, OP_PORTSC_BASE, OP_PORTSC_STRIDE, OperationalRegisters,
     RT_INTERRUPTER_STRIDE, RegisterContext, RuntimeRegisters, USBCMD_HCRST, USBCMD_HSEE,
@@ -435,10 +438,29 @@ impl XhciContext {
         let op = &self.registers.op;
         let mut is_usb3 = true;
         let mut wpr_attempted = true;
+        let mut first_connection_attempt = false;
         if let Some(port) = self.ports.get_mut(port_idx) {
             port.refresh(op);
             is_usb3 = port.is_usb3;
             wpr_attempted = port.wpr_attempted;
+            first_connection_attempt = port.retry_count == 0 && !port.done;
+        }
+
+        // A connected port may already expose PED=1 after firmware handoff,
+        // but xHCI still requires a fresh reset before the first Address
+        // Device command for this controller instance. Do not let the PED
+        // fast path skip that reset on hotplug or after controller reset.
+        if first_connection_attempt && op.portsc(port_idx).ccs() {
+            let reset_ok = if is_usb3 {
+                warm_port_reset(op, port_idx).is_ok()
+            } else {
+                port_reset(op, port_idx).is_ok()
+            };
+            if reset_ok {
+                delay_ms(2);
+            } else {
+                log::debug!("xHCI: port {} initial reset did not complete", port_idx);
+            }
         }
 
         let wpr_done = if is_usb3 && !op.portsc(port_idx).ccs() {
