@@ -214,7 +214,11 @@ impl InputContext {
             ep[1] = ((mps as u32) << 16) | (3 << 1) | (ep_type << 3);
             ep[2] = (ring_phys as u32) | 1;
             ep[3] = (ring_phys >> 32) as u32;
-            ep[4] = mps as u32;
+            // DW4 is Average TRB Length, not Max Packet Size.  Linux leaves
+            // it at the bulk endpoint's calculated average (zero for bulk);
+            // putting the endpoint MPS here makes the context non-Linux
+            // compatible and can cause the first bulk TD to fail.
+            ep[4] = 0;
         }
     }
 }
@@ -510,5 +514,6 @@ mod tests {
         assert_eq!((ep[1] >> 3) & 7, 6);
         assert_eq!(ep[1] >> 16, 512);
         assert_eq!(ep[2], 0x2233_4001);
+        assert_eq!(ep[4], 0);
     }
 }

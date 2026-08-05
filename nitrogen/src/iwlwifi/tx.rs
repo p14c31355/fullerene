@@ -486,6 +486,10 @@ impl IwlWifiDevice {
         // The first internal station allocation reserves station 0 for the
         // BSS/AP path, so the AUX station receives station-table ID 1.
         const AUX_STA_ID: u8 = 1;
+        // In Linux's non-DQA path the scheduler queue is initially owned by
+        // station 0; ADD_STA then binds the auxiliary station (sta 1) to the
+        // queue through tfd_queue_msk. Sending sta 1 here makes API-v17
+        // firmware reject SCD_QUEUE_CFG before it can consume ADD_STA.
         let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX, AUX_STA_ID);
         let aux_sta_bytes = unsafe { super::as_bytes(&aux_sta) };
         self.send_init_hcmd(
