@@ -103,27 +103,26 @@ pub fn bot_exec_command(
     }
 
     // ── Phase 2: Data (optional) ──────────────────────────
-    if let Some(buf) = data {
+    // Keep the host-controller result.  A short data phase must not be
+    // accepted merely because the device reports a matching CSW residue.
+    let data_actual = if let Some(buf) = data {
         let (ep, mps) = if dir_in {
             (ep_in, ep_in_mps)
         } else {
             (ep_out, ep_out_mps)
         };
-        match buf {
-            BotBuffer::In(buf) => {
-                host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, mps)?;
-            }
+        Some(match buf {
+            BotBuffer::In(buf) => host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, mps)?,
             BotBuffer::Out(buf) => {
-                // SAFETY: bulk_transfer for OUT only reads the buffer, so creating a
-                // temporary mutable slice from an immutable one is sound.  The enum
-                // wrapper guarantees this path only runs for OUT transfers.
                 let len = buf.len();
                 let mut tmp = alloc::vec![0u8; len];
                 tmp.copy_from_slice(buf);
-                host.bulk_transfer(dev_addr, ep, &mut tmp, UsbDirection::Out, mps)?;
+                host.bulk_transfer(dev_addr, ep, &mut tmp, UsbDirection::Out, mps)?
             }
-        }
-    }
+        })
+    } else {
+        None
+    };
 
     // ── Phase 3: Receive CSW ──────────────────────────────
     let mut csw_raw = [0u8; 13];
@@ -171,7 +170,22 @@ pub fn bot_exec_command(
     // Compute actual bytes transferred (BOT spec §5.2.3).
     let requested = dlen as usize;
     let residue = u32::from_le_bytes([csw_raw[8], csw_raw[9], csw_raw[10], csw_raw[11]]);
-    let actual = requested.saturating_sub(residue as usize);
+    let actual = requested
+        .checked_sub(residue as usize)
+        .ok_or(crate::DriverError::Protocol)?;
+    if let Some(data_actual) = data_actual
+        && data_actual != actual
+    {
+        log::warn!(
+            "USB BOT: data/CSW length mismatch device={} requested={} data_actual={} residue={} csw_actual={}",
+            dev_addr,
+            requested,
+            data_actual,
+            residue,
+            actual,
+        );
+        return Err(crate::DriverError::Protocol);
+    }
     Ok(actual)
 }
 
