@@ -8,6 +8,17 @@ use crate::process;
 pub(crate) fn syscall_handle_transfer(target_pid: u64, handle: u64) -> SyscallResult {
     let h = Handle::from_raw(handle);
     check_handle_permission(h, HandlePerms::TRANSFER)?;
+    if matches!(
+        with_current_handle_table(|ht| {
+            Ok::<bool, SyscallError>(matches!(ht.get(h), Some(KernelObject::SharedBuffer(_))))
+        }),
+        Ok(true)
+    ) && super::shared_buffer::has_mappings_for_current_process(handle)?
+    {
+        // Moving the last capability must not strand a mapping in the source
+        // process, where the destination could no longer unmap it.
+        return Err(SyscallError::Busy);
+    }
     let target = process::ProcessId(target_pid);
 
     if process::SCHEDULER.with_process(target, |_| {}).is_none() {
@@ -61,6 +72,9 @@ pub(crate) fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
                 buffer: Arc::clone(&p.buffer),
                 is_read_end: p.is_read_end,
             }),
+            KernelObject::SharedBuffer(buffer) => KernelObject::SharedBuffer(SharedBufferState {
+                inner: Arc::clone(&buffer.inner),
+            }),
             _ => return Err(SyscallError::NotSupported),
         };
         Ok(new_obj)
@@ -71,6 +85,18 @@ pub(crate) fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
 
 pub(crate) fn syscall_handle_revoke(handle: u64) -> SyscallResult {
     let h = Handle::from_raw(handle);
+    if matches!(
+        with_current_handle_table(|ht| {
+            Ok::<bool, SyscallError>(matches!(ht.get(h), Some(KernelObject::SharedBuffer(_))))
+        }),
+        Ok(true)
+    ) && super::shared_buffer::has_mappings_for_current_process(handle)?
+    {
+        // A capability cannot be revoked while it still leaves a live mapping
+        // in the current address space.  This makes the required teardown
+        // order explicit: unmap first, then revoke.
+        return Err(SyscallError::Busy);
+    }
     with_current_handle_table(|ht| {
         ht.remove(h).ok_or(SyscallError::BadHandle)?;
         Ok(0)

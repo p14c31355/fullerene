@@ -9,6 +9,7 @@ use super::interface::SyscallError;
 use super::ipc;
 use super::memory;
 use super::process;
+use super::shared_buffer;
 use super::thread;
 use super::time;
 use super::window;
@@ -127,6 +128,15 @@ pub unsafe extern "sysv64" fn handle_syscall(
         Ok(SyscallNumber::ProtectMemory) => memory::syscall_protect_memory(arg1, arg2, arg3),
         Ok(SyscallNumber::QueryMemory) => {
             memory::syscall_query_memory(arg1 as *mut u8, arg2 as usize)
+        }
+        Ok(SyscallNumber::SharedBufferCreate) => {
+            shared_buffer::syscall_shared_buffer_create(arg1, arg2)
+        }
+        Ok(SyscallNumber::SharedBufferMap) => {
+            shared_buffer::syscall_shared_buffer_map(arg1, arg2, arg3)
+        }
+        Ok(SyscallNumber::SharedBufferUnmap) => {
+            shared_buffer::syscall_shared_buffer_unmap(arg1, arg2)
         }
 
         Ok(SyscallNumber::CreateEvent) => event::syscall_create_event(arg1),

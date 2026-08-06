@@ -31,6 +31,9 @@ pub enum SyscallNumber {
     UnmapMemory = 31,
     ProtectMemory = 32,
     QueryMemory = 33,
+    SharedBufferCreate = 34,
+    SharedBufferMap = 35,
+    SharedBufferUnmap = 36,
     CreateEvent = 40,
     WaitEvent = 41,
     SignalEvent = 42,
@@ -65,6 +68,7 @@ impl SyscallNumber {
         AbiQuery, Exit, Fork, Read, Write, Open, Close, Wait,
         GetPid, GetProcessName, Yield, Spawn,
         MapMemory, UnmapMemory, ProtectMemory, QueryMemory,
+        SharedBufferCreate, SharedBufferMap, SharedBufferUnmap,
         CreateEvent, WaitEvent, SignalEvent, SubscribeEvent,
         CreateThread, JoinThread, DetachThread, ExitThread,
         CreateWindow, DestroyWindow, ResizeWindow, PresentWindow, GetWindowEvent,
@@ -89,6 +93,8 @@ impl TryFrom<u64> for SyscallNumber {
             OPEN => Open, CLOSE => Close, WAIT => Wait, GETPID => GetPid, GET_PROCESS_NAME => GetProcessName,
             YIELD => Yield, SPAWN => Spawn, MAP_MEMORY => MapMemory, UNMAP_MEMORY => UnmapMemory,
             PROTECT_MEMORY => ProtectMemory, QUERY_MEMORY => QueryMemory,
+            SHARED_BUFFER_CREATE => SharedBufferCreate, SHARED_BUFFER_MAP => SharedBufferMap,
+            SHARED_BUFFER_UNMAP => SharedBufferUnmap,
             CREATE_EVENT => CreateEvent, WAIT_EVENT => WaitEvent, SIGNAL_EVENT => SignalEvent, SUBSCRIBE_EVENT => SubscribeEvent,
             CREATE_THREAD => CreateThread, JOIN_THREAD => JoinThread, DETACH_THREAD => DetachThread, EXIT_THREAD => ExitThread,
             CREATE_WINDOW => CreateWindow, DESTROY_WINDOW => DestroyWindow, RESIZE_WINDOW => ResizeWindow,
@@ -109,6 +115,8 @@ pub mod syscall_numbers {
         EXIT = Exit, FORK = Fork, READ = Read, WRITE = Write, OPEN = Open, CLOSE = Close, WAIT = Wait,
         GETPID = GetPid, GET_PROCESS_NAME = GetProcessName, YIELD = Yield, SPAWN = Spawn,
         MAP_MEMORY = MapMemory, UNMAP_MEMORY = UnmapMemory, PROTECT_MEMORY = ProtectMemory, QUERY_MEMORY = QueryMemory,
+        SHARED_BUFFER_CREATE = SharedBufferCreate, SHARED_BUFFER_MAP = SharedBufferMap,
+        SHARED_BUFFER_UNMAP = SharedBufferUnmap,
         CREATE_EVENT = CreateEvent, WAIT_EVENT = WaitEvent, SIGNAL_EVENT = SignalEvent, SUBSCRIBE_EVENT = SubscribeEvent,
         CREATE_THREAD = CreateThread, JOIN_THREAD = JoinThread, DETACH_THREAD = DetachThread, EXIT_THREAD = ExitThread,
         CREATE_WINDOW = CreateWindow, DESTROY_WINDOW = DestroyWindow, RESIZE_WINDOW = ResizeWindow,
@@ -203,7 +211,7 @@ pub struct AbiVersion {
 impl AbiVersion {
     pub const CURRENT: Self = Self {
         major: 0,
-        minor: 4,
+        minor: 5,
         patch: 0,
         reserved: 0,
     };
@@ -242,6 +250,7 @@ pub enum Capability {
     TimerSystem = 1 << 7,
     DeviceEnumeration = 1 << 8,
     ProcessSpawn = 1 << 9,
+    SharedBuffers = 1 << 10,
 }
 
 impl Capability {
@@ -268,7 +277,8 @@ impl CapabilitySet {
             | Capability::IpcPipes.bit()
             | Capability::TimerSystem.bit()
             | Capability::DeviceEnumeration.bit()
-            | Capability::ProcessSpawn.bit(),
+            | Capability::ProcessSpawn.bit()
+            | Capability::SharedBuffers.bit(),
     );
 
     #[inline]
@@ -449,6 +459,41 @@ impl IpcMessageHeader {
             reserved: u32::from_ne_bytes(bytes[28..32].try_into().unwrap()),
         }
     }
+}
+
+/// Rights and allocation flags for a kernel-owned shared buffer.
+pub mod shared_buffer_flags {
+    /// The mapping may be read by the holder.
+    pub const READ: u64 = 1 << 0;
+    /// The mapping may be written by the holder.
+    pub const WRITE: u64 = 1 << 1;
+    /// The kernel must zero pages before returning the capability.
+    pub const ZEROED: u64 = 1 << 2;
+}
+
+/// A reference to a region of a shared buffer carried in an IPC payload.
+///
+/// The handle is a capability in the sending process.  A receiver must obtain
+/// its own handle through an explicit handle-transfer/duplicate operation;
+/// copying this descriptor alone does not grant access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct IpcBufferDescriptor {
+    /// Shared-buffer capability handle.
+    pub handle: u64,
+    /// Byte offset from the beginning of the shared buffer.
+    pub offset: u64,
+    /// Number of bytes referenced by this descriptor.
+    pub length: u64,
+    /// Descriptor-specific rights; currently read/write bits only.
+    pub flags: u32,
+    /// Reserved; must be zero.
+    pub reserved: u32,
+}
+
+impl IpcBufferDescriptor {
+    /// Serialized descriptor size.
+    pub const BYTE_SIZE: usize = 32;
 }
 
 /// Information returned by `query_memory`.
@@ -810,6 +855,8 @@ const _: () = {
     assert!(core::mem::align_of::<AbiInfo>() == 8);
     assert!(core::mem::size_of::<IpcMessageHeader>() == IpcMessageHeader::BYTE_SIZE);
     assert!(core::mem::align_of::<IpcMessageHeader>() == 8);
+    assert!(core::mem::size_of::<IpcBufferDescriptor>() == IpcBufferDescriptor::BYTE_SIZE);
+    assert!(core::mem::align_of::<IpcBufferDescriptor>() == 8);
     assert!(core::mem::size_of::<MemoryInfo>() == MemoryInfo::BYTE_SIZE);
     assert!(MemoryInfo::MIN_BYTE_SIZE <= MemoryInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<MemoryInfo>() == 8);

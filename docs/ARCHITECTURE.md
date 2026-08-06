@@ -153,7 +153,7 @@ sealant (no_std memory capability boundary)
     └── checked RAM / MMIO / user / DMA / physical-address access
 
 DriverKit (`ligand`, published as `DriverKit`)
-    └── C ABI user-space IPC client for device handles and channels
+    └── C ABI user-space IPC client for device handles, channels, and shared-buffer capabilities
 ```
 
 New in this revision:
@@ -626,7 +626,7 @@ use. Controller re-enumeration must not invalidate an outstanding lease.
 
 Native syscall handling is split by context under
 `fullerene-kernel/src/syscall/`. `dispatch` is the only syscall-number router;
-`abi`, `process`, `fs`, `memory`, `event`, `thread`, `window`, `device`, `ipc`,
+`abi`, `process`, `fs`, `memory`, `shared_buffer`, `event`, `thread`, `window`, `device`, `ipc`,
 `cap`, and `time` own their domain handlers. `interface` owns the shared error
 and user-copy contract, while `types` owns handle-backed kernel object types.
 Domain modules must not perform secondary syscall-number dispatch.

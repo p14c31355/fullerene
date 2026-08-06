@@ -15,7 +15,8 @@
 //! later capability-grant layer, after the kernel has established the mapping.
 
 use fullerene_abi::{
-    AbiInfo, BlockDeviceInfo, BlockRequest, DeviceCapabilityInfo, IpcMessageHeader,
+    AbiInfo, BlockDeviceInfo, BlockRequest, DeviceCapabilityInfo, IpcBufferDescriptor,
+    IpcMessageHeader,
 };
 use petroleum::common::syscall::syscall;
 
@@ -43,6 +44,8 @@ pub const DRIVERKIT_NOT_SUPPORTED: i32 = 95;
 pub const DRIVERKIT_WOULD_BLOCK: i32 = 140;
 /// The channel or request queue is full.
 pub const DRIVERKIT_AGAIN: i32 = 11;
+/// A capability cannot be revoked while it still has a live mapping.
+pub const DRIVERKIT_BUSY: i32 = 16;
 /// The operation failed for an unspecified reason.
 pub const DRIVERKIT_UNKNOWN_ERROR: i32 = 0x7fff;
 
@@ -52,6 +55,14 @@ pub const DRIVERKIT_MAX_CHANNEL_MESSAGE_SIZE: usize = 65_536;
 pub const DRIVERKIT_MAX_DEVICE_ID_SIZE: usize = 128;
 /// Fixed size of the versioned IPC envelope header.
 pub const DRIVERKIT_IPC_MESSAGE_HEADER_SIZE: usize = IpcMessageHeader::BYTE_SIZE;
+/// Fixed size of an IPC shared-buffer descriptor.
+pub const DRIVERKIT_IPC_BUFFER_DESCRIPTOR_SIZE: usize = IpcBufferDescriptor::BYTE_SIZE;
+/// Shared-buffer mapping may be read.
+pub const DRIVERKIT_SHARED_BUFFER_READ: u64 = fullerene_abi::shared_buffer_flags::READ;
+/// Shared-buffer mapping may be written.
+pub const DRIVERKIT_SHARED_BUFFER_WRITE: u64 = fullerene_abi::shared_buffer_flags::WRITE;
+/// The allocation is explicitly documented as zero-initialized.
+pub const DRIVERKIT_SHARED_BUFFER_ZEROED: u64 = fullerene_abi::shared_buffer_flags::ZEROED;
 
 /// Result returned by scalar DriverKit functions.
 #[repr(C)]
@@ -143,6 +154,22 @@ pub struct DriverKitBlockInfoResult {
     pub reserved: u32,
     /// Number of addressable sectors.
     pub total_sectors: u64,
+}
+
+/// Shared-buffer capability descriptor embedded in an IPC payload.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DriverKitIpcBufferDescriptor {
+    /// Shared-buffer capability handle.
+    pub handle: u64,
+    /// Byte offset from the beginning of the buffer.
+    pub offset: u64,
+    /// Number of bytes referenced.
+    pub length: u64,
+    /// Descriptor rights.
+    pub flags: u32,
+    /// Reserved; must be zero.
+    pub reserved: u32,
 }
 
 #[inline]
@@ -406,6 +433,53 @@ pub extern "C" fn driverkit_channel_recv(
     )
 }
 
+/// Allocate a zeroed kernel-owned shared buffer and return its capability.
+///
+/// `length` is rounded up to a page boundary by the kernel.  The returned
+/// value is a handle, not a pointer; call [`driverkit_shared_buffer_map`] to
+/// obtain a process-local mapping.
+#[unsafe(no_mangle)]
+pub extern "C" fn driverkit_shared_buffer_create(length: usize, flags: u64) -> DriverKitResult {
+    if length == 0 {
+        return error(DRIVERKIT_INVALID_ARGUMENT);
+    }
+    call(
+        fullerene_abi::SyscallNumber::SharedBufferCreate,
+        length as u64,
+        flags,
+        0,
+    )
+}
+
+/// Map a shared-buffer capability into the current process.
+///
+/// Pass zero for `address_hint` to let the kernel choose a page-aligned user
+/// address.  The result value is the mapped address.
+#[unsafe(no_mangle)]
+pub extern "C" fn driverkit_shared_buffer_map(
+    handle: u64,
+    address_hint: u64,
+    flags: u64,
+) -> DriverKitResult {
+    call(
+        fullerene_abi::SyscallNumber::SharedBufferMap,
+        handle,
+        address_hint,
+        flags,
+    )
+}
+
+/// Unmap one process-local mapping while retaining the capability handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn driverkit_shared_buffer_unmap(handle: u64, address: u64) -> DriverKitResult {
+    call(
+        fullerene_abi::SyscallNumber::SharedBufferUnmap,
+        handle,
+        address,
+        0,
+    )
+}
+
 /// Send one versioned IPC message through a kernel channel.
 ///
 /// `message` must point to one contiguous buffer containing an
@@ -468,4 +542,5 @@ pub extern "C" fn driverkit_handle_revoke(handle: u64) -> DriverKitResult {
 const _: () = {
     assert!(core::mem::size_of::<DriverKitDeviceInfo>() == fullerene_abi::DeviceInfo::BYTE_SIZE);
     assert!(core::mem::size_of::<DriverKitAbiInfo>() == AbiInfo::BYTE_SIZE);
+    assert!(core::mem::size_of::<DriverKitIpcBufferDescriptor>() == IpcBufferDescriptor::BYTE_SIZE);
 };

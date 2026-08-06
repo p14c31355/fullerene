@@ -7,6 +7,7 @@ pub mod fs;
 pub mod ipc;
 pub mod memory;
 pub mod process;
+pub mod shared_buffer;
 pub mod thread;
 pub mod time;
 pub mod types;
@@ -146,6 +147,24 @@ mod support_matrix {
             name: "query_memory",
             support: Support::Stub,
             notes: "returns empty data",
+        },
+        SyscallInfo {
+            number: 34,
+            name: "shared_buffer_create",
+            support: Support::Full,
+            notes: "kernel-owned pages; DMA is not implied",
+        },
+        SyscallInfo {
+            number: 35,
+            name: "shared_buffer_map",
+            support: Support::Full,
+            notes: "explicit capability mapping",
+        },
+        SyscallInfo {
+            number: 36,
+            name: "shared_buffer_unmap",
+            support: Support::Full,
+            notes: "unmaps one process-local mapping",
         },
         SyscallInfo {
             number: 40,
