@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::DriverContext;
@@ -35,6 +35,10 @@ static WIFI_INIT_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
 static WIFI_INIT_LAST_ACTIVE_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
+// Hints are drawn from the scheduler context only. set_init_phase() is also
+// used by the NMI watchdog failure path, where taking the debug callback lock
+// could deadlock.
+static WIFI_LAST_HINT_PHASE: AtomicU8 = AtomicU8::new(u8::MAX);
 static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
     mmio_device: None,
     fw_candidate_idx: 0,
@@ -192,6 +196,17 @@ pub fn wifi_init_completed() -> bool {
     WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
 }
 
+/// Whether the most recent initialization attempt ended in the terminal
+/// failed state.
+///
+/// `wifi_init_completed()` intentionally covers both success and failure so
+/// callers can stop polling.  UI code needs the distinction to avoid showing
+/// a successful scan request after initialization was disabled.
+pub fn wifi_init_failed() -> bool {
+    WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
+        && get_init_phase() == WifiInitPhase::Failed
+}
+
 /// Whether the hardware-facing driver object was successfully installed.
 ///
 /// `wifi_init_completed()` also becomes true after a failed initialization so
@@ -292,6 +307,15 @@ fn set_init_phase(phase: WifiInitPhase) {
 fn get_init_phase() -> WifiInitPhase {
     let raw = WIFI_INIT_PHASE.load(core::sync::atomic::Ordering::Acquire);
     WifiInitPhase::from(raw)
+}
+
+fn draw_init_hint_if_changed() {
+    let phase = get_init_phase();
+    let current = phase as u8;
+    let previous = WIFI_LAST_HINT_PHASE.swap(current, Ordering::AcqRel);
+    if previous != current {
+        debug::hint(phase.screen_label());
+    }
 }
 
 // ── Incremental init state machine ─
@@ -1196,15 +1220,47 @@ pub fn process_wifi_submission_queue(budget: usize) {
 
 /// Move Wi-Fi SQ entries through the executor until either budget is reached.
 pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
+    // Keep boot-screen phase changes in the normal scheduler path. In
+    // particular, never call debug::hint() from force_init_failed(), which
+    // may be reached by the NMI watchdog while another context owns a lock.
+    draw_init_hint_if_changed();
+    let mut processed_any = false;
     for _ in 0..budget {
-        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
+        // A short scheduler budget must not turn the SQ into a starvation
+        // point. This is particularly important for InitStep: if the
+        // deadline has already elapsed by the time this phase runs, leaving
+        // the request queued makes Solvent eventually report an outer timeout
+        // even though the hardware state machine never got one step.
+        // Process one request unconditionally, then enforce the deadline for
+        // the remaining batch. The request itself has per-device watchdogs.
+        if processed_any && unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
             break;
         }
-        if !reserve_wifi_completion() {
+
+        // InitStep and Tick are level-triggered housekeeping requests. Their
+        // completion records are intentionally ignored by the consumer, so
+        // they must not be blocked by a full CQ. In particular, a backlog of
+        // stale Tick records must not prevent the first InitStep from ever
+        // reaching the hardware state machine and make the UI-side timeout
+        // fire while the phase is still Idle.
+        let periodic = {
+            let queue = WIFI_SQ.lock();
+            matches!(
+                queue.front().map(|(_, request)| request),
+                Some(WifiRequest::InitStep | WifiRequest::Tick)
+            )
+        };
+        let completion_reserved = if periodic {
+            false
+        } else if reserve_wifi_completion() {
+            true
+        } else {
             break;
-        }
+        };
         let Some((request_id, request)) = WIFI_SQ.lock().pop_front() else {
-            release_wifi_completion();
+            if completion_reserved {
+                release_wifi_completion();
+            }
             break;
         };
         let kind = match request {
@@ -1226,10 +1282,14 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
                 accepted: perform_send_data_frame(&frame),
             },
         };
-        WIFI_CQ
-            .lock()
-            .push_back(WifiCompletion { request_id, kind });
-        release_wifi_completion();
+        draw_init_hint_if_changed();
+        if completion_reserved {
+            WIFI_CQ
+                .lock()
+                .push_back(WifiCompletion { request_id, kind });
+            release_wifi_completion();
+        }
+        processed_any = true;
     }
 }
 

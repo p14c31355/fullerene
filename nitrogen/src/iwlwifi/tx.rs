@@ -57,7 +57,7 @@ impl IwlWifiDevice {
             self.write_prph(SCD_CHAINEXT_EN, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
-            // The scan engine uses the internal station's q8. Configure it
+            // The scan engine uses the internal station's q11. Configure it
             // before ADD_STA_AUX, just as Linux does; the firmware validates
             // the station's tfd_queue_msk against this scheduler entry.
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_AUX, 0);
@@ -118,7 +118,10 @@ impl IwlWifiDevice {
                 (aux_ring_phys >> 8) as u32,
             );
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
-            for channel in 0..=IWL_CMD_QUEUE {
+            // The 7265 exposes 16 legacy TX channels. The AUX station is q11,
+            // so enabling only through the command q9 leaves its scheduler
+            // channel disabled even though host commands still work.
+            for channel in 0..=IWL_AUX_QUEUE {
                 core::ptr::write_volatile(
                     self.mmio
                         .add((FH_TCSR_CHNL_TX_CONFIG_BASE + channel * (0x20 / 4)) as usize),
@@ -482,15 +485,30 @@ impl IwlWifiDevice {
 
         // Firmware API 17 uses the pre-v12 station API. The scan engine
         // requires its auxiliary station before accepting an offload request.
-        // ADD_STA is a legacy-group command and uses the four-byte header.
+        // In non-DQA mode Linux allocates the AUX station first, then sends
+        // SCD_QUEUE_CFG naming that station, and only then sends ADD_STA.
+        // The transport registers above configure DMA; this command tells
+        // firmware that q11 is enabled for the already allocated station.
         const MAC_INDEX_AUX: u8 = 4;
-        // The first internal station allocation reserves station 0 for the
-        // BSS/AP path, so the AUX station receives station-table ID 1.
         const AUX_STA_ID: u8 = 1;
+        let aux_scd = ScdTxqCfgCmdV1::aux(AUX_STA_ID);
+        let aux_scd_bytes = unsafe { super::as_bytes(&aux_scd) };
+        self.send_init_hcmd(
+            "SCD_QUEUE_CFG_AUX",
+            LegacyCmd::ScdQueueCfg as u8,
+            GroupId::Legacy as u8,
+            aux_scd_bytes,
+        )?;
+        log::info!(
+            "iwlwifi: init.config name=aux_queue queue={} owner_sta={} fifo=mcast action=enable",
+            IWL_AUX_QUEUE,
+            AUX_STA_ID,
+        );
+
+        // ADD_STA is a legacy-group command and uses the four-byte header.
         // In Linux's non-DQA path the scheduler queue is initially owned by
-        // station 0; ADD_STA then binds the auxiliary station (sta 1) to the
-        // queue through tfd_queue_msk. Sending sta 1 here makes API-v17
-        // firmware reject SCD_QUEUE_CFG before it can consume ADD_STA.
+        // the auxiliary station; ADD_STA publishes the same station ID and
+        // queue mask to firmware.
         let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX, AUX_STA_ID);
         let aux_sta_bytes = unsafe { super::as_bytes(&aux_sta) };
         self.send_init_hcmd(

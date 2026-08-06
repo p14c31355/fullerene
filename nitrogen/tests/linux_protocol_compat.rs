@@ -12,7 +12,9 @@ use nitrogen::iwlwifi::registers::{
     TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
     TX_TFD_RING_BYTES,
 };
-use nitrogen::iwlwifi::types::{AddStaCmdV7, MacContextCmd, ScanConfigV1, ScanRequestCmd};
+use nitrogen::iwlwifi::types::{
+    AddStaCmdV7, MacContextCmd, ScanConfigV1, ScanRequestCmd, ScdTxqCfgCmdV1,
+};
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
 use nitrogen::usb::xhci::transfer::linux_control_transfer_trbs;
@@ -24,20 +26,30 @@ fn bytes<T>(value: &T) -> &[u8] {
 #[test]
 fn linux_v49_aux_station_payload_is_wire_compatible() {
     assert_eq!(IWL_CMD_QUEUE, 9);
-    assert_eq!(IWL_AUX_QUEUE, 8);
+    assert_eq!(IWL_AUX_QUEUE, 11);
     assert_eq!(size_of::<AddStaCmdV7>(), 44);
 
     // Linux v4.9 iwl_mvm_add_aux_sta(): MAC_INDEX_AUX is 4, while the
     // internal station-table entry is allocated as sta_id 1. The queue mask
-    // must advertise q8 before ADD_STA is sent.
+    // must advertise q11 before ADD_STA is sent.
     let payload = AddStaCmdV7::aux(4, 1);
     let actual = bytes(&payload);
     let mut expected = [0u8; 44];
     expected[2..4].copy_from_slice(&0xffffu16.to_le_bytes());
     expected[4..8].copy_from_slice(&4u32.to_le_bytes());
     expected[16] = 1;
-    expected[40..44].copy_from_slice(&(1u32 << 8).to_le_bytes());
+    expected[40..44].copy_from_slice(&(1u32 << 11).to_le_bytes());
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn linux_v49_aux_queue_config_is_sent_before_station_add() {
+    assert_eq!(size_of::<ScdTxqCfgCmdV1>(), 12);
+    let payload = ScdTxqCfgCmdV1::aux(1);
+    let actual = bytes(&payload);
+    // token=0, owner sta=1, tid=15, q11, enable, non-aggregate,
+    // multicast FIFO=5, window=64, ssn=0, reserved=0.
+    assert_eq!(actual, &[0, 1, 15, 11, 1, 0, 5, 64, 0, 0, 0, 0]);
 }
 
 #[test]

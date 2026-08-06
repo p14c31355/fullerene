@@ -79,6 +79,9 @@ pub enum LegacyCmd {
     /// firmware API 17 transports it through the long-command group.
     ScanConfig = 0x0c,
     AddStaKey = 0x17,
+    /// Legacy scheduler queue configuration used before ADD_STA in non-DQA
+    /// mode. The firmware initially associates the queue with station 0.
+    ScdQueueCfg = 0x1d,
     /// LMAC scan request for the 7265 firmware API (SCAN_OFFLOAD_REQUEST_CMD).
     /// 0x18 is ADD_STA, not a scan request.
     ScanRequest = 0x51,
@@ -87,7 +90,6 @@ pub enum LegacyCmd {
     Auth = 0x1A,
     Assoc = 0x1B,
     Disassoc = 0x1C,
-    Deauth = 0x1D,
     AddSta = 0x18,
     MacContext = 0x28,
     TxAntConfig = 0x98,
@@ -205,6 +207,46 @@ pub struct PhyConfigurationCmd {
     pub phy_config: u32,
     pub calib_flow_trigger: u32,
     pub calib_event_trigger: u32,
+}
+
+/// SCD_QUEUE_CFG_CMD_API_S_VER_1, used by the legacy non-DQA scheduler.
+///
+/// Linux sends this before ADD_STA for the auxiliary queue. The auxiliary
+/// station is allocated first and its real internal station ID is already
+/// used here; the following ADD_STA publishes the same queue mask.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScdTxqCfgCmdV1 {
+    pub token: u8,
+    pub sta_id: u8,
+    pub tid: u8,
+    pub scd_queue: u8,
+    pub action: u8,
+    pub aggregate: u8,
+    pub tx_fifo: u8,
+    pub window: u8,
+    pub ssn: u16,
+    pub reserved: u16,
+}
+
+impl ScdTxqCfgCmdV1 {
+    pub fn aux(sta_id: u8) -> Self {
+        use super::registers::IWL_AUX_QUEUE;
+        Self {
+            token: 0,
+            // Linux allocates the AUX station-table entry before enabling its
+            // queue, so SCD_QUEUE_CFG must name that station (normally 1).
+            sta_id,
+            tid: 15, // IWL_MAX_TID_COUNT
+            scd_queue: IWL_AUX_QUEUE as u8,
+            action: 1,    // SCD_CFG_ENABLE_QUEUE
+            aggregate: 0, // non-aggregated auxiliary queue
+            tx_fifo: 5,   // IWL_MVM_TX_FIFO_MCAST
+            window: 64,
+            ssn: 0,
+            reserved: 0,
+        }
+    }
 }
 
 /// One AC entry in the API-v1 MAC context QoS array.
@@ -381,7 +423,7 @@ pub struct AddStaCmdV7 {
 
 impl AddStaCmdV7 {
     pub fn aux(mac_index: u8, sta_id: u8) -> Self {
-        // The 7265 non-DQA layout reserves queue 8 for the auxiliary
+        // The 7265 non-DQA layout reserves queue 11 for the auxiliary
         // station.  Linux advertises that queue in tfd_queue_msk even when
         // the first scan is passive; leaving it zero makes API-v17 firmware
         // reject the station command before it can return ADD_STA status.
@@ -808,6 +850,22 @@ impl WifiInitPhase {
             Self::FwInitCmds => "fw_init_cmds",
             Self::Done => "done",
             Self::Failed => "failed",
+        }
+    }
+
+    /// Short labels suitable for the boot-screen Hint area.
+    pub const fn screen_label(self) -> &'static [u8] {
+        match self {
+            Self::Idle => b"WIFI WAIT",
+            Self::PciProbe => b"WIFI PCI",
+            Self::MmioInit => b"WIFI MMIO",
+            Self::MmioPollMacClock => b"WIFI CLOCK",
+            Self::DmaAlloc => b"WIFI DMA",
+            Self::FwUpload => b"WIFI FW LOAD",
+            Self::FwWaitAlive => b"WIFI FW ALIVE",
+            Self::FwInitCmds => b"WIFI COMMANDS",
+            Self::Done => b"WIFI READY",
+            Self::Failed => b"WIFI FAILED",
         }
     }
 }
