@@ -79,6 +79,9 @@ pub enum LegacyCmd {
     /// firmware API 17 transports it through the long-command group.
     ScanConfig = 0x0c,
     AddStaKey = 0x17,
+    /// Legacy scheduler queue configuration used before ADD_STA in non-DQA
+    /// mode. The firmware initially associates the queue with station 0.
+    ScdQueueCfg = 0x1d,
     /// LMAC scan request for the 7265 firmware API (SCAN_OFFLOAD_REQUEST_CMD).
     /// 0x18 is ADD_STA, not a scan request.
     ScanRequest = 0x51,
@@ -87,7 +90,6 @@ pub enum LegacyCmd {
     Auth = 0x1A,
     Assoc = 0x1B,
     Disassoc = 0x1C,
-    Deauth = 0x1D,
     AddSta = 0x18,
     MacContext = 0x28,
     TxAntConfig = 0x98,
@@ -205,6 +207,46 @@ pub struct PhyConfigurationCmd {
     pub phy_config: u32,
     pub calib_flow_trigger: u32,
     pub calib_event_trigger: u32,
+}
+
+/// SCD_QUEUE_CFG_CMD_API_S_VER_1, used by the legacy non-DQA scheduler.
+///
+/// Linux sends this before ADD_STA for the auxiliary queue. The queue is
+/// initially owned by station 0; ADD_STA then advertises the real internal
+/// station (ID 1) through its `tfd_queue_msk`.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScdTxqCfgCmdV1 {
+    pub token: u8,
+    pub sta_id: u8,
+    pub tid: u8,
+    pub scd_queue: u8,
+    pub action: u8,
+    pub aggregate: u8,
+    pub tx_fifo: u8,
+    pub window: u8,
+    pub ssn: u16,
+    pub reserved: u16,
+}
+
+impl ScdTxqCfgCmdV1 {
+    pub fn aux() -> Self {
+        use super::registers::IWL_AUX_QUEUE;
+        Self {
+            token: 0,
+            // Non-DQA config happens before the station is added. Linux uses
+            // the default station-0 owner here and binds sta 1 in ADD_STA.
+            sta_id: 0,
+            tid: 15, // IWL_MAX_TID_COUNT
+            scd_queue: IWL_AUX_QUEUE as u8,
+            action: 1,    // SCD_CFG_ENABLE_QUEUE
+            aggregate: 0, // non-aggregated auxiliary queue
+            tx_fifo: 5,   // IWL_MVM_TX_FIFO_MCAST
+            window: 64,
+            ssn: 0,
+            reserved: 0,
+        }
+    }
 }
 
 /// One AC entry in the API-v1 MAC context QoS array.

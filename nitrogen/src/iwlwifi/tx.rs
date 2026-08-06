@@ -485,6 +485,22 @@ impl IwlWifiDevice {
 
         // Firmware API 17 uses the pre-v12 station API. The scan engine
         // requires its auxiliary station before accepting an offload request.
+        // In non-DQA mode Linux first sends SCD_QUEUE_CFG. The transport
+        // registers above configure DMA, while this command tells firmware
+        // that q11 is enabled and initially owned by station 0.
+        let aux_scd = ScdTxqCfgCmdV1::aux();
+        let aux_scd_bytes = unsafe { super::as_bytes(&aux_scd) };
+        self.send_init_hcmd(
+            "SCD_QUEUE_CFG_AUX",
+            LegacyCmd::ScdQueueCfg as u8,
+            GroupId::Legacy as u8,
+            aux_scd_bytes,
+        )?;
+        log::info!(
+            "iwlwifi: init.config name=aux_queue queue={} owner_sta=0 fifo=mcast action=enable",
+            IWL_AUX_QUEUE,
+        );
+
         // ADD_STA is a legacy-group command and uses the four-byte header.
         const MAC_INDEX_AUX: u8 = 4;
         // The first internal station allocation reserves station 0 for the
@@ -492,8 +508,7 @@ impl IwlWifiDevice {
         const AUX_STA_ID: u8 = 1;
         // In Linux's non-DQA path the scheduler queue is initially owned by
         // station 0; ADD_STA then binds the auxiliary station (sta 1) to the
-        // queue through tfd_queue_msk. Sending sta 1 here makes API-v17
-        // firmware reject SCD_QUEUE_CFG before it can consume ADD_STA.
+        // queue through tfd_queue_msk.
         let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX, AUX_STA_ID);
         let aux_sta_bytes = unsafe { super::as_bytes(&aux_sta) };
         self.send_init_hcmd(

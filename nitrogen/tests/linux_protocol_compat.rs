@@ -12,7 +12,9 @@ use nitrogen::iwlwifi::registers::{
     TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
     TX_TFD_RING_BYTES,
 };
-use nitrogen::iwlwifi::types::{AddStaCmdV7, MacContextCmd, ScanConfigV1, ScanRequestCmd};
+use nitrogen::iwlwifi::types::{
+    AddStaCmdV7, MacContextCmd, ScanConfigV1, ScanRequestCmd, ScdTxqCfgCmdV1,
+};
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
 use nitrogen::usb::xhci::transfer::linux_control_transfer_trbs;
@@ -38,6 +40,16 @@ fn linux_v49_aux_station_payload_is_wire_compatible() {
     expected[16] = 1;
     expected[40..44].copy_from_slice(&(1u32 << 11).to_le_bytes());
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn linux_v49_aux_queue_config_is_sent_before_station_add() {
+    assert_eq!(size_of::<ScdTxqCfgCmdV1>(), 12);
+    let payload = ScdTxqCfgCmdV1::aux();
+    let actual = bytes(&payload);
+    // token=0, owner sta=0, tid=15, q11, enable, non-aggregate,
+    // multicast FIFO=5, window=64, ssn=0, reserved=0.
+    assert_eq!(actual, &[0, 0, 15, 11, 1, 0, 5, 64, 0, 0, 0, 0]);
 }
 
 #[test]
