@@ -211,9 +211,9 @@ pub struct PhyConfigurationCmd {
 
 /// SCD_QUEUE_CFG_CMD_API_S_VER_1, used by the legacy non-DQA scheduler.
 ///
-/// Linux sends this before ADD_STA for the auxiliary queue. The queue is
-/// initially owned by station 0; ADD_STA then advertises the real internal
-/// station (ID 1) through its `tfd_queue_msk`.
+/// Linux sends this before ADD_STA for the auxiliary queue. The auxiliary
+/// station is allocated first and its real internal station ID is already
+/// used here; the following ADD_STA publishes the same queue mask.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct ScdTxqCfgCmdV1 {
@@ -230,13 +230,13 @@ pub struct ScdTxqCfgCmdV1 {
 }
 
 impl ScdTxqCfgCmdV1 {
-    pub fn aux() -> Self {
+    pub fn aux(sta_id: u8) -> Self {
         use super::registers::IWL_AUX_QUEUE;
         Self {
             token: 0,
-            // Non-DQA config happens before the station is added. Linux uses
-            // the default station-0 owner here and binds sta 1 in ADD_STA.
-            sta_id: 0,
+            // Linux allocates the AUX station-table entry before enabling its
+            // queue, so SCD_QUEUE_CFG must name that station (normally 1).
+            sta_id,
             tid: 15, // IWL_MAX_TID_COUNT
             scd_queue: IWL_AUX_QUEUE as u8,
             action: 1,    // SCD_CFG_ENABLE_QUEUE

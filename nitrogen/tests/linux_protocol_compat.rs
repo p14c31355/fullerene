@@ -45,11 +45,11 @@ fn linux_v49_aux_station_payload_is_wire_compatible() {
 #[test]
 fn linux_v49_aux_queue_config_is_sent_before_station_add() {
     assert_eq!(size_of::<ScdTxqCfgCmdV1>(), 12);
-    let payload = ScdTxqCfgCmdV1::aux();
+    let payload = ScdTxqCfgCmdV1::aux(1);
     let actual = bytes(&payload);
-    // token=0, owner sta=0, tid=15, q11, enable, non-aggregate,
+    // token=0, owner sta=1, tid=15, q11, enable, non-aggregate,
     // multicast FIFO=5, window=64, ssn=0, reserved=0.
-    assert_eq!(actual, &[0, 0, 15, 11, 1, 0, 5, 64, 0, 0, 0, 0]);
+    assert_eq!(actual, &[0, 1, 15, 11, 1, 0, 5, 64, 0, 0, 0, 0]);
 }
 
 #[test]
