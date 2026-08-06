@@ -24,19 +24,19 @@ fn bytes<T>(value: &T) -> &[u8] {
 #[test]
 fn linux_v49_aux_station_payload_is_wire_compatible() {
     assert_eq!(IWL_CMD_QUEUE, 9);
-    assert_eq!(IWL_AUX_QUEUE, 8);
+    assert_eq!(IWL_AUX_QUEUE, 11);
     assert_eq!(size_of::<AddStaCmdV7>(), 44);
 
     // Linux v4.9 iwl_mvm_add_aux_sta(): MAC_INDEX_AUX is 4, while the
     // internal station-table entry is allocated as sta_id 1. The queue mask
-    // must advertise q8 before ADD_STA is sent.
+    // must advertise q11 before ADD_STA is sent.
     let payload = AddStaCmdV7::aux(4, 1);
     let actual = bytes(&payload);
     let mut expected = [0u8; 44];
     expected[2..4].copy_from_slice(&0xffffu16.to_le_bytes());
     expected[4..8].copy_from_slice(&4u32.to_le_bytes());
     expected[16] = 1;
-    expected[40..44].copy_from_slice(&(1u32 << 8).to_le_bytes());
+    expected[40..44].copy_from_slice(&(1u32 << 11).to_le_bytes());
     assert_eq!(actual, expected);
 }
 

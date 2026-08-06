@@ -57,7 +57,7 @@ impl IwlWifiDevice {
             self.write_prph(SCD_CHAINEXT_EN, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
-            // The scan engine uses the internal station's q8. Configure it
+            // The scan engine uses the internal station's q11. Configure it
             // before ADD_STA_AUX, just as Linux does; the firmware validates
             // the station's tfd_queue_msk against this scheduler entry.
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_AUX, 0);
@@ -118,7 +118,10 @@ impl IwlWifiDevice {
                 (aux_ring_phys >> 8) as u32,
             );
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
-            for channel in 0..=IWL_CMD_QUEUE {
+            // The 7265 exposes 16 legacy TX channels. The AUX station is q11,
+            // so enabling only through the command q9 leaves its scheduler
+            // channel disabled even though host commands still work.
+            for channel in 0..=IWL_AUX_QUEUE {
                 core::ptr::write_volatile(
                     self.mmio
                         .add((FH_TCSR_CHNL_TX_CONFIG_BASE + channel * (0x20 / 4)) as usize),

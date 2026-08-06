@@ -105,11 +105,10 @@ pub const FH_RCSR_RX_RB_TIMEOUT: u32 = 0x11;
 /// layout; using it for HCMDs can appear to work for simple commands but
 /// corrupts the scheduler state when ADD_STA configures the AUX station.
 pub const IWL_CMD_QUEUE: u32 = 9;
-/// Auxiliary/off-channel queue used by the firmware scan station in the
-/// non-DQA transport used by the 7265. Linux v4.9 names this
-/// `IWL_MVM_OFFCHANNEL_QUEUE` and assigns it queue 8; queue 11 belongs to a
-/// different queue layout and must not be used here.
-pub const IWL_AUX_QUEUE: u32 = 8;
+/// Auxiliary queue used by the firmware scan station in the 7265's 16-queue
+/// non-DQA layout. Linux selects q11 for `mvm->aux_queue` in this layout;
+/// q8 is the separate off-channel reservation, not the station's TX queue.
+pub const IWL_AUX_QUEUE: u32 = 11;
 pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
 pub const FH_MEM_CBBC_CMD_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_CMD_QUEUE;
 pub const FH_MEM_CBBC_AUX_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_AUX_QUEUE;
@@ -154,7 +153,7 @@ pub const SCD_GP_CTRL_AUTO_ACTIVE_MODE: u32 = 1 << 18;
 pub const TX_TFD_RING_BYTES: usize = 128 * TX_QUEUE_SIZE;
 /// The auxiliary station has its own TFD ring even though the host does not
 /// submit scan frames directly. Linux allocates one ring per scheduler queue;
-/// keeping q8 separate prevents firmware from interpreting q4 descriptors as
+/// keeping q11 separate prevents firmware from interpreting q9 descriptors as
 /// scan traffic.
 pub const TX_AUX_TFD_RING_OFFSET: usize = TX_TFD_RING_BYTES;
 pub const TX_KEEP_WARM_OFFSET: usize = TX_AUX_TFD_RING_OFFSET + TX_TFD_RING_BYTES;
