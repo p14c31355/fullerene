@@ -116,12 +116,30 @@ impl crate::Service for WifiService {
         #[cfg(nitrogen_no_iwlwifi)]
         let _ = now;
         #[cfg(not(nitrogen_no_iwlwifi))]
-        if !self.init_pending && WIFI_INIT_REQUESTED.swap(false, Ordering::Acquire) {
-            self.init_pending = true;
-            // A retry starts a new timeout window. Keeping the old start
-            // tick made every retry fail immediately after the first timeout.
-            self.init_started = Some(now);
-            log::info!("iwlwifi: deferred initialization requested");
+        if !self.init_pending && WIFI_INIT_REQUESTED.load(Ordering::Acquire) {
+            // A failed initialization is terminal until its resources can be
+            // reset. Keep the request published when try_lock() is busy and
+            // consume it only after retry_wifi_initialization() succeeds.
+            let can_start = if nitrogen::iwlwifi::wifi_init_failed() {
+                nitrogen::iwlwifi::retry_wifi_initialization()
+            } else {
+                !nitrogen::iwlwifi::wifi_init_completed()
+            };
+            if can_start {
+                WIFI_INIT_REQUESTED.store(false, Ordering::Release);
+                self.init_pending = true;
+                // A retry starts a new timeout window. Keeping the old start
+                // tick made every retry fail immediately after the first timeout.
+                self.init_started = Some(now);
+                log::info!("iwlwifi: deferred initialization requested");
+            } else if nitrogen::iwlwifi::wifi_init_completed()
+                && !nitrogen::iwlwifi::wifi_init_failed()
+            {
+                // A menu action may arrive while an existing attempt is
+                // finishing. Do not leave that level-triggered request stuck
+                // forever after a successful initialization.
+                WIFI_INIT_REQUESTED.store(false, Ordering::Release);
+            }
         }
         #[cfg(not(nitrogen_no_iwlwifi))]
         if self.init_pending {
@@ -173,8 +191,12 @@ pub fn register_wifi_service() {
 
 #[cfg(not(nitrogen_no_iwlwifi))]
 fn request_wifi_initialization() {
-    let _ = nitrogen::iwlwifi::retry_wifi_initialization();
-    WIFI_INIT_REQUESTED.store(true, Ordering::Release);
+    // Initial startup and a failed startup are both level-triggered. In the
+    // failed case WifiService::tick retries the reset and leaves this request
+    // pending if WIFI_INIT_CTX is temporarily locked.
+    if !nitrogen::iwlwifi::wifi_init_completed() || nitrogen::iwlwifi::wifi_init_failed() {
+        WIFI_INIT_REQUESTED.store(true, Ordering::Release);
+    }
 }
 
 #[cfg(not(nitrogen_no_iwlwifi))]

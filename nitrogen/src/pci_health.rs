@@ -10,14 +10,15 @@
 //! | Non-posted read hang | Read to unresponsive device | Config space probe | Skip MMIO, use PIO fallback |
 //! | Surprise link down | Transient electrical noise | Config retry | Retry with backoff |
 
-use crate::pci::{PciConfigSpace, PciDevice};
+use crate::pci::{L1SubstateError, PciConfigSpace, PciDevice};
 
 /// Error type for PCI health operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PciHealthError {
-    DeviceGone, // vendor=0xFFFF
-    NotD0,      // power state is D1-D3hot
-    LinkDown,   // PCIe link status shows speed=0
+    DeviceGone,      // vendor=0xFFFF
+    NotD0,           // power state is D1-D3hot
+    LinkDown,        // PCIe link status shows speed=0
+    EcamUnavailable, // bridge L1Substate configuration could not be verified
 }
 
 impl core::fmt::Display for PciHealthError {
@@ -26,6 +27,12 @@ impl core::fmt::Display for PciHealthError {
             PciHealthError::DeviceGone => write!(f, "device not on PCI bus"),
             PciHealthError::NotD0 => write!(f, "device not in D0"),
             PciHealthError::LinkDown => write!(f, "PCIe link down"),
+            PciHealthError::EcamUnavailable => {
+                write!(
+                    f,
+                    "PCI ECAM unavailable for bridge L1Substate configuration"
+                )
+            }
         }
     }
 }
@@ -175,7 +182,18 @@ impl PciHealth {
         // touching the endpoint. This closes the power-management path that
         // can make a live 7265 look like a vanished PCIe device.
         if let Some((b, d, f)) = self.upstream_bridge {
-            PciDevice::disable_l1_substates(b, d, f);
+            match PciDevice::disable_l1_substates(b, d, f) {
+                Ok(()) => {}
+                Err(L1SubstateError::EcamUnavailable) => {
+                    return Err(PciHealthError::EcamUnavailable);
+                }
+                Err(L1SubstateError::DeviceNotPresent) => {
+                    return Err(PciHealthError::DeviceGone);
+                }
+                Err(L1SubstateError::NotBridge) => {
+                    return Err(PciHealthError::DeviceGone);
+                }
+            }
         }
 
         // Step 3: Retrain the upstream link (port I/O, safe)

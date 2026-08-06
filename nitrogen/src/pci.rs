@@ -57,6 +57,17 @@ static PHYS_OFFSET: AtomicU64 = AtomicU64::new(0);
 static ECAM_START_BUS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 static ECAM_END_BUS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+/// Errors returned while preparing an upstream bridge's L1 Substates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum L1SubstateError {
+    /// ECAM is not configured for this bus, so extended config access is unsafe.
+    EcamUnavailable,
+    /// The bridge disappeared from the PCI bus while it was being prepared.
+    DeviceNotPresent,
+    /// The supplied BDF is not an upstream PCIe bridge.
+    NotBridge,
+}
+
 /// Store the ECAM MMIO base (physical), the phys→virt offset, and the
 /// bus range covered by the ECAM segment.
 ///
@@ -68,6 +79,13 @@ pub fn set_ecam_info(ecam_base: u64, phys_offset: u64, start_bus: u8, end_bus: u
     PHYS_OFFSET.store(phys_offset, core::sync::atomic::Ordering::Relaxed);
     ECAM_START_BUS.store(start_bus, core::sync::atomic::Ordering::Relaxed);
     ECAM_END_BUS.store(end_bus, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether ECAM has been configured for at least one PCI bus.
+pub fn ecam_initialized() -> bool {
+    ECAM_BASE.load(core::sync::atomic::Ordering::Acquire) != 0
+        && ECAM_START_BUS.load(core::sync::atomic::Ordering::Acquire)
+            <= ECAM_END_BUS.load(core::sync::atomic::Ordering::Acquire)
 }
 
 /// Convert a physical address to a virtual pointer using the stored offset.
@@ -622,13 +640,33 @@ impl PciDevice {
     /// it on the bridge alone is sufficient to prevent the link from
     /// entering L1.1/L1.2.  There is no need to call this on the endpoint.
     ///
-    /// Note: The WiFi/RTSX/PciHealth recovery paths intentionally leave
-    /// L1Sub enabled, as Linux tolerates ASPM L1 + L1Sub on the same
-    /// chipset without hangs. This function is provided for explicit
-    /// bridge-side L1Sub control when needed.
+    /// WiFi and PciHealth call this for bridge-side L1Sub control before
+    /// endpoint MMIO or link retraining. Endpoint L1Sub remains untouched
+    /// because ECAM access to an endpoint may hang while the link is in L1.
     ///
-    /// Silently no-ops if ECAM has not been configured by the kernel.
-    pub fn disable_l1_substates(bus: u8, device: u8, function: u8) {
+    /// Returns an error when ECAM is unavailable or the bridge disappeared.
+    /// A bridge without an L1Sub capability is treated as successfully
+    /// prepared because there is no L1Sub state to disable.
+    pub fn disable_l1_substates(
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Result<(), crate::pci::L1SubstateError> {
+        if !ecam_initialized()
+            || bus < ECAM_START_BUS.load(core::sync::atomic::Ordering::Acquire)
+            || bus > ECAM_END_BUS.load(core::sync::atomic::Ordering::Acquire)
+        {
+            return Err(crate::pci::L1SubstateError::EcamUnavailable);
+        }
+        let vendor = PciConfigSpace::read_config_word(bus, device, function, 0);
+        if vendor == 0xFFFF || vendor == 0x0000 {
+            return Err(crate::pci::L1SubstateError::DeviceNotPresent);
+        }
+        let class_rev = PciConfigSpace::read_config_dword(bus, device, function, 8);
+        if (class_rev >> 24) as u8 != 0x06 || (class_rev >> 16) as u8 != 0x04 {
+            return Err(crate::pci::L1SubstateError::NotBridge);
+        }
+
         let mut off: u16 = 0x100;
         let mut iterations = 0;
         const MAX_ITERATIONS: u8 = 48;
@@ -637,8 +675,11 @@ impl PciDevice {
             // Extended capabilities live at offsets ≥ 0x100 — must use ECAM.
             let cap_hdr = read_ext_dword(bus, device, function, off);
             if cap_hdr == 0xFFFF_FFFF {
-                // ECAM not configured or device absent — skip
-                return;
+                // The pre-flight checks above already established that ECAM
+                // and the bridge are available. Treat an all-ones capability
+                // header as an absent L1Sub capability, not as permission to
+                // continue with an unsafe endpoint MMIO access.
+                return Ok(());
             }
             let cap_id = (cap_hdr & 0xFFFF) as u16;
             let next_off = ((cap_hdr >> 20) & 0xFFF) as u16;
@@ -647,8 +688,13 @@ impl PciDevice {
                 // L1 PM Substates Capability
                 // L1SubCtl1 is at offset cap+0x08 (2 dwords in).
                 let ctl1 = read_ext_dword(bus, device, function, off + 8);
-                // Bits [2:1]: ASPM L1.2 Enable (bit 2), ASPM L1.1 Enable (bit 1)
-                let l1sub_enabled = ctl1 & 0x6;
+                if ctl1 == 0xFFFF_FFFF {
+                    return Err(crate::pci::L1SubstateError::DeviceNotPresent);
+                }
+                // PCI_L1SS_CTL1_ASPM_L1_2 (bit 2) and
+                // PCI_L1SS_CTL1_ASPM_L1_1 (bit 3). The adjacent bits 0/1
+                // control PCI-PM L1.2/L1.1 and are intentionally preserved.
+                let l1sub_enabled = ctl1 & 0xC;
                 if l1sub_enabled != 0 {
                     log::info!(
                         "PCI: disabling L1Sub on {:02x}:{:02x}.{} (was {:#x})",
@@ -657,13 +703,14 @@ impl PciDevice {
                         function,
                         l1sub_enabled,
                     );
-                    write_ext_dword(bus, device, function, off + 8, ctl1 & !0x6u32);
+                    write_ext_dword(bus, device, function, off + 8, ctl1 & !0xCu32);
                 }
-                return;
+                return Ok(());
             }
 
             off = next_off;
         }
+        Ok(())
     }
 
     pub fn detect_bar_size(&self, bar_index: u8) -> u32 {

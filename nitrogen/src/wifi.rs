@@ -320,6 +320,13 @@ pub struct RawPciProbeResult {
 /// Returns raw state that can be used by subsequent init phases.
 pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResult> {
     crate::debug::print("wifi", "start_pci_probe");
+    // WifiRegistry::probe() only uses port I/O, but its result is immediately
+    // followed by bridge ECAM access before the endpoint's first MMIO read.
+    // Do not discover a candidate that cannot be safely prepared.
+    if !crate::pci::ecam_initialized() {
+        log::warn!("WiFi: PCI ECAM is unavailable; refusing probe before endpoint MMIO");
+        return None;
+    }
     let Some((entry, info)) = WifiRegistry::probe() else {
         log::warn!("WiFi: no supported Intel wireless PCI device found");
         return None;
@@ -345,7 +352,26 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
         // from entering L1.1/L1.2 once firmware starts changing power state.
         // The upstream bridge is safe to access through ECAM, so disable the
         // negotiated L1 Substates before the first endpoint MMIO transaction.
-        crate::pci::PciDevice::disable_l1_substates(bus, dev, func);
+        match crate::pci::PciDevice::disable_l1_substates(bus, dev, func) {
+            Ok(()) => {}
+            Err(crate::pci::L1SubstateError::EcamUnavailable) => {
+                log::warn!(
+                    "WiFi: refusing endpoint MMIO because bridge ECAM is unavailable at {:02x}:{:02x}.{}",
+                    bus,
+                    dev,
+                    func,
+                );
+                return None;
+            }
+            Err(crate::pci::L1SubstateError::DeviceNotPresent) => {
+                log::warn!("WiFi: upstream bridge disappeared during PCI probe");
+                return None;
+            }
+            Err(crate::pci::L1SubstateError::NotBridge) => {
+                log::warn!("WiFi: refusing probe because upstream BDF is not a PCIe bridge");
+                return None;
+            }
+        }
     }
 
     // ── Minimal endpoint configuration ─────────────────────
