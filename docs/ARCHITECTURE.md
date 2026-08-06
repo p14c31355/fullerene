@@ -37,7 +37,7 @@ workspaces and copied into the kernel build output. Viewer MP4 access is
 seek-based and Emulsion screen capture is chunked, so neither path requires a
 full media or framebuffer-sized temporary buffer in the host runtime.
 
-The workspace currently contains 20 Cargo members. The latest host validation
+The workspace currently contains 21 Cargo members. The latest host validation
 passes `cargo check --workspace --all-targets`; the optional BusyBox build
 status is intentionally silent when its cache/toolchain is unavailable, so an
 optional port does not turn a warning-free Rust check into a warning. The
@@ -151,6 +151,9 @@ petroleum (no_std support library)
 
 sealant (no_std memory capability boundary)
     └── checked RAM / MMIO / user / DMA / physical-address access
+
+DriverKit (`ligand`, published as `DriverKit`)
+    └── C ABI user-space IPC client for device handles and channels
 ```
 
 New in this revision:

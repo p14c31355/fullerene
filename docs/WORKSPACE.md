@@ -28,6 +28,8 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`sealant`**: A no_std capability library for checked RAM, MMIO, user-memory, DMA, framebuffer, and physical-address access. It is used at low-level memory boundaries by drivers and security-sensitive helpers.
 
+- **`ligand`** (`DriverKit`): A user-space C ABI IPC client for driver processes. It wraps ABI discovery, device enumeration/open, bounded block I/O, channel send/receive, and capability-handle revocation without exposing Rust-specific types across the boundary.
+
 - **`bonder`**: A no_std network protocol stack implementing Ethernet frame handling, IPv4 packet processing, and UDP socket abstraction with iwlwifi integration.
 
 - **`nitrogen`**: A hardware abstraction and device driver library providing PCI enumeration, APIC/PIC interrupt controllers, PS/2 keyboard/mouse drivers, HDA audio, VirtIO block/net/gpu drivers, USB (xHCI/EHCI), NVMe/AHCI storage, Intel wireless (iwlwifi), and framebuffer management. It owns PCI power/decode transitions and MMIO preflight for matched devices.
@@ -38,7 +40,7 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`toluene/apps`**: Standalone WASI application sources embedded by the kernel build (`hello_wasi.rs` and `startup_sound.rs`). `toluene/viewer` and `toluene/emulsion` are separate nested application workspaces built by `fullerene-kernel/build.rs`, not members of the root workspace.
 
-The root workspace currently has 20 members. The `default-members` list omits
+The root workspace currently has 21 members. The `default-members` list omits
 the bootloader, ABI/VDSO helper crates, and `solvent/wasi` only to keep the
 usual host development commands focused; `cargo check --workspace` includes
 all members. `toluene/cargo` is a vendored third-party Cargo source tree and is

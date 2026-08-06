@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "DriverKit"
+version = "0.1.0"
+dependencies = [
+ "fullerene-abi",
+ "petroleum",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"

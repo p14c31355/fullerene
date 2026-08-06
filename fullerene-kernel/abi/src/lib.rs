@@ -346,6 +346,111 @@ impl Default for AbiInfo {
     }
 }
 
+/// Magic value at the start of a DriverKit IPC message.
+pub const IPC_MESSAGE_MAGIC: u32 = 0x4644_4950;
+/// Current version of the DriverKit IPC message envelope.
+pub const IPC_MESSAGE_VERSION: u16 = 1;
+
+/// Flags carried by an [`IpcMessageHeader`].
+pub mod ipc_message_flags {
+    /// Message is a request submitted to a service.
+    pub const REQUEST: u32 = 1 << 0;
+    /// Message is a response to a request.
+    pub const RESPONSE: u32 = 1 << 1;
+    /// Message is an unsolicited event or notification.
+    pub const EVENT: u32 = 1 << 2;
+    /// Message payload describes an error.
+    pub const ERROR: u32 = 1 << 3;
+    /// More fragments follow this message.
+    pub const MORE: u32 = 1 << 4;
+}
+
+/// Versioned envelope carried inside a Fullerene IPC channel message.
+///
+/// The header is deliberately independent of any device class. `opcode` is
+/// owned by the service selected by the channel endpoint, while `request_id`
+/// lets a user-space driver match asynchronous completions to submissions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct IpcMessageHeader {
+    /// Must equal [`IPC_MESSAGE_MAGIC`].
+    pub magic: u32,
+    /// Envelope format version.
+    pub version: u16,
+    /// Header size in bytes, allowing future header extension.
+    pub header_size: u16,
+    /// Service-specific operation code.
+    pub opcode: u32,
+    /// Combination of [`ipc_message_flags`] values.
+    pub flags: u32,
+    /// Client-assigned request/completion correlation identifier.
+    pub request_id: u64,
+    /// Payload size following this header.
+    pub payload_len: u32,
+    /// Reserved; must be zero for version 1.
+    pub reserved: u32,
+}
+
+impl IpcMessageHeader {
+    /// Current serialized header size.
+    pub const BYTE_SIZE: usize = 32;
+
+    /// Construct a version-1 message header.
+    pub const fn new(opcode: u32, flags: u32, request_id: u64, payload_len: u32) -> Self {
+        Self {
+            magic: IPC_MESSAGE_MAGIC,
+            version: IPC_MESSAGE_VERSION,
+            header_size: Self::BYTE_SIZE as u16,
+            opcode,
+            flags,
+            request_id,
+            payload_len,
+            reserved: 0,
+        }
+    }
+
+    /// Return whether the fixed portion of the header is valid.
+    pub const fn is_valid(self) -> bool {
+        self.magic == IPC_MESSAGE_MAGIC
+            && self.version == IPC_MESSAGE_VERSION
+            && self.header_size as usize >= Self::BYTE_SIZE
+            && self.reserved == 0
+    }
+
+    /// Return the total message size, including the declared header.
+    pub const fn total_size(self) -> Option<usize> {
+        (self.header_size as usize).checked_add(self.payload_len as usize)
+    }
+
+    /// Serialize the fixed header in native-endian field order.
+    pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
+        let mut bytes = [0; Self::BYTE_SIZE];
+        bytes[0..4].copy_from_slice(&self.magic.to_ne_bytes());
+        bytes[4..6].copy_from_slice(&self.version.to_ne_bytes());
+        bytes[6..8].copy_from_slice(&self.header_size.to_ne_bytes());
+        bytes[8..12].copy_from_slice(&self.opcode.to_ne_bytes());
+        bytes[12..16].copy_from_slice(&self.flags.to_ne_bytes());
+        bytes[16..24].copy_from_slice(&self.request_id.to_ne_bytes());
+        bytes[24..28].copy_from_slice(&self.payload_len.to_ne_bytes());
+        bytes[28..32].copy_from_slice(&self.reserved.to_ne_bytes());
+        bytes
+    }
+
+    /// Deserialize the fixed header in native-endian field order.
+    pub fn from_ne_bytes(bytes: [u8; Self::BYTE_SIZE]) -> Self {
+        Self {
+            magic: u32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
+            version: u16::from_ne_bytes(bytes[4..6].try_into().unwrap()),
+            header_size: u16::from_ne_bytes(bytes[6..8].try_into().unwrap()),
+            opcode: u32::from_ne_bytes(bytes[8..12].try_into().unwrap()),
+            flags: u32::from_ne_bytes(bytes[12..16].try_into().unwrap()),
+            request_id: u64::from_ne_bytes(bytes[16..24].try_into().unwrap()),
+            payload_len: u32::from_ne_bytes(bytes[24..28].try_into().unwrap()),
+            reserved: u32::from_ne_bytes(bytes[28..32].try_into().unwrap()),
+        }
+    }
+}
+
 /// Information returned by `query_memory`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
@@ -703,6 +808,8 @@ const _: () = {
     assert!(core::mem::size_of::<AbiInfo>() == AbiInfo::BYTE_SIZE);
     assert!(AbiInfo::MIN_BYTE_SIZE <= AbiInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<AbiInfo>() == 8);
+    assert!(core::mem::size_of::<IpcMessageHeader>() == IpcMessageHeader::BYTE_SIZE);
+    assert!(core::mem::align_of::<IpcMessageHeader>() == 8);
     assert!(core::mem::size_of::<MemoryInfo>() == MemoryInfo::BYTE_SIZE);
     assert!(MemoryInfo::MIN_BYTE_SIZE <= MemoryInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<MemoryInfo>() == 8);
@@ -815,5 +922,16 @@ mod tests {
             CapabilitySet::ALL_DEFINED.bits()
         );
         assert!(info.capabilities.contains(Capability::NativeSyscall));
+    }
+
+    #[test]
+    fn ipc_message_header_serialization_round_trips() {
+        let header = IpcMessageHeader::new(0x100, ipc_message_flags::REQUEST, 42, 128);
+        assert!(header.is_valid());
+        assert_eq!(header.total_size(), Some(160));
+        assert_eq!(
+            IpcMessageHeader::from_ne_bytes(header.to_ne_bytes()),
+            header
+        );
     }
 }
