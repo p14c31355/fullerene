@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::DriverContext;
@@ -35,6 +35,10 @@ static WIFI_INIT_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
 static WIFI_INIT_LAST_ACTIVE_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
+// Hints are drawn from the scheduler context only. set_init_phase() is also
+// used by the NMI watchdog failure path, where taking the debug callback lock
+// could deadlock.
+static WIFI_LAST_HINT_PHASE: AtomicU8 = AtomicU8::new(u8::MAX);
 static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
     mmio_device: None,
     fw_candidate_idx: 0,
@@ -303,6 +307,15 @@ fn set_init_phase(phase: WifiInitPhase) {
 fn get_init_phase() -> WifiInitPhase {
     let raw = WIFI_INIT_PHASE.load(core::sync::atomic::Ordering::Acquire);
     WifiInitPhase::from(raw)
+}
+
+fn draw_init_hint_if_changed() {
+    let phase = get_init_phase();
+    let current = phase as u8;
+    let previous = WIFI_LAST_HINT_PHASE.swap(current, Ordering::AcqRel);
+    if previous != current {
+        debug::hint(phase.screen_label());
+    }
 }
 
 // ── Incremental init state machine ─
@@ -1207,6 +1220,10 @@ pub fn process_wifi_submission_queue(budget: usize) {
 
 /// Move Wi-Fi SQ entries through the executor until either budget is reached.
 pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
+    // Keep boot-screen phase changes in the normal scheduler path. In
+    // particular, never call debug::hint() from force_init_failed(), which
+    // may be reached by the NMI watchdog while another context owns a lock.
+    draw_init_hint_if_changed();
     let mut processed_any = false;
     for _ in 0..budget {
         // A short scheduler budget must not turn the SQ into a starvation
@@ -1265,6 +1282,7 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
                 accepted: perform_send_data_frame(&frame),
             },
         };
+        draw_init_hint_if_changed();
         if completion_reserved {
             WIFI_CQ
                 .lock()

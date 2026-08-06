@@ -852,6 +852,22 @@ impl WifiInitPhase {
             Self::Failed => "failed",
         }
     }
+
+    /// Short labels suitable for the boot-screen Hint area.
+    pub const fn screen_label(self) -> &'static [u8] {
+        match self {
+            Self::Idle => b"WIFI WAIT",
+            Self::PciProbe => b"WIFI PCI",
+            Self::MmioInit => b"WIFI MMIO",
+            Self::MmioPollMacClock => b"WIFI CLOCK",
+            Self::DmaAlloc => b"WIFI DMA",
+            Self::FwUpload => b"WIFI FW LOAD",
+            Self::FwWaitAlive => b"WIFI FW ALIVE",
+            Self::FwInitCmds => b"WIFI COMMANDS",
+            Self::Done => b"WIFI READY",
+            Self::Failed => b"WIFI FAILED",
+        }
+    }
 }
 
 impl From<u8> for WifiInitPhase {
