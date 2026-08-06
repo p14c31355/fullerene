@@ -50,7 +50,7 @@ pub const DRIVERKIT_BUSY: i32 = 16;
 pub const DRIVERKIT_UNKNOWN_ERROR: i32 = 0x7fff;
 
 /// Maximum message size accepted by the current channel syscall.
-pub const DRIVERKIT_MAX_CHANNEL_MESSAGE_SIZE: usize = 65_536;
+pub const DRIVERKIT_MAX_CHANNEL_MESSAGE_SIZE: usize = fullerene_abi::IPC_CHANNEL_MAX_MESSAGE_SIZE;
 /// Maximum NUL-terminated device identifier length accepted by the kernel.
 pub const DRIVERKIT_MAX_DEVICE_ID_SIZE: usize = 128;
 /// Fixed size of the versioned IPC envelope header.

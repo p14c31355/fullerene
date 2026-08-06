@@ -360,6 +360,10 @@ impl Default for AbiInfo {
 pub const IPC_MESSAGE_MAGIC: u32 = 0x4644_4950;
 /// Current version of the DriverKit IPC message envelope.
 pub const IPC_MESSAGE_VERSION: u16 = 1;
+/// Maximum bytes carried by one native IPC channel message.
+pub const IPC_CHANNEL_MAX_MESSAGE_SIZE: usize = 65_536;
+/// Maximum queued messages in one native IPC channel.
+pub const IPC_CHANNEL_MAX_MESSAGES: usize = 64;
 
 /// Flags carried by an [`IpcMessageHeader`].
 pub mod ipc_message_flags {

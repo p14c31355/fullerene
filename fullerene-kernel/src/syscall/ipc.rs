@@ -15,7 +15,7 @@ pub(crate) fn syscall_channel_create(_flags: u64) -> SyscallResult {
     let inner = Arc::new(Mutex::new(ChannelInner {
         messages: Vec::with_capacity(16),
         waiters: Vec::new(),
-        max_messages: 64,
+        max_messages: fullerene_abi::IPC_CHANNEL_MAX_MESSAGES,
     }));
     alloc_handle(KernelObject::Channel(ChannelState { inner }))
 }
@@ -28,7 +28,7 @@ pub(crate) fn syscall_channel_send(
     let h = Handle::from_raw(handle);
     check_handle_permission(h, HandlePerms::WRITE)?;
     let size = data_size as usize;
-    if size == 0 || size > 65536 {
+    if size == 0 || size > fullerene_abi::IPC_CHANNEL_MAX_MESSAGE_SIZE {
         return Err(SyscallError::InvalidArgument);
     }
 
@@ -59,7 +59,7 @@ pub(crate) fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> 
     let h = Handle::from_raw(handle);
     check_handle_permission(h, HandlePerms::READ)?;
     let max = buf_size as usize;
-    if buf.is_null() || max == 0 || max > 65536 {
+    if buf.is_null() || max == 0 || max > fullerene_abi::IPC_CHANNEL_MAX_MESSAGE_SIZE {
         return Err(SyscallError::InvalidArgument);
     }
     petroleum::validate_user_buffer(buf as usize, max, false)?;
