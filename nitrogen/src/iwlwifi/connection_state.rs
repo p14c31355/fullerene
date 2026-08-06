@@ -1219,11 +1219,31 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
         if processed_any && unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
             break;
         }
-        if !reserve_wifi_completion() {
+
+        // InitStep and Tick are level-triggered housekeeping requests. Their
+        // completion records are intentionally ignored by the consumer, so
+        // they must not be blocked by a full CQ. In particular, a backlog of
+        // stale Tick records must not prevent the first InitStep from ever
+        // reaching the hardware state machine and make the UI-side timeout
+        // fire while the phase is still Idle.
+        let periodic = {
+            let queue = WIFI_SQ.lock();
+            matches!(
+                queue.front().map(|(_, request)| request),
+                Some(WifiRequest::InitStep | WifiRequest::Tick)
+            )
+        };
+        let completion_reserved = if periodic {
+            false
+        } else if reserve_wifi_completion() {
+            true
+        } else {
             break;
-        }
+        };
         let Some((request_id, request)) = WIFI_SQ.lock().pop_front() else {
-            release_wifi_completion();
+            if completion_reserved {
+                release_wifi_completion();
+            }
             break;
         };
         let kind = match request {
@@ -1245,10 +1265,12 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
                 accepted: perform_send_data_frame(&frame),
             },
         };
-        WIFI_CQ
-            .lock()
-            .push_back(WifiCompletion { request_id, kind });
-        release_wifi_completion();
+        if completion_reserved {
+            WIFI_CQ
+                .lock()
+                .push_back(WifiCompletion { request_id, kind });
+            release_wifi_completion();
+        }
         processed_any = true;
     }
 }
