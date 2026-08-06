@@ -147,25 +147,21 @@ impl PciHealth {
     ///
     /// # ⚠️ Hang-proof design
     ///
-    /// All operations use port I/O (CF8/CFC) exclusively. Bridge and endpoint
-    /// ECAM reads are **never** performed — port I/O is used for standard
-    /// config space access only. L1 PM Substates are not modified and are
-    /// intentionally left enabled (see below).
+    /// Standard config-space operations use port I/O (CF8/CFC). The one
+    /// extended-config operation is the bridge-side L1Sub clear; the bridge
+    /// is upstream of the endpoint and remains safe to access through ECAM.
     ///
     /// # Ordering
     ///
     /// 1. `ensure_d0()` on endpoint and bridge (port I/O, safe)
-    /// 2. **Link retrain** on upstream bridge (port I/O, safe)
-    /// 3. `disable_pcie_aspm()` on bridge — standard ASPM only (port I/O, safe)
-    /// 4. `disable_pcie_aspm()` on endpoint — standard ASPM only (port I/O, safe)
-    /// 5. `check()` — full health verification via port I/O (safe)
+    /// 2. Disable bridge-side L1 Substates through ECAM (safe)
+    /// 3. **Link retrain** on upstream bridge (port I/O, safe)
+    /// 4. `disable_pcie_aspm()` on bridge — standard ASPM only (port I/O, safe)
+    /// 5. `disable_pcie_aspm()` on endpoint — standard ASPM only (port I/O, safe)
+    /// 6. `check()` — full health verification via port I/O (safe)
     ///
-    /// L1 PM Substates (L1.1/L1.2) are not modified during recovery. While
-    /// bridge-side ECAM access would be permissible for L1Sub configuration
-    /// (bridges are never in L1 relative to the CPU), recovery paths do not
-    /// disable L1Sub since it is disabled once during WiFi init on the bridge.
-    /// Endpoint L1Sub cannot be safely disabled here (ECAM MMIO hangs if the
-    /// link is in L1).
+    /// Endpoint L1Sub is intentionally not touched: ECAM access to an
+    /// endpoint may hang while the link is in L1.
     pub fn recover(&mut self) -> Result<(), PciHealthError> {
         // Step 1: Re-assert D0 on the device and bridge (port I/O, safe)
         self.ensure_d0();
@@ -175,22 +171,29 @@ impl PciHealth {
             bridge.ensure_d0();
         }
 
-        // Step 2: Retrain the upstream link (port I/O, safe)
+        // Step 2: Disable L1.1/L1.2 on the bridge before retraining or
+        // touching the endpoint. This closes the power-management path that
+        // can make a live 7265 look like a vanished PCIe device.
+        if let Some((b, d, f)) = self.upstream_bridge {
+            PciDevice::disable_l1_substates(b, d, f);
+        }
+
+        // Step 3: Retrain the upstream link (port I/O, safe)
         self.retrain_upstream_link();
 
-        // Step 3: Disable standard ASPM on the bridge (port I/O, safe)
+        // Step 4: Disable standard ASPM on the bridge (port I/O, safe)
         if let Some((b, d, f)) = self.upstream_bridge
             && let Some(bridge) = PciDevice::new(b, d, f)
         {
             bridge.disable_pcie_aspm();
         }
 
-        // Step 4: Disable standard ASPM on the endpoint (port I/O, safe).
+        // Step 5: Disable standard ASPM on the endpoint (port I/O, safe).
         // L1Sub is not touched here — endpoint ECAM access is unsafe when
-        // the link may be in L1. Bridge-side L1Sub is disabled during WiFi init.
+        // the link may be in L1.
         self.disable_aspm();
 
-        // Step 5: Re-verify (port I/O, safe)
+        // Step 6: Re-verify (port I/O, safe)
         self.check()
     }
 

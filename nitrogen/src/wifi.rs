@@ -340,6 +340,12 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
             dev,
             func
         );
+
+        // Clearing ordinary ASPM bits is not enough to prevent the endpoint
+        // from entering L1.1/L1.2 once firmware starts changing power state.
+        // The upstream bridge is safe to access through ECAM, so disable the
+        // negotiated L1 Substates before the first endpoint MMIO transaction.
+        crate::pci::PciDevice::disable_l1_substates(bus, dev, func);
     }
 
     // ── Minimal endpoint configuration ─────────────────────
