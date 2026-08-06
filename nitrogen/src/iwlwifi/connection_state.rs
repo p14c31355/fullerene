@@ -192,6 +192,17 @@ pub fn wifi_init_completed() -> bool {
     WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
 }
 
+/// Whether the most recent initialization attempt ended in the terminal
+/// failed state.
+///
+/// `wifi_init_completed()` intentionally covers both success and failure so
+/// callers can stop polling.  UI code needs the distinction to avoid showing
+/// a successful scan request after initialization was disabled.
+pub fn wifi_init_failed() -> bool {
+    WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
+        && get_init_phase() == WifiInitPhase::Failed
+}
+
 /// Whether the hardware-facing driver object was successfully installed.
 ///
 /// `wifi_init_completed()` also becomes true after a failed initialization so
@@ -1196,8 +1207,16 @@ pub fn process_wifi_submission_queue(budget: usize) {
 
 /// Move Wi-Fi SQ entries through the executor until either budget is reached.
 pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
+    let mut processed_any = false;
     for _ in 0..budget {
-        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
+        // A short scheduler budget must not turn the SQ into a starvation
+        // point. This is particularly important for InitStep: if the
+        // deadline has already elapsed by the time this phase runs, leaving
+        // the request queued makes Solvent eventually report an outer timeout
+        // even though the hardware state machine never got one step.
+        // Process one request unconditionally, then enforce the deadline for
+        // the remaining batch. The request itself has per-device watchdogs.
+        if processed_any && unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
             break;
         }
         if !reserve_wifi_completion() {
@@ -1230,6 +1249,7 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
             .lock()
             .push_back(WifiCompletion { request_id, kind });
         release_wifi_completion();
+        processed_any = true;
     }
 }
 

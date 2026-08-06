@@ -43,6 +43,7 @@ impl WifiService {
         let started = *self.init_started.get_or_insert(now);
         if nitrogen::iwlwifi::wifi_init_completed() {
             self.init_pending = false;
+            self.init_started = None;
         } else if now.wrapping_sub(started) >= WIFI_INIT_TIMEOUT_TICKS {
             log::warn!(
                 "iwlwifi: deferred initialization timed out after {} scheduler ticks",
@@ -50,6 +51,7 @@ impl WifiService {
             );
             nitrogen::iwlwifi::force_init_failed();
             self.init_pending = false;
+            self.init_started = None;
         } else {
             nitrogen::iwlwifi::try_init_wifi_device_step();
         }
@@ -86,7 +88,11 @@ impl WifiService {
         *crate::NETWORK_SNAPSHOT.lock() = crate::NetworkSnapshot {
             aps,
             status: if !state.device_available {
-                NetStatus::NoDevice
+                if nitrogen::iwlwifi::wifi_init_failed() {
+                    NetStatus::Error("Wi-Fi initialization failed".into())
+                } else {
+                    NetStatus::NoDevice
+                }
             } else {
                 match state.status {
                     WifiStatus::Connected => NetStatus::Connected(
@@ -112,6 +118,9 @@ impl crate::Service for WifiService {
         #[cfg(not(nitrogen_no_iwlwifi))]
         if !self.init_pending && WIFI_INIT_REQUESTED.swap(false, Ordering::Acquire) {
             self.init_pending = true;
+            // A retry starts a new timeout window. Keeping the old start
+            // tick made every retry fail immediately after the first timeout.
+            self.init_started = Some(now);
             log::info!("iwlwifi: deferred initialization requested by network menu");
         }
         #[cfg(not(nitrogen_no_iwlwifi))]
@@ -129,10 +138,16 @@ impl crate::Service for WifiService {
         }
         #[cfg(not(nitrogen_no_iwlwifi))]
         if nitrogen::iwlwifi::wifi_init_completed()
+            && nitrogen::iwlwifi::wifi_device_ready()
             && WIFI_SCAN_REQUESTED.swap(false, Ordering::Acquire)
         {
             log::info!("iwlwifi: scan requested by network menu");
             nitrogen::iwlwifi::start_scan_if_idle();
+        } else if nitrogen::iwlwifi::wifi_init_failed() {
+            // The menu action and initialization request are independent
+            // atomics. Do not issue a misleading scan request after the
+            // initialization state has been disabled.
+            WIFI_SCAN_REQUESTED.store(false, Ordering::Release);
         }
         for action in core::mem::take(&mut *crate::WIFI_ACTION_QUEUE.lock()) {
             let crate::WifiAction::Connect(ssid, password) = action;
