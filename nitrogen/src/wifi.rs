@@ -379,14 +379,21 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
                 return None;
             }
         }
+
+        // Disable ordinary ASPM before the endpoint can enter L1 between the
+        // probe and the scheduler-owned MMIO phase.  L1.1/L1.2 is controlled
+        // on the bridge above; the standard L1/L0s bits must be cleared on
+        // both sides of the link.  Port-I/O config access is safe here while
+        // the endpoint is still present.
+        if let Some(bridge) = crate::pci::PciDevice::new(bus, dev, func) {
+            bridge.disable_pcie_aspm();
+        }
     }
 
     // ── Minimal endpoint configuration ─────────────────────
-    // Linux' iwlwifi calls only pci_enable_device() (which sets
-    // the Memory Space + Bus Master bits in the Command register)
-    // before accessing BAR0 MMIO.  Any additional config writes
-    // (ASPM disable, D0 re-assertion, CTO) can cause the PCIe
-    // link to enter an inconsistent state on this platform.
+    // Enable only Memory Space + Bus Master before accessing BAR0.  ASPM is
+    // cleared separately below because this endpoint disappears while the
+    // scheduler yields if the link is allowed to enter L1.
     crate::debug::print("wifi", "enable_mem");
     if !pci_dev.enable_memory_access() {
         log::warn!(
@@ -397,6 +404,10 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
         );
         return None;
     }
+
+    // Keep the endpoint in L0 while the initialization state machine yields
+    // between PCI probing and the first MMIO transaction.
+    pci_dev.disable_pcie_aspm();
 
     // Read HW revision from PCI config space (port I/O, NEVER hangs)
     crate::debug::print("wifi", "read_hw_rev_pci");
