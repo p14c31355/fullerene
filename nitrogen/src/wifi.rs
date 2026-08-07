@@ -307,6 +307,13 @@ pub struct PciProbeResult {
 pub struct RawPciProbeResult {
     pub entry: &'static DriverEntry,
     pub pci_dev: crate::pci::PciDevice,
+    /// Firmware-assigned BAR0 captured during the safe PCI probe.
+    ///
+    /// Keep this value instead of re-reading BAR0 after the probe: a device
+    /// that has entered a transient PCIe low-power state may return all ones
+    /// from a later config-space read, which would otherwise be logged as a
+    /// misleading zero by the caller.
+    pub bar0_phys: u64,
     pub mmio: *mut u32,
     pub hw_rev: u16,
     pub device_id: u16,
@@ -469,6 +476,7 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     Some(RawPciProbeResult {
         entry,
         pci_dev,
+        bar0_phys: info.bar0_phys,
         mmio: mmio_base,
         hw_rev,
         device_id: info.device_id,

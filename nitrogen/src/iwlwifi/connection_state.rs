@@ -378,10 +378,7 @@ fn perform_init_step() {
                 raw.pci_dev.bus,
                 raw.pci_dev.device,
                 raw.pci_dev.function,
-                raw.pci_dev
-                    .read_bar_info(0)
-                    .map(|bar| bar.address)
-                    .unwrap_or(0),
+                raw.bar0_phys,
                 raw.hw_rev,
             );
             {
@@ -413,15 +410,36 @@ fn perform_init_step() {
             // Link training belongs to firmware. Resetting the upstream bridge
             // here can strand the endpoint before the first non-posted read.
             let mmio = WIFI_INIT_CTX.lock().mmio;
-            let device_present = {
-                let mut ctx = WIFI_INIT_CTX.lock();
-                match ctx.health.as_mut() {
-                    Some(h) => h.is_device_present(),
-                    None => false,
-                }
+            // Do not use only is_device_present() here. A 7265 can briefly
+            // disappear from config space while its upstream link is in a
+            // low-power state; pre_mmio_access() performs the safe recovery
+            // sequence (D0, bridge L1Sub, link retrain, ASPM) before giving up.
+            let health_result = {
+                let ctx = WIFI_INIT_CTX.lock();
+                ctx.health.map(|mut health| health.pre_mmio_access())
             };
-            if !device_present {
-                log::warn!("iwlwifi: MMIO phase aborted — PCIe device disappeared before reset");
+            match health_result {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    log::warn!(
+                        "iwlwifi: MMIO phase aborted — PCIe health check failed before reset: {}",
+                        error
+                    );
+                    debug::print("iwlwifi", "step: ERR device_gone_before_reset");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+                None => {
+                    log::warn!(
+                        "iwlwifi: MMIO phase aborted — PCIe health state unavailable before reset"
+                    );
+                    debug::print("iwlwifi", "step: ERR device_gone_before_reset");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+            }
+            if mmio.is_null() {
+                log::warn!("iwlwifi: MMIO phase aborted — mapped BAR0 is null");
                 debug::print("iwlwifi", "step: ERR device_gone_before_reset");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
