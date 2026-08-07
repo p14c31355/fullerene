@@ -13,6 +13,7 @@ use x86_64::structures::paging::{
 };
 use x86_64::{PhysAddr, VirtAddr};
 
+use petroleum::page_table::allocator::traits::FrameAllocatorExt;
 use petroleum::page_table::process::ProcessPageTable;
 use petroleum::page_table::types::PageTableHelper;
 pub mod convenience;
@@ -209,6 +210,86 @@ pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::Phy
         let _ = manager.free_frame(frame_addr);
         mem_debug!("Mem: Deallocated process page table\n");
     }
+}
+
+/// Reclaim empty user page-table levels below a process PML4.
+///
+/// The x86 mapper removes leaf entries but intentionally leaves intermediate
+/// tables allocated. Process-owned mappings can therefore release their empty
+/// P1/P2/P3 tables after the leaf pages have been unmapped.
+pub(crate) unsafe fn reclaim_empty_user_page_tables(
+    root: PhysAddr,
+    address: u64,
+    allocator: &mut impl FrameAllocatorExt,
+) {
+    let offset = VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let virtual_address = VirtAddr::new(address);
+    let indexes = [
+        virtual_address.p4_index(),
+        virtual_address.p3_index(),
+        virtual_address.p2_index(),
+        virtual_address.p1_index(),
+    ];
+    let mut table = (offset + root.as_u64()).as_mut_ptr::<PageTable>();
+    let mut path = [None; 3];
+
+    for (level, index) in indexes.into_iter().enumerate().take(3) {
+        let entry = unsafe { &mut (&mut *table)[index] };
+        let flags = entry.flags();
+        if !flags.contains(PageFlags::PRESENT) || flags.contains(PageFlags::HUGE_PAGE) {
+            return;
+        }
+        let child = entry.addr();
+        path[level] = Some((table, index, child));
+        table = (offset + child.as_u64()).as_mut_ptr::<PageTable>();
+    }
+
+    for level in (0..3).rev() {
+        let Some((parent, index, child)) = path[level] else {
+            break;
+        };
+        let child_table = unsafe { &*(offset + child.as_u64()).as_ptr::<PageTable>() };
+        if child_table.iter().any(|entry| !entry.is_unused()) {
+            break;
+        }
+        unsafe { (&mut *parent)[index].set_unused() };
+        allocator.deallocate_frame(petroleum::page_table::types::PhysFrame {
+            start_address: child.as_u64(),
+        });
+    }
+}
+
+/// Unmap and free process-owned pages in a user address range.
+pub fn unmap_process_pages(
+    page_table: &mut ProcessPageTable,
+    start: u64,
+    length: u64,
+    free_leaf_frames: bool,
+) {
+    let Some(end) = start.checked_add(length) else {
+        return;
+    };
+    petroleum::page_table::constants::with_frame_allocator(|allocator| {
+        let mut address = start & !(4096 - 1);
+        while address < end {
+            if let Ok(frame) = page_table.unmap_page(address as usize) {
+                if free_leaf_frames {
+                    allocator.deallocate_frame(petroleum::page_table::types::PhysFrame {
+                        start_address: frame.start_address().as_u64(),
+                    });
+                }
+            }
+            if let Some(root) = page_table.pml4_frame() {
+                unsafe {
+                    reclaim_empty_user_page_tables(root.start_address(), address, allocator);
+                }
+            }
+            address = match address.checked_add(4096) {
+                Some(next) => next,
+                None => break,
+            };
+        }
+    });
 }
 
 /// Initialize the global memory manager

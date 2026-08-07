@@ -475,6 +475,14 @@ pub mod shared_buffer_flags {
     pub const ZEROED: u64 = 1 << 2;
 }
 
+/// Rights carried by an [`IpcBufferDescriptor`].
+pub mod ipc_buffer_flags {
+    /// The descriptor may be read by the receiver.
+    pub const READ: u32 = 1 << 0;
+    /// The descriptor may be written by the receiver.
+    pub const WRITE: u32 = 1 << 1;
+}
+
 /// A reference to a region of a shared buffer carried in an IPC payload.
 ///
 /// The handle is a capability in the sending process.  A receiver must obtain
@@ -489,7 +497,7 @@ pub struct IpcBufferDescriptor {
     pub offset: u64,
     /// Number of bytes referenced by this descriptor.
     pub length: u64,
-    /// Descriptor-specific rights; currently read/write bits only.
+    /// Descriptor-specific rights from [`ipc_buffer_flags`].
     pub flags: u32,
     /// Reserved; must be zero.
     pub reserved: u32,

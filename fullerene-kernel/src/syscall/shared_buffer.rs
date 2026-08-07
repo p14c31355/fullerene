@@ -116,6 +116,7 @@ pub(crate) fn syscall_shared_buffer_create(length: u64, flags: u64) -> SyscallRe
             length,
             flags,
             mappings: alloc::vec::Vec::new(),
+            pending_mappings: alloc::vec::Vec::new(),
         })),
     });
     match alloc_handle(object) {
@@ -166,45 +167,78 @@ pub(crate) fn syscall_shared_buffer_map(
     };
     validate_user_range(address as usize, length)?;
 
-    let map_result = process::SCHEDULER
-        .with_process(ProcessId(pid.0), |process| {
-            let page_table = process
-                .page_table
-                .as_mut()
-                .ok_or(SyscallError::NoSuchProcess)?;
-            let result = petroleum::page_table::constants::with_frame_allocator(|allocator| {
-                let flags = map_flags(rights);
-                let mut mapped = 0usize;
-                for (index, frame) in frames.iter().enumerate() {
-                    let virtual_address = address as usize + index * PAGE_SIZE;
-                    if page_table.translate_address(virtual_address).is_ok() {
-                        for rollback in 0..mapped {
-                            let _ = page_table.unmap_page(address as usize + rollback * PAGE_SIZE);
-                        }
-                        return Err(SyscallError::InvalidArgument);
-                    }
-                    if page_table
-                        .map_page(virtual_address, *frame, flags, allocator)
-                        .is_err()
-                    {
-                        for rollback in 0..mapped {
-                            let _ = page_table.unmap_page(address as usize + rollback * PAGE_SIZE);
-                        }
-                        return Err(SyscallError::OutOfMemory);
-                    }
-                    mapped += 1;
-                }
-                Ok(())
-            });
-            result
-        })
-        .ok_or(SyscallError::NoSuchProcess)?;
-    map_result?;
+    let reservation_pid = pid;
+    let reservation_address = address as usize;
+    let reservation_length = length;
+    {
+        let mut buffer = inner.lock();
+        buffer.pending_mappings.push(SharedBufferMapping {
+            pid: reservation_pid,
+            address: reservation_address,
+            length: reservation_length,
+        });
+    }
 
-    inner.lock().mappings.push(SharedBufferMapping {
-        pid,
-        address: address as usize,
-        length,
+    let map_result = match process::SCHEDULER.with_process(ProcessId(pid.0), |process| {
+        let page_table = process
+            .page_table
+            .as_mut()
+            .ok_or(SyscallError::NoSuchProcess)?;
+        let result = petroleum::page_table::constants::with_frame_allocator(|allocator| {
+            let flags = map_flags(rights);
+            let mut mapped = 0usize;
+            for (index, frame) in frames.iter().enumerate() {
+                let virtual_address = address as usize + index * PAGE_SIZE;
+                if page_table.translate_address(virtual_address).is_ok() {
+                    for rollback in 0..mapped {
+                        let _ = page_table.unmap_page(address as usize + rollback * PAGE_SIZE);
+                    }
+                    return Err(SyscallError::InvalidArgument);
+                }
+                if page_table
+                    .map_page(virtual_address, *frame, flags, allocator)
+                    .is_err()
+                {
+                    for rollback in 0..mapped {
+                        let _ = page_table.unmap_page(address as usize + rollback * PAGE_SIZE);
+                    }
+                    return Err(SyscallError::OutOfMemory);
+                }
+                mapped += 1;
+            }
+            Ok(())
+        });
+        result
+    }) {
+        Some(result) => result,
+        None => {
+            inner.lock().pending_mappings.retain(|entry| {
+                !(entry.pid == reservation_pid
+                    && entry.address == reservation_address
+                    && entry.length == reservation_length)
+            });
+            return Err(SyscallError::NoSuchProcess);
+        }
+    };
+    if let Err(error) = map_result {
+        inner.lock().pending_mappings.retain(|entry| {
+            !(entry.pid == reservation_pid
+                && entry.address == reservation_address
+                && entry.length == reservation_length)
+        });
+        return Err(error);
+    }
+
+    let mut buffer = inner.lock();
+    buffer.pending_mappings.retain(|entry| {
+        !(entry.pid == reservation_pid
+            && entry.address == reservation_address
+            && entry.length == reservation_length)
+    });
+    buffer.mappings.push(SharedBufferMapping {
+        pid: reservation_pid,
+        address: reservation_address,
+        length: reservation_length,
     });
     Ok(address)
 }
@@ -251,9 +285,10 @@ pub(crate) fn has_mappings_for_current_process(raw_handle: u64) -> Result<bool, 
     let handle = Handle::from_raw(raw_handle);
     let inner = buffer_from_handle(handle)?;
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-    Ok(inner
-        .lock()
-        .mappings
-        .iter()
-        .any(|mapping| mapping.pid == pid))
+    let buffer = inner.lock();
+    Ok(buffer.mappings.iter().any(|mapping| mapping.pid == pid)
+        || buffer
+            .pending_mappings
+            .iter()
+            .any(|mapping| mapping.pid == pid))
 }

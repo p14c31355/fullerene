@@ -543,4 +543,13 @@ const _: () = {
     assert!(core::mem::size_of::<DriverKitDeviceInfo>() == fullerene_abi::DeviceInfo::BYTE_SIZE);
     assert!(core::mem::size_of::<DriverKitAbiInfo>() == AbiInfo::BYTE_SIZE);
     assert!(core::mem::size_of::<DriverKitIpcBufferDescriptor>() == IpcBufferDescriptor::BYTE_SIZE);
+    assert!(
+        core::mem::align_of::<DriverKitDeviceInfo>()
+            == core::mem::align_of::<fullerene_abi::DeviceInfo>()
+    );
+    assert!(core::mem::align_of::<DriverKitAbiInfo>() == core::mem::align_of::<AbiInfo>());
+    assert!(
+        core::mem::align_of::<DriverKitIpcBufferDescriptor>()
+            == core::mem::align_of::<IpcBufferDescriptor>()
+    );
 };

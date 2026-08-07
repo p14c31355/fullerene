@@ -1629,12 +1629,25 @@ pub fn run_ipc_kernel_smoke() {
     };
 
     petroleum::serial::serial_log(format_args!(
-        "[ipc-kernel] fixture launched pid={} requests=100000\n",
+        "[ipc-kernel] fixture launched pid={}\n",
         pid.0
     ));
-    while crate::process::SCHEDULER.process_state(pid)
-        != Some(crate::process::ProcessState::Terminated)
-    {
+    let deadline = unsafe { core::arch::x86_64::_rdtsc() }
+        .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(60_000));
+    loop {
+        match crate::process::SCHEDULER.process_state(pid) {
+            Some(crate::process::ProcessState::Terminated) | None => break,
+            Some(_) => {}
+        }
+        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+            petroleum::serial::serial_log(format_args!(
+                "[ipc-kernel] FAIL: native fixture did not terminate within 60s\n"
+            ));
+            unsafe {
+                x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x10);
+            }
+            petroleum::halt_loop();
+        }
         if !crate::process::yield_to(pid) {
             crate::process::yield_current();
         }
@@ -1645,7 +1658,7 @@ pub fn run_ipc_kernel_smoke() {
         .flatten();
     if exit_code == Some(0) {
         petroleum::serial::serial_log(format_args!(
-            "[ipc-kernel] PASS: 0/100000 request failures\n"
+            "[ipc-kernel] PASS: native fixture completed successfully\n"
         ));
         unsafe {
             x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x11);

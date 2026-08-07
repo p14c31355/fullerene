@@ -132,46 +132,46 @@ fn main() {
     // This is a freestanding ELF that invokes Fullerene's native channel
     // syscalls directly. It deliberately has no libc or Rust SDK dependency,
     // so the smoke path measures the actual kernel boundary.
-    let ipc_src = manifest_dir.join("examples").join("native_ipc_rate.rs");
-    let ipc_out = out_dir.join("native_ipc_rate");
-    println!("cargo:rerun-if-changed={}", ipc_src.display());
-    let ipc_status = Command::new(&rustc)
-        .args([
-            "--edition=2024",
-            "--target",
-            "x86_64-unknown-linux-gnu",
-            "-C",
-            "panic=abort",
-            "-C",
-            "relocation-model=static",
-            "-C",
-            "link-arg=-nostdlib",
-            "-C",
-            "link-arg=-Wl,--no-dynamic-linker",
-            "-C",
-            "link-arg=-e",
-            "-C",
-            "link-arg=_start",
-            "-C",
-            "opt-level=2",
-            "-C",
-            "strip=debuginfo",
-            "-o",
-        ])
-        .arg(&ipc_out)
-        .arg(&ipc_src)
-        .status();
-    match ipc_status {
-        Ok(status) if status.success() => {
-            if ipc_kernel_smoke_requested {
+    if ipc_kernel_smoke_requested {
+        let ipc_src = manifest_dir.join("examples").join("native_ipc_rate.rs");
+        let ipc_out = out_dir.join("native_ipc_rate");
+        println!("cargo:rerun-if-changed={}", ipc_src.display());
+        let ipc_status = Command::new(&rustc)
+            .args([
+                "--edition=2024",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "-C",
+                "panic=abort",
+                "-C",
+                "relocation-model=static",
+                "-C",
+                "link-arg=-nostdlib",
+                "-C",
+                "link-arg=-Wl,--no-dynamic-linker",
+                "-C",
+                "link-arg=-e",
+                "-C",
+                "link-arg=_start",
+                "-C",
+                "opt-level=2",
+                "-C",
+                "strip=debuginfo",
+                "-o",
+            ])
+            .arg(&ipc_out)
+            .arg(&ipc_src)
+            .status();
+        match ipc_status {
+            Ok(status) if status.success() => {
                 println!("cargo:rustc-cfg=ipc_kernel_smoke");
             }
-        }
-        Ok(_) | Err(_) if ipc_kernel_smoke_requested => {
-            panic!("FULLERENE_IPC_KERNEL_SMOKE requires the native IPC fixture to compile");
-        }
-        Ok(_) | Err(_) => {
-            println!("cargo:warning=native IPC kernel smoke fixture could not be compiled");
+            Ok(status) => panic!(
+                "FULLERENE_IPC_KERNEL_SMOKE requires the native IPC fixture to compile (rustc exit {status})"
+            ),
+            Err(error) => {
+                panic!("FULLERENE_IPC_KERNEL_SMOKE could not start rustc for its fixture: {error}")
+            }
         }
     }
 

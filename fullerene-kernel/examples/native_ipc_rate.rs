@@ -6,6 +6,8 @@
 use core::arch::asm;
 
 const REQUESTS: u64 = 100_000;
+// Keep these standalone literals synchronized with
+// `fullerene_abi::syscall_numbers` and `fullerene_abi::IpcMessageHeader`.
 const CHANNEL_CREATE: u64 = 80;
 const CHANNEL_SEND: u64 = 81;
 const CHANNEL_RECV: u64 = 82;
@@ -91,7 +93,7 @@ fn error_number(value: u64) -> u64 {
     0u64.wrapping_sub(value)
 }
 
-fn write_u64_ne(bytes: &mut [u8; IPC_MESSAGE_HEADER_SIZE + 8], value: u64) {
+fn encode_echo_request(bytes: &mut [u8; IPC_MESSAGE_HEADER_SIZE + 8], value: u64) {
     unsafe {
         core::ptr::write_bytes(bytes.as_mut_ptr(), 0, IPC_MESSAGE_HEADER_SIZE);
     }
@@ -235,7 +237,7 @@ pub extern "C" fn _start() -> ! {
     let mut first_phase = 0u64;
     let mut first_error = 0u64;
     for request_id in 0..REQUESTS {
-        write_u64_ne(&mut request, request_id);
+        encode_echo_request(&mut request, request_id);
         let sent = unsafe {
             syscall(
                 CHANNEL_SEND,

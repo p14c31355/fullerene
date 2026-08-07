@@ -222,7 +222,8 @@ impl SchedulerContext {
                 }
                 if let Some(page_table) = process.page_table.take() {
                     if let Some(pml4_frame) = page_table.pml4_frame() {
-                        drop(page_table);
+                        let mut page_table = page_table;
+                        crate::process::cleanup_process_address_space(&mut page_table);
                         crate::memory_management::deallocate_process_page_table(pml4_frame);
                     }
                 }

@@ -192,6 +192,7 @@ pub struct SharedBufferInner {
     pub length: usize,
     pub flags: u64,
     pub mappings: Vec<SharedBufferMapping>,
+    pub pending_mappings: Vec<SharedBufferMapping>,
 }
 
 impl Drop for SharedBufferInner {
