@@ -269,8 +269,22 @@ pub fn unmap_process_pages(
     let Some(end) = start.checked_add(length) else {
         return;
     };
+    let Some(last_byte) = end.checked_sub(1) else {
+        return;
+    };
+    let first_page = start & !(4096 - 1);
+    let last_page = last_byte & !(4096 - 1);
+    let Ok(first_addr) = VirtAddr::try_new(first_page) else {
+        return;
+    };
+    let Ok(last_addr) = VirtAddr::try_new(last_page) else {
+        return;
+    };
+    if !petroleum::is_user_address(first_addr) || !petroleum::is_user_address(last_addr) {
+        return;
+    }
     petroleum::page_table::constants::with_frame_allocator(|allocator| {
-        let mut address = start & !(4096 - 1);
+        let mut address = first_page;
         while address < end {
             if let Ok(frame) = page_table.unmap_page(address as usize) {
                 if free_leaf_frames {

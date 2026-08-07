@@ -19,7 +19,7 @@ use fullerene_abi::shared_buffer_flags;
 use super::interface::{SyscallError, SyscallResult};
 use super::process::{alloc_handle, check_handle_permission, with_handle};
 use super::types::{Handle, HandlePerms, KernelObject, SharedBufferInner, SharedBufferMapping};
-use crate::process::{self, ProcessId};
+use crate::process::{self, HandleTable, ProcessId};
 
 const PAGE_SIZE: usize = 4096;
 const MAX_SHARED_BUFFER_SIZE: usize = 128 << 20;
@@ -64,6 +64,49 @@ fn free_frames(frames: &mut alloc::vec::Vec<usize>) {
             });
         }
     });
+}
+
+/// Remove all shared-buffer mappings owned by a terminating process before its
+/// handle table is dropped. The handle table is borrowed only while collecting
+/// the shared-buffer inners; page-table work happens after that lock is gone.
+pub(crate) fn cleanup_process_mappings(
+    pid: ProcessId,
+    page_table: &mut petroleum::page_table::process::ProcessPageTable,
+    handle_table: &HandleTable,
+) {
+    let buffers = handle_table
+        .entries()
+        .filter_map(|(_, object)| match object {
+            KernelObject::SharedBuffer(buffer) => Some(Arc::clone(&buffer.inner)),
+            _ => None,
+        })
+        .collect::<alloc::vec::Vec<_>>();
+
+    for inner in buffers {
+        let mappings = {
+            let mut buffer = inner.lock();
+            let mut mappings = alloc::vec::Vec::new();
+            buffer.mappings.retain(|mapping| {
+                if mapping.pid == pid {
+                    mappings.push((mapping.address, mapping.length));
+                    false
+                } else {
+                    true
+                }
+            });
+            buffer.pending_mappings.retain(|mapping| mapping.pid != pid);
+            mappings
+        };
+
+        for (address, length) in mappings {
+            crate::memory_management::unmap_process_pages(
+                page_table,
+                address as u64,
+                length as u64,
+                true,
+            );
+        }
+    }
 }
 
 /// Allocate a kernel-owned page-backed buffer and return its capability.

@@ -3,9 +3,9 @@
 ## Toolchain
 
 Use `rust-toolchain.toml` to select the nightly Rust toolchain.
-Install the embedded application target once with
-`rustup target add wasm32-wasip1`; the kernel build script compiles the nested
-WASM applications as part of the normal build.
+The rolling nightly channel is intentional; CI uses the same channel and
+validates toolchain updates on every change. The kernel build script compiles
+the nested WASM applications as part of the normal build.
 
 ## Panic Policy
 
