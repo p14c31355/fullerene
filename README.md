@@ -43,13 +43,9 @@ The workspace also contains the `fullerene-tools`, `busybox-build`, and WASI sup
 
 ### Prerequisites
 
-- Rust nightly pinned by [`rust-toolchain.toml`](rust-toolchain.toml): `nightly-2026-06-01`
-- The `x86_64-unknown-uefi` target and Rust source (installed by the toolchain file)
-- The `wasm32-wasip1` target for embedded WASI applications:
-
-  ```bash
-  rustup target add --toolchain nightly-2026-06-01 wasm32-wasip1
-  ```
+- Rust nightly selected by [`rust-toolchain.toml`](rust-toolchain.toml)
+- The `x86_64-unknown-uefi`, `wasm32-wasip1`, and `x86_64-unknown-linux-musl`
+  targets, plus Rust source (installed by the toolchain file)
 
 - `qemu-system-x86_64`
 - UEFI firmware (OVMF). Bundled firmware is kept in `flasks/ovmf/`; if it is unavailable, install the system OVMF package and run `--clone-ovmf` to copy `/usr/share/OVMF/OVMF_CODE.fd` and `OVMF_VARS.fd` into the project.

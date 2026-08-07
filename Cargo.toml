@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["bellows", "bonder", "carrier", "chronoline", "flasks", "flasks/tools", "fullerene-kernel", "fullerene-kernel/abi", "fullerene-kernel/vdso", "genome", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "sealant", "solvent", "solvent/wasi", "toluene", "toluene/busybox-build"]
-default-members = ["bonder", "chronoline", "flasks", "fullerene-kernel", "fullerene-kernel/abi", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "sealant", "solvent", "toluene", "toluene/busybox-build"]
+members = ["bellows", "bonder", "carrier", "chronoline", "flasks", "flasks/tools", "fullerene-kernel", "fullerene-kernel/abi", "fullerene-kernel/vdso", "genome", "lattice", "ligand", "nitrogen", "nozzle", "petroleum", "resonance", "sealant", "solvent", "solvent/wasi", "toluene", "toluene/busybox-build"]
+default-members = ["bonder", "chronoline", "flasks", "fullerene-kernel", "fullerene-kernel/abi", "lattice", "ligand", "nitrogen", "nozzle", "petroleum", "resonance", "sealant", "solvent", "toluene", "toluene/busybox-build"]
 
 [profile.dev]
 panic = "abort"
@@ -24,7 +24,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 spin = { version = "0.12", default-features = false }
-x86_64 = { version = "0.15", default-features = false }
+x86_64 = { version = "0.15.5", default-features = false }
 volatile = { version = "0.6", default-features = false }
 log = { version = "0.4", default-features = false }
 bitflags = { version = "2", default-features = false }

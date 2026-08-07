@@ -20,7 +20,7 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-06-01
+          toolchain: nightly
           components: rust-src, llvm-tools-preview, rustfmt, clippy
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
@@ -37,7 +37,7 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-06-01
+          toolchain: nightly
           components: rust-src, llvm-tools-preview, rustfmt, clippy
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
@@ -54,9 +54,9 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-06-01
+          toolchain: nightly
           components: rust-src, llvm-tools-preview
-          targets: x86_64-unknown-uefi, wasm32-wasip1
+          targets: x86_64-unknown-uefi, wasm32-wasip1, x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
       - name: Build kernel
         run: cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
@@ -86,7 +86,7 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-06-01
+          toolchain: nightly
           components: rust-src
       - uses: Swatinem/rust-cache@v2
       - name: Test selected driver profile

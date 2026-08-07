@@ -10,7 +10,8 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::mem_debug;
-use petroleum::page_table::PageTableHelper as _;
+use petroleum::page_table::{FrameAllocatorExt, PageTableHelper as _};
+use x86_64::structures::paging::{FrameAllocator as _, PageTableFlags};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::solvent_linux::runtime::DispatchMode;
@@ -20,6 +21,61 @@ use crate::syscall::{Handle, HandlePerms, KernelObject};
 
 /// Maximum number of processes managed by the system
 pub const MAX_PROCESSES: usize = 64;
+
+const NATIVE_USER_STACK_TOP: u64 = 0x0000_7fff_fffe_f000;
+const NATIVE_USER_STACK_SIZE: usize = 64 * 1024;
+
+fn native_user_stack_base() -> u64 {
+    NATIVE_USER_STACK_TOP - NATIVE_USER_STACK_SIZE as u64
+}
+
+fn rollback_native_user_stack(
+    page_table: &mut petroleum::page_table::process::ProcessPageTable,
+    stack_base: usize,
+    count: usize,
+    frame_allocator: &mut impl petroleum::page_table::allocator::traits::FrameAllocatorExt,
+) {
+    for index in 0..count {
+        if let Ok(mapped_frame) = page_table.unmap_page(stack_base + index * 4096) {
+            frame_allocator.deallocate_frame(petroleum::page_table::types::PhysFrame {
+                start_address: mapped_frame.start_address().as_u64(),
+            });
+        }
+    }
+    if let Some(root) = page_table.pml4_frame() {
+        unsafe {
+            crate::memory_management::reclaim_empty_user_page_tables(
+                root.start_address(),
+                stack_base as u64,
+                frame_allocator,
+            );
+        }
+    }
+}
+
+/// Release process-owned user mappings before the process page table is gone.
+pub(crate) fn cleanup_process_address_space(
+    page_table: &mut petroleum::page_table::process::ProcessPageTable,
+) {
+    crate::memory_management::unmap_process_pages(
+        page_table,
+        native_user_stack_base(),
+        NATIVE_USER_STACK_SIZE as u64,
+        true,
+    );
+    crate::memory_management::unmap_process_pages(
+        page_table,
+        crate::loader::LINUX_STACK_TOP - crate::loader::LINUX_STACK_SIZE,
+        crate::loader::LINUX_STACK_SIZE,
+        true,
+    );
+    crate::memory_management::unmap_process_pages(
+        page_table,
+        petroleum::vdso::VDSO_USER_BASE,
+        4096,
+        false,
+    );
+}
 
 /// Process ID type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -624,6 +680,63 @@ pub fn init(heap_start: usize, heap_end: usize) {
 }
 
 /// Create a new process and add it to the process list
+fn map_native_user_stack(
+    process: &mut Process,
+) -> Result<(), petroleum::common::logging::SystemError> {
+    let stack_base = (NATIVE_USER_STACK_TOP as usize)
+        .checked_sub(NATIVE_USER_STACK_SIZE)
+        .ok_or(petroleum::common::logging::SystemError::InvalidArgument)?;
+    let page_count = NATIVE_USER_STACK_SIZE / 4096;
+    let page_table = process
+        .page_table
+        .as_mut()
+        .ok_or(petroleum::common::logging::SystemError::NoSuchProcess)?;
+
+    let result = petroleum::page_table::constants::with_frame_allocator(|frame_allocator| {
+        let mut mapped_pages = 0usize;
+        for index in 0..page_count {
+            let virtual_address = stack_base + index * 4096;
+            let frame = match frame_allocator.allocate_frame() {
+                Some(frame) => frame,
+                None => {
+                    rollback_native_user_stack(
+                        page_table,
+                        stack_base,
+                        mapped_pages,
+                        frame_allocator,
+                    );
+                    return Err(petroleum::common::logging::SystemError::FrameAllocationFailed);
+                }
+            };
+            let physical_address = frame.start_address().as_u64() as usize;
+            let flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER_ACCESSIBLE
+                | PageTableFlags::NO_EXECUTE;
+            if let Err(error) =
+                page_table.map_page(virtual_address, physical_address, flags, frame_allocator)
+            {
+                frame_allocator.deallocate_frame(petroleum::page_table::types::PhysFrame {
+                    start_address: physical_address as u64,
+                });
+                rollback_native_user_stack(page_table, stack_base, mapped_pages, frame_allocator);
+                return Err(error);
+            }
+            mapped_pages += 1;
+        }
+        Ok(())
+    });
+    result.map_err(|error| match error {
+        petroleum::common::logging::SystemError::FrameAllocationFailed => error,
+        _ => petroleum::common::logging::SystemError::MappingFailed,
+    })?;
+    // Enter with the SysV-compatible 8-byte offset expected at a function
+    // entry (as if a return address had already been pushed). The mapping
+    // itself still ends on the page boundary above.
+    process.user_stack = VirtAddr::new(NATIVE_USER_STACK_TOP - 8);
+    Ok(())
+}
+
 pub fn create_process(
     name: &str,
     entry_point_address: VirtAddr,
@@ -640,32 +753,29 @@ pub fn create_process(
     process.kernel_stack = kernel_stack_top;
 
     if is_user {
-        // Allocate user stack for the process
-        let user_stack_layout =
-            Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        let user_stack_ptr = petroleum::common::memory::allocate_layout(user_stack_layout)
-            .map_err(|e| {
-                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
-                e
-            })?;
-        process.user_stack =
-            VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
-
         // Create VDSO page after page table creation
         let page_table = match crate::memory_management::create_process_page_table() {
             Ok(pt) => pt,
             Err(e) => {
                 log::error!("Failed to create process page table: {:?}", e);
-                unsafe {
-                    petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-                    petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-                }
+                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
                 return Err(e);
             }
         };
         let page_table_phys = page_table.current_page_table() as u64;
         process.page_table_phys_addr = PhysAddr::new(page_table_phys);
         process.page_table = Some(Box::new(page_table));
+
+        if let Err(error) = map_native_user_stack(&mut process) {
+            unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
+            if let Some(mut page_table) = process.page_table.take() {
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    cleanup_process_address_space(&mut page_table);
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+                }
+            }
+            return Err(error);
+        }
 
         let vdso_result = {
             let pt: &mut petroleum::page_table::process::ProcessPageTable =
@@ -677,11 +787,11 @@ pub fn create_process(
         let vdso_ref = match vdso_result {
             Ok(vdso) => vdso,
             Err(_) => {
+                cleanup_process_address_space(process.page_table.as_mut().unwrap());
                 unsafe {
-                    petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
                     petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
                 }
-                if let Some(ref page_table) = process.page_table
+                if let Some(page_table) = process.page_table.take()
                     && let Some(pml4_frame) = page_table.pml4_frame()
                 {
                     crate::memory_management::deallocate_process_page_table(pml4_frame);
@@ -774,10 +884,12 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
                     process.kernel_stack = VirtAddr::new(0);
                 }
 
-                // Properly free page table frames recursively
+                // Release user mappings and empty intermediate tables before
+                // returning the process PML4 frame.
                 if let Some(page_table) = process.page_table.take() {
                     if let Some(pml4_frame) = page_table.pml4_frame() {
-                        drop(page_table);
+                        let mut page_table = page_table;
+                        cleanup_process_address_space(&mut page_table);
                         crate::memory_management::deallocate_process_page_table(pml4_frame);
                     }
                 }

@@ -6,6 +6,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::process;
+use petroleum::page_table::allocator::traits::FrameAllocatorExt;
 
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,6 +125,7 @@ pub enum KernelObject {
     Channel(ChannelState),
     Pipe(PipeState),
     Timer(TimerState),
+    SharedBuffer(SharedBufferState),
 }
 
 pub struct EventInner {
@@ -171,6 +173,43 @@ pub struct ChannelInner {
 
 pub struct ChannelState {
     pub inner: Arc<Mutex<ChannelInner>>,
+}
+
+/// One mapping of a shared buffer into a process address space.
+pub struct SharedBufferMapping {
+    pub pid: process::ProcessId,
+    pub address: usize,
+    pub length: usize,
+}
+
+/// Kernel-owned physical pages shared through an explicit capability.
+///
+/// The physical frames are kept behind an `Arc`, so duplicate and transferred
+/// handles refer to the same storage.  Mappings are tracked separately from
+/// handles because a process may map the same capability more than once.
+pub struct SharedBufferInner {
+    pub frames: Vec<usize>,
+    pub length: usize,
+    pub flags: u64,
+    pub mappings: Vec<SharedBufferMapping>,
+    pub pending_mappings: Vec<SharedBufferMapping>,
+}
+
+impl Drop for SharedBufferInner {
+    fn drop(&mut self) {
+        let frames = core::mem::take(&mut self.frames);
+        petroleum::page_table::constants::with_frame_allocator(|allocator| {
+            for frame in frames {
+                allocator.deallocate_frame(petroleum::page_table::types::PhysFrame {
+                    start_address: frame as u64,
+                });
+            }
+        });
+    }
+}
+
+pub struct SharedBufferState {
+    pub inner: Arc<Mutex<SharedBufferInner>>,
 }
 
 pub struct PipeState {

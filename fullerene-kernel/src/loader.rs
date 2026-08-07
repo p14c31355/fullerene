@@ -953,7 +953,12 @@ fn load_program_inner(
                     .user_stack
                     .as_u64()
                     .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
-                    .filter(|&base| base != 0)
+                    .filter(|&base| {
+                        base != 0
+                            && petroleum::common::memory::is_allocator_related_address(
+                                base as usize,
+                            )
+                    })
                 {
                     let stack_layout =
                         core::alloc::Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16)

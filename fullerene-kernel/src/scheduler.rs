@@ -107,6 +107,8 @@ pub fn scheduler_loop() -> ! {
 
     // Exercise the same command registration, shell service, VFS loader, and
     // cooperative scheduling path used by an interactive invocation.
+    #[cfg(ipc_kernel_smoke)]
+    crate::shell::run_ipc_kernel_smoke();
     #[cfg(linux_musl_smoke)]
     crate::shell::run_linux_musl_smoke();
     #[cfg(linux_busybox_smoke)]

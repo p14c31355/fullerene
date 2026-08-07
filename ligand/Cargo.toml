@@ -1,0 +1,22 @@
+[package]
+name = "DriverKit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "C ABI user-space IPC client for Fullerene drivers"
+keywords = ["os", "ipc", "driver", "no-std"]
+categories = ["no-std", "os"]
+
+[lib]
+name = "driverkit"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+test = false
+bench = false
+
+[dependencies]
+fullerene-abi = { path = "../fullerene-kernel/abi", version = "0.1.0" }
+petroleum = { path = "../petroleum", version = "0.1.0" }

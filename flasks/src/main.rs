@@ -142,7 +142,6 @@ fn build_uefi_package(
     qemu_smoke_exit: bool,
 ) -> io::Result<()> {
     let mut args: Vec<&str> = vec![
-        "+nightly",
         "build",
         "-q",
         "-Zbuild-std=core,alloc",
@@ -217,7 +216,6 @@ fn create_iso(
         .current_dir(workspace_root)
         .env("KERNEL_BIN_PATH", &kernel_path)
         .args([
-            "+nightly",
             "build",
             "-q",
             "-Zbuild-std=core,alloc",
@@ -445,10 +443,11 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
     qemu_cmd.env("LD_PRELOAD", ld_preload_path);
 
     let mut child = qemu_cmd.spawn()?;
-    let linux_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some()
-        || env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some();
+    let debug_exit_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some()
+        || env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some()
+        || env::var_os("FULLERENE_IPC_KERNEL_SMOKE").is_some();
     let qemu_status_is_valid = |status: &std::process::ExitStatus| {
-        if linux_smoke_requested {
+        if debug_exit_smoke_requested {
             status.code() == Some(35)
         } else {
             status.success()

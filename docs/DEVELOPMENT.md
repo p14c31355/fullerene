@@ -2,10 +2,10 @@
 
 ## Toolchain
 
-Use `rust-toolchain.toml` for pinning nightly (currently `nightly-2026-06-01`).
-Install the embedded application target once with
-`rustup target add wasm32-wasip1`; the kernel build script compiles the nested
-WASM applications as part of the normal build.
+Use `rust-toolchain.toml` to select the nightly Rust toolchain.
+The rolling nightly channel is intentional; CI uses the same channel and
+validates toolchain updates on every change. The kernel build script compiles
+the nested WASM applications as part of the normal build.
 
 ## Panic Policy
 
@@ -54,6 +54,19 @@ cargo run -p lattice --release --example bench_render
 # WASM viewer image decode/downsample path
 cargo run --manifest-path toluene/viewer/Cargo.toml --release --example bench_image -- /path/to/image.jpg
 ```
+
+For the DriverKit IPC envelope, run the bounded request/response stress
+example:
+
+```bash
+cargo run -p DriverKit --example ipc_rate --release
+# IPC rate: 0/100000 request failures (... request/s)
+```
+
+This is the host-side loopback contract gate. It validates the same
+`IpcMessageHeader` used by the kernel channel and keeps the queue bounded at
+64 messages. A live kernel endpoint can replace the loopback transport in a
+later stage without changing the 100,000-request accounting.
 
 ## Debugging
 

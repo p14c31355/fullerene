@@ -37,7 +37,7 @@ workspaces and copied into the kernel build output. Viewer MP4 access is
 seek-based and Emulsion screen capture is chunked, so neither path requires a
 full media or framebuffer-sized temporary buffer in the host runtime.
 
-The workspace currently contains 20 Cargo members. The latest host validation
+The workspace currently contains 21 Cargo members. The latest host validation
 passes `cargo check --workspace --all-targets`; the optional BusyBox build
 status is intentionally silent when its cache/toolchain is unavailable, so an
 optional port does not turn a warning-free Rust check into a warning. The
@@ -151,6 +151,9 @@ petroleum (no_std support library)
 
 sealant (no_std memory capability boundary)
     └── checked RAM / MMIO / user / DMA / physical-address access
+
+DriverKit (`ligand`, published as `DriverKit`)
+    └── C ABI user-space IPC client for device handles, channels, and shared-buffer capabilities
 ```
 
 New in this revision:
@@ -623,7 +626,7 @@ use. Controller re-enumeration must not invalidate an outstanding lease.
 
 Native syscall handling is split by context under
 `fullerene-kernel/src/syscall/`. `dispatch` is the only syscall-number router;
-`abi`, `process`, `fs`, `memory`, `event`, `thread`, `window`, `device`, `ipc`,
+`abi`, `process`, `fs`, `memory`, `shared_buffer`, `event`, `thread`, `window`, `device`, `ipc`,
 `cap`, and `time` own their domain handlers. `interface` owns the shared error
 and user-copy contract, while `types` owns handle-backed kernel object types.
 Domain modules must not perform secondary syscall-number dispatch.

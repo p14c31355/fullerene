@@ -30,7 +30,7 @@ pub fn dma_allocated(bytes: usize) {
 
 /// Record a DMA allocation being returned to the frame allocator.
 pub fn dma_released(bytes: usize) {
-    let _ = DMA_CURRENT_BYTES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = DMA_CURRENT_BYTES.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_sub(bytes))
     });
 }

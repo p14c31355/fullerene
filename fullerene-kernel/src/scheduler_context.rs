@@ -200,10 +200,6 @@ impl SchedulerContext {
                 {
                     let _ = parents.push(parent_id);
                 }
-                for waiter in process.resources.cleanup() {
-                    let _ = waiters.push(waiter);
-                }
-
                 if let Some(kernel_stack_base) = process
                     .kernel_stack
                     .as_u64()
@@ -220,11 +216,20 @@ impl SchedulerContext {
                     }
                     process.kernel_stack = VirtAddr::new(0);
                 }
-                if let Some(page_table) = process.page_table.take() {
+                if let Some(mut page_table) = process.page_table.take() {
+                    let handle_table = process.resources.handle_table.lock();
+                    crate::syscall::shared_buffer::cleanup_process_mappings(
+                        *id,
+                        &mut page_table,
+                        &handle_table,
+                    );
                     if let Some(pml4_frame) = page_table.pml4_frame() {
-                        drop(page_table);
+                        crate::process::cleanup_process_address_space(&mut page_table);
                         crate::memory_management::deallocate_process_page_table(pml4_frame);
                     }
+                }
+                for waiter in process.resources.cleanup() {
+                    let _ = waiters.push(waiter);
                 }
             }
             procs.retain(|(id, p)| {
