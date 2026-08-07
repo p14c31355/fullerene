@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-- Rust nightly toolchain (required for no_std and UEFI targets): Install via `rustup toolchain install nightly-2026-08-01`.
-- `wasm32-wasip1` Rust target (required by the kernel's embedded WASM build): Install with `rustup target add --toolchain nightly-2026-08-01 wasm32-wasip1`.
+- Rust nightly toolchain (required for no_std and UEFI targets): Install via `rustup toolchain install nightly`.
+- `wasm32-wasip1` Rust target (required by the kernel's embedded WASM build): Install with `rustup target add --toolchain nightly wasm32-wasip1`.
 - QEMU: Install on Linux/macOS via package manager (e.g., `apt install qemu-system-x86` on Ubuntu).
 - OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, run with `--clone-ovmf` to copy from system installation or download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
 

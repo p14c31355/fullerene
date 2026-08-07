@@ -43,12 +43,12 @@ The workspace also contains the `fullerene-tools`, `busybox-build`, and WASI sup
 
 ### Prerequisites
 
-- Rust nightly pinned by [`rust-toolchain.toml`](rust-toolchain.toml): `nightly-2026-08-01` (Rust 1.99.0-nightly)
+- Rust nightly selected by [`rust-toolchain.toml`](rust-toolchain.toml)
 - The `x86_64-unknown-uefi` target and Rust source (installed by the toolchain file)
 - The `wasm32-wasip1` target for embedded WASI applications:
 
   ```bash
-  rustup target add --toolchain nightly-2026-08-01 wasm32-wasip1
+  rustup target add --toolchain nightly wasm32-wasip1
   ```
 
 - `qemu-system-x86_64`
