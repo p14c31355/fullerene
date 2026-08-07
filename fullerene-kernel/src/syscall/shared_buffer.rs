@@ -155,7 +155,7 @@ pub(crate) fn syscall_shared_buffer_map(
     let address = if addr_hint == 0 {
         let increment = length as u64;
         NEXT_SHARED_BUFFER_ADDRESS
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(increment)
             })
             .map_err(|_| SyscallError::OutOfMemory)?

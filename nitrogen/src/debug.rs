@@ -230,7 +230,7 @@ pub fn hint(msg: &[u8]) {
 #[macro_export]
 macro_rules! debug_status {
     ($source:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
-        $crate::debug::print($source, &alloc::format!($fmt $(, $arg)*));
+        $crate::debug::print($source, &alloc::format!($fmt $(, $arg)*))
     };
 }
 
