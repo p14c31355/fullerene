@@ -142,7 +142,6 @@ fn build_uefi_package(
     qemu_smoke_exit: bool,
 ) -> io::Result<()> {
     let mut args: Vec<&str> = vec![
-        "+nightly",
         "build",
         "-q",
         "-Zbuild-std=core,alloc",
@@ -217,7 +216,6 @@ fn create_iso(
         .current_dir(workspace_root)
         .env("KERNEL_BIN_PATH", &kernel_path)
         .args([
-            "+nightly",
             "build",
             "-q",
             "-Zbuild-std=core,alloc",
