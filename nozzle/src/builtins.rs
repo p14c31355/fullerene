@@ -355,16 +355,35 @@ pub fn cmd_sleep(ctx: &mut CommandContext) -> bool {
 
 /// `grep` — search for a pattern in input (stdin or files)
 pub fn cmd_grep(ctx: &mut CommandContext) -> bool {
-    if ctx.args.len() < 2 {
+    let Some(options) = carrier::regex::parse_grep_args(ctx.args) else {
         ctx.terminal.write_str("Usage: grep <pattern> [file...]\n");
+        ctx.terminal
+            .write_str("       grep -E <pattern> [file...]\n");
         ctx.terminal.write_str("       command | grep <pattern>\n");
         return true;
-    }
-    let pattern = ctx.args[1];
+    };
+    let matcher = if options.extended {
+        match carrier::regex::Regex::new(options.pattern) {
+            Ok(regex) => Some(regex),
+            Err(_) => {
+                ctx.terminal.write_str("grep: invalid regular expression\n");
+                return true;
+            }
+        }
+    } else {
+        None
+    };
+
+    let matches = |line: &str| {
+        matcher
+            .as_ref()
+            .map_or(line.contains(options.pattern), |regex| regex.is_match(line))
+    };
+
     // If stdin was provided (from a pipe), search through it.
     if let Some(stdin) = ctx.terminal.take_stdin() {
         for line in stdin.lines() {
-            if line.contains(pattern) {
+            if matches(line) {
                 ctx.terminal.write_str(line);
                 ctx.terminal.write_str("\n");
             }
@@ -372,13 +391,13 @@ pub fn cmd_grep(ctx: &mut CommandContext) -> bool {
         return true;
     }
     // Otherwise, search files provided as arguments.
-    if ctx.args.len() < 3 {
+    if options.first_file >= ctx.args.len() {
         ctx.terminal
             .write_str("grep: no input (pipe data or specify files)\n");
         return true;
     }
     // Use a simple sys_info dispatch for file-based grep
-    // The kernel will process all files in ctx.args[2..]
+    // The kernel will process all files beginning at options.first_file.
     crate::sys_hooks::call_sys_info_hook(ctx, "grep");
     true
 }

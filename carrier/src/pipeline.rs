@@ -1,6 +1,5 @@
 use alloc::fmt;
 use alloc::string::String;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone)]
@@ -10,8 +9,8 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn parse(line: &str) -> Self {
-        let commands: Vec<ParsedCommand> = line
-            .split('|')
+        let commands: Vec<ParsedCommand> = split_pipeline(line)
+            .iter()
             .map(|s| ParsedCommand::parse(s.trim()))
             .filter(|c| !c.name.is_empty())
             .collect();
@@ -45,7 +44,7 @@ pub struct ParsedCommand {
 
 impl ParsedCommand {
     pub fn parse(line: &str) -> Self {
-        let mut parts: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
+        let mut parts = shell_words(line);
 
         // Check for "> filename" redirect at the end of the command.
         let redirect = if parts.len() >= 3 && parts[parts.len() - 2] == ">" {
@@ -71,6 +70,89 @@ impl ParsedCommand {
         result.extend(self.args.iter().map(|s| s.as_str()));
         result
     }
+}
+
+/// Split at unquoted pipeline separators. `|` inside a grep -E pattern is
+/// alternation, not a shell pipeline.
+fn split_pipeline(line: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for ch in line.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            current.push(ch);
+            escaped = true;
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            if quote == Some(ch) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(ch);
+            }
+            current.push(ch);
+        } else if ch == '|' && quote.is_none() {
+            result.push(current);
+            current = String::new();
+        } else {
+            current.push(ch);
+        }
+    }
+    result.push(current);
+    result
+}
+
+/// Tokenize one command and remove single/double quotes.
+fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut in_word = false;
+
+    for ch in line.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            in_word = true;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            in_word = true;
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            if quote == Some(ch) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(ch);
+            }
+            in_word = true;
+        } else if ch.is_whitespace() && quote.is_none() {
+            if in_word {
+                words.push(core::mem::take(&mut current));
+                in_word = false;
+            }
+        } else {
+            current.push(ch);
+            in_word = true;
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if in_word {
+        words.push(current);
+    }
+    words
 }
 
 impl fmt::Display for ParsedCommand {
@@ -140,5 +222,30 @@ mod tests {
         assert_eq!(pipeline.commands.len(), 1);
         assert_eq!(pipeline.commands[0].name, "ls");
         assert!(pipeline.commands[0].args.is_empty());
+    }
+
+    #[test]
+    fn keeps_quoted_regex_alternation_inside_grep() {
+        let pipeline = Pipeline::parse(
+            "dmesg | grep -E 'iwlwifi|WiFi|PCI|PciHealth|AER|MMIO' > /mnt/usb/wifi-debug.txt",
+        );
+        assert_eq!(pipeline.commands.len(), 2);
+        assert_eq!(pipeline.commands[1].name, "grep");
+        assert_eq!(
+            pipeline.commands[1].args,
+            ["-E", "iwlwifi|WiFi|PCI|PciHealth|AER|MMIO"]
+        );
+        assert_eq!(
+            pipeline.commands[1].redirect.as_deref(),
+            Some("/mnt/usb/wifi-debug.txt")
+        );
+    }
+
+    #[test]
+    fn preserves_literal_pipe_inside_double_quotes() {
+        let pipeline = Pipeline::parse("echo \"a|b\" | grep -E \"a\\|b\"");
+        assert_eq!(pipeline.commands.len(), 2);
+        assert_eq!(pipeline.commands[0].args, ["a|b"]);
+        assert_eq!(pipeline.commands[1].args, ["-E", "a|b"]);
     }
 }

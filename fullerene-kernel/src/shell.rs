@@ -1354,16 +1354,34 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
             }
             "grep" => {
-                if ctx.args.len() < 3 {
+                let Some(options) = nozzle::regex::parse_grep_args(ctx.args) else {
+                    return tstr!(ctx.terminal, "grep: pattern and file required");
+                };
+                if options.first_file >= ctx.args.len() {
                     return tstr!(ctx.terminal, "grep: pattern and file required");
                 }
-                let pattern = ctx.args[1];
-                let show_filename = ctx.args.len() > 3;
-                for &path in &ctx.args[2..] {
+                let matcher = if options.extended {
+                    match nozzle::regex::Regex::new(options.pattern) {
+                        Ok(regex) => Some(regex),
+                        Err(_) => {
+                            return tstr!(ctx.terminal, "grep: invalid regular expression");
+                        }
+                    }
+                } else {
+                    None
+                };
+                let show_filename = ctx.args.len() - options.first_file > 1;
+                for &path in &ctx.args[options.first_file..] {
                     match read_entire_file(path) {
                         Ok(data) => {
                             let text = alloc::string::String::from_utf8_lossy(&data);
-                            for line in text.lines().filter(|l| l.contains(pattern)) {
+                            for line in text.lines().filter(|line| {
+                                matcher
+                                    .as_ref()
+                                    .map_or(line.contains(options.pattern), |regex| {
+                                        regex.is_match(line)
+                                    })
+                            }) {
                                 if show_filename {
                                     ctx.terminal.write_str(&alloc::format!("{}:", path));
                                 }

@@ -3,4 +3,5 @@ extern crate alloc;
 
 pub mod exec;
 pub mod pipeline;
+pub mod regex;
 pub mod terminal;

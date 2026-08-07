@@ -14,6 +14,7 @@ use alloc::string::String;
 // Re-export carrier types so existing consumers still work
 pub use carrier::exec::{Command, CommandContext, NamedCommand};
 pub use carrier::pipeline::ParsedCommand;
+pub use carrier::regex;
 pub use carrier::terminal::Terminal;
 
 pub use line_editor::LineEditor;
