@@ -446,7 +446,8 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
 
     let mut child = qemu_cmd.spawn()?;
     let linux_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some()
-        || env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some();
+        || env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some()
+        || env::var_os("FULLERENE_IPC_KERNEL_SMOKE").is_some();
     let qemu_status_is_valid = |status: &std::process::ExitStatus| {
         if linux_smoke_requested {
             status.code() == Some(35)

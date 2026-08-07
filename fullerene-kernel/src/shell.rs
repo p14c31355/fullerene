@@ -1610,6 +1610,58 @@ pub fn shell_main() {
     }
 }
 
+/// Run the native DriverKit channel fixture through the real kernel boundary.
+#[cfg(ipc_kernel_smoke)]
+pub fn run_ipc_kernel_smoke() {
+    let image = include_bytes!(concat!(env!("OUT_DIR"), "/native_ipc_rate"));
+    let pid = match crate::loader::load_program(image, "native-ipc-rate") {
+        Ok(pid) => pid,
+        Err(error) => {
+            petroleum::serial::serial_log(format_args!(
+                "[ipc-kernel] FAIL: native fixture load error {:?}\n",
+                error
+            ));
+            unsafe {
+                x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x10);
+            }
+            petroleum::halt_loop();
+        }
+    };
+
+    petroleum::serial::serial_log(format_args!(
+        "[ipc-kernel] fixture launched pid={} requests=100000\n",
+        pid.0
+    ));
+    while crate::process::SCHEDULER.process_state(pid)
+        != Some(crate::process::ProcessState::Terminated)
+    {
+        if !crate::process::yield_to(pid) {
+            crate::process::yield_current();
+        }
+    }
+
+    let exit_code = crate::process::SCHEDULER
+        .with_process(pid, |process| process.exit_code)
+        .flatten();
+    if exit_code == Some(0) {
+        petroleum::serial::serial_log(format_args!(
+            "[ipc-kernel] PASS: 0/100000 request failures\n"
+        ));
+        unsafe {
+            x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x11);
+        }
+    } else {
+        petroleum::serial::serial_log(format_args!(
+            "[ipc-kernel] FAIL: native fixture exit={:?}\n",
+            exit_code
+        ));
+        unsafe {
+            x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x10);
+        }
+        petroleum::halt_loop();
+    }
+}
+
 /// Run the Linux-musl smoke fixture through the real Nozzle command path.
 #[cfg(linux_musl_smoke)]
 pub fn run_linux_musl_smoke() {

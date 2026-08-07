@@ -18,11 +18,13 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(have_emulsion_wasm)");
     println!("cargo::rustc-check-cfg=cfg(have_linux_musl_hello)");
     println!("cargo::rustc-check-cfg=cfg(linux_musl_smoke)");
+    println!("cargo::rustc-check-cfg=cfg(ipc_kernel_smoke)");
     println!("cargo::rustc-check-cfg=cfg(have_busybox)");
     println!("cargo::rustc-check-cfg=cfg(linux_busybox_smoke)");
     println!("cargo::rustc-check-cfg=cfg(linux_busybox_smoke_qemu_exit)");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
     println!("cargo:rerun-if-env-changed=FULLERENE_LINUX_MUSL_SMOKE");
+    println!("cargo:rerun-if-env-changed=FULLERENE_IPC_KERNEL_SMOKE");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_CC");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_SMOKE");
@@ -42,6 +44,7 @@ fn main() {
             .display()
     );
     let linux_musl_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some();
+    let ipc_kernel_smoke_requested = env::var_os("FULLERENE_IPC_KERNEL_SMOKE").is_some();
 
     let workspace_root = manifest_dir.parent().unwrap();
     let have_busybox = embed_busybox(&out_dir, workspace_root);
@@ -124,6 +127,53 @@ fn main() {
     // Use the RUSTC from cargo's build environment — it points to the correct
     // toolchain (respecting rust-toolchain.toml). Derive sysroot from it.
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+
+    // ── Build the native IPC kernel smoke fixture ─────────────────
+    // This is a freestanding ELF that invokes Fullerene's native channel
+    // syscalls directly. It deliberately has no libc or Rust SDK dependency,
+    // so the smoke path measures the actual kernel boundary.
+    let ipc_src = manifest_dir.join("examples").join("native_ipc_rate.rs");
+    let ipc_out = out_dir.join("native_ipc_rate");
+    println!("cargo:rerun-if-changed={}", ipc_src.display());
+    let ipc_status = Command::new(&rustc)
+        .args([
+            "--edition=2024",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "-C",
+            "panic=abort",
+            "-C",
+            "relocation-model=static",
+            "-C",
+            "link-arg=-nostdlib",
+            "-C",
+            "link-arg=-Wl,--no-dynamic-linker",
+            "-C",
+            "link-arg=-e",
+            "-C",
+            "link-arg=_start",
+            "-C",
+            "opt-level=2",
+            "-C",
+            "strip=debuginfo",
+            "-o",
+        ])
+        .arg(&ipc_out)
+        .arg(&ipc_src)
+        .status();
+    match ipc_status {
+        Ok(status) if status.success() => {
+            if ipc_kernel_smoke_requested {
+                println!("cargo:rustc-cfg=ipc_kernel_smoke");
+            }
+        }
+        Ok(_) | Err(_) if ipc_kernel_smoke_requested => {
+            panic!("FULLERENE_IPC_KERNEL_SMOKE requires the native IPC fixture to compile");
+        }
+        Ok(_) | Err(_) => {
+            println!("cargo:warning=native IPC kernel smoke fixture could not be compiled");
+        }
+    }
 
     // ── Build the ordinary Rust std / musl Linux fixture ─────────
     // Watch the target libdir as well as the source. If a developer installs
