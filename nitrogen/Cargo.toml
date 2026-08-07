@@ -16,7 +16,7 @@ spin = { workspace = true, features = [
   "spin_mutex",
 ] }
 log = { workspace = true }
-ps2-mouse = "0.1.4"
+ps2-mouse = { git = "https://github.com/rust-osdev/ps2-mouse", rev = "68803c8dba7c2008eb3b95c47452d51305227ff" }
 bonder = { path = "../bonder" }
 sealant = { path = "../sealant" }
 

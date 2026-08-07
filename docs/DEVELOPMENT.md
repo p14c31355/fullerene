@@ -2,7 +2,7 @@
 
 ## Toolchain
 
-Use `rust-toolchain.toml` for pinning nightly (currently `nightly-2026-06-01`).
+Use `rust-toolchain.toml` for pinning nightly (currently `nightly-2026-08-01`, Rust 1.99.0-nightly).
 Install the embedded application target once with
 `rustup target add wasm32-wasip1`; the kernel build script compiles the nested
 WASM applications as part of the normal build.

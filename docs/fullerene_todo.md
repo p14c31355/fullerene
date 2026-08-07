@@ -143,7 +143,7 @@ You may close them using the "Development" section of the PR, or create new issu
 ## P2: Developer Experience & Performance
 
 ### P2-1. Reproducible toolchain & CI
-- [x] `rust-toolchain.toml`: nightly date pinned to `2026-06-01`
+- [x] `rust-toolchain.toml`: nightly date pinned to `2026-08-01` (Rust 1.99.0-nightly)
 - [x] Components include `rustfmt` + `clippy`
 - [x] Host-target `#[panic_handler]` added — `cargo check -p fullerene-kernel` now works without `--target`
 - [x] CI: add `cargo fmt --check`, host check, Clippy jobs
