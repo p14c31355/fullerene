@@ -488,10 +488,10 @@ pub struct ScanDwellV1 {
     pub active: u8,
     pub passive: u8,
     pub fragmented: u8,
-    pub extended: u8,
+    pub reserved: u8,
 }
 
-/// Legacy LMAC SCAN_CFG_CMD API v1 payload used by the 7265 firmware.
+/// SCAN_CFG_CMD API v1 payload used by the 7265 firmware.
 ///
 /// This command is not the same as the later UMAC scan configuration: the
 /// channel list is part of the payload and the command is sent with the
@@ -514,20 +514,17 @@ pub struct ScanConfigV1 {
 
 impl ScanConfigV1 {
     pub fn new(mac_addr: [u8; 6], bcast_sta_id: u8) -> Self {
-        // ACTIVATE | ALLOW_CHUB_REQS | SET_TX_CHAINS | SET_RX_CHAINS |
-        // SET_AUX_STA_ID | SET_ALL_TIMES | SET_CHANNEL_FLAGS |
-        // SET_LEGACY_RATES | SET_MAC_ADDR | CLEAR_FRAGMENTED |
-        // SCAN_CONFIG_N_CHANNELS(23).
+        // This is the API-v1 SCAN_CONFIG_DB_CMD flag set.  In particular,
+        // SET_AUX_STA_ID and CLEAR_FRAGMENTED are not part of the firmware's
+        // initial scan configuration command; their bits are reserved here.
         let flags = (1 << 0)
             | (1 << 3)
             | (1 << 8)
             | (1 << 9)
-            | (1 << 10)
             | (1 << 11)
             | (1 << 13)
             | (1 << 14)
             | (1 << 15)
-            | (1 << 17)
             | ((SCAN_CHANNEL_COUNT as u32) << 26);
 
         Self {
@@ -535,23 +532,18 @@ impl ScanConfigV1 {
             tx_chains: 0x03,
             rx_chains: 0x03,
             legacy_rates: 0x0fff_0fff,
-            out_of_channel_time: 120,
+            out_of_channel_time: 170,
             suspend_time: 30,
             dwell: ScanDwellV1 {
-                active: 10,
+                active: 20,
                 passive: 110,
-                fragmented: 44,
-                extended: 90,
+                fragmented: 20,
+                reserved: 0,
             },
             mac_addr,
             bcast_sta_id,
-            // PRE_SCAN_PASSIVE2ACTIVE only.  EBS (bits 0-2) is disabled
-            // because it lets the firmware skip channels it considers "empty"
-            // based on energy detection — on some hardware/firmware
-            // combinations this causes every channel to be skipped,
-            // resulting in scan-complete with 0 APs even when APs are
-            // present.
-            channel_flags: 0x08,
+            // EBS | ACCURATE_EBS | EBS_ADD | PRE_SCAN_PASSIVE2ACTIVE.
+            channel_flags: 0x0f,
             channel_array: SCAN_CHANNELS,
         }
     }

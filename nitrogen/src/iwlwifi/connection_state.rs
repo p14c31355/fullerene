@@ -1490,9 +1490,7 @@ impl IwlWifiDevice {
         let scan_cmd = ScanRequestCmd::new(self.mac, 1);
         let cmd_data = unsafe { super::as_bytes(&scan_cmd) };
         // SCAN_OFFLOAD_REQUEST_CMD (0x51) is a legacy-group command and uses
-        // the four-byte HCMD header. SCAN_CFG_CMD above is the exception: it
-        // is sent with the always-long header because its channel database is
-        // a long-group command.
+        // the four-byte HCMD header.
         if let Err(error) = self.send_hcmd(
             LegacyCmd::ScanRequest as u8,
             GroupId::Legacy as u8,

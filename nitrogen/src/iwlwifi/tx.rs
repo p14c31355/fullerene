@@ -886,25 +886,11 @@ impl IwlWifiDevice {
             core::mem::size_of::<MacContextCmd>(),
         );
 
-        // API 17 uses the legacy LMAC scan engine.  Its channel database must
-        // be activated before SCAN_OFFLOAD_REQUEST_CMD is accepted.  Although
-        // the opcode is in the legacy command namespace, the command itself
-        // is a LONG_GROUP command and therefore uses the wide HCMD header.
-        let scan_config = ScanConfigV1::new(self.mac, AUX_STA_ID);
-        let scan_config_bytes = unsafe { super::as_bytes(&scan_config) };
-        self.send_init_hcmd(
-            "SCAN_CONFIG",
-            LegacyCmd::ScanConfig as u8,
-            GroupId::Long as u8,
-            scan_config_bytes,
-        )?;
-        log::info!(
-            "iwlwifi: init.config name=scan_config channels={} group=0x{:02x} opcode=0x{:02x} payload={}",
-            SCAN_CHANNEL_COUNT,
-            GroupId::Long as u8,
-            LegacyCmd::ScanConfig as u8,
-            core::mem::size_of::<ScanConfigV1>(),
-        );
+        // SCAN_CFG_CMD is an optional UMAC-scan setup command.  The 7265
+        // API-v17 path used here is the LMAC scan path, and forcing the UMAC
+        // command makes this firmware raise SW_ERR.  The LMAC
+        // SCAN_OFFLOAD_REQUEST_CMD does not need this command.
+        log::info!("iwlwifi: init.config name=scan_config status=skipped reason=lmac_scan_path");
 
         let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);
         let csr_fh_int_before_echo = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
