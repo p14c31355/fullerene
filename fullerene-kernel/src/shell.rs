@@ -1360,28 +1360,18 @@ fn nozzle_services() -> nozzle::ShellServices {
                 if options.first_file >= ctx.args.len() {
                     return tstr!(ctx.terminal, "grep: pattern and file required");
                 }
-                let matcher = if options.extended {
-                    match nozzle::regex::Regex::new(options.pattern) {
-                        Ok(regex) => Some(regex),
-                        Err(_) => {
-                            return tstr!(ctx.terminal, "grep: invalid regular expression");
-                        }
+                let matcher = match options.compile() {
+                    Ok(matcher) => matcher,
+                    Err(_) => {
+                        return tstr!(ctx.terminal, "grep: invalid regular expression");
                     }
-                } else {
-                    None
                 };
                 let show_filename = ctx.args.len() - options.first_file > 1;
                 for &path in &ctx.args[options.first_file..] {
                     match read_entire_file(path) {
                         Ok(data) => {
                             let text = alloc::string::String::from_utf8_lossy(&data);
-                            for line in text.lines().filter(|line| {
-                                matcher
-                                    .as_ref()
-                                    .map_or(line.contains(options.pattern), |regex| {
-                                        regex.is_match(line)
-                                    })
-                            }) {
+                            for line in text.lines().filter(|line| matcher.is_match(line)) {
                                 if show_filename {
                                     ctx.terminal.write_str(&alloc::format!("{}:", path));
                                 }

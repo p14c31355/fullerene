@@ -47,6 +47,15 @@ pub struct IwlWifiDevice {
     pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
     pub runtime_calib_event: u32,
+    /// True after the INIT image completed and its calibration data is valid
+    /// for replay into the runtime image.
+    pub init_firmware_completed: bool,
+    /// Incremental INIT-command state retained between scheduler ticks.
+    pub init_commands_started: bool,
+    pub init_nvm_index: usize,
+    pub init_hw_section: Option<Vec<u8>>,
+    pub init_mac_ready: bool,
+    pub init_response: Option<(u8, u8, u64)>,
     /// PHY calibration database sections collected from INIT firmware and
     /// replayed to the runtime image.
     pub phy_db_sections: Vec<(u16, Vec<u8>)>,
@@ -92,6 +101,9 @@ pub struct IwlWifiDevice {
     pub tx_tail: usize,
     pub rx_head: usize,
     pub rx_tail: usize,
+    /// Absolute RBD write pointer posted to firmware. This is distinct from
+    /// `rx_tail`, which tracks the host's consumed RX buffers.
+    pub rx_posted: usize,
 
     /// DMA buffers.
     pub tx_bufs: Vec<DmaRegion>,
@@ -150,6 +162,7 @@ impl IwlWifiDevice {
         // Firmware reset also resets the device-side RBD pointers.
         self.rx_head = 0;
         self.rx_tail = 0;
+        self.rx_posted = (RX_QUEUE_SIZE - 1) & !7;
         let rx_phys = self.rx_dma_ring.dma_iova();
         let status_phys = rx_phys + (core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE) as u64;
 
@@ -176,7 +189,7 @@ impl IwlWifiDevice {
                 // full ring from an empty ring. Linux's gen1 transport
                 // restocks 255 of the 256 entries and rounds the pointer
                 // down to an 8-entry boundary.
-                ((RX_QUEUE_SIZE - 1) & !7) as u32,
+                self.rx_posted as u32,
             );
             mmio::write_barrier();
             core::ptr::write_volatile(
@@ -208,6 +221,20 @@ impl IwlWifiDevice {
             rx_wptr,
             int_mask,
         );
+    }
+
+    pub(super) fn restock_rx_buffers(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        self.rx_posted = (self.rx_posted + count) % RX_QUEUE_SIZE;
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(FH_RSCSR_CHNL0_RBDCB_WPTR_REG as usize),
+                (self.rx_posted as u32) & !7,
+            );
+        }
+        mmio::write_barrier();
     }
 
     // ── Safe MMIO access ────────────────────────────
@@ -440,6 +467,12 @@ impl IwlWifiDevice {
             runtime_calib_flow: 0,
             runtime_calib_event: 0,
             phy_db_sections: Vec::new(),
+            init_firmware_completed: false,
+            init_commands_started: false,
+            init_nvm_index: 0,
+            init_hw_section: None,
+            init_mac_ready: false,
+            init_response: None,
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             iwl_state: IwlState::Init,
@@ -462,6 +495,7 @@ impl IwlWifiDevice {
             tx_tail: 0,
             rx_head: 0,
             rx_tail: 0,
+            rx_posted: 0,
             tx_bufs,
             rx_bufs,
             ip_address: [0u8; 4],
@@ -646,6 +680,12 @@ impl IwlWifiDevice {
             runtime_calib_flow: 0,
             runtime_calib_event: 0,
             phy_db_sections: Vec::new(),
+            init_firmware_completed: false,
+            init_commands_started: false,
+            init_nvm_index: 0,
+            init_hw_section: None,
+            init_mac_ready: false,
+            init_response: None,
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             iwl_state: IwlState::Init,
@@ -668,6 +708,7 @@ impl IwlWifiDevice {
             tx_tail: 0,
             rx_head: 0,
             rx_tail: 0,
+            rx_posted: 0,
             tx_bufs,
             rx_bufs,
             ip_address: [0u8; 4],
@@ -850,6 +891,12 @@ impl IwlWifiDevice {
         self.runtime_calib_event = 0;
         if image == FirmwareImage::Init {
             self.phy_db_sections.clear();
+            self.init_firmware_completed = false;
+            self.init_commands_started = false;
+            self.init_nvm_index = 0;
+            self.init_hw_section = None;
+            self.init_mac_ready = false;
+            self.init_response = None;
         }
         log::info!(
             "iwlwifi: firmware image={:?} API v{}, build {}",
@@ -1394,6 +1441,9 @@ impl IwlWifiDevice {
         &mut self,
         fw_data: &[u8],
     ) -> Result<(), crate::DriverError> {
+        self.health
+            .recover()
+            .map_err(|_| crate::DriverError::DeviceNotFound)?;
         self.upload_firmware_and_start_cpu(fw_data, FirmwareImage::Runtime)
     }
 

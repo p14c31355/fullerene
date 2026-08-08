@@ -362,23 +362,15 @@ pub fn cmd_grep(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("       command | grep <pattern>\n");
         return true;
     };
-    let matcher = if options.extended {
-        match carrier::regex::Regex::new(options.pattern) {
-            Ok(regex) => Some(regex),
-            Err(_) => {
-                ctx.terminal.write_str("grep: invalid regular expression\n");
-                return true;
-            }
+    let matcher = match options.compile() {
+        Ok(matcher) => matcher,
+        Err(_) => {
+            ctx.terminal.write_str("grep: invalid regular expression\n");
+            return true;
         }
-    } else {
-        None
     };
 
-    let matches = |line: &str| {
-        matcher
-            .as_ref()
-            .map_or(line.contains(options.pattern), |regex| regex.is_match(line))
-    };
+    let matches = |line: &str| matcher.is_match(line);
 
     // If stdin was provided (from a pipe), search through it.
     if let Some(stdin) = ctx.terminal.take_stdin() {

@@ -415,8 +415,8 @@ fn perform_init_step() {
             // low-power state; pre_mmio_access() performs the safe recovery
             // sequence (D0, bridge L1Sub, link retrain, ASPM) before giving up.
             let health_result = {
-                let ctx = WIFI_INIT_CTX.lock();
-                ctx.health.map(|mut health| health.pre_mmio_access())
+                let mut ctx = WIFI_INIT_CTX.lock();
+                ctx.health.as_mut().map(PciHealth::pre_mmio_access)
             };
             match health_result {
                 Some(Ok(())) => {}
@@ -806,6 +806,12 @@ fn perform_init_step() {
                 runtime_calib_flow: 0,
                 runtime_calib_event: 0,
                 phy_db_sections: Vec::new(),
+                init_firmware_completed: false,
+                init_commands_started: false,
+                init_nvm_index: 0,
+                init_hw_section: None,
+                init_mac_ready: false,
+                init_response: None,
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
                 iwl_state: IwlState::Init,
@@ -828,6 +834,7 @@ fn perform_init_step() {
                 tx_tail: 0,
                 rx_head: 0,
                 rx_tail: 0,
+                rx_posted: 0,
                 tx_bufs,
                 rx_bufs,
                 ip_address: [0u8; 4],
@@ -990,6 +997,9 @@ fn perform_init_step() {
                     debug::print("iwlwifi", "step: fw_init_cmds_ok");
                     set_init_phase(WifiInitPhase::FwRuntimeUpload);
                 }
+                Err(crate::DriverError::Pending) => {
+                    debug::print("iwlwifi", "step: fw_init_cmds_pending");
+                }
                 Err(e) => {
                     log::error!(
                         "iwlwifi: init.phase.error name=fw_init_cmds id=7 error={}",
@@ -1051,6 +1061,26 @@ fn perform_init_step() {
                 let ctx = WIFI_INIT_CTX.lock();
                 (ctx.alive_start_tsc, pci_bdf_from_ctx(&ctx))
             };
+            let pci_health = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                ctx.health.as_mut().map(PciHealth::check)
+            };
+            match pci_health {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    log::warn!(
+                        "iwlwifi: runtime alive wait PCI health check failed: {}",
+                        error
+                    );
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+                None => {
+                    log::warn!("iwlwifi: runtime alive wait PCI health state unavailable");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+            }
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
             }

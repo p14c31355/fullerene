@@ -890,8 +890,8 @@ impl WifiInitPhase {
 
 impl From<u8> for WifiInitPhase {
     fn from(v: u8) -> Self {
-        // Discriminants are contiguous 0..=12; any value outside that range
-        // (and 9 itself) collapses to `Failed`, matching the prior match.
+        // Discriminants are contiguous 0..=12. Any value outside that range
+        // collapses to `Failed`.
         const PHASES: [WifiInitPhase; 13] = [
             WifiInitPhase::Idle,
             WifiInitPhase::PciProbe,

@@ -2,7 +2,11 @@
 //!
 //! This intentionally implements the useful line-oriented subset needed by
 //! `grep -E`: literals, `.`, `^`, `$`, character classes/ranges, grouping,
-//! alternation, and the `*`, `+`, and `?` repetition operators.
+//! alternation, and the `*`, `+`, and `?` repetition operators. `Expr::Any`
+//! and character classes operate on bytes; for non-ASCII UTF-8 input, `.`
+//! therefore matches one byte rather than one Unicode character. `is_match`
+//! returns only a boolean, so it does not expose any invalid slicing that may
+//! result from a byte-oriented match.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -15,6 +19,7 @@ pub enum RegexError {
     UnclosedClass,
     InvalidRange,
     RepetitionWithoutAtom,
+    TooDeep,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +27,32 @@ pub struct GrepArgs<'a> {
     pub extended: bool,
     pub pattern: &'a str,
     pub first_file: usize,
+}
+
+/// The compiled matcher shared by the shell and kernel grep implementations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Matcher<'a> {
+    Literal(&'a str),
+    Extended(Regex),
+}
+
+impl Matcher<'_> {
+    pub fn is_match(&self, text: &str) -> bool {
+        match self {
+            Self::Literal(pattern) => text.contains(pattern),
+            Self::Extended(regex) => regex.is_match(text),
+        }
+    }
+}
+
+impl<'a> GrepArgs<'a> {
+    pub fn compile(self) -> Result<Matcher<'a>, RegexError> {
+        if self.extended {
+            Regex::new(self.pattern).map(Matcher::Extended)
+        } else {
+            Ok(Matcher::Literal(self.pattern))
+        }
+    }
 }
 
 /// Parse the common grep arguments shared by the Nozzle and kernel paths.
@@ -86,6 +117,7 @@ impl Regex {
         let mut parser = Parser {
             input: pattern.as_bytes(),
             pos: 0,
+            depth: 0,
         };
         let expr = parser.parse_alt(false)?;
         if parser.pos != parser.input.len() {
@@ -97,10 +129,10 @@ impl Regex {
     /// Match anywhere in one input line, as grep does by default.
     pub fn is_match(&self, text: &str) -> bool {
         let input = text.as_bytes();
+        let mut scratch = Vec::new();
         for start in 0..=input.len() {
-            let mut out = Vec::new();
-            match_positions(&self.expr, input, start, &mut out);
-            if !out.is_empty() {
+            scratch.clear();
+            if match_positions(&self.expr, input, start, &mut scratch, 0, true) {
                 return true;
             }
         }
@@ -111,7 +143,10 @@ impl Regex {
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
+    depth: usize,
 }
+
+const MAX_DEPTH: usize = 32;
 
 impl Parser<'_> {
     fn parse_alt(&mut self, in_group: bool) -> Result<Expr, RegexError> {
@@ -144,15 +179,14 @@ impl Parser<'_> {
 
     fn parse_repeated_atom(&mut self) -> Result<Expr, RegexError> {
         let mut atom = self.parse_atom()?;
-        let repeat = match self.input.get(self.pos).copied() {
+        if let Some(repeat) = match self.input.get(self.pos).copied() {
             Some(b'*') => Some(Repeat::ZeroOrMore),
             Some(b'+') => Some(Repeat::OneOrMore),
             Some(b'?') => Some(Repeat::Optional),
             _ => None,
-        };
-        if repeat.is_some() {
+        } {
             self.pos += 1;
-            atom = Expr::Repeat(Box::new(atom), repeat.unwrap_or(Repeat::Optional));
+            atom = Expr::Repeat(Box::new(atom), repeat);
         }
         Ok(atom)
     }
@@ -163,7 +197,14 @@ impl Parser<'_> {
             None => Err(RegexError::UnexpectedEnd),
             Some(b'(') => {
                 self.pos += 1;
-                let expr = self.parse_alt(true)?;
+                self.depth += 1;
+                if self.depth > MAX_DEPTH {
+                    self.depth -= 1;
+                    return Err(RegexError::TooDeep);
+                }
+                let parsed = self.parse_alt(true);
+                self.depth -= 1;
+                let expr = parsed?;
                 if !self.take_if(b')') {
                     return Err(RegexError::UnclosedGroup);
                 }
@@ -218,7 +259,8 @@ impl Parser<'_> {
             first = false;
             if self.take_if(b'-') {
                 if self.input.get(self.pos) == Some(&b']') || self.input.get(self.pos).is_none() {
-                    ranges.push((start, b'-'));
+                    ranges.push((start, start));
+                    ranges.push((b'-', b'-'));
                     continue;
                 }
                 let end = self.parse_class_char()?;
@@ -268,18 +310,41 @@ impl Parser<'_> {
     }
 }
 
-fn match_positions(expr: &Expr, input: &[u8], pos: usize, out: &mut Vec<usize>) {
+fn match_positions(
+    expr: &Expr,
+    input: &[u8],
+    pos: usize,
+    out: &mut Vec<usize>,
+    depth: usize,
+    any_match: bool,
+) -> bool {
+    if depth > MAX_DEPTH {
+        return false;
+    }
     match expr {
-        Expr::Empty => push_unique(out, pos),
+        Expr::Empty => {
+            if !any_match {
+                push_unique(out, pos);
+            }
+            true
+        }
         Expr::Literal(expected) => {
             if input.get(pos) == Some(expected) {
-                push_unique(out, pos + 1);
+                if !any_match {
+                    push_unique(out, pos + 1);
+                }
+                return true;
             }
+            false
         }
         Expr::Any => {
             if pos < input.len() {
-                push_unique(out, pos + 1);
+                if !any_match {
+                    push_unique(out, pos + 1);
+                }
+                return true;
             }
+            false
         }
         Expr::Class { negated, ranges } => {
             if let Some(&byte) = input.get(pos) {
@@ -287,67 +352,110 @@ fn match_positions(expr: &Expr, input: &[u8], pos: usize, out: &mut Vec<usize>) 
                     .iter()
                     .any(|&(start, end)| (start..=end).contains(&byte));
                 if found != *negated {
-                    push_unique(out, pos + 1);
+                    if !any_match {
+                        push_unique(out, pos + 1);
+                    }
+                    return true;
                 }
             }
+            false
         }
         Expr::Start => {
             if pos == 0 {
-                push_unique(out, pos);
+                if !any_match {
+                    push_unique(out, pos);
+                }
+                return true;
             }
+            false
         }
         Expr::End => {
             if pos == input.len() {
-                push_unique(out, pos);
+                if !any_match {
+                    push_unique(out, pos);
+                }
+                return true;
             }
+            false
         }
         Expr::Concat(parts) => {
             let mut positions = alloc::vec![pos];
             for part in parts {
                 let mut next = Vec::new();
                 for position in positions {
-                    match_positions(part, input, position, &mut next);
+                    match_positions(part, input, position, &mut next, depth + 1, false);
                 }
                 positions = next;
                 if positions.is_empty() {
                     break;
                 }
             }
-            for position in positions {
-                push_unique(out, position);
+            if any_match {
+                !positions.is_empty()
+            } else {
+                for position in positions {
+                    push_unique(out, position);
+                }
+                false
             }
         }
         Expr::Alt(alternatives) => {
             for alternative in alternatives {
-                match_positions(alternative, input, pos, out);
+                if match_positions(alternative, input, pos, out, depth + 1, any_match) && any_match
+                {
+                    return true;
+                }
             }
+            false
         }
         Expr::Repeat(inner, Repeat::Optional) => {
-            push_unique(out, pos);
-            match_positions(inner, input, pos, out);
+            if any_match {
+                true
+            } else {
+                push_unique(out, pos);
+                match_positions(inner, input, pos, out, depth + 1, false);
+                false
+            }
         }
         Expr::Repeat(inner, Repeat::OneOrMore) => {
+            if any_match {
+                return match_positions(inner, input, pos, out, depth + 1, true);
+            }
             let mut first = Vec::new();
-            match_positions(inner, input, pos, &mut first);
+            match_positions(inner, input, pos, &mut first, depth + 1, false);
             for position in first.iter().copied() {
                 push_unique(out, position);
             }
-            repeat_closure(inner, input, first, out);
+            repeat_closure(inner, input, first, out, depth + 1);
+            false
         }
         Expr::Repeat(inner, Repeat::ZeroOrMore) => {
-            push_unique(out, pos);
-            repeat_closure(inner, input, alloc::vec![pos], out);
+            if any_match {
+                true
+            } else {
+                push_unique(out, pos);
+                repeat_closure(inner, input, alloc::vec![pos], out, depth + 1);
+                false
+            }
         }
     }
 }
 
-fn repeat_closure(inner: &Expr, input: &[u8], mut frontier: Vec<usize>, out: &mut Vec<usize>) {
+fn repeat_closure(
+    inner: &Expr,
+    input: &[u8],
+    mut frontier: Vec<usize>,
+    out: &mut Vec<usize>,
+    depth: usize,
+) {
+    let mut visited = frontier.clone();
     while let Some(position) = frontier.pop() {
         let mut next = Vec::new();
-        match_positions(inner, input, position, &mut next);
+        match_positions(inner, input, position, &mut next, depth + 1, false);
         for candidate in next {
-            if !out.contains(&candidate) {
-                out.push(candidate);
+            if !visited.contains(&candidate) {
+                visited.push(candidate);
+                push_unique(out, candidate);
                 frontier.push(candidate);
             }
         }
@@ -362,7 +470,7 @@ fn push_unique(values: &mut Vec<usize>, value: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::Regex;
+    use super::{Regex, RegexError, parse_grep_args};
 
     fn matches(pattern: &str, text: &str) -> bool {
         Regex::new(pattern).unwrap().is_match(text)
@@ -378,8 +486,22 @@ mod tests {
     #[test]
     fn supports_classes_ranges_and_repetition() {
         assert!(matches("[0-9a-f]+", "rev=0061"));
+        assert!(matches("[a-]", "a"));
+        assert!(matches("[a-]", "-"));
+        assert!(matches("[^0-9]+", "abc"));
         assert!(matches("AER?", "AE"));
         assert!(matches("MMIO.*", "MMIO phase aborted"));
+    }
+
+    #[test]
+    fn expands_repetition_inside_alternation() {
+        assert!(matches("^(aa|a+)b$", "aaab"));
+    }
+
+    #[test]
+    fn rejects_excessive_group_nesting() {
+        let pattern = alloc::format!("{}a{}", "(".repeat(33), ")".repeat(33));
+        assert_eq!(Regex::new(&pattern), Err(RegexError::TooDeep));
     }
 
     #[test]
@@ -396,5 +518,21 @@ mod tests {
         assert!(Regex::new("[").is_err());
         assert!(Regex::new("(").is_err());
         assert!(Regex::new("*").is_err());
+    }
+
+    #[test]
+    fn parses_grep_options() {
+        let args = ["grep", "-E", "foo", "a.log"];
+        let parsed = parse_grep_args(&args).unwrap();
+        assert!(parsed.extended);
+        assert_eq!(parsed.pattern, "foo");
+        assert_eq!(parsed.first_file, 3);
+
+        let args = ["grep", "--extended-regexp", "--", "-foo", "a.log"];
+        let parsed = parse_grep_args(&args).unwrap();
+        assert!(parsed.extended);
+        assert_eq!(parsed.pattern, "-foo");
+        assert_eq!(parsed.first_file, 4);
+        assert!(parse_grep_args(&["grep"]).is_none());
     }
 }
