@@ -478,6 +478,12 @@ const SCAN_DIRECT_SSID_COUNT: usize = 20;
 const SCAN_SSID_MAX_LEN: usize = 32;
 const SCAN_PROBE_BUFFER_SIZE: usize = 512;
 
+// Legacy LMAC scan flags. FullereneOS uses a wildcard probe request so that
+// APs which do not answer a purely passive scan are still discoverable.
+const SCAN_FLAG_PASS_ALL: u32 = 1 << 0;
+const SCAN_FLAG_ITER_COMPLETE: u32 = 1 << 3;
+const SCAN_FLAG_EXTENDED_DWELL: u32 = 1 << 7;
+
 // Legacy TX command fields used by the LMAC scan engine. Scan probe frames
 // are management/broadcast frames, so the firmware must own sequence control
 // and should not let Bluetooth priority arbitration suppress them.
@@ -665,8 +671,9 @@ impl ScanRequestCmd {
             common_data: ScanProbeSegment { offset: 26, len: 0 },
             buf: [0; SCAN_PROBE_BUFFER_SIZE],
         };
-        // Wildcard probe request. It is not transmitted for this passive
-        // scan, but the LMAC API still requires a valid probe descriptor.
+        // Wildcard probe request. The zero-length SSID element is included in
+        // the 26-byte MAC-header segment, so this request does not require a
+        // known SSID and can discover ordinary broadcast APs actively.
         probe.buf[0..2].copy_from_slice(&0x0040u16.to_le_bytes());
         probe.buf[4..10].fill(0xff);
         probe.buf[10..16].copy_from_slice(&mac);
@@ -683,7 +690,9 @@ impl ScanRequestCmd {
             reserved2: 0,
             // Two valid RX chains, selected/forced in the same way as Linux.
             rx_chain_select: 0x01b7,
-            scan_flags: (1 << 0) | (1 << 1) | (1 << 3) | (1 << 7),
+            // Active wildcard scan: keep PASSIVE clear. The probe request
+            // above is transmitted on every active channel.
+            scan_flags: SCAN_FLAG_PASS_ALL | SCAN_FLAG_ITER_COMPLETE | SCAN_FLAG_EXTENDED_DWELL,
             // Regular (wild) scans use the 120-TU associated-channel
             // budget. 37 TU is the fast-balance budget and can terminate a
             // passive dwell before a beacon is delivered.

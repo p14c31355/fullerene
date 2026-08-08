@@ -67,6 +67,10 @@ fn linux_v49_scan_commands_use_the_aux_station_id() {
     // The two Linux LMAC scan TX command entries are both bound to sta_id 1.
     assert_eq!(request_bytes[40], 1);
     assert_eq!(request_bytes[52], 1);
+    // FullereneOS uses the supplied wildcard probe request for an active
+    // scan; the LMAC PASSIVE flag must remain clear.
+    let scan_flags = u32::from_le_bytes(request_bytes[12..16].try_into().unwrap());
+    assert_eq!(scan_flags & (1 << 1), 0);
 }
 
 #[test]

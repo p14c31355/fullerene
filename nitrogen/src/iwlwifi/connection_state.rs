@@ -131,6 +131,13 @@ fn enqueue_wifi_request(request: WifiRequest) -> Option<u64> {
         WifiRequest::Tick => queue
             .iter()
             .any(|(_, pending)| matches!(pending, WifiRequest::Tick)),
+        // A menu event can be observed more than once while the GUI is being
+        // redrawn.  Do not let those duplicate events consume SQ entries or
+        // submit the same scan twice once the first request is waiting for
+        // the scheduler-owned executor.
+        WifiRequest::StartScan => queue
+            .iter()
+            .any(|(_, pending)| matches!(pending, WifiRequest::StartScan)),
         _ => false,
     };
     if duplicate_periodic_request {
@@ -150,9 +157,19 @@ fn enqueue_wifi_request(request: WifiRequest) -> Option<u64> {
     // Initialization is a prerequisite for every other Wi-Fi request.  A
     // pending periodic Tick must never sit in front of the first InitStep;
     // this is especially important when the service and device phases are
-    // separated by a GUI tick.
+    // separated by a GUI tick.  Once initialization is complete, action
+    // requests must run before a pending Tick: perform_tick() polls the
+    // device and may consume the whole short scheduler deadline, leaving a
+    // scan request stranded until the next GUI cycle (or until the user
+    // stops collecting the log).
     if matches!(&request, WifiRequest::InitStep) {
         queue.push_front((id, request));
+    } else if !matches!(&request, WifiRequest::Tick) {
+        let insert_at = queue
+            .iter()
+            .position(|(_, pending)| matches!(pending, WifiRequest::Tick))
+            .unwrap_or(queue.len());
+        queue.insert(insert_at, (id, request));
     } else {
         queue.push_back((id, request));
     }
@@ -1515,8 +1532,8 @@ impl IwlWifiDevice {
         self.wifi_conn.start_scan();
         self.scan_results.clear();
         // Reset the tick-count watchdog. The LMAC request covers the 2.4/5 GHz
-        // channel set and uses passive dwell times, so the host must leave
-        // several seconds for firmware completion and RX delivery.
+        // channel set and actively sends wildcard probes, so the host must
+        // still leave time for firmware completion and RX delivery.
         self.scan_channel = 0;
         self.scan_pending = true;
         self.scan_result_grace_ticks = 0;
@@ -1540,7 +1557,7 @@ impl IwlWifiDevice {
         }
 
         log::info!(
-            "iwlwifi: LMAC scan request queued: opcode=0x51 channels={} bytes={} (Klog: waiting for APs)",
+            "iwlwifi: LMAC active scan request queued: opcode=0x51 channels={} bytes={} (Klog: waiting for APs)",
             23,
             core::mem::size_of::<ScanRequestCmd>()
         );
