@@ -534,7 +534,15 @@ impl IwlWifiDevice {
         data: &[u8],
     ) -> Result<Vec<u8>, crate::DriverError> {
         self.send_init_hcmd(label, opcode, group, data)?;
-        self.wait_for_init_notification(opcode, group, 100_000)
+        // Keep MAC access held until the response is copied from the RX
+        // ring.  The INIT image can take longer than the scheduler-consume
+        // point to finish NVM/PHY work; releasing the request immediately
+        // after consumption allows the MAC to sleep before it posts the
+        // response.
+        self.wake_for_hcmd()?;
+        let response = self.wait_for_init_notification(opcode, group, 500_000);
+        self.release_mac_access();
+        response
     }
 
     /// Read one NVM section through the INIT firmware.
@@ -591,11 +599,11 @@ impl IwlWifiDevice {
         self.init_tx_cmd_queue();
         self.init_rx_dma();
 
-        // The 7000-series NVM image uses section 0 for the HW data. Read the
-        // other standard sections too; an empty section is normal and is
-        // reported as such by INIT firmware, while section 0 is mandatory.
+        // API v2 identifies sections by NVM_SECTION_TYPE_* rather than by
+        // a zero-based array index. The software section (type 1) contains
+        // the hardware data/MAC address on the 7000-series devices.
         let mut hw_section = None;
-        for section in [0u16, 1, 3, 4, 5, 8, 11, 12] {
+        for section in [1u16, 3, 4, 5, 8, 11, 12] {
             match self.read_nvm_section(section, 0, 2048) {
                 Ok(data) => {
                     log::info!(
@@ -603,11 +611,11 @@ impl IwlWifiDevice {
                         section,
                         data.len(),
                     );
-                    if section == 0 {
+                    if section == 1 {
                         hw_section = Some(data);
                     }
                 }
-                Err(error) if section != 0 => {
+                Err(error) if section != 1 => {
                     log::info!(
                         "iwlwifi: nvm.section section={} unavailable error={}",
                         section,
@@ -615,7 +623,7 @@ impl IwlWifiDevice {
                     );
                 }
                 Err(error) => {
-                    log::error!("iwlwifi: nvm.section section=0 failed error={}", error,);
+                    log::error!("iwlwifi: nvm.section section=1 failed error={}", error,);
                     return Err(error);
                 }
             }

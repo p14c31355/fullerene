@@ -30,6 +30,32 @@ impl IwlWifiDevice {
 
         loop {
             if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= timeout_tsc {
+                let status = self.rx_status();
+                let closed_rb =
+                    unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(status.closed_rb_num)) };
+                let closed_fr =
+                    unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(status.closed_fr_num)) };
+                let finished_rb = unsafe {
+                    core::ptr::read_unaligned(core::ptr::addr_of!(status.finished_rb_num))
+                };
+                let finished_fr = unsafe {
+                    core::ptr::read_unaligned(core::ptr::addr_of!(status.finished_fr_num))
+                };
+                log::warn!(
+                    "iwlwifi: init.rx.timeout opcode=0x{:02x} group=0x{:02x} closed_rb={} closed_fr={} finished_rb={} finished_fr={} rx_tail={} CSR_INT={:#010x} FH_INT={:#010x} RX_RDPTR={:#010x} RX_WPTR={:#010x}",
+                    opcode,
+                    group,
+                    closed_rb,
+                    closed_fr,
+                    finished_rb,
+                    finished_fr,
+                    self.rx_tail,
+                    self.safe_read32(CSR_INT).unwrap_or(!0),
+                    self.safe_read32(CSR_FH_INT).unwrap_or(!0),
+                    self.safe_read32(FH_RSCSR_CHNL0_RDPTR_REG).unwrap_or(!0),
+                    self.safe_read32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG)
+                        .unwrap_or(!0),
+                );
                 return Err(crate::DriverError::TimedOut);
             }
 
@@ -61,6 +87,14 @@ impl IwlWifiDevice {
                             break;
                         }
                         let packet = &frame[offset..offset + packet_len];
+                        log::info!(
+                            "iwlwifi: init.rx.packet opcode=0x{:02x} group=0x{:02x} len={} expected_opcode=0x{:02x} expected_group=0x{:02x}",
+                            packet[4],
+                            packet[5],
+                            packet_len,
+                            opcode,
+                            group,
+                        );
                         if packet[4] == opcode && packet[5] == group {
                             matched = Some(packet[8..].to_vec());
                         } else if packet[4] == LegacyCmd::ReplyError as u8 {
