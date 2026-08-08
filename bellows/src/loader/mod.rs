@@ -1,10 +1,9 @@
+use alloc::vec::Vec;
 use core::ffi::c_void;
 use petroleum::common::{
-    BellowsError, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
-    EfiBootServices, EfiFile, EfiLoadedImageProtocol, EfiMemoryType, EfiSimpleFileSystem,
-    EfiStatus, EfiSystemTable,
+    BellowsError, EFI_LOADED_IMAGE_PROTOCOL_GUID, EfiBootServices, EfiLoadedImageProtocol,
+    EfiMemoryType, EfiStatus, EfiSystemTable,
 };
-use petroleum::filesystem::{EfiFileWrapper, open_file, read_file_to_memory};
 
 // Module declarations for separated functionality
 pub mod heap;
@@ -21,10 +20,9 @@ const KERNEL_ARGS_PAGES: usize = 256;
 // Standard 4 KiB page size
 const PAGE_SIZE_4K: u64 = 4096;
 
-/// Read the two EFI files needed by the Fullerene installer from the same
-/// UEFI filesystem that launched Bellows. The allocations are intentionally
-/// left alive across ExitBootServices and are handed to the kernel in
-/// `KernelArgs`.
+/// Retain the two EFI payloads needed by the Fullerene installer. El Torito
+/// boots often expose only Block I/O, so the bootloader PE is reconstructed
+/// from the loaded image and the embedded kernel image is retained directly.
 pub fn read_boot_payloads(
     bs: &EfiBootServices,
     image_handle: usize,
@@ -40,36 +38,257 @@ pub fn read_boot_payloads(
     }
     let loaded = unsafe { &*(loaded_ptr as *const EfiLoadedImageProtocol) };
 
-    let mut fs_ptr: *mut c_void = core::ptr::null_mut();
-    let status = (bs.handle_protocol)(
-        loaded.device_handle,
-        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
-        &mut fs_ptr,
-    );
-    if EfiStatus::from(status) != EfiStatus::Success || fs_ptr.is_null() {
-        return Err(BellowsError::FileIo("boot filesystem protocol unavailable"));
-    }
-    let fs = unsafe { &*(fs_ptr as *const EfiSimpleFileSystem) };
-    let mut root_ptr: *mut EfiFile = core::ptr::null_mut();
-    let status = (fs.open_volume)(fs_ptr as *mut EfiSimpleFileSystem, &mut root_ptr);
-    if EfiStatus::from(status) != EfiStatus::Success || root_ptr.is_null() {
-        return Err(BellowsError::FileIo("boot filesystem volume unavailable"));
-    }
-    let root = EfiFileWrapper::new(root_ptr);
-    let kernel_path = utf16_path("EFI\\BOOT\\KERNEL.EFI");
-    let bootloader_path = utf16_path("EFI\\BOOT\\BOOTX64.EFI");
-    let kernel = open_file(&root, &kernel_path).and_then(|file| read_file_to_memory(bs, &file))?;
-    let bootloader =
-        open_file(&root, &bootloader_path).and_then(|file| read_file_to_memory(bs, &file))?;
-    Ok((bootloader, kernel))
+    // El Torito firmware commonly exposes the CD as Block I/O only, not as
+    // EFI_SIMPLE_FILE_SYSTEM_PROTOCOL.  The kernel payload is already
+    // embedded in Bellows; recover the raw PE bootloader from the loaded
+    // image so the live ISO remains installable without duplicate ISO9660
+    // copies of both EFI files.
+    let bootloader = reconstruct_loaded_pe(bs, loaded.image_base, loaded.image_size)?;
+    Ok((
+        bootloader,
+        (
+            super::KERNEL_BINARY.as_ptr() as usize,
+            super::KERNEL_BINARY.len(),
+        ),
+    ))
 }
 
-fn utf16_path(path: &str) -> [u16; 32] {
-    let mut result = [0u16; 32];
-    for (index, code) in path.encode_utf16().take(31).enumerate() {
-        result[index] = code;
+const MAX_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        data.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        data.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        data.get(offset..offset.checked_add(8)?)?.try_into().ok()?,
+    ))
+}
+
+fn write_u64(data: &mut [u8], offset: usize, value: u64) -> Option<()> {
+    data.get_mut(offset..offset.checked_add(8)?)?
+        .copy_from_slice(&value.to_le_bytes());
+    Some(())
+}
+
+#[derive(Clone, Copy)]
+struct PeSection {
+    virtual_address: usize,
+    virtual_size: usize,
+    raw_offset: usize,
+    raw_size: usize,
+}
+
+fn rva_to_raw(rva: usize, headers_size: usize, sections: &[PeSection]) -> Option<usize> {
+    if rva < headers_size {
+        return Some(rva);
     }
-    result
+    sections.iter().find_map(|section| {
+        let span = section.virtual_size.max(section.raw_size);
+        let end = section.virtual_address.checked_add(span)?;
+        if (section.virtual_address..end).contains(&rva) {
+            section
+                .raw_offset
+                .checked_add(rva - section.virtual_address)
+        } else {
+            None
+        }
+    })
+}
+
+/// Rebuild the on-disk PE layout from the image that UEFI loaded in memory.
+/// UEFI applies base relocations while loading, so those relocations are
+/// reversed before the reconstructed file is retained for installation.
+fn reconstruct_loaded_pe(
+    bs: &EfiBootServices,
+    image_base: usize,
+    image_size: u64,
+) -> petroleum::common::Result<(usize, usize)> {
+    let image_size = usize::try_from(image_size)
+        .ok()
+        .filter(|size| *size != 0 && *size <= MAX_PAYLOAD_SIZE)
+        .ok_or(BellowsError::FileIo("loaded PE image size invalid"))?;
+    if image_base == 0 {
+        return Err(BellowsError::FileIo("loaded PE image base unavailable"));
+    }
+    let image = unsafe { core::slice::from_raw_parts(image_base as *const u8, image_size) };
+    if image.get(..2) != Some(b"MZ") {
+        return Err(BellowsError::FileIo("loaded PE DOS header invalid"));
+    }
+    let pe_offset = usize::try_from(
+        read_u32(image, 0x3c).ok_or(BellowsError::FileIo("loaded PE DOS header truncated"))?,
+    )
+    .map_err(|_| BellowsError::FileIo("loaded PE offset invalid"))?;
+    if image.get(
+        pe_offset
+            ..pe_offset
+                .checked_add(4)
+                .ok_or(BellowsError::FileIo("loaded PE header overflow"))?,
+    ) != Some(b"PE\0\0")
+    {
+        return Err(BellowsError::FileIo("loaded PE signature invalid"));
+    }
+
+    let number_of_sections = usize::from(
+        read_u16(image, pe_offset + 6)
+            .ok_or(BellowsError::FileIo("loaded PE section table truncated"))?,
+    );
+    let optional_size = usize::from(
+        read_u16(image, pe_offset + 16)
+            .ok_or(BellowsError::FileIo("loaded PE optional header truncated"))?,
+    );
+    let optional = pe_offset
+        .checked_add(24)
+        .ok_or(BellowsError::FileIo("loaded PE header overflow"))?;
+    if read_u16(image, optional) != Some(0x20b) {
+        return Err(BellowsError::FileIo("loaded PE is not PE32+"));
+    }
+    let headers_size = usize::try_from(
+        read_u32(image, optional + 60)
+            .ok_or(BellowsError::FileIo("loaded PE headers truncated"))?,
+    )
+    .map_err(|_| BellowsError::FileIo("loaded PE headers too large"))?;
+    if headers_size == 0 || headers_size > image_size {
+        return Err(BellowsError::FileIo("loaded PE headers invalid"));
+    }
+    let preferred_base = read_u64(image, optional + 24)
+        .ok_or(BellowsError::FileIo("loaded PE image base missing"))?;
+    let section_table = optional
+        .checked_add(optional_size)
+        .ok_or(BellowsError::FileIo("loaded PE section table overflow"))?;
+    let table_size = number_of_sections
+        .checked_mul(40)
+        .ok_or(BellowsError::FileIo("loaded PE section table too large"))?;
+    if section_table.checked_add(table_size).is_none() || section_table + table_size > headers_size
+    {
+        return Err(BellowsError::FileIo("loaded PE section table invalid"));
+    }
+
+    let mut sections = Vec::with_capacity(number_of_sections);
+    let mut file_size = headers_size;
+    for index in 0..number_of_sections {
+        let section = section_table + index * 40;
+        let virtual_size = usize::try_from(
+            read_u32(image, section + 8)
+                .ok_or(BellowsError::FileIo("loaded PE section truncated"))?,
+        )
+        .map_err(|_| BellowsError::FileIo("loaded PE section size invalid"))?;
+        let virtual_address = usize::try_from(
+            read_u32(image, section + 12)
+                .ok_or(BellowsError::FileIo("loaded PE section truncated"))?,
+        )
+        .map_err(|_| BellowsError::FileIo("loaded PE section address invalid"))?;
+        let raw_size = usize::try_from(
+            read_u32(image, section + 16)
+                .ok_or(BellowsError::FileIo("loaded PE section truncated"))?,
+        )
+        .map_err(|_| BellowsError::FileIo("loaded PE raw size invalid"))?;
+        let raw_offset = usize::try_from(
+            read_u32(image, section + 20)
+                .ok_or(BellowsError::FileIo("loaded PE section truncated"))?,
+        )
+        .map_err(|_| BellowsError::FileIo("loaded PE raw offset invalid"))?;
+        if raw_size != 0 {
+            let virtual_end = virtual_address
+                .checked_add(raw_size)
+                .ok_or(BellowsError::FileIo("loaded PE section overflow"))?;
+            if virtual_end > image_size {
+                return Err(BellowsError::FileIo("loaded PE section outside image"));
+            }
+            file_size = file_size.max(
+                raw_offset
+                    .checked_add(raw_size)
+                    .ok_or(BellowsError::FileIo("loaded PE raw file overflow"))?,
+            );
+        }
+        sections.push(PeSection {
+            virtual_address,
+            virtual_size,
+            raw_offset,
+            raw_size,
+        });
+    }
+    if file_size == 0 || file_size > MAX_PAYLOAD_SIZE {
+        return Err(BellowsError::FileIo("reconstructed PE is too large"));
+    }
+
+    let pages = file_size.div_ceil(PAGE_SIZE_4K as usize);
+    let mut raw_phys = 0usize;
+    let status = (bs.allocate_pages)(0, EfiMemoryType::EfiLoaderData, pages, &mut raw_phys);
+    if EfiStatus::from(status) != EfiStatus::Success {
+        return Err(BellowsError::AllocationFailed(
+            "failed to retain bootloader payload",
+        ));
+    }
+    let raw = unsafe { core::slice::from_raw_parts_mut(raw_phys as *mut u8, file_size) };
+    raw.fill(0);
+    raw[..headers_size].copy_from_slice(&image[..headers_size]);
+    for section in &sections {
+        if section.raw_size == 0 {
+            continue;
+        }
+        let source_end = section.virtual_address + section.raw_size;
+        let target_end = section.raw_offset + section.raw_size;
+        raw[section.raw_offset..target_end]
+            .copy_from_slice(&image[section.virtual_address..source_end]);
+    }
+
+    // Undo IMAGE_REL_BASED_DIR64 entries in the copied section data.
+    let delta = image_base as i128 - preferred_base as i128;
+    let data_directory_count = read_u32(image, optional + 108).unwrap_or(0);
+    if delta != 0 && data_directory_count > 5 {
+        let reloc_dir = optional + 112 + 5 * 8;
+        let reloc_rva = usize::try_from(read_u32(image, reloc_dir).unwrap_or(0)).unwrap_or(0);
+        let reloc_size = usize::try_from(read_u32(image, reloc_dir + 4).unwrap_or(0)).unwrap_or(0);
+        if reloc_rva != 0 && reloc_size != 0 {
+            let reloc_end = reloc_rva
+                .checked_add(reloc_size)
+                .ok_or(BellowsError::FileIo("loaded PE relocations overflow"))?;
+            if reloc_end > image_size {
+                return Err(BellowsError::FileIo("loaded PE relocations outside image"));
+            }
+            let mut cursor = reloc_rva;
+            while cursor + 8 <= reloc_end {
+                let page_rva = usize::try_from(read_u32(image, cursor).unwrap_or(0)).unwrap_or(0);
+                let block_size =
+                    usize::try_from(read_u32(image, cursor + 4).unwrap_or(0)).unwrap_or(0);
+                if block_size < 8 || cursor + block_size > reloc_end {
+                    return Err(BellowsError::FileIo("loaded PE relocation block invalid"));
+                }
+                let entries_end = cursor + block_size;
+                let mut entry = cursor + 8;
+                while entry + 2 <= entries_end {
+                    let item = read_u16(image, entry).unwrap_or(0);
+                    let kind = item >> 12;
+                    let offset = usize::from(item & 0x0fff);
+                    if kind == 10 {
+                        let rva = page_rva
+                            .checked_add(offset)
+                            .ok_or(BellowsError::FileIo("loaded PE relocation overflow"))?;
+                        let raw_offset = rva_to_raw(rva, headers_size, &sections)
+                            .ok_or(BellowsError::FileIo("loaded PE relocation target invalid"))?;
+                        let current = read_u64(&raw, raw_offset).ok_or(BellowsError::FileIo(
+                            "loaded PE relocation target truncated",
+                        ))?;
+                        let restored = (current as i128 - delta) as u64;
+                        write_u64(raw, raw_offset, restored);
+                    }
+                    entry += 2;
+                }
+                cursor = entries_end;
+            }
+        }
+    }
+
+    Ok((raw_phys, file_size))
 }
 
 /// Exits boot services and jumps to the kernel's entry point.

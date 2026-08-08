@@ -338,8 +338,17 @@ pub struct EfiSimpleFileSystem {
 pub struct EfiLoadedImageProtocol {
     pub revision: u32,
     pub parent_handle: usize,
+    pub system_table: *mut c_void,
     pub device_handle: usize,
-    // more fields, but we only need these
+    pub file_path: *mut c_void,
+    pub reserved: *mut c_void,
+    pub load_options_size: u32,
+    pub load_options: *mut c_void,
+    pub image_base: usize,
+    pub image_size: u64,
+    pub image_code_type: u32,
+    pub image_data_type: u32,
+    pub unload: usize,
 }
 
 /// Minimal EFI_GRAPHICS_OUTPUT_PROTOCOL (UEFI)

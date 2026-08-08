@@ -1,6 +1,6 @@
 // fullerene/flasks/src/main.rs
 use clap::Parser;
-use isobemak::{BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
+use isobemak::{BootInfo, IsoImage, UefiBootInfo, build_iso};
 use std::{env, io, path::PathBuf, process::Command};
 
 use env_logger;
@@ -169,19 +169,6 @@ fn build_uefi_package(
     Ok(())
 }
 
-fn grub_cfg_content(_kernel_path: &PathBuf) -> String {
-    // The ISO image always copies the kernel to /EFI/BOOT/KERNEL.EFI,
-    // so the GRUB configuration must match this fixed path.
-    r#"set default="0"
-set timeout="5"
-
-menuentry "Fullerene OS" {
-    chainloader /EFI/BOOT/KERNEL.EFI
-}
-"#
-    .to_string()
-}
-
 fn create_iso(
     workspace_root: &PathBuf,
     profile: BuildProfile,
@@ -238,14 +225,10 @@ fn create_iso(
 
     let image = IsoImage {
         volume_id: None,
-        // `build_iso` places both EFI files in the UEFI ESP from
-        // `UefiBootInfo`.  Keep a single ISO9660 copy of the bootloader too:
-        // some ISO consumers look for /EFI/BOOT/BOOTX64.EFI directly instead
-        // of inspecting the embedded ESP.  KERNEL.EFI remains ESP-only.
-        files: vec![IsoImageFile {
-            source: bellows_path.clone(),
-            destination: "EFI/BOOT/BOOTX64.EFI".to_string(),
-        }],
+        // `UefiBootInfo` places both EFI payloads in the embedded ESP.  The
+        // Bellows loader has an El Torito fallback for retaining installer
+        // payloads, so duplicating them in ISO9660 is unnecessary.
+        files: Vec::new(),
         boot_info: BootInfo {
             bios_boot: None,
             uefi_boot: Some(UefiBootInfo {
@@ -253,13 +236,13 @@ fn create_iso(
                 kernel_image: kernel_path.clone(),
                 destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
                 additional_efi_boot_files: Vec::new(),
-                grub_cfg_content: Some(grub_cfg_content(&kernel_path)),
+                grub_cfg_content: None,
             }),
         },
         layout_profile: isobemak::IsoLayoutProfile::hardware(),
     };
     let (_iso_output_path, _temp_fat_holder, _iso_file, _logical_fat_size) =
-        build_iso(&iso_path, &image, true)?; // Set to true for isohybrid UEFI boot
+        build_iso(&iso_path, &image, true)?;
 
     Ok(iso_path)
 }
