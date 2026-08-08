@@ -144,6 +144,9 @@ impl IwlWifiDevice {
     }
 
     pub(super) fn init_rx_dma(&mut self) {
+        // Firmware reset also resets the device-side RBD pointers.
+        self.rx_head = 0;
+        self.rx_tail = 0;
         let rx_phys = self.rx_dma_ring.dma_iova();
         let status_phys = rx_phys + (core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE) as u64;
 
@@ -765,7 +768,11 @@ impl IwlWifiDevice {
 
     /// Common firmware upload and CPU start sequence shared by load_firmware and start_firmware.
     /// Does NOT wait for alive signal - caller must handle that if needed.
-    fn upload_firmware_and_start_cpu(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
+    fn upload_firmware_and_start_cpu(
+        &mut self,
+        fw_data: &[u8],
+        image: FirmwareImage,
+    ) -> Result<(), crate::DriverError> {
         debug::print("iwlwifi", "fw: check_header");
         if fw_data.len() < FW_HEADER_SIZE {
             return Err(crate::DriverError::InvalidArgument);
@@ -836,7 +843,8 @@ impl IwlWifiDevice {
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
         log::info!(
-            "iwlwifi: firmware API v{}, build {}",
+            "iwlwifi: firmware image={:?} API v{}, build {}",
+            image,
             self.fw_api_ver,
             self.fw_build
         );
@@ -914,11 +922,15 @@ impl IwlWifiDevice {
                         }
                     }
                 }
-                // A regular boot uses only SEC_RT.  SEC_INIT, SEC_WOWLAN,
-                // and DEF_CALIB belong to other firmware images/metadata;
-                // writing them into runtime SRAM prevents the CPU from
-                // reaching the alive notification.
-                TLV_SEC_RT => {
+                TLV_SEC_INIT | TLV_SEC_RT => {
+                    let wanted = match image {
+                        FirmwareImage::Init => TLV_SEC_INIT,
+                        FirmwareImage::Runtime => TLV_SEC_RT,
+                    };
+                    if tlv_type != wanted {
+                        off = tlv_end;
+                        continue;
+                    }
                     if tlv_len < 4 {
                         off = tlv_end;
                         continue;
@@ -1016,7 +1028,7 @@ impl IwlWifiDevice {
 
     /// Load firmware binary into the device.
     pub(super) fn load_firmware_inner(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
-        self.upload_firmware_and_start_cpu(fw_data)?;
+        self.upload_firmware_and_start_cpu(fw_data, FirmwareImage::Runtime)?;
 
         debug::print("iwlwifi", "fw: wait_alive");
         let alive = self.wait_for_alive();
@@ -1359,13 +1371,21 @@ impl IwlWifiDevice {
             .recover()
             .map_err(|_| crate::DriverError::DeviceNotFound)?;
 
-        self.upload_firmware_and_start_cpu(fw_data)?;
+        self.upload_firmware_and_start_cpu(fw_data, FirmwareImage::Init)?;
         // Do not retrain the upstream PCIe link after releasing the NIC CPU
         // reset. `PciHealth::recover()` toggles bridge link state; doing that
         // while firmware is emitting its alive notification can reset or
         // disconnect the endpoint and turn a valid boot into an alive timeout.
         debug::print("iwlwifi", "fw: cpu_started");
         Ok(())
+    }
+
+    /// Start the operational image after the INIT image has completed.
+    pub(super) fn start_runtime_firmware_inner(
+        &mut self,
+        fw_data: &[u8],
+    ) -> Result<(), crate::DriverError> {
+        self.upload_firmware_and_start_cpu(fw_data, FirmwareImage::Runtime)
     }
 
     /// Check if firmware has signaled alive (non-blocking poll).
@@ -1538,12 +1558,20 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
         IwlWifiDevice::start_firmware(self, fw_data)
     }
 
+    fn start_runtime_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
+        IwlWifiDevice::start_runtime_firmware_inner(self, fw_data)
+    }
+
     fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, crate::DriverError> {
         IwlWifiDevice::check_alive_nonblocking(self, start_tsc)
     }
 
     fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
         IwlWifiDevice::send_init_commands(self)
+    }
+
+    fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
+        IwlWifiDevice::send_init_firmware_commands(self)
     }
 
     fn send_data_frame(&mut self, frame: &[u8]) -> Result<(), crate::DriverError> {

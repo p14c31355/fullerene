@@ -124,6 +124,10 @@ impl IwlWifiDevice {
     }
 
     fn init_tx_cmd_queue(&mut self) {
+        // The INIT and runtime images use the same host allocation but each
+        // firmware reset starts its scheduler pointers at zero.
+        self.tx_head = 0;
+        self.tx_tail = 0;
         let ring_phys = self.tx_dma_ring.dma_iova();
         let aux_ring_phys = ring_phys + TX_AUX_TFD_RING_OFFSET as u64;
         let keep_warm_phys = ring_phys + TX_KEEP_WARM_OFFSET as u64;
@@ -520,6 +524,159 @@ impl IwlWifiDevice {
                 Err(crate::DriverError::Busy)
             }
         }
+    }
+
+    fn send_init_hcmd_response(
+        &mut self,
+        label: &str,
+        opcode: u8,
+        group: u8,
+        data: &[u8],
+    ) -> Result<Vec<u8>, crate::DriverError> {
+        self.send_init_hcmd(label, opcode, group, data)?;
+        self.wait_for_init_notification(opcode, group, 100_000)
+    }
+
+    /// Read one NVM section through the INIT firmware.
+    fn read_nvm_section(
+        &mut self,
+        section: u16,
+        offset: u16,
+        length: u16,
+    ) -> Result<Vec<u8>, crate::DriverError> {
+        // iwl_nvm_access_cmd API v2:
+        // op_code:u8, target:u8, type:le16, offset:le16, length:le16.
+        let mut command = [0u8; 8];
+        command[0] = 0; // IWL_NVM_READ
+        command[1] = 0; // NVM_ACCESS_TARGET_CACHE
+        command[2..4].copy_from_slice(&section.to_le_bytes());
+        command[4..6].copy_from_slice(&offset.to_le_bytes());
+        command[6..8].copy_from_slice(&length.to_le_bytes());
+        let response =
+            self.send_init_hcmd_response("NVM_ACCESS", LegacyCmd::NvmAccess as u8, 0x0c, &command)?;
+        if response.len() < 8 {
+            return Err(crate::DriverError::Protocol);
+        }
+        let response_offset = u16::from_le_bytes([response[0], response[1]]);
+        let response_length = u16::from_le_bytes([response[2], response[3]]) as usize;
+        let response_type = u16::from_le_bytes([response[4], response[5]]);
+        let status = u16::from_le_bytes([response[6], response[7]]);
+        log::info!(
+            "iwlwifi: nvm.response section={} offset={} length={} type={} status={}",
+            section,
+            response_offset,
+            response_length,
+            response_type,
+            status,
+        );
+        if status != 0 || response_offset != offset || response_type != section {
+            return Err(crate::DriverError::Protocol);
+        }
+        let available = response.len().saturating_sub(8);
+        let returned = core::cmp::min(response_length, available);
+        Ok(response[8..8 + returned].to_vec())
+    }
+
+    /// Run the short-lived INIT firmware sequence used by the 7265.
+    pub fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
+        log::info!(
+            "iwlwifi: init.firmware_commands.begin fw_api={} fw_build={}",
+            self.fw_api_ver,
+            self.fw_build,
+        );
+        self.init_tx_cmd_queue();
+        self.init_rx_dma();
+
+        // The 7000-series NVM image uses section 0 for the HW data. Read the
+        // other standard sections too; an empty section is normal and is
+        // reported as such by INIT firmware, while section 0 is mandatory.
+        let mut hw_section = None;
+        for section in [0u16, 1, 3, 4, 5, 8, 11, 12] {
+            match self.read_nvm_section(section, 0, 2048) {
+                Ok(data) => {
+                    log::info!(
+                        "iwlwifi: nvm.section section={} bytes={}",
+                        section,
+                        data.len(),
+                    );
+                    if section == 0 {
+                        hw_section = Some(data);
+                    }
+                }
+                Err(error) if section != 0 => {
+                    log::info!(
+                        "iwlwifi: nvm.section section={} unavailable error={}",
+                        section,
+                        error,
+                    );
+                }
+                Err(error) => {
+                    log::error!("iwlwifi: nvm.section section=0 failed error={}", error,);
+                    return Err(error);
+                }
+            }
+        }
+
+        let hw = hw_section.ok_or(crate::DriverError::Protocol)?;
+        const HW_ADDR_OFFSET: usize = 0x15 * 2;
+        if hw.len() < HW_ADDR_OFFSET + 6 {
+            return Err(crate::DriverError::Protocol);
+        }
+        // The 7000 HW section stores each MAC 16-bit word little-endian;
+        // Linux reverses the bytes within each word before exposing it.
+        let mac = [
+            hw[HW_ADDR_OFFSET + 1],
+            hw[HW_ADDR_OFFSET],
+            hw[HW_ADDR_OFFSET + 3],
+            hw[HW_ADDR_OFFSET + 2],
+            hw[HW_ADDR_OFFSET + 5],
+            hw[HW_ADDR_OFFSET + 4],
+        ];
+        if mac == [0; 6] || mac == [0xff; 6] || (mac[0] & 1) != 0 {
+            log::error!(
+                "iwlwifi: NVM returned invalid MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                mac[0],
+                mac[1],
+                mac[2],
+                mac[3],
+                mac[4],
+                mac[5],
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+        self.mac = mac;
+        log::info!(
+            "iwlwifi: nvm.mac {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5],
+        );
+
+        let nvm_complete = [0u8; 4];
+        self.send_init_hcmd("NVM_ACCESS_COMPLETE", 0x00, 0x0c, &nvm_complete)?;
+
+        if self.phy_config == 0 {
+            return Err(crate::DriverError::Protocol);
+        }
+        let phy_config = PhyConfigurationCmd {
+            phy_config: self.phy_config,
+            calib_flow_trigger: self.runtime_calib_flow,
+            calib_event_trigger: self.runtime_calib_event,
+        };
+        let phy_bytes = unsafe { super::as_bytes(&phy_config) };
+        self.send_init_hcmd(
+            "PHY_CONFIGURATION_INIT",
+            LegacyCmd::PhyConfiguration as u8,
+            0,
+            phy_bytes,
+        )?;
+        let _init_complete =
+            self.wait_for_init_notification(LegacyCmd::InitCompleteNotif as u8, 0, 500_000)?;
+        log::info!("iwlwifi: init.firmware_commands.complete");
+        Ok(())
     }
 
     pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {

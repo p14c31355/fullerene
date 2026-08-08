@@ -21,6 +21,15 @@ pub enum FwState {
     Error,
 }
 
+/// Firmware image contained in the 7265 .ucode TLV stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirmwareImage {
+    /// Bootstrap image used for NVM access and PHY calibration.
+    Init,
+    /// Normal operational image.
+    Runtime,
+}
+
 // ── 802.11 operational mode ────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +107,9 @@ pub enum LegacyCmd {
     PowerUp = 0x27,
     ReplyAlive = 0x01,
     ReplyError = 0x02,
+    InitCompleteNotif = 0x04,
+    /// NVM access command. It is sent in the Regulatory/NVM group.
+    NvmAccess = 0x88,
     /// RX MPDU notification (legacy transport). Carries the raw 802.11 frame
     /// preceded by an `iwl_rx_mpdu_res_start` header.
     ReplyRxMpduCmd = 0xc1,
@@ -833,8 +845,11 @@ pub enum WifiInitPhase {
     FwUpload = 5,
     FwWaitAlive = 6,
     FwInitCmds = 7,
-    Done = 8,
-    Failed = 9,
+    FwRuntimeUpload = 8,
+    FwRuntimeWaitAlive = 9,
+    FwRuntimeCmds = 10,
+    Done = 11,
+    Failed = 12,
 }
 
 impl WifiInitPhase {
@@ -848,6 +863,9 @@ impl WifiInitPhase {
             Self::FwUpload => "fw_upload",
             Self::FwWaitAlive => "fw_wait_alive",
             Self::FwInitCmds => "fw_init_cmds",
+            Self::FwRuntimeUpload => "fw_runtime_upload",
+            Self::FwRuntimeWaitAlive => "fw_runtime_wait_alive",
+            Self::FwRuntimeCmds => "fw_runtime_cmds",
             Self::Done => "done",
             Self::Failed => "failed",
         }
@@ -864,6 +882,9 @@ impl WifiInitPhase {
             Self::FwUpload => b"WIFI FW LOAD",
             Self::FwWaitAlive => b"WIFI FW ALIVE",
             Self::FwInitCmds => b"WIFI COMMANDS",
+            Self::FwRuntimeUpload => b"WIFI RT LOAD",
+            Self::FwRuntimeWaitAlive => b"WIFI RT ALIVE",
+            Self::FwRuntimeCmds => b"WIFI RT CMDS",
             Self::Done => b"WIFI READY",
             Self::Failed => b"WIFI FAILED",
         }
@@ -872,9 +893,9 @@ impl WifiInitPhase {
 
 impl From<u8> for WifiInitPhase {
     fn from(v: u8) -> Self {
-        // Discriminants are contiguous 0..=9; any value outside that range
+        // Discriminants are contiguous 0..=12; any value outside that range
         // (and 9 itself) collapses to `Failed`, matching the prior match.
-        const PHASES: [WifiInitPhase; 10] = [
+        const PHASES: [WifiInitPhase; 13] = [
             WifiInitPhase::Idle,
             WifiInitPhase::PciProbe,
             WifiInitPhase::MmioInit,
@@ -883,6 +904,9 @@ impl From<u8> for WifiInitPhase {
             WifiInitPhase::FwUpload,
             WifiInitPhase::FwWaitAlive,
             WifiInitPhase::FwInitCmds,
+            WifiInitPhase::FwRuntimeUpload,
+            WifiInitPhase::FwRuntimeWaitAlive,
+            WifiInitPhase::FwRuntimeCmds,
             WifiInitPhase::Done,
             WifiInitPhase::Failed,
         ];

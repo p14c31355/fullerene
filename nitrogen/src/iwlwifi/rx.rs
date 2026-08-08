@@ -1,5 +1,6 @@
 //! Receive-ring, interrupt, and inbound protocol processing.
 
+use alloc::vec::Vec;
 use bonder::dhcp::DhcpMessageType;
 use bonder::wifi::{self, Ssid};
 use bonder::wpa::WpaState;
@@ -11,6 +12,95 @@ use super::registers::*;
 use super::types::*;
 
 impl IwlWifiDevice {
+    /// Wait for one command response while the INIT image is running.
+    ///
+    /// The normal service tick intentionally processes RX only in `Ready`
+    /// state.  INIT commands therefore need a small private RX pump: NVM
+    /// responses and `INIT_COMPLETE_NOTIF` arrive through the same FH RBD
+    /// ring, but before the runtime image is installed.
+    pub(super) fn wait_for_init_notification(
+        &mut self,
+        opcode: u8,
+        group: u8,
+        timeout_us: u64,
+    ) -> Result<Vec<u8>, crate::DriverError> {
+        const FRAME_ALIGN: usize = 64;
+        let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let timeout_tsc = crate::timing::ticks_per_us().saturating_mul(timeout_us);
+
+        loop {
+            if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= timeout_tsc {
+                return Err(crate::DriverError::TimedOut);
+            }
+
+            mmio::cache_flush_range(
+                self.rx_status() as *const RxDmaStatus as usize,
+                core::mem::size_of::<RxDmaStatus>(),
+            );
+            self.rx_head = (self.rx_status().closed_rb_num as usize) & (RX_QUEUE_SIZE - 1);
+            let mut matched = None;
+            let mut processed = false;
+
+            while self.rx_tail != self.rx_head {
+                processed = true;
+                let index = self.rx_tail;
+                if index < self.rx_bufs.len() {
+                    let buf = &self.rx_bufs[index];
+                    let mut frame = alloc::vec![0; buf.len()];
+                    buf.read_into(&mut frame);
+                    let mut offset = 0usize;
+                    while offset + 8 <= frame.len() {
+                        let len_n_flags = u32::from_le_bytes([
+                            frame[offset],
+                            frame[offset + 1],
+                            frame[offset + 2],
+                            frame[offset + 3],
+                        ]);
+                        let packet_len = (len_n_flags as usize & 0x3fff).saturating_add(4);
+                        if packet_len < 8 || offset + packet_len > frame.len() {
+                            break;
+                        }
+                        let packet = &frame[offset..offset + packet_len];
+                        if packet[4] == opcode && packet[5] == group {
+                            matched = Some(packet[8..].to_vec());
+                        } else if packet[4] == LegacyCmd::ReplyError as u8 {
+                            log::warn!(
+                                "iwlwifi: INIT firmware command error while waiting for opcode=0x{:02x} group=0x{:02x}",
+                                opcode,
+                                group,
+                            );
+                        }
+                        offset += packet_len.next_multiple_of(FRAME_ALIGN);
+                    }
+                }
+                self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
+                if matched.is_some() {
+                    break;
+                }
+            }
+
+            if processed {
+                unsafe {
+                    core::ptr::write_volatile(
+                        self.mmio.add(FH_RSCSR_CHNL0_RBDCB_WPTR_REG as usize),
+                        (self.rx_tail as u32) & !7,
+                    );
+                }
+                mmio::write_barrier();
+            }
+            if let Some(payload) = matched {
+                log::info!(
+                    "iwlwifi: init.rx.match opcode=0x{:02x} group=0x{:02x} payload={}",
+                    opcode,
+                    group,
+                    payload.len(),
+                );
+                return Ok(payload);
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     fn process_rx_frame(&mut self, frame: &[u8], rx_decrypted: bool) {
         if frame.len() < 2 {
             return;

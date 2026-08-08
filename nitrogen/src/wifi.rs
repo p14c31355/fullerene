@@ -83,6 +83,12 @@ pub trait WifiDriver: Send {
     /// Used by the step-based init to avoid blocking the render loop.
     fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError>;
 
+    /// Start the operational image after the INIT image has completed.
+    fn start_runtime_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
+        let _ = fw_data;
+        Err(crate::DriverError::NotSupported)
+    }
+
     /// Non-blocking check if firmware has signaled alive.
     /// Returns Ok(true) if alive, Ok(false) if still waiting, Err on error/timeout.
     fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, crate::DriverError>;
@@ -90,6 +96,12 @@ pub trait WifiDriver: Send {
     /// Send post-boot init commands (TX antenna config, RXON, queue setup).
     /// Called by the step-based init after firmware alive is confirmed.
     fn send_init_commands(&mut self) -> Result<(), crate::DriverError>;
+
+    /// Configure the temporary INIT image: read NVM, notify the firmware
+    /// that NVM access is complete, and wait for PHY initialization.
+    fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
+        Err(crate::DriverError::NotSupported)
+    }
 
     /// Submit one data frame to the hardware TX path.
     ///
