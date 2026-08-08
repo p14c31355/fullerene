@@ -108,7 +108,8 @@ pub enum LegacyCmd {
     ReplyAlive = 0x01,
     ReplyError = 0x02,
     InitCompleteNotif = 0x04,
-    /// NVM access command. It is sent in the Regulatory/NVM group.
+    /// NVM access command. API 17 sends it in the Legacy group; only the
+    /// completion command uses the Regulatory/NVM group.
     NvmAccess = 0x88,
     /// RX MPDU notification (legacy transport). Carries the raw 802.11 frame
     /// preceded by an `iwl_rx_mpdu_res_start` header.

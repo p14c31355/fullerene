@@ -552,8 +552,12 @@ impl IwlWifiDevice {
         command[2..4].copy_from_slice(&section.to_le_bytes());
         command[4..6].copy_from_slice(&offset.to_le_bytes());
         command[6..8].copy_from_slice(&length.to_le_bytes());
-        let response =
-            self.send_init_hcmd_response("NVM_ACCESS", LegacyCmd::NvmAccess as u8, 0x0c, &command)?;
+        let response = self.send_init_hcmd_response(
+            "NVM_ACCESS",
+            LegacyCmd::NvmAccess as u8,
+            GroupId::Legacy as u8,
+            &command,
+        )?;
         if response.len() < 8 {
             return Err(crate::DriverError::Protocol);
         }
