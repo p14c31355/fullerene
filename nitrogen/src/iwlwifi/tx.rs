@@ -43,9 +43,18 @@ impl IwlWifiDevice {
     /// this handshake, a live 7265 may enter power-save during a command and
     /// subsequent CSR reads look like a disappeared PCIe endpoint.
     fn wake_for_hcmd(&mut self) -> Result<(), crate::DriverError> {
-        let gp = self
-            .safe_read32(CSR_GP_CNTRL)
-            .ok_or(crate::DriverError::DeviceNotFound)?;
+        // Do not make the request depend on a successful read first.  On the
+        // affected 7265 systems the first CSR read after firmware alive can
+        // transiently return all-ones even though a CSR write still reaches
+        // the endpoint.  Use zero as the conservative fallback and report
+        // the raw read result so the next boot log distinguishes that case
+        // from a genuine handshake timeout.
+        let initial_gp = self.safe_read32(CSR_GP_CNTRL);
+        log::info!(
+            "iwlwifi: MAC access request before host command initial_gp={:?}",
+            initial_gp,
+        );
+        let gp = initial_gp.unwrap_or(0);
         unsafe {
             core::ptr::write_volatile(
                 self.mmio.add(CSR_GP_CNTRL as usize),
