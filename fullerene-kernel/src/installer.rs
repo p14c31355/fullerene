@@ -319,23 +319,24 @@ fn push_fat_table_writes(
         .flat_map(|(anchor, chain)| core::iter::once(*anchor).chain(chain.iter().copied()))
         .max()
         .unwrap_or(2);
-    for sector_index in 0..=last_cluster / (SECTOR_SIZE / 4) as u32 {
+    let fat_table_sectors = u64::from(last_cluster / (SECTOR_SIZE / 4) as u32 + 1);
+    let mut fat_data = Vec::with_capacity(fat_table_sectors as usize * SECTOR_SIZE);
+    for sector_index in 0..fat_table_sectors {
         let mut sector = [0u8; SECTOR_SIZE];
         for entry in 0..SECTOR_SIZE / 4 {
-            let cluster = sector_index * (SECTOR_SIZE / 4) as u32 + entry as u32;
+            let cluster = sector_index as u32 * (SECTOR_SIZE / 4) as u32 + entry as u32;
             sector[entry * 4..entry * 4 + 4]
                 .copy_from_slice(&fat_value(cluster, chains).to_le_bytes());
         }
-        for fat in 0..FAT_COUNT {
-            push_owned_sector(
-                writes,
-                PARTITION_START
-                    + RESERVED_SECTORS as u64
-                    + fat as u64 * layout.fat_sectors as u64
-                    + sector_index as u64,
-                sector,
-            );
-        }
+        fat_data.extend_from_slice(&sector);
+    }
+    for fat in 0..FAT_COUNT {
+        writes.push(InstallWrite {
+            lba: PARTITION_START + RESERVED_SECTORS as u64 + fat as u64 * layout.fat_sectors as u64,
+            sectors: fat_table_sectors,
+            offset: 0,
+            data: InstallData::Owned(fat_data.clone()),
+        });
     }
 }
 
@@ -376,15 +377,18 @@ fn push_payload(
     chain: &[u32],
     data: &'static [u8],
 ) {
-    let cluster_bytes = layout.sectors_per_cluster as usize * SECTOR_SIZE;
-    for (index, cluster) in chain.iter().enumerate() {
-        writes.push(InstallWrite {
-            lba: layout.cluster_lba(*cluster),
-            sectors: layout.sectors_per_cluster as u64,
-            offset: 0,
-            data: InstallData::Payload(data, index * cluster_bytes),
-        });
-    }
+    let Some(&first_cluster) = chain.first() else {
+        return;
+    };
+    // allocate_chain() deliberately returns adjacent clusters, so retain the
+    // whole file as one contiguous write and let step() split it into the
+    // device's large I/O chunks.
+    writes.push(InstallWrite {
+        lba: layout.cluster_lba(first_cluster),
+        sectors: chain.len() as u64 * layout.sectors_per_cluster as u64,
+        offset: 0,
+        data: InstallData::Payload(data, 0),
+    });
 }
 
 fn make_mbr(partition_sectors: u64) -> [u8; SECTOR_SIZE] {
