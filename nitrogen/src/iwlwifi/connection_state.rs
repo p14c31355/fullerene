@@ -1391,7 +1391,14 @@ pub fn connect_to_ap(ssid: &Ssid, password: Option<&str>) {
 
 /// Enqueue a scan request for scheduler-owned execution.
 pub fn start_scan_if_idle() {
-    let _ = enqueue_wifi_request(WifiRequest::StartScan);
+    match enqueue_wifi_request(WifiRequest::StartScan) {
+        Some(request_id) => {
+            log::info!("iwlwifi: SQ queued StartScan request={}", request_id);
+        }
+        None => {
+            log::warn!("iwlwifi: SQ did not queue StartScan request");
+        }
+    }
 }
 
 /// Move queued Wi-Fi SQ entries through the hardware-facing executor.
@@ -1422,30 +1429,61 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
             break;
         }
 
-        // InitStep and Tick are level-triggered housekeeping requests. Their
-        // completion records are intentionally ignored by the consumer, so
-        // they must not be blocked by a full CQ. In particular, a backlog of
-        // stale Tick records must not prevent the first InitStep from ever
-        // reaching the hardware state machine and make the UI-side timeout
-        // fire while the phase is still Idle.
-        let periodic = {
-            let queue = WIFI_SQ.lock();
-            matches!(
-                queue.front().map(|(_, request)| request),
-                Some(WifiRequest::InitStep | WifiRequest::Tick)
-            )
-        };
-        let completion_reserved = if periodic {
-            false
-        } else if reserve_wifi_completion() {
-            true
-        } else {
-            break;
-        };
-        let Some((request_id, request)) = WIFI_SQ.lock().pop_front() else {
-            if completion_reserved {
-                release_wifi_completion();
+        // InitStep is the only request that is allowed to jump ahead of an
+        // action: initialization is a prerequisite for every device action.
+        // Once no InitStep remains, select an action before any periodic Tick
+        // even if an older Tick is still sitting at the deque's front. This
+        // avoids treating the SQ as FIFO housekeeping when the user is
+        // waiting for a scan/connect action.
+        let Some((request_id, request, completion_reserved)) = ({
+            let mut queue = WIFI_SQ.lock();
+            let init_active = !matches!(
+                get_init_phase(),
+                WifiInitPhase::Done | WifiInitPhase::Failed
+            );
+            let is_action = |pending: &WifiRequest| {
+                matches!(
+                    pending,
+                    WifiRequest::StartScan
+                        | WifiRequest::Connect { .. }
+                        | WifiRequest::DataTx { .. }
+                )
+            };
+            let next_index = if init_active {
+                queue
+                    .iter()
+                    .position(|(_, pending)| matches!(pending, WifiRequest::InitStep))
+                    .or_else(|| queue.iter().position(|(_, pending)| is_action(pending)))
+                    .unwrap_or(0)
+            } else {
+                queue
+                    .iter()
+                    .position(|(_, pending)| is_action(pending))
+                    .or_else(|| {
+                        queue
+                            .iter()
+                            .position(|(_, pending)| matches!(pending, WifiRequest::InitStep))
+                    })
+                    .unwrap_or(0)
+            };
+            match queue.get(next_index) {
+                None => None,
+                Some((_, next_request)) => {
+                    let periodic =
+                        matches!(next_request, WifiRequest::InitStep | WifiRequest::Tick);
+                    if !periodic && !reserve_wifi_completion() {
+                        log::warn!(
+                            "iwlwifi: SQ action blocked by full completion queue; request remains queued"
+                        );
+                        None
+                    } else {
+                        queue
+                            .remove(next_index)
+                            .map(|(request_id, request)| (request_id, request, !periodic))
+                    }
+                }
             }
+        }) else {
             break;
         };
         let kind = match request {
@@ -1457,9 +1495,12 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
                 perform_tick();
                 WifiCompletionKind::Tick
             }
-            WifiRequest::StartScan => WifiCompletionKind::StartScan {
-                accepted: perform_start_scan_if_idle(),
-            },
+            WifiRequest::StartScan => {
+                log::info!("iwlwifi: SQ execute StartScan request={}", request_id);
+                WifiCompletionKind::StartScan {
+                    accepted: perform_start_scan_if_idle(),
+                }
+            }
             WifiRequest::Connect { ssid, password } => WifiCompletionKind::Connect {
                 accepted: perform_connect(&ssid, password.as_deref()),
             },
