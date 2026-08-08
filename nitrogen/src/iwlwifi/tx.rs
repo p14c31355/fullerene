@@ -575,6 +575,62 @@ impl IwlWifiDevice {
         }
     }
 
+    /// Wait for the firmware response to a synchronous runtime setup command.
+    ///
+    /// Advancing the SCD read pointer only proves that the DMA engine fetched
+    /// the descriptor.  Linux's synchronous command path also waits for the
+    /// matching firmware notification, which is where command validation
+    /// failures are reported.  Keep this separate from `send_init_hcmd`
+    /// because NVM and PHY init commands have responses consumed by the
+    /// scheduler-driven INIT state machine.
+    fn wait_init_hcmd_response(
+        &mut self,
+        label: &str,
+        opcode: u8,
+        group: u8,
+    ) -> Result<(), crate::DriverError> {
+        const RESPONSE_TIMEOUT_US: u64 = 500_000;
+        let deadline_tsc = unsafe { core::arch::x86_64::_rdtsc() }
+            .saturating_add(crate::timing::ticks_per_us().saturating_mul(RESPONSE_TIMEOUT_US));
+        let result = crate::timing::poll_timeout_us(RESPONSE_TIMEOUT_US + 100_000, || {
+            match self.poll_init_notification(opcode, group, deadline_tsc) {
+                Ok(Some(payload)) => Some(Ok(payload.len())),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            }
+        });
+
+        match result {
+            Some(Ok(payload_len)) => {
+                log::info!(
+                    "iwlwifi: init.hcmd.response name={} opcode=0x{:02x} group=0x{:02x} payload={}",
+                    label,
+                    opcode,
+                    group,
+                    payload_len,
+                );
+                Ok(())
+            }
+            Some(Err(error)) => {
+                log::error!(
+                    "iwlwifi: init.hcmd.error name={} stage=response error={}",
+                    label,
+                    error,
+                );
+                Err(error)
+            }
+            None => {
+                log::error!(
+                    "iwlwifi: init.hcmd.error name={} stage=response reason=timeout opcode=0x{:02x} group=0x{:02x}",
+                    label,
+                    opcode,
+                    group,
+                );
+                Err(crate::DriverError::TimedOut)
+            }
+        }
+    }
+
     /// Run one scheduler-sized step of the short-lived INIT firmware sequence.
     ///
     /// Command responses are polled on later ticks.  In particular, do not
@@ -935,6 +991,11 @@ impl IwlWifiDevice {
             LegacyCmd::MacContext as u8,
             GroupId::Legacy as u8,
             mac_ctx_bytes,
+        )?;
+        self.wait_init_hcmd_response(
+            "MAC_CONTEXT",
+            LegacyCmd::MacContext as u8,
+            GroupId::Legacy as u8,
         )?;
         log::info!(
             "iwlwifi: init.config name=mac_context status=accepted mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} filter=0x{:08x} payload={}",

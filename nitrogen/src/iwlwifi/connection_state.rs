@@ -1599,7 +1599,7 @@ impl IwlWifiDevice {
 
         log::info!(
             "iwlwifi: LMAC active scan request queued: opcode=0x51 channels={} bytes={} (Klog: waiting for APs)",
-            23,
+            scan_cmd.n_channels,
             core::mem::size_of::<ScanRequestCmd>()
         );
         Ok(())

@@ -144,4 +144,13 @@ fn tx_dma_allocation_covers_every_region() {
 #[test]
 fn mac_context_payload_matches_api_v1_fixed_offsets() {
     assert_eq!(size_of::<MacContextCmd>(), 144);
+    let payload = MacContextCmd::sta([0x94, 0x65, 0x9c, 0x44, 0x73, 0xd4]);
+    let actual = bytes(&payload);
+    assert_eq!(&actual[24..30], &[0xff; 6]);
+    assert_eq!(&actual[60..62], &15u16.to_le_bytes());
+    assert_eq!(&actual[62..64], &1023u16.to_le_bytes());
+    assert_eq!(actual[64], 2);
+    assert_eq!(&actual[68..70], &15u16.to_le_bytes());
+    assert_eq!(&actual[70..72], &1023u16.to_le_bytes());
+    assert_eq!(&actual[120..124], &0x028f_5c28u32.to_le_bytes());
 }

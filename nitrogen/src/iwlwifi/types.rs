@@ -337,11 +337,10 @@ impl MacContextCmd {
             tsf_id: 0,
             node_addr: mac,
             reserved_for_node_addr: 0,
-            // mac80211 keeps the station BSSID zeroed until association. The
-            // firmware accepts that value for an unassociated BSS_STA
-            // context; a broadcast BSSID is a different (and invalid for
-            // this context) address value.
-            bssid_addr: [0; 6],
+            // Linux fills an unassociated station's BSSID with the broadcast
+            // address when vif->bss_conf.bssid is absent. Zero is not a valid
+            // BSSID for MAC_CONTEXT_CMD_API_S_VER_1.
+            bssid_addr: [0xff; 6],
             reserved_for_bssid_addr: 0,
             cck_rates: 0x0000_000f,
             // For an unassociated 2.4 GHz STA with no AP basic-rate set,
@@ -355,37 +354,37 @@ impl MacContextCmd {
             short_slot: 0,
             filter_flags: FILTER_FLAGS,
             qos_flags: 0,
-            // API v1 expects each of the four EDCA entries to name the FIFO
-            // owned by that access category.  Before association mac80211
-            // has not supplied queue parameters yet, so Linux leaves the
-            // timing values zero and only sets the FIFO masks. The fifth
-            // entry is reserved (AC_NUM + 1) and stays zero.
+            // mac80211's non-QoS station defaults are cw_min=15,
+            // cw_max=1023, aifsn=2, txop=0. API v1 still requires the
+            // command to carry valid EDCA timing values before association;
+            // zero is not a valid contention-window value. The fifth entry
+            // is reserved (AC_NUM + 1) and stays zero.
             ac: [
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 15,
+                    cw_max: 1023,
+                    aifsn: 2,
                     fifos_mask: 1 << 0,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 15,
+                    cw_max: 1023,
+                    aifsn: 2,
                     fifos_mask: 1 << 1,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 15,
+                    cw_max: 1023,
+                    aifsn: 2,
                     fifos_mask: 1 << 2,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 15,
+                    cw_max: 1023,
+                    aifsn: 2,
                     fifos_mask: 1 << 3,
                     edca_txop: 0,
                 },
