@@ -499,6 +499,14 @@ impl IwlWifiDevice {
             let tx_cfg = self
                 .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4))
                 .unwrap_or(!0);
+            let tx_credit = self
+                .safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4))
+                .unwrap_or(!0);
+            let tx_buf_sts = self
+                .safe_read32(
+                    FH_TCSR_CHNL_TX_BUF_STS_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4),
+                )
+                .unwrap_or(!0);
             let rx_closed = self.rx_status().closed_rb_num;
             let rx_finished = self.rx_status().finished_rb_num;
             let rx_rptr = self.safe_read32(FH_RSCSR_CHNL0_RDPTR_REG).unwrap_or(!0);
@@ -506,7 +514,7 @@ impl IwlWifiDevice {
                 .safe_read32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG)
                 .unwrap_or(!0);
             log::info!(
-                "iwlwifi: scan poll tick={} CSR_INT={:#010x} FH_INT={:#010x} tx_head={} tx_tail={} scd_rptr={} scd_status={:#010x} cmd_fifo_cfg={:#010x} tx_status={:#010x} tx_error={:#010x} rx_closed={} rx_finished={} rx_head={} rx_tail={} rx_rptr={:#010x} rx_wptr={:#010x}",
+                "iwlwifi: scan poll tick={} CSR_INT={:#010x} FH_INT={:#010x} tx_head={} tx_tail={} scd_rptr={} scd_status={:#010x} cmd_fifo_cfg={:#010x} cmd_fifo_credit={:#010x} cmd_fifo_buf_sts={:#010x} tx_status={:#010x} tx_error={:#010x} rx_closed={} rx_finished={} rx_head={} rx_tail={} rx_rptr={:#010x} rx_wptr={:#010x}",
                 self.scan_channel,
                 int_cause,
                 self.safe_read32(CSR_FH_INT).unwrap_or(!0),
@@ -515,6 +523,8 @@ impl IwlWifiDevice {
                 scd_rptr,
                 scd_status,
                 tx_cfg,
+                tx_credit,
+                tx_buf_sts,
                 self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
                 self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
                 rx_closed,

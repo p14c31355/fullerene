@@ -129,6 +129,8 @@ pub const FH_TCSR_CHNL_TX_CONFIG_BASE: u32 = (0x1000 + 0xD00) / 4;
 /// (including command q9 and the auxiliary q11) select one of these channels
 /// through their SCD FIFO, so they must not be used as TCSR channel numbers.
 pub const FH_TCSR_CHNL_NUM: u32 = 8;
+pub const FH_TCSR_CHNL_TX_CREDIT_BASE: u32 = FH_TCSR_CHNL_TX_CONFIG_BASE + 1;
+pub const FH_TCSR_CHNL_TX_BUF_STS_BASE: u32 = FH_TCSR_CHNL_TX_CONFIG_BASE + 2;
 pub const FH_TCSR_TX_CONFIG_DMA_CREDIT_ENABLE: u32 = 0x0000_0008;
 pub const FH_TX_CHICKEN_BITS: u32 = (0x1000 + 0xE98) / 4;
 pub const FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN: u32 = 0x0000_0002;

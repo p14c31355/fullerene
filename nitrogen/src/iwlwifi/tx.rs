@@ -413,6 +413,13 @@ impl IwlWifiDevice {
 
         self.tx_head = self.tx_head.wrapping_add(1);
         mmio::write_barrier();
+        let tfd_dma =
+            self.tx_dma_ring.dma_iova() + (desc_idx * core::mem::size_of::<TxDmaDesc>()) as u64;
+        let tfd_num_tbs = desc.num_tbs;
+        let tfd_tb_addr_lo =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].addr_lo)) };
+        let tfd_tb_hi_n_len =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].hi_n_len)) };
         unsafe {
             core::ptr::write_volatile(
                 self.mmio.add(HBUS_TARG_WRPTR as usize),
@@ -421,7 +428,7 @@ impl IwlWifiDevice {
         }
         mmio::write_barrier();
         log::info!(
-            "iwlwifi: hcmd.submit q={} slot={} opcode=0x{:02x} group=0x{:02x} header={} payload={} total={} dma={:#018x} tfd_addr={:#010x} tfd_hi_n_len={:#06x} wrptr={}",
+            "iwlwifi: hcmd.submit q={} slot={} opcode=0x{:02x} group=0x{:02x} header={} payload={} total={} buf_dma={:#018x} tfd_dma={:#018x} tfd_num_tbs={} tfd_tb_addr_lo={:#010x} tfd_tb_hi_n_len={:#06x} wrptr={}",
             IWL_CMD_QUEUE,
             desc_idx,
             opcode,
@@ -430,10 +437,26 @@ impl IwlWifiDevice {
             data.len(),
             total_len,
             dma_addr,
-            dma_addr as u32,
-            hi_n_len,
+            tfd_dma,
+            tfd_num_tbs,
+            tfd_tb_addr_lo,
+            tfd_tb_hi_n_len,
             self.tx_head & 0xff,
         );
+        if opcode == LegacyCmd::ScanRequest as u8 {
+            let fifo = SCD_QUEUE_STTS_FIFO_COMMAND;
+            log::info!(
+                "iwlwifi: scan hcmd wire prefix={} fifo={} cfg={:#010x} credit={:#010x} buf_sts={:#010x}",
+                HexBytes(&full_data[..core::cmp::min(16, full_data.len())]),
+                fifo,
+                self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+            );
+        }
         self.release_mac_access();
         Ok(())
     }
