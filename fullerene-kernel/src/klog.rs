@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 /// Maximum number of bytes in the ring buffer.
-const KLOG_CAPACITY: usize = 65536;
+const KLOG_CAPACITY: usize = 256 * 1024;
 
 /// A fixed-size byte ring buffer for kernel log lines.
 static KLOG_BUF: Mutex<KLogRing> = Mutex::new(KLogRing {
