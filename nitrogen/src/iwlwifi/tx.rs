@@ -78,6 +78,51 @@ impl IwlWifiDevice {
         Ok(())
     }
 
+    /// Release the MAC wake request after the command queue becomes empty.
+    ///
+    /// The request is deliberately held across descriptor submission and
+    /// firmware consumption, but leaving it set across commands prevents
+    /// the 7265 power-management state machine from completing its transition
+    /// after PHY_CONFIGURATION.
+    fn release_mac_access(&mut self) {
+        let Some(gp) = self.safe_read32(CSR_GP_CNTRL) else {
+            log::warn!("iwlwifi: cannot release MAC access: GP_CNTRL unavailable");
+            return;
+        };
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                gp & !CSR_GP_CNTRL_MAC_ACCESS_REQ,
+            );
+        }
+        mmio::write_barrier();
+    }
+
+    /// PHY_CONFIGURATION is consumed before the firmware has finished its
+    /// internal initialization.  Do not issue scheduler commands during the
+    /// short transition where the 7265 temporarily stops responding to CSR
+    /// reads.
+    fn wait_for_phy_init(&mut self) -> Result<(), crate::DriverError> {
+        let ready = crate::timing::poll_timeout_us(500_000, || {
+            let value = self.safe_read32(CSR_GP_CNTRL)?;
+            (value & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 && value & CSR_GP_CNTRL_GOING_TO_SLEEP == 0)
+                .then_some(value)
+        });
+        match ready {
+            Some(value) => {
+                log::info!(
+                    "iwlwifi: PHY firmware initialization settled GP_CNTRL={:#010x}",
+                    value,
+                );
+                Ok(())
+            }
+            None => {
+                log::error!("iwlwifi: PHY firmware initialization did not restore CSR access");
+                Err(crate::DriverError::DeviceNotFound)
+            }
+        }
+    }
+
     fn init_tx_cmd_queue(&mut self) {
         let ring_phys = self.tx_dma_ring.dma_iova();
         let aux_ring_phys = ring_phys + TX_AUX_TFD_RING_OFFSET as u64;
@@ -415,6 +460,7 @@ impl IwlWifiDevice {
         });
         match consumed {
             Some(Ok(())) => {
+                self.release_mac_access();
                 log::info!(
                     "iwlwifi: init.hcmd.ok name={} target={} rptr={} head={} tail={}",
                     label,
@@ -535,6 +581,7 @@ impl IwlWifiDevice {
             self.runtime_calib_event,
             phy_config_bytes.len(),
         );
+        self.wait_for_phy_init()?;
 
         // Firmware API 17 uses the pre-v12 station API. The scan engine
         // requires its auxiliary station before accepting an offload request.
