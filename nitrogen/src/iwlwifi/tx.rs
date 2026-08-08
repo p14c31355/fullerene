@@ -36,6 +36,39 @@ impl fmt::Display for HexBytes<'_> {
 }
 
 impl IwlWifiDevice {
+    /// Keep the MAC awake while the firmware consumes a host command.
+    ///
+    /// The 7000-series Linux transport sets MAC_ACCESS_REQ and waits for
+    /// MAC_CLOCK_READY before touching internal scheduler registers. Without
+    /// this handshake, a live 7265 may enter power-save during a command and
+    /// subsequent CSR reads look like a disappeared PCIe endpoint.
+    fn wake_for_hcmd(&mut self) -> Result<(), crate::DriverError> {
+        let gp = self
+            .safe_read32(CSR_GP_CNTRL)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+            );
+        }
+        mmio::write_barrier();
+
+        let ready = crate::timing::poll_timeout_us(15_000, || {
+            let value = self.safe_read32(CSR_GP_CNTRL)?;
+            (value & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 && value & CSR_GP_CNTRL_GOING_TO_SLEEP == 0)
+                .then_some(())
+        });
+        if ready.is_none() {
+            log::error!(
+                "iwlwifi: MAC access handshake timed out before host command GP_CNTRL={:#010x}",
+                self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+            );
+            return Err(crate::DriverError::DeviceNotFound);
+        }
+        Ok(())
+    }
+
     fn init_tx_cmd_queue(&mut self) {
         let ring_phys = self.tx_dma_ring.dma_iova();
         let aux_ring_phys = ring_phys + TX_AUX_TFD_RING_OFFSET as u64;
@@ -254,6 +287,7 @@ impl IwlWifiDevice {
         if !present {
             return Err(crate::DriverError::DeviceNotFound);
         }
+        self.wake_for_hcmd()?;
         let sequence = ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff);
 
         let used = self.tx_head.wrapping_sub(self.tx_tail);

@@ -43,6 +43,7 @@ pub const CSR_RESET_BIT_STOP_MASTER: u32 = 1 << 9;
 pub const CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 1 << 3;
 pub const CSR_GP_CNTRL_INIT_DONE: u32 = 1 << 2;
 pub const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
+pub const CSR_GP_CNTRL_GOING_TO_SLEEP: u32 = 1 << 4;
 /// CSR_HW_REV type field after shifting the register right by four bits.
 pub const CSR_HW_REV_TYPE_MASK: u16 = 0x0FFF;
 pub const CSR_HW_REV_TYPE_7265D: u16 = 0x0210;
