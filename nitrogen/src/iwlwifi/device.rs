@@ -1009,7 +1009,28 @@ impl IwlWifiDevice {
                     if data_size > 0 {
                         let section_data =
                             &fw_data[tlv_data_off + 4..tlv_data_off + 4 + data_size as usize];
-                        self.upload_section(target, section_data)?;
+                        // 7000-series firmware has a second SRAM address
+                        // window beginning at 0x40000. Linux selects that
+                        // window through LMPM_CHICK for the duration of the
+                        // section transfer; without it a successful FH DMA
+                        // completion can still place the image at the wrong
+                        // internal address and prevent firmware alive.
+                        let extended_addr =
+                            (FW_MEM_EXTENDED_START..=FW_MEM_EXTENDED_END).contains(&target);
+                        let previous_chick = if extended_addr {
+                            let value = self
+                                .read_prph(LMPM_CHICK)
+                                .ok_or(crate::DriverError::DeviceNotFound)?;
+                            self.write_prph(LMPM_CHICK, value | LMPM_CHICK_EXTENDED_ADDR_SPACE);
+                            Some(value)
+                        } else {
+                            None
+                        };
+                        let upload_result = self.upload_section(target, section_data);
+                        if let Some(value) = previous_chick {
+                            self.write_prph(LMPM_CHICK, value);
+                        }
+                        upload_result?;
                         section_count += 1;
                         log::info!(
                             "iwlwifi: uploaded section {} at {:#010x} ({} bytes)",

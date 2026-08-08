@@ -179,6 +179,12 @@ pub const TX_DMA_ALLOCATION_BYTES: usize = TX_SCD_BC_OFFSET + TX_SCD_BC_BYTES;
 /// Firmware-written boot section status consumed before releasing the CPU.
 pub const FH_UCODE_LOAD_STATUS: u32 = 0x1AF0 / 4;
 
+/// Extended SRAM address window used by 7000-series firmware sections.
+pub const FW_MEM_EXTENDED_START: u32 = 0x0004_0000;
+pub const FW_MEM_EXTENDED_END: u32 = 0x0005_7FFF;
+pub const LMPM_CHICK: u32 = 0x00A0_1FF8;
+pub const LMPM_CHICK_EXTENDED_ADDR_SPACE: u32 = 1 << 0;
+
 // Legacy 7000-series firmware upload service channel. These are the
 // byte-offsets from Linux's iwl-fh.h, converted to dword MMIO indices.
 pub const FH_SRVC_CHNL_SRAM_ADDR: u32 = (0x1000 + 0x9C8) / 4;
