@@ -1,9 +1,11 @@
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use petroleum::common::{
-    BellowsError, EFI_LOADED_IMAGE_PROTOCOL_GUID, EfiBootServices, EfiLoadedImageProtocol,
-    EfiMemoryType, EfiStatus, EfiSystemTable,
+    BellowsError, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+    EfiBootServices, EfiFile, EfiLoadedImageProtocol, EfiMemoryType, EfiSimpleFileSystem,
+    EfiStatus, EfiSystemTable,
 };
+use petroleum::filesystem::{EfiFileWrapper, open_file, read_file_to_memory};
 
 // Module declarations for separated functionality
 pub mod heap;
@@ -38,11 +40,36 @@ pub fn read_boot_payloads(
     }
     let loaded = unsafe { &*(loaded_ptr as *const EfiLoadedImageProtocol) };
 
+    // An installed SATA boot does not need installer payloads: the running
+    // system will never reinstall itself from its own ESP. More importantly,
+    // avoid parsing firmware's relocated image on this fixed-disk path. The
+    // live Ventoy/USB path still retains the payloads needed by the installer.
+    if device_path_contains_sata(loaded.file_path) {
+        petroleum::bootloader_log!(
+            "SATA boot path detected; skipping installer payload reconstruction"
+        );
+        return Ok(((0, 0), (0, 0)));
+    }
+
+    // Prefer the original files on the boot filesystem. This preserves the
+    // exact PE bytes that UEFI loaded, instead of rebuilding a relocated image
+    // and installing that reconstruction to the target disk.
+    match read_boot_payloads_from_filesystem(bs, loaded) {
+        Ok(payloads) => {
+            petroleum::bootloader_log!("Installer payloads read from boot filesystem");
+            return Ok(payloads);
+        }
+        Err(error) => {
+            petroleum::bootloader_log!(
+                "Boot filesystem payload read unavailable: {:?}; using PE fallback",
+                error
+            );
+        }
+    }
+
     // El Torito firmware commonly exposes the CD as Block I/O only, not as
-    // EFI_SIMPLE_FILE_SYSTEM_PROTOCOL.  The kernel payload is already
-    // embedded in Bellows; recover the raw PE bootloader from the loaded
-    // image so the live ISO remains installable without duplicate ISO9660
-    // copies of both EFI files.
+    // EFI_SIMPLE_FILE_SYSTEM_PROTOCOL. Fall back to reconstructing the
+    // bootloader from the loaded image for that boot path.
     let bootloader = reconstruct_loaded_pe(bs, loaded.image_base, loaded.image_size)?;
     Ok((
         bootloader,
@@ -51,6 +78,70 @@ pub fn read_boot_payloads(
             super::KERNEL_BINARY.len(),
         ),
     ))
+}
+
+fn read_boot_payloads_from_filesystem(
+    bs: &EfiBootServices,
+    loaded: &EfiLoadedImageProtocol,
+) -> petroleum::common::Result<((usize, usize), (usize, usize))> {
+    let mut fs_ptr: *mut c_void = core::ptr::null_mut();
+    let status = (bs.handle_protocol)(
+        loaded.device_handle,
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
+        &mut fs_ptr,
+    );
+    if EfiStatus::from(status) != EfiStatus::Success || fs_ptr.is_null() {
+        return Err(BellowsError::FileIo("boot filesystem protocol unavailable"));
+    }
+
+    let fs = unsafe { &*(fs_ptr as *const EfiSimpleFileSystem) };
+    let mut root_ptr: *mut EfiFile = core::ptr::null_mut();
+    let status = (fs.open_volume)(fs_ptr as *mut EfiSimpleFileSystem, &mut root_ptr);
+    if EfiStatus::from(status) != EfiStatus::Success || root_ptr.is_null() {
+        return Err(BellowsError::FileIo("boot filesystem volume unavailable"));
+    }
+
+    let root = EfiFileWrapper::new(root_ptr);
+    let kernel_path = utf16_path("EFI\\BOOT\\KERNEL.EFI");
+    let bootloader_path = utf16_path("EFI\\BOOT\\BOOTX64.EFI");
+    let kernel = open_file(&root, &kernel_path).and_then(|file| read_file_to_memory(bs, &file))?;
+    let bootloader =
+        open_file(&root, &bootloader_path).and_then(|file| read_file_to_memory(bs, &file))?;
+    Ok((bootloader, kernel))
+}
+
+fn utf16_path(path: &str) -> [u16; 32] {
+    let mut result = [0u16; 32];
+    for (index, code) in path.encode_utf16().take(31).enumerate() {
+        result[index] = code;
+    }
+    result
+}
+
+fn device_path_contains_sata(path: *mut c_void) -> bool {
+    if path.is_null() {
+        return false;
+    }
+    let mut cursor = path as *const u8;
+    for _ in 0..128 {
+        let node_type = unsafe { core::ptr::read_unaligned(cursor) };
+        let node_subtype = unsafe { core::ptr::read_unaligned(cursor.add(1)) };
+        let node_length = u16::from_le_bytes([
+            unsafe { core::ptr::read_unaligned(cursor.add(2)) },
+            unsafe { core::ptr::read_unaligned(cursor.add(3)) },
+        ]) as usize;
+        if node_length < 4 {
+            return false;
+        }
+        if node_type == 0x7F {
+            return false;
+        }
+        if node_type == 0x03 && node_subtype == 0x12 {
+            return true;
+        }
+        cursor = unsafe { cursor.add(node_length) };
+    }
+    false
 }
 
 const MAX_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
