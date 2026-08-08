@@ -791,6 +791,11 @@ fn perform_init_step() {
             // FH RX setup is deferred until firmware reports alive; the
             // firmware reset sequence can overwrite the FH registers.
             debug::print("iwlwifi", "rx_dma_deferred_until_alive");
+            // Keep a copy in the init context as well as in the concrete
+            // device. The context owns the type-erased device during the
+            // incremental runtime-alive phase, so it cannot inspect the
+            // concrete device's health field directly.
+            WIFI_INIT_CTX.lock().health = Some(health);
             let device = IwlWifiDevice {
                 mac,
                 _pci_dev: pci_dev,

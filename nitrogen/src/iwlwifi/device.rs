@@ -162,7 +162,11 @@ impl IwlWifiDevice {
         // Firmware reset also resets the device-side RBD pointers.
         self.rx_head = 0;
         self.rx_tail = 0;
-        self.rx_posted = (RX_QUEUE_SIZE - 1) & !7;
+        // Keep the software cursor at the actual next RBD slot. The
+        // hardware register is updated only with its 8-entry-aligned form;
+        // collapsing the cursor to 248 here would make the first restock
+        // after wraparound publish 8 instead of the correct 16.
+        self.rx_posted = RX_QUEUE_SIZE - 1;
         let rx_phys = self.rx_dma_ring.dma_iova();
         let status_phys = rx_phys + (core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE) as u64;
 
@@ -189,7 +193,7 @@ impl IwlWifiDevice {
                 // full ring from an empty ring. Linux's gen1 transport
                 // restocks 255 of the 256 entries and rounds the pointer
                 // down to an 8-entry boundary.
-                self.rx_posted as u32,
+                (self.rx_posted as u32) & !7,
             );
             mmio::write_barrier();
             core::ptr::write_volatile(

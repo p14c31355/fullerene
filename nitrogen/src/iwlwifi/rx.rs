@@ -557,15 +557,20 @@ impl IwlWifiDevice {
                     core::mem::size_of::<RxDmaStatus>(),
                 );
                 let closed_rb = (self.rx_status().closed_rb_num as usize) & (RX_QUEUE_SIZE - 1);
+                let previous_head = self.rx_head;
+                let process_from = self.rx_tail;
                 // closed_rb_num is the next RBD boundary: firmware has
                 // filled entries [rx_tail, closed_rb_num). This matches the
                 // Linux gen1_2 receive loop, which processes while read != r.
                 self.rx_head = closed_rb;
-                log::info!(
-                    "iwlwifi: RX DMA progress closed_rbd={} process_until={}",
-                    closed_rb,
-                    self.rx_head
-                );
+                if closed_rb != previous_head || process_from != closed_rb {
+                    log::info!(
+                        "iwlwifi: RX DMA progress closed_rbd={} process_from={} process_until={}",
+                        closed_rb,
+                        process_from,
+                        self.rx_head
+                    );
+                }
             }
             if int_cause & CSR_INT_BIT_FH_TX != 0 {
                 // The pointer was polled above. Re-read only when an actual
