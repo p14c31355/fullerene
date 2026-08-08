@@ -109,6 +109,7 @@ struct InstallWrite {
 struct InstallSession {
     device: String,
     writes: Vec<InstallWrite>,
+    buffer: Vec<u8>,
     next_write: usize,
     written_bytes: u64,
     total_bytes: u64,
@@ -219,6 +220,7 @@ impl InstallSession {
         Ok(Self {
             device: String::from(device_name),
             writes,
+            buffer: vec![0u8; SECTOR_SIZE * INSTALL_IO_SECTORS as usize],
             next_write: 0,
             written_bytes: 0,
             total_bytes: payload_bytes as u64,
@@ -238,13 +240,12 @@ impl InstallSession {
             .sectors
             .saturating_sub(write.offset)
             .min(INSTALL_IO_SECTORS) as usize;
-        let mut buffer = [0u8; SECTOR_SIZE * INSTALL_IO_SECTORS as usize];
         let offset = write.offset as usize * SECTOR_SIZE;
         let bytes = count * SECTOR_SIZE;
+        let buffer = &mut self.buffer[..bytes];
+        buffer.fill(0);
         match &write.data {
-            InstallData::Owned(data) => {
-                buffer[..bytes].copy_from_slice(&data[offset..offset + bytes])
-            }
+            InstallData::Owned(data) => buffer.copy_from_slice(&data[offset..offset + bytes]),
             InstallData::Payload(data, source_offset) => {
                 let start = source_offset + offset;
                 let available = data.len().saturating_sub(start).min(bytes);

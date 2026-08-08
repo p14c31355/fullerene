@@ -581,8 +581,11 @@ impl AhciController {
             return Err(crate::DriverError::InvalidArgument);
         }
 
-        let per_command =
-            (port.data_buffer_size / port.sector_size as usize).min(u16::MAX as usize) as u16;
+        // LBA48 carries a 16-bit sector count. Legacy 28-bit ATA carries an
+        // 8-bit count, where zero encodes 256 sectors, so never let a large
+        // DMA buffer truncate the count in the task-file FIS.
+        let ata_limit = if port.lba48 { u16::MAX as usize } else { 256 };
+        let per_command = (port.data_buffer_size / port.sector_size as usize).min(ata_limit) as u16;
         let mut completed = 0usize;
         while completed < count as usize {
             let chunk = (count as usize - completed).min(per_command as usize) as u16;
