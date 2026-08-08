@@ -478,6 +478,15 @@ const SCAN_DIRECT_SSID_COUNT: usize = 20;
 const SCAN_SSID_MAX_LEN: usize = 32;
 const SCAN_PROBE_BUFFER_SIZE: usize = 512;
 
+// Legacy TX command fields used by the LMAC scan engine. Scan probe frames
+// are management/broadcast frames, so the firmware must own sequence control
+// and should not let Bluetooth priority arbitration suppress them.
+const SCAN_TX_FLAG_BT_DIS: u32 = 1 << 12;
+const SCAN_TX_FLAG_SEQ_CTL: u32 = 1 << 13;
+const SCAN_RATE_ANT_A: u32 = 1 << 14;
+const SCAN_RATE_1M_CCK: u32 = 10 | (1 << 9) | SCAN_RATE_ANT_A;
+const SCAN_RATE_6M_OFDM: u32 = 13 | SCAN_RATE_ANT_A;
+
 const SCAN_CHANNELS: [u8; SCAN_CHANNEL_COUNT] = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 149, 153, 157, 161, 165,
 ];
@@ -685,16 +694,16 @@ impl ScanRequestCmd {
             filter_flags: (1 << 2) | (1 << 6),
             tx_cmd: [
                 ScanReqTxCmd {
-                    tx_flags: 0,
-                    rate_n_flags: 0,
+                    tx_flags: SCAN_TX_FLAG_SEQ_CTL | SCAN_TX_FLAG_BT_DIS,
+                    rate_n_flags: SCAN_RATE_1M_CCK,
                     // The legacy scan engine transmits through the auxiliary
                     // station created during firmware initialization.
                     sta_id: aux_sta_id,
                     reserved: [0; 3],
                 },
                 ScanReqTxCmd {
-                    tx_flags: 0,
-                    rate_n_flags: 0,
+                    tx_flags: SCAN_TX_FLAG_SEQ_CTL | SCAN_TX_FLAG_BT_DIS,
+                    rate_n_flags: SCAN_RATE_6M_OFDM,
                     sta_id: aux_sta_id,
                     reserved: [0; 3],
                 },
@@ -704,7 +713,10 @@ impl ScanRequestCmd {
                 len: 0,
                 ssid: [0; SCAN_SSID_MAX_LEN],
             }; SCAN_DIRECT_SSID_COUNT],
-            scan_prio: 2,
+            // Linux uses the extended priority value 6 for regular LMAC
+            // scans; the legacy enum values 0..2 are not the wire value used
+            // by this API generation.
+            scan_prio: 6,
             iter_num: 1,
             delay: 0,
             schedule: [
