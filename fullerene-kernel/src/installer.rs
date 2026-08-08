@@ -12,7 +12,7 @@ use core::fmt;
 use spin::Mutex;
 
 const SECTOR_SIZE: usize = 512;
-const INSTALL_IO_SECTORS: u64 = 128; // 64 KiB, matching the AHCI DMA buffer
+const INSTALL_IO_SECTORS: u64 = 2048; // 1 MiB, matching the AHCI DMA buffer
 const PARTITION_START: u64 = 2048;
 const RESERVED_SECTORS: u32 = 32;
 const FAT_COUNT: u32 = 2;

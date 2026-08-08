@@ -53,7 +53,7 @@ const PXCMD_CR: u32 = 1 << 15; // Command List Running
 const SSTS_DET_MASK: u32 = 0x0F;
 const SSTS_DET_PHY_OK: u32 = 0x03;
 const PHY_WAIT_TIMEOUT_US: u64 = 1_000_000;
-const AHCI_DATA_BUFFER_SIZE: usize = 64 * 1024;
+const AHCI_DATA_BUFFER_SIZE: usize = 1024 * 1024;
 
 // ── Command Header ───────────────────────────────────────────────
 #[repr(C)]
