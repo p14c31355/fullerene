@@ -98,29 +98,36 @@ impl IwlWifiDevice {
         mmio::write_barrier();
     }
 
-    /// PHY_CONFIGURATION is consumed before the firmware has finished its
-    /// internal initialization.  Do not issue scheduler commands during the
-    /// short transition where the 7265 temporarily stops responding to CSR
-    /// reads.
-    fn wait_for_phy_init(&mut self) -> Result<(), crate::DriverError> {
-        let ready = crate::timing::poll_timeout_us(500_000, || {
-            let value = self.safe_read32(CSR_GP_CNTRL)?;
-            (value & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 && value & CSR_GP_CNTRL_GOING_TO_SLEEP == 0)
-                .then_some(value)
-        });
-        match ready {
-            Some(value) => {
-                log::info!(
-                    "iwlwifi: PHY firmware initialization settled GP_CNTRL={:#010x}",
-                    value,
-                );
-                Ok(())
-            }
-            None => {
-                log::error!("iwlwifi: PHY firmware initialization did not restore CSR access");
-                Err(crate::DriverError::DeviceNotFound)
-            }
+    /// Replay the calibration sections collected from INIT firmware to the
+    /// operational image. This is the API-v17 equivalent of Linux's
+    /// iwl_send_phy_db_data() sequence.
+    fn send_runtime_phy_db(&mut self) -> Result<(), crate::DriverError> {
+        let sections = self.phy_db_sections.clone();
+        if sections.is_empty() {
+            log::error!("iwlwifi: runtime PHY DB is empty after INIT calibration");
+            return Err(crate::DriverError::Protocol);
         }
+        for (section_type, data) in sections {
+            if data.len() > u16::MAX as usize {
+                return Err(crate::DriverError::InvalidArgument);
+            }
+            let mut payload = Vec::with_capacity(4 + data.len());
+            payload.extend_from_slice(&section_type.to_le_bytes());
+            payload.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&data);
+            self.send_init_hcmd(
+                "PHY_DB",
+                LegacyCmd::PhyDb as u8,
+                GroupId::Legacy as u8,
+                &payload,
+            )?;
+            log::info!(
+                "iwlwifi: runtime.phy_db section={} bytes={}",
+                section_type,
+                data.len(),
+            );
+        }
+        Ok(())
     }
 
     fn init_tx_cmd_queue(&mut self) {
@@ -667,8 +674,10 @@ impl IwlWifiDevice {
             mac[5],
         );
 
-        let nvm_complete = [0u8; 4];
-        self.send_init_hcmd("NVM_ACCESS_COMPLETE", 0x00, 0x0c, &nvm_complete)?;
+        // API-v17 on the 7265 uses the legacy NVM_ACCESS_CMD directly. The
+        // REGULATORY_AND_NVM_GROUP NVM_ACCESS_COMPLETE command was added for
+        // newer firmware generations; sending it here makes the API-v17 INIT
+        // image raise SW_ERR after the otherwise successful NVM reads.
 
         if self.phy_config == 0 {
             return Err(crate::DriverError::Protocol);
@@ -720,6 +729,8 @@ impl IwlWifiDevice {
             ant_cfg[0]
         );
 
+        self.send_runtime_phy_db()?;
+
         // Linux configures the runtime PHY before creating any MAC context.
         // API-v17 supplies the PHY SKU and calibration triggers in the
         // firmware TLVs parsed during upload; omitting this command leaves
@@ -750,8 +761,6 @@ impl IwlWifiDevice {
             self.runtime_calib_event,
             phy_config_bytes.len(),
         );
-        self.wait_for_phy_init()?;
-
         // Firmware API 17 uses the pre-v12 station API. The scan engine
         // requires its auxiliary station before accepting an offload request.
         // In non-DQA mode Linux allocates the AUX station first, then sends

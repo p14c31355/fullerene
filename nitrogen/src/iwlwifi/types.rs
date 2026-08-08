@@ -111,6 +111,10 @@ pub enum LegacyCmd {
     /// NVM access command. API 17 sends it in the Legacy group; only the
     /// completion command uses the Regulatory/NVM group.
     NvmAccess = 0x88,
+    /// PHY calibration database notification emitted by INIT firmware.
+    CalibResNotifPhyDb = 0x6b,
+    /// PHY calibration database section accepted by runtime firmware.
+    PhyDb = 0x6c,
     /// RX MPDU notification (legacy transport). Carries the raw 802.11 frame
     /// preceded by an `iwl_rx_mpdu_res_start` header.
     ReplyRxMpduCmd = 0xc1,

@@ -47,6 +47,9 @@ pub struct IwlWifiDevice {
     pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
     pub runtime_calib_event: u32,
+    /// PHY calibration database sections collected from INIT firmware and
+    /// replayed to the runtime image.
+    pub phy_db_sections: Vec<(u16, Vec<u8>)>,
     /// SRAM pointers supplied by the firmware image for post-crash logs.
     pub runtime_errlog_ptr: u32,
     pub init_errlog_ptr: u32,
@@ -436,6 +439,7 @@ impl IwlWifiDevice {
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
             runtime_calib_event: 0,
+            phy_db_sections: Vec::new(),
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             iwl_state: IwlState::Init,
@@ -641,6 +645,7 @@ impl IwlWifiDevice {
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
             runtime_calib_event: 0,
+            phy_db_sections: Vec::new(),
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             iwl_state: IwlState::Init,
@@ -843,6 +848,9 @@ impl IwlWifiDevice {
         self.phy_sku_tlv_len = None;
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
+        if image == FirmwareImage::Init {
+            self.phy_db_sections.clear();
+        }
         log::info!(
             "iwlwifi: firmware image={:?} API v{}, build {}",
             image,

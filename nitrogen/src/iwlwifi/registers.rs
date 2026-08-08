@@ -205,7 +205,9 @@ pub const TX_QUEUE_SIZE: usize = 256;
 pub const RX_QUEUE_SIZE: usize = 256;
 /// Gen1 FH RX is configured for 4 KiB receive buffers.
 pub const RX_BUFFER_SIZE: usize = 4096;
-pub const MAX_FRAME_SIZE: usize = 2346;
+// Host commands also carry the largest API-v17 PHY calibration database
+// section (just over 3 KiB), so the command DMA buffers must be a full page.
+pub const MAX_FRAME_SIZE: usize = 4096;
 
 // ── Firmware image ─────────────────
 

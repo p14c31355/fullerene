@@ -12,6 +12,26 @@ use super::registers::*;
 use super::types::*;
 
 impl IwlWifiDevice {
+    fn save_phy_db_notification(&mut self, payload: &[u8]) {
+        if payload.len() < 4 {
+            return;
+        }
+        let section_type = u16::from_le_bytes([payload[0], payload[1]]);
+        let section_len = u16::from_le_bytes([payload[2], payload[3]]) as usize;
+        let available = payload.len().saturating_sub(4);
+        let length = core::cmp::min(section_len, available);
+        if length == 0 {
+            return;
+        }
+        self.phy_db_sections
+            .push((section_type, payload[4..4 + length].to_vec()));
+        log::info!(
+            "iwlwifi: init.phy_db section={} bytes={}",
+            section_type,
+            length,
+        );
+    }
+
     /// Wait for one command response while the INIT image is running.
     ///
     /// The normal service tick intentionally processes RX only in `Ready`
@@ -95,6 +115,11 @@ impl IwlWifiDevice {
                             opcode,
                             group,
                         );
+                        if packet[4] == LegacyCmd::CalibResNotifPhyDb as u8
+                            && packet[5] == GroupId::Legacy as u8
+                        {
+                            self.save_phy_db_notification(&packet[8..]);
+                        }
                         if packet[4] == opcode && packet[5] == group {
                             matched = Some(packet[8..].to_vec());
                         } else if packet[4] == LegacyCmd::ReplyError as u8 {

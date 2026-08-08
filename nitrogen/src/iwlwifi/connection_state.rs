@@ -805,6 +805,7 @@ fn perform_init_step() {
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
                 runtime_calib_event: 0,
+                phy_db_sections: Vec::new(),
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
                 iwl_state: IwlState::Init,
