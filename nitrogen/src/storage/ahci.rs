@@ -53,6 +53,7 @@ const PXCMD_CR: u32 = 1 << 15; // Command List Running
 const SSTS_DET_MASK: u32 = 0x0F;
 const SSTS_DET_PHY_OK: u32 = 0x03;
 const PHY_WAIT_TIMEOUT_US: u64 = 1_000_000;
+const AHCI_DATA_BUFFER_SIZE: usize = 64 * 1024;
 
 // ── Command Header ───────────────────────────────────────────────
 #[repr(C)]
@@ -111,6 +112,7 @@ struct AhciPort {
     data_buffer: *mut u8,
     data_buffer_phys: u64,
     data_buffer_size: usize,
+    data_buffer_frames: usize,
     sector_size: u32,
     total_sectors: u64,
     lba48: bool,
@@ -331,23 +333,39 @@ impl AhciController {
         };
         let cmd_table = ctx.phys_to_virt(cmd_table_phys) as *mut CommandTable;
 
-        let data_buffer_phys = match ctx.allocate_frame() {
-            Ok(phys) => phys,
-            Err(e) => {
-                log::error!("AHCI port {}: failed to allocate data frame: {}", port, e);
-                ctx.free_frame(cmd_list_phys);
-                ctx.free_frame(fis_phys);
-                ctx.free_frame(cmd_table_phys);
-                return None;
-            }
-        };
+        let (data_buffer_phys, data_buffer_size, data_buffer_frames) =
+            match ctx.allocate_contiguous_frames(AHCI_DATA_BUFFER_SIZE / 4096) {
+                Ok(phys) => (phys, AHCI_DATA_BUFFER_SIZE, AHCI_DATA_BUFFER_SIZE / 4096),
+                Err(e) => {
+                    log::warn!(
+                        "AHCI port {}: {} KiB DMA buffer unavailable ({}); falling back to 4 KiB",
+                        port,
+                        AHCI_DATA_BUFFER_SIZE / 1024,
+                        e
+                    );
+                    match ctx.allocate_frame() {
+                        Ok(phys) => (phys, 4096, 1),
+                        Err(e) => {
+                            log::error!(
+                                "AHCI port {}: failed to allocate fallback data frame: {}",
+                                port,
+                                e
+                            );
+                            ctx.free_frame(cmd_list_phys);
+                            ctx.free_frame(fis_phys);
+                            ctx.free_frame(cmd_table_phys);
+                            return None;
+                        }
+                    }
+                }
+            };
         let data_buffer = ctx.phys_to_virt(data_buffer_phys) as *mut u8;
 
         unsafe {
             ptr::write_bytes(cmd_list as *mut u8, 0, 4096);
             ptr::write_bytes(fis as *mut u8, 0, 4096);
             ptr::write_bytes(cmd_table as *mut u8, 0, 4096);
-            ptr::write_bytes(data_buffer, 0, 4096);
+            ptr::write_bytes(data_buffer, 0, data_buffer_size);
         }
 
         Self::w32_port(port_mmio, PXCLB, cmd_list_phys as u32);
@@ -382,7 +400,8 @@ impl AhciController {
             cmd_table_phys,
             data_buffer,
             data_buffer_phys,
-            data_buffer_size: 4096,
+            data_buffer_size,
+            data_buffer_frames,
             sector_size: 512,
             total_sectors: 0,
             lba48: false,
@@ -394,7 +413,11 @@ impl AhciController {
         ctx.free_frame(port.cmd_list_phys);
         ctx.free_frame(port.fis_phys);
         ctx.free_frame(port.cmd_table_phys);
-        ctx.free_frame(port.data_buffer_phys);
+        if port.data_buffer_frames == 1 {
+            ctx.free_frame(port.data_buffer_phys);
+        } else {
+            ctx.free_contiguous_frames(port.data_buffer_phys, port.data_buffer_frames);
+        }
     }
 
     fn stop_command_engine(port_mmio: *mut u32) {

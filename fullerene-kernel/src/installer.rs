@@ -12,6 +12,7 @@ use core::fmt;
 use spin::Mutex;
 
 const SECTOR_SIZE: usize = 512;
+const INSTALL_IO_SECTORS: u64 = 128; // 64 KiB, matching the AHCI DMA buffer
 const PARTITION_START: u64 = 2048;
 const RESERVED_SECTORS: u32 = 32;
 const FAT_COUNT: u32 = 2;
@@ -233,8 +234,11 @@ impl InstallSession {
             });
         }
         let write = &mut self.writes[self.next_write];
-        let count = write.sectors.saturating_sub(write.offset).min(8) as usize;
-        let mut buffer = [0u8; SECTOR_SIZE * 8];
+        let count = write
+            .sectors
+            .saturating_sub(write.offset)
+            .min(INSTALL_IO_SECTORS) as usize;
+        let mut buffer = [0u8; SECTOR_SIZE * INSTALL_IO_SECTORS as usize];
         let offset = write.offset as usize * SECTOR_SIZE;
         let bytes = count * SECTOR_SIZE;
         match &write.data {
