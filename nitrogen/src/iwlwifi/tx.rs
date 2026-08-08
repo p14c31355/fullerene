@@ -191,6 +191,11 @@ impl IwlWifiDevice {
         self.write_prph(SCD_GP_CTRL, scd_gp | SCD_GP_CTRL_AUTO_ACTIVE_MODE);
         self.write_prph(SCD_QUEUE_RDPTR_CMD, 0);
         self.write_prph(SCD_QUEUE_RDPTR_AUX, 0);
+        // Match Linux's iwl_trans_pcie_txq_enable(): stop the command queue
+        // before rewriting its context/status.  Clearing SCD_EN_CTRL alone
+        // is not sufficient on a warm 7265 reset; the queue can retain its
+        // old active state and then refuse a later large host command.
+        self.write_prph(SCD_QUEUE_STATUS_CMD, 1 << 19);
         self.write_prph(
             SCD_QUEUE_STATUS_AUX,
             1 << 19, // SCD_QUEUE_STTS_REG_POS_SCD_ACT_EN: inactive while configuring
@@ -235,10 +240,11 @@ impl IwlWifiDevice {
                 (aux_ring_phys >> 8) as u32,
             );
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
-            // The 7265 exposes 16 legacy TX channels. The AUX station is q11,
-            // so enabling only through the command q9 leaves its scheduler
-            // channel disabled even though host commands still work.
-            for channel in 0..=IWL_AUX_QUEUE {
+            // The FH exposes eight physical DMA channels. q9/q11 are logical
+            // SCD queues and select physical channels through their FIFO
+            // fields; using 9/11 as TCSR channel numbers writes outside the
+            // valid FH TX channel window.
+            for channel in 0..FH_TCSR_CHNL_NUM {
                 core::ptr::write_volatile(
                     self.mmio
                         .add((FH_TCSR_CHNL_TX_CONFIG_BASE + channel * (0x20 / 4)) as usize),
@@ -252,13 +258,15 @@ impl IwlWifiDevice {
             );
         }
         mmio::write_barrier();
-        let fh_config = self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4));
+        let fh_config = self
+            .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4));
         let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD);
         let scd_active = self.read_prph(SCD_EN_CTRL);
         let scd_chainext = self.read_prph(SCD_CHAINEXT_EN);
         log::info!(
-            "iwlwifi: legacy TX queues configured: cmd_q={} cmd_tfd={:#018x} aux_q={} aux_tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cfg={:#010x} scd_status={:#010x} aux_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
+            "iwlwifi: legacy TX queues configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} aux_q={} aux_fifo=5 aux_tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} aux_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
             IWL_CMD_QUEUE,
+            SCD_QUEUE_STTS_FIFO_COMMAND,
             ring_phys,
             IWL_AUX_QUEUE,
             aux_ring_phys,

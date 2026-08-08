@@ -435,7 +435,24 @@ impl IwlWifiDevice {
 
     /// Service device interrupts and consume completed receive descriptors.
     pub fn tick(&mut self) {
-        if self.health.pre_mmio_access().is_err() {
+        if let Err(error) = self.health.pre_mmio_access() {
+            if self.scan_pending {
+                // Do not silently turn a live-scan PCIe/link check failure
+                // into a missing firmware notification.  `send_hcmd()` has
+                // already accepted the scan request at this point, so this
+                // is the only evidence that the RX service path was unable
+                // to poll the device.  Reuse the watchdog counter to rate
+                // limit the message; it is also the elapsed service-tick
+                // count used by the scan watchdog below.
+                if self.scan_channel == 0 || self.scan_channel % 256 == 0 {
+                    log::warn!(
+                        "iwlwifi: scan RX poll skipped by PCI health: error={} scan_ticks={}",
+                        error,
+                        self.scan_channel,
+                    );
+                }
+                self.scan_channel = self.scan_channel.saturating_add(1);
+            }
             return;
         }
         // A hardware error requires a full device restart. Do not keep
@@ -476,6 +493,38 @@ impl IwlWifiDevice {
             Some(value) => value,
             None => return,
         };
+        if self.scan_pending && (self.scan_channel == 0 || self.scan_channel % 512 == 0) {
+            let scd_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
+            let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
+            let tx_cfg = self
+                .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4))
+                .unwrap_or(!0);
+            let rx_closed = self.rx_status().closed_rb_num;
+            let rx_finished = self.rx_status().finished_rb_num;
+            let rx_rptr = self.safe_read32(FH_RSCSR_CHNL0_RDPTR_REG).unwrap_or(!0);
+            let rx_wptr = self
+                .safe_read32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG)
+                .unwrap_or(!0);
+            log::info!(
+                "iwlwifi: scan poll tick={} CSR_INT={:#010x} FH_INT={:#010x} tx_head={} tx_tail={} scd_rptr={} scd_status={:#010x} cmd_fifo_cfg={:#010x} tx_status={:#010x} tx_error={:#010x} rx_closed={} rx_finished={} rx_head={} rx_tail={} rx_rptr={:#010x} rx_wptr={:#010x}",
+                self.scan_channel,
+                int_cause,
+                self.safe_read32(CSR_FH_INT).unwrap_or(!0),
+                self.tx_head & (TX_QUEUE_SIZE - 1),
+                self.tx_tail & (TX_QUEUE_SIZE - 1),
+                scd_rptr,
+                scd_status,
+                tx_cfg,
+                self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
+                self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
+                rx_closed,
+                rx_finished,
+                self.rx_head,
+                self.rx_tail,
+                rx_rptr,
+                rx_wptr,
+            );
+        }
         // Read FH_INT before acknowledging CSR_INT.  Once the aggregate
         // interrupt is acknowledged, the per-channel error cause may no
         // longer be observable.  HW_ERR is fatal for this transport; leave a
