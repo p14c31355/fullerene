@@ -47,9 +47,19 @@ impl IwlWifiDevice {
         self.write_prph(SCD_TXFACT, 0);
         self.write_prph(SCD_EN_CTRL, 0);
         if let Some(scd_base) = self.read_prph(SCD_SRAM_BASE_ADDR) {
-            // Linux resets the scheduler's host-memory backing pointer after
-            // alive. The table is also needed by the legacy scheduler even
-            // though the command queue itself is non-aggregated.
+            // Linux clears the complete SCD SRAM region before enabling any
+            // queue: queue contexts, TX status entries, and the queue-to-
+            // RA/TID translation table. Clearing only q9/q11 leaves stale
+            // state after a warm reboot; SCD_QUEUE_CFG is the first command
+            // that makes the firmware consume that state and can then make
+            // the 7265 disappear from PCIe.
+            for offset in (SCD_CONTEXT_MEM_LOWER_BOUND..SCD_TRANS_TBL_MEM_UPPER_BOUND).step_by(4) {
+                self.write_mem32(scd_base + offset, 0);
+            }
+
+            // Reset the scheduler's host-memory backing pointer after alive.
+            // The table is also needed by the legacy scheduler even though
+            // the command queue itself is non-aggregated.
             self.write_prph(SCD_DRAM_BASE_ADDR, (scd_bc_phys >> 10) as u32);
             // The chain-extension path is enabled by default on gen1, but it
             // is unreliable on the 7265 legacy scheduler. Keep the command

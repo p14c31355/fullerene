@@ -134,6 +134,11 @@ pub const SCD_GP_CTRL: u32 = SCD_BASE + 0x1A8;
 pub const SCD_EN_CTRL: u32 = SCD_BASE + 0x254;
 pub const SCD_QUEUECHAIN_SEL: u32 = SCD_BASE + 0xE8;
 pub const SCD_AGGR_SEL: u32 = SCD_BASE + 0x248;
+/// Shared SCD SRAM range cleared by the legacy PCIe TX start sequence.
+/// It covers queue contexts, TX status entries, and the queue-to-RA/TID
+/// translation table for the 16-queue 7265 layout.
+pub const SCD_CONTEXT_MEM_LOWER_BOUND: u32 = 0x600;
+pub const SCD_TRANS_TBL_MEM_UPPER_BOUND: u32 = 0x800;
 pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_CMD: u32 = 0x600 + IWL_CMD_QUEUE * 8;
