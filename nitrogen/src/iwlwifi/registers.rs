@@ -44,9 +44,18 @@ pub const CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 1 << 3;
 pub const CSR_GP_CNTRL_INIT_DONE: u32 = 1 << 2;
 pub const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
 pub const CSR_GP_CNTRL_GOING_TO_SLEEP: u32 = 1 << 4;
-/// CSR_HW_REV type field after shifting the register right by four bits.
-pub const CSR_HW_REV_TYPE_MASK: u16 = 0x0FFF;
+/// CSR_HW_REV type field in the register's original bit positions.
+///
+/// The type occupies bits 15:4.  Keep the selector input in this raw form;
+/// Linux's `CSR_HW_REV_TYPE_7265D` constant is also expressed in these bit
+/// positions (0x210), not as the shifted value (0x21).
+pub const CSR_HW_REV_TYPE_MASK: u16 = 0xFFF0;
 pub const CSR_HW_REV_TYPE_7265D: u16 = 0x0210;
+
+/// Decode the printable/type value from a raw CSR_HW_REV register value.
+pub const fn csr_hw_rev_type(raw: u32) -> u16 {
+    ((raw & 0x0000_FFF0) >> 4) as u16
+}
 pub const CSR_INT_BIT_ALIVE: u32 = 1 << 0;
 pub const CSR_INT_BIT_RESET_DONE: u32 = 1 << 2;
 pub const CSR_INT_BIT_SW_RX: u32 = 1 << 3;
@@ -197,7 +206,7 @@ pub const APMG_PCIDEV_STT_L1_ACT_DIS: u32 = 0x0000_0800;
 
 // ── Firmware constants ─────────────
 
-pub const IWL_FW_API_VER: u32 = 16;
+pub const IWL_FW_API_VER: u32 = 17;
 pub const IWL_FW_MAX_SECTIONS: usize = 32;
 
 /// TX queue configuration.

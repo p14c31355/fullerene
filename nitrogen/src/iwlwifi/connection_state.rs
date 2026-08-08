@@ -372,14 +372,14 @@ fn perform_init_step() {
                 }
             };
             log::info!(
-                "iwlwifi: PCI device matched {:04x}:{:04x} at {:02x}:{:02x}.{} BAR0={:#x} hw_rev={:#06x}",
+                "iwlwifi: PCI device matched {:04x}:{:04x} at {:02x}:{:02x}.{} BAR0={:#x} pci_revision={:#04x}",
                 raw.pci_dev.vendor_id,
                 raw.device_id,
                 raw.pci_dev.bus,
                 raw.pci_dev.device,
                 raw.pci_dev.function,
                 raw.bar0_phys,
-                raw.hw_rev,
+                raw.pci_revision,
             );
             {
                 let health = raw.upstream_bridge.map_or_else(
@@ -393,7 +393,7 @@ fn perform_init_step() {
                 ctx.mmio = raw.mmio;
                 ctx.driver_ctx = Some(raw.driver_ctx);
                 ctx.health = Some(health);
-                ctx.hw_rev = raw.hw_rev;
+                ctx.hw_rev = 0;
                 // Firmware selection is deferred until the CSR HW_REV has
                 // been read after MMIO clock initialization.  7265 and
                 // 7265D share PCI IDs, so the PCI revision byte is not enough.
@@ -585,7 +585,7 @@ fn perform_init_step() {
                     return;
                 }
             };
-            let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
+            let hw_rev = hw_rev_raw as u16;
             let device_id = WIFI_INIT_CTX
                 .lock()
                 .pci_dev
@@ -594,8 +594,10 @@ fn perform_init_step() {
                 .unwrap_or(0);
             let candidates = select_firmware_list(device_id, hw_rev);
             log::info!(
-                "iwlwifi: detected CSR HW_REV type={:#06x}, firmware candidates={}",
-                hw_rev & CSR_HW_REV_TYPE_MASK,
+                "iwlwifi: detected CSR_HW_REV raw={:#010x} type={:#06x} step_dash={:#x} firmware candidates={}",
+                hw_rev_raw,
+                csr_hw_rev_type(hw_rev_raw),
+                hw_rev_raw & 0xf,
                 candidates.len()
             );
             if candidates.is_empty() {

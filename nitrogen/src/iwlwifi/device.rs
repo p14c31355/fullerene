@@ -342,8 +342,13 @@ impl IwlWifiDevice {
             mmio::SafeReadResult::Value(v) => v,
             _ => return Err(IwlError::BarNotAvailable),
         };
-        let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
-        log::info!("iwlwifi: HW_REV={:#06x}", hw_rev);
+        let hw_rev = hw_rev_raw as u16;
+        log::info!(
+            "iwlwifi: CSR_HW_REV raw={:#010x} type={:#06x} step_dash={:#x}",
+            hw_rev_raw,
+            csr_hw_rev_type(hw_rev_raw),
+            hw_rev_raw & 0xf,
+        );
 
         Self::reset_device(mmio);
 
@@ -560,10 +565,12 @@ impl IwlWifiDevice {
             SafeReadResult::Value(v) => v,
             _ => return Err(IwlError::ClockNotReady),
         };
-        let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
+        let hw_rev = hw_rev_raw as u16;
         log::info!(
-            "iwlwifi: CSR HW_REV type={:#06x}",
-            hw_rev & CSR_HW_REV_TYPE_MASK
+            "iwlwifi: CSR_HW_REV raw={:#010x} type={:#06x} step_dash={:#x}",
+            hw_rev_raw,
+            csr_hw_rev_type(hw_rev_raw),
+            hw_rev_raw & 0xf,
         );
 
         debug::print("iwlwifi", "read_mac");
