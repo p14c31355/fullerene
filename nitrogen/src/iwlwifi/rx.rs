@@ -1,5 +1,6 @@
 //! Receive-ring, interrupt, and inbound protocol processing.
 
+use alloc::vec::Vec;
 use bonder::dhcp::DhcpMessageType;
 use bonder::wifi::{self, Ssid};
 use bonder::wpa::WpaState;
@@ -11,6 +12,145 @@ use super::registers::*;
 use super::types::*;
 
 impl IwlWifiDevice {
+    fn save_phy_db_notification(&mut self, payload: &[u8]) {
+        if payload.len() < 4 {
+            return;
+        }
+        let section_type = u16::from_le_bytes([payload[0], payload[1]]);
+        let section_len = u16::from_le_bytes([payload[2], payload[3]]) as usize;
+        let available = payload.len().saturating_sub(4);
+        let length = core::cmp::min(section_len, available);
+        if length == 0 {
+            return;
+        }
+        self.phy_db_sections
+            .push((section_type, payload[4..4 + length].to_vec()));
+        log::info!(
+            "iwlwifi: init.phy_db section={} bytes={}",
+            section_type,
+            length,
+        );
+    }
+
+    /// Poll one command response while the INIT image is running.
+    ///
+    /// The normal service tick intentionally processes RX only in `Ready`
+    /// state.  INIT commands therefore need a small private RX pump: NVM
+    /// responses and `INIT_COMPLETE_NOTIF` arrive through the same FH RBD
+    /// ring, but before the runtime image is installed.
+    pub(super) fn poll_init_notification(
+        &mut self,
+        opcode: u8,
+        group: u8,
+        deadline_tsc: u64,
+    ) -> Result<Option<Vec<u8>>, crate::DriverError> {
+        const FRAME_ALIGN: usize = 64;
+        let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        if now_tsc.wrapping_sub(deadline_tsc) < (1u64 << 63) {
+            let status = self.rx_status();
+            let closed_rb =
+                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(status.closed_rb_num)) };
+            let closed_fr =
+                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(status.closed_fr_num)) };
+            let finished_rb =
+                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(status.finished_rb_num)) };
+            let finished_fr =
+                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(status.finished_fr_num)) };
+            log::warn!(
+                "iwlwifi: init.rx.timeout opcode=0x{:02x} group=0x{:02x} closed_rb={} closed_fr={} finished_rb={} finished_fr={} rx_tail={} CSR_INT={:#010x} FH_INT={:#010x} RX_RDPTR={:#010x} RX_WPTR={:#010x}",
+                opcode,
+                group,
+                closed_rb,
+                closed_fr,
+                finished_rb,
+                finished_fr,
+                self.rx_tail,
+                self.safe_read32(CSR_INT).unwrap_or(!0),
+                self.safe_read32(CSR_FH_INT).unwrap_or(!0),
+                self.safe_read32(FH_RSCSR_CHNL0_RDPTR_REG).unwrap_or(!0),
+                self.safe_read32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG)
+                    .unwrap_or(!0),
+            );
+            return Err(crate::DriverError::TimedOut);
+        }
+
+        self.health
+            .check()
+            .map_err(|_| crate::DriverError::DeviceNotFound)?;
+
+        mmio::cache_flush_range(
+            self.rx_status() as *const RxDmaStatus as usize,
+            core::mem::size_of::<RxDmaStatus>(),
+        );
+        self.rx_head = (self.rx_status().closed_rb_num as usize) & (RX_QUEUE_SIZE - 1);
+        let mut matched = None;
+        let mut processed = 0usize;
+
+        while self.rx_tail != self.rx_head {
+            processed += 1;
+            let index = self.rx_tail;
+            if index < self.rx_bufs.len() {
+                let buf = &self.rx_bufs[index];
+                let mut frame = alloc::vec![0; buf.len()];
+                buf.read_into(&mut frame);
+                let mut offset = 0usize;
+                while offset + 8 <= frame.len() {
+                    let len_n_flags = u32::from_le_bytes([
+                        frame[offset],
+                        frame[offset + 1],
+                        frame[offset + 2],
+                        frame[offset + 3],
+                    ]);
+                    let packet_len = (len_n_flags as usize & 0x3fff).saturating_add(4);
+                    if packet_len < 8 || offset + packet_len > frame.len() {
+                        break;
+                    }
+                    let packet = &frame[offset..offset + packet_len];
+                    log::info!(
+                        "iwlwifi: init.rx.packet opcode=0x{:02x} group=0x{:02x} len={} expected_opcode=0x{:02x} expected_group=0x{:02x}",
+                        packet[4],
+                        packet[5],
+                        packet_len,
+                        opcode,
+                        group,
+                    );
+                    if packet[4] == LegacyCmd::CalibResNotifPhyDb as u8
+                        && packet[5] == GroupId::Legacy as u8
+                    {
+                        self.save_phy_db_notification(&packet[8..]);
+                    }
+                    if packet[4] == opcode && packet[5] == group {
+                        matched = Some(packet[8..].to_vec());
+                    } else if packet[4] == LegacyCmd::ReplyError as u8 {
+                        log::warn!(
+                            "iwlwifi: INIT firmware command error while waiting for opcode=0x{:02x} group=0x{:02x}",
+                            opcode,
+                            group,
+                        );
+                        return Err(crate::DriverError::Protocol);
+                    }
+                    offset += packet_len.next_multiple_of(FRAME_ALIGN);
+                }
+            }
+            self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
+            if matched.is_some() {
+                break;
+            }
+        }
+
+        self.restock_rx_buffers(processed);
+        if let Some(payload) = matched {
+            log::info!(
+                "iwlwifi: init.rx.match opcode=0x{:02x} group=0x{:02x} payload={}",
+                opcode,
+                group,
+                payload.len(),
+            );
+            return Ok(Some(payload));
+        }
+        Ok(None)
+    }
+
     fn process_rx_frame(&mut self, frame: &[u8], rx_decrypted: bool) {
         if frame.len() < 2 {
             return;
@@ -484,13 +624,8 @@ impl IwlWifiDevice {
         if self.rx_tail != rx_tail_before {
             // The hardware write index is the next RBD made available and
             // must advance in groups of eight on this generation.
-            unsafe {
-                core::ptr::write_volatile(
-                    self.mmio.add(FH_RSCSR_CHNL0_RBDCB_WPTR_REG as usize),
-                    (self.rx_tail as u32) & !7,
-                );
-            }
-            mmio::write_barrier();
+            let processed = (self.rx_tail + RX_QUEUE_SIZE - rx_tail_before) % RX_QUEUE_SIZE;
+            self.restock_rx_buffers(processed);
         }
 
         if deferred_scan_complete && self.scan_pending {

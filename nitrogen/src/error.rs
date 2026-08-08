@@ -24,6 +24,9 @@ pub enum DriverError {
     TimedOut,
     /// The device cannot accept the operation while busy.
     Busy,
+    /// The operation is in progress and should be polled again on a later
+    /// scheduler tick.
+    Pending,
     /// The device or driver does not support the requested operation.
     NotSupported,
     /// A generic device I/O transaction failed.
@@ -60,6 +63,7 @@ impl fmt::Display for DriverError {
             Self::DmaMappingFailed => "DMA mapping failed",
             Self::TimedOut => "driver operation timed out",
             Self::Busy => "device busy",
+            Self::Pending => "driver operation pending",
             Self::NotSupported => "driver operation not supported",
             Self::Io => "device I/O error",
             Self::Protocol => "device protocol error",

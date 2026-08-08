@@ -21,6 +21,15 @@ pub enum FwState {
     Error,
 }
 
+/// Firmware image contained in the 7265 .ucode TLV stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirmwareImage {
+    /// Bootstrap image used for NVM access and PHY calibration.
+    Init,
+    /// Normal operational image.
+    Runtime,
+}
+
 // ── 802.11 operational mode ────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +107,14 @@ pub enum LegacyCmd {
     PowerUp = 0x27,
     ReplyAlive = 0x01,
     ReplyError = 0x02,
+    InitCompleteNotif = 0x04,
+    /// NVM access command. API 17 sends it in the Legacy group; only the
+    /// completion command uses the Regulatory/NVM group.
+    NvmAccess = 0x88,
+    /// PHY calibration database notification emitted by INIT firmware.
+    CalibResNotifPhyDb = 0x6b,
+    /// PHY calibration database section accepted by runtime firmware.
+    PhyDb = 0x6c,
     /// RX MPDU notification (legacy transport). Carries the raw 802.11 frame
     /// preceded by an `iwl_rx_mpdu_res_start` header.
     ReplyRxMpduCmd = 0xc1,
@@ -471,10 +488,10 @@ pub struct ScanDwellV1 {
     pub active: u8,
     pub passive: u8,
     pub fragmented: u8,
-    pub extended: u8,
+    pub reserved: u8,
 }
 
-/// Legacy LMAC SCAN_CFG_CMD API v1 payload used by the 7265 firmware.
+/// SCAN_CFG_CMD API v1 payload used by the 7265 firmware.
 ///
 /// This command is not the same as the later UMAC scan configuration: the
 /// channel list is part of the payload and the command is sent with the
@@ -497,20 +514,17 @@ pub struct ScanConfigV1 {
 
 impl ScanConfigV1 {
     pub fn new(mac_addr: [u8; 6], bcast_sta_id: u8) -> Self {
-        // ACTIVATE | ALLOW_CHUB_REQS | SET_TX_CHAINS | SET_RX_CHAINS |
-        // SET_AUX_STA_ID | SET_ALL_TIMES | SET_CHANNEL_FLAGS |
-        // SET_LEGACY_RATES | SET_MAC_ADDR | CLEAR_FRAGMENTED |
-        // SCAN_CONFIG_N_CHANNELS(23).
+        // This is the API-v1 SCAN_CONFIG_DB_CMD flag set.  In particular,
+        // SET_AUX_STA_ID and CLEAR_FRAGMENTED are not part of the firmware's
+        // initial scan configuration command; their bits are reserved here.
         let flags = (1 << 0)
             | (1 << 3)
             | (1 << 8)
             | (1 << 9)
-            | (1 << 10)
             | (1 << 11)
             | (1 << 13)
             | (1 << 14)
             | (1 << 15)
-            | (1 << 17)
             | ((SCAN_CHANNEL_COUNT as u32) << 26);
 
         Self {
@@ -518,23 +532,18 @@ impl ScanConfigV1 {
             tx_chains: 0x03,
             rx_chains: 0x03,
             legacy_rates: 0x0fff_0fff,
-            out_of_channel_time: 120,
+            out_of_channel_time: 170,
             suspend_time: 30,
             dwell: ScanDwellV1 {
-                active: 10,
+                active: 20,
                 passive: 110,
-                fragmented: 44,
-                extended: 90,
+                fragmented: 20,
+                reserved: 0,
             },
             mac_addr,
             bcast_sta_id,
-            // PRE_SCAN_PASSIVE2ACTIVE only.  EBS (bits 0-2) is disabled
-            // because it lets the firmware skip channels it considers "empty"
-            // based on energy detection — on some hardware/firmware
-            // combinations this causes every channel to be skipped,
-            // resulting in scan-complete with 0 APs even when APs are
-            // present.
-            channel_flags: 0x08,
+            // EBS | ACCURATE_EBS | EBS_ADD | PRE_SCAN_PASSIVE2ACTIVE.
+            channel_flags: 0x0f,
             channel_array: SCAN_CHANNELS,
         }
     }
@@ -833,8 +842,11 @@ pub enum WifiInitPhase {
     FwUpload = 5,
     FwWaitAlive = 6,
     FwInitCmds = 7,
-    Done = 8,
-    Failed = 9,
+    FwRuntimeUpload = 8,
+    FwRuntimeWaitAlive = 9,
+    FwRuntimeCmds = 10,
+    Done = 11,
+    Failed = 12,
 }
 
 impl WifiInitPhase {
@@ -848,6 +860,9 @@ impl WifiInitPhase {
             Self::FwUpload => "fw_upload",
             Self::FwWaitAlive => "fw_wait_alive",
             Self::FwInitCmds => "fw_init_cmds",
+            Self::FwRuntimeUpload => "fw_runtime_upload",
+            Self::FwRuntimeWaitAlive => "fw_runtime_wait_alive",
+            Self::FwRuntimeCmds => "fw_runtime_cmds",
             Self::Done => "done",
             Self::Failed => "failed",
         }
@@ -864,6 +879,9 @@ impl WifiInitPhase {
             Self::FwUpload => b"WIFI FW LOAD",
             Self::FwWaitAlive => b"WIFI FW ALIVE",
             Self::FwInitCmds => b"WIFI COMMANDS",
+            Self::FwRuntimeUpload => b"WIFI RT LOAD",
+            Self::FwRuntimeWaitAlive => b"WIFI RT ALIVE",
+            Self::FwRuntimeCmds => b"WIFI RT CMDS",
             Self::Done => b"WIFI READY",
             Self::Failed => b"WIFI FAILED",
         }
@@ -872,9 +890,9 @@ impl WifiInitPhase {
 
 impl From<u8> for WifiInitPhase {
     fn from(v: u8) -> Self {
-        // Discriminants are contiguous 0..=9; any value outside that range
-        // (and 9 itself) collapses to `Failed`, matching the prior match.
-        const PHASES: [WifiInitPhase; 10] = [
+        // Discriminants are contiguous 0..=12. Any value outside that range
+        // collapses to `Failed`.
+        const PHASES: [WifiInitPhase; 13] = [
             WifiInitPhase::Idle,
             WifiInitPhase::PciProbe,
             WifiInitPhase::MmioInit,
@@ -883,6 +901,9 @@ impl From<u8> for WifiInitPhase {
             WifiInitPhase::FwUpload,
             WifiInitPhase::FwWaitAlive,
             WifiInitPhase::FwInitCmds,
+            WifiInitPhase::FwRuntimeUpload,
+            WifiInitPhase::FwRuntimeWaitAlive,
+            WifiInitPhase::FwRuntimeCmds,
             WifiInitPhase::Done,
             WifiInitPhase::Failed,
         ];

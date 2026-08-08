@@ -36,7 +36,114 @@ impl fmt::Display for HexBytes<'_> {
 }
 
 impl IwlWifiDevice {
+    /// Keep the MAC awake while the firmware consumes a host command.
+    ///
+    /// The 7000-series Linux transport sets MAC_ACCESS_REQ and waits for
+    /// MAC_CLOCK_READY before touching internal scheduler registers. Without
+    /// this handshake, a live 7265 may enter power-save during a command and
+    /// subsequent CSR reads look like a disappeared PCIe endpoint.
+    fn wake_for_hcmd(&mut self) -> Result<(), crate::DriverError> {
+        // Do not make the request depend on a successful read first.  On the
+        // affected 7265 systems the first CSR read after firmware alive can
+        // transiently return all-ones even though a CSR write still reaches
+        // the endpoint.  Use zero as the conservative fallback and report
+        // the raw read result so the next boot log distinguishes that case
+        // from a genuine handshake timeout.
+        let initial_gp = self.safe_read32(CSR_GP_CNTRL);
+        log::debug!(
+            "iwlwifi: MAC access request before host command initial_gp={:?}",
+            initial_gp,
+        );
+        let gp = initial_gp.unwrap_or(0);
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+            );
+        }
+        mmio::write_barrier();
+
+        let ready = crate::timing::poll_timeout_us(15_000, || {
+            let value = self.safe_read32(CSR_GP_CNTRL)?;
+            (value & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 && value & CSR_GP_CNTRL_GOING_TO_SLEEP == 0)
+                .then_some(())
+        });
+        if ready.is_none() {
+            self.release_mac_access();
+            log::error!(
+                "iwlwifi: MAC access handshake timed out before host command GP_CNTRL={:#010x}",
+                self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+            );
+            return Err(crate::DriverError::DeviceNotFound);
+        }
+        Ok(())
+    }
+
+    /// Release the MAC wake request after the command queue becomes empty.
+    ///
+    /// The request is deliberately held across descriptor submission and
+    /// firmware consumption, but leaving it set across commands prevents
+    /// the 7265 power-management state machine from completing its transition
+    /// after PHY_CONFIGURATION.
+    fn release_mac_access(&mut self) {
+        let Some(gp) = self.safe_read32(CSR_GP_CNTRL) else {
+            log::warn!("iwlwifi: cannot release MAC access: GP_CNTRL unavailable");
+            return;
+        };
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                gp & !CSR_GP_CNTRL_MAC_ACCESS_REQ,
+            );
+        }
+        mmio::write_barrier();
+    }
+
+    /// Replay the calibration sections collected from INIT firmware to the
+    /// operational image. This is the API-v17 equivalent of Linux's
+    /// iwl_send_phy_db_data() sequence.
+    fn send_runtime_phy_db(&mut self) -> Result<(), crate::DriverError> {
+        if !self.init_firmware_completed {
+            log::info!("iwlwifi: runtime PHY DB skipped reason=init_firmware_not_completed");
+            return Ok(());
+        }
+        let sections = core::mem::take(&mut self.phy_db_sections);
+        let result = (|| {
+            if sections.is_empty() {
+                log::warn!("iwlwifi: runtime PHY DB empty after INIT calibration");
+                return Ok(());
+            }
+            for (section_type, data) in &sections {
+                if data.len() > u16::MAX as usize {
+                    return Err(crate::DriverError::InvalidArgument);
+                }
+                let mut payload = Vec::with_capacity(4 + data.len());
+                payload.extend_from_slice(&section_type.to_le_bytes());
+                payload.extend_from_slice(&(data.len() as u16).to_le_bytes());
+                payload.extend_from_slice(data);
+                self.send_init_hcmd(
+                    "PHY_DB",
+                    LegacyCmd::PhyDb as u8,
+                    GroupId::Legacy as u8,
+                    &payload,
+                )?;
+                log::info!(
+                    "iwlwifi: runtime.phy_db section={} bytes={}",
+                    section_type,
+                    data.len(),
+                );
+            }
+            Ok(())
+        })();
+        self.phy_db_sections = sections;
+        result
+    }
+
     fn init_tx_cmd_queue(&mut self) {
+        // The INIT and runtime images use the same host allocation but each
+        // firmware reset starts its scheduler pointers at zero.
+        self.tx_head = 0;
+        self.tx_tail = 0;
         let ring_phys = self.tx_dma_ring.dma_iova();
         let aux_ring_phys = ring_phys + TX_AUX_TFD_RING_OFFSET as u64;
         let keep_warm_phys = ring_phys + TX_KEEP_WARM_OFFSET as u64;
@@ -47,9 +154,19 @@ impl IwlWifiDevice {
         self.write_prph(SCD_TXFACT, 0);
         self.write_prph(SCD_EN_CTRL, 0);
         if let Some(scd_base) = self.read_prph(SCD_SRAM_BASE_ADDR) {
-            // Linux resets the scheduler's host-memory backing pointer after
-            // alive. The table is also needed by the legacy scheduler even
-            // though the command queue itself is non-aggregated.
+            // Linux clears the complete SCD SRAM region before enabling any
+            // queue: queue contexts, TX status entries, and the queue-to-
+            // RA/TID translation table. Clearing only q9/q11 leaves stale
+            // state after a warm reboot; SCD_QUEUE_CFG is the first command
+            // that makes the firmware consume that state and can then make
+            // the 7265 disappear from PCIe.
+            for offset in (SCD_CONTEXT_MEM_LOWER_BOUND..SCD_TRANS_TBL_MEM_UPPER_BOUND).step_by(4) {
+                self.write_mem32(scd_base + offset, 0);
+            }
+
+            // Reset the scheduler's host-memory backing pointer after alive.
+            // The table is also needed by the legacy scheduler even though
+            // the command queue itself is non-aggregated.
             self.write_prph(SCD_DRAM_BASE_ADDR, (scd_bc_phys >> 10) as u32);
             // The chain-extension path is enabled by default on gen1, but it
             // is unreliable on the 7265 legacy scheduler. Keep the command
@@ -244,10 +361,12 @@ impl IwlWifiDevice {
         if !present {
             return Err(crate::DriverError::DeviceNotFound);
         }
+        self.wake_for_hcmd()?;
         let sequence = ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff);
 
         let used = self.tx_head.wrapping_sub(self.tx_tail);
         if used >= TX_QUEUE_SIZE {
+            self.release_mac_access();
             return Err(crate::DriverError::Busy);
         }
         let desc_idx = self.tx_head % TX_QUEUE_SIZE;
@@ -307,6 +426,7 @@ impl IwlWifiDevice {
             hi_n_len,
             self.tx_head & 0xff,
         );
+        self.release_mac_access();
         Ok(())
     }
 
@@ -362,6 +482,7 @@ impl IwlWifiDevice {
         });
         match consumed {
             Some(Ok(())) => {
+                self.release_mac_access();
                 log::info!(
                     "iwlwifi: init.hcmd.ok name={} target={} rptr={} head={} tail={}",
                     label,
@@ -423,6 +544,193 @@ impl IwlWifiDevice {
         }
     }
 
+    /// Run one scheduler-sized step of the short-lived INIT firmware sequence.
+    ///
+    /// Command responses are polled on later ticks.  In particular, do not
+    /// spin here: a missing INIT response must not monopolize the driver
+    /// scheduler while the PCI health monitor is unable to run.
+    pub fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
+        const NVM_SECTIONS: [u16; 8] = [0, 1, 3, 4, 5, 8, 11, 12];
+        const NVM_OFFSET: u16 = 0;
+        const NVM_LENGTH: u16 = 2048;
+        const RESPONSE_TIMEOUT_US: u64 = 500_000;
+
+        if !self.init_commands_started {
+            log::info!(
+                "iwlwifi: init.firmware_commands.begin fw_api={} fw_build={}",
+                self.fw_api_ver,
+                self.fw_build,
+            );
+            self.init_tx_cmd_queue();
+            self.init_rx_dma();
+            self.init_commands_started = true;
+            self.init_nvm_index = 0;
+            self.init_hw_section = None;
+            self.init_mac_ready = false;
+            self.init_response = None;
+        }
+
+        if let Some((opcode, group, deadline_tsc)) = self.init_response {
+            match self.poll_init_notification(opcode, group, deadline_tsc)? {
+                None => return Err(crate::DriverError::Pending),
+                Some(response) => {
+                    self.init_response = None;
+                    if opcode == LegacyCmd::NvmAccess as u8 {
+                        let section = NVM_SECTIONS
+                            .get(self.init_nvm_index)
+                            .copied()
+                            .ok_or(crate::DriverError::Protocol)?;
+                        if response.len() < 8 {
+                            return Err(crate::DriverError::Protocol);
+                        }
+                        let response_offset = u16::from_le_bytes([response[0], response[1]]);
+                        let response_length =
+                            u16::from_le_bytes([response[2], response[3]]) as usize;
+                        let response_type = u16::from_le_bytes([response[4], response[5]]);
+                        let status = u16::from_le_bytes([response[6], response[7]]);
+                        log::info!(
+                            "iwlwifi: nvm.response section={} offset={} length={} type={} status={}",
+                            section,
+                            response_offset,
+                            response_length,
+                            response_type,
+                            status,
+                        );
+                        if status != 0 || response_offset != NVM_OFFSET || response_type != section
+                        {
+                            if section == 0 {
+                                log::error!(
+                                    "iwlwifi: nvm.section section=0 failed status={} offset={} type={}",
+                                    status,
+                                    response_offset,
+                                    response_type,
+                                );
+                                return Err(crate::DriverError::Protocol);
+                            }
+                            log::info!(
+                                "iwlwifi: nvm.section section={} unavailable status={} offset={} type={}",
+                                section,
+                                status,
+                                response_offset,
+                                response_type,
+                            );
+                        } else {
+                            let available = response.len().saturating_sub(8);
+                            let returned = core::cmp::min(response_length, available);
+                            let data = response[8..8 + returned].to_vec();
+                            log::info!(
+                                "iwlwifi: nvm.section section={} bytes={}",
+                                section,
+                                data.len(),
+                            );
+                            if section == 0 {
+                                self.init_hw_section = Some(data);
+                            }
+                        }
+                        self.init_nvm_index += 1;
+                    } else if opcode == LegacyCmd::InitCompleteNotif as u8 {
+                        self.init_firmware_completed = true;
+                        self.init_commands_started = false;
+                        log::info!("iwlwifi: init.firmware_commands.complete");
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        if let Some(&section) = NVM_SECTIONS.get(self.init_nvm_index) {
+            let mut command = [0u8; 8];
+            command[0] = 0; // IWL_NVM_READ
+            command[1] = 0; // NVM_ACCESS_TARGET_CACHE
+            command[2..4].copy_from_slice(&section.to_le_bytes());
+            command[4..6].copy_from_slice(&NVM_OFFSET.to_le_bytes());
+            command[6..8].copy_from_slice(&NVM_LENGTH.to_le_bytes());
+            self.send_init_hcmd(
+                "NVM_ACCESS",
+                LegacyCmd::NvmAccess as u8,
+                GroupId::Legacy as u8,
+                &command,
+            )?;
+            self.init_response = Some((
+                LegacyCmd::NvmAccess as u8,
+                GroupId::Legacy as u8,
+                unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(
+                    crate::timing::ticks_per_us().saturating_mul(RESPONSE_TIMEOUT_US),
+                ),
+            ));
+            return Err(crate::DriverError::Pending);
+        }
+
+        if !self.init_mac_ready {
+            let hw = self
+                .init_hw_section
+                .take()
+                .ok_or(crate::DriverError::Protocol)?;
+            const HW_ADDR_OFFSET: usize = 0x15 * 2;
+            if hw.len() < HW_ADDR_OFFSET + 6 {
+                return Err(crate::DriverError::Protocol);
+            }
+            let mac = [
+                hw[HW_ADDR_OFFSET + 1],
+                hw[HW_ADDR_OFFSET],
+                hw[HW_ADDR_OFFSET + 3],
+                hw[HW_ADDR_OFFSET + 2],
+                hw[HW_ADDR_OFFSET + 5],
+                hw[HW_ADDR_OFFSET + 4],
+            ];
+            if mac == [0; 6] || mac == [0xff; 6] || (mac[0] & 1) != 0 {
+                log::error!(
+                    "iwlwifi: NVM returned invalid MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    mac[0],
+                    mac[1],
+                    mac[2],
+                    mac[3],
+                    mac[4],
+                    mac[5],
+                );
+                return Err(crate::DriverError::Protocol);
+            }
+            self.mac = mac;
+            self.init_mac_ready = true;
+            log::info!(
+                "iwlwifi: nvm.mac {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                mac[0],
+                mac[1],
+                mac[2],
+                mac[3],
+                mac[4],
+                mac[5],
+            );
+        }
+
+        if self.phy_config == 0 {
+            log::error!(
+                "iwlwifi: init.firmware_commands name=phy_configuration status=missing_firmware_phy_sku tlv_len={:?}",
+                self.phy_sku_tlv_len
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+        let phy_config = PhyConfigurationCmd {
+            phy_config: self.phy_config,
+            calib_flow_trigger: self.runtime_calib_flow,
+            calib_event_trigger: self.runtime_calib_event,
+        };
+        let phy_bytes = unsafe { super::as_bytes(&phy_config) };
+        self.send_init_hcmd(
+            "PHY_CONFIGURATION_INIT",
+            LegacyCmd::PhyConfiguration as u8,
+            GroupId::Legacy as u8,
+            phy_bytes,
+        )?;
+        self.init_response = Some((
+            LegacyCmd::InitCompleteNotif as u8,
+            GroupId::Legacy as u8,
+            unsafe { core::arch::x86_64::_rdtsc() }
+                .saturating_add(crate::timing::ticks_per_us().saturating_mul(RESPONSE_TIMEOUT_US)),
+        ));
+        Err(crate::DriverError::Pending)
+    }
+
     pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
         log::info!(
             "iwlwifi: init.commands.begin fw_api={} fw_build={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -451,6 +759,8 @@ impl IwlWifiDevice {
             "iwlwifi: init.config name=tx_antenna mask=0x{:02x}",
             ant_cfg[0]
         );
+
+        self.send_runtime_phy_db()?;
 
         // Linux configures the runtime PHY before creating any MAC context.
         // API-v17 supplies the PHY SKU and calibration triggers in the
@@ -482,7 +792,6 @@ impl IwlWifiDevice {
             self.runtime_calib_event,
             phy_config_bytes.len(),
         );
-
         // Firmware API 17 uses the pre-v12 station API. The scan engine
         // requires its auxiliary station before accepting an offload request.
         // In non-DQA mode Linux allocates the AUX station first, then sends
@@ -608,25 +917,11 @@ impl IwlWifiDevice {
             core::mem::size_of::<MacContextCmd>(),
         );
 
-        // API 17 uses the legacy LMAC scan engine.  Its channel database must
-        // be activated before SCAN_OFFLOAD_REQUEST_CMD is accepted.  Although
-        // the opcode is in the legacy command namespace, the command itself
-        // is a LONG_GROUP command and therefore uses the wide HCMD header.
-        let scan_config = ScanConfigV1::new(self.mac, AUX_STA_ID);
-        let scan_config_bytes = unsafe { super::as_bytes(&scan_config) };
-        self.send_init_hcmd(
-            "SCAN_CONFIG",
-            LegacyCmd::ScanConfig as u8,
-            GroupId::Long as u8,
-            scan_config_bytes,
-        )?;
-        log::info!(
-            "iwlwifi: init.config name=scan_config channels={} group=0x{:02x} opcode=0x{:02x} payload={}",
-            SCAN_CHANNEL_COUNT,
-            GroupId::Long as u8,
-            LegacyCmd::ScanConfig as u8,
-            core::mem::size_of::<ScanConfigV1>(),
-        );
+        // SCAN_CFG_CMD is an optional UMAC-scan setup command.  The 7265
+        // API-v17 path used here is the LMAC scan path, and forcing the UMAC
+        // command makes this firmware raise SW_ERR.  The LMAC
+        // SCAN_OFFLOAD_REQUEST_CMD does not need this command.
+        log::info!("iwlwifi: init.config name=scan_config status=skipped reason=lmac_scan_path");
 
         let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);
         let csr_fh_int_before_echo = self.safe_read32(CSR_FH_INT).unwrap_or(!0);

@@ -43,6 +43,7 @@ pub const CSR_RESET_BIT_STOP_MASTER: u32 = 1 << 9;
 pub const CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 1 << 3;
 pub const CSR_GP_CNTRL_INIT_DONE: u32 = 1 << 2;
 pub const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
+pub const CSR_GP_CNTRL_GOING_TO_SLEEP: u32 = 1 << 4;
 /// CSR_HW_REV type field after shifting the register right by four bits.
 pub const CSR_HW_REV_TYPE_MASK: u16 = 0x0FFF;
 pub const CSR_HW_REV_TYPE_7265D: u16 = 0x0210;
@@ -134,6 +135,11 @@ pub const SCD_GP_CTRL: u32 = SCD_BASE + 0x1A8;
 pub const SCD_EN_CTRL: u32 = SCD_BASE + 0x254;
 pub const SCD_QUEUECHAIN_SEL: u32 = SCD_BASE + 0xE8;
 pub const SCD_AGGR_SEL: u32 = SCD_BASE + 0x248;
+/// Shared SCD SRAM range cleared by the legacy PCIe TX start sequence.
+/// It covers queue contexts, TX status entries, and the queue-to-RA/TID
+/// translation table for the 16-queue 7265 layout.
+pub const SCD_CONTEXT_MEM_LOWER_BOUND: u32 = 0x600;
+pub const SCD_TRANS_TBL_MEM_UPPER_BOUND: u32 = 0x800;
 pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_CMD: u32 = 0x600 + IWL_CMD_QUEUE * 8;
@@ -199,7 +205,9 @@ pub const TX_QUEUE_SIZE: usize = 256;
 pub const RX_QUEUE_SIZE: usize = 256;
 /// Gen1 FH RX is configured for 4 KiB receive buffers.
 pub const RX_BUFFER_SIZE: usize = 4096;
-pub const MAX_FRAME_SIZE: usize = 2346;
+// Host commands also carry the largest API-v17 PHY calibration database
+// section (just over 3 KiB), so the command DMA buffers must be a full page.
+pub const MAX_FRAME_SIZE: usize = 4096;
 
 // ── Firmware image ─────────────────
 

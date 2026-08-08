@@ -172,6 +172,7 @@ impl From<nitrogen::DriverError> for SyscallError {
             | DriverError::DeviceFault => Self::Io,
             DriverError::TimedOut => Self::TimedOut,
             DriverError::Busy => Self::Busy,
+            DriverError::Pending => Self::Again,
             DriverError::NotSupported => Self::NotSupported,
         }
     }

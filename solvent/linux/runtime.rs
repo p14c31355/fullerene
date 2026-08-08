@@ -502,6 +502,7 @@ impl From<nitrogen::DriverError> for LinuxErrno {
             | DriverError::DeviceFault => EIO,
             DriverError::TimedOut => ETIMEDOUT,
             DriverError::Busy => EBUSY,
+            DriverError::Pending => EAGAIN,
             DriverError::NotSupported => ENOTSUP,
         })
     }

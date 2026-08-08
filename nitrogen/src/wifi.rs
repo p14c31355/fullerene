@@ -83,6 +83,12 @@ pub trait WifiDriver: Send {
     /// Used by the step-based init to avoid blocking the render loop.
     fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError>;
 
+    /// Start the operational image after the INIT image has completed.
+    fn start_runtime_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
+        let _ = fw_data;
+        Err(crate::DriverError::NotSupported)
+    }
+
     /// Non-blocking check if firmware has signaled alive.
     /// Returns Ok(true) if alive, Ok(false) if still waiting, Err on error/timeout.
     fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, crate::DriverError>;
@@ -90,6 +96,12 @@ pub trait WifiDriver: Send {
     /// Send post-boot init commands (TX antenna config, RXON, queue setup).
     /// Called by the step-based init after firmware alive is confirmed.
     fn send_init_commands(&mut self) -> Result<(), crate::DriverError>;
+
+    /// Configure the temporary INIT image: read NVM, notify the firmware
+    /// that NVM access is complete, and wait for PHY initialization.
+    fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
+        Err(crate::DriverError::NotSupported)
+    }
 
     /// Submit one data frame to the hardware TX path.
     ///
@@ -307,6 +319,13 @@ pub struct PciProbeResult {
 pub struct RawPciProbeResult {
     pub entry: &'static DriverEntry,
     pub pci_dev: crate::pci::PciDevice,
+    /// Firmware-assigned BAR0 captured during the safe PCI probe.
+    ///
+    /// Keep this value instead of re-reading BAR0 after the probe: a device
+    /// that has entered a transient PCIe low-power state may return all ones
+    /// from a later config-space read, which would otherwise be logged as a
+    /// misleading zero by the caller.
+    pub bar0_phys: u64,
     pub mmio: *mut u32,
     pub hw_rev: u16,
     pub device_id: u16,
@@ -372,14 +391,21 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
                 return None;
             }
         }
+
+        // Disable ordinary ASPM before the endpoint can enter L1 between the
+        // probe and the scheduler-owned MMIO phase.  L1.1/L1.2 is controlled
+        // on the bridge above; the standard L1/L0s bits must be cleared on
+        // both sides of the link.  Port-I/O config access is safe here while
+        // the endpoint is still present.
+        if let Some(bridge) = crate::pci::PciDevice::new(bus, dev, func) {
+            bridge.disable_pcie_aspm();
+        }
     }
 
     // ── Minimal endpoint configuration ─────────────────────
-    // Linux' iwlwifi calls only pci_enable_device() (which sets
-    // the Memory Space + Bus Master bits in the Command register)
-    // before accessing BAR0 MMIO.  Any additional config writes
-    // (ASPM disable, D0 re-assertion, CTO) can cause the PCIe
-    // link to enter an inconsistent state on this platform.
+    // Enable only Memory Space + Bus Master before accessing BAR0.  ASPM is
+    // cleared separately below because this endpoint disappears while the
+    // scheduler yields if the link is allowed to enter L1.
     crate::debug::print("wifi", "enable_mem");
     if !pci_dev.enable_memory_access() {
         log::warn!(
@@ -390,6 +416,10 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
         );
         return None;
     }
+
+    // Keep the endpoint in L0 while the initialization state machine yields
+    // between PCI probing and the first MMIO transaction.
+    pci_dev.disable_pcie_aspm();
 
     // Read HW revision from PCI config space (port I/O, NEVER hangs)
     crate::debug::print("wifi", "read_hw_rev_pci");
@@ -469,6 +499,7 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     Some(RawPciProbeResult {
         entry,
         pci_dev,
+        bar0_phys: info.bar0_phys,
         mmio: mmio_base,
         hw_rev,
         device_id: info.device_id,

@@ -378,10 +378,7 @@ fn perform_init_step() {
                 raw.pci_dev.bus,
                 raw.pci_dev.device,
                 raw.pci_dev.function,
-                raw.pci_dev
-                    .read_bar_info(0)
-                    .map(|bar| bar.address)
-                    .unwrap_or(0),
+                raw.bar0_phys,
                 raw.hw_rev,
             );
             {
@@ -413,15 +410,36 @@ fn perform_init_step() {
             // Link training belongs to firmware. Resetting the upstream bridge
             // here can strand the endpoint before the first non-posted read.
             let mmio = WIFI_INIT_CTX.lock().mmio;
-            let device_present = {
+            // Do not use only is_device_present() here. A 7265 can briefly
+            // disappear from config space while its upstream link is in a
+            // low-power state; pre_mmio_access() performs the safe recovery
+            // sequence (D0, bridge L1Sub, link retrain, ASPM) before giving up.
+            let health_result = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                match ctx.health.as_mut() {
-                    Some(h) => h.is_device_present(),
-                    None => false,
-                }
+                ctx.health.as_mut().map(PciHealth::pre_mmio_access)
             };
-            if !device_present {
-                log::warn!("iwlwifi: MMIO phase aborted — PCIe device disappeared before reset");
+            match health_result {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    log::warn!(
+                        "iwlwifi: MMIO phase aborted — PCIe health check failed before reset: {}",
+                        error
+                    );
+                    debug::print("iwlwifi", "step: ERR device_gone_before_reset");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+                None => {
+                    log::warn!(
+                        "iwlwifi: MMIO phase aborted — PCIe health state unavailable before reset"
+                    );
+                    debug::print("iwlwifi", "step: ERR device_gone_before_reset");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+            }
+            if mmio.is_null() {
+                log::warn!("iwlwifi: MMIO phase aborted — mapped BAR0 is null");
                 debug::print("iwlwifi", "step: ERR device_gone_before_reset");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
@@ -787,6 +805,13 @@ fn perform_init_step() {
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
                 runtime_calib_event: 0,
+                phy_db_sections: Vec::new(),
+                init_firmware_completed: false,
+                init_commands_started: false,
+                init_nvm_index: 0,
+                init_hw_section: None,
+                init_mac_ready: false,
+                init_response: None,
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
                 iwl_state: IwlState::Init,
@@ -809,6 +834,7 @@ fn perform_init_step() {
                 tx_tail: 0,
                 rx_head: 0,
                 rx_tail: 0,
+                rx_posted: 0,
                 tx_bufs,
                 rx_bufs,
                 ip_address: [0u8; 4],
@@ -962,19 +988,154 @@ fn perform_init_step() {
                         return;
                     }
                 };
-                dev.send_init_commands()
+                dev.send_init_firmware_commands()
             };
             mmio::disarm_mmio_watchdog();
             match result {
                 Ok(()) => {
-                    log::info!("iwlwifi: firmware initialization commands accepted");
+                    log::info!("iwlwifi: INIT firmware sequence completed");
                     debug::print("iwlwifi", "step: fw_init_cmds_ok");
-                    set_init_phase(WifiInitPhase::Done);
+                    set_init_phase(WifiInitPhase::FwRuntimeUpload);
+                }
+                Err(crate::DriverError::Pending) => {
+                    debug::print("iwlwifi", "step: fw_init_cmds_pending");
                 }
                 Err(e) => {
                     log::error!(
                         "iwlwifi: init.phase.error name=fw_init_cmds id=7 error={}",
                         e
+                    );
+                    set_init_phase(WifiInitPhase::Failed);
+                }
+            }
+        }
+        WifiInitPhase::FwRuntimeUpload => {
+            let (fw_data, fw_name, bdf_info) = {
+                let ctx = WIFI_INIT_CTX.lock();
+                if ctx.fw_candidate_idx >= ctx.fw_candidates.len() {
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+                let fw = &ctx.fw_candidates[ctx.fw_candidate_idx];
+                (fw.data, fw.name, pci_bdf_from_ctx(&ctx))
+            };
+            log::info!(
+                "iwlwifi: step: switching from INIT to runtime firmware {}",
+                fw_name
+            );
+            if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+            }
+            let result = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                let dev = match ctx.mmio_device.as_mut() {
+                    Some(d) => d,
+                    None => {
+                        mmio::disarm_mmio_watchdog();
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
+                };
+                dev.start_runtime_firmware(fw_data)
+            };
+            mmio::disarm_mmio_watchdog();
+            match result {
+                Ok(()) => {
+                    let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+                    WIFI_INIT_CTX.lock().alive_start_tsc = now_tsc;
+                    debug::print("iwlwifi", "step: runtime_fw_uploaded");
+                    set_init_phase(WifiInitPhase::FwRuntimeWaitAlive);
+                }
+                Err(error) => {
+                    log::error!(
+                        "iwlwifi: runtime firmware {} upload failed: {}",
+                        fw_name,
+                        error
+                    );
+                    set_init_phase(WifiInitPhase::Failed);
+                }
+            }
+        }
+        WifiInitPhase::FwRuntimeWaitAlive => {
+            let (start_tsc, bdf_info) = {
+                let ctx = WIFI_INIT_CTX.lock();
+                (ctx.alive_start_tsc, pci_bdf_from_ctx(&ctx))
+            };
+            let pci_health = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                ctx.health.as_mut().map(PciHealth::check)
+            };
+            match pci_health {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    log::warn!(
+                        "iwlwifi: runtime alive wait PCI health check failed: {}",
+                        error
+                    );
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+                None => {
+                    log::warn!("iwlwifi: runtime alive wait PCI health state unavailable");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+            }
+            if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+            }
+            let mut dev = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                match ctx.mmio_device.take() {
+                    Some(d) => d,
+                    None => {
+                        mmio::disarm_mmio_watchdog();
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
+                }
+            };
+            let result = dev.check_alive_nonblocking(start_tsc);
+            mmio::disarm_mmio_watchdog();
+            WIFI_INIT_CTX.lock().mmio_device = Some(dev);
+            match result {
+                Ok(true) => {
+                    log::info!("iwlwifi: runtime firmware alive notification received");
+                    set_init_phase(WifiInitPhase::FwRuntimeCmds);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    log::error!("iwlwifi: runtime firmware alive failed: {}", error);
+                    set_init_phase(WifiInitPhase::Failed);
+                }
+            }
+        }
+        WifiInitPhase::FwRuntimeCmds => {
+            log::info!("iwlwifi: init.phase.begin name=fw_runtime_cmds id=10");
+            let bdf_info = {
+                let ctx = WIFI_INIT_CTX.lock();
+                pci_bdf_from_ctx(&ctx)
+            };
+            if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+            }
+            let result = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                match ctx.mmio_device.as_mut() {
+                    Some(dev) => dev.send_init_commands(),
+                    None => Err(crate::DriverError::DeviceNotFound),
+                }
+            };
+            mmio::disarm_mmio_watchdog();
+            match result {
+                Ok(()) => {
+                    log::info!("iwlwifi: runtime firmware initialization commands accepted");
+                    set_init_phase(WifiInitPhase::Done);
+                }
+                Err(error) => {
+                    log::error!(
+                        "iwlwifi: init.phase.error name=fw_runtime_cmds id=10 error={}",
+                        error
                     );
                     set_init_phase(WifiInitPhase::Failed);
                 }
@@ -1359,9 +1520,7 @@ impl IwlWifiDevice {
         let scan_cmd = ScanRequestCmd::new(self.mac, 1);
         let cmd_data = unsafe { super::as_bytes(&scan_cmd) };
         // SCAN_OFFLOAD_REQUEST_CMD (0x51) is a legacy-group command and uses
-        // the four-byte HCMD header. SCAN_CFG_CMD above is the exception: it
-        // is sent with the always-long header because its channel database is
-        // a long-group command.
+        // the four-byte HCMD header.
         if let Err(error) = self.send_hcmd(
             LegacyCmd::ScanRequest as u8,
             GroupId::Legacy as u8,
