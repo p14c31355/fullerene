@@ -169,10 +169,11 @@ impl IwlWifiDevice {
             );
             core::ptr::write_volatile(
                 self.mmio.add(FH_RSCSR_CHNL0_RBDCB_WPTR_REG as usize),
-                // All 256 RBDs have already been populated. On this
-                // generation a fully posted ring wraps the write pointer to
-                // zero; Linux uses the same value after restocking.
-                0,
+                // Keep one slot empty so the hardware can distinguish a
+                // full ring from an empty ring. Linux's gen1 transport
+                // restocks 255 of the 256 entries and rounds the pointer
+                // down to an 8-entry boundary.
+                ((RX_QUEUE_SIZE - 1) & !7) as u32,
             );
             mmio::write_barrier();
             core::ptr::write_volatile(
