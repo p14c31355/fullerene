@@ -453,3 +453,273 @@ fn fiveghz_beacon_uses_phy_channel() {
     assert_eq!(dev.scan_results.len(), 1);
     assert_eq!(dev.scan_results[0].channel, 36); // from last_rx_phy_channel
 }
+
+// ── DHCP frame builders ─────────────────────────────────────────
+
+/// Build a raw DHCP packet (240-byte header + options) for a BOOTREPLY.
+fn build_dhcp_packet(
+    xid: u32,
+    yiaddr: [u8; 4],
+    server_ip: [u8; 4],
+    client_mac: Bssid,
+    msg_type: u8,
+    options: &[u8],
+) -> Vec<u8> {
+    let mut p = vec![0u8; 240];
+    p[0] = 0x02; // op = BOOTREPLY
+    p[1] = 0x01; // htype = Ethernet
+    p[2] = 0x06; // hlen = 6
+    p[3] = 0x00; // hops
+    p[4..8].copy_from_slice(&xid.to_be_bytes());
+    p[8..10].copy_from_slice(&[0x00, 0x00]); // secs
+    p[10..12].copy_from_slice(&[0x00, 0x00]); // flags
+    p[12..16].copy_from_slice(&[0; 4]); // ciaddr
+    p[16..20].copy_from_slice(&yiaddr); // yiaddr
+    p[20..24].copy_from_slice(&server_ip); // siaddr
+    p[24..28].copy_from_slice(&[0; 4]); // giaddr
+    p[28..34].copy_from_slice(&client_mac); // chaddr
+    // sname (64 bytes) and file (128 bytes) already zero
+    p[236..240].copy_from_slice(&[0x63, 0x82, 0x53, 0x63]); // magic cookie
+
+    // Options
+    p.push(53); // Message Type
+    p.push(1);
+    p.push(msg_type);
+    p.extend_from_slice(options);
+    p.push(255); // END
+    p
+}
+
+/// Wrap a raw DHCP packet in IP/UDP/LLC-SNAP/802.11 data frame (AP → station).
+fn wrap_dhcp_response(dhcp: &[u8], server_ip: [u8; 4]) -> Vec<u8> {
+    let dhcp_len = dhcp.len();
+    let udp_len = 8 + dhcp_len;
+    let ip_total_len = 20 + udp_len;
+
+    // 802.11 data frame header (FromDS)
+    let mut frame = Vec::new();
+    frame.push(0x08); // FC: data type
+    frame.push(0x02); // FromDS
+    frame.extend_from_slice(&[0x00, 0x00]); // duration
+    frame.extend_from_slice(&CLIENT_MAC); // addr1: DA (client)
+    frame.extend_from_slice(&AP_BSSID); // addr2: BSSID
+    frame.extend_from_slice(&AP_BSSID); // addr3: SA
+    frame.extend_from_slice(&[0x00, 0x00]); // seq
+
+    // LLC/SNAP
+    frame.extend_from_slice(&[0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00]);
+
+    // IPv4 header (20 bytes)
+    let ip_start = frame.len();
+    frame.push(0x45); // ver=4, IHL=5
+    frame.push(0x00); // DSCP/ECN
+    frame.extend_from_slice(&(ip_total_len as u16).to_be_bytes());
+    frame.extend_from_slice(&[0x00, 0x00]); // identification
+    frame.extend_from_slice(&[0x00, 0x00]); // flags/frag
+    frame.push(0x40); // TTL=64
+    frame.push(0x11); // protocol=UDP
+    frame.extend_from_slice(&[0x00, 0x00]); // checksum placeholder
+    frame.extend_from_slice(&server_ip); // src IP
+    frame.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // dst IP (broadcast)
+
+    // Compute IP checksum
+    let checksum = ipv4_checksum(&frame[ip_start..ip_start + 20]);
+    frame[ip_start + 10..ip_start + 12].copy_from_slice(&checksum.to_be_bytes());
+
+    // UDP header (8 bytes)
+    frame.extend_from_slice(&[0x00, 0x43]); // src port 67 (server)
+    frame.extend_from_slice(&[0x00, 0x44]); // dst port 68 (client)
+    frame.extend_from_slice(&(udp_len as u16).to_be_bytes());
+    frame.extend_from_slice(&[0x00, 0x00]); // checksum = 0
+
+    // DHCP payload
+    frame.extend_from_slice(dhcp);
+    frame
+}
+
+fn ipv4_checksum(header: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    for chunk in header.chunks_exact(2) {
+        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+// ── DHCP tests ──────────────────────────────────────────────────
+
+#[test]
+fn dhcp_full_flow_open_network() {
+    let mut dev = IwlWifiDevice::new_for_test(CLIENT_MAC);
+    dev.iwl_state = IwlState::Scanning;
+    dev.scan_pending = true;
+
+    // 1. Beacon → scan result
+    let beacon = build_beacon(AP_BSSID, SSID, 6, 0x0001, None);
+    dev.inject_rx_frame(&beacon);
+
+    // 2. Connect (open)
+    let ssid = Ssid::new(SSID);
+    dev.connect(&ssid, None).expect("connect");
+
+    // 3. Auth response
+    dev.inject_rx_frame(&build_auth_response(AP_BSSID, CLIENT_MAC, 0));
+    assert_eq!(dev.iwl_state, IwlState::AssocSent);
+
+    // 4. Assoc response → start_dhcp sends Discover
+    dev.inject_rx_frame(&build_assoc_response(AP_BSSID, CLIENT_MAC, 0, 1));
+    assert_eq!(dev.iwl_state, IwlState::Connected);
+    assert!(dev.dhcp.is_some());
+
+    // Read the xid so we can echo it in Offer/Ack
+    assert!(dev.dhcp.is_some(), "DHCP client not initialized");
+    let xid = dev.dhcp.as_ref().unwrap().xid;
+
+    // 5. Inject DHCP Offer
+    let server_ip = [192, 168, 1, 1];
+    let offered_ip = [192, 168, 1, 100];
+    let offer_options = {
+        let mut opts = Vec::new();
+        // Server ID (option 54)
+        opts.extend_from_slice(&[54, 4]);
+        opts.extend_from_slice(&server_ip);
+        // Subnet mask (option 1)
+        opts.extend_from_slice(&[1, 4, 255, 255, 255, 0]);
+        // Router (option 3)
+        opts.extend_from_slice(&[3, 4]);
+        opts.extend_from_slice(&server_ip);
+        // DNS (option 6)
+        opts.extend_from_slice(&[6, 4]);
+        opts.extend_from_slice(&server_ip);
+        // Lease time (option 51) = 86400 seconds
+        opts.extend_from_slice(&[51, 4]);
+        opts.extend_from_slice(&86400u32.to_be_bytes());
+        opts
+    };
+    let offer = build_dhcp_packet(xid, offered_ip, server_ip, CLIENT_MAC, 2, &offer_options);
+    let offer_frame = wrap_dhcp_response(&offer, server_ip);
+
+    let tx_head_before_offer = dev.tx_head;
+    dev.inject_rx_frame(&offer_frame);
+
+    // DHCP Request should have been sent
+    assert!(
+        dev.tx_head > tx_head_before_offer,
+        "tx_head didn't advance after Offer: {} -> {}",
+        tx_head_before_offer,
+        dev.tx_head
+    );
+
+    // 6. Inject DHCP ACK
+    let ack = build_dhcp_packet(xid, offered_ip, server_ip, CLIENT_MAC, 5, &offer_options);
+    let ack_frame = wrap_dhcp_response(&ack, server_ip);
+    dev.inject_rx_frame(&ack_frame);
+
+    // 7. Verify IP configuration
+    assert_eq!(dev.ip_address, [192, 168, 1, 100]);
+    assert_eq!(dev.subnet_mask, [255, 255, 255, 0]);
+    assert_eq!(dev.gateway, [192, 168, 1, 1]);
+    assert_eq!(dev.dns_server, [192, 168, 1, 1]);
+}
+
+#[test]
+fn dhcp_full_flow_wpa2_network() {
+    let mut dev = IwlWifiDevice::new_for_test(CLIENT_MAC);
+    dev.iwl_state = IwlState::Scanning;
+    dev.scan_pending = true;
+
+    // 1. WPA2 beacon
+    let rsn = rsn_ie_wpa2_psk();
+    let beacon = build_beacon(AP_BSSID, SSID, 11, 0x0011, Some(&rsn));
+    dev.inject_rx_frame(&beacon);
+
+    // 2. Connect with WPA2 password
+    let ssid = Ssid::new(SSID);
+    dev.connect(&ssid, Some("password")).expect("connect");
+    assert!(dev.wpa_required);
+
+    // 3. Auth → Assoc → Handshake
+    dev.inject_rx_frame(&build_auth_response(AP_BSSID, CLIENT_MAC, 0));
+    dev.inject_rx_frame(&build_assoc_response(AP_BSSID, CLIENT_MAC, 0, 1));
+    assert_eq!(dev.wifi_conn.status, wifi::WifiStatus::Handshake);
+
+    // 4. EAPOL 4-way handshake
+    let known_anonce = [0xA5u8; 32];
+    dev.inject_rx_frame(&build_eapol_msg1(&known_anonce, 1));
+    assert_eq!(dev.wpa.state, WpaState::WaitMsg3);
+
+    let known_gtk = [0x77u8; 16];
+    dev.inject_rx_frame(&build_eapol_msg3(
+        &known_anonce,
+        2,
+        &dev.wpa.ptk,
+        &known_gtk,
+        1,
+    ));
+    assert_eq!(dev.wpa.state, WpaState::WaitMsg4);
+
+    // 5. Complete WPA key installation
+    dev.drain_tx();
+    dev.finish_wpa_for_test();
+    assert!(dev.wpa_keys_installed);
+    assert_eq!(dev.wifi_conn.status, wifi::WifiStatus::Connected);
+
+    // 6. DHCP flow
+    let xid = dev.dhcp.as_ref().unwrap().xid;
+    let server_ip = [10, 0, 0, 1];
+    let offered_ip = [10, 0, 0, 42];
+    let dhcp_opts = {
+        let mut o = Vec::new();
+        o.extend_from_slice(&[54, 4]);
+        o.extend_from_slice(&server_ip);
+        o.extend_from_slice(&[1, 4, 255, 255, 255, 0]);
+        o.extend_from_slice(&[3, 4]);
+        o.extend_from_slice(&server_ip);
+        o.extend_from_slice(&[6, 4]);
+        o.extend_from_slice(&server_ip);
+        o
+    };
+
+    // Offer → Request (inject as decrypted since WPA keys are installed)
+    let offer = build_dhcp_packet(xid, offered_ip, server_ip, CLIENT_MAC, 2, &dhcp_opts);
+    dev.inject_rx_frame_decrypted(&wrap_dhcp_response(&offer, server_ip));
+
+    // ACK → IP assigned
+    let ack = build_dhcp_packet(xid, offered_ip, server_ip, CLIENT_MAC, 5, &dhcp_opts);
+    dev.inject_rx_frame_decrypted(&wrap_dhcp_response(&ack, server_ip));
+
+    assert_eq!(dev.ip_address, [10, 0, 0, 42]);
+    assert_eq!(dev.subnet_mask, [255, 255, 255, 0]);
+    assert_eq!(dev.gateway, [10, 0, 0, 1]);
+    assert_eq!(dev.dns_server, [10, 0, 0, 1]);
+}
+
+#[test]
+fn dhcp_offer_with_wrong_xid_is_ignored() {
+    let mut dev = IwlWifiDevice::new_for_test(CLIENT_MAC);
+    dev.iwl_state = IwlState::Scanning;
+    dev.scan_pending = true;
+
+    let beacon = build_beacon(AP_BSSID, SSID, 6, 0x0001, None);
+    dev.inject_rx_frame(&beacon);
+
+    let ssid = Ssid::new(SSID);
+    dev.connect(&ssid, None).expect("connect");
+    dev.inject_rx_frame(&build_auth_response(AP_BSSID, CLIENT_MAC, 0));
+    dev.inject_rx_frame(&build_assoc_response(AP_BSSID, CLIENT_MAC, 0, 1));
+
+    let correct_xid = dev.dhcp.as_ref().unwrap().xid;
+    let wrong_xid = correct_xid.wrapping_add(1);
+    let server_ip = [192, 168, 1, 1];
+    let offered_ip = [192, 168, 1, 100];
+    let offer = build_dhcp_packet(wrong_xid, offered_ip, server_ip, CLIENT_MAC, 2, &[]);
+    let tx_head_before = dev.tx_head;
+
+    dev.inject_rx_frame(&wrap_dhcp_response(&offer, server_ip));
+
+    // No DHCP Request should have been sent (xid mismatch)
+    assert_eq!(dev.tx_head, tx_head_before);
+    assert_eq!(dev.ip_address, [0u8; 4]);
+}

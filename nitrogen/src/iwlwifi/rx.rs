@@ -1076,6 +1076,12 @@ impl IwlWifiDevice {
         self.process_rx_frame(frame, false);
     }
 
+    /// Inject an 802.11 frame that the firmware has already CCMP-decrypted.
+    /// Use this for data frames received after WPA keys are installed.
+    pub(super) fn inject_rx_frame_decrypted(&mut self, frame: &[u8]) {
+        self.process_rx_frame(frame, true);
+    }
+
     /// Force the deferred WPA key finalisation.  In normal operation this is
     /// called from `tick()` after the TX ring reports that the key commands
     /// have been consumed.  In tests, call `drain_tx()` first to advance
