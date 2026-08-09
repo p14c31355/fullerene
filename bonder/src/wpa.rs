@@ -1017,4 +1017,374 @@ mod tests {
             Err(crate::NetError::Protocol)
         );
     }
+
+    // ── HMAC-SHA1 KAT (RFC 2202) ────────────────────────────
+
+    #[test]
+    fn hmac_sha1_rfc2202_case1() {
+        let key = [0x0b; 20];
+        let data = b"Hi There";
+        let expected = [
+            0xb6, 0x17, 0x31, 0x86, 0x55, 0x05, 0x72, 0x64, 0xe2, 0x8b, 0xc0, 0xb6, 0xfb, 0x37,
+            0x8c, 0x8e, 0xf1, 0x46, 0xbe, 0x00,
+        ];
+        assert_eq!(hmac_sha1(&key, data), expected);
+    }
+
+    #[test]
+    fn hmac_sha1_rfc2202_case2() {
+        let key = b"Jefe";
+        let data = b"what do ya want for nothing?";
+        let expected = [
+            0xef, 0xfc, 0xdf, 0x6a, 0xe5, 0xeb, 0x2f, 0xa2, 0xd2, 0x74, 0x16, 0xd5, 0xf1, 0x84,
+            0xdf, 0x9c, 0x25, 0x9a, 0x7c, 0x79,
+        ];
+        assert_eq!(hmac_sha1(key, data), expected);
+    }
+
+    #[test]
+    fn hmac_sha1_long_key_hashes_key_first() {
+        // When key > 64 bytes, HMAC must hash the key first (RFC 2104).
+        // Verify by checking that HMAC(long_key) == HMAC(SHA1(long_key)).
+        let long_key = [0xaa; 80];
+        let data = b"Test Using Larger Than Block-Size Key - Hash Key First";
+
+        let hashed_key = sha1(&long_key);
+
+        let result_long = hmac_sha1(&long_key, data);
+        let result_hashed = hmac_sha1(&hashed_key, data);
+
+        assert_eq!(result_long, result_hashed);
+    }
+
+    // ── PBKDF2-SHA1 KAT (RFC 6070, c=4096, dkLen=20) ────────
+
+    #[test]
+    fn pbkdf2_matches_rfc6070_test_case_5() {
+        // RFC 6070: P="password", S="salt", c=4096, dkLen=20
+        // Expected DK = 4b007901b765489abead49d926f721d065a429c1
+        //
+        // Our derive_pmk uses SSID as the salt and produces 32 bytes.
+        // We set ssid="salt" so the first 20 bytes of PMK must match.
+        let mut supplicant = WpaSupplicant::new();
+        supplicant.passphrase = String::from("password");
+        supplicant.ssid = String::from("salt");
+        supplicant.derive_pmk();
+
+        let expected_first_20 = [
+            0x4b, 0x00, 0x79, 0x01, 0xb7, 0x65, 0x48, 0x9a, 0xbe, 0xad, 0x49, 0xd9, 0x26, 0xf7,
+            0x21, 0xd0, 0x65, 0xa4, 0x29, 0xc1,
+        ];
+        assert_eq!(&supplicant.pmk[..20], &expected_first_20[..]);
+    }
+
+    // ── AES-128 block decrypt KAT (NIST FIPS-197) ───────────
+
+    #[test]
+    fn aes_decrypt_block_matches_nist_fips197() {
+        // NIST FIPS-197 Appendix B: AES-128
+        let key = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
+        ];
+        let ciphertext = [
+            0x69, 0xc4, 0xe0, 0xd8, 0x6a, 0x7b, 0x04, 0x30, 0xd8, 0xcd, 0xb7, 0x80, 0x70, 0xb4,
+            0xc5, 0x5a,
+        ];
+        let expected_plaintext = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        let plaintext = aes_decrypt_block(&key, &ciphertext);
+        assert_eq!(plaintext, expected_plaintext);
+    }
+
+    // ── Full 4-way handshake test ───────────────────────────
+
+    /// Build a synthetic EAPOL-Key Message 1 with known ANonce.
+    fn build_msg1(anonce: &[u8; 32], replay_counter: u64) -> Vec<u8> {
+        let mut frame = vec![0u8; 4 + 95];
+        frame[0] = 0x02; // EAPOL version
+        frame[1] = 0x03; // EAPOL-Key
+        frame[2..4].copy_from_slice(&95u16.to_be_bytes());
+        frame[4] = 0x02; // WPA2 key descriptor
+        let key_info = KEY_INFO_KEY_TYPE | KEY_INFO_PAIRWISE | KEY_INFO_ACK;
+        frame[5..7].copy_from_slice(&key_info.to_be_bytes());
+        frame[7..9].copy_from_slice(&0x0010u16.to_be_bytes()); // key_len
+        frame[9..17].copy_from_slice(&replay_counter.to_be_bytes());
+        frame[17..49].copy_from_slice(anonce);
+        frame
+    }
+
+    /// Build a synthetic EAPOL-Key Message 3 with known values and valid MIC.
+    /// Uses descriptor version 0 (key_info bits 0-2 = 0) so key data is plaintext.
+    fn build_msg3(
+        anonce: &[u8; 32],
+        replay_counter: u64,
+        ptk: &[u8; 48],
+        gtk: &[u8; 16],
+        gtk_key_id: u8,
+    ) -> Vec<u8> {
+        // GTK KDE: [0xDD, len, 00-0F-AC-01, key_id, 0x00, gtk(16)]
+        let mut key_data = Vec::new();
+        key_data.push(0xDD); // KDE type
+        key_data.push(22); // KDE length (4+2+16)
+        key_data.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x01]); // OUI + GTK type
+        key_data.push(gtk_key_id);
+        key_data.push(0x00); // reserved
+        key_data.extend_from_slice(gtk);
+
+        let key_data_len = key_data.len() as u16;
+        let eapol_len = 95u16 + key_data_len;
+
+        let mut frame = Vec::new();
+        frame.push(0x03); // EAPOL version
+        frame.push(0x03); // EAPOL-Key
+        frame.extend_from_slice(&eapol_len.to_be_bytes());
+        frame.push(0x02); // WPA2 descriptor
+        let key_info =
+            KEY_INFO_KEY_TYPE | KEY_INFO_PAIRWISE | KEY_INFO_MIC | KEY_INFO_ACK | KEY_INFO_INSTALL;
+        frame.extend_from_slice(&key_info.to_be_bytes());
+        frame.extend_from_slice(&0x0010u16.to_be_bytes()); // key_len
+        frame.extend_from_slice(&replay_counter.to_be_bytes());
+        frame.extend_from_slice(anonce); // key_nonce (ANonce)
+        frame.extend_from_slice(&[0u8; 16]); // key_iv
+        frame.extend_from_slice(&[0u8; 8]); // key_rsc
+        frame.extend_from_slice(&[0u8; 8]); // key_id
+        frame.extend_from_slice(&[0u8; 16]); // MIC placeholder (offset 81..97)
+        frame.extend_from_slice(&key_data_len.to_be_bytes());
+        frame.extend_from_slice(&key_data);
+
+        // Compute and fill MIC
+        let mic = compute_mic(ptk, &frame);
+        frame[81..97].copy_from_slice(&mic);
+
+        frame
+    }
+
+    #[test]
+    fn full_4way_handshake() {
+        let mut supplicant = WpaSupplicant::new();
+        let ap_bssid: Bssid = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let client_mac: Bssid = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        supplicant.init("password", "TestSSID", ap_bssid, client_mac);
+
+        // Override SNonce with a deterministic value for reproducible PTK
+        let known_snonce = [0x22u8; 32];
+        supplicant.snonce = known_snonce;
+
+        // --- Message 1 → Message 2 ---
+        let known_anonce = [0xA5u8; 32];
+        let msg1 = build_msg1(&known_anonce, 1);
+        let msg2 = supplicant.handle_message_1(&msg1).expect("msg1 handling");
+        assert_eq!(supplicant.state, WpaState::WaitMsg3);
+        assert_ne!(supplicant.ptk, [0u8; 48]);
+
+        // Verify msg2 structure
+        assert_eq!(msg2.len(), 99); // 4 + 95
+        assert_eq!(msg2[0], 0x03); // EAPOL version
+        assert_eq!(msg2[1], 0x03); // EAPOL-Key
+        // key_info should have KEY_TYPE | MIC | PAIRWISE
+        let msg2_key_info = u16::from_be_bytes([msg2[5], msg2[6]]);
+        assert_eq!(
+            msg2_key_info & (KEY_INFO_KEY_TYPE | KEY_INFO_MIC | KEY_INFO_PAIRWISE),
+            KEY_INFO_KEY_TYPE | KEY_INFO_MIC | KEY_INFO_PAIRWISE
+        );
+        // SNonce in msg2 should match our known value
+        assert_eq!(&msg2[17..49], &known_snonce[..]);
+        // Replay counter should match msg1's
+        assert_eq!(&msg2[9..17], &1u64.to_be_bytes());
+
+        // Verify msg2 MIC is valid
+        let mut msg2_copy = msg2.clone();
+        msg2_copy[81..97].fill(0);
+        let expected_mic = compute_mic(&supplicant.ptk, &msg2_copy);
+        assert_eq!(&msg2[81..97], &expected_mic[..]);
+
+        // --- Message 3 → Message 4 ---
+        let known_gtk = [0x77u8; 16];
+        let msg3 = build_msg3(
+            &known_anonce,
+            2, // replay counter must be > msg1's (1)
+            &supplicant.ptk,
+            &known_gtk,
+            1, // GTK key index
+        );
+        let msg4 = supplicant.handle_message_3(&msg3).expect("msg3 handling");
+        assert_eq!(supplicant.state, WpaState::WaitMsg4);
+
+        // Verify GTK was extracted
+        assert_eq!(&supplicant.gtk[..16], &known_gtk[..]);
+        assert_eq!(supplicant.gtk_key_index, 1);
+
+        // Verify msg4 structure
+        assert_eq!(msg4[0], 0x03); // EAPOL version
+        assert_eq!(msg4[1], 0x03); // EAPOL-Key
+        let msg4_key_info = u16::from_be_bytes([msg4[5], msg4[6]]);
+        assert_eq!(msg4_key_info & KEY_INFO_SECURE, KEY_INFO_SECURE);
+        // Replay counter should match msg3's
+        assert_eq!(&msg4[9..17], &2u64.to_be_bytes());
+
+        // Verify msg4 MIC
+        let mut msg4_copy = msg4.clone();
+        msg4_copy[81..97].fill(0);
+        let expected_mic4 = compute_mic(&supplicant.ptk, &msg4_copy);
+        assert_eq!(&msg4[81..97], &expected_mic4[..]);
+
+        // --- Key material ---
+        let (ptk_key, gtk_key, key_idx) = supplicant.key_material().expect("key material");
+        assert_eq!(ptk_key, supplicant.ptk[32..48]);
+        assert_eq!(&gtk_key[..], &known_gtk[..]);
+        assert_eq!(key_idx, 1);
+
+        // --- Complete handshake ---
+        supplicant.complete_handshake().expect("complete");
+        assert_eq!(supplicant.state, WpaState::Done);
+
+        // key_material still works after Done
+        assert!(supplicant.key_material().is_some());
+    }
+
+    // ── State guard tests ───────────────────────────────────
+
+    #[test]
+    fn msg1_rejects_wrong_state() {
+        let mut supplicant = WpaSupplicant::new();
+        supplicant.state = WpaState::Initial; // not WaitMsg1
+        let msg1 = build_msg1(&[0xA5; 32], 1);
+        assert_eq!(
+            supplicant.handle_message_1(&msg1),
+            Err(crate::NetError::Protocol)
+        );
+    }
+
+    #[test]
+    fn msg1_rejects_zero_anonce() {
+        let mut supplicant = WpaSupplicant::new();
+        supplicant.init("password", "TestSSID", [1; 6], [2; 6]);
+        let msg1 = build_msg1(&[0u8; 32], 1); // all-zero ANonce
+        assert_eq!(
+            supplicant.handle_message_1(&msg1),
+            Err(crate::NetError::Protocol)
+        );
+    }
+
+    #[test]
+    fn msg1_rejects_wrong_key_info_flags() {
+        let mut supplicant = WpaSupplicant::new();
+        supplicant.init("password", "TestSSID", [1; 6], [2; 6]);
+
+        // Add MIC flag which should be absent in msg1
+        let mut msg1 = build_msg1(&[0xA5; 32], 1);
+        // Set MIC flag (should cause rejection)
+        let bad_key_info = KEY_INFO_KEY_TYPE | KEY_INFO_PAIRWISE | KEY_INFO_ACK | KEY_INFO_MIC;
+        msg1[5..7].copy_from_slice(&bad_key_info.to_be_bytes());
+
+        assert_eq!(
+            supplicant.handle_message_1(&msg1),
+            Err(crate::NetError::Protocol)
+        );
+    }
+
+    #[test]
+    fn msg3_rejects_stale_replay_counter() {
+        let mut supplicant = WpaSupplicant::new();
+        supplicant.init("password", "TestSSID", [1; 6], [2; 6]);
+        supplicant.snonce = [0x22; 32];
+
+        // msg1 with replay counter 5
+        let msg1 = build_msg1(&[0xA5; 32], 5);
+        supplicant.handle_message_1(&msg1).unwrap();
+        assert_eq!(supplicant.replay_counter, 5);
+
+        // msg3 with replay counter 3 (stale)
+        let msg3 = build_msg3(
+            &[0xA5; 32],
+            3, // < 5, should be rejected
+            &supplicant.ptk,
+            &[0x77; 16],
+            0,
+        );
+        assert_eq!(
+            supplicant.handle_message_3(&msg3),
+            Err(crate::NetError::Protocol)
+        );
+    }
+
+    #[test]
+    fn key_material_rejects_before_handshake() {
+        let supplicant = WpaSupplicant::new();
+        assert!(supplicant.key_material().is_none());
+    }
+
+    #[test]
+    fn complete_handshake_rejects_wrong_state() {
+        let mut supplicant = WpaSupplicant::new();
+        // State is Initial, not WaitMsg4
+        assert_eq!(
+            supplicant.complete_handshake(),
+            Err(crate::NetError::Protocol)
+        );
+    }
+
+    // ── PTK determinism test ────────────────────────────────
+
+    #[test]
+    fn ptk_is_deterministic_with_known_inputs() {
+        let mut a = WpaSupplicant::new();
+        a.init(
+            "password",
+            "TestSSID",
+            [1, 2, 3, 4, 5, 6],
+            [6, 5, 4, 3, 2, 1],
+        );
+        a.snonce = [0x22; 32];
+
+        let mut b = WpaSupplicant::new();
+        b.init(
+            "password",
+            "TestSSID",
+            [1, 2, 3, 4, 5, 6],
+            [6, 5, 4, 3, 2, 1],
+        );
+        b.snonce = [0x22; 32];
+
+        let anonce = [0xA5; 32];
+        let msg1 = build_msg1(&anonce, 1);
+
+        a.handle_message_1(&msg1).unwrap();
+        b.handle_message_1(&msg1).unwrap();
+
+        assert_eq!(a.ptk, b.ptk);
+        assert_eq!(a.pmk, b.pmk);
+    }
+
+    #[test]
+    fn ptk_differs_for_different_mac_addresses() {
+        let anonce = [0xA5; 32];
+
+        let mut a = WpaSupplicant::new();
+        a.init(
+            "password",
+            "TestSSID",
+            [1, 2, 3, 4, 5, 6],
+            [6, 5, 4, 3, 2, 1],
+        );
+        a.snonce = [0x22; 32];
+
+        let mut b = WpaSupplicant::new();
+        b.init(
+            "password",
+            "TestSSID",
+            [1, 2, 3, 4, 5, 6],
+            [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        );
+        b.snonce = [0x22; 32];
+
+        let msg1 = build_msg1(&anonce, 1);
+        a.handle_message_1(&msg1).unwrap();
+        b.handle_message_1(&msg1).unwrap();
+
+        assert_ne!(a.ptk, b.ptk);
+    }
 }

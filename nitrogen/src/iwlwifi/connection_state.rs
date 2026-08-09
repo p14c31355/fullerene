@@ -36,6 +36,14 @@ static WIFI_INIT_PHASE: core::sync::atomic::AtomicU8 =
 static WIFI_INIT_LAST_ACTIVE_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
 static WIFI_RUNTIME_PHASE_LOGGED: AtomicBool = AtomicBool::new(false);
+/// Cooldown counter (in scheduler ticks) before auto-rescanning after a
+/// scan completes or a connection drops.  When this reaches zero and the
+/// device is disconnected + idle, `perform_tick` enqueues a fresh scan.
+static WIFI_AUTO_SCAN_COOLDOWN: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+/// Number of scheduler ticks to wait between automatic scans.  At ~2.25 ms
+/// per tick this is roughly 15 seconds.
+const AUTO_SCAN_INTERVAL_TICKS: u32 = 6_500;
 // Hints are drawn from the scheduler context only. set_init_phase() is also
 // used by the NMI watchdog failure path, where taking the debug callback lock
 // could deadlock.
@@ -1199,6 +1207,10 @@ fn perform_init_step() {
             WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
             log::info!("iwlwifi: initialization complete; device is ready for scanning");
             debug::print("iwlwifi", "step: init_done");
+            // Auto-scan: enqueue the first scan immediately so results
+            // are available before the user opens the network menu.
+            // The scheduler processes this on the next SQ drain cycle.
+            start_scan_if_idle();
         }
         WifiInitPhase::Failed => {
             let previous = WifiInitPhase::from(
@@ -1307,6 +1319,31 @@ fn perform_tick() {
         let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
         dev_ref.tick();
         update_wifi_manager(dev_ref);
+
+        // Auto-rescan: when the device is disconnected and not currently
+        // scanning, count down the cooldown.  When it reaches zero, enqueue
+        // a fresh scan so the AP list stays current without requiring the
+        // user to open the network menu.
+        let status = dev_ref.get_status();
+        if status == bonder::wifi::WifiStatus::Disconnected {
+            let prev = WIFI_AUTO_SCAN_COOLDOWN.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+            if prev <= 1 {
+                WIFI_AUTO_SCAN_COOLDOWN.store(
+                    AUTO_SCAN_INTERVAL_TICKS,
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+                drop(dev_guard);
+                log::info!("iwlwifi: auto-rescan triggered (cooldown elapsed)");
+                start_scan_if_idle();
+            }
+        } else {
+            // Reset the cooldown while connected or scanning so the next
+            // auto-scan window starts fresh after disconnection.
+            WIFI_AUTO_SCAN_COOLDOWN.store(
+                AUTO_SCAN_INTERVAL_TICKS,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+        }
     }
 }
 

@@ -381,7 +381,7 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
                 let tag_end = offset + tag_len;
 
                 let group_cipher = if pos + 4 <= tag_end {
-                    u32::from_le_bytes([frame[pos], frame[pos + 1], frame[pos + 2], frame[pos + 3]])
+                    u32::from_be_bytes([frame[pos], frame[pos + 1], frame[pos + 2], frame[pos + 3]])
                 } else {
                     0
                 };
@@ -397,7 +397,7 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
                 let mut pair_ciphers = Vec::new();
                 for _ in 0..pair_cipher_count {
                     if pos + 4 <= tag_end {
-                        pair_ciphers.push(u32::from_le_bytes([
+                        pair_ciphers.push(u32::from_be_bytes([
                             frame[pos],
                             frame[pos + 1],
                             frame[pos + 2],
@@ -417,7 +417,7 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
                 let mut akms = Vec::new();
                 for _ in 0..akm_count {
                     if pos + 4 <= tag_end {
-                        akms.push(u32::from_le_bytes([
+                        akms.push(u32::from_be_bytes([
                             frame[pos],
                             frame[pos + 1],
                             frame[pos + 2],
@@ -458,8 +458,7 @@ pub fn security_from_beacon(capability: u16, rsn: Option<&RsnInfo>) -> Security 
     if let Some(r) = rsn {
         for akm in &r.akms {
             match akm {
-                0x000FAC01 | 0x000FAC05 => return Security::Wpa2Psk,
-                0x000FAC02 => return Security::WpaPsk,
+                0x000FAC01 | 0x000FAC02 | 0x000FAC05 => return Security::Wpa2Psk,
                 0x000FAC08 => return Security::Wpa3Sae,
                 _ => {}
             }
@@ -634,4 +633,572 @@ pub fn build_deauth(bssid: Bssid, client_mac: Bssid, reason: u16) -> Vec<u8> {
     frame.extend_from_slice(&reason.to_le_bytes());
 
     frame
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::format;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    // ── Test helpers ────────────────────────────────────────
+
+    /// Build a beacon/probe-response frame for testing.
+    fn build_beacon_frame(
+        subtype: u8,
+        bssid: Bssid,
+        ssid: &[u8],
+        channel: u8,
+        capability: u16,
+        rsn_ie: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let mut f = Vec::new();
+        // Frame control: management type (0), subtype in upper nibble
+        f.push((subtype << 4) | 0x00);
+        f.push(0x00);
+        // Duration
+        f.extend_from_slice(&[0x00, 0x00]);
+        // Addr1: broadcast
+        f.extend_from_slice(&[0xFF; 6]);
+        // Addr2: SA (AP)
+        f.extend_from_slice(&bssid);
+        // Addr3: BSSID
+        f.extend_from_slice(&bssid);
+        // Sequence control
+        f.extend_from_slice(&[0x10, 0x00]);
+        // Fixed params
+        f.extend_from_slice(&0u64.to_le_bytes()); // timestamp
+        f.extend_from_slice(&100u16.to_le_bytes()); // beacon interval
+        f.extend_from_slice(&capability.to_le_bytes());
+        // SSID IE
+        f.push(0x00);
+        f.push(ssid.len() as u8);
+        f.extend_from_slice(ssid);
+        // Rates IE
+        f.push(0x01);
+        f.push(0x04);
+        f.extend_from_slice(&[0x82, 0x84, 0x8B, 0x96]);
+        // DS Channel IE
+        f.push(0x03);
+        f.push(0x01);
+        f.push(channel);
+        // RSN IE (optional)
+        if let Some(rsn) = rsn_ie {
+            f.extend_from_slice(rsn);
+        }
+        f
+    }
+
+    /// Standard WPA2-PSK/CCMP RSN IE bytes (element ID + length + data).
+    fn rsn_ie_wpa2_psk() -> Vec<u8> {
+        let mut ie = Vec::new();
+        ie.push(0x30); // Element ID
+        ie.push(20); // Length
+        ie.extend_from_slice(&1u16.to_le_bytes()); // Version
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x04]); // Group: CCMP
+        ie.extend_from_slice(&1u16.to_le_bytes()); // Pair count
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x04]); // Pair: CCMP
+        ie.extend_from_slice(&1u16.to_le_bytes()); // AKM count
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x02]); // AKM: PSK
+        ie.extend_from_slice(&0u16.to_le_bytes()); // Capabilities
+        ie
+    }
+
+    /// WPA3-SAE RSN IE.
+    fn rsn_ie_wpa3_sae() -> Vec<u8> {
+        let mut ie = Vec::new();
+        ie.push(0x30);
+        ie.push(20);
+        ie.extend_from_slice(&1u16.to_le_bytes());
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x04]); // CCMP
+        ie.extend_from_slice(&1u16.to_le_bytes());
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x04]);
+        ie.extend_from_slice(&1u16.to_le_bytes());
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x08]); // SAE
+        ie.extend_from_slice(&0u16.to_le_bytes());
+        ie
+    }
+
+    /// RSN IE with multiple AKMs (WPA2-PSK + WPA3-SAE transition).
+    fn rsn_ie_wpa3_transition() -> Vec<u8> {
+        let mut ie = Vec::new();
+        ie.push(0x30);
+        ie.push(24); // 20 + 4 for extra AKM
+        ie.extend_from_slice(&1u16.to_le_bytes());
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x04]);
+        ie.extend_from_slice(&1u16.to_le_bytes());
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x04]);
+        ie.extend_from_slice(&2u16.to_le_bytes()); // 2 AKMs
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x02]); // PSK
+        ie.extend_from_slice(&[0x00, 0x0F, 0xAC, 0x08]); // SAE
+        ie.extend_from_slice(&0u16.to_le_bytes());
+        ie
+    }
+
+    // ── Ssid tests ──────────────────────────────────────────
+
+    #[test]
+    fn ssid_basic_operations() {
+        let s = Ssid::new(b"Hello");
+        assert_eq!(s.len(), 5);
+        assert!(!s.is_empty());
+        assert_eq!(s.as_str(), "Hello");
+        assert_eq!(format!("{}", s), "Hello");
+    }
+
+    #[test]
+    fn ssid_truncation_to_32_bytes() {
+        let long = b"ThisIsAVeryLongSSIDThatExceeds32Bytes!!!!";
+        let s = Ssid::new(long);
+        assert_eq!(s.len(), SSID_MAX_LEN);
+    }
+
+    #[test]
+    fn ssid_empty() {
+        let s = Ssid::new(b"");
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+        assert_eq!(s.as_str(), "");
+    }
+
+    #[test]
+    fn ssid_non_utf8_shows_invalid() {
+        let s = Ssid::new(&[0xFF, 0xFE, 0xFD]);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.as_str(), "");
+        assert_eq!(format!("{}", s), "<invalid>");
+    }
+
+    // ── Beacon parsing tests ────────────────────────────────
+
+    #[test]
+    fn parse_open_beacon_2ghz() {
+        let bssid = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let frame = build_beacon_frame(8, bssid, b"OpenNet", 6, 0x0001, None);
+
+        let beacon = parse_beacon(&frame).expect("beacon parse");
+        assert_eq!(beacon.header.mgmt_subtype(), Some(MgmtSubtype::Beacon));
+        assert_eq!(beacon.ssid.as_ref().unwrap().as_str(), "OpenNet");
+        assert_eq!(beacon.ds_channel, Some(6));
+        assert_eq!(beacon.capability, 0x0001);
+        assert!(beacon.rsn.is_none());
+        assert_eq!(beacon.beacon_interval, 100);
+        assert_eq!(beacon.rates, vec![0x82, 0x84, 0x8B, 0x96]);
+    }
+
+    #[test]
+    fn parse_wpa2_beacon() {
+        let bssid = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        let rsn = rsn_ie_wpa2_psk();
+        let frame = build_beacon_frame(8, bssid, b"WPA2Net", 11, 0x0011, Some(&rsn));
+
+        let beacon = parse_beacon(&frame).expect("beacon parse");
+        assert_eq!(beacon.ssid.as_ref().unwrap().as_str(), "WPA2Net");
+        assert_eq!(beacon.ds_channel, Some(11));
+        assert_eq!(beacon.capability, 0x0011);
+
+        let rsn = beacon.rsn.as_ref().expect("RSN IE");
+        assert_eq!(rsn.version, 1);
+        assert_eq!(rsn.group_cipher, 0x000FAC04); // CCMP
+        assert_eq!(rsn.pair_cipher_count, 1);
+        assert_eq!(rsn.pair_ciphers, vec![0x000FAC04u32]);
+        assert_eq!(rsn.akm_count, 1);
+        assert_eq!(rsn.akms, vec![0x000FAC02u32]); // PSK
+    }
+
+    #[test]
+    fn parse_5ghz_beacon_ch36() {
+        let bssid = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC];
+        let rsn = rsn_ie_wpa2_psk();
+        // Channel 36 in 5GHz band
+        let frame = build_beacon_frame(8, bssid, b"Buffalo-A-2218", 36, 0x0011, Some(&rsn));
+
+        let beacon = parse_beacon(&frame).expect("beacon parse");
+        assert_eq!(beacon.ssid.as_ref().unwrap().as_str(), "Buffalo-A-2218");
+        assert_eq!(beacon.ds_channel, Some(36));
+        assert!(beacon.rsn.is_some());
+    }
+
+    #[test]
+    fn parse_probe_response() {
+        let bssid = [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01];
+        let frame = build_beacon_frame(5, bssid, b"ProbeTest", 1, 0x0001, None);
+
+        let beacon = parse_beacon(&frame).expect("probe response parse");
+        assert_eq!(
+            beacon.header.mgmt_subtype(),
+            Some(MgmtSubtype::ProbeResponse)
+        );
+        assert_eq!(beacon.ssid.as_ref().unwrap().as_str(), "ProbeTest");
+    }
+
+    #[test]
+    fn parse_beacon_too_short() {
+        assert!(parse_beacon(&[0x80, 0x00, 0x00]).is_none());
+    }
+
+    #[test]
+    fn parse_beacon_wrong_subtype() {
+        // Authentication frame (subtype 11) should not parse as beacon
+        let frame = build_beacon_frame(11, [0; 6], b"Test", 1, 0x0001, None);
+        assert!(parse_beacon(&frame).is_none());
+    }
+
+    #[test]
+    fn parse_beacon_with_wpa3_transition() {
+        let bssid = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        let rsn = rsn_ie_wpa3_transition();
+        let frame = build_beacon_frame(8, bssid, b"WPA3Trans", 36, 0x0011, Some(&rsn));
+
+        let beacon = parse_beacon(&frame).expect("beacon parse");
+        let rsn = beacon.rsn.as_ref().expect("RSN IE");
+        assert_eq!(rsn.akm_count, 2);
+        assert_eq!(rsn.akms.len(), 2);
+        assert_eq!(rsn.akms[0], 0x000FAC02); // PSK
+        assert_eq!(rsn.akms[1], 0x000FAC08); // SAE
+    }
+
+    #[test]
+    fn parse_beacon_empty_ssid() {
+        let bssid = [0; 6];
+        let frame = build_beacon_frame(8, bssid, b"", 6, 0x0001, None);
+
+        let beacon = parse_beacon(&frame).expect("beacon parse");
+        // Empty SSID tag with length 0
+        assert!(beacon.ssid.is_none() || beacon.ssid.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_beacon_with_wpa3_sae_rsn() {
+        let bssid = [0x09, 0x08, 0x07, 0x06, 0x05, 0x04];
+        let rsn = rsn_ie_wpa3_sae();
+        let frame = build_beacon_frame(8, bssid, b"WPA3Net", 36, 0x0011, Some(&rsn));
+
+        let beacon = parse_beacon(&frame).expect("beacon parse");
+        let rsn = beacon.rsn.as_ref().expect("RSN IE");
+        assert_eq!(rsn.akm_count, 1);
+        assert_eq!(rsn.akms, vec![0x000FAC08]); // SAE
+        assert_eq!(
+            security_from_beacon(beacon.capability, beacon.rsn.as_ref()),
+            Security::Wpa3Sae
+        );
+    }
+
+    #[test]
+    fn parse_beacon_truncated_rsn_ie() {
+        let bssid = [0; 6];
+        let mut frame = build_beacon_frame(8, bssid, b"Test", 6, 0x0011, None);
+        // Add truncated RSN IE (tag 48, length 2, but only version)
+        frame.push(0x30);
+        frame.push(2);
+        frame.extend_from_slice(&1u16.to_le_bytes());
+
+        let beacon = parse_beacon(&frame).expect("beacon parse");
+        let rsn = beacon.rsn.as_ref().expect("RSN present");
+        assert_eq!(rsn.version, 1);
+        assert_eq!(rsn.group_cipher, 0); // not enough data
+    }
+
+    // ── security_from_beacon tests ──────────────────────────
+
+    #[test]
+    fn security_open_no_rsn_no_privacy() {
+        assert_eq!(security_from_beacon(0x0001, None), Security::Open);
+    }
+
+    #[test]
+    fn security_wpa2_psk_from_rsn() {
+        let rsn = RsnInfo {
+            version: 1,
+            group_cipher: 0x000FAC04,
+            pair_cipher_count: 1,
+            pair_ciphers: vec![0x000FAC04],
+            akm_count: 1,
+            akms: vec![0x000FAC02],
+        };
+        assert_eq!(security_from_beacon(0x0011, Some(&rsn)), Security::Wpa2Psk);
+    }
+
+    #[test]
+    fn security_wpa2_psk_via_akm_05() {
+        // AKM type 5 (0x000FAC05) also maps to WPA2-PSK
+        let rsn = RsnInfo {
+            version: 1,
+            group_cipher: 0x000FAC04,
+            pair_cipher_count: 1,
+            pair_ciphers: vec![0x000FAC04],
+            akm_count: 1,
+            akms: vec![0x000FAC05],
+        };
+        assert_eq!(security_from_beacon(0x0011, Some(&rsn)), Security::Wpa2Psk);
+    }
+
+    #[test]
+    fn security_wpa2_enterprise_from_rsn() {
+        // AKM type 1 (802.1X) maps to Wpa2Psk (we don't distinguish enterprise)
+        let rsn = RsnInfo {
+            version: 1,
+            group_cipher: 0x000FAC04,
+            pair_cipher_count: 1,
+            pair_ciphers: vec![0x000FAC04],
+            akm_count: 1,
+            akms: vec![0x000FAC01], // 802.1X
+        };
+        assert_eq!(security_from_beacon(0x0011, Some(&rsn)), Security::Wpa2Psk);
+    }
+
+    #[test]
+    fn security_wpa3_sae_from_rsn() {
+        let rsn = RsnInfo {
+            version: 1,
+            group_cipher: 0x000FAC04,
+            pair_cipher_count: 1,
+            pair_ciphers: vec![0x000FAC04],
+            akm_count: 1,
+            akms: vec![0x000FAC08],
+        };
+        assert_eq!(security_from_beacon(0x0011, Some(&rsn)), Security::Wpa3Sae);
+    }
+
+    #[test]
+    fn security_wpa3_transition_prefers_psk() {
+        // With both PSK and SAE, the first match wins (PSK → Wpa2Psk)
+        let rsn = RsnInfo {
+            version: 1,
+            group_cipher: 0x000FAC04,
+            pair_cipher_count: 1,
+            pair_ciphers: vec![0x000FAC04],
+            akm_count: 2,
+            akms: vec![0x000FAC02, 0x000FAC08],
+        };
+        assert_eq!(security_from_beacon(0x0011, Some(&rsn)), Security::Wpa2Psk);
+    }
+
+    #[test]
+    fn security_wep_fallback_privacy_bit() {
+        // No RSN IE but privacy bit set → WEP (or WPA, currently maps to WpaPsk)
+        assert_eq!(security_from_beacon(0x0011, None), Security::WpaPsk);
+    }
+
+    #[test]
+    fn security_open_with_rsn_no_matching_akm() {
+        // RSN present but no recognized AKM → falls through to privacy check
+        let rsn = RsnInfo {
+            version: 1,
+            group_cipher: 0x000FAC04,
+            pair_cipher_count: 1,
+            pair_ciphers: vec![0x000FAC04],
+            akm_count: 1,
+            akms: vec![0x000FAC09], // unknown AKM
+        };
+        // Privacy bit set → WpaPsk (fallback)
+        assert_eq!(security_from_beacon(0x0011, Some(&rsn)), Security::WpaPsk);
+    }
+
+    // ── Frame builder tests ─────────────────────────────────
+
+    #[test]
+    fn build_probe_request_wildcard() {
+        let frame = build_probe_request(None);
+        // FC: management, subtype 4
+        assert_eq!(frame[0], 0x40);
+        assert_eq!(frame[1], 0x00);
+        // Addr1: broadcast
+        assert_eq!(&frame[4..10], &[0xFF; 6]);
+        // SSID IE: wildcard (length 0)
+        assert_eq!(frame[24], 0x00);
+        assert_eq!(frame[25], 0x00);
+        // Rates IE present
+        assert_eq!(frame[26], 0x01);
+    }
+
+    #[test]
+    fn build_probe_request_with_ssid() {
+        let ssid = Ssid::new(b"TestAP");
+        let frame = build_probe_request(Some(&ssid));
+        assert_eq!(frame[0], 0x40);
+        // SSID IE
+        assert_eq!(frame[24], 0x00); // tag 0
+        assert_eq!(frame[25], 6); // length
+        assert_eq!(&frame[26..32], b"TestAP");
+    }
+
+    #[test]
+    fn build_auth_frame_layout() {
+        let bssid = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        let client = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        let frame = build_auth_frame(bssid, client, 1);
+
+        // FC: management, subtype 11 (auth)
+        assert_eq!(frame[0], 0xB0);
+        // Addr1 = BSSID
+        assert_eq!(&frame[4..10], &bssid);
+        // Addr2 = client
+        assert_eq!(&frame[10..16], &client);
+        // Addr3 = BSSID
+        assert_eq!(&frame[16..22], &bssid);
+        // Auth algorithm = 0 (open)
+        assert_eq!(&frame[24..26], &[0x00, 0x00]);
+        // Auth seq = 1 (LE)
+        assert_eq!(&frame[26..28], &[0x01, 0x00]);
+        // Status = 0
+        assert_eq!(&frame[28..30], &[0x00, 0x00]);
+    }
+
+    #[test]
+    fn build_assoc_request_open() {
+        let bssid = [0x11; 6];
+        let client = [0x22; 6];
+        let ssid = Ssid::new(b"OpenAP");
+        let frame = build_assoc_request(bssid, client, &ssid);
+
+        // FC: management, subtype 0 (assoc request)
+        assert_eq!(frame[0], 0x00);
+        // Addr1 = BSSID
+        assert_eq!(&frame[4..10], &bssid);
+        // Capability: ESS=1, no privacy
+        assert_eq!(frame[24], 0x01);
+        assert_eq!(frame[25], 0x00);
+        // Listen interval = 10
+        assert_eq!(&frame[26..28], &[0x0A, 0x00]);
+        // SSID IE
+        assert_eq!(frame[28], 0x00);
+        assert_eq!(frame[29], 6); // "OpenAP" = 6 bytes
+        assert_eq!(&frame[30..36], b"OpenAP");
+    }
+
+    #[test]
+    fn build_assoc_request_with_wpa2() {
+        let bssid = [0x33; 6];
+        let client = [0x44; 6];
+        let ssid = Ssid::new(b"SecureAP");
+        let frame = build_assoc_request_with_security(bssid, client, &ssid, true);
+
+        // Capability: ESS=1 + privacy=1
+        assert_eq!(frame[24], 0x01 | 0x10);
+        assert_eq!(frame[25], 0x00);
+
+        // Find RSN IE after SSID + rates
+        let mut pos = 28; // after capability + listen_interval
+        // Skip SSID IE
+        pos += 2 + frame[pos + 1] as usize;
+        // Skip Rates IE
+        pos += 2 + frame[pos + 1] as usize;
+
+        // Now at RSN IE
+        assert_eq!(frame[pos], 0x30); // RSN element ID
+        assert_eq!(frame[pos + 1], 20); // RSN length
+        assert_eq!(&frame[pos + 2..pos + 4], &[0x01, 0x00]); // version
+        assert_eq!(&frame[pos + 4..pos + 8], &[0x00, 0x0F, 0xAC, 0x04]); // CCMP
+    }
+
+    #[test]
+    fn build_deauth_frame() {
+        let bssid = [0x55; 6];
+        let client = [0x66; 6];
+        let frame = build_deauth(bssid, client, 7);
+
+        // FC: management, subtype 12 (deauth)
+        assert_eq!(frame[0], 0xC0);
+        // Addr1 = BSSID
+        assert_eq!(&frame[4..10], &bssid);
+        // Addr2 = client
+        assert_eq!(&frame[10..16], &client);
+        // Reason code = 7 (LE)
+        assert_eq!(&frame[24..26], &[0x07, 0x00]);
+    }
+
+    // ── WifiConnection state machine tests ──────────────────
+
+    #[test]
+    fn connection_state_machine() {
+        let mut conn = WifiConnection::new();
+        assert_eq!(conn.status, WifiStatus::Disconnected);
+        assert!(!conn.is_connected());
+
+        // Scan
+        conn.start_scan();
+        assert_eq!(conn.status, WifiStatus::Scanning);
+        assert!(conn.scan_results.is_empty());
+
+        // Add results
+        conn.add_scan_result(AccessPoint {
+            ssid: Ssid::new(b"AP1"),
+            bssid: [1; 6],
+            channel: 6,
+            rssi: -50,
+            security: Security::Open,
+            beacon_interval: 100,
+        });
+        conn.add_scan_result(AccessPoint {
+            ssid: Ssid::new(b"AP2"),
+            bssid: [2; 6],
+            channel: 11,
+            rssi: -60,
+            security: Security::Wpa2Psk,
+            beacon_interval: 100,
+        });
+        assert_eq!(conn.scan_results.len(), 2);
+
+        // Duplicate BSSID should be deduped
+        conn.add_scan_result(AccessPoint {
+            ssid: Ssid::new(b"AP1-dup"),
+            bssid: [1; 6],
+            channel: 6,
+            rssi: -40,
+            security: Security::Open,
+            beacon_interval: 100,
+        });
+        assert_eq!(conn.scan_results.len(), 2);
+
+        // Finish scan
+        conn.finish_scan();
+        assert_eq!(conn.status, WifiStatus::Disconnected);
+
+        // Connect
+        let ssid = Ssid::new(b"AP2");
+        conn.connect(&ssid, Some("password"));
+        assert_eq!(conn.status, WifiStatus::Authenticating);
+        assert_eq!(conn.current_ssid.as_ref().unwrap().as_str(), "AP2");
+        assert!(conn.password.is_some());
+
+        // Disconnect
+        conn.disconnect();
+        assert_eq!(conn.status, WifiStatus::Disconnected);
+        assert!(conn.current_ssid.is_none());
+        assert!(conn.current_bssid.is_none());
+    }
+
+    // ── FrameType / MgmtSubtype tests ───────────────────────
+
+    #[test]
+    fn frame_type_from_u8() {
+        assert_eq!(FrameType::from_u8(0), Some(FrameType::Management));
+        assert_eq!(FrameType::from_u8(1), Some(FrameType::Control));
+        assert_eq!(FrameType::from_u8(2), Some(FrameType::Data));
+        assert_eq!(FrameType::from_u8(3), None);
+    }
+
+    #[test]
+    fn mgmt_subtype_from_u8() {
+        assert_eq!(MgmtSubtype::from_u8(8), Some(MgmtSubtype::Beacon));
+        assert_eq!(MgmtSubtype::from_u8(11), Some(MgmtSubtype::Authentication));
+        assert_eq!(
+            MgmtSubtype::from_u8(12),
+            Some(MgmtSubtype::Deauthentication)
+        );
+        assert_eq!(MgmtSubtype::from_u8(14), None);
+    }
+
+    #[test]
+    fn security_name_and_needs_password() {
+        assert_eq!(Security::Open.name(), "Open");
+        assert!(!Security::Open.needs_password());
+        assert_eq!(Security::Wpa2Psk.name(), "WPA2-PSK");
+        assert!(Security::Wpa2Psk.needs_password());
+        assert_eq!(Security::Wpa3Sae.name(), "WPA3-SAE");
+        assert!(Security::Wpa3Sae.needs_password());
+        assert!(Security::Wep.needs_password());
+    }
 }
