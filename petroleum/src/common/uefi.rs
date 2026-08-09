@@ -198,8 +198,9 @@ pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
     0x22, 0x5b, 0x4e, 0x96, 0x59, 0x64, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
 ];
 
+/// EFI_FILE_INFO_ID: {09576E92-6D3F-11D2-8E39-00A0C969723B}
 pub const EFI_FILE_INFO_GUID: [u8; 16] = [
-    0x0d, 0x95, 0xde, 0x05, 0x93, 0x31, 0xd2, 0x11, 0x8a, 0x41, 0x00, 0xa0, 0xc9, 0x3e, 0xc7, 0xea,
+    0x92, 0x6e, 0x57, 0x09, 0x3f, 0x6d, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
 ];
 
 /// GUID for EFI_GRAPHICS_OUTPUT_PROTOCOL (UEFI)
@@ -312,15 +313,15 @@ pub struct EfiSimpleTextOutput {
 /// A minimal subset of EFI_FILE_PROTOCOL (UEFI)
 #[repr(C)]
 pub struct EfiFile {
-    _pad0: [usize; 3],
+    _pad0: [usize; 1],
     /// open(This, *mut EfiFile, *mut u16, OpenMode, Attributes) -> EFI_STATUS
     pub open: extern "efiapi" fn(*mut EfiFile, *mut *mut EfiFile, *const u16, u64, u64) -> usize,
     /// close(This) -> EFI_STATUS
     pub close: extern "efiapi" fn(*mut EfiFile) -> usize,
-    _pad1: [usize; 1],
+    _delete: usize,
     /// read(This, *mut ReadSize, *mut Buffer) -> EFI_STATUS
     pub read: extern "efiapi" fn(*mut EfiFile, *mut u64, *mut u8) -> usize,
-    _pad2: [usize; 2],
+    _pad1: [usize; 3],
     /// get_info(This, *const Guid, *mut BufferSize, *mut Buffer) -> EFI_STATUS
     pub get_info: extern "efiapi" fn(*mut EfiFile, *const u8, *mut usize, *mut c_void) -> usize,
 }
@@ -338,8 +339,17 @@ pub struct EfiSimpleFileSystem {
 pub struct EfiLoadedImageProtocol {
     pub revision: u32,
     pub parent_handle: usize,
+    pub system_table: *mut c_void,
     pub device_handle: usize,
-    // more fields, but we only need these
+    pub file_path: *mut c_void,
+    pub reserved: *mut c_void,
+    pub load_options_size: u32,
+    pub load_options: *mut c_void,
+    pub image_base: usize,
+    pub image_size: u64,
+    pub image_code_type: u32,
+    pub image_data_type: u32,
+    pub unload: usize,
 }
 
 /// Minimal EFI_GRAPHICS_OUTPUT_PROTOCOL (UEFI)

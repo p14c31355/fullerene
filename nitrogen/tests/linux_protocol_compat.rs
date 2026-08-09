@@ -4,7 +4,7 @@
 //! boot log and do not need special arguments or hardware: the Linux 4.9
 //! wire format is the oracle, and a driver regression makes `cargo test` fail.
 
-use std::mem::size_of;
+use std::mem::{offset_of, size_of};
 use std::slice;
 
 use nitrogen::iwlwifi::registers::{
@@ -67,6 +67,26 @@ fn linux_v49_scan_commands_use_the_aux_station_id() {
     // The two Linux LMAC scan TX command entries are both bound to sta_id 1.
     assert_eq!(request_bytes[40], 1);
     assert_eq!(request_bytes[52], 1);
+    // FullereneOS uses the supplied wildcard probe request for an active
+    // scan; the LMAC PASSIVE flag must remain clear.
+    let scan_flags = u32::from_le_bytes(request_bytes[12..16].try_into().unwrap());
+    assert_ne!(scan_flags & (1 << 0), 0);
+    assert_eq!(scan_flags & (1 << 1), 0);
+    assert_ne!(scan_flags & (1 << 3), 0);
+    assert_ne!(scan_flags & (1 << 7), 0);
+
+    let probe = &request_bytes[offset_of!(ScanRequestCmd, probe_req)..];
+    assert_eq!(u16::from_le_bytes(probe[4..6].try_into().unwrap()), 26);
+    assert_eq!(u16::from_le_bytes(probe[6..8].try_into().unwrap()), 10);
+    assert_eq!(u16::from_le_bytes(probe[8..10].try_into().unwrap()), 36);
+    assert_eq!(u16::from_le_bytes(probe[10..12].try_into().unwrap()), 6);
+    assert_eq!(u16::from_le_bytes(probe[12..14].try_into().unwrap()), 42);
+    assert_eq!(u16::from_le_bytes(probe[14..16].try_into().unwrap()), 6);
+    assert_eq!(
+        &probe[16 + 26..16 + 36],
+        &[1, 8, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]
+    );
+    assert_eq!(&probe[16 + 42..16 + 48], &[50, 4, 0xb0, 0x48, 0x60, 0x6c]);
 }
 
 #[test]
@@ -140,4 +160,13 @@ fn tx_dma_allocation_covers_every_region() {
 #[test]
 fn mac_context_payload_matches_api_v1_fixed_offsets() {
     assert_eq!(size_of::<MacContextCmd>(), 144);
+    let payload = MacContextCmd::sta([0x94, 0x65, 0x9c, 0x44, 0x73, 0xd4]);
+    let actual = bytes(&payload);
+    assert_eq!(&actual[24..30], &[0xff; 6]);
+    assert_eq!(&actual[60..62], &15u16.to_le_bytes());
+    assert_eq!(&actual[62..64], &1023u16.to_le_bytes());
+    assert_eq!(actual[64], 2);
+    assert_eq!(&actual[68..70], &15u16.to_le_bytes());
+    assert_eq!(&actual[70..72], &1023u16.to_le_bytes());
+    assert_eq!(&actual[120..124], &0x028f_5c28u32.to_le_bytes());
 }

@@ -38,7 +38,7 @@ pub trait WifiDriver: Send {
     fn create(
         ctx: &'static dyn DriverContext,
         mmio_base: *mut u32,
-        hw_rev: u32,
+        pci_revision: u32,
         device: crate::pci::PciDevice,
     ) -> Option<Box<dyn WifiDriver>>
     where
@@ -97,6 +97,11 @@ pub trait WifiDriver: Send {
     /// Called by the step-based init after firmware alive is confirmed.
     fn send_init_commands(&mut self) -> Result<(), crate::DriverError>;
 
+    /// Check PCIe health before a scheduler-owned MMIO operation.
+    fn check_pci_health(&mut self) -> Result<(), crate::DriverError> {
+        Ok(())
+    }
+
     /// Configure the temporary INIT image: read NVM, notify the firmware
     /// that NVM access is complete, and wait for PHY initialization.
     fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
@@ -136,7 +141,7 @@ pub struct PciWifiInfo {
 
 // ── Driver entry in the registry ─────────────────────────────────────
 
-/// Type-erased constructor: given the driver context, MMIO base, and HW
+/// Type-erased constructor: given the driver context, MMIO base, and PCI
 /// revision, returns a boxed driver or `None` on failure.
 type DriverCtor = fn(
     &'static dyn DriverContext,
@@ -311,7 +316,7 @@ pub static DRIVER_TABLE: &[DriverEntry] = &[
 pub struct PciProbeResult {
     pub driver: Box<dyn WifiDriver>,
     pub device_id: u16,
-    pub hw_rev: u32,
+    pub pci_revision: u32,
 }
 
 /// Raw result of a lightweight PCI probe (without driver creation).
@@ -327,7 +332,9 @@ pub struct RawPciProbeResult {
     /// misleading zero by the caller.
     pub bar0_phys: u64,
     pub mmio: *mut u32,
-    pub hw_rev: u16,
+    /// PCI configuration-space revision byte. This is not CSR_HW_REV and
+    /// must not be used for 7265/7265D firmware selection.
+    pub pci_revision: u8,
     pub device_id: u16,
     pub driver_ctx: &'static dyn DriverContext,
     /// Upstream PCIe bridge coordinates (if found) for ASPM control.
@@ -425,7 +432,13 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     crate::debug::print("wifi", "read_hw_rev_pci");
     let pci_revision =
         crate::pci::PciConfigSpace::read_config_byte(info.bus, info.device, info.function, 0x08);
-    let hw_rev: u16 = pci_revision as u16;
+    log::info!(
+        "WiFi: PCI revision byte at {:02x}:{:02x}.{} = {:#04x} (CSR_HW_REV will be read after MMIO clock init)",
+        info.bus,
+        info.device,
+        info.function,
+        pci_revision,
+    );
 
     // Map BAR0 MMIO
     crate::debug::print("wifi", "map_bar0");
@@ -501,7 +514,7 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
         pci_dev,
         bar0_phys: info.bar0_phys,
         mmio: mmio_base,
-        hw_rev,
+        pci_revision,
         device_id: info.device_id,
         driver_ctx: ctx,
         upstream_bridge,
@@ -516,14 +529,14 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
 pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeResult> {
     let raw = probe_pci_only(ctx)?;
 
-    let hw_rev_32 = raw.hw_rev as u32;
+    let pci_revision = raw.pci_revision as u32;
     crate::debug::print("wifi", "driver_create");
-    let driver = (raw.entry.create)(ctx, raw.mmio, hw_rev_32, raw.pci_dev)?;
+    let driver = (raw.entry.create)(ctx, raw.mmio, pci_revision, raw.pci_dev)?;
 
     crate::debug::print("wifi", "driver_ok");
     Some(PciProbeResult {
         driver,
         device_id: raw.device_id,
-        hw_rev: hw_rev_32,
+        pci_revision,
     })
 }

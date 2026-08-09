@@ -116,10 +116,11 @@ install_fullerene /dev/sata0p0 --confirm
 ```
 
 Installation is deliberately destructive. It requires a 512-byte-sector disk
-with at least 64 MiB available after LBA 2048, writes a small MBR-partitioned
-FAT32 EFI System Partition, and copies the running ISO's `BOOTX64.EFI` and
-`KERNEL.EFI` payloads into `EFI/BOOT/`. NVMe targets and BIOS-only boots are
-not supported by this installer yet.
+with at least 64 MiB available after LBA 2048, writes a GPT-partitioned FAT32
+EFI System Partition (including the backup GPT at the end of the disk), and
+copies the running ISO's `BOOTX64.EFI` and `KERNEL.EFI` payloads into
+`EFI/BOOT/`. NVMe targets and BIOS-only boots are not supported by this
+installer yet.
 
 ## QEMU Options
 

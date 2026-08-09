@@ -191,6 +191,11 @@ impl IwlWifiDevice {
         self.write_prph(SCD_GP_CTRL, scd_gp | SCD_GP_CTRL_AUTO_ACTIVE_MODE);
         self.write_prph(SCD_QUEUE_RDPTR_CMD, 0);
         self.write_prph(SCD_QUEUE_RDPTR_AUX, 0);
+        // Match Linux's iwl_trans_pcie_txq_enable(): stop the command queue
+        // before rewriting its context/status.  Clearing SCD_EN_CTRL alone
+        // is not sufficient on a warm 7265 reset; the queue can retain its
+        // old active state and then refuse a later large host command.
+        self.write_prph(SCD_QUEUE_STATUS_CMD, 1 << 19);
         self.write_prph(
             SCD_QUEUE_STATUS_AUX,
             1 << 19, // SCD_QUEUE_STTS_REG_POS_SCD_ACT_EN: inactive while configuring
@@ -235,10 +240,11 @@ impl IwlWifiDevice {
                 (aux_ring_phys >> 8) as u32,
             );
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
-            // The 7265 exposes 16 legacy TX channels. The AUX station is q11,
-            // so enabling only through the command q9 leaves its scheduler
-            // channel disabled even though host commands still work.
-            for channel in 0..=IWL_AUX_QUEUE {
+            // The FH exposes eight physical DMA channels. q9/q11 are logical
+            // SCD queues and select physical channels through their FIFO
+            // fields; using 9/11 as TCSR channel numbers writes outside the
+            // valid FH TX channel window.
+            for channel in 0..FH_TCSR_CHNL_NUM {
                 core::ptr::write_volatile(
                     self.mmio
                         .add((FH_TCSR_CHNL_TX_CONFIG_BASE + channel * (0x20 / 4)) as usize),
@@ -252,13 +258,15 @@ impl IwlWifiDevice {
             );
         }
         mmio::write_barrier();
-        let fh_config = self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4));
+        let fh_config = self
+            .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4));
         let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD);
         let scd_active = self.read_prph(SCD_EN_CTRL);
         let scd_chainext = self.read_prph(SCD_CHAINEXT_EN);
         log::info!(
-            "iwlwifi: legacy TX queues configured: cmd_q={} cmd_tfd={:#018x} aux_q={} aux_tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cfg={:#010x} scd_status={:#010x} aux_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
+            "iwlwifi: legacy TX queues configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} aux_q={} aux_fifo=5 aux_tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} aux_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
             IWL_CMD_QUEUE,
+            SCD_QUEUE_STTS_FIFO_COMMAND,
             ring_phys,
             IWL_AUX_QUEUE,
             aux_ring_phys,
@@ -405,6 +413,13 @@ impl IwlWifiDevice {
 
         self.tx_head = self.tx_head.wrapping_add(1);
         mmio::write_barrier();
+        let tfd_dma =
+            self.tx_dma_ring.dma_iova() + (desc_idx * core::mem::size_of::<TxDmaDesc>()) as u64;
+        let tfd_num_tbs = desc.num_tbs;
+        let tfd_tb_addr_lo =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].addr_lo)) };
+        let tfd_tb_hi_n_len =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].hi_n_len)) };
         unsafe {
             core::ptr::write_volatile(
                 self.mmio.add(HBUS_TARG_WRPTR as usize),
@@ -413,7 +428,7 @@ impl IwlWifiDevice {
         }
         mmio::write_barrier();
         log::info!(
-            "iwlwifi: hcmd.submit q={} slot={} opcode=0x{:02x} group=0x{:02x} header={} payload={} total={} dma={:#018x} tfd_addr={:#010x} tfd_hi_n_len={:#06x} wrptr={}",
+            "iwlwifi: hcmd.submit q={} slot={} opcode=0x{:02x} group=0x{:02x} header={} payload={} total={} buf_dma={:#018x} tfd_dma={:#018x} tfd_num_tbs={} tfd_tb_addr_lo={:#010x} tfd_tb_hi_n_len={:#06x} wrptr={}",
             IWL_CMD_QUEUE,
             desc_idx,
             opcode,
@@ -422,10 +437,26 @@ impl IwlWifiDevice {
             data.len(),
             total_len,
             dma_addr,
-            dma_addr as u32,
-            hi_n_len,
+            tfd_dma,
+            tfd_num_tbs,
+            tfd_tb_addr_lo,
+            tfd_tb_hi_n_len,
             self.tx_head & 0xff,
         );
+        if opcode == LegacyCmd::ScanRequest as u8 {
+            let fifo = SCD_QUEUE_STTS_FIFO_COMMAND;
+            log::info!(
+                "iwlwifi: scan hcmd wire prefix={} fifo={} cfg={:#010x} credit={:#010x} buf_sts={:#010x}",
+                HexBytes(&full_data[..core::cmp::min(16, full_data.len())]),
+                fifo,
+                self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+            );
+        }
         self.release_mac_access();
         Ok(())
     }
@@ -540,6 +571,61 @@ impl IwlWifiDevice {
                     self.tx_tail,
                 );
                 Err(crate::DriverError::Busy)
+            }
+        }
+    }
+
+    /// Wait for the firmware response to a synchronous runtime setup command.
+    ///
+    /// Advancing the SCD read pointer only proves that the DMA engine fetched
+    /// the descriptor.  Linux's synchronous command path also waits for the
+    /// matching firmware notification, which is where command validation
+    /// failures are reported.  Keep this separate from `send_init_hcmd`
+    /// because NVM and PHY init commands have responses consumed by the
+    /// scheduler-driven INIT state machine.
+    fn wait_init_hcmd_response(
+        &mut self,
+        label: &str,
+        opcode: u8,
+        group: u8,
+    ) -> Result<(), crate::DriverError> {
+        const RESPONSE_TIMEOUT_US: u64 = 500_000;
+        let deadline_tsc = match self.init_response {
+            Some((pending_opcode, pending_group, deadline_tsc))
+                if pending_opcode == opcode && pending_group == group =>
+            {
+                deadline_tsc
+            }
+            Some(_) => return Err(crate::DriverError::Protocol),
+            None => {
+                let deadline_tsc = unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(
+                    crate::timing::ticks_per_us().saturating_mul(RESPONSE_TIMEOUT_US),
+                );
+                self.init_response = Some((opcode, group, deadline_tsc));
+                deadline_tsc
+            }
+        };
+
+        match self.poll_init_notification(opcode, group, deadline_tsc)? {
+            Some(payload) => {
+                self.init_response = None;
+                log::info!(
+                    "iwlwifi: init.hcmd.response name={} opcode=0x{:02x} group=0x{:02x} payload={}",
+                    label,
+                    opcode,
+                    group,
+                    payload.len(),
+                );
+                Ok(())
+            }
+            None => {
+                log::debug!(
+                    "iwlwifi: init.hcmd.pending name={} opcode=0x{:02x} group=0x{:02x}",
+                    label,
+                    opcode,
+                    group,
+                );
+                Err(crate::DriverError::Pending)
             }
         }
     }
@@ -732,6 +818,30 @@ impl IwlWifiDevice {
     }
 
     pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
+        if self.runtime_commands_started {
+            match self.init_response {
+                Some((opcode, group, deadline_tsc)) => {
+                    match self.poll_init_notification(opcode, group, deadline_tsc)? {
+                        None => return Err(crate::DriverError::Pending),
+                        Some(payload) => {
+                            self.init_response = None;
+                            log::info!(
+                                "iwlwifi: init.hcmd.response name=MAC_CONTEXT opcode=0x{:02x} group=0x{:02x} payload={}",
+                                opcode,
+                                group,
+                                payload.len(),
+                            );
+                        }
+                    }
+                }
+                None => return Err(crate::DriverError::Protocol),
+            }
+            self.runtime_commands_started = false;
+            self.fw_state = FwState::Ready;
+            log::info!("iwlwifi: init.commands.result status=operational");
+            return Ok(());
+        }
+        self.runtime_commands_started = true;
         log::info!(
             "iwlwifi: init.commands.begin fw_api={} fw_build={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             self.fw_api_ver,
@@ -871,12 +981,18 @@ impl IwlWifiDevice {
         log::info!(
             "iwlwifi: init.config name=mac_context rates_cck=0x0000000f rates_ofdm=0x00000015"
         );
-        log::info!(
-            "iwlwifi: init.config name=mac_context ac0=cw_min:0,cw_max:0,aifsn:0,fifo:0x01 ac1=cw_min:0,cw_max:0,aifsn:0,fifo:0x02"
-        );
-        log::info!(
-            "iwlwifi: init.config name=mac_context ac2=cw_min:0,cw_max:0,aifsn:0,fifo:0x04 ac3=cw_min:0,cw_max:0,aifsn:0,fifo:0x08 ac4=reserved:zero"
-        );
+        for (index, ac) in (0..5).map(|index| (index, mac_ctx.qos_ac(index))) {
+            let (cw_min, cw_max, aifsn, fifo, txop) = ac.values();
+            log::info!(
+                "iwlwifi: init.config name=mac_context ac{}=cw_min:{},cw_max:{},aifsn:{},fifo:0x{:02x},txop:{}",
+                index,
+                cw_min,
+                cw_max,
+                aifsn,
+                fifo,
+                txop,
+            );
+        }
         log::info!(
             "iwlwifi: init.config name=mac_context sta=unassociated beacon_interval:100 dtim_interval:0 listen_interval:10"
         );
@@ -904,6 +1020,11 @@ impl IwlWifiDevice {
             LegacyCmd::MacContext as u8,
             GroupId::Legacy as u8,
             mac_ctx_bytes,
+        )?;
+        self.wait_init_hcmd_response(
+            "MAC_CONTEXT",
+            LegacyCmd::MacContext as u8,
+            GroupId::Legacy as u8,
         )?;
         log::info!(
             "iwlwifi: init.config name=mac_context status=accepted mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} filter=0x{:08x} payload={}",

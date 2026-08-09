@@ -8,10 +8,13 @@ const FW_7260_17: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7260-1
 const FW_7260_16: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7260-16.ucode");
 const FW_7265_17: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265-17.ucode");
 const FW_7265_16: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265-16.ucode");
-const FW_7265D_29: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-29.ucode");
-const FW_7265D_27: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-27.ucode");
+const FW_7265D_17: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-17.ucode");
+const FW_7265D_16: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-16.ucode");
 
-pub(super) fn select_firmware_list(device_id: u16, hw_rev: u16) -> &'static [FirmwareBlob] {
+/// Select firmware using the raw CSR_HW_REV value, before the type field is
+/// shifted for display.  The 7265 and 7265D share PCI IDs, so this distinction
+/// is essential on real hardware.
+pub(super) fn select_firmware_list(device_id: u16, hw_rev_raw: u16) -> &'static [FirmwareBlob] {
     match device_id {
         0x08B1 | 0x08B2 => &[
             FirmwareBlob {
@@ -23,14 +26,17 @@ pub(super) fn select_firmware_list(device_id: u16, hw_rev: u16) -> &'static [Fir
                 name: "iwlwifi-7260-16",
             },
         ],
-        0x095A | 0x095B if (hw_rev & CSR_HW_REV_TYPE_MASK) == CSR_HW_REV_TYPE_7265D => &[
+        0x095A | 0x095B if (hw_rev_raw & CSR_HW_REV_TYPE_MASK) == CSR_HW_REV_TYPE_7265D => &[
             FirmwareBlob {
-                data: FW_7265D_29,
-                name: "iwlwifi-7265D-29",
+                // The host-command and scan implementation is API-v17.
+                // D27/D29 are kept in the firmware bundle for later API
+                // support, but must not be selected before that work lands.
+                data: FW_7265D_17,
+                name: "iwlwifi-7265D-17",
             },
             FirmwareBlob {
-                data: FW_7265D_27,
-                name: "iwlwifi-7265D-27",
+                data: FW_7265D_16,
+                name: "iwlwifi-7265D-16",
             },
         ],
         0x095A | 0x095B => &[
@@ -78,8 +84,8 @@ mod tests {
     fn selects_7265d_firmware_for_7265d_hw_rev() {
         let firmware = select_firmware_list(0x095B, CSR_HW_REV_TYPE_7265D);
         assert_eq!(firmware.len(), 2);
-        assert_eq!(firmware[0].name, "iwlwifi-7265D-29");
-        assert_eq!(firmware[1].name, "iwlwifi-7265D-27");
+        assert_eq!(firmware[0].name, "iwlwifi-7265D-17");
+        assert_eq!(firmware[1].name, "iwlwifi-7265D-16");
     }
 
     #[test]
@@ -88,6 +94,16 @@ mod tests {
         assert_eq!(firmware.len(), 2);
         assert_eq!(firmware[0].name, "iwlwifi-7265-17");
         assert_eq!(firmware[1].name, "iwlwifi-7265-16");
+    }
+
+    #[test]
+    fn selects_7265d_firmware_from_the_raw_csr_value() {
+        // The CSR contains 0x210 in bits 15:4; its display/type value is
+        // 0x21 after shifting.  The selector must receive the former.
+        let firmware = select_firmware_list(0x095B, 0x0210);
+        assert_eq!(firmware[0].name, "iwlwifi-7265D-17");
+        let shifted = select_firmware_list(0x095B, 0x0021);
+        assert_eq!(shifted[0].name, "iwlwifi-7265-17");
     }
 
     #[test]

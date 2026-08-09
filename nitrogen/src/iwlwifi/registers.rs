@@ -44,9 +44,18 @@ pub const CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 1 << 3;
 pub const CSR_GP_CNTRL_INIT_DONE: u32 = 1 << 2;
 pub const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
 pub const CSR_GP_CNTRL_GOING_TO_SLEEP: u32 = 1 << 4;
-/// CSR_HW_REV type field after shifting the register right by four bits.
-pub const CSR_HW_REV_TYPE_MASK: u16 = 0x0FFF;
+/// CSR_HW_REV type field in the register's original bit positions.
+///
+/// The type occupies bits 15:4.  Keep the selector input in this raw form;
+/// Linux's `CSR_HW_REV_TYPE_7265D` constant is also expressed in these bit
+/// positions (0x210), not as the shifted value (0x21).
+pub const CSR_HW_REV_TYPE_MASK: u16 = 0xFFF0;
 pub const CSR_HW_REV_TYPE_7265D: u16 = 0x0210;
+
+/// Decode the printable/type value from a raw CSR_HW_REV register value.
+pub const fn csr_hw_rev_type(raw: u32) -> u16 {
+    ((raw & 0x0000_FFF0) >> 4) as u16
+}
 pub const CSR_INT_BIT_ALIVE: u32 = 1 << 0;
 pub const CSR_INT_BIT_RESET_DONE: u32 = 1 << 2;
 pub const CSR_INT_BIT_SW_RX: u32 = 1 << 3;
@@ -116,6 +125,12 @@ pub const FH_MEM_CBBC_AUX_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_AUX_QU
 pub const FH_KW_MEM_ADDR_REG: u32 = (0x1000 + 0x97C) / 4;
 pub const HBUS_TARG_WRPTR: u32 = (0x400 + 0x060) / 4;
 pub const FH_TCSR_CHNL_TX_CONFIG_BASE: u32 = (0x1000 + 0xD00) / 4;
+/// The FH has eight physical TX DMA channels. Logical scheduler queues
+/// (including command q9 and the auxiliary q11) select one of these channels
+/// through their SCD FIFO, so they must not be used as TCSR channel numbers.
+pub const FH_TCSR_CHNL_NUM: u32 = 8;
+pub const FH_TCSR_CHNL_TX_CREDIT_BASE: u32 = FH_TCSR_CHNL_TX_CONFIG_BASE + 1;
+pub const FH_TCSR_CHNL_TX_BUF_STS_BASE: u32 = FH_TCSR_CHNL_TX_CONFIG_BASE + 2;
 pub const FH_TCSR_TX_CONFIG_DMA_CREDIT_ENABLE: u32 = 0x0000_0008;
 pub const FH_TX_CHICKEN_BITS: u32 = (0x1000 + 0xE98) / 4;
 pub const FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN: u32 = 0x0000_0002;
@@ -170,6 +185,12 @@ pub const TX_DMA_ALLOCATION_BYTES: usize = TX_SCD_BC_OFFSET + TX_SCD_BC_BYTES;
 /// Firmware-written boot section status consumed before releasing the CPU.
 pub const FH_UCODE_LOAD_STATUS: u32 = 0x1AF0 / 4;
 
+/// Extended SRAM address window used by 7000-series firmware sections.
+pub const FW_MEM_EXTENDED_START: u32 = 0x0004_0000;
+pub const FW_MEM_EXTENDED_END: u32 = 0x0005_7FFF;
+pub const LMPM_CHICK: u32 = 0x00A0_1FF8;
+pub const LMPM_CHICK_EXTENDED_ADDR_SPACE: u32 = 1 << 0;
+
 // Legacy 7000-series firmware upload service channel. These are the
 // byte-offsets from Linux's iwl-fh.h, converted to dword MMIO indices.
 pub const FH_SRVC_CHNL_SRAM_ADDR: u32 = (0x1000 + 0x9C8) / 4;
@@ -197,7 +218,7 @@ pub const APMG_PCIDEV_STT_L1_ACT_DIS: u32 = 0x0000_0800;
 
 // ── Firmware constants ─────────────
 
-pub const IWL_FW_API_VER: u32 = 16;
+pub const IWL_FW_API_VER: u32 = 17;
 pub const IWL_FW_MAX_SECTIONS: usize = 32;
 
 /// TX queue configuration.

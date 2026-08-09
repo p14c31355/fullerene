@@ -1,7 +1,7 @@
 //! Destructive Fullerene installation onto a registered block device.
 //!
 //! The installer deliberately owns only the small amount of FAT32/GPT-adjacent
-//! layout needed for a bootable UEFI ESP. It does not reuse the mounted VFS:
+//! layout needed for a bootable GPT/UEFI ESP. It does not reuse the mounted VFS:
 //! the target disk is exclusively reserved, formatted, and populated through
 //! the block-device capability layer.
 
@@ -12,12 +12,21 @@ use core::fmt;
 use spin::Mutex;
 
 const SECTOR_SIZE: usize = 512;
+const INSTALL_IO_SECTORS: u64 = 2048; // 1 MiB, matching the AHCI DMA buffer
 const PARTITION_START: u64 = 2048;
 const RESERVED_SECTORS: u32 = 32;
 const FAT_COUNT: u32 = 2;
 const ROOT_CLUSTER: u32 = 2;
 const EOF_CLUSTER: u32 = 0x0FFF_FFFF;
 const MAX_PARTITION_SECTORS: u64 = 1_048_576; // 512 MiB ESP cap
+const GPT_ENTRY_COUNT: usize = 128;
+const GPT_ENTRY_SIZE: usize = 128;
+const GPT_ENTRIES_SECTORS: u64 = (GPT_ENTRY_COUNT * GPT_ENTRY_SIZE / SECTOR_SIZE) as u64;
+const GPT_BACKUP_SECTORS: u64 = GPT_ENTRIES_SECTORS + 1;
+
+const ESP_TYPE_GUID: [u8; 16] = [
+    0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallerError {
@@ -108,6 +117,7 @@ struct InstallWrite {
 struct InstallSession {
     device: String,
     writes: Vec<InstallWrite>,
+    buffer: Vec<u8>,
     next_write: usize,
     written_bytes: u64,
     total_bytes: u64,
@@ -130,7 +140,7 @@ impl InstallSession {
             return Err(InstallerError::UnsupportedSectorSize);
         }
         let usable_sectors = total_sectors
-            .checked_sub(PARTITION_START)
+            .checked_sub(PARTITION_START + GPT_BACKUP_SECTORS)
             .ok_or(InstallerError::DeviceTooSmall)?;
         if usable_sectors < 131_072 {
             return Err(InstallerError::DeviceTooSmall);
@@ -173,7 +183,12 @@ impl InstallSession {
         ];
 
         let mut writes = Vec::new();
-        push_owned_sector(&mut writes, 0, make_mbr(partition_sectors));
+        let (primary_gpt, backup_gpt, gpt_entries) = make_gpt(total_sectors, partition_sectors);
+        push_owned_sector(&mut writes, 0, make_protective_mbr(total_sectors));
+        push_owned_sector(&mut writes, 1, primary_gpt);
+        push_owned_sectors(&mut writes, 2, gpt_entries.clone());
+        push_owned_sectors(&mut writes, total_sectors - GPT_BACKUP_SECTORS, gpt_entries);
+        push_owned_sector(&mut writes, total_sectors - 1, backup_gpt);
         let (boot, fsinfo) = make_fat_boot_sectors(&layout);
         push_owned_sector(&mut writes, PARTITION_START, boot);
         push_owned_sector(&mut writes, PARTITION_START + 6, boot);
@@ -218,6 +233,7 @@ impl InstallSession {
         Ok(Self {
             device: String::from(device_name),
             writes,
+            buffer: vec![0u8; SECTOR_SIZE * INSTALL_IO_SECTORS as usize],
             next_write: 0,
             written_bytes: 0,
             total_bytes: payload_bytes as u64,
@@ -233,14 +249,16 @@ impl InstallSession {
             });
         }
         let write = &mut self.writes[self.next_write];
-        let count = write.sectors.saturating_sub(write.offset).min(8) as usize;
-        let mut buffer = [0u8; SECTOR_SIZE * 8];
+        let count = write
+            .sectors
+            .saturating_sub(write.offset)
+            .min(INSTALL_IO_SECTORS) as usize;
         let offset = write.offset as usize * SECTOR_SIZE;
         let bytes = count * SECTOR_SIZE;
+        let buffer = &mut self.buffer[..bytes];
+        buffer.fill(0);
         match &write.data {
-            InstallData::Owned(data) => {
-                buffer[..bytes].copy_from_slice(&data[offset..offset + bytes])
-            }
+            InstallData::Owned(data) => buffer.copy_from_slice(&data[offset..offset + bytes]),
             InstallData::Payload(data, source_offset) => {
                 let start = source_offset + offset;
                 let available = data.len().saturating_sub(start).min(bytes);
@@ -295,6 +313,18 @@ fn push_owned_sector(writes: &mut Vec<InstallWrite>, lba: u64, sector: [u8; SECT
     });
 }
 
+fn push_owned_sectors(writes: &mut Vec<InstallWrite>, lba: u64, data: Vec<u8>) {
+    if data.is_empty() || data.len() % SECTOR_SIZE != 0 {
+        return;
+    }
+    writes.push(InstallWrite {
+        lba,
+        sectors: (data.len() / SECTOR_SIZE) as u64,
+        offset: 0,
+        data: InstallData::Owned(data),
+    });
+}
+
 fn push_zero(writes: &mut Vec<InstallWrite>, lba: u64, sectors: u64) {
     writes.push(InstallWrite {
         lba,
@@ -314,23 +344,24 @@ fn push_fat_table_writes(
         .flat_map(|(anchor, chain)| core::iter::once(*anchor).chain(chain.iter().copied()))
         .max()
         .unwrap_or(2);
-    for sector_index in 0..=last_cluster / (SECTOR_SIZE / 4) as u32 {
+    let fat_table_sectors = u64::from(last_cluster / (SECTOR_SIZE / 4) as u32 + 1);
+    let mut fat_data = Vec::with_capacity(fat_table_sectors as usize * SECTOR_SIZE);
+    for sector_index in 0..fat_table_sectors {
         let mut sector = [0u8; SECTOR_SIZE];
         for entry in 0..SECTOR_SIZE / 4 {
-            let cluster = sector_index * (SECTOR_SIZE / 4) as u32 + entry as u32;
+            let cluster = sector_index as u32 * (SECTOR_SIZE / 4) as u32 + entry as u32;
             sector[entry * 4..entry * 4 + 4]
                 .copy_from_slice(&fat_value(cluster, chains).to_le_bytes());
         }
-        for fat in 0..FAT_COUNT {
-            push_owned_sector(
-                writes,
-                PARTITION_START
-                    + RESERVED_SECTORS as u64
-                    + fat as u64 * layout.fat_sectors as u64
-                    + sector_index as u64,
-                sector,
-            );
-        }
+        fat_data.extend_from_slice(&sector);
+    }
+    for fat in 0..FAT_COUNT {
+        writes.push(InstallWrite {
+            lba: PARTITION_START + RESERVED_SECTORS as u64 + fat as u64 * layout.fat_sectors as u64,
+            sectors: fat_table_sectors,
+            offset: 0,
+            data: InstallData::Owned(fat_data.clone()),
+        });
     }
 }
 
@@ -371,26 +402,127 @@ fn push_payload(
     chain: &[u32],
     data: &'static [u8],
 ) {
-    let cluster_bytes = layout.sectors_per_cluster as usize * SECTOR_SIZE;
-    for (index, cluster) in chain.iter().enumerate() {
-        writes.push(InstallWrite {
-            lba: layout.cluster_lba(*cluster),
-            sectors: layout.sectors_per_cluster as u64,
-            offset: 0,
-            data: InstallData::Payload(data, index * cluster_bytes),
-        });
-    }
+    let Some(&first_cluster) = chain.first() else {
+        return;
+    };
+    // allocate_chain() deliberately returns adjacent clusters, so retain the
+    // whole file as one contiguous write and let step() split it into the
+    // device's large I/O chunks.
+    writes.push(InstallWrite {
+        lba: layout.cluster_lba(first_cluster),
+        sectors: chain.len() as u64 * layout.sectors_per_cluster as u64,
+        offset: 0,
+        data: InstallData::Payload(data, 0),
+    });
 }
 
-fn make_mbr(partition_sectors: u64) -> [u8; SECTOR_SIZE] {
+fn make_protective_mbr(total_sectors: u64) -> [u8; SECTOR_SIZE] {
     let mut sector = [0u8; SECTOR_SIZE];
     let entry = &mut sector[0x1BE..0x1CE];
-    entry[0] = 0x80;
-    entry[4] = 0xEF;
-    entry[8..12].copy_from_slice(&(PARTITION_START as u32).to_le_bytes());
-    entry[12..16].copy_from_slice(&(partition_sectors as u32).to_le_bytes());
+    entry[0..3].copy_from_slice(&[0x00, 0x02, 0x00]);
+    entry[4] = 0xEE;
+    entry[5..8].copy_from_slice(&[0xff, 0xff, 0xff]);
+    entry[8..12].copy_from_slice(&1u32.to_le_bytes());
+    let protective_sectors = total_sectors.saturating_sub(1).min(u64::from(u32::MAX)) as u32;
+    entry[12..16].copy_from_slice(&protective_sectors.to_le_bytes());
     sector[510..512].copy_from_slice(&0xAA55u16.to_le_bytes());
     sector
+}
+
+fn make_gpt(
+    total_sectors: u64,
+    partition_sectors: u64,
+) -> ([u8; SECTOR_SIZE], [u8; SECTOR_SIZE], Vec<u8>) {
+    let backup_header_lba = total_sectors - 1;
+    let backup_entries_lba = total_sectors - GPT_BACKUP_SECTORS;
+    let first_usable_lba = PARTITION_START;
+    let last_usable_lba = total_sectors - GPT_BACKUP_SECTORS - 1;
+    let partition_last_lba = PARTITION_START + partition_sectors - 1;
+    let mut entries = vec![0u8; GPT_ENTRY_COUNT * GPT_ENTRY_SIZE];
+    let entry = &mut entries[..GPT_ENTRY_SIZE];
+    entry[..16].copy_from_slice(&ESP_TYPE_GUID);
+    let seed = unsafe { core::arch::x86_64::_rdtsc() } ^ total_sectors.rotate_left(17);
+    let partition_guid = make_guid(seed);
+    let disk_guid = make_guid(seed ^ partition_sectors.rotate_left(29));
+    entry[16..32].copy_from_slice(&partition_guid);
+    entry[32..40].copy_from_slice(&PARTITION_START.to_le_bytes());
+    entry[40..48].copy_from_slice(&partition_last_lba.to_le_bytes());
+    for (index, byte) in b"FULLERENE ESP".iter().copied().enumerate() {
+        entry[56 + index * 2] = byte;
+    }
+    let entries_crc = crc32(&entries);
+    let primary = make_gpt_header(
+        1,
+        backup_header_lba,
+        2,
+        first_usable_lba,
+        last_usable_lba,
+        &disk_guid,
+        entries_crc,
+    );
+    let backup = make_gpt_header(
+        backup_header_lba,
+        1,
+        backup_entries_lba,
+        first_usable_lba,
+        last_usable_lba,
+        &disk_guid,
+        entries_crc,
+    );
+    (primary, backup, entries)
+}
+
+fn make_gpt_header(
+    current_lba: u64,
+    backup_lba: u64,
+    entries_lba: u64,
+    first_usable_lba: u64,
+    last_usable_lba: u64,
+    disk_guid: &[u8; 16],
+    entries_crc: u32,
+) -> [u8; SECTOR_SIZE] {
+    let mut header = [0u8; SECTOR_SIZE];
+    header[0..8].copy_from_slice(b"EFI PART");
+    header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+    header[12..16].copy_from_slice(&92u32.to_le_bytes());
+    header[24..32].copy_from_slice(&current_lba.to_le_bytes());
+    header[32..40].copy_from_slice(&backup_lba.to_le_bytes());
+    header[40..48].copy_from_slice(&first_usable_lba.to_le_bytes());
+    header[48..56].copy_from_slice(&last_usable_lba.to_le_bytes());
+    header[56..72].copy_from_slice(disk_guid);
+    header[72..80].copy_from_slice(&entries_lba.to_le_bytes());
+    header[80..84].copy_from_slice(&(GPT_ENTRY_COUNT as u32).to_le_bytes());
+    header[84..88].copy_from_slice(&(GPT_ENTRY_SIZE as u32).to_le_bytes());
+    header[88..92].copy_from_slice(&entries_crc.to_le_bytes());
+    let header_crc = crc32(&header[..92]);
+    header[16..20].copy_from_slice(&header_crc.to_le_bytes());
+    header
+}
+
+fn make_guid(seed: u64) -> [u8; 16] {
+    let mut guid = [0u8; 16];
+    let mut state = seed | 1;
+    for byte in &mut guid {
+        state ^= state << 7;
+        state ^= state >> 9;
+        state ^= state << 8;
+        *byte = state as u8;
+    }
+    guid[6] = (guid[6] & 0x0F) | 0x40;
+    guid[8] = (guid[8] & 0x3F) | 0x80;
+    guid
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in data {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
 }
 
 fn make_fat_boot_sectors(layout: &FatLayout) -> ([u8; SECTOR_SIZE], [u8; SECTOR_SIZE]) {
@@ -402,6 +534,7 @@ fn make_fat_boot_sectors(layout: &FatLayout) -> ([u8; SECTOR_SIZE], [u8; SECTOR_
     boot[14..16].copy_from_slice(&(RESERVED_SECTORS as u16).to_le_bytes());
     boot[16] = FAT_COUNT as u8;
     boot[21] = 0xF8;
+    boot[28..32].copy_from_slice(&(PARTITION_START as u32).to_le_bytes());
     boot[32..36].copy_from_slice(&(layout.partition_sectors as u32).to_le_bytes());
     boot[36..40].copy_from_slice(&layout.fat_sectors.to_le_bytes());
     boot[44..48].copy_from_slice(&ROOT_CLUSTER.to_le_bytes());
@@ -589,5 +722,52 @@ mod tests {
         ] {
             assert_eq!(name.len(), 11, "invalid FAT short name: {name:?}");
         }
+    }
+
+    #[test]
+    fn gpt_headers_and_esp_entry_are_consistent() {
+        let total_sectors = 2_000_000;
+        let partition_sectors = 1_048_576;
+        let (primary, backup, entries) = make_gpt(total_sectors, partition_sectors);
+
+        assert_eq!(&primary[..8], b"EFI PART");
+        assert_eq!(&backup[..8], b"EFI PART");
+        assert_eq!(
+            ESP_TYPE_GUID,
+            [
+                0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E,
+                0xC9, 0x3B,
+            ]
+        );
+        assert_eq!(u64::from_le_bytes(primary[24..32].try_into().unwrap()), 1);
+        assert_eq!(
+            u64::from_le_bytes(primary[32..40].try_into().unwrap()),
+            total_sectors - 1
+        );
+        assert_eq!(
+            u64::from_le_bytes(backup[24..32].try_into().unwrap()),
+            total_sectors - 1
+        );
+        assert_eq!(u64::from_le_bytes(backup[32..40].try_into().unwrap()), 1);
+        assert_eq!(&entries[..16], &ESP_TYPE_GUID);
+        assert_eq!(
+            u64::from_le_bytes(entries[32..40].try_into().unwrap()),
+            PARTITION_START
+        );
+        assert_eq!(
+            u64::from_le_bytes(entries[40..48].try_into().unwrap()),
+            PARTITION_START + partition_sectors - 1
+        );
+        assert_eq!(
+            u32::from_le_bytes(primary[88..92].try_into().unwrap()),
+            crc32(&entries)
+        );
+
+        let mut header = primary;
+        header[16..20].fill(0);
+        assert_eq!(
+            u32::from_le_bytes(primary[16..20].try_into().unwrap()),
+            crc32(&header[..92])
+        );
     }
 }

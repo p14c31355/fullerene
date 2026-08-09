@@ -52,6 +52,9 @@ pub struct IwlWifiDevice {
     pub init_firmware_completed: bool,
     /// Incremental INIT-command state retained between scheduler ticks.
     pub init_commands_started: bool,
+    /// True after runtime setup has submitted its first command. This lets a
+    /// pending MAC_CONTEXT response resume without replaying setup commands.
+    pub runtime_commands_started: bool,
     pub init_nvm_index: usize,
     pub init_hw_section: Option<Vec<u8>>,
     pub init_mac_ready: bool,
@@ -162,7 +165,11 @@ impl IwlWifiDevice {
         // Firmware reset also resets the device-side RBD pointers.
         self.rx_head = 0;
         self.rx_tail = 0;
-        self.rx_posted = (RX_QUEUE_SIZE - 1) & !7;
+        // Keep the software cursor at the actual next RBD slot. The
+        // hardware register is updated only with its 8-entry-aligned form;
+        // collapsing the cursor to 248 here would make the first restock
+        // after wraparound publish 8 instead of the correct 16.
+        self.rx_posted = RX_QUEUE_SIZE - 1;
         let rx_phys = self.rx_dma_ring.dma_iova();
         let status_phys = rx_phys + (core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE) as u64;
 
@@ -189,7 +196,7 @@ impl IwlWifiDevice {
                 // full ring from an empty ring. Linux's gen1 transport
                 // restocks 255 of the 256 entries and rounds the pointer
                 // down to an 8-entry boundary.
-                self.rx_posted as u32,
+                (self.rx_posted as u32) & !7,
             );
             mmio::write_barrier();
             core::ptr::write_volatile(
@@ -338,8 +345,13 @@ impl IwlWifiDevice {
             mmio::SafeReadResult::Value(v) => v,
             _ => return Err(IwlError::BarNotAvailable),
         };
-        let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
-        log::info!("iwlwifi: HW_REV={:#06x}", hw_rev);
+        let hw_rev = hw_rev_raw as u16;
+        log::info!(
+            "iwlwifi: CSR_HW_REV raw={:#010x} type={:#06x} step_dash={:#x}",
+            hw_rev_raw,
+            csr_hw_rev_type(hw_rev_raw),
+            hw_rev_raw & 0xf,
+        );
 
         Self::reset_device(mmio);
 
@@ -469,6 +481,7 @@ impl IwlWifiDevice {
             phy_db_sections: Vec::new(),
             init_firmware_completed: false,
             init_commands_started: false,
+            runtime_commands_started: false,
             init_nvm_index: 0,
             init_hw_section: None,
             init_mac_ready: false,
@@ -509,21 +522,22 @@ impl IwlWifiDevice {
     pub fn init_from_mmio(
         ctx: &'static dyn DriverContext,
         mmio: *mut u32,
-        hw_rev: u32,
+        pci_revision: u32,
         device: PciDevice,
     ) -> Option<Self> {
         let health = PciHealth::new(&device);
-        Self::init_after_mmio(ctx, mmio, hw_rev as u16, device, health).ok()
+        Self::init_after_mmio(ctx, mmio, pci_revision as u16, device, health).ok()
     }
 
     fn init_after_mmio(
         ctx: &'static dyn DriverContext,
         mmio: *mut u32,
-        _hw_rev: u16,
+        pci_revision: u16,
         device: PciDevice,
         mut health: PciHealth,
     ) -> Result<Self, IwlError> {
         debug::print("iwlwifi", "init_after_mmio: enter");
+        let _ = pci_revision;
         if !health.is_device_present() {
             debug::print("iwlwifi", "ERR device_gone before reset");
             return Err(IwlError::BarNotAvailable);
@@ -556,10 +570,12 @@ impl IwlWifiDevice {
             SafeReadResult::Value(v) => v,
             _ => return Err(IwlError::ClockNotReady),
         };
-        let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
+        let hw_rev = hw_rev_raw as u16;
         log::info!(
-            "iwlwifi: CSR HW_REV type={:#06x}",
-            hw_rev & CSR_HW_REV_TYPE_MASK
+            "iwlwifi: CSR_HW_REV raw={:#010x} type={:#06x} step_dash={:#x}",
+            hw_rev_raw,
+            csr_hw_rev_type(hw_rev_raw),
+            hw_rev_raw & 0xf,
         );
 
         debug::print("iwlwifi", "read_mac");
@@ -682,6 +698,7 @@ impl IwlWifiDevice {
             phy_db_sections: Vec::new(),
             init_firmware_completed: false,
             init_commands_started: false,
+            runtime_commands_started: false,
             init_nvm_index: 0,
             init_hw_section: None,
             init_mac_ready: false,
@@ -907,12 +924,6 @@ impl IwlWifiDevice {
 
         let mut off = FW_HEADER_SIZE;
         let mut section_count = 0u32;
-        // Linux encodes the sections loaded into CPU1 as a growing mask in
-        // FH_UCODE_LOAD_STATUS (1, 3, 7, ...), then writes 0xffff when the
-        // CPU1 image is complete. The 7265 firmware checks this mailbox
-        // before it emits the alive interrupt.
-        let mut section_status = 1u32;
-
         while off + 8 <= fw_data.len() {
             let tlv_type: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off) as *const u32) };
             let tlv_len: u32 =
@@ -1004,16 +1015,29 @@ impl IwlWifiDevice {
                     if data_size > 0 {
                         let section_data =
                             &fw_data[tlv_data_off + 4..tlv_data_off + 4 + data_size as usize];
-                        self.upload_section(target, section_data)?;
-                        section_count += 1;
-                        unsafe {
-                            core::ptr::write_volatile(
-                                self.mmio.add(FH_UCODE_LOAD_STATUS as usize),
-                                section_status,
-                            );
+                        // 7000-series firmware has a second SRAM address
+                        // window beginning at 0x40000. Linux selects that
+                        // window through LMPM_CHICK for the duration of the
+                        // section transfer; without it a successful FH DMA
+                        // completion can still place the image at the wrong
+                        // internal address and prevent firmware alive.
+                        let extended_addr =
+                            (FW_MEM_EXTENDED_START..=FW_MEM_EXTENDED_END).contains(&target);
+                        let previous_chick = if extended_addr {
+                            let value = self
+                                .read_prph(LMPM_CHICK)
+                                .ok_or(crate::DriverError::DeviceNotFound)?;
+                            self.write_prph(LMPM_CHICK, value | LMPM_CHICK_EXTENDED_ADDR_SPACE);
+                            Some(value)
+                        } else {
+                            None
+                        };
+                        let upload_result = self.upload_section(target, section_data);
+                        if let Some(value) = previous_chick {
+                            self.write_prph(LMPM_CHICK, value);
                         }
-                        mmio::write_barrier();
-                        section_status = (section_status << 1) | 1;
+                        upload_result?;
+                        section_count += 1;
                         log::info!(
                             "iwlwifi: uploaded section {} at {:#010x} ({} bytes)",
                             section_count,
@@ -1031,55 +1055,45 @@ impl IwlWifiDevice {
             return Err(crate::DriverError::Protocol);
         }
 
-        unsafe {
-            core::ptr::write_volatile(self.mmio.add(FH_UCODE_LOAD_STATUS as usize), 0xFFFF);
-        }
-        mmio::write_barrier();
-        log::info!(
-            "iwlwifi: firmware sections ready: FH_UCODE_LOAD_STATUS={:#010x}",
-            0xFFFF_u32
-        );
+        // The 7265 is a gen1 device. Linux updates FH_UCODE_LOAD_STATUS only
+        // for the newer gen2 section loader; writing the gen2 section mask on
+        // this device can prevent the image from reaching its alive path.
+        self.log_fw_boot_registers("sections_ready");
 
         debug::print("iwlwifi", "fw: upload_done");
         log::info!("iwlwifi: firmware upload complete, starting CPU...");
 
         unsafe {
             core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), 0xFFFF_FFFF);
-            // Arm the alive interrupt before releasing reset. The firmware
-            // can signal alive immediately after the CPU starts.
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_INT_MASK as usize),
-                CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX,
-            );
+            // Match the gen1 Linux path: enable the normal host interrupt
+            // set before releasing CPU reset. This includes SW/HW error
+            // causes, which are useful if the image rejects the boot state.
+            core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), CSR_INI_SET_MASK);
             core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0);
         }
+        mmio::write_barrier();
+        self.log_fw_boot_registers("cpu_released");
         crate::timing::delay_us(10_000);
 
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_UCODE_GP1_CLR as usize),
-                CSR_UCODE_SW_BIT_RFKILL | CSR_UCODE_GP1_BIT_CMD_BLOCKED,
-            );
-        }
-
-        let gp = self
-            .safe_read32(CSR_GP_CNTRL)
-            .ok_or(crate::DriverError::DeviceNotFound)?;
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_GP_CNTRL as usize),
-                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
-            );
-        }
-
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_INT_MASK as usize),
-                CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX,
-            );
-        }
-
         Ok(())
+    }
+
+    /// Capture the gen1 firmware boot hand-off state without changing any
+    /// device register. This is intentionally small enough to leave enabled
+    /// in real-device debug logs.
+    fn log_fw_boot_registers(&self, stage: &str) {
+        log::info!(
+            "iwlwifi: fw.boot stage={} CSR_INT={:#010x} CSR_INT_MASK={:#010x} CSR_FH_INT={:#010x} CSR_GP={:#010x} CSR_UCODE_GP1={:#010x} RESET={:#010x} FH_LOAD={:#010x} FH_TX_CFG={:#010x}",
+            stage,
+            self.safe_read32(CSR_INT).unwrap_or(!0),
+            self.safe_read32(CSR_INT_MASK).unwrap_or(!0),
+            self.safe_read32(CSR_FH_INT).unwrap_or(!0),
+            self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+            self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0),
+            self.safe_read32(CSR_RESET).unwrap_or(!0),
+            self.safe_read32(FH_UCODE_LOAD_STATUS).unwrap_or(!0),
+            self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_SRVC).unwrap_or(!0),
+        );
     }
 
     /// Load firmware binary into the device.
@@ -1462,9 +1476,13 @@ impl IwlWifiDevice {
             let csr_ucode = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
             let csr_reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
             let fh_load = self.safe_read32(FH_UCODE_LOAD_STATUS).unwrap_or(!0);
+            let int_mask = self.safe_read32(CSR_INT_MASK).unwrap_or(!0);
+            let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
             log::warn!(
-                "iwlwifi: firmware alive timeout: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x} FH_LOAD={:#010x}",
+                "iwlwifi: firmware alive timeout: CSR_INT={:#010x} INT_MASK={:#010x} FH_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x} FH_LOAD={:#010x}",
                 csr_int,
+                int_mask,
+                fh_int,
                 csr_gp,
                 csr_ucode,
                 csr_reset,
@@ -1562,10 +1580,10 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
     fn create(
         ctx: &'static dyn crate::DriverContext,
         mmio_base: *mut u32,
-        hw_rev: u32,
+        pci_revision: u32,
         device: crate::pci::PciDevice,
     ) -> Option<Box<dyn crate::wifi::WifiDriver>> {
-        Self::init_from_mmio(ctx, mmio_base, hw_rev, device)
+        Self::init_from_mmio(ctx, mmio_base, pci_revision, device)
             .map(|dev| Box::new(dev) as Box<dyn crate::wifi::WifiDriver>)
     }
 
@@ -1629,6 +1647,12 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
         IwlWifiDevice::send_init_commands(self)
     }
 
+    fn check_pci_health(&mut self) -> Result<(), crate::DriverError> {
+        self.health
+            .check()
+            .map_err(|_| crate::DriverError::DeviceNotFound)
+    }
+
     fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
         IwlWifiDevice::send_init_firmware_commands(self)
     }
@@ -1641,9 +1665,9 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
 pub fn try_create_iwl(
     ctx: &'static dyn crate::DriverContext,
     mmio: *mut u32,
-    hw_rev: u32,
+    pci_revision: u32,
     device: crate::pci::PciDevice,
 ) -> Option<Box<dyn crate::wifi::WifiDriver>> {
-    IwlWifiDevice::init_from_mmio(ctx, mmio, hw_rev, device)
+    IwlWifiDevice::init_from_mmio(ctx, mmio, pci_revision, device)
         .map(|dev| Box::new(dev) as Box<dyn crate::wifi::WifiDriver>)
 }

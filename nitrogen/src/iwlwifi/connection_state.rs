@@ -45,6 +45,8 @@ static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
     fw_candidates: &[],
     alive_start_tsc: 0,
     pci_dev: None,
+    pci_bdf: None,
+    upstream_bridge: None,
     mmio: core::ptr::null_mut(),
     driver_ctx: None,
     health: None,
@@ -131,6 +133,13 @@ fn enqueue_wifi_request(request: WifiRequest) -> Option<u64> {
         WifiRequest::Tick => queue
             .iter()
             .any(|(_, pending)| matches!(pending, WifiRequest::Tick)),
+        // A menu event can be observed more than once while the GUI is being
+        // redrawn.  Do not let those duplicate events consume SQ entries or
+        // submit the same scan twice once the first request is waiting for
+        // the scheduler-owned executor.
+        WifiRequest::StartScan => queue
+            .iter()
+            .any(|(_, pending)| matches!(pending, WifiRequest::StartScan)),
         _ => false,
     };
     if duplicate_periodic_request {
@@ -150,9 +159,19 @@ fn enqueue_wifi_request(request: WifiRequest) -> Option<u64> {
     // Initialization is a prerequisite for every other Wi-Fi request.  A
     // pending periodic Tick must never sit in front of the first InitStep;
     // this is especially important when the service and device phases are
-    // separated by a GUI tick.
+    // separated by a GUI tick.  Once initialization is complete, action
+    // requests must run before a pending Tick: perform_tick() polls the
+    // device and may consume the whole short scheduler deadline, leaving a
+    // scan request stranded until the next GUI cycle (or until the user
+    // stops collecting the log).
     if matches!(&request, WifiRequest::InitStep) {
         queue.push_front((id, request));
+    } else if !matches!(&request, WifiRequest::Tick) {
+        let insert_at = queue
+            .iter()
+            .position(|(_, pending)| matches!(pending, WifiRequest::Tick))
+            .unwrap_or(queue.len());
+        queue.insert(insert_at, (id, request));
     } else {
         queue.push_back((id, request));
     }
@@ -270,6 +289,8 @@ pub fn retry_wifi_initialization() -> bool {
     ctx.fw_candidates = &[];
     ctx.alive_start_tsc = 0;
     ctx.pci_dev = None;
+    ctx.pci_bdf = None;
+    ctx.upstream_bridge = None;
     ctx.mmio = core::ptr::null_mut();
     ctx.driver_ctx = None;
     ctx.health = None;
@@ -372,16 +393,17 @@ fn perform_init_step() {
                 }
             };
             log::info!(
-                "iwlwifi: PCI device matched {:04x}:{:04x} at {:02x}:{:02x}.{} BAR0={:#x} hw_rev={:#06x}",
+                "iwlwifi: PCI device matched {:04x}:{:04x} at {:02x}:{:02x}.{} BAR0={:#x} pci_revision={:#04x}",
                 raw.pci_dev.vendor_id,
                 raw.device_id,
                 raw.pci_dev.bus,
                 raw.pci_dev.device,
                 raw.pci_dev.function,
                 raw.bar0_phys,
-                raw.hw_rev,
+                raw.pci_revision,
             );
             {
+                let pci_bdf = (raw.pci_dev.bus, raw.pci_dev.device, raw.pci_dev.function);
                 let health = raw.upstream_bridge.map_or_else(
                     || PciHealth::new(&raw.pci_dev),
                     |(bus, dev, func)| {
@@ -390,10 +412,12 @@ fn perform_init_step() {
                 );
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.pci_dev = Some(raw.pci_dev);
+                ctx.pci_bdf = Some(pci_bdf);
+                ctx.upstream_bridge = raw.upstream_bridge;
                 ctx.mmio = raw.mmio;
                 ctx.driver_ctx = Some(raw.driver_ctx);
                 ctx.health = Some(health);
-                ctx.hw_rev = raw.hw_rev;
+                ctx.hw_rev = 0;
                 // Firmware selection is deferred until the CSR HW_REV has
                 // been read after MMIO clock initialization.  7265 and
                 // 7265D share PCI IDs, so the PCI revision byte is not enough.
@@ -585,7 +609,7 @@ fn perform_init_step() {
                     return;
                 }
             };
-            let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
+            let hw_rev = hw_rev_raw as u16;
             let device_id = WIFI_INIT_CTX
                 .lock()
                 .pci_dev
@@ -594,8 +618,10 @@ fn perform_init_step() {
                 .unwrap_or(0);
             let candidates = select_firmware_list(device_id, hw_rev);
             log::info!(
-                "iwlwifi: detected CSR HW_REV type={:#06x}, firmware candidates={}",
-                hw_rev & CSR_HW_REV_TYPE_MASK,
+                "iwlwifi: detected CSR_HW_REV raw={:#010x} type={:#06x} step_dash={:#x} firmware candidates={}",
+                hw_rev_raw,
+                csr_hw_rev_type(hw_rev_raw),
+                hw_rev_raw & 0xf,
                 candidates.len()
             );
             if candidates.is_empty() {
@@ -808,6 +834,7 @@ fn perform_init_step() {
                 phy_db_sections: Vec::new(),
                 init_firmware_completed: false,
                 init_commands_started: false,
+                runtime_commands_started: false,
                 init_nvm_index: 0,
                 init_hw_section: None,
                 init_mac_ready: false,
@@ -919,14 +946,22 @@ fn perform_init_step() {
             // entering a non-posted read that cannot complete.
             let pci_health = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                ctx.health.as_mut().map(PciHealth::check)
+                ctx.mmio_device.as_mut().map(|dev| dev.check_pci_health())
             };
-            if let Some(Err(error)) = pci_health {
-                log::warn!("iwlwifi: alive wait PCI health check failed: {}", error);
-                let mut ctx = WIFI_INIT_CTX.lock();
-                ctx.fw_candidate_idx += 1;
-                set_init_phase(WifiInitPhase::FwUpload);
-                return;
+            match pci_health {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    log::warn!("iwlwifi: alive wait PCI health check failed: {:?}", error);
+                    let mut ctx = WIFI_INIT_CTX.lock();
+                    ctx.fw_candidate_idx += 1;
+                    set_init_phase(WifiInitPhase::FwUpload);
+                    return;
+                }
+                None => {
+                    log::warn!("iwlwifi: alive wait PCI health state unavailable");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
             }
 
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
@@ -1063,13 +1098,13 @@ fn perform_init_step() {
             };
             let pci_health = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                ctx.health.as_mut().map(PciHealth::check)
+                ctx.mmio_device.as_mut().map(|dev| dev.check_pci_health())
             };
             match pci_health {
                 Some(Ok(())) => {}
                 Some(Err(error)) => {
                     log::warn!(
-                        "iwlwifi: runtime alive wait PCI health check failed: {}",
+                        "iwlwifi: runtime alive wait PCI health check failed: {:?}",
                         error
                     );
                     set_init_phase(WifiInitPhase::Failed);
@@ -1132,6 +1167,9 @@ fn perform_init_step() {
                     log::info!("iwlwifi: runtime firmware initialization commands accepted");
                     set_init_phase(WifiInitPhase::Done);
                 }
+                Err(crate::DriverError::Pending) => {
+                    debug::print("iwlwifi", "step: fw_runtime_cmds_pending");
+                }
                 Err(error) => {
                     log::error!(
                         "iwlwifi: init.phase.error name=fw_runtime_cmds id=10 error={}",
@@ -1175,9 +1213,8 @@ fn perform_init_step() {
 // ── High-level API ─────────────────
 
 fn pci_bdf_from_ctx(ctx: &WifiInitContext) -> Option<((u8, u8, u8), Option<(u8, u8, u8)>)> {
-    let pci = ctx.pci_dev.as_ref()?;
-    let bdf = (pci.bus, pci.device, pci.function);
-    let bridge = ctx.health.as_ref().and_then(|h| h.upstream_bridge());
+    let bdf = ctx.pci_bdf?;
+    let bridge = ctx.upstream_bridge;
     Some((bdf, bridge))
 }
 
@@ -1367,7 +1404,22 @@ pub fn connect_to_ap(ssid: &Ssid, password: Option<&str>) {
 
 /// Enqueue a scan request for scheduler-owned execution.
 pub fn start_scan_if_idle() {
-    let _ = enqueue_wifi_request(WifiRequest::StartScan);
+    let duplicate = WIFI_SQ
+        .lock()
+        .iter()
+        .any(|(_, pending)| matches!(pending, WifiRequest::StartScan));
+    match enqueue_wifi_request(WifiRequest::StartScan) {
+        Some(request_id) => {
+            log::info!("iwlwifi: SQ queued StartScan request={}", request_id);
+        }
+        None => {
+            if duplicate {
+                log::debug!("iwlwifi: SQ ignored duplicate StartScan request");
+            } else {
+                log::warn!("iwlwifi: SQ did not queue StartScan request");
+            }
+        }
+    }
 }
 
 /// Move queued Wi-Fi SQ entries through the hardware-facing executor.
@@ -1398,30 +1450,61 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
             break;
         }
 
-        // InitStep and Tick are level-triggered housekeeping requests. Their
-        // completion records are intentionally ignored by the consumer, so
-        // they must not be blocked by a full CQ. In particular, a backlog of
-        // stale Tick records must not prevent the first InitStep from ever
-        // reaching the hardware state machine and make the UI-side timeout
-        // fire while the phase is still Idle.
-        let periodic = {
-            let queue = WIFI_SQ.lock();
-            matches!(
-                queue.front().map(|(_, request)| request),
-                Some(WifiRequest::InitStep | WifiRequest::Tick)
-            )
-        };
-        let completion_reserved = if periodic {
-            false
-        } else if reserve_wifi_completion() {
-            true
-        } else {
-            break;
-        };
-        let Some((request_id, request)) = WIFI_SQ.lock().pop_front() else {
-            if completion_reserved {
-                release_wifi_completion();
+        // InitStep is the only request that is allowed to jump ahead of an
+        // action: initialization is a prerequisite for every device action.
+        // Once no InitStep remains, select an action before any periodic Tick
+        // even if an older Tick is still sitting at the deque's front. This
+        // avoids treating the SQ as FIFO housekeeping when the user is
+        // waiting for a scan/connect action.
+        let Some((request_id, request, completion_reserved)) = ({
+            let mut queue = WIFI_SQ.lock();
+            let init_active = !matches!(
+                get_init_phase(),
+                WifiInitPhase::Done | WifiInitPhase::Failed
+            );
+            let is_action = |pending: &WifiRequest| {
+                matches!(
+                    pending,
+                    WifiRequest::StartScan
+                        | WifiRequest::Connect { .. }
+                        | WifiRequest::DataTx { .. }
+                )
+            };
+            let next_index = if init_active {
+                queue
+                    .iter()
+                    .position(|(_, pending)| matches!(pending, WifiRequest::InitStep))
+                    .or_else(|| queue.iter().position(|(_, pending)| is_action(pending)))
+                    .unwrap_or(0)
+            } else {
+                queue
+                    .iter()
+                    .position(|(_, pending)| is_action(pending))
+                    .or_else(|| {
+                        queue
+                            .iter()
+                            .position(|(_, pending)| matches!(pending, WifiRequest::InitStep))
+                    })
+                    .unwrap_or(0)
+            };
+            match queue.get(next_index) {
+                None => None,
+                Some((_, next_request)) => {
+                    let periodic =
+                        matches!(next_request, WifiRequest::InitStep | WifiRequest::Tick);
+                    if !periodic && !reserve_wifi_completion() {
+                        log::warn!(
+                            "iwlwifi: SQ action blocked by full completion queue; request remains queued"
+                        );
+                        None
+                    } else {
+                        queue
+                            .remove(next_index)
+                            .map(|(request_id, request)| (request_id, request, !periodic))
+                    }
+                }
             }
+        }) else {
             break;
         };
         let kind = match request {
@@ -1433,9 +1516,12 @@ pub fn process_wifi_submission_queue_until(budget: usize, deadline_tsc: u64) {
                 perform_tick();
                 WifiCompletionKind::Tick
             }
-            WifiRequest::StartScan => WifiCompletionKind::StartScan {
-                accepted: perform_start_scan_if_idle(),
-            },
+            WifiRequest::StartScan => {
+                log::info!("iwlwifi: SQ execute StartScan request={}", request_id);
+                WifiCompletionKind::StartScan {
+                    accepted: perform_start_scan_if_idle(),
+                }
+            }
             WifiRequest::Connect { ssid, password } => WifiCompletionKind::Connect {
                 accepted: perform_connect(&ssid, password.as_deref()),
             },
@@ -1508,8 +1594,8 @@ impl IwlWifiDevice {
         self.wifi_conn.start_scan();
         self.scan_results.clear();
         // Reset the tick-count watchdog. The LMAC request covers the 2.4/5 GHz
-        // channel set and uses passive dwell times, so the host must leave
-        // several seconds for firmware completion and RX delivery.
+        // channel set and actively sends wildcard probes, so the host must
+        // still leave time for firmware completion and RX delivery.
         self.scan_channel = 0;
         self.scan_pending = true;
         self.scan_result_grace_ticks = 0;
@@ -1533,8 +1619,8 @@ impl IwlWifiDevice {
         }
 
         log::info!(
-            "iwlwifi: LMAC scan request queued: opcode=0x51 channels={} bytes={} (Klog: waiting for APs)",
-            23,
+            "iwlwifi: LMAC active scan request queued: opcode=0x51 channels={} bytes={} (Klog: waiting for APs)",
+            scan_cmd.n_channels,
             core::mem::size_of::<ScanRequestCmd>()
         );
         Ok(())

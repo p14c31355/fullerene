@@ -277,6 +277,20 @@ pub struct MacQosAc {
     pub edca_txop: u16,
 }
 
+impl MacQosAc {
+    pub fn values(self) -> (u16, u16, u8, u8, u16) {
+        unsafe {
+            (
+                core::ptr::read_unaligned(core::ptr::addr_of!(self.cw_min)),
+                core::ptr::read_unaligned(core::ptr::addr_of!(self.cw_max)),
+                self.aifsn,
+                self.fifos_mask,
+                core::ptr::read_unaligned(core::ptr::addr_of!(self.edca_txop)),
+            )
+        }
+    }
+}
+
 /// Station-specific portion of the API-v1 MAC context union.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -337,11 +351,10 @@ impl MacContextCmd {
             tsf_id: 0,
             node_addr: mac,
             reserved_for_node_addr: 0,
-            // mac80211 keeps the station BSSID zeroed until association. The
-            // firmware accepts that value for an unassociated BSS_STA
-            // context; a broadcast BSSID is a different (and invalid for
-            // this context) address value.
-            bssid_addr: [0; 6],
+            // Linux fills an unassociated station's BSSID with the broadcast
+            // address when vif->bss_conf.bssid is absent. Zero is not a valid
+            // BSSID for MAC_CONTEXT_CMD_API_S_VER_1.
+            bssid_addr: [0xff; 6],
             reserved_for_bssid_addr: 0,
             cck_rates: 0x0000_000f,
             // For an unassociated 2.4 GHz STA with no AP basic-rate set,
@@ -355,37 +368,37 @@ impl MacContextCmd {
             short_slot: 0,
             filter_flags: FILTER_FLAGS,
             qos_flags: 0,
-            // API v1 expects each of the four EDCA entries to name the FIFO
-            // owned by that access category.  Before association mac80211
-            // has not supplied queue parameters yet, so Linux leaves the
-            // timing values zero and only sets the FIFO masks. The fifth
-            // entry is reserved (AC_NUM + 1) and stays zero.
+            // mac80211's non-QoS station defaults are cw_min=15,
+            // cw_max=1023, aifsn=2, txop=0. API v1 still requires the
+            // command to carry valid EDCA timing values before association;
+            // zero is not a valid contention-window value. The fifth entry
+            // is reserved (AC_NUM + 1) and stays zero.
             ac: [
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 15,
+                    cw_max: 1023,
+                    aifsn: 2,
                     fifos_mask: 1 << 0,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 15,
+                    cw_max: 1023,
+                    aifsn: 2,
                     fifos_mask: 1 << 1,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 15,
+                    cw_max: 1023,
+                    aifsn: 2,
                     fifos_mask: 1 << 2,
                     edca_txop: 0,
                 },
                 MacQosAc {
-                    cw_min: 0,
-                    cw_max: 0,
-                    aifsn: 0,
+                    cw_min: 15,
+                    cw_max: 1023,
+                    aifsn: 2,
                     fifos_mask: 1 << 3,
                     edca_txop: 0,
                 },
@@ -410,6 +423,13 @@ impl MacContextCmd {
                 assoc_beacon_arrive_time: 0,
             },
         }
+    }
+
+    /// Read one packed QoS entry without creating an unaligned reference.
+    pub fn qos_ac(&self, index: usize) -> MacQosAc {
+        assert!(index < self.ac.len());
+        let ac = core::ptr::addr_of!(self.ac) as *const MacQosAc;
+        unsafe { ac.add(index).read_unaligned() }
     }
 }
 
@@ -477,6 +497,21 @@ pub const SCAN_CHANNEL_COUNT: usize = 23;
 const SCAN_DIRECT_SSID_COUNT: usize = 20;
 const SCAN_SSID_MAX_LEN: usize = 32;
 const SCAN_PROBE_BUFFER_SIZE: usize = 512;
+
+// Legacy LMAC scan flags. FullereneOS uses a wildcard probe request so that
+// APs which do not answer a purely passive scan are still discoverable.
+const SCAN_FLAG_PASS_ALL: u32 = 1 << 0;
+const SCAN_FLAG_ITER_COMPLETE: u32 = 1 << 3;
+const SCAN_FLAG_EXTENDED_DWELL: u32 = 1 << 7;
+
+// Legacy TX command fields used by the LMAC scan engine. Scan probe frames
+// are management/broadcast frames, so the firmware must own sequence control
+// and should not let Bluetooth priority arbitration suppress them.
+const SCAN_TX_FLAG_BT_DIS: u32 = 1 << 12;
+const SCAN_TX_FLAG_SEQ_CTL: u32 = 1 << 13;
+const SCAN_RATE_ANT_A: u32 = 1 << 14;
+const SCAN_RATE_1M_CCK: u32 = 10 | (1 << 9) | SCAN_RATE_ANT_A;
+const SCAN_RATE_6M_OFDM: u32 = 13 | SCAN_RATE_ANT_A;
 
 const SCAN_CHANNELS: [u8; SCAN_CHANNEL_COUNT] = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 149, 153, 157, 161, 165,
@@ -647,22 +682,37 @@ impl ScanRequestCmd {
             channel.channel_num = number as u16;
         }
 
+        // The legacy firmware accepts a wildcard SSID-only probe, but some
+        // APs and firmware revisions expect the legacy rate IEs as well.
+        // Keep the band-specific mandatory rates separate and put the
+        // remaining rates in the common tail, matching Linux's segment
+        // layout for PROBE_REQUEST_FRAME_API_S_VER_2.
+        const RATES_24GHZ: [u8; 10] = [1, 8, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24];
+        const RATES_5GHZ: [u8; 6] = [1, 4, 0x8c, 0x12, 0x98, 0x24];
+        const RATES_COMMON: [u8; 6] = [50, 4, 0xb0, 0x48, 0x60, 0x6c];
         let mut probe = ScanProbeReqV1 {
             mac_header: ScanProbeSegment { offset: 0, len: 26 },
             band_data: [
-                ScanProbeSegment { offset: 26, len: 0 },
-                ScanProbeSegment { offset: 26, len: 0 },
+                ScanProbeSegment {
+                    offset: 26,
+                    len: 10,
+                },
+                ScanProbeSegment { offset: 36, len: 6 },
             ],
-            common_data: ScanProbeSegment { offset: 26, len: 0 },
+            common_data: ScanProbeSegment { offset: 42, len: 6 },
             buf: [0; SCAN_PROBE_BUFFER_SIZE],
         };
-        // Wildcard probe request. It is not transmitted for this passive
-        // scan, but the LMAC API still requires a valid probe descriptor.
+        // Wildcard probe request. The zero-length SSID element is included in
+        // the 26-byte MAC-header segment, so this request does not require a
+        // known SSID and can discover ordinary broadcast APs actively.
         probe.buf[0..2].copy_from_slice(&0x0040u16.to_le_bytes());
         probe.buf[4..10].fill(0xff);
         probe.buf[10..16].copy_from_slice(&mac);
         probe.buf[16..22].fill(0xff);
         probe.buf[24..26].fill(0);
+        probe.buf[26..36].copy_from_slice(&RATES_24GHZ);
+        probe.buf[36..42].copy_from_slice(&RATES_5GHZ);
+        probe.buf[42..48].copy_from_slice(&RATES_COMMON);
 
         Self {
             reserved1: 0,
@@ -674,7 +724,9 @@ impl ScanRequestCmd {
             reserved2: 0,
             // Two valid RX chains, selected/forced in the same way as Linux.
             rx_chain_select: 0x01b7,
-            scan_flags: (1 << 0) | (1 << 1) | (1 << 3) | (1 << 7),
+            // Active wildcard scan: keep PASSIVE clear. The probe request
+            // above is transmitted on every active channel.
+            scan_flags: SCAN_FLAG_PASS_ALL | SCAN_FLAG_ITER_COMPLETE | SCAN_FLAG_EXTENDED_DWELL,
             // Regular (wild) scans use the 120-TU associated-channel
             // budget. 37 TU is the fast-balance budget and can terminate a
             // passive dwell before a beacon is delivered.
@@ -685,16 +737,16 @@ impl ScanRequestCmd {
             filter_flags: (1 << 2) | (1 << 6),
             tx_cmd: [
                 ScanReqTxCmd {
-                    tx_flags: 0,
-                    rate_n_flags: 0,
+                    tx_flags: SCAN_TX_FLAG_SEQ_CTL | SCAN_TX_FLAG_BT_DIS,
+                    rate_n_flags: SCAN_RATE_1M_CCK,
                     // The legacy scan engine transmits through the auxiliary
                     // station created during firmware initialization.
                     sta_id: aux_sta_id,
                     reserved: [0; 3],
                 },
                 ScanReqTxCmd {
-                    tx_flags: 0,
-                    rate_n_flags: 0,
+                    tx_flags: SCAN_TX_FLAG_SEQ_CTL | SCAN_TX_FLAG_BT_DIS,
+                    rate_n_flags: SCAN_RATE_6M_OFDM,
                     sta_id: aux_sta_id,
                     reserved: [0; 3],
                 },
@@ -704,7 +756,10 @@ impl ScanRequestCmd {
                 len: 0,
                 ssid: [0; SCAN_SSID_MAX_LEN],
             }; SCAN_DIRECT_SSID_COUNT],
-            scan_prio: 2,
+            // Linux uses the extended priority value 6 for regular LMAC
+            // scans; the legacy enum values 0..2 are not the wire value used
+            // by this API generation.
+            scan_prio: 6,
             iter_num: 1,
             delay: 0,
             schedule: [
@@ -930,6 +985,8 @@ pub struct WifiInitContext {
     pub fw_candidates: &'static [FirmwareBlob],
     pub alive_start_tsc: u64,
     pub pci_dev: Option<PciDevice>,
+    pub pci_bdf: Option<(u8, u8, u8)>,
+    pub upstream_bridge: Option<(u8, u8, u8)>,
     pub mmio: *mut u32,
     pub driver_ctx: Option<&'static dyn DriverContext>,
     pub health: Option<PciHealth>,
