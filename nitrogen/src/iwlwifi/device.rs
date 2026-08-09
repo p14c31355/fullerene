@@ -1345,6 +1345,39 @@ impl IwlWifiDevice {
     /// Read the compact LMAC error table written by firmware after a
     /// software assertion.  The pointer comes from the firmware TLV rather
     /// than from a guessed SRAM address.
+    pub(super) fn record_alive_notification(&mut self, payload: &[u8]) {
+        // MVM_ALIVE (API v3) starts with status/flags, followed by the LMAC
+        // alive structure.  The LMAC error-event-table pointer is therefore
+        // at payload offset 20.  Runtime firmware can emit a fresh ALIVE
+        // notification when it restarts after an assertion, even though the
+        // original firmware TLV did not provide an error-log pointer.
+        if payload.len() < 24 {
+            return;
+        }
+        let status = u16::from_le_bytes([payload[0], payload[1]]);
+        let flags = u16::from_le_bytes([payload[2], payload[3]]);
+        let error_log_ptr =
+            u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]);
+        if error_log_ptr == 0 {
+            return;
+        }
+
+        let (image, pointer) = if self.init_firmware_completed {
+            self.runtime_errlog_ptr = error_log_ptr;
+            ("runtime", self.runtime_errlog_ptr)
+        } else {
+            self.init_errlog_ptr = error_log_ptr;
+            ("init", self.init_errlog_ptr)
+        };
+        log::error!(
+            "iwlwifi: firmware.alive image={} status={:#06x} flags={:#06x} error_log_ptr={:#010x}",
+            image,
+            status,
+            flags,
+            pointer,
+        );
+    }
+
     pub(super) fn log_firmware_error_table(&mut self, command: &str) {
         let (image, base) = if self.runtime_errlog_ptr != 0 {
             ("runtime", self.runtime_errlog_ptr)

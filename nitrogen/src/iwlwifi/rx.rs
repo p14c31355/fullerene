@@ -77,6 +77,7 @@ impl IwlWifiDevice {
             return Err(crate::DriverError::DeviceNotFound);
         }
         let mut firmware_error = false;
+        let mut firmware_error_command = "init.rx.firmware_failure";
         if csr_int & (CSR_INT_BIT_SW_ERR | CSR_INT_BIT_HW_ERR) != 0 {
             let gp1 = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
             let gp_driver = self.safe_read32(CSR_GP_DRIVER).unwrap_or(!0);
@@ -96,7 +97,6 @@ impl IwlWifiDevice {
                 gp_cntrl,
                 rptr,
             );
-            self.log_firmware_error_table("init.rx.firmware_failure");
             self.fw_state = FwState::Error;
             // Continue draining the current RBD below.  Some firmware builds
             // emit REPLY_ERROR together with SW_ERR; returning here would
@@ -113,7 +113,7 @@ impl IwlWifiDevice {
                 gp1,
                 csr_int,
             );
-            self.log_firmware_error_table("init.rx.command_blocked");
+            firmware_error_command = "init.rx.command_blocked";
             firmware_error = true;
         }
 
@@ -184,6 +184,11 @@ impl IwlWifiDevice {
                     let packet = &frame[offset..offset + packet_len];
                     let payload = &packet[8..];
                     let payload_preview = &payload[..core::cmp::min(payload.len(), 32)];
+                    if packet[4] == LegacyCmd::ReplyAlive as u8
+                        && packet[5] == GroupId::Legacy as u8
+                    {
+                        self.record_alive_notification(payload);
+                    }
                     log::info!(
                         "iwlwifi: init.rx.packet opcode=0x{:02x} group=0x{:02x} len={} payload_len={} payload_preview={} expected_opcode=0x{:02x} expected_group=0x{:02x}",
                         packet[4],
@@ -239,6 +244,11 @@ impl IwlWifiDevice {
 
         self.restock_rx_buffers(processed);
         if firmware_error {
+            // An assertion may enqueue a fresh ALIVE notification in the
+            // same RX batch.  Record its error-table pointer first, then
+            // read the table; doing this before draining the RBD would
+            // incorrectly report pointer_missing.
+            self.log_firmware_error_table(firmware_error_command);
             return Err(crate::DriverError::Protocol);
         }
         if let Some(payload) = matched {
