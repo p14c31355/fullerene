@@ -292,6 +292,18 @@ impl MacQosAc {
 }
 
 /// Station-specific portion of the API-v1 MAC context union.
+///
+/// Linux's `union` in `struct iwl_mac_ctx_cmd` is sized by the largest
+/// member `iwl_mac_data_p2p_sta` (44-byte `iwl_mac_data_sta` + 4-byte
+/// `ctwin` = 48 bytes).  The firmware's MAC_CONTEXT_CMD_API_S_VER_1
+/// handler always expects `sizeof(struct iwl_mac_ctx_cmd)` = 148 bytes
+/// of payload.  Sending only the 44-byte `iwl_mac_data_sta` produces a
+/// 144-byte command, 4 bytes short of the fixed API-v1 size, which
+/// causes the runtime firmware to watchdog (NMI_INTERRUPT_WDG,
+/// error_id=0x34) while processing MAC_CONTEXT.  The trailing `ctwin`
+/// field mirrors the p2p_sta union member so the total command is
+/// 148 bytes; it is zero for a non-P2P BSS STA and ignored by the
+/// firmware for mac_type=FW_MAC_TYPE_BSS_STA.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct MacStaData {
@@ -305,6 +317,7 @@ pub struct MacStaData {
     pub listen_interval: u32,
     pub assoc_id: u32,
     pub assoc_beacon_arrive_time: u32,
+    pub ctwin: u32,
 }
 
 /// MAC_CONTEXT_CMD (0x28) payload for a minimal STA context.
@@ -421,6 +434,7 @@ impl MacContextCmd {
                 listen_interval: 10,
                 assoc_id: 0,
                 assoc_beacon_arrive_time: 0,
+                ctwin: 0,
             },
         }
     }

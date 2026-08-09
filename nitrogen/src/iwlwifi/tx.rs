@@ -19,7 +19,7 @@ const _: () = assert!(
     core::mem::size_of::<HcmdHeaderWide>() + core::mem::size_of::<ScanRequestCmd>()
         <= TFD_LENGTH_MAX
 );
-const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 144);
+const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 148);
 
 struct HexBytes<'a>(&'a [u8]);
 
@@ -974,7 +974,7 @@ impl IwlWifiDevice {
         // but the firmware dropped them because no MAC context existed.
         let mac_ctx = MacContextCmd::sta(self.mac);
         let mac_ctx_bytes = unsafe { super::as_bytes(&mac_ctx) };
-        const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 144);
+        const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 148);
         log::info!(
             "iwlwifi: init.config name=mac_context action=add mac_type=bss_sta(5) id_color=0 filter=0x44"
         );
@@ -1002,7 +1002,7 @@ impl IwlWifiDevice {
         for (region, region_offset, region_bytes) in [
             ("common", 0usize, &mac_ctx_bytes[0..60]),
             ("qos_ac", 60usize, &mac_ctx_bytes[60..100]),
-            ("sta", 100usize, &mac_ctx_bytes[100..144]),
+            ("sta", 100usize, &mac_ctx_bytes[100..148]),
         ] {
             for (chunk_index, chunk) in region_bytes.chunks(16).enumerate() {
                 log::info!(

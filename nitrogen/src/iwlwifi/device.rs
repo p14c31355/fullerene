@@ -1391,19 +1391,42 @@ impl IwlWifiDevice {
             return;
         };
 
-        let mut words = [0u32; 30];
+        // LOG_ERROR_TABLE_API_S_VER_3 has 38 dwords through flow_handler.
+        // The first compact log only exposed the command identity; retain the
+        // execution addresses and error-specific data as well so a watchdog
+        // can be distinguished from a malformed-command assertion.
+        let mut words = [0u32; 38];
         for (index, word) in words.iter_mut().enumerate() {
             *word = self
                 .read_mem32(base.saturating_add((index * 4) as u32))
                 .unwrap_or(!0);
         }
+        let error_name = match words[1] {
+            0x34 => "NMI_INTERRUPT_WDG",
+            0x35 => "SYSASSERT",
+            0x37 => "UCODE_VERSION_MISMATCH",
+            0x38 => "BAD_COMMAND",
+            0x3c => "NMI_INTERRUPT_DATA_ACTION_PT",
+            0x3d => "FATAL_ERROR",
+            0x46 => "NMI_TRM_HW_ERR",
+            0x4c => "NMI_INTERRUPT_TRM",
+            0x54 => "NMI_INTERRUPT_BREAK_POINT",
+            0x5c => "NMI_INTERRUPT_WDG_RXF_FULL",
+            0x64 => "NMI_INTERRUPT_WDG_NO_RBD_RXF_FULL",
+            0x66 => "NMI_INTERRUPT_HOST",
+            0x7c => "NMI_INTERRUPT_ACTION_PT",
+            0x84 => "NMI_INTERRUPT_UNKNOWN",
+            0x86 => "NMI_INTERRUPT_INST_ACTION_PT",
+            _ => "ADVANCED_SYSASSERT_OR_UNKNOWN",
+        };
         log::error!(
-            "iwlwifi: firmware.error_log command={} image={} base={:#010x} valid={:#010x} error_id={:#010x} hcmd={:#010x} last_cmd_id={:#010x} isr0={:#010x} isr1={:#010x} isr2={:#010x} isr3={:#010x} isr4={:#010x}",
+            "iwlwifi: firmware.error_log command={} image={} base={:#010x} valid={:#010x} error_id={:#010x} name={} hcmd={:#010x} last_cmd_id={:#010x} isr0={:#010x} isr1={:#010x} isr2={:#010x} isr3={:#010x} isr4={:#010x}",
             command,
             image,
             base,
             words[0],
             words[1],
+            error_name,
             words[23],
             words[29],
             words[24],
@@ -1411,6 +1434,26 @@ impl IwlWifiDevice {
             words[26],
             words[27],
             words[28],
+        );
+        log::error!(
+            "iwlwifi: firmware.error_detail trm_hw_status0={:#010x} trm_hw_status1={:#010x} blink2={:#010x} ilink1={:#010x} ilink2={:#010x} data1={:#010x} data2={:#010x} data3={:#010x}",
+            words[2],
+            words[3],
+            words[4],
+            words[5],
+            words[6],
+            words[7],
+            words[8],
+            words[9],
+        );
+        log::error!(
+            "iwlwifi: firmware.error_state gp1={:#010x} gp2={:#010x} log_pc={:#010x} frame_ptr={:#010x} stack_ptr={:#010x} flow_handler={:#010x}",
+            words[13],
+            words[14],
+            words[20],
+            words[21],
+            words[22],
+            words[37],
         );
     }
 
