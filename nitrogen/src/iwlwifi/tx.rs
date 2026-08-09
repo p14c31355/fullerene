@@ -1044,14 +1044,14 @@ impl IwlWifiDevice {
         // to switch to the NVM-stored default regulatory profile before
         // any scan request.  Linux does this in iwl_mvm_init_fw_regd() and
         // refuses to scan (iwl_mvm_reg_scan_start) until lar_regdom_set is
-        // true.  The command is in group 0x1 (Long) and uses the 8-byte
-        // wide header.
+        // true.  MCC_UPDATE_CMD (0xc8) is in LEGACY_GROUP (0x0) and uses
+        // the 4-byte header.
         let mcc_cmd = MccUpdateCmd::nvm_default();
         let mcc_cmd_bytes = unsafe { super::as_bytes(&mcc_cmd) };
         self.send_init_hcmd(
             "MCC_UPDATE",
             LegacyCmd::MccUpdate as u8,
-            GroupId::Long as u8,
+            GroupId::Legacy as u8,
             mcc_cmd_bytes,
         )?;
         log::info!(
@@ -1061,7 +1061,7 @@ impl IwlWifiDevice {
         self.wait_init_hcmd_response(
             "MCC_UPDATE",
             LegacyCmd::MccUpdate as u8,
-            GroupId::Long as u8,
+            GroupId::Legacy as u8,
         )?;
         log::info!("iwlwifi: init.config name=mcc_update status=accepted");
 

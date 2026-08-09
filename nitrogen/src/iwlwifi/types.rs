@@ -122,10 +122,10 @@ pub enum LegacyCmd {
     ScanCompleteUrgent = 0x6d,
     /// LMAC scan iteration completion notification.
     ScanOffloadCompleteNotif = 0xe7,
-    /// MCC update command (LAR regulatory domain). Sent in group 0x1
-    /// (Long) with the wide 8-byte header. The firmware refuses to scan
-    /// 5 GHz channels until an MCC is applied.
-    MccUpdate = 0xc2,
+    /// MCC update command (LAR regulatory domain).  Linux 4.14 defines
+    /// MCC_UPDATE_CMD as opcode 0xc8 in LEGACY_GROUP (0x0).  The firmware
+    /// refuses to scan 5 GHz channels until an MCC is applied.
+    MccUpdate = 0xc8,
 }
 
 /// ADD_STA_KEY command payload used by the 7000-series firmware API.
