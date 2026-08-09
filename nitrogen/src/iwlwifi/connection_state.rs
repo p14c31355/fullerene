@@ -840,6 +840,7 @@ fn perform_init_step() {
                 selected_fw_api: IWL_FW_API_VER,
                 fw_lar_supported: false,
                 fw_lar_v2: false,
+                fw_umac_scan_supported: false,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,

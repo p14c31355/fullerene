@@ -49,6 +49,7 @@ pub struct IwlWifiDevice {
     /// LAR/MCC capabilities advertised by the loaded firmware TLVs.
     pub fw_lar_supported: bool,
     pub fw_lar_v2: bool,
+    pub fw_umac_scan_supported: bool,
     pub phy_config: u32,
     pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
@@ -489,6 +490,7 @@ impl IwlWifiDevice {
             selected_fw_api: IWL_FW_API_VER,
             fw_lar_supported: false,
             fw_lar_v2: false,
+            fw_umac_scan_supported: false,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -711,6 +713,7 @@ impl IwlWifiDevice {
             selected_fw_api: IWL_FW_API_VER,
             fw_lar_supported: false,
             fw_lar_v2: false,
+            fw_umac_scan_supported: false,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -801,6 +804,7 @@ impl IwlWifiDevice {
         self.phy_sku_tlv_len = None;
         self.fw_lar_supported = false;
         self.fw_lar_v2 = false;
+        self.fw_umac_scan_supported = false;
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
         self.tx_head = 0;
@@ -1042,16 +1046,18 @@ impl IwlWifiDevice {
                         // 73 (entry 2, bit 9).
                         if api_index == 0 {
                             self.fw_lar_supported = capabilities & (1 << 1) != 0;
+                            self.fw_umac_scan_supported = capabilities & (1 << 2) != 0;
                         }
                         if api_index == 2 {
                             self.fw_lar_v2 = capabilities & (1 << 9) != 0;
                         }
                         log::info!(
-                            "iwlwifi: firmware.capabilities api_index={} bitmap={:#010x} lar={} lar_v2={}",
+                            "iwlwifi: firmware.capabilities api_index={} bitmap={:#010x} lar={} lar_v2={} umac_scan={}",
                             api_index,
                             capabilities,
                             self.fw_lar_supported,
                             self.fw_lar_v2,
+                            self.fw_umac_scan_supported,
                         );
                     }
                 }
@@ -1985,6 +1991,7 @@ pub(super) mod test_support {
                 selected_fw_api: 17,
                 fw_lar_supported: false,
                 fw_lar_v2: false,
+                fw_umac_scan_supported: false,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,

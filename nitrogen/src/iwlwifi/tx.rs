@@ -983,6 +983,16 @@ impl IwlWifiDevice {
     /// Send the LMAC scan configuration after MCC_UPDATE completed.
     fn send_runtime_scan_config(&mut self) -> Result<(), crate::DriverError> {
         const AUX_STA_ID: u8 = 1;
+        // Linux only sends SCAN_CFG_CMD when the firmware advertises UMAC
+        // scan support. The 7265D-27/29 images expose LMAC scan only, so
+        // their SCAN_OFFLOAD_REQUEST_CMD already carries the channel list
+        // and this command must be omitted.
+        if !self.fw_umac_scan_supported {
+            log::info!(
+                "iwlwifi: init.config name=scan_config status=skipped reason=umac_scan_unsupported"
+            );
+            return Ok(());
+        }
         // SCAN_CFG_CMD configures the LMAC scan engine with channel lists,
         // rates, and dwell times. It is a long-group command with opcode 0x0c.
         let scan_cfg = ScanConfigV1::new(self.mac, AUX_STA_ID);
