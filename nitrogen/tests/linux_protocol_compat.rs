@@ -13,7 +13,8 @@ use nitrogen::iwlwifi::registers::{
     TX_TFD_RING_BYTES,
 };
 use nitrogen::iwlwifi::types::{
-    AddStaCmdV7, MacContextCmd, ScanConfigV1, ScanRequestCmd, ScdTxqCfgCmdV1,
+    AddStaCmdV7, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanConfigV1, ScanRequestCmd,
+    ScdTxqCfgCmdV1,
 };
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
@@ -87,6 +88,27 @@ fn linux_v49_scan_commands_use_the_aux_station_id() {
         &[1, 8, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]
     );
     assert_eq!(&probe[16 + 42..16 + 48], &[50, 4, 0xb0, 0x48, 0x60, 0x6c]);
+}
+
+#[test]
+fn linux_mcc_update_api_versions_use_the_advertised_wire_layouts() {
+    let v1 = MccUpdateCmdV1 {
+        mcc: u16::from_be_bytes(*b"ZZ"),
+        source_id: 0,
+        reserved: 0,
+    };
+    assert_eq!(bytes(&v1), &[0x5a, 0x5a, 0, 0]);
+
+    let v2 = MccUpdateCmdV2 {
+        mcc: u16::from_be_bytes(*b"ZZ"),
+        source_id: 0,
+        reserved: 0,
+        key: 0,
+        reserved2: [0; 20],
+    };
+    assert_eq!(size_of::<MccUpdateCmdV2>(), 28);
+    assert_eq!(&bytes(&v2)[..4], &[0x5a, 0x5a, 0, 0]);
+    assert!(bytes(&v2)[4..].iter().all(|byte| *byte == 0));
 }
 
 #[test]

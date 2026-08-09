@@ -147,14 +147,25 @@ pub struct AddStaKeyCmd {
     pub rx_security_seq: [u8; 16],
 }
 
-/// MCC_UPDATE_CMD payload — sets the regulatory country code for LAR.
+/// MCC_UPDATE_CMD API v1 payload — sets the regulatory country code for LAR.
 #[repr(C, packed)]
-pub struct MccUpdateCmd {
+pub struct MccUpdateCmdV1 {
     /// ISO 3166 country code in ASCII, e.g. b"US" = 0x5553, b"ZZ" = 0x5A5A.
     pub mcc: u16,
     /// Regulatory domain source (0=MCC_SOURCE_OLD_FW).
     pub source_id: u8,
     pub reserved: u8,
+}
+
+/// MCC_UPDATE_CMD API v2 payload used when the firmware advertises
+/// `IWL_UCODE_TLV_CAPA_LAR_SUPPORT_V2`.
+#[repr(C, packed)]
+pub struct MccUpdateCmdV2 {
+    pub mcc: u16,
+    pub source_id: u8,
+    pub reserved: u8,
+    pub key: u32,
+    pub reserved2: [u8; 20],
 }
 
 /// BT_CONFIG_CMD payload used by the 7000-series INIT image.
@@ -1085,7 +1096,7 @@ pub enum IwlError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BtCoexConfigCmd, MccUpdateCmd, ScanConfigV1};
+    use super::{BtCoexConfigCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanConfigV1};
 
     #[test]
     fn bt_config_network_default_has_upstream_wire_layout() {
@@ -1115,17 +1126,42 @@ mod tests {
 
     #[test]
     fn mcc_initial_source_uses_upstream_old_fw_id() {
-        let command = MccUpdateCmd {
+        let command = MccUpdateCmdV1 {
             mcc: u16::from_be_bytes(*b"ZZ"),
             source_id: 0,
             reserved: 0,
         };
         let bytes = unsafe {
             core::slice::from_raw_parts(
-                (&command as *const MccUpdateCmd).cast::<u8>(),
-                core::mem::size_of::<MccUpdateCmd>(),
+                (&command as *const MccUpdateCmdV1).cast::<u8>(),
+                core::mem::size_of::<MccUpdateCmdV1>(),
             )
         };
         assert_eq!(bytes, &[0x5a, 0x5a, 0, 0]);
+    }
+
+    #[test]
+    fn mcc_api_v2_payload_has_linux_wire_size_and_zero_reserved_fields() {
+        let command = MccUpdateCmdV2 {
+            mcc: u16::from_be_bytes(*b"ZZ"),
+            source_id: 0,
+            reserved: 0,
+            key: 0,
+            reserved2: [0; 20],
+        };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const MccUpdateCmdV2).cast::<u8>(),
+                core::mem::size_of::<MccUpdateCmdV2>(),
+            )
+        };
+        assert_eq!(core::mem::size_of::<MccUpdateCmdV2>(), 28);
+        assert_eq!(
+            bytes,
+            &[
+                0x5a, 0x5a, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0
+            ]
+        );
     }
 }

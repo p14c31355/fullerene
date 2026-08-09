@@ -923,23 +923,60 @@ impl IwlWifiDevice {
     /// firmware response before submitting SCAN_CONFIG. Linux treats MCC as a
     /// synchronous command; descriptor consumption alone is not sufficient.
     fn send_runtime_mcc(&mut self) -> Result<(), crate::DriverError> {
-        let mcc = MccUpdateCmd {
-            mcc: u16::from_be_bytes(*b"ZZ"),
-            source_id: 0,
-            reserved: 0,
+        // Linux checks the firmware LAR capability before sending this
+        // command. A non-LAR firmware must proceed directly to scan setup;
+        // waiting for an MCC response from it can only end in a timeout.
+        if !self.fw_lar_supported {
+            log::info!(
+                "iwlwifi: init.config name=mcc_update status=skipped reason=lar_unsupported"
+            );
+            return Ok(());
+        }
+
+        let mcc = u16::from_be_bytes(*b"ZZ");
+        let (wire_version, payload_len) = if self.fw_lar_v2 {
+            let command = MccUpdateCmdV2 {
+                mcc,
+                source_id: 0,
+                reserved: 0,
+                key: 0,
+                reserved2: [0; 20],
+            };
+            let bytes = unsafe { super::as_bytes(&command) };
+            self.send_init_hcmd(
+                "MCC_UPDATE",
+                LegacyCmd::MccUpdate as u8,
+                GroupId::Legacy as u8,
+                bytes,
+            )?;
+            (2, bytes.len())
+        } else {
+            let command = MccUpdateCmdV1 {
+                mcc,
+                source_id: 0,
+                reserved: 0,
+            };
+            let bytes = unsafe { super::as_bytes(&command) };
+            self.send_init_hcmd(
+                "MCC_UPDATE",
+                LegacyCmd::MccUpdate as u8,
+                GroupId::Legacy as u8,
+                bytes,
+            )?;
+            (1, bytes.len())
         };
-        let mcc_bytes = unsafe { super::as_bytes(&mcc) };
-        self.send_init_hcmd(
-            "MCC_UPDATE",
-            LegacyCmd::MccUpdate as u8,
-            GroupId::Legacy as u8,
-            mcc_bytes,
-        )?;
-        log::info!("iwlwifi: init.config name=mcc_update country=ZZ source=old_fw");
+        log::info!(
+            "iwlwifi: init.config name=mcc_update country=ZZ source=old_fw lar_wire_version={} payload={}",
+            wire_version,
+            payload_len,
+        );
+        // MCC_UPDATE_CMD is listed in Linux's always-long response table even
+        // though the request uses the legacy command group. RX matching also
+        // accepts the legacy namespace for older 7000-series firmware.
         self.wait_init_hcmd_response(
             "MCC_UPDATE",
             LegacyCmd::MccUpdate as u8,
-            GroupId::Legacy as u8,
+            GroupId::Long as u8,
         )
     }
 

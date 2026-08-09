@@ -46,6 +46,9 @@ pub struct IwlWifiDevice {
     /// API profile selected from PCI/revision matching. The parsed image API
     /// must agree with this before HCMD dispatch.
     pub selected_fw_api: u32,
+    /// LAR/MCC capabilities advertised by the loaded firmware TLVs.
+    pub fw_lar_supported: bool,
+    pub fw_lar_v2: bool,
     pub phy_config: u32,
     pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
@@ -484,6 +487,8 @@ impl IwlWifiDevice {
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
             selected_fw_api: IWL_FW_API_VER,
+            fw_lar_supported: false,
+            fw_lar_v2: false,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -704,6 +709,8 @@ impl IwlWifiDevice {
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
             selected_fw_api: IWL_FW_API_VER,
+            fw_lar_supported: false,
+            fw_lar_v2: false,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -792,6 +799,8 @@ impl IwlWifiDevice {
         self.phy_db_sections.clear();
         self.phy_config = 0;
         self.phy_sku_tlv_len = None;
+        self.fw_lar_supported = false;
+        self.fw_lar_v2 = false;
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
         self.tx_head = 0;
@@ -1018,6 +1027,32 @@ impl IwlWifiDevice {
                             core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
                         };
                         log::info!("iwlwifi: firmware.phy_sku config={:#010x}", self.phy_config,);
+                    }
+                }
+                TLV_ENABLED_CAPABILITIES => {
+                    if tlv_len == 8 {
+                        let api_index: u32 = unsafe {
+                            core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
+                        };
+                        let capabilities: u32 = unsafe {
+                            core::ptr::read_unaligned(fw_ptr.add(tlv_data_off + 4) as *const u32)
+                        };
+                        // Linux treats these as a 128-bit bitmap split into
+                        // u32 entries. LAR is bit 1 and LAR API v2 is bit
+                        // 73 (entry 2, bit 9).
+                        if api_index == 0 {
+                            self.fw_lar_supported = capabilities & (1 << 1) != 0;
+                        }
+                        if api_index == 2 {
+                            self.fw_lar_v2 = capabilities & (1 << 9) != 0;
+                        }
+                        log::info!(
+                            "iwlwifi: firmware.capabilities api_index={} bitmap={:#010x} lar={} lar_v2={}",
+                            api_index,
+                            capabilities,
+                            self.fw_lar_supported,
+                            self.fw_lar_v2,
+                        );
                     }
                 }
                 TLV_RUNT_ERRLOG_PTR | TLV_INIT_ERRLOG_PTR => {
@@ -1948,6 +1983,8 @@ pub(super) mod test_support {
                 fw_build: 0,
                 fw_api_ver: 17,
                 selected_fw_api: 17,
+                fw_lar_supported: false,
+                fw_lar_v2: false,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
