@@ -2,7 +2,7 @@
 
 use super::device::IwlWifiDevice;
 use super::registers::*;
-use super::types::FirmwareBlob;
+use super::types::{FirmwareBlob, FirmwareProfile};
 
 const FW_7260_17: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7260-17.ucode");
 const FW_7260_16: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7260-16.ucode");
@@ -10,6 +10,8 @@ const FW_7265_17: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265-1
 const FW_7265_16: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265-16.ucode");
 const FW_7265D_17: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-17.ucode");
 const FW_7265D_16: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-16.ucode");
+const FW_7265D_29: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-29.ucode");
+const FW_7265D_27: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-27.ucode");
 
 /// Select firmware using the raw CSR_HW_REV value, before the type field is
 /// shifted for display.  The 7265 and 7265D share PCI IDs, so this distinction
@@ -20,36 +22,67 @@ pub(super) fn select_firmware_list(device_id: u16, hw_rev_raw: u16) -> &'static 
             FirmwareBlob {
                 data: FW_7260_17,
                 name: "iwlwifi-7260-17",
+                profile: FirmwareProfile::Api17,
             },
             FirmwareBlob {
                 data: FW_7260_16,
                 name: "iwlwifi-7260-16",
+                profile: FirmwareProfile::Api17,
             },
         ],
         0x095A | 0x095B if (hw_rev_raw & CSR_HW_REV_TYPE_MASK) == CSR_HW_REV_TYPE_7265D => &[
             FirmwareBlob {
-                // The host-command and scan implementation is API-v17.
-                // D27/D29 are kept in the firmware bundle for later API
-                // support, but must not be selected before that work lands.
-                data: FW_7265D_17,
-                name: "iwlwifi-7265D-17",
+                data: FW_7265D_29,
+                name: "iwlwifi-7265D-29",
+                profile: FirmwareProfile::Api29,
             },
             FirmwareBlob {
-                data: FW_7265D_16,
-                name: "iwlwifi-7265D-16",
+                data: FW_7265D_27,
+                name: "iwlwifi-7265D-27",
+                profile: FirmwareProfile::Api29,
             },
         ],
         0x095A | 0x095B => &[
             FirmwareBlob {
                 data: FW_7265_17,
                 name: "iwlwifi-7265-17",
+                profile: FirmwareProfile::Api17,
             },
             FirmwareBlob {
                 data: FW_7265_16,
                 name: "iwlwifi-7265-16",
+                profile: FirmwareProfile::Api17,
             },
         ],
         _ => &[],
+    }
+}
+
+/// Keep the pre-existing API-17 7265D images available for controlled
+/// regression/debug runs. This is deliberately not part of automatic device
+/// selection: a detected 7265D must never fall through to an API-17 image.
+#[allow(dead_code)]
+pub(super) fn select_firmware_list_api17_legacy(
+    device_id: u16,
+    hw_rev_raw: u16,
+) -> &'static [FirmwareBlob] {
+    if matches!(device_id, 0x095A | 0x095B)
+        && (hw_rev_raw & CSR_HW_REV_TYPE_MASK) == CSR_HW_REV_TYPE_7265D
+    {
+        &[
+            FirmwareBlob {
+                data: FW_7265D_17,
+                name: "iwlwifi-7265D-17",
+                profile: FirmwareProfile::Api17,
+            },
+            FirmwareBlob {
+                data: FW_7265D_16,
+                name: "iwlwifi-7265D-16",
+                profile: FirmwareProfile::Api17,
+            },
+        ]
+    } else {
+        &[]
     }
 }
 
@@ -69,8 +102,9 @@ impl IwlWifiDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::select_firmware_list;
+    use super::{select_firmware_list, select_firmware_list_api17_legacy};
     use crate::iwlwifi::registers::CSR_HW_REV_TYPE_7265D;
+    use crate::iwlwifi::types::{FirmwareProfile, LegacyCmd};
 
     #[test]
     fn selects_7260_firmware_in_preference_order() {
@@ -84,8 +118,13 @@ mod tests {
     fn selects_7265d_firmware_for_7265d_hw_rev() {
         let firmware = select_firmware_list(0x095B, CSR_HW_REV_TYPE_7265D);
         assert_eq!(firmware.len(), 2);
-        assert_eq!(firmware[0].name, "iwlwifi-7265D-17");
-        assert_eq!(firmware[1].name, "iwlwifi-7265D-16");
+        assert_eq!(firmware[0].name, "iwlwifi-7265D-29");
+        assert_eq!(firmware[1].name, "iwlwifi-7265D-27");
+        assert!(
+            firmware
+                .iter()
+                .all(|fw| fw.profile == FirmwareProfile::Api29)
+        );
     }
 
     #[test]
@@ -94,6 +133,11 @@ mod tests {
         assert_eq!(firmware.len(), 2);
         assert_eq!(firmware[0].name, "iwlwifi-7265-17");
         assert_eq!(firmware[1].name, "iwlwifi-7265-16");
+        assert!(
+            firmware
+                .iter()
+                .all(|fw| fw.profile == FirmwareProfile::Api17)
+        );
     }
 
     #[test]
@@ -101,9 +145,25 @@ mod tests {
         // The CSR contains 0x210 in bits 15:4; its display/type value is
         // 0x21 after shifting.  The selector must receive the former.
         let firmware = select_firmware_list(0x095B, 0x0210);
-        assert_eq!(firmware[0].name, "iwlwifi-7265D-17");
+        assert_eq!(firmware[0].name, "iwlwifi-7265D-29");
         let shifted = select_firmware_list(0x095B, 0x0021);
         assert_eq!(shifted[0].name, "iwlwifi-7265-17");
+    }
+
+    #[test]
+    fn api17_7265d_images_remain_available_only_as_explicit_legacy_path() {
+        let firmware = select_firmware_list_api17_legacy(0x095B, 0x0210);
+        assert_eq!(firmware[0].name, "iwlwifi-7265D-17");
+        assert!(
+            select_firmware_list(0x095B, 0x0210)
+                .iter()
+                .all(|fw| fw.profile != FirmwareProfile::Api17)
+        );
+    }
+
+    #[test]
+    fn scan_config_uses_upstream_long_group_opcode() {
+        assert_eq!(LegacyCmd::ScanConfig as u8, 0x0c);
     }
 
     #[test]

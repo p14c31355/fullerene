@@ -2,45 +2,73 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-static DMA_CURRENT_BYTES: AtomicUsize = AtomicUsize::new(0);
-static DMA_HIGH_WATER_BYTES: AtomicUsize = AtomicUsize::new(0);
+struct DmaCounters {
+    current_bytes: AtomicUsize,
+    high_water_bytes: AtomicUsize,
+}
 
-fn update_high_water(candidate: usize) {
-    let mut observed = DMA_HIGH_WATER_BYTES.load(Ordering::Relaxed);
-    while candidate > observed {
-        match DMA_HIGH_WATER_BYTES.compare_exchange_weak(
-            observed,
-            candidate,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => break,
-            Err(actual) => observed = actual,
+impl DmaCounters {
+    const fn new() -> Self {
+        Self {
+            current_bytes: AtomicUsize::new(0),
+            high_water_bytes: AtomicUsize::new(0),
         }
+    }
+
+    fn update_high_water(&self, candidate: usize) {
+        let mut observed = self.high_water_bytes.load(Ordering::Relaxed);
+        while candidate > observed {
+            match self.high_water_bytes.compare_exchange_weak(
+                observed,
+                candidate,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => observed = actual,
+            }
+        }
+    }
+
+    fn allocated(&self, bytes: usize) {
+        let current = self
+            .current_bytes
+            .fetch_add(bytes, Ordering::Relaxed)
+            .saturating_add(bytes);
+        self.update_high_water(current);
+    }
+
+    fn released(&self, bytes: usize) {
+        let _ = self
+            .current_bytes
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(bytes))
+            });
+    }
+
+    fn usage(&self) -> (usize, usize) {
+        (
+            self.current_bytes.load(Ordering::Relaxed),
+            self.high_water_bytes.load(Ordering::Relaxed),
+        )
     }
 }
 
+static DMA_COUNTERS: DmaCounters = DmaCounters::new();
+
 /// Record a DMA allocation after it succeeds.
 pub fn dma_allocated(bytes: usize) {
-    let current = DMA_CURRENT_BYTES
-        .fetch_add(bytes, Ordering::Relaxed)
-        .saturating_add(bytes);
-    update_high_water(current);
+    DMA_COUNTERS.allocated(bytes);
 }
 
 /// Record a DMA allocation being returned to the frame allocator.
 pub fn dma_released(bytes: usize) {
-    let _ = DMA_CURRENT_BYTES.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_sub(bytes))
-    });
+    DMA_COUNTERS.released(bytes);
 }
 
 /// `(current bytes, high-water bytes)`.
 pub fn dma_usage() -> (usize, usize) {
-    (
-        DMA_CURRENT_BYTES.load(Ordering::Relaxed),
-        DMA_HIGH_WATER_BYTES.load(Ordering::Relaxed),
-    )
+    DMA_COUNTERS.usage()
 }
 
 #[cfg(test)]
@@ -49,12 +77,16 @@ mod tests {
 
     #[test]
     fn dma_counter_tracks_current_and_high_water() {
-        let (before, high_before) = dma_usage();
-        dma_allocated(8192);
-        let (current, high) = dma_usage();
+        // Use an isolated counter so unrelated allocations and releases
+        // cannot change either snapshot while this test is running.
+        let counters = DmaCounters::new();
+        let (before, high_before) = counters.usage();
+        counters.allocated(8192);
+        let (current, high) = counters.usage();
         assert_eq!(current, before + 8192);
         assert!(high >= high_before.max(current));
-        dma_released(8192);
-        assert_eq!(dma_usage().0, before);
+        counters.released(8192);
+        let (after, _) = counters.usage();
+        assert_eq!(after, before);
     }
 }

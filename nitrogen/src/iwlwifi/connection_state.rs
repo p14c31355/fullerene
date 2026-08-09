@@ -35,6 +35,15 @@ static WIFI_INIT_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
 static WIFI_INIT_LAST_ACTIVE_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
+static WIFI_RUNTIME_PHASE_LOGGED: AtomicBool = AtomicBool::new(false);
+/// Cooldown counter (in scheduler ticks) before auto-rescanning after a
+/// scan completes or a connection drops.  When this reaches zero and the
+/// device is disconnected + idle, `perform_tick` enqueues a fresh scan.
+static WIFI_AUTO_SCAN_COOLDOWN: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+/// Number of scheduler ticks to wait between automatic scans.  At ~2.25 ms
+/// per tick this is roughly 15 seconds.
+const AUTO_SCAN_INTERVAL_TICKS: u32 = 6_500;
 // Hints are drawn from the scheduler context only. set_init_phase() is also
 // used by the NMI watchdog failure path, where taking the debug callback lock
 // could deadlock.
@@ -302,6 +311,7 @@ pub fn retry_wifi_initialization() -> bool {
         WifiInitPhase::Idle as u8,
         core::sync::atomic::Ordering::Release,
     );
+    WIFI_RUNTIME_PHASE_LOGGED.store(false, Ordering::Release);
     WIFI_INIT_COMPLETED.store(false, core::sync::atomic::Ordering::Release);
     set_init_phase(WifiInitPhase::Idle);
     log::info!("iwlwifi: retrying initialization after a previous failure");
@@ -827,6 +837,7 @@ fn perform_init_step() {
                 fw_state: FwState::NotLoaded,
                 fw_build: 0,
                 fw_api_ver: IWL_FW_API_VER,
+                selected_fw_api: IWL_FW_API_VER,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
@@ -834,6 +845,7 @@ fn perform_init_step() {
                 phy_db_sections: Vec::new(),
                 init_firmware_completed: false,
                 init_commands_started: false,
+                init_bt_config_sent: false,
                 runtime_commands_started: false,
                 init_nvm_index: 0,
                 init_hw_section: None,
@@ -853,6 +865,7 @@ fn perform_init_step() {
                 scan_channel: 1,
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
+                last_rx_phy_channel: 0,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
                 tx_dma_ring: tx_dma,
@@ -878,7 +891,7 @@ fn perform_init_step() {
             set_init_phase(WifiInitPhase::FwUpload);
         }
         WifiInitPhase::FwUpload => {
-            let (fw_data, fw_name, bdf_info) = {
+            let (fw_data, fw_name, fw_api_profile, bdf_info) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let _dev = match ctx.mmio_device.as_mut() {
                     Some(d) => d,
@@ -894,12 +907,17 @@ fn perform_init_step() {
                 }
                 let fw = &ctx.fw_candidates[ctx.fw_candidate_idx];
                 let bdf = pci_bdf_from_ctx(&ctx);
-                (fw.data, fw.name, bdf)
+                let fw_api_profile = match fw.profile {
+                    FirmwareProfile::Api17 => IWL_FW_API_VER,
+                    FirmwareProfile::Api29 => IWL_FW_API29_MAX,
+                };
+                (fw.data, fw.name, fw_api_profile, bdf)
             };
             log::info!(
-                "iwlwifi: step: trying firmware {} ({} bytes)",
+                "iwlwifi: step: trying firmware {} ({} bytes) selected_api={}",
                 fw_name,
-                fw_data.len()
+                fw_data.len(),
+                fw_api_profile
             );
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
@@ -914,6 +932,7 @@ fn perform_init_step() {
                         return;
                     }
                 };
+                dev.set_firmware_api_profile(fw_api_profile);
                 dev.start_firmware(fw_data)
             };
             mmio::disarm_mmio_watchdog();
@@ -1040,23 +1059,56 @@ fn perform_init_step() {
                         "iwlwifi: init.phase.error name=fw_init_cmds id=7 error={}",
                         e
                     );
-                    set_init_phase(WifiInitPhase::Failed);
+                    let retry = {
+                        let mut ctx = WIFI_INIT_CTX.lock();
+                        ctx.fw_candidate_idx += 1;
+                        if ctx.fw_candidate_idx < ctx.fw_candidates.len() {
+                            ctx.mmio_device
+                                .as_mut()
+                                .map(|dev| dev.prepare_firmware_retry())
+                        } else {
+                            None
+                        }
+                    };
+                    match retry {
+                        Some(Ok(())) => {
+                            let candidate = WIFI_INIT_CTX.lock().fw_candidate_idx;
+                            log::warn!(
+                                "iwlwifi: INIT candidate failed; retrying firmware candidate index={}",
+                                candidate,
+                            );
+                            set_init_phase(WifiInitPhase::FwUpload);
+                        }
+                        Some(Err(error)) => {
+                            log::error!(
+                                "iwlwifi: cannot reset device for next firmware candidate: {}",
+                                error
+                            );
+                            set_init_phase(WifiInitPhase::Failed);
+                        }
+                        None => set_init_phase(WifiInitPhase::Failed),
+                    }
                 }
             }
         }
         WifiInitPhase::FwRuntimeUpload => {
-            let (fw_data, fw_name, bdf_info) = {
+            let (fw_data, fw_name, fw_api_profile, bdf_info) = {
                 let ctx = WIFI_INIT_CTX.lock();
                 if ctx.fw_candidate_idx >= ctx.fw_candidates.len() {
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
                 let fw = &ctx.fw_candidates[ctx.fw_candidate_idx];
-                (fw.data, fw.name, pci_bdf_from_ctx(&ctx))
+                let fw_api_profile = match fw.profile {
+                    FirmwareProfile::Api17 => IWL_FW_API_VER,
+                    FirmwareProfile::Api29 => IWL_FW_API29_MAX,
+                };
+                (fw.data, fw.name, fw_api_profile, pci_bdf_from_ctx(&ctx))
             };
             log::info!(
-                "iwlwifi: step: switching from INIT to runtime firmware {}",
-                fw_name
+                "iwlwifi: step: switching from INIT to runtime firmware {} selected_api={}",
+                fw_name,
+                fw_api_profile
             );
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
@@ -1071,6 +1123,7 @@ fn perform_init_step() {
                         return;
                     }
                 };
+                dev.set_firmware_api_profile(fw_api_profile);
                 dev.start_runtime_firmware(fw_data)
             };
             mmio::disarm_mmio_watchdog();
@@ -1146,7 +1199,13 @@ fn perform_init_step() {
             }
         }
         WifiInitPhase::FwRuntimeCmds => {
-            log::info!("iwlwifi: init.phase.begin name=fw_runtime_cmds id=10");
+            // Runtime command setup is resumable: a command response may be
+            // polled over many scheduler ticks.  Emit the phase banner only
+            // for the initial submission, otherwise a missing response hides
+            // the useful diagnostics in a repeated banner stream.
+            if !WIFI_RUNTIME_PHASE_LOGGED.swap(true, Ordering::AcqRel) {
+                log::info!("iwlwifi: init.phase.begin name=fw_runtime_cmds id=10");
+            }
             let bdf_info = {
                 let ctx = WIFI_INIT_CTX.lock();
                 pci_bdf_from_ctx(&ctx)
@@ -1190,6 +1249,10 @@ fn perform_init_step() {
             WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
             log::info!("iwlwifi: initialization complete; device is ready for scanning");
             debug::print("iwlwifi", "step: init_done");
+            // Auto-scan: enqueue the first scan immediately so results
+            // are available before the user opens the network menu.
+            // The scheduler processes this on the next SQ drain cycle.
+            start_scan_if_idle();
         }
         WifiInitPhase::Failed => {
             let previous = WifiInitPhase::from(
@@ -1259,12 +1322,18 @@ pub fn try_init_wifi_device() {
     let mut fw_loaded = false;
     for fw in candidates {
         log::info!(
-            "iwlwifi: trying firmware {} ({} bytes)",
+            "iwlwifi: trying firmware {} ({} bytes) profile={:?}",
             fw.name,
-            fw.data.len()
+            fw.data.len(),
+            fw.profile
         );
         debug::print("iwlwifi", "load_firmware_start");
 
+        let fw_api_profile = match fw.profile {
+            FirmwareProfile::Api17 => IWL_FW_API_VER,
+            FirmwareProfile::Api29 => IWL_FW_API29_MAX,
+        };
+        probe.driver.set_firmware_api_profile(fw_api_profile);
         match probe.driver.load_firmware(fw.data) {
             Ok(()) => {
                 log::info!("iwlwifi: firmware {} loaded successfully", fw.name);
@@ -1298,6 +1367,31 @@ fn perform_tick() {
         let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
         dev_ref.tick();
         update_wifi_manager(dev_ref);
+
+        // Auto-rescan: when the device is disconnected and not currently
+        // scanning, count down the cooldown.  When it reaches zero, enqueue
+        // a fresh scan so the AP list stays current without requiring the
+        // user to open the network menu.
+        let status = dev_ref.get_status();
+        if status == bonder::wifi::WifiStatus::Disconnected {
+            let prev = WIFI_AUTO_SCAN_COOLDOWN.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+            if prev <= 1 {
+                WIFI_AUTO_SCAN_COOLDOWN.store(
+                    AUTO_SCAN_INTERVAL_TICKS,
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+                drop(dev_guard);
+                log::info!("iwlwifi: auto-rescan triggered (cooldown elapsed)");
+                start_scan_if_idle();
+            }
+        } else {
+            // Reset the cooldown while connected or scanning so the next
+            // auto-scan window starts fresh after disconnection.
+            WIFI_AUTO_SCAN_COOLDOWN.store(
+                AUTO_SCAN_INTERVAL_TICKS,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+        }
     }
 }
 
@@ -1634,10 +1728,17 @@ impl IwlWifiDevice {
             }
 
             let security = wifi::security_from_beacon(beacon.capability, beacon.rsn.as_ref());
+            // 5 GHz beacons lack a DS Parameter Set IE; fall back to the
+            // channel recorded by the preceding REPLY_RX_PHY_CMD.
+            let channel = beacon
+                .ds_channel
+                .map(|ch| ch as u16)
+                .unwrap_or(self.last_rx_phy_channel);
+            let channel = u8::try_from(channel).unwrap_or(0);
             let ap = AccessPoint {
                 ssid,
                 bssid: beacon.header.addr2,
-                channel: beacon.ds_channel.unwrap_or(0),
+                channel,
                 rssi: -50,
                 security,
                 beacon_interval: beacon.beacon_interval,

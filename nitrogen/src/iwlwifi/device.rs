@@ -43,6 +43,9 @@ pub struct IwlWifiDevice {
     pub fw_state: FwState,
     pub fw_build: u32,
     pub fw_api_ver: u32,
+    /// API profile selected from PCI/revision matching. The parsed image API
+    /// must agree with this before HCMD dispatch.
+    pub selected_fw_api: u32,
     pub phy_config: u32,
     pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
@@ -52,6 +55,8 @@ pub struct IwlWifiDevice {
     pub init_firmware_completed: bool,
     /// Incremental INIT-command state retained between scheduler ticks.
     pub init_commands_started: bool,
+    /// API-29 sends BT_CONFIG once before the first NVM_ACCESS command.
+    pub init_bt_config_sent: bool,
     /// True after runtime setup has submitted its first command. This lets a
     /// pending MAC_CONTEXT response resume without replaying setup commands.
     pub runtime_commands_started: bool,
@@ -94,6 +99,10 @@ pub struct IwlWifiDevice {
     /// Late RX buffers may contain beacons after the firmware's completion
     /// notification.  Keep accepting scan frames until this reaches zero.
     pub scan_result_grace_ticks: u32,
+    /// Channel from the last REPLY_RX_PHY_CMD.  5 GHz beacons lack a DS
+    /// Parameter Set IE, so the channel can only be determined from this
+    /// PHY metadata.
+    pub last_rx_phy_channel: u16,
 
     /// TX/RX queues.
     pub tx_queue: VecDeque<Vec<u8>>,
@@ -474,6 +483,7 @@ impl IwlWifiDevice {
             fw_state: FwState::NotLoaded,
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
+            selected_fw_api: IWL_FW_API_VER,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -481,6 +491,7 @@ impl IwlWifiDevice {
             phy_db_sections: Vec::new(),
             init_firmware_completed: false,
             init_commands_started: false,
+            init_bt_config_sent: false,
             runtime_commands_started: false,
             init_nvm_index: 0,
             init_hw_section: None,
@@ -500,6 +511,7 @@ impl IwlWifiDevice {
             scan_channel: 0,
             scan_pending: false,
             scan_result_grace_ticks: 0,
+            last_rx_phy_channel: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -691,6 +703,7 @@ impl IwlWifiDevice {
             fw_state: FwState::NotLoaded,
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
+            selected_fw_api: IWL_FW_API_VER,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -698,6 +711,7 @@ impl IwlWifiDevice {
             phy_db_sections: Vec::new(),
             init_firmware_completed: false,
             init_commands_started: false,
+            init_bt_config_sent: false,
             runtime_commands_started: false,
             init_nvm_index: 0,
             init_hw_section: None,
@@ -717,6 +731,7 @@ impl IwlWifiDevice {
             scan_channel: 0,
             scan_pending: false,
             scan_result_grace_ticks: 0,
+            last_rx_phy_channel: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -749,6 +764,42 @@ impl IwlWifiDevice {
             core::ptr::write_volatile(mmio.add(CSR_RESET as usize), 0);
         }
         crate::timing::delay_us(10_000);
+    }
+
+    /// Put the NIC back at the pre-firmware boundary so the next selected
+    /// image does not inherit a wedged INIT scheduler or stale RX/TX state.
+    pub(super) fn prepare_firmware_retry(&mut self) -> Result<(), crate::DriverError> {
+        self.health
+            .recover()
+            .map_err(|_| crate::DriverError::DeviceNotFound)?;
+        Self::reset_device(self.mmio);
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+            );
+        }
+        mmio::write_barrier();
+        self.fw_state = FwState::NotLoaded;
+        self.init_firmware_completed = false;
+        self.init_commands_started = false;
+        self.init_bt_config_sent = false;
+        self.runtime_commands_started = false;
+        self.init_nvm_index = 0;
+        self.init_hw_section = None;
+        self.init_mac_ready = false;
+        self.init_response = None;
+        self.phy_db_sections.clear();
+        self.phy_config = 0;
+        self.phy_sku_tlv_len = None;
+        self.runtime_calib_flow = 0;
+        self.runtime_calib_event = 0;
+        self.tx_head = 0;
+        self.tx_tail = 0;
+        self.rx_head = 0;
+        self.rx_tail = 0;
+        self.rx_posted = 0;
+        Ok(())
     }
 
     /// Read MAC address from the NVM (non-volatile memory) via CSR registers.
@@ -1345,6 +1396,39 @@ impl IwlWifiDevice {
     /// Read the compact LMAC error table written by firmware after a
     /// software assertion.  The pointer comes from the firmware TLV rather
     /// than from a guessed SRAM address.
+    pub(super) fn record_alive_notification(&mut self, payload: &[u8]) {
+        // MVM_ALIVE (API v3) starts with status/flags, followed by the LMAC
+        // alive structure.  The LMAC error-event-table pointer is therefore
+        // at payload offset 20.  Runtime firmware can emit a fresh ALIVE
+        // notification when it restarts after an assertion, even though the
+        // original firmware TLV did not provide an error-log pointer.
+        if payload.len() < 24 {
+            return;
+        }
+        let status = u16::from_le_bytes([payload[0], payload[1]]);
+        let flags = u16::from_le_bytes([payload[2], payload[3]]);
+        let error_log_ptr =
+            u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]);
+        if error_log_ptr == 0 {
+            return;
+        }
+
+        let (image, pointer) = if self.init_firmware_completed {
+            self.runtime_errlog_ptr = error_log_ptr;
+            ("runtime", self.runtime_errlog_ptr)
+        } else {
+            self.init_errlog_ptr = error_log_ptr;
+            ("init", self.init_errlog_ptr)
+        };
+        log::info!(
+            "iwlwifi: firmware.alive image={} status={:#06x} flags={:#06x} error_log_ptr={:#010x}",
+            image,
+            status,
+            flags,
+            pointer,
+        );
+    }
+
     pub(super) fn log_firmware_error_table(&mut self, command: &str) {
         let (image, base) = if self.runtime_errlog_ptr != 0 {
             ("runtime", self.runtime_errlog_ptr)
@@ -1358,19 +1442,42 @@ impl IwlWifiDevice {
             return;
         };
 
-        let mut words = [0u32; 30];
+        // LOG_ERROR_TABLE_API_S_VER_3 has 38 dwords through flow_handler.
+        // The first compact log only exposed the command identity; retain the
+        // execution addresses and error-specific data as well so a watchdog
+        // can be distinguished from a malformed-command assertion.
+        let mut words = [0u32; 38];
         for (index, word) in words.iter_mut().enumerate() {
             *word = self
                 .read_mem32(base.saturating_add((index * 4) as u32))
                 .unwrap_or(!0);
         }
+        let error_name = match words[1] {
+            0x34 => "NMI_INTERRUPT_WDG",
+            0x35 => "SYSASSERT",
+            0x37 => "UCODE_VERSION_MISMATCH",
+            0x38 => "BAD_COMMAND",
+            0x3c => "NMI_INTERRUPT_DATA_ACTION_PT",
+            0x3d => "FATAL_ERROR",
+            0x46 => "NMI_TRM_HW_ERR",
+            0x4c => "NMI_INTERRUPT_TRM",
+            0x54 => "NMI_INTERRUPT_BREAK_POINT",
+            0x5c => "NMI_INTERRUPT_WDG_RXF_FULL",
+            0x64 => "NMI_INTERRUPT_WDG_NO_RBD_RXF_FULL",
+            0x66 => "NMI_INTERRUPT_HOST",
+            0x7c => "NMI_INTERRUPT_ACTION_PT",
+            0x84 => "NMI_INTERRUPT_UNKNOWN",
+            0x86 => "NMI_INTERRUPT_INST_ACTION_PT",
+            _ => "ADVANCED_SYSASSERT_OR_UNKNOWN",
+        };
         log::error!(
-            "iwlwifi: firmware.error_log command={} image={} base={:#010x} valid={:#010x} error_id={:#010x} hcmd={:#010x} last_cmd_id={:#010x} isr0={:#010x} isr1={:#010x} isr2={:#010x} isr3={:#010x} isr4={:#010x}",
+            "iwlwifi: firmware.error_log command={} image={} base={:#010x} valid={:#010x} error_id={:#010x} name={} hcmd={:#010x} last_cmd_id={:#010x} isr0={:#010x} isr1={:#010x} isr2={:#010x} isr3={:#010x} isr4={:#010x}",
             command,
             image,
             base,
             words[0],
             words[1],
+            error_name,
             words[23],
             words[29],
             words[24],
@@ -1378,6 +1485,26 @@ impl IwlWifiDevice {
             words[26],
             words[27],
             words[28],
+        );
+        log::error!(
+            "iwlwifi: firmware.error_detail trm_hw_status0={:#010x} trm_hw_status1={:#010x} blink2={:#010x} ilink1={:#010x} ilink2={:#010x} data1={:#010x} data2={:#010x} data3={:#010x}",
+            words[2],
+            words[3],
+            words[4],
+            words[5],
+            words[6],
+            words[7],
+            words[8],
+            words[9],
+        );
+        log::error!(
+            "iwlwifi: firmware.error_state gp1={:#010x} gp2={:#010x} log_pc={:#010x} frame_ptr={:#010x} stack_ptr={:#010x} flow_handler={:#010x}",
+            words[13],
+            words[14],
+            words[20],
+            words[21],
+            words[22],
+            words[37],
         );
     }
 
@@ -1635,6 +1762,14 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
         IwlWifiDevice::start_firmware(self, fw_data)
     }
 
+    fn set_firmware_api_profile(&mut self, api: u32) {
+        self.selected_fw_api = api;
+    }
+
+    fn prepare_firmware_retry(&mut self) -> Result<(), crate::DriverError> {
+        IwlWifiDevice::prepare_firmware_retry(self)
+    }
+
     fn start_runtime_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         IwlWifiDevice::start_runtime_firmware_inner(self, fw_data)
     }
@@ -1670,4 +1805,215 @@ pub fn try_create_iwl(
 ) -> Option<Box<dyn crate::wifi::WifiDriver>> {
     IwlWifiDevice::init_from_mmio(ctx, mmio, pci_revision, device)
         .map(|dev| Box::new(dev) as Box<dyn crate::wifi::WifiDriver>)
+}
+
+// ── Test infrastructure ──────────────────────────────────────────
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use super::*;
+    use crate::driver_context::{DriverContext, DriverContextError, PageFlags};
+    use alloc::boxed::Box;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// Heap-backed `DriverContext` for unit tests.  Each DMA allocation is
+    /// backed by a leaked `Box<[u8]>` so the "physical address" is the raw
+    /// heap pointer.  `phys_to_virt` is identity, and `dma_map` returns the
+    /// physical address unchanged.
+    pub struct HeapDriverContext {
+        backing: spin::Mutex<Vec<Box<[u8]>>>,
+    }
+
+    impl HeapDriverContext {
+        pub fn new() -> Self {
+            Self {
+                backing: spin::Mutex::new(Vec::new()),
+            }
+        }
+
+        /// Leak this context to obtain a `&'static` reference.
+        pub fn leaked() -> &'static Self {
+            Box::leak(Box::new(Self::new()))
+        }
+    }
+
+    impl DriverContext for HeapDriverContext {
+        fn phys_to_virt(&self, phys: u64) -> usize {
+            phys as usize
+        }
+
+        fn zero_dma_buffer(&self, _phys: u64, _bytes: usize) {}
+
+        fn allocate_frame(&self) -> Result<u64, DriverContextError> {
+            self.allocate_contiguous_frames(1)
+        }
+
+        fn allocate_contiguous_frames(&self, count: usize) -> Result<u64, DriverContextError> {
+            let size = count * 4096;
+            let buf = vec![0u8; size].into_boxed_slice();
+            let ptr = buf.as_ptr() as u64;
+            self.backing.lock().push(buf);
+            Ok(ptr)
+        }
+
+        fn map_mmio_region(&self, _: usize, _: usize, _: usize) -> Result<(), DriverContextError> {
+            Ok(())
+        }
+
+        fn unmap_mmio_region(&self, _: usize, _: usize, _: usize) {}
+
+        fn map_page(&self, _: usize, _: usize, _: PageFlags) -> Result<(), DriverContextError> {
+            Ok(())
+        }
+
+        fn free_frame(&self, _: u64) {}
+
+        fn free_contiguous_frames(&self, _: u64, _: usize) {}
+
+        fn dma_map(&self, _: u16, phys: u64, _: usize) -> Result<u64, DriverContextError> {
+            Ok(phys)
+        }
+
+        fn dma_unmap(&self, _: u64, _: usize) {}
+    }
+
+    impl IwlWifiDevice {
+        /// Construct a minimal device backed by a fake MMIO buffer and
+        /// heap-allocated DMA regions.  `fw_state` is set to `Ready` so
+        /// `safe_read32` bypasses PCI health checks.
+        pub fn new_for_test(mac: [u8; 6]) -> Self {
+            let ctx = HeapDriverContext::leaked();
+
+            // Fake MMIO: 2048 dwords = 8192 bytes (covers all register offsets).
+            let mmio_vec = vec![0u32; 2048].into_boxed_slice();
+            let mmio = Box::into_raw(mmio_vec) as *mut u32;
+            // Pre-set CSR_GP_CNTRL with MAC_CLOCK_READY so `wake_for_hcmd`
+            // succeeds immediately on the first poll.
+            unsafe {
+                *mmio.add(CSR_GP_CNTRL as usize) = CSR_GP_CNTRL_MAC_CLOCK_READY;
+            }
+
+            let pci_dev = PciDevice {
+                bus: 0,
+                device: 0,
+                function: 0,
+                handle: 0,
+                vendor_id: 0x8086,
+                device_id: 0x095A,
+                class_code: 0x02,
+                subclass: 0x80,
+                prog_if: 0,
+                header_type: 0,
+            };
+            let health = PciHealth::new(&pci_dev);
+
+            // Allocate DMA regions.
+            let mut tx_dma_ring =
+                DmaRegion::alloc(ctx, TX_DMA_ALLOCATION_BYTES).expect("TX ring DMA");
+            tx_dma_ring.dma_map(ctx, 0).expect("TX ring map");
+
+            let rx_ring_size = core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE
+                + core::mem::size_of::<RxDmaStatus>();
+            let mut rx_dma_ring = DmaRegion::alloc(ctx, rx_ring_size).expect("RX ring DMA");
+            rx_dma_ring.dma_map(ctx, 0).expect("RX ring map");
+
+            let mut tx_bufs = Vec::new();
+            for _ in 0..TX_QUEUE_SIZE {
+                let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).expect("TX buf DMA");
+                buf.dma_map(ctx, 0).expect("TX buf map");
+                tx_bufs.push(buf);
+            }
+
+            let mut rx_bufs = Vec::new();
+            let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
+            for i in 0..RX_QUEUE_SIZE {
+                let mut buf = DmaRegion::alloc(ctx, RX_BUFFER_SIZE).expect("RX buf DMA");
+                let dma = buf.dma_map(ctx, 0).expect("RX buf map");
+                unsafe {
+                    (*rx_virt.add(i)).addr = (dma >> 8) as u32;
+                    mmio::cache_flush(rx_virt.add(i) as usize);
+                }
+                rx_bufs.push(buf);
+            }
+
+            Self {
+                mac,
+                _pci_dev: pci_dev,
+                mmio,
+                hw_rev: 0x095A,
+                ctx,
+                health,
+                fw_state: FwState::Ready,
+                fw_build: 0,
+                fw_api_ver: 17,
+                selected_fw_api: 17,
+                phy_config: 0,
+                phy_sku_tlv_len: None,
+                runtime_calib_flow: 0,
+                runtime_calib_event: 0,
+                phy_db_sections: Vec::new(),
+                init_firmware_completed: true,
+                init_commands_started: true,
+                init_bt_config_sent: true,
+                runtime_commands_started: true,
+                init_nvm_index: 0,
+                init_hw_section: None,
+                init_mac_ready: true,
+                init_response: None,
+                runtime_errlog_ptr: 0,
+                init_errlog_ptr: 0,
+                iwl_state: IwlState::Init,
+                wifi_conn: wifi::WifiConnection::new(),
+                wpa: WpaSupplicant::new(),
+                wpa_required: false,
+                wpa_keys_installed: false,
+                wpa_key_command_end: None,
+                pending_wpa_message4: None,
+                dhcp: None,
+                scan_results: Vec::new(),
+                scan_channel: 0,
+                scan_pending: false,
+                scan_result_grace_ticks: 0,
+                last_rx_phy_channel: 0,
+                tx_queue: VecDeque::new(),
+                rx_queue: VecDeque::new(),
+                tx_dma_ring,
+                rx_dma_ring,
+                tx_head: 0,
+                tx_tail: 0,
+                rx_head: 0,
+                rx_tail: 0,
+                rx_posted: 0,
+                tx_bufs,
+                rx_bufs,
+                ip_address: [0; 4],
+                subnet_mask: [0; 4],
+                gateway: [0; 4],
+                dns_server: [0; 4],
+            }
+        }
+
+        /// Read back the most recent TX frame written to the DMA ring.
+        pub fn last_tx_frame(&self) -> &[u8] {
+            if self.tx_head == 0 {
+                return &[];
+            }
+            let idx = (self.tx_head - 1) % TX_QUEUE_SIZE;
+            let buf = &self.tx_bufs[idx];
+            buf.as_slice()
+        }
+
+        /// Read a TX frame by ring index.
+        pub fn tx_frame_at(&self, index: usize) -> &[u8] {
+            let idx = index % TX_QUEUE_SIZE;
+            self.tx_bufs[idx].as_slice()
+        }
+
+        /// Simulate firmware consuming all queued TX descriptors by advancing
+        /// `tx_tail` to `tx_head`.
+        pub fn drain_tx(&mut self) {
+            self.tx_tail = self.tx_head;
+        }
+    }
 }

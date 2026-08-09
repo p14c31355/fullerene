@@ -16,7 +16,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 /// Maximum number of bytes in the ring buffer.
-const KLOG_CAPACITY: usize = 256 * 1024;
+///
+/// 1 MiB is enough to retain the full Wi-Fi init sequence, a complete
+/// scan cycle (including per-channel RX MPDU notifications), and any
+/// follow-up connection attempts without wrapping.  The previous 256 KiB
+/// buffer was too small: init logs alone consumed most of it, so scan
+/// results were overwritten before the user could save the log.
+const KLOG_CAPACITY: usize = 1024 * 1024;
 
 /// A fixed-size byte ring buffer for kernel log lines.
 static KLOG_BUF: Mutex<KLogRing> = Mutex::new(KLogRing {

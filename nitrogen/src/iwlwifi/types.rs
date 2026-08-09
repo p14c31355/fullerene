@@ -75,18 +75,26 @@ pub struct FwHeader {
 pub enum GroupId {
     Legacy = 0x0,
     Long = 0x1,
+    System = 0x2,
     Phy = 0x4,
+    DataPath = 0x5,
+    Scan = 0x6,
+    RegulatoryAndNvm = 0xc,
 }
 
 #[repr(u8)]
 pub enum LegacyCmd {
     Echo = 0x03,
+    /// BT_CONFIG_CMD used by the non-unified 7000-series INIT sequence.
+    BtConfig = 0x9b,
     PhyContext = 0x08,
     /// PHY configuration and calibration control used before MAC contexts.
     PhyConfiguration = 0x6a,
-    /// Legacy LMAC scan configuration.  The command number is legacy, but
-    /// firmware API 17 transports it through the long-command group.
+    /// Legacy LMAC scan configuration.  Sent as SCAN_CFG_CMD in the
+    /// LONG_GROUP (IWL_ALWAYS_LONG_GROUP = 1).
     ScanConfig = 0x0c,
+    /// MCC_UPDATE_CMD — sets the regulatory domain for LAR firmware.
+    MccUpdate = 0xc8,
     AddStaKey = 0x17,
     /// Legacy scheduler queue configuration used before ADD_STA in non-DQA
     /// mode. The firmware initially associates the queue with station 0.
@@ -139,6 +147,40 @@ pub struct AddStaKeyCmd {
     pub rx_security_seq: [u8; 16],
 }
 
+/// MCC_UPDATE_CMD payload — sets the regulatory country code for LAR.
+#[repr(C, packed)]
+pub struct MccUpdateCmd {
+    /// ISO 3166 country code in ASCII, e.g. b"US" = 0x5553, b"ZZ" = 0x5A5A.
+    pub mcc: u16,
+    /// Regulatory domain source (0=MCC_SOURCE_OLD_FW).
+    pub source_id: u8,
+    pub reserved: u8,
+}
+
+/// BT_CONFIG_CMD payload used by the 7000-series INIT image.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct BtCoexConfigCmd {
+    pub mode: u32,
+    pub enabled_modules: u32,
+}
+
+impl BtCoexConfigCmd {
+    pub const BT_COEX_NW: u32 = 1;
+    pub const BT_COEX_MPLUT_ENABLED: u32 = 1 << 1;
+    pub const BT_COEX_SYNC2SCO_ENABLED: u32 = 1 << 2;
+    pub const BT_COEX_HIGH_BAND_RET: u32 = 1 << 4;
+
+    pub const fn network_default() -> Self {
+        Self {
+            mode: Self::BT_COEX_NW,
+            enabled_modules: Self::BT_COEX_MPLUT_ENABLED
+                | Self::BT_COEX_SYNC2SCO_ENABLED
+                | Self::BT_COEX_HIGH_BAND_RET,
+        }
+    }
+}
+
 #[repr(C, packed)]
 pub struct HcmdHeader {
     pub opcode: u8,
@@ -177,6 +219,10 @@ pub struct PhyChannelInfoV1 {
     pub ctrl_pos: u8,
 }
 
+/// PHY band constants matching Linux's IWL_PHY_BAND_* definitions.
+pub const PHY_BAND_24: u8 = 0;
+pub const PHY_BAND_5: u8 = 1;
+
 /// PHY_CONTEXT_CMD API v1 used by the 7265 firmware.
 ///
 /// The old channel-info form is four bytes; the newer API's channel number is
@@ -203,7 +249,7 @@ impl PhyContextCmdV1 {
             apply_time: 0,
             tx_param_color: 0,
             channel: PhyChannelInfoV1 {
-                band: 1, // PHY_BAND_24
+                band: PHY_BAND_24,
                 channel: 1,
                 width: 0, // 20 MHz, no HT
                 ctrl_pos: 0,
@@ -292,6 +338,18 @@ impl MacQosAc {
 }
 
 /// Station-specific portion of the API-v1 MAC context union.
+///
+/// Linux's `union` in `struct iwl_mac_ctx_cmd` is sized by the largest
+/// member `iwl_mac_data_p2p_sta` (44-byte `iwl_mac_data_sta` + 4-byte
+/// `ctwin` = 48 bytes).  The firmware's MAC_CONTEXT_CMD_API_S_VER_1
+/// handler always expects `sizeof(struct iwl_mac_ctx_cmd)` = 148 bytes
+/// of payload.  Sending only the 44-byte `iwl_mac_data_sta` produces a
+/// 144-byte command, 4 bytes short of the fixed API-v1 size, which
+/// causes the runtime firmware to watchdog (NMI_INTERRUPT_WDG,
+/// error_id=0x34) while processing MAC_CONTEXT.  The trailing `ctwin`
+/// field mirrors the p2p_sta union member so the total command is
+/// 148 bytes; it is zero for a non-P2P BSS STA and ignored by the
+/// firmware for mac_type=FW_MAC_TYPE_BSS_STA.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct MacStaData {
@@ -305,6 +363,7 @@ pub struct MacStaData {
     pub listen_interval: u32,
     pub assoc_id: u32,
     pub assoc_beacon_arrive_time: u32,
+    pub ctwin: u32,
 }
 
 /// MAC_CONTEXT_CMD (0x28) payload for a minimal STA context.
@@ -421,6 +480,7 @@ impl MacContextCmd {
                 listen_interval: 10,
                 assoc_id: 0,
                 assoc_beacon_arrive_time: 0,
+                ctwin: 0,
             },
         }
     }
@@ -502,6 +562,8 @@ const SCAN_PROBE_BUFFER_SIZE: usize = 512;
 // APs which do not answer a purely passive scan are still discoverable.
 const SCAN_FLAG_PASS_ALL: u32 = 1 << 0;
 const SCAN_FLAG_ITER_COMPLETE: u32 = 1 << 3;
+#[allow(dead_code)]
+const _SCAN_FLAG_ITER_COMPLETE_UNUSED: u32 = SCAN_FLAG_ITER_COMPLETE;
 const SCAN_FLAG_EXTENDED_DWELL: u32 = 1 << 7;
 
 // Legacy TX command fields used by the LMAC scan engine. Scan probe frames
@@ -556,10 +618,12 @@ impl ScanConfigV1 {
             | (1 << 3)
             | (1 << 8)
             | (1 << 9)
+            | (1 << 10)
             | (1 << 11)
             | (1 << 13)
             | (1 << 14)
             | (1 << 15)
+            | (1 << 17)
             | ((SCAN_CHANNEL_COUNT as u32) << 26);
 
         Self {
@@ -726,14 +790,15 @@ impl ScanRequestCmd {
             rx_chain_select: 0x01b7,
             // Active wildcard scan: keep PASSIVE clear. The probe request
             // above is transmitted on every active channel.
-            scan_flags: SCAN_FLAG_PASS_ALL | SCAN_FLAG_ITER_COMPLETE | SCAN_FLAG_EXTENDED_DWELL,
+            scan_flags: SCAN_FLAG_PASS_ALL | SCAN_FLAG_EXTENDED_DWELL,
             // Regular (wild) scans use the 120-TU associated-channel
             // budget. 37 TU is the fast-balance budget and can terminate a
             // passive dwell before a beacon is delivered.
             max_out_time: 120,
             suspend_time: 30,
-            // PHY_BAND_24 and MAC_FILTER_ACCEPT_GRP|MAC_FILTER_IN_BEACON.
-            flags: 1,
+            // IWL_PHY_BAND_24: scan starts on 2.4 GHz.  The firmware
+            // switches bands internally as it walks the channel list.
+            flags: PHY_BAND_24 as u32,
             filter_flags: (1 << 2) | (1 << 6),
             tx_cmd: [
                 ScanReqTxCmd {
@@ -971,9 +1036,20 @@ impl From<u8> for WifiInitPhase {
 
 // ── Firmware blob registry ────────
 
+/// Host-command implementation selected for a firmware image.
+///
+/// The PCI IDs alone are not enough for the 7265 family: 7265D uses the
+/// API-29 firmware line while the older 7265/7260 path remains API-17.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirmwareProfile {
+    Api17,
+    Api29,
+}
+
 pub struct FirmwareBlob {
     pub data: &'static [u8],
     pub name: &'static str,
+    pub profile: FirmwareProfile,
 }
 
 // ── Incremental init context ──────
@@ -1005,4 +1081,51 @@ pub enum IwlError {
     BarNotAvailable,
     ClockNotReady,
     DmaAllocFailed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BtCoexConfigCmd, MccUpdateCmd, ScanConfigV1};
+
+    #[test]
+    fn bt_config_network_default_has_upstream_wire_layout() {
+        let command = BtCoexConfigCmd::network_default();
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const BtCoexConfigCmd).cast::<u8>(),
+                core::mem::size_of::<BtCoexConfigCmd>(),
+            )
+        };
+        assert_eq!(bytes, &[1, 0, 0, 0, 0x16, 0, 0, 0]);
+    }
+
+    #[test]
+    fn scan_config_flags_select_aux_station_and_clear_fragmented_mode() {
+        let command = ScanConfigV1::new([0x94, 0x65, 0x9c, 0x44, 0x73, 0xd4], 1);
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const ScanConfigV1).cast::<u8>(),
+                core::mem::size_of::<ScanConfigV1>(),
+            )
+        };
+        let flags = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        assert_ne!(flags & (1 << 10), 0);
+        assert_ne!(flags & (1 << 17), 0);
+    }
+
+    #[test]
+    fn mcc_initial_source_uses_upstream_old_fw_id() {
+        let command = MccUpdateCmd {
+            mcc: u16::from_be_bytes(*b"ZZ"),
+            source_id: 0,
+            reserved: 0,
+        };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const MccUpdateCmd).cast::<u8>(),
+                core::mem::size_of::<MccUpdateCmd>(),
+            )
+        };
+        assert_eq!(bytes, &[0x5a, 0x5a, 0, 0]);
+    }
 }

@@ -14,6 +14,7 @@
 //! - [`rx`] — Receive-ring and interrupt processing
 //! - [`connection_state`] — 802.11 state and high-level public API
 
+mod api29;
 mod connection_state;
 mod device;
 mod firmware;
@@ -50,3 +51,6 @@ pub use device::IwlWifiDevice;
 pub use device::try_create_iwl;
 pub use registers as regs;
 pub use types::WifiManager;
+
+#[cfg(test)]
+mod replay_tests;
