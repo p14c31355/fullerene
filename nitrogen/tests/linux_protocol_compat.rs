@@ -69,11 +69,11 @@ fn linux_v49_scan_commands_use_the_aux_station_id() {
     assert_eq!(request_bytes[52], 1);
     // FullereneOS uses the supplied wildcard probe request for an active
     // scan; the LMAC PASSIVE flag must remain clear.
+    // Linux does not set ITER_COMPLETE for regular unassociated scans.
     let scan_flags = u32::from_le_bytes(request_bytes[12..16].try_into().unwrap());
-    assert_ne!(scan_flags & (1 << 0), 0);
-    assert_eq!(scan_flags & (1 << 1), 0);
-    assert_ne!(scan_flags & (1 << 3), 0);
-    assert_ne!(scan_flags & (1 << 7), 0);
+    assert_ne!(scan_flags & (1 << 0), 0); // PASS_ALL
+    assert_eq!(scan_flags & (1 << 1), 0); // not PASSIVE
+    assert_ne!(scan_flags & (1 << 7), 0); // EXTENDED_DWELL
 
     let probe = &request_bytes[offset_of!(ScanRequestCmd, probe_req)..];
     assert_eq!(u16::from_le_bytes(probe[4..6].try_into().unwrap()), 26);

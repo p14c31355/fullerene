@@ -84,9 +84,11 @@ pub enum LegacyCmd {
     PhyContext = 0x08,
     /// PHY configuration and calibration control used before MAC contexts.
     PhyConfiguration = 0x6a,
-    /// Legacy LMAC scan configuration.  The command number is legacy, but
-    /// firmware API 17 transports it through the long-command group.
-    ScanConfig = 0x0c,
+    /// Legacy LMAC scan configuration.  Sent as SCAN_CFG_CMD in the
+    /// LONG_GROUP (IWL_ALWAYS_LONG_GROUP = 1).
+    ScanConfig = 0x10,
+    /// MCC_UPDATE_CMD — sets the regulatory domain for LAR firmware.
+    MccUpdate = 0xc8,
     AddStaKey = 0x17,
     /// Legacy scheduler queue configuration used before ADD_STA in non-DQA
     /// mode. The firmware initially associates the queue with station 0.
@@ -137,6 +139,16 @@ pub struct AddStaKeyCmd {
     pub key_flags: u16,
     pub key: [u8; 32],
     pub rx_security_seq: [u8; 16],
+}
+
+/// MCC_UPDATE_CMD payload — sets the regulatory country code for LAR.
+#[repr(C, packed)]
+pub struct MccUpdateCmd {
+    /// ISO 3166 country code in ASCII, e.g. b"US" = 0x5553, b"ZZ" = 0x5A5A.
+    pub mcc: u16,
+    /// Regulatory domain source (0=old firmware, 5=default).
+    pub source_id: u8,
+    pub reserved: u8,
 }
 
 #[repr(C, packed)]
@@ -520,6 +532,8 @@ const SCAN_PROBE_BUFFER_SIZE: usize = 512;
 // APs which do not answer a purely passive scan are still discoverable.
 const SCAN_FLAG_PASS_ALL: u32 = 1 << 0;
 const SCAN_FLAG_ITER_COMPLETE: u32 = 1 << 3;
+#[allow(dead_code)]
+const _SCAN_FLAG_ITER_COMPLETE_UNUSED: u32 = SCAN_FLAG_ITER_COMPLETE;
 const SCAN_FLAG_EXTENDED_DWELL: u32 = 1 << 7;
 
 // Legacy TX command fields used by the LMAC scan engine. Scan probe frames
@@ -744,7 +758,7 @@ impl ScanRequestCmd {
             rx_chain_select: 0x01b7,
             // Active wildcard scan: keep PASSIVE clear. The probe request
             // above is transmitted on every active channel.
-            scan_flags: SCAN_FLAG_PASS_ALL | SCAN_FLAG_ITER_COMPLETE | SCAN_FLAG_EXTENDED_DWELL,
+            scan_flags: SCAN_FLAG_PASS_ALL | SCAN_FLAG_EXTENDED_DWELL,
             // Regular (wild) scans use the 120-TU associated-channel
             // budget. 37 TU is the fast-balance budget and can terminate a
             // passive dwell before a beacon is delivered.

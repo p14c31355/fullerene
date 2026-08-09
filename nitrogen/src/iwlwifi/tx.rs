@@ -1047,11 +1047,43 @@ impl IwlWifiDevice {
             core::mem::size_of::<MacContextCmd>(),
         );
 
-        // SCAN_CFG_CMD is an optional UMAC-scan setup command.  The 7265
-        // API-v17 path used here is the LMAC scan path, and forcing the UMAC
-        // command makes this firmware raise SW_ERR.  The LMAC
-        // SCAN_OFFLOAD_REQUEST_CMD does not need this command.
-        log::info!("iwlwifi: init.config name=scan_config status=skipped reason=lmac_scan_path");
+        // MCC_UPDATE_CMD: 7265D firmware API 17 supports LAR (Location-Aware
+        // Regulatory).  Without setting the regulatory domain, the firmware
+        // silently refuses to scan — the scan command is accepted but no RX
+        // data is ever delivered.  "ZZ" is the worldwide default that allows
+        // scanning on all channels.
+        let mcc = MccUpdateCmd {
+            mcc: u16::from_be_bytes(*b"ZZ"),
+            source_id: 5, // MCC_SOURCE_DEFAULT
+            reserved: 0,
+        };
+        let mcc_bytes = unsafe { super::as_bytes(&mcc) };
+        self.send_init_hcmd(
+            "MCC_UPDATE",
+            LegacyCmd::MccUpdate as u8,
+            GroupId::Legacy as u8,
+            mcc_bytes,
+        )?;
+        log::info!("iwlwifi: init.config name=mcc_update country=ZZ source=default");
+
+        // SCAN_CFG_CMD configures the LMAC scan engine with channel lists,
+        // rates, and dwell times.  Without this, the firmware does not have
+        // a scan configuration and silently ignores scan requests.
+        // SCAN_CFG_CMD = 0x10 in LONG_GROUP (1), so it uses the 8-byte wide
+        // header.
+        let scan_cfg = ScanConfigV1::new(self.mac, AUX_STA_ID);
+        let scan_cfg_bytes = unsafe { super::as_bytes(&scan_cfg) };
+        self.send_init_hcmd(
+            "SCAN_CONFIG",
+            LegacyCmd::ScanConfig as u8,
+            GroupId::Long as u8,
+            scan_cfg_bytes,
+        )?;
+        log::info!(
+            "iwlwifi: init.config name=scan_config channels={} payload={}",
+            SCAN_CHANNEL_COUNT,
+            scan_cfg_bytes.len(),
+        );
 
         let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);
         let csr_fh_int_before_echo = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
