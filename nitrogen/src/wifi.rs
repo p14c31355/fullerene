@@ -38,7 +38,7 @@ pub trait WifiDriver: Send {
     fn create(
         ctx: &'static dyn DriverContext,
         mmio_base: *mut u32,
-        hw_rev: u32,
+        pci_revision: u32,
         device: crate::pci::PciDevice,
     ) -> Option<Box<dyn WifiDriver>>
     where
@@ -97,6 +97,11 @@ pub trait WifiDriver: Send {
     /// Called by the step-based init after firmware alive is confirmed.
     fn send_init_commands(&mut self) -> Result<(), crate::DriverError>;
 
+    /// Check PCIe health before a scheduler-owned MMIO operation.
+    fn check_pci_health(&mut self) -> Result<(), crate::DriverError> {
+        Ok(())
+    }
+
     /// Configure the temporary INIT image: read NVM, notify the firmware
     /// that NVM access is complete, and wait for PHY initialization.
     fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
@@ -136,7 +141,7 @@ pub struct PciWifiInfo {
 
 // ── Driver entry in the registry ─────────────────────────────────────
 
-/// Type-erased constructor: given the driver context, MMIO base, and HW
+/// Type-erased constructor: given the driver context, MMIO base, and PCI
 /// revision, returns a boxed driver or `None` on failure.
 type DriverCtor = fn(
     &'static dyn DriverContext,

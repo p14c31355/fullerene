@@ -45,6 +45,8 @@ static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
     fw_candidates: &[],
     alive_start_tsc: 0,
     pci_dev: None,
+    pci_bdf: None,
+    upstream_bridge: None,
     mmio: core::ptr::null_mut(),
     driver_ctx: None,
     health: None,
@@ -287,6 +289,8 @@ pub fn retry_wifi_initialization() -> bool {
     ctx.fw_candidates = &[];
     ctx.alive_start_tsc = 0;
     ctx.pci_dev = None;
+    ctx.pci_bdf = None;
+    ctx.upstream_bridge = None;
     ctx.mmio = core::ptr::null_mut();
     ctx.driver_ctx = None;
     ctx.health = None;
@@ -399,6 +403,7 @@ fn perform_init_step() {
                 raw.pci_revision,
             );
             {
+                let pci_bdf = (raw.pci_dev.bus, raw.pci_dev.device, raw.pci_dev.function);
                 let health = raw.upstream_bridge.map_or_else(
                     || PciHealth::new(&raw.pci_dev),
                     |(bus, dev, func)| {
@@ -407,6 +412,8 @@ fn perform_init_step() {
                 );
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.pci_dev = Some(raw.pci_dev);
+                ctx.pci_bdf = Some(pci_bdf);
+                ctx.upstream_bridge = raw.upstream_bridge;
                 ctx.mmio = raw.mmio;
                 ctx.driver_ctx = Some(raw.driver_ctx);
                 ctx.health = Some(health);
@@ -810,11 +817,6 @@ fn perform_init_step() {
             // FH RX setup is deferred until firmware reports alive; the
             // firmware reset sequence can overwrite the FH registers.
             debug::print("iwlwifi", "rx_dma_deferred_until_alive");
-            // Keep a copy in the init context as well as in the concrete
-            // device. The context owns the type-erased device during the
-            // incremental runtime-alive phase, so it cannot inspect the
-            // concrete device's health field directly.
-            WIFI_INIT_CTX.lock().health = Some(health);
             let device = IwlWifiDevice {
                 mac,
                 _pci_dev: pci_dev,
@@ -832,6 +834,7 @@ fn perform_init_step() {
                 phy_db_sections: Vec::new(),
                 init_firmware_completed: false,
                 init_commands_started: false,
+                runtime_commands_started: false,
                 init_nvm_index: 0,
                 init_hw_section: None,
                 init_mac_ready: false,
@@ -943,14 +946,22 @@ fn perform_init_step() {
             // entering a non-posted read that cannot complete.
             let pci_health = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                ctx.health.as_mut().map(PciHealth::check)
+                ctx.mmio_device.as_mut().map(|dev| dev.check_pci_health())
             };
-            if let Some(Err(error)) = pci_health {
-                log::warn!("iwlwifi: alive wait PCI health check failed: {}", error);
-                let mut ctx = WIFI_INIT_CTX.lock();
-                ctx.fw_candidate_idx += 1;
-                set_init_phase(WifiInitPhase::FwUpload);
-                return;
+            match pci_health {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    log::warn!("iwlwifi: alive wait PCI health check failed: {:?}", error);
+                    let mut ctx = WIFI_INIT_CTX.lock();
+                    ctx.fw_candidate_idx += 1;
+                    set_init_phase(WifiInitPhase::FwUpload);
+                    return;
+                }
+                None => {
+                    log::warn!("iwlwifi: alive wait PCI health state unavailable");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
             }
 
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
@@ -1087,13 +1098,13 @@ fn perform_init_step() {
             };
             let pci_health = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                ctx.health.as_mut().map(PciHealth::check)
+                ctx.mmio_device.as_mut().map(|dev| dev.check_pci_health())
             };
             match pci_health {
                 Some(Ok(())) => {}
                 Some(Err(error)) => {
                     log::warn!(
-                        "iwlwifi: runtime alive wait PCI health check failed: {}",
+                        "iwlwifi: runtime alive wait PCI health check failed: {:?}",
                         error
                     );
                     set_init_phase(WifiInitPhase::Failed);
@@ -1156,6 +1167,9 @@ fn perform_init_step() {
                     log::info!("iwlwifi: runtime firmware initialization commands accepted");
                     set_init_phase(WifiInitPhase::Done);
                 }
+                Err(crate::DriverError::Pending) => {
+                    debug::print("iwlwifi", "step: fw_runtime_cmds_pending");
+                }
                 Err(error) => {
                     log::error!(
                         "iwlwifi: init.phase.error name=fw_runtime_cmds id=10 error={}",
@@ -1199,9 +1213,8 @@ fn perform_init_step() {
 // ── High-level API ─────────────────
 
 fn pci_bdf_from_ctx(ctx: &WifiInitContext) -> Option<((u8, u8, u8), Option<(u8, u8, u8)>)> {
-    let pci = ctx.pci_dev.as_ref()?;
-    let bdf = (pci.bus, pci.device, pci.function);
-    let bridge = ctx.health.as_ref().and_then(|h| h.upstream_bridge());
+    let bdf = ctx.pci_bdf?;
+    let bridge = ctx.upstream_bridge;
     Some((bdf, bridge))
 }
 
@@ -1391,12 +1404,20 @@ pub fn connect_to_ap(ssid: &Ssid, password: Option<&str>) {
 
 /// Enqueue a scan request for scheduler-owned execution.
 pub fn start_scan_if_idle() {
+    let duplicate = WIFI_SQ
+        .lock()
+        .iter()
+        .any(|(_, pending)| matches!(pending, WifiRequest::StartScan));
     match enqueue_wifi_request(WifiRequest::StartScan) {
         Some(request_id) => {
             log::info!("iwlwifi: SQ queued StartScan request={}", request_id);
         }
         None => {
-            log::warn!("iwlwifi: SQ did not queue StartScan request");
+            if duplicate {
+                log::debug!("iwlwifi: SQ ignored duplicate StartScan request");
+            } else {
+                log::warn!("iwlwifi: SQ did not queue StartScan request");
+            }
         }
     }
 }

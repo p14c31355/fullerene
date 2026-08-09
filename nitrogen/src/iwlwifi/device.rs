@@ -52,6 +52,9 @@ pub struct IwlWifiDevice {
     pub init_firmware_completed: bool,
     /// Incremental INIT-command state retained between scheduler ticks.
     pub init_commands_started: bool,
+    /// True after runtime setup has submitted its first command. This lets a
+    /// pending MAC_CONTEXT response resume without replaying setup commands.
+    pub runtime_commands_started: bool,
     pub init_nvm_index: usize,
     pub init_hw_section: Option<Vec<u8>>,
     pub init_mac_ready: bool,
@@ -478,6 +481,7 @@ impl IwlWifiDevice {
             phy_db_sections: Vec::new(),
             init_firmware_completed: false,
             init_commands_started: false,
+            runtime_commands_started: false,
             init_nvm_index: 0,
             init_hw_section: None,
             init_mac_ready: false,
@@ -518,21 +522,22 @@ impl IwlWifiDevice {
     pub fn init_from_mmio(
         ctx: &'static dyn DriverContext,
         mmio: *mut u32,
-        hw_rev: u32,
+        pci_revision: u32,
         device: PciDevice,
     ) -> Option<Self> {
         let health = PciHealth::new(&device);
-        Self::init_after_mmio(ctx, mmio, hw_rev as u16, device, health).ok()
+        Self::init_after_mmio(ctx, mmio, pci_revision as u16, device, health).ok()
     }
 
     fn init_after_mmio(
         ctx: &'static dyn DriverContext,
         mmio: *mut u32,
-        _hw_rev: u16,
+        pci_revision: u16,
         device: PciDevice,
         mut health: PciHealth,
     ) -> Result<Self, IwlError> {
         debug::print("iwlwifi", "init_after_mmio: enter");
+        let _ = pci_revision;
         if !health.is_device_present() {
             debug::print("iwlwifi", "ERR device_gone before reset");
             return Err(IwlError::BarNotAvailable);
@@ -693,6 +698,7 @@ impl IwlWifiDevice {
             phy_db_sections: Vec::new(),
             init_firmware_completed: false,
             init_commands_started: false,
+            runtime_commands_started: false,
             init_nvm_index: 0,
             init_hw_section: None,
             init_mac_ready: false,
@@ -1075,7 +1081,7 @@ impl IwlWifiDevice {
     /// Capture the gen1 firmware boot hand-off state without changing any
     /// device register. This is intentionally small enough to leave enabled
     /// in real-device debug logs.
-    fn log_fw_boot_registers(&mut self, stage: &str) {
+    fn log_fw_boot_registers(&self, stage: &str) {
         log::info!(
             "iwlwifi: fw.boot stage={} CSR_INT={:#010x} CSR_INT_MASK={:#010x} CSR_FH_INT={:#010x} CSR_GP={:#010x} CSR_UCODE_GP1={:#010x} RESET={:#010x} FH_LOAD={:#010x} FH_TX_CFG={:#010x}",
             stage,
@@ -1574,10 +1580,10 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
     fn create(
         ctx: &'static dyn crate::DriverContext,
         mmio_base: *mut u32,
-        hw_rev: u32,
+        pci_revision: u32,
         device: crate::pci::PciDevice,
     ) -> Option<Box<dyn crate::wifi::WifiDriver>> {
-        Self::init_from_mmio(ctx, mmio_base, hw_rev, device)
+        Self::init_from_mmio(ctx, mmio_base, pci_revision, device)
             .map(|dev| Box::new(dev) as Box<dyn crate::wifi::WifiDriver>)
     }
 
@@ -1641,6 +1647,12 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
         IwlWifiDevice::send_init_commands(self)
     }
 
+    fn check_pci_health(&mut self) -> Result<(), crate::DriverError> {
+        self.health
+            .check()
+            .map_err(|_| crate::DriverError::DeviceNotFound)
+    }
+
     fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
         IwlWifiDevice::send_init_firmware_commands(self)
     }
@@ -1653,9 +1665,9 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
 pub fn try_create_iwl(
     ctx: &'static dyn crate::DriverContext,
     mmio: *mut u32,
-    hw_rev: u32,
+    pci_revision: u32,
     device: crate::pci::PciDevice,
 ) -> Option<Box<dyn crate::wifi::WifiDriver>> {
-    IwlWifiDevice::init_from_mmio(ctx, mmio, hw_rev, device)
+    IwlWifiDevice::init_from_mmio(ctx, mmio, pci_revision, device)
         .map(|dev| Box::new(dev) as Box<dyn crate::wifi::WifiDriver>)
 }

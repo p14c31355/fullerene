@@ -113,6 +113,7 @@ struct AhciPort {
     data_buffer_phys: u64,
     data_buffer_size: usize,
     data_buffer_frames: usize,
+    data_buffer_contiguous: bool,
     sector_size: u32,
     total_sectors: u64,
     lba48: bool,
@@ -333,9 +334,14 @@ impl AhciController {
         };
         let cmd_table = ctx.phys_to_virt(cmd_table_phys) as *mut CommandTable;
 
-        let (data_buffer_phys, data_buffer_size, data_buffer_frames) =
+        let (data_buffer_phys, data_buffer_size, data_buffer_frames, data_buffer_contiguous) =
             match ctx.allocate_contiguous_frames(AHCI_DATA_BUFFER_SIZE / 4096) {
-                Ok(phys) => (phys, AHCI_DATA_BUFFER_SIZE, AHCI_DATA_BUFFER_SIZE / 4096),
+                Ok(phys) => (
+                    phys,
+                    AHCI_DATA_BUFFER_SIZE,
+                    AHCI_DATA_BUFFER_SIZE / 4096,
+                    true,
+                ),
                 Err(e) => {
                     log::warn!(
                         "AHCI port {}: {} KiB DMA buffer unavailable ({}); falling back to 4 KiB",
@@ -344,7 +350,7 @@ impl AhciController {
                         e
                     );
                     match ctx.allocate_frame() {
-                        Ok(phys) => (phys, 4096, 1),
+                        Ok(phys) => (phys, 4096, 1, false),
                         Err(e) => {
                             log::error!(
                                 "AHCI port {}: failed to allocate fallback data frame: {}",
@@ -402,6 +408,7 @@ impl AhciController {
             data_buffer_phys,
             data_buffer_size,
             data_buffer_frames,
+            data_buffer_contiguous,
             sector_size: 512,
             total_sectors: 0,
             lba48: false,
@@ -413,10 +420,10 @@ impl AhciController {
         ctx.free_frame(port.cmd_list_phys);
         ctx.free_frame(port.fis_phys);
         ctx.free_frame(port.cmd_table_phys);
-        if port.data_buffer_frames == 1 {
-            ctx.free_frame(port.data_buffer_phys);
-        } else {
+        if port.data_buffer_contiguous {
             ctx.free_contiguous_frames(port.data_buffer_phys, port.data_buffer_frames);
+        } else {
+            ctx.free_frame(port.data_buffer_phys);
         }
     }
 

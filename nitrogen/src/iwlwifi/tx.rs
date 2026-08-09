@@ -590,43 +590,42 @@ impl IwlWifiDevice {
         group: u8,
     ) -> Result<(), crate::DriverError> {
         const RESPONSE_TIMEOUT_US: u64 = 500_000;
-        let deadline_tsc = unsafe { core::arch::x86_64::_rdtsc() }
-            .saturating_add(crate::timing::ticks_per_us().saturating_mul(RESPONSE_TIMEOUT_US));
-        let result = crate::timing::poll_timeout_us(RESPONSE_TIMEOUT_US + 100_000, || {
-            match self.poll_init_notification(opcode, group, deadline_tsc) {
-                Ok(Some(payload)) => Some(Ok(payload.len())),
-                Ok(None) => None,
-                Err(error) => Some(Err(error)),
+        let deadline_tsc = match self.init_response {
+            Some((pending_opcode, pending_group, deadline_tsc))
+                if pending_opcode == opcode && pending_group == group =>
+            {
+                deadline_tsc
             }
-        });
+            Some(_) => return Err(crate::DriverError::Protocol),
+            None => {
+                let deadline_tsc = unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(
+                    crate::timing::ticks_per_us().saturating_mul(RESPONSE_TIMEOUT_US),
+                );
+                self.init_response = Some((opcode, group, deadline_tsc));
+                deadline_tsc
+            }
+        };
 
-        match result {
-            Some(Ok(payload_len)) => {
+        match self.poll_init_notification(opcode, group, deadline_tsc)? {
+            Some(payload) => {
+                self.init_response = None;
                 log::info!(
                     "iwlwifi: init.hcmd.response name={} opcode=0x{:02x} group=0x{:02x} payload={}",
                     label,
                     opcode,
                     group,
-                    payload_len,
+                    payload.len(),
                 );
                 Ok(())
             }
-            Some(Err(error)) => {
-                log::error!(
-                    "iwlwifi: init.hcmd.error name={} stage=response error={}",
-                    label,
-                    error,
-                );
-                Err(error)
-            }
             None => {
-                log::error!(
-                    "iwlwifi: init.hcmd.error name={} stage=response reason=timeout opcode=0x{:02x} group=0x{:02x}",
+                log::debug!(
+                    "iwlwifi: init.hcmd.pending name={} opcode=0x{:02x} group=0x{:02x}",
                     label,
                     opcode,
                     group,
                 );
-                Err(crate::DriverError::TimedOut)
+                Err(crate::DriverError::Pending)
             }
         }
     }
@@ -819,6 +818,30 @@ impl IwlWifiDevice {
     }
 
     pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
+        if self.runtime_commands_started {
+            match self.init_response {
+                Some((opcode, group, deadline_tsc)) => {
+                    match self.poll_init_notification(opcode, group, deadline_tsc)? {
+                        None => return Err(crate::DriverError::Pending),
+                        Some(payload) => {
+                            self.init_response = None;
+                            log::info!(
+                                "iwlwifi: init.hcmd.response name=MAC_CONTEXT opcode=0x{:02x} group=0x{:02x} payload={}",
+                                opcode,
+                                group,
+                                payload.len(),
+                            );
+                        }
+                    }
+                }
+                None => return Err(crate::DriverError::Protocol),
+            }
+            self.runtime_commands_started = false;
+            self.fw_state = FwState::Ready;
+            log::info!("iwlwifi: init.commands.result status=operational");
+            return Ok(());
+        }
+        self.runtime_commands_started = true;
         log::info!(
             "iwlwifi: init.commands.begin fw_api={} fw_build={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             self.fw_api_ver,
@@ -958,12 +981,18 @@ impl IwlWifiDevice {
         log::info!(
             "iwlwifi: init.config name=mac_context rates_cck=0x0000000f rates_ofdm=0x00000015"
         );
-        log::info!(
-            "iwlwifi: init.config name=mac_context ac0=cw_min:0,cw_max:0,aifsn:0,fifo:0x01 ac1=cw_min:0,cw_max:0,aifsn:0,fifo:0x02"
-        );
-        log::info!(
-            "iwlwifi: init.config name=mac_context ac2=cw_min:0,cw_max:0,aifsn:0,fifo:0x04 ac3=cw_min:0,cw_max:0,aifsn:0,fifo:0x08 ac4=reserved:zero"
-        );
+        for (index, ac) in (0..5).map(|index| (index, mac_ctx.qos_ac(index))) {
+            let (cw_min, cw_max, aifsn, fifo, txop) = ac.values();
+            log::info!(
+                "iwlwifi: init.config name=mac_context ac{}=cw_min:{},cw_max:{},aifsn:{},fifo:0x{:02x},txop:{}",
+                index,
+                cw_min,
+                cw_max,
+                aifsn,
+                fifo,
+                txop,
+            );
+        }
         log::info!(
             "iwlwifi: init.config name=mac_context sta=unassociated beacon_interval:100 dtim_interval:0 listen_interval:10"
         );

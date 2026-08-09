@@ -102,6 +102,8 @@ mod tests {
         // 0x21 after shifting.  The selector must receive the former.
         let firmware = select_firmware_list(0x095B, 0x0210);
         assert_eq!(firmware[0].name, "iwlwifi-7265D-17");
+        let shifted = select_firmware_list(0x095B, 0x0021);
+        assert_eq!(shifted[0].name, "iwlwifi-7265-17");
     }
 
     #[test]

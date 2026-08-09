@@ -277,6 +277,20 @@ pub struct MacQosAc {
     pub edca_txop: u16,
 }
 
+impl MacQosAc {
+    pub fn values(self) -> (u16, u16, u8, u8, u16) {
+        unsafe {
+            (
+                core::ptr::read_unaligned(core::ptr::addr_of!(self.cw_min)),
+                core::ptr::read_unaligned(core::ptr::addr_of!(self.cw_max)),
+                self.aifsn,
+                self.fifos_mask,
+                core::ptr::read_unaligned(core::ptr::addr_of!(self.edca_txop)),
+            )
+        }
+    }
+}
+
 /// Station-specific portion of the API-v1 MAC context union.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -409,6 +423,13 @@ impl MacContextCmd {
                 assoc_beacon_arrive_time: 0,
             },
         }
+    }
+
+    /// Read one packed QoS entry without creating an unaligned reference.
+    pub fn qos_ac(&self, index: usize) -> MacQosAc {
+        assert!(index < self.ac.len());
+        let ac = core::ptr::addr_of!(self.ac) as *const MacQosAc;
+        unsafe { ac.add(index).read_unaligned() }
     }
 }
 
@@ -661,13 +682,24 @@ impl ScanRequestCmd {
             channel.channel_num = number as u16;
         }
 
+        // The legacy firmware accepts a wildcard SSID-only probe, but some
+        // APs and firmware revisions expect the legacy rate IEs as well.
+        // Keep the band-specific mandatory rates separate and put the
+        // remaining rates in the common tail, matching Linux's segment
+        // layout for PROBE_REQUEST_FRAME_API_S_VER_2.
+        const RATES_24GHZ: [u8; 10] = [1, 8, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24];
+        const RATES_5GHZ: [u8; 6] = [1, 4, 0x8c, 0x12, 0x98, 0x24];
+        const RATES_COMMON: [u8; 6] = [50, 4, 0xb0, 0x48, 0x60, 0x6c];
         let mut probe = ScanProbeReqV1 {
             mac_header: ScanProbeSegment { offset: 0, len: 26 },
             band_data: [
-                ScanProbeSegment { offset: 26, len: 0 },
-                ScanProbeSegment { offset: 26, len: 0 },
+                ScanProbeSegment {
+                    offset: 26,
+                    len: 10,
+                },
+                ScanProbeSegment { offset: 36, len: 6 },
             ],
-            common_data: ScanProbeSegment { offset: 26, len: 0 },
+            common_data: ScanProbeSegment { offset: 42, len: 6 },
             buf: [0; SCAN_PROBE_BUFFER_SIZE],
         };
         // Wildcard probe request. The zero-length SSID element is included in
@@ -678,6 +710,9 @@ impl ScanRequestCmd {
         probe.buf[10..16].copy_from_slice(&mac);
         probe.buf[16..22].fill(0xff);
         probe.buf[24..26].fill(0);
+        probe.buf[26..36].copy_from_slice(&RATES_24GHZ);
+        probe.buf[36..42].copy_from_slice(&RATES_5GHZ);
+        probe.buf[42..48].copy_from_slice(&RATES_COMMON);
 
         Self {
             reserved1: 0,
@@ -950,6 +985,8 @@ pub struct WifiInitContext {
     pub fw_candidates: &'static [FirmwareBlob],
     pub alive_start_tsc: u64,
     pub pci_dev: Option<PciDevice>,
+    pub pci_bdf: Option<(u8, u8, u8)>,
+    pub upstream_bridge: Option<(u8, u8, u8)>,
     pub mmio: *mut u32,
     pub driver_ctx: Option<&'static dyn DriverContext>,
     pub health: Option<PciHealth>,

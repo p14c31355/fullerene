@@ -173,7 +173,6 @@ fn write_u64(data: &mut [u8], offset: usize, value: u64) -> Option<()> {
 #[derive(Clone, Copy)]
 struct PeSection {
     virtual_address: usize,
-    virtual_size: usize,
     raw_offset: usize,
     raw_size: usize,
 }
@@ -183,8 +182,10 @@ fn rva_to_raw(rva: usize, headers_size: usize, sections: &[PeSection]) -> Option
         return Some(rva);
     }
     sections.iter().find_map(|section| {
-        let span = section.virtual_size.max(section.raw_size);
-        let end = section.virtual_address.checked_add(span)?;
+        if section.raw_size == 0 {
+            return None;
+        }
+        let end = section.virtual_address.checked_add(section.raw_size)?;
         if (section.virtual_address..end).contains(&rva) {
             section
                 .raw_offset
@@ -233,7 +234,7 @@ fn reconstruct_loaded_pe(
             .ok_or(BellowsError::FileIo("loaded PE section table truncated"))?,
     );
     let optional_size = usize::from(
-        read_u16(image, pe_offset + 16)
+        read_u16(image, pe_offset + 20)
             .ok_or(BellowsError::FileIo("loaded PE optional header truncated"))?,
     );
     let optional = pe_offset
@@ -267,11 +268,6 @@ fn reconstruct_loaded_pe(
     let mut file_size = headers_size;
     for index in 0..number_of_sections {
         let section = section_table + index * 40;
-        let virtual_size = usize::try_from(
-            read_u32(image, section + 8)
-                .ok_or(BellowsError::FileIo("loaded PE section truncated"))?,
-        )
-        .map_err(|_| BellowsError::FileIo("loaded PE section size invalid"))?;
         let virtual_address = usize::try_from(
             read_u32(image, section + 12)
                 .ok_or(BellowsError::FileIo("loaded PE section truncated"))?,
@@ -302,7 +298,6 @@ fn reconstruct_loaded_pe(
         }
         sections.push(PeSection {
             virtual_address,
-            virtual_size,
             raw_offset,
             raw_size,
         });
@@ -370,7 +365,9 @@ fn reconstruct_loaded_pe(
                             "loaded PE relocation target truncated",
                         ))?;
                         let restored = (current as i128 - delta) as u64;
-                        write_u64(raw, raw_offset, restored);
+                        write_u64(raw, raw_offset, restored).ok_or(BellowsError::FileIo(
+                            "loaded PE relocation target truncated",
+                        ))?;
                     }
                     entry += 2;
                 }

@@ -419,7 +419,9 @@ fn push_payload(
 fn make_protective_mbr(total_sectors: u64) -> [u8; SECTOR_SIZE] {
     let mut sector = [0u8; SECTOR_SIZE];
     let entry = &mut sector[0x1BE..0x1CE];
+    entry[0..3].copy_from_slice(&[0x00, 0x02, 0x00]);
     entry[4] = 0xEE;
+    entry[5..8].copy_from_slice(&[0xff, 0xff, 0xff]);
     entry[8..12].copy_from_slice(&1u32.to_le_bytes());
     let protective_sectors = total_sectors.saturating_sub(1).min(u64::from(u32::MAX)) as u32;
     entry[12..16].copy_from_slice(&protective_sectors.to_le_bytes());

@@ -622,7 +622,7 @@ impl IwlWifiDevice {
                 // filled entries [rx_tail, closed_rb_num). This matches the
                 // Linux gen1_2 receive loop, which processes while read != r.
                 self.rx_head = closed_rb;
-                if closed_rb != previous_head || process_from != closed_rb {
+                if closed_rb != previous_head {
                     log::info!(
                         "iwlwifi: RX DMA progress closed_rbd={} process_from={} process_until={}",
                         closed_rb,
