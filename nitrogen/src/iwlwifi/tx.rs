@@ -1038,6 +1038,33 @@ impl IwlWifiDevice {
             core::mem::size_of::<MacContextCmd>(),
         );
 
+        // MCC_UPDATE_CMD: the 7265 firmware supports LAR (Location Aware
+        // Regulatory).  Without an applied MCC, the firmware disables all
+        // 5 GHz channels and scans return only 2.4 GHz results.  Send "ZZ"
+        // to switch to the NVM-stored default regulatory profile before
+        // any scan request.  Linux does this in iwl_mvm_init_fw_regd() and
+        // refuses to scan (iwl_mvm_reg_scan_start) until lar_regdom_set is
+        // true.  The command is in group 0x1 (Long) and uses the 8-byte
+        // wide header.
+        let mcc_cmd = MccUpdateCmd::nvm_default();
+        let mcc_cmd_bytes = unsafe { super::as_bytes(&mcc_cmd) };
+        self.send_init_hcmd(
+            "MCC_UPDATE",
+            LegacyCmd::MccUpdate as u8,
+            GroupId::Long as u8,
+            mcc_cmd_bytes,
+        )?;
+        log::info!(
+            "iwlwifi: init.config name=mcc_update mcc=ZZ source=old_fw payload={}",
+            mcc_cmd_bytes.len(),
+        );
+        self.wait_init_hcmd_response(
+            "MCC_UPDATE",
+            LegacyCmd::MccUpdate as u8,
+            GroupId::Long as u8,
+        )?;
+        log::info!("iwlwifi: init.config name=mcc_update status=accepted");
+
         // SCAN_CFG_CMD is an optional UMAC-scan setup command.  The 7265
         // API-v17 path used here is the LMAC scan path, and forcing the UMAC
         // command makes this firmware raise SW_ERR.  The LMAC
