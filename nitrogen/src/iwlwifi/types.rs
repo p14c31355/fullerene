@@ -152,7 +152,7 @@ pub struct AddStaKeyCmd {
 pub struct MccUpdateCmd {
     /// ISO 3166 country code in ASCII, e.g. b"US" = 0x5553, b"ZZ" = 0x5A5A.
     pub mcc: u16,
-    /// Regulatory domain source (0=old firmware, 5=default).
+    /// Regulatory domain source (0=MCC_SOURCE_OLD_FW).
     pub source_id: u8,
     pub reserved: u8,
 }
@@ -1085,7 +1085,7 @@ pub enum IwlError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BtCoexConfigCmd, ScanConfigV1};
+    use super::{BtCoexConfigCmd, MccUpdateCmd, ScanConfigV1};
 
     #[test]
     fn bt_config_network_default_has_upstream_wire_layout() {
@@ -1111,5 +1111,21 @@ mod tests {
         let flags = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
         assert_ne!(flags & (1 << 10), 0);
         assert_ne!(flags & (1 << 17), 0);
+    }
+
+    #[test]
+    fn mcc_initial_source_uses_upstream_old_fw_id() {
+        let command = MccUpdateCmd {
+            mcc: u16::from_be_bytes(*b"ZZ"),
+            source_id: 0,
+            reserved: 0,
+        };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const MccUpdateCmd).cast::<u8>(),
+                core::mem::size_of::<MccUpdateCmd>(),
+            )
+        };
+        assert_eq!(bytes, &[0x5a, 0x5a, 0, 0]);
     }
 }

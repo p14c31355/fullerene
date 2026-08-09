@@ -924,7 +924,7 @@ impl IwlWifiDevice {
     fn send_runtime_mcc(&mut self) -> Result<(), crate::DriverError> {
         let mcc = MccUpdateCmd {
             mcc: u16::from_be_bytes(*b"ZZ"),
-            source_id: 5,
+            source_id: 0,
             reserved: 0,
         };
         let mcc_bytes = unsafe { super::as_bytes(&mcc) };
@@ -934,7 +934,7 @@ impl IwlWifiDevice {
             GroupId::Legacy as u8,
             mcc_bytes,
         )?;
-        log::info!("iwlwifi: init.config name=mcc_update country=ZZ source=default");
+        log::info!("iwlwifi: init.config name=mcc_update country=ZZ source=old_fw");
         self.wait_init_hcmd_response(
             "MCC_UPDATE",
             LegacyCmd::MccUpdate as u8,

@@ -199,12 +199,29 @@ impl IwlWifiDevice {
                         opcode,
                         group,
                     );
+                    if opcode == LegacyCmd::MccUpdate as u8 {
+                        log::info!(
+                            "iwlwifi: init.rx.mcc_packet opcode=0x{:02x} group=0x{:02x} len={} payload={}",
+                            packet[4],
+                            packet[5],
+                            packet_len,
+                            RxHexBytes(payload),
+                        );
+                    }
                     if packet[4] == LegacyCmd::CalibResNotifPhyDb as u8
                         && packet[5] == GroupId::Legacy as u8
                     {
                         self.save_phy_db_notification(&packet[8..]);
                     }
-                    if packet[4] == opcode && packet[5] == group {
+                    // MCC_UPDATE is a legacy command, but older 7000-series
+                    // firmware has emitted its response through either the
+                    // legacy or long notification namespace. Match its
+                    // opcode independently of the namespace; all other
+                    // command responses remain strict.
+                    let response_group_matches = packet[5] == group
+                        || (opcode == LegacyCmd::MccUpdate as u8
+                            && packet[4] == LegacyCmd::MccUpdate as u8);
+                    if packet[4] == opcode && response_group_matches {
                         matched = Some(payload.to_vec());
                     } else if packet[4] == LegacyCmd::ReplyError as u8 {
                         let error_type = payload
