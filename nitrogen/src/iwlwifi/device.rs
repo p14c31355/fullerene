@@ -1375,7 +1375,7 @@ impl IwlWifiDevice {
             self.init_errlog_ptr = error_log_ptr;
             ("init", self.init_errlog_ptr)
         };
-        log::error!(
+        log::info!(
             "iwlwifi: firmware.alive image={} status={:#06x} flags={:#06x} error_log_ptr={:#010x}",
             image,
             status,

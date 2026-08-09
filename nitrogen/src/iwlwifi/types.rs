@@ -177,6 +177,10 @@ pub struct PhyChannelInfoV1 {
     pub ctrl_pos: u8,
 }
 
+/// PHY band constants matching Linux's IWL_PHY_BAND_* definitions.
+pub const PHY_BAND_24: u8 = 0;
+pub const PHY_BAND_5: u8 = 1;
+
 /// PHY_CONTEXT_CMD API v1 used by the 7265 firmware.
 ///
 /// The old channel-info form is four bytes; the newer API's channel number is
@@ -203,7 +207,7 @@ impl PhyContextCmdV1 {
             apply_time: 0,
             tx_param_color: 0,
             channel: PhyChannelInfoV1 {
-                band: 1, // PHY_BAND_24
+                band: PHY_BAND_24,
                 channel: 1,
                 width: 0, // 20 MHz, no HT
                 ctrl_pos: 0,
@@ -746,8 +750,9 @@ impl ScanRequestCmd {
             // passive dwell before a beacon is delivered.
             max_out_time: 120,
             suspend_time: 30,
-            // PHY_BAND_24 and MAC_FILTER_ACCEPT_GRP|MAC_FILTER_IN_BEACON.
-            flags: 1,
+            // IWL_PHY_BAND_24: scan starts on 2.4 GHz.  The firmware
+            // switches bands internally as it walks the channel list.
+            flags: PHY_BAND_24 as u32,
             filter_flags: (1 << 2) | (1 << 6),
             tx_cmd: [
                 ScanReqTxCmd {
