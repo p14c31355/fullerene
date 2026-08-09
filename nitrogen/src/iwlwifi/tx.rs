@@ -918,15 +918,10 @@ impl IwlWifiDevice {
         Err(crate::DriverError::Pending)
     }
 
-    /// Send the regulatory and LMAC scan configuration after MAC_CONTEXT has
-    /// been accepted. These commands must remain after the asynchronous
-    /// MAC_CONTEXT response, but before the device is exposed as scan-ready.
-    fn send_runtime_scan_setup(&mut self) -> Result<(), crate::DriverError> {
-        const AUX_STA_ID: u8 = 1;
-
-        // MCC_UPDATE_CMD: 7265D firmware API 17 supports LAR (Location-Aware
-        // Regulatory). Without setting the regulatory domain, the firmware
-        // silently refuses to scan.
+    /// Send MCC_UPDATE after MAC_CONTEXT has been accepted and wait for its
+    /// firmware response before submitting SCAN_CONFIG. Linux treats MCC as a
+    /// synchronous command; descriptor consumption alone is not sufficient.
+    fn send_runtime_mcc(&mut self) -> Result<(), crate::DriverError> {
         let mcc = MccUpdateCmd {
             mcc: u16::from_be_bytes(*b"ZZ"),
             source_id: 5,
@@ -940,7 +935,16 @@ impl IwlWifiDevice {
             mcc_bytes,
         )?;
         log::info!("iwlwifi: init.config name=mcc_update country=ZZ source=default");
+        self.wait_init_hcmd_response(
+            "MCC_UPDATE",
+            LegacyCmd::MccUpdate as u8,
+            GroupId::Legacy as u8,
+        )
+    }
 
+    /// Send the LMAC scan configuration after MCC_UPDATE completed.
+    fn send_runtime_scan_config(&mut self) -> Result<(), crate::DriverError> {
+        const AUX_STA_ID: u8 = 1;
         // SCAN_CFG_CMD configures the LMAC scan engine with channel lists,
         // rates, and dwell times. It is a long-group command with opcode 0x0c.
         let scan_cfg = ScanConfigV1::new(self.mac, AUX_STA_ID);
@@ -974,12 +978,21 @@ impl IwlWifiDevice {
                         Some(payload) => {
                             self.init_response = None;
                             log::info!(
-                                "iwlwifi: init.hcmd.response name=MAC_CONTEXT opcode=0x{:02x} group=0x{:02x} payload={}",
+                                "iwlwifi: init.hcmd.response opcode=0x{:02x} group=0x{:02x} payload={}",
                                 opcode,
                                 group,
                                 payload.len(),
                             );
-                            self.send_runtime_scan_setup()?;
+                            match opcode {
+                                x if x == LegacyCmd::MacContext as u8 => {
+                                    self.send_runtime_mcc()?;
+                                    self.send_runtime_scan_config()?;
+                                }
+                                x if x == LegacyCmd::MccUpdate as u8 => {
+                                    self.send_runtime_scan_config()?;
+                                }
+                                _ => return Err(crate::DriverError::Protocol),
+                            }
                         }
                     }
                 }
@@ -1175,7 +1188,8 @@ impl IwlWifiDevice {
             LegacyCmd::MacContext as u8,
             GroupId::Legacy as u8,
         )?;
-        self.send_runtime_scan_setup()?;
+        self.send_runtime_mcc()?;
+        self.send_runtime_scan_config()?;
         log::info!(
             "iwlwifi: init.config name=mac_context status=accepted mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} filter=0x{:08x} payload={}",
             self.mac[0],

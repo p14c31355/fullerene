@@ -623,6 +623,7 @@ impl ScanConfigV1 {
             | (1 << 13)
             | (1 << 14)
             | (1 << 15)
+            | (1 << 17)
             | ((SCAN_CHANNEL_COUNT as u32) << 26);
 
         Self {
@@ -1084,7 +1085,7 @@ pub enum IwlError {
 
 #[cfg(test)]
 mod tests {
-    use super::BtCoexConfigCmd;
+    use super::{BtCoexConfigCmd, ScanConfigV1};
 
     #[test]
     fn bt_config_network_default_has_upstream_wire_layout() {
@@ -1096,5 +1097,19 @@ mod tests {
             )
         };
         assert_eq!(bytes, &[1, 0, 0, 0, 0x16, 0, 0, 0]);
+    }
+
+    #[test]
+    fn scan_config_flags_select_aux_station_and_clear_fragmented_mode() {
+        let command = ScanConfigV1::new([0x94, 0x65, 0x9c, 0x44, 0x73, 0xd4], 1);
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const ScanConfigV1).cast::<u8>(),
+                core::mem::size_of::<ScanConfigV1>(),
+            )
+        };
+        let flags = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        assert_ne!(flags & (1 << 10), 0);
+        assert_ne!(flags & (1 << 17), 0);
     }
 }
