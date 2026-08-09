@@ -747,23 +747,30 @@ pub struct ScanRequestCmd {
     pub delay: u32,
     pub schedule: [ScanScheduleLmac; 2],
     pub channel_opt: [ScanChannelOpt; 2],
-    pub channels: [ScanChannelCfgLmac; SCAN_CHANNEL_COUNT],
+    // Linux places the probe request after the firmware-advertised channel
+    // array, not immediately after the channels used by this scan. The 7265
+    // firmware advertises 40 LMAC slots; unused slots must remain zero.
+    pub channels: [ScanChannelCfgLmac; SCAN_CONFIG_CHANNEL_COUNT],
     pub probe_req: ScanProbeReqV1,
 }
 
 impl ScanRequestCmd {
     pub fn new(mac: [u8; 6], aux_sta_id: u8) -> Self {
         let mut channels = [ScanChannelCfgLmac {
-            // Each entry is explicitly supplied by this request.  The
-            // legacy LMAC API marks that form as PARTIAL; FULL is reserved
-            // for a firmware-managed channel plan.
-            flags: 1 << 28,
+            // Linux kzalloc() leaves the firmware-reserved tail zeroed. It
+            // fills only the first n_channels entries below.
+            flags: 0,
             channel_num: 0,
-            iter_count: 1,
+            iter_count: 0,
             iter_interval: 0,
-        }; SCAN_CHANNEL_COUNT];
+        }; SCAN_CONFIG_CHANNEL_COUNT];
         for (channel, number) in channels.iter_mut().zip(SCAN_CHANNELS) {
+            // Each entry supplied by this request is marked PARTIAL; FULL is
+            // reserved for a firmware-managed channel plan.
+            channel.flags = 1 << 28;
             channel.channel_num = number as u16;
+            channel.iter_count = 1;
+            channel.iter_interval = 0;
         }
 
         // The legacy firmware accepts a wildcard SSID-only probe, but some

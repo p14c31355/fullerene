@@ -13,8 +13,8 @@ use nitrogen::iwlwifi::registers::{
     TX_TFD_RING_BYTES,
 };
 use nitrogen::iwlwifi::types::{
-    AddStaCmdV7, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanConfigV1, ScanRequestCmd,
-    ScdTxqCfgCmdV1,
+    AddStaCmdV7, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanChannelCfgLmac, ScanConfigV1,
+    ScanRequestCmd, ScdTxqCfgCmdV1,
 };
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
@@ -65,6 +65,21 @@ fn linux_v49_scan_commands_use_the_aux_station_id() {
 
     let request = ScanRequestCmd::new(mac, 1);
     let request_bytes = bytes(&request);
+    let channels_offset = offset_of!(ScanRequestCmd, channels);
+    let probe_offset = offset_of!(ScanRequestCmd, probe_req);
+    // Linux allocates one channel slot for each value in the firmware TLV
+    // (40 on the 7265), then fills only the requested 23 channels. The probe
+    // request therefore follows all 40 slots, including a zero tail.
+    assert_eq!(
+        probe_offset - channels_offset,
+        40 * size_of::<ScanChannelCfgLmac>()
+    );
+    assert_eq!(size_of::<ScanRequestCmd>(), 1772);
+    assert!(
+        request_bytes[channels_offset + 23 * size_of::<ScanChannelCfgLmac>()..probe_offset]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
     // The two Linux LMAC scan TX command entries are both bound to sta_id 1.
     assert_eq!(request_bytes[40], 1);
     assert_eq!(request_bytes[52], 1);
