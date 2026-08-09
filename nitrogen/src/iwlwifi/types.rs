@@ -565,6 +565,11 @@ impl AddStaCmdV7 {
 // ── Scan command structures ────────
 
 pub const SCAN_CHANNEL_COUNT: usize = 23;
+/// 7265 firmware advertises a 40-entry SCAN_CONFIG channel array. Linux
+/// allocates this many entries even though this minimal driver currently
+/// enables 39 standard channels and leaves the final entry zeroed.
+pub const SCAN_CONFIG_CHANNEL_COUNT: usize = 40;
+const SCAN_CONFIG_VALID_CHANNEL_COUNT: usize = 39;
 const SCAN_DIRECT_SSID_COUNT: usize = 20;
 const SCAN_SSID_MAX_LEN: usize = 32;
 const SCAN_PROBE_BUFFER_SIZE: usize = 512;
@@ -589,6 +594,10 @@ const SCAN_RATE_6M_OFDM: u32 = 13 | SCAN_RATE_ANT_A;
 const SCAN_CHANNELS: [u8; SCAN_CHANNEL_COUNT] = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 149, 153, 157, 161, 165,
 ];
+const SCAN_CONFIG_CHANNELS: [u8; SCAN_CONFIG_CHANNEL_COUNT] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108,
+    112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165, 0,
+];
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -596,7 +605,7 @@ pub struct ScanDwellV1 {
     pub active: u8,
     pub passive: u8,
     pub fragmented: u8,
-    pub reserved: u8,
+    pub extended: u8,
 }
 
 /// SCAN_CFG_CMD API v1 payload used by the 7265 firmware.
@@ -617,14 +626,14 @@ pub struct ScanConfigV1 {
     pub mac_addr: [u8; 6],
     pub bcast_sta_id: u8,
     pub channel_flags: u8,
-    pub channel_array: [u8; SCAN_CHANNEL_COUNT],
+    pub channel_array: [u8; SCAN_CONFIG_CHANNEL_COUNT],
 }
 
 impl ScanConfigV1 {
     pub fn new(mac_addr: [u8; 6], bcast_sta_id: u8) -> Self {
-        // This is the API-v1 SCAN_CONFIG_DB_CMD flag set.  In particular,
-        // SET_AUX_STA_ID and CLEAR_FRAGMENTED are not part of the firmware's
-        // initial scan configuration command; their bits are reserved here.
+        // This is the API-v1 SCAN_CONFIG_DB_CMD flag set used by Linux:
+        // activate the engine, select the auxiliary station, populate the
+        // timing/rate/address fields, and explicitly clear fragmented mode.
         let flags = (1 << 0)
             | (1 << 3)
             | (1 << 8)
@@ -635,26 +644,26 @@ impl ScanConfigV1 {
             | (1 << 14)
             | (1 << 15)
             | (1 << 17)
-            | ((SCAN_CHANNEL_COUNT as u32) << 26);
+            | ((SCAN_CONFIG_VALID_CHANNEL_COUNT as u32) << 26);
 
         Self {
             flags,
             tx_chains: 0x03,
             rx_chains: 0x03,
             legacy_rates: 0x0fff_0fff,
-            out_of_channel_time: 170,
+            out_of_channel_time: 120,
             suspend_time: 30,
             dwell: ScanDwellV1 {
-                active: 20,
+                active: 10,
                 passive: 110,
-                fragmented: 20,
-                reserved: 0,
+                fragmented: 44,
+                extended: 90,
             },
             mac_addr,
             bcast_sta_id,
             // EBS | ACCURATE_EBS | EBS_ADD | PRE_SCAN_PASSIVE2ACTIVE.
             channel_flags: 0x0f,
-            channel_array: SCAN_CHANNELS,
+            channel_array: SCAN_CONFIG_CHANNELS,
         }
     }
 }

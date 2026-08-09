@@ -91,6 +91,19 @@ fn linux_v49_scan_commands_use_the_aux_station_id() {
 }
 
 #[test]
+fn linux_scan_config_uses_the_7265_firmware_channel_array_size() {
+    let config = ScanConfigV1::new([0x02, 0, 0, 0, 0, 1], 1);
+    let config_bytes = bytes(&config);
+    // The 7265 TLV advertises 40 SCAN_CONFIG channel slots. Linux sends the
+    // full fixed-size array and encodes 39 populated channels in the flags.
+    assert_eq!(size_of::<ScanConfigV1>(), 36 + 40);
+    let flags = u32::from_le_bytes(config_bytes[0..4].try_into().unwrap());
+    assert_eq!(flags >> 26, 39);
+    assert_eq!(&config_bytes[24..28], &[10, 110, 44, 90]);
+    assert_eq!(config_bytes[36 + 39], 0);
+}
+
+#[test]
 fn linux_mcc_update_api_versions_use_the_advertised_wire_layouts() {
     let v1 = MccUpdateCmdV1 {
         mcc: u16::from_be_bytes(*b"ZZ"),

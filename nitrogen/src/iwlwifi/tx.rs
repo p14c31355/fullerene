@@ -997,10 +997,18 @@ impl IwlWifiDevice {
             "iwlwifi: init.config name=scan_config opcode=0x{:02x} group=0x{:02x} channels={} payload={}",
             LegacyCmd::ScanConfig as u8,
             GroupId::Long as u8,
-            SCAN_CHANNEL_COUNT,
+            SCAN_CONFIG_CHANNEL_COUNT,
             scan_cfg_bytes.len(),
         );
-        Ok(())
+        // Linux sends SCAN_CFG_CMD synchronously. Do not expose the device as
+        // scan-ready until the firmware has accepted this configuration;
+        // otherwise its REPLY_ERROR arrives later, mixed with the first scan
+        // request, and the original failure is obscured.
+        self.wait_init_hcmd_response(
+            "SCAN_CONFIG",
+            LegacyCmd::ScanConfig as u8,
+            GroupId::Long as u8,
+        )
     }
 
     /// Existing API-17 runtime command sequence. Kept as a separately named
@@ -1029,6 +1037,7 @@ impl IwlWifiDevice {
                                 x if x == LegacyCmd::MccUpdate as u8 => {
                                     self.send_runtime_scan_config()?;
                                 }
+                                x if x == LegacyCmd::ScanConfig as u8 => {}
                                 _ => return Err(crate::DriverError::Protocol),
                             }
                         }
