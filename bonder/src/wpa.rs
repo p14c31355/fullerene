@@ -631,7 +631,7 @@ fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
 }
 
 /// Compute MIC (Message Integrity Code) for EAPOL-Key frames.
-fn compute_mic(ptk: &[u8; 48], frame: &[u8]) -> [u8; 16] {
+pub fn compute_mic(ptk: &[u8; 48], frame: &[u8]) -> [u8; 16] {
     // The MIC is the first 16 bytes of HMAC-SHA1 using KCK (first 16 bytes of PTK)
     let kck: [u8; 16] = {
         let mut k = [0u8; 16];

@@ -1264,23 +1264,23 @@ impl IwlWifiDevice {
             && matches!(frame[0] & 0xFC, 0x00 | 0xB0 | 0xC0); // assoc, auth, deauth subtypes
         let is_80211_data = frame_type == 2; // Data frame type
 
-        // Data TX needs its own configured data queue and independent ring
-        // accounting. The current WIP driver only owns the HCMD queue, so
-        // never enqueue an 802.11 data frame there (this includes EAPOL and
-        // DHCP). Management-frame transport remains available for scanning
-        // and association bring-up.
+        // Data frames must carry a valid LLC/SNAP header.  EAPOL frames
+        // (ether_type 0x888E) are permitted during the 4-way handshake even
+        // before CCMP keys are installed.  All other data frames require
+        // the protected path to be active.
         if is_80211_data {
-            log::warn!("iwlwifi: rejecting 802.11 data frame: data TX queue is not implemented");
-            return Err(crate::DriverError::NotSupported);
-        }
-
-        // Management frames are allowed before the handshake. If WPA is
-        // enabled, reject any other frame shape rather than silently sending
-        // plaintext through the command queue.
-        if self.wpa_required && !is_80211_management {
-            // Reject frames that are neither management nor data.
-            // This prevents bare IP/UDP payloads from being misclassified
-            // and sent without proper 802.11 encapsulation.
+            if self.wpa_required && !self.wpa_keys_installed {
+                let is_eapol = frame.len() >= 32
+                    && frame[24] == 0xAA
+                    && frame[25] == 0xAA
+                    && frame[26] == 0x03
+                    && frame[30] == 0x88
+                    && frame[31] == 0x8E;
+                if !is_eapol {
+                    return Err(crate::DriverError::NotSupported);
+                }
+            }
+        } else if self.wpa_required && !is_80211_management {
             return Err(crate::DriverError::NotSupported);
         }
 

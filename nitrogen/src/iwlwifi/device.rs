@@ -1753,3 +1753,212 @@ pub fn try_create_iwl(
     IwlWifiDevice::init_from_mmio(ctx, mmio, pci_revision, device)
         .map(|dev| Box::new(dev) as Box<dyn crate::wifi::WifiDriver>)
 }
+
+// ── Test infrastructure ──────────────────────────────────────────
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use super::*;
+    use crate::driver_context::{DriverContext, DriverContextError, PageFlags};
+    use alloc::boxed::Box;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// Heap-backed `DriverContext` for unit tests.  Each DMA allocation is
+    /// backed by a leaked `Box<[u8]>` so the "physical address" is the raw
+    /// heap pointer.  `phys_to_virt` is identity, and `dma_map` returns the
+    /// physical address unchanged.
+    pub struct HeapDriverContext {
+        backing: spin::Mutex<Vec<Box<[u8]>>>,
+    }
+
+    impl HeapDriverContext {
+        pub fn new() -> Self {
+            Self {
+                backing: spin::Mutex::new(Vec::new()),
+            }
+        }
+
+        /// Leak this context to obtain a `&'static` reference.
+        pub fn leaked() -> &'static Self {
+            Box::leak(Box::new(Self::new()))
+        }
+    }
+
+    impl DriverContext for HeapDriverContext {
+        fn phys_to_virt(&self, phys: u64) -> usize {
+            phys as usize
+        }
+
+        fn zero_dma_buffer(&self, _phys: u64, _bytes: usize) {}
+
+        fn allocate_frame(&self) -> Result<u64, DriverContextError> {
+            self.allocate_contiguous_frames(1)
+        }
+
+        fn allocate_contiguous_frames(&self, count: usize) -> Result<u64, DriverContextError> {
+            let size = count * 4096;
+            let buf = vec![0u8; size].into_boxed_slice();
+            let ptr = buf.as_ptr() as u64;
+            self.backing.lock().push(buf);
+            Ok(ptr)
+        }
+
+        fn map_mmio_region(&self, _: usize, _: usize, _: usize) -> Result<(), DriverContextError> {
+            Ok(())
+        }
+
+        fn unmap_mmio_region(&self, _: usize, _: usize, _: usize) {}
+
+        fn map_page(&self, _: usize, _: usize, _: PageFlags) -> Result<(), DriverContextError> {
+            Ok(())
+        }
+
+        fn free_frame(&self, _: u64) {}
+
+        fn free_contiguous_frames(&self, _: u64, _: usize) {}
+
+        fn dma_map(&self, _: u16, phys: u64, _: usize) -> Result<u64, DriverContextError> {
+            Ok(phys)
+        }
+
+        fn dma_unmap(&self, _: u64, _: usize) {}
+    }
+
+    impl IwlWifiDevice {
+        /// Construct a minimal device backed by a fake MMIO buffer and
+        /// heap-allocated DMA regions.  `fw_state` is set to `Ready` so
+        /// `safe_read32` bypasses PCI health checks.
+        pub fn new_for_test(mac: [u8; 6]) -> Self {
+            let ctx = HeapDriverContext::leaked();
+
+            // Fake MMIO: 2048 dwords = 8192 bytes (covers all register offsets).
+            let mmio_vec = vec![0u32; 2048].into_boxed_slice();
+            let mmio = Box::into_raw(mmio_vec) as *mut u32;
+            // Pre-set CSR_GP_CNTRL with MAC_CLOCK_READY so `wake_for_hcmd`
+            // succeeds immediately on the first poll.
+            unsafe {
+                *mmio.add(CSR_GP_CNTRL as usize) = CSR_GP_CNTRL_MAC_CLOCK_READY;
+            }
+
+            let pci_dev = PciDevice {
+                bus: 0,
+                device: 0,
+                function: 0,
+                handle: 0,
+                vendor_id: 0x8086,
+                device_id: 0x095A,
+                class_code: 0x02,
+                subclass: 0x80,
+                prog_if: 0,
+                header_type: 0,
+            };
+            let health = PciHealth::new(&pci_dev);
+
+            // Allocate DMA regions.
+            let mut tx_dma_ring =
+                DmaRegion::alloc(ctx, TX_DMA_ALLOCATION_BYTES).expect("TX ring DMA");
+            tx_dma_ring.dma_map(ctx, 0).expect("TX ring map");
+
+            let rx_ring_size = core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE
+                + core::mem::size_of::<RxDmaStatus>();
+            let mut rx_dma_ring = DmaRegion::alloc(ctx, rx_ring_size).expect("RX ring DMA");
+            rx_dma_ring.dma_map(ctx, 0).expect("RX ring map");
+
+            let mut tx_bufs = Vec::new();
+            for _ in 0..TX_QUEUE_SIZE {
+                let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).expect("TX buf DMA");
+                buf.dma_map(ctx, 0).expect("TX buf map");
+                tx_bufs.push(buf);
+            }
+
+            let mut rx_bufs = Vec::new();
+            let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
+            for i in 0..RX_QUEUE_SIZE {
+                let mut buf = DmaRegion::alloc(ctx, RX_BUFFER_SIZE).expect("RX buf DMA");
+                let dma = buf.dma_map(ctx, 0).expect("RX buf map");
+                unsafe {
+                    (*rx_virt.add(i)).addr = (dma >> 8) as u32;
+                    mmio::cache_flush(rx_virt.add(i) as usize);
+                }
+                rx_bufs.push(buf);
+            }
+
+            Self {
+                mac,
+                _pci_dev: pci_dev,
+                mmio,
+                hw_rev: 0x095A,
+                ctx,
+                health,
+                fw_state: FwState::Ready,
+                fw_build: 0,
+                fw_api_ver: 17,
+                phy_config: 0,
+                phy_sku_tlv_len: None,
+                runtime_calib_flow: 0,
+                runtime_calib_event: 0,
+                phy_db_sections: Vec::new(),
+                init_firmware_completed: true,
+                init_commands_started: true,
+                runtime_commands_started: true,
+                init_nvm_index: 0,
+                init_hw_section: None,
+                init_mac_ready: true,
+                init_response: None,
+                runtime_errlog_ptr: 0,
+                init_errlog_ptr: 0,
+                iwl_state: IwlState::Init,
+                wifi_conn: wifi::WifiConnection::new(),
+                wpa: WpaSupplicant::new(),
+                wpa_required: false,
+                wpa_keys_installed: false,
+                wpa_key_command_end: None,
+                pending_wpa_message4: None,
+                dhcp: None,
+                scan_results: Vec::new(),
+                scan_channel: 0,
+                scan_pending: false,
+                scan_result_grace_ticks: 0,
+                last_rx_phy_channel: 0,
+                tx_queue: VecDeque::new(),
+                rx_queue: VecDeque::new(),
+                tx_dma_ring,
+                rx_dma_ring,
+                tx_head: 0,
+                tx_tail: 0,
+                rx_head: 0,
+                rx_tail: 0,
+                rx_posted: 0,
+                tx_bufs,
+                rx_bufs,
+                ip_address: [0; 4],
+                subnet_mask: [0; 4],
+                gateway: [0; 4],
+                dns_server: [0; 4],
+            }
+        }
+
+        /// Read back the most recent TX frame written to the DMA ring.
+        pub fn last_tx_frame(&self) -> &[u8] {
+            if self.tx_head == 0 {
+                return &[];
+            }
+            let idx = (self.tx_head - 1) % TX_QUEUE_SIZE;
+            let buf = &self.tx_bufs[idx];
+            buf.as_slice()
+        }
+
+        /// Read a TX frame by ring index.
+        pub fn tx_frame_at(&self, index: usize) -> &[u8] {
+            let idx = index % TX_QUEUE_SIZE;
+            self.tx_bufs[idx].as_slice()
+        }
+
+        /// Simulate firmware consuming all queued TX descriptors by advancing
+        /// `tx_tail` to `tx_head`.
+        pub fn drain_tx(&mut self) {
+            self.tx_tail = self.tx_head;
+        }
+    }
+}

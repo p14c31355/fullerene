@@ -50,3 +50,6 @@ pub use device::IwlWifiDevice;
 pub use device::try_create_iwl;
 pub use registers as regs;
 pub use types::WifiManager;
+
+#[cfg(test)]
+mod replay_tests;

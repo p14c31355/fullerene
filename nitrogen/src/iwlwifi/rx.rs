@@ -1065,3 +1065,22 @@ impl IwlWifiDevice {
         self.start_dhcp(0);
     }
 }
+
+// ── Test injection methods ───────────────────────────────────────
+
+#[cfg(test)]
+impl IwlWifiDevice {
+    /// Inject an 802.11 frame directly into the RX processing path, bypassing
+    /// the DMA ring and MMIO.  This simulates a frame received from firmware.
+    pub(super) fn inject_rx_frame(&mut self, frame: &[u8]) {
+        self.process_rx_frame(frame, false);
+    }
+
+    /// Force the deferred WPA key finalisation.  In normal operation this is
+    /// called from `tick()` after the TX ring reports that the key commands
+    /// have been consumed.  In tests, call `drain_tx()` first to advance
+    /// `tx_tail`, then call this method.
+    pub(super) fn finish_wpa_for_test(&mut self) {
+        self.finish_pending_wpa_keys();
+    }
+}
