@@ -87,6 +87,13 @@ pub trait WifiDriver: Send {
     /// Drivers without profile-specific command paths may keep this no-op.
     fn set_firmware_api_profile(&mut self, _api: u32) {}
 
+    /// Reset a failed firmware attempt before trying the next image in the
+    /// selector's preference list. Drivers that cannot safely reset in place
+    /// may keep the default terminal error.
+    fn prepare_firmware_retry(&mut self) -> Result<(), crate::DriverError> {
+        Err(crate::DriverError::NotSupported)
+    }
+
     /// Start the operational image after the INIT image has completed.
     fn start_runtime_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         let _ = fw_data;

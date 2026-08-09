@@ -85,6 +85,8 @@ pub enum GroupId {
 #[repr(u8)]
 pub enum LegacyCmd {
     Echo = 0x03,
+    /// BT_CONFIG_CMD used by the non-unified 7000-series INIT sequence.
+    BtConfig = 0x9b,
     PhyContext = 0x08,
     /// PHY configuration and calibration control used before MAC contexts.
     PhyConfiguration = 0x6a,
@@ -153,6 +155,30 @@ pub struct MccUpdateCmd {
     /// Regulatory domain source (0=old firmware, 5=default).
     pub source_id: u8,
     pub reserved: u8,
+}
+
+/// BT_CONFIG_CMD payload used by the 7000-series INIT image.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct BtCoexConfigCmd {
+    pub mode: u32,
+    pub enabled_modules: u32,
+}
+
+impl BtCoexConfigCmd {
+    pub const BT_COEX_NW: u32 = 1;
+    pub const BT_COEX_MPLUT_ENABLED: u32 = 1 << 1;
+    pub const BT_COEX_SYNC2SCO_ENABLED: u32 = 1 << 2;
+    pub const BT_COEX_HIGH_BAND_RET: u32 = 1 << 4;
+
+    pub const fn network_default() -> Self {
+        Self {
+            mode: Self::BT_COEX_NW,
+            enabled_modules: Self::BT_COEX_MPLUT_ENABLED
+                | Self::BT_COEX_SYNC2SCO_ENABLED
+                | Self::BT_COEX_HIGH_BAND_RET,
+        }
+    }
 }
 
 #[repr(C, packed)]
@@ -1053,4 +1079,21 @@ pub enum IwlError {
     BarNotAvailable,
     ClockNotReady,
     DmaAllocFailed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BtCoexConfigCmd;
+
+    #[test]
+    fn bt_config_network_default_has_upstream_wire_layout() {
+        let command = BtCoexConfigCmd::network_default();
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const BtCoexConfigCmd).cast::<u8>(),
+                core::mem::size_of::<BtCoexConfigCmd>(),
+            )
+        };
+        assert_eq!(bytes, &[1, 0, 0, 0, 0x16, 0, 0, 0]);
+    }
 }

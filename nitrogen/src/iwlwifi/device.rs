@@ -55,6 +55,8 @@ pub struct IwlWifiDevice {
     pub init_firmware_completed: bool,
     /// Incremental INIT-command state retained between scheduler ticks.
     pub init_commands_started: bool,
+    /// API-29 sends BT_CONFIG once before the first NVM_ACCESS command.
+    pub init_bt_config_sent: bool,
     /// True after runtime setup has submitted its first command. This lets a
     /// pending MAC_CONTEXT response resume without replaying setup commands.
     pub runtime_commands_started: bool,
@@ -489,6 +491,7 @@ impl IwlWifiDevice {
             phy_db_sections: Vec::new(),
             init_firmware_completed: false,
             init_commands_started: false,
+            init_bt_config_sent: false,
             runtime_commands_started: false,
             init_nvm_index: 0,
             init_hw_section: None,
@@ -708,6 +711,7 @@ impl IwlWifiDevice {
             phy_db_sections: Vec::new(),
             init_firmware_completed: false,
             init_commands_started: false,
+            init_bt_config_sent: false,
             runtime_commands_started: false,
             init_nvm_index: 0,
             init_hw_section: None,
@@ -760,6 +764,42 @@ impl IwlWifiDevice {
             core::ptr::write_volatile(mmio.add(CSR_RESET as usize), 0);
         }
         crate::timing::delay_us(10_000);
+    }
+
+    /// Put the NIC back at the pre-firmware boundary so the next selected
+    /// image does not inherit a wedged INIT scheduler or stale RX/TX state.
+    pub(super) fn prepare_firmware_retry(&mut self) -> Result<(), crate::DriverError> {
+        self.health
+            .recover()
+            .map_err(|_| crate::DriverError::DeviceNotFound)?;
+        Self::reset_device(self.mmio);
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+            );
+        }
+        mmio::write_barrier();
+        self.fw_state = FwState::NotLoaded;
+        self.init_firmware_completed = false;
+        self.init_commands_started = false;
+        self.init_bt_config_sent = false;
+        self.runtime_commands_started = false;
+        self.init_nvm_index = 0;
+        self.init_hw_section = None;
+        self.init_mac_ready = false;
+        self.init_response = None;
+        self.phy_db_sections.clear();
+        self.phy_config = 0;
+        self.phy_sku_tlv_len = None;
+        self.runtime_calib_flow = 0;
+        self.runtime_calib_event = 0;
+        self.tx_head = 0;
+        self.tx_tail = 0;
+        self.rx_head = 0;
+        self.rx_tail = 0;
+        self.rx_posted = 0;
+        Ok(())
     }
 
     /// Read MAC address from the NVM (non-volatile memory) via CSR registers.
@@ -1726,6 +1766,10 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
         self.selected_fw_api = api;
     }
 
+    fn prepare_firmware_retry(&mut self) -> Result<(), crate::DriverError> {
+        IwlWifiDevice::prepare_firmware_retry(self)
+    }
+
     fn start_runtime_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         IwlWifiDevice::start_runtime_firmware_inner(self, fw_data)
     }
@@ -1911,6 +1955,7 @@ pub(super) mod test_support {
                 phy_db_sections: Vec::new(),
                 init_firmware_completed: true,
                 init_commands_started: true,
+                init_bt_config_sent: true,
                 runtime_commands_started: true,
                 init_nvm_index: 0,
                 init_hw_section: None,

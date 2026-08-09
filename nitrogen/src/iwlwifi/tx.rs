@@ -569,6 +569,7 @@ impl IwlWifiDevice {
                 Err(error)
             }
             None => {
+                self.log_init_hcmd_transport(label, target as usize);
                 log::error!(
                     "iwlwifi: init.hcmd.error name={} stage=consume reason=timeout consumed=false target={} rptr={:#010x} csr_int={:#010x} fh_int={:#010x} head={} tail={}",
                     label,
@@ -582,6 +583,51 @@ impl IwlWifiDevice {
                 Err(crate::DriverError::Busy)
             }
         }
+    }
+
+    /// Capture the transport state that distinguishes a rejected command
+    /// from a descriptor that the FH/SCD never fetched. This is intentionally
+    /// read-only and is emitted only on INIT command-consume timeout.
+    fn log_init_hcmd_transport(&mut self, label: &str, target: usize) {
+        let fifo = SCD_QUEUE_STTS_FIFO_COMMAND;
+        let slot = target.wrapping_sub(1) % TX_QUEUE_SIZE;
+        let desc_ptr = self.tx_dma_ring.virt() as *const TxDmaDesc;
+        let (num_tbs, addr_lo, hi_n_len) = unsafe {
+            let desc = desc_ptr.add(slot);
+            (
+                core::ptr::read_unaligned(core::ptr::addr_of!((*desc).num_tbs)),
+                core::ptr::read_unaligned(core::ptr::addr_of!((*desc).tbs[0].addr_lo)),
+                core::ptr::read_unaligned(core::ptr::addr_of!((*desc).tbs[0].hi_n_len)),
+            )
+        };
+        let mut wire = [0u8; 16];
+        if slot < self.tx_bufs.len() {
+            self.tx_bufs[slot].read_into(&mut wire);
+        }
+        log::error!(
+            "iwlwifi: init.hcmd.transport name={} slot={} target={} wrptr={:#010x} scd_rptr={:#010x} scd_status={:#010x} scd_en={:#010x} scd_gp={:#010x} queuechain={:#010x} fh_cfg={:#010x} fh_credit={:#010x} fh_buf_sts={:#010x} fh_tx_status={:#010x} fh_tx_error={:#010x} tfd_num_tbs={} tfd_addr_lo={:#010x} tfd_hi_n_len={:#06x} wire={}",
+            label,
+            slot,
+            target,
+            self.safe_read32(HBUS_TARG_WRPTR).unwrap_or(!0),
+            self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0),
+            self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0),
+            self.read_prph(SCD_EN_CTRL).unwrap_or(!0),
+            self.read_prph(SCD_GP_CTRL).unwrap_or(!0),
+            self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(!0),
+            self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + fifo * (0x20 / 4))
+                .unwrap_or(!0),
+            self.safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + fifo * (0x20 / 4))
+                .unwrap_or(!0),
+            self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + fifo * (0x20 / 4))
+                .unwrap_or(!0),
+            self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
+            self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
+            num_tbs,
+            addr_lo,
+            hi_n_len,
+            HexBytes(&wire),
+        );
     }
 
     /// Wait for the firmware response to a synchronous runtime setup command.
@@ -672,6 +718,26 @@ impl IwlWifiDevice {
             self.init_hw_section = None;
             self.init_mac_ready = false;
             self.init_response = None;
+        }
+
+        if api29 && !self.init_bt_config_sent {
+            let bt_config = BtCoexConfigCmd::network_default();
+            let bt_config_bytes = unsafe { super::as_bytes(&bt_config) };
+            self.send_init_hcmd(
+                "BT_CONFIG_INIT_API29",
+                LegacyCmd::BtConfig as u8,
+                GroupId::Legacy as u8,
+                bt_config_bytes,
+            )?;
+            self.init_bt_config_sent = true;
+            log::info!(
+                "iwlwifi: init.api29.config name=bt_config mode={} modules={:#x}",
+                BtCoexConfigCmd::BT_COEX_NW,
+                BtCoexConfigCmd::BT_COEX_MPLUT_ENABLED
+                    | BtCoexConfigCmd::BT_COEX_SYNC2SCO_ENABLED
+                    | BtCoexConfigCmd::BT_COEX_HIGH_BAND_RET,
+            );
+            return Err(crate::DriverError::Pending);
         }
 
         if let Some((opcode, group, deadline_tsc)) = self.init_response {

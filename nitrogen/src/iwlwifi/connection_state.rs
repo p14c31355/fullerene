@@ -845,6 +845,7 @@ fn perform_init_step() {
                 phy_db_sections: Vec::new(),
                 init_firmware_completed: false,
                 init_commands_started: false,
+                init_bt_config_sent: false,
                 runtime_commands_started: false,
                 init_nvm_index: 0,
                 init_hw_section: None,
@@ -1058,7 +1059,35 @@ fn perform_init_step() {
                         "iwlwifi: init.phase.error name=fw_init_cmds id=7 error={}",
                         e
                     );
-                    set_init_phase(WifiInitPhase::Failed);
+                    let retry = {
+                        let mut ctx = WIFI_INIT_CTX.lock();
+                        ctx.fw_candidate_idx += 1;
+                        if ctx.fw_candidate_idx < ctx.fw_candidates.len() {
+                            ctx.mmio_device
+                                .as_mut()
+                                .map(|dev| dev.prepare_firmware_retry())
+                        } else {
+                            None
+                        }
+                    };
+                    match retry {
+                        Some(Ok(())) => {
+                            let candidate = WIFI_INIT_CTX.lock().fw_candidate_idx;
+                            log::warn!(
+                                "iwlwifi: INIT candidate failed; retrying firmware candidate index={}",
+                                candidate,
+                            );
+                            set_init_phase(WifiInitPhase::FwUpload);
+                        }
+                        Some(Err(error)) => {
+                            log::error!(
+                                "iwlwifi: cannot reset device for next firmware candidate: {}",
+                                error
+                            );
+                            set_init_phase(WifiInitPhase::Failed);
+                        }
+                        None => set_init_phase(WifiInitPhase::Failed),
+                    }
                 }
             }
         }
