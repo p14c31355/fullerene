@@ -127,7 +127,7 @@ impl IwlWifiDevice {
                     GroupId::Legacy as u8,
                     &payload,
                 )?;
-                log::info!(
+                log::debug!(
                     "iwlwifi: runtime.phy_db section={} bytes={}",
                     section_type,
                     data.len(),
@@ -415,10 +415,10 @@ impl IwlWifiDevice {
         mmio::write_barrier();
         let tfd_dma =
             self.tx_dma_ring.dma_iova() + (desc_idx * core::mem::size_of::<TxDmaDesc>()) as u64;
-        let tfd_num_tbs = desc.num_tbs;
-        let tfd_tb_addr_lo =
+        let _tfd_num_tbs = desc.num_tbs;
+        let _tfd_tb_addr_lo =
             unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].addr_lo)) };
-        let tfd_tb_hi_n_len =
+        let _tfd_tb_hi_n_len =
             unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].hi_n_len)) };
         unsafe {
             core::ptr::write_volatile(
@@ -427,23 +427,20 @@ impl IwlWifiDevice {
             );
         }
         mmio::write_barrier();
-        log::info!(
-            "iwlwifi: hcmd.submit q={} slot={} opcode=0x{:02x} group=0x{:02x} header={} payload={} total={} buf_dma={:#018x} tfd_dma={:#018x} tfd_num_tbs={} tfd_tb_addr_lo={:#010x} tfd_tb_hi_n_len={:#06x} wrptr={}",
-            IWL_CMD_QUEUE,
-            desc_idx,
-            opcode,
-            group,
-            header_len,
-            data.len(),
-            total_len,
-            dma_addr,
-            tfd_dma,
-            tfd_num_tbs,
-            tfd_tb_addr_lo,
-            tfd_tb_hi_n_len,
-            self.tx_head & 0xff,
-        );
         if opcode == LegacyCmd::ScanRequest as u8 {
+            log::info!(
+                "iwlwifi: scan hcmd.submit q={} slot={} opcode=0x{:02x} group=0x{:02x} header={} payload={} total={} buf_dma={:#018x} tfd_dma={:#018x} wrptr={}",
+                IWL_CMD_QUEUE,
+                desc_idx,
+                opcode,
+                group,
+                header_len,
+                data.len(),
+                total_len,
+                dma_addr,
+                tfd_dma,
+                self.tx_head & 0xff,
+            );
             let fifo = SCD_QUEUE_STTS_FIFO_COMMAND;
             log::info!(
                 "iwlwifi: scan hcmd wire prefix={} fifo={} cfg={:#010x} credit={:#010x} buf_sts={:#010x}",
@@ -455,6 +452,18 @@ impl IwlWifiDevice {
                     .unwrap_or(!0),
                 self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + fifo * (0x20 / 4))
                     .unwrap_or(!0),
+            );
+        } else {
+            log::debug!(
+                "iwlwifi: hcmd.submit q={} slot={} opcode=0x{:02x} group=0x{:02x} header={} payload={} total={} wrptr={}",
+                IWL_CMD_QUEUE,
+                desc_idx,
+                opcode,
+                group,
+                header_len,
+                data.len(),
+                total_len,
+                self.tx_head & 0xff,
             );
         }
         self.release_mac_access();
@@ -473,7 +482,7 @@ impl IwlWifiDevice {
         group: u8,
         data: &[u8],
     ) -> Result<(), crate::DriverError> {
-        log::info!(
+        log::debug!(
             "iwlwifi: init.hcmd.begin name={} opcode=0x{:02x} group=0x{:02x} payload={} head={} tail={} used={}",
             label,
             opcode,
@@ -514,7 +523,7 @@ impl IwlWifiDevice {
         match consumed {
             Some(Ok(())) => {
                 self.release_mac_access();
-                log::info!(
+                log::debug!(
                     "iwlwifi: init.hcmd.ok name={} target={} rptr={} head={} tail={}",
                     label,
                     target,
@@ -674,7 +683,7 @@ impl IwlWifiDevice {
                             u16::from_le_bytes([response[2], response[3]]) as usize;
                         let response_type = u16::from_le_bytes([response[4], response[5]]);
                         let status = u16::from_le_bytes([response[6], response[7]]);
-                        log::info!(
+                        log::debug!(
                             "iwlwifi: nvm.response section={} offset={} length={} type={} status={}",
                             section,
                             response_offset,
@@ -693,7 +702,7 @@ impl IwlWifiDevice {
                                 );
                                 return Err(crate::DriverError::Protocol);
                             }
-                            log::info!(
+                            log::debug!(
                                 "iwlwifi: nvm.section section={} unavailable status={} offset={} type={}",
                                 section,
                                 status,
@@ -704,7 +713,7 @@ impl IwlWifiDevice {
                             let available = response.len().saturating_sub(8);
                             let returned = core::cmp::min(response_length, available);
                             let data = response[8..8 + returned].to_vec();
-                            log::info!(
+                            log::debug!(
                                 "iwlwifi: nvm.section section={} bytes={}",
                                 section,
                                 data.len(),
@@ -1037,33 +1046,6 @@ impl IwlWifiDevice {
             (1u32 << 2) | (1u32 << 6),
             core::mem::size_of::<MacContextCmd>(),
         );
-
-        // MCC_UPDATE_CMD: the 7265 firmware supports LAR (Location Aware
-        // Regulatory).  Without an applied MCC, the firmware disables all
-        // 5 GHz channels and scans return only 2.4 GHz results.  Send "ZZ"
-        // to switch to the NVM-stored default regulatory profile before
-        // any scan request.  Linux does this in iwl_mvm_init_fw_regd() and
-        // refuses to scan (iwl_mvm_reg_scan_start) until lar_regdom_set is
-        // true.  MCC_UPDATE_CMD (0xc8) is in LEGACY_GROUP (0x0) and uses
-        // the 4-byte header.
-        let mcc_cmd = MccUpdateCmd::nvm_default();
-        let mcc_cmd_bytes = unsafe { super::as_bytes(&mcc_cmd) };
-        self.send_init_hcmd(
-            "MCC_UPDATE",
-            LegacyCmd::MccUpdate as u8,
-            GroupId::Legacy as u8,
-            mcc_cmd_bytes,
-        )?;
-        log::info!(
-            "iwlwifi: init.config name=mcc_update mcc=ZZ source=old_fw payload={}",
-            mcc_cmd_bytes.len(),
-        );
-        self.wait_init_hcmd_response(
-            "MCC_UPDATE",
-            LegacyCmd::MccUpdate as u8,
-            GroupId::Legacy as u8,
-        )?;
-        log::info!("iwlwifi: init.config name=mcc_update status=accepted");
 
         // SCAN_CFG_CMD is an optional UMAC-scan setup command.  The 7265
         // API-v17 path used here is the LMAC scan path, and forcing the UMAC

@@ -94,6 +94,10 @@ pub struct IwlWifiDevice {
     /// Late RX buffers may contain beacons after the firmware's completion
     /// notification.  Keep accepting scan frames until this reaches zero.
     pub scan_result_grace_ticks: u32,
+    /// Channel from the last REPLY_RX_PHY_CMD.  5 GHz beacons lack a DS
+    /// Parameter Set IE, so the channel can only be determined from this
+    /// PHY metadata.
+    pub last_rx_phy_channel: u16,
 
     /// TX/RX queues.
     pub tx_queue: VecDeque<Vec<u8>>,
@@ -500,6 +504,7 @@ impl IwlWifiDevice {
             scan_channel: 0,
             scan_pending: false,
             scan_result_grace_ticks: 0,
+            last_rx_phy_channel: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -717,6 +722,7 @@ impl IwlWifiDevice {
             scan_channel: 0,
             scan_pending: false,
             scan_result_grace_ticks: 0,
+            last_rx_phy_channel: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,

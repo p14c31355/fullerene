@@ -40,7 +40,7 @@ impl IwlWifiDevice {
         }
         self.phy_db_sections
             .push((section_type, payload[4..4 + length].to_vec()));
-        log::info!(
+        log::debug!(
             "iwlwifi: init.phy_db section={} bytes={}",
             section_type,
             length,
@@ -189,7 +189,7 @@ impl IwlWifiDevice {
                     {
                         self.record_alive_notification(payload);
                     }
-                    log::info!(
+                    log::debug!(
                         "iwlwifi: init.rx.packet opcode=0x{:02x} group=0x{:02x} len={} payload_len={} payload_preview={} expected_opcode=0x{:02x} expected_group=0x{:02x}",
                         packet[4],
                         packet[5],
@@ -252,7 +252,7 @@ impl IwlWifiDevice {
             return Err(crate::DriverError::Protocol);
         }
         if let Some(payload) = matched {
-            log::info!(
+            log::debug!(
                 "iwlwifi: init.rx.match opcode=0x{:02x} group=0x{:02x} payload={}",
                 opcode,
                 group,
@@ -978,9 +978,17 @@ impl IwlWifiDevice {
         }
 
         // REPLY_RX_PHY_CMD (0xc0) precedes every REPLY_RX_MPDU_CMD.  It
-        // carries PHY metadata (RSSI, noise, rate) and has no 802.11 frame.
-        // Skip it silently — the actual beacon follows in the next packet.
+        // carries PHY metadata (RSSI, noise, rate, channel) and has no
+        // 802.11 frame.  Store the channel for the subsequent MPDU — 5 GHz
+        // beacons lack a DS Parameter Set IE so the channel can only be
+        // obtained from this metadata.
         if command == REPLY_RX_PHY_CMD {
+            let payload = &data[8..packet_len];
+            // iwl_rx_phy_info: channel is at byte offset 12 (le16).
+            if payload.len() >= 14 {
+                let channel = u16::from_le_bytes([payload[12], payload[13]]);
+                self.last_rx_phy_channel = channel;
+            }
             return;
         }
 

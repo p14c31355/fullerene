@@ -122,10 +122,6 @@ pub enum LegacyCmd {
     ScanCompleteUrgent = 0x6d,
     /// LMAC scan iteration completion notification.
     ScanOffloadCompleteNotif = 0xe7,
-    /// MCC update command (LAR regulatory domain).  Linux 4.14 defines
-    /// MCC_UPDATE_CMD as opcode 0xc8 in LEGACY_GROUP (0x0).  The firmware
-    /// refuses to scan 5 GHz channels until an MCC is applied.
-    MccUpdate = 0xc8,
 }
 
 /// ADD_STA_KEY command payload used by the 7000-series firmware API.
@@ -228,39 +224,6 @@ pub struct PhyConfigurationCmd {
     pub phy_config: u32,
     pub calib_flow_trigger: u32,
     pub calib_event_trigger: u32,
-}
-
-/// MCC_UPDATE_CMD payload (LAR_UPDATE_MCC_CMD_API_S_VER_2).
-///
-/// Sent in the Long group (0x1) with the 8-byte wide header.  The firmware
-/// uses this to set its internal regulatory domain; without it, 5 GHz
-/// channels are disabled and the scan returns only 2.4 GHz results.
-/// `mcc` = "ZZ" with `MCC_SOURCE_OLD_FW` tells the firmware to switch to
-/// the NVM-stored default profile.
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
-pub struct MccUpdateCmd {
-    pub mcc: u16,
-    pub source_id: u8,
-    pub reserved: u8,
-    pub key: u32,
-    pub reserved2: [u8; 20],
-}
-
-impl MccUpdateCmd {
-    /// Request the NVM default regulatory profile.  The firmware responds
-    /// with the actual MCC and channel list, but we only need the side
-    /// effect of enabling 5 GHz channels.
-    pub fn nvm_default() -> Self {
-        // "ZZ" in little-endian ASCII = 0x5A5A
-        Self {
-            mcc: 0x5A5A,
-            source_id: 0, // MCC_SOURCE_OLD_FW
-            reserved: 0,
-            key: 0,
-            reserved2: [0; 20],
-        }
-    }
 }
 
 /// SCD_QUEUE_CFG_CMD_API_S_VER_1, used by the legacy non-DQA scheduler.

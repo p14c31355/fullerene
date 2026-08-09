@@ -855,6 +855,7 @@ fn perform_init_step() {
                 scan_channel: 1,
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
+                last_rx_phy_channel: 0,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
                 tx_dma_ring: tx_dma,
@@ -1642,10 +1643,16 @@ impl IwlWifiDevice {
             }
 
             let security = wifi::security_from_beacon(beacon.capability, beacon.rsn.as_ref());
+            // 5 GHz beacons lack a DS Parameter Set IE; fall back to the
+            // channel recorded by the preceding REPLY_RX_PHY_CMD.
+            let channel = beacon
+                .ds_channel
+                .map(|ch| ch as u16)
+                .unwrap_or(self.last_rx_phy_channel);
             let ap = AccessPoint {
                 ssid,
                 bssid: beacon.header.addr2,
-                channel: beacon.ds_channel.unwrap_or(0),
+                channel: channel as u8,
                 rssi: -50,
                 security,
                 beacon_interval: beacon.beacon_interval,
