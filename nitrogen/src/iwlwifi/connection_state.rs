@@ -35,6 +35,7 @@ static WIFI_INIT_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
 static WIFI_INIT_LAST_ACTIVE_PHASE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
+static WIFI_RUNTIME_PHASE_LOGGED: AtomicBool = AtomicBool::new(false);
 // Hints are drawn from the scheduler context only. set_init_phase() is also
 // used by the NMI watchdog failure path, where taking the debug callback lock
 // could deadlock.
@@ -302,6 +303,7 @@ pub fn retry_wifi_initialization() -> bool {
         WifiInitPhase::Idle as u8,
         core::sync::atomic::Ordering::Release,
     );
+    WIFI_RUNTIME_PHASE_LOGGED.store(false, Ordering::Release);
     WIFI_INIT_COMPLETED.store(false, core::sync::atomic::Ordering::Release);
     set_init_phase(WifiInitPhase::Idle);
     log::info!("iwlwifi: retrying initialization after a previous failure");
@@ -1146,7 +1148,13 @@ fn perform_init_step() {
             }
         }
         WifiInitPhase::FwRuntimeCmds => {
-            log::info!("iwlwifi: init.phase.begin name=fw_runtime_cmds id=10");
+            // Runtime command setup is resumable: a command response may be
+            // polled over many scheduler ticks.  Emit the phase banner only
+            // for the initial submission, otherwise a missing response hides
+            // the useful diagnostics in a repeated banner stream.
+            if !WIFI_RUNTIME_PHASE_LOGGED.swap(true, Ordering::AcqRel) {
+                log::info!("iwlwifi: init.phase.begin name=fw_runtime_cmds id=10");
+            }
             let bdf_info = {
                 let ctx = WIFI_INIT_CTX.lock();
                 pci_bdf_from_ctx(&ctx)

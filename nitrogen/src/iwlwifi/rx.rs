@@ -4,12 +4,27 @@ use alloc::vec::Vec;
 use bonder::dhcp::DhcpMessageType;
 use bonder::wifi::{self, Ssid};
 use bonder::wpa::WpaState;
+use core::fmt;
 
 use crate::mmio;
 
 use super::device::IwlWifiDevice;
 use super::registers::*;
 use super::types::*;
+
+struct RxHexBytes<'a>(&'a [u8]);
+
+impl fmt::Display for RxHexBytes<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, byte) in self.0.iter().enumerate() {
+            if index != 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
 
 impl IwlWifiDevice {
     fn save_phy_db_notification(&mut self, payload: &[u8]) {
@@ -46,6 +61,62 @@ impl IwlWifiDevice {
     ) -> Result<Option<Vec<u8>>, crate::DriverError> {
         const FRAME_ALIGN: usize = 64;
         let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+
+        // CSR_INT is sticky on this generation.  A firmware assertion can
+        // therefore stop the command scheduler while the TX descriptor still
+        // advances normally.  Do this check before the deadline check so a
+        // rejected command is reported as SW_ERR/HW_ERR, rather than as a
+        // misleading missing response after the full timeout.
+        let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
+        if csr_int == !0 {
+            log::error!(
+                "iwlwifi: init.rx.error device_gone opcode=0x{:02x} group=0x{:02x}",
+                opcode,
+                group,
+            );
+            return Err(crate::DriverError::DeviceNotFound);
+        }
+        let mut firmware_error = false;
+        if csr_int & (CSR_INT_BIT_SW_ERR | CSR_INT_BIT_HW_ERR) != 0 {
+            let gp1 = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
+            let gp_driver = self.safe_read32(CSR_GP_DRIVER).unwrap_or(!0);
+            let reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
+            let gp_cntrl = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
+            let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
+            let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
+            log::error!(
+                "iwlwifi: init.rx.error firmware_failure opcode=0x{:02x} group=0x{:02x} CSR_INT={:#010x} FH_INT={:#010x} UCODE_GP1={:#010x} GP_DRIVER={:#010x} RESET={:#010x} GP_CNTRL={:#010x} SCD_RDPTR={:#010x}",
+                opcode,
+                group,
+                csr_int,
+                fh_int,
+                gp1,
+                gp_driver,
+                reset,
+                gp_cntrl,
+                rptr,
+            );
+            self.log_firmware_error_table("init.rx.firmware_failure");
+            self.fw_state = FwState::Error;
+            // Continue draining the current RBD below.  Some firmware builds
+            // emit REPLY_ERROR together with SW_ERR; returning here would
+            // discard that command-specific reason.
+            firmware_error = true;
+        }
+
+        let gp1 = self.safe_read32(CSR_UCODE_GP1).unwrap_or(0);
+        if gp1 & CSR_UCODE_GP1_BIT_CMD_BLOCKED != 0 {
+            log::error!(
+                "iwlwifi: init.rx.error command_blocked opcode=0x{:02x} group=0x{:02x} UCODE_GP1={:#010x} CSR_INT={:#010x}",
+                opcode,
+                group,
+                gp1,
+                csr_int,
+            );
+            self.log_firmware_error_table("init.rx.command_blocked");
+            firmware_error = true;
+        }
+
         if now_tsc.wrapping_sub(deadline_tsc) < (1u64 << 63) {
             let status = self.rx_status();
             let closed_rb =
@@ -71,7 +142,12 @@ impl IwlWifiDevice {
                 self.safe_read32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG)
                     .unwrap_or(!0),
             );
-            return Err(crate::DriverError::TimedOut);
+            self.log_firmware_error_table("init.rx.timeout");
+            return Err(if firmware_error {
+                crate::DriverError::Protocol
+            } else {
+                crate::DriverError::TimedOut
+            });
         }
 
         self.health
@@ -106,11 +182,15 @@ impl IwlWifiDevice {
                         break;
                     }
                     let packet = &frame[offset..offset + packet_len];
+                    let payload = &packet[8..];
+                    let payload_preview = &payload[..core::cmp::min(payload.len(), 32)];
                     log::info!(
-                        "iwlwifi: init.rx.packet opcode=0x{:02x} group=0x{:02x} len={} expected_opcode=0x{:02x} expected_group=0x{:02x}",
+                        "iwlwifi: init.rx.packet opcode=0x{:02x} group=0x{:02x} len={} payload_len={} payload_preview={} expected_opcode=0x{:02x} expected_group=0x{:02x}",
                         packet[4],
                         packet[5],
                         packet_len,
+                        payload.len(),
+                        RxHexBytes(payload_preview),
                         opcode,
                         group,
                     );
@@ -120,12 +200,31 @@ impl IwlWifiDevice {
                         self.save_phy_db_notification(&packet[8..]);
                     }
                     if packet[4] == opcode && packet[5] == group {
-                        matched = Some(packet[8..].to_vec());
+                        matched = Some(payload.to_vec());
                     } else if packet[4] == LegacyCmd::ReplyError as u8 {
+                        let error_type = payload
+                            .get(0..4)
+                            .and_then(|bytes| bytes.try_into().ok())
+                            .map(u32::from_le_bytes);
+                        let bad_cmd = payload.get(4).copied();
+                        let bad_seq = payload
+                            .get(6..8)
+                            .and_then(|bytes| bytes.try_into().ok())
+                            .map(u16::from_le_bytes);
+                        let service = payload
+                            .get(8..12)
+                            .and_then(|bytes| bytes.try_into().ok())
+                            .map(u32::from_le_bytes);
                         log::warn!(
-                            "iwlwifi: INIT firmware command error while waiting for opcode=0x{:02x} group=0x{:02x}",
+                            "iwlwifi: INIT firmware command error while waiting for opcode=0x{:02x} group=0x{:02x} error_type={:?} bad_cmd={:?} bad_seq={:?} service={:?} payload_len={} payload={}",
                             opcode,
                             group,
+                            error_type,
+                            bad_cmd,
+                            bad_seq,
+                            service,
+                            payload.len(),
+                            RxHexBytes(payload_preview),
                         );
                         return Err(crate::DriverError::Protocol);
                     }
@@ -139,6 +238,9 @@ impl IwlWifiDevice {
         }
 
         self.restock_rx_buffers(processed);
+        if firmware_error {
+            return Err(crate::DriverError::Protocol);
+        }
         if let Some(payload) = matched {
             log::info!(
                 "iwlwifi: init.rx.match opcode=0x{:02x} group=0x{:02x} payload={}",
