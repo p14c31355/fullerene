@@ -1001,9 +1001,9 @@ impl IwlWifiDevice {
         // obtained from this metadata.
         if command == REPLY_RX_PHY_CMD {
             let payload = &data[8..packet_len];
-            // iwl_rx_phy_info: channel is at byte offset 12 (le16).
-            if payload.len() >= 14 {
-                let channel = u16::from_le_bytes([payload[12], payload[13]]);
+            // iwl_rx_phy_info: channel is at byte offset 22 (le16).
+            if payload.len() >= 24 {
+                let channel = u16::from_le_bytes([payload[22], payload[23]]);
                 self.last_rx_phy_channel = channel;
             }
             return;
@@ -1097,6 +1097,12 @@ impl IwlWifiDevice {
     /// Use this for data frames received after WPA keys are installed.
     pub(super) fn inject_rx_frame_decrypted(&mut self, frame: &[u8]) {
         self.process_rx_frame(frame, true);
+    }
+
+    /// Inject a raw firmware notification directly into packet processing.
+    pub(super) fn inject_rx_notification(&mut self, notification: &[u8]) {
+        let mut deferred_scan_complete = false;
+        self.process_single_packet(notification, &mut deferred_scan_complete);
     }
 
     /// Force the deferred WPA key finalisation.  In normal operation this is

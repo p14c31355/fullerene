@@ -454,6 +454,31 @@ fn fiveghz_beacon_uses_phy_channel() {
     assert_eq!(dev.scan_results[0].channel, 36); // from last_rx_phy_channel
 }
 
+#[test]
+fn rx_phy_notification_reads_channel_from_protocol_offset() {
+    let mut dev = IwlWifiDevice::new_for_test(CLIENT_MAC);
+    let mut notification = vec![0u8; 24 + 8];
+    notification[4] = 0xc0; // REPLY_RX_PHY_CMD
+    notification[20] = 0xAA;
+    notification[21] = 0xBB;
+    notification[30..32].copy_from_slice(&36u16.to_le_bytes());
+    dev.inject_rx_notification(&notification);
+
+    assert_eq!(dev.last_rx_phy_channel, 36);
+}
+
+#[test]
+fn qos_eapol_frame_uses_qos_header_length() {
+    let mut dev = IwlWifiDevice::new_for_test(CLIENT_MAC);
+    dev.wpa_required = true;
+
+    let mut frame = vec![0u8; 26];
+    frame[0] = 0x88; // QoS data frame
+    frame.extend_from_slice(&[0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E]);
+
+    assert!(dev.send_raw_80211_frame(&frame).is_ok());
+}
+
 // ── DHCP frame builders ─────────────────────────────────────────
 
 /// Build a raw DHCP packet (240-byte header + options) for a BOOTREPLY.

@@ -714,6 +714,7 @@ impl IwlWifiDevice {
             self.init_tx_cmd_queue();
             self.init_rx_dma();
             self.init_commands_started = true;
+            self.init_bt_config_sent = false;
             self.init_nvm_index = 0;
             self.init_hw_section = None;
             self.init_mac_ready = false;
@@ -1465,12 +1466,14 @@ impl IwlWifiDevice {
         // the protected path to be active.
         if is_80211_data {
             if self.wpa_required && !self.wpa_keys_installed {
-                let is_eapol = frame.len() >= 32
-                    && frame[24] == 0xAA
-                    && frame[25] == 0xAA
-                    && frame[26] == 0x03
-                    && frame[30] == 0x88
-                    && frame[31] == 0x8E;
+                let subtype = (frame_control >> 4) & 0x0F;
+                let header_len = if subtype & 0x08 != 0 { 26 } else { 24 };
+                let is_eapol = frame.len() >= header_len + 8
+                    && frame[header_len] == 0xAA
+                    && frame[header_len + 1] == 0xAA
+                    && frame[header_len + 2] == 0x03
+                    && frame[header_len + 6] == 0x88
+                    && frame[header_len + 7] == 0x8E;
                 if !is_eapol {
                     return Err(crate::DriverError::NotSupported);
                 }

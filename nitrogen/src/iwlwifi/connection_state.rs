@@ -1734,10 +1734,11 @@ impl IwlWifiDevice {
                 .ds_channel
                 .map(|ch| ch as u16)
                 .unwrap_or(self.last_rx_phy_channel);
+            let channel = u8::try_from(channel).unwrap_or(0);
             let ap = AccessPoint {
                 ssid,
                 bssid: beacon.header.addr2,
-                channel: channel as u8,
+                channel,
                 rssi: -50,
                 security,
                 beacon_interval: beacon.beacon_interval,
