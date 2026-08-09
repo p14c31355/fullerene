@@ -644,7 +644,16 @@ impl IwlWifiDevice {
     /// Command responses are polled on later ticks.  In particular, do not
     /// spin here: a missing INIT response must not monopolize the driver
     /// scheduler while the PCI health monitor is unable to run.
-    pub fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
+    /// Shared non-unified INIT sequence for the 7000-series firmware.
+    ///
+    /// API-17 keeps the historical order. API-29 uses the same NVM wire
+    /// format, but upstream sends the valid TX antenna mask before PHY
+    /// calibration; the `api29` flag expresses that protocol distinction
+    /// without changing the existing API-17 path.
+    pub(super) fn send_init_firmware_commands_profile(
+        &mut self,
+        api29: bool,
+    ) -> Result<(), crate::DriverError> {
         const NVM_SECTIONS: [u16; 8] = [0, 1, 3, 4, 5, 8, 11, 12];
         const NVM_OFFSET: u16 = 0;
         const NVM_LENGTH: u16 = 2048;
@@ -805,6 +814,23 @@ impl IwlWifiDevice {
             );
             return Err(crate::DriverError::Protocol);
         }
+        if api29 {
+            // Linux's non-unified 7000-series path sends TX antenna
+            // configuration before triggering INIT PHY calibration. Keep
+            // this in the API-29 branch; the established API-17 sequence is
+            // intentionally left byte-for-byte ordered as before.
+            let ant_cfg: [u8; 4] = [0x03, 0, 0, 0];
+            self.send_init_hcmd(
+                "TX_ANT_CONFIG_INIT_API29",
+                LegacyCmd::TxAntConfig as u8,
+                GroupId::Legacy as u8,
+                &ant_cfg,
+            )?;
+            log::info!(
+                "iwlwifi: init.api29.config name=tx_antenna mask=0x{:02x}",
+                ant_cfg[0]
+            );
+        }
         let phy_config = PhyConfigurationCmd {
             phy_config: self.phy_config,
             calib_flow_trigger: self.runtime_calib_flow,
@@ -826,7 +852,11 @@ impl IwlWifiDevice {
         Err(crate::DriverError::Pending)
     }
 
-    pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
+    /// Existing API-17 runtime command sequence. Kept as a separately named
+    /// entry point so the API-29 dispatcher cannot accidentally fall through
+    /// firmware selection while the 7000-series legacy wire format
+    /// remains shared.
+    pub(super) fn send_init_commands_legacy(&mut self) -> Result<(), crate::DriverError> {
         if self.runtime_commands_started {
             match self.init_response {
                 Some((opcode, group, deadline_tsc)) => {
@@ -1125,6 +1155,52 @@ impl IwlWifiDevice {
         self.fw_state = FwState::Ready;
         log::info!("iwlwifi: init.commands.result status=operational");
         Ok(())
+    }
+
+    /// Dispatch INIT commands by the parsed firmware API.
+    pub fn send_init_firmware_commands(&mut self) -> Result<(), crate::DriverError> {
+        let parsed_api29 = (IWL_FW_API29_MIN..=IWL_FW_API29_MAX).contains(&self.fw_api_ver);
+        if self.selected_fw_api == IWL_FW_API29_MAX {
+            if !parsed_api29 {
+                log::error!(
+                    "iwlwifi: firmware profile mismatch selected_api=29 parsed_api={}",
+                    self.fw_api_ver
+                );
+                return Err(crate::DriverError::Protocol);
+            }
+            return super::api29::send_init_firmware_commands(self);
+        }
+        if parsed_api29 {
+            log::error!(
+                "iwlwifi: API-29 firmware cannot enter API-17 command path selected_api={}",
+                self.selected_fw_api
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+        self.send_init_firmware_commands_profile(false)
+    }
+
+    /// Dispatch runtime commands by the parsed firmware API.
+    pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
+        let parsed_api29 = (IWL_FW_API29_MIN..=IWL_FW_API29_MAX).contains(&self.fw_api_ver);
+        if self.selected_fw_api == IWL_FW_API29_MAX {
+            if !parsed_api29 {
+                log::error!(
+                    "iwlwifi: firmware profile mismatch selected_api=29 parsed_api={}",
+                    self.fw_api_ver
+                );
+                return Err(crate::DriverError::Protocol);
+            }
+            return super::api29::send_runtime_commands(self);
+        }
+        if parsed_api29 {
+            log::error!(
+                "iwlwifi: API-29 firmware cannot enter API-17 runtime path selected_api={}",
+                self.selected_fw_api
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+        self.send_init_commands_legacy()
     }
 
     /// Send a complete IPv4 packet in an 802.11 data frame with LLC/SNAP.

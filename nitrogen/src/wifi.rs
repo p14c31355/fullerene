@@ -83,6 +83,10 @@ pub trait WifiDriver: Send {
     /// Used by the step-based init to avoid blocking the render loop.
     fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError>;
 
+    /// Record the firmware command profile chosen by PCI/revision matching.
+    /// Drivers without profile-specific command paths may keep this no-op.
+    fn set_firmware_api_profile(&mut self, _api: u32) {}
+
     /// Start the operational image after the INIT image has completed.
     fn start_runtime_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         let _ = fw_data;

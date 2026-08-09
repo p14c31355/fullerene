@@ -14,6 +14,7 @@
 //! - [`rx`] — Receive-ring and interrupt processing
 //! - [`connection_state`] — 802.11 state and high-level public API
 
+mod api29;
 mod connection_state;
 mod device;
 mod firmware;

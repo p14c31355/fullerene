@@ -837,6 +837,7 @@ fn perform_init_step() {
                 fw_state: FwState::NotLoaded,
                 fw_build: 0,
                 fw_api_ver: IWL_FW_API_VER,
+                selected_fw_api: IWL_FW_API_VER,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
@@ -889,7 +890,7 @@ fn perform_init_step() {
             set_init_phase(WifiInitPhase::FwUpload);
         }
         WifiInitPhase::FwUpload => {
-            let (fw_data, fw_name, bdf_info) = {
+            let (fw_data, fw_name, fw_api_profile, bdf_info) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let _dev = match ctx.mmio_device.as_mut() {
                     Some(d) => d,
@@ -905,12 +906,17 @@ fn perform_init_step() {
                 }
                 let fw = &ctx.fw_candidates[ctx.fw_candidate_idx];
                 let bdf = pci_bdf_from_ctx(&ctx);
-                (fw.data, fw.name, bdf)
+                let fw_api_profile = match fw.profile {
+                    FirmwareProfile::Api17 => IWL_FW_API_VER,
+                    FirmwareProfile::Api29 => IWL_FW_API29_MAX,
+                };
+                (fw.data, fw.name, fw_api_profile, bdf)
             };
             log::info!(
-                "iwlwifi: step: trying firmware {} ({} bytes)",
+                "iwlwifi: step: trying firmware {} ({} bytes) selected_api={}",
                 fw_name,
-                fw_data.len()
+                fw_data.len(),
+                fw_api_profile
             );
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
@@ -925,6 +931,7 @@ fn perform_init_step() {
                         return;
                     }
                 };
+                dev.set_firmware_api_profile(fw_api_profile);
                 dev.start_firmware(fw_data)
             };
             mmio::disarm_mmio_watchdog();
@@ -1056,18 +1063,23 @@ fn perform_init_step() {
             }
         }
         WifiInitPhase::FwRuntimeUpload => {
-            let (fw_data, fw_name, bdf_info) = {
+            let (fw_data, fw_name, fw_api_profile, bdf_info) = {
                 let ctx = WIFI_INIT_CTX.lock();
                 if ctx.fw_candidate_idx >= ctx.fw_candidates.len() {
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
                 let fw = &ctx.fw_candidates[ctx.fw_candidate_idx];
-                (fw.data, fw.name, pci_bdf_from_ctx(&ctx))
+                let fw_api_profile = match fw.profile {
+                    FirmwareProfile::Api17 => IWL_FW_API_VER,
+                    FirmwareProfile::Api29 => IWL_FW_API29_MAX,
+                };
+                (fw.data, fw.name, fw_api_profile, pci_bdf_from_ctx(&ctx))
             };
             log::info!(
-                "iwlwifi: step: switching from INIT to runtime firmware {}",
-                fw_name
+                "iwlwifi: step: switching from INIT to runtime firmware {} selected_api={}",
+                fw_name,
+                fw_api_profile
             );
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
@@ -1082,6 +1094,7 @@ fn perform_init_step() {
                         return;
                     }
                 };
+                dev.set_firmware_api_profile(fw_api_profile);
                 dev.start_runtime_firmware(fw_data)
             };
             mmio::disarm_mmio_watchdog();
@@ -1280,12 +1293,18 @@ pub fn try_init_wifi_device() {
     let mut fw_loaded = false;
     for fw in candidates {
         log::info!(
-            "iwlwifi: trying firmware {} ({} bytes)",
+            "iwlwifi: trying firmware {} ({} bytes) profile={:?}",
             fw.name,
-            fw.data.len()
+            fw.data.len(),
+            fw.profile
         );
         debug::print("iwlwifi", "load_firmware_start");
 
+        let fw_api_profile = match fw.profile {
+            FirmwareProfile::Api17 => IWL_FW_API_VER,
+            FirmwareProfile::Api29 => IWL_FW_API29_MAX,
+        };
+        probe.driver.set_firmware_api_profile(fw_api_profile);
         match probe.driver.load_firmware(fw.data) {
             Ok(()) => {
                 log::info!("iwlwifi: firmware {} loaded successfully", fw.name);

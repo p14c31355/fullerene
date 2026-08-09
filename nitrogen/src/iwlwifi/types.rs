@@ -75,7 +75,11 @@ pub struct FwHeader {
 pub enum GroupId {
     Legacy = 0x0,
     Long = 0x1,
+    System = 0x2,
     Phy = 0x4,
+    DataPath = 0x5,
+    Scan = 0x6,
+    RegulatoryAndNvm = 0xc,
 }
 
 #[repr(u8)]
@@ -1004,9 +1008,20 @@ impl From<u8> for WifiInitPhase {
 
 // ── Firmware blob registry ────────
 
+/// Host-command implementation selected for a firmware image.
+///
+/// The PCI IDs alone are not enough for the 7265 family: 7265D uses the
+/// API-29 firmware line while the older 7265/7260 path remains API-17.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirmwareProfile {
+    Api17,
+    Api29,
+}
+
 pub struct FirmwareBlob {
     pub data: &'static [u8],
     pub name: &'static str,
+    pub profile: FirmwareProfile,
 }
 
 // ── Incremental init context ──────

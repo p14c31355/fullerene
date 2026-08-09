@@ -43,6 +43,9 @@ pub struct IwlWifiDevice {
     pub fw_state: FwState,
     pub fw_build: u32,
     pub fw_api_ver: u32,
+    /// API profile selected from PCI/revision matching. The parsed image API
+    /// must agree with this before HCMD dispatch.
+    pub selected_fw_api: u32,
     pub phy_config: u32,
     pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
@@ -478,6 +481,7 @@ impl IwlWifiDevice {
             fw_state: FwState::NotLoaded,
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
+            selected_fw_api: IWL_FW_API_VER,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -696,6 +700,7 @@ impl IwlWifiDevice {
             fw_state: FwState::NotLoaded,
             fw_build: 0,
             fw_api_ver: IWL_FW_API_VER,
+            selected_fw_api: IWL_FW_API_VER,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -1717,6 +1722,10 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
         IwlWifiDevice::start_firmware(self, fw_data)
     }
 
+    fn set_firmware_api_profile(&mut self, api: u32) {
+        self.selected_fw_api = api;
+    }
+
     fn start_runtime_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         IwlWifiDevice::start_runtime_firmware_inner(self, fw_data)
     }
@@ -1894,6 +1903,7 @@ pub(super) mod test_support {
                 fw_state: FwState::Ready,
                 fw_build: 0,
                 fw_api_ver: 17,
+                selected_fw_api: 17,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,

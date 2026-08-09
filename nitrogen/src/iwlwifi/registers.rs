@@ -219,6 +219,10 @@ pub const APMG_PCIDEV_STT_L1_ACT_DIS: u32 = 0x0000_0800;
 // ── Firmware constants ─────────────
 
 pub const IWL_FW_API_VER: u32 = 17;
+/// API range supported by the 7265D firmware family. Linux advertises
+/// 22..=29 for this device; the captured machine loaded API 29.
+pub const IWL_FW_API29_MIN: u32 = 22;
+pub const IWL_FW_API29_MAX: u32 = 29;
 pub const IWL_FW_MAX_SECTIONS: usize = 32;
 
 /// TX queue configuration.
