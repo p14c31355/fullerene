@@ -92,7 +92,7 @@ pub enum LegacyCmd {
     PhyConfiguration = 0x6a,
     /// Legacy LMAC scan configuration.  Sent as SCAN_CFG_CMD in the
     /// LONG_GROUP (IWL_ALWAYS_LONG_GROUP = 1).
-    ScanConfig = 0x10,
+    ScanConfig = 0x0c,
     /// MCC_UPDATE_CMD — sets the regulatory domain for LAR firmware.
     MccUpdate = 0xc8,
     AddStaKey = 0x17,
@@ -618,6 +618,7 @@ impl ScanConfigV1 {
             | (1 << 3)
             | (1 << 8)
             | (1 << 9)
+            | (1 << 10)
             | (1 << 11)
             | (1 << 13)
             | (1 << 14)

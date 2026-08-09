@@ -918,6 +918,49 @@ impl IwlWifiDevice {
         Err(crate::DriverError::Pending)
     }
 
+    /// Send the regulatory and LMAC scan configuration after MAC_CONTEXT has
+    /// been accepted. These commands must remain after the asynchronous
+    /// MAC_CONTEXT response, but before the device is exposed as scan-ready.
+    fn send_runtime_scan_setup(&mut self) -> Result<(), crate::DriverError> {
+        const AUX_STA_ID: u8 = 1;
+
+        // MCC_UPDATE_CMD: 7265D firmware API 17 supports LAR (Location-Aware
+        // Regulatory). Without setting the regulatory domain, the firmware
+        // silently refuses to scan.
+        let mcc = MccUpdateCmd {
+            mcc: u16::from_be_bytes(*b"ZZ"),
+            source_id: 5,
+            reserved: 0,
+        };
+        let mcc_bytes = unsafe { super::as_bytes(&mcc) };
+        self.send_init_hcmd(
+            "MCC_UPDATE",
+            LegacyCmd::MccUpdate as u8,
+            GroupId::Legacy as u8,
+            mcc_bytes,
+        )?;
+        log::info!("iwlwifi: init.config name=mcc_update country=ZZ source=default");
+
+        // SCAN_CFG_CMD configures the LMAC scan engine with channel lists,
+        // rates, and dwell times. It is a long-group command with opcode 0x0c.
+        let scan_cfg = ScanConfigV1::new(self.mac, AUX_STA_ID);
+        let scan_cfg_bytes = unsafe { super::as_bytes(&scan_cfg) };
+        self.send_init_hcmd(
+            "SCAN_CONFIG",
+            LegacyCmd::ScanConfig as u8,
+            GroupId::Long as u8,
+            scan_cfg_bytes,
+        )?;
+        log::info!(
+            "iwlwifi: init.config name=scan_config opcode=0x{:02x} group=0x{:02x} channels={} payload={}",
+            LegacyCmd::ScanConfig as u8,
+            GroupId::Long as u8,
+            SCAN_CHANNEL_COUNT,
+            scan_cfg_bytes.len(),
+        );
+        Ok(())
+    }
+
     /// Existing API-17 runtime command sequence. Kept as a separately named
     /// entry point so the API-29 dispatcher cannot accidentally fall through
     /// firmware selection while the 7000-series legacy wire format
@@ -936,6 +979,7 @@ impl IwlWifiDevice {
                                 group,
                                 payload.len(),
                             );
+                            self.send_runtime_scan_setup()?;
                         }
                     }
                 }
@@ -1131,6 +1175,7 @@ impl IwlWifiDevice {
             LegacyCmd::MacContext as u8,
             GroupId::Legacy as u8,
         )?;
+        self.send_runtime_scan_setup()?;
         log::info!(
             "iwlwifi: init.config name=mac_context status=accepted mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} filter=0x{:08x} payload={}",
             self.mac[0],
@@ -1141,44 +1186,6 @@ impl IwlWifiDevice {
             self.mac[5],
             (1u32 << 2) | (1u32 << 6),
             core::mem::size_of::<MacContextCmd>(),
-        );
-
-        // MCC_UPDATE_CMD: 7265D firmware API 17 supports LAR (Location-Aware
-        // Regulatory).  Without setting the regulatory domain, the firmware
-        // silently refuses to scan — the scan command is accepted but no RX
-        // data is ever delivered.  "ZZ" is the worldwide default that allows
-        // scanning on all channels.
-        let mcc = MccUpdateCmd {
-            mcc: u16::from_be_bytes(*b"ZZ"),
-            source_id: 5, // MCC_SOURCE_DEFAULT
-            reserved: 0,
-        };
-        let mcc_bytes = unsafe { super::as_bytes(&mcc) };
-        self.send_init_hcmd(
-            "MCC_UPDATE",
-            LegacyCmd::MccUpdate as u8,
-            GroupId::Legacy as u8,
-            mcc_bytes,
-        )?;
-        log::info!("iwlwifi: init.config name=mcc_update country=ZZ source=default");
-
-        // SCAN_CFG_CMD configures the LMAC scan engine with channel lists,
-        // rates, and dwell times.  Without this, the firmware does not have
-        // a scan configuration and silently ignores scan requests.
-        // SCAN_CFG_CMD = 0x10 in LONG_GROUP (1), so it uses the 8-byte wide
-        // header.
-        let scan_cfg = ScanConfigV1::new(self.mac, AUX_STA_ID);
-        let scan_cfg_bytes = unsafe { super::as_bytes(&scan_cfg) };
-        self.send_init_hcmd(
-            "SCAN_CONFIG",
-            LegacyCmd::ScanConfig as u8,
-            GroupId::Long as u8,
-            scan_cfg_bytes,
-        )?;
-        log::info!(
-            "iwlwifi: init.config name=scan_config channels={} payload={}",
-            SCAN_CHANNEL_COUNT,
-            scan_cfg_bytes.len(),
         );
 
         let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);

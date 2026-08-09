@@ -104,7 +104,7 @@ impl IwlWifiDevice {
 mod tests {
     use super::{select_firmware_list, select_firmware_list_api17_legacy};
     use crate::iwlwifi::registers::CSR_HW_REV_TYPE_7265D;
-    use crate::iwlwifi::types::FirmwareProfile;
+    use crate::iwlwifi::types::{FirmwareProfile, LegacyCmd};
 
     #[test]
     fn selects_7260_firmware_in_preference_order() {
@@ -159,6 +159,11 @@ mod tests {
                 .iter()
                 .all(|fw| fw.profile != FirmwareProfile::Api17)
         );
+    }
+
+    #[test]
+    fn scan_config_uses_upstream_long_group_opcode() {
+        assert_eq!(LegacyCmd::ScanConfig as u8, 0x0c);
     }
 
     #[test]
