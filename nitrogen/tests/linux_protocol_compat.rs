@@ -13,7 +13,8 @@ use nitrogen::iwlwifi::registers::{
     TX_TFD_RING_BYTES,
 };
 use nitrogen::iwlwifi::types::{
-    AddStaCmdV7, MacContextCmd, ScanConfigV1, ScanRequestCmd, ScdTxqCfgCmdV1,
+    AddStaCmdV7, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanChannelCfgLmac, ScanConfigV1,
+    ScanRequestCmd, ScdTxqCfgCmdV1,
 };
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
@@ -64,6 +65,21 @@ fn linux_v49_scan_commands_use_the_aux_station_id() {
 
     let request = ScanRequestCmd::new(mac, 1);
     let request_bytes = bytes(&request);
+    let channels_offset = offset_of!(ScanRequestCmd, channels);
+    let probe_offset = offset_of!(ScanRequestCmd, probe_req);
+    // Linux allocates one channel slot for each value in the firmware TLV
+    // (40 on the 7265), then fills only the requested 23 channels. The probe
+    // request therefore follows all 40 slots, including a zero tail.
+    assert_eq!(
+        probe_offset - channels_offset,
+        40 * size_of::<ScanChannelCfgLmac>()
+    );
+    assert_eq!(size_of::<ScanRequestCmd>(), 1772);
+    assert!(
+        request_bytes[channels_offset + 23 * size_of::<ScanChannelCfgLmac>()..probe_offset]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
     // The two Linux LMAC scan TX command entries are both bound to sta_id 1.
     assert_eq!(request_bytes[40], 1);
     assert_eq!(request_bytes[52], 1);
@@ -87,6 +103,40 @@ fn linux_v49_scan_commands_use_the_aux_station_id() {
         &[1, 8, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]
     );
     assert_eq!(&probe[16 + 42..16 + 48], &[50, 4, 0xb0, 0x48, 0x60, 0x6c]);
+}
+
+#[test]
+fn linux_scan_config_uses_the_7265_firmware_channel_array_size() {
+    let config = ScanConfigV1::new([0x02, 0, 0, 0, 0, 1], 1);
+    let config_bytes = bytes(&config);
+    // The 7265 TLV advertises 40 SCAN_CONFIG channel slots. Linux sends the
+    // full fixed-size array and encodes 39 populated channels in the flags.
+    assert_eq!(size_of::<ScanConfigV1>(), 36 + 40);
+    let flags = u32::from_le_bytes(config_bytes[0..4].try_into().unwrap());
+    assert_eq!(flags >> 26, 39);
+    assert_eq!(&config_bytes[24..28], &[10, 110, 44, 90]);
+    assert_eq!(config_bytes[36 + 39], 0);
+}
+
+#[test]
+fn linux_mcc_update_api_versions_use_the_advertised_wire_layouts() {
+    let v1 = MccUpdateCmdV1 {
+        mcc: u16::from_be_bytes(*b"ZZ"),
+        source_id: 0,
+        reserved: 0,
+    };
+    assert_eq!(bytes(&v1), &[0x5a, 0x5a, 0, 0]);
+
+    let v2 = MccUpdateCmdV2 {
+        mcc: u16::from_be_bytes(*b"ZZ"),
+        source_id: 0,
+        reserved: 0,
+        key: 0,
+        reserved2: [0; 20],
+    };
+    assert_eq!(size_of::<MccUpdateCmdV2>(), 28);
+    assert_eq!(&bytes(&v2)[..4], &[0x5a, 0x5a, 0, 0]);
+    assert!(bytes(&v2)[4..].iter().all(|byte| *byte == 0));
 }
 
 #[test]

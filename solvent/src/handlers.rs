@@ -136,6 +136,29 @@ impl EventHandler for WmEventHandler {
         }
 
         match event {
+            Event::Input(InputEvent::KeyDown(key)) if rt.desktop.network_menu_open => {
+                let handled = match key {
+                    KeyCode::Up => rt.desktop.move_network_selection(-1),
+                    KeyCode::Down => rt.desktop.move_network_selection(1),
+                    KeyCode::Enter => {
+                        let (fw, fh, _) = *FB_DIMS.lock();
+                        let handled = rt.desktop.activate_network_selection(fw, fh);
+                        if handled && let Some(action) = rt.desktop.menu_action_pending.take() {
+                            crate::menu_actions::dispatch_menu_action(rt, &action);
+                        }
+                        handled
+                    }
+                    KeyCode::Escape => {
+                        rt.desktop.dismiss_network_menu();
+                        true
+                    }
+                    _ => false,
+                };
+                if handled {
+                    rt.frame_due = true;
+                }
+                handled
+            }
             Event::Input(InputEvent::MouseMove { x, y }) => {
                 apply_mouse_move(
                     &mut rt.desktop,
@@ -329,9 +352,12 @@ impl EventHandler for WmEventHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::apply_mouse_move;
-    use crate::FB_DIMS;
+    use super::{WmEventHandler, apply_mouse_move};
+    use crate::{FB_DIMS, NETWORK_SNAPSHOT, RUNTIME_CONTEXT, WIFI_ACTION_QUEUE, WifiAction};
+    use alloc::string::String;
     use lattice::desktop::Desktop;
+    use lattice::network_menu::{ApDisplay, NetStatus};
+    use resonance::{Event, EventHandler, InputEvent, KeyCode};
 
     struct FbDimsGuard((u32, u32, u32));
 
@@ -388,6 +414,39 @@ mod tests {
         );
 
         assert_eq!((desktop.cursor.x, desktop.cursor.y), (1023, 0));
+    }
+
+    #[test]
+    fn network_menu_enter_dispatches_connection_action() {
+        crate::init();
+        let ap = ApDisplay {
+            ssid: String::from("TestAP"),
+            signal_bars: 3,
+            has_lock: false,
+            connected: false,
+        };
+        *NETWORK_SNAPSHOT.lock() = crate::NetworkSnapshot {
+            aps: alloc::vec![ap.clone()],
+            status: NetStatus::Disconnected,
+        };
+        WIFI_ACTION_QUEUE.lock().clear();
+        {
+            let mut runtime = RUNTIME_CONTEXT.runtime();
+            let runtime = runtime.as_mut().expect("runtime initialized");
+            runtime.desktop.ap_list = alloc::vec![ap];
+            runtime.desktop.network_menu_open = true;
+            runtime.desktop.net_selected_idx = Some(0);
+        }
+
+        let mut handler = WmEventHandler;
+        assert!(handler.handle(&Event::Input(InputEvent::KeyDown(KeyCode::Enter))));
+
+        let mut actions = WIFI_ACTION_QUEUE.lock();
+        let action = actions.pop().expect("Enter should queue a Wi-Fi action");
+        match action {
+            WifiAction::Connect(ssid, None) => assert_eq!(ssid.as_str(), "TestAP"),
+            WifiAction::Connect(_, Some(_)) => panic!("open AP unexpectedly requested a password"),
+        }
     }
 }
 

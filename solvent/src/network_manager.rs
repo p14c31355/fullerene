@@ -238,11 +238,7 @@ pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopActio
             true
         }
         DesktopAction::DismissPasswordDialog => {
-            rt.desktop.pwd_dialog_open = false;
-            rt.desktop.pwd_target_ap = None;
-            rt.desktop.pwd_dialog_password.clear();
-            rt.desktop.pwd_dialog_cursor = 0;
-            rt.desktop.shift_held = false;
+            rt.desktop.dismiss_password_dialog();
             rt.desktop.dismiss_network_menu();
             rt.frame_due = true;
             true
@@ -257,11 +253,7 @@ pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopActio
                     .lock()
                     .push(crate::WifiAction::Connect(ssid, Some(password)));
             }
-            rt.desktop.pwd_dialog_open = false;
-            rt.desktop.pwd_target_ap = None;
-            rt.desktop.pwd_dialog_password.clear();
-            rt.desktop.pwd_dialog_cursor = 0;
-            rt.desktop.shift_held = false;
+            rt.desktop.dismiss_password_dialog();
             rt.desktop.dismiss_network_menu();
             rt.frame_due = true;
             true

@@ -923,29 +923,76 @@ impl IwlWifiDevice {
     /// firmware response before submitting SCAN_CONFIG. Linux treats MCC as a
     /// synchronous command; descriptor consumption alone is not sufficient.
     fn send_runtime_mcc(&mut self) -> Result<(), crate::DriverError> {
-        let mcc = MccUpdateCmd {
-            mcc: u16::from_be_bytes(*b"ZZ"),
-            source_id: 0,
-            reserved: 0,
+        // Linux checks the firmware LAR capability before sending this
+        // command. A non-LAR firmware must proceed directly to scan setup;
+        // waiting for an MCC response from it can only end in a timeout.
+        if !self.fw_lar_supported {
+            log::info!(
+                "iwlwifi: init.config name=mcc_update status=skipped reason=lar_unsupported"
+            );
+            return Ok(());
+        }
+
+        let mcc = u16::from_be_bytes(*b"ZZ");
+        let (wire_version, payload_len) = if self.fw_lar_v2 {
+            let command = MccUpdateCmdV2 {
+                mcc,
+                source_id: 0,
+                reserved: 0,
+                key: 0,
+                reserved2: [0; 20],
+            };
+            let bytes = unsafe { super::as_bytes(&command) };
+            self.send_init_hcmd(
+                "MCC_UPDATE",
+                LegacyCmd::MccUpdate as u8,
+                GroupId::Legacy as u8,
+                bytes,
+            )?;
+            (2, bytes.len())
+        } else {
+            let command = MccUpdateCmdV1 {
+                mcc,
+                source_id: 0,
+                reserved: 0,
+            };
+            let bytes = unsafe { super::as_bytes(&command) };
+            self.send_init_hcmd(
+                "MCC_UPDATE",
+                LegacyCmd::MccUpdate as u8,
+                GroupId::Legacy as u8,
+                bytes,
+            )?;
+            (1, bytes.len())
         };
-        let mcc_bytes = unsafe { super::as_bytes(&mcc) };
-        self.send_init_hcmd(
-            "MCC_UPDATE",
-            LegacyCmd::MccUpdate as u8,
-            GroupId::Legacy as u8,
-            mcc_bytes,
-        )?;
-        log::info!("iwlwifi: init.config name=mcc_update country=ZZ source=old_fw");
+        log::info!(
+            "iwlwifi: init.config name=mcc_update country=ZZ source=old_fw lar_wire_version={} payload={}",
+            wire_version,
+            payload_len,
+        );
+        // MCC_UPDATE_CMD is listed in Linux's always-long response table even
+        // though the request uses the legacy command group. RX matching also
+        // accepts the legacy namespace for older 7000-series firmware.
         self.wait_init_hcmd_response(
             "MCC_UPDATE",
             LegacyCmd::MccUpdate as u8,
-            GroupId::Legacy as u8,
+            GroupId::Long as u8,
         )
     }
 
     /// Send the LMAC scan configuration after MCC_UPDATE completed.
     fn send_runtime_scan_config(&mut self) -> Result<(), crate::DriverError> {
         const AUX_STA_ID: u8 = 1;
+        // Linux only sends SCAN_CFG_CMD when the firmware advertises UMAC
+        // scan support. The 7265D-27/29 images expose LMAC scan only, so
+        // their SCAN_OFFLOAD_REQUEST_CMD already carries the channel list
+        // and this command must be omitted.
+        if !self.fw_umac_scan_supported {
+            log::info!(
+                "iwlwifi: init.config name=scan_config status=skipped reason=umac_scan_unsupported"
+            );
+            return Ok(());
+        }
         // SCAN_CFG_CMD configures the LMAC scan engine with channel lists,
         // rates, and dwell times. It is a long-group command with opcode 0x0c.
         let scan_cfg = ScanConfigV1::new(self.mac, AUX_STA_ID);
@@ -960,10 +1007,18 @@ impl IwlWifiDevice {
             "iwlwifi: init.config name=scan_config opcode=0x{:02x} group=0x{:02x} channels={} payload={}",
             LegacyCmd::ScanConfig as u8,
             GroupId::Long as u8,
-            SCAN_CHANNEL_COUNT,
+            SCAN_CONFIG_CHANNEL_COUNT,
             scan_cfg_bytes.len(),
         );
-        Ok(())
+        // Linux sends SCAN_CFG_CMD synchronously. Do not expose the device as
+        // scan-ready until the firmware has accepted this configuration;
+        // otherwise its REPLY_ERROR arrives later, mixed with the first scan
+        // request, and the original failure is obscured.
+        self.wait_init_hcmd_response(
+            "SCAN_CONFIG",
+            LegacyCmd::ScanConfig as u8,
+            GroupId::Long as u8,
+        )
     }
 
     /// Existing API-17 runtime command sequence. Kept as a separately named
@@ -992,6 +1047,7 @@ impl IwlWifiDevice {
                                 x if x == LegacyCmd::MccUpdate as u8 => {
                                     self.send_runtime_scan_config()?;
                                 }
+                                x if x == LegacyCmd::ScanConfig as u8 => {}
                                 _ => return Err(crate::DriverError::Protocol),
                             }
                         }

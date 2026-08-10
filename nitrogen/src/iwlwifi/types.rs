@@ -147,14 +147,25 @@ pub struct AddStaKeyCmd {
     pub rx_security_seq: [u8; 16],
 }
 
-/// MCC_UPDATE_CMD payload — sets the regulatory country code for LAR.
+/// MCC_UPDATE_CMD API v1 payload — sets the regulatory country code for LAR.
 #[repr(C, packed)]
-pub struct MccUpdateCmd {
+pub struct MccUpdateCmdV1 {
     /// ISO 3166 country code in ASCII, e.g. b"US" = 0x5553, b"ZZ" = 0x5A5A.
     pub mcc: u16,
     /// Regulatory domain source (0=MCC_SOURCE_OLD_FW).
     pub source_id: u8,
     pub reserved: u8,
+}
+
+/// MCC_UPDATE_CMD API v2 payload used when the firmware advertises
+/// `IWL_UCODE_TLV_CAPA_LAR_SUPPORT_V2`.
+#[repr(C, packed)]
+pub struct MccUpdateCmdV2 {
+    pub mcc: u16,
+    pub source_id: u8,
+    pub reserved: u8,
+    pub key: u32,
+    pub reserved2: [u8; 20],
 }
 
 /// BT_CONFIG_CMD payload used by the 7000-series INIT image.
@@ -554,6 +565,11 @@ impl AddStaCmdV7 {
 // ── Scan command structures ────────
 
 pub const SCAN_CHANNEL_COUNT: usize = 23;
+/// 7265 firmware advertises a 40-entry SCAN_CONFIG channel array. Linux
+/// allocates this many entries even though this minimal driver currently
+/// enables 39 standard channels and leaves the final entry zeroed.
+pub const SCAN_CONFIG_CHANNEL_COUNT: usize = 40;
+const SCAN_CONFIG_VALID_CHANNEL_COUNT: usize = 39;
 const SCAN_DIRECT_SSID_COUNT: usize = 20;
 const SCAN_SSID_MAX_LEN: usize = 32;
 const SCAN_PROBE_BUFFER_SIZE: usize = 512;
@@ -578,6 +594,10 @@ const SCAN_RATE_6M_OFDM: u32 = 13 | SCAN_RATE_ANT_A;
 const SCAN_CHANNELS: [u8; SCAN_CHANNEL_COUNT] = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 149, 153, 157, 161, 165,
 ];
+const SCAN_CONFIG_CHANNELS: [u8; SCAN_CONFIG_CHANNEL_COUNT] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108,
+    112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165, 0,
+];
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -585,7 +605,7 @@ pub struct ScanDwellV1 {
     pub active: u8,
     pub passive: u8,
     pub fragmented: u8,
-    pub reserved: u8,
+    pub extended: u8,
 }
 
 /// SCAN_CFG_CMD API v1 payload used by the 7265 firmware.
@@ -606,14 +626,14 @@ pub struct ScanConfigV1 {
     pub mac_addr: [u8; 6],
     pub bcast_sta_id: u8,
     pub channel_flags: u8,
-    pub channel_array: [u8; SCAN_CHANNEL_COUNT],
+    pub channel_array: [u8; SCAN_CONFIG_CHANNEL_COUNT],
 }
 
 impl ScanConfigV1 {
     pub fn new(mac_addr: [u8; 6], bcast_sta_id: u8) -> Self {
-        // This is the API-v1 SCAN_CONFIG_DB_CMD flag set.  In particular,
-        // SET_AUX_STA_ID and CLEAR_FRAGMENTED are not part of the firmware's
-        // initial scan configuration command; their bits are reserved here.
+        // This is the API-v1 SCAN_CONFIG_DB_CMD flag set used by Linux:
+        // activate the engine, select the auxiliary station, populate the
+        // timing/rate/address fields, and explicitly clear fragmented mode.
         let flags = (1 << 0)
             | (1 << 3)
             | (1 << 8)
@@ -624,26 +644,26 @@ impl ScanConfigV1 {
             | (1 << 14)
             | (1 << 15)
             | (1 << 17)
-            | ((SCAN_CHANNEL_COUNT as u32) << 26);
+            | ((SCAN_CONFIG_VALID_CHANNEL_COUNT as u32) << 26);
 
         Self {
             flags,
             tx_chains: 0x03,
             rx_chains: 0x03,
             legacy_rates: 0x0fff_0fff,
-            out_of_channel_time: 170,
+            out_of_channel_time: 120,
             suspend_time: 30,
             dwell: ScanDwellV1 {
-                active: 20,
+                active: 10,
                 passive: 110,
-                fragmented: 20,
-                reserved: 0,
+                fragmented: 44,
+                extended: 90,
             },
             mac_addr,
             bcast_sta_id,
             // EBS | ACCURATE_EBS | EBS_ADD | PRE_SCAN_PASSIVE2ACTIVE.
             channel_flags: 0x0f,
-            channel_array: SCAN_CHANNELS,
+            channel_array: SCAN_CONFIG_CHANNELS,
         }
     }
 }
@@ -727,23 +747,30 @@ pub struct ScanRequestCmd {
     pub delay: u32,
     pub schedule: [ScanScheduleLmac; 2],
     pub channel_opt: [ScanChannelOpt; 2],
-    pub channels: [ScanChannelCfgLmac; SCAN_CHANNEL_COUNT],
+    // Linux places the probe request after the firmware-advertised channel
+    // array, not immediately after the channels used by this scan. The 7265
+    // firmware advertises 40 LMAC slots; unused slots must remain zero.
+    pub channels: [ScanChannelCfgLmac; SCAN_CONFIG_CHANNEL_COUNT],
     pub probe_req: ScanProbeReqV1,
 }
 
 impl ScanRequestCmd {
     pub fn new(mac: [u8; 6], aux_sta_id: u8) -> Self {
         let mut channels = [ScanChannelCfgLmac {
-            // Each entry is explicitly supplied by this request.  The
-            // legacy LMAC API marks that form as PARTIAL; FULL is reserved
-            // for a firmware-managed channel plan.
-            flags: 1 << 28,
+            // Linux kzalloc() leaves the firmware-reserved tail zeroed. It
+            // fills only the first n_channels entries below.
+            flags: 0,
             channel_num: 0,
-            iter_count: 1,
+            iter_count: 0,
             iter_interval: 0,
-        }; SCAN_CHANNEL_COUNT];
+        }; SCAN_CONFIG_CHANNEL_COUNT];
         for (channel, number) in channels.iter_mut().zip(SCAN_CHANNELS) {
+            // Each entry supplied by this request is marked PARTIAL; FULL is
+            // reserved for a firmware-managed channel plan.
+            channel.flags = 1 << 28;
             channel.channel_num = number as u16;
+            channel.iter_count = 1;
+            channel.iter_interval = 0;
         }
 
         // The legacy firmware accepts a wildcard SSID-only probe, but some
@@ -1085,7 +1112,7 @@ pub enum IwlError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BtCoexConfigCmd, MccUpdateCmd, ScanConfigV1};
+    use super::{BtCoexConfigCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanConfigV1};
 
     #[test]
     fn bt_config_network_default_has_upstream_wire_layout() {
@@ -1115,17 +1142,42 @@ mod tests {
 
     #[test]
     fn mcc_initial_source_uses_upstream_old_fw_id() {
-        let command = MccUpdateCmd {
+        let command = MccUpdateCmdV1 {
             mcc: u16::from_be_bytes(*b"ZZ"),
             source_id: 0,
             reserved: 0,
         };
         let bytes = unsafe {
             core::slice::from_raw_parts(
-                (&command as *const MccUpdateCmd).cast::<u8>(),
-                core::mem::size_of::<MccUpdateCmd>(),
+                (&command as *const MccUpdateCmdV1).cast::<u8>(),
+                core::mem::size_of::<MccUpdateCmdV1>(),
             )
         };
         assert_eq!(bytes, &[0x5a, 0x5a, 0, 0]);
+    }
+
+    #[test]
+    fn mcc_api_v2_payload_has_linux_wire_size_and_zero_reserved_fields() {
+        let command = MccUpdateCmdV2 {
+            mcc: u16::from_be_bytes(*b"ZZ"),
+            source_id: 0,
+            reserved: 0,
+            key: 0,
+            reserved2: [0; 20],
+        };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const MccUpdateCmdV2).cast::<u8>(),
+                core::mem::size_of::<MccUpdateCmdV2>(),
+            )
+        };
+        assert_eq!(core::mem::size_of::<MccUpdateCmdV2>(), 28);
+        assert_eq!(
+            bytes,
+            &[
+                0x5a, 0x5a, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0
+            ]
+        );
     }
 }

@@ -419,7 +419,7 @@ impl Compositor {
                     scene.net_menu_y,
                     scene.net_aps,
                     scene.net_status,
-                    None,
+                    scene.net_selected_idx,
                 );
                 inc_draw_calls();
             }

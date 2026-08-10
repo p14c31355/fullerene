@@ -331,7 +331,7 @@ pub fn render_network_menu(
     menu_y: u32,
     aps: &[ApDisplay],
     status: &NetStatus,
-    _hover_idx: Option<usize>,
+    selected_idx: Option<usize>,
 ) {
     let fw = fb_width as usize;
 
@@ -507,6 +507,26 @@ pub fn render_network_menu(
         // Skip if off screen
         if item_y + NET_MENU_ITEM_HEIGHT > fb_height {
             break;
+        }
+
+        // Keyboard-selected row. Keep the border and text readable while
+        // preserving the same row geometry used by mouse hit-testing.
+        if selected_idx == Some(i) {
+            for row in 1..NET_MENU_ITEM_HEIGHT - 1 {
+                let py = item_y + row;
+                if py >= fb_height {
+                    continue;
+                }
+                for col in 1..NET_MENU_WIDTH - 1 {
+                    let px = menu_x + col;
+                    if px < fb_width {
+                        let idx = (py as usize) * fw + px as usize;
+                        if idx < fb.len() {
+                            fb[idx] = NET_MENU_HOVER;
+                        }
+                    }
+                }
+            }
         }
 
         // Signal bars

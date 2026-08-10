@@ -95,6 +95,7 @@ pub struct Scene<'a> {
     pub net_menu_y: u32,
     pub net_aps: &'a [crate::network_menu::ApDisplay],
     pub net_status: &'a NetStatus,
+    pub net_selected_idx: Option<usize>,
 
     // ── Password dialog ─────────────────────────────
     pub pwd_dialog_open: bool,
@@ -132,6 +133,7 @@ impl<'a> Scene<'a> {
             net_menu_y: 0,
             net_aps: &[],
             net_status: &NetStatus::NoDevice,
+            net_selected_idx: None,
             pwd_dialog_open: false,
             pwd_dialog_x: 0,
             pwd_dialog_y: 0,
@@ -162,6 +164,7 @@ impl<'a> Scene<'a> {
             net_menu_y: 0,
             net_aps: &[],
             net_status: &NetStatus::NoDevice,
+            net_selected_idx: None,
             pwd_dialog_open: false,
             pwd_dialog_x: 0,
             pwd_dialog_y: 0,
