@@ -285,7 +285,9 @@ impl IwlWifiDevice {
 
     // ── Device initialisation ───────────────────────
 
-    /// Scan the PCI bus for an Intel Wireless 7265 and initialize it.
+    /// Scan the PCI bus for a supported legacy Intel wireless device and
+    /// initialize it. Modern CNVi devices are reported explicitly but never
+    /// sent through the incompatible 7265 transport.
     pub fn probe_and_init(ctx: &'static dyn DriverContext) -> Option<Self> {
         let mut scanner = PciScanner::new();
         let _ = scanner.scan_all_buses();
@@ -295,6 +297,14 @@ impl IwlWifiDevice {
                 continue;
             }
             if device.vendor_id != IWL_PCI_VENDOR {
+                continue;
+            }
+            if IWL_MODERN_CNVI_DEVICE_IDS.contains(&device.device_id) {
+                log::warn!(
+                    "iwlwifi: modern CNVi adapter {:04x}:{:04x} detected; legacy 7265 transport is not used",
+                    device.vendor_id,
+                    device.device_id
+                );
                 continue;
             }
             if !IWL_DEVICE_IDS.contains(&device.device_id) {

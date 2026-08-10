@@ -610,6 +610,17 @@ impl Desktop {
     pub fn update_ap_list(&mut self, aps: alloc::vec::Vec<ApDisplay>, status: NetStatus) -> bool {
         let changed = self.ap_list != aps || self.net_status != status;
         if changed {
+            // A scan can change both the number of visible rows and the
+            // menu's y-position. Invalidate the old rectangle before
+            // replacing the list so rows removed by the scan are repainted.
+            if self.network_menu_open {
+                self.push_dirty_rect(crate::scene::DirtyRect::new(
+                    self.net_menu_x,
+                    self.net_menu_y,
+                    network_menu::NET_MENU_WIDTH,
+                    network_menu::menu_height(self.net_visible_rows),
+                ));
+            }
             self.ap_list = aps;
             self.net_status = status;
             self.net_selected_idx = match (self.net_selected_idx, self.ap_list.len()) {
@@ -938,8 +949,23 @@ impl Desktop {
 
         // Network menu overlay (rendered by compositor via scene.active_menu render)
         if self.network_menu_open {
+            let old_menu_rect = DirtyRect::new(
+                self.net_menu_x,
+                self.net_menu_y,
+                network_menu::NET_MENU_WIDTH,
+                network_menu::menu_height(self.net_visible_rows),
+            );
             self.update_network_menu_geometry(fb_width, fb_height);
             let menu_h = network_menu::menu_height(self.net_visible_rows);
+            let new_menu_rect = DirtyRect::new(
+                self.net_menu_x,
+                self.net_menu_y,
+                network_menu::NET_MENU_WIDTH,
+                menu_h,
+            );
+            if old_menu_rect != new_menu_rect {
+                self.dirty_cache.push(old_menu_rect);
+            }
             self.dirty_cache.push(DirtyRect::new(
                 self.net_menu_x,
                 self.net_menu_y,
@@ -1150,6 +1176,40 @@ mod tests {
 
         assert!(dt.scroll_network_menu(-1));
         assert!(dt.net_scroll_offset < 5);
+    }
+
+    #[test]
+    fn changing_scan_rows_invalidates_previous_network_menu_rect() {
+        let mut dt = Desktop::new(0x202020);
+        let aps = (0..6)
+            .map(|index| ApDisplay {
+                ssid: alloc::format!("ap-{index}"),
+                signal_bars: 2,
+                has_lock: false,
+                connected: false,
+            })
+            .collect();
+        dt.update_ap_list(aps, NetStatus::Disconnected);
+        dt.show_network_menu(800, 120);
+        dt.prepare_frame(800, 120);
+
+        let old_rect = crate::scene::DirtyRect::new(
+            dt.net_menu_x,
+            dt.net_menu_y,
+            network_menu::NET_MENU_WIDTH,
+            network_menu::menu_height(dt.net_visible_rows),
+        );
+        dt.update_ap_list(
+            alloc::vec![ApDisplay {
+                ssid: String::from("remaining"),
+                signal_bars: 1,
+                has_lock: false,
+                connected: false,
+            }],
+            NetStatus::Disconnected,
+        );
+
+        assert!(dt.wm.dirty_rects.contains(&old_rect));
     }
 
     #[test]

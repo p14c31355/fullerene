@@ -5,6 +5,11 @@
 
 pub const IWL_PCI_VENDOR: u16 = 0x8086;
 pub const IWL_DEVICE_IDS: &[u16] = &[0x095b, 0x095a, 0x08b1, 0x08b2];
+/// Intel CNVi devices use a different transport and firmware family from the
+/// legacy 7000-series implementation below. Keep this list separate so a
+/// modern adapter can be diagnosed without ever being passed to the 7265
+/// reset/firmware path.
+pub const IWL_MODERN_CNVI_DEVICE_IDS: &[u16] = &[0x54f0];
 
 /// PCI requester ID format consumed by the VT-d context-table lookup.
 pub const fn pci_dma_device_id(bus: u8, device: u8, function: u8) -> u16 {
