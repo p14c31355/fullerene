@@ -2,6 +2,7 @@ pub const COM1_DATA_PORT: u16 = 0x3F8;
 pub const COM1_STATUS_PORT: u16 = 0x3FD;
 
 #[inline(always)]
+#[allow(dead_code)]
 unsafe fn read_port_u8(port: u16) -> u8 {
     let value: u8;
     unsafe {
@@ -16,6 +17,7 @@ unsafe fn read_port_u8(port: u16) -> u8 {
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 unsafe fn write_port_u8(port: u16, value: u8) {
     unsafe {
         core::arch::asm!(

@@ -12,6 +12,11 @@ use alloc::vec::Vec;
 pub const INTEL_LPSS_I2C_DEVICE_IDS: &[u16] = &[0x54e8, 0x54e9, 0x54ea, 0x54eb];
 /// ACPI HID reported by the GemiBook XPro N150 for its I2C HID device.
 pub const GEMIBOOK_TOUCHPAD_ACPI_HID: &[u8; 7] = b"AMR1399";
+/// Linux's ACPI-backed I2C-HID device name observed on the N150.
+pub const GEMIBOOK_LINUX_I2C_HID_NAME: &[u8; 11] = b"AMR13992:00";
+/// HID identity reported by the Linux live image.
+pub const GEMIBOOK_TOUCHPAD_HID_VENDOR_ID: u16 = 0x36b6;
+pub const GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID: u16 = 0xc001;
 
 const GENERIC_DESKTOP_PAGE: u16 = 0x01;
 const BUTTON_PAGE: u16 = 0x09;
@@ -207,9 +212,11 @@ impl HidReportDescriptor {
                     max_input_bytes = max_input_bytes.max((end_bits as usize + 7) / 8);
                     local.clear();
                 }
-                // Collection, End Collection, Output, Feature and global
-                // Push/Pop do not change the input bit layout here.
-                (0, 0x9) | (0, 0xa) | (0, 0xc) | (1, 0xa) | (1, 0xb) => {}
+                // Collection, End Collection, Output and Feature do not
+                // change the input bit layout here.  Physical/unit globals
+                // also do not affect extraction; they are nevertheless
+                // valid and common in precision-touchpad descriptors.
+                (0, 0x9) | (0, 0xa) | (0, 0xc) | (1, 0x3..=0x6) | (1, 0xa) | (1, 0xb) => {}
                 _ => return Err(HidDescriptorError::InvalidItem),
             }
         }
@@ -306,14 +313,36 @@ impl HidReportDescriptor {
                 .copied()
                 .find(|field| field.usage_page == page && field.usage == usage)
         };
+        let tip_switch = find(DIGITIZER_PAGE, USAGE_TIP_SWITCH);
+        let contact_id = find(DIGITIZER_PAGE, USAGE_CONTACT_ID);
+        let contact_count = find(DIGITIZER_PAGE, USAGE_CONTACT_COUNT);
+        // The N150 descriptor contains a mouse collection (report ID 6)
+        // before the touchpad collections (report ID 1).  Select coordinates
+        // and buttons from the digitizer report instead of accidentally
+        // binding the relative mouse X/Y fields.
+        let touchpad_report_id = tip_switch
+            .or(contact_id)
+            .or(contact_count)
+            .map(|field| field.report_id);
+        let find_touchpad = |page, usage| {
+            touchpad_report_id
+                .and_then(|report_id| {
+                    self.fields.iter().copied().find(|field| {
+                        field.report_id == report_id
+                            && field.usage_page == page
+                            && field.usage == usage
+                    })
+                })
+                .or_else(|| find(page, usage))
+        };
         Some(TouchpadFieldMap {
-            x: find(GENERIC_DESKTOP_PAGE, USAGE_X)?,
-            y: find(GENERIC_DESKTOP_PAGE, USAGE_Y)?,
-            left_button: find(BUTTON_PAGE, USAGE_BUTTON_LEFT),
-            right_button: find(BUTTON_PAGE, USAGE_BUTTON_RIGHT),
-            tip_switch: find(DIGITIZER_PAGE, USAGE_TIP_SWITCH),
-            contact_id: find(DIGITIZER_PAGE, USAGE_CONTACT_ID),
-            contact_count: find(DIGITIZER_PAGE, USAGE_CONTACT_COUNT),
+            x: find_touchpad(GENERIC_DESKTOP_PAGE, USAGE_X)?,
+            y: find_touchpad(GENERIC_DESKTOP_PAGE, USAGE_Y)?,
+            left_button: find_touchpad(BUTTON_PAGE, USAGE_BUTTON_LEFT),
+            right_button: find_touchpad(BUTTON_PAGE, USAGE_BUTTON_RIGHT),
+            tip_switch,
+            contact_id,
+            contact_count,
         })
     }
 
@@ -355,7 +384,9 @@ impl HidReportDescriptor {
 #[cfg(test)]
 mod tests {
     use super::{
-        GEMIBOOK_TOUCHPAD_ACPI_HID, HidReportDescriptor, INTEL_LPSS_I2C_DEVICE_IDS, TouchpadReport,
+        GEMIBOOK_LINUX_I2C_HID_NAME, GEMIBOOK_TOUCHPAD_ACPI_HID, GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID,
+        GEMIBOOK_TOUCHPAD_HID_VENDOR_ID, HidReportDescriptor, INTEL_LPSS_I2C_DEVICE_IDS,
+        TouchpadReport,
     };
 
     // One report-IDed absolute pointer with left/right buttons and a tip bit.
@@ -365,6 +396,17 @@ mod tests {
         0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x16, 0x00, 0x00, 0x26, 0xff, 0x0f, 0x75, 0x10, 0x95,
         0x02, 0x81, 0x02, 0x05, 0x0d, 0x09, 0x42, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x01,
         0x81, 0x02, 0xc0,
+    ];
+
+    // The first digitizer collection from the N150 report descriptor.  In
+    // the complete descriptor this follows a report-ID 6 relative mouse
+    // collection and uses report ID 1 for touch data.
+    const N150_TOUCHPAD_DESCRIPTOR: &[u8] = &[
+        0x05, 0x0d, 0x09, 0x22, 0xa1, 0x02, 0x85, 0x01, 0x09, 0x47, 0x09, 0x42, 0x15, 0x00, 0x25,
+        0x01, 0x75, 0x01, 0x95, 0x02, 0x81, 0x02, 0x95, 0x02, 0x81, 0x03, 0x09, 0x51, 0x25, 0x0f,
+        0x75, 0x04, 0x95, 0x01, 0x81, 0x02, 0x05, 0x01, 0x09, 0x30, 0x75, 0x10, 0x55, 0x0e, 0x65,
+        0x11, 0x35, 0x00, 0x46, 0xd8, 0x04, 0x27, 0xac, 0x06, 0x00, 0x00, 0x81, 0x02, 0x09, 0x31,
+        0x46, 0x02, 0x03, 0x27, 0x24, 0x04, 0x00, 0x00, 0x81, 0x02, 0xc0,
     ];
 
     #[test]
@@ -394,5 +436,28 @@ mod tests {
     fn records_n150_linux_transport_identity() {
         assert!(INTEL_LPSS_I2C_DEVICE_IDS.contains(&0x54e8));
         assert_eq!(GEMIBOOK_TOUCHPAD_ACPI_HID, b"AMR1399");
+        assert_eq!(GEMIBOOK_LINUX_I2C_HID_NAME, b"AMR13992:00");
+        assert_eq!(GEMIBOOK_TOUCHPAD_HID_VENDOR_ID, 0x36b6);
+        assert_eq!(GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID, 0xc001);
+    }
+
+    #[test]
+    fn parses_n150_precision_touchpad_collection() {
+        let descriptor = HidReportDescriptor::parse(N150_TOUCHPAD_DESCRIPTOR).unwrap();
+        let fields = descriptor.touchpad_fields().unwrap();
+        assert_eq!(fields.x.report_id, 1);
+        assert_eq!(fields.y.report_id, 1);
+        assert_eq!(fields.contact_id.unwrap().report_id, 1);
+        assert_eq!(descriptor.max_input_bytes(), 6);
+
+        let report = [1, 0b0010_0011, 0x34, 0x12, 0x78, 0x56];
+        assert_eq!(
+            descriptor.decode_touchpad(fields, &report).unwrap().x,
+            0x1234
+        );
+        assert_eq!(
+            descriptor.decode_touchpad(fields, &report).unwrap().y,
+            0x5678
+        );
     }
 }
