@@ -1610,8 +1610,9 @@ impl IwlWifiDevice {
     ///
     /// The DMA buffer must begin with the normal four-byte command header;
     /// the fixed TX command follows it, then the 802.11 MAC frame.  Linux
-    /// calls this `struct iwl_tx_cmd` and sets ACK/sequence-control for
-    /// management and ordinary non-QoS frames.
+    /// calls this `struct iwl_tx_cmd`. The values below mirror Linux's
+    /// `iwl_mvm_set_tx_cmd()`/`iwl_mvm_set_tx_cmd_rate()` defaults for the
+    /// management and non-QoS frames used by this driver.
     fn build_tx_command(frame: &[u8], sequence: u16) -> Vec<u8> {
         let mut wire = vec![0u8; TX_FRAME_OFFSET + frame.len()];
 
@@ -1623,15 +1624,37 @@ impl IwlWifiDevice {
         // API-v6 iwl_tx_cmd, relative to the command header.
         let tx = TX_COMMAND_HEADER_LEN;
         wire[tx..tx + 2].copy_from_slice(&(frame.len() as u16).to_le_bytes());
-        // TX_CMD_FLG_ACK | TX_CMD_FLG_SEQ_CTL.
-        wire[tx + 4..tx + 8].copy_from_slice(&(1u32 << 3 | 1u32 << 13).to_le_bytes());
+        // TX_CMD_FLG_ACK | TX_CMD_FLG_SEQ_CTL | TX_CMD_FLG_BT_DIS.
+        // Authentication/association are non-QoS management frames. Keep
+        // the sequence-control bit enabled because the frame builders leave
+        // sequence assignment to the firmware, as mac80211 does for these
+        // requests. Disable BT arbitration for this low-rate 2.4 GHz
+        // exchange so a SCO activity cannot defer the authentication frame.
+        const TX_CMD_FLG_ACK: u32 = 1 << 3;
+        const TX_CMD_FLG_BT_DIS: u32 = 1 << 12;
+        const TX_CMD_FLG_SEQ_CTL: u32 = 1 << 13;
+        wire[tx + 4..tx + 8].copy_from_slice(
+            &(TX_CMD_FLG_ACK | TX_CMD_FLG_BT_DIS | TX_CMD_FLG_SEQ_CTL).to_le_bytes(),
+        );
         wire[tx + 12..tx + 16].copy_from_slice(&TX_RATE_1M_CCK.to_le_bytes());
-        // sta_id=0, no firmware-side encryption, and the default management
-        // retry budget.  The lifetime and PM timeout keep the AP awake while
-        // authentication/association completes.
+        // sta_id=0, no firmware-side encryption. The AP peer is registered
+        // before this command is queued by connect().
+        wire[tx + 16] = 0;
         wire[tx + 40..tx + 44].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
-        wire[tx + 50] = 3;
-        wire[tx + 52..tx + 54].copy_from_slice(&3u16.to_le_bytes());
+        // Linux uses 60 RTS retries and 15 data retries for ordinary
+        // management/data frames (3 is reserved for probe responses).
+        wire[tx + 49] = 60;
+        wire[tx + 50] = 15;
+        // IWL_MAX_TID_COUNT marks a non-QoS management frame. PM_FRAME_ASSOC
+        // is needed for association requests; authentication uses the normal
+        // management timeout.
+        wire[tx + 51] = 16;
+        let pm_timeout = if frame.first().is_some_and(|fc| *fc & 0xfc == 0x00) {
+            3u16
+        } else {
+            2u16
+        };
+        wire[tx + 52..tx + 54].copy_from_slice(&pm_timeout.to_le_bytes());
 
         wire[TX_FRAME_OFFSET..].copy_from_slice(frame);
         wire
@@ -1670,4 +1693,37 @@ fn ipv4_checksum(header: &[u8]) -> u16 {
         sum = (sum & 0xffff) + (sum >> 16);
     }
     !(sum as u16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_v6_tx_command_has_linux_management_defaults() {
+        let frame = [0xb0u8; 30];
+        let wire = IwlWifiDevice::build_tx_command(&frame, 0x0918);
+        let tx = TX_COMMAND_HEADER_LEN;
+
+        assert_eq!(wire[0], TX_CMD_OPCODE);
+        assert_eq!(wire[1], GroupId::Legacy as u8);
+        assert_eq!(&wire[2..4], &0x0918u16.to_le_bytes());
+        assert_eq!(
+            u16::from_le_bytes([wire[tx], wire[tx + 1]]),
+            frame.len() as u16
+        );
+        assert_eq!(
+            u32::from_le_bytes(wire[tx + 4..tx + 8].try_into().unwrap()),
+            (1 << 3) | (1 << 12) | (1 << 13)
+        );
+        assert_eq!(wire[tx + 16], 0); // AP station ID
+        assert_eq!(wire[tx + 49], 60); // RTS retries
+        assert_eq!(wire[tx + 50], 15); // ordinary management retries
+        assert_eq!(wire[tx + 51], 16); // IWL_MAX_TID_COUNT / non-QoS
+        assert_eq!(
+            u16::from_le_bytes([wire[tx + 52], wire[tx + 53]]),
+            2 // PM_FRAME_MGMT for authentication
+        );
+        assert_eq!(&wire[TX_FRAME_OFFSET..], &frame);
+    }
 }

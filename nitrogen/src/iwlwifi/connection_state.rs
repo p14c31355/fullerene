@@ -1810,6 +1810,40 @@ impl IwlWifiDevice {
             self.wpa.init(password, ssid.as_str(), ap.bssid, self.mac);
         }
 
+        // Linux updates the BSS MAC context and adds the AP peer before
+        // transmitting authentication. TX_CMD carries sta_id=0 for this
+        // minimal managed-station path; without the ADD_STA entry the 7265
+        // accepts the TX_CMD opcode but rejects the command payload.
+        let mac_context = MacContextCmd::sta_for_bssid(self.mac, ap.bssid);
+        let mac_context_bytes = unsafe { super::as_bytes(&mac_context) };
+        if let Err(error) = self.send_hcmd(
+            LegacyCmd::MacContext as u8,
+            GroupId::Legacy as u8,
+            mac_context_bytes,
+        ) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection MAC context setup failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
+        let ap_sta = AddStaCmdV7::peer(0, 0, ap.bssid);
+        let ap_sta_bytes = unsafe { super::as_bytes(&ap_sta) };
+        if let Err(error) =
+            self.send_hcmd(LegacyCmd::AddSta as u8, GroupId::Legacy as u8, ap_sta_bytes)
+        {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection AP station setup failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
         self.iwl_state = IwlState::AuthSent;
         let auth_frame = wifi::build_auth_frame(ap.bssid, self.mac, 1);
         if let Err(error) = self.send_raw_80211_frame(&auth_frame) {
@@ -1843,6 +1877,33 @@ impl IwlWifiDevice {
         if let Some(ref mut dhcp) = self.dhcp {
             let release = dhcp.build_release();
             let _ = self.send_raw_80211_frame(&release);
+        }
+        // Remove the AP peer after queued deauthentication/DHCP traffic. This
+        // lets a later connect() add station 0 again instead of receiving an
+        // ADD_STA_MODIFY_NON_EXISTING/duplicate-station error from firmware.
+        let ap_bssid = self.wifi_conn.current_ssid.as_ref().and_then(|ssid| {
+            self.scan_results
+                .iter()
+                .find(|ap| ap.ssid == *ssid)
+                .map(|ap| ap.bssid)
+        });
+        if let Some(ap_bssid) = ap_bssid {
+            let remove_sta = RemoveStaCmd::new(0);
+            let remove_sta_bytes = unsafe { super::as_bytes(&remove_sta) };
+            let _ = self.send_hcmd(
+                LegacyCmd::RemoveSta as u8,
+                GroupId::Legacy as u8,
+                remove_sta_bytes,
+            );
+            log::debug!(
+                "iwlwifi: removed AP station 0 ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+                ap_bssid[0],
+                ap_bssid[1],
+                ap_bssid[2],
+                ap_bssid[3],
+                ap_bssid[4],
+                ap_bssid[5],
+            );
         }
         self.dhcp = None;
         self.wifi_conn.disconnect();

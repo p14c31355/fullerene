@@ -375,6 +375,33 @@ impl IwlWifiDevice {
                                 frame[body_offset + 4],
                                 frame[body_offset + 5],
                             ]);
+                            let bssid = [
+                                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
+                            ];
+                            // The MAC context is kept unassociated until the
+                            // AP accepts the association. Publish the AID
+                            // now so firmware can correctly handle the
+                            // subsequent protected handshake/data traffic.
+                            let mac_context =
+                                MacContextCmd::sta_for_bssid(self.mac, bssid).associated(aid);
+                            let mac_context_bytes = unsafe { super::as_bytes(&mac_context) };
+                            if let Err(error) = self.send_hcmd(
+                                LegacyCmd::MacContext as u8,
+                                GroupId::Legacy as u8,
+                                mac_context_bytes,
+                            ) {
+                                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                                self.connection_watchdog_ticks = 0;
+                                self.wifi_conn.error_msg = Some(alloc::format!(
+                                    "associated MAC context setup failed: {:?}",
+                                    error
+                                ));
+                                log::warn!(
+                                    "iwlwifi: failed to publish associated MAC context: {:?}",
+                                    error
+                                );
+                                return;
+                            }
                             self.iwl_state = IwlState::Connected;
                             self.connection_watchdog_ticks = 0;
                             self.wifi_conn.status = if self.wpa_required {
@@ -385,9 +412,7 @@ impl IwlWifiDevice {
                             } else {
                                 bonder::wifi::WifiStatus::Connected
                             };
-                            self.wifi_conn.current_bssid = Some([
-                                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
-                            ]);
+                            self.wifi_conn.current_bssid = Some(bssid);
 
                             if !self.wpa_required {
                                 self.start_dhcp(aid);
