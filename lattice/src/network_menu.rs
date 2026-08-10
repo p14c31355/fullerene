@@ -21,6 +21,7 @@ const WIFI_CONNECTED: u32 = 0x33CC33;
 /// Menu dimensions for network AP list.
 pub const NET_MENU_WIDTH: u32 = 220;
 pub const NET_MENU_ITEM_HEIGHT: u32 = 28;
+pub const NET_MENU_PADDING: u32 = 4;
 pub const NET_MENU_BORDER: u32 = 1;
 pub const NET_MENU_BG: u32 = 0x2A2A3E;
 pub const NET_MENU_TEXT: u32 = 0xCCCCCC;
@@ -29,6 +30,12 @@ pub const NET_MENU_HOVER: u32 = 0x3A7BD5;
 pub const NET_MENU_LOCKED: u32 = 0xE6A817;
 pub const NET_MENU_SIGNAL_COLOR: u32 = 0x4A90D9;
 pub const NET_MENU_DISCONNECTED: u32 = 0x999999;
+
+/// Return the height of a menu showing at most `visible_ap_rows` APs.
+#[inline]
+pub const fn menu_height(visible_ap_rows: usize) -> u32 {
+    NET_MENU_PADDING + (visible_ap_rows as u32 + 1) * NET_MENU_ITEM_HEIGHT
+}
 
 /// Password dialog constants.
 pub const PWD_DIALOG_W: u32 = 320;
@@ -332,12 +339,13 @@ pub fn render_network_menu(
     aps: &[ApDisplay],
     status: &NetStatus,
     selected_idx: Option<usize>,
+    visible_ap_rows: usize,
+    scroll_offset: usize,
 ) {
     let fw = fb_width as usize;
 
-    // Calculate menu height
-    let item_count = aps.len() + 1; // +1 for status/title line
-    let menu_h = 4 + item_count as u32 * NET_MENU_ITEM_HEIGHT;
+    let visible_ap_rows = visible_ap_rows.max(1);
+    let menu_h = menu_height(visible_ap_rows);
 
     // Menu background
     for row in 0..menu_h {
@@ -501,13 +509,9 @@ pub fn render_network_menu(
     }
 
     // Draw each AP
-    for (i, ap) in aps.iter().enumerate() {
-        let item_y = menu_y + NET_MENU_ITEM_HEIGHT + (i as u32) * NET_MENU_ITEM_HEIGHT;
-
-        // Skip if off screen
-        if item_y + NET_MENU_ITEM_HEIGHT > fb_height {
-            break;
-        }
+    let offset = scroll_offset.min(aps.len());
+    for (i, ap) in aps.iter().enumerate().skip(offset).take(visible_ap_rows) {
+        let item_y = menu_y + NET_MENU_ITEM_HEIGHT + ((i - offset) as u32) * NET_MENU_ITEM_HEIGHT;
 
         // Keyboard-selected row. Keep the border and text readable while
         // preserving the same row geometry used by mouse hit-testing.
@@ -610,6 +614,42 @@ pub fn render_network_menu(
             );
         }
     }
+
+    // A narrow scrollbar makes it clear that the list contains more APs and
+    // also gives mouse users a visual position while using the wheel.
+    if aps.len() > visible_ap_rows {
+        let track_x = menu_x + NET_MENU_WIDTH - 6;
+        let track_y = menu_y + NET_MENU_ITEM_HEIGHT + 2;
+        let track_h = (visible_ap_rows as u32 * NET_MENU_ITEM_HEIGHT).saturating_sub(4);
+        if track_h > 0 {
+            for row in 0..track_h {
+                let py = track_y + row;
+                if py >= fb_height || track_x >= fb_width {
+                    continue;
+                }
+                let idx = py as usize * fw + track_x as usize;
+                if idx < fb.len() {
+                    fb[idx] = NET_MENU_BORDER_COLOR;
+                }
+            }
+            let max_offset = aps.len() - visible_ap_rows;
+            let thumb_h = (track_h as usize * visible_ap_rows / aps.len())
+                .max(4)
+                .min(track_h as usize) as u32;
+            let thumb_y =
+                track_y + ((track_h.saturating_sub(thumb_h)) as usize * offset / max_offset) as u32;
+            for row in 0..thumb_h {
+                let py = thumb_y + row;
+                if py >= fb_height || track_x >= fb_width {
+                    continue;
+                }
+                let idx = py as usize * fw + track_x as usize;
+                if idx < fb.len() {
+                    fb[idx] = NET_MENU_HOVER;
+                }
+            }
+        }
+    }
 }
 
 /// Helper to render menu text using Painter TTF.
@@ -637,9 +677,18 @@ pub fn hit_wifi_icon(px: i32, py: i32, _fb_width: u32, fb_height: u32, icon_x: u
 }
 
 /// Check if a point hits an AP entry in the network menu.
-pub fn hit_ap_entry(px: i32, py: i32, menu_x: u32, menu_y: u32, num_aps: usize) -> Option<usize> {
+pub fn hit_ap_entry(
+    px: i32,
+    py: i32,
+    menu_x: u32,
+    menu_y: u32,
+    num_aps: usize,
+    visible_ap_rows: usize,
+    scroll_offset: usize,
+) -> Option<usize> {
     let start_y = menu_y + NET_MENU_ITEM_HEIGHT; // After status line
-    let end_y = start_y + (num_aps as u32) * NET_MENU_ITEM_HEIGHT;
+    let visible_ap_rows = visible_ap_rows.max(1).min(num_aps.max(1));
+    let end_y = start_y + (visible_ap_rows as u32) * NET_MENU_ITEM_HEIGHT;
 
     let px_u = px as u32;
     let py_u = py as u32;
@@ -652,13 +701,19 @@ pub fn hit_ap_entry(px: i32, py: i32, menu_x: u32, menu_y: u32, num_aps: usize) 
     }
 
     let rel_y = py_u - start_y;
-    let idx = (rel_y / NET_MENU_ITEM_HEIGHT) as usize;
+    let idx = scroll_offset.saturating_add((rel_y / NET_MENU_ITEM_HEIGHT) as usize);
     if idx < num_aps { Some(idx) } else { None }
 }
 
 /// Check if a point hits the network menu area (for dismissal).
-pub fn hit_network_menu(px: i32, py: i32, menu_x: u32, menu_y: u32, num_aps: usize) -> bool {
-    let menu_h = 4 + (num_aps + 1) as u32 * NET_MENU_ITEM_HEIGHT;
+pub fn hit_network_menu(
+    px: i32,
+    py: i32,
+    menu_x: u32,
+    menu_y: u32,
+    visible_ap_rows: usize,
+) -> bool {
+    let menu_h = menu_height(visible_ap_rows.max(1));
     let px_u = px as u32;
     let py_u = py as u32;
     px_u >= menu_x && px_u < menu_x + NET_MENU_WIDTH && py_u >= menu_y && py_u < menu_y + menu_h

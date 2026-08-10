@@ -135,6 +135,10 @@ pub struct Desktop {
     pub net_status: NetStatus,
     /// Currently highlighted access point in the network menu.
     pub net_selected_idx: Option<usize>,
+    /// Number of AP rows that fit in the current network menu.
+    pub net_visible_rows: usize,
+    /// First AP row currently shown in the network menu.
+    pub net_scroll_offset: usize,
     /// Position of the network menu.
     pub net_menu_x: u32,
     pub net_menu_y: u32,
@@ -190,6 +194,8 @@ impl Desktop {
             ap_list: alloc::vec::Vec::new(),
             net_status: NetStatus::NoDevice,
             net_selected_idx: None,
+            net_visible_rows: 1,
+            net_scroll_offset: 0,
             net_menu_x: 0,
             net_menu_y: 0,
             pwd_dialog_open: false,
@@ -307,6 +313,8 @@ impl Desktop {
                 self.net_menu_x,
                 self.net_menu_y,
                 self.ap_list.len(),
+                self.net_visible_rows,
+                self.net_scroll_offset,
             ) {
                 if ap_idx < self.ap_list.len() {
                     self.net_selected_idx = Some(ap_idx);
@@ -515,6 +523,22 @@ impl Desktop {
     pub fn show_network_menu(&mut self, fb_width: u32, fb_height: u32) {
         self.network_menu_open = true;
         self.net_selected_idx = (!self.ap_list.is_empty()).then_some(0);
+        self.net_scroll_offset = 0;
+        self.update_network_menu_geometry(fb_width, fb_height);
+        self.push_dirty_rect(crate::scene::DirtyRect::new(
+            self.net_menu_x,
+            self.net_menu_y,
+            network_menu::NET_MENU_WIDTH,
+            network_menu::menu_height(self.net_visible_rows),
+        ));
+    }
+
+    /// Recalculate the bounded network-menu rectangle for the current scanout.
+    ///
+    /// The status row is always kept visible. AP rows use the remaining space
+    /// above the taskbar, so a large scan result cannot push the menu below the
+    /// bottom edge of the display.
+    fn update_network_menu_geometry(&mut self, fb_width: u32, fb_height: u32) {
         // Position the menu above the WiFi icon, right-aligned to stay on-screen
         let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
         // Right-align the menu with the WiFi icon so it doesn't extend past fb_width
@@ -523,23 +547,32 @@ impl Desktop {
         } else {
             wifi_icon_x
         };
-        let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+        let available_height = fb_height.saturating_sub(crate::style::taskbar_height());
+        let max_rows = available_height
+            .saturating_sub(network_menu::NET_MENU_PADDING + network_menu::NET_MENU_ITEM_HEIGHT)
+            / network_menu::NET_MENU_ITEM_HEIGHT;
+        self.net_visible_rows = max_rows.max(1) as usize;
+        self.net_visible_rows = self.net_visible_rows.min(self.ap_list.len().max(1));
+        let max_offset = self.ap_list.len().saturating_sub(self.net_visible_rows);
+        self.net_scroll_offset = self.net_scroll_offset.min(max_offset);
+        if let Some(selected) = self.net_selected_idx {
+            if selected < self.net_scroll_offset {
+                self.net_scroll_offset = selected;
+            } else if selected >= self.net_scroll_offset + self.net_visible_rows {
+                self.net_scroll_offset = selected + 1 - self.net_visible_rows;
+            }
+            self.net_scroll_offset = self.net_scroll_offset.min(max_offset);
+        }
+        let menu_h = network_menu::menu_height(self.net_visible_rows);
         self.net_menu_y = fb_height
             .saturating_sub(crate::style::taskbar_height())
             .saturating_sub(menu_h);
-
-        self.push_dirty_rect(crate::scene::DirtyRect::new(
-            self.net_menu_x,
-            self.net_menu_y,
-            network_menu::NET_MENU_WIDTH,
-            menu_h,
-        ));
     }
 
     /// Dismiss the network menu.
     pub fn dismiss_network_menu(&mut self) {
         if self.network_menu_open {
-            let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+            let menu_h = network_menu::menu_height(self.net_visible_rows);
             self.push_dirty_rect(crate::scene::DirtyRect::new(
                 self.net_menu_x,
                 self.net_menu_y,
@@ -549,6 +582,7 @@ impl Desktop {
             self.network_menu_open = false;
         }
         self.net_selected_idx = None;
+        self.net_scroll_offset = 0;
     }
 
     /// Close the password dialog and invalidate the area it occupied.
@@ -584,6 +618,8 @@ impl Desktop {
                 (None, _) if self.network_menu_open => Some(0),
                 (None, _) => None,
             };
+            let max_offset = self.ap_list.len().saturating_sub(self.net_visible_rows);
+            self.net_scroll_offset = self.net_scroll_offset.min(max_offset);
             self.wifi_networks_visible = match &self.net_status {
                 NetStatus::NoDevice => false,
                 _ => true,
@@ -604,12 +640,44 @@ impl Desktop {
         let current = self.net_selected_idx.unwrap_or(0) as i32;
         let next = (current + delta).rem_euclid(len as i32) as usize;
         self.net_selected_idx = Some(next);
-        let menu_h = 4 + (len + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+        if next < self.net_scroll_offset {
+            self.net_scroll_offset = next;
+        } else if next >= self.net_scroll_offset + self.net_visible_rows {
+            self.net_scroll_offset = next + 1 - self.net_visible_rows;
+        }
+        let menu_h = network_menu::menu_height(self.net_visible_rows);
         self.push_dirty_rect(crate::scene::DirtyRect::new(
             self.net_menu_x,
             self.net_menu_y,
             network_menu::NET_MENU_WIDTH,
             menu_h,
+        ));
+        true
+    }
+
+    /// Scroll the AP viewport by `delta` rows. Positive values move down.
+    pub fn scroll_network_menu(&mut self, delta: i32) -> bool {
+        if !self.network_menu_open || self.ap_list.is_empty() {
+            return false;
+        }
+        let max_offset = self.ap_list.len().saturating_sub(self.net_visible_rows);
+        let next = (self.net_scroll_offset as i32 + delta).clamp(0, max_offset as i32) as usize;
+        if next == self.net_scroll_offset {
+            return true;
+        }
+        self.net_scroll_offset = next;
+        if let Some(selected) = self.net_selected_idx {
+            self.net_selected_idx = Some(
+                selected
+                    .max(next)
+                    .min(next + self.net_visible_rows.saturating_sub(1)),
+            );
+        }
+        self.push_dirty_rect(crate::scene::DirtyRect::new(
+            self.net_menu_x,
+            self.net_menu_y,
+            network_menu::NET_MENU_WIDTH,
+            network_menu::menu_height(self.net_visible_rows),
         ));
         true
     }
@@ -642,7 +710,7 @@ impl Desktop {
         } else {
             self.menu_action_pending = Some(DesktopAction::ConnectAp(index));
         }
-        let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+        let menu_h = network_menu::menu_height(self.net_visible_rows);
         self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
             self.net_menu_x,
             self.net_menu_y,
@@ -870,7 +938,8 @@ impl Desktop {
 
         // Network menu overlay (rendered by compositor via scene.active_menu render)
         if self.network_menu_open {
-            let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+            self.update_network_menu_geometry(fb_width, fb_height);
+            let menu_h = network_menu::menu_height(self.net_visible_rows);
             self.dirty_cache.push(DirtyRect::new(
                 self.net_menu_x,
                 self.net_menu_y,
@@ -968,6 +1037,8 @@ impl Desktop {
             net_aps: &self.ap_list,
             net_status: &self.net_status,
             net_selected_idx: self.net_selected_idx,
+            net_visible_rows: self.net_visible_rows,
+            net_scroll_offset: self.net_scroll_offset,
             pwd_dialog_open: self.pwd_dialog_open,
             pwd_dialog_x: self.pwd_dialog_x,
             pwd_dialog_y: self.pwd_dialog_y,
@@ -1048,6 +1119,37 @@ mod tests {
         assert!(dt.activate_network_selection(800, 600));
         assert!(!dt.network_menu_open);
         assert_eq!(dt.menu_action_pending, Some(DesktopAction::ConnectAp(0)));
+    }
+
+    #[test]
+    fn network_menu_bounds_and_scroll_follow_small_scanout() {
+        let mut dt = Desktop::new(0x202020);
+        let aps = (0..6)
+            .map(|index| ApDisplay {
+                ssid: alloc::format!("ap-{index}"),
+                signal_bars: 2,
+                has_lock: false,
+                connected: false,
+            })
+            .collect();
+        dt.update_ap_list(aps, NetStatus::Disconnected);
+        dt.show_network_menu(800, 120);
+
+        assert!(dt.net_visible_rows < 6);
+        assert!(
+            dt.net_menu_y + network_menu::menu_height(dt.net_visible_rows)
+                <= 120 - crate::style::taskbar_height()
+        );
+
+        for _ in 0..5 {
+            assert!(dt.move_network_selection(1));
+        }
+        assert_eq!(dt.net_selected_idx, Some(5));
+        assert!(dt.net_scroll_offset > 0);
+        assert!(dt.net_scroll_offset + dt.net_visible_rows >= 6);
+
+        assert!(dt.scroll_network_menu(-1));
+        assert!(dt.net_scroll_offset < 5);
     }
 
     #[test]

@@ -402,8 +402,7 @@ impl Compositor {
         }
 
         if scene.network_menu_open {
-            let menu_height =
-                4 + (scene.net_aps.len() as u32 + 1) * crate::network_menu::NET_MENU_ITEM_HEIGHT;
+            let menu_height = crate::network_menu::menu_height(scene.net_visible_rows);
             let menu_rect = DirtyRect::new(
                 scene.net_menu_x,
                 scene.net_menu_y,
@@ -420,6 +419,8 @@ impl Compositor {
                     scene.net_aps,
                     scene.net_status,
                     scene.net_selected_idx,
+                    scene.net_visible_rows,
+                    scene.net_scroll_offset,
                 );
                 inc_draw_calls();
             }

@@ -170,6 +170,21 @@ impl EventHandler for WmEventHandler {
                 true
             }
             Event::Input(InputEvent::MouseWheel { dy, .. }) => {
+                if rt.desktop.network_menu_open
+                    && lattice::network_menu::hit_network_menu(
+                        rt.desktop.cursor.x,
+                        rt.desktop.cursor.y,
+                        rt.desktop.net_menu_x,
+                        rt.desktop.net_menu_y,
+                        rt.desktop.net_visible_rows,
+                    )
+                {
+                    // Mouse-wheel +Y is conventionally upward; the menu's
+                    // positive scroll direction is downward.
+                    rt.desktop.scroll_network_menu(-(*dy as i32));
+                    rt.frame_due = true;
+                    return true;
+                }
                 let target = rt
                     .desktop
                     .wm
