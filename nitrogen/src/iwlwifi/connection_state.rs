@@ -1832,6 +1832,23 @@ impl IwlWifiDevice {
             return Err(error);
         }
 
+        let ap_sta = AddStaCmdV7::peer(0, 0, ap.bssid);
+        let ap_sta_bytes = unsafe { super::as_bytes(&ap_sta) };
+        if let Err(error) =
+            self.send_hcmd(LegacyCmd::AddSta as u8, GroupId::Legacy as u8, ap_sta_bytes)
+        {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection AP station setup failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
+        // The station must exist before the legacy scheduler can bind q4 to
+        // its station ID. Linux enables the queue only after ADD_STA has been
+        // accepted by firmware.
         let data_scd = ScdTxqCfgCmdV1::peer(0);
         let data_scd_bytes = unsafe { super::as_bytes(&data_scd) };
         if let Err(error) = self.send_hcmd(
@@ -1843,20 +1860,6 @@ impl IwlWifiDevice {
             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
             self.wifi_conn.error_msg = Some(alloc::format!(
                 "connection data queue setup failed: {:?}",
-                error
-            ));
-            return Err(error);
-        }
-
-        let ap_sta = AddStaCmdV7::peer(0, 0, ap.bssid);
-        let ap_sta_bytes = unsafe { super::as_bytes(&ap_sta) };
-        if let Err(error) =
-            self.send_hcmd(LegacyCmd::AddSta as u8, GroupId::Legacy as u8, ap_sta_bytes)
-        {
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(alloc::format!(
-                "connection AP station setup failed: {:?}",
                 error
             ));
             return Err(error);

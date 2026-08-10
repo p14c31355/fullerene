@@ -235,7 +235,13 @@ impl IwlWifiDevice {
             1 << 19, // SCD_QUEUE_STTS_REG_POS_SCD_ACT_EN: inactive while configuring
         );
         self.write_prph(SCD_QUEUE_STATUS_DATA, 1 << 19);
-        self.write_prph(SCD_QUEUECHAIN_SEL, 1 << IWL_AUX_QUEUE);
+        // Linux marks every non-command scheduler queue as a chain queue;
+        // q9 remains the only FIFO command queue.  Without q4 here the
+        // scheduler accepts the doorbell but never advances the data TFD.
+        self.write_prph(
+            SCD_QUEUECHAIN_SEL,
+            (1 << IWL_DATA_QUEUE) | (1 << IWL_AUX_QUEUE),
+        );
         self.write_prph(SCD_AGGR_SEL, 0);
         self.write_prph(
             SCD_QUEUE_STATUS_AUX,
@@ -259,7 +265,10 @@ impl IwlWifiDevice {
                 | SCD_QUEUE_STTS_MASK,
         );
         self.write_prph(SCD_TXFACT, 0xFF);
-        self.write_prph(SCD_EN_CTRL, (1 << IWL_CMD_QUEUE) | (1 << IWL_DATA_QUEUE));
+        // SCD_EN_CTRL is the legacy scheduler-active gate used for the
+        // command queue.  Data queues are activated by their queue status;
+        // Linux does not add them to this register.
+        self.write_prph(SCD_EN_CTRL, 1 << IWL_CMD_QUEUE);
 
         unsafe {
             // The keep-warm buffer must be a separate 4 KiB-aligned DMA
@@ -285,6 +294,9 @@ impl IwlWifiDevice {
                 self.mmio.add(FH_MEM_CBBC_DATA_QUEUE as usize),
                 (data_ring_phys >> 8) as u32,
             );
+            // Establish the initial scheduler write pointer for every queue
+            // before firmware receives its first SCD_QUEUE_CFG command.
+            core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_DATA_QUEUE << 8);
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
             // The FH exposes eight physical DMA channels. q9/q11 are logical
             // SCD queues and select physical channels through their FIFO
