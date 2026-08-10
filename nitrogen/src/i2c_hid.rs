@@ -20,6 +20,18 @@ use crate::pci::PciDevice;
 use crate::timing::{delay_ms, poll_timeout_us};
 
 const MMIO_SIZE: usize = 0x1000;
+// Intel LPSS exposes the DesignWare block at BAR+0x000 and its private
+// wrapper registers at BAR+0x200.  Linux initializes the wrapper before it
+// probes the child DesignWare adapter.
+const LPSS_PRIV_RESETS: usize = 0x204;
+const LPSS_PRIV_REMAP_ADDR: usize = 0x240;
+const LPSS_PRIV_CAPS: usize = 0x2fc;
+const LPSS_PRIV_CAPS_TYPE_MASK: u32 = 0xf0;
+const LPSS_PRIV_CAPS_TYPE_SHIFT: u32 = 4;
+const LPSS_PRIV_CAPS_TYPE_I2C: u32 = 0;
+const LPSS_PRIV_RESETS_IDMA: u32 = 1 << 2;
+const LPSS_PRIV_RESETS_FUNC: u32 = 0x3;
+
 const COMP_TYPE: usize = 0xfc;
 const COMP_TYPE_VALUE: u32 = 0x4457_0140;
 
@@ -31,6 +43,8 @@ const IC_SS_SCL_LCNT: usize = 0x18;
 const IC_FS_SCL_HCNT: usize = 0x1c;
 const IC_FS_SCL_LCNT: usize = 0x20;
 const IC_INTR_MASK: usize = 0x30;
+const IC_RX_TL: usize = 0x38;
+const IC_TX_TL: usize = 0x3c;
 const IC_RAW_INTR_STAT: usize = 0x34;
 const IC_CLR_INTR: usize = 0x40;
 const IC_CLR_TX_ABRT: usize = 0x54;
@@ -41,6 +55,8 @@ const IC_TXFLR: usize = 0x74;
 const IC_RXFLR: usize = 0x78;
 const IC_ENABLE_STATUS: usize = 0x9c;
 const IC_COMP_PARAM_1: usize = 0xf4;
+const IC_COMP_VERSION: usize = 0xf8;
+const IC_SDA_HOLD: usize = 0x7c;
 
 const CON_MASTER: u32 = 1 << 0;
 const CON_SPEED_FAST: u32 = 2 << 1;
@@ -54,6 +70,59 @@ const DATA_RESTART: u32 = 1 << 10;
 const STATUS_MASTER_ACTIVITY: u32 = 1 << 5;
 const INTR_TX_ABORT: u32 = 1 << 6;
 const INTR_STOP_DET: u32 = 1 << 9;
+
+// Intel's bxt_i2c_info is also used for Alder Lake-M 8086:54e8 by Linux.
+// These values are the software node properties and fixed LPSS root clock
+// from that platform description.
+const LPSS_BXT_I2C_CLOCK_KHZ: u64 = 133_000;
+const LPSS_BXT_SDA_HOLD_NS: u64 = 42;
+const LPSS_BXT_SDA_FALL_NS: u64 = 171;
+const LPSS_BXT_SCL_FALL_NS: u64 = 208;
+const DW_IC_SDA_HOLD_MIN_VERSION: u32 = 0x3131312a;
+
+const fn div_round_closest(value: u64, divisor: u64) -> u64 {
+    (value + divisor / 2) / divisor
+}
+
+const fn bxt_scl_hcnt() -> u32 {
+    // Linux: i2c_dw_scl_hcnt(133000, 600ns, 171ns, offset=0).
+    div_round_closest(
+        LPSS_BXT_I2C_CLOCK_KHZ * (600 + LPSS_BXT_SDA_FALL_NS),
+        1_000_000,
+    )
+    .saturating_sub(3) as u32
+}
+
+const fn bxt_scl_lcnt() -> u32 {
+    // Linux: i2c_dw_scl_lcnt(133000, 1300ns, 208ns, offset=0).
+    div_round_closest(
+        LPSS_BXT_I2C_CLOCK_KHZ * (1_300 + LPSS_BXT_SCL_FALL_NS),
+        1_000_000,
+    )
+    .saturating_sub(1) as u32
+}
+
+const fn bxt_ss_hcnt() -> u32 {
+    div_round_closest(
+        LPSS_BXT_I2C_CLOCK_KHZ * (4_000 + LPSS_BXT_SDA_FALL_NS),
+        1_000_000,
+    )
+    .saturating_sub(3) as u32
+}
+
+const fn bxt_ss_lcnt() -> u32 {
+    div_round_closest(
+        LPSS_BXT_I2C_CLOCK_KHZ * (4_700 + LPSS_BXT_SCL_FALL_NS),
+        1_000_000,
+    )
+    .saturating_sub(1) as u32
+}
+
+const fn bxt_sda_hold() -> u32 {
+    // Linux converts the 42 ns property to clock cycles and sets the RX
+    // hold workaround bit when the DesignWare IP supports SDA_HOLD.
+    (div_round_closest(LPSS_BXT_I2C_CLOCK_KHZ * LPSS_BXT_SDA_HOLD_NS, 1_000_000) as u32) | (1 << 16)
+}
 
 const MAX_HID_DESCRIPTOR: usize = 64;
 const HID_DESCRIPTOR_LENGTH: usize = 30;
@@ -140,6 +209,25 @@ impl DesignWareI2c {
         // SAFETY: the PCI BAR was validated and mapped as an uncached 4 KiB
         // MMIO region immediately above.
         let mmio = unsafe { MemRegion::new(virt, MMIO_SIZE) };
+        let lpss_caps = mmio.read32(LPSS_PRIV_CAPS);
+        let lpss_type = (lpss_caps & LPSS_PRIV_CAPS_TYPE_MASK) >> LPSS_PRIV_CAPS_TYPE_SHIFT;
+        if lpss_type != LPSS_PRIV_CAPS_TYPE_I2C {
+            return Err(I2cHidError::UnsupportedController);
+        }
+
+        // This is the ordering used by intel_lpss_init_dev(): put the LPSS
+        // function in reset, deassert the function and IDMA resets, then
+        // provide the child DesignWare block with its PCI BAR remap address.
+        // Without this wrapper setup the DesignWare component may be visible
+        // but transactions never reach the I2C pins (the observed symptom was
+        // a touchpad that initialized nowhere and never moved the cursor).
+        mmio.write32(LPSS_PRIV_RESETS, 0);
+        mmio.write32(
+            LPSS_PRIV_RESETS,
+            LPSS_PRIV_RESETS_FUNC | LPSS_PRIV_RESETS_IDMA,
+        );
+        mmio.write64(LPSS_PRIV_REMAP_ADDR, bar.address);
+
         let component_type = mmio.read32(COMP_TYPE);
         if component_type != COMP_TYPE_VALUE {
             return Err(I2cHidError::UnsupportedController);
@@ -164,24 +252,20 @@ impl DesignWareI2c {
         let _ = self.mmio.read32(IC_CLR_INTR);
         let _ = self.mmio.read32(IC_CLR_TX_ABRT);
 
-        // The N150's LPSS clock is 100 MHz.  Keep firmware-provided timing
-        // values when present; otherwise use DesignWare's 400 kHz timing
-        // formula with the conservative 0.3 us SCL fall-time allowance.
-        if self.mmio.read32(IC_FS_SCL_HCNT) == 0 || self.mmio.read32(IC_FS_SCL_LCNT) == 0 {
-            let clock = 100_000_000u64;
-            let high = ((clock * 900) / 1_000_000_000).saturating_sub(3) as u32;
-            let low = ((clock * 1_600) / 1_000_000_000).saturating_sub(1) as u32;
-            self.mmio.write32(IC_FS_SCL_HCNT, high.max(8));
-            self.mmio.write32(IC_FS_SCL_LCNT, low.max(8));
+        // Match Linux's intel-lpss bxt_i2c_info and DesignWare timing
+        // calculation for the 400 kHz ACPI bus.  Firmware HCNT/LCNT values
+        // are not trusted here: this exact LPSS function is clocked at
+        // 133 MHz, and the old 100 MHz fallback produced an invalid bus
+        // waveform on the N150.
+        self.mmio.write32(IC_FS_SCL_HCNT, bxt_scl_hcnt());
+        self.mmio.write32(IC_FS_SCL_LCNT, bxt_scl_lcnt());
+        self.mmio.write32(IC_SS_SCL_HCNT, bxt_ss_hcnt());
+        self.mmio.write32(IC_SS_SCL_LCNT, bxt_ss_lcnt());
+        if self.mmio.read32(IC_COMP_VERSION) >= DW_IC_SDA_HOLD_MIN_VERSION {
+            self.mmio.write32(IC_SDA_HOLD, bxt_sda_hold());
         }
-        // Standard-mode values are not selected, but programming them avoids
-        // an uninitialised register when firmware later changes the speed bit.
-        if self.mmio.read32(IC_SS_SCL_HCNT) == 0 {
-            self.mmio.write32(IC_SS_SCL_HCNT, 400);
-        }
-        if self.mmio.read32(IC_SS_SCL_LCNT) == 0 {
-            self.mmio.write32(IC_SS_SCL_LCNT, 470);
-        }
+        self.mmio.write32(IC_TX_TL, self.tx_fifo_depth / 2);
+        self.mmio.write32(IC_RX_TL, 0);
         self.mmio.write32(IC_TAR, self.target as u32);
         self.mmio.write32(
             IC_CON,
@@ -282,6 +366,31 @@ impl DesignWareI2c {
         bytes.extend_from_slice(command);
         self.transfer(&bytes, &mut [])
     }
+
+    fn read_input_report(
+        &mut self,
+        input_register: u16,
+        output: &mut [u8],
+    ) -> Result<usize, I2cHidError> {
+        // Linux uses a plain receive for the interrupt-driven path. Some
+        // firmware revisions also require the HID input-register address;
+        // try the Linux path first and fall back to the explicit register
+        // form when the returned length is not a valid packet.
+        let direct_ok = self.transfer(&[], output).is_ok();
+        let mut length = if direct_ok {
+            u16::from_le_bytes([output[0], output[1]]) as usize
+        } else {
+            0
+        };
+        if length < 2 || length > output.len() {
+            // Do not propagate the direct-read NACK before trying the
+            // register-addressed form; some controllers only expose the
+            // pending HID packet through this transaction shape.
+            self.read_register(input_register, output)?;
+            length = u16::from_le_bytes([output[0], output[1]]) as usize;
+        }
+        Ok(length)
+    }
 }
 
 impl Drop for DesignWareI2c {
@@ -336,6 +445,15 @@ pub fn init_n150(ctx: &dyn DriverContext, device: &PciDevice) -> Result<(), I2cH
     bus.write_command(descriptor.command_register, &[0x00, 0x08])?;
     delay_ms(60);
 
+    // Consume the reset-complete input packet when the firmware exposes one.
+    // Linux normally does this from IRQ 81; the polling implementation must
+    // clear it explicitly before waiting for the first finger report.
+    let reset_length = (descriptor.max_input_length as usize).min(MAX_INPUT_REPORT);
+    if reset_length >= 2 {
+        let mut reset_report = [0u8; MAX_INPUT_REPORT];
+        let _ = bus.read_input_report(descriptor.input_register, &mut reset_report[..reset_length]);
+    }
+
     let report_length = descriptor.report_desc_length as usize;
     if report_length > MAX_REPORT_DESCRIPTOR {
         return Err(I2cHidError::InvalidDescriptor);
@@ -388,10 +506,13 @@ pub fn poll_input() {
         return;
     }
     let mut bytes = [0u8; MAX_INPUT_REPORT];
-    if device.bus.transfer(&[], &mut bytes[..length]).is_err() {
-        return;
-    }
-    let report_length = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+    let report_length = match device
+        .bus
+        .read_input_report(device.descriptor.input_register, &mut bytes[..length])
+    {
+        Ok(length) => length,
+        Err(_) => return,
+    };
     if report_length < 2 || report_length > length {
         return;
     }
@@ -419,7 +540,14 @@ pub fn is_initialized() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::HidI2cDescriptor;
+    use super::{HidI2cDescriptor, bxt_scl_hcnt, bxt_scl_lcnt, bxt_sda_hold};
+
+    #[test]
+    fn matches_linux_bxt_i2c_timing_profile() {
+        assert_eq!(bxt_scl_hcnt(), 100);
+        assert_eq!(bxt_scl_lcnt(), 200);
+        assert_eq!(bxt_sda_hold(), 0x1_0006);
+    }
 
     #[test]
     fn parses_wire_descriptor_offsets() {

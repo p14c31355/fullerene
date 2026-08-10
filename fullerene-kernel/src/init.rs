@@ -352,11 +352,17 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     && device.function == nitrogen::hid::GEMIBOOK_N150_I2C_HID.pci_function
             }) {
                 match nitrogen::i2c_hid::init_n150(ctx, device) {
-                    Ok(()) => log::info!("N150 touchpad: I2C-HID polling enabled"),
-                    Err(error) => log::warn!(
-                        "N150 touchpad: I2C-HID probe failed; keeping PS/2 fallback: {:?}",
-                        error
-                    ),
+                    Ok(()) => {
+                        crate::boot_stage::draw_step_hint(b"tp_ok");
+                        log::info!("N150 touchpad: I2C-HID polling enabled");
+                    }
+                    Err(error) => {
+                        crate::boot_stage::draw_step_hint(b"tp_fail");
+                        log::warn!(
+                            "N150 touchpad: I2C-HID probe failed; keeping PS/2 fallback: {:?}",
+                            error
+                        );
+                    }
                 }
             }
 
