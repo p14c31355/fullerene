@@ -1818,7 +1818,8 @@ impl IwlWifiDevice {
         // accepts the TX_CMD opcode but rejects the command payload.
         let mac_context = MacContextCmd::sta_for_bssid_on_channel(self.mac, ap.bssid, ap.channel);
         let mac_context_bytes = unsafe { super::as_bytes(&mac_context) };
-        if let Err(error) = self.send_hcmd(
+        if let Err(error) = self.send_hcmd_and_wait(
+            "CONNECT_MAC_CONTEXT",
             LegacyCmd::MacContext as u8,
             GroupId::Legacy as u8,
             mac_context_bytes,
@@ -1834,9 +1835,12 @@ impl IwlWifiDevice {
 
         let ap_sta = AddStaCmdV7::peer(0, 0, ap.bssid);
         let ap_sta_bytes = unsafe { super::as_bytes(&ap_sta) };
-        if let Err(error) =
-            self.send_hcmd(LegacyCmd::AddSta as u8, GroupId::Legacy as u8, ap_sta_bytes)
-        {
+        if let Err(error) = self.send_hcmd_and_wait(
+            "CONNECT_ADD_STA",
+            LegacyCmd::AddSta as u8,
+            GroupId::Legacy as u8,
+            ap_sta_bytes,
+        ) {
             self.iwl_state = IwlState::Disconnected;
             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
             self.wifi_conn.error_msg = Some(alloc::format!(
@@ -1851,7 +1855,8 @@ impl IwlWifiDevice {
         // accepted by firmware.
         let data_scd = ScdTxqCfgCmdV1::peer(0);
         let data_scd_bytes = unsafe { super::as_bytes(&data_scd) };
-        if let Err(error) = self.send_hcmd(
+        if let Err(error) = self.send_hcmd_and_wait(
+            "CONNECT_SCD_QUEUE_CFG",
             LegacyCmd::ScdQueueCfg as u8,
             GroupId::Legacy as u8,
             data_scd_bytes,

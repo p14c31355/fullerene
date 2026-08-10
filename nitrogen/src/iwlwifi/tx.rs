@@ -691,6 +691,54 @@ impl IwlWifiDevice {
         );
     }
 
+    /// Submit a runtime setup command and wait until the command queue has
+    /// consumed it. The AP station must be fully published on q9 before a
+    /// TX_CMD is doorbelled on q4.
+    pub(super) fn send_hcmd_and_wait(
+        &mut self,
+        label: &str,
+        opcode: u8,
+        group: u8,
+        data: &[u8],
+    ) -> Result<(), crate::DriverError> {
+        // Unit-test devices have no firmware scheduler to advance the
+        // indirect SCD read pointer. Keep the wire-building replay tests
+        // deterministic; hardware follows the synchronous path below.
+        if cfg!(test) {
+            let _ = label;
+            return self.send_hcmd(opcode, group, data);
+        }
+        self.send_hcmd(opcode, group, data)?;
+        let target = self.tx_head;
+        let consumed = crate::timing::poll_timeout_us(100_000, || {
+            let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD)? as usize;
+            self.update_tx_tail(rptr);
+            self.tx_tail_reached(target).then_some(())
+        });
+        if consumed.is_some() {
+            log::debug!(
+                "iwlwifi: hcmd.sync.ok name={} opcode=0x{:02x} target={} rptr={}",
+                label,
+                opcode,
+                target,
+                self.tx_tail & (TX_QUEUE_SIZE - 1),
+            );
+            Ok(())
+        } else {
+            let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
+            log::error!(
+                "iwlwifi: hcmd.sync.timeout name={} opcode=0x{:02x} target={} head={} tail={} rptr={:#010x}",
+                label,
+                opcode,
+                target,
+                self.tx_head,
+                self.tx_tail,
+                rptr,
+            );
+            Err(crate::DriverError::Busy)
+        }
+    }
+
     /// Wait for the firmware response to a synchronous runtime setup command.
     ///
     /// Advancing the SCD read pointer only proves that the DMA engine fetched
