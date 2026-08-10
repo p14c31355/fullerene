@@ -215,6 +215,13 @@ pub struct HcmdHeaderWide {
     pub version: u8,
 }
 
+/// The legacy TX queue stores a four-byte command header before the API-v6
+/// TX command.  The API-v6 fixed portion is 56 bytes, followed by the raw
+/// 802.11 frame.
+pub const TX_COMMAND_HEADER_LEN: usize = core::mem::size_of::<HcmdHeader>();
+pub const TX_COMMAND_FIXED_LEN: usize = 56;
+pub const TX_FRAME_OFFSET: usize = TX_COMMAND_HEADER_LEN + TX_COMMAND_FIXED_LEN;
+
 #[repr(C, packed)]
 pub struct HcmdResp {
     pub header: HcmdHeader,

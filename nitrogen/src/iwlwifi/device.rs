@@ -2052,13 +2052,25 @@ pub(super) mod test_support {
             }
             let idx = (self.tx_head - 1) % TX_QUEUE_SIZE;
             let buf = &self.tx_bufs[idx];
-            buf.as_slice()
+            let wire = buf.as_slice();
+            if wire.len() < TX_FRAME_OFFSET {
+                return &[];
+            }
+            let frame_len = u16::from_le_bytes([wire[4], wire[5]]) as usize;
+            let end = TX_FRAME_OFFSET.saturating_add(frame_len).min(wire.len());
+            &wire[TX_FRAME_OFFSET..end]
         }
 
         /// Read a TX frame by ring index.
         pub fn tx_frame_at(&self, index: usize) -> &[u8] {
             let idx = index % TX_QUEUE_SIZE;
-            self.tx_bufs[idx].as_slice()
+            let wire = self.tx_bufs[idx].as_slice();
+            if wire.len() < TX_FRAME_OFFSET {
+                return &[];
+            }
+            let frame_len = u16::from_le_bytes([wire[4], wire[5]]) as usize;
+            let end = TX_FRAME_OFFSET.saturating_add(frame_len).min(wire.len());
+            &wire[TX_FRAME_OFFSET..end]
         }
 
         /// Simulate firmware consuming all queued TX descriptors by advancing

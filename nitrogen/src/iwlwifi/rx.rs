@@ -32,6 +32,30 @@ impl fmt::Display for RxHexBytes<'_> {
 }
 
 impl IwlWifiDevice {
+    /// Advance the management-frame connection watchdog before touching the
+    /// device.  A PCIe/MMIO health failure can make the RX poll return early;
+    /// the user-facing state must still leave `Authenticating`/`Associating`
+    /// instead of remaining there forever.
+    fn advance_connection_watchdog(&mut self) {
+        if matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent) {
+            self.connection_watchdog_ticks = self.connection_watchdog_ticks.saturating_add(1);
+            if self.connection_watchdog_ticks > CONNECTION_WATCHDOG_TICKS {
+                let phase = if self.iwl_state == IwlState::AuthSent {
+                    "authentication"
+                } else {
+                    "association"
+                };
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!("{} response timeout", phase));
+                self.connection_watchdog_ticks = 0;
+                log::warn!("iwlwifi: {} response timeout", phase);
+            }
+        } else {
+            self.connection_watchdog_ticks = 0;
+        }
+    }
+
     fn save_phy_db_notification(&mut self, payload: &[u8]) {
         if payload.len() < 4 {
             return;
@@ -574,6 +598,9 @@ impl IwlWifiDevice {
 
     /// Service device interrupts and consume completed receive descriptors.
     pub fn tick(&mut self) {
+        // Keep this before the PCIe/MMIO probe: a failed probe must not leave
+        // the UI in an unbounded Authenticating or Associating state.
+        self.advance_connection_watchdog();
         if let Err(error) = self.health.pre_mmio_access() {
             if self.scan_pending {
                 // Do not silently turn a live-scan PCIe/link check failure
@@ -901,24 +928,6 @@ impl IwlWifiDevice {
                     SCAN_RESULT_GRACE_TICKS
                 );
             }
-        }
-
-        if matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent) {
-            self.connection_watchdog_ticks = self.connection_watchdog_ticks.saturating_add(1);
-            if self.connection_watchdog_ticks > CONNECTION_WATCHDOG_TICKS {
-                let phase = if self.iwl_state == IwlState::AuthSent {
-                    "authentication"
-                } else {
-                    "association"
-                };
-                self.iwl_state = IwlState::Disconnected;
-                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-                self.wifi_conn.error_msg = Some(alloc::format!("{} response timeout", phase));
-                self.connection_watchdog_ticks = 0;
-                log::warn!("iwlwifi: {} response timeout", phase);
-            }
-        } else {
-            self.connection_watchdog_ticks = 0;
         }
     }
 

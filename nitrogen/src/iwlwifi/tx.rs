@@ -1,6 +1,7 @@
 //! Host-command and transmit-ring handling for [`IwlWifiDevice`].
 
 use crate::mmio;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -10,6 +11,14 @@ use super::types::*;
 
 /// The legacy TFD stores the buffer length in bits 4..15 of `hi_n_len`.
 const TFD_LENGTH_MAX: usize = 0x0fff;
+
+// Legacy 7265 management/data frames use the API-v6 TX command.  A 1 Mbps
+// CCK rate is valid for the 2.4 GHz management exchange used by this driver;
+// the firmware command wrapper is the important part here, since placing the
+// raw 802.11 frame at byte zero makes the firmware interpret 0xb0/0x00 as a
+// command opcode.
+const TX_RATE_1M_CCK: u32 = 10 | (1 << 9) | (1 << 14);
+const TX_CMD_OPCODE: u8 = 0x1c;
 
 const _: () = assert!(
     core::mem::size_of::<HcmdHeaderWide>() + core::mem::size_of::<ScanRequestCmd>()
@@ -1506,6 +1515,11 @@ impl IwlWifiDevice {
         if frame.len() < 2 {
             return Err(crate::DriverError::InvalidArgument);
         }
+        if frame.len() > MAX_FRAME_SIZE.saturating_sub(TX_FRAME_OFFSET)
+            || frame.len() + TX_FRAME_OFFSET > TFD_LENGTH_MAX
+        {
+            return Err(crate::DriverError::InvalidArgument);
+        }
 
         // Identify frame type based on well-known 802.11 patterns
         let frame_control = frame[0];
@@ -1554,7 +1568,9 @@ impl IwlWifiDevice {
         }
 
         while let Some(tx_frame) = self.tx_queue.front() {
-            if tx_frame.len() > MAX_FRAME_SIZE || tx_frame.len() > TFD_LENGTH_MAX {
+            if tx_frame.len() + TX_FRAME_OFFSET > MAX_FRAME_SIZE
+                || tx_frame.len() + TX_FRAME_OFFSET > TFD_LENGTH_MAX
+            {
                 self.tx_queue.pop_front();
                 continue;
             }
@@ -1563,18 +1579,19 @@ impl IwlWifiDevice {
             }
 
             let tx_frame = self.tx_queue.pop_front().unwrap();
+            let sequence = ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff);
+            let wire = Self::build_tx_command(&tx_frame, sequence);
             let desc_idx = self.tx_head % TX_QUEUE_SIZE;
             let desc_ptr = self.tx_dma_ring.virt() as *mut TxDmaDesc;
             let buf = &mut self.tx_bufs[desc_idx];
-            buf.write_from(&tx_frame);
+            buf.write_from(&wire);
 
             let dma_addr = buf.dma_iova();
             let desc = unsafe { &mut *desc_ptr.add(desc_idx) };
             *desc = TxDmaDesc::zeroed();
             desc.num_tbs = 1;
             desc.tbs[0].addr_lo = dma_addr as u32;
-            desc.tbs[0].hi_n_len =
-                ((tx_frame.len() as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
+            desc.tbs[0].hi_n_len = ((wire.len() as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
             self.tx_head = self.tx_head.wrapping_add(1);
@@ -1587,6 +1604,37 @@ impl IwlWifiDevice {
             }
             mmio::write_barrier();
         }
+    }
+
+    /// Build the legacy API-v6 TX command consumed by the 7265 firmware.
+    ///
+    /// The DMA buffer must begin with the normal four-byte command header;
+    /// the fixed TX command follows it, then the 802.11 MAC frame.  Linux
+    /// calls this `struct iwl_tx_cmd` and sets ACK/sequence-control for
+    /// management and ordinary non-QoS frames.
+    fn build_tx_command(frame: &[u8], sequence: u16) -> Vec<u8> {
+        let mut wire = vec![0u8; TX_FRAME_OFFSET + frame.len()];
+
+        // HcmdHeader.
+        wire[0] = TX_CMD_OPCODE;
+        wire[1] = GroupId::Legacy as u8;
+        wire[2..4].copy_from_slice(&sequence.to_le_bytes());
+
+        // API-v6 iwl_tx_cmd, relative to the command header.
+        let tx = TX_COMMAND_HEADER_LEN;
+        wire[tx..tx + 2].copy_from_slice(&(frame.len() as u16).to_le_bytes());
+        // TX_CMD_FLG_ACK | TX_CMD_FLG_SEQ_CTL.
+        wire[tx + 4..tx + 8].copy_from_slice(&(1u32 << 3 | 1u32 << 13).to_le_bytes());
+        wire[tx + 12..tx + 16].copy_from_slice(&TX_RATE_1M_CCK.to_le_bytes());
+        // sta_id=0, no firmware-side encryption, and the default management
+        // retry budget.  The lifetime and PM timeout keep the AP awake while
+        // authentication/association completes.
+        wire[tx + 40..tx + 44].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+        wire[tx + 50] = 3;
+        wire[tx + 52..tx + 54].copy_from_slice(&3u16.to_le_bytes());
+
+        wire[TX_FRAME_OFFSET..].copy_from_slice(frame);
+        wire
     }
 
     /// Return whether the monotonic hardware TX tail has reached or passed the
