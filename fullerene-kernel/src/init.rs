@@ -340,6 +340,26 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 present_devices.push(dev.clone());
             }
 
+            // The N150 touchpad is an ACPI HID device behind Intel LPSS I2C
+            // 00:15.0 (8086:54e8). Probe this exact profile before the
+            // generic driver manager so the existing PS/2 path remains the
+            // fallback on the older NEC test machine.
+            if let Some(device) = present_devices.iter().find(|device| {
+                device.vendor_id == 0x8086
+                    && device.device_id == nitrogen::hid::GEMIBOOK_N150_I2C_HID.pci_device_id
+                    && device.bus == nitrogen::hid::GEMIBOOK_N150_I2C_HID.pci_bus
+                    && device.device == nitrogen::hid::GEMIBOOK_N150_I2C_HID.pci_device
+                    && device.function == nitrogen::hid::GEMIBOOK_N150_I2C_HID.pci_function
+            }) {
+                match nitrogen::i2c_hid::init_n150(ctx, device) {
+                    Ok(()) => log::info!("N150 touchpad: I2C-HID polling enabled"),
+                    Err(error) => log::warn!(
+                        "N150 touchpad: I2C-HID probe failed; keeping PS/2 fallback: {:?}",
+                        error
+                    ),
+                }
+            }
+
             // DriverManager orchestrates probe → priority → attach → registration
             let mgr = DRIVER_MGR.call_once(crate::hardware::driver_manager::DriverManager::new);
             mgr.discover_and_attach(&registry, ctx, &present_devices);

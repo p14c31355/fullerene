@@ -36,6 +36,16 @@ const MOUSE_STALE_AFTER_MS: u64 = 50;
 static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
 static VIDEO_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+fn map_touch_axis(value: i32, minimum: i32, maximum: i32, pixels: u32) -> i16 {
+    if pixels == 0 || maximum <= minimum {
+        return 0;
+    }
+    let value = value.clamp(minimum, maximum) - minimum;
+    let range = i64::from(maximum - minimum);
+    (i64::from(value) * i64::from(pixels.saturating_sub(1)) / range)
+        .clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+}
+
 /// Consume an Escape press observed by the low-level keyboard poller.
 ///
 /// The synchronous WASM viewer cannot receive the normal desktop event
@@ -76,6 +86,8 @@ fn push_mouse_button_edges(queue: &mut resonance::EventQueue, buttons: u8, previ
 }
 
 pub fn poll_mouse_state() {
+    nitrogen::i2c_hid::poll_input();
+    let touchpad = nitrogen::i2c_hid::consume_input();
     // IRQ12 is the normal delivery path. Drain AUX bytes as a fallback for
     // QEMU/firmware configurations where the legacy mouse route is not wired
     // through the I/O APIC.
@@ -109,6 +121,13 @@ pub fn poll_mouse_state() {
     } else {
         next_y.clamp(0, fb_height.saturating_sub(1) as i32) as i16
     };
+    // HID-over-I2C reports absolute coordinates.  Update the desktop only
+    // while a finger is down; release reports must not snap the pointer back
+    // to the controller's last coordinate.
+    if let Some(touchpad) = touchpad.filter(|input| input.report.in_contact) {
+        mouse.x = map_touch_axis(touchpad.report.x, touchpad.x_min, touchpad.x_max, fb_width);
+        mouse.y = map_touch_axis(touchpad.report.y, touchpad.y_min, touchpad.y_max, fb_height);
+    }
     mouse.buttons = buttons;
     let cursor_x = mouse.x as i32;
     let cursor_y = mouse.y as i32;

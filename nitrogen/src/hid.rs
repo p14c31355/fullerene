@@ -14,9 +14,40 @@ pub const INTEL_LPSS_I2C_DEVICE_IDS: &[u16] = &[0x54e8, 0x54e9, 0x54ea, 0x54eb];
 pub const GEMIBOOK_TOUCHPAD_ACPI_HID: &[u8; 7] = b"AMR1399";
 /// Linux's ACPI-backed I2C-HID device name observed on the N150.
 pub const GEMIBOOK_LINUX_I2C_HID_NAME: &[u8; 11] = b"AMR13992:00";
+/// The firmware's full `_HID` string. Windows exposes the legacy seven-byte
+/// prefix (`AMR1399`) while Linux retains the trailing firmware character.
+pub const GEMIBOOK_FIRMWARE_ACPI_HID: &[u8; 8] = b"AMR13992";
 /// HID identity reported by the Linux live image.
 pub const GEMIBOOK_TOUCHPAD_HID_VENDOR_ID: u16 = 0x36b6;
 pub const GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID: u16 = 0xc001;
+
+/// ACPI-derived transport parameters for the GemiBook XPro N150 touchpad.
+///
+/// These values come from `\_SB.PC00.I2C0.TPD0` in the supplied DSDT:
+/// `BADR = 0x2c`, `SPED = 0x00061a80`, and `HID2 = 0x20`. The IRQ is the
+/// resolved GPIO interrupt reported by Windows and Linux on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct I2cHidPlatformConfig {
+    pub pci_device_id: u16,
+    pub pci_bus: u8,
+    pub pci_device: u8,
+    pub pci_function: u8,
+    pub i2c_address: u16,
+    pub bus_speed_hz: u32,
+    pub hid_descriptor_register: u16,
+    pub interrupt_gsi: u32,
+}
+
+pub const GEMIBOOK_N150_I2C_HID: I2cHidPlatformConfig = I2cHidPlatformConfig {
+    pci_device_id: 0x54e8,
+    pci_bus: 0,
+    pci_device: 0x15,
+    pci_function: 0,
+    i2c_address: 0x2c,
+    bus_speed_hz: 400_000,
+    hid_descriptor_register: 0x20,
+    interrupt_gsi: 81,
+};
 
 const GENERIC_DESKTOP_PAGE: u16 = 0x01;
 const BUTTON_PAGE: u16 = 0x09;
@@ -216,7 +247,13 @@ impl HidReportDescriptor {
                 // change the input bit layout here.  Physical/unit globals
                 // also do not affect extraction; they are nevertheless
                 // valid and common in precision-touchpad descriptors.
-                (0, 0x9) | (0, 0xa) | (0, 0xc) | (1, 0x3..=0x6) | (1, 0xa) | (1, 0xb) => {}
+                (0, 0x9)
+                | (0, 0xa)
+                | (0, 0xb)
+                | (0, 0xc)
+                | (1, 0x3..=0x6)
+                | (1, 0xa)
+                | (1, 0xb) => {}
                 _ => return Err(HidDescriptorError::InvalidItem),
             }
         }
@@ -384,7 +421,8 @@ impl HidReportDescriptor {
 #[cfg(test)]
 mod tests {
     use super::{
-        GEMIBOOK_LINUX_I2C_HID_NAME, GEMIBOOK_TOUCHPAD_ACPI_HID, GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID,
+        GEMIBOOK_FIRMWARE_ACPI_HID, GEMIBOOK_LINUX_I2C_HID_NAME, GEMIBOOK_N150_I2C_HID,
+        GEMIBOOK_TOUCHPAD_ACPI_HID, GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID,
         GEMIBOOK_TOUCHPAD_HID_VENDOR_ID, HidReportDescriptor, INTEL_LPSS_I2C_DEVICE_IDS,
         TouchpadReport,
     };
@@ -437,8 +475,13 @@ mod tests {
         assert!(INTEL_LPSS_I2C_DEVICE_IDS.contains(&0x54e8));
         assert_eq!(GEMIBOOK_TOUCHPAD_ACPI_HID, b"AMR1399");
         assert_eq!(GEMIBOOK_LINUX_I2C_HID_NAME, b"AMR13992:00");
+        assert_eq!(GEMIBOOK_FIRMWARE_ACPI_HID, b"AMR13992");
         assert_eq!(GEMIBOOK_TOUCHPAD_HID_VENDOR_ID, 0x36b6);
         assert_eq!(GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID, 0xc001);
+        assert_eq!(GEMIBOOK_N150_I2C_HID.i2c_address, 0x2c);
+        assert_eq!(GEMIBOOK_N150_I2C_HID.bus_speed_hz, 400_000);
+        assert_eq!(GEMIBOOK_N150_I2C_HID.hid_descriptor_register, 0x20);
+        assert_eq!(GEMIBOOK_N150_I2C_HID.interrupt_gsi, 81);
     }
 
     #[test]
@@ -459,5 +502,17 @@ mod tests {
             descriptor.decode_touchpad(fields, &report).unwrap().y,
             0x5678
         );
+    }
+
+    #[test]
+    fn accepts_n150_feature_items_after_touch_collections() {
+        // The complete N150 descriptor contains feature reports for contact
+        // mode and vendor configuration after its input collections.
+        let descriptor = HidReportDescriptor::parse(&[
+            0x05, 0x0d, 0x85, 0x03, 0x75, 0x04, 0x95, 0x02, 0x25, 0x0f, 0xb1, 0x02, 0x06, 0x00,
+            0xff, 0x85, 0x0a, 0x75, 0x08, 0x96, 0x00, 0x01, 0xb1, 0x02,
+        ])
+        .unwrap();
+        assert!(descriptor.fields().is_empty());
     }
 }
