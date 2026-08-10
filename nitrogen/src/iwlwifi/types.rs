@@ -313,6 +313,22 @@ pub struct ScdTxqCfgCmdV1 {
 }
 
 impl ScdTxqCfgCmdV1 {
+    pub fn peer(sta_id: u8) -> Self {
+        use super::registers::IWL_DATA_QUEUE;
+        Self {
+            token: 0,
+            sta_id,
+            tid: 16, // IWL_MAX_TID_COUNT: non-QoS management/data traffic
+            scd_queue: IWL_DATA_QUEUE as u8,
+            action: 1,    // SCD_CFG_ENABLE_QUEUE
+            aggregate: 0, // non-aggregated queue
+            tx_fifo: 2,   // IWL_MVM_TX_FIFO_BE
+            window: 64,
+            ssn: 0,
+            reserved: 0,
+        }
+    }
+
     pub fn aux(sta_id: u8) -> Self {
         use super::registers::IWL_AUX_QUEUE;
         Self {
@@ -604,9 +620,10 @@ impl AddStaCmdV7 {
     /// Add the AP peer used by a managed station connection.
     ///
     /// The 7265 reserves station 0 for the AP of the station interface. The
-    /// queue mask is left empty initially; the TX command path only needs the
-    /// peer to exist for authentication/association management frames.
+    /// first ordinary data queue is assigned to that peer before the first
+    /// authentication frame is submitted.
     pub fn peer(mac_index: u8, sta_id: u8, bssid: [u8; 6]) -> Self {
+        use super::registers::IWL_DATA_QUEUE;
         Self {
             add_modify: 0, // STA_MODE_ADD
             awake_acs: 0,
@@ -626,7 +643,7 @@ impl AddStaCmdV7 {
             sleep_state_flags: 0,
             assoc_id: 0,
             beamform_flags: 0,
-            tfd_queue_msk: 0,
+            tfd_queue_msk: 1 << IWL_DATA_QUEUE,
         }
     }
 }

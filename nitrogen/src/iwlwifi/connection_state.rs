@@ -876,6 +876,8 @@ fn perform_init_step() {
                 rx_dma_ring: rx_dma,
                 tx_head: 0,
                 tx_tail: 0,
+                tx_data_head: 0,
+                tx_data_tail: 0,
                 rx_head: 0,
                 rx_tail: 0,
                 rx_posted: 0,
@@ -1825,6 +1827,22 @@ impl IwlWifiDevice {
             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
             self.wifi_conn.error_msg = Some(alloc::format!(
                 "connection MAC context setup failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
+        let data_scd = ScdTxqCfgCmdV1::peer(0);
+        let data_scd_bytes = unsafe { super::as_bytes(&data_scd) };
+        if let Err(error) = self.send_hcmd(
+            LegacyCmd::ScdQueueCfg as u8,
+            GroupId::Legacy as u8,
+            data_scd_bytes,
+        ) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection data queue setup failed: {:?}",
                 error
             ));
             return Err(error);

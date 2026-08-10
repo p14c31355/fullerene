@@ -172,8 +172,11 @@ impl IwlWifiDevice {
         // firmware reset starts its scheduler pointers at zero.
         self.tx_head = 0;
         self.tx_tail = 0;
+        self.tx_data_head = 0;
+        self.tx_data_tail = 0;
         let ring_phys = self.tx_dma_ring.dma_iova();
         let aux_ring_phys = ring_phys + TX_AUX_TFD_RING_OFFSET as u64;
+        let data_ring_phys = ring_phys + TX_DATA_TFD_RING_OFFSET as u64;
         let keep_warm_phys = ring_phys + TX_KEEP_WARM_OFFSET as u64;
         let scd_bc_phys = ring_phys + TX_SCD_BC_OFFSET as u64;
 
@@ -202,6 +205,8 @@ impl IwlWifiDevice {
             self.write_prph(SCD_CHAINEXT_EN, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
+            self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_DATA, 0);
+            self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_DATA + 4, 64 | (64 << 16));
             // The scan engine uses the internal station's q11. Configure it
             // before ADD_STA_AUX, just as Linux does; the firmware validates
             // the station's tfd_queue_msk against this scheduler entry.
@@ -218,6 +223,7 @@ impl IwlWifiDevice {
         let scd_gp = self.read_prph(SCD_GP_CTRL).unwrap_or(0);
         self.write_prph(SCD_GP_CTRL, scd_gp | SCD_GP_CTRL_AUTO_ACTIVE_MODE);
         self.write_prph(SCD_QUEUE_RDPTR_CMD, 0);
+        self.write_prph(SCD_QUEUE_RDPTR_DATA, 0);
         self.write_prph(SCD_QUEUE_RDPTR_AUX, 0);
         // Match Linux's iwl_trans_pcie_txq_enable(): stop the command queue
         // before rewriting its context/status.  Clearing SCD_EN_CTRL alone
@@ -228,6 +234,7 @@ impl IwlWifiDevice {
             SCD_QUEUE_STATUS_AUX,
             1 << 19, // SCD_QUEUE_STTS_REG_POS_SCD_ACT_EN: inactive while configuring
         );
+        self.write_prph(SCD_QUEUE_STATUS_DATA, 1 << 19);
         self.write_prph(SCD_QUEUECHAIN_SEL, 1 << IWL_AUX_QUEUE);
         self.write_prph(SCD_AGGR_SEL, 0);
         self.write_prph(
@@ -244,8 +251,15 @@ impl IwlWifiDevice {
                 | SCD_QUEUE_STTS_FIFO_COMMAND
                 | SCD_QUEUE_STTS_MASK,
         );
+        self.write_prph(
+            SCD_QUEUE_STATUS_DATA,
+            SCD_QUEUE_STTS_ACTIVE
+                | 2 // IWL_MVM_TX_FIFO_BE
+                | SCD_QUEUE_STTS_WSL
+                | SCD_QUEUE_STTS_MASK,
+        );
         self.write_prph(SCD_TXFACT, 0xFF);
-        self.write_prph(SCD_EN_CTRL, 1 << IWL_CMD_QUEUE);
+        self.write_prph(SCD_EN_CTRL, (1 << IWL_CMD_QUEUE) | (1 << IWL_DATA_QUEUE));
 
         unsafe {
             // The keep-warm buffer must be a separate 4 KiB-aligned DMA
@@ -266,6 +280,10 @@ impl IwlWifiDevice {
             core::ptr::write_volatile(
                 self.mmio.add(FH_MEM_CBBC_AUX_QUEUE as usize),
                 (aux_ring_phys >> 8) as u32,
+            );
+            core::ptr::write_volatile(
+                self.mmio.add(FH_MEM_CBBC_DATA_QUEUE as usize),
+                (data_ring_phys >> 8) as u32,
             );
             core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
             // The FH exposes eight physical DMA channels. q9/q11 are logical
@@ -292,16 +310,19 @@ impl IwlWifiDevice {
         let scd_active = self.read_prph(SCD_EN_CTRL);
         let scd_chainext = self.read_prph(SCD_CHAINEXT_EN);
         log::info!(
-            "iwlwifi: legacy TX queues configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} aux_q={} aux_fifo=5 aux_tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} aux_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
+            "iwlwifi: legacy TX queues configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} data_q={} data_fifo=2 data_tfd={:#018x} aux_q={} aux_fifo=5 aux_tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} data_status={:#010x} aux_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
             IWL_CMD_QUEUE,
             SCD_QUEUE_STTS_FIFO_COMMAND,
             ring_phys,
+            IWL_DATA_QUEUE,
+            data_ring_phys,
             IWL_AUX_QUEUE,
             aux_ring_phys,
             keep_warm_phys,
             scd_bc_phys,
             fh_config.unwrap_or(!0),
             scd_status.unwrap_or(!0),
+            self.read_prph(SCD_QUEUE_STATUS_DATA).unwrap_or(!0),
             self.read_prph(SCD_QUEUE_STATUS_AUX).unwrap_or(!0),
             scd_active.unwrap_or(!0),
             scd_chainext.unwrap_or(!0),
@@ -1586,6 +1607,10 @@ impl IwlWifiDevice {
             return;
         }
 
+        if self.tx_queue.is_empty() || self.wake_for_hcmd().is_err() {
+            return;
+        }
+
         while let Some(tx_frame) = self.tx_queue.front() {
             if tx_frame.len() + TX_FRAME_OFFSET > MAX_FRAME_SIZE
                 || tx_frame.len() + TX_FRAME_OFFSET > TFD_LENGTH_MAX
@@ -1593,12 +1618,12 @@ impl IwlWifiDevice {
                 self.tx_queue.pop_front();
                 continue;
             }
-            if self.tx_head.wrapping_sub(self.tx_tail) >= TX_QUEUE_SIZE {
+            if self.tx_data_head.wrapping_sub(self.tx_data_tail) >= TX_QUEUE_SIZE {
                 break;
             }
 
             let tx_frame = self.tx_queue.pop_front().unwrap();
-            let sequence = ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff);
+            let sequence = ((IWL_DATA_QUEUE as u16) << 8) | (self.tx_data_head as u16 & 0xff);
             let rate_n_flags = self.tx_rate_n_flags();
             let wire = Self::build_tx_command(&tx_frame, sequence, rate_n_flags);
             if tx_frame.len() >= 2 && (tx_frame[0] & 0x0c) >> 2 == 0 {
@@ -1613,8 +1638,10 @@ impl IwlWifiDevice {
                     },
                 );
             }
-            let desc_idx = self.tx_head % TX_QUEUE_SIZE;
-            let desc_ptr = self.tx_dma_ring.virt() as *mut TxDmaDesc;
+            let desc_idx = self.tx_data_head % TX_QUEUE_SIZE;
+            let desc_ptr = unsafe {
+                (self.tx_dma_ring.virt() as *mut u8).add(TX_DATA_TFD_RING_OFFSET) as *mut TxDmaDesc
+            };
             let buf = &mut self.tx_bufs[desc_idx];
             buf.write_from(&wire);
 
@@ -1626,16 +1653,17 @@ impl IwlWifiDevice {
             desc.tbs[0].hi_n_len = ((wire.len() as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
-            self.tx_head = self.tx_head.wrapping_add(1);
+            self.tx_data_head = self.tx_data_head.wrapping_add(1);
             mmio::write_barrier();
             unsafe {
                 core::ptr::write_volatile(
                     self.mmio.add(HBUS_TARG_WRPTR as usize),
-                    (self.tx_head as u32 & 0xff) | (IWL_CMD_QUEUE << 8),
+                    (self.tx_data_head as u32 & 0xff) | (IWL_DATA_QUEUE << 8),
                 );
             }
             mmio::write_barrier();
         }
+        self.release_mac_access();
     }
 
     /// Build the legacy API-v6 TX command consumed by the 7265 firmware.
@@ -1713,6 +1741,20 @@ impl IwlWifiDevice {
             return;
         }
         self.tx_tail = self.tx_tail.wrapping_add(advance);
+    }
+
+    /// Extend the data-queue hardware read pointer into its monotonic host
+    /// counter.  The command and data queues have independent scheduler
+    /// pointers and must not share completion accounting.
+    pub(super) fn update_data_tx_tail(&mut self, hardware_tail: usize) {
+        let hardware_tail = hardware_tail % TX_QUEUE_SIZE;
+        let current_tail = self.tx_data_tail % TX_QUEUE_SIZE;
+        let advance = (hardware_tail + TX_QUEUE_SIZE - current_tail) % TX_QUEUE_SIZE;
+        let outstanding = self.tx_data_head.wrapping_sub(self.tx_data_tail);
+        if advance > outstanding {
+            return;
+        }
+        self.tx_data_tail = self.tx_data_tail.wrapping_add(advance);
     }
 }
 

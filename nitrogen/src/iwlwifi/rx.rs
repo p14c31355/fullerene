@@ -673,6 +673,12 @@ impl IwlWifiDevice {
         } else {
             None
         };
+        let polled_data_tx_tail = if self.fw_state == FwState::Ready {
+            self.read_prph(SCD_QUEUE_RDPTR_DATA)
+                .map(|value| value as usize)
+        } else {
+            None
+        };
         let tx_tail_before_poll = self.tx_tail;
         if let Some(hardware_tail) = polled_tx_tail {
             self.update_tx_tail(hardware_tail);
@@ -682,6 +688,19 @@ impl IwlWifiDevice {
                     hardware_tail & (TX_QUEUE_SIZE - 1),
                     self.tx_tail & (TX_QUEUE_SIZE - 1),
                     self.tx_head & (TX_QUEUE_SIZE - 1),
+                );
+                self.process_tx_queue();
+            }
+        }
+        let data_tx_tail_before_poll = self.tx_data_tail;
+        if let Some(hardware_tail) = polled_data_tx_tail {
+            self.update_data_tx_tail(hardware_tail);
+            if self.tx_data_tail != data_tx_tail_before_poll {
+                log::debug!(
+                    "iwlwifi: TX data completion progress scd_rptr={} tx_data_tail={} tx_data_head={}",
+                    hardware_tail & (TX_QUEUE_SIZE - 1),
+                    self.tx_data_tail & (TX_QUEUE_SIZE - 1),
+                    self.tx_data_head & (TX_QUEUE_SIZE - 1),
                 );
                 self.process_tx_queue();
             }
@@ -835,6 +854,9 @@ impl IwlWifiDevice {
                 // pointer are independent on this generation.
                 if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_CMD) {
                     self.update_tx_tail(hardware_tail as usize);
+                }
+                if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_DATA) {
+                    self.update_data_tx_tail(hardware_tail as usize);
                 }
                 self.process_tx_queue();
             }

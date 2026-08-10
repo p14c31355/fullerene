@@ -119,6 +119,8 @@ pub struct IwlWifiDevice {
     pub rx_dma_ring: DmaRegion,
     pub tx_head: usize,
     pub tx_tail: usize,
+    pub tx_data_head: usize,
+    pub tx_data_tail: usize,
     pub rx_head: usize,
     pub rx_tail: usize,
     /// Absolute RBD write pointer posted to firmware. This is distinct from
@@ -530,6 +532,8 @@ impl IwlWifiDevice {
             rx_dma_ring,
             tx_head: 0,
             tx_tail: 0,
+            tx_data_head: 0,
+            tx_data_tail: 0,
             rx_head: 0,
             rx_tail: 0,
             rx_posted: 0,
@@ -754,6 +758,8 @@ impl IwlWifiDevice {
             rx_dma_ring,
             tx_head: 0,
             tx_tail: 0,
+            tx_data_head: 0,
+            tx_data_tail: 0,
             rx_head: 0,
             rx_tail: 0,
             rx_posted: 0,
@@ -815,6 +821,8 @@ impl IwlWifiDevice {
         self.runtime_calib_event = 0;
         self.tx_head = 0;
         self.tx_tail = 0;
+        self.tx_data_head = 0;
+        self.tx_data_tail = 0;
         self.rx_head = 0;
         self.rx_tail = 0;
         self.rx_posted = 0;
@@ -2033,6 +2041,8 @@ pub(super) mod test_support {
                 rx_dma_ring,
                 tx_head: 0,
                 tx_tail: 0,
+                tx_data_head: 0,
+                tx_data_tail: 0,
                 rx_head: 0,
                 rx_tail: 0,
                 rx_posted: 0,
@@ -2047,10 +2057,10 @@ pub(super) mod test_support {
 
         /// Read back the most recent TX frame written to the DMA ring.
         pub fn last_tx_frame(&self) -> &[u8] {
-            if self.tx_head == 0 {
+            if self.tx_data_head == 0 {
                 return &[];
             }
-            let idx = (self.tx_head - 1) % TX_QUEUE_SIZE;
+            let idx = (self.tx_data_head - 1) % TX_QUEUE_SIZE;
             let buf = &self.tx_bufs[idx];
             let wire = buf.as_slice();
             if wire.len() < TX_FRAME_OFFSET {
@@ -2074,9 +2084,10 @@ pub(super) mod test_support {
         }
 
         /// Simulate firmware consuming all queued TX descriptors by advancing
-        /// `tx_tail` to `tx_head`.
+        /// both command and data queue tails to their respective heads.
         pub fn drain_tx(&mut self) {
             self.tx_tail = self.tx_head;
+            self.tx_data_tail = self.tx_data_head;
         }
     }
 }
