@@ -292,15 +292,7 @@ impl Desktop {
                 return;
             } else {
                 // Click outside dialog - dismiss
-                self.pwd_dialog_open = false;
-                self.pwd_target_ap = None;
-                self.shift_held = false;
-                self.push_dirty_rect(crate::scene::DirtyRect::new(
-                    self.pwd_dialog_x,
-                    self.pwd_dialog_y,
-                    network_menu::PWD_DIALOG_W,
-                    network_menu::PWD_DIALOG_H,
-                ));
+                self.dismiss_password_dialog();
                 self.dismiss_network_menu();
                 return;
             }
@@ -557,6 +549,26 @@ impl Desktop {
             self.network_menu_open = false;
         }
         self.net_selected_idx = None;
+    }
+
+    /// Close the password dialog and invalidate the area it occupied.
+    ///
+    /// The dialog is an overlay. Clearing its state without dirtying the old
+    /// rectangle leaves its pixels behind until a later repaint covers them.
+    pub fn dismiss_password_dialog(&mut self) {
+        if self.pwd_dialog_open {
+            self.push_dirty_rect(crate::scene::DirtyRect::new(
+                self.pwd_dialog_x,
+                self.pwd_dialog_y,
+                network_menu::PWD_DIALOG_W,
+                network_menu::PWD_DIALOG_H,
+            ));
+        }
+        self.pwd_dialog_open = false;
+        self.pwd_target_ap = None;
+        self.pwd_dialog_password.clear();
+        self.pwd_dialog_cursor = 0;
+        self.shift_held = false;
     }
 
     /// Update the access point list for the network menu.
@@ -1036,6 +1048,23 @@ mod tests {
         assert!(dt.activate_network_selection(800, 600));
         assert!(!dt.network_menu_open);
         assert_eq!(dt.menu_action_pending, Some(DesktopAction::ConnectAp(0)));
+    }
+
+    #[test]
+    fn dismissing_password_dialog_invalidates_its_old_rectangle() {
+        let mut dt = Desktop::new(0x202020);
+        dt.pwd_dialog_open = true;
+        dt.pwd_dialog_x = 40;
+        dt.pwd_dialog_y = 50;
+        dt.dismiss_password_dialog();
+
+        assert!(!dt.pwd_dialog_open);
+        assert!(dt.wm.dirty_rects.iter().any(|rect| {
+            rect.x == 40
+                && rect.y == 50
+                && rect.width == network_menu::PWD_DIALOG_W
+                && rect.height == network_menu::PWD_DIALOG_H
+        }));
     }
 
     #[test]
