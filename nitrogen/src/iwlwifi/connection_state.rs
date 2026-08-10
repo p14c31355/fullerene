@@ -1814,7 +1814,7 @@ impl IwlWifiDevice {
         // transmitting authentication. TX_CMD carries sta_id=0 for this
         // minimal managed-station path; without the ADD_STA entry the 7265
         // accepts the TX_CMD opcode but rejects the command payload.
-        let mac_context = MacContextCmd::sta_for_bssid(self.mac, ap.bssid);
+        let mac_context = MacContextCmd::sta_for_bssid_on_channel(self.mac, ap.bssid, ap.channel);
         let mac_context_bytes = unsafe { super::as_bytes(&mac_context) };
         if let Err(error) = self.send_hcmd(
             LegacyCmd::MacContext as u8,

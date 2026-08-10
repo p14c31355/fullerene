@@ -517,6 +517,17 @@ impl MacContextCmd {
         context
     }
 
+    /// Build a BSSID context with the basic-rate bitmap for the selected
+    /// channel. CCK rates are not valid on 5 GHz; leaving them advertised can
+    /// make the 7265 reject or suppress the first management transmission.
+    pub fn sta_for_bssid_on_channel(mac: [u8; 6], bssid: [u8; 6], channel: u8) -> Self {
+        let mut context = Self::sta_for_bssid(mac, bssid);
+        if channel > 14 {
+            context.cck_rates = 0;
+        }
+        context
+    }
+
     /// Mark the station context associated after a successful association
     /// response. The AP supplies the association ID in that response.
     pub fn associated(mut self, aid: u16) -> Self {

@@ -18,6 +18,7 @@ const TFD_LENGTH_MAX: usize = 0x0fff;
 // raw 802.11 frame at byte zero makes the firmware interpret 0xb0/0x00 as a
 // command opcode.
 const TX_RATE_1M_CCK: u32 = 10 | (1 << 9) | (1 << 14);
+const TX_RATE_6M_OFDM: u32 = 13 | (1 << 8) | (1 << 14);
 const TX_CMD_OPCODE: u8 = 0x1c;
 
 const _: () = assert!(
@@ -45,6 +46,24 @@ impl fmt::Display for HexBytes<'_> {
 }
 
 impl IwlWifiDevice {
+    /// Select the lowest mandatory legacy rate for the AP's band. The
+    /// previous implementation always used 1 Mbps CCK, which is illegal on
+    /// 5 GHz and leaves authentication stuck after the TX_CMD is accepted.
+    fn tx_rate_n_flags(&self) -> u32 {
+        let channel = self
+            .wifi_conn
+            .current_ssid
+            .as_ref()
+            .and_then(|ssid| self.scan_results.iter().find(|ap| ap.ssid == *ssid))
+            .map(|ap| ap.channel)
+            .unwrap_or(1);
+        if channel > 14 {
+            TX_RATE_6M_OFDM
+        } else {
+            TX_RATE_1M_CCK
+        }
+    }
+
     /// Keep the MAC awake while the firmware consumes a host command.
     ///
     /// The 7000-series Linux transport sets MAC_ACCESS_REQ and waits for
@@ -1580,7 +1599,20 @@ impl IwlWifiDevice {
 
             let tx_frame = self.tx_queue.pop_front().unwrap();
             let sequence = ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff);
-            let wire = Self::build_tx_command(&tx_frame, sequence);
+            let rate_n_flags = self.tx_rate_n_flags();
+            let wire = Self::build_tx_command(&tx_frame, sequence, rate_n_flags);
+            if tx_frame.len() >= 2 && (tx_frame[0] & 0x0c) >> 2 == 0 {
+                log::info!(
+                    "iwlwifi: TX management frame subtype={} rate_n_flags={:#010x} band={}",
+                    (tx_frame[0] >> 4) & 0x0f,
+                    rate_n_flags,
+                    if rate_n_flags == TX_RATE_6M_OFDM {
+                        "5GHz"
+                    } else {
+                        "2.4GHz"
+                    },
+                );
+            }
             let desc_idx = self.tx_head % TX_QUEUE_SIZE;
             let desc_ptr = self.tx_dma_ring.virt() as *mut TxDmaDesc;
             let buf = &mut self.tx_bufs[desc_idx];
@@ -1613,7 +1645,7 @@ impl IwlWifiDevice {
     /// calls this `struct iwl_tx_cmd`. The values below mirror Linux's
     /// `iwl_mvm_set_tx_cmd()`/`iwl_mvm_set_tx_cmd_rate()` defaults for the
     /// management and non-QoS frames used by this driver.
-    fn build_tx_command(frame: &[u8], sequence: u16) -> Vec<u8> {
+    fn build_tx_command(frame: &[u8], sequence: u16, rate_n_flags: u32) -> Vec<u8> {
         let mut wire = vec![0u8; TX_FRAME_OFFSET + frame.len()];
 
         // HcmdHeader.
@@ -1636,7 +1668,7 @@ impl IwlWifiDevice {
         wire[tx + 4..tx + 8].copy_from_slice(
             &(TX_CMD_FLG_ACK | TX_CMD_FLG_BT_DIS | TX_CMD_FLG_SEQ_CTL).to_le_bytes(),
         );
-        wire[tx + 12..tx + 16].copy_from_slice(&TX_RATE_1M_CCK.to_le_bytes());
+        wire[tx + 12..tx + 16].copy_from_slice(&rate_n_flags.to_le_bytes());
         // sta_id=0, no firmware-side encryption. The AP peer is registered
         // before this command is queued by connect().
         wire[tx + 16] = 0;
@@ -1702,7 +1734,7 @@ mod tests {
     #[test]
     fn api_v6_tx_command_has_linux_management_defaults() {
         let frame = [0xb0u8; 30];
-        let wire = IwlWifiDevice::build_tx_command(&frame, 0x0918);
+        let wire = IwlWifiDevice::build_tx_command(&frame, 0x0918, TX_RATE_1M_CCK);
         let tx = TX_COMMAND_HEADER_LEN;
 
         assert_eq!(wire[0], TX_CMD_OPCODE);

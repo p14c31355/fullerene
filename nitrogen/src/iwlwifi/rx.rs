@@ -382,8 +382,15 @@ impl IwlWifiDevice {
                             // AP accepts the association. Publish the AID
                             // now so firmware can correctly handle the
                             // subsequent protected handshake/data traffic.
+                            let channel = self
+                                .scan_results
+                                .iter()
+                                .find(|ap| ap.bssid == bssid)
+                                .map(|ap| ap.channel)
+                                .unwrap_or(1);
                             let mac_context =
-                                MacContextCmd::sta_for_bssid(self.mac, bssid).associated(aid);
+                                MacContextCmd::sta_for_bssid_on_channel(self.mac, bssid, channel)
+                                    .associated(aid);
                             let mac_context_bytes = unsafe { super::as_bytes(&mac_context) };
                             if let Err(error) = self.send_hcmd(
                                 LegacyCmd::MacContext as u8,
