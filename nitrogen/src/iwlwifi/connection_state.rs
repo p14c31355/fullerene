@@ -869,6 +869,7 @@ fn perform_init_step() {
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
                 last_rx_phy_channel: 0,
+                connection_watchdog_ticks: 0,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
                 tx_dma_ring: tx_dma,
@@ -1711,6 +1712,7 @@ impl IwlWifiDevice {
         ) {
             self.scan_pending = false;
             self.iwl_state = IwlState::Disconnected;
+            self.connection_watchdog_ticks = 0;
             self.wifi_conn.finish_scan();
             return Err(error);
         }
@@ -1802,6 +1804,7 @@ impl IwlWifiDevice {
         self.subnet_mask = [0; 4];
         self.gateway = [0; 4];
         self.dns_server = [0; 4];
+        self.connection_watchdog_ticks = 0;
 
         if let Some(password) = password {
             self.wpa.init(password, ssid.as_str(), ap.bssid, self.mac);
@@ -1809,7 +1812,16 @@ impl IwlWifiDevice {
 
         self.iwl_state = IwlState::AuthSent;
         let auth_frame = wifi::build_auth_frame(ap.bssid, self.mac, 1);
-        let _ = self.send_raw_80211_frame(&auth_frame);
+        if let Err(error) = self.send_raw_80211_frame(&auth_frame) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "authentication frame transmission failed: {:?}",
+                error
+            ));
+            log::warn!("iwlwifi: failed to send authentication frame: {:?}", error);
+            return Err(error);
+        }
         log::info!(
             "iwlwifi: authenticating with {} ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
             ssid,
@@ -1840,6 +1852,7 @@ impl IwlWifiDevice {
         self.wpa_key_command_end = None;
         self.pending_wpa_message4 = None;
         self.iwl_state = IwlState::Disconnected;
+        self.connection_watchdog_ticks = 0;
         log::info!("iwlwifi: disconnected");
     }
 

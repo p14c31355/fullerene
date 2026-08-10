@@ -12,6 +12,11 @@ use super::device::IwlWifiDevice;
 use super::registers::*;
 use super::types::*;
 
+/// Bound a lost authentication/association response.  This is intentionally
+/// longer than a normal management exchange but finite, so the UI cannot stay
+/// in Authenticating forever when an AP or RX path drops the response.
+const CONNECTION_WATCHDOG_TICKS: u32 = 4_000;
+
 struct RxHexBytes<'a>(&'a [u8]);
 
 impl fmt::Display for RxHexBytes<'_> {
@@ -309,6 +314,8 @@ impl IwlWifiDevice {
                             u16::from_le_bytes([frame[body_offset + 4], frame[body_offset + 5]]);
                         if status_code == 0 {
                             self.iwl_state = IwlState::AssocSent;
+                            self.wifi_conn.status = bonder::wifi::WifiStatus::Associating;
+                            self.connection_watchdog_ticks = 0;
                             let bssid = [
                                 frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
                             ];
@@ -327,6 +334,7 @@ impl IwlWifiDevice {
                             log::info!("iwlwifi: auth successful, associating");
                         } else {
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                            self.connection_watchdog_ticks = 0;
                             log::warn!("iwlwifi: auth failed with status {}", status_code);
                         }
                     }
@@ -344,6 +352,7 @@ impl IwlWifiDevice {
                                 frame[body_offset + 5],
                             ]);
                             self.iwl_state = IwlState::Connected;
+                            self.connection_watchdog_ticks = 0;
                             self.wifi_conn.status = if self.wpa_required {
                                 // Association is not an encrypted connection.
                                 // Do not expose Connected or start DHCP until
@@ -361,6 +370,7 @@ impl IwlWifiDevice {
                             }
                         } else {
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                            self.connection_watchdog_ticks = 0;
                             log::warn!("iwlwifi: assoc failed with status {}", status_code);
                         }
                     }
@@ -891,6 +901,24 @@ impl IwlWifiDevice {
                     SCAN_RESULT_GRACE_TICKS
                 );
             }
+        }
+
+        if matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent) {
+            self.connection_watchdog_ticks = self.connection_watchdog_ticks.saturating_add(1);
+            if self.connection_watchdog_ticks > CONNECTION_WATCHDOG_TICKS {
+                let phase = if self.iwl_state == IwlState::AuthSent {
+                    "authentication"
+                } else {
+                    "association"
+                };
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!("{} response timeout", phase));
+                self.connection_watchdog_ticks = 0;
+                log::warn!("iwlwifi: {} response timeout", phase);
+            }
+        } else {
+            self.connection_watchdog_ticks = 0;
         }
     }
 

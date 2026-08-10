@@ -107,6 +107,10 @@ pub struct IwlWifiDevice {
     /// Parameter Set IE, so the channel can only be determined from this
     /// PHY metadata.
     pub last_rx_phy_channel: u16,
+    /// Service ticks since the current authentication/association request.
+    /// This bounds a lost management-frame exchange instead of leaving the
+    /// public connection status in Authenticating forever.
+    pub connection_watchdog_ticks: u32,
 
     /// TX/RX queues.
     pub tx_queue: VecDeque<Vec<u8>>,
@@ -519,6 +523,7 @@ impl IwlWifiDevice {
             scan_pending: false,
             scan_result_grace_ticks: 0,
             last_rx_phy_channel: 0,
+            connection_watchdog_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -742,6 +747,7 @@ impl IwlWifiDevice {
             scan_pending: false,
             scan_result_grace_ticks: 0,
             last_rx_phy_channel: 0,
+            connection_watchdog_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -2020,6 +2026,7 @@ pub(super) mod test_support {
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
                 last_rx_phy_channel: 0,
+                connection_watchdog_ticks: 0,
                 tx_queue: VecDeque::new(),
                 rx_queue: VecDeque::new(),
                 tx_dma_ring,

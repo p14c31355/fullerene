@@ -227,6 +227,7 @@ fn open_network_full_flow() {
     let auth_resp = build_auth_response(AP_BSSID, CLIENT_MAC, 0);
     dev.inject_rx_frame(&auth_resp);
     assert_eq!(dev.iwl_state, IwlState::AssocSent);
+    assert_eq!(dev.wifi_conn.status, wifi::WifiStatus::Associating);
 
     // Assoc request should have been sent
     let assoc_tx = dev.last_tx_frame();
@@ -267,6 +268,7 @@ fn wpa2_full_handshake_flow() {
     let auth_resp = build_auth_response(AP_BSSID, CLIENT_MAC, 0);
     dev.inject_rx_frame(&auth_resp);
     assert_eq!(dev.iwl_state, IwlState::AssocSent);
+    assert_eq!(dev.wifi_conn.status, wifi::WifiStatus::Associating);
 
     // 4. Assoc response → Handshake
     let assoc_resp = build_assoc_response(AP_BSSID, CLIENT_MAC, 0, 1);
