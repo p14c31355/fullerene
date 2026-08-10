@@ -136,6 +136,25 @@ impl EventHandler for WmEventHandler {
         }
 
         match event {
+            Event::Input(InputEvent::KeyDown(key)) if rt.desktop.network_menu_open => {
+                let handled = match key {
+                    KeyCode::Up => rt.desktop.move_network_selection(-1),
+                    KeyCode::Down => rt.desktop.move_network_selection(1),
+                    KeyCode::Enter => {
+                        let (fw, fh, _) = *FB_DIMS.lock();
+                        rt.desktop.activate_network_selection(fw, fh)
+                    }
+                    KeyCode::Escape => {
+                        rt.desktop.dismiss_network_menu();
+                        true
+                    }
+                    _ => false,
+                };
+                if handled {
+                    rt.frame_due = true;
+                }
+                handled
+            }
             Event::Input(InputEvent::MouseMove { x, y }) => {
                 apply_mouse_move(
                     &mut rt.desktop,

@@ -133,6 +133,8 @@ pub struct Desktop {
     pub ap_list: alloc::vec::Vec<ApDisplay>,
     /// Current network status.
     pub net_status: NetStatus,
+    /// Currently highlighted access point in the network menu.
+    pub net_selected_idx: Option<usize>,
     /// Position of the network menu.
     pub net_menu_x: u32,
     pub net_menu_y: u32,
@@ -187,6 +189,7 @@ impl Desktop {
             network_menu_open: false,
             ap_list: alloc::vec::Vec::new(),
             net_status: NetStatus::NoDevice,
+            net_selected_idx: None,
             net_menu_x: 0,
             net_menu_y: 0,
             pwd_dialog_open: false,
@@ -314,33 +317,9 @@ impl Desktop {
                 self.ap_list.len(),
             ) {
                 if ap_idx < self.ap_list.len() {
-                    let ap = &self.ap_list[ap_idx];
-                    if ap.has_lock {
-                        // Open password dialog
-                        self.pwd_dialog_open = true;
-                        self.pwd_dialog_ssid = ap.ssid.clone();
-                        self.pwd_dialog_password = String::new();
-                        self.pwd_dialog_cursor = 0;
-                        self.shift_held = false;
-                        self.pwd_target_ap = Some(ap_idx);
-                        self.pwd_dialog_x =
-                            (fb_width / 2).saturating_sub(network_menu::PWD_DIALOG_W / 2);
-                        self.pwd_dialog_y =
-                            (fb_height / 2).saturating_sub(network_menu::PWD_DIALOG_H / 2);
-                    } else {
-                        // Open AP - connect directly
-                        self.menu_action_pending = Some(DesktopAction::ConnectAp(ap_idx));
-                    }
+                    self.net_selected_idx = Some(ap_idx);
+                    self.activate_network_ap(ap_idx, fb_width, fb_height);
                 }
-                let menu_h =
-                    4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
-                self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
-                    self.net_menu_x,
-                    self.net_menu_y,
-                    network_menu::NET_MENU_WIDTH,
-                    menu_h,
-                ));
-                self.network_menu_open = false;
                 return;
             }
 
@@ -543,6 +522,7 @@ impl Desktop {
     /// Show the network menu with access point list.
     pub fn show_network_menu(&mut self, fb_width: u32, fb_height: u32) {
         self.network_menu_open = true;
+        self.net_selected_idx = (!self.ap_list.is_empty()).then_some(0);
         // Position the menu above the WiFi icon, right-aligned to stay on-screen
         let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
         // Right-align the menu with the WiFi icon so it doesn't extend past fb_width
@@ -576,6 +556,7 @@ impl Desktop {
             ));
             self.network_menu_open = false;
         }
+        self.net_selected_idx = None;
     }
 
     /// Update the access point list for the network menu.
@@ -585,12 +566,79 @@ impl Desktop {
         if changed {
             self.ap_list = aps;
             self.net_status = status;
+            self.net_selected_idx = match (self.net_selected_idx, self.ap_list.len()) {
+                (_, 0) => None,
+                (Some(index), len) => Some(index.min(len - 1)),
+                (None, _) if self.network_menu_open => Some(0),
+                (None, _) => None,
+            };
             self.wifi_networks_visible = match &self.net_status {
                 NetStatus::NoDevice => false,
                 _ => true,
             };
         }
         changed
+    }
+
+    /// Move the highlighted network entry by one or more rows.
+    pub fn move_network_selection(&mut self, delta: i32) -> bool {
+        if !self.network_menu_open {
+            return false;
+        }
+        let len = self.ap_list.len();
+        if len == 0 {
+            return true;
+        }
+        let current = self.net_selected_idx.unwrap_or(0) as i32;
+        let next = (current + delta).rem_euclid(len as i32) as usize;
+        self.net_selected_idx = Some(next);
+        let menu_h = 4 + (len + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+        self.push_dirty_rect(crate::scene::DirtyRect::new(
+            self.net_menu_x,
+            self.net_menu_y,
+            network_menu::NET_MENU_WIDTH,
+            menu_h,
+        ));
+        true
+    }
+
+    /// Activate the highlighted network entry from keyboard input.
+    pub fn activate_network_selection(&mut self, fb_width: u32, fb_height: u32) -> bool {
+        if !self.network_menu_open {
+            return false;
+        }
+        let Some(index) = self.net_selected_idx else {
+            return true;
+        };
+        self.activate_network_ap(index, fb_width, fb_height);
+        true
+    }
+
+    fn activate_network_ap(&mut self, index: usize, fb_width: u32, fb_height: u32) {
+        let Some(ap) = self.ap_list.get(index) else {
+            return;
+        };
+        if ap.has_lock {
+            self.pwd_dialog_open = true;
+            self.pwd_dialog_ssid = ap.ssid.clone();
+            self.pwd_dialog_password = String::new();
+            self.pwd_dialog_cursor = 0;
+            self.shift_held = false;
+            self.pwd_target_ap = Some(index);
+            self.pwd_dialog_x = (fb_width / 2).saturating_sub(network_menu::PWD_DIALOG_W / 2);
+            self.pwd_dialog_y = (fb_height / 2).saturating_sub(network_menu::PWD_DIALOG_H / 2);
+        } else {
+            self.menu_action_pending = Some(DesktopAction::ConnectAp(index));
+        }
+        let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+        self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
+            self.net_menu_x,
+            self.net_menu_y,
+            network_menu::NET_MENU_WIDTH,
+            menu_h,
+        ));
+        self.network_menu_open = false;
+        self.net_selected_idx = None;
     }
 
     /// Dismiss the active menu.
@@ -907,6 +955,7 @@ impl Desktop {
             net_menu_y: self.net_menu_y,
             net_aps: &self.ap_list,
             net_status: &self.net_status,
+            net_selected_idx: self.net_selected_idx,
             pwd_dialog_open: self.pwd_dialog_open,
             pwd_dialog_x: self.pwd_dialog_x,
             pwd_dialog_y: self.pwd_dialog_y,
@@ -954,6 +1003,39 @@ mod tests {
         let mut dt = Desktop::new(0x202020);
         let id = dt.create_window(0, 0, 50, 50, 0xFFFFFF);
         assert!(dt.wm.window_at(10, 10) == Some(id));
+    }
+
+    #[test]
+    fn network_menu_keyboard_selection_wraps_and_activates() {
+        let mut dt = Desktop::new(0x202020);
+        dt.update_ap_list(
+            alloc::vec![
+                ApDisplay {
+                    ssid: String::from("first"),
+                    signal_bars: 3,
+                    has_lock: false,
+                    connected: false,
+                },
+                ApDisplay {
+                    ssid: String::from("second"),
+                    signal_bars: 2,
+                    has_lock: false,
+                    connected: false,
+                },
+            ],
+            NetStatus::Disconnected,
+        );
+        dt.show_network_menu(800, 600);
+        assert_eq!(dt.net_selected_idx, Some(0));
+
+        assert!(dt.move_network_selection(-1));
+        assert_eq!(dt.net_selected_idx, Some(1));
+        assert!(dt.move_network_selection(1));
+        assert_eq!(dt.net_selected_idx, Some(0));
+
+        assert!(dt.activate_network_selection(800, 600));
+        assert!(!dt.network_menu_open);
+        assert_eq!(dt.menu_action_pending, Some(DesktopAction::ConnectAp(0)));
     }
 
     #[test]
