@@ -85,6 +85,19 @@ fn push_mouse_button_edges(queue: &mut resonance::EventQueue, buttons: u8, previ
     }
 }
 
+/// Merge physical HID buttons with the digitizer's Tip Switch. A precision
+/// touchpad reports a tap/drag as contact state rather than as a separate
+/// button field; exposing that state as left-button edges gives the desktop
+/// normal click and drag semantics.
+fn touchpad_button_bits(input: Option<&nitrogen::i2c_hid::TouchpadInput>) -> u8 {
+    let Some(input) = input else { return 0 };
+    let mut buttons = input.report.buttons & 0x03;
+    if input.relative.is_none() && input.report.in_contact {
+        buttons |= 0x01;
+    }
+    buttons
+}
+
 pub fn poll_mouse_state() {
     nitrogen::i2c_hid::poll_input();
     let touchpad = nitrogen::i2c_hid::consume_input();
@@ -118,7 +131,9 @@ pub fn poll_mouse_state() {
     if let Some((dx, dy)) = touchpad_relative {
         mouse.x = (next_x + scaled_mouse_delta(dx, sensitivity))
             .clamp(0, fb_width.saturating_sub(1) as i32) as i16;
-        mouse.y = (next_y - scaled_mouse_delta(dy, sensitivity))
+        // HID relative mouse Y is positive downward. PS/2 uses the opposite
+        // convention and is handled by the subtraction above.
+        mouse.y = (next_y + scaled_mouse_delta(dy, sensitivity))
             .clamp(0, fb_height.saturating_sub(1) as i32) as i16;
     } else {
         mouse.x = if fb_width == 0 {
@@ -139,11 +154,7 @@ pub fn poll_mouse_state() {
         mouse.x = map_touch_axis(touchpad.report.x, touchpad.x_min, touchpad.x_max, fb_width);
         mouse.y = map_touch_axis(touchpad.report.y, touchpad.y_min, touchpad.y_max, fb_height);
     }
-    let combined_buttons = (buttons & !0x03)
-        | touchpad
-            .as_ref()
-            .map(|input| input.report.buttons & 0x03)
-            .unwrap_or(0);
+    let combined_buttons = (buttons & !0x03) | touchpad_button_bits(touchpad.as_ref());
     mouse.buttons = combined_buttons;
     let cursor_x = mouse.x as i32;
     let cursor_y = mouse.y as i32;
@@ -182,7 +193,7 @@ pub fn poll_mouse_state() {
 mod tests {
     use super::{
         MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, map_touch_axis, mouse_motion_is_stale,
-        scaled_mouse_delta,
+        scaled_mouse_delta, touchpad_button_bits,
     };
 
     #[test]
@@ -217,6 +228,32 @@ mod tests {
         assert_eq!(map_touch_axis(1709, 0, 1708, 1920), 1919);
         assert_eq!(map_touch_axis(10, 10, 10, 1920), 0);
         assert_eq!(map_touch_axis(10, 0, 10, 0), 0);
+    }
+
+    #[test]
+    fn maps_digitizer_contact_to_left_button_edges() {
+        let pressed = nitrogen::i2c_hid::TouchpadInput {
+            report: nitrogen::hid::TouchpadReport {
+                x: 100,
+                y: 200,
+                buttons: 0,
+                in_contact: true,
+            },
+            x_min: 0,
+            x_max: 1708,
+            y_min: 0,
+            y_max: 1060,
+            relative: None,
+        };
+        let released = nitrogen::i2c_hid::TouchpadInput {
+            report: nitrogen::hid::TouchpadReport {
+                in_contact: false,
+                ..pressed.report
+            },
+            ..pressed
+        };
+        assert_eq!(touchpad_button_bits(Some(&pressed)), 0x01);
+        assert_eq!(touchpad_button_bits(Some(&released)), 0);
     }
 }
 
