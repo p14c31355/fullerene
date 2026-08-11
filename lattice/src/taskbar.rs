@@ -37,7 +37,7 @@ pub const POWER_STATUS_WIDTH: u32 = 32;
 /// Gap between status icons and the clock.
 pub const STATUS_GAP: u32 = 8;
 /// Maximum width reserved for the latest diagnostic message.
-pub const DEBUG_STATUS_MAX_WIDTH: u32 = 240;
+pub const DEBUG_STATUS_MAX_WIDTH: u32 = 640;
 
 /// A single taskbar entry (represents a window).
 #[derive(Debug, Clone, PartialEq, Eq)]

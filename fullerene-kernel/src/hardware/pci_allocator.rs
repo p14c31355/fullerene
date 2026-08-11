@@ -3,11 +3,22 @@ use nitrogen::pci::{PciConfigSpace, PciDevice};
 /// Policy-level PCI BAR allocator.
 pub struct PciAllocator {
     pub mmio_base: u64,
+    /// Aperture used for 64-bit BARs. This must be kept above ordinary RAM;
+    /// the old single 32-bit window could place an LPSS BAR at 0x40000000.
+    pub mmio64_base: u64,
 }
 
 impl PciAllocator {
     pub fn new(mmio_base: u64) -> Self {
-        Self { mmio_base }
+        Self {
+            mmio_base,
+            mmio64_base: 0x1_0000_0000,
+        }
+    }
+
+    pub fn with_64bit_base(mut self, mmio64_base: u64) -> Self {
+        self.mmio64_base = mmio64_base.max(0x1_0000_0000);
+        self
     }
 
     pub fn assign_bars(&mut self, devices: &[PciDevice]) {
@@ -61,8 +72,12 @@ impl PciAllocator {
                         continue;
                     }
                     if bar.address == 0 && bar.size > 0 {
-                        let aligned_addr =
-                            (self.mmio_base + (bar.size as u64 - 1)) & !(bar.size as u64 - 1);
+                        let base = if bar.is_64bit {
+                            self.mmio64_base
+                        } else {
+                            self.mmio_base
+                        };
+                        let aligned_addr = (base + (bar.size as u64 - 1)) & !(bar.size as u64 - 1);
                         let offset = 0x10 + (bar_index * 4);
                         let original_command = PciConfigSpace::read_config_word(
                             device.bus,
@@ -82,7 +97,17 @@ impl PciAllocator {
                             device.device,
                             device.function,
                             offset,
-                            aligned_addr as u32,
+                            // Preserve the BAR type bits. In particular,
+                            // clearing bit 2 makes a 64-bit BAR look like a
+                            // 32-bit BAR on the next configuration read.
+                            (aligned_addr as u32 & 0xffff_fff0)
+                                | if bar.is_64bit {
+                                    0x4
+                                } else if bar.is_prefetchable {
+                                    0x8
+                                } else {
+                                    0
+                                },
                         );
                         if bar.is_64bit {
                             PciConfigSpace::write_config_dword_raw(
@@ -105,7 +130,11 @@ impl PciAllocator {
                             bar_index,
                             aligned_addr
                         );
-                        self.mmio_base = aligned_addr + bar.size as u64;
+                        if bar.is_64bit {
+                            self.mmio64_base = aligned_addr + bar.size as u64;
+                        } else {
+                            self.mmio_base = aligned_addr + bar.size as u64;
+                        }
                     } else {
                         log::info!(
                             "[PCI-Allocator] BAR {} already assigned at {:#x}",

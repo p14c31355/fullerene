@@ -88,6 +88,10 @@ fn push_mouse_button_edges(queue: &mut resonance::EventQueue, buttons: u8, previ
 pub fn poll_mouse_state() {
     nitrogen::i2c_hid::poll_input();
     let touchpad = nitrogen::i2c_hid::consume_input();
+    let touchpad_relative = touchpad.as_ref().and_then(|input| input.relative);
+    let touchpad_absolute = touchpad
+        .as_ref()
+        .filter(|input| input.relative.is_none() && input.report.in_contact);
     // IRQ12 is the normal delivery path. Drain AUX bytes as a fallback for
     // QEMU/firmware configurations where the legacy mouse route is not wired
     // through the I/O APIC.
@@ -108,27 +112,39 @@ pub fn poll_mouse_state() {
     let old_x = mouse.x;
     let old_y = mouse.y;
     let sensitivity = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
+    let (fb_width, fb_height, _) = *FB_DIMS.lock();
     let next_x = i32::from(mouse.x) + scaled_mouse_delta(dx, sensitivity);
     let next_y = i32::from(mouse.y) - scaled_mouse_delta(dy, sensitivity);
-    let (fb_width, fb_height, _) = *FB_DIMS.lock();
-    mouse.x = if fb_width == 0 {
-        next_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    if let Some((dx, dy)) = touchpad_relative {
+        mouse.x = (next_x + scaled_mouse_delta(dx, sensitivity))
+            .clamp(0, fb_width.saturating_sub(1) as i32) as i16;
+        mouse.y = (next_y - scaled_mouse_delta(dy, sensitivity))
+            .clamp(0, fb_height.saturating_sub(1) as i32) as i16;
     } else {
-        next_x.clamp(0, fb_width.saturating_sub(1) as i32) as i16
-    };
-    mouse.y = if fb_height == 0 {
-        next_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-    } else {
-        next_y.clamp(0, fb_height.saturating_sub(1) as i32) as i16
-    };
+        mouse.x = if fb_width == 0 {
+            next_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        } else {
+            next_x.clamp(0, fb_width.saturating_sub(1) as i32) as i16
+        };
+        mouse.y = if fb_height == 0 {
+            next_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        } else {
+            next_y.clamp(0, fb_height.saturating_sub(1) as i32) as i16
+        };
+    }
     // HID-over-I2C reports absolute coordinates.  Update the desktop only
     // while a finger is down; release reports must not snap the pointer back
     // to the controller's last coordinate.
-    if let Some(touchpad) = touchpad.filter(|input| input.report.in_contact) {
+    if let Some(touchpad) = touchpad_absolute {
         mouse.x = map_touch_axis(touchpad.report.x, touchpad.x_min, touchpad.x_max, fb_width);
         mouse.y = map_touch_axis(touchpad.report.y, touchpad.y_min, touchpad.y_max, fb_height);
     }
-    mouse.buttons = buttons;
+    let combined_buttons = (buttons & !0x03)
+        | touchpad
+            .as_ref()
+            .map(|input| input.report.buttons & 0x03)
+            .unwrap_or(0);
+    mouse.buttons = combined_buttons;
     let cursor_x = mouse.x as i32;
     let cursor_y = mouse.y as i32;
     let moved = old_x != mouse.x || old_y != mouse.y;
@@ -154,12 +170,12 @@ pub fn poll_mouse_state() {
 
     let mut previous_buttons = PREV_MOUSE_BUTTONS.lock();
     let previous = *previous_buttons;
-    if buttons != previous
+    if combined_buttons != previous
         && let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut()
     {
-        push_mouse_button_edges(queue, buttons, previous);
+        push_mouse_button_edges(queue, combined_buttons, previous);
     }
-    *previous_buttons = buttons;
+    *previous_buttons = combined_buttons;
 }
 
 #[cfg(test)]

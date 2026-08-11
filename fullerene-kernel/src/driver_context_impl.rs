@@ -20,6 +20,13 @@ impl DriverContext for KernelDriverContext {
         (phys + off) as usize
     }
 
+    fn mmio_virtual_address(&self, _phys: u64, size: usize) -> Result<usize, DriverContextError> {
+        let mgr = crate::memory_management::get_memory_manager().lock();
+        let _ = mgr.as_ref().ok_or(DriverContextError::MmioMappingFailed)?;
+        crate::memory_management::kernel_space::find_free_virtual_address(size as u64)
+            .ok_or(DriverContextError::MmioMappingFailed)
+    }
+
     fn allocate_frame(&self) -> Result<u64, DriverContextError> {
         let mut mgr = crate::memory_management::get_memory_manager().lock();
         let m = mgr.as_mut().ok_or(DriverContextError::OutOfMemory)?;

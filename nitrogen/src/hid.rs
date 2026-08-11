@@ -443,6 +443,57 @@ impl HidReportDescriptor {
             in_contact,
         })
     }
+
+    /// Decode the relative-mouse collection some precision touchpads expose
+    /// alongside their absolute digitizer collections.  The N150 emits this
+    /// collection as report ID 6 when a finger moves; Linux presents it as a
+    /// normal relative mouse, so it must not be rejected just because the
+    /// precision-touchpad collection uses report ID 1.
+    pub fn decode_relative_mouse(&self, report: &[u8]) -> Option<(i16, i16, u8)> {
+        let x = self.fields.iter().copied().find(|field| {
+            field.report_id != 0
+                && field.usage_page == GENERIC_DESKTOP_PAGE
+                && field.usage == USAGE_X
+                && field.logical_minimum < 0
+        })?;
+        let y = self.fields.iter().copied().find(|field| {
+            field.report_id == x.report_id
+                && field.usage_page == GENERIC_DESKTOP_PAGE
+                && field.usage == USAGE_Y
+                && field.logical_minimum < 0
+        })?;
+        let left = self
+            .fields
+            .iter()
+            .copied()
+            .find(|field| {
+                field.report_id == x.report_id
+                    && field.usage_page == BUTTON_PAGE
+                    && field.usage == USAGE_BUTTON_LEFT
+            })
+            .and_then(|field| self.value(field, report))
+            .unwrap_or(0)
+            != 0;
+        let right = self
+            .fields
+            .iter()
+            .copied()
+            .find(|field| {
+                field.report_id == x.report_id
+                    && field.usage_page == BUTTON_PAGE
+                    && field.usage == USAGE_BUTTON_RIGHT
+            })
+            .and_then(|field| self.value(field, report))
+            .unwrap_or(0)
+            != 0;
+        let x = self.value(x, report)?;
+        let y = self.value(y, report)?;
+        Some((
+            i16::try_from(x).ok()?,
+            i16::try_from(y).ok()?,
+            (left as u8) | ((right as u8) << 1),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -591,5 +642,13 @@ mod tests {
                 in_contact: true,
             }
         );
+    }
+
+    #[test]
+    fn decodes_n150_relative_mouse_collection_report_id_six() {
+        let descriptor = HidReportDescriptor::parse(n150_fixture::N150_REPORT_DESCRIPTOR).unwrap();
+        // ID 6: two buttons, six padding bits, then signed 8-bit X/Y.
+        let report = [6, 0b0000_0001, 0xfe, 0x03];
+        assert_eq!(descriptor.decode_relative_mouse(&report), Some((-2, 3, 1)));
     }
 }

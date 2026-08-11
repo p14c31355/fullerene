@@ -16,7 +16,7 @@ use spin::Mutex;
 use crate::driver_context::DriverContext;
 use crate::hid::{HidReportDescriptor, I2cHidPlatformConfig, TouchpadReport};
 use crate::mmio::MemRegion;
-use crate::pci::PciDevice;
+use crate::pci::{PciConfigSpace, PciDevice};
 use crate::timing::{delay_ms, delay_us, poll_timeout_us};
 
 const MMIO_SIZE: usize = 0x1000;
@@ -190,7 +190,12 @@ impl DesignWareI2c {
         if !device.prepare_mmio() {
             return Err(I2cHidError::MappingFailed);
         }
-        let virt = ctx.phys_to_virt(bar.address);
+        // Do not use the WB physical-memory direct map for controller
+        // registers. A dedicated virtual alias lets the kernel map this BAR
+        // as UC, which is required for LPSS/DW register reads and writes.
+        let virt = ctx
+            .mmio_virtual_address(bar.address, MMIO_SIZE)
+            .map_err(|_| I2cHidError::MappingFailed)?;
         ctx.map_mmio_region(bar.address as usize, virt, MMIO_SIZE)
             .map_err(|_| I2cHidError::MappingFailed)?;
         // SAFETY: the PCI BAR was validated and mapped as an uncached 4 KiB
@@ -199,7 +204,13 @@ impl DesignWareI2c {
         let lpss_caps = mmio.read32(LPSS_PRIV_CAPS);
         let lpss_type = (lpss_caps & LPSS_PRIV_CAPS_TYPE_MASK) >> LPSS_PRIV_CAPS_TYPE_SHIFT;
         if lpss_type != LPSS_PRIV_CAPS_TYPE_I2C {
-            return Err(I2cHidError::UnsupportedController);
+            let status = alloc::format!("LPSS type{}; DW probe", lpss_type);
+            publish_status(&status);
+            log::warn!(
+                "[nitrogen] LPSS caps type {} (caps=0x{:08x}); validating DW component before fallback",
+                lpss_type,
+                lpss_caps
+            );
         }
 
         // This is the ordering used by intel_lpss_init_dev(): put the LPSS
@@ -217,6 +228,36 @@ impl DesignWareI2c {
 
         let component_type = mmio.read32(COMP_TYPE);
         if component_type != COMP_TYPE_VALUE {
+            // Keep the physical BAR, the dedicated MMIO alias and the PCI
+            // decode bits beside the bad register value.  This is the only
+            // useful distinction available on machines without a serial
+            // console: a wrong BAR and a wrong page-table mapping otherwise
+            // look exactly like an unsupported DesignWare revision.
+            let command =
+                PciConfigSpace::read_config_word(device.bus, device.device, device.function, 4);
+            let bar_low =
+                PciConfigSpace::read_config_dword(device.bus, device.device, device.function, 0x10);
+            let status = alloc::format!(
+                "DW={:08x} LP={:08x} B={:x} T={:08x} V={:x} C={:04x}",
+                component_type,
+                lpss_caps,
+                bar.address,
+                bar_low,
+                virt,
+                command
+            );
+            log::warn!(
+                "[nitrogen] DesignWare probe mismatch: comp=0x{:08x} caps=0x{:08x} bar=0x{:x} virt=0x{:x} command=0x{:04x} c0=0x{:08x} f4=0x{:08x} f8=0x{:08x}",
+                component_type,
+                lpss_caps,
+                bar.address,
+                virt,
+                command,
+                mmio.read32(IC_CON),
+                mmio.read32(IC_COMP_PARAM_1),
+                mmio.read32(IC_COMP_VERSION),
+            );
+            publish_status(&status);
             return Err(I2cHidError::UnsupportedController);
         }
         let param = mmio.read32(IC_COMP_PARAM_1);
@@ -517,6 +558,9 @@ pub struct TouchpadInput {
     pub x_max: i32,
     pub y_min: i32,
     pub y_max: i32,
+    /// Relative mouse reports are emitted as report ID 6 on the N150.  The
+    /// absolute digitizer path remains available for report ID 1.
+    pub relative: Option<(i16, i16)>,
 }
 
 struct I2cHidTouchpad {
@@ -769,9 +813,20 @@ pub fn poll_input() {
         }
         return;
     }
-    let decoded = device
-        .report
-        .decode_touchpad(device.fields, &bytes[2..report_length]);
+    let payload = &bytes[2..report_length];
+    let decoded = device.report.decode_touchpad(device.fields, payload);
+    let relative = if decoded.is_none() {
+        device.report.decode_relative_mouse(payload)
+    } else {
+        None
+    };
+    let input_kind = if decoded.is_some() {
+        "ABS"
+    } else if relative.is_some() {
+        "REL"
+    } else {
+        "ERR"
+    };
     if !FIRST_INPUT_REPORTED.swap(true, Ordering::AcqRel) {
         log::info!(
             "[nitrogen] I2C-HID first input: len={} report_id={} payload={:02x?}",
@@ -781,14 +836,16 @@ pub fn poll_input() {
         );
         crate::debug_status!(
             "I2C-HID",
-            "INPUT len{} id{}",
+            "INPUT len{} id{} {}",
             report_length,
-            bytes.get(2).copied().unwrap_or(0)
+            bytes.get(2).copied().unwrap_or(0),
+            input_kind
         );
         let status = alloc::format!(
-            "INPUT len{} id{}",
+            "INPUT len{} id{} {}",
             report_length,
-            bytes.get(2).copied().unwrap_or(0)
+            bytes.get(2).copied().unwrap_or(0),
+            input_kind
         );
         publish_status(&status);
     }
@@ -799,6 +856,21 @@ pub fn poll_input() {
             x_max: device.fields.x.logical_maximum,
             y_min: device.fields.y.logical_minimum,
             y_max: device.fields.y.logical_maximum,
+            relative: None,
+        });
+    } else if let Some((x, y, buttons)) = relative {
+        *LATEST_INPUT.lock() = Some(TouchpadInput {
+            report: TouchpadReport {
+                x: 0,
+                y: 0,
+                buttons,
+                in_contact: buttons != 0,
+            },
+            x_min: device.fields.x.logical_minimum,
+            x_max: device.fields.x.logical_maximum,
+            y_min: device.fields.y.logical_minimum,
+            y_max: device.fields.y.logical_maximum,
+            relative: Some((x, y)),
         });
     } else if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
         log::warn!(

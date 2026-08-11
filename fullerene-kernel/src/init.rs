@@ -12,6 +12,7 @@
 use crate::boot_stage::BootStage;
 use petroleum::common::InitSequence;
 use petroleum::initializer::FrameAllocator;
+use petroleum::page_table::MemoryDescriptorValidator;
 
 #[cfg(not(nitrogen_no_iwlwifi))]
 static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
@@ -155,7 +156,29 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::serial::serial_log(format_args!("Initializing PCI BARs...\n"));
             let mut scanner = nitrogen::pci::PciScanner::new();
             if scanner.scan_all_buses().is_ok() {
-                let mut allocator = crate::hardware::pci_allocator::PciAllocator::new(0x40000000);
+                let mmio64_base = crate::heap::MEMORY_MAP
+                    .lock()
+                    .as_ref()
+                    .map(|descriptors| {
+                        let highest_ram = descriptors
+                            .iter()
+                            .filter(|descriptor| {
+                                petroleum::page_table::MemoryDescriptorValidator::is_memory_available(
+                                    *descriptor,
+                                )
+                            })
+                            .filter_map(|descriptor| {
+                                descriptor
+                                    .get_physical_start()
+                                    .checked_add(descriptor.get_page_count().checked_mul(4096)?)
+                            })
+                            .max()
+                            .unwrap_or(0);
+                        ((highest_ram + 0xFFFFF) & !0xFFFFF).max(0x1_0000_0000)
+                    })
+                    .unwrap_or(0x1_0000_0000);
+                let mut allocator = crate::hardware::pci_allocator::PciAllocator::new(0x40000000)
+                    .with_64bit_base(mmio64_base);
                 allocator.assign_bars(scanner.get_devices());
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PCI BARs step done\n");
@@ -365,7 +388,14 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     }
                     Err(error) => {
                         crate::boot_stage::draw_step_hint(b"tp_fail");
-                        nitrogen::i2c_hid::publish_status(&alloc::format!("FAILED {:?}", error));
+                        // UnsupportedController publishes the exact LPSS/DW
+                        // register value from the low-level probe itself.
+                        if !matches!(error, nitrogen::i2c_hid::I2cHidError::UnsupportedController) {
+                            nitrogen::i2c_hid::publish_status(&alloc::format!(
+                                "FAILED {:?}",
+                                error
+                            ));
+                        }
                         log::warn!(
                             "I2C-HID touchpad probe failed; keeping PS/2 fallback: {:?}",
                             error
