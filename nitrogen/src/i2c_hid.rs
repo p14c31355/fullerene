@@ -595,10 +595,16 @@ struct I2cHidTouchpad {
 static TOUCHPAD: Mutex<Option<I2cHidTouchpad>> = Mutex::new(None);
 static LATEST_INPUT: Mutex<Option<TouchpadInput>> = Mutex::new(None);
 static STATUS: Mutex<Option<(String, String)>> = Mutex::new(None);
-static LAST_POLL_TSC: AtomicU64 = AtomicU64::new(0);
+static LAST_SERVICE_TSC: AtomicU64 = AtomicU64::new(0);
+static INPUT_PENDING: AtomicBool = AtomicBool::new(false);
+static INPUT_INTERRUPT_MODE: AtomicBool = AtomicBool::new(false);
+static INPUT_INTERRUPT_REARM: Mutex<Option<fn()>> = Mutex::new(None);
 static POLL_CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
 static POLL_ERROR_REPORTED: AtomicBool = AtomicBool::new(false);
 static FIRST_INPUT_REPORTED: AtomicBool = AtomicBool::new(false);
+static INPUT_SERVICE_COUNT: AtomicU64 = AtomicU64::new(0);
+static INPUT_SERVICE_TOTAL_TSC: AtomicU64 = AtomicU64::new(0);
+static INPUT_SERVICE_MAX_TSC: AtomicU64 = AtomicU64::new(0);
 
 /// Publish a persistent framebuffer-visible status for the I2C-HID path.
 /// The normal debug ring is transient and can be displaced by later boot
@@ -802,36 +808,85 @@ fn store_input(input: TouchpadInput) {
     *slot = Some(input);
 }
 
-/// Poll and drain HID input packets. The interrupt line is intentionally left
-/// for a later APIC/GSI integration; bounded draining prevents the polling
-/// path from replaying a backlog after the finger has already stopped.
-pub fn poll_input() {
+/// Record an input interrupt without touching the I2C controller from ISR
+/// context. The kernel masks the level-triggered GSI before calling this.
+pub fn handle_interrupt() {
+    INPUT_PENDING.store(true, Ordering::Release);
+}
+
+/// Enable interrupt-driven input after the platform has routed the ACPI GSI.
+/// A pending service is requested once so a report already waiting in the
+/// device FIFO is not lost during the hand-off from boot polling.
+pub fn enable_interrupt_mode() {
+    INPUT_PENDING.store(true, Ordering::Release);
+    INPUT_INTERRUPT_MODE.store(true, Ordering::Release);
+}
+
+/// Install the kernel-side callback that unmasks the level-triggered GSI
+/// after a normal-context transfer has drained the device FIFO.
+pub fn install_interrupt_rearm(callback: fn()) {
+    *INPUT_INTERRUPT_REARM.lock() = Some(callback);
+}
+
+fn rearm_interrupt() {
+    if let Some(callback) = *INPUT_INTERRUPT_REARM.lock() {
+        callback();
+    }
+}
+
+/// Return whether the HID path is using the platform interrupt.
+pub fn interrupt_mode_enabled() -> bool {
+    INPUT_INTERRUPT_MODE.load(Ordering::Acquire)
+}
+
+/// Service HID input in normal scheduler context and drain a bounded number
+/// of reports. With a working IRQ this does no I2C work while the device is
+/// idle; polling remains as a compatibility fallback when IRQ routing is not
+/// available on a platform.
+pub fn service_input() -> bool {
     if !is_initialized() {
-        return;
+        return false;
+    }
+    let interrupt_mode = INPUT_INTERRUPT_MODE.load(Ordering::Acquire);
+    if interrupt_mode {
+        if !INPUT_PENDING.swap(false, Ordering::AcqRel) {
+            return false;
+        }
     }
     let now = unsafe { core::arch::x86_64::_rdtsc() };
-    let previous = LAST_POLL_TSC.load(Ordering::Relaxed);
-    let failures = POLL_CONSECUTIVE_FAILURES.load(Ordering::Relaxed).min(4);
-    let interval_us = I2C_INPUT_POLL_INTERVAL_US.saturating_mul(1u64 << failures);
-    if previous != 0
-        && now.wrapping_sub(previous) < crate::timing::ticks_per_us().saturating_mul(interval_us)
-    {
-        return;
+    if !interrupt_mode {
+        let previous = LAST_SERVICE_TSC.load(Ordering::Relaxed);
+        let failures = POLL_CONSECUTIVE_FAILURES.load(Ordering::Relaxed).min(4);
+        let interval_us = I2C_INPUT_POLL_INTERVAL_US.saturating_mul(1u64 << failures);
+        if previous != 0
+            && now.wrapping_sub(previous)
+                < crate::timing::ticks_per_us().saturating_mul(interval_us)
+        {
+            return false;
+        }
     }
-    LAST_POLL_TSC.store(now, Ordering::Relaxed);
+    LAST_SERVICE_TSC.store(now, Ordering::Relaxed);
     let length = {
         let guard = TOUCHPAD.lock();
-        let Some(device) = guard.as_ref() else { return };
+        let Some(device) = guard.as_ref() else {
+            rearm_interrupt();
+            return false;
+        };
         (device.descriptor.max_input_length as usize).min(MAX_INPUT_REPORT)
     };
     if length < 2 {
-        return;
+        rearm_interrupt();
+        return true;
     }
+    let service_start = unsafe { core::arch::x86_64::_rdtsc() };
     for _ in 0..MAX_INPUT_REPORTS_PER_POLL {
         let mut bytes = [0u8; MAX_INPUT_REPORT];
         let report_length = match {
             let mut guard = TOUCHPAD.lock();
-            let Some(device) = guard.as_mut() else { return };
+            let Some(device) = guard.as_mut() else {
+                rearm_interrupt();
+                return false;
+            };
             device.bus.read_input_report(&mut bytes[..length])
         } {
             Ok(length) => length,
@@ -873,7 +928,10 @@ pub fn poll_input() {
         let payload = &bytes[2..report_length];
         let (decoded, relative, x_min, x_max, y_min, y_max) = {
             let guard = TOUCHPAD.lock();
-            let Some(device) = guard.as_ref() else { return };
+            let Some(device) = guard.as_ref() else {
+                rearm_interrupt();
+                return false;
+            };
             let decoded = device.report.decode_touchpad(device.fields, payload);
             let relative = if decoded.is_none() {
                 device.report.decode_relative_mouse(payload)
@@ -956,6 +1014,31 @@ pub fn poll_input() {
             publish_status(&status);
         }
     }
+    let elapsed = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(service_start);
+    INPUT_SERVICE_COUNT.fetch_add(1, Ordering::Relaxed);
+    INPUT_SERVICE_TOTAL_TSC.fetch_add(elapsed, Ordering::Relaxed);
+    let mut maximum = INPUT_SERVICE_MAX_TSC.load(Ordering::Relaxed);
+    while elapsed > maximum {
+        match INPUT_SERVICE_MAX_TSC.compare_exchange_weak(
+            maximum,
+            elapsed,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(current) => maximum = current,
+        }
+    }
+    if interrupt_mode {
+        rearm_interrupt();
+    }
+    true
+}
+
+/// Compatibility entry point for callers that still perform input servicing
+/// from their own event-loop pump.
+pub fn poll_input() {
+    let _ = service_input();
 }
 
 pub fn consume_input() -> Option<TouchpadInput> {
@@ -964,6 +1047,15 @@ pub fn consume_input() -> Option<TouchpadInput> {
 
 pub fn is_initialized() -> bool {
     TOUCHPAD.lock().is_some()
+}
+
+/// Return `(service_count, total_tsc, maximum_service_tsc)` for diagnostics.
+pub fn input_service_metrics() -> (u64, u64, u64) {
+    (
+        INPUT_SERVICE_COUNT.load(Ordering::Relaxed),
+        INPUT_SERVICE_TOTAL_TSC.load(Ordering::Relaxed),
+        INPUT_SERVICE_MAX_TSC.load(Ordering::Relaxed),
+    )
 }
 
 #[cfg(test)]

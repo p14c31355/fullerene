@@ -127,6 +127,26 @@ pub fn scheduler_loop() -> ! {
     // Idle loop: drive runtime ticks.
     // Shell and other apps are launched via AppGrid or context menu.
     loop {
+        // Service the HID FIFO before storage, USB, Wi-Fi, or compositor work.
+        // The GUI tick only consumes the already-decoded latest state; it no
+        // longer performs the synchronous I2C transaction itself.
+        nitrogen::i2c_hid::service_input();
+
+        if SCHEDULER.current_tick().is_multiple_of(1_000) {
+            let (count, total_tsc, max_tsc) = nitrogen::i2c_hid::input_service_metrics();
+            let (pointer_count, pointer_max_tsc) = solvent::pointer_latency_metrics();
+            let average_tsc = if count == 0 { 0 } else { total_tsc / count };
+            petroleum::serial::serial_log(format_args!(
+                "[input] hid_services={} avg_tsc={} max_tsc={} pointer_events={} pointer_max_tsc={} tsc_per_ms={}\n",
+                count,
+                average_tsc,
+                max_tsc,
+                pointer_count,
+                pointer_max_tsc,
+                solvent::get_tsc_per_ms(),
+            ));
+        }
+
         // VDSO: update time metadata for all processes.
         // Compute monotonic uptime in microseconds
         let uptime_us = if solvent::get_tsc_per_ms() > 0 {

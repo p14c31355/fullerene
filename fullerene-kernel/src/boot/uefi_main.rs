@@ -182,6 +182,11 @@ fn kernel_main_higher_half(
 
     // 1. Initialize APIC (IDT, exceptions, syscalls already set up in init_common)
     crate::interrupts::apic::init_apic();
+    if crate::interrupts::apic::configure_i2c_hid_interrupt() {
+        log::info!("I2C-HID interrupt routed; input polling disabled");
+    } else if nitrogen::i2c_hid::is_initialized() {
+        log::warn!("I2C-HID interrupt routing unavailable; keeping fallback polling");
+    }
     log::info!("APIC initialized");
 
     // 2. Flush kernel log to VFS before entering scheduler

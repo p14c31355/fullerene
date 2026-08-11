@@ -38,6 +38,9 @@ const MAX_MOUSE_STEP_PX: i32 = 96;
 const HID_RELATIVE_SENSITIVITY_SCALE: i16 = 2;
 const MOUSE_STALE_AFTER_MS: u64 = 50;
 static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
+static LAST_POINTER_EVENT_TSC: AtomicU64 = AtomicU64::new(0);
+static POINTER_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+static POINTER_EVENT_TO_CURSOR_MAX_TSC: AtomicU64 = AtomicU64::new(0);
 static VIDEO_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 fn map_touch_axis(value: i32, minimum: i32, maximum: i32, pixels: u32) -> i16 {
@@ -103,7 +106,6 @@ fn touchpad_button_bits(input: Option<&nitrogen::i2c_hid::TouchpadInput>) -> u8 
 }
 
 pub fn poll_mouse_state() {
-    nitrogen::i2c_hid::poll_input();
     let touchpad = nitrogen::i2c_hid::consume_input();
     let touchpad_relative = touchpad.as_ref().and_then(|input| input.relative);
     let touchpad_absolute = touchpad
@@ -167,6 +169,8 @@ pub fn poll_mouse_state() {
     drop(mouse);
 
     if moved && let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut() {
+        LAST_POINTER_EVENT_TSC.store(unsafe { core::arch::x86_64::_rdtsc() }, Ordering::Release);
+        POINTER_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
         queue.push(Event::Input(InputEvent::MouseMove {
             x: cursor_x,
             y: cursor_y,
@@ -192,6 +196,35 @@ pub fn poll_mouse_state() {
         push_mouse_button_edges(queue, combined_buttons, previous);
     }
     *previous_buttons = combined_buttons;
+}
+
+/// Record the time at which a pointer event enters the runtime queue.
+pub(crate) fn record_cursor_paint() {
+    let event_tsc = LAST_POINTER_EVENT_TSC.load(Ordering::Acquire);
+    if event_tsc == 0 {
+        return;
+    }
+    let elapsed = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(event_tsc);
+    let mut maximum = POINTER_EVENT_TO_CURSOR_MAX_TSC.load(Ordering::Relaxed);
+    while elapsed > maximum {
+        match POINTER_EVENT_TO_CURSOR_MAX_TSC.compare_exchange_weak(
+            maximum,
+            elapsed,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(current) => maximum = current,
+        }
+    }
+}
+
+/// Return `(pointer_events, maximum_event_to_cursor_tsc)` for diagnostics.
+pub fn pointer_latency_metrics() -> (u64, u64) {
+    (
+        POINTER_EVENT_COUNT.load(Ordering::Relaxed),
+        POINTER_EVENT_TO_CURSOR_MAX_TSC.load(Ordering::Relaxed),
+    )
 }
 
 #[cfg(test)]

@@ -392,7 +392,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 ) {
                     Ok(()) => {
                         crate::boot_stage::draw_step_hint(b"tp_ok");
-                        log::info!("I2C-HID touchpad: polling enabled");
+                        log::info!("I2C-HID touchpad initialized; waiting for APIC setup");
                     }
                     Err(error) => {
                         crate::boot_stage::draw_step_hint(b"tp_fail");

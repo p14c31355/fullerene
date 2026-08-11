@@ -249,6 +249,7 @@ pub fn runtime_tick_no_fb() {
         // Pump only input and the already-due compositor work here; do not
         // re-enter tick_core(), which could recursively launch another file
         // or shell while the outer tick is still active.
+        nitrogen::i2c_hid::poll_input();
         crate::poll_mouse_state();
         crate::poll_keyboard();
         process_pointer_motion_only();

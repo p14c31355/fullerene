@@ -15,6 +15,7 @@ use x86_64::registers::model_specific::Msr;
 pub const TIMER_INTERRUPT_INDEX: u32 = 32;
 pub const KEYBOARD_INTERRUPT_INDEX: u32 = 33;
 pub const MOUSE_INTERRUPT_INDEX: u32 = 44;
+pub const I2C_HID_INTERRUPT_INDEX: u32 = 45;
 
 /// Global APIC controller instance.
 ///
@@ -67,6 +68,47 @@ pub fn send_eoi() {
     if let Some(ref ctrl) = *APIC_CONTROLLER.lock() {
         ctrl.send_eoi();
     }
+}
+
+/// Route an ACPI-described device GSI to a fixed IDT vector.
+pub fn configure_gsi(gsi: u32, vector: u8, low_active: bool, level_triggered: bool) -> bool {
+    APIC_CONTROLLER
+        .lock()
+        .as_ref()
+        .is_some_and(|ctrl| ctrl.configure_gsi(gsi, vector, low_active, level_triggered))
+}
+
+/// Mask or unmask an ACPI-described device GSI.
+pub fn set_gsi_masked(gsi: u32, masked: bool) -> bool {
+    APIC_CONTROLLER
+        .lock()
+        .as_ref()
+        .is_some_and(|ctrl| ctrl.set_gsi_masked(gsi, masked))
+}
+
+/// Connect the N150 I2C-HID GPIO interrupt after the IDT and I/O APIC are
+/// ready.  The ACPI description for this device is active-low, level-based.
+pub fn configure_i2c_hid_interrupt() -> bool {
+    if !nitrogen::i2c_hid::is_initialized() {
+        return false;
+    }
+    let profile = nitrogen::hid::GEMIBOOK_N150_I2C_HID;
+    let routed = configure_gsi(
+        profile.interrupt_gsi,
+        I2C_HID_INTERRUPT_INDEX as u8,
+        true,
+        true,
+    );
+    if routed {
+        nitrogen::i2c_hid::install_interrupt_rearm(rearm_i2c_hid_interrupt);
+        nitrogen::i2c_hid::enable_interrupt_mode();
+    }
+    routed
+}
+
+fn rearm_i2c_hid_interrupt() {
+    let gsi = nitrogen::hid::GEMIBOOK_N150_I2C_HID.interrupt_gsi;
+    let _ = set_gsi_masked(gsi, false);
 }
 
 /// Hardware-only APIC initialisation (called BEFORE IDT/ISRs are ready).

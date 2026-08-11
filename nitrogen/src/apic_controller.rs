@@ -241,6 +241,51 @@ impl ApicController {
         self.ioapic_write(IOAPIC_REDTBL_START + index * 2 + 1, entry.upper);
     }
 
+    /// Configure a platform interrupt identified by its global system
+    /// interrupt number.  ACPI GPIO interrupts are commonly level-triggered
+    /// and active-low, so callers provide those electrical properties instead
+    /// of silently treating every device like a legacy edge-triggered IRQ.
+    pub fn configure_gsi(
+        &self,
+        gsi: u32,
+        vector: u8,
+        low_active: bool,
+        level_triggered: bool,
+    ) -> bool {
+        let Ok(index) = u8::try_from(gsi) else {
+            return false;
+        };
+        if index > self.max_redirection_entry {
+            return false;
+        }
+        let entry = IoApicRedirectionEntry::new(
+            vector,
+            0,
+            false,
+            low_active,
+            level_triggered,
+            false,
+            self.local_apic_id,
+        );
+        self.write_rte(index, entry);
+        true
+    }
+
+    /// Temporarily mask or unmask a GSI while servicing a level-triggered
+    /// device interrupt.
+    pub fn set_gsi_masked(&self, gsi: u32, masked: bool) -> bool {
+        let Ok(index) = u8::try_from(gsi) else {
+            return false;
+        };
+        if index > self.max_redirection_entry {
+            return false;
+        }
+        let mut entry = self.read_rte(index);
+        entry.set_mask(masked);
+        self.write_rte(index, entry);
+        true
+    }
+
     /// Configure I/O APIC routing for legacy IRQs (keyboard IRQ1 → vector,
     /// mouse IRQ12 → vector).
     ///
