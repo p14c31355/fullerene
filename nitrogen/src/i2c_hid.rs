@@ -1,20 +1,19 @@
-//! Minimal polling HID-over-I2C support for the GemiBook XPro N150.
+//! Polling HID-over-I2C support for ACPI-described DesignWare controllers.
 //!
 //! The Linux stack presents this device as an Intel DesignWare I2C adapter
 //! followed by `i2c_hid_acpi` and `hid-multitouch`.  This module keeps the
-//! same layering, but deliberately enables only the exact PCI function and
-//! HID identity found in the supplied N150 diagnostics.  Other machines keep
-//! using the existing PS/2 path unchanged.
+//! The platform description (PCI BDF, I²C address, timing and HID descriptor
+//! register) is supplied by the platform layer.  The HID identity and report
+//! format are discovered from the device, like Linux's i2c_hid_acpi and
+//! i2c-hid-core layers.  Machines without such a description keep using the
+//! existing PS/2 path unchanged.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::driver_context::DriverContext;
-use crate::hid::{
-    GEMIBOOK_N150_I2C_HID, GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID, GEMIBOOK_TOUCHPAD_HID_VENDOR_ID,
-    HidReportDescriptor, TouchpadReport,
-};
+use crate::hid::{HidReportDescriptor, I2cHidPlatformConfig, TouchpadReport};
 use crate::mmio::MemRegion;
 use crate::pci::PciDevice;
 use crate::timing::{delay_ms, delay_us, poll_timeout_us};
@@ -59,6 +58,7 @@ const IC_COMP_VERSION: usize = 0xf8;
 const IC_SDA_HOLD: usize = 0x7c;
 
 const CON_MASTER: u32 = 1 << 0;
+const CON_SPEED_STANDARD: u32 = 1 << 1;
 const CON_SPEED_FAST: u32 = 2 << 1;
 const CON_RESTART: u32 = 1 << 5;
 const CON_SLAVE_DISABLE: u32 = 1 << 6;
@@ -73,57 +73,24 @@ const INTR_TX_ABORT: u32 = 1 << 6;
 const INTR_STOP_DET: u32 = 1 << 9;
 const I2C_BUSY_TIMEOUT_US: u64 = 1_000;
 
-// Intel's bxt_i2c_info is also used for Alder Lake-M 8086:54e8 by Linux.
-// These values are the software node properties and fixed LPSS root clock
-// from that platform description.
-const LPSS_BXT_I2C_CLOCK_KHZ: u64 = 133_000;
-const LPSS_BXT_SDA_HOLD_NS: u64 = 42;
-const LPSS_BXT_SDA_FALL_NS: u64 = 171;
-const LPSS_BXT_SCL_FALL_NS: u64 = 208;
 const DW_IC_SDA_HOLD_MIN_VERSION: u32 = 0x3131312a;
 
 const fn div_round_closest(value: u64, divisor: u64) -> u64 {
     (value + divisor / 2) / divisor
 }
 
-const fn bxt_scl_hcnt() -> u32 {
-    // Linux: i2c_dw_scl_hcnt(133000, 600ns, 171ns, offset=0).
-    div_round_closest(
-        LPSS_BXT_I2C_CLOCK_KHZ * (600 + LPSS_BXT_SDA_FALL_NS),
-        1_000_000,
-    )
-    .saturating_sub(3) as u32
+const fn scl_hcnt(clock_khz: u64, period_ns: u64, fall_ns: u64) -> u32 {
+    div_round_closest(clock_khz * (period_ns + fall_ns), 1_000_000).saturating_sub(3) as u32
 }
 
-const fn bxt_scl_lcnt() -> u32 {
-    // Linux: i2c_dw_scl_lcnt(133000, 1300ns, 208ns, offset=0).
-    div_round_closest(
-        LPSS_BXT_I2C_CLOCK_KHZ * (1_300 + LPSS_BXT_SCL_FALL_NS),
-        1_000_000,
-    )
-    .saturating_sub(1) as u32
+const fn scl_lcnt(clock_khz: u64, period_ns: u64, fall_ns: u64) -> u32 {
+    div_round_closest(clock_khz * (period_ns + fall_ns), 1_000_000).saturating_sub(1) as u32
 }
 
-const fn bxt_ss_hcnt() -> u32 {
-    div_round_closest(
-        LPSS_BXT_I2C_CLOCK_KHZ * (4_000 + LPSS_BXT_SDA_FALL_NS),
-        1_000_000,
-    )
-    .saturating_sub(3) as u32
-}
-
-const fn bxt_ss_lcnt() -> u32 {
-    div_round_closest(
-        LPSS_BXT_I2C_CLOCK_KHZ * (4_700 + LPSS_BXT_SCL_FALL_NS),
-        1_000_000,
-    )
-    .saturating_sub(1) as u32
-}
-
-const fn bxt_sda_hold() -> u32 {
-    // Linux converts the 42 ns property to clock cycles and sets the RX
-    // hold workaround bit when the DesignWare IP supports SDA_HOLD.
-    (div_round_closest(LPSS_BXT_I2C_CLOCK_KHZ * LPSS_BXT_SDA_HOLD_NS, 1_000_000) as u32) | (1 << 16)
+const fn sda_hold(clock_khz: u64, hold_ns: u64) -> u32 {
+    // Linux converts the ACPI/software-node hold time to clock cycles and
+    // sets the RX hold workaround bit when the DesignWare IP supports it.
+    (div_round_closest(clock_khz * hold_ns, 1_000_000) as u32) | (1 << 16)
 }
 
 const MAX_HID_DESCRIPTOR: usize = 64;
@@ -152,14 +119,18 @@ struct HidI2cDescriptor {
     report_desc_register: u16,
     input_register: u16,
     max_input_length: u16,
+    output_register: u16,
+    max_output_length: u16,
     command_register: u16,
+    data_register: u16,
     vendor_id: u16,
     product_id: u16,
+    version_id: u16,
 }
 
 impl HidI2cDescriptor {
     fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < HID_DESCRIPTOR_LENGTH {
+        if bytes.len() != HID_DESCRIPTOR_LENGTH {
             return None;
         }
         let word = |offset: usize| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
@@ -174,9 +145,13 @@ impl HidI2cDescriptor {
             report_desc_register: word(6),
             input_register: word(8),
             max_input_length: word(10),
+            output_register: word(12),
+            max_output_length: word(14),
             command_register: word(16),
+            data_register: word(18),
             vendor_id: word(20),
             product_id: word(22),
+            version_id: word(24),
         };
         (descriptor.report_desc_length != 0 && descriptor.max_input_length as usize >= 2)
             .then_some(descriptor)
@@ -188,17 +163,22 @@ struct DesignWareI2c {
     mmio: MemRegion,
     target: u16,
     tx_fifo_depth: u32,
+    speed_mode: u32,
 }
 
 impl DesignWareI2c {
-    fn new(ctx: &dyn DriverContext, device: &PciDevice) -> Result<Self, I2cHidError> {
-        let profile = GEMIBOOK_N150_I2C_HID;
-        if device.vendor_id != 0x8086
-            || device.device_id != profile.pci_device_id
-            || device.bus != profile.pci_bus
-            || device.device != profile.pci_device
-            || device.function != profile.pci_function
-        {
+    fn new(
+        ctx: &dyn DriverContext,
+        device: &PciDevice,
+        profile: I2cHidPlatformConfig,
+    ) -> Result<Self, I2cHidError> {
+        if !profile.matches_pci(
+            device.vendor_id,
+            device.device_id,
+            device.bus,
+            device.device,
+            device.function,
+        ) {
             return Err(I2cHidError::NotTarget);
         }
         let bar = device.read_bar_info(0).ok_or(I2cHidError::InvalidBar)?;
@@ -243,12 +223,17 @@ impl DesignWareI2c {
             mmio,
             target: profile.i2c_address,
             tx_fifo_depth,
+            speed_mode: if profile.bus_speed_hz > 100_000 {
+                CON_SPEED_FAST
+            } else {
+                CON_SPEED_STANDARD
+            },
         };
-        controller.configure(profile.bus_speed_hz)?;
+        controller.configure(profile)?;
         Ok(controller)
     }
 
-    fn configure(&mut self, _bus_speed_hz: u32) -> Result<(), I2cHidError> {
+    fn configure(&mut self, profile: I2cHidPlatformConfig) -> Result<(), I2cHidError> {
         self.mmio.write32(IC_ENABLE, 0);
         poll_timeout_us(10_000, || {
             (self.mmio.read32(IC_ENABLE_STATUS) & 1 == 0).then_some(())
@@ -257,24 +242,37 @@ impl DesignWareI2c {
         let _ = self.mmio.read32(IC_CLR_INTR);
         let _ = self.mmio.read32(IC_CLR_TX_ABRT);
 
-        // Match Linux's intel-lpss bxt_i2c_info and DesignWare timing
-        // calculation for the 400 kHz ACPI bus.  Firmware HCNT/LCNT values
-        // are not trusted here: this exact LPSS function is clocked at
-        // 133 MHz, and the old 100 MHz fallback produced an invalid bus
-        // waveform on the N150.
-        self.mmio.write32(IC_FS_SCL_HCNT, bxt_scl_hcnt());
-        self.mmio.write32(IC_FS_SCL_LCNT, bxt_scl_lcnt());
-        self.mmio.write32(IC_SS_SCL_HCNT, bxt_ss_hcnt());
-        self.mmio.write32(IC_SS_SCL_LCNT, bxt_ss_lcnt());
+        // Match Linux's i2c_dw_scl_{h,l}cnt calculations.  The root clock
+        // and electrical fall/hold times come from the platform description;
+        // the controller is otherwise independent of the attached HID.
+        self.mmio.write32(
+            IC_FS_SCL_HCNT,
+            scl_hcnt(profile.root_clock_khz, 600, profile.sda_fall_ns),
+        );
+        self.mmio.write32(
+            IC_FS_SCL_LCNT,
+            scl_lcnt(profile.root_clock_khz, 1_300, profile.scl_fall_ns),
+        );
+        self.mmio.write32(
+            IC_SS_SCL_HCNT,
+            scl_hcnt(profile.root_clock_khz, 4_000, profile.sda_fall_ns),
+        );
+        self.mmio.write32(
+            IC_SS_SCL_LCNT,
+            scl_lcnt(profile.root_clock_khz, 4_700, profile.scl_fall_ns),
+        );
         if self.mmio.read32(IC_COMP_VERSION) >= DW_IC_SDA_HOLD_MIN_VERSION {
-            self.mmio.write32(IC_SDA_HOLD, bxt_sda_hold());
+            self.mmio.write32(
+                IC_SDA_HOLD,
+                sda_hold(profile.root_clock_khz, profile.sda_hold_ns),
+            );
         }
         self.mmio.write32(IC_TX_TL, self.tx_fifo_depth / 2);
         self.mmio.write32(IC_RX_TL, 0);
         self.mmio.write32(IC_TAR, self.target as u32);
         self.mmio.write32(
             IC_CON,
-            CON_MASTER | CON_SPEED_FAST | CON_RESTART | CON_SLAVE_DISABLE,
+            CON_MASTER | self.speed_mode | CON_RESTART | CON_SLAVE_DISABLE,
         );
         self.mmio.write32(IC_INTR_MASK, 0);
         // Linux enables the adapter for each individual I2C transfer and
@@ -298,7 +296,7 @@ impl DesignWareI2c {
         self.mmio.write32(IC_TAR, self.target as u32);
         self.mmio.write32(
             IC_CON,
-            CON_MASTER | CON_SPEED_FAST | CON_RESTART | CON_SLAVE_DISABLE,
+            CON_MASTER | self.speed_mode | CON_RESTART | CON_SLAVE_DISABLE,
         );
         self.mmio.write32(IC_INTR_MASK, 0);
         self.mmio.write32(IC_ENABLE, 1);
@@ -483,21 +481,23 @@ static TOUCHPAD: Mutex<Option<N150Touchpad>> = Mutex::new(None);
 static LATEST_INPUT: Mutex<Option<TouchpadInput>> = Mutex::new(None);
 static LAST_POLL_TSC: AtomicU64 = AtomicU64::new(0);
 
-/// Probe and initialise only the N150's `00:15.0` I2C controller.
-pub fn init_n150(ctx: &dyn DriverContext, device: &PciDevice) -> Result<(), I2cHidError> {
-    let mut bus = DesignWareI2c::new(ctx, device)?;
+/// Probe and initialise one ACPI-described HID-over-I2C touch device.
+///
+/// The platform config identifies the controller and bus wiring.  HID
+/// vendor/product IDs are read from the wire descriptor and are not used to
+/// select the driver.
+pub fn init_i2c_hid(
+    ctx: &dyn DriverContext,
+    device: &PciDevice,
+    profile: I2cHidPlatformConfig,
+) -> Result<(), I2cHidError> {
+    let mut bus = DesignWareI2c::new(ctx, device, profile)?;
     let mut hid_bytes = [0u8; MAX_HID_DESCRIPTOR];
     bus.read_register(
-        GEMIBOOK_N150_I2C_HID.hid_descriptor_register,
+        profile.hid_descriptor_register,
         &mut hid_bytes[..HID_DESCRIPTOR_LENGTH],
     )?;
     let descriptor = HidI2cDescriptor::parse(&hid_bytes).ok_or(I2cHidError::InvalidDescriptor)?;
-    if descriptor.vendor_id != GEMIBOOK_TOUCHPAD_HID_VENDOR_ID
-        || descriptor.product_id != GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID
-    {
-        return Err(I2cHidError::UnsupportedDevice);
-    }
-
     // Follow Linux's power-on/reset sequence.  IRQ 81 is not wired into the
     // current Fullerene APIC input path yet, so the reset completion wait is
     // bounded and the normal polling path is used below.
@@ -508,7 +508,7 @@ pub fn init_n150(ctx: &dyn DriverContext, device: &PciDevice) -> Result<(), I2cH
         // Linux continues after its one-second reset wait and reports the
         // missing IRQ acknowledgement, so keep the same recovery behavior
         // while still using the polling transport here.
-        log::warn!("[nitrogen] N150 I2C-HID reset acknowledgement timed out");
+        log::warn!("[nitrogen] I2C-HID reset acknowledgement timed out");
     }
     bus.write_command(descriptor.command_register, &[0x00, 0x08])?;
     delay_ms(60);
@@ -535,12 +535,18 @@ pub fn init_n150(ctx: &dyn DriverContext, device: &PciDevice) -> Result<(), I2cH
     *TOUCHPAD.lock() = Some(state);
     *LATEST_INPUT.lock() = None;
     log::info!(
-        "[nitrogen] N150 I2C-HID touchpad initialized ({:04x}:{:04x}, input max {})",
+        "[nitrogen] I2C-HID touchpad initialized ({:04x}:{:04x}, input max {})",
         descriptor.vendor_id,
         descriptor.product_id,
         descriptor.max_input_length
     );
     Ok(())
+}
+
+/// Compatibility wrapper for callers that still select the supplied N150
+/// platform description explicitly.
+pub fn init_n150(ctx: &dyn DriverContext, device: &PciDevice) -> Result<(), I2cHidError> {
+    init_i2c_hid(ctx, device, crate::hid::GEMIBOOK_N150_I2C_HID)
 }
 
 /// Poll one HID input packet.  The interrupt line is intentionally left for a
@@ -596,13 +602,13 @@ pub fn is_initialized() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{HidI2cDescriptor, bxt_scl_hcnt, bxt_scl_lcnt, bxt_sda_hold};
+    use super::{HidI2cDescriptor, scl_hcnt, scl_lcnt, sda_hold};
 
     #[test]
     fn matches_linux_bxt_i2c_timing_profile() {
-        assert_eq!(bxt_scl_hcnt(), 100);
-        assert_eq!(bxt_scl_lcnt(), 200);
-        assert_eq!(bxt_sda_hold(), 0x1_0006);
+        assert_eq!(scl_hcnt(133_000, 600, 171), 100);
+        assert_eq!(scl_lcnt(133_000, 1_300, 208), 200);
+        assert_eq!(sda_hold(133_000, 42), 0x1_0006);
     }
 
     #[test]
@@ -632,6 +638,10 @@ mod tests {
         bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
         bytes[10..12].copy_from_slice(&2u16.to_le_bytes());
         assert!(HidI2cDescriptor::parse(&bytes).is_some());
+
+        let mut extended = [0u8; 31];
+        extended[..30].copy_from_slice(&bytes);
+        assert!(HidI2cDescriptor::parse(&extended).is_none());
 
         bytes[0..2].copy_from_slice(&31u16.to_le_bytes());
         assert!(HidI2cDescriptor::parse(&bytes).is_none());

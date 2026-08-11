@@ -340,26 +340,33 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 present_devices.push(dev.clone());
             }
 
-            // The N150 touchpad is an ACPI HID device behind Intel LPSS I2C
-            // 00:15.0 (8086:54e8). Probe this exact profile before the
-            // generic driver manager so the existing PS/2 path remains the
-            // fallback on the older NEC test machine.
+            // The platform description identifies the Intel LPSS controller
+            // and its ACPI-described I2C child.  The HID identity itself is
+            // read from the wire descriptor by the generic I2C-HID core.
+            // Probe it before the generic driver manager so the existing PS/2
+            // path remains the fallback on machines without this profile.
             if let Some(device) = present_devices.iter().find(|device| {
-                device.vendor_id == 0x8086
-                    && device.device_id == nitrogen::hid::GEMIBOOK_N150_I2C_HID.pci_device_id
-                    && device.bus == nitrogen::hid::GEMIBOOK_N150_I2C_HID.pci_bus
-                    && device.device == nitrogen::hid::GEMIBOOK_N150_I2C_HID.pci_device
-                    && device.function == nitrogen::hid::GEMIBOOK_N150_I2C_HID.pci_function
+                nitrogen::hid::GEMIBOOK_N150_I2C_HID.matches_pci(
+                    device.vendor_id,
+                    device.device_id,
+                    device.bus,
+                    device.device,
+                    device.function,
+                )
             }) {
-                match nitrogen::i2c_hid::init_n150(ctx, device) {
+                match nitrogen::i2c_hid::init_i2c_hid(
+                    ctx,
+                    device,
+                    nitrogen::hid::GEMIBOOK_N150_I2C_HID,
+                ) {
                     Ok(()) => {
                         crate::boot_stage::draw_step_hint(b"tp_ok");
-                        log::info!("N150 touchpad: I2C-HID polling enabled");
+                        log::info!("I2C-HID touchpad: polling enabled");
                     }
                     Err(error) => {
                         crate::boot_stage::draw_step_hint(b"tp_fail");
                         log::warn!(
-                            "N150 touchpad: I2C-HID probe failed; keeping PS/2 fallback: {:?}",
+                            "I2C-HID touchpad probe failed; keeping PS/2 fallback: {:?}",
                             error
                         );
                     }

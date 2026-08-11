@@ -137,6 +137,19 @@ Flasks supports dynamic VGA/display configuration via CLI arguments:
 | `--iso-only` | false | Rebuild `fullerene.iso` and exit without launching QEMU |
 | `--debug` | false | Use Cargo's `dev` profile instead of the default `release` profile |
 
+The default machine is `q35,usb=off`. It exposes the emulated PS/2
+keyboard/mouse and the ICH9 SMBus controller (`8086:2930`), but it does not
+expose an Intel LPSS DesignWare I²C controller (`8086:54e8`) or an
+HID-over-I²C touch device. QEMU's optional `i2c-echo` device is only an I²C
+echo peripheral on the ICH9 SMBus; adding it does not emulate the HID-over-I²C
+descriptor, reset acknowledgement, or input reports.
+
+Therefore QEMU regression runs validate common boot, PCI, scheduler,
+filesystem, and existing PS/2 input paths. The generic I²C-HID transport and
+report path are covered by strict Nitrogen tests, while a real N150 probe
+still requires the platform-supplied ACPI controller/address/timing
+description and hardware.
+
 Examples:
 ```bash
 # Rebuild only fullerene.iso without opening QEMU

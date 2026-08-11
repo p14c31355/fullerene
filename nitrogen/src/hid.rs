@@ -8,7 +8,7 @@
 use alloc::vec::Vec;
 
 /// Intel LPSS I2C functions used by Linux for Alder Lake-N touch devices.
-/// The attached GemiBook report identifies function 0 as `8086:54e8`.
+/// The list is a controller-family match, not a touchpad identity match.
 pub const INTEL_LPSS_I2C_DEVICE_IDS: &[u16] = &[0x54e8, 0x54e9, 0x54ea, 0x54eb];
 /// ACPI HID reported by the GemiBook XPro N150 for its I2C HID device.
 pub const GEMIBOOK_TOUCHPAD_ACPI_HID: &[u8; 7] = b"AMR1399";
@@ -28,26 +28,58 @@ pub const GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID: u16 = 0xc001;
 /// resolved GPIO interrupt reported by Windows and Linux on this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct I2cHidPlatformConfig {
+    pub pci_vendor_id: u16,
     pub pci_device_id: u16,
     pub pci_bus: u8,
     pub pci_device: u8,
     pub pci_function: u8,
     pub i2c_address: u16,
     pub bus_speed_hz: u32,
+    /// DesignWare input clock and board-level signal timings supplied by
+    /// the platform description (Linux's `i2c_timings`/software-node data).
+    pub root_clock_khz: u64,
+    pub sda_hold_ns: u64,
+    pub sda_fall_ns: u64,
+    pub scl_fall_ns: u64,
     pub hid_descriptor_register: u16,
     pub interrupt_gsi: u32,
 }
 
 pub const GEMIBOOK_N150_I2C_HID: I2cHidPlatformConfig = I2cHidPlatformConfig {
+    pci_vendor_id: 0x8086,
     pci_device_id: 0x54e8,
     pci_bus: 0,
     pci_device: 0x15,
     pci_function: 0,
     i2c_address: 0x2c,
     bus_speed_hz: 400_000,
+    root_clock_khz: 133_000,
+    sda_hold_ns: 42,
+    sda_fall_ns: 171,
+    scl_fall_ns: 208,
     hid_descriptor_register: 0x20,
     interrupt_gsi: 81,
 };
+
+impl I2cHidPlatformConfig {
+    /// Match only the platform/controller description.  The HID vendor and
+    /// product IDs are deliberately not part of this match: Linux obtains
+    /// those from the HID-over-I2C descriptor at probe time.
+    pub const fn matches_pci(
+        &self,
+        vendor_id: u16,
+        device_id: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> bool {
+        self.pci_vendor_id == vendor_id
+            && self.pci_device_id == device_id
+            && self.pci_bus == bus
+            && self.pci_device == device
+            && self.pci_function == function
+    }
+}
 
 const GENERIC_DESKTOP_PAGE: u16 = 0x01;
 const BUTTON_PAGE: u16 = 0x09;
