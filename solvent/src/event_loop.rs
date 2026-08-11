@@ -17,6 +17,7 @@ static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64
 static TICK_CORE_ACTIVE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
+static CURSOR_RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 fn process_pointer_motion_only() {
@@ -96,6 +97,14 @@ pub fn process_events() {
 
 pub fn set_render_fn(render_fn: fn()) {
     *RENDER_FN.lock() = Some(render_fn);
+}
+
+/// Install the kernel callback used for cursor-only framebuffer updates.
+///
+/// Synchronous callers such as Nozzle cannot borrow a framebuffer directly,
+/// so `runtime_tick_no_fb` uses this callback for the cheap cursor path.
+pub fn set_cursor_render_fn(render_fn: fn()) {
+    *CURSOR_RENDER_FN.lock() = Some(render_fn);
 }
 
 fn service_explorer_navigation() {
@@ -263,63 +272,81 @@ pub fn runtime_tick_no_fb() {
             .load(core::sync::atomic::Ordering::Relaxed)
             .saturating_mul(FRAME_INTERVAL_MS);
         let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
-            if !runtime.frame_due {
-                return false;
-            }
-            // A video frame has its own presentation deadline in the WASM
-            // viewer. Do not quantize it to the desktop's 17 ms refresh
-            // throttle: that turns a 30 fps stream into alternating short
-            // and long display intervals and is visible as judder.
-            let video_frame_due = runtime.video_dirty_window.is_some();
-            let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
-            if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
-                return false;
-            }
-            LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
-            runtime.frame_due = false;
-            true
-        });
-        if do_render {
+        let (do_render, cursor_only) = RUNTIME_CONTEXT
+            .runtime()
+            .as_mut()
+            .map(|runtime| {
+                if !runtime.frame_due {
+                    return (false, runtime.cursor_redraw_from.is_some());
+                }
+                // A video frame has its own presentation deadline in the WASM
+                // viewer. Do not quantize it to the desktop's 17 ms refresh
+                // throttle: that turns a 30 fps stream into alternating short
+                // and long display intervals and is visible as judder.
+                let video_frame_due = runtime.video_dirty_window.is_some();
+                let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
+                if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
+                    return (false, false);
+                }
+                LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
+                runtime.frame_due = false;
+                (true, false)
+            })
+            .unwrap_or((false, false));
+        if do_render || cursor_only {
             // Keep the outer tick marked as suspended while the nested pump
             // is idle, but release it around the renderer itself because the
             // renderer uses the same guard to reject recursive frames.
             RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-            let render_fn = *RENDER_FN.lock();
+            let render_fn = if do_render {
+                *RENDER_FN.lock()
+            } else {
+                *CURSOR_RENDER_FN.lock()
+            };
             if let Some(render_fn) = render_fn {
                 render_fn();
             }
             RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
         }
-        if !do_render {
+        if !do_render && !cursor_only {
             RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
         }
         return;
     }
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     tick_core(now);
-    let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
-        let due = runtime.frame_due;
-        if due {
-            let video_frame_due = runtime.video_dirty_window.is_some();
-            let frame_tsc = TSC_PER_MS
-                .load(core::sync::atomic::Ordering::Relaxed)
-                .saturating_mul(FRAME_INTERVAL_MS);
-            let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
-            let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-            if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
-                runtime.frame_due = true;
-                return false;
+    let (do_render, cursor_only) = RUNTIME_CONTEXT
+        .runtime()
+        .as_mut()
+        .map(|runtime| {
+            let due = runtime.frame_due;
+            if due {
+                let video_frame_due = runtime.video_dirty_window.is_some();
+                let frame_tsc = TSC_PER_MS
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                    .saturating_mul(FRAME_INTERVAL_MS);
+                let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
+                let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+                if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
+                    runtime.frame_due = true;
+                    return (false, false);
+                }
+                LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
+                runtime.frame_due = false;
             }
-            LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
-            runtime.frame_due = false;
-        }
-        due
-    });
+            (due, !due && runtime.cursor_redraw_from.is_some())
+        })
+        .unwrap_or((false, false));
     // Release RENDERING_SUSPENDED before calling render_fn, otherwise
     // render() will see it as already-suspended and early-return.
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-    let render_fn = if do_render { *RENDER_FN.lock() } else { None };
+    let render_fn = if do_render {
+        *RENDER_FN.lock()
+    } else if cursor_only {
+        *CURSOR_RENDER_FN.lock()
+    } else {
+        None
+    };
     if let Some(render_fn) = render_fn {
         render_fn();
     }

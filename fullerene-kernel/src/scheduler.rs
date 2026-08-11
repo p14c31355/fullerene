@@ -104,6 +104,7 @@ pub fn scheduler_loop() -> ! {
 
     // Wire kernel renderer into Solvent so runtime ticks can paint the display.
     gui::set_render_fn(gui::render);
+    gui::set_cursor_render_fn(gui::render_cursor);
 
     // Exercise the same command registration, shell service, VFS loader, and
     // cooperative scheduling path used by an interactive invocation.

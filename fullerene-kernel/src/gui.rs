@@ -64,8 +64,8 @@ fn save_runtime_settings() {
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
     LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, cursor_update_due,
-    is_initialized, poll_mouse_state, process_events, push_key_event, set_render_fn, tick_core,
-    write_terminal,
+    is_initialized, poll_mouse_state, process_events, push_key_event, set_cursor_render_fn,
+    set_render_fn, tick_core, write_terminal,
 };
 
 /// Initialise the GUI subsystem via Solvent runtime.
@@ -281,6 +281,21 @@ pub fn render() {
     crate::metrics::record_frame_ticks(
         unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
     );
+}
+
+/// Render only the pending cursor damage for a synchronous caller.
+///
+/// Nozzle and synchronous applications cannot hold the framebuffer guard
+/// themselves, but they still pump input while waiting. Keep that path as
+/// cheap as the normal scheduler's cursor-only branch.
+pub fn render_cursor() {
+    let rendered = crate::contexts::framebuffer::with_framebuffer(|framebuffer| {
+        solvent::render_cursor_fast(framebuffer);
+    })
+    .is_some();
+    if rendered {
+        finish_frame(0);
+    }
 }
 
 /// Perform one tick of the runtime loop with kernel framebuffer access.
