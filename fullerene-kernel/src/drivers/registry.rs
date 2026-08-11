@@ -67,6 +67,10 @@ static LAST_REGISTERED_USB_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(not(nitrogen_no_usb))]
 struct UsbPollRequest {
     request_id: u64,
+    /// Number of poll attempts remaining.  When zero, the request is
+    /// completed even if no device was found.  This mirrors the old
+    /// synchronous `usb_poll_and_register` retry loop (8 × 250 ms).
+    retries_left: u8,
 }
 
 #[cfg(not(nitrogen_no_usb))]
@@ -682,6 +686,12 @@ impl UsbHostDriver for UsbHostCtl {
     }
 }
 
+/// Maximum number of poll retries before giving up.  Each retry happens on
+/// a separate scheduler tick, so the total window is roughly
+/// `MAX_USB_POLL_RETRIES × scheduler-tick-period`.
+#[cfg(not(nitrogen_no_usb))]
+const MAX_USB_POLL_RETRIES: u8 = 16;
+
 /// Enqueue one coalesced USB hotplug poll from a runtime/service callback.
 #[cfg(not(nitrogen_no_usb))]
 pub fn enqueue_usb_poll() -> bool {
@@ -693,6 +703,7 @@ pub fn enqueue_usb_poll() -> bool {
     }
     let request = UsbPollRequest {
         request_id: NEXT_USB_REQUEST.fetch_add(1, Ordering::Relaxed),
+        retries_left: MAX_USB_POLL_RETRIES,
     };
     if USB_SQ.lock().len() >= 4 {
         USB_POLL_PENDING.store(false, Ordering::Release);
@@ -712,24 +723,60 @@ pub fn enqueue_usb_poll() -> bool {
 /// Each poll first ensures the controller is activated.  The activation
 /// (BAR MMIO) is bounded by the scheduler's device-phase deadline, so a
 /// hung controller cannot block the desktop permanently.
+///
+/// If no device is found and retries remain, the request stays at the
+/// head of the SQ for the next scheduler tick.  `USB_POLL_PENDING` is
+/// cleared immediately so a new `usb_rescan` can replace the in-flight
+/// request at any time.
 #[cfg(not(nitrogen_no_usb))]
 pub fn process_usb_submission_queue(budget: usize) {
     for _ in 0..budget {
-        let Some(request) = USB_SQ.lock().pop_front() else {
-            break;
-        };
-        // Activate the controller if it has not been enabled yet.  This
-        // is the step that touches BAR MMIO; doing it here (instead of
-        // in the shell's usb_rescan path) keeps the shell responsive.
-        if !is_usb_enabled() {
-            activate_usb();
+        // Peek at the head without removing it so retries can continue
+        // on the next tick.
+        let mut should_complete = false;
+        let mut should_retry = false;
+        {
+            let sq = USB_SQ.lock();
+            if sq.front().is_none() {
+                break;
+            }
+            // Activate the controller if it has not been enabled yet.
+            if !is_usb_enabled() {
+                drop(sq);
+                activate_usb();
+            }
         }
         let changed = poll_usb();
-        USB_CQ.lock().push_back(UsbPollCompletion {
-            request_id: request.request_id,
-            changed,
-        });
-        USB_POLL_PENDING.store(false, Ordering::Release);
+        let found = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
+
+        {
+            let mut sq = USB_SQ.lock();
+            let Some(request) = sq.front_mut() else {
+                USB_POLL_PENDING.store(false, Ordering::Release);
+                break;
+            };
+            if changed || found || request.retries_left == 0 {
+                should_complete = true;
+            } else {
+                request.retries_left -= 1;
+                should_retry = true;
+            }
+        }
+
+        if should_complete {
+            let completed = USB_SQ.lock().pop_front().unwrap();
+            USB_CQ.lock().push_back(UsbPollCompletion {
+                request_id: completed.request_id,
+                changed,
+            });
+            USB_POLL_PENDING.store(false, Ordering::Release);
+        } else if should_retry {
+            // Leave the request at the head of the SQ.  Do NOT hold
+            // USB_POLL_PENDING — that would block a new usb_rescan from
+            // replacing this request.  The scheduler will re-enter this
+            // function on the next tick and retry.
+            USB_POLL_PENDING.store(false, Ordering::Release);
+        }
     }
 }
 
