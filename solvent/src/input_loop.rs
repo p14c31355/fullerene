@@ -241,8 +241,7 @@ pub fn pointer_latency_metrics() -> (u64, u64) {
 mod tests {
     use super::{
         MAX_HID_RELATIVE_STEP_PX, MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, map_touch_axis,
-        mouse_motion_is_stale, scaled_hid_relative_delta, scaled_mouse_delta,
-        touchpad_button_bits,
+        mouse_motion_is_stale, scaled_hid_relative_delta, scaled_mouse_delta, touchpad_button_bits,
     };
 
     #[test]

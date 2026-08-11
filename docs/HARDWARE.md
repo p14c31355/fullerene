@@ -175,6 +175,42 @@ card-reader endpoints whose state must survive until their explicit rescan.
 Reference: Linux [`drivers/usb/host/pci-quirks.c`](https://github.com/torvalds/linux/blob/master/drivers/usb/host/pci-quirks.c)
 and [`drivers/usb/host/xhci-ext-caps.h`](https://github.com/torvalds/linux/blob/master/drivers/usb/host/xhci-ext-caps.h).
 
+## Intel Alder Lake-N xHCI (8086:54ed)
+
+The Chuwi GemiBook XPro (N150) exposes a single xHCI controller at
+`00:14.0` with no EHCI companion. Fullerene's USB stack handles this
+configuration directly: the Intel USB2/USB3 port-routing quirk is
+skipped when no EHCI companion is present, and the xHCI is initialised
+through the standard HCRST → configure → start → init-ports sequence.
+
+Extended capabilities (Supported Protocol, Legacy Support) are dumped
+during init so USB2/USB3 port classification is visible in the kernel
+log. Port protocol parsing assigns the correct reset type (warm reset
+for USB3, regular reset for USB2) per port.
+
+### USB hub class driver
+
+The GemiBook XPro has an internal USB 2.0 hub (WCH CH334R,
+`1d86:8091`) on a root port. External USB mass-storage devices may be
+behind this hub. Fullerene's xHCI stack now enumerates devices behind
+external hubs:
+
+1. After Address Device, the device class is probed via a control
+   transfer (GET_DESCRIPTOR(device)).
+2. If the device is a hub (class `0x09`), SET_CONFIGURATION is issued,
+   the Hub Class Descriptor is read for `bNbrPorts`, and a Configure
+   Endpoint command updates the slot context with `Hub=1` and
+   `NumberOfPorts`.
+3. Each downstream port is polled via Get Port Status. Connected ports
+   are reset via Set Port Feature (PORT_RESET). After reset, the child
+   device is addressed with the correct Route String and Parent Hub
+   Slot ID in the slot context.
+4. Mass-storage devices behind the hub are enumerated through the
+   standard BOT/SCSI path and registered as `/dev/usbN`.
+
+This allows `usb_rescan` to discover Ventoy USB mass-storage devices
+whether they are on a root port or behind the internal hub.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:

@@ -96,6 +96,8 @@ impl XhciContext {
         );
         log::info!("xHCI: HCIVERSION=0x{:04X}", cap_regs.hci_version);
 
+        super::register::dump_extended_capabilities(mmio_base, hcc1.ext_cap_ptr);
+
         crate::debug::hint(b"xh_leg");
         let legacy_ok = match try_legacy_handoff(mmio_base, hcc1.ext_cap_ptr) {
             Ok(true) | Ok(false) => true,

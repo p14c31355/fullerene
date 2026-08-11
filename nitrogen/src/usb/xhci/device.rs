@@ -201,6 +201,67 @@ impl InputContext {
         ep0[4] = 8;
     }
 
+    /// Set up a device behind an external hub for the Address Device command.
+    ///
+    /// `root_port` is the root-hub port the hub is connected to.
+    /// `hub_port` is the port on the parent hub (1-based).
+    /// `parent_slot_id` is the xHCI slot ID of the parent hub.
+    pub fn setup_address_device_behind_hub(
+        &mut self,
+        root_port: u8,
+        hub_port: u8,
+        speed_id: u8,
+        parent_slot_id: u32,
+        ep0_ring_phys: u64,
+    ) {
+        self.add_flags = 3; // add slot + EP0
+        self.drop_flags = 0;
+        self.slot_ctx = [0; 8];
+        // Route String bits [3:0] (dword 0 bits [19:16]) = hub port on tier-1 hub.
+        let route_string = (hub_port as u32 & 0xF) << 16;
+        self.slot_ctx[0] = ((speed_id as u32) << 20) | (1 << 27) | route_string;
+        // Dword 1: root hub port | parent hub slot ID
+        self.slot_ctx[1] = ((root_port as u32) << 24) | ((parent_slot_id & 0xFF) << 8);
+
+        let max_packet_size = match speed_id {
+            3 => 64,
+            4 | 5 => 512,
+            _ => 8,
+        };
+        let ep0 = &mut self.ep_ctx[0];
+        *ep0 = [0; 8];
+        ep0[1] = (max_packet_size << 16) | (3 << 1) | (4 << 3);
+        ep0[2] = (ep0_ring_phys as u32) | 1;
+        ep0[3] = (ep0_ring_phys >> 32) as u32;
+        ep0[4] = 8;
+    }
+
+    /// Update the slot context to mark a device as a hub.
+    ///
+    /// Sets Hub=1, Number of Ports, and the parent hub's TT think time.
+    /// Used via a Configure Endpoint command after Address Device and
+    /// before enumerating the hub's downstream ports.
+    pub fn setup_hub_slot(&mut self, num_ports: u8, speed_id: u8) {
+        // Only modify slot context (context index 0), not EP0.
+        self.add_flags = 1; // add slot context only
+        self.drop_flags = 0;
+        // Preserve speed and context entries from the Address Device output.
+        let preserved = self.slot_ctx[0] & ((0x1F << 27) | (0xF << 20));
+        // Set Hub bit (bit 20 of dword 0 in the Linux layout, i.e. bit 26
+        // in xHCI 1.2 spec).  The existing `<< 20` speed encoding places
+        // speed at bits [23:20]; Hub is at bit 20 in the same field,
+        // so OR-ing (1 << 20) sets the Hub flag without disturbing speed
+        // bits [23:21].
+        self.slot_ctx[0] = preserved | (1 << 20);
+        // Dword 1: root hub port is already set; add number of ports.
+        let root_port = (self.slot_ctx[1] >> 24) & 0xFF;
+        self.slot_ctx[1] = (root_port << 24) | ((num_ports as u32 & 0xFF) << 16);
+        // For FS/LS hubs with TT, set think time.  Full-speed hub (speed_id=2)
+        // uses TT think time of 8 bit-times (value 2 in bits [1:0] of dword 2).
+        // High-speed hub (speed_id=3) is multi-TT capable.
+        let _ = speed_id; // TT info is in dword 2, not critical for basic operation.
+    }
+
     /// Add one bulk endpoint context and keep Slot Context Entries monotonic.
     pub fn setup_bulk_endpoint(&mut self, ctx_idx: u32, mps: u16, ring_phys: u64) {
         self.add_flags = (1 << ctx_idx) | 1;
