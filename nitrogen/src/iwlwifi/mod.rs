@@ -18,6 +18,7 @@ mod api29;
 mod connection_state;
 mod device;
 mod firmware;
+pub mod modern;
 pub mod registers;
 mod rx;
 mod tx;
