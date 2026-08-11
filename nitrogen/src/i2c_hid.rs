@@ -74,6 +74,8 @@ const INTR_TX_ABORT: u32 = 1 << 6;
 const INTR_STOP_DET: u32 = 1 << 9;
 const I2C_BUSY_TIMEOUT_US: u64 = 1_000;
 const HID_ADDRESS_RETRY_DELAY_US: u64 = 400;
+const I2C_INPUT_POLL_INTERVAL_US: u64 = 1_000;
+const MAX_INPUT_REPORTS_PER_POLL: usize = 4;
 
 const DW_IC_SDA_HOLD_MIN_VERSION: u32 = 0x3131312a;
 
@@ -762,9 +764,25 @@ pub fn init_n150(ctx: &dyn DriverContext, device: &PciDevice) -> Result<(), I2cH
     init_i2c_hid(ctx, device, crate::hid::GEMIBOOK_N150_I2C_HID)
 }
 
-/// Poll one HID input packet.  The interrupt line is intentionally left for a
-/// later APIC/GSI integration; polling keeps this first hardware path
-/// independent of the existing legacy IRQ routing.
+fn store_input(input: TouchpadInput) {
+    let mut slot = LATEST_INPUT.lock();
+    if let (Some(previous), Some((x, y))) = (slot.as_mut(), input.relative)
+        && let Some((previous_x, previous_y)) = previous.relative
+    {
+        // Preserve every relative packet until the desktop consumes it. The
+        // scheduler is slower than a busy HID device, so replacing the old
+        // packet here would create both lag and post-release motion.
+        previous.relative = Some((previous_x.saturating_add(x), previous_y.saturating_add(y)));
+        previous.report.buttons = input.report.buttons;
+        previous.report.in_contact = input.report.in_contact;
+        return;
+    }
+    *slot = Some(input);
+}
+
+/// Poll and drain HID input packets. The interrupt line is intentionally left
+/// for a later APIC/GSI integration; bounded draining prevents the polling
+/// path from replaying a backlog after the finger has already stopped.
 pub fn poll_input() {
     if !is_initialized() {
         return;
@@ -772,7 +790,8 @@ pub fn poll_input() {
     let now = unsafe { core::arch::x86_64::_rdtsc() };
     let previous = LAST_POLL_TSC.load(Ordering::Relaxed);
     if previous != 0
-        && now.wrapping_sub(previous) < crate::timing::ticks_per_us().saturating_mul(5_000)
+        && now.wrapping_sub(previous)
+            < crate::timing::ticks_per_us().saturating_mul(I2C_INPUT_POLL_INTERVAL_US)
     {
         return;
     }
@@ -783,108 +802,116 @@ pub fn poll_input() {
     if length < 2 {
         return;
     }
-    let mut bytes = [0u8; MAX_INPUT_REPORT];
-    let report_length = match device.bus.read_input_report(&mut bytes[..length]) {
-        Ok(length) => length,
-        Err(error) => {
+    for _ in 0..MAX_INPUT_REPORTS_PER_POLL {
+        let mut bytes = [0u8; MAX_INPUT_REPORT];
+        let report_length = match device.bus.read_input_report(&mut bytes[..length]) {
+            Ok(length) => length,
+            Err(error) => {
+                if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
+                    log::warn!(
+                        "[nitrogen] I2C-HID input read failed: max_len={} error={:?}",
+                        length,
+                        error
+                    );
+                    crate::debug_status!("I2C-HID", "INPUT ERR {:?}", error);
+                    let status = alloc::format!("INPUT ERR {:?}", error);
+                    publish_status(&status);
+                }
+                break;
+            }
+        };
+        // Zero is the normal HID-over-I2C idle response, not a malformed
+        // packet. It also terminates the bounded drain once the queue is
+        // empty, so old motion cannot be replayed indefinitely.
+        if report_length == 0 {
+            break;
+        }
+        if report_length < 2 || report_length > length {
             if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
                 log::warn!(
-                    "[nitrogen] I2C-HID input read failed: max_len={} error={:?}",
-                    length,
-                    error
+                    "[nitrogen] I2C-HID input length invalid: embedded={} transfer_len={}",
+                    report_length,
+                    length
                 );
-                crate::debug_status!("I2C-HID", "INPUT ERR {:?}", error);
-                let status = alloc::format!("INPUT ERR {:?}", error);
+                crate::debug_status!("I2C-HID", "INPUT LEN {}", report_length);
+                let status = alloc::format!("INPUT LEN {}", report_length);
                 publish_status(&status);
             }
-            return;
+            break;
         }
-    };
-    if report_length < 2 || report_length > length {
-        if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
-            log::warn!(
-                "[nitrogen] I2C-HID input length invalid: embedded={} transfer_len={}",
+        let payload = &bytes[2..report_length];
+        let decoded = device.report.decode_touchpad(device.fields, payload);
+        let relative = if decoded.is_none() {
+            device.report.decode_relative_mouse(payload)
+        } else {
+            None
+        };
+        let input_kind = if decoded.is_some() {
+            "ABS"
+        } else if relative.is_some() {
+            "REL"
+        } else {
+            "ERR"
+        };
+        if !FIRST_INPUT_REPORTED.swap(true, Ordering::AcqRel) {
+            log::info!(
+                "[nitrogen] I2C-HID first input: len={} report_id={} payload={:02x?}",
                 report_length,
-                length
+                bytes.get(2).copied().unwrap_or(0),
+                &bytes[2..report_length.min(34)]
             );
-            crate::debug_status!("I2C-HID", "INPUT LEN {}", report_length);
-            let status = alloc::format!("INPUT LEN {}", report_length);
+            crate::debug_status!(
+                "I2C-HID",
+                "INPUT len{} id{} {}",
+                report_length,
+                bytes.get(2).copied().unwrap_or(0),
+                input_kind
+            );
+            let status = alloc::format!(
+                "INPUT len{} id{} {}",
+                report_length,
+                bytes.get(2).copied().unwrap_or(0),
+                input_kind
+            );
             publish_status(&status);
         }
-        return;
-    }
-    let payload = &bytes[2..report_length];
-    let decoded = device.report.decode_touchpad(device.fields, payload);
-    let relative = if decoded.is_none() {
-        device.report.decode_relative_mouse(payload)
-    } else {
-        None
-    };
-    let input_kind = if decoded.is_some() {
-        "ABS"
-    } else if relative.is_some() {
-        "REL"
-    } else {
-        "ERR"
-    };
-    if !FIRST_INPUT_REPORTED.swap(true, Ordering::AcqRel) {
-        log::info!(
-            "[nitrogen] I2C-HID first input: len={} report_id={} payload={:02x?}",
-            report_length,
-            bytes.get(2).copied().unwrap_or(0),
-            &bytes[2..report_length.min(34)]
-        );
-        crate::debug_status!(
-            "I2C-HID",
-            "INPUT len{} id{} {}",
-            report_length,
-            bytes.get(2).copied().unwrap_or(0),
-            input_kind
-        );
-        let status = alloc::format!(
-            "INPUT len{} id{} {}",
-            report_length,
-            bytes.get(2).copied().unwrap_or(0),
-            input_kind
-        );
-        publish_status(&status);
-    }
-    if let Some(report) = decoded {
-        *LATEST_INPUT.lock() = Some(TouchpadInput {
-            report,
-            x_min: device.fields.x.logical_minimum,
-            x_max: device.fields.x.logical_maximum,
-            y_min: device.fields.y.logical_minimum,
-            y_max: device.fields.y.logical_maximum,
-            relative: None,
-        });
-    } else if let Some((x, y, buttons)) = relative {
-        *LATEST_INPUT.lock() = Some(TouchpadInput {
-            report: TouchpadReport {
-                x: 0,
-                y: 0,
-                buttons,
-                in_contact: buttons != 0,
-            },
-            x_min: device.fields.x.logical_minimum,
-            x_max: device.fields.x.logical_maximum,
-            y_min: device.fields.y.logical_minimum,
-            y_max: device.fields.y.logical_maximum,
-            relative: Some((x, y)),
-        });
-    } else if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
-        log::warn!(
-            "[nitrogen] I2C-HID input report could not be decoded: report_id={} len={}",
-            bytes.get(2).copied().unwrap_or(0),
-            report_length
-        );
-        crate::debug_status!(
-            "I2C-HID",
-            "DECODE ERR id{}",
-            bytes.get(2).copied().unwrap_or(0)
-        );
-        let status = alloc::format!("DECODE ERR id{}", bytes.get(2).copied().unwrap_or(0));
-        publish_status(&status);
+        if let Some(report) = decoded {
+            store_input(TouchpadInput {
+                report,
+                x_min: device.fields.x.logical_minimum,
+                x_max: device.fields.x.logical_maximum,
+                y_min: device.fields.y.logical_minimum,
+                y_max: device.fields.y.logical_maximum,
+                relative: None,
+            });
+        } else if let Some((x, y, buttons)) = relative {
+            store_input(TouchpadInput {
+                report: TouchpadReport {
+                    x: 0,
+                    y: 0,
+                    buttons,
+                    in_contact: buttons != 0,
+                },
+                x_min: device.fields.x.logical_minimum,
+                x_max: device.fields.x.logical_maximum,
+                y_min: device.fields.y.logical_minimum,
+                y_max: device.fields.y.logical_maximum,
+                relative: Some((x, y)),
+            });
+        } else if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
+            log::warn!(
+                "[nitrogen] I2C-HID input report could not be decoded: report_id={} len={}",
+                bytes.get(2).copied().unwrap_or(0),
+                report_length
+            );
+            crate::debug_status!(
+                "I2C-HID",
+                "DECODE ERR id{}",
+                bytes.get(2).copied().unwrap_or(0)
+            );
+            let status = alloc::format!("DECODE ERR id{}", bytes.get(2).copied().unwrap_or(0));
+            publish_status(&status);
+        }
     }
 }
 

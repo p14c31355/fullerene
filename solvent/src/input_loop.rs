@@ -32,6 +32,10 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
 // resumes. The rest is intentionally discarded: it is stale motion, not a
 // new pointer position that the user is still trying to reach.
 const MAX_MOUSE_STEP_PX: i32 = 96;
+// The N150's HID relative-mouse collection reports smaller deltas than the
+// legacy PS/2 mouse used on the old test machine. Keep the user-facing
+// sensitivity setting as the common base, then normalize this transport.
+const HID_RELATIVE_SENSITIVITY_SCALE: i16 = 2;
 const MOUSE_STALE_AFTER_MS: u64 = 50;
 static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
 static VIDEO_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -129,11 +133,12 @@ pub fn poll_mouse_state() {
     let next_x = i32::from(mouse.x) + scaled_mouse_delta(dx, sensitivity);
     let next_y = i32::from(mouse.y) - scaled_mouse_delta(dy, sensitivity);
     if let Some((dx, dy)) = touchpad_relative {
-        mouse.x = (next_x + scaled_mouse_delta(dx, sensitivity))
+        let hid_sensitivity = sensitivity.saturating_mul(HID_RELATIVE_SENSITIVITY_SCALE);
+        mouse.x = (next_x + scaled_mouse_delta(dx, hid_sensitivity))
             .clamp(0, fb_width.saturating_sub(1) as i32) as i16;
         // HID relative mouse Y is positive downward. PS/2 uses the opposite
         // convention and is handled by the subtraction above.
-        mouse.y = (next_y + scaled_mouse_delta(dy, sensitivity))
+        mouse.y = (next_y + scaled_mouse_delta(dy, hid_sensitivity))
             .clamp(0, fb_height.saturating_sub(1) as i32) as i16;
     } else {
         mouse.x = if fb_width == 0 {
