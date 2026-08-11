@@ -21,10 +21,19 @@ impl DriverContext for KernelDriverContext {
     }
 
     fn mmio_virtual_address(&self, _phys: u64, size: usize) -> Result<usize, DriverContextError> {
-        let mgr = crate::memory_management::get_memory_manager().lock();
-        let _ = mgr.as_ref().ok_or(DriverContextError::MmioMappingFailed)?;
-        crate::memory_management::kernel_space::find_free_virtual_address(size as u64)
-            .ok_or(DriverContextError::MmioMappingFailed)
+        let manager_available = {
+            let mgr = crate::memory_management::get_memory_manager().lock();
+            mgr.as_ref().is_some()
+        };
+        if !manager_available {
+            return Err(DriverContextError::MmioMappingFailed);
+        }
+        let virt = crate::memory_management::kernel_space::find_free_virtual_address(size as u64)
+            .ok_or(DriverContextError::MmioMappingFailed)?;
+        if !crate::memory_management::kernel_space::reserve_virtual_address(virt, size) {
+            return Err(DriverContextError::MmioMappingFailed);
+        }
+        Ok(virt)
     }
 
     fn allocate_frame(&self) -> Result<u64, DriverContextError> {
@@ -58,6 +67,7 @@ impl DriverContext for KernelDriverContext {
     }
 
     fn unmap_mmio_region(&self, phys: usize, virt: usize, size: usize) {
+        crate::memory_management::kernel_space::release_virtual_address(virt, size);
         let mut mgr = crate::memory_management::get_memory_manager().lock();
         if let Some(m) = mgr.as_mut() {
             if let Err(error) = m.unmap_mmio_region(phys, virt, size) {

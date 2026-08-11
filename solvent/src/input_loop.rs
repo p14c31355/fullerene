@@ -159,7 +159,7 @@ pub fn poll_mouse_state() {
         mouse.x = map_touch_axis(touchpad.report.x, touchpad.x_min, touchpad.x_max, fb_width);
         mouse.y = map_touch_axis(touchpad.report.y, touchpad.y_min, touchpad.y_max, fb_height);
     }
-    let combined_buttons = (buttons & !0x03) | touchpad_button_bits(touchpad.as_ref());
+    let combined_buttons = buttons | touchpad_button_bits(touchpad.as_ref());
     mouse.buttons = combined_buttons;
     let cursor_x = mouse.x as i32;
     let cursor_y = mouse.y as i32;

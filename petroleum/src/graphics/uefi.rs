@@ -2,10 +2,11 @@
 
 use crate::common::memory::create_framebuffer_config;
 use crate::common::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputModeInformation, EfiGraphicsOutputProtocol,
-    EfiGraphicsPixelFormat, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiBootServices, EfiGraphicsOutputModeInformation,
+    EfiGraphicsOutputProtocol, EfiGraphicsPixelFormat, EfiStatus, EfiSystemTable,
+    FullereneFramebufferConfig,
 };
-use core::{ffi::c_void, mem::MaybeUninit, ptr};
+use core::{ffi::c_void, ptr};
 use sealant::{FramebufferRegion, Permissions};
 use spin::Mutex;
 
@@ -78,25 +79,32 @@ fn install(config: FullereneFramebufferConfig) {
 }
 
 fn query_mode_info(
+    services: &EfiBootServices,
     gop_ptr: *mut EfiGraphicsOutputProtocol,
     mode_number: u32,
 ) -> Option<EfiGraphicsOutputModeInformation> {
-    let mut info = MaybeUninit::<EfiGraphicsOutputModeInformation>::uninit();
-    let mut info_size = core::mem::size_of::<EfiGraphicsOutputModeInformation>();
+    let mut info_ptr: *mut EfiGraphicsOutputModeInformation = ptr::null_mut();
+    let mut info_size = 0usize;
     let status = EfiStatus::from(unsafe {
         ((*gop_ptr).query_mode)(
             gop_ptr,
             mode_number,
             &mut info_size,
-            info.as_mut_ptr().cast::<c_void>(),
+            (&mut info_ptr as *mut *mut EfiGraphicsOutputModeInformation).cast::<c_void>(),
         )
     });
-    if status != EfiStatus::Success
-        || info_size < core::mem::size_of::<EfiGraphicsOutputModeInformation>()
-    {
+    let valid = status == EfiStatus::Success
+        && info_size >= core::mem::size_of::<EfiGraphicsOutputModeInformation>()
+        && !info_ptr.is_null();
+    if !valid {
+        if !info_ptr.is_null() {
+            (services.free_pool)(info_ptr.cast::<c_void>());
+        }
         return None;
     }
-    Some(unsafe { info.assume_init() })
+    let info = unsafe { ptr::read(info_ptr) };
+    (services.free_pool)(info_ptr.cast::<c_void>());
+    Some(info)
 }
 
 fn mode_score(info: &EfiGraphicsOutputModeInformation) -> Option<(u8, u64, u64)> {
@@ -121,6 +129,7 @@ fn mode_score(info: &EfiGraphicsOutputModeInformation) -> Option<(u8, u64, u64)>
 }
 
 fn preferred_mode(
+    services: &EfiBootServices,
     gop_ptr: *mut EfiGraphicsOutputProtocol,
     max_mode: u32,
     current_mode: u32,
@@ -128,7 +137,7 @@ fn preferred_mode(
     // Do not unexpectedly downscale a display that is already at a normal
     // desktop resolution. The mode switch is specifically for firmware or
     // Ventoy fallback modes such as 640x480 and 800x600.
-    if let Some(current_info) = query_mode_info(gop_ptr, current_mode)
+    if let Some(current_info) = query_mode_info(services, gop_ptr, current_mode)
         && let Some((class, area, _)) = mode_score(&current_info)
         && class >= 2
         && area >= 1280 * 720
@@ -138,7 +147,7 @@ fn preferred_mode(
 
     let mut best: Option<(u8, u64, u64, u32)> = None;
     for mode_number in 0..max_mode {
-        let Some(info) = query_mode_info(gop_ptr, mode_number) else {
+        let Some(info) = query_mode_info(services, gop_ptr, mode_number) else {
             continue;
         };
         let Some((class, area, aspect)) = mode_score(&info) else {
@@ -161,6 +170,7 @@ fn preferred_mode(
 /// framebuffer configuration. If a firmware rejects `SetMode`, the current
 /// mode remains a safe fallback.
 pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    let services = unsafe { system_table.boot_services.as_ref() }?;
     let gop_ptr = match locate_gop(system_table) {
         Ok(gop) => gop,
         Err(status) => {
@@ -171,7 +181,7 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     let gop = unsafe { gop_ptr.as_ref() }?;
     let mode = unsafe { gop.mode.as_ref() }?;
     let current_mode = mode.mode;
-    if let Some(preferred) = preferred_mode(gop_ptr, mode.max_mode, current_mode) {
+    if let Some(preferred) = preferred_mode(services, gop_ptr, mode.max_mode, current_mode) {
         let status = EfiStatus::from((gop.set_mode)(gop_ptr, preferred));
         if status == EfiStatus::Success {
             log_uefi!("GOP: switched mode {} -> {}\n", current_mode, preferred);

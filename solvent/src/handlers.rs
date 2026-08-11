@@ -179,9 +179,7 @@ impl EventHandler for WmEventHandler {
                         rt.desktop.net_visible_rows,
                     )
                 {
-                    // Mouse-wheel +Y is conventionally upward; the menu's
-                    // positive scroll direction is downward.
-                    rt.desktop.scroll_network_menu(-(*dy as i32));
+                    rt.desktop.scroll_network_menu(*dy as i32);
                     rt.frame_due = true;
                     return true;
                 }

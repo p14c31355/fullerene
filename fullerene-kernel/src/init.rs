@@ -12,10 +12,12 @@
 use crate::boot_stage::BootStage;
 use petroleum::common::InitSequence;
 use petroleum::initializer::FrameAllocator;
-use petroleum::page_table::MemoryDescriptorValidator;
 
 #[cfg(not(nitrogen_no_iwlwifi))]
 static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
+    super::driver_context_impl::KernelDriverContext;
+
+static I2C_HID_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
     super::driver_context_impl::KernelDriverContext;
 
 use spin::Once;
@@ -168,9 +170,15 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                                 )
                             })
                             .filter_map(|descriptor| {
-                                descriptor
-                                    .get_physical_start()
-                                    .checked_add(descriptor.get_page_count().checked_mul(4096)?)
+                                petroleum::page_table::MemoryDescriptorValidator::get_physical_start(
+                                    descriptor,
+                                )
+                                .checked_add(
+                                    petroleum::page_table::MemoryDescriptorValidator::get_page_count(
+                                        descriptor,
+                                    )
+                                    .checked_mul(4096)?,
+                                )
                             })
                             .max()
                             .unwrap_or(0);
@@ -378,7 +386,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 )
             }) {
                 match nitrogen::i2c_hid::init_i2c_hid(
-                    ctx,
+                    &I2C_HID_DRIVER_CTX,
                     device,
                     nitrogen::hid::GEMIBOOK_N150_I2C_HID,
                 ) {

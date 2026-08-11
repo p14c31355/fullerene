@@ -101,13 +101,8 @@ impl PciAllocator {
                             // clearing bit 2 makes a 64-bit BAR look like a
                             // 32-bit BAR on the next configuration read.
                             (aligned_addr as u32 & 0xffff_fff0)
-                                | if bar.is_64bit {
-                                    0x4
-                                } else if bar.is_prefetchable {
-                                    0x8
-                                } else {
-                                    0
-                                },
+                                | if bar.is_64bit { 0x4 } else { 0 }
+                                | if bar.is_prefetchable { 0x8 } else { 0 },
                         );
                         if bar.is_64bit {
                             PciConfigSpace::write_config_dword_raw(

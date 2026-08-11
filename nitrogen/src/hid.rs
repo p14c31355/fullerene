@@ -233,7 +233,11 @@ impl HidReportDescriptor {
                         return Err(HidDescriptorError::InvalidItem);
                     }
                     global.report_id = unsigned as u8;
-                    report_offsets[global.report_id as usize] = 8;
+                    // Count the report-ID prefix only once. A later
+                    // declaration of the same ID continues its layout.
+                    if report_offsets[global.report_id as usize] == 0 {
+                        report_offsets[global.report_id as usize] = 8;
+                    }
                     local.clear();
                 }
                 (1, 0x9) => global.report_count = unsigned as u8,
@@ -281,6 +285,9 @@ impl HidReportDescriptor {
                 // valid and common in precision-touchpad descriptors.
                 (0, 0x9) | (0, 0xa) | (0, 0xb) | (0, 0xc) => local.clear(),
                 (1, 0x3..=0x6) | (1, 0xa) | (1, 0xb) => {}
+                // Designator, string and delimiter local items are valid but
+                // do not affect the input bit layout.
+                (2, 0x3..=0x5) | (2, 0x7..=0xa) => {}
                 _ => return Err(HidDescriptorError::InvalidItem),
             }
         }
@@ -602,6 +609,31 @@ mod tests {
         ])
         .unwrap();
         assert!(descriptor.fields().is_empty());
+    }
+
+    #[test]
+    fn repeated_report_id_continues_the_input_bit_offset() {
+        let descriptor = HidReportDescriptor::parse(&[
+            0x85, 0x01, // Report ID 1
+            0x75, 0x08, // report size 8
+            0x95, 0x01, // one field
+            0x09, 0x30, 0x81, 0x02, 0x85, 0x01, // re-declare the same report ID
+            0x09, 0x31, 0x81, 0x02,
+        ])
+        .unwrap();
+        assert_eq!(descriptor.fields()[0].bit_offset, 8);
+        assert_eq!(descriptor.fields()[1].bit_offset, 16);
+        assert_eq!(descriptor.max_input_bytes(), 3);
+    }
+
+    #[test]
+    fn accepts_standard_local_items_that_do_not_change_layout() {
+        let descriptor = HidReportDescriptor::parse(&[
+            0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x39, 0x01, 0x49, 0x01, 0x59, 0x01, 0x79, 0x01,
+            0x89, 0x01, 0x99, 0x01, 0xa9, 0x01, 0x75, 0x01, 0x95, 0x01, 0x81, 0x02, 0xc0,
+        ])
+        .unwrap();
+        assert_eq!(descriptor.fields().len(), 1);
     }
 
     #[test]

@@ -329,8 +329,9 @@ fn wpa2_full_handshake_flow() {
     // DHCP discover is the last TX frame (tx_data_head - 1)
     let dhcp_tx = dev.last_tx_frame();
     assert_eq!(dhcp_tx[0] & 0x0C, 0x08); // data frame
-    assert_eq!(dhcp_tx[30], 0x08); // ether_type 0x0800 (IP)
-    assert_eq!(dhcp_tx[31], 0x00);
+    assert_eq!(&dhcp_tx[24..32], &[1, 0, 0, 0x20, 0, 0, 0, 0]);
+    assert_eq!(dhcp_tx[38], 0x08); // ether_type 0x0800 (IP)
+    assert_eq!(dhcp_tx[39], 0x00);
 
     // IP address not yet assigned (DHCP not completed)
     assert_eq!(dev.ip_address, [0u8; 4]);

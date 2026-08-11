@@ -84,6 +84,8 @@ pub struct IwlWifiDevice {
     /// Set only after the TX ring has reported both CCMP commands consumed.
     /// Until then, WPA data traffic is rejected fail-closed.
     pub wpa_keys_installed: bool,
+    /// Next CCMP packet number for protected data frames.
+    pub tx_pn: u64,
     /// End position of the queued pair/group key commands, awaiting TX-ring
     /// consumption.  A command response path is not available in this
     /// firmware interface, so the data path stays blocked until the ring has
@@ -442,7 +444,9 @@ impl IwlWifiDevice {
         let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
 
         let init_result = (|| -> Result<(), IwlError> {
-            for _ in 0..TX_QUEUE_SIZE {
+            // Keep q9 host-command and q4 data payloads in disjoint DMA
+            // slots; their queue heads advance independently.
+            for _ in 0..TX_QUEUE_SIZE * 2 {
                 let mut buf =
                     DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
                 if buf
@@ -527,6 +531,7 @@ impl IwlWifiDevice {
             wpa: WpaSupplicant::new(),
             wpa_required: false,
             wpa_keys_installed: false,
+            tx_pn: 1,
             wpa_key_command_end: None,
             pending_wpa_message4: None,
             dhcp: None,
@@ -666,7 +671,9 @@ impl IwlWifiDevice {
 
         debug::print("iwlwifi", "alloc_tx_bufs");
         let init_result = (|| -> Result<(), IwlError> {
-            for _ in 0..TX_QUEUE_SIZE {
+            // Keep q9 host-command and q4 data payloads in disjoint DMA
+            // slots; their queue heads advance independently.
+            for _ in 0..TX_QUEUE_SIZE * 2 {
                 let mut buf =
                     DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
                 if buf
@@ -753,6 +760,7 @@ impl IwlWifiDevice {
             wpa: WpaSupplicant::new(),
             wpa_required: false,
             wpa_keys_installed: false,
+            tx_pn: 1,
             wpa_key_command_end: None,
             pending_wpa_message4: None,
             dhcp: None,
@@ -1984,7 +1992,9 @@ pub(super) mod test_support {
             rx_dma_ring.dma_map(ctx, 0).expect("RX ring map");
 
             let mut tx_bufs = Vec::new();
-            for _ in 0..TX_QUEUE_SIZE {
+            // Keep q9 host-command and q4 data payloads in disjoint DMA
+            // slots; their queue heads advance independently.
+            for _ in 0..TX_QUEUE_SIZE * 2 {
                 let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).expect("TX buf DMA");
                 buf.dma_map(ctx, 0).expect("TX buf map");
                 tx_bufs.push(buf);
@@ -2036,6 +2046,7 @@ pub(super) mod test_support {
                 wpa: WpaSupplicant::new(),
                 wpa_required: false,
                 wpa_keys_installed: false,
+                tx_pn: 1,
                 wpa_key_command_end: None,
                 pending_wpa_message4: None,
                 dhcp: None,
@@ -2071,7 +2082,7 @@ pub(super) mod test_support {
                 return &[];
             }
             let idx = (self.tx_data_head - 1) % TX_QUEUE_SIZE;
-            let buf = &self.tx_bufs[idx];
+            let buf = &self.tx_bufs[TX_QUEUE_SIZE + idx];
             let wire = buf.as_slice();
             if wire.len() < TX_FRAME_OFFSET {
                 return &[];
@@ -2084,7 +2095,7 @@ pub(super) mod test_support {
         /// Read a TX frame by ring index.
         pub fn tx_frame_at(&self, index: usize) -> &[u8] {
             let idx = index % TX_QUEUE_SIZE;
-            let wire = self.tx_bufs[idx].as_slice();
+            let wire = self.tx_bufs[TX_QUEUE_SIZE + idx].as_slice();
             if wire.len() < TX_FRAME_OFFSET {
                 return &[];
             }

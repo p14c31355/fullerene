@@ -10,7 +10,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::driver_context::DriverContext;
@@ -165,6 +165,10 @@ impl HidI2cDescriptor {
 /// A single DesignWare I2C controller configured for one 7-bit HID target.
 struct DesignWareI2c {
     mmio: MemRegion,
+    ctx: &'static dyn DriverContext,
+    physical_base: usize,
+    virtual_base: usize,
+    mapping_size: usize,
     target: u16,
     tx_fifo_depth: u32,
     speed_mode: u32,
@@ -172,7 +176,7 @@ struct DesignWareI2c {
 
 impl DesignWareI2c {
     fn new(
-        ctx: &dyn DriverContext,
+        ctx: &'static dyn DriverContext,
         device: &PciDevice,
         profile: I2cHidPlatformConfig,
     ) -> Result<Self, I2cHidError> {
@@ -198,8 +202,14 @@ impl DesignWareI2c {
         let virt = ctx
             .mmio_virtual_address(bar.address, MMIO_SIZE)
             .map_err(|_| I2cHidError::MappingFailed)?;
-        ctx.map_mmio_region(bar.address as usize, virt, MMIO_SIZE)
-            .map_err(|_| I2cHidError::MappingFailed)?;
+        if ctx
+            .map_mmio_region(bar.address as usize, virt, MMIO_SIZE)
+            .is_err()
+        {
+            // mmio_virtual_address reserves the range before returning it.
+            ctx.unmap_mmio_region(bar.address as usize, virt, MMIO_SIZE);
+            return Err(I2cHidError::MappingFailed);
+        }
         // SAFETY: the PCI BAR was validated and mapped as an uncached 4 KiB
         // MMIO region immediately above.
         let mmio = unsafe { MemRegion::new(virt, MMIO_SIZE) };
@@ -260,12 +270,17 @@ impl DesignWareI2c {
                 mmio.read32(IC_COMP_VERSION),
             );
             publish_status(&status);
+            ctx.unmap_mmio_region(bar.address as usize, virt, MMIO_SIZE);
             return Err(I2cHidError::UnsupportedController);
         }
         let param = mmio.read32(IC_COMP_PARAM_1);
         let tx_fifo_depth = (((param >> 16) & 0xff) + 1).max(1);
         let mut controller = Self {
             mmio,
+            ctx,
+            physical_base: bar.address as usize,
+            virtual_base: virt,
+            mapping_size: MMIO_SIZE,
             target: profile.i2c_address,
             tx_fifo_depth,
             speed_mode: if profile.bus_speed_hz > 100_000 {
@@ -499,6 +514,9 @@ impl DesignWareI2c {
     }
 
     fn read_input_report(&mut self, output: &mut [u8]) -> Result<usize, I2cHidError> {
+        if output.len() < 2 {
+            return Err(I2cHidError::InvalidDescriptor);
+        }
         // Linux reads an input packet with I2C_M_RD only.  The input register
         // is not sent as a prefix; it is a descriptor field used by command
         // transactions, not by interrupt/input reception.  A zero length is
@@ -550,6 +568,8 @@ impl Drop for DesignWareI2c {
     fn drop(&mut self) {
         self.mmio.write32(IC_INTR_MASK, 0);
         self.mmio.write32(IC_ENABLE, 0);
+        self.ctx
+            .unmap_mmio_region(self.physical_base, self.virtual_base, self.mapping_size);
     }
 }
 
@@ -576,6 +596,7 @@ static TOUCHPAD: Mutex<Option<I2cHidTouchpad>> = Mutex::new(None);
 static LATEST_INPUT: Mutex<Option<TouchpadInput>> = Mutex::new(None);
 static STATUS: Mutex<Option<(String, String)>> = Mutex::new(None);
 static LAST_POLL_TSC: AtomicU64 = AtomicU64::new(0);
+static POLL_CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
 static POLL_ERROR_REPORTED: AtomicBool = AtomicBool::new(false);
 static FIRST_INPUT_REPORTED: AtomicBool = AtomicBool::new(false);
 
@@ -603,7 +624,7 @@ pub fn publish_absent() {
 /// vendor/product IDs are read from the wire descriptor and are not used to
 /// select the driver.
 pub fn init_i2c_hid(
-    ctx: &dyn DriverContext,
+    ctx: &'static dyn DriverContext,
     device: &PciDevice,
     profile: I2cHidPlatformConfig,
 ) -> Result<(), I2cHidError> {
@@ -748,6 +769,7 @@ pub fn init_i2c_hid(
     *TOUCHPAD.lock() = Some(state);
     *LATEST_INPUT.lock() = None;
     POLL_ERROR_REPORTED.store(false, Ordering::Release);
+    POLL_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
     FIRST_INPUT_REPORTED.store(false, Ordering::Release);
     log::info!(
         "[nitrogen] I2C-HID touchpad initialized ({:04x}:{:04x}, input max {})",
@@ -760,7 +782,7 @@ pub fn init_i2c_hid(
 
 /// Compatibility wrapper for callers that still select the supplied N150
 /// platform description explicitly.
-pub fn init_n150(ctx: &dyn DriverContext, device: &PciDevice) -> Result<(), I2cHidError> {
+pub fn init_n150(ctx: &'static dyn DriverContext, device: &PciDevice) -> Result<(), I2cHidError> {
     init_i2c_hid(ctx, device, crate::hid::GEMIBOOK_N150_I2C_HID)
 }
 
@@ -789,24 +811,32 @@ pub fn poll_input() {
     }
     let now = unsafe { core::arch::x86_64::_rdtsc() };
     let previous = LAST_POLL_TSC.load(Ordering::Relaxed);
+    let failures = POLL_CONSECUTIVE_FAILURES.load(Ordering::Relaxed).min(4);
+    let interval_us = I2C_INPUT_POLL_INTERVAL_US.saturating_mul(1u64 << failures);
     if previous != 0
-        && now.wrapping_sub(previous)
-            < crate::timing::ticks_per_us().saturating_mul(I2C_INPUT_POLL_INTERVAL_US)
+        && now.wrapping_sub(previous) < crate::timing::ticks_per_us().saturating_mul(interval_us)
     {
         return;
     }
     LAST_POLL_TSC.store(now, Ordering::Relaxed);
-    let mut guard = TOUCHPAD.lock();
-    let Some(device) = guard.as_mut() else { return };
-    let length = (device.descriptor.max_input_length as usize).min(MAX_INPUT_REPORT);
+    let length = {
+        let guard = TOUCHPAD.lock();
+        let Some(device) = guard.as_ref() else { return };
+        (device.descriptor.max_input_length as usize).min(MAX_INPUT_REPORT)
+    };
     if length < 2 {
         return;
     }
     for _ in 0..MAX_INPUT_REPORTS_PER_POLL {
         let mut bytes = [0u8; MAX_INPUT_REPORT];
-        let report_length = match device.bus.read_input_report(&mut bytes[..length]) {
+        let report_length = match {
+            let mut guard = TOUCHPAD.lock();
+            let Some(device) = guard.as_mut() else { return };
+            device.bus.read_input_report(&mut bytes[..length])
+        } {
             Ok(length) => length,
             Err(error) => {
+                POLL_CONSECUTIVE_FAILURES.fetch_add(1, Ordering::AcqRel);
                 if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
                     log::warn!(
                         "[nitrogen] I2C-HID input read failed: max_len={} error={:?}",
@@ -820,6 +850,7 @@ pub fn poll_input() {
                 break;
             }
         };
+        POLL_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
         // Zero is the normal HID-over-I2C idle response, not a malformed
         // packet. It also terminates the bounded drain once the queue is
         // empty, so old motion cannot be replayed indefinitely.
@@ -840,11 +871,23 @@ pub fn poll_input() {
             break;
         }
         let payload = &bytes[2..report_length];
-        let decoded = device.report.decode_touchpad(device.fields, payload);
-        let relative = if decoded.is_none() {
-            device.report.decode_relative_mouse(payload)
-        } else {
-            None
+        let (decoded, relative, x_min, x_max, y_min, y_max) = {
+            let guard = TOUCHPAD.lock();
+            let Some(device) = guard.as_ref() else { return };
+            let decoded = device.report.decode_touchpad(device.fields, payload);
+            let relative = if decoded.is_none() {
+                device.report.decode_relative_mouse(payload)
+            } else {
+                None
+            };
+            (
+                decoded,
+                relative,
+                device.fields.x.logical_minimum,
+                device.fields.x.logical_maximum,
+                device.fields.y.logical_minimum,
+                device.fields.y.logical_maximum,
+            )
         };
         let input_kind = if decoded.is_some() {
             "ABS"
@@ -878,10 +921,10 @@ pub fn poll_input() {
         if let Some(report) = decoded {
             store_input(TouchpadInput {
                 report,
-                x_min: device.fields.x.logical_minimum,
-                x_max: device.fields.x.logical_maximum,
-                y_min: device.fields.y.logical_minimum,
-                y_max: device.fields.y.logical_maximum,
+                x_min,
+                x_max,
+                y_min,
+                y_max,
                 relative: None,
             });
         } else if let Some((x, y, buttons)) = relative {
@@ -892,10 +935,10 @@ pub fn poll_input() {
                     buttons,
                     in_contact: buttons != 0,
                 },
-                x_min: device.fields.x.logical_minimum,
-                x_max: device.fields.x.logical_maximum,
-                y_min: device.fields.y.logical_minimum,
-                y_max: device.fields.y.logical_maximum,
+                x_min,
+                x_max,
+                y_min,
+                y_max,
                 relative: Some((x, y)),
             });
         } else if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {

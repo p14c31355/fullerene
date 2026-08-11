@@ -52,9 +52,9 @@ impl IwlWifiDevice {
     fn tx_rate_n_flags(&self) -> u32 {
         let channel = self
             .wifi_conn
-            .current_ssid
+            .current_bssid
             .as_ref()
-            .and_then(|ssid| self.scan_results.iter().find(|ap| ap.ssid == *ssid))
+            .and_then(|bssid| self.scan_results.iter().find(|ap| ap.bssid == *bssid))
             .map(|ap| ap.channel)
             .unwrap_or(1);
         if channel > 14 {
@@ -1556,7 +1556,7 @@ impl IwlWifiDevice {
     }
 
     fn build_data_frame(
-        &self,
+        &mut self,
         ether_type: u16,
         payload: &[u8],
         protected: bool,
@@ -1566,7 +1566,8 @@ impl IwlWifiDevice {
             .current_bssid
             .ok_or(crate::DriverError::NotReady)?;
         let frame_len = 24usize
-            .checked_add(8)
+            .checked_add(if protected { 8 } else { 0 })
+            .and_then(|len| len.checked_add(8))
             .and_then(|len| len.checked_add(payload.len()))
             .ok_or(crate::DriverError::InvalidArgument)?;
         if frame_len > MAX_FRAME_SIZE {
@@ -1590,6 +1591,24 @@ impl IwlWifiDevice {
         frame.extend_from_slice(&bssid);
         // Sequence control
         frame.extend_from_slice(&[0x00, 0x00]);
+
+        if protected {
+            let pn = self.tx_pn;
+            self.tx_pn = pn
+                .checked_add(1)
+                .ok_or(crate::DriverError::InvalidArgument)?;
+            // CCMP uses PN0, PN1, reserved, ExtIV/key ID, PN2..PN5.
+            frame.extend_from_slice(&[
+                pn as u8,
+                (pn >> 8) as u8,
+                0,
+                0x20, // ExtIV, key index 0 (the installed PTK)
+                (pn >> 16) as u8,
+                (pn >> 24) as u8,
+                (pn >> 32) as u8,
+                (pn >> 40) as u8,
+            ]);
+        }
 
         // LLC/SNAP header.
         frame.extend_from_slice(&[
@@ -1702,7 +1721,7 @@ impl IwlWifiDevice {
             let desc_ptr = unsafe {
                 (self.tx_dma_ring.virt() as *mut u8).add(TX_DATA_TFD_RING_OFFSET) as *mut TxDmaDesc
             };
-            let buf = &mut self.tx_bufs[desc_idx];
+            let buf = &mut self.tx_bufs[TX_QUEUE_SIZE + desc_idx];
             buf.write_from(&wire);
 
             let dma_addr = buf.dma_iova();
@@ -1757,9 +1776,13 @@ impl IwlWifiDevice {
             &(TX_CMD_FLG_ACK | TX_CMD_FLG_BT_DIS | TX_CMD_FLG_SEQ_CTL).to_le_bytes(),
         );
         wire[tx + 12..tx + 16].copy_from_slice(&rate_n_flags.to_le_bytes());
-        // sta_id=0, no firmware-side encryption. The AP peer is registered
-        // before this command is queued by connect().
+        // sta_id=0. Protected frames use CCMP and the PTK installed in
+        // firmware key-table slot 0.
         wire[tx + 16] = 0;
+        if frame.len() >= 2 && frame[1] & 0x40 != 0 {
+            wire[tx + 17] = 0x02 | 0x10; // TX_CMD_SEC_CCM | KEY_FROM_TABLE
+            wire[tx + 20] = 0; // PTK key-table index
+        }
         wire[tx + 40..tx + 44].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
         // Linux uses 60 RTS retries and 15 data retries for ordinary
         // management/data frames (3 is reserved for probe responses).
@@ -1859,5 +1882,37 @@ mod tests {
             2 // PM_FRAME_MGMT for authentication
         );
         assert_eq!(&wire[TX_FRAME_OFFSET..], &frame);
+    }
+
+    #[test]
+    fn protected_frames_use_increasing_ccmp_pns_and_key_table_slot_zero() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.wifi_conn.current_bssid = Some([0x10, 0x20, 0x30, 0x40, 0x50, 0x60]);
+
+        let first = device.build_data_frame(0x0800, &[0xaa], true).unwrap();
+        let second = device.build_data_frame(0x0800, &[0xbb], true).unwrap();
+        assert_eq!(&first[24..32], &[1, 0, 0, 0x20, 0, 0, 0, 0]);
+        assert_eq!(&second[24..32], &[2, 0, 0, 0x20, 0, 0, 0, 0]);
+        assert_eq!(&first[32..40], &[0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0]);
+
+        let wire = IwlWifiDevice::build_tx_command(&first, 0x0400, TX_RATE_6M_OFDM);
+        assert_eq!(wire[TX_COMMAND_HEADER_LEN + 17], 0x12); // CCMP | key table
+        assert_eq!(wire[TX_COMMAND_HEADER_LEN + 20], 0); // PTK slot 0
+    }
+
+    #[test]
+    fn command_and_data_queues_use_disjoint_dma_buffers() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.send_hcmd(0x01, GroupId::Legacy as u8, &[]).unwrap();
+        device.send_raw_80211_frame(&[0xb0; 30]).unwrap();
+
+        assert_eq!(device.tx_head, 1);
+        assert_eq!(device.tx_data_head, 1);
+        assert_ne!(
+            device.tx_bufs[0].dma_iova(),
+            device.tx_bufs[TX_QUEUE_SIZE].dma_iova()
+        );
+        assert!(!device.tx_bufs[0].as_slice().is_empty());
+        assert!(!device.tx_bufs[TX_QUEUE_SIZE].as_slice().is_empty());
     }
 }

@@ -357,6 +357,7 @@ impl IwlWifiDevice {
                             let _ = self.send_raw_80211_frame(&assoc);
                             log::info!("iwlwifi: auth successful, associating");
                         } else {
+                            self.iwl_state = IwlState::Disconnected;
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
                             self.connection_watchdog_ticks = 0;
                             log::warn!("iwlwifi: auth failed with status {}", status_code);
@@ -397,6 +398,7 @@ impl IwlWifiDevice {
                                 GroupId::Legacy as u8,
                                 mac_context_bytes,
                             ) {
+                                self.iwl_state = IwlState::Disconnected;
                                 self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
                                 self.connection_watchdog_ticks = 0;
                                 self.wifi_conn.error_msg = Some(alloc::format!(
@@ -425,6 +427,7 @@ impl IwlWifiDevice {
                                 self.start_dhcp(aid);
                             }
                         } else {
+                            self.iwl_state = IwlState::Disconnected;
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
                             self.connection_watchdog_ticks = 0;
                             log::warn!("iwlwifi: assoc failed with status {}", status_code);

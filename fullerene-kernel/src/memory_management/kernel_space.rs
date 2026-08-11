@@ -2,11 +2,61 @@
 //!
 //! Uses the declarative mapper for concise, safe initial mappings.
 
+use alloc::vec::Vec;
 use petroleum::page_table::KERNEL_OFFSET;
 use petroleum::page_table::allocator::bitmap::BitmapFrameAllocator;
 use petroleum::page_table::allocator::traits::FrameAllocatorExt;
 use petroleum::page_table::kernel::mapper::{MapError, Mapper};
 use petroleum::page_table::types::*;
+use spin::Mutex;
+
+static MMIO_RESERVATIONS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+fn ranges_overlap(start: usize, size: usize, other_start: usize, other_size: usize) -> bool {
+    let Some(end) = start.checked_add(size) else {
+        return true;
+    };
+    let Some(other_end) = other_start.checked_add(other_size) else {
+        return true;
+    };
+    start < other_end && other_start < end
+}
+
+/// Reserve an unmapped kernel virtual range before publishing it to a driver.
+pub fn reserve_virtual_address(start: usize, size: usize) -> bool {
+    if size == 0 {
+        return false;
+    }
+    let mut reservations = MMIO_RESERVATIONS.lock();
+    if reservations
+        .iter()
+        .any(|&(other_start, other_size)| ranges_overlap(start, size, other_start, other_size))
+    {
+        return false;
+    }
+    reservations.push((start, size));
+    true
+}
+
+/// Release a range previously reserved for a device MMIO mapping.
+pub fn release_virtual_address(start: usize, size: usize) {
+    let mut reservations = MMIO_RESERVATIONS.lock();
+    if let Some(index) = reservations
+        .iter()
+        .position(|&(reserved_start, reserved_size)| {
+            reserved_start == start && reserved_size == size
+        })
+    {
+        reservations.swap_remove(index);
+    }
+}
+
+fn is_virtual_address_reserved(start: usize, size: usize) -> bool {
+    MMIO_RESERVATIONS
+        .lock()
+        .iter()
+        .any(|&(other_start, other_size)| ranges_overlap(start, size, other_start, other_size))
+}
 
 /// Set up the kernel's initial page tables.
 ///
@@ -138,7 +188,7 @@ pub fn find_free_virtual_address(size: u64) -> Option<usize> {
             }
         }
 
-        if all_free {
+        if all_free && !is_virtual_address_reserved(candidate as usize, aligned_size as usize) {
             return Some(candidate as usize);
         }
 

@@ -746,7 +746,9 @@ fn perform_init_step() {
                     return;
                 }
                 let mut tx_bufs: Vec<DmaRegion> = Vec::new();
-                for _ in 0..TX_QUEUE_SIZE {
+                // Keep q9 host-command and q4 data payloads in disjoint DMA
+                // slots; their queue heads advance independently.
+                for _ in 0..TX_QUEUE_SIZE * 2 {
                     let mut buf = match DmaRegion::alloc(driver_ctx, MAX_FRAME_SIZE) {
                         Some(b) => b,
                         None => {
@@ -765,7 +767,7 @@ fn perform_init_step() {
                     }
                     tx_bufs.push(buf);
                 }
-                if tx_bufs.len() < TX_QUEUE_SIZE {
+                if tx_bufs.len() < TX_QUEUE_SIZE * 2 {
                     for mut b in tx_bufs {
                         b.free(driver_ctx);
                     }
@@ -861,6 +863,7 @@ fn perform_init_step() {
                 wpa: bonder::wpa::WpaSupplicant::new(),
                 wpa_required: false,
                 wpa_keys_installed: false,
+                tx_pn: 1,
                 wpa_key_command_end: None,
                 pending_wpa_message4: None,
                 dhcp: None,
