@@ -17,7 +17,7 @@ use crate::hid::{
 };
 use crate::mmio::MemRegion;
 use crate::pci::PciDevice;
-use crate::timing::{delay_ms, poll_timeout_us};
+use crate::timing::{delay_ms, delay_us, poll_timeout_us};
 
 const MMIO_SIZE: usize = 0x1000;
 // Intel LPSS exposes the DesignWare block at BAR+0x000 and its private
@@ -68,8 +68,10 @@ const DATA_STOP: u32 = 1 << 9;
 const DATA_RESTART: u32 = 1 << 10;
 
 const STATUS_MASTER_ACTIVITY: u32 = 1 << 5;
+const STATUS_ACTIVITY: u32 = 1 << 0;
 const INTR_TX_ABORT: u32 = 1 << 6;
 const INTR_STOP_DET: u32 = 1 << 9;
+const I2C_BUSY_TIMEOUT_US: u64 = 1_000;
 
 // Intel's bxt_i2c_info is also used for Alder Lake-M 8086:54e8 by Linux.
 // These values are the software node properties and fixed LPSS root clock
@@ -275,11 +277,55 @@ impl DesignWareI2c {
             CON_MASTER | CON_SPEED_FAST | CON_RESTART | CON_SLAVE_DISABLE,
         );
         self.mmio.write32(IC_INTR_MASK, 0);
+        // Linux enables the adapter for each individual I2C transfer and
+        // disables it again when the transfer completes.  Leave it disabled
+        // here; `begin_transfer` owns the transaction lifetime.
+        Ok(())
+    }
+
+    fn begin_transfer(&self) -> Result<(), I2cHidError> {
+        // Match i2c_dw_wait_bus_not_busy() before i2c_dw_xfer_init().
+        poll_timeout_us(I2C_BUSY_TIMEOUT_US, || {
+            (self.mmio.read32(IC_STATUS) & STATUS_ACTIVITY == 0).then_some(())
+        })
+        .ok_or(I2cHidError::Timeout)?;
+
+        self.mmio.write32(IC_ENABLE, 0);
+        poll_timeout_us(10_000, || {
+            (self.mmio.read32(IC_ENABLE_STATUS) & 1 == 0).then_some(())
+        })
+        .ok_or(I2cHidError::Timeout)?;
+        self.mmio.write32(IC_TAR, self.target as u32);
+        self.mmio.write32(
+            IC_CON,
+            CON_MASTER | CON_SPEED_FAST | CON_RESTART | CON_SLAVE_DISABLE,
+        );
+        self.mmio.write32(IC_INTR_MASK, 0);
         self.mmio.write32(IC_ENABLE, 1);
+        // Linux performs this dummy read for DesignWare implementations with
+        // an enable-status register before clearing stale transaction state.
+        let _ = self.mmio.read32(IC_ENABLE_STATUS);
+        let _ = self.mmio.read32(IC_CLR_INTR);
+        let _ = self.mmio.read32(IC_CLR_TX_ABRT);
         poll_timeout_us(10_000, || {
             (self.mmio.read32(IC_ENABLE_STATUS) & 1 != 0).then_some(())
         })
         .ok_or(I2cHidError::Timeout)
+    }
+
+    fn end_transfer(&self) {
+        // Linux checks that the master is no longer active before disabling
+        // the adapter; disabling while SCL is still held can strand the
+        // DesignWare state machine on the next transaction.
+        let _ = poll_timeout_us(10_000, || {
+            (self.mmio.read32(IC_STATUS) & (STATUS_ACTIVITY | STATUS_MASTER_ACTIVITY) == 0)
+                .then_some(())
+        });
+        self.mmio.write32(IC_INTR_MASK, 0);
+        self.mmio.write32(IC_ENABLE, 0);
+        let _ = poll_timeout_us(10_000, || {
+            (self.mmio.read32(IC_ENABLE_STATUS) & 1 == 0).then_some(())
+        });
     }
 
     fn abort_source(&self) -> Option<I2cHidError> {
@@ -319,7 +365,16 @@ impl DesignWareI2c {
         if write.is_empty() && read.is_empty() {
             return Ok(());
         }
-        self.mmio.write32(IC_INTR_MASK, 0);
+        if let Err(error) = self.begin_transfer() {
+            self.end_transfer();
+            return Err(error);
+        }
+        let result = self.transfer_started(write, read);
+        self.end_transfer();
+        result
+    }
+
+    fn transfer_started(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), I2cHidError> {
         let mut wrote = 0usize;
         for byte in write {
             self.wait_tx_space()?;
@@ -370,29 +425,34 @@ impl DesignWareI2c {
         self.transfer(&bytes, &mut [])
     }
 
-    fn read_input_report(
-        &mut self,
-        input_register: u16,
-        output: &mut [u8],
-    ) -> Result<usize, I2cHidError> {
-        // Linux uses a plain receive for the interrupt-driven path. Some
-        // firmware revisions also require the HID input-register address;
-        // try the Linux path first and fall back to the explicit register
-        // form when the returned length is not a valid packet.
-        let direct_ok = self.transfer(&[], output).is_ok();
-        let mut length = if direct_ok {
-            u16::from_le_bytes([output[0], output[1]]) as usize
-        } else {
-            0
-        };
-        if length < 2 || length > output.len() {
-            // Do not propagate the direct-read NACK before trying the
-            // register-addressed form; some controllers only expose the
-            // pending HID packet through this transaction shape.
-            self.read_register(input_register, output)?;
-            length = u16::from_le_bytes([output[0], output[1]]) as usize;
+    fn read_input_report(&mut self, output: &mut [u8]) -> Result<usize, I2cHidError> {
+        // Linux reads an input packet with I2C_M_RD only.  The input register
+        // is not sent as a prefix; it is a descriptor field used by command
+        // transactions, not by interrupt/input reception.  A zero length is
+        // meaningful: i2c-hid uses it to acknowledge RESET completion.
+        self.transfer(&[], output)?;
+        Ok(u16::from_le_bytes([output[0], output[1]]) as usize)
+    }
+
+    fn wait_reset_completion(&mut self, max_input_length: usize) -> bool {
+        let length = max_input_length.min(MAX_INPUT_REPORT);
+        if length < 2 {
+            return false;
         }
-        Ok(length)
+        let mut packet = [0u8; MAX_INPUT_REPORT];
+        poll_timeout_us(1_000_000, || {
+            match self.read_input_report(&mut packet[..length]) {
+                // Linux treats a zero-sized input packet as the reset
+                // completion acknowledgement.
+                Ok(0) => return Some(true),
+                // A non-empty packet may be queued while the controller is
+                // waking. Consume it and keep waiting for the ack packet.
+                Ok(_) | Err(_) => {}
+            }
+            delay_us(1_000);
+            None
+        })
+        .unwrap_or(false)
     }
 }
 
@@ -444,18 +504,14 @@ pub fn init_n150(ctx: &dyn DriverContext, device: &PciDevice) -> Result<(), I2cH
     bus.write_command(descriptor.command_register, &[0x00, 0x08])?;
     delay_ms(60);
     bus.write_command(descriptor.command_register, &[0x00, 0x01])?;
-    delay_ms(100);
+    if !bus.wait_reset_completion(descriptor.max_input_length as usize) {
+        // Linux continues after its one-second reset wait and reports the
+        // missing IRQ acknowledgement, so keep the same recovery behavior
+        // while still using the polling transport here.
+        log::warn!("[nitrogen] N150 I2C-HID reset acknowledgement timed out");
+    }
     bus.write_command(descriptor.command_register, &[0x00, 0x08])?;
     delay_ms(60);
-
-    // Consume the reset-complete input packet when the firmware exposes one.
-    // Linux normally does this from IRQ 81; the polling implementation must
-    // clear it explicitly before waiting for the first finger report.
-    let reset_length = (descriptor.max_input_length as usize).min(MAX_INPUT_REPORT);
-    if reset_length >= 2 {
-        let mut reset_report = [0u8; MAX_INPUT_REPORT];
-        let _ = bus.read_input_report(descriptor.input_register, &mut reset_report[..reset_length]);
-    }
 
     let report_length = descriptor.report_desc_length as usize;
     if report_length > MAX_REPORT_DESCRIPTOR {
@@ -509,10 +565,7 @@ pub fn poll_input() {
         return;
     }
     let mut bytes = [0u8; MAX_INPUT_REPORT];
-    let report_length = match device
-        .bus
-        .read_input_report(device.descriptor.input_register, &mut bytes[..length])
-    {
+    let report_length = match device.bus.read_input_report(&mut bytes[..length]) {
         Ok(length) => length,
         Err(_) => return,
     };
