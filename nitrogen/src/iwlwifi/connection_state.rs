@@ -746,7 +746,9 @@ fn perform_init_step() {
                     return;
                 }
                 let mut tx_bufs: Vec<DmaRegion> = Vec::new();
-                for _ in 0..TX_QUEUE_SIZE {
+                // Keep q9 host-command and q4 data payloads in disjoint DMA
+                // slots; their queue heads advance independently.
+                for _ in 0..TX_QUEUE_SIZE * 2 {
                     let mut buf = match DmaRegion::alloc(driver_ctx, MAX_FRAME_SIZE) {
                         Some(b) => b,
                         None => {
@@ -765,7 +767,7 @@ fn perform_init_step() {
                     }
                     tx_bufs.push(buf);
                 }
-                if tx_bufs.len() < TX_QUEUE_SIZE {
+                if tx_bufs.len() < TX_QUEUE_SIZE * 2 {
                     for mut b in tx_bufs {
                         b.free(driver_ctx);
                     }
@@ -861,6 +863,7 @@ fn perform_init_step() {
                 wpa: bonder::wpa::WpaSupplicant::new(),
                 wpa_required: false,
                 wpa_keys_installed: false,
+                tx_pn: 1,
                 wpa_key_command_end: None,
                 pending_wpa_message4: None,
                 dhcp: None,
@@ -869,12 +872,15 @@ fn perform_init_step() {
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
                 last_rx_phy_channel: 0,
+                connection_watchdog_ticks: 0,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
                 tx_dma_ring: tx_dma,
                 rx_dma_ring: rx_dma,
                 tx_head: 0,
                 tx_tail: 0,
+                tx_data_head: 0,
+                tx_data_tail: 0,
                 rx_head: 0,
                 rx_tail: 0,
                 rx_posted: 0,
@@ -1711,6 +1717,7 @@ impl IwlWifiDevice {
         ) {
             self.scan_pending = false;
             self.iwl_state = IwlState::Disconnected;
+            self.connection_watchdog_ticks = 0;
             self.wifi_conn.finish_scan();
             return Err(error);
         }
@@ -1802,14 +1809,82 @@ impl IwlWifiDevice {
         self.subnet_mask = [0; 4];
         self.gateway = [0; 4];
         self.dns_server = [0; 4];
+        self.connection_watchdog_ticks = 0;
 
         if let Some(password) = password {
             self.wpa.init(password, ssid.as_str(), ap.bssid, self.mac);
         }
 
+        // Linux updates the BSS MAC context and adds the AP peer before
+        // transmitting authentication. TX_CMD carries sta_id=0 for this
+        // minimal managed-station path; without the ADD_STA entry the 7265
+        // accepts the TX_CMD opcode but rejects the command payload.
+        let mac_context = MacContextCmd::sta_for_bssid_on_channel(self.mac, ap.bssid, ap.channel);
+        let mac_context_bytes = unsafe { super::as_bytes(&mac_context) };
+        if let Err(error) = self.send_hcmd_and_wait(
+            "CONNECT_MAC_CONTEXT",
+            LegacyCmd::MacContext as u8,
+            GroupId::Legacy as u8,
+            mac_context_bytes,
+        ) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection MAC context setup failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
+        let ap_sta = AddStaCmdV7::peer(0, 0, ap.bssid);
+        let ap_sta_bytes = unsafe { super::as_bytes(&ap_sta) };
+        if let Err(error) = self.send_hcmd_and_wait(
+            "CONNECT_ADD_STA",
+            LegacyCmd::AddSta as u8,
+            GroupId::Legacy as u8,
+            ap_sta_bytes,
+        ) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection AP station setup failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
+        // The station must exist before the legacy scheduler can bind q4 to
+        // its station ID. Linux enables the queue only after ADD_STA has been
+        // accepted by firmware.
+        let data_scd = ScdTxqCfgCmdV1::peer(0);
+        let data_scd_bytes = unsafe { super::as_bytes(&data_scd) };
+        if let Err(error) = self.send_hcmd_and_wait(
+            "CONNECT_SCD_QUEUE_CFG",
+            LegacyCmd::ScdQueueCfg as u8,
+            GroupId::Legacy as u8,
+            data_scd_bytes,
+        ) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection data queue setup failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
         self.iwl_state = IwlState::AuthSent;
         let auth_frame = wifi::build_auth_frame(ap.bssid, self.mac, 1);
-        let _ = self.send_raw_80211_frame(&auth_frame);
+        if let Err(error) = self.send_raw_80211_frame(&auth_frame) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "authentication frame transmission failed: {:?}",
+                error
+            ));
+            log::warn!("iwlwifi: failed to send authentication frame: {:?}", error);
+            return Err(error);
+        }
         log::info!(
             "iwlwifi: authenticating with {} ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
             ssid,
@@ -1832,6 +1907,33 @@ impl IwlWifiDevice {
             let release = dhcp.build_release();
             let _ = self.send_raw_80211_frame(&release);
         }
+        // Remove the AP peer after queued deauthentication/DHCP traffic. This
+        // lets a later connect() add station 0 again instead of receiving an
+        // ADD_STA_MODIFY_NON_EXISTING/duplicate-station error from firmware.
+        let ap_bssid = self.wifi_conn.current_ssid.as_ref().and_then(|ssid| {
+            self.scan_results
+                .iter()
+                .find(|ap| ap.ssid == *ssid)
+                .map(|ap| ap.bssid)
+        });
+        if let Some(ap_bssid) = ap_bssid {
+            let remove_sta = RemoveStaCmd::new(0);
+            let remove_sta_bytes = unsafe { super::as_bytes(&remove_sta) };
+            let _ = self.send_hcmd(
+                LegacyCmd::RemoveSta as u8,
+                GroupId::Legacy as u8,
+                remove_sta_bytes,
+            );
+            log::debug!(
+                "iwlwifi: removed AP station 0 ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+                ap_bssid[0],
+                ap_bssid[1],
+                ap_bssid[2],
+                ap_bssid[3],
+                ap_bssid[4],
+                ap_bssid[5],
+            );
+        }
         self.dhcp = None;
         self.wifi_conn.disconnect();
         self.wpa = bonder::wpa::WpaSupplicant::new();
@@ -1840,6 +1942,7 @@ impl IwlWifiDevice {
         self.wpa_key_command_end = None;
         self.pending_wpa_message4 = None;
         self.iwl_state = IwlState::Disconnected;
+        self.connection_watchdog_ticks = 0;
         log::info!("iwlwifi: disconnected");
     }
 

@@ -5,6 +5,11 @@
 
 pub const IWL_PCI_VENDOR: u16 = 0x8086;
 pub const IWL_DEVICE_IDS: &[u16] = &[0x095b, 0x095a, 0x08b1, 0x08b2];
+/// Intel CNVi devices use a different transport and firmware family from the
+/// legacy 7000-series implementation below. Keep this list separate so a
+/// modern adapter can be diagnosed without ever being passed to the 7265
+/// reset/firmware path.
+pub const IWL_MODERN_CNVI_DEVICE_IDS: &[u16] = &[0x54f0];
 
 /// PCI requester ID format consumed by the VT-d context-table lookup.
 pub const fn pci_dma_device_id(bus: u8, device: u8, function: u8) -> u16 {
@@ -115,12 +120,16 @@ pub const FH_RCSR_RX_RB_TIMEOUT: u32 = 0x11;
 /// layout; using it for HCMDs can appear to work for simple commands but
 /// corrupts the scheduler state when ADD_STA configures the AUX station.
 pub const IWL_CMD_QUEUE: u32 = 9;
+/// Minimal managed-station data queue. Linux keeps TX_CMD frames off the
+/// command queue and assigns the first ordinary data queue to the AP peer.
+pub const IWL_DATA_QUEUE: u32 = 4;
 /// Auxiliary queue used by the firmware scan station in the 7265's 16-queue
 /// non-DQA layout. Linux selects q11 for `mvm->aux_queue` in this layout;
 /// q8 is the separate off-channel reservation, not the station's TX queue.
 pub const IWL_AUX_QUEUE: u32 = 11;
 pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
 pub const FH_MEM_CBBC_CMD_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_CMD_QUEUE;
+pub const FH_MEM_CBBC_DATA_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_DATA_QUEUE;
 pub const FH_MEM_CBBC_AUX_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_AUX_QUEUE;
 pub const FH_KW_MEM_ADDR_REG: u32 = (0x1000 + 0x97C) / 4;
 pub const HBUS_TARG_WRPTR: u32 = (0x400 + 0x060) / 4;
@@ -158,6 +167,9 @@ pub const SCD_TRANS_TBL_MEM_UPPER_BOUND: u32 = 0x800;
 pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_CMD: u32 = 0x600 + IWL_CMD_QUEUE * 8;
+pub const SCD_QUEUE_RDPTR_DATA: u32 = SCD_BASE + 0x68 + IWL_DATA_QUEUE * 4;
+pub const SCD_QUEUE_STATUS_DATA: u32 = SCD_BASE + 0x10C + IWL_DATA_QUEUE * 4;
+pub const SCD_CONTEXT_QUEUE_DATA: u32 = 0x600 + IWL_DATA_QUEUE * 8;
 pub const SCD_QUEUE_RDPTR_AUX: u32 = SCD_BASE + 0x68 + IWL_AUX_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_AUX: u32 = SCD_BASE + 0x10C + IWL_AUX_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_AUX: u32 = 0x600 + IWL_AUX_QUEUE * 8;
@@ -177,7 +189,10 @@ pub const TX_TFD_RING_BYTES: usize = 128 * TX_QUEUE_SIZE;
 /// keeping q11 separate prevents firmware from interpreting q9 descriptors as
 /// scan traffic.
 pub const TX_AUX_TFD_RING_OFFSET: usize = TX_TFD_RING_BYTES;
-pub const TX_KEEP_WARM_OFFSET: usize = TX_AUX_TFD_RING_OFFSET + TX_TFD_RING_BYTES;
+/// Ordinary data queue ring. It is kept separate from both the HCMD and AUX
+/// rings because each scheduler queue owns an independent read pointer.
+pub const TX_DATA_TFD_RING_OFFSET: usize = TX_AUX_TFD_RING_OFFSET + TX_TFD_RING_BYTES;
+pub const TX_KEEP_WARM_OFFSET: usize = TX_DATA_TFD_RING_OFFSET + TX_TFD_RING_BYTES;
 pub const TX_KEEP_WARM_BYTES: usize = 0x1000;
 pub const TX_SCD_BC_OFFSET: usize = TX_KEEP_WARM_OFFSET + TX_KEEP_WARM_BYTES;
 pub const TX_SCD_BC_BYTES: usize = 32 * (256 + 64) * 2;

@@ -84,6 +84,8 @@ pub struct IwlWifiDevice {
     /// Set only after the TX ring has reported both CCMP commands consumed.
     /// Until then, WPA data traffic is rejected fail-closed.
     pub wpa_keys_installed: bool,
+    /// Next CCMP packet number for protected data frames.
+    pub tx_pn: u64,
     /// End position of the queued pair/group key commands, awaiting TX-ring
     /// consumption.  A command response path is not available in this
     /// firmware interface, so the data path stays blocked until the ring has
@@ -107,6 +109,10 @@ pub struct IwlWifiDevice {
     /// Parameter Set IE, so the channel can only be determined from this
     /// PHY metadata.
     pub last_rx_phy_channel: u16,
+    /// Service ticks since the current authentication/association request.
+    /// This bounds a lost management-frame exchange instead of leaving the
+    /// public connection status in Authenticating forever.
+    pub connection_watchdog_ticks: u32,
 
     /// TX/RX queues.
     pub tx_queue: VecDeque<Vec<u8>>,
@@ -115,6 +121,8 @@ pub struct IwlWifiDevice {
     pub rx_dma_ring: DmaRegion,
     pub tx_head: usize,
     pub tx_tail: usize,
+    pub tx_data_head: usize,
+    pub tx_data_tail: usize,
     pub rx_head: usize,
     pub rx_tail: usize,
     /// Absolute RBD write pointer posted to firmware. This is distinct from
@@ -279,7 +287,9 @@ impl IwlWifiDevice {
 
     // ── Device initialisation ───────────────────────
 
-    /// Scan the PCI bus for an Intel Wireless 7265 and initialize it.
+    /// Scan the PCI bus for a supported legacy Intel wireless device and
+    /// initialize it. Modern CNVi devices are reported explicitly but never
+    /// sent through the incompatible 7265 transport.
     pub fn probe_and_init(ctx: &'static dyn DriverContext) -> Option<Self> {
         let mut scanner = PciScanner::new();
         let _ = scanner.scan_all_buses();
@@ -289,6 +299,14 @@ impl IwlWifiDevice {
                 continue;
             }
             if device.vendor_id != IWL_PCI_VENDOR {
+                continue;
+            }
+            if IWL_MODERN_CNVI_DEVICE_IDS.contains(&device.device_id) {
+                log::warn!(
+                    "iwlwifi: modern CNVi adapter {:04x}:{:04x} detected; legacy 7265 transport is not used",
+                    device.vendor_id,
+                    device.device_id
+                );
                 continue;
             }
             if !IWL_DEVICE_IDS.contains(&device.device_id) {
@@ -426,7 +444,9 @@ impl IwlWifiDevice {
         let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
 
         let init_result = (|| -> Result<(), IwlError> {
-            for _ in 0..TX_QUEUE_SIZE {
+            // Keep q9 host-command and q4 data payloads in disjoint DMA
+            // slots; their queue heads advance independently.
+            for _ in 0..TX_QUEUE_SIZE * 2 {
                 let mut buf =
                     DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
                 if buf
@@ -511,6 +531,7 @@ impl IwlWifiDevice {
             wpa: WpaSupplicant::new(),
             wpa_required: false,
             wpa_keys_installed: false,
+            tx_pn: 1,
             wpa_key_command_end: None,
             pending_wpa_message4: None,
             dhcp: None,
@@ -519,12 +540,15 @@ impl IwlWifiDevice {
             scan_pending: false,
             scan_result_grace_ticks: 0,
             last_rx_phy_channel: 0,
+            connection_watchdog_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
             rx_dma_ring,
             tx_head: 0,
             tx_tail: 0,
+            tx_data_head: 0,
+            tx_data_tail: 0,
             rx_head: 0,
             rx_tail: 0,
             rx_posted: 0,
@@ -647,7 +671,9 @@ impl IwlWifiDevice {
 
         debug::print("iwlwifi", "alloc_tx_bufs");
         let init_result = (|| -> Result<(), IwlError> {
-            for _ in 0..TX_QUEUE_SIZE {
+            // Keep q9 host-command and q4 data payloads in disjoint DMA
+            // slots; their queue heads advance independently.
+            for _ in 0..TX_QUEUE_SIZE * 2 {
                 let mut buf =
                     DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
                 if buf
@@ -734,6 +760,7 @@ impl IwlWifiDevice {
             wpa: WpaSupplicant::new(),
             wpa_required: false,
             wpa_keys_installed: false,
+            tx_pn: 1,
             wpa_key_command_end: None,
             pending_wpa_message4: None,
             dhcp: None,
@@ -742,12 +769,15 @@ impl IwlWifiDevice {
             scan_pending: false,
             scan_result_grace_ticks: 0,
             last_rx_phy_channel: 0,
+            connection_watchdog_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
             rx_dma_ring,
             tx_head: 0,
             tx_tail: 0,
+            tx_data_head: 0,
+            tx_data_tail: 0,
             rx_head: 0,
             rx_tail: 0,
             rx_posted: 0,
@@ -809,6 +839,8 @@ impl IwlWifiDevice {
         self.runtime_calib_event = 0;
         self.tx_head = 0;
         self.tx_tail = 0;
+        self.tx_data_head = 0;
+        self.tx_data_tail = 0;
         self.rx_head = 0;
         self.rx_tail = 0;
         self.rx_posted = 0;
@@ -1960,7 +1992,9 @@ pub(super) mod test_support {
             rx_dma_ring.dma_map(ctx, 0).expect("RX ring map");
 
             let mut tx_bufs = Vec::new();
-            for _ in 0..TX_QUEUE_SIZE {
+            // Keep q9 host-command and q4 data payloads in disjoint DMA
+            // slots; their queue heads advance independently.
+            for _ in 0..TX_QUEUE_SIZE * 2 {
                 let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).expect("TX buf DMA");
                 buf.dma_map(ctx, 0).expect("TX buf map");
                 tx_bufs.push(buf);
@@ -2012,6 +2046,7 @@ pub(super) mod test_support {
                 wpa: WpaSupplicant::new(),
                 wpa_required: false,
                 wpa_keys_installed: false,
+                tx_pn: 1,
                 wpa_key_command_end: None,
                 pending_wpa_message4: None,
                 dhcp: None,
@@ -2020,12 +2055,15 @@ pub(super) mod test_support {
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
                 last_rx_phy_channel: 0,
+                connection_watchdog_ticks: 0,
                 tx_queue: VecDeque::new(),
                 rx_queue: VecDeque::new(),
                 tx_dma_ring,
                 rx_dma_ring,
                 tx_head: 0,
                 tx_tail: 0,
+                tx_data_head: 0,
+                tx_data_tail: 0,
                 rx_head: 0,
                 rx_tail: 0,
                 rx_posted: 0,
@@ -2040,24 +2078,37 @@ pub(super) mod test_support {
 
         /// Read back the most recent TX frame written to the DMA ring.
         pub fn last_tx_frame(&self) -> &[u8] {
-            if self.tx_head == 0 {
+            if self.tx_data_head == 0 {
                 return &[];
             }
-            let idx = (self.tx_head - 1) % TX_QUEUE_SIZE;
-            let buf = &self.tx_bufs[idx];
-            buf.as_slice()
+            let idx = (self.tx_data_head - 1) % TX_QUEUE_SIZE;
+            let buf = &self.tx_bufs[TX_QUEUE_SIZE + idx];
+            let wire = buf.as_slice();
+            if wire.len() < TX_FRAME_OFFSET {
+                return &[];
+            }
+            let frame_len = u16::from_le_bytes([wire[4], wire[5]]) as usize;
+            let end = TX_FRAME_OFFSET.saturating_add(frame_len).min(wire.len());
+            &wire[TX_FRAME_OFFSET..end]
         }
 
         /// Read a TX frame by ring index.
         pub fn tx_frame_at(&self, index: usize) -> &[u8] {
             let idx = index % TX_QUEUE_SIZE;
-            self.tx_bufs[idx].as_slice()
+            let wire = self.tx_bufs[TX_QUEUE_SIZE + idx].as_slice();
+            if wire.len() < TX_FRAME_OFFSET {
+                return &[];
+            }
+            let frame_len = u16::from_le_bytes([wire[4], wire[5]]) as usize;
+            let end = TX_FRAME_OFFSET.saturating_add(frame_len).min(wire.len());
+            &wire[TX_FRAME_OFFSET..end]
         }
 
         /// Simulate firmware consuming all queued TX descriptors by advancing
-        /// `tx_tail` to `tx_head`.
+        /// both command and data queue tails to their respective heads.
         pub fn drain_tx(&mut self) {
             self.tx_tail = self.tx_head;
+            self.tx_data_tail = self.tx_data_head;
         }
     }
 }

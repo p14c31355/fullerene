@@ -608,21 +608,14 @@ pub fn draw_basalt_taskbar(canvas: &mut Painter<'_>, taskbar: &Taskbar, spec: &S
         bar_y + 4,
         palette.taskbar_text,
     );
-    if let Some((source, message)) = taskbar.debug_msgs.last() {
-        let text = if source.is_empty() {
-            alloc::format!("[{}]", message)
-        } else {
-            alloc::format!("{}: {}", source, message)
-        };
-        let debug_x = 4 + taskbar.entries.len() as i32 * 124;
-        canvas.draw_text(
-            debug_x + 4,
-            bar_y as i32 + 7,
-            &text,
-            palette.taskbar_text,
-            13.0,
-        );
-    }
+    draw_debug_status(
+        canvas,
+        taskbar,
+        4 + taskbar.entries.len() as i32 * 124,
+        bar_y as i32 + 7,
+        taskbar.wifi_icon_x(width).saturating_sub(8),
+        palette.taskbar_text,
+    );
     if !taskbar.clock_text.is_empty() {
         canvas.draw_text(
             taskbar.clock_x(width) as i32,
@@ -632,6 +625,32 @@ pub fn draw_basalt_taskbar(canvas: &mut Painter<'_>, taskbar: &Taskbar, spec: &S
             13.0,
         );
     }
+}
+
+/// Draw the latest driver status without allowing a long message to overwrite
+/// the network/power/clock group.
+pub fn draw_debug_status(
+    canvas: &mut Painter<'_>,
+    taskbar: &Taskbar,
+    x: i32,
+    y: i32,
+    right: u32,
+    color: u32,
+) {
+    let Some(text) = taskbar.debug_status_label() else {
+        return;
+    };
+    let available = right.saturating_sub(x.max(0) as u32);
+    let max_chars = (available / 8) as usize;
+    if max_chars == 0 {
+        return;
+    }
+    let end = text
+        .char_indices()
+        .nth(max_chars)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+    canvas.draw_text(x, y, &text[..end], color, 13.0);
 }
 
 pub fn draw_top_panel(canvas: &mut Painter<'_>, panel: &TopPanel, spec: &StyleSpec) {

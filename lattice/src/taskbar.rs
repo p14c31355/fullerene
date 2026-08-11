@@ -36,6 +36,8 @@ pub const WIFI_STATUS_WIDTH: u32 = crate::network_menu::NET_ICON_WIDTH;
 pub const POWER_STATUS_WIDTH: u32 = 32;
 /// Gap between status icons and the clock.
 pub const STATUS_GAP: u32 = 8;
+/// Maximum width reserved for the latest diagnostic message.
+pub const DEBUG_STATUS_MAX_WIDTH: u32 = 640;
 
 /// A single taskbar entry (represents a window).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +99,31 @@ impl Taskbar {
 
     /// Left edge of the rounded right-hand status group used by modern shells.
     pub fn status_group_x(&self, fb_width: u32) -> u32 {
-        self.wifi_icon_x(fb_width).saturating_sub(STATUS_GAP)
+        self.wifi_icon_x(fb_width)
+            .saturating_sub(STATUS_GAP + self.debug_status_width())
+    }
+
+    /// Format the latest driver status for the taskbar.
+    pub fn debug_status_label(&self) -> Option<alloc::string::String> {
+        self.debug_msgs.last().map(|(source, message)| {
+            if source.is_empty() {
+                alloc::format!("[{}]", message)
+            } else {
+                alloc::format!("{}: {}", source, message)
+            }
+        })
+    }
+
+    /// Width reserved for the latest driver status, including padding.
+    pub fn debug_status_width(&self) -> u32 {
+        self.debug_status_label()
+            .map(|label| {
+                ((label.chars().count() as u32)
+                    .saturating_mul(8)
+                    .saturating_add(16))
+                .min(DEBUG_STATUS_MAX_WIDTH)
+            })
+            .unwrap_or(0)
     }
 
     /// Update entries from window list.

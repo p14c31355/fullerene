@@ -12,6 +12,11 @@ use super::device::IwlWifiDevice;
 use super::registers::*;
 use super::types::*;
 
+/// Bound a lost authentication/association response.  This is intentionally
+/// longer than a normal management exchange but finite, so the UI cannot stay
+/// in Authenticating forever when an AP or RX path drops the response.
+const CONNECTION_WATCHDOG_TICKS: u32 = 4_000;
+
 struct RxHexBytes<'a>(&'a [u8]);
 
 impl fmt::Display for RxHexBytes<'_> {
@@ -27,6 +32,30 @@ impl fmt::Display for RxHexBytes<'_> {
 }
 
 impl IwlWifiDevice {
+    /// Advance the management-frame connection watchdog before touching the
+    /// device.  A PCIe/MMIO health failure can make the RX poll return early;
+    /// the user-facing state must still leave `Authenticating`/`Associating`
+    /// instead of remaining there forever.
+    fn advance_connection_watchdog(&mut self) {
+        if matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent) {
+            self.connection_watchdog_ticks = self.connection_watchdog_ticks.saturating_add(1);
+            if self.connection_watchdog_ticks > CONNECTION_WATCHDOG_TICKS {
+                let phase = if self.iwl_state == IwlState::AuthSent {
+                    "authentication"
+                } else {
+                    "association"
+                };
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!("{} response timeout", phase));
+                self.connection_watchdog_ticks = 0;
+                log::warn!("iwlwifi: {} response timeout", phase);
+            }
+        } else {
+            self.connection_watchdog_ticks = 0;
+        }
+    }
+
     fn save_phy_db_notification(&mut self, payload: &[u8]) {
         if payload.len() < 4 {
             return;
@@ -309,6 +338,8 @@ impl IwlWifiDevice {
                             u16::from_le_bytes([frame[body_offset + 4], frame[body_offset + 5]]);
                         if status_code == 0 {
                             self.iwl_state = IwlState::AssocSent;
+                            self.wifi_conn.status = bonder::wifi::WifiStatus::Associating;
+                            self.connection_watchdog_ticks = 0;
                             let bssid = [
                                 frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
                             ];
@@ -326,7 +357,9 @@ impl IwlWifiDevice {
                             let _ = self.send_raw_80211_frame(&assoc);
                             log::info!("iwlwifi: auth successful, associating");
                         } else {
+                            self.iwl_state = IwlState::Disconnected;
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                            self.connection_watchdog_ticks = 0;
                             log::warn!("iwlwifi: auth failed with status {}", status_code);
                         }
                     }
@@ -343,7 +376,43 @@ impl IwlWifiDevice {
                                 frame[body_offset + 4],
                                 frame[body_offset + 5],
                             ]);
+                            let bssid = [
+                                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
+                            ];
+                            // The MAC context is kept unassociated until the
+                            // AP accepts the association. Publish the AID
+                            // now so firmware can correctly handle the
+                            // subsequent protected handshake/data traffic.
+                            let channel = self
+                                .scan_results
+                                .iter()
+                                .find(|ap| ap.bssid == bssid)
+                                .map(|ap| ap.channel)
+                                .unwrap_or(1);
+                            let mac_context =
+                                MacContextCmd::sta_for_bssid_on_channel(self.mac, bssid, channel)
+                                    .associated(aid);
+                            let mac_context_bytes = unsafe { super::as_bytes(&mac_context) };
+                            if let Err(error) = self.send_hcmd(
+                                LegacyCmd::MacContext as u8,
+                                GroupId::Legacy as u8,
+                                mac_context_bytes,
+                            ) {
+                                self.iwl_state = IwlState::Disconnected;
+                                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                                self.connection_watchdog_ticks = 0;
+                                self.wifi_conn.error_msg = Some(alloc::format!(
+                                    "associated MAC context setup failed: {:?}",
+                                    error
+                                ));
+                                log::warn!(
+                                    "iwlwifi: failed to publish associated MAC context: {:?}",
+                                    error
+                                );
+                                return;
+                            }
                             self.iwl_state = IwlState::Connected;
+                            self.connection_watchdog_ticks = 0;
                             self.wifi_conn.status = if self.wpa_required {
                                 // Association is not an encrypted connection.
                                 // Do not expose Connected or start DHCP until
@@ -352,15 +421,15 @@ impl IwlWifiDevice {
                             } else {
                                 bonder::wifi::WifiStatus::Connected
                             };
-                            self.wifi_conn.current_bssid = Some([
-                                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
-                            ]);
+                            self.wifi_conn.current_bssid = Some(bssid);
 
                             if !self.wpa_required {
                                 self.start_dhcp(aid);
                             }
                         } else {
+                            self.iwl_state = IwlState::Disconnected;
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                            self.connection_watchdog_ticks = 0;
                             log::warn!("iwlwifi: assoc failed with status {}", status_code);
                         }
                     }
@@ -564,6 +633,9 @@ impl IwlWifiDevice {
 
     /// Service device interrupts and consume completed receive descriptors.
     pub fn tick(&mut self) {
+        // Keep this before the PCIe/MMIO probe: a failed probe must not leave
+        // the UI in an unbounded Authenticating or Associating state.
+        self.advance_connection_watchdog();
         if let Err(error) = self.health.pre_mmio_access() {
             if self.scan_pending {
                 // Do not silently turn a live-scan PCIe/link check failure
@@ -604,6 +676,12 @@ impl IwlWifiDevice {
         } else {
             None
         };
+        let polled_data_tx_tail = if self.fw_state == FwState::Ready {
+            self.read_prph(SCD_QUEUE_RDPTR_DATA)
+                .map(|value| value as usize)
+        } else {
+            None
+        };
         let tx_tail_before_poll = self.tx_tail;
         if let Some(hardware_tail) = polled_tx_tail {
             self.update_tx_tail(hardware_tail);
@@ -613,6 +691,19 @@ impl IwlWifiDevice {
                     hardware_tail & (TX_QUEUE_SIZE - 1),
                     self.tx_tail & (TX_QUEUE_SIZE - 1),
                     self.tx_head & (TX_QUEUE_SIZE - 1),
+                );
+                self.process_tx_queue();
+            }
+        }
+        let data_tx_tail_before_poll = self.tx_data_tail;
+        if let Some(hardware_tail) = polled_data_tx_tail {
+            self.update_data_tx_tail(hardware_tail);
+            if self.tx_data_tail != data_tx_tail_before_poll {
+                log::debug!(
+                    "iwlwifi: TX data completion progress scd_rptr={} tx_data_tail={} tx_data_head={}",
+                    hardware_tail & (TX_QUEUE_SIZE - 1),
+                    self.tx_data_tail & (TX_QUEUE_SIZE - 1),
+                    self.tx_data_head & (TX_QUEUE_SIZE - 1),
                 );
                 self.process_tx_queue();
             }
@@ -766,6 +857,9 @@ impl IwlWifiDevice {
                 // pointer are independent on this generation.
                 if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_CMD) {
                     self.update_tx_tail(hardware_tail as usize);
+                }
+                if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_DATA) {
+                    self.update_data_tx_tail(hardware_tail as usize);
                 }
                 self.process_tx_queue();
             }

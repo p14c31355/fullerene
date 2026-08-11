@@ -227,6 +227,7 @@ fn open_network_full_flow() {
     let auth_resp = build_auth_response(AP_BSSID, CLIENT_MAC, 0);
     dev.inject_rx_frame(&auth_resp);
     assert_eq!(dev.iwl_state, IwlState::AssocSent);
+    assert_eq!(dev.wifi_conn.status, wifi::WifiStatus::Associating);
 
     // Assoc request should have been sent
     let assoc_tx = dev.last_tx_frame();
@@ -267,6 +268,7 @@ fn wpa2_full_handshake_flow() {
     let auth_resp = build_auth_response(AP_BSSID, CLIENT_MAC, 0);
     dev.inject_rx_frame(&auth_resp);
     assert_eq!(dev.iwl_state, IwlState::AssocSent);
+    assert_eq!(dev.wifi_conn.status, wifi::WifiStatus::Associating);
 
     // 4. Assoc response → Handshake
     let assoc_resp = build_assoc_response(AP_BSSID, CLIENT_MAC, 0, 1);
@@ -278,13 +280,13 @@ fn wpa2_full_handshake_flow() {
     // 5. Inject EAPOL Message 1 → sends Message 2
     let known_anonce = [0xA5u8; 32];
     let msg1 = build_eapol_msg1(&known_anonce, 1);
-    let tx_head_before = dev.tx_head;
+    let tx_data_head_before = dev.tx_data_head;
     dev.inject_rx_frame(&msg1);
     assert_eq!(dev.wpa.state, WpaState::WaitMsg3);
     assert_ne!(dev.wpa.ptk, [0u8; 48]);
 
     // EAPOL Message 2 should have been sent
-    assert!(dev.tx_head > tx_head_before);
+    assert!(dev.tx_data_head > tx_data_head_before);
     let msg2_tx = dev.last_tx_frame();
     assert_eq!(msg2_tx[0] & 0x0C, 0x08); // data frame
     // Check it's EAPOL (ether_type 0x888E at LLC/SNAP offset)
@@ -306,7 +308,7 @@ fn wpa2_full_handshake_flow() {
 
     // 7. Simulate firmware consuming the key commands
     dev.drain_tx();
-    let tx_head_after_keys = dev.tx_head;
+    let tx_data_head_after_keys = dev.tx_data_head;
     dev.finish_wpa_for_test();
 
     // WPA should be complete
@@ -315,20 +317,21 @@ fn wpa2_full_handshake_flow() {
     assert_eq!(dev.wifi_conn.status, wifi::WifiStatus::Connected);
 
     // After finish: EAPOL Message 4 was sent, then DHCP discover.
-    // tx_head should have advanced by 2 (msg4 + DHCP discover).
-    assert_eq!(dev.tx_head, tx_head_after_keys + 2);
+    // The data queue should have advanced by 2 (msg4 + DHCP discover).
+    assert_eq!(dev.tx_data_head, tx_data_head_after_keys + 2);
 
-    // EAPOL Message 4 is at tx_head - 2
-    let msg4_tx = dev.tx_frame_at(dev.tx_head - 2);
+    // EAPOL Message 4 is at tx_data_head - 2
+    let msg4_tx = dev.tx_frame_at(dev.tx_data_head - 2);
     assert_eq!(msg4_tx[0] & 0x0C, 0x08); // data frame
     assert_eq!(msg4_tx[30], 0x88);
     assert_eq!(msg4_tx[31], 0x8E);
 
-    // DHCP discover is the last TX frame (tx_head - 1)
+    // DHCP discover is the last TX frame (tx_data_head - 1)
     let dhcp_tx = dev.last_tx_frame();
     assert_eq!(dhcp_tx[0] & 0x0C, 0x08); // data frame
-    assert_eq!(dhcp_tx[30], 0x08); // ether_type 0x0800 (IP)
-    assert_eq!(dhcp_tx[31], 0x00);
+    assert_eq!(&dhcp_tx[24..32], &[1, 0, 0, 0x20, 0, 0, 0, 0]);
+    assert_eq!(dhcp_tx[38], 0x08); // ether_type 0x0800 (IP)
+    assert_eq!(dhcp_tx[39], 0x00);
 
     // IP address not yet assigned (DHCP not completed)
     assert_eq!(dev.ip_address, [0u8; 4]);
@@ -626,15 +629,15 @@ fn dhcp_full_flow_open_network() {
     let offer = build_dhcp_packet(xid, offered_ip, server_ip, CLIENT_MAC, 2, &offer_options);
     let offer_frame = wrap_dhcp_response(&offer, server_ip);
 
-    let tx_head_before_offer = dev.tx_head;
+    let tx_data_head_before_offer = dev.tx_data_head;
     dev.inject_rx_frame(&offer_frame);
 
     // DHCP Request should have been sent
     assert!(
-        dev.tx_head > tx_head_before_offer,
-        "tx_head didn't advance after Offer: {} -> {}",
-        tx_head_before_offer,
-        dev.tx_head
+        dev.tx_data_head > tx_data_head_before_offer,
+        "tx_data_head didn't advance after Offer: {} -> {}",
+        tx_data_head_before_offer,
+        dev.tx_data_head
     );
 
     // 6. Inject DHCP ACK
@@ -740,11 +743,11 @@ fn dhcp_offer_with_wrong_xid_is_ignored() {
     let server_ip = [192, 168, 1, 1];
     let offered_ip = [192, 168, 1, 100];
     let offer = build_dhcp_packet(wrong_xid, offered_ip, server_ip, CLIENT_MAC, 2, &[]);
-    let tx_head_before = dev.tx_head;
+    let tx_data_head_before = dev.tx_data_head;
 
     dev.inject_rx_frame(&wrap_dhcp_response(&offer, server_ip));
 
     // No DHCP Request should have been sent (xid mismatch)
-    assert_eq!(dev.tx_head, tx_head_before);
+    assert_eq!(dev.tx_data_head, tx_data_head_before);
     assert_eq!(dev.ip_address, [0u8; 4]);
 }

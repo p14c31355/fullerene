@@ -75,6 +75,13 @@ pub trait DriverContext: Send + Sync {
     /// In a higher-half kernel this is typically `phys + offset`.
     fn phys_to_virt(&self, phys: u64) -> usize;
 
+    /// Reserve a virtual address suitable for uncached device MMIO.
+    /// Kernel implementations should override this for PCI devices so MMIO
+    /// does not alias the WB physical-memory mapping.
+    fn mmio_virtual_address(&self, phys: u64, _size: usize) -> Result<usize, DriverContextError> {
+        Ok(self.phys_to_virt(phys))
+    }
+
     /// Clear newly allocated DMA storage before exposing it to a device.
     /// Implementations with a synthetic address space may override this hook
     /// while preserving the zero-initialization contract.

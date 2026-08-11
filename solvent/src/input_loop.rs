@@ -32,9 +32,23 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
 // resumes. The rest is intentionally discarded: it is stale motion, not a
 // new pointer position that the user is still trying to reach.
 const MAX_MOUSE_STEP_PX: i32 = 96;
+// The N150's HID relative-mouse collection reports smaller deltas than the
+// legacy PS/2 mouse used on the old test machine. Keep the user-facing
+// sensitivity setting as the common base, then normalize this transport.
+const HID_RELATIVE_SENSITIVITY_SCALE: i16 = 2;
 const MOUSE_STALE_AFTER_MS: u64 = 50;
 static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
 static VIDEO_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn map_touch_axis(value: i32, minimum: i32, maximum: i32, pixels: u32) -> i16 {
+    if pixels == 0 || maximum <= minimum {
+        return 0;
+    }
+    let value = value.clamp(minimum, maximum) - minimum;
+    let range = i64::from(maximum - minimum);
+    (i64::from(value) * i64::from(pixels.saturating_sub(1)) / range)
+        .clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+}
 
 /// Consume an Escape press observed by the low-level keyboard poller.
 ///
@@ -75,7 +89,26 @@ fn push_mouse_button_edges(queue: &mut resonance::EventQueue, buttons: u8, previ
     }
 }
 
+/// Merge physical HID buttons with the digitizer's Tip Switch. A precision
+/// touchpad reports a tap/drag as contact state rather than as a separate
+/// button field; exposing that state as left-button edges gives the desktop
+/// normal click and drag semantics.
+fn touchpad_button_bits(input: Option<&nitrogen::i2c_hid::TouchpadInput>) -> u8 {
+    let Some(input) = input else { return 0 };
+    let mut buttons = input.report.buttons & 0x03;
+    if input.relative.is_none() && input.report.in_contact {
+        buttons |= 0x01;
+    }
+    buttons
+}
+
 pub fn poll_mouse_state() {
+    nitrogen::i2c_hid::poll_input();
+    let touchpad = nitrogen::i2c_hid::consume_input();
+    let touchpad_relative = touchpad.as_ref().and_then(|input| input.relative);
+    let touchpad_absolute = touchpad
+        .as_ref()
+        .filter(|input| input.relative.is_none() && input.report.in_contact);
     // IRQ12 is the normal delivery path. Drain AUX bytes as a fallback for
     // QEMU/firmware configurations where the legacy mouse route is not wired
     // through the I/O APIC.
@@ -96,20 +129,38 @@ pub fn poll_mouse_state() {
     let old_x = mouse.x;
     let old_y = mouse.y;
     let sensitivity = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
+    let (fb_width, fb_height, _) = *FB_DIMS.lock();
     let next_x = i32::from(mouse.x) + scaled_mouse_delta(dx, sensitivity);
     let next_y = i32::from(mouse.y) - scaled_mouse_delta(dy, sensitivity);
-    let (fb_width, fb_height, _) = *FB_DIMS.lock();
-    mouse.x = if fb_width == 0 {
-        next_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    if let Some((dx, dy)) = touchpad_relative {
+        let hid_sensitivity = sensitivity.saturating_mul(HID_RELATIVE_SENSITIVITY_SCALE);
+        mouse.x = (next_x + scaled_mouse_delta(dx, hid_sensitivity))
+            .clamp(0, fb_width.saturating_sub(1) as i32) as i16;
+        // HID relative mouse Y is positive downward. PS/2 uses the opposite
+        // convention and is handled by the subtraction above.
+        mouse.y = (next_y + scaled_mouse_delta(dy, hid_sensitivity))
+            .clamp(0, fb_height.saturating_sub(1) as i32) as i16;
     } else {
-        next_x.clamp(0, fb_width.saturating_sub(1) as i32) as i16
-    };
-    mouse.y = if fb_height == 0 {
-        next_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-    } else {
-        next_y.clamp(0, fb_height.saturating_sub(1) as i32) as i16
-    };
-    mouse.buttons = buttons;
+        mouse.x = if fb_width == 0 {
+            next_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        } else {
+            next_x.clamp(0, fb_width.saturating_sub(1) as i32) as i16
+        };
+        mouse.y = if fb_height == 0 {
+            next_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        } else {
+            next_y.clamp(0, fb_height.saturating_sub(1) as i32) as i16
+        };
+    }
+    // HID-over-I2C reports absolute coordinates.  Update the desktop only
+    // while a finger is down; release reports must not snap the pointer back
+    // to the controller's last coordinate.
+    if let Some(touchpad) = touchpad_absolute {
+        mouse.x = map_touch_axis(touchpad.report.x, touchpad.x_min, touchpad.x_max, fb_width);
+        mouse.y = map_touch_axis(touchpad.report.y, touchpad.y_min, touchpad.y_max, fb_height);
+    }
+    let combined_buttons = buttons | touchpad_button_bits(touchpad.as_ref());
+    mouse.buttons = combined_buttons;
     let cursor_x = mouse.x as i32;
     let cursor_y = mouse.y as i32;
     let moved = old_x != mouse.x || old_y != mouse.y;
@@ -135,18 +186,19 @@ pub fn poll_mouse_state() {
 
     let mut previous_buttons = PREV_MOUSE_BUTTONS.lock();
     let previous = *previous_buttons;
-    if buttons != previous
+    if combined_buttons != previous
         && let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut()
     {
-        push_mouse_button_edges(queue, buttons, previous);
+        push_mouse_button_edges(queue, combined_buttons, previous);
     }
-    *previous_buttons = buttons;
+    *previous_buttons = combined_buttons;
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, mouse_motion_is_stale, scaled_mouse_delta,
+        MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, map_touch_axis, mouse_motion_is_stale,
+        scaled_mouse_delta, touchpad_button_bits,
     };
 
     #[test]
@@ -170,6 +222,43 @@ mod tests {
             100_000 + tsc_per_ms * (MOUSE_STALE_AFTER_MS + 1),
             tsc_per_ms,
         ));
+    }
+
+    #[test]
+    fn maps_n150_absolute_touch_coordinates_to_framebuffer_edges() {
+        assert_eq!(map_touch_axis(0, 0, 1708, 1920), 0);
+        assert_eq!(map_touch_axis(1708, 0, 1708, 1920), 1919);
+        assert_eq!(map_touch_axis(1060 / 2, 0, 1060, 1080), 539);
+        assert_eq!(map_touch_axis(-1, 0, 1708, 1920), 0);
+        assert_eq!(map_touch_axis(1709, 0, 1708, 1920), 1919);
+        assert_eq!(map_touch_axis(10, 10, 10, 1920), 0);
+        assert_eq!(map_touch_axis(10, 0, 10, 0), 0);
+    }
+
+    #[test]
+    fn maps_digitizer_contact_to_left_button_edges() {
+        let pressed = nitrogen::i2c_hid::TouchpadInput {
+            report: nitrogen::hid::TouchpadReport {
+                x: 100,
+                y: 200,
+                buttons: 0,
+                in_contact: true,
+            },
+            x_min: 0,
+            x_max: 1708,
+            y_min: 0,
+            y_max: 1060,
+            relative: None,
+        };
+        let released = nitrogen::i2c_hid::TouchpadInput {
+            report: nitrogen::hid::TouchpadReport {
+                in_contact: false,
+                ..pressed.report
+            },
+            ..pressed
+        };
+        assert_eq!(touchpad_button_bits(Some(&pressed)), 0x01);
+        assert_eq!(touchpad_button_bits(Some(&released)), 0);
     }
 }
 

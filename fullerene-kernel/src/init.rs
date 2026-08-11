@@ -17,6 +17,9 @@ use petroleum::initializer::FrameAllocator;
 static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
     super::driver_context_impl::KernelDriverContext;
 
+static I2C_HID_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
+    super::driver_context_impl::KernelDriverContext;
+
 use spin::Once;
 
 static DRIVER_MGR: Once<crate::hardware::driver_manager::DriverManager> = Once::new();
@@ -155,7 +158,35 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::serial::serial_log(format_args!("Initializing PCI BARs...\n"));
             let mut scanner = nitrogen::pci::PciScanner::new();
             if scanner.scan_all_buses().is_ok() {
-                let mut allocator = crate::hardware::pci_allocator::PciAllocator::new(0x40000000);
+                let mmio64_base = crate::heap::MEMORY_MAP
+                    .lock()
+                    .as_ref()
+                    .map(|descriptors| {
+                        let highest_ram = descriptors
+                            .iter()
+                            .filter(|descriptor| {
+                                petroleum::page_table::MemoryDescriptorValidator::is_memory_available(
+                                    *descriptor,
+                                )
+                            })
+                            .filter_map(|descriptor| {
+                                petroleum::page_table::MemoryDescriptorValidator::get_physical_start(
+                                    descriptor,
+                                )
+                                .checked_add(
+                                    petroleum::page_table::MemoryDescriptorValidator::get_page_count(
+                                        descriptor,
+                                    )
+                                    .checked_mul(4096)?,
+                                )
+                            })
+                            .max()
+                            .unwrap_or(0);
+                        ((highest_ram + 0xFFFFF) & !0xFFFFF).max(0x1_0000_0000)
+                    })
+                    .unwrap_or(0x1_0000_0000);
+                let mut allocator = crate::hardware::pci_allocator::PciAllocator::new(0x40000000)
+                    .with_64bit_base(mmio64_base);
                 allocator.assign_bars(scanner.get_devices());
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PCI BARs step done\n");
@@ -338,6 +369,49 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     continue;
                 }
                 present_devices.push(dev.clone());
+            }
+
+            // The platform description identifies the Intel LPSS controller
+            // and its ACPI-described I2C child.  The HID identity itself is
+            // read from the wire descriptor by the generic I2C-HID core.
+            // Probe it before the generic driver manager so the existing PS/2
+            // path remains the fallback on machines without this profile.
+            if let Some(device) = present_devices.iter().find(|device| {
+                nitrogen::hid::GEMIBOOK_N150_I2C_HID.matches_pci(
+                    device.vendor_id,
+                    device.device_id,
+                    device.bus,
+                    device.device,
+                    device.function,
+                )
+            }) {
+                match nitrogen::i2c_hid::init_i2c_hid(
+                    &I2C_HID_DRIVER_CTX,
+                    device,
+                    nitrogen::hid::GEMIBOOK_N150_I2C_HID,
+                ) {
+                    Ok(()) => {
+                        crate::boot_stage::draw_step_hint(b"tp_ok");
+                        log::info!("I2C-HID touchpad: polling enabled");
+                    }
+                    Err(error) => {
+                        crate::boot_stage::draw_step_hint(b"tp_fail");
+                        // UnsupportedController publishes the exact LPSS/DW
+                        // register value from the low-level probe itself.
+                        if !matches!(error, nitrogen::i2c_hid::I2cHidError::UnsupportedController) {
+                            nitrogen::i2c_hid::publish_status(&alloc::format!(
+                                "FAILED {:?}",
+                                error
+                            ));
+                        }
+                        log::warn!(
+                            "I2C-HID touchpad probe failed; keeping PS/2 fallback: {:?}",
+                            error
+                        );
+                    }
+                }
+            } else {
+                nitrogen::i2c_hid::publish_absent();
             }
 
             // DriverManager orchestrates probe → priority → attach → registration
