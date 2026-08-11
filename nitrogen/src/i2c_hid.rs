@@ -161,6 +161,11 @@ impl HidI2cDescriptor {
             return None;
         }
         let word = |offset: usize| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        // Linux i2c-hid-core requires HID-over-I2C version 1.00 and the
+        // specification fixes this descriptor at exactly 30 bytes.
+        if word(0) != HID_DESCRIPTOR_LENGTH as u16 || word(2) != 0x0100 {
+            return None;
+        }
         let descriptor = Self {
             hid_desc_length: word(0),
             report_desc_length: word(4),
@@ -171,9 +176,7 @@ impl HidI2cDescriptor {
             vendor_id: word(20),
             product_id: word(22),
         };
-        (descriptor.hid_desc_length as usize >= HID_DESCRIPTOR_LENGTH
-            && descriptor.report_desc_length != 0
-            && descriptor.max_input_length as usize >= 2)
+        (descriptor.report_desc_length != 0 && descriptor.max_input_length as usize >= 2)
             .then_some(descriptor)
     }
 }
@@ -553,6 +556,7 @@ mod tests {
     fn parses_wire_descriptor_offsets() {
         let mut bytes = [0u8; 30];
         bytes[0..2].copy_from_slice(&30u16.to_le_bytes());
+        bytes[2..4].copy_from_slice(&0x0100u16.to_le_bytes());
         bytes[4..6].copy_from_slice(&512u16.to_le_bytes());
         bytes[6..8].copy_from_slice(&0x100u16.to_le_bytes());
         bytes[8..10].copy_from_slice(&0x200u16.to_le_bytes());
@@ -565,5 +569,21 @@ mod tests {
         assert_eq!(descriptor.input_register, 0x200);
         assert_eq!(descriptor.command_register, 0x300);
         assert_eq!(descriptor.vendor_id, 0x36b6);
+    }
+
+    #[test]
+    fn rejects_non_1_00_or_non_30_byte_hid_descriptors() {
+        let mut bytes = [0u8; 30];
+        bytes[0..2].copy_from_slice(&30u16.to_le_bytes());
+        bytes[2..4].copy_from_slice(&0x0100u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
+        bytes[10..12].copy_from_slice(&2u16.to_le_bytes());
+        assert!(HidI2cDescriptor::parse(&bytes).is_some());
+
+        bytes[0..2].copy_from_slice(&31u16.to_le_bytes());
+        assert!(HidI2cDescriptor::parse(&bytes).is_none());
+        bytes[0..2].copy_from_slice(&30u16.to_le_bytes());
+        bytes[2..4].copy_from_slice(&0x0101u16.to_le_bytes());
+        assert!(HidI2cDescriptor::parse(&bytes).is_none());
     }
 }

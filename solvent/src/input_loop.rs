@@ -165,7 +165,8 @@ pub fn poll_mouse_state() {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, mouse_motion_is_stale, scaled_mouse_delta,
+        MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, map_touch_axis, mouse_motion_is_stale,
+        scaled_mouse_delta,
     };
 
     #[test]
@@ -189,6 +190,17 @@ mod tests {
             100_000 + tsc_per_ms * (MOUSE_STALE_AFTER_MS + 1),
             tsc_per_ms,
         ));
+    }
+
+    #[test]
+    fn maps_n150_absolute_touch_coordinates_to_framebuffer_edges() {
+        assert_eq!(map_touch_axis(0, 0, 1708, 1920), 0);
+        assert_eq!(map_touch_axis(1708, 0, 1708, 1920), 1919);
+        assert_eq!(map_touch_axis(1060 / 2, 0, 1060, 1080), 539);
+        assert_eq!(map_touch_axis(-1, 0, 1708, 1920), 0);
+        assert_eq!(map_touch_axis(1709, 0, 1708, 1920), 1919);
+        assert_eq!(map_touch_axis(10, 10, 10, 1920), 0);
+        assert_eq!(map_touch_axis(10, 0, 10, 0), 0);
     }
 }
 

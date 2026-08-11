@@ -247,13 +247,8 @@ impl HidReportDescriptor {
                 // change the input bit layout here.  Physical/unit globals
                 // also do not affect extraction; they are nevertheless
                 // valid and common in precision-touchpad descriptors.
-                (0, 0x9)
-                | (0, 0xa)
-                | (0, 0xb)
-                | (0, 0xc)
-                | (1, 0x3..=0x6)
-                | (1, 0xa)
-                | (1, 0xb) => {}
+                (0, 0x9) | (0, 0xa) | (0, 0xb) | (0, 0xc) => local.clear(),
+                (1, 0x3..=0x6) | (1, 0xa) | (1, 0xb) => {}
                 _ => return Err(HidDescriptorError::InvalidItem),
             }
         }
@@ -427,6 +422,10 @@ mod tests {
         TouchpadReport,
     };
 
+    mod n150_fixture {
+        include!("testdata/n150_report_descriptor.rs");
+    }
+
     // One report-IDed absolute pointer with left/right buttons and a tip bit.
     const DESCRIPTOR: &[u8] = &[
         0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x85, 0x01, 0x05, 0x09, 0x19, 0x01, 0x29, 0x02, 0x15,
@@ -514,5 +513,45 @@ mod tests {
         ])
         .unwrap();
         assert!(descriptor.fields().is_empty());
+    }
+
+    #[test]
+    fn parses_the_complete_linux_n150_report_descriptor_strictly() {
+        let descriptor = HidReportDescriptor::parse(n150_fixture::N150_REPORT_DESCRIPTOR).unwrap();
+        let fields = descriptor.touchpad_fields().unwrap();
+        assert!(
+            fields.tip_switch.is_some(),
+            "fields: {:?}",
+            descriptor.fields()
+        );
+
+        assert_eq!(n150_fixture::N150_REPORT_DESCRIPTOR.len(), 614);
+        assert_eq!(descriptor.max_input_bytes(), 30);
+        assert_eq!(fields.x.report_id, 1);
+        assert_eq!(fields.y.report_id, 1);
+        assert_eq!(fields.x.bit_offset, 16);
+        assert_eq!(fields.y.bit_offset, 32);
+        assert_eq!(fields.x.logical_minimum, 0);
+        assert_eq!(fields.x.logical_maximum, 1708);
+        assert_eq!(fields.y.logical_minimum, 0);
+        assert_eq!(fields.y.logical_maximum, 1060);
+        assert_eq!(fields.tip_switch.unwrap().bit_offset, 9);
+        assert_eq!(fields.contact_id.unwrap().bit_offset, 12);
+
+        let mut report = [0u8; 35];
+        report[0] = 1;
+        report[1] = 0b0000_0011; // tip switch + confidence/contact bit
+        report[2..4].copy_from_slice(&1708u16.to_le_bytes());
+        report[4..6].copy_from_slice(&1060u16.to_le_bytes());
+        let decoded = descriptor.decode_touchpad(fields, &report).unwrap();
+        assert_eq!(
+            decoded,
+            TouchpadReport {
+                x: 1708,
+                y: 1060,
+                buttons: 0,
+                in_contact: true,
+            }
+        );
     }
 }
