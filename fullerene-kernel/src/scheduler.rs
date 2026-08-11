@@ -128,10 +128,12 @@ pub fn scheduler_loop() -> ! {
     // Idle loop: drive runtime ticks.
     // Shell and other apps are launched via AppGrid or context menu.
     loop {
-        // Service the HID FIFO before storage, USB, Wi-Fi, or compositor work.
-        // The GUI tick only consumes the already-decoded latest state; it no
-        // longer performs the synchronous I2C transaction itself.
-        nitrogen::i2c_hid::service_input();
+        // Pump HID input + cursor at the top of every iteration so the
+        // cursor moves before any device phase absorbs the scheduler.
+        // This matches the tight read_byte → runtime_tick_no_fb loop the
+        // shell (Nozzle) uses, giving HID touchpad users the same snappy
+        // cursor response on the desktop as inside the shell.
+        gui::pump_hid_cursor();
 
         if SCHEDULER.current_tick().is_multiple_of(1_000) {
             let (count, total_tsc, max_tsc) = nitrogen::i2c_hid::input_service_metrics();
@@ -183,10 +185,10 @@ pub fn scheduler_loop() -> ! {
             crate::drivers::registry::process_usb_submission_queue(1);
             crate::drivers::registry::consume_usb_completion_queue(1);
         }
-        // Re-service the HID FIFO after the storage/USB phases.  Those phases
-        // can absorb several milliseconds of MMIO time, during which touchpad
-        // reports accumulate in the device FIFO and the cursor stalls.
-        nitrogen::i2c_hid::service_input();
+        // Pump HID + cursor after the storage/USB phases.  Those phases can
+        // absorb several milliseconds of MMIO time; without this pump the
+        // cursor stalls until the next tick_core inside runtime_tick.
+        gui::pump_hid_cursor();
         crate::contexts::audio::process_audio_submission_queue(2);
         crate::contexts::audio::poll_audio_playback();
         crate::contexts::audio::consume_audio_completion_queue(4);
@@ -202,9 +204,9 @@ pub fn scheduler_loop() -> ! {
             nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
             nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
         }
-        // Final HID drain before the GUI tick so poll_mouse_state sees the
-        // freshest possible report after every device phase.
-        nitrogen::i2c_hid::service_input();
+        // Final HID + cursor pump before the GUI tick so poll_mouse_state
+        // sees the freshest possible report after every device phase.
+        gui::pump_hid_cursor();
 
         // BusyBox smoke is a synchronous ABI test. During the harness, the
         // nested runtime pump handles only input and rendering; after a
@@ -229,6 +231,9 @@ pub fn scheduler_loop() -> ! {
             nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
             nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
         }
+        // Pump HID + cursor after the post-GUI Wi-Fi phase so input that
+        // arrived during firmware MMIO is reflected before the next hlt.
+        gui::pump_hid_cursor();
 
         // Check if the user requested a shell launch (via AppGrid / menu).
         if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false)

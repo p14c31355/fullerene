@@ -253,6 +253,34 @@ pub fn tick_core(now: u64) {
     }
 }
 
+/// Lightweight HID input pump for the scheduler idle loop.
+///
+/// This mirrors the nested branch of [`runtime_tick_no_fb`]: drain the
+/// I2C-HID FIFO, update mouse state, process pointer motion, and render
+/// the cursor.  The scheduler calls this between long device phases
+/// (storage, USB, Wi-Fi) so the cursor stays responsive on machines
+/// whose touchpad is delivered over I2C-HID — the same responsiveness
+/// the shell (Nozzle) gets from its tight `read_byte` → `runtime_tick_no_fb`
+/// loop.
+pub fn pump_hid_cursor() {
+    let already_suspended = RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst);
+    nitrogen::i2c_hid::service_input();
+    crate::poll_mouse_state();
+    crate::poll_keyboard();
+    process_pointer_motion_only();
+    let cursor_only = RUNTIME_CONTEXT
+        .runtime()
+        .as_ref()
+        .is_some_and(|runtime| runtime.cursor_redraw_from.is_some());
+    if cursor_only {
+        RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+        if let Some(render_fn) = *CURSOR_RENDER_FN.lock() {
+            render_fn();
+        }
+    }
+    RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn runtime_tick_no_fb() {
     let already_suspended = RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst);
     let tick_core_active = TICK_CORE_ACTIVE.load(core::sync::atomic::Ordering::Acquire);

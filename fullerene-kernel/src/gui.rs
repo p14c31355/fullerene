@@ -64,8 +64,8 @@ fn save_runtime_settings() {
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
     LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, cursor_update_due,
-    is_initialized, poll_mouse_state, process_events, push_key_event, set_cursor_render_fn,
-    set_render_fn, tick_core, write_terminal,
+    is_initialized, poll_mouse_state, process_events, pump_hid_cursor, push_key_event,
+    set_cursor_render_fn, set_render_fn, tick_core, write_terminal,
 };
 
 /// Initialise the GUI subsystem via Solvent runtime.
