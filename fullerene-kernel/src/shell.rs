@@ -1127,14 +1127,15 @@ fn nozzle_services() -> nozzle::ShellServices {
             "exec" => exec_path(ctx),
             "usb_rescan" => {
                 ctx.terminal.write_str(
-                "USB rescan: explicitly activating controller MMIO; this may not return on broken hardware.\n",
-            );
-                if crate::drivers::registry::rescan_usb_all() {
+                    "USB rescan: queued; controller activation and enumeration will run in the scheduler.\n",
+                );
+                let queued = crate::drivers::registry::enqueue_usb_rescan();
+                if queued {
                     ctx.terminal
-                        .write_str("USB rescan: storage device registered.\n");
+                        .write_str("USB rescan: poll enqueued. Check /dev/usb* shortly.\n");
                 } else {
                     ctx.terminal
-                        .write_str("USB rescan: no storage device registered.\n");
+                        .write_str("USB rescan: already pending. Check /dev/usb* shortly.\n");
                 }
             }
             "sd_rescan" => {

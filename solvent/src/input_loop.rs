@@ -33,14 +33,20 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
 // new pointer position that the user is still trying to reach.
 const MAX_MOUSE_STEP_PX: i32 = 96;
 // HID touchpad relative reports are intentionally accumulated in store_input
-// across service_input calls.  Capping them at the PS/2 limit discards fast
-// finger motion.  Use a generous separate ceiling so accumulated deltas are
-// delivered in full while still guarding against pathological saturation.
-const MAX_HID_RELATIVE_STEP_PX: i32 = 512;
+// across service_input calls.  The N150 touchpad emits small per-report
+// deltas; on the desktop (scheduler idle loop) multiple reports accumulate
+// between polls, and the old 512px ceiling let those deltas combine into
+// visible jumps.  Aligning the HID cap with the PS/2 limit keeps the
+// cursor as smooth as the tight Nozzle read_byte loop, where each
+// service_input call only drains one report.
+const MAX_HID_RELATIVE_STEP_PX: i32 = 96;
 // The N150's HID relative-mouse collection reports smaller deltas than the
-// legacy PS/2 mouse used on the old test machine. Keep the user-facing
-// sensitivity setting as the common base, then normalize this transport.
-const HID_RELATIVE_SENSITIVITY_SCALE: i16 = 2;
+// legacy PS/2 mouse used on the old test machine.  Nozzle's tight read_byte
+// loop drains one report per service_input call, so a 2x scale feels right
+// inside the shell.  On the desktop the scheduler accumulates multiple
+// reports between polls, making 2x too fast.  Drop to 1x so the HID
+// touchpad uses the same sensitivity as PS/2, matching the Nozzle feel.
+const HID_RELATIVE_SENSITIVITY_SCALE: i16 = 1;
 const MOUSE_STALE_AFTER_MS: u64 = 50;
 static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
 static LAST_POINTER_EVENT_TSC: AtomicU64 = AtomicU64::new(0);
@@ -252,12 +258,17 @@ mod tests {
     }
 
     #[test]
-    fn hid_relative_delta_uses_generous_ceiling() {
-        // PS/2 clip would lose fast touchpad motion.
-        assert!(scaled_hid_relative_delta(50, 6) > MAX_MOUSE_STEP_PX);
-        // Accumulated HID motion is delivered in full up to the HID ceiling.
-        assert_eq!(scaled_hid_relative_delta(50, 6), 300);
-        // Pathological saturation is still bounded.
+    fn hid_relative_delta_uses_same_ceiling_as_ps2() {
+        // HID and PS/2 now share the same step ceiling so accumulated
+        // deltas on the desktop do not jump beyond what a single PS/2
+        // poll would produce.
+        assert_eq!(MAX_HID_RELATIVE_STEP_PX, MAX_MOUSE_STEP_PX);
+        // A small per-report delta (Nozzle-like, one report per poll)
+        // is delivered in full.
+        assert_eq!(scaled_hid_relative_delta(10, 6), 60);
+        // An accumulated desktop delta is clamped to the same ceiling
+        // as PS/2, preventing the cursor from jumping.
+        assert_eq!(scaled_hid_relative_delta(50, 6), MAX_HID_RELATIVE_STEP_PX);
         assert_eq!(
             scaled_hid_relative_delta(i16::MAX, 6),
             MAX_HID_RELATIVE_STEP_PX

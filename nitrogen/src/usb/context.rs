@@ -635,8 +635,8 @@ impl USBContext {
     }
 
     fn register_xhci_storage(&mut self, ctrl_idx: usize, dev_idx: usize) {
-        // Phase 1: enable slot, address device, probe device class.
-        let (slot_id, dev_addr, is_hub) = {
+        // Phase 1: enable slot and address the device.
+        let (slot_id, dev_addr) = {
             let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
 
             let slot_id = match xhci.enable_slot() {
@@ -652,69 +652,67 @@ impl USBContext {
                 return;
             }
 
-            let dev_addr = slot_id as u8;
-
-            match probe_device_class(xhci as &mut dyn HostController, dev_addr) {
-                Ok(super::HUB_CLASS) => {
-                    log::info!(
-                        "USB: xHCI device {} is a hub; enumerating downstream ports",
-                        dev_addr
-                    );
-                    (slot_id, dev_addr, true)
-                }
-                Ok(class) => {
-                    log::info!(
-                        "USB: xHCI device {} class={:#04x}, trying mass storage",
-                        dev_addr,
-                        class
-                    );
-                    (slot_id, dev_addr, false)
-                }
-                Err(error) => {
-                    log::warn!(
-                        "USB: xHCI device {} class probe failed: {}",
-                        dev_addr,
-                        error
-                    );
-                    xhci.retry_device_candidate(slot_id, dev_idx);
-                    return;
-                }
-            }
+            (slot_id, slot_id as u8)
         };
 
-        // If the device is a hub, enumerate its downstream ports first.
-        // The hub may have mass-storage devices behind it.
-        if is_hub {
-            let found = self.enumerate_hub_ports_xhci(ctrl_idx, slot_id, dev_idx);
-            if found {
-                return;
-            }
-        }
-
         // Phase 2: try mass-storage enumeration on the device itself.
-        let (dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, block_size, total_blocks) = {
+        // This is the original code path — no extra control transfers
+        // before it, so device state is identical to the pre-hub-support
+        // build.
+        let msc_result = {
             let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
-
-            let result = super::usb_bus::enumerate_mass_storage(
+            super::usb_bus::enumerate_mass_storage(
                 xhci as &mut dyn HostController,
                 dev_addr,
                 dev_idx,
-            );
-            let (ep_out, ep_out_mps, ep_in, ep_in_mps) = match result {
-                Ok(v) => v,
-                Err(error) => {
-                    log::warn!("USB: xHCI mass-storage enumeration failed: {}", error);
-                    xhci.retry_device_candidate(slot_id, dev_idx);
-                    return;
-                }
-            };
+            )
+        };
 
-            // Use the device-reported wMaxPacketSize for each endpoint.
-            // For SuperSpeed (USB 3.x) bulk endpoints this must be 1024;
-            // for High-speed / Full-speed it is 512.  Using the wrong value
-            // causes the controller to mis-segment transfers and the
-            // device may silently fail to enumerate or stall on the
-            // first bulk transfer.
+        match msc_result {
+            Ok((ep_out, ep_out_mps, ep_in, ep_in_mps)) => {
+                self.finish_xhci_storage(
+                    ctrl_idx, slot_id, dev_addr, dev_idx, ep_out, ep_out_mps, ep_in, ep_in_mps,
+                );
+            }
+            Err(crate::DriverError::NotSupported) => {
+                // The device is not a BOT mass-storage device.  It may be
+                // a USB hub with mass-storage devices behind it.  Try the
+                // hub path before giving up.
+                log::info!(
+                    "USB: xHCI device {} not mass-storage; trying hub enumeration",
+                    dev_addr
+                );
+                let found = self.enumerate_hub_ports_xhci(ctrl_idx, slot_id, dev_idx);
+                if !found {
+                    let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
+                    xhci.retry_device_candidate(slot_id, dev_idx);
+                }
+            }
+            Err(error) => {
+                log::warn!("USB: xHCI mass-storage enumeration failed: {}", error);
+                let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
+                xhci.retry_device_candidate(slot_id, dev_idx);
+            }
+        }
+    }
+
+    /// Complete mass-storage registration after a successful
+    /// `enumerate_mass_storage`.  Configures bulk endpoints, reads
+    /// capacity, and registers the disk.
+    fn finish_xhci_storage(
+        &mut self,
+        ctrl_idx: usize,
+        slot_id: u32,
+        dev_addr: u8,
+        dev_idx: usize,
+        ep_out: u8,
+        ep_out_mps: u16,
+        ep_in: u8,
+        ep_in_mps: u16,
+    ) {
+        let (ep_out, ep_out_mps, ep_in, ep_in_mps, block_size, total_blocks) = {
+            let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
+
             if xhci
                 .configure_endpoint_bulk(slot_id, ep_out, ep_out_mps)
                 .is_err()
@@ -743,7 +741,6 @@ impl USBContext {
                 }
             };
             (
-                dev_addr,
                 ep_out,
                 ep_out_mps,
                 ep_in,
@@ -1134,55 +1131,4 @@ impl USBContext {
             );
         }
     }
-}
-
-/// Read the device descriptor and return `bDeviceClass`.
-///
-/// This performs the same EP0 evaluation as `enumerate_mass_storage` but
-/// stops after reading the device descriptor, allowing the caller to
-/// branch based on device class (hub vs. mass-storage vs. other).
-fn probe_device_class(
-    host: &mut dyn HostController,
-    dev_addr: u8,
-) -> Result<u8, crate::DriverError> {
-    use super::{DESC_DEVICE, REQ_GET_DESCRIPTOR, UsbSetupPacket};
-
-    let mut desc_buf = [0u8; 8];
-    let setup = UsbSetupPacket {
-        bm_request_type: 0x80,
-        b_request: REQ_GET_DESCRIPTOR,
-        w_value: (DESC_DEVICE as u16) << 8,
-        w_index: 0,
-        w_length: 8,
-    };
-    let len = host.control_transfer(dev_addr, &setup, &mut desc_buf)?;
-    if len < 8 {
-        return Err(crate::DriverError::Protocol);
-    }
-
-    let raw_max_packet = desc_buf[7];
-    let super_speed = host.is_super_speed(dev_addr);
-    let max_packet_size = if super_speed {
-        (raw_max_packet == 9).then_some(512)
-    } else {
-        matches!(raw_max_packet, 8 | 16 | 32 | 64).then_some(raw_max_packet as u16)
-    }
-    .ok_or(crate::DriverError::Protocol)?;
-
-    host.set_control_max_packet_size(dev_addr, max_packet_size)?;
-
-    let mut full_desc = [0u8; 18];
-    let full_setup = UsbSetupPacket {
-        bm_request_type: 0x80,
-        b_request: REQ_GET_DESCRIPTOR,
-        w_value: (DESC_DEVICE as u16) << 8,
-        w_index: 0,
-        w_length: 18,
-    };
-    let full_len = host.control_transfer(dev_addr, &full_setup, &mut full_desc)?;
-    if full_len < 18 {
-        return Err(crate::DriverError::Protocol);
-    }
-
-    Ok(full_desc[4]) // bDeviceClass
 }

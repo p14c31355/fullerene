@@ -180,6 +180,19 @@ fn kernel_main_higher_half(
     // in efi_main_stage2 BEFORE init_common, so init_graphics can safely
     // access the framebuffer. No need to call map_mmio again here.
 
+    // 0. Calibrate TSC before APIC init so the APIC timer can be
+    //    calibrated to a 1 ms periodic tick using the known TSC frequency.
+    //    Without this, the APIC timer uses a fixed initial_count that is
+    //    far too large on real hardware, making the scheduler hlt() loop
+    //    wake only ~6 times/sec and the desktop feel sluggish.
+    let tsc_per_ms = crate::gui::calibrate_tsc_with_pit();
+    petroleum::serial::serial_log(format_args!(
+        "TSC calibration (pre-APIC): {} ticks/ms (~{:.1} GHz)\n",
+        tsc_per_ms,
+        tsc_per_ms as f64 / 1_000_000.0,
+    ));
+    solvent::set_tsc_per_ms(tsc_per_ms);
+
     // 1. Initialize APIC (IDT, exceptions, syscalls already set up in init_common)
     crate::interrupts::apic::init_apic();
     if crate::interrupts::apic::configure_i2c_hid_interrupt() {

@@ -708,12 +708,22 @@ pub fn enqueue_usb_poll() -> bool {
 }
 
 /// Execute USB poll SQ entries in scheduler context.
+///
+/// Each poll first ensures the controller is activated.  The activation
+/// (BAR MMIO) is bounded by the scheduler's device-phase deadline, so a
+/// hung controller cannot block the desktop permanently.
 #[cfg(not(nitrogen_no_usb))]
 pub fn process_usb_submission_queue(budget: usize) {
     for _ in 0..budget {
         let Some(request) = USB_SQ.lock().pop_front() else {
             break;
         };
+        // Activate the controller if it has not been enabled yet.  This
+        // is the step that touches BAR MMIO; doing it here (instead of
+        // in the shell's usb_rescan path) keeps the shell responsive.
+        if !is_usb_enabled() {
+            activate_usb();
+        }
         let changed = poll_usb();
         USB_CQ.lock().push_back(UsbPollCompletion {
             request_id: request.request_id,
@@ -721,6 +731,12 @@ pub fn process_usb_submission_queue(budget: usize) {
         });
         USB_POLL_PENDING.store(false, Ordering::Release);
     }
+}
+
+#[cfg(not(nitrogen_no_usb))]
+fn is_usb_enabled() -> bool {
+    let guard = with_ctx_inner();
+    guard.as_ref().is_some_and(|ctx| ctx.is_enabled())
 }
 
 #[cfg(nitrogen_no_usb)]
@@ -1455,6 +1471,10 @@ fn usb_poll_and_register() {
 }
 
 /// Full USB re-enumeration (clear + re-scan).  Does NOT mount.
+///
+/// Synchronous variant: performs controller activation and polling in the
+/// caller's context.  May block on MMIO.  Kept for compatibility but should
+/// not be called from interactive shell paths.
 #[cfg(not(nitrogen_no_usb))]
 pub fn rescan_usb_all() -> bool {
     let names = crate::devfs::list_block_device_names();
@@ -1483,8 +1503,46 @@ pub fn rescan_usb_all() -> bool {
     registered
 }
 
+/// Asynchronous USB re-enumeration: clears existing USB block devices and
+/// enqueues a controller activation + poll request for the scheduler.
+///
+/// The clear/unregister phase does not touch MMIO, so it is safe to run
+/// in the shell context.  The actual controller activation and device
+/// enumeration happen in the scheduler's device phase via the USB
+/// submission queue, bounded by the scheduler's MMIO deadline.
+#[cfg(not(nitrogen_no_usb))]
+pub fn enqueue_usb_rescan() -> bool {
+    let names = crate::devfs::list_block_device_names();
+    if names
+        .iter()
+        .any(|name| name.starts_with("usb") && !crate::devfs::block_device_available(name))
+    {
+        log::warn!("USB: refusing re-enumeration while a USB block device is mounted");
+        return false;
+    }
+
+    // Only unregister USB-owned block devices (usbN pattern).
+    for name in names {
+        if name.starts_with("usb") {
+            crate::devfs::unregister_block_device(&name);
+        }
+    }
+    LAST_REGISTERED_USB_COUNT.store(0, Ordering::Relaxed);
+
+    // Re-create the USB context so the scheduler's activate_usb() will
+    // re-enable the controller from a clean state.
+    init_usb_ctx(nitrogen::usb::context::USBContext::new(
+        &crate::driver_context_impl::KernelDriverContext,
+    ));
+
+    // Enqueue a poll request. The scheduler's process_usb_submission_queue
+    // will call activate_usb() + poll_usb(), bounded by the device-phase
+    // MMIO deadline so a hung controller cannot block the desktop.
+    enqueue_usb_poll()
+}
+
 #[cfg(nitrogen_no_usb)]
-pub fn rescan_usb_all() -> bool {
+pub fn enqueue_usb_rescan() -> bool {
     false
 }
 
