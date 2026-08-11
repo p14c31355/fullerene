@@ -365,12 +365,15 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     }
                     Err(error) => {
                         crate::boot_stage::draw_step_hint(b"tp_fail");
+                        nitrogen::i2c_hid::publish_status(&alloc::format!("FAILED {:?}", error));
                         log::warn!(
                             "I2C-HID touchpad probe failed; keeping PS/2 fallback: {:?}",
                             error
                         );
                     }
                 }
+            } else {
+                nitrogen::i2c_hid::publish_absent();
             }
 
             // DriverManager orchestrates probe → priority → attach → registration

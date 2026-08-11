@@ -1,15 +1,16 @@
 //! Polling HID-over-I2C support for ACPI-described DesignWare controllers.
 //!
 //! The Linux stack presents this device as an Intel DesignWare I2C adapter
-//! followed by `i2c_hid_acpi` and `hid-multitouch`.  This module keeps the
-//! The platform description (PCI BDF, I²C address, timing and HID descriptor
+//! followed by `i2c_hid_acpi` and `hid-multitouch`.  The platform description
+//! (PCI BDF, I²C address, timing and HID descriptor
 //! register) is supplied by the platform layer.  The HID identity and report
 //! format are discovered from the device, like Linux's i2c_hid_acpi and
 //! i2c-hid-core layers.  Machines without such a description keep using the
 //! existing PS/2 path unchanged.
 
+use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::driver_context::DriverContext;
@@ -72,6 +73,7 @@ const STATUS_ACTIVITY: u32 = 1 << 0;
 const INTR_TX_ABORT: u32 = 1 << 6;
 const INTR_STOP_DET: u32 = 1 << 9;
 const I2C_BUSY_TIMEOUT_US: u64 = 1_000;
+const HID_ADDRESS_RETRY_DELAY_US: u64 = 400;
 
 const DW_IC_SDA_HOLD_MIN_VERSION: u32 = 0x3131312a;
 
@@ -275,6 +277,21 @@ impl DesignWareI2c {
             CON_MASTER | self.speed_mode | CON_RESTART | CON_SLAVE_DISABLE,
         );
         self.mmio.write32(IC_INTR_MASK, 0);
+        log::info!(
+            "[nitrogen] I2C-HID DW configured: target=0x{:02x} fifo={} speed={}Hz hcnt={} lcnt={} sda_hold=0x{:08x}",
+            self.target,
+            self.tx_fifo_depth,
+            profile.bus_speed_hz,
+            self.mmio.read32(IC_FS_SCL_HCNT),
+            self.mmio.read32(IC_FS_SCL_LCNT),
+            self.mmio.read32(IC_SDA_HOLD),
+        );
+        crate::debug_status!(
+            "I2C-HID",
+            "CTRL 0x{:02x} {}k",
+            self.target,
+            profile.bus_speed_hz / 1_000
+        );
         // Linux enables the adapter for each individual I2C transfer and
         // disables it again when the transfer completes.  Leave it disabled
         // here; `begin_transfer` owns the transaction lifetime.
@@ -415,6 +432,21 @@ impl DesignWareI2c {
         self.transfer(&register, output)
     }
 
+    /// Match Linux's i2c_hid_probe_address() SMBus-byte probe.  This is a
+    /// plain one-byte read: no register prefix is sent before the HID
+    /// descriptor transaction.  Some controllers need a short wake delay
+    /// after the first address probe, so retry once exactly as Linux does.
+    fn probe_address(&mut self) -> Result<(), I2cHidError> {
+        let mut byte = [0u8; 1];
+        match self.transfer(&[], &mut byte) {
+            Ok(()) => Ok(()),
+            Err(first_error) => {
+                delay_us(HID_ADDRESS_RETRY_DELAY_US);
+                self.transfer(&[], &mut byte).map_err(|_| first_error)
+            }
+        }
+    }
+
     fn write_command(&mut self, register: u16, command: &[u8]) -> Result<(), I2cHidError> {
         let register = register.to_le_bytes();
         let mut bytes = Vec::with_capacity(register.len() + command.len());
@@ -454,6 +486,23 @@ impl DesignWareI2c {
     }
 }
 
+/// Send SET_POWER(ON) with the same wake-up retry Linux uses for devices that
+/// NAK the first transaction after a clock edge or a deep-sleep transition.
+fn power_on(bus: &mut DesignWareI2c, command_register: u16) -> Result<(), I2cHidError> {
+    match bus.write_command(command_register, &[0x00, 0x08]) {
+        Ok(()) => {}
+        Err(first_error) => {
+            delay_us(HID_ADDRESS_RETRY_DELAY_US);
+            bus.write_command(command_register, &[0x00, 0x08])
+                .map_err(|_| first_error)?;
+        }
+    }
+    // The HID-over-I2C stack follows Windows here: allow the device to finish
+    // its wake-up before RESET or the first descriptor transaction.
+    delay_ms(60);
+    Ok(())
+}
+
 impl Drop for DesignWareI2c {
     fn drop(&mut self) {
         self.mmio.write32(IC_INTR_MASK, 0);
@@ -470,16 +519,37 @@ pub struct TouchpadInput {
     pub y_max: i32,
 }
 
-struct N150Touchpad {
+struct I2cHidTouchpad {
     bus: DesignWareI2c,
     descriptor: HidI2cDescriptor,
     report: HidReportDescriptor,
     fields: crate::hid::TouchpadFieldMap,
 }
 
-static TOUCHPAD: Mutex<Option<N150Touchpad>> = Mutex::new(None);
+static TOUCHPAD: Mutex<Option<I2cHidTouchpad>> = Mutex::new(None);
 static LATEST_INPUT: Mutex<Option<TouchpadInput>> = Mutex::new(None);
+static STATUS: Mutex<Option<(String, String)>> = Mutex::new(None);
 static LAST_POLL_TSC: AtomicU64 = AtomicU64::new(0);
+static POLL_ERROR_REPORTED: AtomicBool = AtomicBool::new(false);
+static FIRST_INPUT_REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Publish a persistent framebuffer-visible status for the I2C-HID path.
+/// The normal debug ring is transient and can be displaced by later boot
+/// messages from VFS or Wi-Fi.
+pub fn publish_status(message: &str) {
+    *STATUS.lock() = Some((String::from("I2C-HID"), String::from(message)));
+    crate::debug::print("I2C-HID", message);
+}
+
+/// Return the latest I2C-HID status for the taskbar compositor.
+pub fn status_snapshot() -> Option<(String, String)> {
+    STATUS.lock().clone()
+}
+
+/// Publish a visible result when the expected LPSS PCI function is absent.
+pub fn publish_absent() {
+    publish_status("PCI 54e8 absent");
+}
 
 /// Probe and initialise one ACPI-described HID-over-I2C touch device.
 ///
@@ -492,26 +562,81 @@ pub fn init_i2c_hid(
     profile: I2cHidPlatformConfig,
 ) -> Result<(), I2cHidError> {
     let mut bus = DesignWareI2c::new(ctx, device, profile)?;
+    bus.probe_address().map_err(|error| {
+        log::warn!(
+            "[nitrogen] I2C-HID address probe failed: target=0x{:02x} error={:?}",
+            profile.i2c_address,
+            error
+        );
+        crate::debug_status!("I2C-HID", "ADDR ERR {:?}", error);
+        error
+    })?;
+    log::info!(
+        "[nitrogen] I2C-HID address acknowledged: target=0x{:02x} descriptor_reg=0x{:02x}",
+        profile.i2c_address,
+        profile.hid_descriptor_register
+    );
+    crate::debug_status!("I2C-HID", "ADDR OK 0x{:02x}", profile.i2c_address);
     let mut hid_bytes = [0u8; MAX_HID_DESCRIPTOR];
     bus.read_register(
         profile.hid_descriptor_register,
         &mut hid_bytes[..HID_DESCRIPTOR_LENGTH],
-    )?;
-    let descriptor = HidI2cDescriptor::parse(&hid_bytes).ok_or(I2cHidError::InvalidDescriptor)?;
+    )
+    .map_err(|error| {
+        log::warn!(
+            "[nitrogen] I2C-HID descriptor read failed: reg=0x{:02x} len={} error={:?}",
+            profile.hid_descriptor_register,
+            HID_DESCRIPTOR_LENGTH,
+            error
+        );
+        crate::debug_status!("I2C-HID", "DESC ERR {:?}", error);
+        error
+    })?;
+    let descriptor =
+        HidI2cDescriptor::parse(&hid_bytes[..HID_DESCRIPTOR_LENGTH]).ok_or_else(|| {
+            log::warn!(
+                "[nitrogen] invalid I2C-HID descriptor: first bytes={:02x?}",
+                &hid_bytes[..HID_DESCRIPTOR_LENGTH.min(8)]
+            );
+            crate::debug_status!("I2C-HID", "DESC INVALID");
+            I2cHidError::InvalidDescriptor
+        })?;
+    log::info!(
+        "[nitrogen] I2C-HID descriptor: report_reg=0x{:04x} report_len={} input_reg=0x{:04x} input_max={} command_reg=0x{:04x} data_reg=0x{:04x} id={:04x}:{:04x} version=0x{:04x}",
+        descriptor.report_desc_register,
+        descriptor.report_desc_length,
+        descriptor.input_register,
+        descriptor.max_input_length,
+        descriptor.command_register,
+        descriptor.data_register,
+        descriptor.vendor_id,
+        descriptor.product_id,
+        descriptor.version_id
+    );
+    crate::debug_status!(
+        "I2C-HID",
+        "DESC {:04x}:{:04x} IN{}",
+        descriptor.vendor_id,
+        descriptor.product_id,
+        descriptor.max_input_length
+    );
     // Follow Linux's power-on/reset sequence.  IRQ 81 is not wired into the
     // current Fullerene APIC input path yet, so the reset completion wait is
     // bounded and the normal polling path is used below.
-    bus.write_command(descriptor.command_register, &[0x00, 0x08])?;
-    delay_ms(60);
+    power_on(&mut bus, descriptor.command_register)?;
     bus.write_command(descriptor.command_register, &[0x00, 0x01])?;
-    if !bus.wait_reset_completion(descriptor.max_input_length as usize) {
+    let reset_ack = bus.wait_reset_completion(descriptor.max_input_length as usize);
+    if !reset_ack {
         // Linux continues after its one-second reset wait and reports the
         // missing IRQ acknowledgement, so keep the same recovery behavior
         // while still using the polling transport here.
         log::warn!("[nitrogen] I2C-HID reset acknowledgement timed out");
+        crate::debug_status!("I2C-HID", "RESET TIMEOUT");
+    } else {
+        log::info!("[nitrogen] I2C-HID reset acknowledgement received");
+        crate::debug_status!("I2C-HID", "RESET ACK");
     }
-    bus.write_command(descriptor.command_register, &[0x00, 0x08])?;
-    delay_ms(60);
+    power_on(&mut bus, descriptor.command_register)?;
 
     let report_length = descriptor.report_desc_length as usize;
     if report_length > MAX_REPORT_DESCRIPTOR {
@@ -520,13 +645,55 @@ pub fn init_i2c_hid(
     let mut report_bytes = Vec::new();
     report_bytes.resize(report_length, 0);
     bus.read_register(descriptor.report_desc_register, &mut report_bytes)
-        .map_err(|_| I2cHidError::InvalidReportDescriptor)?;
-    let report = HidReportDescriptor::parse(&report_bytes)
-        .map_err(|_| I2cHidError::InvalidReportDescriptor)?;
-    let fields = report
-        .touchpad_fields()
-        .ok_or(I2cHidError::InvalidReportDescriptor)?;
-    let state = N150Touchpad {
+        .map_err(|error| {
+            log::warn!(
+                "[nitrogen] I2C-HID report descriptor read failed: reg=0x{:04x} len={} error={:?}",
+                descriptor.report_desc_register,
+                report_length,
+                error
+            );
+            I2cHidError::InvalidReportDescriptor
+        })?;
+    let report = HidReportDescriptor::parse(&report_bytes).map_err(|error| {
+        log::warn!(
+            "[nitrogen] I2C-HID report descriptor parse failed: {:?}",
+            error
+        );
+        crate::debug_status!("I2C-HID", "REPORT INVALID");
+        I2cHidError::InvalidReportDescriptor
+    })?;
+    let fields = report.touchpad_fields().ok_or_else(|| {
+        crate::debug_status!("I2C-HID", "TOUCH INVALID");
+        I2cHidError::InvalidReportDescriptor
+    })?;
+    log::info!(
+        "[nitrogen] I2C-HID report descriptor parsed: max_input_bytes={} report_id={} x_bits={} y_bits={}",
+        report.max_input_bytes(),
+        fields.x.report_id,
+        fields.x.bit_size,
+        fields.y.bit_size
+    );
+    crate::debug_status!(
+        "I2C-HID",
+        "READY x{} y{}",
+        fields.x.bit_size,
+        fields.y.bit_size
+    );
+    crate::debug_status!(
+        "I2C-HID",
+        "READY x{} y{} RST={}",
+        fields.x.bit_size,
+        fields.y.bit_size,
+        if reset_ack { "OK" } else { "TO" }
+    );
+    let status = alloc::format!(
+        "READY x{} y{} RST={}",
+        fields.x.bit_size,
+        fields.y.bit_size,
+        if reset_ack { "OK" } else { "TO" }
+    );
+    publish_status(&status);
+    let state = I2cHidTouchpad {
         bus,
         descriptor,
         report,
@@ -534,6 +701,8 @@ pub fn init_i2c_hid(
     };
     *TOUCHPAD.lock() = Some(state);
     *LATEST_INPUT.lock() = None;
+    POLL_ERROR_REPORTED.store(false, Ordering::Release);
+    FIRST_INPUT_REPORTED.store(false, Ordering::Release);
     log::info!(
         "[nitrogen] I2C-HID touchpad initialized ({:04x}:{:04x}, input max {})",
         descriptor.vendor_id,
@@ -573,15 +742,57 @@ pub fn poll_input() {
     let mut bytes = [0u8; MAX_INPUT_REPORT];
     let report_length = match device.bus.read_input_report(&mut bytes[..length]) {
         Ok(length) => length,
-        Err(_) => return,
+        Err(error) => {
+            if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
+                log::warn!(
+                    "[nitrogen] I2C-HID input read failed: max_len={} error={:?}",
+                    length,
+                    error
+                );
+                crate::debug_status!("I2C-HID", "INPUT ERR {:?}", error);
+                let status = alloc::format!("INPUT ERR {:?}", error);
+                publish_status(&status);
+            }
+            return;
+        }
     };
     if report_length < 2 || report_length > length {
+        if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
+            log::warn!(
+                "[nitrogen] I2C-HID input length invalid: embedded={} transfer_len={}",
+                report_length,
+                length
+            );
+            crate::debug_status!("I2C-HID", "INPUT LEN {}", report_length);
+            let status = alloc::format!("INPUT LEN {}", report_length);
+            publish_status(&status);
+        }
         return;
     }
-    if let Some(report) = device
+    let decoded = device
         .report
-        .decode_touchpad(device.fields, &bytes[2..report_length])
-    {
+        .decode_touchpad(device.fields, &bytes[2..report_length]);
+    if !FIRST_INPUT_REPORTED.swap(true, Ordering::AcqRel) {
+        log::info!(
+            "[nitrogen] I2C-HID first input: len={} report_id={} payload={:02x?}",
+            report_length,
+            bytes.get(2).copied().unwrap_or(0),
+            &bytes[2..report_length.min(34)]
+        );
+        crate::debug_status!(
+            "I2C-HID",
+            "INPUT len{} id{}",
+            report_length,
+            bytes.get(2).copied().unwrap_or(0)
+        );
+        let status = alloc::format!(
+            "INPUT len{} id{}",
+            report_length,
+            bytes.get(2).copied().unwrap_or(0)
+        );
+        publish_status(&status);
+    }
+    if let Some(report) = decoded {
         *LATEST_INPUT.lock() = Some(TouchpadInput {
             report,
             x_min: device.fields.x.logical_minimum,
@@ -589,6 +800,19 @@ pub fn poll_input() {
             y_min: device.fields.y.logical_minimum,
             y_max: device.fields.y.logical_maximum,
         });
+    } else if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
+        log::warn!(
+            "[nitrogen] I2C-HID input report could not be decoded: report_id={} len={}",
+            bytes.get(2).copied().unwrap_or(0),
+            report_length
+        );
+        crate::debug_status!(
+            "I2C-HID",
+            "DECODE ERR id{}",
+            bytes.get(2).copied().unwrap_or(0)
+        );
+        let status = alloc::format!("DECODE ERR id{}", bytes.get(2).copied().unwrap_or(0));
+        publish_status(&status);
     }
 }
 

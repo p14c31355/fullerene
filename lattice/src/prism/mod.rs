@@ -131,6 +131,14 @@ impl LatticeStyle for PrismStyle {
             8,
             palette.taskbar_inactive_bg,
         );
+        crate::common::draw_debug_status(
+            canvas,
+            taskbar,
+            tray_x as i32 + 8,
+            bar_y as i32 + 17,
+            taskbar.wifi_icon_x(width).saturating_sub(8),
+            palette.taskbar_text,
+        );
         crate::network_menu::render_wifi_icon(
             canvas.fb,
             width,

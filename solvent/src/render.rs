@@ -338,7 +338,13 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         crate::menu_actions::render_klog_live(rt);
     }
 
-    let debug_msgs = nitrogen::debug::drain();
+    let mut debug_msgs = nitrogen::debug::drain();
+    // Keep the I2C-HID result separate from the transient debug ring. Boot
+    // diagnostics from VFS/Wi-Fi must not hide the touchpad result.
+    if let Some(i2c_status) = nitrogen::i2c_hid::status_snapshot() {
+        debug_msgs.retain(|(source, _)| source != "I2C-HID");
+        debug_msgs.push(i2c_status);
+    }
     let debug_changed = if !debug_msgs.is_empty() {
         let changed = rt.desktop.taskbar.debug_msgs != debug_msgs;
         rt.desktop.taskbar.debug_msgs = debug_msgs;

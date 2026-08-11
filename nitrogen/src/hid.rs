@@ -509,8 +509,14 @@ mod tests {
         assert_eq!(GEMIBOOK_FIRMWARE_ACPI_HID, b"AMR13992");
         assert_eq!(GEMIBOOK_TOUCHPAD_HID_VENDOR_ID, 0x36b6);
         assert_eq!(GEMIBOOK_TOUCHPAD_HID_PRODUCT_ID, 0xc001);
+        assert!(GEMIBOOK_N150_I2C_HID.matches_pci(0x8086, 0x54e8, 0, 0x15, 0));
+        assert!(!GEMIBOOK_N150_I2C_HID.matches_pci(0x8086, 0x54e8, 0, 0x16, 0));
         assert_eq!(GEMIBOOK_N150_I2C_HID.i2c_address, 0x2c);
         assert_eq!(GEMIBOOK_N150_I2C_HID.bus_speed_hz, 400_000);
+        assert_eq!(GEMIBOOK_N150_I2C_HID.root_clock_khz, 133_000);
+        assert_eq!(GEMIBOOK_N150_I2C_HID.sda_hold_ns, 42);
+        assert_eq!(GEMIBOOK_N150_I2C_HID.sda_fall_ns, 171);
+        assert_eq!(GEMIBOOK_N150_I2C_HID.scl_fall_ns, 208);
         assert_eq!(GEMIBOOK_N150_I2C_HID.hid_descriptor_register, 0x20);
         assert_eq!(GEMIBOOK_N150_I2C_HID.interrupt_gsi, 81);
     }
