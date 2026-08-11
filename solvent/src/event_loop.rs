@@ -165,6 +165,13 @@ pub fn tick_core(now: u64) {
     let _tick_core = TickCoreGuard::enter();
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
+    // Drain the I2C-HID FIFO before consuming input.  The scheduler idle
+    // loop services this separately (scheduler.rs), but while it is blocked
+    // inside shell_main/nozzle the only entry point that runs is
+    // runtime_tick_no_fb -> tick_core.  Without this call consume_input()
+    // in poll_mouse_state always returns None and the touchpad cursor
+    // freezes for the whole Nozzle session.
+    nitrogen::i2c_hid::service_input();
     crate::poll_mouse_state();
     crate::poll_keyboard();
     crate::clock::update_clock();

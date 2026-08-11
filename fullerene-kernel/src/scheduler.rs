@@ -183,6 +183,10 @@ pub fn scheduler_loop() -> ! {
             crate::drivers::registry::process_usb_submission_queue(1);
             crate::drivers::registry::consume_usb_completion_queue(1);
         }
+        // Re-service the HID FIFO after the storage/USB phases.  Those phases
+        // can absorb several milliseconds of MMIO time, during which touchpad
+        // reports accumulate in the device FIFO and the cursor stalls.
+        nitrogen::i2c_hid::service_input();
         crate::contexts::audio::process_audio_submission_queue(2);
         crate::contexts::audio::poll_audio_playback();
         crate::contexts::audio::consume_audio_completion_queue(4);
@@ -198,6 +202,9 @@ pub fn scheduler_loop() -> ! {
             nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
             nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
         }
+        // Final HID drain before the GUI tick so poll_mouse_state sees the
+        // freshest possible report after every device phase.
+        nitrogen::i2c_hid::service_input();
 
         // BusyBox smoke is a synchronous ABI test. During the harness, the
         // nested runtime pump handles only input and rendering; after a

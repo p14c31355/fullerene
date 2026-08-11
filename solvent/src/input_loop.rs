@@ -32,6 +32,11 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
 // resumes. The rest is intentionally discarded: it is stale motion, not a
 // new pointer position that the user is still trying to reach.
 const MAX_MOUSE_STEP_PX: i32 = 96;
+// HID touchpad relative reports are intentionally accumulated in store_input
+// across service_input calls.  Capping them at the PS/2 limit discards fast
+// finger motion.  Use a generous separate ceiling so accumulated deltas are
+// delivered in full while still guarding against pathological saturation.
+const MAX_HID_RELATIVE_STEP_PX: i32 = 512;
 // The N150's HID relative-mouse collection reports smaller deltas than the
 // legacy PS/2 mouse used on the old test machine. Keep the user-facing
 // sensitivity setting as the common base, then normalize this transport.
@@ -70,6 +75,11 @@ pub fn clear_video_stop_request() {
 
 fn scaled_mouse_delta(delta: i16, sensitivity: i16) -> i32 {
     (i32::from(delta) * i32::from(sensitivity)).clamp(-MAX_MOUSE_STEP_PX, MAX_MOUSE_STEP_PX)
+}
+
+fn scaled_hid_relative_delta(delta: i16, sensitivity: i16) -> i32 {
+    (i32::from(delta) * i32::from(sensitivity))
+        .clamp(-MAX_HID_RELATIVE_STEP_PX, MAX_HID_RELATIVE_STEP_PX)
 }
 
 fn mouse_motion_is_stale(previous_poll: u64, now_tsc: u64, tsc_per_ms: u64) -> bool {
@@ -136,11 +146,11 @@ pub fn poll_mouse_state() {
     let next_y = i32::from(mouse.y) - scaled_mouse_delta(dy, sensitivity);
     if let Some((dx, dy)) = touchpad_relative {
         let hid_sensitivity = sensitivity.saturating_mul(HID_RELATIVE_SENSITIVITY_SCALE);
-        mouse.x = (next_x + scaled_mouse_delta(dx, hid_sensitivity))
+        mouse.x = (next_x + scaled_hid_relative_delta(dx, hid_sensitivity))
             .clamp(0, fb_width.saturating_sub(1) as i32) as i16;
         // HID relative mouse Y is positive downward. PS/2 uses the opposite
         // convention and is handled by the subtraction above.
-        mouse.y = (next_y + scaled_mouse_delta(dy, hid_sensitivity))
+        mouse.y = (next_y + scaled_hid_relative_delta(dy, hid_sensitivity))
             .clamp(0, fb_height.saturating_sub(1) as i32) as i16;
     } else {
         mouse.x = if fb_width == 0 {
@@ -230,8 +240,9 @@ pub fn pointer_latency_metrics() -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, map_touch_axis, mouse_motion_is_stale,
-        scaled_mouse_delta, touchpad_button_bits,
+        MAX_HID_RELATIVE_STEP_PX, MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, map_touch_axis,
+        mouse_motion_is_stale, scaled_hid_relative_delta, scaled_mouse_delta,
+        touchpad_button_bits,
     };
 
     #[test]
@@ -239,6 +250,23 @@ mod tests {
         assert_eq!(scaled_mouse_delta(127, 6), MAX_MOUSE_STEP_PX);
         assert_eq!(scaled_mouse_delta(-127, 6), -MAX_MOUSE_STEP_PX);
         assert_eq!(scaled_mouse_delta(4, 6), 24);
+    }
+
+    #[test]
+    fn hid_relative_delta_uses_generous_ceiling() {
+        // PS/2 clip would lose fast touchpad motion.
+        assert!(scaled_hid_relative_delta(50, 6) > MAX_MOUSE_STEP_PX);
+        // Accumulated HID motion is delivered in full up to the HID ceiling.
+        assert_eq!(scaled_hid_relative_delta(50, 6), 300);
+        // Pathological saturation is still bounded.
+        assert_eq!(
+            scaled_hid_relative_delta(i16::MAX, 6),
+            MAX_HID_RELATIVE_STEP_PX
+        );
+        assert_eq!(
+            scaled_hid_relative_delta(i16::MIN, 6),
+            -MAX_HID_RELATIVE_STEP_PX
+        );
     }
 
     #[test]
