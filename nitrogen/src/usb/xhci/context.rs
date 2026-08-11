@@ -129,6 +129,24 @@ impl XhciContext {
         self.ports.clear_done_flags();
         self.devices.clear();
     }
+
+    /// Drop a failed storage candidate so the next USB poll can enumerate it
+    /// again. A port is marked done when a placeholder device is created; if
+    /// descriptor or BOT setup then fails, leaving that placeholder in place
+    /// permanently suppresses all later retries.
+    pub fn retry_device_candidate(&mut self, slot_id: u32, dev_idx: usize) {
+        let port_index = self.devices.get(dev_idx).map(|device| device.port_index);
+        self.disable_slot(slot_id);
+        if let Some(port_index) = port_index {
+            self.devices
+                .retain(|device| device.port_index != port_index);
+            if let Some(port) = self.ports.get_mut(port_index) {
+                port.done = false;
+                port.wpr_attempted = false;
+                port.retry_count = 0;
+            }
+        }
+    }
 }
 
 impl HostController for XhciContext {

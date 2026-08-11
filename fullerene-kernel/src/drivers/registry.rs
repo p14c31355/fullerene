@@ -109,9 +109,22 @@ where
 pub struct DummyUsbContext;
 
 #[cfg(nitrogen_no_usb)]
+pub struct DummyUsbControllerInfo {
+    pub kind: &'static str,
+    pub ports: u32,
+    pub running: bool,
+    pub devices: usize,
+    pub done_ports: u32,
+}
+
+#[cfg(nitrogen_no_usb)]
 impl DummyUsbContext {
     pub fn is_enabled(&self) -> bool {
         false
+    }
+
+    pub fn controller_info(&self) -> &[DummyUsbControllerInfo] {
+        &[]
     }
 
     pub fn disks(&self) -> &[DummyUsbDisk] {

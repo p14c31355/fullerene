@@ -13,8 +13,8 @@ use super::host_controller::HostController;
 use super::xhci::context::XhciContext;
 use crate::DriverContext;
 use crate::usb::{
-    DESC_CONFIGURATION, DESC_DEVICE, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION, UsbDirection,
-    UsbSetupPacket,
+    DESC_CONFIGURATION, DESC_DEVICE, MSC_CLASS, MSC_PROTOCOL_BOT, MSC_PROTOCOL_UAS,
+    MSC_SUBCLASS_SCSI, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION, UsbDirection, UsbSetupPacket,
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -383,6 +383,18 @@ pub fn enumerate_mass_storage(
         return Err(crate::DriverError::Protocol);
     }
 
+    log::info!(
+        "USB: device {} descriptor vid={:04x} pid={:04x} class={:02x}/{:02x}/{:02x} ep0={} configs={}",
+        dev_addr,
+        u16::from_le_bytes([full_desc_buf[8], full_desc_buf[9]]),
+        u16::from_le_bytes([full_desc_buf[10], full_desc_buf[11]]),
+        full_desc_buf[4],
+        full_desc_buf[5],
+        full_desc_buf[6],
+        full_desc_buf[7],
+        full_desc_buf[17],
+    );
+
     let num_cfgs = full_desc_buf[17];
     if num_cfgs == 0 {
         log::warn!("USB: device {} reports zero configurations", dev_addr);
@@ -522,6 +534,7 @@ fn parse_mass_storage_config(
     let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let mut offset: usize = 9;
     let mut interface = None;
+    let mut uas_interface = None;
     let mut ep_out = None;
     let mut ep_in = None;
 
@@ -533,11 +546,16 @@ fn parse_mass_storage_config(
         }
         let dtype = cfg_buf[offset + 1];
         if dtype == 4 && dlen >= 9 {
-            interface = (cfg_buf[offset + 5] == 0x08 && cfg_buf[offset + 7] == 0x50).then_some((
-                cfg_buf[offset + 2],
-                cfg_buf[offset + 6],
-                cfg_buf[offset + 7],
-            ));
+            let class = cfg_buf[offset + 5];
+            let subclass = cfg_buf[offset + 6];
+            let protocol = cfg_buf[offset + 7];
+            interface = (class == MSC_CLASS
+                && subclass == MSC_SUBCLASS_SCSI
+                && protocol == MSC_PROTOCOL_BOT)
+                .then_some((cfg_buf[offset + 2], subclass, protocol));
+            if class == MSC_CLASS && subclass == MSC_SUBCLASS_SCSI && protocol == MSC_PROTOCOL_UAS {
+                uas_interface = Some(cfg_buf[offset + 2]);
+            }
             ep_out = None;
             ep_in = None;
         } else if dtype == 5 && dlen >= 7 && interface.is_some() {
@@ -570,6 +588,12 @@ fn parse_mass_storage_config(
             });
         }
         offset += dlen;
+    }
+    if let Some(interface) = uas_interface {
+        log::warn!(
+            "USB: device exposes UAS-only mass-storage interface {} but UAS transport is not implemented",
+            interface
+        );
     }
     Err(crate::DriverError::NotSupported)
 }

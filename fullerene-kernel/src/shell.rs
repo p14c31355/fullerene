@@ -1253,6 +1253,17 @@ fn nozzle_services() -> nozzle::ShellServices {
                 // Also show full USB context status without assuming a controller exists.
                 if registry::try_with_ctx(|ctx_usb| {
                 tline!(ctx.terminal, "USB controller: {}", if ctx_usb.is_enabled() { "active" } else { "deferred" });
+                for controller in ctx_usb.controller_info() {
+                    tline!(
+                        ctx.terminal,
+                        "  {}: running={} ports={} done=0x{:08x} devices={}",
+                        controller.kind,
+                        controller.running,
+                        controller.ports,
+                        controller.done_ports,
+                        controller.devices
+                    );
+                }
                 tline!(ctx.terminal, "USBContext: {} disk(s) enumerated", ctx_usb.disks().len());
                 for disk in ctx_usb.disks() {
                     tline!(ctx.terminal, "  ctrl={} dev_addr={} ep_out=0x{:02x} ep_in=0x{:02x} blk_size={} total_blocks={}",

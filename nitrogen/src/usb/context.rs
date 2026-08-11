@@ -23,6 +23,19 @@ use super::ehci::context::EhciContext;
 use super::host_controller::HostController;
 use super::xhci::context::XhciContext;
 
+/// Read-only state exposed by [`USBContext`] for shell and boot diagnostics.
+///
+/// Keeping this as a value type avoids exposing controller ownership or MMIO
+/// details to the kernel UI while still making real-hardware bring-up useful.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbControllerInfo {
+    pub kind: &'static str,
+    pub ports: u32,
+    pub running: bool,
+    pub devices: usize,
+    pub done_ports: u32,
+}
+
 // ============================================================================
 //  ControllerManager — PCI scan, init, polling
 // ============================================================================
@@ -405,6 +418,37 @@ impl USBContext {
         self.enabled
     }
 
+    /// Return a safe snapshot of the active host controllers.
+    pub fn controller_info(&self) -> Vec<UsbControllerInfo> {
+        let mut info =
+            Vec::with_capacity(self.controllers.ehci.len() + self.controllers.xhci.len());
+        info.extend(
+            self.controllers
+                .ehci
+                .iter()
+                .map(|controller| UsbControllerInfo {
+                    kind: "EHCI",
+                    ports: controller.n_ports(),
+                    running: controller.is_running(),
+                    devices: controller.devices().len(),
+                    done_ports: controller.ports.processed_mask,
+                }),
+        );
+        info.extend(
+            self.controllers
+                .xhci
+                .iter()
+                .map(|controller| UsbControllerInfo {
+                    kind: "xHCI",
+                    ports: controller.n_ports(),
+                    running: controller.is_running(),
+                    devices: controller.devices().len(),
+                    done_ports: controller.ports_done_mask(),
+                }),
+        );
+        info
+    }
+
     /// Poll all controllers for hotplug events and register new storage.
     pub fn poll(&mut self) {
         let ev = self.controllers.poll();
@@ -603,7 +647,7 @@ impl USBContext {
             };
             if let Err(error) = xhci.address_device(slot_id, dev_idx) {
                 log::warn!("USB: xHCI Address Device failed: {}", error);
-                xhci.disable_slot(slot_id);
+                xhci.retry_device_candidate(slot_id, dev_idx);
                 return;
             }
 
@@ -617,7 +661,7 @@ impl USBContext {
                 Ok(v) => v,
                 Err(error) => {
                     log::warn!("USB: xHCI mass-storage enumeration failed: {}", error);
-                    xhci.disable_slot(slot_id);
+                    xhci.retry_device_candidate(slot_id, dev_idx);
                     return;
                 }
             };
@@ -633,7 +677,7 @@ impl USBContext {
                 .is_err()
             {
                 log::warn!("USB: xHCI bulk OUT endpoint configuration failed");
-                xhci.disable_slot(slot_id);
+                xhci.retry_device_candidate(slot_id, dev_idx);
                 return;
             }
             if xhci
@@ -641,7 +685,7 @@ impl USBContext {
                 .is_err()
             {
                 log::warn!("USB: xHCI bulk IN endpoint configuration failed");
-                xhci.disable_slot(slot_id);
+                xhci.retry_device_candidate(slot_id, dev_idx);
                 return;
             }
             let mut tag = 1;
@@ -651,7 +695,7 @@ impl USBContext {
                 Ok(capacity) => capacity,
                 Err(error) => {
                     log::warn!("USB: xHCI READ CAPACITY failed: {}", error);
-                    xhci.disable_slot(slot_id);
+                    xhci.retry_device_candidate(slot_id, dev_idx);
                     return;
                 }
             };

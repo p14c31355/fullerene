@@ -179,6 +179,7 @@ pub struct UsbInterfaceDescriptor {
 pub const MSC_CLASS: u8 = 0x08;
 pub const MSC_SUBCLASS_SCSI: u8 = 0x06;
 pub const MSC_PROTOCOL_BOT: u8 = 0x50;
+pub const MSC_PROTOCOL_UAS: u8 = 0x62;
 
 /// Common endpoint addresses for mass storage (bulk-only).
 pub const EP_BULK_OUT: u8 = 0x02; // typical

@@ -202,6 +202,26 @@ impl WifiRegistry {
                 continue;
             }
 
+            // Alder Lake-N exposes the AX101 through Intel CNVi as 8086:54f0.
+            // It is not wire-compatible with the legacy 7265 transport below;
+            // report it without attempting a BAR read or firmware upload.
+            if device.vendor_id == 0x8086 && device.device_id == 0x54f0 {
+                let subsys = crate::pci::PciConfigSpace::read_config_dword(
+                    device.bus,
+                    device.device,
+                    device.function,
+                    0x2C,
+                );
+                log::warn!(
+                    "WiFi: Intel AX101 CNVi detected at {:02x}:{:02x}.{} subsys={:#010x}; modern CNVi transport/firmware is not implemented",
+                    device.bus,
+                    device.device,
+                    device.function,
+                    subsys,
+                );
+                continue;
+            }
+
             let info = PciWifiInfo {
                 vendor_id: device.vendor_id,
                 device_id: device.device_id,
