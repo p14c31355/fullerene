@@ -179,6 +179,17 @@ pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     tick_progress("GUI tick: input begin");
 
+    // Kernel log producers can request this without taking the runtime lock.
+    // Consume it at the start of the next GUI tick so Klog Live does not
+    // depend on mouse motion or a coarse periodic refresh interval.
+    if crate::runtime_context::take_klog_live_refresh()
+        && let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()
+        && runtime.klog_live_window.is_some()
+    {
+        runtime.klog_live_dirty = true;
+        runtime.frame_due = true;
+    }
+
     // Drain the I2C-HID FIFO before consuming input.  The scheduler idle
     // loop services this separately (scheduler.rs), but while it is blocked
     // inside shell_main/nozzle the only entry point that runs is
@@ -232,16 +243,6 @@ pub fn tick_core(now: u64) {
     if let Some(path) = crate::window_api::PENDING_LAUNCH.lock().take() {
         crate::launch_file(&path);
     }
-    // Auto-refresh the live kernel log viewer if open, every ~0.8s (50 ticks).
-    if now % 50 == 0 {
-        if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
-            if runtime.klog_live_window.is_some() {
-                runtime.klog_live_dirty = true;
-                runtime.frame_due = true;
-            }
-        }
-    }
-
     // NOTE: periodic kernel log write to SD card is DISABLED because the
     // SD card SPI driver can hang on writes, which defeats the purpose of
     // saving a crash log.  Use the shell command `klog > /mnt/klog.txt`

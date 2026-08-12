@@ -103,7 +103,7 @@ define_input_interrupt_handler!(mouse_handler, 0x60, 0x21, |byte: u8| {
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
     // Increment global tick counter (lock-free atomic increment)
-    let tick = super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     if nitrogen::mmio::mmio_watchdog_recovery_triggered() {
         petroleum::serial::serial_log(format_args!(
@@ -132,7 +132,7 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
 
     // Klog Live has a direct, lock-free repaint path so the existing window
     // can continue updating while the normal scheduler/compositor is blocked.
-    if tick % 50 == 0 && solvent::is_klog_live_active() {
+    if solvent::is_klog_live_active() {
         let generation = crate::klog::generation();
         let last = LAST_KLOG_LIVE_GENERATION.load(Ordering::Acquire);
         if generation != last && crate::klog::try_render_live_surface() {

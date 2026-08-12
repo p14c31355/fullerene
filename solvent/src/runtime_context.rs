@@ -52,6 +52,8 @@ pub static KLOG_SAVE_ENABLED: core::sync::atomic::AtomicBool =
 /// loop is blocked by a synchronous kernel operation.
 pub(crate) static KLOG_LIVE_ACTIVE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
+pub(crate) static KLOG_LIVE_REFRESH_PENDING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 pub(crate) static KLOG_LIVE_SURFACE_X: core::sync::atomic::AtomicI32 =
     core::sync::atomic::AtomicI32::new(0);
 pub(crate) static KLOG_LIVE_SURFACE_Y: core::sync::atomic::AtomicI32 =
@@ -73,6 +75,17 @@ pub(crate) fn clear_klog_live_surface() {
     KLOG_LIVE_ACTIVE.store(false, core::sync::atomic::Ordering::Release);
     KLOG_LIVE_SURFACE_WIDTH.store(0, core::sync::atomic::Ordering::Relaxed);
     KLOG_LIVE_SURFACE_HEIGHT.store(0, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Request a Klog Live repaint without taking the runtime lock. Kernel log
+/// producers use this from scheduler/MMIO paths where entering the GUI state
+/// would risk lock inversion.
+pub fn request_klog_live_refresh() {
+    KLOG_LIVE_REFRESH_PENDING.store(true, core::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn take_klog_live_refresh() -> bool {
+    KLOG_LIVE_REFRESH_PENDING.swap(false, core::sync::atomic::Ordering::Acquire)
 }
 pub(crate) static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 pub(crate) static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
