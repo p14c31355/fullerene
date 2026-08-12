@@ -577,8 +577,9 @@ through `genome::fat::mount_device`.
 USB controller service registration is boot-safe and does not activate BAR
 MMIO. Solvent polling observes only an already-active controller and must never
 activate the Nitrogen state machine from rendering or input dispatch. Explicit
-`usb_rescan` is the activation boundary; device discovery and `/dev`
-registration remain separate from filesystem mount policy.
+`usb_rescan` is the activation request boundary; it queues the work and returns
+immediately, while scheduler-owned device processing performs activation,
+discovery, and `/dev` registration. Filesystem mount policy remains separate.
 
 PCI storage follows the same lifecycle rule. Boot may discover an RTSX
 controller and prepare its service, but card-register MMIO begins only at the

@@ -1129,15 +1129,13 @@ fn nozzle_services() -> nozzle::ShellServices {
             "usb_rescan" => {
                 crate::klog_fmt!("[USB-RESCAN] shell command entered\n");
                 ctx.terminal.write_str(
-                    "USB rescan: explicitly activating controller and enumerating devices.\n\
-                     USB rescan: progress is available in KLog Live.\n",
+                    "USB rescan: request queued; controller activation is scheduler-owned.\n\
+                     USB rescan: watch KLog Live for progress, then run usb_info.\n",
                 );
                 if crate::drivers::registry::rescan_usb_all() {
-                    ctx.terminal
-                        .write_str("USB rescan: storage device registered.\n");
+                    ctx.terminal.write_str("USB rescan: queue accepted.\n");
                 } else {
-                    ctx.terminal
-                        .write_str("USB rescan: no storage device registered.\n");
+                    ctx.terminal.write_str("USB rescan: queue rejected.\n");
                 }
             }
             "sd_rescan" => {
@@ -1875,10 +1873,19 @@ pub fn usb_xhci_smoke() {
     let mut terminal = ScriptedTerminal::new("usb_rescan\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
 
+    // The real command is asynchronous.  The harness is invoked before the
+    // normal scheduler loop starts, so pump the same scheduler-owned queue it
+    // would otherwise process on subsequent ticks.
+    for _ in 0..64 {
+        crate::drivers::registry::process_usb_submission_queue_until(1, u64::MAX);
+        crate::drivers::registry::consume_usb_completion_queue(1);
+        if crate::devfs::block_device_exists("usb0") {
+            break;
+        }
+    }
+
     let registered = crate::devfs::block_device_exists("usb0")
-        && terminal
-            .output
-            .contains("USB rescan: storage device registered.");
+        && terminal.output.contains("USB rescan: queue accepted.");
     if registered {
         petroleum::serial::serial_log(format_args!(
             "[usb-xhci-smoke] PASS: usb_rescan registered /dev/usb0\n"

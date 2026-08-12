@@ -701,22 +701,55 @@ impl UsbHostDriver for UsbHostCtl {
 #[cfg(not(nitrogen_no_usb))]
 const MAX_USB_POLL_RETRIES: u8 = 64;
 
-/// Keep the explicit shell command synchronous.  `usb_rescan` is an
-/// activation boundary, while ordinary service polling remains scheduler-
-/// owned and asynchronous.  This bounded path is used only by the explicit
-/// command and gives its caller a definite completion result.
-#[cfg(not(nitrogen_no_usb))]
-const MAX_USB_SYNC_POLL_ATTEMPTS: u8 = 12;
-
-#[cfg(not(nitrogen_no_usb))]
-const USB_SYNC_POLL_INTERVAL_MS: u64 = 250;
-
 /// Keep the scheduler-owned rescan observable on real hardware. `log::info!`
 /// normally reaches klog too, but these short, stable markers are easier to
 /// identify in Klog Live around potentially non-returning MMIO transactions.
 #[cfg(not(nitrogen_no_usb))]
 fn usb_rescan_diag(stage: &str) {
     crate::klog_fmt!("[USB-RESCAN] {}\n", stage);
+    // Klog Live is a framebuffer surface and can stop repainting when the
+    // machine wedges in a non-posted PCIe/MMIO access.  Mirror the boundary
+    // to the serial stream before attempting the immediate repaint so the
+    // last completed step remains recoverable on physical machines.
+    petroleum::serial::serial_log(format_args!("[USB-RESCAN] {}\n", stage));
+    // Publish a compact version through the normal compositor/taskbar path.
+    // This is the primary on-screen indicator; the direct boot diagnostic
+    // below remains a fallback for a machine that stops before the next GUI
+    // frame can be rendered.
+    let taskbar_status = match stage {
+        "queue begin" => "queue begin",
+        "queue accepted" => "queue accepted",
+        "queue rejected" => "queue rejected",
+        "activate: take context" => "activation start",
+        "activate: USBContext::enable begin" => "USB init",
+        "enable: init_controllers begin" => "controller scan",
+        "enable: pci scan begin" => "PCI scan",
+        "enable: pci scan complete" => "PCI scan done",
+        "enable: xhci init begin" => "xHCI init",
+        "enable: xhci construct returned" => "xHCI constructed",
+        "enable: xhci init returned" => "xHCI ready",
+        "enable: complete" => "USB init done",
+        "poll: controller poll begin" => "USB polling",
+        "poll: controller poll returned" => "USB poll done",
+        "poll: register pending complete" => "USB devices registered",
+        _ => stage,
+    };
+    nitrogen::debug_status!("USB", "{}", taskbar_status);
+    // Keep the last activation boundary visible even when the compositor or
+    // Klog Live window cannot repaint on the target machine.
+    let screen_hint = match stage {
+        "activate: USBContext::enable begin" | "enable: init_controllers begin" => {
+            Some(b"USB INIT".as_slice())
+        }
+        "enable: pci scan begin" | "enable: pci scan complete" => Some(b"USB PCI".as_slice()),
+        "enable: xhci init begin" | "enable: xhci construct returned" => {
+            Some(b"USB XHCI".as_slice())
+        }
+        _ => None,
+    };
+    if let Some(screen_hint) = screen_hint {
+        crate::boot_stage::draw_hang_diagnostic(screen_hint);
+    }
     // Refresh immediately as well as relying on the timer path; this makes
     // the last completed boundary visible before a potentially non-returning
     // MMIO access.
@@ -1598,7 +1631,7 @@ fn activate_usb() -> bool {
     } else {
         usb_rescan_diag("activate: USBContext::enable begin");
         crate::boot_stage::draw_step_hint(b"usb_init");
-        let result = ctx.enable();
+        let result = ctx.enable_with_diagnostic(Some(usb_rescan_diag));
         usb_rescan_diag("activate: USBContext::enable returned");
         result
     };
@@ -1610,39 +1643,6 @@ fn activate_usb() -> bool {
         Err(e) => {
             log::warn!("USB: enable failed: {:?}", e);
             false
-        }
-    }
-}
-
-/// Activate USB and poll for storage from the explicit `usb_rescan` command.
-///
-/// The shell is now an independent kernel process, so this bounded operation
-/// cannot strand the scheduler loop.  Keep it separate from the normal USB
-/// submission queue: service callbacks must remain non-blocking, while an
-/// explicit rescan needs to report whether enumeration completed.
-#[cfg(not(nitrogen_no_usb))]
-fn usb_poll_and_register() {
-    usb_rescan_diag("poll: activate begin");
-    if !activate_usb() {
-        usb_rescan_diag("poll: activate failed");
-        return;
-    }
-    usb_rescan_diag("poll: activate complete");
-
-    for attempt in 0..MAX_USB_SYNC_POLL_ATTEMPTS {
-        log::info!("USB: poll #{}", attempt + 1);
-        usb_rescan_diag(&alloc::format!("poll: attempt {} begin", attempt + 1));
-        if poll_usb() || LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0 {
-            log::info!("USB: device detected after {} polls", attempt + 1);
-            usb_rescan_diag(&alloc::format!(
-                "poll: attempt {} registered device",
-                attempt + 1
-            ));
-            break;
-        }
-        usb_rescan_diag(&alloc::format!("poll: attempt {} no device", attempt + 1));
-        if attempt + 1 < MAX_USB_SYNC_POLL_ATTEMPTS {
-            nitrogen::timing::delay_ms(USB_SYNC_POLL_INTERVAL_MS);
         }
     }
 }
@@ -1681,33 +1681,21 @@ fn prepare_usb_rescan() -> bool {
 
 /// Full USB re-enumeration (clear + re-scan). Does NOT mount.
 ///
-/// This explicit command is intentionally synchronous and returns whether a
-/// storage device was registered.  The regular service callback still uses
-/// the scheduler-owned asynchronous queue below.
+/// The command only prepares and queues the request.  Controller activation,
+/// enumeration, and teardown all remain in scheduler context; this is
+/// important on machines where a PCIe/MMIO transaction can take an
+/// unexpectedly long time or fail to return.  The return value means that the
+/// request was accepted, not that `/dev/usb0` already exists.
 #[cfg(not(nitrogen_no_usb))]
 pub fn rescan_usb_all() -> bool {
-    usb_rescan_diag("prepare begin");
-    if !prepare_usb_rescan() {
-        usb_rescan_diag("prepare rejected");
-        return false;
-    }
-    usb_rescan_diag("prepare complete; context replaced");
-
-    // Replacing an active controller parks the old context so normal
-    // asynchronous paths do not drop it in shell/input context.  The
-    // explicit command is the activation boundary, so retire it here before
-    // reinitialising the same hardware.
-    usb_rescan_diag("retire old context begin");
-    let retired = USB_RETIRED_CTX.lock().take();
-    drop(retired);
-    usb_rescan_diag("retire old context complete");
-
-    usb_rescan_diag("activate and poll begin");
-    usb_poll_and_register();
-    usb_rescan_diag("activate and poll complete");
-    let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
-    let _ = crate::klog::flush_to_vfs();
-    registered
+    usb_rescan_diag("queue begin");
+    let accepted = enqueue_usb_rescan();
+    usb_rescan_diag(if accepted {
+        "queue accepted"
+    } else {
+        "queue rejected"
+    });
+    accepted
 }
 
 /// Asynchronous USB re-enumeration: clears existing USB block devices and

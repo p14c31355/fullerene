@@ -147,21 +147,26 @@ markers:
   are sufficient.
 
 For a real-hardware USB rescan, open `KLog Live` before running `usb_rescan`.
-The stable `[USB-RESCAN]` markers identify the last completed boundary:
+The command returns after queue acceptance; controller activation and
+enumeration continue in the scheduler-owned device phase. The stable
+`[USB-RESCAN]` markers identify the last completed boundary:
 
 ```text
-[USB-RESCAN] retire old context complete
+[USB-RESCAN] queue accepted
 [USB-RESCAN] activate: USBContext::enable begin
 [USB-RESCAN] activate: USBContext::enable returned
-[USB-RESCAN] poll: attempt 1 registered device
+[USB-RESCAN] poll: controller poll returned
 ```
 
-If the last marker is `retire old context begin`, the old controller teardown
-is stuck. If it is `USBContext::enable begin`, the PCI/xHCI activation path is
+If the last marker is `queue accepted`, the request has not reached the device
+phase yet. If it is `retire old context begin`, old controller teardown is
+stuck. If it is `USBContext::enable begin`, the PCI/xHCI activation path is
 stuck. A marker at `poll: attempt N begin` points to root-port or device
-enumeration. Sealant still bounds the MMIO region and permissions, while the
-NMI watchdog is the mechanism that can recover from a non-posted PCIe read
-that never completes; Sealant alone cannot cancel such a hardware transaction.
+enumeration. The same markers are also mirrored to the serial stream because
+Klog Live may not repaint while the machine is wedged. Sealant still bounds
+the MMIO region and permissions, while the NMI watchdog is the mechanism that
+can recover from a non-posted PCIe read that never completes; Sealant alone
+cannot cancel such a hardware transaction.
 
 These markers are in the persistent kernel log, so serial capture is not
 required. A scan that reaches `scan complete (0 APs found)` is valid when no
@@ -238,10 +243,12 @@ Linux reaches `usb-storage`, SCSI, and an attached removable disk for that
 device. These are useful reference identities, but the N150 run itself must
 still be diagnosed from its Fullerene Klog.
 
-Before testing, open `Klog Live`, then run `usb_rescan`. For a successful
-root-port storage path, the important sequence is:
+Before testing, open `Klog Live`, run `usb_rescan`, wait for the scheduler to
+finish enumeration, and then run `usb_info`. For a successful root-port
+storage path, the important sequence is:
 
 ```text
+[USB-RESCAN] queue accepted
 [USB-RESCAN] poll: attempt 1 begin
 USB: device N descriptor vid=.... pid=....
 USB: found BOT mass-storage interface N
