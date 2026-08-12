@@ -146,6 +146,23 @@ markers:
   require `N > 0`; otherwise successful firmware readiness and scan completion
   are sufficient.
 
+For a real-hardware USB rescan, open `KLog Live` before running `usb_rescan`.
+The stable `[USB-RESCAN]` markers identify the last completed boundary:
+
+```text
+[USB-RESCAN] retire old context complete
+[USB-RESCAN] activate: USBContext::enable begin
+[USB-RESCAN] activate: USBContext::enable returned
+[USB-RESCAN] poll: attempt 1 registered device
+```
+
+If the last marker is `retire old context begin`, the old controller teardown
+is stuck. If it is `USBContext::enable begin`, the PCI/xHCI activation path is
+stuck. A marker at `poll: attempt N begin` points to root-port or device
+enumeration. Sealant still bounds the MMIO region and permissions, while the
+NMI watchdog is the mechanism that can recover from a non-posted PCIe read
+that never completes; Sealant alone cannot cancel such a hardware transaction.
+
 These markers are in the persistent kernel log, so serial capture is not
 required. A scan that reaches `scan complete (0 APs found)` is valid when no
 known test AP is expected; firmware initialization/readiness and scan
@@ -210,6 +227,69 @@ external hubs:
 
 This allows `usb_rescan` to discover Ventoy USB mass-storage devices
 whether they are on a root port or behind the internal hub.
+
+### GemiBook XPro USB rescan checklist
+
+The Linux capture for the N150 identifies the machine's xHCI controller as
+`00:14.0`, Intel `8086:54ed`, and the I2C-HID touch device as
+`AMR13992:00 36B6:C001`. A separate older GemiBook capture contains the
+KIOXIA Ventoy device (`30de:6544`, `TransMemory`) on a SuperSpeed xHCI port;
+Linux reaches `usb-storage`, SCSI, and an attached removable disk for that
+device. These are useful reference identities, but the N150 run itself must
+still be diagnosed from its Fullerene Klog.
+
+Before testing, open `Klog Live`, then run `usb_rescan`. For a successful
+root-port storage path, the important sequence is:
+
+```text
+[USB-RESCAN] poll: attempt 1 begin
+USB: device N descriptor vid=.... pid=....
+USB: found BOT mass-storage interface N
+USB: device N BOT reset complete ...
+USB: xHCI mass-storage device ready ...
+USB: registered /dev/usb0 ...
+```
+
+Interpret the last line as follows:
+
+- `controllers: xhci poll ports returned` but no device descriptor: port or
+  Address Device discovery did not produce a usable candidate.
+- `xhci mass-storage enumeration returned` followed by
+  `xhci non-hub unsupported device`: configuration parsing did not find a BOT
+  or UAS bulk pair; this is not a reason to issue hub requests.
+- `xhci hub enumeration begin`: only expected when the descriptor contains a
+  real Hub interface (`class 0x09`). Continue with `hub descriptor`, `hub get
+  port status`, and downstream-device markers.
+- `xhci storage finish begin`: mass-storage enumeration succeeded; inspect
+  `bulk out configure`, `bulk in configure`, and `read capacity` next.
+- `poll: attempt N no device` repeated through the retry count: enumeration
+  returned without a disk, so `usb_info` will correctly report no registered
+  storage even though the controller is active.
+
+The adjacent state line is especially useful on the N150:
+
+```text
+[USB-RESCAN] poll: state enabled=true disks=0 xhci0:ports=11 devices=1 done=0x00000004 [port=3 addr=0 class=00 parent=false]
+```
+
+`devices=0` means root-port detection did not leave a candidate. `devices=1`
+means the port saw a device and the failure is in Address Device, descriptor,
+BOT/UAS, or hub classification. A failed non-hub candidate is retried with
+the port state reset; it must not turn the remaining retry attempts into a
+misleading stream of `no device` messages.
+
+For the HID touchpad, a physical right-button press should add these Klog Live
+edges while the pointer is over the desktop:
+
+```text
+[I2C-HID] pointer buttons changed: 0x00->0x02
+[I2C-HID] pointer buttons changed: 0x02->0x00
+```
+
+The first edge is `MouseDown(Right)` and routes to the desktop or Explorer
+context menu; the second is `MouseUp(Right)`. A report ID 6 mouse packet with
+button bit `0x02` is used for the GemiBook's physical right button, while
+digitizer contact remains the left-button/tap path.
 
 ## Future Platforms
 

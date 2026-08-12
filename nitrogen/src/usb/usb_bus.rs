@@ -421,6 +421,12 @@ pub fn enumerate_mass_storage(
             return Err(error);
         }
     };
+    let is_hub = configuration_has_interface_class(&cfg_buf, cfg_len, super::HUB_CLASS);
+    if is_hub {
+        if let Some(dev) = host.devices_mut().get_mut(dev_idx) {
+            dev.device_class = super::HUB_CLASS;
+        }
+    }
     let config = match parse_mass_storage_config(&cfg_buf, cfg_len) {
         Ok(config) => config,
         Err(error) => {
@@ -496,6 +502,26 @@ pub fn enumerate_mass_storage(
         config.ep_in,
         config.ep_in_mps,
     ))
+}
+
+fn configuration_has_interface_class(cfg_buf: &[u8], cfg_len: usize, class: u8) -> bool {
+    if cfg_len < 9 || cfg_buf.len() < 9 {
+        return false;
+    }
+    let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
+    let limit = total_len.min(cfg_len).min(cfg_buf.len());
+    let mut offset = 9usize;
+    while offset + 2 <= limit {
+        let dlen = cfg_buf[offset] as usize;
+        if dlen < 2 || offset + dlen > limit {
+            break;
+        }
+        if cfg_buf[offset + 1] == 4 && dlen >= 9 && cfg_buf[offset + 5] == class {
+            return true;
+        }
+        offset += dlen;
+    }
+    false
 }
 
 fn decode_ep0_packet_size(raw: u8, super_speed: bool) -> Option<u16> {

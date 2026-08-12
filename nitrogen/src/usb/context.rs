@@ -23,6 +23,14 @@ use super::ehci::context::EhciContext;
 use super::host_controller::HostController;
 use super::xhci::context::XhciContext;
 
+pub type UsbPollDiagnostic = fn(&str);
+
+fn emit_poll_diagnostic(diagnostic: Option<UsbPollDiagnostic>, message: &str) {
+    if let Some(diagnostic) = diagnostic {
+        diagnostic(message);
+    }
+}
+
 /// Read-only state exposed by [`USBContext`] for shell and boot diagnostics.
 ///
 /// Keeping this as a value type avoids exposing controller ownership or MMIO
@@ -401,6 +409,10 @@ impl ControllerManager {
 
     /// Poll all controllers; returns newly discovered devices.
     fn poll(&mut self) -> ControllerEvent {
+        self.poll_with_diagnostic(None)
+    }
+
+    fn poll_with_diagnostic(&mut self, diagnostic: Option<UsbPollDiagnostic>) -> ControllerEvent {
         let mut ehci_devices: Vec<(usize, usize)> = Vec::new();
         let mut xhci_devices: Vec<(usize, usize)> = Vec::new();
 
@@ -415,9 +427,13 @@ impl ControllerManager {
         }
 
         for (idx, xhci) in self.xhci.iter_mut().enumerate() {
+            emit_poll_diagnostic(diagnostic, "controllers: xhci recovery begin");
             xhci.clear_hse_and_recover();
+            emit_poll_diagnostic(diagnostic, "controllers: xhci recovery returned");
             let old = xhci.devices().len();
+            emit_poll_diagnostic(diagnostic, "controllers: xhci poll ports begin");
             let new = xhci.poll_ports();
+            emit_poll_diagnostic(diagnostic, "controllers: xhci poll ports returned");
             if new > 0 {
                 for d in old..xhci.devices().len() {
                     xhci_devices.push((idx, d));
@@ -522,16 +538,73 @@ impl USBContext {
         info
     }
 
+    /// Compact state for the synchronous USB rescan diagnostic path. This
+    /// includes candidates that have not yet become storage disks, which is
+    /// the distinction needed when a retry reports only `no device`.
+    pub fn diagnostic_summary(&self) -> alloc::string::String {
+        use core::fmt::Write;
+
+        let mut summary = alloc::string::String::new();
+        let _ = write!(
+            summary,
+            "enabled={} disks={}",
+            self.enabled,
+            self.storage.disks().len()
+        );
+        for (idx, controller) in self.controllers.xhci.iter().enumerate() {
+            let _ = write!(
+                summary,
+                " xhci{}:ports={} devices={} done=0x{:08x}",
+                idx,
+                controller.n_ports(),
+                controller.devices().len(),
+                controller.ports_done_mask()
+            );
+            for device in controller.devices() {
+                let _ = write!(
+                    summary,
+                    " [port={} addr={} class={:02x} parent={}]",
+                    device.port_index + 1,
+                    device.address,
+                    device.device_class,
+                    device.parent_hub_slot.is_some()
+                );
+            }
+        }
+        summary
+    }
+
     /// Poll all controllers for hotplug events and register new storage.
     pub fn poll(&mut self) {
-        let ev = self.controllers.poll();
+        self.poll_with_diagnostic_inner(None);
+    }
+
+    /// Poll all controllers with diagnostics for an explicitly synchronous
+    /// rescan. The callback is absent from the normal scheduler poll path so
+    /// production polling does not add log or framebuffer traffic.
+    pub fn poll_with_diagnostic(&mut self, diagnostic: UsbPollDiagnostic) {
+        self.poll_with_diagnostic_inner(Some(diagnostic));
+    }
+
+    fn poll_with_diagnostic_inner(&mut self, diagnostic: Option<UsbPollDiagnostic>) {
+        emit_poll_diagnostic(diagnostic, "context: controllers poll begin");
+        let ev = match diagnostic {
+            Some(_) => self.controllers.poll_with_diagnostic(diagnostic),
+            None => self.controllers.poll(),
+        };
+        emit_poll_diagnostic(diagnostic, "context: controllers poll returned");
 
         for (ctrl_idx, dev_idx) in &ev.ehci_devices {
+            emit_poll_diagnostic(diagnostic, "context: ehci storage registration begin");
             self.register_ehci_storage(*ctrl_idx, *dev_idx);
+            emit_poll_diagnostic(diagnostic, "context: ehci storage registration returned");
         }
         for (ctrl_idx, dev_idx) in &ev.xhci_devices {
-            self.register_xhci_storage(*ctrl_idx, *dev_idx);
+            emit_poll_diagnostic(diagnostic, "context: xhci storage registration begin");
+            self.register_xhci_storage(*ctrl_idx, *dev_idx, diagnostic);
+            emit_poll_diagnostic(diagnostic, "context: xhci storage registration returned");
         }
+        emit_poll_diagnostic(diagnostic, "context: storage registration returned");
     }
 
     /// Stop all controllers before replacing this context during rescan.
@@ -714,11 +787,17 @@ impl USBContext {
         });
     }
 
-    fn register_xhci_storage(&mut self, ctrl_idx: usize, dev_idx: usize) {
+    fn register_xhci_storage(
+        &mut self,
+        ctrl_idx: usize,
+        dev_idx: usize,
+        diagnostic: Option<UsbPollDiagnostic>,
+    ) {
         // Phase 1: enable slot and address the device.
         let (slot_id, dev_addr) = {
             let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
 
+            emit_poll_diagnostic(diagnostic, "context: xhci enable slot begin");
             let slot_id = match xhci.enable_slot() {
                 Ok(id) => id,
                 Err(error) => {
@@ -726,11 +805,14 @@ impl USBContext {
                     return;
                 }
             };
+            emit_poll_diagnostic(diagnostic, "context: xhci enable slot returned");
+            emit_poll_diagnostic(diagnostic, "context: xhci address device begin");
             if let Err(error) = xhci.address_device(slot_id, dev_idx) {
                 log::warn!("USB: xHCI Address Device failed: {}", error);
                 xhci.retry_device_candidate(slot_id, dev_idx);
                 return;
             }
+            emit_poll_diagnostic(diagnostic, "context: xhci address device returned");
 
             (slot_id, slot_id as u8)
         };
@@ -739,6 +821,7 @@ impl USBContext {
         // This is the original code path — no extra control transfers
         // before it, so device state is identical to the pre-hub-support
         // build.
+        emit_poll_diagnostic(diagnostic, "context: xhci mass-storage enumeration begin");
         let msc_result = {
             let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
             super::usb_bus::enumerate_mass_storage(
@@ -747,14 +830,42 @@ impl USBContext {
                 dev_idx,
             )
         };
+        emit_poll_diagnostic(
+            diagnostic,
+            "context: xhci mass-storage enumeration returned",
+        );
 
         match msc_result {
             Ok((ep_out, ep_out_mps, ep_in, ep_in_mps)) => {
+                emit_poll_diagnostic(diagnostic, "context: xhci storage finish begin");
                 self.finish_xhci_storage(
                     ctrl_idx, slot_id, dev_addr, dev_idx, ep_out, ep_out_mps, ep_in, ep_in_mps,
+                    diagnostic,
                 );
+                emit_poll_diagnostic(diagnostic, "context: xhci storage finish returned");
             }
             Err(crate::DriverError::NotSupported) => {
+                let is_hub = self.controllers.xhci[ctrl_idx]
+                    .devices()
+                    .get(dev_idx)
+                    .map(|device| device.device_class == super::HUB_CLASS)
+                    .unwrap_or(false);
+                if !is_hub {
+                    emit_poll_diagnostic(diagnostic, "context: xhci non-hub unsupported device");
+                    log::info!(
+                        "USB: xHCI device {} is not mass-storage and not a hub",
+                        dev_addr
+                    );
+                    let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
+                    emit_poll_diagnostic(diagnostic, "context: xhci unsupported retry begin");
+                    xhci.retry_device_candidate(slot_id, dev_idx);
+                    emit_poll_diagnostic(
+                        diagnostic,
+                        "context: xhci unsupported candidate retry state updated",
+                    );
+                    return;
+                }
+                emit_poll_diagnostic(diagnostic, "context: xhci hub enumeration begin");
                 // The device is not a BOT mass-storage device.  It may be
                 // a USB hub with mass-storage devices behind it.  Try the
                 // hub path before giving up.
@@ -762,17 +873,27 @@ impl USBContext {
                     "USB: xHCI device {} not mass-storage; trying hub enumeration",
                     dev_addr
                 );
-                let found = self.enumerate_hub_ports_xhci(ctrl_idx, slot_id, dev_idx);
+                let found = self.enumerate_hub_ports_xhci(ctrl_idx, slot_id, dev_idx, diagnostic);
+                emit_poll_diagnostic(diagnostic, "context: xhci hub enumeration returned");
                 if !found {
                     let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
-                    let _ = xhci.disable_slot(slot_id);
-                    xhci.remove_device_candidate(dev_idx);
+                    emit_poll_diagnostic(diagnostic, "context: xhci hub retry begin");
+                    xhci.retry_device_candidate(slot_id, dev_idx);
+                    emit_poll_diagnostic(
+                        diagnostic,
+                        "context: xhci hub candidate retry state updated",
+                    );
                 }
             }
             Err(error) => {
+                emit_poll_diagnostic(diagnostic, "context: xhci enumeration error recovery begin");
                 log::warn!("USB: xHCI mass-storage enumeration failed: {}", error);
                 let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
                 xhci.retry_device_candidate(slot_id, dev_idx);
+                emit_poll_diagnostic(
+                    diagnostic,
+                    "context: xhci enumeration error recovery returned",
+                );
             }
         }
     }
@@ -790,10 +911,12 @@ impl USBContext {
         ep_out_mps: u16,
         ep_in: u8,
         ep_in_mps: u16,
+        diagnostic: Option<UsbPollDiagnostic>,
     ) {
         let (ep_out, ep_out_mps, ep_in, ep_in_mps, block_size, total_blocks) = {
             let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
 
+            emit_poll_diagnostic(diagnostic, "context: xhci bulk out configure begin");
             if xhci
                 .configure_endpoint_bulk(slot_id, ep_out, ep_out_mps)
                 .is_err()
@@ -802,6 +925,8 @@ impl USBContext {
                 xhci.retry_device_candidate(slot_id, dev_idx);
                 return;
             }
+            emit_poll_diagnostic(diagnostic, "context: xhci bulk out configure returned");
+            emit_poll_diagnostic(diagnostic, "context: xhci bulk in configure begin");
             if xhci
                 .configure_endpoint_bulk(slot_id, ep_in, ep_in_mps)
                 .is_err()
@@ -810,7 +935,9 @@ impl USBContext {
                 xhci.retry_device_candidate(slot_id, dev_idx);
                 return;
             }
+            emit_poll_diagnostic(diagnostic, "context: xhci bulk in configure returned");
             let mut tag = 1;
+            emit_poll_diagnostic(diagnostic, "context: xhci read capacity begin");
             let (block_size, total_blocks) = match super::usb_bus::bot_read_capacity(
                 xhci, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, &mut tag,
             ) {
@@ -821,6 +948,7 @@ impl USBContext {
                     return;
                 }
             };
+            emit_poll_diagnostic(diagnostic, "context: xhci read capacity returned");
             (
                 ep_out,
                 ep_out_mps,
@@ -865,6 +993,7 @@ impl USBContext {
         ctrl_idx: usize,
         hub_slot_id: u32,
         hub_dev_idx: usize,
+        diagnostic: Option<UsbPollDiagnostic>,
     ) -> bool {
         let hub_addr = hub_slot_id as u8;
 
@@ -888,10 +1017,12 @@ impl USBContext {
                 w_index: 0,
                 w_length: 0,
             };
+            emit_poll_diagnostic(diagnostic, "context: hub set configuration begin");
             if let Err(error) = HostController::control_transfer(xhci, hub_addr, &setup, &mut []) {
                 log::warn!("USB: hub SET_CONFIGURATION failed: {}", error);
                 return false;
             }
+            emit_poll_diagnostic(diagnostic, "context: hub set configuration returned");
         }
 
         // Get Hub Descriptor to learn the number of downstream ports.
@@ -905,6 +1036,7 @@ impl USBContext {
                 w_index: 0,
                 w_length: 8,
             };
+            emit_poll_diagnostic(diagnostic, "context: hub descriptor begin");
             match HostController::control_transfer(xhci, hub_addr, &setup, &mut hub_desc) {
                 Ok(len) if len >= 4 => {
                     let n = hub_desc[2]; // bNbrPorts
@@ -921,20 +1053,24 @@ impl USBContext {
                 }
             }
         };
+        emit_poll_diagnostic(diagnostic, "context: hub descriptor returned");
 
         // Mark the hub slot so the xHC knows it has downstream ports.
         {
             let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
+            emit_poll_diagnostic(diagnostic, "context: hub slot configure begin");
             let speed_id = xhci.registers.op.portsc(root_port as u32 - 1).speed() as u8;
             if let Err(error) = xhci.configure_hub_slot(hub_slot_id, num_ports, speed_id) {
                 log::warn!("USB: hub slot configuration failed: {}", error);
                 // Continue anyway — some controllers work without the Hub flag.
             }
+            emit_poll_diagnostic(diagnostic, "context: hub slot configure returned");
         }
 
         // Power on all hub ports (needed for some hubs).
         {
             let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
+            emit_poll_diagnostic(diagnostic, "context: hub power ports begin");
             for port in 1..=num_ports {
                 let setup = super::UsbSetupPacket {
                     bm_request_type: 0x23, // H2D, class, other
@@ -945,16 +1081,19 @@ impl USBContext {
                 };
                 let _ = HostController::control_transfer(xhci, hub_addr, &setup, &mut []);
             }
+            emit_poll_diagnostic(diagnostic, "context: hub power ports returned");
         }
         super::xhci::port::delay_ms(50);
 
         let mut found_any = false;
 
         for port in 1..=num_ports {
+            emit_poll_diagnostic(diagnostic, "context: hub get port status begin");
             let port_status = match self.hub_get_port_status(ctrl_idx, hub_addr, port) {
                 Some(status) => status,
                 None => continue,
             };
+            emit_poll_diagnostic(diagnostic, "context: hub get port status returned");
 
             if port_status & super::HUB_PORT_STATUS_CONNECTION == 0 {
                 continue;
@@ -967,22 +1106,30 @@ impl USBContext {
             );
 
             // Clear any pending connection change.
+            emit_poll_diagnostic(diagnostic, "context: hub clear connection begin");
             self.hub_clear_port_feature(ctrl_idx, hub_addr, port, super::HUB_C_PORT_CONNECTION);
+            emit_poll_diagnostic(diagnostic, "context: hub clear connection returned");
 
             // Issue port reset.
+            emit_poll_diagnostic(diagnostic, "context: hub port reset begin");
             self.hub_set_port_feature(ctrl_idx, hub_addr, port, super::HUB_PORT_RESET);
+            emit_poll_diagnostic(diagnostic, "context: hub port reset returned");
 
             // Wait for reset to complete (USB 2.0: ~50ms, allow 200ms).
             super::xhci::port::delay_ms(200);
 
             // Clear C_PORT_RESET.
+            emit_poll_diagnostic(diagnostic, "context: hub clear reset begin");
             self.hub_clear_port_feature(ctrl_idx, hub_addr, port, super::HUB_C_PORT_RESET);
+            emit_poll_diagnostic(diagnostic, "context: hub clear reset returned");
 
             // Re-read port status to get the post-reset speed.
+            emit_poll_diagnostic(diagnostic, "context: hub post-reset status begin");
             let post_status = match self.hub_get_port_status(ctrl_idx, hub_addr, port) {
                 Some(status) => status,
                 None => continue,
             };
+            emit_poll_diagnostic(diagnostic, "context: hub post-reset status returned");
 
             if post_status & super::HUB_PORT_STATUS_ENABLE == 0 {
                 log::warn!("USB: hub port {} not enabled after reset", port);

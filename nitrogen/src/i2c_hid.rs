@@ -14,7 +14,9 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::driver_context::DriverContext;
-use crate::hid::{HidReportDescriptor, I2cHidPlatformConfig, TouchpadReport};
+use crate::hid::{
+    HidReportDescriptor, I2cHidPlatformConfig, MAX_TOUCH_CONTACTS, TouchContact, TouchpadReport,
+};
 use crate::mmio::MemRegion;
 use crate::pci::{PciConfigSpace, PciDevice};
 use crate::timing::{delay_ms, delay_us, poll_timeout_us};
@@ -581,8 +583,14 @@ pub struct TouchpadInput {
     pub y_min: i32,
     pub y_max: i32,
     /// Relative mouse reports are emitted as report ID 6 on the N150.  The
-    /// absolute digitizer path remains available for report ID 1.
+    /// absolute digitizer path remains available for report ID 1. A stored
+    /// snapshot may contain a relative delta together with contact slots
+    /// retained from the preceding absolute report.
     pub relative: Option<(i16, i16)>,
+    /// Contact slots from the absolute digitizer report.  A slot remains
+    /// present with `in_contact == false` in release reports.
+    pub contacts: [Option<TouchContact>; MAX_TOUCH_CONTACTS],
+    pub contact_count: u8,
 }
 
 struct I2cHidTouchpad {
@@ -794,16 +802,19 @@ pub fn init_n150(ctx: &'static dyn DriverContext, device: &PciDevice) -> Result<
 
 fn store_input(input: TouchpadInput) {
     let mut slot = LATEST_INPUT.lock();
-    if let (Some(previous), Some((x, y))) = (slot.as_mut(), input.relative)
-        && let Some((previous_x, previous_y)) = previous.relative
-    {
-        // Preserve every relative packet until the desktop consumes it. The
-        // scheduler is slower than a busy HID device, so replacing the old
-        // packet here would create both lag and post-release motion.
-        previous.relative = Some((previous_x.saturating_add(x), previous_y.saturating_add(y)));
-        previous.report.buttons = input.report.buttons;
-        previous.report.in_contact = input.report.in_contact;
-        return;
+    if let Some((x, y)) = input.relative {
+        if let Some(previous) = slot.as_mut() {
+            // Preserve every relative packet until the desktop consumes it.
+            // The scheduler is slower than a busy HID device, so replacing
+            // the old packet here would create both lag and post-release
+            // motion.  Keep the preceding absolute contact snapshot as well:
+            // the N150 may interleave digitizer and relative-mouse reports.
+            let (previous_x, previous_y) = previous.relative.unwrap_or((0, 0));
+            previous.relative = Some((previous_x.saturating_add(x), previous_y.saturating_add(y)));
+            previous.report.buttons = input.report.buttons;
+            previous.report.in_contact = input.report.in_contact;
+            return;
+        }
     }
     *slot = Some(input);
 }
@@ -926,13 +937,20 @@ pub fn service_input() -> bool {
             break;
         }
         let payload = &bytes[2..report_length];
-        let (decoded, relative, x_min, x_max, y_min, y_max) = {
+        let (decoded, relative, contacts, contact_count, x_min, x_max, y_min, y_max) = {
             let guard = TOUCHPAD.lock();
             let Some(device) = guard.as_ref() else {
                 rearm_interrupt();
                 return false;
             };
             let decoded = device.report.decode_touchpad(device.fields, payload);
+            let (contacts, contact_count) = if decoded.is_some() {
+                device
+                    .report
+                    .decode_touchpad_contacts(device.fields, payload)
+            } else {
+                ([None; MAX_TOUCH_CONTACTS], 0)
+            };
             let relative = if decoded.is_none() {
                 device.report.decode_relative_mouse(payload)
             } else {
@@ -941,6 +959,8 @@ pub fn service_input() -> bool {
             (
                 decoded,
                 relative,
+                contacts,
+                contact_count,
                 device.fields.x.logical_minimum,
                 device.fields.x.logical_maximum,
                 device.fields.y.logical_minimum,
@@ -984,6 +1004,8 @@ pub fn service_input() -> bool {
                 y_min,
                 y_max,
                 relative: None,
+                contacts,
+                contact_count,
             });
         } else if let Some((x, y, buttons)) = relative {
             store_input(TouchpadInput {
@@ -998,6 +1020,8 @@ pub fn service_input() -> bool {
                 y_min,
                 y_max,
                 relative: Some((x, y)),
+                contacts: [None; MAX_TOUCH_CONTACTS],
+                contact_count: 0,
             });
         } else if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {
             log::warn!(

@@ -1053,6 +1053,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
             }
             "klog_live" => {
+                crate::klog_fmt!("[KLOG-LIVE] open requested\n");
                 if solvent::open_klog_live() {
                     ctx.terminal.write_str(
                         "KLog Live window opened. New klog entries appear here \
@@ -1126,20 +1127,16 @@ fn nozzle_services() -> nozzle::ShellServices {
             }
             "exec" => exec_path(ctx),
             "usb_rescan" => {
+                crate::klog_fmt!("[USB-RESCAN] shell command entered\n");
                 ctx.terminal.write_str(
-                    "USB rescan: explicitly activating controller and enumerating devices.\n",
+                    "USB rescan: queued controller activation and enumeration.\n\
+                     USB rescan: progress is available in KLog Live.\n",
                 );
-                // Keep the explicit shell command synchronous, as it was at
-                // Merge #334.  An interactive rescan is the activation
-                // boundary; deferring it to the scheduler can leave the
-                // freshly-created USBContext permanently in `deferred`
-                // while the shell waits for a result.
                 if crate::drivers::registry::rescan_usb_all() {
                     ctx.terminal
-                        .write_str("USB rescan: storage device registered.\n");
+                        .write_str("USB rescan: request accepted; storage will be registered asynchronously.\n");
                 } else {
-                    ctx.terminal
-                        .write_str("USB rescan: no storage device registered.\n");
+                    ctx.terminal.write_str("USB rescan: request rejected.\n");
                 }
             }
             "sd_rescan" => {
@@ -1257,7 +1254,14 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
                 // Also show full USB context status without assuming a controller exists.
                 if registry::try_with_ctx(|ctx_usb| {
-                tline!(ctx.terminal, "USB controller: {}", if ctx_usb.is_enabled() { "active" } else { "deferred" });
+                let status = if ctx_usb.is_enabled() {
+                    "active"
+                } else if registry::usb_activation_pending() {
+                    "activation pending"
+                } else {
+                    "deferred"
+                };
+                tline!(ctx.terminal, "USB controller: {}", status);
                 for controller in ctx_usb.controller_info() {
                     tline!(
                         ctx.terminal,
@@ -1827,6 +1831,71 @@ pub fn busybox_smoke() {
     } else {
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] FAIL: output or successful exit was not observed\n"
+        ));
+        petroleum::halt_loop();
+    }
+}
+
+/// Run `usb_rescan` against QEMU's qemu-xhci controller and a deterministic
+/// USB mass-storage backend.  The command is intentionally issued through the
+/// real Nozzle path so this covers shell dispatch, xHCI enumeration, BOT/SCSI
+/// probing, and `/dev` registration together.
+#[cfg(usb_xhci_smoke)]
+pub fn usb_xhci_smoke() {
+    struct ScriptedTerminal {
+        input: alloc::collections::VecDeque<u8>,
+        output: String,
+    }
+
+    impl ScriptedTerminal {
+        fn new(script: &str) -> Self {
+            Self {
+                input: script.bytes().collect(),
+                output: String::new(),
+            }
+        }
+    }
+
+    impl nozzle::Terminal for ScriptedTerminal {
+        fn write_str(&mut self, text: &str) {
+            self.output.push_str(text);
+        }
+
+        fn read_byte(&mut self) -> Option<u8> {
+            self.input.pop_front()
+        }
+
+        fn input_available(&self) -> bool {
+            !self.input.is_empty()
+        }
+    }
+
+    let services = nozzle_services();
+    let mut terminal = ScriptedTerminal::new("usb_rescan\nexit\n");
+    solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
+
+    // Drive the same scheduler-owned lifecycle used by the idle loop. The
+    // shell only queues the request; retired-context teardown must complete
+    // before the replacement controller is activated.
+    for _ in 0..12 {
+        crate::drivers::registry::process_usb_submission_queue_until(1, u64::MAX);
+        if crate::devfs::block_device_exists("usb0") {
+            break;
+        }
+    }
+
+    let registered = crate::devfs::block_device_exists("usb0")
+        && terminal.output.contains("USB rescan: request accepted;");
+    if registered {
+        petroleum::serial::serial_log(format_args!(
+            "[usb-xhci-smoke] PASS: usb_rescan registered /dev/usb0\n"
+        ));
+        unsafe {
+            x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x11);
+        }
+    } else {
+        petroleum::serial::serial_log(format_args!(
+            "[usb-xhci-smoke] FAIL: usb_rescan did not register /dev/usb0\n"
         ));
         petroleum::halt_loop();
     }

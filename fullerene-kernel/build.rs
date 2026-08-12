@@ -19,12 +19,14 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(have_linux_musl_hello)");
     println!("cargo::rustc-check-cfg=cfg(linux_musl_smoke)");
     println!("cargo::rustc-check-cfg=cfg(ipc_kernel_smoke)");
+    println!("cargo::rustc-check-cfg=cfg(usb_xhci_smoke)");
     println!("cargo::rustc-check-cfg=cfg(have_busybox)");
     println!("cargo::rustc-check-cfg=cfg(linux_busybox_smoke)");
     println!("cargo::rustc-check-cfg=cfg(linux_busybox_smoke_qemu_exit)");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
     println!("cargo:rerun-if-env-changed=FULLERENE_LINUX_MUSL_SMOKE");
     println!("cargo:rerun-if-env-changed=FULLERENE_IPC_KERNEL_SMOKE");
+    println!("cargo:rerun-if-env-changed=FULLERENE_USB_XHCI_SMOKE");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_CC");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_SMOKE");
@@ -45,6 +47,11 @@ fn main() {
     );
     let linux_musl_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some();
     let ipc_kernel_smoke_requested = env::var_os("FULLERENE_IPC_KERNEL_SMOKE").is_some();
+    let usb_xhci_smoke_requested = env::var_os("FULLERENE_USB_XHCI_SMOKE").is_some();
+
+    if usb_xhci_smoke_requested {
+        println!("cargo:rustc-cfg=usb_xhci_smoke");
+    }
 
     let workspace_root = manifest_dir.parent().unwrap();
     let have_busybox = embed_busybox(&out_dir, workspace_root);

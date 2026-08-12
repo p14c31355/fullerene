@@ -93,6 +93,11 @@ const USAGE_TIP_SWITCH: u16 = 0x42;
 const USAGE_CONTACT_ID: u16 = 0x51;
 const USAGE_CONTACT_COUNT: u16 = 0x54;
 
+/// Maximum number of digitizer contact collections in the touchpad reports
+/// currently supported by the generic decoder.  The GemiBook N150 exposes
+/// five collections in report ID 1.
+pub const MAX_TOUCH_CONTACTS: usize = 5;
+
 /// A single input field in a HID report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HidInputField {
@@ -375,6 +380,14 @@ pub struct TouchpadReport {
     pub in_contact: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TouchContact {
+    pub id: u8,
+    pub x: i32,
+    pub y: i32,
+    pub in_contact: bool,
+}
+
 impl HidReportDescriptor {
     /// Find the standard HID usages used by Windows/Linux precision touchpads.
     pub fn touchpad_fields(&self) -> Option<TouchpadFieldMap> {
@@ -449,6 +462,89 @@ impl HidReportDescriptor {
             buttons: (left as u8) | ((right as u8) << 1),
             in_contact,
         })
+    }
+
+    /// Decode all digitizer contact collections in one input report.
+    ///
+    /// Precision touchpads commonly repeat the same contact collection under
+    /// one report ID.  Keeping those slots instead of returning only the
+    /// first X/Y pair is needed for gestures such as two-finger window move.
+    pub fn decode_touchpad_contacts(
+        &self,
+        fields: TouchpadFieldMap,
+        report: &[u8],
+    ) -> ([Option<TouchContact>; MAX_TOUCH_CONTACTS], u8) {
+        let mut contacts = [None; MAX_TOUCH_CONTACTS];
+        let mut slot = 0;
+        for x_field in self.fields.iter().copied().filter(|field| {
+            field.report_id == fields.x.report_id
+                && field.usage_page == GENERIC_DESKTOP_PAGE
+                && field.usage == USAGE_X
+                && field.logical_minimum >= 0
+        }) {
+            if slot == MAX_TOUCH_CONTACTS {
+                break;
+            }
+            let Some(y_field) = self.fields.iter().copied().find(|field| {
+                field.report_id == x_field.report_id
+                    && field.usage_page == GENERIC_DESKTOP_PAGE
+                    && field.usage == USAGE_Y
+                    && field.bit_offset == x_field.bit_offset + x_field.bit_size as u16
+            }) else {
+                continue;
+            };
+            let id_field = self
+                .fields
+                .iter()
+                .copied()
+                .filter(|field| {
+                    field.report_id == x_field.report_id
+                        && field.usage_page == DIGITIZER_PAGE
+                        && field.usage == USAGE_CONTACT_ID
+                        && field.bit_offset < x_field.bit_offset
+                })
+                .max_by_key(|field| field.bit_offset);
+            let tip_field = self
+                .fields
+                .iter()
+                .copied()
+                .filter(|field| {
+                    field.report_id == x_field.report_id
+                        && field.usage_page == DIGITIZER_PAGE
+                        && field.usage == USAGE_TIP_SWITCH
+                        && field.bit_offset < x_field.bit_offset
+                })
+                .max_by_key(|field| field.bit_offset);
+            let (Some(x), Some(y)) = (self.value(x_field, report), self.value(y_field, report))
+            else {
+                continue;
+            };
+            let id = id_field
+                .and_then(|field| self.value(field, report))
+                .unwrap_or(slot as i32)
+                .clamp(0, u8::MAX as i32) as u8;
+            let in_contact = tip_field
+                .and_then(|field| self.value(field, report))
+                .map(|value| value != 0)
+                .unwrap_or(slot == 0 && fields.x == x_field);
+            contacts[slot] = Some(TouchContact {
+                id,
+                x,
+                y,
+                in_contact,
+            });
+            slot += 1;
+        }
+        let active_count = contacts
+            .iter()
+            .filter(|contact| contact.is_some_and(|contact| contact.in_contact))
+            .count() as u8;
+        let declared_count = fields
+            .contact_count
+            .and_then(|field| self.value(field, report))
+            .unwrap_or(active_count as i32)
+            .clamp(0, MAX_TOUCH_CONTACTS as i32) as u8;
+        (contacts, declared_count.max(active_count))
     }
 
     /// Decode the relative-mouse collection some precision touchpads expose
@@ -680,7 +776,54 @@ mod tests {
     fn decodes_n150_relative_mouse_collection_report_id_six() {
         let descriptor = HidReportDescriptor::parse(n150_fixture::N150_REPORT_DESCRIPTOR).unwrap();
         // ID 6: two buttons, six padding bits, then signed 8-bit X/Y.
-        let report = [6, 0b0000_0001, 0xfe, 0x03];
-        assert_eq!(descriptor.decode_relative_mouse(&report), Some((-2, 3, 1)));
+        let left_report = [6, 0b0000_0001, 0xfe, 0x03];
+        assert_eq!(
+            descriptor.decode_relative_mouse(&left_report),
+            Some((-2, 3, 1))
+        );
+        let right_report = [6, 0b0000_0010, 0x00, 0x00];
+        assert_eq!(
+            descriptor.decode_relative_mouse(&right_report),
+            Some((0, 0, 2))
+        );
+    }
+
+    #[test]
+    fn decodes_two_n150_touch_contacts_from_repeated_slots() {
+        let descriptor = HidReportDescriptor::parse(n150_fixture::N150_REPORT_DESCRIPTOR).unwrap();
+        let fields = descriptor.touchpad_fields().unwrap();
+        let mut report = [0u8; 30];
+        report[0] = 1;
+
+        fn set_bits(report: &mut [u8], offset: usize, size: usize, value: u32) {
+            for bit in 0..size {
+                report[(offset + bit) / 8] |= (((value >> bit) & 1) as u8) << ((offset + bit) % 8);
+            }
+        }
+
+        // Each N150 contact slot is 40 bits after the two padding bits,
+        // followed by the next slot at bit 48 (the report-ID prefix is bits
+        // 0..8).
+        set_bits(&mut report, 9, 1, 1);
+        set_bits(&mut report, 12, 4, 3);
+        set_bits(&mut report, 16, 16, 400);
+        set_bits(&mut report, 32, 16, 500);
+        set_bits(&mut report, 49, 1, 1);
+        set_bits(&mut report, 52, 4, 7);
+        set_bits(&mut report, 56, 16, 900);
+        set_bits(&mut report, 72, 16, 800);
+
+        let (contacts, count) = descriptor.decode_touchpad_contacts(fields, &report);
+        assert_eq!(count, 2);
+        assert_eq!(
+            contacts[0].map(|contact| (contact.id, contact.x, contact.y)),
+            Some((3, 400, 500))
+        );
+        assert_eq!(
+            contacts[1].map(|contact| (contact.id, contact.x, contact.y)),
+            Some((7, 900, 800))
+        );
+        assert!(contacts[0].is_some_and(|contact| contact.in_contact));
+        assert!(contacts[1].is_some_and(|contact| contact.in_contact));
     }
 }

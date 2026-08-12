@@ -114,6 +114,8 @@ pub fn scheduler_loop() -> ! {
     crate::shell::run_linux_musl_smoke();
     #[cfg(linux_busybox_smoke)]
     crate::shell::busybox_smoke();
+    #[cfg(usb_xhci_smoke)]
+    crate::shell::usb_xhci_smoke();
 
     // Register NMI recovery restart context with a dedicated stack.
     let recovery_rsp = {
@@ -182,7 +184,7 @@ pub fn scheduler_loop() -> ! {
         }
         #[cfg(not(nitrogen_no_usb))]
         {
-            crate::drivers::registry::process_usb_submission_queue(1);
+            crate::drivers::registry::process_usb_submission_queue_until(1, device_phase_deadline);
             crate::drivers::registry::consume_usb_completion_queue(1);
         }
         // Pump HID + cursor after the storage/USB phases.  Those phases can
