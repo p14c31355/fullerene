@@ -19,6 +19,7 @@ mod connection_state;
 mod device;
 mod firmware;
 pub mod modern;
+mod modern_device;
 pub mod registers;
 mod rx;
 mod tx;
@@ -50,6 +51,7 @@ pub use connection_state::{
 };
 pub use device::IwlWifiDevice;
 pub use device::try_create_iwl;
+pub use modern_device::try_create_iwl_modern;
 pub use registers as regs;
 pub use types::WifiManager;
 

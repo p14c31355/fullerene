@@ -1202,6 +1202,10 @@ pub struct WifiInitContext {
     pub rx_dma_ring: Option<DmaRegion>,
     pub tx_bufs: Vec<DmaRegion>,
     pub rx_bufs: Vec<DmaRegion>,
+    /// Modern CNVi devices use the Gen2 context-info transport and do not
+    /// participate in the legacy INIT/runtime firmware split.
+    pub modern_device: bool,
+    pub modern_firmware: Option<super::modern::FirmwareBlob>,
 }
 
 // ── Error types ────────────────────

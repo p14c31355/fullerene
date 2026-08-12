@@ -24,6 +24,7 @@ pub const CSR_HW_IF_CONFIG: u32 = 0x000;
 pub const CSR_HW_RF_ID: u32 = 0x034 / 4;
 pub const CSR_GIO: u32 = 0x03C / 4;
 pub const CSR_GIO_CHICKEN_BITS: u32 = 0x100 / 4;
+pub const CSR_MAC_SHADOW_REG_CTRL: u32 = 0x0A8 / 4;
 pub const CSR_DBG_HPET_MEM: u32 = 0x240 / 4;
 pub const CSR_UCODE_GP1: u32 = 0x054 / 4;
 pub const CSR_UCODE_GP1_SET: u32 = 0x058 / 4;
@@ -134,6 +135,8 @@ pub const FH_MEM_CBBC_DATA_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_DATA_
 pub const FH_MEM_CBBC_AUX_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_AUX_QUEUE;
 pub const FH_KW_MEM_ADDR_REG: u32 = (0x1000 + 0x97C) / 4;
 pub const HBUS_TARG_WRPTR: u32 = (0x400 + 0x060) / 4;
+/// AX210/So/QuZ RFH free-RBD producer doorbell for RX queue 0.
+pub const RFH_Q0_FRBDCB_WIDX_TRG: u32 = 0x1C80 / 4;
 pub const FH_TCSR_CHNL_TX_CONFIG_BASE: u32 = (0x1000 + 0xD00) / 4;
 /// The FH has eight physical TX DMA channels. Logical scheduler queues
 /// (including command q9 and the auxiliary q11) select one of these channels

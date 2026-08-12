@@ -202,28 +202,6 @@ impl WifiRegistry {
                 continue;
             }
 
-            // AX101-family CNVi devices use a different transport and
-            // firmware family from the legacy 7265 path below. Report them
-            // without attempting a BAR read or firmware upload.
-            if device.vendor_id == 0x8086 && matches!(device.device_id, 0x4df0 | 0x54f0) {
-                let subsys = crate::pci::PciConfigSpace::read_config_dword(
-                    device.bus,
-                    device.device,
-                    device.function,
-                    0x2C,
-                );
-                log::warn!(
-                    "WiFi: Intel AX101-family CNVi detected ({:04x}:{:04x}) at {:02x}:{:02x}.{} subsys={:#010x}; modern CNVi transport/firmware is not implemented",
-                    device.vendor_id,
-                    device.device_id,
-                    device.bus,
-                    device.device,
-                    device.function,
-                    subsys,
-                );
-                continue;
-            }
-
             let info = PciWifiInfo {
                 vendor_id: device.vendor_id,
                 device_id: device.device_id,
@@ -333,6 +311,13 @@ impl WifiRegistry {
 
 /// All supported WiFi chipsets.  The first matching entry wins.
 pub static DRIVER_TABLE: &[DriverEntry] = &[
+    #[cfg(not(nitrogen_no_iwlwifi))]
+    DriverEntry {
+        vendor: 0x8086,
+        devices: &[0x4df0, 0x54f0],
+        name: "Intel AX101-family CNVi (Gen2)",
+        create: super::iwlwifi::try_create_iwl_modern,
+    },
     #[cfg(not(nitrogen_no_iwlwifi))]
     DriverEntry {
         vendor: 0x8086,
