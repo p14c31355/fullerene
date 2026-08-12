@@ -15,7 +15,7 @@
 //!   └── hlt()
 //! ```
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::VirtAddr;
 
 use crate::gui;
@@ -71,6 +71,11 @@ struct AlignedStack {
 
 #[allow(dead_code)]
 static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack { _bytes: [0; 65536] };
+
+/// Only one interactive shell is launched at a time.  The shell is a real
+/// scheduler process, so the idle scheduler can continue consuming device
+/// queues while the shell waits for input or runs a command.
+static SHELL_PROCESS_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Set the launch‑shell flag from the solvent side.
 pub fn request_shell_launch() {
@@ -238,13 +243,25 @@ pub fn scheduler_loop() -> ! {
         gui::pump_hid_cursor();
 
         // Check if the user requested a shell launch (via AppGrid / menu).
+        // Run it as a scheduler-managed kernel process instead of calling
+        // shell_main() on this stack.  The shell can then yield while waiting
+        // for input, allowing USB and other device queues to make progress.
         if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false)
+            && !SHELL_PROCESS_ACTIVE.swap(true, Ordering::AcqRel)
         {
-            petroleum::serial::_print(format_args!("Launching shell on demand\n"));
-            crate::shell::shell_main();
-            // After shell exits, re‑render the desktop and keep idling.
-            gui::render();
-            petroleum::serial::_print(format_args!("Shell exited, back to idle\n"));
+            let entry = VirtAddr::from_ptr(shell_process_main as *const ());
+            match crate::process::create_process("shell", entry, false) {
+                Ok(pid) => {
+                    petroleum::serial::serial_log(format_args!(
+                        "Launching shell process PID {}\n",
+                        pid.0
+                    ));
+                }
+                Err(error) => {
+                    SHELL_PROCESS_ACTIVE.store(false, Ordering::Release);
+                    log::error!("Failed to launch shell process: {:?}", error);
+                }
+            }
         }
 
         // The timer interrupt intentionally does not preempt. Give ready
@@ -265,6 +282,7 @@ pub fn scheduler_loop() -> ! {
 pub extern "C" fn shell_process_main() -> ! {
     log::info!("Shell process started");
     crate::shell::shell_main();
+    SHELL_PROCESS_ACTIVE.store(false, Ordering::Release);
     crate::process::terminate_process(crate::process::current_pid().unwrap(), 0);
     petroleum::halt_loop();
 }

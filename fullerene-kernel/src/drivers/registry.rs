@@ -701,6 +701,16 @@ impl UsbHostDriver for UsbHostCtl {
 #[cfg(not(nitrogen_no_usb))]
 const MAX_USB_POLL_RETRIES: u8 = 64;
 
+/// Keep the explicit shell command synchronous.  `usb_rescan` is an
+/// activation boundary, while ordinary service polling remains scheduler-
+/// owned and asynchronous.  This bounded path is used only by the explicit
+/// command and gives its caller a definite completion result.
+#[cfg(not(nitrogen_no_usb))]
+const MAX_USB_SYNC_POLL_ATTEMPTS: u8 = 12;
+
+#[cfg(not(nitrogen_no_usb))]
+const USB_SYNC_POLL_INTERVAL_MS: u64 = 250;
+
 /// Keep the scheduler-owned rescan observable on real hardware. `log::info!`
 /// normally reaches klog too, but these short, stable markers are easier to
 /// identify in Klog Live around potentially non-returning MMIO transactions.
@@ -1604,6 +1614,39 @@ fn activate_usb() -> bool {
     }
 }
 
+/// Activate USB and poll for storage from the explicit `usb_rescan` command.
+///
+/// The shell is now an independent kernel process, so this bounded operation
+/// cannot strand the scheduler loop.  Keep it separate from the normal USB
+/// submission queue: service callbacks must remain non-blocking, while an
+/// explicit rescan needs to report whether enumeration completed.
+#[cfg(not(nitrogen_no_usb))]
+fn usb_poll_and_register() {
+    usb_rescan_diag("poll: activate begin");
+    if !activate_usb() {
+        usb_rescan_diag("poll: activate failed");
+        return;
+    }
+    usb_rescan_diag("poll: activate complete");
+
+    for attempt in 0..MAX_USB_SYNC_POLL_ATTEMPTS {
+        log::info!("USB: poll #{}", attempt + 1);
+        usb_rescan_diag(&alloc::format!("poll: attempt {} begin", attempt + 1));
+        if poll_usb() || LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0 {
+            log::info!("USB: device detected after {} polls", attempt + 1);
+            usb_rescan_diag(&alloc::format!(
+                "poll: attempt {} registered device",
+                attempt + 1
+            ));
+            break;
+        }
+        usb_rescan_diag(&alloc::format!("poll: attempt {} no device", attempt + 1));
+        if attempt + 1 < MAX_USB_SYNC_POLL_ATTEMPTS {
+            nitrogen::timing::delay_ms(USB_SYNC_POLL_INTERVAL_MS);
+        }
+    }
+}
+
 /// Prepare a USB context for the scheduler-owned rescan.
 #[cfg(not(nitrogen_no_usb))]
 fn prepare_usb_rescan() -> bool {
@@ -1636,21 +1679,35 @@ fn prepare_usb_rescan() -> bool {
     true
 }
 
-/// Queue a full USB re-enumeration (clear + re-scan). Does NOT mount.
+/// Full USB re-enumeration (clear + re-scan). Does NOT mount.
 ///
-/// Controller teardown and activation are both scheduler-owned operations.
-/// The returned value reports whether the request was accepted, not whether a
-/// storage device has already been registered.
+/// This explicit command is intentionally synchronous and returns whether a
+/// storage device was registered.  The regular service callback still uses
+/// the scheduler-owned asynchronous queue below.
 #[cfg(not(nitrogen_no_usb))]
 pub fn rescan_usb_all() -> bool {
-    usb_rescan_diag("queue begin");
-    let accepted = enqueue_usb_rescan();
-    usb_rescan_diag(if accepted {
-        "queue accepted"
-    } else {
-        "queue rejected"
-    });
-    accepted
+    usb_rescan_diag("prepare begin");
+    if !prepare_usb_rescan() {
+        usb_rescan_diag("prepare rejected");
+        return false;
+    }
+    usb_rescan_diag("prepare complete; context replaced");
+
+    // Replacing an active controller parks the old context so normal
+    // asynchronous paths do not drop it in shell/input context.  The
+    // explicit command is the activation boundary, so retire it here before
+    // reinitialising the same hardware.
+    usb_rescan_diag("retire old context begin");
+    let retired = USB_RETIRED_CTX.lock().take();
+    drop(retired);
+    usb_rescan_diag("retire old context complete");
+
+    usb_rescan_diag("activate and poll begin");
+    usb_poll_and_register();
+    usb_rescan_diag("activate and poll complete");
+    let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
+    let _ = crate::klog::flush_to_vfs();
+    registered
 }
 
 /// Asynchronous USB re-enumeration: clears existing USB block devices and
