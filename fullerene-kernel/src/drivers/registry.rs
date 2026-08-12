@@ -707,15 +707,13 @@ const MAX_USB_POLL_RETRIES: u8 = 64;
 #[cfg(not(nitrogen_no_usb))]
 fn usb_rescan_diag(stage: &str) {
     crate::klog_fmt!("[USB-RESCAN] {}\n", stage);
-    // Klog Live is a framebuffer surface and can stop repainting when the
-    // machine wedges in a non-posted PCIe/MMIO access.  Mirror the boundary
-    // to the serial stream before attempting the immediate repaint so the
-    // last completed step remains recoverable on physical machines.
-    petroleum::serial::serial_log(format_args!("[USB-RESCAN] {}\n", stage));
+    // Do not synchronously write the UART here.  GemiBook-class machines may
+    // have no usable COM1, and a diagnostic path must never wait on a
+    // disconnected serial transmitter. Klog and the lock-free taskbar ring
+    // remain available for on-screen/post-boot inspection.
     // Publish a compact version through the normal compositor/taskbar path.
-    // This is the primary on-screen indicator; the direct boot diagnostic
-    // below remains a fallback for a machine that stops before the next GUI
-    // frame can be rendered.
+    // This is the primary on-screen indicator. USB runtime diagnostics must
+    // never repaint the boot splash after the desktop owns the framebuffer.
     let taskbar_status = match stage {
         "queue begin" => "queue begin",
         "queue accepted" => "queue accepted",
@@ -739,21 +737,6 @@ fn usb_rescan_diag(stage: &str) {
         _ => stage,
     };
     nitrogen::debug_status!("USB", "{}", taskbar_status);
-    // Keep the last activation boundary visible even when the compositor or
-    // Klog Live window cannot repaint on the target machine.
-    let screen_hint = match stage {
-        "activate: USBContext::enable begin" | "enable: init_controllers begin" => {
-            Some(b"USB INIT".as_slice())
-        }
-        "enable: pci scan begin" | "enable: pci scan complete" => Some(b"USB PCI".as_slice()),
-        "enable: xhci init begin" | "enable: xhci construct returned" => {
-            Some(b"USB XHCI".as_slice())
-        }
-        _ => None,
-    };
-    if let Some(screen_hint) = screen_hint {
-        crate::boot_stage::draw_hang_diagnostic(screen_hint);
-    }
     // Do not force a direct Klog Live repaint here. This callback runs from
     // both the shell and scheduler paths; on some machines the framebuffer
     // path can block immediately after publishing `queue accepted`. The
@@ -1594,9 +1577,6 @@ pub fn poll_usb() -> bool {
                 usb_rescan_diag("poll: controller not enabled");
                 return false;
             }
-            usb_rescan_diag("poll: boot hint begin");
-            crate::boot_stage::draw_step_hint(b"usb_poll");
-            usb_rescan_diag("poll: boot hint returned");
             usb_rescan_diag("poll: controller poll begin");
             ctx.poll_with_diagnostic(usb_rescan_diag);
             usb_rescan_diag("poll: controller poll returned");
@@ -1655,7 +1635,6 @@ fn activate_usb() -> bool {
         Ok(())
     } else {
         usb_rescan_diag("activate: USBContext::enable begin");
-        crate::boot_stage::draw_step_hint(b"usb_init");
         let result = ctx.enable_with_diagnostic(Some(usb_rescan_diag));
         usb_rescan_diag("activate: USBContext::enable returned");
         result

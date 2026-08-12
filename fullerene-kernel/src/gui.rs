@@ -319,6 +319,9 @@ pub fn runtime_tick(now: u64) {
     crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: tick_core begin");
     solvent::tick_core(now);
     crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: tick_core returned");
+    // tick_core has returned, so it owns no runtime guard. It is now safe to
+    // take the short-lived runtime guard for frame selection. The framebuffer
+    // guard below is acquired only after this guard is dropped.
     let full_frame = solvent::consume_frame_due();
     let cursor_only = !full_frame && solvent::cursor_update_due();
     crate::drivers::registry::usb_rescan_scheduler_diag(if full_frame {
@@ -337,8 +340,11 @@ pub fn runtime_tick(now: u64) {
         };
         let composite_start = unsafe { core::arch::x86_64::_rdtsc() };
         crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: framebuffer begin");
+        // Do not emit USB diagnostics while the framebuffer/kernel lock is
+        // held. Diagnostics feed the compositor's taskbar and klog path;
+        // keeping them outside this closure preserves the lock boundary.
+        crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: render begin");
         let rendered = crate::contexts::framebuffer::with_framebuffer(|framebuffer| {
-            crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: render begin");
             if full_frame {
                 solvent::render(framebuffer);
             } else {
@@ -352,12 +358,15 @@ pub fn runtime_tick(now: u64) {
             );
         }
         if rendered.is_none() {
-            crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
+            crate::drivers::registry::usb_rescan_scheduler_diag(
+                "GUI runtime: framebuffer lock busy; frame deferred",
+            );
+        } else {
+            finish_frame(video_frames);
+            crate::metrics::record_frame_ticks(
+                unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
+            );
         }
-        finish_frame(video_frames);
-        crate::metrics::record_frame_ticks(
-            unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
-        );
     }
 }
 

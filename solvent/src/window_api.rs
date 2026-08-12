@@ -394,6 +394,7 @@ pub fn ensure_terminal_window() -> Option<WindowId> {
         .wm
         .create_titled_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
     runtime.term_window = Some(id);
+    crate::menu_actions::layout_klog_live_window(runtime);
     runtime.desktop.force_full_redraw();
     runtime.frame_due = true;
     runtime.term_dirty = true;
