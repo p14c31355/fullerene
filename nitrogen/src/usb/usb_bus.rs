@@ -536,6 +536,7 @@ fn parse_mass_storage_config(
     // Prefer BOT; fall back to UAS (many UAS devices also accept BOT).
     let mut bot_interface = None;
     let mut uas_interface = None;
+    let mut uas_candidate = None;
     let mut ep_out = None;
     let mut ep_in = None;
     // Track which interface the current endpoints belong to.
@@ -558,6 +559,8 @@ fn parse_mass_storage_config(
 
             current_interface_bot = false;
             current_interface_uas = false;
+            bot_interface = None;
+            uas_interface = None;
 
             if class == MSC_CLASS && subclass == MSC_SUBCLASS_SCSI {
                 if protocol == MSC_PROTOCOL_BOT {
@@ -587,10 +590,8 @@ fn parse_mass_storage_config(
                     if ep_in.is_none() {
                         ep_in = Some((ep_addr, mps));
                     }
-                } else {
-                    if ep_out.is_none() {
-                        ep_out = Some((ep_addr, mps));
-                    }
+                } else if ep_out.is_none() {
+                    ep_out = Some((ep_addr, mps));
                 }
             }
         }
@@ -611,17 +612,18 @@ fn parse_mass_storage_config(
                 ep_in_mps: in_mps,
             });
         }
+        if current_interface_uas
+            && let (Some(iface), Some(out), Some(input)) = (uas_interface, ep_out, ep_in)
+        {
+            uas_candidate = Some((iface, out, input));
+        }
 
         offset += dlen;
     }
 
     // No BOT interface found.  Fall back to UAS using BOT protocol — most
     // UAS-capable devices also accept BOT commands on their bulk endpoints.
-    // The endpoint pair collected above belongs to the UAS interface if
-    // `current_interface_uas` was the last interface seen.
-    if let (Some(iface), Some((out, out_mps)), Some((input, in_mps))) =
-        (uas_interface, ep_out, ep_in)
-    {
+    if let Some((iface, (out, out_mps), (input, in_mps))) = uas_candidate {
         log::info!(
             "USB: falling back to BOT on UAS interface {} (endpoints out={:#04x} in={:#04x})",
             iface,
@@ -800,6 +802,11 @@ mod tests {
         0x81, 2, 0, 2, 0,
     ];
 
+    const BOT_WITHOUT_ENDPOINTS_THEN_UAS: [u8; 41] = [
+        9, 2, 41, 0, 2, 2, 0, 0x80, 50, 9, 4, 0, 0, 0, 8, 6, 0x50, 0, 9, 4, 1, 0, 2, 8, 6, 0x62, 0,
+        7, 5, 2, 2, 0, 2, 0, 7, 5, 0x81, 2, 0, 2, 0,
+    ];
+
     #[test]
     fn parses_bot_interface_and_reported_endpoints() {
         let config = parse_mass_storage_config(&MSC_CONFIG, MSC_CONFIG.len()).unwrap();
@@ -815,6 +822,19 @@ mod tests {
         assert_eq!(config.interface, 0);
         // Protocol is reported as BOT even though the interface declares UAS,
         // because we use the BOT wire protocol as a fallback.
+        assert_eq!(config.protocol, MSC_PROTOCOL_BOT);
+        assert_eq!((config.ep_out, config.ep_out_mps), (2, 512));
+        assert_eq!((config.ep_in, config.ep_in_mps), (0x81, 512));
+    }
+
+    #[test]
+    fn binds_fallback_endpoints_to_their_uas_interface() {
+        let config = parse_mass_storage_config(
+            &BOT_WITHOUT_ENDPOINTS_THEN_UAS,
+            BOT_WITHOUT_ENDPOINTS_THEN_UAS.len(),
+        )
+        .unwrap();
+        assert_eq!(config.interface, 1);
         assert_eq!(config.protocol, MSC_PROTOCOL_BOT);
         assert_eq!((config.ep_out, config.ep_out_mps), (2, 512));
         assert_eq!((config.ep_in, config.ep_in_mps), (0x81, 512));

@@ -765,7 +765,8 @@ impl USBContext {
                 let found = self.enumerate_hub_ports_xhci(ctrl_idx, slot_id, dev_idx);
                 if !found {
                     let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
-                    xhci.retry_device_candidate(slot_id, dev_idx);
+                    let _ = xhci.disable_slot(slot_id);
+                    xhci.remove_device_candidate(dev_idx);
                 }
             }
             Err(error) => {
@@ -843,8 +844,9 @@ impl USBContext {
         });
         if registered {
             log::info!(
-                "USB: xHCI mass-storage device ready ctrl={} slot={} block_size={} total_blocks={}",
+                "USB: xHCI mass-storage device ready ctrl={} slot={} dev_addr={} block_size={} total_blocks={}",
                 ctrl_idx,
+                slot_id,
                 dev_addr,
                 block_size,
                 total_blocks,
@@ -1043,6 +1045,8 @@ impl USBContext {
                     configurations: 0,
                     endpoints: alloc::vec::Vec::new(),
                     port_index: root_port as u32 - 1,
+                    parent_hub_slot: Some(hub_slot_id),
+                    downstream_port: Some(port),
                 });
             }
             let child_dev_idx = {
@@ -1067,9 +1071,7 @@ impl USBContext {
                     let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
                     let _ = xhci.disable_slot(child_slot);
                     // Remove the placeholder.
-                    if child_dev_idx < xhci.devices.len() {
-                        xhci.devices.remove(child_dev_idx);
-                    }
+                    xhci.remove_device_candidate(child_dev_idx);
                     continue;
                 }
             };
@@ -1083,6 +1085,7 @@ impl USBContext {
                 {
                     log::warn!("USB: hub port {} bulk OUT config failed", port);
                     let _ = xhci.disable_slot(child_slot);
+                    xhci.remove_device_candidate(child_dev_idx);
                     continue;
                 }
                 if xhci
@@ -1091,6 +1094,7 @@ impl USBContext {
                 {
                     log::warn!("USB: hub port {} bulk IN config failed", port);
                     let _ = xhci.disable_slot(child_slot);
+                    xhci.remove_device_candidate(child_dev_idx);
                     continue;
                 }
             }
@@ -1106,6 +1110,7 @@ impl USBContext {
                     Err(error) => {
                         log::warn!("USB: hub port {} READ CAPACITY failed: {}", port, error);
                         let _ = xhci.disable_slot(child_slot);
+                        xhci.remove_device_candidate(child_dev_idx);
                         continue;
                     }
                 }

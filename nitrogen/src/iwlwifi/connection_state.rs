@@ -437,7 +437,8 @@ fn perform_init_step() {
                 // 7265D share PCI IDs, so the PCI revision byte is not enough.
                 ctx.fw_candidates = &[];
                 ctx.fw_candidate_idx = 0;
-                ctx.modern_device = matches!(raw.device_id, 0x4df0 | 0x54f0);
+                ctx.modern_device =
+                    super::registers::IWL_MODERN_CNVI_DEVICE_IDS.contains(&raw.device_id);
                 ctx.modern_firmware = None;
             }
             set_init_phase(WifiInitPhase::MmioInit);
@@ -632,9 +633,8 @@ fn perform_init_step() {
                 .as_ref()
                 .map(|d| d.device_id)
                 .unwrap_or(0);
-            if matches!(device_id, 0x4df0 | 0x54f0) {
-                let firmware = super::modern::select_firmware(device_id);
-                if firmware.is_none() {
+            if super::registers::IWL_MODERN_CNVI_DEVICE_IDS.contains(&device_id) {
+                let Some(firmware) = super::modern::select_firmware(device_id) else {
                     mmio::disarm_mmio_watchdog();
                     log::error!(
                         "iwlwifi: no Gen2 firmware image matches modern device {:#06x}",
@@ -642,8 +642,7 @@ fn perform_init_step() {
                     );
                     set_init_phase(WifiInitPhase::Failed);
                     return;
-                }
-                let firmware = firmware.unwrap();
+                };
                 log::info!(
                     "iwlwifi: modern device {:04x} selected {} API {}",
                     device_id,
@@ -657,7 +656,8 @@ fn perform_init_step() {
                     ctx.modern_firmware = Some(firmware);
                     ctx.fw_candidates = &[];
                     ctx.fw_candidate_idx = 0;
-                    ctx.mac = Some([0x02, 0, 0, 0, 0, 1]);
+                    ctx.hw_rev = hw_rev;
+                    ctx.mac = None;
                 }
                 debug::print("iwlwifi", "step: modern_probe_done");
                 set_init_phase(WifiInitPhase::DmaAlloc);
@@ -722,9 +722,14 @@ fn perform_init_step() {
                     };
                     (ctx.mmio, pci, driver_ctx)
                 };
-                let Some(driver) =
-                    super::modern_device::try_create_iwl_modern(driver_ctx, mmio, 0, pci)
-                else {
+                let health = WIFI_INIT_CTX.lock().health;
+                if let Some((pci_bdf, bridge_bdf)) = health.map(|h| (h.bdf(), h.upstream_bridge()))
+                {
+                    mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+                }
+                let driver = super::modern_device::try_create_iwl_modern(driver_ctx, mmio, 0, pci);
+                mmio::disarm_mmio_watchdog();
+                let Some(driver) = driver else {
                     log::error!("iwlwifi: failed to create AX101 Gen2 transport");
                     set_init_phase(WifiInitPhase::Failed);
                     return;

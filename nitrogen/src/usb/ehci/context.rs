@@ -224,6 +224,7 @@ impl EhciContext {
             self.disable_bus_master();
             return;
         }
+        op.write(OP_USBINTR, 0);
         if command & (USBCMD_RS | USBCMD_ASSE) == 0 {
             return;
         }
@@ -236,8 +237,8 @@ impl EhciContext {
         .is_ok();
         if !halted {
             log::warn!("EHCI: controller did not halt during teardown; disabling DMA");
-            self.disable_bus_master();
         }
+        self.disable_bus_master();
     }
 
     fn disable_bus_master(&self) {
@@ -328,6 +329,8 @@ impl EhciContext {
                 configurations: 0,
                 endpoints: Vec::new(),
                 port_index: port_idx,
+                parent_hub_slot: None,
+                downstream_port: None,
             });
             self.ports.mark_processed(port_idx);
         }

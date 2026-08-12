@@ -272,7 +272,7 @@ pub fn pump_hid_cursor() {
         .runtime()
         .as_ref()
         .is_some_and(|runtime| runtime.cursor_redraw_from.is_some());
-    if cursor_only {
+    if cursor_only && !already_suspended {
         RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
         if let Some(render_fn) = *CURSOR_RENDER_FN.lock() {
             render_fn();
@@ -293,7 +293,7 @@ pub fn runtime_tick_no_fb() {
         // Pump only input and the already-due compositor work here; do not
         // re-enter tick_core(), which could recursively launch another file
         // or shell while the outer tick is still active.
-        nitrogen::i2c_hid::poll_input();
+        nitrogen::i2c_hid::service_input();
         crate::poll_mouse_state();
         crate::poll_keyboard();
         process_pointer_motion_only();
@@ -341,11 +341,8 @@ pub fn runtime_tick_no_fb() {
             if let Some(render_fn) = render_fn {
                 render_fn();
             }
-            RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
         }
-        if !do_render && !cursor_only {
-            RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
-        }
+        RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
         return;
     }
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);

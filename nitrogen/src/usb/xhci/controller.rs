@@ -235,9 +235,11 @@ impl XhciContext {
             .is_ok();
             if !halted {
                 log::warn!("xHCI: controller did not halt during teardown; disabling DMA");
-                self.disable_bus_master();
             }
         }
+        // Always clear PCI bus mastering before the DMA rings are released,
+        // including the already-halted and no-op shutdown paths.
+        self.disable_bus_master();
     }
 
     fn disable_bus_master(&self) {
@@ -338,6 +340,8 @@ impl XhciContext {
                 configurations: 0,
                 endpoints: Vec::new(),
                 port_index: port_idx,
+                parent_hub_slot: None,
+                downstream_port: None,
             });
             added += 1;
             if let Some(port) = self.ports.get_mut(port_idx) {

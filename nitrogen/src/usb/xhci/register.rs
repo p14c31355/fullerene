@@ -108,21 +108,17 @@ impl Mmio {
         }
     }
 
+    unsafe fn new_opt(base: usize, size: usize, health: Option<PciHealth>) -> Self {
+        match health {
+            Some(health) => unsafe { Self::new_checked(base, size, health) },
+            None => unsafe { Self::new(base, size) },
+        }
+    }
+
     fn read32(&self, off: usize) -> u32 {
         let value = match self.health.as_ref() {
             Some(health) => {
-                // Sealant validates the mapped range and alignment; the
-                // checked MMIO path additionally performs the PCI presence
-                // probe and arms the platform NMI recovery before the
-                // non-posted load. A broken endpoint must never strand the
-                // interactive shell in an unbounded xHCI register read.
-                crate::mmio::arm_mmio_watchdog(0, health.bdf(), health.upstream_bridge());
-                let result = self.region.checked_read32(off, Some(health));
-                if crate::mmio::mmio_watchdog_armed() {
-                    // The preflight can reject a vanished device before the
-                    // common helper gets to its normal disarm path.
-                    crate::mmio::disarm_mmio_watchdog();
-                }
+                let result = crate::mmio::checked_read32_with_watchdog(&self.region, off, health);
                 match result {
                     SafeReadResult::Value(value) => value,
                     SafeReadResult::DeviceGone => {
@@ -237,10 +233,7 @@ impl CapabilityRegisters {
     /// `mmio` must identify a live, readable MMIO mapping of at least `size`
     /// bytes for the duration of this operation.
     pub unsafe fn read(mmio: usize, size: usize, health: Option<PciHealth>) -> Option<Self> {
-        let registers = match health {
-            Some(health) => unsafe { Mmio::new_checked(mmio, size, health) },
-            None => unsafe { Mmio::new(mmio, size) },
-        };
+        let registers = unsafe { Mmio::new_opt(mmio, size, health) };
         let header = registers.read32(CAP_CAPLENGTH);
         let caplength = header as u8;
         if header == u32::MAX || caplength < 0x20 || caplength & 3 != 0 {
@@ -353,6 +346,12 @@ impl OperationalRegisters {
         Self(unsafe { Mmio::new(base, size) })
     }
 
+    /// Create a checked operational-register view.
+    ///
+    /// # Safety
+    ///
+    /// `base..base + size` must be a live, readable and writable MMIO mapping
+    /// validated for `health`.
     pub unsafe fn new_checked(base: usize, size: usize, health: PciHealth) -> Self {
         Self(unsafe { Mmio::new_checked(base, size, health) })
     }
@@ -444,6 +443,12 @@ impl RuntimeRegisters {
         Self(unsafe { Mmio::new(base, size) })
     }
 
+    /// Create a checked runtime-register view.
+    ///
+    /// # Safety
+    ///
+    /// `base..base + size` must be a live, readable and writable MMIO mapping
+    /// validated for `health`.
     pub unsafe fn new_checked(base: usize, size: usize, health: PciHealth) -> Self {
         Self(unsafe { Mmio::new_checked(base, size, health) })
     }
@@ -471,6 +476,12 @@ impl DoorbellRegisters {
         Self(unsafe { Mmio::new(base, size) })
     }
 
+    /// Create a checked doorbell-register view.
+    ///
+    /// # Safety
+    ///
+    /// `base..base + size` must be a live, readable and writable MMIO mapping
+    /// validated for `health`.
     pub unsafe fn new_checked(base: usize, size: usize, health: PciHealth) -> Self {
         Self(unsafe { Mmio::new_checked(base, size, health) })
     }
@@ -514,12 +525,7 @@ fn next_extended_cap(offset: usize, next: u8) -> Option<usize> {
 }
 
 pub fn dump_extended_capabilities(mmio_base: usize, ext_cap_ptr: u16, health: Option<PciHealth>) {
-    let m = match health {
-        Some(health) => unsafe {
-            Mmio::new_checked(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE, health)
-        },
-        None => unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) },
-    };
+    let m = unsafe { Mmio::new_opt(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE, health) };
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
     while extended_cap_in_bounds(off, 12) {
@@ -573,12 +579,7 @@ pub fn parse_port_protocols(
     n_ports: u32,
     health: Option<PciHealth>,
 ) -> alloc::vec::Vec<u32> {
-    let m = match health {
-        Some(health) => unsafe {
-            Mmio::new_checked(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE, health)
-        },
-        None => unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) },
-    };
+    let m = unsafe { Mmio::new_opt(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE, health) };
     let n_words = ((n_ports + 31) / 32).max(1) as usize;
     // Unknown ports conservatively default to USB2. Issuing WPR to an
     // unclassified USB2 port can wedge its PHY.
@@ -641,12 +642,7 @@ pub fn try_legacy_handoff(
     const LEGACY_DISABLE_SMI: u32 = (0x7 << 1) | (0xFF << 5) | (0x7 << 17);
     const LEGACY_SMI_EVENTS: u32 = 0x7 << 29;
 
-    let m = match health {
-        Some(health) => unsafe {
-            Mmio::new_checked(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE, health)
-        },
-        None => unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) },
-    };
+    let m = unsafe { Mmio::new_opt(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE, health) };
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
     while extended_cap_in_bounds(off, 8) {
@@ -658,6 +654,10 @@ pub fn try_legacy_handoff(
         if ec_id == 1 {
             let cap_base = off * 4;
             let legsup = m.read32(cap_base);
+            if legsup == u32::MAX {
+                log::warn!("xHCI: failed to read BIOS ownership register");
+                return Err(crate::DriverError::DeviceFault);
+            }
             if legsup & BIOS_OWNED == 0 {
                 let control = m.read32(cap_base + 4);
                 m.write32(

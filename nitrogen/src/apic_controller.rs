@@ -56,6 +56,9 @@ pub struct ApicController {
 
     /// Cached maximum redirection entry index.
     max_redirection_entry: u8,
+
+    /// Global System Interrupt number assigned to RTE index zero by MADT.
+    gsi_base: u32,
 }
 
 impl ApicController {
@@ -89,6 +92,7 @@ impl ApicController {
             local_apic_id,
             ioapic_version,
             max_redirection_entry,
+            gsi_base: 0,
         }
     }
 
@@ -241,6 +245,17 @@ impl ApicController {
         self.ioapic_write(IOAPIC_REDTBL_START + index * 2 + 1, entry.upper);
     }
 
+    /// Set the global interrupt base reported by the MADT for this I/O APIC.
+    pub fn set_gsi_base(&mut self, gsi_base: u32) {
+        self.gsi_base = gsi_base;
+    }
+
+    fn rte_index_for_gsi(&self, gsi: u32) -> Option<u8> {
+        let index = gsi.checked_sub(self.gsi_base)?;
+        let index = u8::try_from(index).ok()?;
+        (index <= self.max_redirection_entry).then_some(index)
+    }
+
     /// Configure a platform interrupt identified by its global system
     /// interrupt number.  ACPI GPIO interrupts are commonly level-triggered
     /// and active-low, so callers provide those electrical properties instead
@@ -252,12 +267,9 @@ impl ApicController {
         low_active: bool,
         level_triggered: bool,
     ) -> bool {
-        let Ok(index) = u8::try_from(gsi) else {
+        let Some(index) = self.rte_index_for_gsi(gsi) else {
             return false;
         };
-        if index > self.max_redirection_entry {
-            return false;
-        }
         let entry = IoApicRedirectionEntry::new(
             vector,
             0,
@@ -274,12 +286,9 @@ impl ApicController {
     /// Temporarily mask or unmask a GSI while servicing a level-triggered
     /// device interrupt.
     pub fn set_gsi_masked(&self, gsi: u32, masked: bool) -> bool {
-        let Ok(index) = u8::try_from(gsi) else {
+        let Some(index) = self.rte_index_for_gsi(gsi) else {
             return false;
         };
-        if index > self.max_redirection_entry {
-            return false;
-        }
         let mut entry = self.read_rte(index);
         entry.set_mask(masked);
         self.write_rte(index, entry);

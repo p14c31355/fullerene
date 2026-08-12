@@ -121,7 +121,9 @@ struct ModernResources {
     rx_status: Option<DmaRegion>,
     rx_bufs: Vec<DmaRegion>,
     command_bufs: Vec<Option<DmaRegion>>,
-    tx_command_bufs: Vec<(u16, u16, DmaRegion)>,
+    // One entry per possible (queue, slot). Slot reuse replaces and frees the
+    // previous DMA buffer instead of growing an append-only completion list.
+    tx_command_bufs: Vec<Option<DmaRegion>>,
     prph_info: Option<DmaRegion>,
     prph_scratch: Option<DmaRegion>,
     context_info: Option<DmaRegion>,
@@ -143,7 +145,7 @@ impl ModernResources {
             rx_status: None,
             rx_bufs: Vec::new(),
             command_bufs: (0..COMMAND_QUEUE_SIZE).map(|_| None).collect(),
-            tx_command_bufs: Vec::new(),
+            tx_command_bufs: (0..32 * 256).map(|_| None).collect(),
             prph_info: None,
             prph_scratch: None,
             context_info: None,
@@ -192,8 +194,10 @@ impl Drop for ModernResources {
                 region.free(self.ctx);
             }
         }
-        for (_, _, region) in &mut self.tx_command_bufs {
-            region.free(self.ctx);
+        for region in &mut self.tx_command_bufs {
+            if let Some(mut region) = region.take() {
+                region.free(self.ctx);
+            }
         }
     }
 }
@@ -477,9 +481,9 @@ impl ModernIwlWifiDevice {
             let bytes = rx_free.as_mut_slice();
             bytes[offset..offset + 2].copy_from_slice(&(rbid as u16).to_le_bytes());
             bytes[offset + 8..offset + 16].copy_from_slice(&address.to_le_bytes());
-            rx_free.flush_for_device();
             resources.rx_bufs.push(buffer);
         }
+        rx_free.flush_for_device();
         resources.rx_free = Some(rx_free);
         resources.rx_used = Some(rx_used);
         resources.rx_status = Some(rx_status);
@@ -619,7 +623,7 @@ impl ModernIwlWifiDevice {
         tx_queue.as_mut_slice()[tfd_offset..tfd_offset + tfd.len()].copy_from_slice(&tfd);
         tx_queue.flush_for_device();
         mmio::write_barrier();
-        self.tx_write_ptr = self.tx_write_ptr.wrapping_add(1) & 0x7f;
+        self.tx_write_ptr = self.tx_write_ptr.wrapping_add(1) & (COMMAND_QUEUE_SIZE as u16 - 1);
         write32(
             self.mmio,
             HBUS_TARG_WRPTR,
@@ -683,6 +687,11 @@ impl ModernIwlWifiDevice {
             .rx_status
             .as_ref()
             .ok_or(crate::DriverError::NotReady)?
+            .flush_for_cpu();
+        resources
+            .rx_status
+            .as_ref()
+            .ok_or(crate::DriverError::NotReady)?
             .read_into(&mut status);
         let closed = u16::from_le_bytes(status) & ring_mask;
         if self.rx_read_ptr == closed {
@@ -713,6 +722,7 @@ impl ModernIwlWifiDevice {
 
         let mut packet = Vec::new();
         packet.resize(modern::GEN2_RX_BUFFER_SIZE, 0);
+        resources.rx_bufs[buffer_index].flush_for_cpu();
         resources.rx_bufs[buffer_index].read_into(&mut packet);
         let buffer_dma = resources.rx_bufs[buffer_index].dma_iova();
 
@@ -874,13 +884,11 @@ impl ModernIwlWifiDevice {
         let Some(resources) = self.resources.as_mut() else {
             return;
         };
-        if let Some(position) = resources
-            .tx_command_bufs
-            .iter()
-            .position(|(queue, slot, _)| *queue == queue_id && *slot == index)
-        {
-            let (_, _, mut buffer) = resources.tx_command_bufs.swap_remove(position);
-            buffer.free(self.ctx);
+        let slot = usize::from(queue_id) * 256 + usize::from(index);
+        if slot < resources.tx_command_bufs.len() {
+            if let Some(mut buffer) = resources.tx_command_bufs[slot].take() {
+                buffer.free(self.ctx);
+            }
         }
     }
 
@@ -989,7 +997,7 @@ impl ModernIwlWifiDevice {
         };
         let tfd =
             modern::encode_tfh_tfd(&tbs[..tb_count]).map_err(|_| crate::DriverError::Protocol)?;
-        let byte_count = (frame_len as u16) | (0u16 << 14);
+        let byte_count = frame_len as u16;
         let resources = self
             .resources
             .as_mut()
@@ -1023,9 +1031,10 @@ impl ModernIwlWifiDevice {
             .copy_from_slice(&byte_count.to_le_bytes());
         tx_queue.flush_for_device();
         byte_table.flush_for_device();
-        resources
-            .tx_command_bufs
-            .push((queue_id, index as u16, command_buf));
+        let tx_slot = usize::from(queue_id) * 256 + index;
+        if let Some(mut previous) = resources.tx_command_bufs[tx_slot].replace(command_buf) {
+            previous.free(self.ctx);
+        }
 
         let next = write_ptr.wrapping_add(1) & (queue_size as u16 - 1);
         if management {
@@ -1143,7 +1152,7 @@ impl ModernIwlWifiDevice {
         let payload = if self.add_sta_command_version >= 12 {
             modern::encode_add_sta_cmd_v10(0, 0, bssid, sta_id, 0, 0)
         } else {
-            modern::encode_add_sta_cmd_v7(0, 0, bssid, sta_id, 0)
+            modern::encode_add_sta_cmd_v7(0, 0, bssid, sta_id)
         };
         let sequence = self.submit_wide_command(
             ADD_STA_CMD,
@@ -1173,7 +1182,7 @@ impl ModernIwlWifiDevice {
                 self.release_command_buffer(sequence);
                 let response = modern::decode_tx_queue_config_response(payload)
                     .map_err(|_| crate::DriverError::Protocol)?;
-                if response.flags != 0 {
+                if response.flags != 0 || response.queue_number > 0x1f {
                     return Err(crate::DriverError::Protocol);
                 }
                 self.mgmt_tx_queue_id = Some(response.queue_number);
@@ -1193,7 +1202,7 @@ impl ModernIwlWifiDevice {
                 self.release_command_buffer(sequence);
                 let response = modern::decode_tx_queue_config_response(payload)
                     .map_err(|_| crate::DriverError::Protocol)?;
-                if response.flags != 0 {
+                if response.flags != 0 || response.queue_number > 0x1f {
                     return Err(crate::DriverError::Protocol);
                 }
                 self.data_tx_queue_id = Some(response.queue_number);
@@ -1886,7 +1895,7 @@ impl crate::wifi::WifiDriver for ModernIwlWifiDevice {
                 // API89's command table selects ADD_STA v7. Linux allocates
                 // the first non-reserved station ID for this internal AUX
                 // station; ID 0 is reserved for the station interface.
-                let payload = modern::encode_add_sta_cmd_v7(4, 0, [0; 6], self.aux_sta_id, 0);
+                let payload = modern::encode_add_sta_cmd_v7(4, 0, [0; 6], self.aux_sta_id);
                 let sequence = self.submit_wide_command(
                     ADD_STA_CMD,
                     LONG_GROUP,

@@ -314,7 +314,7 @@ pub static DRIVER_TABLE: &[DriverEntry] = &[
     #[cfg(not(nitrogen_no_iwlwifi))]
     DriverEntry {
         vendor: 0x8086,
-        devices: &[0x4df0, 0x54f0],
+        devices: super::iwlwifi::registers::IWL_MODERN_CNVI_DEVICE_IDS,
         name: "Intel AX101-family CNVi (Gen2)",
         create: super::iwlwifi::try_create_iwl_modern,
     },

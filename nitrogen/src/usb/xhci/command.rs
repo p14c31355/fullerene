@@ -46,7 +46,12 @@ impl XhciContext {
             (slot.ep0_ring.phys, slot.in_ctx_phys)
         };
 
-        if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
+        let in_ctx = self
+            .device
+            .slots
+            .input_ctx_mut(self.driver_ctx, slot_id)
+            .ok_or(crate::DriverError::OutOfMemory)?;
+        {
             in_ctx.setup_address_device(root_port, speed_id, ep0_ring_phys);
             log::info!(
                 "xHCI: Address Device slot={} port={} speed={} in_ctx={:#x} add={:#x} slot0={:#010x} slot1={:#010x} ep0_1={:#010x} ep0_2={:#010x} ep0_3={:#010x} ep0_4={:#010x}",
@@ -143,7 +148,12 @@ impl XhciContext {
             (slot.ep0_ring.phys, slot.in_ctx_phys)
         };
 
-        if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
+        let in_ctx = self
+            .device
+            .slots
+            .input_ctx_mut(self.driver_ctx, slot_id)
+            .ok_or(crate::DriverError::OutOfMemory)?;
+        {
             in_ctx.setup_address_device_behind_hub(
                 root_port,
                 hub_port,
@@ -211,10 +221,16 @@ impl XhciContext {
             .ok_or(crate::DriverError::InvalidArgument)?
             .dev_ctx_phys;
         let dev_ctx_ptr = self.driver_ctx.phys_to_virt(dev_ctx_phys) as *const u32;
+        crate::mmio::cache_flush_range(dev_ctx_ptr as usize, 64);
         let out_slot0 = unsafe { core::ptr::read_volatile(dev_ctx_ptr) };
         let out_slot1 = unsafe { core::ptr::read_volatile(dev_ctx_ptr.add(1)) };
 
-        if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
+        let in_ctx = self
+            .device
+            .slots
+            .input_ctx_mut(self.driver_ctx, slot_id)
+            .ok_or(crate::DriverError::OutOfMemory)?;
+        {
             in_ctx.drop_flags = 0;
             in_ctx.add_flags = 1; // slot context only
             in_ctx.slot_ctx[0] = out_slot0;

@@ -217,11 +217,13 @@ impl InputContext {
         self.add_flags = 3; // add slot + EP0
         self.drop_flags = 0;
         self.slot_ctx = [0; 8];
-        // Route String bits [3:0] (dword 0 bits [19:16]) = hub port on tier-1 hub.
-        let route_string = (hub_port as u32 & 0xF) << 16;
+        // Route String bits [3:0] identify the first-tier hub port.
+        let route_string = hub_port as u32 & 0xF;
         self.slot_ctx[0] = ((speed_id as u32) << 20) | (1 << 27) | route_string;
-        // Dword 1: root hub port | parent hub slot ID
-        self.slot_ctx[1] = ((root_port as u32) << 24) | ((parent_slot_id & 0xFF) << 8);
+        // DW1: Root Hub Port Number [23:16]. DW2 carries the parent slot and
+        // parent port for a device behind a hub.
+        self.slot_ctx[1] = (root_port as u32) << 16;
+        self.slot_ctx[2] = (parent_slot_id & 0xFF) | ((hub_port as u32 & 0xFF) << 8);
 
         let max_packet_size = match speed_id {
             3 => 64,
@@ -245,17 +247,13 @@ impl InputContext {
         // Only modify slot context (context index 0), not EP0.
         self.add_flags = 1; // add slot context only
         self.drop_flags = 0;
-        // Preserve speed and context entries from the Address Device output.
-        let preserved = self.slot_ctx[0] & ((0x1F << 27) | (0xF << 20));
-        // Set Hub bit (bit 20 of dword 0 in the Linux layout, i.e. bit 26
-        // in xHCI 1.2 spec).  The existing `<< 20` speed encoding places
-        // speed at bits [23:20]; Hub is at bit 20 in the same field,
-        // so OR-ing (1 << 20) sets the Hub flag without disturbing speed
-        // bits [23:21].
-        self.slot_ctx[0] = preserved | (1 << 20);
-        // Dword 1: root hub port is already set; add number of ports.
-        let root_port = (self.slot_ctx[1] >> 24) & 0xFF;
-        self.slot_ctx[1] = (root_port << 24) | ((num_ports as u32 & 0xFF) << 16);
+        // Preserve Route String [19:0], Speed [23:20], and Context Entries
+        // [31:27], then set Hub at DW0 bit 26.
+        let preserved = self.slot_ctx[0] & ((0xFFFFF) | (0xF << 20) | (0x1F << 27));
+        self.slot_ctx[0] = preserved | (1 << 26);
+        // DW1: Root Hub Port Number [23:16], Number of Ports [31:24].
+        let root_port = (self.slot_ctx[1] >> 16) & 0xFF;
+        self.slot_ctx[1] = (root_port << 16) | ((num_ports as u32 & 0xFF) << 24);
         // For FS/LS hubs with TT, set think time.  Full-speed hub (speed_id=2)
         // uses TT think time of 8 bit-times (value 2 in bits [1:0] of dword 2).
         // High-speed hub (speed_id=3) is multi-TT capable.

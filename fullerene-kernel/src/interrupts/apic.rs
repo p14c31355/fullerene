@@ -3,6 +3,7 @@
 //! This module provides APIC initialization and management functions.
 //! All unsafe volatile/port I/O is encapsulated in `nitrogen::apic_controller::ApicController`.
 
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use nitrogen::apic::{ApicFlags, ApicOffsets, IO_APIC_BASE};
 use nitrogen::apic_controller::ApicController;
 use nitrogen::mmio;
@@ -22,6 +23,8 @@ pub const I2C_HID_INTERRUPT_INDEX: u32 = 45;
 /// Set during early boot (UEFI MMIO mapping phase) and then used by
 /// `init_apic_hw_only`, `init_apic`, and `send_eoi`.
 pub static APIC_CONTROLLER: Mutex<Option<ApicController>> = Mutex::new(None);
+static IOAPIC_GSI_BASE: AtomicU32 = AtomicU32::new(0);
+static IOAPIC_PHYS_BASE: AtomicU64 = AtomicU64::new(IO_APIC_BASE);
 
 /// Get the physical APIC base address from the IA32_APIC_BASE MSR.
 fn get_apic_base_phys() -> Option<u64> {
@@ -65,25 +68,71 @@ pub fn preinit_apic_controller(lapic_virt: u64) {
 /// with IF=1 but cannot be preempted by an interrupt handler on UP).
 /// A blocking `lock()` is safe here — `try_lock()` would silently lose EOIs.
 pub fn send_eoi() {
-    if let Some(ref ctrl) = *APIC_CONTROLLER.lock() {
-        ctrl.send_eoi();
-    }
+    // EOI is issued from interrupt context. Avoid taking a potentially
+    // contended Rust mutex on that path and write the architectural LAPIC
+    // register directly through the already-installed direct map.
+    let phys = get_apic_base_phys().unwrap_or(0xFEE0_0000);
+    let addr = phys_to_virt(phys) as usize + ApicOffsets::EOI as usize;
+    unsafe { core::ptr::write_volatile(addr as *mut u32, 0) };
+}
+
+/// Publish the MADT GSI base before device interrupts are routed.
+pub fn set_ioapic_gsi_base(base: u32) {
+    set_ioapic_info(IO_APIC_BASE as u32, base);
+}
+
+pub fn set_ioapic_info(phys_base: u32, gsi_base: u32) {
+    IOAPIC_PHYS_BASE.store(phys_base as u64, Ordering::Release);
+    IOAPIC_GSI_BASE.store(gsi_base, Ordering::Release);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut guard = APIC_CONTROLLER.lock();
+        if let Some(ctrl) = guard.as_mut() {
+            ctrl.set_gsi_base(gsi_base);
+        }
+    });
 }
 
 /// Route an ACPI-described device GSI to a fixed IDT vector.
 pub fn configure_gsi(gsi: u32, vector: u8, low_active: bool, level_triggered: bool) -> bool {
-    APIC_CONTROLLER
-        .lock()
-        .as_ref()
-        .is_some_and(|ctrl| ctrl.configure_gsi(gsi, vector, low_active, level_triggered))
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        APIC_CONTROLLER
+            .lock()
+            .as_ref()
+            .is_some_and(|ctrl| ctrl.configure_gsi(gsi, vector, low_active, level_triggered))
+    })
 }
 
 /// Mask or unmask an ACPI-described device GSI.
 pub fn set_gsi_masked(gsi: u32, masked: bool) -> bool {
-    APIC_CONTROLLER
-        .lock()
-        .as_ref()
-        .is_some_and(|ctrl| ctrl.set_gsi_masked(gsi, masked))
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        APIC_CONTROLLER
+            .lock()
+            .as_ref()
+            .is_some_and(|ctrl| ctrl.set_gsi_masked(gsi, masked))
+    })
+}
+
+/// Mask a GSI from an interrupt handler without acquiring APIC_CONTROLLER.
+pub fn set_gsi_masked_from_interrupt(gsi: u32, masked: bool) -> bool {
+    let index = match gsi.checked_sub(IOAPIC_GSI_BASE.load(Ordering::Acquire)) {
+        Some(index) if index <= u8::MAX as u32 => index as u8,
+        _ => return false,
+    };
+    let base = phys_to_virt(IOAPIC_PHYS_BASE.load(Ordering::Acquire)) as usize;
+    let select = base as *mut u32;
+    let window = (base + 0x10) as *mut u32;
+    unsafe {
+        core::ptr::write_volatile(select, 0x10 + index as u32 * 2);
+        let mut lower = core::ptr::read_volatile(window);
+        if masked {
+            lower |= 1 << 16
+        } else {
+            lower &= !(1 << 16)
+        }
+        core::ptr::write_volatile(select, 0x10 + index as u32 * 2);
+        core::ptr::write_volatile(window, lower);
+    }
+    true
 }
 
 /// Connect the N150 I2C-HID GPIO interrupt after the IDT and I/O APIC are
@@ -274,7 +323,7 @@ fn calibrate_apic_timer(ctrl: &ApicController, tsc_per_ms: u64, divider: u32) ->
     let elapsed_tsc = tsc_end.wrapping_sub(tsc_start);
     let elapsed_apic = apic_start.saturating_sub(apic_end);
 
-    if elapsed_apic == 0 || elapsed_tsc == 0 {
+    if apic_end == 0 || elapsed_apic == 0 || elapsed_tsc == 0 {
         petroleum::serial::serial_log(format_args!(
             "APIC timer calibration: no ticks elapsed (apic_start={}, apic_end={}), using fallback\n",
             apic_start, apic_end

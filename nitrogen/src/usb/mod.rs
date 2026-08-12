@@ -204,7 +204,7 @@ pub const HUB_C_PORT_CONNECTION: u16 = 16;
 pub const HUB_C_PORT_ENABLE: u16 = 17;
 pub const HUB_C_PORT_RESET: u16 = 20;
 
-/// Hub port status bits (wPortStatus low byte).
+/// Hub port status bits in `wPortStatus`.
 pub const HUB_PORT_STATUS_CONNECTION: u16 = 0x0001;
 pub const HUB_PORT_STATUS_ENABLE: u16 = 0x0002;
 pub const HUB_PORT_STATUS_POWER: u16 = 0x0100;
@@ -230,6 +230,10 @@ pub struct UsbDevice {
     pub endpoints: alloc::vec::Vec<UsbEndpointDesc>,
     /// Root-hub port index this device is connected to.
     pub port_index: u32,
+    /// Parent xHCI hub slot for a downstream device, if any.
+    pub parent_hub_slot: Option<u32>,
+    /// 1-based downstream port on `parent_hub_slot`, if any.
+    pub downstream_port: Option<u8>,
 }
 
 impl UsbDevice {

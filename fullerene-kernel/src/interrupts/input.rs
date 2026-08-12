@@ -150,10 +150,9 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
 /// The I2C transaction itself stays out of interrupt context.  The handler
 /// only records that a report is ready, masks the level-triggered line, and
 /// lets the scheduler perform the bounded transfer in normal context.
-#[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn i2c_hid_handler(_stack_frame: InterruptStackFrame) {
     let gsi = nitrogen::hid::GEMIBOOK_N150_I2C_HID.interrupt_gsi;
-    crate::interrupts::apic::set_gsi_masked(gsi, true);
+    crate::interrupts::apic::set_gsi_masked_from_interrupt(gsi, true);
     nitrogen::i2c_hid::handle_interrupt();
     super::apic::send_eoi();
 }

@@ -121,6 +121,11 @@ fn touchpad_button_bits(input: Option<&nitrogen::i2c_hid::TouchpadInput>) -> u8 
     buttons
 }
 
+/// Consume the latest input state and update the pointer.
+///
+/// Callers must drain the I2C-HID FIFO with `service_input()` before calling
+/// this function. PS/2 input is drained here because it has its own fallback
+/// polling contract.
 pub fn poll_mouse_state() {
     let touchpad = nitrogen::i2c_hid::consume_input();
     let touchpad_relative = touchpad.as_ref().and_then(|input| input.relative);
@@ -214,9 +219,9 @@ pub fn poll_mouse_state() {
     *previous_buttons = combined_buttons;
 }
 
-/// Record the time at which a pointer event enters the runtime queue.
+/// Measure the delay from the last queued pointer event to cursor painting.
 pub(crate) fn record_cursor_paint() {
-    let event_tsc = LAST_POINTER_EVENT_TSC.load(Ordering::Acquire);
+    let event_tsc = LAST_POINTER_EVENT_TSC.swap(0, Ordering::AcqRel);
     if event_tsc == 0 {
         return;
     }

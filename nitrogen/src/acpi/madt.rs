@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 const SDT_HEADER_LEN: usize = 36;
 const MADT_FIXED_LEN: usize = SDT_HEADER_LEN + 8;
 const ENTRY_LOCAL_APIC: u8 = 0;
+const ENTRY_IO_APIC: u8 = 1;
 const ENTRY_LOCAL_X2APIC: u8 = 9;
 const CPU_ENABLED: u32 = 1;
 const CPU_ONLINE_CAPABLE: u32 = 2;
@@ -17,10 +18,17 @@ pub struct Processor {
     pub online_capable: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IoApic {
+    pub address: u32,
+    pub gsi_base: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MadtInfo {
     pub local_apic_address: u32,
     pub processors: Vec<Processor>,
+    pub io_apics: Vec<IoApic>,
 }
 
 pub fn parse(bytes: &[u8]) -> Option<MadtInfo> {
@@ -29,6 +37,7 @@ pub fn parse(bytes: &[u8]) -> Option<MadtInfo> {
     }
     let local_apic_address = u32::from_le_bytes(bytes[36..40].try_into().ok()?);
     let mut processors = Vec::new();
+    let mut io_apics = Vec::new();
     let mut offset = MADT_FIXED_LEN;
     while offset < bytes.len() {
         let entry_type = *bytes.get(offset)?;
@@ -38,6 +47,12 @@ pub fn parse(bytes: &[u8]) -> Option<MadtInfo> {
         }
         let entry = &bytes[offset..offset + entry_len];
         match entry_type {
+            ENTRY_IO_APIC if entry_len >= 12 => {
+                io_apics.push(IoApic {
+                    address: u32::from_le_bytes(entry[4..8].try_into().ok()?),
+                    gsi_base: u32::from_le_bytes(entry[8..12].try_into().ok()?),
+                });
+            }
             ENTRY_LOCAL_APIC if entry_len >= 8 => {
                 let flags = u32::from_le_bytes(entry[4..8].try_into().ok()?);
                 processors.push(Processor {
@@ -67,6 +82,7 @@ pub fn parse(bytes: &[u8]) -> Option<MadtInfo> {
     Some(MadtInfo {
         local_apic_address,
         processors,
+        io_apics,
     })
 }
 
@@ -101,6 +117,7 @@ mod tests {
                 },
             ]
         );
+        assert!(info.io_apics.is_empty());
     }
 
     #[test]

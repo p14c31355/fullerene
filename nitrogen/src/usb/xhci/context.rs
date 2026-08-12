@@ -135,16 +135,38 @@ impl XhciContext {
     /// descriptor or BOT setup then fails, leaving that placeholder in place
     /// permanently suppresses all later retries.
     pub fn retry_device_candidate(&mut self, slot_id: u32, dev_idx: usize) {
-        let port_index = self.devices.get(dev_idx).map(|device| device.port_index);
+        let Some(device) = self.devices.get(dev_idx) else {
+            let _ = self.disable_slot(slot_id);
+            return;
+        };
+        // A downstream device has its own slot and must not reset or remove
+        // the root-hub candidate that owns it.
+        if device.parent_hub_slot.is_some() {
+            let _ = self.disable_slot(slot_id);
+            self.devices.remove(dev_idx);
+            return;
+        }
+        let port_index = Some(device.port_index);
         self.disable_slot(slot_id);
         if let Some(port_index) = port_index {
-            self.devices
-                .retain(|device| device.port_index != port_index);
+            self.devices.retain(|device| {
+                device.parent_hub_slot.is_some() || device.port_index != port_index
+            });
             if let Some(port) = self.ports.get_mut(port_index) {
-                port.done = false;
-                port.wpr_attempted = false;
-                port.retry_count = 0;
+                port.retry_count = port.retry_count.saturating_add(1);
+                if port.retry_count < 3 {
+                    port.done = false;
+                    port.wpr_attempted = false;
+                } else {
+                    port.done = true;
+                }
             }
+        }
+    }
+
+    pub fn remove_device_candidate(&mut self, dev_idx: usize) {
+        if dev_idx < self.devices.len() {
+            self.devices.remove(dev_idx);
         }
     }
 }

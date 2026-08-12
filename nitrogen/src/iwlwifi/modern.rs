@@ -87,7 +87,10 @@ pub enum ModernFamily {
 }
 
 impl ModernFamily {
-    pub const fn from_device_id(device_id: u16) -> Option<Self> {
+    pub fn from_device_id(device_id: u16) -> Option<Self> {
+        if !super::registers::IWL_MODERN_CNVI_DEVICE_IDS.contains(&device_id) {
+            return None;
+        }
         match device_id {
             0x54f0 => Some(Self::So),
             0x4df0 => Some(Self::Quz),
@@ -691,7 +694,6 @@ pub enum FirmwareError {
     MissingPagingSeparator,
     UnexpectedSeparator,
     EmptyImageGroup,
-    MissingIml,
     ApiOutOfRange,
     SectionAddressCountMismatch,
     InvalidQueueSize,
@@ -926,13 +928,7 @@ pub fn encode_phy_context_cmd_v4(
 /// Encode the API v7 ADD_STA command.  API89 uses this format unless the
 /// firmware advertises the newer MLD station API; the auxiliary scan station
 /// is a normal v7 station with the AUX_ACTIVITY type (4).
-pub fn encode_add_sta_cmd_v7(
-    mac_id: u8,
-    color: u8,
-    address: [u8; 6],
-    sta_id: u8,
-    tfd_queue_mask: u32,
-) -> Vec<u8> {
+pub fn encode_add_sta_cmd_v7(mac_id: u8, color: u8, address: [u8; 6], sta_id: u8) -> Vec<u8> {
     let mut bytes = vec![0u8; 32];
     bytes[0] = 0; // STA_MODE_ADD
     put_u16(&mut bytes, 2, 0xffff); // enable all TIDs
@@ -944,10 +940,6 @@ pub fn encode_add_sta_cmd_v7(
     bytes[28] = 0;
     bytes[29] = 0;
     put_u16(&mut bytes, 30, 0);
-    let _ = tfd_queue_mask;
-    // v7 has no station_type field. Linux selects the type through the
-    // station allocation path. The queue mask is also programmed separately
-    // on the old TX API, so it is intentionally not serialized here.
     bytes
 }
 
@@ -1184,7 +1176,7 @@ pub fn encode_umac_scan_request_v17(
 }
 
 /// Select the firmware corresponding to an Intel modern CNVi device ID.
-pub const fn select_firmware(device_id: u16) -> Option<FirmwareBlob> {
+pub fn select_firmware(device_id: u16) -> Option<FirmwareBlob> {
     match ModernFamily::from_device_id(device_id) {
         Some(family) => Some(family.firmware()),
         None => None,
@@ -1213,7 +1205,7 @@ mod tests {
         assert_eq!(phy[16], 0);
 
         let address = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
-        let sta7 = encode_add_sta_cmd_v7(4, 0, address, 7, 0);
+        let sta7 = encode_add_sta_cmd_v7(4, 0, address, 7);
         assert_eq!(sta7.len(), 32);
         assert_eq!(&sta7[2..4], &0xffffu16.to_le_bytes());
         assert_eq!(&sta7[8..14], &address);

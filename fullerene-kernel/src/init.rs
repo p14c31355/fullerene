@@ -257,6 +257,14 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                         "MADT: discovered {} processor entries",
                         madt.processors.len()
                     );
+                    if let Some(ioapic) = madt.io_apics.first() {
+                        crate::interrupts::apic::set_ioapic_info(ioapic.address, ioapic.gsi_base);
+                        log::info!(
+                            "MADT: I/O APIC at {:#x} owns GSI base {}",
+                            ioapic.address,
+                            ioapic.gsi_base
+                        );
+                    }
                     crate::smp::configure(madt);
                 } else {
                     log::warn!("MADT: processor topology unavailable; using BSP only");
