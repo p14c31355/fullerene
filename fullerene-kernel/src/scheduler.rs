@@ -135,13 +135,6 @@ pub fn scheduler_loop() -> ! {
     // Idle loop: drive runtime ticks.
     // Shell and other apps are launched via AppGrid or context menu.
     loop {
-        // Pump HID input + cursor at the top of every iteration so the
-        // cursor moves before any device phase absorbs the scheduler.
-        // This matches the tight read_byte → runtime_tick_no_fb loop the
-        // shell (Nozzle) uses, giving HID touchpad users the same snappy
-        // cursor response on the desktop as inside the shell.
-        gui::pump_hid_cursor();
-
         if SCHEDULER.current_tick().is_multiple_of(1_000) {
             let (count, total_tsc, max_tsc) = nitrogen::i2c_hid::input_service_metrics();
             let (pointer_count, pointer_max_tsc) = solvent::pointer_latency_metrics();
@@ -176,8 +169,18 @@ pub fn scheduler_loop() -> ! {
         // or service tick never performs firmware/MMIO work synchronously.
         let device_phase_deadline = unsafe { core::arch::x86_64::_rdtsc() }
             .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(10));
+        #[cfg(not(nitrogen_no_usb))]
+        {
+            crate::drivers::registry::process_usb_submission_queue_until(1, device_phase_deadline);
+            crate::drivers::registry::consume_usb_completion_queue(1);
+            crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: USB phase returned");
+        }
+        // USB rescan is an explicit user request. Run it before the generic
+        // storage SQ: a Gemibook storage/MMIO probe must not strand an
+        // already-accepted USB request before its activation boundary.
         #[cfg(not(nitrogen_no_storage))]
         {
+            crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: storage phase begin");
             crate::drivers::registry::process_driver_submission_queue_until(
                 8,
                 device_phase_deadline,
@@ -186,19 +189,22 @@ pub fn scheduler_loop() -> ! {
                 8,
                 device_phase_deadline,
             );
+            crate::drivers::registry::usb_rescan_scheduler_diag(
+                "scheduler: storage phase returned",
+            );
         }
-        #[cfg(not(nitrogen_no_usb))]
-        {
-            crate::drivers::registry::process_usb_submission_queue_until(1, device_phase_deadline);
-            crate::drivers::registry::consume_usb_completion_queue(1);
-        }
-        // Pump HID + cursor after the storage/USB phases.  Those phases can
-        // absorb several milliseconds of MMIO time; without this pump the
-        // cursor stalls until the next tick_core inside runtime_tick.
+        // Pump HID + cursor after the storage/USB phases. USB requests must
+        // get the first scheduler opportunity: on machines whose I2C-HID
+        // transaction does not return, a pre-device HID pump would strand an
+        // already-accepted USB request before its activation boundary.
+        crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: HID phase begin");
         gui::pump_hid_cursor();
+        crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: HID phase returned");
+        crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: audio phase begin");
         crate::contexts::audio::process_audio_submission_queue(2);
         crate::contexts::audio::poll_audio_playback();
         crate::contexts::audio::consume_audio_completion_queue(4);
+        crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: audio phase returned");
 
         // Drain requests left by the preceding GUI tick before entering the
         // next one. This closes the gap where a nested/runtime-driven tick
@@ -206,10 +212,12 @@ pub fn scheduler_loop() -> ! {
         // reached the normal post-GUI device phase.
         #[cfg(not(nitrogen_no_iwlwifi))]
         {
+            crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: WiFi phase begin");
             let wifi_phase_deadline = unsafe { core::arch::x86_64::_rdtsc() }
                 .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(2));
             nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
             nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
+            crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: WiFi phase returned");
         }
         // Final HID + cursor pump before the GUI tick so poll_mouse_state
         // sees the freshest possible report after every device phase.
@@ -219,7 +227,11 @@ pub fn scheduler_loop() -> ! {
         // nested runtime pump handles only input and rendering; after a
         // physical smoke run returns, normal desktop ticks resume.
         #[cfg(not(linux_busybox_smoke))]
-        gui::runtime_tick(SCHEDULER.current_tick());
+        {
+            crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: GUI phase begin");
+            gui::runtime_tick(SCHEDULER.current_tick());
+            crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: GUI phase returned");
+        }
         #[cfg(linux_busybox_smoke)]
         if !solvent::headless_smoke_active() {
             gui::runtime_tick(SCHEDULER.current_tick());
@@ -233,14 +245,20 @@ pub fn scheduler_loop() -> ! {
         // deadline for this path.
         #[cfg(not(nitrogen_no_iwlwifi))]
         {
+            crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: post-GUI WiFi begin");
             let wifi_phase_deadline = unsafe { core::arch::x86_64::_rdtsc() }
                 .saturating_add(solvent::get_tsc_per_ms().max(1).saturating_mul(2));
             nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
             nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
+            crate::drivers::registry::usb_rescan_scheduler_diag(
+                "scheduler: post-GUI WiFi returned",
+            );
         }
         // Pump HID + cursor after the post-GUI Wi-Fi phase so input that
         // arrived during firmware MMIO is reflected before the next hlt.
+        crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: final HID phase begin");
         gui::pump_hid_cursor();
+        crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: final HID phase returned");
 
         // Check if the user requested a shell launch (via AppGrid / menu).
         // Run it as a scheduler-managed kernel process instead of calling

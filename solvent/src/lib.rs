@@ -83,7 +83,7 @@ pub use editor_bridge::editor_handle_key;
 pub use event_loop::{
     GLOBAL_TICK, chrono_tick, consume_frame_due, cursor_update_due, flush_frame_no_fb,
     process_events, pump_hid_cursor, push_key_event, runtime_tick, runtime_tick_no_fb,
-    set_cursor_render_fn, set_render_fn, tick_core,
+    set_cursor_render_fn, set_render_fn, set_tick_progress_fn, tick_core,
 };
 pub use file::RuntimeFile;
 pub use input_loop::{

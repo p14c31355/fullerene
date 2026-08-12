@@ -18,7 +18,20 @@ static TICK_CORE_ACTIVE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 static CURSOR_RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
+static TICK_PROGRESS_FN: Mutex<Option<fn(&str)>> = Mutex::new(None);
 static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Install an optional diagnostic callback for the normal GUI tick. The
+/// kernel uses this only while an explicit USB request is pending.
+pub fn set_tick_progress_fn(f: fn(&str)) {
+    *TICK_PROGRESS_FN.lock() = Some(f);
+}
+
+fn tick_progress(stage: &str) {
+    if let Some(f) = *TICK_PROGRESS_FN.lock() {
+        f(stage);
+    }
+}
 
 fn process_pointer_motion_only() {
     let events = RUNTIME_CONTEXT
@@ -164,6 +177,7 @@ fn service_explorer_copy() {
 pub fn tick_core(now: u64) {
     let _tick_core = TickCoreGuard::enter();
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
+    tick_progress("GUI tick: input begin");
 
     // Drain the I2C-HID FIFO before consuming input.  The scheduler idle
     // loop services this separately (scheduler.rs), but while it is blocked
@@ -172,10 +186,14 @@ pub fn tick_core(now: u64) {
     // in poll_mouse_state always returns None and the touchpad cursor
     // freezes for the whole Nozzle session.
     nitrogen::i2c_hid::service_input();
+    tick_progress("GUI tick: I2C-HID returned");
     crate::poll_mouse_state();
+    tick_progress("GUI tick: mouse returned");
     crate::poll_keyboard();
+    tick_progress("GUI tick: keyboard returned");
     crate::clock::update_clock();
     chrono_tick(now);
+    tick_progress("GUI tick: clock returned");
 
     // Skip service ticking while inside a WASM host callback.  Services
     // like WifiService can block for seconds on firmware MMIO, which
@@ -188,6 +206,7 @@ pub fn tick_core(now: u64) {
         for service in &mut services {
             service.tick(now);
         }
+        tick_progress("GUI tick: services returned");
         let mut registry = SERVICES.lock();
         services.append(&mut *registry);
         *registry = services;
@@ -206,6 +225,7 @@ pub fn tick_core(now: u64) {
     }
 
     process_events();
+    tick_progress("GUI tick: events returned");
     // File launch may have been queued by event handlers that ran inside
     // the runtime lock.  Process it now, outside the lock, so that VFS I/O
     // (called inside launch_file) cannot deadlock with the compositor.
@@ -234,23 +254,36 @@ pub fn tick_core(now: u64) {
         }
     }
     service_explorer_navigation();
+    tick_progress("GUI tick: navigation returned");
     service_explorer_copy();
+    tick_progress("GUI tick: copy returned");
     crate::installer::service_install_request();
+    tick_progress("GUI tick: installer returned");
+    tick_progress("GUI tick: shell check begin");
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.shell_launch_pending;
         runtime.shell_launch_pending = false;
         pending
     }) {
+        tick_progress("GUI tick: shell launch begin");
         crate::ensure_terminal_window();
+        tick_progress("GUI tick: terminal window returned");
         crate::launch_shell();
+        tick_progress("GUI tick: shell launch returned");
     }
+    tick_progress("GUI tick: shell check returned");
+    tick_progress("GUI tick: editor check begin");
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.editor_launch_pending;
         runtime.editor_launch_pending = false;
         pending
     }) {
+        tick_progress("GUI tick: editor launch begin");
         crate::ensure_editor_window();
+        tick_progress("GUI tick: editor launch returned");
     }
+    tick_progress("GUI tick: editor check returned");
+    tick_progress("GUI tick: core end");
 }
 
 /// Lightweight HID input pump for the scheduler idle loop.

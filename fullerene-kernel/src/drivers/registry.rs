@@ -732,6 +732,10 @@ fn usb_rescan_diag(stage: &str) {
         "poll: controller poll begin" => "USB polling",
         "poll: controller poll returned" => "USB poll done",
         "poll: register pending complete" => "USB devices registered",
+        "poll: complete (device registered)" => "poll complete",
+        "poll: complete (no device)" => "poll: no device",
+        "queue complete" => "queue complete",
+        "queue retry" => "queue retry",
         _ => stage,
     };
     nitrogen::debug_status!("USB", "{}", taskbar_status);
@@ -750,11 +754,25 @@ fn usb_rescan_diag(stage: &str) {
     if let Some(screen_hint) = screen_hint {
         crate::boot_stage::draw_hang_diagnostic(screen_hint);
     }
-    // Refresh immediately as well as relying on the timer path; this makes
-    // the last completed boundary visible before a potentially non-returning
-    // MMIO access.
-    let _ = crate::klog::try_render_live_surface();
+    // Do not force a direct Klog Live repaint here. This callback runs from
+    // both the shell and scheduler paths; on some machines the framebuffer
+    // path can block immediately after publishing `queue accepted`. The
+    // taskbar status above is the normal compositor path, while serial/klog
+    // retain the last boundary if the machine later wedges in MMIO.
 }
+
+/// Emit scheduler-phase diagnostics only while an explicit USB request is
+/// still pending. This distinguishes a hang after `queue retry` from a hang
+/// inside the USB poll itself without adding noise to normal boot polling.
+#[cfg(not(nitrogen_no_usb))]
+pub fn usb_rescan_scheduler_diag(stage: &str) {
+    if usb_activation_pending() {
+        usb_rescan_diag(stage);
+    }
+}
+
+#[cfg(nitrogen_no_usb)]
+pub fn usb_rescan_scheduler_diag(_stage: &str) {}
 
 /// Enqueue one coalesced USB hotplug poll from a runtime/service callback.
 #[cfg(not(nitrogen_no_usb))]
@@ -869,12 +887,14 @@ pub fn process_usb_submission_queue_until(budget: usize, deadline_tsc: u64) {
                 });
             }
             USB_POLL_PENDING.store(false, Ordering::Release);
+            usb_rescan_diag("queue complete");
         } else if should_retry {
             // Leave the request at the head of the SQ and keep
             // USB_POLL_PENDING set.  Otherwise the regular USB service poll
             // callback enqueues a duplicate request on every tick, starving
             // the original rescan.  An explicit usb_rescan clears the SQ and
             // this flag before enqueueing its replacement.
+            usb_rescan_diag("queue retry");
             break;
         }
     }
@@ -1599,6 +1619,11 @@ pub fn poll_usb() -> bool {
     if changed {
         let _ = crate::klog::flush_to_vfs();
     }
+    usb_rescan_diag(if changed {
+        "poll: complete (device registered)"
+    } else {
+        "poll: complete (no device)"
+    });
     changed
 }
 

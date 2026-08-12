@@ -208,6 +208,7 @@ pub fn init() {
     }
 
     solvent::set_render_progress_fn(crate::boot_stage::draw_boot_label);
+    solvent::set_tick_progress_fn(crate::drivers::registry::usb_rescan_scheduler_diag);
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
 
@@ -315,9 +316,18 @@ pub fn render_cursor() {
 /// 2. **render** — framebuffer rendering under the `KERNEL` lock.
 ///    Full-scene and cursor-only requests both borrow a `FramebufferGuard`.
 pub fn runtime_tick(now: u64) {
+    crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: tick_core begin");
     solvent::tick_core(now);
+    crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: tick_core returned");
     let full_frame = solvent::consume_frame_due();
     let cursor_only = !full_frame && solvent::cursor_update_due();
+    crate::drivers::registry::usb_rescan_scheduler_diag(if full_frame {
+        "GUI runtime: full frame due"
+    } else if cursor_only {
+        "GUI runtime: cursor frame due"
+    } else {
+        "GUI runtime: no frame due"
+    });
     if full_frame || cursor_only {
         let frame_start = unsafe { core::arch::x86_64::_rdtsc() };
         let video_frames = if full_frame {
@@ -326,13 +336,16 @@ pub fn runtime_tick(now: u64) {
             0
         };
         let composite_start = unsafe { core::arch::x86_64::_rdtsc() };
+        crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: framebuffer begin");
         let rendered = crate::contexts::framebuffer::with_framebuffer(|framebuffer| {
+            crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: render begin");
             if full_frame {
                 solvent::render(framebuffer);
             } else {
                 solvent::render_cursor_fast(framebuffer);
             }
         });
+        crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: render returned");
         if video_frames != 0 {
             crate::metrics::record_video_composite(
                 unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(composite_start),
