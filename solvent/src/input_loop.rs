@@ -121,6 +121,213 @@ fn touchpad_button_bits(input: Option<&nitrogen::i2c_hid::TouchpadInput>) -> u8 
     buttons
 }
 
+#[derive(Clone, Copy)]
+enum TwoFingerGesture {
+    Idle,
+    Moving {
+        window: lattice::window::WindowId,
+        anchor_id: u8,
+        mover_id: u8,
+        last_mover_x: i32,
+        last_mover_y: i32,
+    },
+    SuppressUntilRelease,
+}
+
+static TWO_FINGER_GESTURE: Mutex<TwoFingerGesture> = Mutex::new(TwoFingerGesture::Idle);
+
+fn mapped_touch_contacts(
+    input: &nitrogen::i2c_hid::TouchpadInput,
+    fb_width: u32,
+    fb_height: u32,
+) -> [Option<(u8, i32, i32)>; nitrogen::hid::MAX_TOUCH_CONTACTS] {
+    let mut mapped = [None; nitrogen::hid::MAX_TOUCH_CONTACTS];
+    for (out, contact) in mapped.iter_mut().zip(input.contacts.iter().flatten()) {
+        if contact.in_contact {
+            *out = Some((
+                contact.id,
+                i32::from(map_touch_axis(
+                    contact.x,
+                    input.x_min,
+                    input.x_max,
+                    fb_width,
+                )),
+                i32::from(map_touch_axis(
+                    contact.y,
+                    input.y_min,
+                    input.y_max,
+                    fb_height,
+                )),
+            ));
+        }
+    }
+    mapped
+}
+
+fn move_window_by_gesture(window_id: lattice::window::WindowId, dx: i32, dy: i32) {
+    if dx == 0 && dy == 0 {
+        return;
+    }
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let Some(runtime) = runtime.as_mut() else {
+        return;
+    };
+    if !runtime.desktop.wm.move_window_by(window_id, dx, dy) {
+        return;
+    }
+    if runtime.klog_live_window == Some(window_id)
+        && let Some(window) = runtime
+            .desktop
+            .wm
+            .windows()
+            .iter()
+            .find(|window| window.id == window_id)
+    {
+        crate::runtime_context::publish_klog_live_surface(
+            window.x,
+            window.y + lattice::style::title_bar_height() as i32,
+            window.surface.width(),
+            window.surface.height(),
+        );
+    }
+    runtime.frame_due = true;
+}
+
+/// Start and update the two-finger window-move gesture.
+///
+/// The first contact must land on a titled window's title bar.  That contact
+/// is treated as the anchor; the other contact's delta moves the window. Once
+/// a gesture has started, all touch contacts are suppressed until release so
+/// lifting the fingers cannot accidentally click or begin a normal title-bar
+/// drag.
+fn update_two_finger_gesture(
+    input: Option<&nitrogen::i2c_hid::TouchpadInput>,
+    fb_width: u32,
+    fb_height: u32,
+) -> bool {
+    let mut gesture = TWO_FINGER_GESTURE.lock();
+    match *gesture {
+        TwoFingerGesture::SuppressUntilRelease => {
+            let released = input.is_some_and(|input| {
+                input.relative.is_none()
+                    && mapped_touch_contacts(input, fb_width, fb_height)
+                        .iter()
+                        .all(Option::is_none)
+            });
+            if released {
+                *gesture = TwoFingerGesture::Idle;
+            }
+            true
+        }
+        TwoFingerGesture::Moving {
+            window,
+            anchor_id,
+            mover_id,
+            last_mover_x,
+            last_mover_y,
+        } => {
+            let Some(input) = input else { return true };
+            let contacts = mapped_touch_contacts(input, fb_width, fb_height);
+            let anchor = contacts
+                .iter()
+                .flatten()
+                .find(|(id, _, _)| *id == anchor_id);
+            let mover = contacts.iter().flatten().find(|(id, _, _)| *id == mover_id);
+            if anchor.is_none() {
+                if contacts.iter().flatten().next().is_none() {
+                    *gesture = TwoFingerGesture::Idle;
+                } else {
+                    *gesture = TwoFingerGesture::SuppressUntilRelease;
+                }
+                return true;
+            }
+            if let Some((dx, dy)) = input.relative {
+                let sensitivity = MOUSE_SENSITIVITY.load(Ordering::Relaxed);
+                move_window_by_gesture(
+                    window,
+                    scaled_hid_relative_delta(dx, sensitivity),
+                    scaled_hid_relative_delta(dy, sensitivity),
+                );
+                return true;
+            }
+            if let Some((_, mover_x, mover_y)) = mover {
+                move_window_by_gesture(window, *mover_x - last_mover_x, *mover_y - last_mover_y);
+                *gesture = TwoFingerGesture::Moving {
+                    window,
+                    anchor_id,
+                    mover_id,
+                    last_mover_x: *mover_x,
+                    last_mover_y: *mover_y,
+                };
+                return true;
+            }
+            if contacts.iter().flatten().next().is_none() {
+                *gesture = TwoFingerGesture::Idle;
+            } else {
+                *gesture = TwoFingerGesture::SuppressUntilRelease;
+            }
+            true
+        }
+        TwoFingerGesture::Idle => {
+            let Some(input) = input.filter(|input| input.relative.is_none()) else {
+                return false;
+            };
+            let contacts = mapped_touch_contacts(input, fb_width, fb_height);
+            let active: alloc::vec::Vec<(u8, i32, i32)> =
+                contacts.iter().flatten().copied().collect();
+            if active.len() < 2 {
+                return false;
+            }
+            let mut runtime = RUNTIME_CONTEXT.runtime();
+            let Some(runtime) = runtime.as_mut() else {
+                return false;
+            };
+            let anchor_index = active.iter().position(|(_, x, y)| {
+                runtime
+                    .desktop
+                    .wm
+                    .windows()
+                    .iter()
+                    .rev()
+                    .find(|window| !window.minimized && window.contains_title_bar(*x, *y))
+                    .is_some()
+            });
+            let Some(anchor_index) = anchor_index else {
+                return false;
+            };
+            let (anchor_id, _, _) = active[anchor_index];
+            let Some(window_id) = runtime
+                .desktop
+                .wm
+                .windows()
+                .iter()
+                .rev()
+                .find(|window| {
+                    !window.minimized
+                        && window.contains_title_bar(active[anchor_index].1, active[anchor_index].2)
+                })
+                .map(|window| window.id)
+            else {
+                return false;
+            };
+            let Some(&(mover_id, mover_x, mover_y)) =
+                active.iter().find(|(id, _, _)| *id != anchor_id)
+            else {
+                return false;
+            };
+            runtime.desktop.wm.raise_to_top(window_id);
+            *gesture = TwoFingerGesture::Moving {
+                window: window_id,
+                anchor_id,
+                mover_id,
+                last_mover_x: mover_x,
+                last_mover_y: mover_y,
+            };
+            true
+        }
+    }
+}
+
 /// Consume the latest input state and update the pointer.
 ///
 /// Callers must drain the I2C-HID FIFO with `service_input()` before calling
@@ -128,10 +335,16 @@ fn touchpad_button_bits(input: Option<&nitrogen::i2c_hid::TouchpadInput>) -> u8 
 /// polling contract.
 pub fn poll_mouse_state() {
     let touchpad = nitrogen::i2c_hid::consume_input();
-    let touchpad_relative = touchpad.as_ref().and_then(|input| input.relative);
+    let (fb_width, fb_height, _) = *FB_DIMS.lock();
+    let suppress_touchpad = update_two_finger_gesture(touchpad.as_ref(), fb_width, fb_height);
+    let touchpad_relative = if suppress_touchpad {
+        None
+    } else {
+        touchpad.as_ref().and_then(|input| input.relative)
+    };
     let touchpad_absolute = touchpad
         .as_ref()
-        .filter(|input| input.relative.is_none() && input.report.in_contact);
+        .filter(|input| !suppress_touchpad && input.relative.is_none() && input.report.in_contact);
     // IRQ12 is the normal delivery path. Drain AUX bytes as a fallback for
     // QEMU/firmware configurations where the legacy mouse route is not wired
     // through the I/O APIC.
@@ -152,7 +365,6 @@ pub fn poll_mouse_state() {
     let old_x = mouse.x;
     let old_y = mouse.y;
     let sensitivity = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
-    let (fb_width, fb_height, _) = *FB_DIMS.lock();
     let next_x = i32::from(mouse.x) + scaled_mouse_delta(dx, sensitivity);
     let next_y = i32::from(mouse.y) - scaled_mouse_delta(dy, sensitivity);
     if let Some((dx, dy)) = touchpad_relative {
@@ -182,7 +394,12 @@ pub fn poll_mouse_state() {
         mouse.x = map_touch_axis(touchpad.report.x, touchpad.x_min, touchpad.x_max, fb_width);
         mouse.y = map_touch_axis(touchpad.report.y, touchpad.y_min, touchpad.y_max, fb_height);
     }
-    let combined_buttons = buttons | touchpad_button_bits(touchpad.as_ref());
+    let combined_buttons = buttons
+        | if suppress_touchpad {
+            0
+        } else {
+            touchpad_button_bits(touchpad.as_ref())
+        };
     mouse.buttons = combined_buttons;
     let cursor_x = mouse.x as i32;
     let cursor_y = mouse.y as i32;
@@ -332,6 +549,8 @@ mod tests {
             y_min: 0,
             y_max: 1060,
             relative: None,
+            contacts: [None; nitrogen::hid::MAX_TOUCH_CONTACTS],
+            contact_count: 0,
         };
         let released = nitrogen::i2c_hid::TouchpadInput {
             report: nitrogen::hid::TouchpadReport {
@@ -358,6 +577,8 @@ mod tests {
             y_min: 0,
             y_max: 1060,
             relative: Some((0, 0)),
+            contacts: [None; nitrogen::hid::MAX_TOUCH_CONTACTS],
+            contact_count: 0,
         };
         let right_released = nitrogen::i2c_hid::TouchpadInput {
             report: nitrogen::hid::TouchpadReport {

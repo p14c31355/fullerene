@@ -381,6 +381,29 @@ impl WindowManager {
         self.drag = DragState::None;
     }
 
+    /// Move one window by a screen-space delta without entering the regular
+    /// mouse drag state.  Touch gestures use this path so the anchor finger
+    /// can remain stationary while another finger supplies the movement.
+    pub fn move_window_by(&mut self, id: WindowId, dx: i32, dy: i32) -> bool {
+        let Some(dirty_before) = self
+            .windows
+            .iter()
+            .find(|window| window.id == id)
+            .map(window_dirty_rect)
+        else {
+            return false;
+        };
+        let Some(window) = self.windows.iter_mut().find(|window| window.id == id) else {
+            return false;
+        };
+        window.x = window.x.saturating_add(dx);
+        window.y = window.y.saturating_add(dy);
+        let dirty_after = window_dirty_rect(window);
+        self.dirty_rects.push(dirty_before);
+        self.dirty_rects.push(dirty_after);
+        true
+    }
+
     // ── Window actions ─────────────────────────────────────
 
     /// Minimize a window (hide it).  Focus moves to the next visible window.
@@ -734,6 +757,17 @@ mod tests {
         assert_eq!(w.y, 40);
         wm.on_mouse_up();
     }
+
+    #[test]
+    fn gesture_move_repositions_window_without_mouse_drag_state() {
+        let mut wm = WindowManager::new();
+        let id = wm.create_titled_window(10, 10, 100, 100, 0xFF0000, "Test");
+        assert!(wm.move_window_by(id, 12, -3));
+        let window = wm.windows.iter().find(|window| window.id == id).unwrap();
+        assert_eq!((window.x, window.y), (22, 7));
+        assert!(matches!(wm.drag, DragState::None));
+    }
+
     #[test]
     fn test_focus_transfer() {
         let mut wm = test_wm();
