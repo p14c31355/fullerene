@@ -146,6 +146,23 @@ markers:
   require `N > 0`; otherwise successful firmware readiness and scan completion
   are sufficient.
 
+For a real-hardware USB rescan, open `KLog Live` before running `usb_rescan`.
+The stable `[USB-RESCAN]` markers identify the last completed boundary:
+
+```text
+[USB-RESCAN] retire old context complete
+[USB-RESCAN] activate: USBContext::enable begin
+[USB-RESCAN] activate: USBContext::enable returned
+[USB-RESCAN] poll: attempt 1 registered device
+```
+
+If the last marker is `retire old context begin`, the old controller teardown
+is stuck. If it is `USBContext::enable begin`, the PCI/xHCI activation path is
+stuck. A marker at `poll: attempt N begin` points to root-port or device
+enumeration. Sealant still bounds the MMIO region and permissions, while the
+NMI watchdog is the mechanism that can recover from a non-posted PCIe read
+that never completes; Sealant alone cannot cancel such a hardware transaction.
+
 These markers are in the persistent kernel log, so serial capture is not
 required. A scan that reaches `scan complete (0 APs found)` is valid when no
 known test AP is expected; firmware initialization/readiness and scan

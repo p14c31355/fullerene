@@ -708,6 +708,20 @@ const MAX_USB_SYNC_POLL_ATTEMPTS: u8 = 12;
 #[cfg(not(nitrogen_no_usb))]
 const USB_SYNC_POLL_INTERVAL_MS: u64 = 250;
 
+/// Keep the synchronous rescan observable on real hardware. `log::info!`
+/// normally reaches klog too, but these short, stable markers are easier to
+/// identify in Klog Live immediately before a potentially non-returning MMIO
+/// transaction.
+#[cfg(not(nitrogen_no_usb))]
+fn usb_rescan_diag(stage: &str) {
+    crate::klog_fmt!("[USB-RESCAN] {}\n", stage);
+    // `usb_rescan` is synchronous, so the compositor cannot repaint while a
+    // controller operation is in progress.  Refresh immediately as well as
+    // relying on the timer path; this makes the last completed boundary
+    // visible before a potentially non-returning MMIO access.
+    let _ = crate::klog::try_render_live_surface();
+}
+
 /// Enqueue one coalesced USB hotplug poll from a runtime/service callback.
 #[cfg(not(nitrogen_no_usb))]
 fn enqueue_usb_poll_request() -> bool {
@@ -1517,17 +1531,27 @@ fn usb_block_error(error: nitrogen::DriverError) -> BlockError {
 #[cfg(not(nitrogen_no_usb))]
 pub fn poll_usb() -> bool {
     let before = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed);
+    usb_rescan_diag("poll: controller context lock begin");
     {
         let mut guard = with_ctx_inner();
+        usb_rescan_diag("poll: controller context lock acquired");
         if let Some(ctx) = guard.as_mut() {
             if !ctx.is_enabled() {
+                usb_rescan_diag("poll: controller not enabled");
                 return false;
             }
+            usb_rescan_diag("poll: boot hint begin");
             crate::boot_stage::draw_step_hint(b"usb_poll");
-            ctx.poll();
+            usb_rescan_diag("poll: boot hint returned");
+            usb_rescan_diag("poll: controller poll begin");
+            ctx.poll_with_diagnostic(usb_rescan_diag);
+            usb_rescan_diag("poll: controller poll returned");
         }
     }
+    usb_rescan_diag("poll: controller context released");
+    usb_rescan_diag("poll: register pending begin");
     register_pending_usb();
+    usb_rescan_diag("poll: register pending complete");
     let changed = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) != before;
     if changed {
         let _ = crate::klog::flush_to_vfs();
@@ -1546,6 +1570,7 @@ pub fn poll_usb() -> bool {
 /// must never invoke this from boot, rendering, or input-dispatch paths.
 #[cfg(not(nitrogen_no_usb))]
 fn activate_usb() -> bool {
+    usb_rescan_diag("activate: take context");
     // Do not hold USB_CTX across enable(): a broken non-posted MMIO read may
     // never return. Pollers must be able to observe None and keep the GUI
     // responsive while explicit activation is in progress.
@@ -1558,12 +1583,17 @@ fn activate_usb() -> bool {
     };
 
     let result = if ctx.is_enabled() {
+        usb_rescan_diag("activate: already enabled");
         Ok(())
     } else {
+        usb_rescan_diag("activate: USBContext::enable begin");
         crate::boot_stage::draw_step_hint(b"usb_init");
-        ctx.enable()
+        let result = ctx.enable();
+        usb_rescan_diag("activate: USBContext::enable returned");
+        result
     };
     *with_ctx_inner() = Some(ctx);
+    usb_rescan_diag("activate: context restored");
 
     match result {
         Ok(()) => true,
@@ -1577,15 +1607,21 @@ fn activate_usb() -> bool {
 /// Initial USB poll with retries, then register block devices.
 #[cfg(not(nitrogen_no_usb))]
 fn usb_poll_and_register() {
+    usb_rescan_diag("poll: activate begin");
     if !activate_usb() {
+        usb_rescan_diag("poll: activate failed");
         return;
     }
+    usb_rescan_diag("poll: activate complete");
     for i in 0..MAX_USB_SYNC_POLL_ATTEMPTS {
         log::info!("USB: poll #{}", i + 1);
+        usb_rescan_diag(&alloc::format!("poll: attempt {} begin", i + 1));
         if poll_usb() || LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0 {
             log::info!("USB: device detected after {} polls", i + 1);
+            usb_rescan_diag(&alloc::format!("poll: attempt {} registered device", i + 1));
             break;
         }
+        usb_rescan_diag(&alloc::format!("poll: attempt {} no device", i + 1));
         if i + 1 < MAX_USB_SYNC_POLL_ATTEMPTS {
             nitrogen::timing::delay_ms(USB_SYNC_POLL_INTERVAL_MS);
         }
@@ -1631,18 +1667,25 @@ fn prepare_usb_rescan() -> bool {
 /// only be called from the explicit `usb_rescan` activation boundary.
 #[cfg(not(nitrogen_no_usb))]
 pub fn rescan_usb_all() -> bool {
+    usb_rescan_diag("prepare begin");
     if !prepare_usb_rescan() {
+        usb_rescan_diag("prepare rejected");
         return false;
     }
+    usb_rescan_diag("prepare complete; context replaced");
     // init_usb_ctx parked the previously-active context in USB_RETIRED_CTX
     // instead of shutting it down inline (teardown is MMIO).  The synchronous
     // path already performs MMIO here (activate_usb), so drop the retired
     // context now so the old controller halts and releases DMA before the new
     // one is re-initialised on the same hardware — matching the pre-async
     // behaviour where init_usb_ctx called old.shutdown() directly.
+    usb_rescan_diag("retire old context begin");
     let retired = USB_RETIRED_CTX.lock().take();
     drop(retired);
+    usb_rescan_diag("retire old context complete");
+    usb_rescan_diag("activate and poll begin");
     usb_poll_and_register();
+    usb_rescan_diag("activate and poll complete");
     let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
     let _ = crate::klog::flush_to_vfs();
     registered

@@ -1053,6 +1053,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
             }
             "klog_live" => {
+                crate::klog_fmt!("[KLOG-LIVE] open requested\n");
                 if solvent::open_klog_live() {
                     ctx.terminal.write_str(
                         "KLog Live window opened. New klog entries appear here \
@@ -1126,8 +1127,10 @@ fn nozzle_services() -> nozzle::ShellServices {
             }
             "exec" => exec_path(ctx),
             "usb_rescan" => {
+                crate::klog_fmt!("[USB-RESCAN] shell command entered\n");
                 ctx.terminal.write_str(
-                    "USB rescan: explicitly activating controller and enumerating devices.\n",
+                    "USB rescan: explicitly activating controller and enumerating devices.\n\
+                     USB rescan: progress is available in KLog Live.\n",
                 );
                 // Keep the explicit shell command synchronous, as it was at
                 // Merge #330/#334.  An interactive rescan is the activation
