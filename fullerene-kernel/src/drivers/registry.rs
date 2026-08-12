@@ -686,11 +686,13 @@ impl UsbHostDriver for UsbHostCtl {
     }
 }
 
-/// Maximum number of poll retries before giving up.  Each retry happens on
-/// a separate scheduler tick, so the total window is roughly
-/// `MAX_USB_POLL_RETRIES × scheduler-tick-period`.
+/// Maximum number of poll retries before giving up. Each retry happens on a
+/// separate scheduler tick.  SuperSpeed link training and BOT devices behind
+/// the GemiBook's internal hub can need considerably longer than the old
+/// 16-tick window, especially immediately after xHCI HCRST, so keep the
+/// asynchronous activation alive for a bounded but practical interval.
 #[cfg(not(nitrogen_no_usb))]
-const MAX_USB_POLL_RETRIES: u8 = 16;
+const MAX_USB_POLL_RETRIES: u8 = 64;
 
 /// Enqueue one coalesced USB hotplug poll from a runtime/service callback.
 #[cfg(not(nitrogen_no_usb))]
@@ -1575,6 +1577,15 @@ pub fn enqueue_usb_rescan() -> bool {
         }
     }
     LAST_REGISTERED_USB_COUNT.store(0, Ordering::Relaxed);
+
+    // A periodic UsbHostDriver::poll may have left an old request at the
+    // queue head while the interactive shell is asking for an explicit
+    // rescan.  Do not let that stale request make the shell report
+    // "already pending" forever; the new context below must be paired with
+    // a fresh scheduler request.
+    USB_SQ.lock().clear();
+    USB_POLL_PENDING.store(false, Ordering::Release);
+    USB_POLL_CHANGED.store(false, Ordering::Release);
 
     // Re-create the USB context so the scheduler's activate_usb() will
     // re-enable the controller from a clean state.

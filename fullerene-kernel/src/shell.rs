@@ -1127,15 +1127,17 @@ fn nozzle_services() -> nozzle::ShellServices {
             "exec" => exec_path(ctx),
             "usb_rescan" => {
                 ctx.terminal.write_str(
-                    "USB rescan: queued; controller activation and enumeration will run in the scheduler.\n",
+                    "USB rescan: queued; controller activation and enumeration will run asynchronously.\n",
                 );
                 let queued = crate::drivers::registry::enqueue_usb_rescan();
                 if queued {
-                    ctx.terminal
-                        .write_str("USB rescan: poll enqueued. Check /dev/usb* shortly.\n");
+                    ctx.terminal.write_str(
+                        "USB rescan: poll enqueued. Wait a few seconds, then run usb_info.\n",
+                    );
                 } else {
-                    ctx.terminal
-                        .write_str("USB rescan: already pending. Check /dev/usb* shortly.\n");
+                    ctx.terminal.write_str(
+                        "USB rescan: already pending. Wait a few seconds, then run usb_info.\n",
+                    );
                 }
             }
             "sd_rescan" => {
