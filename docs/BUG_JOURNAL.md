@@ -461,8 +461,9 @@ invalid hub path and could hang during a control transaction.
 
 The configuration descriptor is now checked for an actual Hub interface
 (class `0x09`) before entering hub enumeration. Unsupported non-hub devices
-are logged, their xHCI slot is disabled, and the candidate is removed instead
-of issuing hub requests. Genuine hubs retain the existing downstream-port
+are logged and passed back through `register_xhci_storage`, which invokes
+`retry_device_candidate` instead of issuing hub requests or disabling and
+removing the xHCI candidate. Genuine hubs retain the existing downstream-port
 enumeration path.
 
 ### Validation

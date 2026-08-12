@@ -583,7 +583,9 @@ pub struct TouchpadInput {
     pub y_min: i32,
     pub y_max: i32,
     /// Relative mouse reports are emitted as report ID 6 on the N150.  The
-    /// absolute digitizer path remains available for report ID 1.
+    /// absolute digitizer path remains available for report ID 1. A stored
+    /// snapshot may contain a relative delta together with contact slots
+    /// retained from the preceding absolute report.
     pub relative: Option<(i16, i16)>,
     /// Contact slots from the absolute digitizer report.  A slot remains
     /// present with `in_contact == false` in release reports.
@@ -942,9 +944,13 @@ pub fn service_input() -> bool {
                 return false;
             };
             let decoded = device.report.decode_touchpad(device.fields, payload);
-            let (contacts, contact_count) = device
-                .report
-                .decode_touchpad_contacts(device.fields, payload);
+            let (contacts, contact_count) = if decoded.is_some() {
+                device
+                    .report
+                    .decode_touchpad_contacts(device.fields, payload)
+            } else {
+                ([None; MAX_TOUCH_CONTACTS], 0)
+            };
             let relative = if decoded.is_none() {
                 device.report.decode_relative_mouse(payload)
             } else {

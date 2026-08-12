@@ -75,8 +75,8 @@ static LAST_REGISTERED_USB_COUNT: AtomicUsize = AtomicUsize::new(0);
 struct UsbPollRequest {
     request_id: u64,
     /// Number of poll attempts remaining.  When zero, the request is
-    /// completed even if no device was found.  The explicit synchronous path
-    /// uses the same bounded retry count.
+    /// completed even if no device was found. The scheduler retries the
+    /// request without blocking the shell or input context.
     retries_left: u8,
 }
 
@@ -701,24 +701,15 @@ impl UsbHostDriver for UsbHostCtl {
 #[cfg(not(nitrogen_no_usb))]
 const MAX_USB_POLL_RETRIES: u8 = 64;
 
-/// Keep the synchronous shell path bounded to a predictable wait.
-#[cfg(not(nitrogen_no_usb))]
-const MAX_USB_SYNC_POLL_ATTEMPTS: u8 = 12;
-
-#[cfg(not(nitrogen_no_usb))]
-const USB_SYNC_POLL_INTERVAL_MS: u64 = 250;
-
-/// Keep the synchronous rescan observable on real hardware. `log::info!`
+/// Keep the scheduler-owned rescan observable on real hardware. `log::info!`
 /// normally reaches klog too, but these short, stable markers are easier to
-/// identify in Klog Live immediately before a potentially non-returning MMIO
-/// transaction.
+/// identify in Klog Live around potentially non-returning MMIO transactions.
 #[cfg(not(nitrogen_no_usb))]
 fn usb_rescan_diag(stage: &str) {
     crate::klog_fmt!("[USB-RESCAN] {}\n", stage);
-    // `usb_rescan` is synchronous, so the compositor cannot repaint while a
-    // controller operation is in progress.  Refresh immediately as well as
-    // relying on the timer path; this makes the last completed boundary
-    // visible before a potentially non-returning MMIO access.
+    // Refresh immediately as well as relying on the timer path; this makes
+    // the last completed boundary visible before a potentially non-returning
+    // MMIO access.
     let _ = crate::klog::try_render_live_surface();
 }
 
@@ -1613,31 +1604,7 @@ fn activate_usb() -> bool {
     }
 }
 
-/// Initial USB poll with retries, then register block devices.
-#[cfg(not(nitrogen_no_usb))]
-fn usb_poll_and_register() {
-    usb_rescan_diag("poll: activate begin");
-    if !activate_usb() {
-        usb_rescan_diag("poll: activate failed");
-        return;
-    }
-    usb_rescan_diag("poll: activate complete");
-    for i in 0..MAX_USB_SYNC_POLL_ATTEMPTS {
-        log::info!("USB: poll #{}", i + 1);
-        usb_rescan_diag(&alloc::format!("poll: attempt {} begin", i + 1));
-        if poll_usb() || LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0 {
-            log::info!("USB: device detected after {} polls", i + 1);
-            usb_rescan_diag(&alloc::format!("poll: attempt {} registered device", i + 1));
-            break;
-        }
-        usb_rescan_diag(&alloc::format!("poll: attempt {} no device", i + 1));
-        if i + 1 < MAX_USB_SYNC_POLL_ATTEMPTS {
-            nitrogen::timing::delay_ms(USB_SYNC_POLL_INTERVAL_MS);
-        }
-    }
-}
-
-/// Prepare a USB context for either the synchronous or scheduler-owned rescan.
+/// Prepare a USB context for the scheduler-owned rescan.
 #[cfg(not(nitrogen_no_usb))]
 fn prepare_usb_rescan() -> bool {
     if USB_RETIRED_CTX.lock().is_some() {
@@ -1669,35 +1636,21 @@ fn prepare_usb_rescan() -> bool {
     true
 }
 
-/// Full USB re-enumeration (clear + re-scan).  Does NOT mount.
+/// Queue a full USB re-enumeration (clear + re-scan). Does NOT mount.
 ///
-/// Synchronous variant: performs controller activation and polling in the
-/// caller's context.  May block on MMIO.  Kept for compatibility but should
-/// only be called from the explicit `usb_rescan` activation boundary.
+/// Controller teardown and activation are both scheduler-owned operations.
+/// The returned value reports whether the request was accepted, not whether a
+/// storage device has already been registered.
 #[cfg(not(nitrogen_no_usb))]
 pub fn rescan_usb_all() -> bool {
-    usb_rescan_diag("prepare begin");
-    if !prepare_usb_rescan() {
-        usb_rescan_diag("prepare rejected");
-        return false;
-    }
-    usb_rescan_diag("prepare complete; context replaced");
-    // init_usb_ctx parked the previously-active context in USB_RETIRED_CTX
-    // instead of shutting it down inline (teardown is MMIO).  The synchronous
-    // path already performs MMIO here (activate_usb), so drop the retired
-    // context now so the old controller halts and releases DMA before the new
-    // one is re-initialised on the same hardware — matching the pre-async
-    // behaviour where init_usb_ctx called old.shutdown() directly.
-    usb_rescan_diag("retire old context begin");
-    let retired = USB_RETIRED_CTX.lock().take();
-    drop(retired);
-    usb_rescan_diag("retire old context complete");
-    usb_rescan_diag("activate and poll begin");
-    usb_poll_and_register();
-    usb_rescan_diag("activate and poll complete");
-    let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
-    let _ = crate::klog::flush_to_vfs();
-    registered
+    usb_rescan_diag("queue begin");
+    let accepted = enqueue_usb_rescan();
+    usb_rescan_diag(if accepted {
+        "queue accepted"
+    } else {
+        "queue rejected"
+    });
+    accepted
 }
 
 /// Asynchronous USB re-enumeration: clears existing USB block devices and

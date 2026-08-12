@@ -762,7 +762,11 @@ mod tests {
     fn gesture_move_repositions_window_without_mouse_drag_state() {
         let mut wm = WindowManager::new();
         let id = wm.create_titled_window(10, 10, 100, 100, 0xFF0000, "Test");
+        let _ = wm.consume_dirty_rects();
         assert!(wm.move_window_by(id, 12, -3));
+        assert!(wm.has_dirty_rects());
+        assert_eq!(wm.consume_dirty_rects().len(), 2);
+        assert!(!wm.move_window_by(WindowId::INVALID, 5, 5));
         let window = wm.windows.iter().find(|window| window.id == id).unwrap();
         assert_eq!((window.x, window.y), (22, 7));
         assert!(matches!(wm.drag, DragState::None));

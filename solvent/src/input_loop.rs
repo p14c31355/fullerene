@@ -48,6 +48,7 @@ const MAX_HID_RELATIVE_STEP_PX: i32 = 96;
 // touchpad uses the same sensitivity as PS/2, matching the Nozzle feel.
 const HID_RELATIVE_SENSITIVITY_SCALE: i16 = 1;
 const MOUSE_STALE_AFTER_MS: u64 = 50;
+const TWO_FINGER_GESTURE_INACTIVE_AFTER_MS: u64 = 500;
 static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
 static LAST_POINTER_EVENT_TSC: AtomicU64 = AtomicU64::new(0);
 static POINTER_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -130,6 +131,7 @@ enum TwoFingerGesture {
         mover_id: u8,
         last_mover_x: i32,
         last_mover_y: i32,
+        last_contact_tsc: u64,
     },
     SuppressUntilRelease,
 }
@@ -142,8 +144,10 @@ fn mapped_touch_contacts(
     fb_height: u32,
 ) -> [Option<(u8, i32, i32)>; nitrogen::hid::MAX_TOUCH_CONTACTS] {
     let mut mapped = [None; nitrogen::hid::MAX_TOUCH_CONTACTS];
-    for (out, contact) in mapped.iter_mut().zip(input.contacts.iter().flatten()) {
-        if contact.in_contact {
+    for (out, contact) in mapped.iter_mut().zip(input.contacts.iter()) {
+        if let Some(contact) = contact
+            && contact.in_contact
+        {
             *out = Some((
                 contact.id,
                 i32::from(map_touch_axis(
@@ -225,8 +229,21 @@ fn update_two_finger_gesture(
             mover_id,
             last_mover_x,
             last_mover_y,
+            last_contact_tsc,
         } => {
-            let Some(input) = input else { return true };
+            let Some(input) = input else {
+                let now = unsafe { core::arch::x86_64::_rdtsc() };
+                let timeout = crate::TSC_PER_MS
+                    .load(Ordering::Relaxed)
+                    .max(1)
+                    .saturating_mul(TWO_FINGER_GESTURE_INACTIVE_AFTER_MS);
+                if now.wrapping_sub(last_contact_tsc) > timeout {
+                    *gesture = TwoFingerGesture::Idle;
+                    return false;
+                }
+                return true;
+            };
+            let now = unsafe { core::arch::x86_64::_rdtsc() };
             let contacts = mapped_touch_contacts(input, fb_width, fb_height);
             let anchor = contacts
                 .iter()
@@ -242,6 +259,17 @@ fn update_two_finger_gesture(
                 return true;
             }
             if let Some((dx, dy)) = input.relative {
+                let (next_mover_x, next_mover_y) = mover
+                    .map(|(_, mover_x, mover_y)| (*mover_x, *mover_y))
+                    .unwrap_or((last_mover_x, last_mover_y));
+                *gesture = TwoFingerGesture::Moving {
+                    window,
+                    anchor_id,
+                    mover_id,
+                    last_mover_x: next_mover_x,
+                    last_mover_y: next_mover_y,
+                    last_contact_tsc: now,
+                };
                 let sensitivity = MOUSE_SENSITIVITY.load(Ordering::Relaxed);
                 move_window_by_gesture(
                     window,
@@ -258,6 +286,7 @@ fn update_two_finger_gesture(
                     mover_id,
                     last_mover_x: *mover_x,
                     last_mover_y: *mover_y,
+                    last_contact_tsc: now,
                 };
                 return true;
             }
@@ -269,7 +298,7 @@ fn update_two_finger_gesture(
             true
         }
         TwoFingerGesture::Idle => {
-            let Some(input) = input.filter(|input| input.relative.is_none()) else {
+            let Some(input) = input else {
                 return false;
             };
             let contacts = mapped_touch_contacts(input, fb_width, fb_height);
@@ -282,7 +311,7 @@ fn update_two_finger_gesture(
             let Some(runtime) = runtime.as_mut() else {
                 return false;
             };
-            let anchor_index = active.iter().position(|(_, x, y)| {
+            let Some((anchor_id, window_id)) = active.iter().find_map(|(id, x, y)| {
                 runtime
                     .desktop
                     .wm
@@ -290,24 +319,8 @@ fn update_two_finger_gesture(
                     .iter()
                     .rev()
                     .find(|window| !window.minimized && window.contains_title_bar(*x, *y))
-                    .is_some()
-            });
-            let Some(anchor_index) = anchor_index else {
-                return false;
-            };
-            let (anchor_id, _, _) = active[anchor_index];
-            let Some(window_id) = runtime
-                .desktop
-                .wm
-                .windows()
-                .iter()
-                .rev()
-                .find(|window| {
-                    !window.minimized
-                        && window.contains_title_bar(active[anchor_index].1, active[anchor_index].2)
-                })
-                .map(|window| window.id)
-            else {
+                    .map(|window| (*id, window.id))
+            }) else {
                 return false;
             };
             let Some(&(mover_id, mover_x, mover_y)) =
@@ -322,6 +335,7 @@ fn update_two_finger_gesture(
                 mover_id,
                 last_mover_x: mover_x,
                 last_mover_y: mover_y,
+                last_contact_tsc: unsafe { core::arch::x86_64::_rdtsc() },
             };
             true
         }
@@ -434,7 +448,7 @@ pub fn poll_mouse_state() {
         push_mouse_button_edges(queue, combined_buttons, previous);
     }
     if touchpad.is_some() && combined_buttons != previous {
-        log::info!(
+        log::debug!(
             "[I2C-HID] pointer buttons changed: {:#04x}->{:#04x}",
             previous,
             combined_buttons
@@ -476,7 +490,8 @@ pub fn pointer_latency_metrics() -> (u64, u64) {
 mod tests {
     use super::{
         MAX_HID_RELATIVE_STEP_PX, MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, map_touch_axis,
-        mouse_motion_is_stale, scaled_hid_relative_delta, scaled_mouse_delta, touchpad_button_bits,
+        mapped_touch_contacts, mouse_motion_is_stale, scaled_hid_relative_delta,
+        scaled_mouse_delta, touchpad_button_bits,
     };
 
     #[test]
@@ -589,6 +604,46 @@ mod tests {
         };
         assert_eq!(touchpad_button_bits(Some(&right_pressed)), 0x02);
         assert_eq!(touchpad_button_bits(Some(&right_released)), 0);
+    }
+
+    #[test]
+    fn maps_active_touch_contacts_and_releases_slots() {
+        let input = nitrogen::i2c_hid::TouchpadInput {
+            report: nitrogen::hid::TouchpadReport {
+                x: 0,
+                y: 0,
+                buttons: 0,
+                in_contact: true,
+            },
+            x_min: 0,
+            x_max: 1000,
+            y_min: 0,
+            y_max: 1000,
+            relative: None,
+            contacts: [
+                Some(nitrogen::hid::TouchContact {
+                    id: 7,
+                    x: 500,
+                    y: 250,
+                    in_contact: true,
+                }),
+                Some(nitrogen::hid::TouchContact {
+                    id: 8,
+                    x: 900,
+                    y: 900,
+                    in_contact: false,
+                }),
+                None,
+                None,
+                None,
+            ],
+            contact_count: 1,
+        };
+        let mapped = mapped_touch_contacts(&input, 800, 600);
+        assert_eq!(mapped[0], Some((7, 399, 149)));
+        assert_eq!(mapped[1], None);
+        assert_eq!(mapped[2], None);
+        assert_eq!(mapped[3], None);
     }
 }
 
