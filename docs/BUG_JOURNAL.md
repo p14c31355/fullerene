@@ -432,3 +432,43 @@ and each resumed poll caps stale accumulated motion to a bounded screen step.
 The IRQ handlers also verify the PS/2 controller's AUX/keyboard status before
 consuming `0x60`, and a poll gap over 50 ms discards the stale relative packet
 backlog entirely.
+
+## Entry 010 — 2026-08-12 USB rescan entered the hub path for non-hub storage
+
+### Symptoms
+
+On the target machine, `usb_rescan` could hang while Klog Live showed the last
+completed marker as:
+
+```text
+[USB-RESCAN] context: controllers poll returned
+[USB-RESCAN] context: xhci mass-storage enumeration returned
+[USB-RESCAN] context: xhci hub enumeration begin
+```
+
+The controller poll and generic mass-storage enumeration had returned, but the
+shell never reached `/dev/usb0` registration. The Klog Live boundary markers
+were added because the synchronous shell command blocks the normal compositor;
+the timer/direct repaint path kept the last completed USB boundary visible.
+
+### Root cause and fix
+
+`enumerate_mass_storage()` returned `NotSupported` when the configuration did
+not contain a BOT mass-storage interface. The xHCI caller treated every such
+device as a possible hub and immediately issued hub class control transfers.
+For a non-hub device on the affected real machine, that took the driver into an
+invalid hub path and could hang during a control transaction.
+
+The configuration descriptor is now checked for an actual Hub interface
+(class `0x09`) before entering hub enumeration. Unsupported non-hub devices
+are logged, their xHCI slot is disabled, and the candidate is removed instead
+of issuing hub requests. Genuine hubs retain the existing downstream-port
+enumeration path.
+
+### Validation
+
+- Real hardware: `usb_rescan` completed and registered `/dev/usb0`.
+- QEMU xHCI smoke test: `usb_rescan` completed and registered `/dev/usb0`.
+- `cargo check -p nitrogen` passed.
+- `cargo check -p fullerene-kernel --target x86_64-unknown-uefi` passed.
+- Formatting and `git diff --check` passed.
