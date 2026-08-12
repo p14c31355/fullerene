@@ -68,8 +68,8 @@ static LAST_REGISTERED_USB_COUNT: AtomicUsize = AtomicUsize::new(0);
 struct UsbPollRequest {
     request_id: u64,
     /// Number of poll attempts remaining.  When zero, the request is
-    /// completed even if no device was found.  This mirrors the old
-    /// synchronous `usb_poll_and_register` retry loop (8 × 250 ms).
+    /// completed even if no device was found.  The explicit synchronous path
+    /// uses the same bounded retry count.
     retries_left: u8,
 }
 
@@ -686,13 +686,16 @@ impl UsbHostDriver for UsbHostCtl {
     }
 }
 
-/// Maximum number of poll retries before giving up. Each retry happens on a
-/// separate scheduler tick.  SuperSpeed link training and BOT devices behind
-/// the GemiBook's internal hub can need considerably longer than the old
-/// 16-tick window, especially immediately after xHCI HCRST, so keep the
-/// asynchronous activation alive for a bounded but practical interval.
+/// Maximum number of poll retries before giving up. Each asynchronous retry
+/// happens on a separate scheduler tick.  SuperSpeed link training and BOT
+/// devices behind the GemiBook's internal hub can need considerably longer
+/// than the old 16-tick window, especially immediately after xHCI HCRST, so
+/// keep both activation paths bounded but practical.
 #[cfg(not(nitrogen_no_usb))]
 const MAX_USB_POLL_RETRIES: u8 = 64;
+
+#[cfg(not(nitrogen_no_usb))]
+const USB_SYNC_POLL_INTERVAL_MS: u64 = 250;
 
 /// Enqueue one coalesced USB hotplug poll from a runtime/service callback.
 #[cfg(not(nitrogen_no_usb))]
@@ -816,6 +819,10 @@ pub fn consume_usb_completion_queue(_budget: usize) {}
 /// Initialise the USB driver (probe phase — called from Driver).
 #[cfg(not(nitrogen_no_usb))]
 pub(crate) fn init_usb_ctx(ctx: nitrogen::usb::context::USBContext) {
+    let old = USB_CTX.lock().take();
+    if let Some(mut old) = old {
+        old.shutdown();
+    }
     *USB_CTX.lock() = Some(ctx);
 }
 
@@ -1509,13 +1516,15 @@ fn usb_poll_and_register() {
     if !activate_usb() {
         return;
     }
-    for i in 0..8 {
+    for i in 0..MAX_USB_POLL_RETRIES {
         log::info!("USB: poll #{}", i + 1);
         if poll_usb() || LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0 {
             log::info!("USB: device detected after {} polls", i + 1);
             break;
         }
-        nitrogen::timing::delay_ms(250);
+        if i + 1 < MAX_USB_POLL_RETRIES {
+            nitrogen::timing::delay_ms(USB_SYNC_POLL_INTERVAL_MS);
+        }
     }
 }
 
@@ -1523,7 +1532,7 @@ fn usb_poll_and_register() {
 ///
 /// Synchronous variant: performs controller activation and polling in the
 /// caller's context.  May block on MMIO.  Kept for compatibility but should
-/// not be called from interactive shell paths.
+/// only be called from the explicit `usb_rescan` activation boundary.
 #[cfg(not(nitrogen_no_usb))]
 pub fn rescan_usb_all() -> bool {
     let names = crate::devfs::list_block_device_names();
@@ -1542,6 +1551,14 @@ pub fn rescan_usb_all() -> bool {
         }
     }
     LAST_REGISTERED_USB_COUNT.store(0, Ordering::Relaxed);
+
+    // The explicit shell path is synchronous.  Cancel any periodic request
+    // that was queued before the context was replaced; otherwise the
+    // scheduler can poll a second request against the newly-created context
+    // as soon as the shell yields.
+    USB_SQ.lock().clear();
+    USB_POLL_PENDING.store(false, Ordering::Release);
+    USB_POLL_CHANGED.store(false, Ordering::Release);
 
     init_usb_ctx(nitrogen::usb::context::USBContext::new(
         &crate::driver_context_impl::KernelDriverContext,

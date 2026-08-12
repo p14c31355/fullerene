@@ -37,6 +37,23 @@ impl XhciContext {
         self.drain_deferred_free_list();
     }
 
+    /// Release host-side slot state after the controller has been stopped.
+    /// No command-ring transaction is issued from this path.
+    pub fn release_all_slots(&mut self) {
+        let slot_ids: Vec<u32> = self
+            .device
+            .slots
+            .slots
+            .iter()
+            .map(|slot| slot.slot_id)
+            .collect();
+        for slot_id in slot_ids {
+            self.device.dcbaa.clear_slot(slot_id);
+        }
+        self.device.slots.release_all(self.driver_ctx);
+        self.drain_deferred_free_list();
+    }
+
     /// Release staging buffers after the controller no longer owns them.
     fn drain_deferred_free_list(&mut self) {
         for (phys, pages) in self.deferred_free_list.drain(..) {
@@ -47,7 +64,8 @@ impl XhciContext {
 
 impl Drop for XhciContext {
     fn drop(&mut self) {
-        self.disable_all_slots();
+        self.shutdown();
+        self.release_all_slots();
         self.rings.command.free(self.driver_ctx);
         self.rings.event.free(self.driver_ctx);
         self.driver_ctx

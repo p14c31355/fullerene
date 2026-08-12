@@ -4,7 +4,8 @@
 //! [`Mmio`], [`OperationalRegisters`], [`RuntimeRegisters`],
 //! and [`DoorbellRegisters`].
 
-use crate::mmio::MemRegion;
+use crate::mmio::{MemRegion, SafeReadResult};
+use crate::pci_health::PciHealth;
 
 // ══════════════════════════════════════════════════════════════
 //  Register Offsets
@@ -87,15 +88,58 @@ pub const CRCR_CRR: u32 = 1 << 3;
 //  Mmio — shared MMIO accessor
 // ══════════════════════════════════════════════════════════════
 
-struct Mmio(MemRegion);
+struct Mmio {
+    region: MemRegion,
+    health: Option<PciHealth>,
+}
 
 impl Mmio {
     unsafe fn new(base: usize, size: usize) -> Self {
-        Self(unsafe { MemRegion::new(base, size) })
+        Self {
+            region: unsafe { MemRegion::new(base, size) },
+            health: None,
+        }
+    }
+
+    unsafe fn new_checked(base: usize, size: usize, health: PciHealth) -> Self {
+        Self {
+            region: unsafe { MemRegion::new(base, size) },
+            health: Some(health),
+        }
     }
 
     fn read32(&self, off: usize) -> u32 {
-        let value = self.0.read32(off);
+        let value = match self.health.as_ref() {
+            Some(health) => {
+                // Sealant validates the mapped range and alignment; the
+                // checked MMIO path additionally performs the PCI presence
+                // probe and arms the platform NMI recovery before the
+                // non-posted load. A broken endpoint must never strand the
+                // interactive shell in an unbounded xHCI register read.
+                crate::mmio::arm_mmio_watchdog(0, health.bdf(), health.upstream_bridge());
+                let result = self.region.checked_read32(off, Some(health));
+                if crate::mmio::mmio_watchdog_armed() {
+                    // The preflight can reject a vanished device before the
+                    // common helper gets to its normal disarm path.
+                    crate::mmio::disarm_mmio_watchdog();
+                }
+                match result {
+                    SafeReadResult::Value(value) => value,
+                    SafeReadResult::DeviceGone => {
+                        log::warn!(
+                            "xHCI: PCI device disappeared during MMIO read at {:#x}",
+                            off
+                        );
+                        u32::MAX
+                    }
+                    SafeReadResult::MasterAbort => {
+                        log::warn!("xHCI: MMIO master abort at offset {:#x}", off);
+                        u32::MAX
+                    }
+                }
+            }
+            None => self.region.read32(off),
+        };
         if value == u32::MAX {
             log::warn!(
                 "xHCI: MMIO read at offset {:#x} completed with all ones",
@@ -106,7 +150,7 @@ impl Mmio {
     }
 
     fn write32(&self, off: usize, val: u32) {
-        self.0.write32(off, val);
+        self.region.write32(off, val);
     }
 
     fn read64(&self, off: usize) -> u64 {
@@ -192,8 +236,11 @@ impl CapabilityRegisters {
     ///
     /// `mmio` must identify a live, readable MMIO mapping of at least `size`
     /// bytes for the duration of this operation.
-    pub unsafe fn read(mmio: usize, size: usize) -> Option<Self> {
-        let registers = unsafe { Mmio::new(mmio, size) };
+    pub unsafe fn read(mmio: usize, size: usize, health: Option<PciHealth>) -> Option<Self> {
+        let registers = match health {
+            Some(health) => unsafe { Mmio::new_checked(mmio, size, health) },
+            None => unsafe { Mmio::new(mmio, size) },
+        };
         let header = registers.read32(CAP_CAPLENGTH);
         let caplength = header as u8;
         if header == u32::MAX || caplength < 0x20 || caplength & 3 != 0 {
@@ -306,6 +353,10 @@ impl OperationalRegisters {
         Self(unsafe { Mmio::new(base, size) })
     }
 
+    pub unsafe fn new_checked(base: usize, size: usize, health: PciHealth) -> Self {
+        Self(unsafe { Mmio::new_checked(base, size, health) })
+    }
+
     pub fn read(&self, off: usize) -> u32 {
         self.0.read32(off)
     }
@@ -393,6 +444,10 @@ impl RuntimeRegisters {
         Self(unsafe { Mmio::new(base, size) })
     }
 
+    pub unsafe fn new_checked(base: usize, size: usize, health: PciHealth) -> Self {
+        Self(unsafe { Mmio::new_checked(base, size, health) })
+    }
+
     reg32!(iman, set_iman, RT_IMAN);
     reg32!(imod, set_imod, RT_IMOD);
     reg32!(erstsz, set_erstsz, RT_ERSTSZ);
@@ -414,6 +469,10 @@ impl DoorbellRegisters {
     /// `base..base + size` must be a live, readable and writable MMIO mapping.
     pub unsafe fn new(base: usize, size: usize) -> Self {
         Self(unsafe { Mmio::new(base, size) })
+    }
+
+    pub unsafe fn new_checked(base: usize, size: usize, health: PciHealth) -> Self {
+        Self(unsafe { Mmio::new_checked(base, size, health) })
     }
 
     pub fn ring(&self, slot: u32, target: u32) {
@@ -454,8 +513,13 @@ fn next_extended_cap(offset: usize, next: u8) -> Option<usize> {
         .flatten()
 }
 
-pub fn dump_extended_capabilities(mmio_base: usize, ext_cap_ptr: u16) {
-    let m = unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) };
+pub fn dump_extended_capabilities(mmio_base: usize, ext_cap_ptr: u16, health: Option<PciHealth>) {
+    let m = match health {
+        Some(health) => unsafe {
+            Mmio::new_checked(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE, health)
+        },
+        None => unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) },
+    };
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
     while extended_cap_in_bounds(off, 12) {
@@ -507,8 +571,14 @@ pub fn parse_port_protocols(
     mmio_base: usize,
     ext_cap_ptr: u16,
     n_ports: u32,
+    health: Option<PciHealth>,
 ) -> alloc::vec::Vec<u32> {
-    let m = unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) };
+    let m = match health {
+        Some(health) => unsafe {
+            Mmio::new_checked(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE, health)
+        },
+        None => unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) },
+    };
     let n_words = ((n_ports + 31) / 32).max(1) as usize;
     // Unknown ports conservatively default to USB2. Issuing WPR to an
     // unclassified USB2 port can wedge its PHY.
@@ -560,14 +630,23 @@ pub fn parse_port_protocols(
     bitmap
 }
 
-pub fn try_legacy_handoff(mmio_base: usize, ext_cap_ptr: u16) -> Result<bool, crate::DriverError> {
+pub fn try_legacy_handoff(
+    mmio_base: usize,
+    ext_cap_ptr: u16,
+    health: Option<PciHealth>,
+) -> Result<bool, crate::DriverError> {
     const BIOS_OWNED: u32 = 1 << 16;
     const OS_OWNED: u32 = 1 << 24;
     // Preserve reserved fields, disable SMI enables, and clear RW1C events.
     const LEGACY_DISABLE_SMI: u32 = (0x7 << 1) | (0xFF << 5) | (0x7 << 17);
     const LEGACY_SMI_EVENTS: u32 = 0x7 << 29;
 
-    let m = unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) };
+    let m = match health {
+        Some(health) => unsafe {
+            Mmio::new_checked(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE, health)
+        },
+        None => unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) },
+    };
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
     while extended_cap_in_bounds(off, 8) {
@@ -799,7 +878,7 @@ mod tests {
     #[test]
     fn test_capability_registers_read() {
         let sim = SimHc::new(4);
-        let cap = unsafe { CapabilityRegisters::read(sim.base(), MMIO_SIZE) }.unwrap();
+        let cap = unsafe { CapabilityRegisters::read(sim.base(), MMIO_SIZE, None) }.unwrap();
         assert_eq!(cap.caplength, 0x20);
         assert_eq!(cap.hci_version, 0x0110);
         assert_eq!(cap.db_offset, 0x2000);
@@ -814,7 +893,7 @@ mod tests {
     fn test_parse_port_protocols() {
         let sim = SimHc::new(4);
         // xHCI XECP is expressed in DWORDs, not bytes.
-        let bitmap = parse_port_protocols(sim.base(), 0x3000 / 4, 4);
+        let bitmap = parse_port_protocols(sim.base(), 0x3000 / 4, 4, None);
         assert!(!bitmap.is_empty());
         // All 4 ports should be USB 3.0
         assert_eq!(bitmap[0] & 0xF, 0xF);
@@ -849,7 +928,7 @@ mod tests {
     #[test]
     fn test_legacy_handoff_no_bios() {
         let sim = SimHc::new(2);
-        let result = try_legacy_handoff(sim.base(), 0x3000 / 4);
+        let result = try_legacy_handoff(sim.base(), 0x3000 / 4, None);
         // No legacy support capability → Ok(true) = OS owns controller
         assert!(result.is_ok());
     }
@@ -862,7 +941,7 @@ mod tests {
         sim.write_hw(ec_base + 4, u32::MAX);
 
         assert_eq!(
-            try_legacy_handoff(sim.base(), (ec_base / 4) as u16),
+            try_legacy_handoff(sim.base(), (ec_base / 4) as u16, None),
             Ok(true)
         );
         assert_eq!(

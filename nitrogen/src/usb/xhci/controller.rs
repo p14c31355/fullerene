@@ -15,6 +15,7 @@ use super::register::{
 };
 use super::ring::{ErstEntry, RingContext};
 use crate::DriverContext;
+use crate::pci::PciConfigSpace;
 use crate::pci_health::PciHealth;
 use crate::usb::UsbDevice;
 use alloc::vec::Vec;
@@ -39,7 +40,9 @@ impl XhciContext {
 
         crate::debug::hint(b"xh_cap");
         let bar_size = crate::usb::HOST_CONTROLLER_BAR_SIZE;
-        let Some(cap_regs) = (unsafe { CapabilityRegisters::read(mmio_base, bar_size) }) else {
+        let Some(cap_regs) =
+            (unsafe { CapabilityRegisters::read(mmio_base, bar_size, Some(health)) })
+        else {
             log::warn!("xHCI: invalid or inaccessible capability header");
             return None;
         };
@@ -96,10 +99,10 @@ impl XhciContext {
         );
         log::info!("xHCI: HCIVERSION=0x{:04X}", cap_regs.hci_version);
 
-        super::register::dump_extended_capabilities(mmio_base, hcc1.ext_cap_ptr);
+        super::register::dump_extended_capabilities(mmio_base, hcc1.ext_cap_ptr, Some(health));
 
         crate::debug::hint(b"xh_leg");
-        let legacy_ok = match try_legacy_handoff(mmio_base, hcc1.ext_cap_ptr) {
+        let legacy_ok = match try_legacy_handoff(mmio_base, hcc1.ext_cap_ptr, Some(health)) {
             Ok(true) | Ok(false) => true,
             Err(_) => {
                 log::info!("xHCI: legacy handoff failed");
@@ -117,15 +120,16 @@ impl XhciContext {
         let registers = RegisterContext {
             mmio_base,
             cap: cap_regs,
-            op: unsafe { OperationalRegisters::new(op_base, op_size) },
-            runtime: unsafe { RuntimeRegisters::new(rt_base, rt_size) },
-            doorbell: unsafe { DoorbellRegisters::new(db_base, db_size) },
+            op: unsafe { OperationalRegisters::new_checked(op_base, op_size, health) },
+            runtime: unsafe { RuntimeRegisters::new_checked(rt_base, rt_size, health) },
+            doorbell: unsafe { DoorbellRegisters::new_checked(db_base, db_size, health) },
         };
 
         crate::debug::hint(b"xh_dma");
         let rings = RingContext::alloc(ctx, 256, 256)?;
         let device = DeviceContextSet::new(ctx, max_slots, scratchpad_bufs)?;
-        let port_protocols = parse_port_protocols(mmio_base, hcc1.ext_cap_ptr, n_ports);
+        let port_protocols =
+            parse_port_protocols(mmio_base, hcc1.ext_cap_ptr, n_ports, Some(health));
         let ports = PortContext::new(n_ports, ppc, Some(&port_protocols));
         let interrupts = InterruptContext::new();
 
@@ -201,6 +205,47 @@ impl XhciContext {
         self.init_ports();
         crate::debug::hint(b"xh_ready");
         Ok(())
+    }
+
+    /// Stop the controller before its DMA-owned rings are released.
+    ///
+    /// This is used when an explicit USB rescan replaces an active context.
+    /// A controller must not retain RS or bus-mastering while the Rust owner
+    /// is being dropped, otherwise the next context can race stale DMA.
+    pub fn shutdown(&mut self) {
+        if !self.health.is_device_present() {
+            return;
+        }
+
+        let command = self.registers.op.usbcmd();
+        if command == u32::MAX {
+            self.disable_bus_master();
+            return;
+        }
+
+        self.interrupts.disable(&self.registers.runtime);
+        if command & (USBCMD_RS | USBCMD_INTE | USBCMD_HSEE) != 0 {
+            self.registers
+                .op
+                .set_usbcmd(command & !(USBCMD_RS | USBCMD_INTE | USBCMD_HSEE));
+            let halted = crate::timing::wait_timeout_us(500_000, || {
+                let status = self.registers.op.usbsts();
+                status != u32::MAX && status & USBSTS_HCH != 0
+            })
+            .is_ok();
+            if !halted {
+                log::warn!("xHCI: controller did not halt during teardown; disabling DMA");
+                self.disable_bus_master();
+            }
+        }
+    }
+
+    fn disable_bus_master(&self) {
+        let (bus, dev, func) = self.health.bdf();
+        let command = PciConfigSpace::read_config_word(bus, dev, func, 4);
+        if command != u16::MAX {
+            PciConfigSpace::write_config_word_raw(bus, dev, func, 4, command & !0x0004);
+        }
     }
 
     /// Reset the controller with HCRST.

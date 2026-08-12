@@ -1127,17 +1127,19 @@ fn nozzle_services() -> nozzle::ShellServices {
             "exec" => exec_path(ctx),
             "usb_rescan" => {
                 ctx.terminal.write_str(
-                    "USB rescan: queued; controller activation and enumeration will run asynchronously.\n",
+                    "USB rescan: explicitly activating controller and enumerating devices.\n",
                 );
-                let queued = crate::drivers::registry::enqueue_usb_rescan();
-                if queued {
-                    ctx.terminal.write_str(
-                        "USB rescan: poll enqueued. Wait a few seconds, then run usb_info.\n",
-                    );
+                // Keep the explicit shell command synchronous, as it was at
+                // Merge #334.  An interactive rescan is the activation
+                // boundary; deferring it to the scheduler can leave the
+                // freshly-created USBContext permanently in `deferred`
+                // while the shell waits for a result.
+                if crate::drivers::registry::rescan_usb_all() {
+                    ctx.terminal
+                        .write_str("USB rescan: storage device registered.\n");
                 } else {
-                    ctx.terminal.write_str(
-                        "USB rescan: already pending. Wait a few seconds, then run usb_info.\n",
-                    );
+                    ctx.terminal
+                        .write_str("USB rescan: no storage device registered.\n");
                 }
             }
             "sd_rescan" => {

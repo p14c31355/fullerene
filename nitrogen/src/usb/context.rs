@@ -47,8 +47,16 @@ struct ControllerManager {
     xhci: Vec<Box<XhciContext>>,
 }
 
+#[derive(Clone, Copy)]
+struct IntelPortRoute {
+    bus: u8,
+    device: u8,
+    function: u8,
+    routed: bool,
+}
+
 impl ControllerManager {
-    fn route_intel_ports_to_xhci(devices: &[crate::pci::PciDevice]) -> bool {
+    fn route_intel_ports_to_xhci(devices: &[crate::pci::PciDevice]) -> Vec<IntelPortRoute> {
         use crate::pci::PciConfigSpace;
 
         let has_intel_ehci = devices.iter().any(|dev| {
@@ -58,10 +66,10 @@ impl ControllerManager {
                 && dev.prog_if == 0x20
         });
         if !has_intel_ehci {
-            return false;
+            return Vec::new();
         }
 
-        let mut routed = false;
+        let mut routes = Vec::new();
         for dev in devices.iter().filter(|dev| {
             dev.vendor_id == 0x8086
                 && dev.class_code == 0x0C
@@ -108,17 +116,55 @@ impl ControllerManager {
             // companion active alongside xHCI.
             let usb2_ok = usb2 == 0 || (usb2_active & usb2) == usb2;
             let usb3_ok = usb3 == 0 || (usb3_active & usb3) == usb3;
-            routed |= usb2_ok && usb3_ok;
+            let routed = usb2_ok && usb3_ok;
+            routes.push(IntelPortRoute {
+                bus: dev.bus,
+                device: dev.device,
+                function: dev.function,
+                routed,
+            });
             log::info!(
                 "USB: Intel routing USB2={:#x}/{:#x} USB3={:#x}/{:#x} routed={}",
                 usb2_active,
                 usb2,
                 usb3_active,
                 usb3,
-                usb2_ok && usb3_ok,
+                routed,
             );
         }
-        routed
+        routes
+    }
+
+    fn disable_intel_port_routes(routes: &[IntelPortRoute]) {
+        use crate::pci::PciConfigSpace;
+
+        for route in routes {
+            // Match Linux's usb_disable_xhci_ports(): zeroing both routing
+            // registers hands switchable USB2 wires back to EHCI and turns
+            // off xHCI SuperSpeed terminations. Restoring an arbitrary BIOS
+            // value could leave ports assigned to a controller that just
+            // failed initialization.
+            PciConfigSpace::write_config_dword_raw(
+                route.bus,
+                route.device,
+                route.function,
+                0xD8,
+                0,
+            );
+            PciConfigSpace::write_config_dword_raw(
+                route.bus,
+                route.device,
+                route.function,
+                0xD0,
+                0,
+            );
+            log::info!(
+                "USB: disabled Intel xHCI port routing at {:02x}:{:02x}.{}; EHCI fallback enabled",
+                route.bus,
+                route.device,
+                route.function,
+            );
+        }
     }
 
     /// Scan the PCI bus and initialise every USB controller found.
@@ -131,7 +177,8 @@ impl ControllerManager {
             log::info!("USB: PCI scan failed: {:?}", e);
             return;
         }
-        let intel_ports_routed = Self::route_intel_ports_to_xhci(scanner.get_devices());
+        let intel_routes = Self::route_intel_ports_to_xhci(scanner.get_devices());
+        let intel_ports_routed = intel_routes.iter().any(|route| route.routed);
         let mut controllers: Vec<_> = scanner
             .get_devices()
             .iter()
@@ -141,7 +188,20 @@ impl ControllerManager {
         controllers.sort_by_key(|dev| dev.prog_if != 0x30);
         let found_any = !controllers.is_empty();
         let mut intel_xhci_active = false;
+        let mut intel_routes_restored = false;
         for dev in controllers {
+            if dev.prog_if == 0x20
+                && dev.vendor_id == 0x8086
+                && intel_ports_routed
+                && !intel_xhci_active
+                && !intel_routes_restored
+            {
+                // xHCI was tried first but did not become usable. Restore
+                // firmware routing before probing the EHCI companion so it
+                // can actually see the USB2 ports again.
+                Self::disable_intel_port_routes(&intel_routes);
+                intel_routes_restored = true;
+            }
             if dev.prog_if == 0x20
                 && dev.vendor_id == 0x8086
                 && intel_ports_routed
@@ -370,6 +430,19 @@ impl ControllerManager {
             xhci_devices,
         }
     }
+
+    fn shutdown(&mut self) {
+        // Stop xHCI first; Intel EHCI companions may share the same physical
+        // ports, but each controller owns independent DMA state.
+        for controller in &mut self.xhci {
+            controller.shutdown();
+        }
+        for controller in &mut self.ehci {
+            controller.shutdown();
+        }
+        self.xhci.clear();
+        self.ehci.clear();
+    }
 }
 
 /// Events from a single poll cycle.
@@ -459,6 +532,13 @@ impl USBContext {
         for (ctrl_idx, dev_idx) in &ev.xhci_devices {
             self.register_xhci_storage(*ctrl_idx, *dev_idx);
         }
+    }
+
+    /// Stop all controllers before replacing this context during rescan.
+    pub fn shutdown(&mut self) {
+        self.controllers.shutdown();
+        self.storage = StorageManager::new();
+        self.enabled = false;
     }
 
     /// References to all discovered storage disks.
