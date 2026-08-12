@@ -1127,18 +1127,22 @@ fn nozzle_services() -> nozzle::ShellServices {
             "exec" => exec_path(ctx),
             "usb_rescan" => {
                 ctx.terminal.write_str(
-                    "USB rescan: queued controller activation and device enumeration.\n",
+                    "USB rescan: explicitly activating controller and enumerating devices.\n",
                 );
-                // Controller activation and teardown may perform PCIe MMIO.
-                // Queue them for the scheduler so a non-responsive host
-                // controller cannot block the shell or input dispatch.
-                if crate::drivers::registry::enqueue_usb_rescan() {
-                    ctx.terminal.write_str(
-                        "USB rescan: running asynchronously; use usb_info to check progress.\n",
-                    );
+                // Keep the explicit shell command synchronous, as it was at
+                // Merge #330/#334.  An interactive rescan is the activation
+                // boundary; deferring it to the scheduler's bounded device
+                // phase leaves the freshly-created USBContext permanently in
+                // `deferred`: controller teardown (up to a 500ms HCHalt wait)
+                // and activation (PCI scan + xHCI HCRST) exceed the shared
+                // 10ms deadline, so the request stalls at the SQ head with
+                // USB_POLL_PENDING set and retries never advance.
+                if crate::drivers::registry::rescan_usb_all() {
+                    ctx.terminal
+                        .write_str("USB rescan: storage device registered.\n");
                 } else {
                     ctx.terminal
-                        .write_str("USB rescan: could not queue the request.\n");
+                        .write_str("USB rescan: no storage device registered.\n");
                 }
             }
             "sd_rescan" => {

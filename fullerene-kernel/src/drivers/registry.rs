@@ -1634,6 +1634,14 @@ pub fn rescan_usb_all() -> bool {
     if !prepare_usb_rescan() {
         return false;
     }
+    // init_usb_ctx parked the previously-active context in USB_RETIRED_CTX
+    // instead of shutting it down inline (teardown is MMIO).  The synchronous
+    // path already performs MMIO here (activate_usb), so drop the retired
+    // context now so the old controller halts and releases DMA before the new
+    // one is re-initialised on the same hardware — matching the pre-async
+    // behaviour where init_usb_ctx called old.shutdown() directly.
+    let retired = USB_RETIRED_CTX.lock().take();
+    drop(retired);
     usb_poll_and_register();
     let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
     let _ = crate::klog::flush_to_vfs();
