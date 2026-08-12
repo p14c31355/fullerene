@@ -110,6 +110,22 @@ pub enum SafeReadResult<T> {
     MasterAbort,
 }
 
+/// Read an MMIO register with the common PCI presence and watchdog policy.
+/// Device-specific register layers should only translate the resulting
+/// `SafeReadResult` into their own logging/error policy.
+pub fn checked_read32_with_watchdog(
+    region: &MemRegion,
+    offset: usize,
+    health: &PciHealth,
+) -> SafeReadResult<u32> {
+    arm_mmio_watchdog(0, health.bdf(), health.upstream_bridge());
+    let result = region.checked_read32(offset, Some(health));
+    if mmio_watchdog_armed() {
+        disarm_mmio_watchdog();
+    }
+    result
+}
+
 /// Perform a volatile read from a PCIe MMIO register with hang-safety checks.
 ///
 /// # Safety checks

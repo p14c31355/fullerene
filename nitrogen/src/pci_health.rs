@@ -79,6 +79,11 @@ impl PciHealth {
         self.upstream_bridge
     }
 
+    /// Return the endpoint BDF used by the MMIO watchdog recovery path.
+    pub fn bdf(&self) -> (u8, u8, u8) {
+        (self.bus, self.dev, self.func)
+    }
+
     /// Quick check: is the device still visible on the PCI bus?
     /// This is a single config read — safe and fast.
     pub fn is_device_present(&self) -> bool {

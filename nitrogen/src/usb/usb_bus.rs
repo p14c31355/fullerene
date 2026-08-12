@@ -13,8 +13,8 @@ use super::host_controller::HostController;
 use super::xhci::context::XhciContext;
 use crate::DriverContext;
 use crate::usb::{
-    DESC_CONFIGURATION, DESC_DEVICE, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION, UsbDirection,
-    UsbSetupPacket,
+    DESC_CONFIGURATION, DESC_DEVICE, MSC_CLASS, MSC_PROTOCOL_BOT, MSC_PROTOCOL_UAS,
+    MSC_SUBCLASS_SCSI, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION, UsbDirection, UsbSetupPacket,
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -383,6 +383,18 @@ pub fn enumerate_mass_storage(
         return Err(crate::DriverError::Protocol);
     }
 
+    log::info!(
+        "USB: device {} descriptor vid={:04x} pid={:04x} class={:02x}/{:02x}/{:02x} ep0={} configs={}",
+        dev_addr,
+        u16::from_le_bytes([full_desc_buf[8], full_desc_buf[9]]),
+        u16::from_le_bytes([full_desc_buf[10], full_desc_buf[11]]),
+        full_desc_buf[4],
+        full_desc_buf[5],
+        full_desc_buf[6],
+        full_desc_buf[7],
+        full_desc_buf[17],
+    );
+
     let num_cfgs = full_desc_buf[17];
     if num_cfgs == 0 {
         log::warn!("USB: device {} reports zero configurations", dev_addr);
@@ -521,9 +533,15 @@ fn parse_mass_storage_config(
     }
     let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let mut offset: usize = 9;
-    let mut interface = None;
+    // Prefer BOT; fall back to UAS (many UAS devices also accept BOT).
+    let mut bot_interface = None;
+    let mut uas_interface = None;
+    let mut uas_candidate = None;
     let mut ep_out = None;
     let mut ep_in = None;
+    // Track which interface the current endpoints belong to.
+    let mut current_interface_bot = false;
+    let mut current_interface_uas = false;
 
     let limit = total_len.min(cfg_len).min(cfg_buf.len());
     while offset + 2 <= limit {
@@ -533,43 +551,99 @@ fn parse_mass_storage_config(
         }
         let dtype = cfg_buf[offset + 1];
         if dtype == 4 && dlen >= 9 {
-            interface = (cfg_buf[offset + 5] == 0x08 && cfg_buf[offset + 7] == 0x50).then_some((
-                cfg_buf[offset + 2],
-                cfg_buf[offset + 6],
-                cfg_buf[offset + 7],
-            ));
+            // Interface descriptor
+            let class = cfg_buf[offset + 5];
+            let subclass = cfg_buf[offset + 6];
+            let protocol = cfg_buf[offset + 7];
+            let iface_num = cfg_buf[offset + 2];
+
+            current_interface_bot = false;
+            current_interface_uas = false;
+            bot_interface = None;
+            uas_interface = None;
+
+            if class == MSC_CLASS && subclass == MSC_SUBCLASS_SCSI {
+                if protocol == MSC_PROTOCOL_BOT {
+                    bot_interface = Some(iface_num);
+                    current_interface_bot = true;
+                    log::info!("USB: found BOT mass-storage interface {}", iface_num);
+                } else if protocol == MSC_PROTOCOL_UAS {
+                    uas_interface = Some(iface_num);
+                    current_interface_uas = true;
+                    log::info!(
+                        "USB: found UAS mass-storage interface {} (will try BOT fallback)",
+                        iface_num
+                    );
+                }
+            }
             ep_out = None;
             ep_in = None;
-        } else if dtype == 5 && dlen >= 7 && interface.is_some() {
+        } else if dtype == 5 && dlen >= 7 && (current_interface_bot || current_interface_uas) {
+            // Endpoint descriptor — collect bulk endpoints for the current
+            // BOT or UAS interface.  UAS uses 2–4 bulk endpoints; the first
+            // bulk OUT and first bulk IN are used for BOT fallback.
             let ep_addr = cfg_buf[offset + 2];
             let ep_attr = cfg_buf[offset + 3];
             let mps = u16::from_le_bytes([cfg_buf[offset + 4], cfg_buf[offset + 5]]);
             if ep_attr & 3 == 2 && mps != 0 {
                 if ep_addr & 0x80 != 0 {
-                    ep_in = Some((ep_addr, mps));
-                } else {
+                    if ep_in.is_none() {
+                        ep_in = Some((ep_addr, mps));
+                    }
+                } else if ep_out.is_none() {
                     ep_out = Some((ep_addr, mps));
                 }
             }
         }
-        if let (
-            Some((interface_number, subclass, protocol)),
-            Some((out, out_mps)),
-            Some((input, in_mps)),
-        ) = (interface, ep_out, ep_in)
+
+        // Return immediately when we have a complete BOT interface with
+        // both bulk endpoints.
+        if let (Some(iface), Some((out, out_mps)), Some((input, in_mps))) =
+            (bot_interface, ep_out, ep_in)
         {
             return Ok(MassStorageConfig {
                 value: cfg_buf[5],
-                interface: interface_number,
-                subclass,
-                protocol,
+                interface: iface,
+                subclass: MSC_SUBCLASS_SCSI,
+                protocol: MSC_PROTOCOL_BOT,
                 ep_out: out,
                 ep_out_mps: out_mps,
                 ep_in: input,
                 ep_in_mps: in_mps,
             });
         }
+        if current_interface_uas
+            && let (Some(iface), Some(out), Some(input)) = (uas_interface, ep_out, ep_in)
+        {
+            uas_candidate = Some((iface, out, input));
+        }
+
         offset += dlen;
+    }
+
+    // No BOT interface found.  Fall back to UAS using BOT protocol — most
+    // UAS-capable devices also accept BOT commands on their bulk endpoints.
+    if let Some((iface, (out, out_mps), (input, in_mps))) = uas_candidate {
+        log::info!(
+            "USB: falling back to BOT on UAS interface {} (endpoints out={:#04x} in={:#04x})",
+            iface,
+            out,
+            input
+        );
+        return Ok(MassStorageConfig {
+            value: cfg_buf[5],
+            interface: iface,
+            subclass: MSC_SUBCLASS_SCSI,
+            protocol: MSC_PROTOCOL_BOT, // Use BOT wire protocol
+            ep_out: out,
+            ep_out_mps: out_mps,
+            ep_in: input,
+            ep_in_mps: in_mps,
+        });
+    }
+
+    if uas_interface.is_some() {
+        log::warn!("USB: UAS interface found but no bulk endpoint pair available");
     }
     Err(crate::DriverError::NotSupported)
 }
@@ -721,10 +795,47 @@ mod tests {
         0x81, 2, 0, 2, 0,
     ];
 
+    // Same layout as MSC_CONFIG but with protocol = UAS (0x62) instead of
+    // BOT (0x50).  The parser should fall back to BOT wire protocol.
+    const UAS_CONFIG: [u8; 32] = [
+        9, 2, 32, 0, 1, 2, 0, 0x80, 50, 9, 4, 0, 0, 2, 8, 6, 0x62, 0, 7, 5, 2, 2, 0, 2, 0, 7, 5,
+        0x81, 2, 0, 2, 0,
+    ];
+
+    const BOT_WITHOUT_ENDPOINTS_THEN_UAS: [u8; 41] = [
+        9, 2, 41, 0, 2, 2, 0, 0x80, 50, 9, 4, 0, 0, 0, 8, 6, 0x50, 0, 9, 4, 1, 0, 2, 8, 6, 0x62, 0,
+        7, 5, 2, 2, 0, 2, 0, 7, 5, 0x81, 2, 0, 2, 0,
+    ];
+
     #[test]
     fn parses_bot_interface_and_reported_endpoints() {
         let config = parse_mass_storage_config(&MSC_CONFIG, MSC_CONFIG.len()).unwrap();
         assert_eq!(config.value, 2);
+        assert_eq!((config.ep_out, config.ep_out_mps), (2, 512));
+        assert_eq!((config.ep_in, config.ep_in_mps), (0x81, 512));
+        assert_eq!(config.protocol, MSC_PROTOCOL_BOT);
+    }
+
+    #[test]
+    fn falls_back_to_bot_on_uas_only_interface() {
+        let config = parse_mass_storage_config(&UAS_CONFIG, UAS_CONFIG.len()).unwrap();
+        assert_eq!(config.interface, 0);
+        // Protocol is reported as BOT even though the interface declares UAS,
+        // because we use the BOT wire protocol as a fallback.
+        assert_eq!(config.protocol, MSC_PROTOCOL_BOT);
+        assert_eq!((config.ep_out, config.ep_out_mps), (2, 512));
+        assert_eq!((config.ep_in, config.ep_in_mps), (0x81, 512));
+    }
+
+    #[test]
+    fn binds_fallback_endpoints_to_their_uas_interface() {
+        let config = parse_mass_storage_config(
+            &BOT_WITHOUT_ENDPOINTS_THEN_UAS,
+            BOT_WITHOUT_ENDPOINTS_THEN_UAS.len(),
+        )
+        .unwrap();
+        assert_eq!(config.interface, 1);
+        assert_eq!(config.protocol, MSC_PROTOCOL_BOT);
         assert_eq!((config.ep_out, config.ep_out_mps), (2, 512));
         assert_eq!((config.ep_in, config.ep_in_mps), (0x81, 512));
     }

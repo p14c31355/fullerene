@@ -2,9 +2,11 @@
 //!
 //! This module provides IDT initialization and handler setup.
 
-use super::apic::{KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX, TIMER_INTERRUPT_INDEX};
+use super::apic::{
+    I2C_HID_INTERRUPT_INDEX, KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX, TIMER_INTERRUPT_INDEX,
+};
 use super::exceptions::*;
-use super::input::{keyboard_handler, mouse_handler, timer_handler};
+use super::input::{i2c_hid_handler, keyboard_handler, mouse_handler, timer_handler};
 use crate::gdt::{
     DOUBLE_FAULT_IST_INDEX, GP_FAULT_IST_INDEX, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX,
     PAGE_FAULT_IST_INDEX, STACK_FAULT_IST_INDEX,
@@ -118,6 +120,7 @@ pub fn init() {
         idt[TIMER_INTERRUPT_INDEX as u8].set_handler_fn(timer_handler);
         idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
         idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
+        idt[I2C_HID_INTERRUPT_INDEX as u8].set_handler_fn(i2c_hid_handler);
 
         // Set up scheduler trampoline address for exception recovery
         let trampoline_addr = x86_64::VirtAddr::new(

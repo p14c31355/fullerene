@@ -9,6 +9,20 @@
 
 ## Application Ports
 
+### Intel Wi-Fi firmware submodule
+
+The `bonder/iwlwifi` submodule tracks `linux-firmware`, but the kernel only
+consumes files below `intel/iwlwifi`. Initialize it shallowly and enable the
+same sparse checkout used by CI:
+
+```bash
+git submodule update --init bonder/iwlwifi
+git -C bonder/iwlwifi sparse-checkout set intel/iwlwifi
+```
+
+The UEFI build requires the matching firmware files to be present in that
+directory.
+
 The repository includes third‑party application port definitions that are
 automatically built from submodule sources and embedded into the kernel
 via a CPIO initramfs archive.

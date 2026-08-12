@@ -272,6 +272,9 @@ pub fn render_cursor_fast(framebuffer: &mut petroleum::graphics::FramebufferGuar
         .as_ref()
         .map(|b| b.as_slice())
         .is_some_and(|back| update_cursor_pixels(framebuffer, back, previous, &cursor));
+    if updated {
+        crate::input_loop::record_cursor_paint();
+    }
     if !updated {
         runtime.cursor_redraw_from = Some(previous);
         runtime.frame_due = true;

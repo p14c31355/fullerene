@@ -3,6 +3,7 @@
 //! This module provides APIC initialization and management functions.
 //! All unsafe volatile/port I/O is encapsulated in `nitrogen::apic_controller::ApicController`.
 
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use nitrogen::apic::{ApicFlags, ApicOffsets, IO_APIC_BASE};
 use nitrogen::apic_controller::ApicController;
 use nitrogen::mmio;
@@ -15,12 +16,15 @@ use x86_64::registers::model_specific::Msr;
 pub const TIMER_INTERRUPT_INDEX: u32 = 32;
 pub const KEYBOARD_INTERRUPT_INDEX: u32 = 33;
 pub const MOUSE_INTERRUPT_INDEX: u32 = 44;
+pub const I2C_HID_INTERRUPT_INDEX: u32 = 45;
 
 /// Global APIC controller instance.
 ///
 /// Set during early boot (UEFI MMIO mapping phase) and then used by
 /// `init_apic_hw_only`, `init_apic`, and `send_eoi`.
 pub static APIC_CONTROLLER: Mutex<Option<ApicController>> = Mutex::new(None);
+static IOAPIC_GSI_BASE: AtomicU32 = AtomicU32::new(0);
+static IOAPIC_PHYS_BASE: AtomicU64 = AtomicU64::new(IO_APIC_BASE);
 
 /// Get the physical APIC base address from the IA32_APIC_BASE MSR.
 fn get_apic_base_phys() -> Option<u64> {
@@ -64,9 +68,96 @@ pub fn preinit_apic_controller(lapic_virt: u64) {
 /// with IF=1 but cannot be preempted by an interrupt handler on UP).
 /// A blocking `lock()` is safe here — `try_lock()` would silently lose EOIs.
 pub fn send_eoi() {
-    if let Some(ref ctrl) = *APIC_CONTROLLER.lock() {
-        ctrl.send_eoi();
+    // EOI is issued from interrupt context. Avoid taking a potentially
+    // contended Rust mutex on that path and write the architectural LAPIC
+    // register directly through the already-installed direct map.
+    let phys = get_apic_base_phys().unwrap_or(0xFEE0_0000);
+    let addr = phys_to_virt(phys) as usize + ApicOffsets::EOI as usize;
+    unsafe { core::ptr::write_volatile(addr as *mut u32, 0) };
+}
+
+/// Publish the MADT GSI base before device interrupts are routed.
+pub fn set_ioapic_gsi_base(base: u32) {
+    set_ioapic_info(IO_APIC_BASE as u32, base);
+}
+
+pub fn set_ioapic_info(phys_base: u32, gsi_base: u32) {
+    IOAPIC_PHYS_BASE.store(phys_base as u64, Ordering::Release);
+    IOAPIC_GSI_BASE.store(gsi_base, Ordering::Release);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut guard = APIC_CONTROLLER.lock();
+        if let Some(ctrl) = guard.as_mut() {
+            ctrl.set_gsi_base(gsi_base);
+        }
+    });
+}
+
+/// Route an ACPI-described device GSI to a fixed IDT vector.
+pub fn configure_gsi(gsi: u32, vector: u8, low_active: bool, level_triggered: bool) -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        APIC_CONTROLLER
+            .lock()
+            .as_ref()
+            .is_some_and(|ctrl| ctrl.configure_gsi(gsi, vector, low_active, level_triggered))
+    })
+}
+
+/// Mask or unmask an ACPI-described device GSI.
+pub fn set_gsi_masked(gsi: u32, masked: bool) -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        APIC_CONTROLLER
+            .lock()
+            .as_ref()
+            .is_some_and(|ctrl| ctrl.set_gsi_masked(gsi, masked))
+    })
+}
+
+/// Mask a GSI from an interrupt handler without acquiring APIC_CONTROLLER.
+pub fn set_gsi_masked_from_interrupt(gsi: u32, masked: bool) -> bool {
+    let index = match gsi.checked_sub(IOAPIC_GSI_BASE.load(Ordering::Acquire)) {
+        Some(index) if index <= u8::MAX as u32 => index as u8,
+        _ => return false,
+    };
+    let base = phys_to_virt(IOAPIC_PHYS_BASE.load(Ordering::Acquire)) as usize;
+    let select = base as *mut u32;
+    let window = (base + 0x10) as *mut u32;
+    unsafe {
+        core::ptr::write_volatile(select, 0x10 + index as u32 * 2);
+        let mut lower = core::ptr::read_volatile(window);
+        if masked {
+            lower |= 1 << 16
+        } else {
+            lower &= !(1 << 16)
+        }
+        core::ptr::write_volatile(select, 0x10 + index as u32 * 2);
+        core::ptr::write_volatile(window, lower);
     }
+    true
+}
+
+/// Connect the N150 I2C-HID GPIO interrupt after the IDT and I/O APIC are
+/// ready.  The ACPI description for this device is active-low, level-based.
+pub fn configure_i2c_hid_interrupt() -> bool {
+    if !nitrogen::i2c_hid::is_initialized() {
+        return false;
+    }
+    let profile = nitrogen::hid::GEMIBOOK_N150_I2C_HID;
+    let routed = configure_gsi(
+        profile.interrupt_gsi,
+        I2C_HID_INTERRUPT_INDEX as u8,
+        true,
+        true,
+    );
+    if routed {
+        nitrogen::i2c_hid::install_interrupt_rearm(rearm_i2c_hid_interrupt);
+        nitrogen::i2c_hid::enable_interrupt_mode();
+    }
+    routed
+}
+
+fn rearm_i2c_hid_interrupt() {
+    let gsi = nitrogen::hid::GEMIBOOK_N150_I2C_HID.interrupt_gsi;
+    let _ = set_gsi_masked(gsi, false);
 }
 
 /// Hardware-only APIC initialisation (called BEFORE IDT/ISRs are ready).
@@ -153,19 +244,24 @@ pub fn init_apic() {
 
         petroleum::serial::serial_log(format_args!("APIC LVT entries masked.\n"));
 
-        // Configure timer: periodic, unmasked, divide-by-16, ~1ms initial count.
-        // Note: on real hardware the actual frequency depends on the bus clock;
-        // the scheduler hlt() loop is interrupt-driven so precise timing isn't
-        // critical — any periodic tick prevents the permanent hang.
+        // Calibrate the APIC timer against the known TSC frequency.
+        // The APIC timer's tick rate is platform-specific (bus clock / divider).
+        // Measure how many APIC ticks elapse during a known TSC interval, then
+        // compute the initial count for a 1 ms periodic tick.
+        let tsc_per_ms = solvent::get_tsc_per_ms();
+        let divider = 0x3u32; // divide by 16
+        let initial_count = calibrate_apic_timer(ctrl, tsc_per_ms, divider);
+
         ctrl.configure_timer(
             TIMER_INTERRUPT_INDEX,
             ApicFlags::TIMER_PERIODIC,
-            1_000_000,
-            0x3,
+            initial_count,
+            divider,
         );
 
         petroleum::serial::serial_log(format_args!(
-            "APIC timer configured (periodic, div=16, initial_count=1000000).\n"
+            "APIC timer configured (periodic, div=16, initial_count={}, tsc_per_ms={}).\n",
+            initial_count, tsc_per_ms,
         ));
 
         // Configure I/O APIC for legacy IRQs.
@@ -179,6 +275,77 @@ pub fn init_apic() {
 
     use super::syscall::setup_syscall;
     setup_syscall();
+}
+
+/// Calibrate the APIC timer against the known TSC frequency.
+///
+/// Sets the APIC timer to one-shot mode with a large initial count, measures
+/// how many APIC ticks elapse during a ~2 ms TSC interval, and returns the
+/// initial count that produces a 1 ms periodic tick.
+///
+/// Falls back to a conservative estimate if the calibration fails (e.g. TSC
+/// frequency is unknown or the APIC timer does not appear to decrement).
+fn calibrate_apic_timer(ctrl: &ApicController, tsc_per_ms: u64, divider: u32) -> u32 {
+    // Use a ~2 ms measurement window for accuracy.  A longer window improves
+    // precision but delays boot; 2 ms is a good balance.
+    const CALIB_WINDOW_MS: u64 = 2;
+    const PROBE_COUNT: u32 = 10_000_000;
+
+    if tsc_per_ms == 0 {
+        petroleum::serial::serial_log(format_args!(
+            "APIC timer calibration: TSC frequency unknown, using fallback count\n"
+        ));
+        return 10_000; // ~1.6 ms at 100 MHz / 16, safe fallback
+    }
+
+    // Set one-shot mode with a large initial count.  Mask the interrupt so
+    // it does not fire during calibration.
+    ctrl.lapic_write(
+        ApicOffsets::LVT_TIMER,
+        TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_ONESHOT | ApicFlags::TIMER_MASKED,
+    );
+    ctrl.lapic_write(ApicOffsets::TMRDIV, divider);
+    ctrl.lapic_write(ApicOffsets::TMRINITCNT, PROBE_COUNT);
+
+    // Read TSC and APIC current count simultaneously.
+    let tsc_start = unsafe { core::arch::x86_64::_rdtsc() };
+    let apic_start = ctrl.timer_current_count();
+
+    // Busy-wait for the calibration window.
+    let target_tsc = tsc_start + tsc_per_ms * CALIB_WINDOW_MS;
+    while unsafe { core::arch::x86_64::_rdtsc() } < target_tsc {
+        core::hint::spin_loop();
+    }
+
+    let tsc_end = unsafe { core::arch::x86_64::_rdtsc() };
+    let apic_end = ctrl.timer_current_count();
+
+    let elapsed_tsc = tsc_end.wrapping_sub(tsc_start);
+    let elapsed_apic = apic_start.saturating_sub(apic_end);
+
+    if apic_end == 0 || elapsed_apic == 0 || elapsed_tsc == 0 {
+        petroleum::serial::serial_log(format_args!(
+            "APIC timer calibration: no ticks elapsed (apic_start={}, apic_end={}), using fallback\n",
+            apic_start, apic_end
+        ));
+        return 10_000;
+    }
+
+    // apic_ticks_per_ms = elapsed_apic * tsc_per_ms / elapsed_tsc
+    let apic_ticks_per_ms =
+        (elapsed_apic as u128 * tsc_per_ms as u128 / elapsed_tsc as u128) as u64;
+
+    petroleum::serial::serial_log(format_args!(
+        "APIC timer calibration: apic_ticks/ms={} (elapsed_apic={}, elapsed_tsc={}, window={}ms)\n",
+        apic_ticks_per_ms, elapsed_apic, elapsed_tsc, CALIB_WINDOW_MS,
+    ));
+
+    // Clamp to a safe range.  Too small → excessive timer interrupts.
+    // Too large → sluggish scheduler wakeup.
+    apic_ticks_per_ms
+        .max(1_000) // at least ~0.16 ms at 6.25 MHz
+        .min(10_000_000) // at most ~1.6 s at 6.25 MHz
+        as u32
 }
 
 // ── MMIO NMI watchdog timer switching ───────────────────────────

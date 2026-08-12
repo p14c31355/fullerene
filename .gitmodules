@@ -1,6 +1,7 @@
 [submodule "bonder/iwlwifi"]
 	path = bonder/iwlwifi
-	url = https://github.com/Slimbook-Team/iwlwifi.git
+	url = https://gitlab.com/kernel-firmware/linux-firmware.git
+	shallow = true
 [submodule "toluene/freedoom"]
 	path = toluene/freedoom
 	url = https://github.com/freedoom/freedoom.git

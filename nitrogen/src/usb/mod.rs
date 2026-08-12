@@ -179,6 +179,37 @@ pub struct UsbInterfaceDescriptor {
 pub const MSC_CLASS: u8 = 0x08;
 pub const MSC_SUBCLASS_SCSI: u8 = 0x06;
 pub const MSC_PROTOCOL_BOT: u8 = 0x50;
+pub const MSC_PROTOCOL_UAS: u8 = 0x62;
+
+/// USB Hub class code.
+pub const HUB_CLASS: u8 = 0x09;
+
+/// Hub class descriptor type (wValue high byte = 0x29).
+pub const DESC_HUB: u8 = 0x29;
+
+/// Hub class requests (USB 2.0 §11.24).
+pub const HUB_REQ_GET_STATUS: u8 = 0x00;
+pub const HUB_REQ_CLEAR_FEATURE: u8 = 0x01;
+pub const HUB_REQ_SET_FEATURE: u8 = 0x03;
+pub const HUB_REQ_GET_DESCRIPTOR: u8 = 0x06;
+
+/// Hub port feature selectors (USB 2.0 §11.24.2).
+pub const HUB_PORT_CONNECTION: u16 = 0;
+pub const HUB_PORT_ENABLE: u16 = 1;
+pub const HUB_PORT_RESET: u16 = 4;
+pub const HUB_PORT_POWER: u16 = 8;
+
+/// Hub port change feature selectors (for Clear Feature).
+pub const HUB_C_PORT_CONNECTION: u16 = 16;
+pub const HUB_C_PORT_ENABLE: u16 = 17;
+pub const HUB_C_PORT_RESET: u16 = 20;
+
+/// Hub port status bits in `wPortStatus`.
+pub const HUB_PORT_STATUS_CONNECTION: u16 = 0x0001;
+pub const HUB_PORT_STATUS_ENABLE: u16 = 0x0002;
+pub const HUB_PORT_STATUS_POWER: u16 = 0x0100;
+pub const HUB_PORT_STATUS_LOW_SPEED: u16 = 0x0200;
+pub const HUB_PORT_STATUS_HIGH_SPEED: u16 = 0x0400;
 
 /// Common endpoint addresses for mass storage (bulk-only).
 pub const EP_BULK_OUT: u8 = 0x02; // typical
@@ -199,6 +230,10 @@ pub struct UsbDevice {
     pub endpoints: alloc::vec::Vec<UsbEndpointDesc>,
     /// Root-hub port index this device is connected to.
     pub port_index: u32,
+    /// Parent xHCI hub slot for a downstream device, if any.
+    pub parent_hub_slot: Option<u32>,
+    /// 1-based downstream port on `parent_hub_slot`, if any.
+    pub downstream_port: Option<u8>,
 }
 
 impl UsbDevice {

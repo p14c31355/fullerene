@@ -1127,8 +1127,13 @@ fn nozzle_services() -> nozzle::ShellServices {
             "exec" => exec_path(ctx),
             "usb_rescan" => {
                 ctx.terminal.write_str(
-                "USB rescan: explicitly activating controller MMIO; this may not return on broken hardware.\n",
-            );
+                    "USB rescan: explicitly activating controller and enumerating devices.\n",
+                );
+                // Keep the explicit shell command synchronous, as it was at
+                // Merge #334.  An interactive rescan is the activation
+                // boundary; deferring it to the scheduler can leave the
+                // freshly-created USBContext permanently in `deferred`
+                // while the shell waits for a result.
                 if crate::drivers::registry::rescan_usb_all() {
                     ctx.terminal
                         .write_str("USB rescan: storage device registered.\n");
@@ -1253,6 +1258,17 @@ fn nozzle_services() -> nozzle::ShellServices {
                 // Also show full USB context status without assuming a controller exists.
                 if registry::try_with_ctx(|ctx_usb| {
                 tline!(ctx.terminal, "USB controller: {}", if ctx_usb.is_enabled() { "active" } else { "deferred" });
+                for controller in ctx_usb.controller_info() {
+                    tline!(
+                        ctx.terminal,
+                        "  {}: running={} ports={} done=0x{:08x} devices={}",
+                        controller.kind,
+                        controller.running,
+                        controller.ports,
+                        controller.done_ports,
+                        controller.devices
+                    );
+                }
                 tline!(ctx.terminal, "USBContext: {} disk(s) enumerated", ctx_usb.disks().len());
                 for disk in ctx_usb.disks() {
                     tline!(ctx.terminal, "  ctrl={} dev_addr={} ep_out=0x{:02x} ep_in=0x{:02x} blk_size={} total_blocks={}",

@@ -156,5 +156,7 @@ pub fn enumerate_device(
         configurations: dev_desc.b_num_configurations,
         endpoints,
         port_index: 0, // hub enumeration, port tracked by parent
+        parent_hub_slot: None,
+        downstream_port: None,
     })
 }

@@ -67,6 +67,10 @@ static LAST_REGISTERED_USB_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(not(nitrogen_no_usb))]
 struct UsbPollRequest {
     request_id: u64,
+    /// Number of poll attempts remaining.  When zero, the request is
+    /// completed even if no device was found.  The explicit synchronous path
+    /// uses the same bounded retry count.
+    retries_left: u8,
 }
 
 #[cfg(not(nitrogen_no_usb))]
@@ -109,9 +113,22 @@ where
 pub struct DummyUsbContext;
 
 #[cfg(nitrogen_no_usb)]
+pub struct DummyUsbControllerInfo {
+    pub kind: &'static str,
+    pub ports: u32,
+    pub running: bool,
+    pub devices: usize,
+    pub done_ports: u32,
+}
+
+#[cfg(nitrogen_no_usb)]
 impl DummyUsbContext {
     pub fn is_enabled(&self) -> bool {
         false
+    }
+
+    pub fn controller_info(&self) -> &[DummyUsbControllerInfo] {
+        &[]
     }
 
     pub fn disks(&self) -> &[DummyUsbDisk] {
@@ -669,23 +686,45 @@ impl UsbHostDriver for UsbHostCtl {
     }
 }
 
+/// Maximum number of poll retries before giving up. Each asynchronous retry
+/// happens on a separate scheduler tick.  SuperSpeed link training and BOT
+/// devices behind the GemiBook's internal hub can need considerably longer
+/// than the old 16-tick window, especially immediately after xHCI HCRST, so
+/// keep both activation paths bounded but practical.
+#[cfg(not(nitrogen_no_usb))]
+const MAX_USB_POLL_RETRIES: u8 = 64;
+
+/// Keep the synchronous shell path bounded to a predictable wait.
+#[cfg(not(nitrogen_no_usb))]
+const MAX_USB_SYNC_POLL_ATTEMPTS: u8 = 12;
+
+#[cfg(not(nitrogen_no_usb))]
+const USB_SYNC_POLL_INTERVAL_MS: u64 = 250;
+
 /// Enqueue one coalesced USB hotplug poll from a runtime/service callback.
 #[cfg(not(nitrogen_no_usb))]
-pub fn enqueue_usb_poll() -> bool {
+fn enqueue_usb_poll_request() -> bool {
     if USB_POLL_PENDING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return USB_POLL_CHANGED.swap(false, Ordering::AcqRel);
+        return false;
     }
     let request = UsbPollRequest {
         request_id: NEXT_USB_REQUEST.fetch_add(1, Ordering::Relaxed),
+        retries_left: MAX_USB_POLL_RETRIES,
     };
     if USB_SQ.lock().len() >= 4 {
         USB_POLL_PENDING.store(false, Ordering::Release);
-        return USB_POLL_CHANGED.swap(false, Ordering::AcqRel);
+        return false;
     }
     USB_SQ.lock().push_back(request);
+    true
+}
+
+#[cfg(not(nitrogen_no_usb))]
+pub fn enqueue_usb_poll() -> bool {
+    let _accepted = enqueue_usb_poll_request();
     USB_POLL_CHANGED.swap(false, Ordering::AcqRel)
 }
 
@@ -695,19 +734,69 @@ pub fn enqueue_usb_poll() -> bool {
 }
 
 /// Execute USB poll SQ entries in scheduler context.
+///
+/// Each poll first ensures the controller is activated.  The activation
+/// (BAR MMIO) is bounded by the scheduler's device-phase deadline, so a
+/// hung controller cannot block the desktop permanently.
+///
+/// If no device is found and retries remain, the request stays at the
+/// head of the SQ for the next scheduler tick.  `USB_POLL_PENDING` is
+/// cleared immediately so a new `usb_rescan` can replace the in-flight
+/// request at any time.
 #[cfg(not(nitrogen_no_usb))]
 pub fn process_usb_submission_queue(budget: usize) {
     for _ in 0..budget {
-        let Some(request) = USB_SQ.lock().pop_front() else {
+        // Peek at the head without removing it so retries can continue
+        // on the next tick.
+        let mut should_complete = false;
+        let mut should_retry = false;
+        if USB_SQ.lock().front().is_none() {
             break;
-        };
+        }
+        // Activate the controller after releasing the submission-queue lock.
+        if !is_usb_enabled() {
+            activate_usb();
+        }
         let changed = poll_usb();
-        USB_CQ.lock().push_back(UsbPollCompletion {
-            request_id: request.request_id,
-            changed,
-        });
-        USB_POLL_PENDING.store(false, Ordering::Release);
+        let found = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
+
+        {
+            let mut sq = USB_SQ.lock();
+            let Some(request) = sq.front_mut() else {
+                USB_POLL_PENDING.store(false, Ordering::Release);
+                break;
+            };
+            if changed || found || request.retries_left == 0 {
+                should_complete = true;
+            } else {
+                request.retries_left -= 1;
+                should_retry = true;
+            }
+        }
+
+        if should_complete {
+            if let Some(completed) = USB_SQ.lock().pop_front() {
+                USB_CQ.lock().push_back(UsbPollCompletion {
+                    request_id: completed.request_id,
+                    changed,
+                });
+            }
+            USB_POLL_PENDING.store(false, Ordering::Release);
+        } else if should_retry {
+            // Leave the request at the head of the SQ.  Do NOT hold
+            // USB_POLL_PENDING — that would block a new usb_rescan from
+            // replacing this request.  The scheduler will re-enter this
+            // function on the next tick and retry.
+            USB_POLL_PENDING.store(false, Ordering::Release);
+            break;
+        }
     }
+}
+
+#[cfg(not(nitrogen_no_usb))]
+fn is_usb_enabled() -> bool {
+    let guard = with_ctx_inner();
+    guard.as_ref().is_some_and(|ctx| ctx.is_enabled())
 }
 
 #[cfg(nitrogen_no_usb)]
@@ -738,6 +827,10 @@ pub fn consume_usb_completion_queue(_budget: usize) {}
 /// Initialise the USB driver (probe phase — called from Driver).
 #[cfg(not(nitrogen_no_usb))]
 pub(crate) fn init_usb_ctx(ctx: nitrogen::usb::context::USBContext) {
+    let old = USB_CTX.lock().take();
+    if let Some(mut old) = old {
+        old.shutdown();
+    }
     *USB_CTX.lock() = Some(ctx);
 }
 
@@ -1431,19 +1524,21 @@ fn usb_poll_and_register() {
     if !activate_usb() {
         return;
     }
-    for i in 0..8 {
+    for i in 0..MAX_USB_SYNC_POLL_ATTEMPTS {
         log::info!("USB: poll #{}", i + 1);
         if poll_usb() || LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0 {
             log::info!("USB: device detected after {} polls", i + 1);
             break;
         }
-        nitrogen::timing::delay_ms(250);
+        if i + 1 < MAX_USB_SYNC_POLL_ATTEMPTS {
+            nitrogen::timing::delay_ms(USB_SYNC_POLL_INTERVAL_MS);
+        }
     }
 }
 
-/// Full USB re-enumeration (clear + re-scan).  Does NOT mount.
+/// Prepare a USB context for either the synchronous or scheduler-owned rescan.
 #[cfg(not(nitrogen_no_usb))]
-pub fn rescan_usb_all() -> bool {
+fn prepare_usb_rescan() -> bool {
     let names = crate::devfs::list_block_device_names();
     if names
         .iter()
@@ -1453,25 +1548,58 @@ pub fn rescan_usb_all() -> bool {
         return false;
     }
 
-    // Only unregister USB-owned block devices (usbN pattern).
     for name in names {
         if name.starts_with("usb") {
             crate::devfs::unregister_block_device(&name);
         }
     }
     LAST_REGISTERED_USB_COUNT.store(0, Ordering::Relaxed);
-
+    USB_SQ.lock().clear();
+    USB_POLL_PENDING.store(false, Ordering::Release);
+    USB_POLL_CHANGED.store(false, Ordering::Release);
     init_usb_ctx(nitrogen::usb::context::USBContext::new(
         &crate::driver_context_impl::KernelDriverContext,
     ));
+    true
+}
+
+/// Full USB re-enumeration (clear + re-scan).  Does NOT mount.
+///
+/// Synchronous variant: performs controller activation and polling in the
+/// caller's context.  May block on MMIO.  Kept for compatibility but should
+/// only be called from the explicit `usb_rescan` activation boundary.
+#[cfg(not(nitrogen_no_usb))]
+pub fn rescan_usb_all() -> bool {
+    if !prepare_usb_rescan() {
+        return false;
+    }
     usb_poll_and_register();
     let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
     let _ = crate::klog::flush_to_vfs();
     registered
 }
 
+/// Asynchronous USB re-enumeration: clears existing USB block devices and
+/// enqueues a controller activation + poll request for the scheduler.
+///
+/// The clear/unregister phase does not touch MMIO, so it is safe to run
+/// in the shell context.  The actual controller activation and device
+/// enumeration happen in the scheduler's device phase via the USB
+/// submission queue, bounded by the scheduler's MMIO deadline.
+#[cfg(not(nitrogen_no_usb))]
+pub fn enqueue_usb_rescan() -> bool {
+    if !prepare_usb_rescan() {
+        return false;
+    }
+
+    // Enqueue a poll request. The scheduler's process_usb_submission_queue
+    // will call activate_usb() + poll_usb(), bounded by the device-phase
+    // MMIO deadline so a hung controller cannot block the desktop.
+    enqueue_usb_poll_request()
+}
+
 #[cfg(nitrogen_no_usb)]
-pub fn rescan_usb_all() -> bool {
+pub fn enqueue_usb_rescan() -> bool {
     false
 }
 

@@ -104,6 +104,7 @@ pub fn scheduler_loop() -> ! {
 
     // Wire kernel renderer into Solvent so runtime ticks can paint the display.
     gui::set_render_fn(gui::render);
+    gui::set_cursor_render_fn(gui::render_cursor);
 
     // Exercise the same command registration, shell service, VFS loader, and
     // cooperative scheduling path used by an interactive invocation.
@@ -127,6 +128,28 @@ pub fn scheduler_loop() -> ! {
     // Idle loop: drive runtime ticks.
     // Shell and other apps are launched via AppGrid or context menu.
     loop {
+        // Pump HID input + cursor at the top of every iteration so the
+        // cursor moves before any device phase absorbs the scheduler.
+        // This matches the tight read_byte → runtime_tick_no_fb loop the
+        // shell (Nozzle) uses, giving HID touchpad users the same snappy
+        // cursor response on the desktop as inside the shell.
+        gui::pump_hid_cursor();
+
+        if SCHEDULER.current_tick().is_multiple_of(1_000) {
+            let (count, total_tsc, max_tsc) = nitrogen::i2c_hid::input_service_metrics();
+            let (pointer_count, pointer_max_tsc) = solvent::pointer_latency_metrics();
+            let average_tsc = if count == 0 { 0 } else { total_tsc / count };
+            petroleum::serial::serial_log(format_args!(
+                "[input] hid_services={} avg_tsc={} max_tsc={} pointer_events={} pointer_max_tsc={} tsc_per_ms={}\n",
+                count,
+                average_tsc,
+                max_tsc,
+                pointer_count,
+                pointer_max_tsc,
+                solvent::get_tsc_per_ms(),
+            ));
+        }
+
         // VDSO: update time metadata for all processes.
         // Compute monotonic uptime in microseconds
         let uptime_us = if solvent::get_tsc_per_ms() > 0 {
@@ -162,6 +185,10 @@ pub fn scheduler_loop() -> ! {
             crate::drivers::registry::process_usb_submission_queue(1);
             crate::drivers::registry::consume_usb_completion_queue(1);
         }
+        // Pump HID + cursor after the storage/USB phases.  Those phases can
+        // absorb several milliseconds of MMIO time; without this pump the
+        // cursor stalls until the next tick_core inside runtime_tick.
+        gui::pump_hid_cursor();
         crate::contexts::audio::process_audio_submission_queue(2);
         crate::contexts::audio::poll_audio_playback();
         crate::contexts::audio::consume_audio_completion_queue(4);
@@ -177,6 +204,9 @@ pub fn scheduler_loop() -> ! {
             nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
             nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
         }
+        // Final HID + cursor pump before the GUI tick so poll_mouse_state
+        // sees the freshest possible report after every device phase.
+        gui::pump_hid_cursor();
 
         // BusyBox smoke is a synchronous ABI test. During the harness, the
         // nested runtime pump handles only input and rendering; after a
@@ -201,6 +231,9 @@ pub fn scheduler_loop() -> ! {
             nitrogen::iwlwifi::process_wifi_submission_queue_until(16, wifi_phase_deadline);
             nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
         }
+        // Pump HID + cursor after the post-GUI Wi-Fi phase so input that
+        // arrived during firmware MMIO is reflected before the next hlt.
+        gui::pump_hid_cursor();
 
         // Check if the user requested a shell launch (via AppGrid / menu).
         if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false)

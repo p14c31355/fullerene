@@ -1,9 +1,11 @@
 //! EHCI register context — structured MMIO access layer.
 
-use crate::mmio::MemRegion;
+use crate::mmio::{MemRegion, SafeReadResult};
+use crate::pci_health::PciHealth;
 
 pub const OP_USBCMD: usize = 0x00;
 pub const OP_USBSTS: usize = 0x04;
+pub const OP_USBINTR: usize = 0x08;
 pub const OP_ASYNCLISTADDR: usize = 0x18;
 pub const OP_PORTSC_BASE: usize = 0x44;
 
@@ -28,7 +30,14 @@ pub trait RegisterBackend {
     fn write_register(&mut self, offset: usize, value: u32);
 }
 
-pub struct EhciOperationalRegisters(MemRegion);
+pub struct EhciOperationalRegisters {
+    region: MemRegion,
+    health: Option<PciHealth>,
+}
+
+fn checked_read(region: &MemRegion, off: usize, health: &PciHealth) -> SafeReadResult<u32> {
+    crate::mmio::checked_read32_with_watchdog(region, off, health)
+}
 
 impl EhciOperationalRegisters {
     /// Create an operational-register view over a validated BAR sub-window.
@@ -37,11 +46,41 @@ impl EhciOperationalRegisters {
     ///
     /// `base..base + size` must be a live, readable and writable MMIO mapping.
     pub unsafe fn new(base: usize, size: usize) -> Self {
-        Self(unsafe { MemRegion::new(base, size) })
+        Self {
+            region: unsafe { MemRegion::new(base, size) },
+            health: None,
+        }
+    }
+
+    /// Create an operational-register view with PCIe/MMIO hang protection.
+    pub unsafe fn new_checked(base: usize, size: usize, health: PciHealth) -> Self {
+        Self {
+            region: unsafe { MemRegion::new(base, size) },
+            health: Some(health),
+        }
     }
 
     pub fn read(&self, off: usize) -> u32 {
-        let value = self.0.read32(off);
+        let value = match self.health.as_ref() {
+            Some(health) => {
+                let result = checked_read(&self.region, off, health);
+                match result {
+                    SafeReadResult::Value(value) => value,
+                    SafeReadResult::DeviceGone => {
+                        log::warn!(
+                            "EHCI: PCI device disappeared during MMIO read at {:#x}",
+                            off
+                        );
+                        u32::MAX
+                    }
+                    SafeReadResult::MasterAbort => {
+                        log::warn!("EHCI: MMIO master abort at offset {:#x}", off);
+                        u32::MAX
+                    }
+                }
+            }
+            None => self.region.read32(off),
+        };
         if value == u32::MAX {
             log::warn!(
                 "EHCI: MMIO read at offset {:#x} completed with all ones",
@@ -51,7 +90,7 @@ impl EhciOperationalRegisters {
         value
     }
     pub fn write(&self, off: usize, val: u32) {
-        self.0.write32(off, val);
+        self.region.write32(off, val);
     }
 
     pub fn usbcmd(&self) -> u32 {
@@ -131,15 +170,47 @@ impl EhciRegisterContext {
     ///
     /// `mmio_base` must identify a live, readable and writable EHCI BAR
     /// mapping of at least `HOST_CONTROLLER_BAR_SIZE` bytes.
-    pub unsafe fn new(mmio_base: usize) -> Option<Self> {
+    pub unsafe fn new(mmio_base: usize, health: Option<PciHealth>) -> Option<Self> {
         crate::debug::hint(b"eh_cap");
         let region = unsafe { MemRegion::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) };
-        let header = region.read32(0);
+        let header = match health.as_ref() {
+            Some(health) => {
+                let result = checked_read(&region, 0, health);
+                match result {
+                    SafeReadResult::Value(value) => value,
+                    SafeReadResult::DeviceGone => {
+                        log::warn!("EHCI: capability header read found device gone");
+                        return None;
+                    }
+                    SafeReadResult::MasterAbort => {
+                        log::warn!("EHCI: capability header read returned master abort");
+                        return None;
+                    }
+                }
+            }
+            None => region.read32(0),
+        };
         let caplength = header as u8;
         if header == u32::MAX || caplength < 0x10 || caplength & 3 != 0 {
             return None;
         }
-        let hcs_params = region.read32(4);
+        let hcs_params = match health.as_ref() {
+            Some(health) => {
+                let result = checked_read(&region, 4, health);
+                match result {
+                    SafeReadResult::Value(value) => value,
+                    SafeReadResult::DeviceGone => {
+                        log::warn!("EHCI: HCS_PARAMS read found device gone");
+                        return None;
+                    }
+                    SafeReadResult::MasterAbort => {
+                        log::warn!("EHCI: HCS_PARAMS read returned master abort");
+                        return None;
+                    }
+                }
+            }
+            None => region.read32(4),
+        };
         if hcs_params == u32::MAX || hcs_params & 0x0f == 0 {
             return None;
         }
@@ -149,7 +220,12 @@ impl EhciRegisterContext {
             mmio_base,
             caplength,
             hcs_params,
-            op: unsafe { EhciOperationalRegisters::new(op_base, op_size) },
+            op: match health {
+                Some(health) => unsafe {
+                    EhciOperationalRegisters::new_checked(op_base, op_size, health)
+                },
+                None => unsafe { EhciOperationalRegisters::new(op_base, op_size) },
+            },
         })
     }
 }

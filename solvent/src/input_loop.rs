@@ -32,12 +32,26 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
 // resumes. The rest is intentionally discarded: it is stale motion, not a
 // new pointer position that the user is still trying to reach.
 const MAX_MOUSE_STEP_PX: i32 = 96;
+// HID touchpad relative reports are intentionally accumulated in store_input
+// across service_input calls.  The N150 touchpad emits small per-report
+// deltas; on the desktop (scheduler idle loop) multiple reports accumulate
+// between polls, and the old 512px ceiling let those deltas combine into
+// visible jumps.  Aligning the HID cap with the PS/2 limit keeps the
+// cursor as smooth as the tight Nozzle read_byte loop, where each
+// service_input call only drains one report.
+const MAX_HID_RELATIVE_STEP_PX: i32 = 96;
 // The N150's HID relative-mouse collection reports smaller deltas than the
-// legacy PS/2 mouse used on the old test machine. Keep the user-facing
-// sensitivity setting as the common base, then normalize this transport.
-const HID_RELATIVE_SENSITIVITY_SCALE: i16 = 2;
+// legacy PS/2 mouse used on the old test machine.  Nozzle's tight read_byte
+// loop drains one report per service_input call, so a 2x scale feels right
+// inside the shell.  On the desktop the scheduler accumulates multiple
+// reports between polls, making 2x too fast.  Drop to 1x so the HID
+// touchpad uses the same sensitivity as PS/2, matching the Nozzle feel.
+const HID_RELATIVE_SENSITIVITY_SCALE: i16 = 1;
 const MOUSE_STALE_AFTER_MS: u64 = 50;
 static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
+static LAST_POINTER_EVENT_TSC: AtomicU64 = AtomicU64::new(0);
+static POINTER_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+static POINTER_EVENT_TO_CURSOR_MAX_TSC: AtomicU64 = AtomicU64::new(0);
 static VIDEO_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 fn map_touch_axis(value: i32, minimum: i32, maximum: i32, pixels: u32) -> i16 {
@@ -67,6 +81,11 @@ pub fn clear_video_stop_request() {
 
 fn scaled_mouse_delta(delta: i16, sensitivity: i16) -> i32 {
     (i32::from(delta) * i32::from(sensitivity)).clamp(-MAX_MOUSE_STEP_PX, MAX_MOUSE_STEP_PX)
+}
+
+fn scaled_hid_relative_delta(delta: i16, sensitivity: i16) -> i32 {
+    (i32::from(delta) * i32::from(sensitivity))
+        .clamp(-MAX_HID_RELATIVE_STEP_PX, MAX_HID_RELATIVE_STEP_PX)
 }
 
 fn mouse_motion_is_stale(previous_poll: u64, now_tsc: u64, tsc_per_ms: u64) -> bool {
@@ -102,8 +121,12 @@ fn touchpad_button_bits(input: Option<&nitrogen::i2c_hid::TouchpadInput>) -> u8 
     buttons
 }
 
+/// Consume the latest input state and update the pointer.
+///
+/// Callers must drain the I2C-HID FIFO with `service_input()` before calling
+/// this function. PS/2 input is drained here because it has its own fallback
+/// polling contract.
 pub fn poll_mouse_state() {
-    nitrogen::i2c_hid::poll_input();
     let touchpad = nitrogen::i2c_hid::consume_input();
     let touchpad_relative = touchpad.as_ref().and_then(|input| input.relative);
     let touchpad_absolute = touchpad
@@ -134,11 +157,11 @@ pub fn poll_mouse_state() {
     let next_y = i32::from(mouse.y) - scaled_mouse_delta(dy, sensitivity);
     if let Some((dx, dy)) = touchpad_relative {
         let hid_sensitivity = sensitivity.saturating_mul(HID_RELATIVE_SENSITIVITY_SCALE);
-        mouse.x = (next_x + scaled_mouse_delta(dx, hid_sensitivity))
+        mouse.x = (next_x + scaled_hid_relative_delta(dx, hid_sensitivity))
             .clamp(0, fb_width.saturating_sub(1) as i32) as i16;
         // HID relative mouse Y is positive downward. PS/2 uses the opposite
         // convention and is handled by the subtraction above.
-        mouse.y = (next_y + scaled_mouse_delta(dy, hid_sensitivity))
+        mouse.y = (next_y + scaled_hid_relative_delta(dy, hid_sensitivity))
             .clamp(0, fb_height.saturating_sub(1) as i32) as i16;
     } else {
         mouse.x = if fb_width == 0 {
@@ -167,6 +190,8 @@ pub fn poll_mouse_state() {
     drop(mouse);
 
     if moved && let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut() {
+        LAST_POINTER_EVENT_TSC.store(unsafe { core::arch::x86_64::_rdtsc() }, Ordering::Release);
+        POINTER_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
         queue.push(Event::Input(InputEvent::MouseMove {
             x: cursor_x,
             y: cursor_y,
@@ -194,11 +219,40 @@ pub fn poll_mouse_state() {
     *previous_buttons = combined_buttons;
 }
 
+/// Measure the delay from the last queued pointer event to cursor painting.
+pub(crate) fn record_cursor_paint() {
+    let event_tsc = LAST_POINTER_EVENT_TSC.swap(0, Ordering::AcqRel);
+    if event_tsc == 0 {
+        return;
+    }
+    let elapsed = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(event_tsc);
+    let mut maximum = POINTER_EVENT_TO_CURSOR_MAX_TSC.load(Ordering::Relaxed);
+    while elapsed > maximum {
+        match POINTER_EVENT_TO_CURSOR_MAX_TSC.compare_exchange_weak(
+            maximum,
+            elapsed,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(current) => maximum = current,
+        }
+    }
+}
+
+/// Return `(pointer_events, maximum_event_to_cursor_tsc)` for diagnostics.
+pub fn pointer_latency_metrics() -> (u64, u64) {
+    (
+        POINTER_EVENT_COUNT.load(Ordering::Relaxed),
+        POINTER_EVENT_TO_CURSOR_MAX_TSC.load(Ordering::Relaxed),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, map_touch_axis, mouse_motion_is_stale,
-        scaled_mouse_delta, touchpad_button_bits,
+        MAX_HID_RELATIVE_STEP_PX, MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, map_touch_axis,
+        mouse_motion_is_stale, scaled_hid_relative_delta, scaled_mouse_delta, touchpad_button_bits,
     };
 
     #[test]
@@ -206,6 +260,28 @@ mod tests {
         assert_eq!(scaled_mouse_delta(127, 6), MAX_MOUSE_STEP_PX);
         assert_eq!(scaled_mouse_delta(-127, 6), -MAX_MOUSE_STEP_PX);
         assert_eq!(scaled_mouse_delta(4, 6), 24);
+    }
+
+    #[test]
+    fn hid_relative_delta_uses_same_ceiling_as_ps2() {
+        // HID and PS/2 now share the same step ceiling so accumulated
+        // deltas on the desktop do not jump beyond what a single PS/2
+        // poll would produce.
+        assert_eq!(MAX_HID_RELATIVE_STEP_PX, MAX_MOUSE_STEP_PX);
+        // A small per-report delta (Nozzle-like, one report per poll)
+        // is delivered in full.
+        assert_eq!(scaled_hid_relative_delta(10, 6), 60);
+        // An accumulated desktop delta is clamped to the same ceiling
+        // as PS/2, preventing the cursor from jumping.
+        assert_eq!(scaled_hid_relative_delta(50, 6), MAX_HID_RELATIVE_STEP_PX);
+        assert_eq!(
+            scaled_hid_relative_delta(i16::MAX, 6),
+            MAX_HID_RELATIVE_STEP_PX
+        );
+        assert_eq!(
+            scaled_hid_relative_delta(i16::MIN, 6),
+            -MAX_HID_RELATIVE_STEP_PX
+        );
     }
 
     #[test]

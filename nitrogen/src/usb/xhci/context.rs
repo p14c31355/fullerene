@@ -129,6 +129,46 @@ impl XhciContext {
         self.ports.clear_done_flags();
         self.devices.clear();
     }
+
+    /// Drop a failed storage candidate so the next USB poll can enumerate it
+    /// again. A port is marked done when a placeholder device is created; if
+    /// descriptor or BOT setup then fails, leaving that placeholder in place
+    /// permanently suppresses all later retries.
+    pub fn retry_device_candidate(&mut self, slot_id: u32, dev_idx: usize) {
+        let Some(device) = self.devices.get(dev_idx) else {
+            let _ = self.disable_slot(slot_id);
+            return;
+        };
+        // A downstream device has its own slot and must not reset or remove
+        // the root-hub candidate that owns it.
+        if device.parent_hub_slot.is_some() {
+            let _ = self.disable_slot(slot_id);
+            self.devices.remove(dev_idx);
+            return;
+        }
+        let port_index = Some(device.port_index);
+        self.disable_slot(slot_id);
+        if let Some(port_index) = port_index {
+            self.devices.retain(|device| {
+                device.parent_hub_slot.is_some() || device.port_index != port_index
+            });
+            if let Some(port) = self.ports.get_mut(port_index) {
+                port.retry_count = port.retry_count.saturating_add(1);
+                if port.retry_count < 3 {
+                    port.done = false;
+                    port.wpr_attempted = false;
+                } else {
+                    port.done = true;
+                }
+            }
+        }
+    }
+
+    pub fn remove_device_candidate(&mut self, dev_idx: usize) {
+        if dev_idx < self.devices.len() {
+            self.devices.remove(dev_idx);
+        }
+    }
 }
 
 impl HostController for XhciContext {

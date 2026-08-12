@@ -56,6 +56,9 @@ pub struct ApicController {
 
     /// Cached maximum redirection entry index.
     max_redirection_entry: u8,
+
+    /// Global System Interrupt number assigned to RTE index zero by MADT.
+    gsi_base: u32,
 }
 
 impl ApicController {
@@ -89,6 +92,7 @@ impl ApicController {
             local_apic_id,
             ioapic_version,
             max_redirection_entry,
+            gsi_base: 0,
         }
     }
 
@@ -239,6 +243,56 @@ impl ApicController {
     pub fn write_rte(&self, index: u8, entry: IoApicRedirectionEntry) {
         self.ioapic_write(IOAPIC_REDTBL_START + index * 2, entry.lower);
         self.ioapic_write(IOAPIC_REDTBL_START + index * 2 + 1, entry.upper);
+    }
+
+    /// Set the global interrupt base reported by the MADT for this I/O APIC.
+    pub fn set_gsi_base(&mut self, gsi_base: u32) {
+        self.gsi_base = gsi_base;
+    }
+
+    fn rte_index_for_gsi(&self, gsi: u32) -> Option<u8> {
+        let index = gsi.checked_sub(self.gsi_base)?;
+        let index = u8::try_from(index).ok()?;
+        (index <= self.max_redirection_entry).then_some(index)
+    }
+
+    /// Configure a platform interrupt identified by its global system
+    /// interrupt number.  ACPI GPIO interrupts are commonly level-triggered
+    /// and active-low, so callers provide those electrical properties instead
+    /// of silently treating every device like a legacy edge-triggered IRQ.
+    pub fn configure_gsi(
+        &self,
+        gsi: u32,
+        vector: u8,
+        low_active: bool,
+        level_triggered: bool,
+    ) -> bool {
+        let Some(index) = self.rte_index_for_gsi(gsi) else {
+            return false;
+        };
+        let entry = IoApicRedirectionEntry::new(
+            vector,
+            0,
+            false,
+            low_active,
+            level_triggered,
+            false,
+            self.local_apic_id,
+        );
+        self.write_rte(index, entry);
+        true
+    }
+
+    /// Temporarily mask or unmask a GSI while servicing a level-triggered
+    /// device interrupt.
+    pub fn set_gsi_masked(&self, gsi: u32, masked: bool) -> bool {
+        let Some(index) = self.rte_index_for_gsi(gsi) else {
+            return false;
+        };
+        let mut entry = self.read_rte(index);
+        entry.set_mask(masked);
+        self.write_rte(index, entry);
+        true
     }
 
     /// Configure I/O APIC routing for legacy IRQs (keyboard IRQ1 → vector,

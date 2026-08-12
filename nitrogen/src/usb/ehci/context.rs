@@ -20,6 +20,7 @@
 //! ```
 
 use crate::DriverContext;
+use crate::pci::PciConfigSpace;
 use crate::pci_health::PciHealth;
 use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket, UsbSpeed};
 use alloc::vec::Vec;
@@ -124,7 +125,7 @@ impl EhciContext {
         // Brief delay after PCI config-space setup before first MMIO access;
         // mirrors the same guard in the xHCI path.
         crate::timing::delay_us(100);
-        let registers = unsafe { EhciRegisterContext::new(mmio_base) }?;
+        let registers = unsafe { EhciRegisterContext::new(mmio_base, Some(health)) }?;
         crate::debug::hint(b"eh_csp");
         let n_ports = registers.hcs_params & 0x0F;
 
@@ -210,6 +211,44 @@ impl EhciContext {
         Ok(())
     }
 
+    /// Stop the async schedule before the context and its DMA pools are
+    /// released by an explicit USB rescan.
+    pub fn shutdown(&mut self) {
+        if !self.health.is_device_present() {
+            return;
+        }
+
+        let op = &self.registers.op;
+        let command = op.usbcmd();
+        if command == u32::MAX {
+            self.disable_bus_master();
+            return;
+        }
+        op.write(OP_USBINTR, 0);
+        if command & (USBCMD_RS | USBCMD_ASSE) == 0 {
+            return;
+        }
+
+        op.set_usbcmd(command & !(USBCMD_RS | USBCMD_ASSE));
+        let halted = crate::timing::wait_timeout_us(200_000, || {
+            let status = op.usbsts();
+            status != u32::MAX && status & USBSTS_HCH != 0
+        })
+        .is_ok();
+        if !halted {
+            log::warn!("EHCI: controller did not halt during teardown; disabling DMA");
+        }
+        self.disable_bus_master();
+    }
+
+    fn disable_bus_master(&self) {
+        let (bus, dev, func) = self.health.bdf();
+        let command = PciConfigSpace::read_config_word(bus, dev, func, 4);
+        if command != u16::MAX {
+            PciConfigSpace::write_config_word_raw(bus, dev, func, 4, command & !0x0004);
+        }
+    }
+
     /// Check if the controller is running.
     pub fn is_running(&self) -> bool {
         self.registers.op.usbsts() & USBSTS_HCH == 0
@@ -290,6 +329,8 @@ impl EhciContext {
                 configurations: 0,
                 endpoints: Vec::new(),
                 port_index: port_idx,
+                parent_hub_slot: None,
+                downstream_port: None,
             });
             self.ports.mark_processed(port_idx);
         }

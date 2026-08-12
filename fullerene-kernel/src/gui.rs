@@ -64,8 +64,8 @@ fn save_runtime_settings() {
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
     LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, cursor_update_due,
-    is_initialized, poll_mouse_state, process_events, push_key_event, set_render_fn, tick_core,
-    write_terminal,
+    is_initialized, poll_mouse_state, process_events, pump_hid_cursor, push_key_event,
+    set_cursor_render_fn, set_render_fn, tick_core, write_terminal,
 };
 
 /// Initialise the GUI subsystem via Solvent runtime.
@@ -192,16 +192,20 @@ pub fn init() {
     );
     solvent::KLOG_SAVE_ENABLED.store(klog_save, core::sync::atomic::Ordering::Relaxed);
 
-    // Calibrate TSC ticks per millisecond using the PIT (8254).
-    // PIT channel 2 is free‑running and connected to the speaker
-    // gate, so we can read its counter without disturbing audio.
-    let tsc_per_ms = calibrate_tsc_with_pit();
-    petroleum::serial::serial_log(format_args!(
-        "TSC calibration: {} ticks/ms (~{:.1} GHz)\n",
-        tsc_per_ms,
-        tsc_per_ms as f64 / 1_000_000.0,
-    ));
-    solvent::set_tsc_per_ms(tsc_per_ms);
+    // TSC calibration was already performed in uefi_main before APIC init
+    // so the APIC timer could be calibrated against the known TSC frequency.
+    // Verify it succeeded; fall back to a recalibration if the value is still
+    // the default (indicating the pre-APIC calibration was skipped).
+    let tsc_per_ms = solvent::get_tsc_per_ms();
+    if tsc_per_ms == 0 || tsc_per_ms == 3_000_000 {
+        let tsc_per_ms = calibrate_tsc_with_pit();
+        petroleum::serial::serial_log(format_args!(
+            "TSC calibration (fallback): {} ticks/ms (~{:.1} GHz)\n",
+            tsc_per_ms,
+            tsc_per_ms as f64 / 1_000_000.0,
+        ));
+        solvent::set_tsc_per_ms(tsc_per_ms);
+    }
 
     solvent::set_render_progress_fn(crate::boot_stage::draw_boot_label);
     solvent::init();
@@ -281,6 +285,21 @@ pub fn render() {
     crate::metrics::record_frame_ticks(
         unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
     );
+}
+
+/// Render only the pending cursor damage for a synchronous caller.
+///
+/// Nozzle and synchronous applications cannot hold the framebuffer guard
+/// themselves, but they still pump input while waiting. Keep that path as
+/// cheap as the normal scheduler's cursor-only branch.
+pub fn render_cursor() {
+    let rendered = crate::contexts::framebuffer::with_framebuffer(|framebuffer| {
+        solvent::render_cursor_fast(framebuffer);
+    })
+    .is_some();
+    if rendered {
+        finish_frame(0);
+    }
 }
 
 /// Perform one tick of the runtime loop with kernel framebuffer access.
@@ -430,7 +449,7 @@ fn read_cmos_time() -> Option<(u16, u8, u8, u8, u8, u8)> {
 /// with divisor 0 (effectively 65536), giving ~18.2 Hz.
 /// We read the LATCH command → current count twice to measure
 /// elapsed time.
-fn calibrate_tsc_with_pit() -> u64 {
+pub fn calibrate_tsc_with_pit() -> u64 {
     // Ensure PIT channel 2 gate is enabled (bit 0 of System Control Port B
     // at 0x61).  The BIOS may leave it disabled, causing the counter to
     // stall and the calibration to fall back to 3 GHz.

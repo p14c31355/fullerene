@@ -46,7 +46,12 @@ impl XhciContext {
             (slot.ep0_ring.phys, slot.in_ctx_phys)
         };
 
-        if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
+        let in_ctx = self
+            .device
+            .slots
+            .input_ctx_mut(self.driver_ctx, slot_id)
+            .ok_or(crate::DriverError::OutOfMemory)?;
+        {
             in_ctx.setup_address_device(root_port, speed_id, ep0_ring_phys);
             log::info!(
                 "xHCI: Address Device slot={} port={} speed={} in_ctx={:#x} add={:#x} slot0={:#010x} slot1={:#010x} ep0_1={:#010x} ep0_2={:#010x} ep0_3={:#010x} ep0_4={:#010x}",
@@ -117,6 +122,146 @@ impl XhciContext {
         if let Some(device) = self.devices.get_mut(dev_idx) {
             device.address = dev_addr;
         }
+        Ok(())
+    }
+
+    /// Address a device connected behind an external hub.
+    ///
+    /// `root_port` is the root-hub port the parent hub is on.
+    /// `hub_port` is the 1-based port number on the parent hub.
+    /// `speed_id` is the xHCI speed ID from the hub port status.
+    /// `parent_slot_id` is the slot ID of the parent hub.
+    pub fn address_device_behind_hub(
+        &mut self,
+        slot_id: u32,
+        root_port: u8,
+        hub_port: u8,
+        speed_id: u8,
+        parent_slot_id: u32,
+    ) -> Result<(), crate::DriverError> {
+        let (ep0_ring_phys, in_ctx_phys) = {
+            let slot = self
+                .device
+                .slots
+                .get(slot_id)
+                .ok_or(crate::DriverError::InvalidArgument)?;
+            (slot.ep0_ring.phys, slot.in_ctx_phys)
+        };
+
+        let in_ctx = self
+            .device
+            .slots
+            .input_ctx_mut(self.driver_ctx, slot_id)
+            .ok_or(crate::DriverError::OutOfMemory)?;
+        {
+            in_ctx.setup_address_device_behind_hub(
+                root_port,
+                hub_port,
+                speed_id,
+                parent_slot_id,
+                ep0_ring_phys,
+            );
+            log::info!(
+                "xHCI: Address Device (behind hub) slot={} root_port={} hub_port={} speed={} parent_slot={} in_ctx={:#x}",
+                slot_id,
+                root_port,
+                hub_port,
+                speed_id,
+                parent_slot_id,
+                in_ctx_phys,
+            );
+            crate::usb::dma::flush_range(
+                in_ctx as *const _ as *const u8,
+                core::mem::size_of::<super::device::InputContext>(),
+            );
+        }
+
+        self.send_cmd(
+            Trb::new(trb_type::ADDRESS_DEVICE, self.rings.command.cycle)
+                .with_data_ptr(in_ctx_phys)
+                .with_flags(slot_id << 24),
+        )?;
+
+        if let Some(slot) = self.device.slots.get_mut(slot_id) {
+            slot.dev_addr = slot_id as u8;
+        }
+        log::info!(
+            "xHCI: Address Device (behind hub) complete slot={}",
+            slot_id
+        );
+        Ok(())
+    }
+
+    /// Mark a slot as a hub via a Configure Endpoint command.
+    ///
+    /// Sets Hub=1 and Number of Ports in the slot context so the xHC
+    /// knows this slot has downstream ports.
+    pub fn configure_hub_slot(
+        &mut self,
+        slot_id: u32,
+        num_ports: u8,
+        speed_id: u8,
+    ) -> Result<(), crate::DriverError> {
+        let in_ctx_phys = {
+            let slot = self
+                .device
+                .slots
+                .get(slot_id)
+                .ok_or(crate::DriverError::InvalidArgument)?;
+            slot.in_ctx_phys
+        };
+
+        // Read the current output slot context so we preserve root port,
+        // speed, and device address.  The Configure Endpoint command only
+        // writes the contexts whose add-flag bit is set.
+        let dev_ctx_phys = self
+            .device
+            .slots
+            .get(slot_id)
+            .ok_or(crate::DriverError::InvalidArgument)?
+            .dev_ctx_phys;
+        let dev_ctx_ptr = self.driver_ctx.phys_to_virt(dev_ctx_phys) as *const u32;
+        crate::mmio::cache_flush_range(dev_ctx_ptr as usize, 64);
+        let out_slot0 = unsafe { core::ptr::read_volatile(dev_ctx_ptr) };
+        let out_slot1 = unsafe { core::ptr::read_volatile(dev_ctx_ptr.add(1)) };
+
+        let in_ctx = self
+            .device
+            .slots
+            .input_ctx_mut(self.driver_ctx, slot_id)
+            .ok_or(crate::DriverError::OutOfMemory)?;
+        {
+            in_ctx.drop_flags = 0;
+            in_ctx.add_flags = 1; // slot context only
+            in_ctx.slot_ctx[0] = out_slot0;
+            in_ctx.slot_ctx[1] = out_slot1;
+            in_ctx.setup_hub_slot(num_ports, speed_id);
+            crate::usb::dma::flush_range(
+                in_ctx as *const _ as *const u8,
+                core::mem::size_of::<super::device::InputContext>(),
+            );
+        }
+
+        log::info!(
+            "xHCI: Configure Hub slot={} num_ports={} in_ctx={:#x} slot0={:#010x} slot1={:#010x}",
+            slot_id,
+            num_ports,
+            in_ctx_phys,
+            out_slot0,
+            out_slot1,
+        );
+
+        self.send_cmd(
+            Trb::new(trb_type::CONFIGURE_ENDPOINT, self.rings.command.cycle)
+                .with_data_ptr(in_ctx_phys)
+                .with_flags(slot_id << 24),
+        )?;
+
+        log::info!(
+            "xHCI: Hub slot configured slot={} num_ports={}",
+            slot_id,
+            num_ports
+        );
         Ok(())
     }
 

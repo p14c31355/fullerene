@@ -17,6 +17,7 @@ static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64
 static TICK_CORE_ACTIVE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
+static CURSOR_RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 fn process_pointer_motion_only() {
@@ -98,6 +99,14 @@ pub fn set_render_fn(render_fn: fn()) {
     *RENDER_FN.lock() = Some(render_fn);
 }
 
+/// Install the kernel callback used for cursor-only framebuffer updates.
+///
+/// Synchronous callers such as Nozzle cannot borrow a framebuffer directly,
+/// so `runtime_tick_no_fb` uses this callback for the cheap cursor path.
+pub fn set_cursor_render_fn(render_fn: fn()) {
+    *CURSOR_RENDER_FN.lock() = Some(render_fn);
+}
+
 fn service_explorer_navigation() {
     let path = RUNTIME_CONTEXT
         .runtime()
@@ -156,6 +165,13 @@ pub fn tick_core(now: u64) {
     let _tick_core = TickCoreGuard::enter();
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
+    // Drain the I2C-HID FIFO before consuming input.  The scheduler idle
+    // loop services this separately (scheduler.rs), but while it is blocked
+    // inside shell_main/nozzle the only entry point that runs is
+    // runtime_tick_no_fb -> tick_core.  Without this call consume_input()
+    // in poll_mouse_state always returns None and the touchpad cursor
+    // freezes for the whole Nozzle session.
+    nitrogen::i2c_hid::service_input();
     crate::poll_mouse_state();
     crate::poll_keyboard();
     crate::clock::update_clock();
@@ -237,6 +253,34 @@ pub fn tick_core(now: u64) {
     }
 }
 
+/// Lightweight HID input pump for the scheduler idle loop.
+///
+/// This mirrors the nested branch of [`runtime_tick_no_fb`]: drain the
+/// I2C-HID FIFO, update mouse state, process pointer motion, and render
+/// the cursor.  The scheduler calls this between long device phases
+/// (storage, USB, Wi-Fi) so the cursor stays responsive on machines
+/// whose touchpad is delivered over I2C-HID — the same responsiveness
+/// the shell (Nozzle) gets from its tight `read_byte` → `runtime_tick_no_fb`
+/// loop.
+pub fn pump_hid_cursor() {
+    let already_suspended = RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst);
+    nitrogen::i2c_hid::service_input();
+    crate::poll_mouse_state();
+    crate::poll_keyboard();
+    process_pointer_motion_only();
+    let cursor_only = RUNTIME_CONTEXT
+        .runtime()
+        .as_ref()
+        .is_some_and(|runtime| runtime.cursor_redraw_from.is_some());
+    if cursor_only && !already_suspended {
+        RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+        if let Some(render_fn) = *CURSOR_RENDER_FN.lock() {
+            render_fn();
+        }
+    }
+    RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn runtime_tick_no_fb() {
     let already_suspended = RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst);
     let tick_core_active = TICK_CORE_ACTIVE.load(core::sync::atomic::Ordering::Acquire);
@@ -249,6 +293,7 @@ pub fn runtime_tick_no_fb() {
         // Pump only input and the already-due compositor work here; do not
         // re-enter tick_core(), which could recursively launch another file
         // or shell while the outer tick is still active.
+        nitrogen::i2c_hid::service_input();
         crate::poll_mouse_state();
         crate::poll_keyboard();
         process_pointer_motion_only();
@@ -262,63 +307,78 @@ pub fn runtime_tick_no_fb() {
             .load(core::sync::atomic::Ordering::Relaxed)
             .saturating_mul(FRAME_INTERVAL_MS);
         let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
-            if !runtime.frame_due {
-                return false;
-            }
-            // A video frame has its own presentation deadline in the WASM
-            // viewer. Do not quantize it to the desktop's 17 ms refresh
-            // throttle: that turns a 30 fps stream into alternating short
-            // and long display intervals and is visible as judder.
-            let video_frame_due = runtime.video_dirty_window.is_some();
-            let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
-            if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
-                return false;
-            }
-            LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
-            runtime.frame_due = false;
-            true
-        });
-        if do_render {
+        let (do_render, cursor_only) = RUNTIME_CONTEXT
+            .runtime()
+            .as_mut()
+            .map(|runtime| {
+                if !runtime.frame_due {
+                    return (false, runtime.cursor_redraw_from.is_some());
+                }
+                // A video frame has its own presentation deadline in the WASM
+                // viewer. Do not quantize it to the desktop's 17 ms refresh
+                // throttle: that turns a 30 fps stream into alternating short
+                // and long display intervals and is visible as judder.
+                let video_frame_due = runtime.video_dirty_window.is_some();
+                let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
+                if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
+                    return (false, false);
+                }
+                LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
+                runtime.frame_due = false;
+                (true, false)
+            })
+            .unwrap_or((false, false));
+        if do_render || cursor_only {
             // Keep the outer tick marked as suspended while the nested pump
             // is idle, but release it around the renderer itself because the
             // renderer uses the same guard to reject recursive frames.
             RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-            let render_fn = *RENDER_FN.lock();
+            let render_fn = if do_render {
+                *RENDER_FN.lock()
+            } else {
+                *CURSOR_RENDER_FN.lock()
+            };
             if let Some(render_fn) = render_fn {
                 render_fn();
             }
-            RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
         }
-        if !do_render {
-            RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
-        }
+        RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
         return;
     }
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     tick_core(now);
-    let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
-        let due = runtime.frame_due;
-        if due {
-            let video_frame_due = runtime.video_dirty_window.is_some();
-            let frame_tsc = TSC_PER_MS
-                .load(core::sync::atomic::Ordering::Relaxed)
-                .saturating_mul(FRAME_INTERVAL_MS);
-            let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
-            let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-            if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
-                runtime.frame_due = true;
-                return false;
+    let (do_render, cursor_only) = RUNTIME_CONTEXT
+        .runtime()
+        .as_mut()
+        .map(|runtime| {
+            let due = runtime.frame_due;
+            if due {
+                let video_frame_due = runtime.video_dirty_window.is_some();
+                let frame_tsc = TSC_PER_MS
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                    .saturating_mul(FRAME_INTERVAL_MS);
+                let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
+                let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+                if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
+                    runtime.frame_due = true;
+                    return (false, false);
+                }
+                LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
+                runtime.frame_due = false;
             }
-            LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
-            runtime.frame_due = false;
-        }
-        due
-    });
+            (due, !due && runtime.cursor_redraw_from.is_some())
+        })
+        .unwrap_or((false, false));
     // Release RENDERING_SUSPENDED before calling render_fn, otherwise
     // render() will see it as already-suspended and early-return.
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-    let render_fn = if do_render { *RENDER_FN.lock() } else { None };
+    let render_fn = if do_render {
+        *RENDER_FN.lock()
+    } else if cursor_only {
+        *CURSOR_RENDER_FN.lock()
+    } else {
+        None
+    };
     if let Some(render_fn) = render_fn {
         render_fn();
     }
