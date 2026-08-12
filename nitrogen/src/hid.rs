@@ -680,7 +680,15 @@ mod tests {
     fn decodes_n150_relative_mouse_collection_report_id_six() {
         let descriptor = HidReportDescriptor::parse(n150_fixture::N150_REPORT_DESCRIPTOR).unwrap();
         // ID 6: two buttons, six padding bits, then signed 8-bit X/Y.
-        let report = [6, 0b0000_0001, 0xfe, 0x03];
-        assert_eq!(descriptor.decode_relative_mouse(&report), Some((-2, 3, 1)));
+        let left_report = [6, 0b0000_0001, 0xfe, 0x03];
+        assert_eq!(
+            descriptor.decode_relative_mouse(&left_report),
+            Some((-2, 3, 1))
+        );
+        let right_report = [6, 0b0000_0010, 0x00, 0x00];
+        assert_eq!(
+            descriptor.decode_relative_mouse(&right_report),
+            Some((0, 0, 2))
+        );
     }
 }

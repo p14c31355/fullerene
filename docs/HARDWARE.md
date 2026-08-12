@@ -228,6 +228,57 @@ external hubs:
 This allows `usb_rescan` to discover Ventoy USB mass-storage devices
 whether they are on a root port or behind the internal hub.
 
+### GemiBook XPro USB rescan checklist
+
+The Linux capture for the N150 identifies the machine's xHCI controller as
+`00:14.0`, Intel `8086:54ed`, and the I2C-HID touch device as
+`AMR13992:00 36B6:C001`. A separate older GemiBook capture contains the
+KIOXIA Ventoy device (`30de:6544`, `TransMemory`) on a SuperSpeed xHCI port;
+Linux reaches `usb-storage`, SCSI, and an attached removable disk for that
+device. These are useful reference identities, but the N150 run itself must
+still be diagnosed from its Fullerene Klog.
+
+Before testing, open `Klog Live`, then run `usb_rescan`. For a successful
+root-port storage path, the important sequence is:
+
+```text
+[USB-RESCAN] poll: attempt 1 begin
+USB: device N descriptor vid=.... pid=....
+USB: found BOT mass-storage interface N
+USB: device N BOT reset complete ...
+USB: xHCI mass-storage device ready ...
+USB: registered /dev/usb0 ...
+```
+
+Interpret the last line as follows:
+
+- `controllers: xhci poll ports returned` but no device descriptor: port or
+  Address Device discovery did not produce a usable candidate.
+- `xhci mass-storage enumeration returned` followed by
+  `xhci non-hub unsupported device`: configuration parsing did not find a BOT
+  or UAS bulk pair; this is not a reason to issue hub requests.
+- `xhci hub enumeration begin`: only expected when the descriptor contains a
+  real Hub interface (`class 0x09`). Continue with `hub descriptor`, `hub get
+  port status`, and downstream-device markers.
+- `xhci storage finish begin`: mass-storage enumeration succeeded; inspect
+  `bulk out configure`, `bulk in configure`, and `read capacity` next.
+- `poll: attempt N no device` repeated through the retry count: enumeration
+  returned without a disk, so `usb_info` will correctly report no registered
+  storage even though the controller is active.
+
+For the HID touchpad, a physical right-button press should add these Klog Live
+edges while the pointer is over the desktop:
+
+```text
+[I2C-HID] pointer buttons changed: 0x00->0x02
+[I2C-HID] pointer buttons changed: 0x02->0x00
+```
+
+The first edge is `MouseDown(Right)` and routes to the desktop or Explorer
+context menu; the second is `MouseUp(Right)`. A report ID 6 mouse packet with
+button bit `0x02` is used for the GemiBook's physical right button, while
+digitizer contact remains the left-button/tap path.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:

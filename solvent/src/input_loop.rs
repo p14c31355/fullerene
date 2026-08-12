@@ -216,6 +216,13 @@ pub fn poll_mouse_state() {
     {
         push_mouse_button_edges(queue, combined_buttons, previous);
     }
+    if touchpad.is_some() && combined_buttons != previous {
+        log::info!(
+            "[I2C-HID] pointer buttons changed: {:#04x}->{:#04x}",
+            previous,
+            combined_buttons
+        );
+    }
     *previous_buttons = combined_buttons;
 }
 
@@ -335,6 +342,32 @@ mod tests {
         };
         assert_eq!(touchpad_button_bits(Some(&pressed)), 0x01);
         assert_eq!(touchpad_button_bits(Some(&released)), 0);
+    }
+
+    #[test]
+    fn preserves_hid_right_button_for_context_menu_edges() {
+        let right_pressed = nitrogen::i2c_hid::TouchpadInput {
+            report: nitrogen::hid::TouchpadReport {
+                x: 100,
+                y: 200,
+                buttons: 0x02,
+                in_contact: false,
+            },
+            x_min: 0,
+            x_max: 1708,
+            y_min: 0,
+            y_max: 1060,
+            relative: Some((0, 0)),
+        };
+        let right_released = nitrogen::i2c_hid::TouchpadInput {
+            report: nitrogen::hid::TouchpadReport {
+                buttons: 0,
+                ..right_pressed.report
+            },
+            ..right_pressed
+        };
+        assert_eq!(touchpad_button_bits(Some(&right_pressed)), 0x02);
+        assert_eq!(touchpad_button_bits(Some(&right_released)), 0);
     }
 }
 
