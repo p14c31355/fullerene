@@ -1127,19 +1127,18 @@ fn nozzle_services() -> nozzle::ShellServices {
             "exec" => exec_path(ctx),
             "usb_rescan" => {
                 ctx.terminal.write_str(
-                    "USB rescan: explicitly activating controller and enumerating devices.\n",
+                    "USB rescan: queued controller activation and device enumeration.\n",
                 );
-                // Keep the explicit shell command synchronous, as it was at
-                // Merge #334.  An interactive rescan is the activation
-                // boundary; deferring it to the scheduler can leave the
-                // freshly-created USBContext permanently in `deferred`
-                // while the shell waits for a result.
-                if crate::drivers::registry::rescan_usb_all() {
-                    ctx.terminal
-                        .write_str("USB rescan: storage device registered.\n");
+                // Controller activation and teardown may perform PCIe MMIO.
+                // Queue them for the scheduler so a non-responsive host
+                // controller cannot block the shell or input dispatch.
+                if crate::drivers::registry::enqueue_usb_rescan() {
+                    ctx.terminal.write_str(
+                        "USB rescan: running asynchronously; use usb_info to check progress.\n",
+                    );
                 } else {
                     ctx.terminal
-                        .write_str("USB rescan: no storage device registered.\n");
+                        .write_str("USB rescan: could not queue the request.\n");
                 }
             }
             "sd_rescan" => {
@@ -1257,7 +1256,14 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
                 // Also show full USB context status without assuming a controller exists.
                 if registry::try_with_ctx(|ctx_usb| {
-                tline!(ctx.terminal, "USB controller: {}", if ctx_usb.is_enabled() { "active" } else { "deferred" });
+                let status = if ctx_usb.is_enabled() {
+                    "active"
+                } else if registry::usb_activation_pending() {
+                    "activation pending"
+                } else {
+                    "deferred"
+                };
+                tline!(ctx.terminal, "USB controller: {}", status);
                 for controller in ctx_usb.controller_info() {
                     tline!(
                         ctx.terminal,

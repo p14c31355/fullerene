@@ -182,7 +182,7 @@ pub fn scheduler_loop() -> ! {
         }
         #[cfg(not(nitrogen_no_usb))]
         {
-            crate::drivers::registry::process_usb_submission_queue(1);
+            crate::drivers::registry::process_usb_submission_queue_until(1, device_phase_deadline);
             crate::drivers::registry::consume_usb_completion_queue(1);
         }
         // Pump HID + cursor after the storage/USB phases.  Those phases can
