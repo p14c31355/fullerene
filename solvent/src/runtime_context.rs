@@ -80,7 +80,15 @@ pub(crate) fn clear_klog_live_surface() {
 /// Request a Klog Live repaint without taking the runtime lock. Kernel log
 /// producers use this from scheduler/MMIO paths where entering the GUI state
 /// would risk lock inversion.
+///
+/// The store is idempotent, so frequent callers during a diagnostic-heavy USB
+/// rescan pay only a single relaxed atomic store.  The actual repaint cadence
+/// is bounded by `tick_core` consumption (healthy scheduler) and by the timer
+/// interrupt's stall-gated, rate-limited fallback path.
 pub fn request_klog_live_refresh() {
+    if !KLOG_LIVE_ACTIVE.load(core::sync::atomic::Ordering::Acquire) {
+        return;
+    }
     KLOG_LIVE_REFRESH_PENDING.store(true, core::sync::atomic::Ordering::Release);
 }
 

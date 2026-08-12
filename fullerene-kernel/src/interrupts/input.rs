@@ -8,6 +8,13 @@ use petroleum::port_read_u8;
 use x86_64::structures::idt::{InterruptStackFrame, InterruptStackFrameValue};
 
 static LAST_KLOG_LIVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+// Direct Klog Live painting runs from the timer interrupt and writes to the
+// firmware framebuffer without taking the compositor/framebuffer locks.  It
+// is an emergency fallback for a stalled scheduler, not a per-log repaint
+// path, and is gated on `SCHEDULER_STALL_REPORTED` so it never races with USB
+// MMIO work.  The cadence keeps the WC fill/text draw affordable in interrupt
+// context once the scheduler has wedged.
+const KLOG_LIVE_REPAINT_INTERVAL: u64 = 50;
 static LAST_SCHEDULER_PROGRESS_TICK: AtomicU64 = AtomicU64::new(0);
 static LAST_SCHEDULER_PROGRESS_TSC: AtomicU64 = AtomicU64::new(0);
 static SCHEDULER_STALL_REPORTED: AtomicBool = AtomicBool::new(false);
@@ -103,7 +110,7 @@ define_input_interrupt_handler!(mouse_handler, 0x60, 0x21, |byte: u8| {
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
     // Increment global tick counter (lock-free atomic increment)
-    super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let tick = super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     if nitrogen::mmio::mmio_watchdog_recovery_triggered() {
         petroleum::serial::serial_log(format_args!(
@@ -130,17 +137,29 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
         }
     }
 
+    // Detect scheduler stalls before the Klog Live emergency repaint below so
+    // the direct framebuffer write only fires while the scheduler is wedged.
+    check_scheduler_progress();
+
     // Klog Live has a direct, lock-free repaint path so the existing window
     // can continue updating while the normal scheduler/compositor is blocked.
-    if solvent::is_klog_live_active() {
+    // Only paint from the timer while a scheduler stall is reported: when the
+    // scheduler is healthy the normal compositor keeps Klog Live fresh, and
+    // touching the WC framebuffer from the timer during USB MMIO work can
+    // wedge the interrupt on GemiBook-class hardware (Intel N150 / Alder
+    // Lake-N PCH) where the xHCI controller shares the PCH fabric with the
+    // framebuffer.  The repaint is rate-limited even while stalled because the
+    // WC fill/text draw is expensive in interrupt context.
+    if SCHEDULER_STALL_REPORTED.load(Ordering::Acquire)
+        && tick.is_multiple_of(KLOG_LIVE_REPAINT_INTERVAL)
+        && solvent::is_klog_live_active()
+    {
         let generation = crate::klog::generation();
         let last = LAST_KLOG_LIVE_GENERATION.load(Ordering::Acquire);
         if generation != last && crate::klog::try_render_live_surface() {
             LAST_KLOG_LIVE_GENERATION.store(generation, Ordering::Release);
         }
     }
-
-    check_scheduler_progress();
 
     send_eoi();
 }
