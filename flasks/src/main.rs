@@ -162,6 +162,9 @@ fn build_uefi_package(
     if qemu_smoke_exit && env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some() {
         cargo.env("FULLERENE_BUSYBOX_SMOKE_QEMU_EXIT", "1");
     }
+    if qemu_smoke_exit && env::var_os("FULLERENE_USB_XHCI_SMOKE").is_some() {
+        cargo.env("FULLERENE_USB_XHCI_SMOKE", "1");
+    }
     let status = cargo.args(&args).status()?;
     if !status.success() {
         return Err(io::Error::other(format!("{} build failed", package)));
@@ -393,6 +396,39 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
         iso_path_str
     ));
 
+    if env::var_os("FULLERENE_USB_XHCI_SMOKE").is_some() {
+        // QEMU's qemu-xhci needs an actual mass-storage backend. A sparse
+        // image is enough for BOT INQUIRY/READ CAPACITY and keeps the smoke
+        // test independent of host USB hardware and filesystem contents.
+        let usb_image_path = workspace_root
+            .join("target")
+            .join("qemu")
+            .join("usb-xhci-smoke.img");
+        if let Some(parent) = usb_image_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let usb_image = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&usb_image_path)?;
+        usb_image.set_len(16 * 1024 * 1024)?;
+
+        qemu_args.extend([
+            "-drive".to_string(),
+            format!(
+                "file={},if=none,format=raw,id=usb_xhci_disk,readonly=on",
+                usb_image_path.display()
+            ),
+            "-device".to_string(),
+            // Expose one SuperSpeed root port. QEMU otherwise creates eight
+            // ports; the guest's bounded root-port scan should not be
+            // coupled to unused emulated PHYs.
+            "qemu-xhci,id=xhci,p2=1,p3=1".to_string(),
+            "-device".to_string(),
+            "usb-storage,bus=xhci.0,port=1,drive=usb_xhci_disk".to_string(),
+        ]);
+    }
+
     qemu_args.extend([
         "-no-reboot".to_string(),
         "-no-shutdown".to_string(),
@@ -428,7 +464,8 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
     let mut child = qemu_cmd.spawn()?;
     let debug_exit_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some()
         || env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some()
-        || env::var_os("FULLERENE_IPC_KERNEL_SMOKE").is_some();
+        || env::var_os("FULLERENE_IPC_KERNEL_SMOKE").is_some()
+        || env::var_os("FULLERENE_USB_XHCI_SMOKE").is_some();
     let qemu_status_is_valid = |status: &std::process::ExitStatus| {
         if debug_exit_smoke_requested {
             status.code() == Some(35)

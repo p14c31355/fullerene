@@ -1842,6 +1842,64 @@ pub fn busybox_smoke() {
     }
 }
 
+/// Run `usb_rescan` against QEMU's qemu-xhci controller and a deterministic
+/// USB mass-storage backend.  The command is intentionally issued through the
+/// real Nozzle path so this covers shell dispatch, xHCI enumeration, BOT/SCSI
+/// probing, and `/dev` registration together.
+#[cfg(usb_xhci_smoke)]
+pub fn usb_xhci_smoke() {
+    struct ScriptedTerminal {
+        input: alloc::collections::VecDeque<u8>,
+        output: String,
+    }
+
+    impl ScriptedTerminal {
+        fn new(script: &str) -> Self {
+            Self {
+                input: script.bytes().collect(),
+                output: String::new(),
+            }
+        }
+    }
+
+    impl nozzle::Terminal for ScriptedTerminal {
+        fn write_str(&mut self, text: &str) {
+            self.output.push_str(text);
+        }
+
+        fn read_byte(&mut self) -> Option<u8> {
+            self.input.pop_front()
+        }
+
+        fn input_available(&self) -> bool {
+            !self.input.is_empty()
+        }
+    }
+
+    let services = nozzle_services();
+    let mut terminal = ScriptedTerminal::new("usb_rescan\nusb_info\nexit\n");
+    solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
+
+    let registered = crate::devfs::block_device_exists("usb0")
+        && terminal
+            .output
+            .contains("USB rescan: storage device registered.")
+        && terminal.output.contains("/dev/usb0");
+    if registered {
+        petroleum::serial::serial_log(format_args!(
+            "[usb-xhci-smoke] PASS: usb_rescan registered /dev/usb0\n"
+        ));
+        unsafe {
+            x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x11);
+        }
+    } else {
+        petroleum::serial::serial_log(format_args!(
+            "[usb-xhci-smoke] FAIL: usb_rescan did not register /dev/usb0\n"
+        ));
+        petroleum::halt_loop();
+    }
+}
+
 // ── Kernel terminal ─────────────────────────────────────────────────
 
 struct KernelTerminal {

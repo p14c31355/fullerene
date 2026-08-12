@@ -220,6 +220,26 @@ standard library. Linux stdout and stderr are mirrored to the serial console
 and the interactive Lattice terminal, so the Hello line appears in the shell
 before the next prompt.
 
+### QEMU xHCI USB rescan smoke test
+
+The USB smoke test adds QEMU's `qemu-xhci` controller and a deterministic
+16 MiB USB mass-storage image, then runs `usb_rescan` through the real Nozzle
+command path. It passes only when the rescan returns and `usb_info` observes
+`/dev/usb0`:
+
+```bash
+FULLERENE_USB_XHCI_SMOKE=1 \
+  cargo run -p flasks -- --display none --vga none --timeout 30
+```
+
+The timeout is intentional: it turns a rescan that never returns into a
+failed test instead of leaving QEMU running indefinitely. A successful run
+prints:
+
+```text
+[usb-xhci-smoke] PASS: usb_rescan registered /dev/usb0
+```
+
 Nozzle exposes the Linux and WASI launchers through this single command:
 
 ```text

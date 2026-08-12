@@ -114,6 +114,8 @@ pub fn scheduler_loop() -> ! {
     crate::shell::run_linux_musl_smoke();
     #[cfg(linux_busybox_smoke)]
     crate::shell::busybox_smoke();
+    #[cfg(usb_xhci_smoke)]
+    crate::shell::usb_xhci_smoke();
 
     // Register NMI recovery restart context with a dedicated stack.
     let recovery_rsp = {
