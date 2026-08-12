@@ -27,6 +27,11 @@ pub fn set_tick_progress_fn(f: fn(&str)) {
     *TICK_PROGRESS_FN.lock() = Some(f);
 }
 
+/// Remove the diagnostic callback once the pending request completes.
+pub fn clear_tick_progress_fn() {
+    *TICK_PROGRESS_FN.lock() = None;
+}
+
 fn tick_progress(stage: &str) {
     if let Some(f) = *TICK_PROGRESS_FN.lock() {
         f(stage);
@@ -260,30 +265,23 @@ pub fn tick_core(now: u64) {
     tick_progress("GUI tick: copy returned");
     crate::installer::service_install_request();
     tick_progress("GUI tick: installer returned");
-    tick_progress("GUI tick: shell check begin");
+    tick_progress("GUI tick: shell phase");
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.shell_launch_pending;
         runtime.shell_launch_pending = false;
         pending
     }) {
-        tick_progress("GUI tick: shell launch begin");
         crate::ensure_terminal_window();
-        tick_progress("GUI tick: terminal window returned");
         crate::launch_shell();
-        tick_progress("GUI tick: shell launch returned");
     }
-    tick_progress("GUI tick: shell check returned");
-    tick_progress("GUI tick: editor check begin");
+    tick_progress("GUI tick: editor phase");
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.editor_launch_pending;
         runtime.editor_launch_pending = false;
         pending
     }) {
-        tick_progress("GUI tick: editor launch begin");
         crate::ensure_editor_window();
-        tick_progress("GUI tick: editor launch returned");
     }
-    tick_progress("GUI tick: editor check returned");
     tick_progress("GUI tick: core end");
 }
 

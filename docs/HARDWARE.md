@@ -155,15 +155,15 @@ enumeration continue in the scheduler-owned device phase. The stable
 [USB-RESCAN] queue accepted
 [USB-RESCAN] activate: USBContext::enable begin
 [USB-RESCAN] activate: USBContext::enable returned
+[USB-RESCAN] poll: controller poll begin
 [USB-RESCAN] poll: controller poll returned
 ```
 
 If the last marker is `queue accepted`, the request has not reached the device
-phase yet. If it is `retire old context begin`, old controller teardown is
-stuck. If it is `USBContext::enable begin`, the PCI/xHCI activation path is
-stuck. A marker at `poll: attempt N begin` points to root-port or device
-enumeration. The same markers are also mirrored to the serial stream because
-Klog Live may not repaint while the machine is wedged. Sealant still bounds
+phase yet. If it is `USBContext::enable begin`, the PCI/xHCI activation path is
+stuck. If it is `poll: controller poll begin`, root-port or device enumeration
+is in progress. These markers are emitted to the kernel log and taskbar ring;
+they are not synchronously mirrored to the serial stream. Sealant still bounds
 the MMIO region and permissions, while the NMI watchdog is the mechanism that
 can recover from a non-posted PCIe read that never completes; Sealant alone
 cannot cancel such a hardware transaction.
@@ -249,7 +249,7 @@ storage path, the important sequence is:
 
 ```text
 [USB-RESCAN] queue accepted
-[USB-RESCAN] poll: attempt 1 begin
+[USB-RESCAN] poll: controller poll begin
 USB: device N descriptor vid=.... pid=....
 USB: found BOT mass-storage interface N
 USB: device N BOT reset complete ...
@@ -269,7 +269,8 @@ Interpret the last line as follows:
   port status`, and downstream-device markers.
 - `xhci storage finish begin`: mass-storage enumeration succeeded; inspect
   `bulk out configure`, `bulk in configure`, and `read capacity` next.
-- `poll: attempt N no device` repeated through the retry count: enumeration
+- `poll: complete (no device)` followed by `queue retry` through the retry
+  count: enumeration
   returned without a disk, so `usb_info` will correctly report no registered
   storage even though the controller is active.
 

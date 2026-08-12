@@ -736,7 +736,7 @@ fn usb_rescan_diag(stage: &str) {
         "queue retry" => "queue retry",
         _ => stage,
     };
-    nitrogen::debug_status!("USB", "{}", taskbar_status);
+    nitrogen::debug::publish_usb_status(taskbar_status);
     // Do not force a direct Klog Live repaint here. This callback runs from
     // both the shell and scheduler paths; on some machines the framebuffer
     // path can block immediately after publishing `queue accepted`. The
@@ -751,6 +751,8 @@ fn usb_rescan_diag(stage: &str) {
 pub fn usb_rescan_scheduler_diag(stage: &str) {
     if usb_activation_pending() {
         usb_rescan_diag(stage);
+    } else {
+        solvent::clear_tick_progress_fn();
     }
 }
 
@@ -871,6 +873,7 @@ pub fn process_usb_submission_queue_until(budget: usize, deadline_tsc: u64) {
             }
             USB_POLL_PENDING.store(false, Ordering::Release);
             usb_rescan_diag("queue complete");
+            solvent::clear_tick_progress_fn();
         } else if should_retry {
             // Leave the request at the head of the SQ and keep
             // USB_POLL_PENDING set.  Otherwise the regular USB service poll
@@ -1692,6 +1695,7 @@ fn prepare_usb_rescan() -> bool {
 /// request was accepted, not that `/dev/usb0` already exists.
 #[cfg(not(nitrogen_no_usb))]
 pub fn rescan_usb_all() -> bool {
+    solvent::set_tick_progress_fn(usb_rescan_scheduler_diag);
     usb_rescan_diag("queue begin");
     let accepted = enqueue_usb_rescan();
     usb_rescan_diag(if accepted {
@@ -1699,6 +1703,9 @@ pub fn rescan_usb_all() -> bool {
     } else {
         "queue rejected"
     });
+    if !accepted {
+        solvent::clear_tick_progress_fn();
+    }
     accepted
 }
 

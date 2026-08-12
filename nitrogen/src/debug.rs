@@ -14,6 +14,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::Mutex;
 
 // ── Lock-free ring buffer ────────────────────────────────────────────
 
@@ -83,6 +84,10 @@ static READ_POS: AtomicUsize = AtomicUsize::new(0);
 /// Updated by the producer after data is committed.
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Latest USB diagnostic status for consumers that render status outside the
+/// transient debug ring's current drain.
+static USB_STATUS: Mutex<Option<(String, String)>> = Mutex::new(None);
+
 // ── Public API ──────────────────────────────────────────────────────
 
 /// Write a debug status message (lock-free, single-producer only).
@@ -106,6 +111,18 @@ pub fn print(source: &str, msg: &str) {
     // Use Release so the consumer (Acquire) sees the data write.
     WRITE_POS.store(slot + 1, Ordering::Release);
     COUNT.fetch_add(1, Ordering::Release);
+}
+
+/// Publish a USB status to both the transient debug ring and its persistent
+/// taskbar snapshot.
+pub fn publish_usb_status(msg: &str) {
+    *USB_STATUS.lock() = Some((String::from("USB"), String::from(msg)));
+    print("USB", msg);
+}
+
+/// Return the latest USB status even when the transient ring is empty.
+pub fn usb_status_snapshot() -> Option<(String, String)> {
+    USB_STATUS.lock().clone()
 }
 
 /// Drain all pending debug messages for the compositor.
@@ -192,8 +209,6 @@ struct FbInfo {
 }
 
 unsafe impl Send for FbInfo {}
-
-use spin::Mutex;
 
 static FB: Mutex<Option<FbInfo>> = Mutex::new(None);
 

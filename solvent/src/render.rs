@@ -350,7 +350,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         .iter()
         .rev()
         .find(|(source, _)| source == "USB")
-        .cloned();
+        .cloned()
+        .or_else(nitrogen::debug::usb_status_snapshot);
     // Keep the I2C-HID result separate from the transient debug ring. Boot
     // diagnostics from VFS/Wi-Fi must not hide the touchpad result.
     if let Some(i2c_status) = nitrogen::i2c_hid::status_snapshot() {

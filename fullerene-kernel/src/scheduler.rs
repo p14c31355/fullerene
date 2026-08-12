@@ -119,9 +119,6 @@ pub fn scheduler_loop() -> ! {
     crate::shell::run_linux_musl_smoke();
     #[cfg(linux_busybox_smoke)]
     crate::shell::busybox_smoke();
-    #[cfg(usb_xhci_smoke)]
-    crate::shell::usb_xhci_smoke();
-
     // Register NMI recovery restart context with a dedicated stack.
     let recovery_rsp = {
         let base = core::ptr::addr_of!(NMI_RECOVERY_STACK) as u64;
@@ -131,6 +128,9 @@ pub fn scheduler_loop() -> ! {
         recovery_rsp,
         VirtAddr::from_ptr(mmio_recovery_restart as *const ()),
     );
+
+    #[cfg(usb_xhci_smoke)]
+    crate::shell::usb_xhci_smoke();
 
     // Idle loop: drive runtime ticks.
     // Shell and other apps are launched via AppGrid or context menu.

@@ -208,7 +208,6 @@ pub fn init() {
     }
 
     solvent::set_render_progress_fn(crate::boot_stage::draw_boot_label);
-    solvent::set_tick_progress_fn(crate::drivers::registry::usb_rescan_scheduler_diag);
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
 
@@ -352,16 +351,16 @@ pub fn runtime_tick(now: u64) {
             }
         });
         crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: render returned");
-        if video_frames != 0 {
-            crate::metrics::record_video_composite(
-                unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(composite_start),
-            );
-        }
         if rendered.is_none() {
             crate::drivers::registry::usb_rescan_scheduler_diag(
                 "GUI runtime: framebuffer lock busy; frame deferred",
             );
         } else {
+            if video_frames != 0 {
+                crate::metrics::record_video_composite(
+                    unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(composite_start),
+                );
+            }
             finish_frame(video_frames);
             crate::metrics::record_frame_ticks(
                 unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),

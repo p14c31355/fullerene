@@ -92,13 +92,13 @@ fn klog_live_geometry(
         (
             shell.right().saturating_add(KLOG_GAP as i32),
             top as i32,
-            right.saturating_sub(shell.right().max(0) as u32 + KLOG_GAP),
+            right.saturating_sub((shell.right().max(0) as u32).saturating_add(KLOG_GAP)),
             max_h,
         ),
         (
             left as i32,
             top as i32,
-            (shell.x.max(left as i32) as u32).saturating_sub(left + KLOG_GAP),
+            (shell.x.max(left as i32) as u32).saturating_sub(left.saturating_add(KLOG_GAP)),
             max_h,
         ),
         (
@@ -174,6 +174,8 @@ pub(crate) fn layout_klog_live_window(rt: &mut RuntimeState) {
     if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         if window.width != rect.width || window.height != rect.height {
             window.surface = Surface::new(rect.width, rect.height, 0x0d0d14);
+            window.width = rect.width;
+            window.height = rect.height;
             resized = true;
         }
         window.x = rect.x;
