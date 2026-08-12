@@ -266,6 +266,18 @@ Interpret the last line as follows:
   returned without a disk, so `usb_info` will correctly report no registered
   storage even though the controller is active.
 
+The adjacent state line is especially useful on the N150:
+
+```text
+[USB-RESCAN] poll: state enabled=true disks=0 xhci0:ports=11 devices=1 done=0x00000004 [port=3 addr=0 class=00 parent=false]
+```
+
+`devices=0` means root-port detection did not leave a candidate. `devices=1`
+means the port saw a device and the failure is in Address Device, descriptor,
+BOT/UAS, or hub classification. A failed non-hub candidate is retried with
+the port state reset; it must not turn the remaining retry attempts into a
+misleading stream of `no device` messages.
+
 For the HID touchpad, a physical right-button press should add these Klog Live
 edges while the pointer is over the desktop:
 

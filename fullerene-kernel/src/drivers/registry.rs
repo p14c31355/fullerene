@@ -1546,12 +1546,21 @@ pub fn poll_usb() -> bool {
             usb_rescan_diag("poll: controller poll begin");
             ctx.poll_with_diagnostic(usb_rescan_diag);
             usb_rescan_diag("poll: controller poll returned");
+            let summary = ctx.diagnostic_summary();
+            usb_rescan_diag(&alloc::format!("poll: state {}", summary));
         }
     }
     usb_rescan_diag("poll: controller context released");
     usb_rescan_diag("poll: register pending begin");
     register_pending_usb();
     usb_rescan_diag("poll: register pending complete");
+    let summary = {
+        let guard = with_ctx_inner();
+        guard.as_ref().map(|ctx| ctx.diagnostic_summary())
+    };
+    if let Some(summary) = summary {
+        usb_rescan_diag(&alloc::format!("poll: post-register state {}", summary));
+    }
     let changed = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) != before;
     if changed {
         let _ = crate::klog::flush_to_vfs();

@@ -538,6 +538,42 @@ impl USBContext {
         info
     }
 
+    /// Compact state for the synchronous USB rescan diagnostic path. This
+    /// includes candidates that have not yet become storage disks, which is
+    /// the distinction needed when a retry reports only `no device`.
+    pub fn diagnostic_summary(&self) -> alloc::string::String {
+        use core::fmt::Write;
+
+        let mut summary = alloc::string::String::new();
+        let _ = write!(
+            summary,
+            "enabled={} disks={}",
+            self.enabled,
+            self.storage.disks().len()
+        );
+        for (idx, controller) in self.controllers.xhci.iter().enumerate() {
+            let _ = write!(
+                summary,
+                " xhci{}:ports={} devices={} done=0x{:08x}",
+                idx,
+                controller.n_ports(),
+                controller.devices().len(),
+                controller.ports_done_mask()
+            );
+            for device in controller.devices() {
+                let _ = write!(
+                    summary,
+                    " [port={} addr={} class={:02x} parent={}]",
+                    device.port_index + 1,
+                    device.address,
+                    device.device_class,
+                    device.parent_hub_slot.is_some()
+                );
+            }
+        }
+        summary
+    }
+
     /// Poll all controllers for hotplug events and register new storage.
     pub fn poll(&mut self) {
         self.poll_with_diagnostic_inner(None);
@@ -821,16 +857,12 @@ impl USBContext {
                         dev_addr
                     );
                     let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
+                    emit_poll_diagnostic(diagnostic, "context: xhci unsupported retry begin");
+                    xhci.retry_device_candidate(slot_id, dev_idx);
                     emit_poll_diagnostic(
                         diagnostic,
-                        "context: xhci disable unsupported slot begin",
+                        "context: xhci unsupported candidate retry state updated",
                     );
-                    let _ = xhci.disable_slot(slot_id);
-                    emit_poll_diagnostic(
-                        diagnostic,
-                        "context: xhci disable unsupported slot returned",
-                    );
-                    xhci.remove_device_candidate(dev_idx);
                     return;
                 }
                 emit_poll_diagnostic(diagnostic, "context: xhci hub enumeration begin");
@@ -845,10 +877,12 @@ impl USBContext {
                 emit_poll_diagnostic(diagnostic, "context: xhci hub enumeration returned");
                 if !found {
                     let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
-                    emit_poll_diagnostic(diagnostic, "context: xhci disable slot begin");
-                    let _ = xhci.disable_slot(slot_id);
-                    emit_poll_diagnostic(diagnostic, "context: xhci disable slot returned");
-                    xhci.remove_device_candidate(dev_idx);
+                    emit_poll_diagnostic(diagnostic, "context: xhci hub retry begin");
+                    xhci.retry_device_candidate(slot_id, dev_idx);
+                    emit_poll_diagnostic(
+                        diagnostic,
+                        "context: xhci hub candidate retry state updated",
+                    );
                 }
             }
             Err(error) => {
