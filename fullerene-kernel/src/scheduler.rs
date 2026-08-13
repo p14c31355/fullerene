@@ -22,6 +22,22 @@ use crate::gui;
 use crate::scheduler_context::SCHEDULER;
 
 static LAUNCHD_IMAGE: &[u8] = include_bytes!(env!("FULLERENE_LAUNCHD_IMAGE"));
+/// Set by the desktop callback and consumed by PID 1 through the native ABI.
+/// Keeping the request at the kernel boundary preserves the old Nozzle launch
+/// gesture without making the kernel start the shell itself.
+static LAUNCH_SHELL_REQUESTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Request an interactive shell from the desktop action path.
+pub fn request_shell_launch() {
+    LAUNCH_SHELL_REQUESTED.store(true, Ordering::Release);
+}
+
+/// Consume one pending interactive-shell request. Only the launchd syscall
+/// handler calls this, after verifying that the caller is PID 1.
+pub fn take_shell_launch_request() -> bool {
+    LAUNCH_SHELL_REQUESTED.swap(false, Ordering::Acquire)
+}
 
 /// Read CMOS RTC and convert to microseconds since Unix epoch (1970-01-01 00:00:00 UTC).
 /// Returns `None` if RTC is unavailable or invalid.

@@ -389,6 +389,20 @@ pub(crate) fn syscall_getpid() -> SyscallResult {
     Ok(process::current_pid().map(|pid| pid.0).unwrap_or(0))
 }
 
+/// Poll the kernel-to-launchd desktop request queue. This is intentionally
+/// restricted to PID 1: ordinary applications request a shell through the
+/// desktop callback and cannot consume or forge launchd control messages.
+pub(crate) fn syscall_launchd_poll_request() -> SyscallResult {
+    let caller = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    let is_init = process::SCHEDULER
+        .with_process(caller, |current| current.role == process::ProcessRole::Init)
+        .ok_or(SyscallError::NoSuchProcess)?;
+    if !is_init {
+        return Err(SyscallError::PermissionDenied);
+    }
+    Ok(crate::scheduler::take_shell_launch_request() as u64)
+}
+
 pub(crate) fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
     if size == 0 {
         return Err(SyscallError::InvalidArgument);

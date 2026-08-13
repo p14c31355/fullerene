@@ -21,6 +21,7 @@ const CREATE_TERMINAL: u64 = 65;
 const OPEN_PROCESS_CONTROL: u64 = 110;
 const PROCESS_CONTROL_STATUS: u64 = 112;
 const PROCESS_CONTROL_REAP: u64 = 113;
+const LAUNCHD_POLL_REQUEST: u64 = 115;
 
 const PROCESS_READY: u64 = 0;
 const PROCESS_RUNNING: u64 = 1;
@@ -68,15 +69,20 @@ struct ServiceSlot {
     stopped: bool,
 }
 
-// The shell is just the first service.  The supervisor loop is deliberately
-// written against a table so future daemons can use the same lifecycle path.
-static SERVICES: &[ServiceSpec] = &[ServiceSpec {
+// The shell is on-demand, not a boot service. The desktop preserves the
+// former Nozzle launch gesture and launchd turns its request into this job.
+static SHELL_SERVICE: ServiceSpec = ServiceSpec {
     name: b"shell",
-    terminal_title: b"Fullerene Shell",
+    terminal_title: b"Terminal",
     image: SHELL_IMAGE,
-    restart: RestartPolicy::Always,
-    required: true,
-}];
+    restart: RestartPolicy::Never,
+    required: false,
+};
+
+// Other launchd-managed services can be added here without changing the
+// shell-on-demand path. An empty table means desktop boot has no user-facing
+// terminal side effect.
+static SERVICES: &[ServiceSpec] = &[];
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
@@ -309,8 +315,28 @@ fn poll_service(service: &ServiceSpec, mut slot: ServiceSlot) -> Option<ServiceS
 fn service_loop() -> ! {
     write(b"launchd: PID 1 started\n");
     let mut slots = [None; SERVICES.len()];
+    let mut shell_slot = None;
 
     loop {
+        let shell_request = unsafe { syscall(LAUNCHD_POLL_REQUEST, 0, 0, 0, 0, 0, 0) };
+        let shell_is_stopped = shell_slot.map_or(true, |slot: ServiceSlot| slot.stopped);
+        if shell_request == 1 && shell_is_stopped {
+            shell_slot = Some(launch_service(&SHELL_SERVICE, 0));
+        }
+        shell_slot = shell_slot.and_then(|slot| {
+            if slot.stopped {
+                Some(slot)
+            } else if slot.pid == 0 {
+                if slot.cooldown == 0 {
+                    Some(launch_service(&SHELL_SERVICE, slot.restart_count))
+                } else {
+                    Some(slot)
+                }
+            } else {
+                poll_service(&SHELL_SERVICE, slot)
+            }
+        });
+
         let mut index = 0;
         while index < SERVICES.len() {
             let service = &SERVICES[index];

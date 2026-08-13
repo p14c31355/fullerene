@@ -271,7 +271,10 @@ pub fn tick_core(now: u64) {
         runtime.shell_launch_pending = false;
         pending
     }) {
-        crate::ensure_terminal_window();
+        // The launchd-managed shell creates its own process-owned terminal.
+        // Do not create the legacy in-process Nozzle window as well; the
+        // desktop action remains the same, but there is exactly one shell
+        // terminal for the request.
         crate::launch_shell();
     }
     tick_progress("GUI tick: editor phase");

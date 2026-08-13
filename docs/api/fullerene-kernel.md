@@ -120,7 +120,10 @@ unsigned 32-bit value in `rax`; userland decodes it as an `i32`, so negative
 exit statuses are not confused with negative syscall errors.
 The bundled PID 1 launchd uses this contract from Rust userland: managed
 services are described by a static service table and are polled, reaped, and
-restarted according to their userland restart policy.
+restarted according to their userland restart policy. The interactive shell
+is not a boot service: the desktop sends a PID-1-only launch request, and
+launchd spawns the shell only after the user invokes the existing terminal or
+shell action.
 
 ---
 

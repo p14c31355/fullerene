@@ -253,12 +253,15 @@ kernel adopts the child under launchd while preserving the supervisor
 relationship.
 
 The bundled launchd is itself Rust-only userland. Its service table contains
-image, terminal, and restart policy; the shell is merely the first entry. The
-manager polls each service through its `ProcessControl` capability, reaps
-terminated children, revokes the capability, and restarts `Always` jobs with
-bounded exponential backoff. A service that is not configured for restart is
-left stopped. Failure while bootstrapping a required service is fatal to PID
-1, so launchd never continues with an unmanaged child or an orphaned startup
+image, terminal, and restart policy; the interactive shell is an on-demand
+job rather than a boot service. The existing desktop/AppGrid terminal action
+sets a kernel request flag, and only PID 1 can consume that request through
+the native ABI. launchd then creates the terminal, spawns the shell, and
+supervises it through its `ProcessControl` capability. It polls, reaps, and
+revokes terminated children, and restarts `Always` jobs with bounded
+exponential backoff. A service that is not configured for restart is left
+stopped. Failure while bootstrapping a required service is fatal to PID 1,
+so launchd never continues with an unmanaged child or an orphaned startup
 terminal.
 
 This keeps launchd special only at the PID 1 bootstrap boundary. Shells,

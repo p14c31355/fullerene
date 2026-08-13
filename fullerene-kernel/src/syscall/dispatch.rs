@@ -134,6 +134,7 @@ pub unsafe extern "sysv64" fn handle_syscall(
         Ok(SyscallNumber::ProcessControlAssign) => {
             process::syscall_process_control_assign(arg1, arg2)
         }
+        Ok(SyscallNumber::LaunchdPollRequest) => process::syscall_launchd_poll_request(),
 
         Ok(SyscallNumber::MapMemory) => memory::syscall_map_memory(arg1, arg2, arg3),
         Ok(SyscallNumber::UnmapMemory) => memory::syscall_unmap_memory(arg1, arg2),

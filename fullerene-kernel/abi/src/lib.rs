@@ -67,6 +67,7 @@ pub enum SyscallNumber {
     ProcessControlStatus = 112,
     ProcessControlReap = 113,
     ProcessControlAssign = 114,
+    LaunchdPollRequest = 115,
 }
 
 impl SyscallNumber {
@@ -83,7 +84,7 @@ impl SyscallNumber {
         HandleTransfer, HandleDuplicate, HandleRevoke,
         ClockGetTime, TimerCreate, Sleep, Uptime,
         OpenProcessControl, ProcessControlStop, ProcessControlStatus, ProcessControlReap,
-        ProcessControlAssign,
+        ProcessControlAssign, LaunchdPollRequest,
     }
 
     #[inline]
@@ -113,7 +114,7 @@ impl TryFrom<u64> for SyscallNumber {
             CLOCK_GETTIME => ClockGetTime, TIMER_CREATE => TimerCreate, SLEEP => Sleep, UPTIME => Uptime,
             OPEN_PROCESS_CONTROL => OpenProcessControl, PROCESS_CONTROL_STOP => ProcessControlStop,
             PROCESS_CONTROL_STATUS => ProcessControlStatus, PROCESS_CONTROL_REAP => ProcessControlReap,
-            PROCESS_CONTROL_ASSIGN => ProcessControlAssign,
+            PROCESS_CONTROL_ASSIGN => ProcessControlAssign, LAUNCHD_POLL_REQUEST => LaunchdPollRequest,
         }
     }
 }
@@ -138,7 +139,7 @@ pub mod syscall_numbers {
         CLOCK_GETTIME = ClockGetTime, TIMER_CREATE = TimerCreate, SLEEP = Sleep, UPTIME = Uptime,
         OPEN_PROCESS_CONTROL = OpenProcessControl, PROCESS_CONTROL_STOP = ProcessControlStop,
         PROCESS_CONTROL_STATUS = ProcessControlStatus, PROCESS_CONTROL_REAP = ProcessControlReap,
-        PROCESS_CONTROL_ASSIGN = ProcessControlAssign,
+        PROCESS_CONTROL_ASSIGN = ProcessControlAssign, LAUNCHD_POLL_REQUEST = LaunchdPollRequest,
     }
 }
 
