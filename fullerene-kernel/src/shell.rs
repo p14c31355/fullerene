@@ -1921,6 +1921,7 @@ pub fn usb_xhci_smoke() {
 struct KernelTerminal {
     history: alloc::collections::VecDeque<String>,
     pipe_stdout: Option<String>,
+    pipe_stdin: Option<String>,
     terminal_id: Option<u64>,
 }
 
@@ -1929,6 +1930,7 @@ impl KernelTerminal {
         Self {
             history: alloc::collections::VecDeque::with_capacity(128),
             pipe_stdout: None,
+            pipe_stdin: None,
             terminal_id: crate::process::current_pid().and_then(|pid| {
                 crate::process::SCHEDULER
                     .with_process(pid, |process| process.terminal_id)
@@ -1988,11 +1990,21 @@ impl nozzle::Terminal for KernelTerminal {
         self.pipe_stdout.take()
     }
 
+    fn set_stdin(&mut self, data: String) {
+        self.pipe_stdin = Some(data);
+    }
+
+    fn take_stdin(&mut self) -> Option<String> {
+        self.pipe_stdin.take()
+    }
+
     fn arm_pipe_stdout(&mut self) {
         self.pipe_stdout = Some(String::new());
     }
 
-    fn clear_pipe_stdin(&mut self) {}
+    fn clear_pipe_stdin(&mut self) {
+        self.pipe_stdin = None;
+    }
 
     fn record_history(&mut self, line: &str) {
         if line.is_empty() || self.history.front().is_some_and(|entry| entry == line) {
@@ -2006,6 +2018,26 @@ impl nozzle::Terminal for KernelTerminal {
 
     fn history_snapshot(&self) -> alloc::vec::Vec<String> {
         self.history.iter().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nozzle::Terminal;
+
+    #[test]
+    fn kernel_terminal_routes_pipeline_stdin_and_stdout() {
+        let mut terminal = KernelTerminal::new();
+        terminal.set_stdin(String::from("USB ready\n"));
+        assert_eq!(terminal.take_stdin().as_deref(), Some("USB ready\n"));
+
+        terminal.arm_pipe_stdout();
+        nozzle::Terminal::write_str(&mut terminal, "USB: registered /dev/usb0\n");
+        assert_eq!(
+            terminal.take_stdout().as_deref(),
+            Some("USB: registered /dev/usb0\n")
+        );
     }
 }
 
