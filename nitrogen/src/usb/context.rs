@@ -594,6 +594,59 @@ impl USBContext {
         info
     }
 
+    /// Run the bounded xHCI HBD solver for every active xHCI controller.
+    ///
+    /// The caller owns scheduling and may choose an appropriate budget.  A
+    /// report is returned for each controller so one failed topology does not
+    /// suppress diagnostics for another controller.
+    pub fn hbd_solve_xhci(
+        &mut self,
+        budget: crate::hbd::SolverBudget,
+    ) -> Vec<crate::hbd::ConvergenceReport> {
+        let mut reports = Vec::with_capacity(self.controllers.xhci.len());
+        for controller in &mut self.controllers.xhci {
+            reports.push(crate::hbd::backends::xhci::XhciBackend::solve(controller, budget).report);
+        }
+        reports
+    }
+
+    /// Read-only xHCI HBD observations for status/report commands.
+    pub fn hbd_xhci_status(&self) -> Vec<crate::hbd::ConvergenceReport> {
+        let mut reports = Vec::with_capacity(self.controllers.xhci.len());
+        for controller in &self.controllers.xhci {
+            let observation = crate::hbd::backends::xhci::observe(controller);
+            let running = observation.running;
+            let state = if running {
+                "observed"
+            } else {
+                "controller_stopped"
+            };
+            reports.push(crate::hbd::ConvergenceReport {
+                backend: "xhci",
+                stage: state,
+                result: crate::hbd::ReportResult::NoAction,
+                actions: 0,
+                retries: 0,
+                resets: 0,
+                constraints: alloc::vec![crate::hbd::ConstraintResult::new(
+                    "controller_running",
+                    if running {
+                        crate::hbd::ConstraintStatus::Satisfied
+                    } else {
+                        crate::hbd::ConstraintStatus::Unsatisfied
+                    },
+                    "USBCMD/USBSTS running state",
+                )],
+                transitions: alloc::vec![],
+                observations: alloc::vec![
+                    crate::hbd::Observation::integer("root_ports", observation.ports.len() as u64),
+                    crate::hbd::Observation::integer("devices", observation.devices.len() as u64),
+                ],
+            });
+        }
+        reports
+    }
+
     /// Compact state for the synchronous USB rescan diagnostic path. This
     /// includes candidates that have not yet become storage disks, which is
     /// the distinction needed when a retry reports only `no device`.

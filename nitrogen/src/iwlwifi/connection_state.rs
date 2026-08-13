@@ -344,6 +344,12 @@ fn get_init_phase() -> WifiInitPhase {
     WifiInitPhase::from(raw)
 }
 
+/// Snapshot the explicit incremental initialization phase for HBD and
+/// diagnostics. This is read-only and does not touch PCI/MMIO state.
+pub fn wifi_init_phase() -> WifiInitPhase {
+    get_init_phase()
+}
+
 fn draw_init_hint_if_changed() {
     let phase = get_init_phase();
     let current = phase as u8;

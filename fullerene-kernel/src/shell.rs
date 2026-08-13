@@ -1005,6 +1005,23 @@ fn nozzle_services() -> nozzle::ShellServices {
                     ctx.terminal.write_str("Device manager not initialized.\n");
                 }
             }
+            "hbd status" => {
+                ctx.terminal
+                    .write_str(&crate::drivers::registry::hbd_status());
+            }
+            "hbd report" => {
+                ctx.terminal
+                    .write_str(&crate::drivers::registry::hbd_report());
+            }
+            "hbd solve xhci" | "hbd solve iwlwifi" | "hbd solve all" => {
+                let backend = cmd.strip_prefix("hbd solve ").unwrap_or("all");
+                ctx.terminal
+                    .write_str(&crate::drivers::registry::hbd_solve(backend));
+            }
+            _ if cmd == "hbd" => {
+                ctx.terminal
+                    .write_str("Usage: hbd status|solve <xhci|iwlwifi|all>|report\n");
+            }
             "calc" => {
                 ctx.terminal.write_str("Usage: calc <expression>\n");
                 ctx.terminal.write_str("Example: calc (2+3)*4\n");

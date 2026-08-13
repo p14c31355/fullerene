@@ -152,6 +152,21 @@ pub fn cmd_run(ctx: &mut CommandContext) -> bool {
 sys_info_cmd!(cmd_taskmon, "taskmon");
 sys_info_cmd!(cmd_devices, "devices");
 
+/// `hbd` — inspect or run bounded hardware-state convergence.
+pub fn cmd_hbd(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() == 1 {
+        crate::sys_hooks::call_sys_info_hook(ctx, "hbd status");
+        return true;
+    }
+    let mut command = alloc::string::String::from("hbd");
+    for arg in &ctx.args[1..] {
+        command.push(' ');
+        command.push_str(arg);
+    }
+    crate::sys_hooks::call_sys_info_hook(ctx, &command);
+    true
+}
+
 /// `install_fullerene` — show targets or explicitly install Fullerene.
 pub fn cmd_install_fullerene(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() == 1 {
