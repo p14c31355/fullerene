@@ -684,7 +684,16 @@ fn initialize_linux_stack_transaction(
 /// Load a program from raw bytes and create a process for it using goblin.
 /// If `linux_abi` is true, attaches a LinuxRuntime for Linux ABI emulation.
 pub fn load_program(image_data: &[u8], name: &str) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, &[], &[], false)
+    load_program_inner(image_data, name, &[], &[], false, None)
+}
+
+/// Load a native program as a child of the requesting process.
+pub fn load_program_with_parent(
+    image_data: &[u8],
+    name: &str,
+    parent_id: process::ProcessId,
+) -> Result<process::ProcessId, LoadError> {
+    load_program_inner(image_data, name, &[], &[], false, Some(parent_id))
 }
 
 /// Load a program, optionally with Linux ABI emulation.
@@ -705,7 +714,7 @@ pub fn load_program_with_runtime_args(
     envp: &[&str],
     is_linux: bool,
 ) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, argv, envp, is_linux)
+    load_program_inner(image_data, name, argv, envp, is_linux, None)
 }
 
 /// Replace the executable image in an existing Linux process address space.
@@ -797,6 +806,7 @@ fn load_program_inner(
     argv: &[&str],
     envp: &[&str],
     is_linux: bool,
+    parent_id: Option<process::ProcessId>,
 ) -> Result<process::ProcessId, LoadError> {
     crate::klog_fmt!(
         "[LINUX-DIAG] elf parse begin name={} bytes={} linux={}\n",
@@ -862,7 +872,7 @@ fn load_program_inner(
     }
 
     // Create process with the loaded program (user mode)
-    let pid = process::create_process(name, entry_point_address, true)?;
+    let pid = process::create_process_with_parent(name, entry_point_address, true, parent_id)?;
     crate::klog_fmt!(
         "[LINUX-DIAG] process created pid={} entry={:#x}\n",
         pid.0,

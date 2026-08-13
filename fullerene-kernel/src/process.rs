@@ -87,6 +87,12 @@ impl core::fmt::Display for ProcessId {
     }
 }
 
+/// Entry point for a kernel-resident program.
+///
+/// User programs use the ELF loader and enter through the user-mode context;
+/// this ABI is for kernel tasks that still need direct kernel services.
+pub type KernelProcessEntry = extern "C" fn() -> !;
+
 /// Process states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
@@ -742,9 +748,24 @@ pub fn create_process(
     entry_point_address: VirtAddr,
     is_user: bool,
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
+    create_process_with_parent(name, entry_point_address, is_user, None)
+}
+
+/// Create a process while recording the process that requested its creation.
+///
+/// `parent_id` is a lifecycle relationship (wait/reap and orphan handling),
+/// not an administrative authority. A future service manager can therefore
+/// supervise a process without becoming its Unix-style parent.
+pub fn create_process_with_parent(
+    name: &str,
+    entry_point_address: VirtAddr,
+    is_user: bool,
+    parent_id: Option<ProcessId>,
+) -> Result<ProcessId, petroleum::common::logging::SystemError> {
     mem_debug!("Process: create_process starting\n");
 
     let mut process = Process::new(name, entry_point_address, is_user);
+    process.parent_id = parent_id;
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
@@ -822,6 +843,18 @@ pub fn create_process(
 
     mem_debug!("Process: create_process done\n");
     Ok(pid)
+}
+
+/// Create a kernel-resident program through the common process path.
+///
+/// This is a transitional API: it removes per-program construction from the
+/// scheduler, but does not grant user-mode semantics. A real user process
+/// must be loaded as an ELF image.
+pub fn create_kernel_process(
+    name: &str,
+    entry: KernelProcessEntry,
+) -> Result<ProcessId, petroleum::common::logging::SystemError> {
+    create_process(name, VirtAddr::from_ptr(entry as *const ()), false)
 }
 
 /// Unblock parent processes that are waiting for this child process

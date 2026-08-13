@@ -317,7 +317,8 @@ pub(crate) fn syscall_spawn(
         return Err(SyscallError::InvalidArgument);
     }
 
-    crate::loader::load_program(&image, name)
+    let parent_id = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    crate::loader::load_program_with_parent(&image, name, parent_id)
         .map(|pid| pid.0)
         .map_err(|error| match error {
             crate::loader::LoadError::OutOfMemory => SyscallError::OutOfMemory,

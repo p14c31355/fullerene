@@ -15,7 +15,7 @@
 //!   └── hlt()
 //! ```
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 use x86_64::VirtAddr;
 
 use crate::gui;
@@ -71,11 +71,6 @@ struct AlignedStack {
 
 #[allow(dead_code)]
 static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack { _bytes: [0; 65536] };
-
-/// Only one interactive shell is launched at a time.  The shell is a real
-/// scheduler process, so the idle scheduler can continue consuming device
-/// queues while the shell waits for input or runs a command.
-static SHELL_PROCESS_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Set the launch‑shell flag from the solvent side.
 pub fn request_shell_launch() {
@@ -265,10 +260,9 @@ pub fn scheduler_loop() -> ! {
         // shell_main() on this stack.  The shell can then yield while waiting
         // for input, allowing USB and other device queues to make progress.
         if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false)
-            && !SHELL_PROCESS_ACTIVE.swap(true, Ordering::AcqRel)
+            && crate::shell::try_start_process()
         {
-            let entry = VirtAddr::from_ptr(shell_process_main as *const ());
-            match crate::process::create_process("shell", entry, false) {
+            match crate::process::create_kernel_process("shell", crate::shell::shell_process_main) {
                 Ok(pid) => {
                     petroleum::serial::serial_log(format_args!(
                         "Launching shell process PID {}\n",
@@ -276,7 +270,7 @@ pub fn scheduler_loop() -> ! {
                     ));
                 }
                 Err(error) => {
-                    SHELL_PROCESS_ACTIVE.store(false, Ordering::Release);
+                    crate::shell::abort_process_start();
                     log::error!("Failed to launch shell process: {:?}", error);
                 }
             }
@@ -294,15 +288,6 @@ pub fn scheduler_loop() -> ! {
         SCHEDULER.advance_tick();
         x86_64::instructions::hlt();
     }
-}
-
-/// Shell entry-point for process spawning.
-pub extern "C" fn shell_process_main() -> ! {
-    log::info!("Shell process started");
-    crate::shell::shell_main();
-    SHELL_PROCESS_ACTIVE.store(false, Ordering::Release);
-    crate::process::terminate_process(crate::process::current_pid().unwrap(), 0);
-    petroleum::halt_loop();
 }
 
 /// Restart the scheduler loop after an NMI watchdog recovery.
