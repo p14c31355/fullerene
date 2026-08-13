@@ -362,11 +362,15 @@ impl VirtioGpu {
     }
 
     fn read_common_via_direct(&self, offset: u32, width: u32) -> Option<u32> {
-        let ptr = unsafe { (self.common_virt_absolute as *mut u8).add(offset as usize) };
+        let address = (self.common_virt_absolute as usize).checked_add(offset as usize)?;
+        let region = unsafe {
+            sealant::MmioRegion::from_address(address, width as usize, sealant::Permissions::READ)
+        }
+        .ok()?;
         let val = match width {
-            1 => Some(unsafe { core::ptr::read_volatile(ptr as *const u8) as u32 }),
-            2 => Some(unsafe { core::ptr::read_volatile(ptr as *const u16) as u32 }),
-            4 => Some(unsafe { core::ptr::read_volatile(ptr as *const u32) }),
+            1 => region.read_volatile_at::<u8>(0).ok().map(u32::from),
+            2 => region.read_volatile_at::<u16>(0).ok().map(u32::from),
+            4 => region.read_volatile_at::<u32>(0).ok(),
             _ => None,
         };
         if let Some(v) = val {
@@ -383,11 +387,15 @@ impl VirtioGpu {
     }
 
     fn write_common_via_direct(&self, offset: u32, value: u32, width: u32) -> Option<()> {
-        let ptr = unsafe { (self.common_virt_absolute as *mut u8).add(offset as usize) };
+        let address = (self.common_virt_absolute as usize).checked_add(offset as usize)?;
+        let region = unsafe {
+            sealant::MmioRegion::from_address(address, width as usize, sealant::Permissions::WRITE)
+        }
+        .ok()?;
         match width {
-            1 => unsafe { core::ptr::write_volatile(ptr as *mut u8, value as u8) },
-            2 => unsafe { core::ptr::write_volatile(ptr as *mut u16, value as u16) },
-            4 => unsafe { core::ptr::write_volatile(ptr as *mut u32, value) },
+            1 => region.write_volatile_at(0, value as u8).ok()?,
+            2 => region.write_volatile_at(0, value as u16).ok()?,
+            4 => region.write_volatile_at(0, value).ok()?,
             _ => return None,
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
@@ -753,12 +761,23 @@ impl VirtioGpu {
             self.dma_fence();
 
             let notify_off = self.get_notify_offset(0);
-            let notify_ptr = self
-                .notify_bar_base
-                .add(self.notify_cap_offset as usize)
-                .add(notify_off) as *mut u32;
-            core::ptr::write_volatile(notify_ptr, 0u32.to_le());
-            core::ptr::read_volatile(self.common_virt_absolute);
+            let Some(notify_address) = (self.notify_bar_base as usize)
+                .checked_add(self.notify_cap_offset as usize)
+                .and_then(|base| base.checked_add(notify_off))
+            else {
+                return;
+            };
+            let Ok(notify_region) = sealant::MmioRegion::from_address(
+                notify_address,
+                core::mem::size_of::<u32>(),
+                sealant::Permissions::WRITE,
+            ) else {
+                return;
+            };
+            if notify_region.write_volatile_at(0, 0u32.to_le()).is_err() {
+                return;
+            }
+            let _ = self.read_common_via_direct(0, 4);
         }
     }
 

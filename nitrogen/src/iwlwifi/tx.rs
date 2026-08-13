@@ -83,12 +83,10 @@ impl IwlWifiDevice {
             initial_gp,
         );
         let gp = initial_gp.unwrap_or(0);
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_GP_CNTRL as usize),
-                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
-            );
-        }
+        self.write_mmio32(
+            CSR_GP_CNTRL,
+            gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+        );
         mmio::write_barrier();
 
         let ready = crate::timing::poll_timeout_us(15_000, || {
@@ -118,12 +116,7 @@ impl IwlWifiDevice {
             log::warn!("iwlwifi: cannot release MAC access: GP_CNTRL unavailable");
             return;
         };
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_GP_CNTRL as usize),
-                gp & !CSR_GP_CNTRL_MAC_ACCESS_REQ,
-            );
-        }
+        self.write_mmio32(CSR_GP_CNTRL, gp & !CSR_GP_CNTRL_MAC_ACCESS_REQ);
         mmio::write_barrier();
     }
 
@@ -270,48 +263,35 @@ impl IwlWifiDevice {
         // Linux does not add them to this register.
         self.write_prph(SCD_EN_CTRL, 1 << IWL_CMD_QUEUE);
 
-        unsafe {
+        {
             // The keep-warm buffer must be a separate 4 KiB-aligned DMA
             // region. It occupies the page immediately after the TFD ring in
             // the single contiguous allocation.
-            core::ptr::write_volatile(
-                self.mmio.add(FH_KW_MEM_ADDR_REG as usize),
-                (keep_warm_phys >> 4) as u32,
-            );
+            self.write_mmio32(FH_KW_MEM_ADDR_REG, (keep_warm_phys >> 4) as u32);
             // The 7265 uses a gen1 128-byte TFD and the API-v17 MVM command
             // queue 9. The previous code rang 0x0bc, which is not
             // HBUS_TARG_WRPTR on this device and therefore never submitted
             // the scan command.
-            core::ptr::write_volatile(
-                self.mmio.add(FH_MEM_CBBC_CMD_QUEUE as usize),
-                (ring_phys >> 8) as u32,
-            );
-            core::ptr::write_volatile(
-                self.mmio.add(FH_MEM_CBBC_AUX_QUEUE as usize),
-                (aux_ring_phys >> 8) as u32,
-            );
-            core::ptr::write_volatile(
-                self.mmio.add(FH_MEM_CBBC_DATA_QUEUE as usize),
-                (data_ring_phys >> 8) as u32,
-            );
+            self.write_mmio32(FH_MEM_CBBC_CMD_QUEUE, (ring_phys >> 8) as u32);
+            self.write_mmio32(FH_MEM_CBBC_AUX_QUEUE, (aux_ring_phys >> 8) as u32);
+            self.write_mmio32(FH_MEM_CBBC_DATA_QUEUE, (data_ring_phys >> 8) as u32);
             // Establish the initial scheduler write pointer for every queue
             // before firmware receives its first SCD_QUEUE_CFG command.
-            core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_DATA_QUEUE << 8);
-            core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
+            self.write_mmio32(HBUS_TARG_WRPTR, IWL_DATA_QUEUE << 8);
+            self.write_mmio32(HBUS_TARG_WRPTR, IWL_CMD_QUEUE << 8);
             // The FH exposes eight physical DMA channels. q9/q11 are logical
             // SCD queues and select physical channels through their FIFO
             // fields; using 9/11 as TCSR channel numbers writes outside the
             // valid FH TX channel window.
             for channel in 0..FH_TCSR_CHNL_NUM {
-                core::ptr::write_volatile(
-                    self.mmio
-                        .add((FH_TCSR_CHNL_TX_CONFIG_BASE + channel * (0x20 / 4)) as usize),
+                self.write_mmio32(
+                    FH_TCSR_CHNL_TX_CONFIG_BASE + channel * (0x20 / 4),
                     FH_TCSR_TX_CONFIG_DMA_ENABLE | FH_TCSR_TX_CONFIG_DMA_CREDIT_ENABLE,
                 );
             }
-            let chicken = core::ptr::read_volatile(self.mmio.add(FH_TX_CHICKEN_BITS as usize));
-            core::ptr::write_volatile(
-                self.mmio.add(FH_TX_CHICKEN_BITS as usize),
+            let chicken = self.safe_read32(FH_TX_CHICKEN_BITS).unwrap_or(!0);
+            self.write_mmio32(
+                FH_TX_CHICKEN_BITS,
                 chicken | FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN,
             );
         }
@@ -481,12 +461,10 @@ impl IwlWifiDevice {
             unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].addr_lo)) };
         let _tfd_tb_hi_n_len =
             unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].hi_n_len)) };
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(HBUS_TARG_WRPTR as usize),
-                (self.tx_head as u32 & 0xff) | (IWL_CMD_QUEUE << 8),
-            );
-        }
+        self.write_mmio32(
+            HBUS_TARG_WRPTR,
+            (self.tx_head as u32 & 0xff) | (IWL_CMD_QUEUE << 8),
+        );
         mmio::write_barrier();
         if opcode == LegacyCmd::ScanRequest as u8 {
             log::info!(
@@ -1385,9 +1363,7 @@ impl IwlWifiDevice {
             log::error!(
                 "iwlwifi: firmware SW_ERR is latched after init HCMD submissions (MAC_CONTEXT or an earlier command was rejected)"
             );
-            unsafe {
-                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), csr_int_before_echo);
-            }
+            self.write_mmio32(CSR_INT, csr_int_before_echo);
             self.fw_state = FwState::Error;
             return Err(crate::DriverError::Protocol);
         }
@@ -1734,12 +1710,10 @@ impl IwlWifiDevice {
 
             self.tx_data_head = self.tx_data_head.wrapping_add(1);
             mmio::write_barrier();
-            unsafe {
-                core::ptr::write_volatile(
-                    self.mmio.add(HBUS_TARG_WRPTR as usize),
-                    (self.tx_data_head as u32 & 0xff) | (IWL_DATA_QUEUE << 8),
-                );
-            }
+            self.write_mmio32(
+                HBUS_TARG_WRPTR,
+                (self.tx_data_head as u32 & 0xff) | (IWL_DATA_QUEUE << 8),
+            );
             mmio::write_barrier();
         }
         self.release_mac_access();

@@ -2009,14 +2009,26 @@ pub fn try_create_iwl_modern(
 }
 
 fn read32(mmio: *mut u32, offset: u32, health: Option<&PciHealth>) -> Option<u32> {
-    match unsafe { mmio::checked_read_u32(mmio.add(offset as usize) as usize, health) } {
+    if mmio.is_null() {
+        return None;
+    }
+    let offset = (offset as usize).checked_mul(core::mem::size_of::<u32>())?;
+    let region = unsafe { mmio::MemRegion::new(mmio as usize, 0x2000) };
+    match region.checked_read32(offset, health) {
         SafeReadResult::Value(value) => Some(value),
         _ => None,
     }
 }
 
 fn write32(mmio: *mut u32, offset: u32, value: u32) {
-    unsafe { core::ptr::write_volatile(mmio.add(offset as usize), value) };
+    let Some(offset) = (offset as usize).checked_mul(core::mem::size_of::<u32>()) else {
+        return;
+    };
+    if mmio.is_null() {
+        return;
+    }
+    let region = unsafe { mmio::MemRegion::new(mmio as usize, 0x2000) };
+    region.write32(offset, value);
 }
 
 fn write32_bytes(mmio: *mut u32, byte_offset: u32, value: u32) {
