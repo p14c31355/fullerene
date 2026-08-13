@@ -10,6 +10,7 @@ use super::ipc;
 use super::memory;
 use super::process;
 use super::shared_buffer;
+use super::terminal;
 use super::thread;
 use super::time;
 use super::window;
@@ -24,7 +25,23 @@ pub unsafe extern "sysv64" fn handle_syscall(
     arg5: u64,
     arg6: u64,
 ) -> u64 {
+    handle_syscall_impl(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6, true)
+}
+
+fn handle_syscall_impl(
+    syscall_num: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
+    from_user_entry: bool,
+) -> u64 {
     let current_pid = crate::process::current_pid();
+    if from_user_entry {
+        crate::interrupts::syscall::begin_syscall(current_pid);
+    }
     let dispatch_mode = current_pid
         .and_then(|pid| {
             crate::process::SCHEDULER.with_process(pid, |p| {
@@ -92,6 +109,9 @@ pub unsafe extern "sysv64" fn handle_syscall(
             syscall_num,
             ret
         );
+        if from_user_entry {
+            crate::interrupts::syscall::end_syscall(current_pid);
+        }
         return ret;
     }
 
@@ -121,7 +141,20 @@ pub unsafe extern "sysv64" fn handle_syscall(
             arg2 as usize,
             arg3 as *const u8,
             arg4 as usize,
+            arg5,
+            arg6,
         ),
+        Ok(SyscallNumber::OpenProcessControl) => process::syscall_open_process_control(arg1),
+        Ok(SyscallNumber::ProcessControlStop) => {
+            process::syscall_process_control_stop(arg1, arg2 as i32)
+        }
+        Ok(SyscallNumber::ProcessControlStatus) => process::syscall_process_control_status(arg1),
+        Ok(SyscallNumber::ProcessControlReap) => process::syscall_process_control_reap(arg1),
+        Ok(SyscallNumber::ProcessControlAssign) => {
+            process::syscall_process_control_assign(arg1, arg2)
+        }
+        Ok(SyscallNumber::LaunchdPollRequest) => process::syscall_launchd_poll_request(),
+        Ok(SyscallNumber::RunNozzle) => process::syscall_run_nozzle(),
 
         Ok(SyscallNumber::MapMemory) => memory::syscall_map_memory(arg1, arg2, arg3),
         Ok(SyscallNumber::UnmapMemory) => memory::syscall_unmap_memory(arg1, arg2),
@@ -160,6 +193,9 @@ pub unsafe extern "sysv64" fn handle_syscall(
         Ok(SyscallNumber::GetWindowEvent) => {
             window::syscall_get_window_event(arg1, arg2 as *mut u8, arg3 as usize)
         }
+        Ok(SyscallNumber::CreateTerminal) => {
+            terminal::syscall_create_terminal(arg1 as *const u8, arg2 as usize)
+        }
 
         Ok(SyscallNumber::EnumerateDevices) => {
             device::syscall_enumerate_devices(arg1, arg2 as *mut u8, arg3 as usize)
@@ -185,14 +221,18 @@ pub unsafe extern "sysv64" fn handle_syscall(
         Err(()) => Err(SyscallError::InvalidSyscall),
     };
 
-    match result {
+    let ret = match result {
         Ok(value) => value,
         Err(error) => (-(error as i64)) as u64,
+    };
+    if from_user_entry {
+        crate::interrupts::syscall::end_syscall(current_pid);
     }
+    ret
 }
 
 pub fn kernel_syscall(syscall_num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    unsafe { handle_syscall(syscall_num, arg1, arg2, arg3, 0, 0, 0) }
+    handle_syscall_impl(syscall_num, arg1, arg2, arg3, 0, 0, 0, false)
 }
 
 pub fn init() {

@@ -2,7 +2,7 @@
 //!
 //! Thin wrapper around the [`nozzle`] shell runtime.  Provides a
 //! `KernelTerminal` that bridges the abstract `nozzle::Terminal`
-//! trait to the kernel's raw syscall I/O.
+//! trait to the kernel's process-terminal runtime.
 
 use crate::syscall::kernel_syscall;
 use alloc::format;
@@ -1618,7 +1618,11 @@ fn nozzle_services() -> nozzle::ShellServices {
     nozzle::ShellServices::new(fs, sys, mount)
 }
 
-/// Main shell entry point — called from the scheduler as a kernel process.
+/// Main shell program body.
+///
+/// The body still uses kernel VFS/terminal callbacks, so ring-3 conversion is
+/// a separate userland/ABI change. Its process entry is nevertheless created
+/// through the generic kernel-program path.
 pub fn shell_main() {
     petroleum::debug_log!("Shell main started");
 
@@ -1635,6 +1639,17 @@ pub fn shell_main() {
         let mut terminal = KernelTerminal::new();
         solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     }
+}
+
+/// Run the #340 Nozzle shell on the terminal attached to the current process.
+///
+/// launchd still creates and supervises the native `shell` process; this entry
+/// point keeps the existing Nozzle command/runtime contract until the complete
+/// VFS and desktop service surface is exposed as userland syscalls.
+pub fn shell_main_on_current_terminal() {
+    let services = nozzle_services();
+    let mut terminal = KernelTerminal::new();
+    solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
 }
 
 /// Run the native DriverKit channel fixture through the real kernel boundary.
@@ -1906,6 +1921,8 @@ pub fn usb_xhci_smoke() {
 struct KernelTerminal {
     history: alloc::collections::VecDeque<String>,
     pipe_stdout: Option<String>,
+    pipe_stdin: Option<String>,
+    terminal_id: Option<u64>,
 }
 
 impl KernelTerminal {
@@ -1913,6 +1930,12 @@ impl KernelTerminal {
         Self {
             history: alloc::collections::VecDeque::with_capacity(128),
             pipe_stdout: None,
+            pipe_stdin: None,
+            terminal_id: crate::process::current_pid().and_then(|pid| {
+                crate::process::SCHEDULER
+                    .with_process(pid, |process| process.terminal_id)
+                    .flatten()
+            }),
         }
     }
 }
@@ -1921,6 +1944,11 @@ impl nozzle::Terminal for KernelTerminal {
     fn write_str(&mut self, s: &str) {
         if let Some(ref mut output) = self.pipe_stdout {
             output.push_str(s);
+        } else if let Some(terminal_id) = self.terminal_id {
+            solvent::write_process_terminal_bytes(
+                lattice::window::WindowId(terminal_id),
+                s.as_bytes(),
+            );
         } else {
             kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
         }
@@ -1928,28 +1956,55 @@ impl nozzle::Terminal for KernelTerminal {
 
     fn read_byte(&mut self) -> Option<u8> {
         loop {
-            let mut byte = 0u8;
-            let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
-            if res > 0 {
-                return Some(byte);
+            if let Some(terminal_id) = self.terminal_id {
+                // The native shell enters Nozzle through a kernel bridge.
+                // Its local byte buffer is a kernel address, so it cannot be
+                // passed to the user-buffer-validating read syscall. Pump
+                // the GUI and consume the process terminal directly instead.
+                solvent::runtime_tick_no_fb();
+                let mut byte = [0u8; 1];
+                if solvent::read_process_terminal(lattice::window::WindowId(terminal_id), &mut byte)
+                    > 0
+                {
+                    return Some(byte[0]);
+                }
+            } else {
+                let mut byte = 0u8;
+                let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
+                if res > 0 {
+                    return Some(byte);
+                }
             }
             kernel_syscall(22, 0, 0, 0);
         }
     }
 
     fn input_available(&self) -> bool {
-        nitrogen::ps2::keyboard::input_available()
+        self.terminal_id
+            .map_or_else(nitrogen::ps2::keyboard::input_available, |terminal_id| {
+                solvent::process_terminal_has_input(lattice::window::WindowId(terminal_id))
+            })
     }
 
     fn take_stdout(&mut self) -> Option<String> {
         self.pipe_stdout.take()
     }
 
+    fn set_stdin(&mut self, data: String) {
+        self.pipe_stdin = Some(data);
+    }
+
+    fn take_stdin(&mut self) -> Option<String> {
+        self.pipe_stdin.take()
+    }
+
     fn arm_pipe_stdout(&mut self) {
         self.pipe_stdout = Some(String::new());
     }
 
-    fn clear_pipe_stdin(&mut self) {}
+    fn clear_pipe_stdin(&mut self) {
+        self.pipe_stdin = None;
+    }
 
     fn record_history(&mut self, line: &str) {
         if line.is_empty() || self.history.front().is_some_and(|entry| entry == line) {
@@ -1963,6 +2018,26 @@ impl nozzle::Terminal for KernelTerminal {
 
     fn history_snapshot(&self) -> alloc::vec::Vec<String> {
         self.history.iter().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nozzle::Terminal;
+
+    #[test]
+    fn kernel_terminal_routes_pipeline_stdin_and_stdout() {
+        let mut terminal = KernelTerminal::new();
+        terminal.set_stdin(String::from("USB ready\n"));
+        assert_eq!(terminal.take_stdin().as_deref(), Some("USB ready\n"));
+
+        terminal.arm_pipe_stdout();
+        nozzle::Terminal::write_str(&mut terminal, "USB: registered /dev/usb0\n");
+        assert_eq!(
+            terminal.take_stdout().as_deref(),
+            Some("USB: registered /dev/usb0\n")
+        );
     }
 }
 

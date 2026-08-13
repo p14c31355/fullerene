@@ -135,6 +135,73 @@ fn main() {
     // toolchain (respecting rust-toolchain.toml). Derive sysroot from it.
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
 
+    // ── Build the userland init and shell ────────────────────────
+    // Both are freestanding native ELF programs.  They are embedded only as
+    // boot payloads; neither source is linked into the kernel.
+    let shell_src = manifest_dir.join("examples").join("native_shell.rs");
+    let shell_out = out_dir.join("native_shell");
+    let launchd_src = manifest_dir.join("examples").join("native_launchd.rs");
+    let launchd_out = out_dir.join("native_launchd");
+    for source in [&shell_src, &launchd_src] {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
+    let native_args = [
+        "--edition=2024",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-C",
+        "panic=abort",
+        "-C",
+        "relocation-model=static",
+        "-C",
+        "link-arg=-nostdlib",
+        "-C",
+        "link-arg=-Wl,--no-dynamic-linker",
+        "-C",
+        "link-arg=-e",
+        "-C",
+        "link-arg=_start",
+        "-C",
+        "opt-level=2",
+        "-C",
+        "strip=debuginfo",
+        "-o",
+    ];
+    let shell_status = Command::new(&rustc)
+        .args(native_args)
+        .arg(&shell_out)
+        .arg(&shell_src)
+        .status()
+        .expect("could not start rustc for native shell");
+    assert!(
+        shell_status.success(),
+        "native user shell compilation failed (rustc exit {shell_status}); it requires the x86_64-unknown-linux-gnu target and a host linker: rustup target add x86_64-unknown-linux-gnu"
+    );
+    let launchd_status = Command::new(&rustc)
+        .args(native_args)
+        .env("FULLERENE_SHELL_IMAGE", &shell_out)
+        .arg(&launchd_out)
+        .arg(&launchd_src)
+        .status()
+        .expect("could not start rustc for launchd");
+    assert!(
+        launchd_status.success(),
+        "launchd compilation failed (rustc exit {launchd_status}); it requires the x86_64-unknown-linux-gnu target and a host linker: rustup target add x86_64-unknown-linux-gnu"
+    );
+    // Keep the example target buildable as well as the generated kernel
+    // payload. `native_launchd.rs` embeds the shell image, so Cargo must pass
+    // the same path when it compiles the example directly (for checks and
+    // documentation tooling); the ad-hoc rustc invocation above only sets
+    // the variable for that one child process.
+    println!(
+        "cargo:rustc-env=FULLERENE_SHELL_IMAGE={}",
+        shell_out.display()
+    );
+    println!(
+        "cargo:rustc-env=FULLERENE_LAUNCHD_IMAGE={}",
+        launchd_out.display()
+    );
+
     // ── Build the native IPC kernel smoke fixture ─────────────────
     // This is a freestanding ELF that invokes Fullerene's native channel
     // syscalls directly. It deliberately has no libc or Rust SDK dependency,

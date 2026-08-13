@@ -13,11 +13,11 @@
 | 4 | write | ✅ Full |  |
 | 5 | open | ✅ Full | Read-only only |
 | 6 | close | ✅ Full |  |
-| 7 | wait | 🟡 Partial | Non-blocking |
+| 7 | wait | 🟡 Partial | Parent-child wait; u64::MAX waits for any child |
 | 20 | getpid | ✅ Full |  |
 | 21 | get_process_name | ✅ Full |  |
 | 22 | yield | ✅ Full |  |
-| 23 | spawn | ✅ Full | Copies and validates ELF image into an isolated process |
+| 23 | spawn | ✅ Full | Copies ELF into an isolated process; arg6 may designate a supervisor |
 | 30 | map_memory | ✅ Full |  |
 | 31 | unmap_memory | ✅ Full |  |
 | 32 | protect_memory | ✅ Full | Page-table flag update |
@@ -38,6 +38,7 @@
 | 62 | resize_window | ✅ Full |  |
 | 63 | present_window | ✅ Full |  |
 | 64 | get_window_event | 🧩 Stub |  |
+| 65 | create_terminal | ✅ Full | Creates an endpoint; ownership attaches to the spawned process |
 | 70 | enumerate_devices | 🟡 Partial | PCI devices and registered block devices |
 | 71 | open_device | 🟡 Partial | PCI BDF, vendor:device, nvmeN/ahciN, and /dev block names |
 | 72 | device_ioctl | 🟡 Partial | PCI access, controller init, capabilities, and block I/O |
@@ -52,6 +53,13 @@
 | 101 | timer_create | ✅ Full |  |
 | 102 | sleep | 🟡 Partial |  |
 | 103 | uptime | ✅ Full |  |
+| 110 | open_process_control | ✅ Full | Parent or supervisor receives a transferable capability |
+| 111 | process_control_stop | ✅ Full | Capability-authorized termination |
+| 112 | process_control_status | ✅ Full | Capability-authorized state query |
+| 113 | process_control_reap | ✅ Full | Capability-authorized zombie collection |
+| 114 | process_control_assign | ✅ Full | Changes supervisor without changing birth parent |
+| 115 | launchd_poll_request | ✅ Full | PID 1-only desktop-to-launchd shell request |
+| 116 | run_nozzle | ✅ Full | Kernel-issued launchd identity authorizes the shell image |
 
 ## Linux Compat Syscalls
 

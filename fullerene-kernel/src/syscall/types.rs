@@ -126,6 +126,7 @@ pub enum KernelObject {
     Pipe(PipeState),
     Timer(TimerState),
     SharedBuffer(SharedBufferState),
+    ProcessControl(ProcessControlState),
 }
 
 pub struct EventInner {
@@ -147,6 +148,13 @@ pub struct ThreadInner {
 
 pub struct ThreadState {
     pub inner: Arc<Mutex<ThreadInner>>,
+}
+
+/// Capability naming one process that the holder may supervise or reap.
+/// The PID is only the object identity; possession of this signed handle is
+/// what grants control to a different process.
+pub struct ProcessControlState {
+    pub pid: process::ProcessId,
 }
 
 pub struct WindowState {

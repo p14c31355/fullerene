@@ -31,7 +31,9 @@ use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
 
 use crate::context_switch::switch_context;
-use crate::process::{MAX_PROCESSES, Process, ProcessContext, ProcessId, ProcessState};
+use crate::process::{
+    MAX_PROCESSES, Process, ProcessContext, ProcessId, ProcessRole, ProcessState,
+};
 use crate::vdso;
 
 /// Scheduler tick interval in nanoseconds (for future use).
@@ -41,13 +43,42 @@ const _TICK_NANOS: u64 = 2_250_000; // ~2.25 ms ≈ 1 PIT tick
 
 pub static SCHEDULER: SchedulerContext = SchedulerContext::new();
 
+/// Reclaim allocations owned by a process that failed before publication in
+/// the scheduler's process table.
+fn discard_unpublished_process(process: &mut Process) {
+    if let Some(kernel_stack_base) = process
+        .kernel_stack
+        .as_u64()
+        .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
+        .filter(|&base| base != 0)
+    {
+        let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16)
+            .expect("kernel stack layout");
+        unsafe {
+            petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout);
+        }
+        process.kernel_stack = VirtAddr::new(0);
+    }
+    if let Some(mut page_table) = process.page_table.take()
+        && let Some(pml4_frame) = page_table.pml4_frame()
+    {
+        crate::process::cleanup_process_address_space(&mut page_table);
+        crate::memory_management::deallocate_process_page_table(pml4_frame);
+    }
+}
+
 /// ── SchedulerContext ──────────────────────────────────────────────
 
 pub struct SchedulerContext {
     // ── Process list (locked) ───────────────────────────────
     processes: spin::Mutex<HeaplessVec<(ProcessId, Box<Process>), MAX_PROCESSES>>,
+    reserved_pids: spin::Mutex<HeaplessVec<ProcessId, MAX_PROCESSES>>,
+    /// Endpoints are created before a child is spawned. Keep the creator as
+    /// the temporary owner until a successful spawn transfers ownership.
+    terminal_owners: spin::Mutex<HeaplessVec<(u64, ProcessId), MAX_PROCESSES>>,
 
     // ── Schedule state (lock‑free atomics) ──────────────────
+    pid_allocator: spin::Mutex<()>,
     next_pid: AtomicUsize,
     schedule_index: AtomicUsize,
     current_pid: AtomicUsize,
@@ -66,6 +97,9 @@ impl SchedulerContext {
     pub const fn new() -> Self {
         Self {
             processes: spin::Mutex::new(HeaplessVec::new()),
+            reserved_pids: spin::Mutex::new(HeaplessVec::new()),
+            terminal_owners: spin::Mutex::new(HeaplessVec::new()),
+            pid_allocator: spin::Mutex::new(()),
             next_pid: AtomicUsize::new(1),
             schedule_index: AtomicUsize::new(0),
             current_pid: AtomicUsize::new(0),
@@ -96,25 +130,156 @@ impl SchedulerContext {
     // ── PID allocation ──────────────────────────────────────
 
     pub fn allocate_pid(&self) -> ProcessId {
+        let _guard = self.pid_allocator.lock();
         ProcessId(self.next_pid.fetch_add(1, Ordering::Relaxed) as u64)
+    }
+
+    /// Reserve a caller-selected PID and advance ordinary allocation past it.
+    /// The process-list check and allocator update are both performed before
+    /// the process is published, so `new_with_id` cannot replace an existing
+    /// process through `add`'s duplicate-PID fallback.
+    pub fn reserve_pid(&self, pid: ProcessId) -> bool {
+        if pid.0 == 0 || self.with_process(pid, |_| {}).is_some() {
+            return false;
+        }
+        let _allocator_guard = self.pid_allocator.lock();
+        let mut reserved = self.reserved_pids.lock();
+        if reserved.contains(&pid) || reserved.push(pid).is_err() {
+            return false;
+        }
+        let next = pid.0.saturating_add(1) as usize;
+        let mut current = self.next_pid.load(Ordering::Acquire);
+        while current < next {
+            match self.next_pid.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+        true
+    }
+
+    /// Release a PID reserved for a process that was never published.
+    /// Allocation remains monotonic; releasing only removes the in-flight
+    /// reservation so a later construction attempt cannot exhaust the table.
+    pub fn release_pid(&self, pid: ProcessId) {
+        self.reserved_pids
+            .lock()
+            .retain(|reserved| *reserved != pid);
+    }
+
+    pub fn register_terminal_owner(&self, terminal_id: u64, owner: ProcessId) -> bool {
+        let mut owners = self.terminal_owners.lock();
+        if owners.iter().any(|(id, _)| *id == terminal_id) {
+            return false;
+        }
+        owners.push((terminal_id, owner)).is_ok()
+    }
+
+    pub fn terminal_owned_by(&self, terminal_id: u64, owner: ProcessId) -> bool {
+        self.terminal_owners
+            .lock()
+            .iter()
+            .any(|(id, pid)| *id == terminal_id && *pid == owner)
+    }
+
+    pub fn transfer_terminal_owner(
+        &self,
+        terminal_id: u64,
+        from: ProcessId,
+        to: ProcessId,
+    ) -> bool {
+        let mut owners = self.terminal_owners.lock();
+        if let Some((_, owner)) = owners
+            .iter_mut()
+            .find(|(id, owner)| *id == terminal_id && *owner == from)
+        {
+            *owner = to;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn close_terminal_if_owned(&self, terminal_id: u64, owner: ProcessId) -> bool {
+        let removed = {
+            let mut owners = self.terminal_owners.lock();
+            owners
+                .iter()
+                .position(|(id, pid)| *id == terminal_id && *pid == owner)
+                .map(|pos| {
+                    owners.swap_remove(pos);
+                    true
+                })
+                .unwrap_or(false)
+        };
+        if removed {
+            solvent::close_process_terminal(lattice::window::WindowId(terminal_id));
+        }
+        removed
+    }
+
+    /// Close all endpoints still provisionally owned by a process that exits
+    /// before attaching them to a child.
+    pub fn close_terminals_owned_by(&self, owner: ProcessId) {
+        let removed = {
+            let mut owners = self.terminal_owners.lock();
+            let mut removed = HeaplessVec::<u64, MAX_PROCESSES>::new();
+            let mut index = 0;
+            while index < owners.len() {
+                if owners[index].1 == owner {
+                    let (terminal_id, _) = owners.swap_remove(index);
+                    let _ = removed.push(terminal_id);
+                } else {
+                    index += 1;
+                }
+            }
+            removed
+        };
+        for terminal_id in removed {
+            solvent::close_process_terminal(lattice::window::WindowId(terminal_id));
+        }
     }
 
     // ── Process list access ──────────────────────────────────
 
     /// Add a new process to the list.
-    pub fn add(&self, process: Box<Process>) -> Result<(), SystemError> {
+    pub fn add(&self, mut process: Box<Process>) -> Result<(), SystemError> {
         let mut procs = self.processes.lock();
+        let pid = process.id;
         if procs.len() >= MAX_PROCESSES {
+            discard_unpublished_process(&mut process);
+            self.reserved_pids
+                .lock()
+                .retain(|reserved| *reserved != pid);
             return Err(SystemError::TooManyProcesses);
         }
-        let pid = process.id;
-        // Remove stale entry with same PID (should not happen, but be safe).
-        if let Some(pos) = procs.iter().position(|(id, _)| *id == pid) {
-            let _ = procs.swap_remove(pos);
+        if procs.iter().any(|(id, _)| *id == pid) {
+            discard_unpublished_process(&mut process);
+            self.reserved_pids
+                .lock()
+                .retain(|reserved| *reserved != pid);
+            return Err(SystemError::InvalidArgument);
         }
-        procs
-            .push((pid, process))
-            .map_err(|_| SystemError::TooManyProcesses)
+        self.reserved_pids
+            .lock()
+            .retain(|reserved| *reserved != pid);
+        if let Err(error) = procs.push((pid, process)) {
+            // Keep the reservation and all process-owned allocations
+            // consistent even if the fixed-capacity push ever changes.
+            let (_, mut process) = error;
+            discard_unpublished_process(&mut process);
+            self.reserved_pids
+                .lock()
+                .retain(|reserved| *reserved != pid);
+            Err(SystemError::TooManyProcesses)
+        } else {
+            Ok(())
+        }
     }
 
     /// Run a closure on a process identified by PID.
@@ -179,6 +344,23 @@ impl SchedulerContext {
             .count()
     }
 
+    #[inline]
+    fn retain_after_cleanup(id: ProcessId, process: &Process, current: usize) -> bool {
+        !matches!(process.state, ProcessState::Terminated)
+            || id.0 as usize == current
+            || !process.reaped
+    }
+
+    #[inline]
+    fn should_defer_reap(
+        reaped: bool,
+        parent_alive: bool,
+        supervisor_alive: bool,
+        capability_holder_alive: bool,
+    ) -> bool {
+        !reaped && (parent_alive || supervisor_alive || capability_holder_alive)
+    }
+
     /// Remove terminated processes and reclaim their process-owned memory.
     pub fn cleanup(&self) {
         let current = self.current_pid();
@@ -190,9 +372,76 @@ impl SchedulerContext {
                 .iter()
                 .filter_map(|(id, process)| (process.state == ProcessState::Blocked).then_some(*id))
                 .collect();
+            let live_processes: HeaplessVec<ProcessId, MAX_PROCESSES> = procs
+                .iter()
+                .filter_map(|(id, process)| {
+                    (process.state != ProcessState::Terminated).then_some(*id)
+                })
+                .collect();
+            let mut capability_targets = HeaplessVec::<ProcessId, MAX_PROCESSES>::new();
+            let mut capability_targets_overflowed = false;
+            for (holder_id, holder) in procs.iter() {
+                if !live_processes.contains(holder_id) {
+                    continue;
+                }
+                let handles = holder.resources.handle_table.lock();
+                for (_, object) in handles.entries() {
+                    if let crate::syscall::KernelObject::ProcessControl(control) = object {
+                        if capability_targets.contains(&control.pid) {
+                            continue;
+                        }
+                        if capability_targets.push(control.pid).is_err() {
+                            // Never reap a zombie while the complete set of
+                            // capability targets is unknown.
+                            capability_targets_overflowed = true;
+                        }
+                    }
+                }
+            }
+            let init_pid = procs
+                .iter()
+                .find_map(|(id, process)| (process.role == ProcessRole::Init).then_some(*id));
+            // Birth lineage and supervision are independent. When a parent
+            // disappears, transfer the wait/reap lineage to PID 1 while
+            // retaining an explicitly assigned supervisor if one exists.
+            if let Some(init_pid) = init_pid {
+                for (id, process) in procs.iter_mut() {
+                    if *id != init_pid
+                        && process
+                            .parent_id
+                            .is_some_and(|parent_id| !live_processes.contains(&parent_id))
+                    {
+                        process.parent_id = Some(init_pid);
+                    }
+                }
+            }
             for (id, process) in procs.iter_mut() {
                 if !matches!(process.state, ProcessState::Terminated) || id.0 as usize == current {
                     continue;
+                }
+
+                // Keep a terminated child as a lightweight zombie until its
+                // parent or a transferred ProcessControl capability reaps
+                // it. Orphans are adopted by PID 1's policy and may be
+                // reclaimed immediately when no parent remains.
+                if !process.reaped {
+                    let parent_alive = process
+                        .parent_id
+                        .is_some_and(|parent_id| live_processes.contains(&parent_id));
+                    let supervisor_alive = process
+                        .supervisor_id
+                        .is_some_and(|supervisor_id| live_processes.contains(&supervisor_id));
+                    let capability_holder_alive =
+                        capability_targets_overflowed || capability_targets.contains(id);
+                    if Self::should_defer_reap(
+                        process.reaped,
+                        parent_alive,
+                        supervisor_alive,
+                        capability_holder_alive,
+                    ) {
+                        continue;
+                    }
+                    process.reaped = true;
                 }
 
                 if let Some(parent_id) = process.parent_id
@@ -228,13 +477,17 @@ impl SchedulerContext {
                         crate::memory_management::deallocate_process_page_table(pml4_frame);
                     }
                 }
+                if process.terminal_owner {
+                    if let Some(terminal_id) = process.terminal_id.take() {
+                        self.close_terminal_if_owned(terminal_id, *id);
+                    }
+                }
+                self.close_terminals_owned_by(*id);
                 for waiter in process.resources.cleanup() {
                     let _ = waiters.push(waiter);
                 }
             }
-            procs.retain(|(id, p)| {
-                !matches!(p.state, ProcessState::Terminated) || id.0 as usize == current
-            });
+            procs.retain(|(id, p)| Self::retain_after_cleanup(*id, p, current));
             // Removal can shift every following list index. Re-anchor the
             // round-robin cursor to the process that owns the live CPU state.
             let current_index = procs
@@ -314,7 +567,7 @@ impl SchedulerContext {
                     .position(|(_, process)| process.state == ProcessState::Ready)
                     .or_else(|| {
                         list.iter()
-                            .position(|(_, process)| process.name.as_ref() == "idle")
+                            .position(|(_, process)| process.role == ProcessRole::Idle)
                     })
                 else {
                     return (Some(list[current_idx].0), ProcessId(0));
@@ -337,7 +590,7 @@ impl SchedulerContext {
                         // All blocked → fall back to idle.
                         if let Some(idle) = list
                             .iter()
-                            .position(|(_, p)| p.name.as_ref() == "idle")
+                            .position(|(_, p)| p.role == ProcessRole::Idle)
                         {
                             next_idx = idle;
                         }
@@ -409,7 +662,7 @@ impl SchedulerContext {
     /// Yield the current process.
     pub fn yield_current(&self) {
         let old_pid_val = self.current_pid();
-        if old_pid_val == 0 {
+        if self.process_state(ProcessId(old_pid_val as u64)).is_none() {
             return;
         }
         let (old, new) = self.schedule_next();
@@ -486,6 +739,14 @@ impl SchedulerContext {
             return;
         }
 
+        // A user process can yield from inside a syscall (the native Nozzle
+        // bridge does this while waiting for keyboard input).  Save its
+        // SYSCALL return frame before another process is allowed to reuse the
+        // CPU-global entry state.
+        if let Some(old_pid) = old_pid {
+            crate::interrupts::syscall::save_context_for_switch(old_pid);
+        }
+
         let mut guard = self.processes.lock();
         let list = &mut *guard;
 
@@ -550,6 +811,9 @@ impl SchedulerContext {
                             error_code: 0,
                         },
                     );
+                    if let Some(old_pid) = old_pid {
+                        crate::interrupts::syscall::restore_context_for_switch(old_pid);
+                    }
                     return;
                 }
             };
@@ -575,10 +839,19 @@ impl SchedulerContext {
                 crate::interrupts::syscall::prepare_user_entry();
                 crate::process::mark_linux_stage(new_pid, "user-entry-prepared");
             } else if plan.entry() == crate::context_switch::SwitchEntry::KernelContinuation {
+                crate::interrupts::syscall::restore_context_for_switch(new_pid);
                 crate::interrupts::syscall::prepare_kernel_continuation();
+            } else {
+                crate::interrupts::syscall::restore_context_for_switch(new_pid);
             }
             crate::process::mark_linux_stage(new_pid, "context-switch-enter");
             unsafe { switch_context(&plan) };
+        } else if let Some(old_pid) = old_pid {
+            // `save_context_for_switch` ran before the target lookup.  If the
+            // target disappeared, the old process continues on this CPU and
+            // must regain its syscall frame instead of leaving stale state in
+            // Process::syscall_state.
+            crate::interrupts::syscall::restore_context_for_switch(old_pid);
         }
     }
 
@@ -627,5 +900,72 @@ impl SchedulerContext {
                 vdso::update_vdso_metadata(now_us, wall_us, vdso_ref.kernel_ptr);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_pid_reserves_the_next_automatic_pid() {
+        let scheduler = SchedulerContext::new();
+        assert!(scheduler.reserve_pid(ProcessId(1)));
+        assert!(!scheduler.reserve_pid(ProcessId(1)));
+        assert_eq!(scheduler.allocate_pid(), ProcessId(2));
+    }
+
+    #[test]
+    fn process_control_capability_keeps_reap_deferred() {
+        assert!(SchedulerContext::should_defer_reap(
+            false, false, false, true
+        ));
+        assert!(!SchedulerContext::should_defer_reap(
+            false, false, false, false
+        ));
+    }
+
+    #[test]
+    fn terminal_ownership_transfers_only_from_current_owner() {
+        let scheduler = SchedulerContext::new();
+        assert!(scheduler.register_terminal_owner(7, ProcessId(10)));
+        assert!(!scheduler.transfer_terminal_owner(7, ProcessId(11), ProcessId(12)));
+        assert!(scheduler.transfer_terminal_owner(7, ProcessId(10), ProcessId(12)));
+        assert!(!scheduler.terminal_owned_by(7, ProcessId(10)));
+        assert!(scheduler.terminal_owned_by(7, ProcessId(12)));
+    }
+
+    #[test]
+    fn unreaped_zombies_survive_cleanup_for_their_manager() {
+        let mut process =
+            Process::new("zombie", VirtAddr::new(0), false).expect("test process allocation");
+        process.state = ProcessState::Terminated;
+        assert!(SchedulerContext::retain_after_cleanup(
+            process.id,
+            &process,
+            usize::MAX
+        ));
+
+        process.reaped = true;
+        assert!(!SchedulerContext::retain_after_cleanup(
+            process.id,
+            &process,
+            usize::MAX
+        ));
+
+        assert!(SchedulerContext::should_defer_reap(
+            false, false, true, false
+        ));
+        assert!(SchedulerContext::should_defer_reap(
+            false, true, false, false
+        ));
+        assert!(SchedulerContext::should_defer_reap(
+            false, false, false, true
+        ));
+        assert!(!SchedulerContext::should_defer_reap(
+            false, false, false, false
+        ));
+        assert!(!SchedulerContext::should_defer_reap(true, true, true, true));
+        SCHEDULER.release_pid(process.id);
     }
 }

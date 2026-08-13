@@ -284,13 +284,27 @@ pub fn ensure_port_ready(
     let mut status = op.portsc(port_idx);
     if ppc && !status.pp() {
         op.write_portsc(port_idx, (status.0 & !PORTSC_RW1C_MASK) | PORTSC_PP);
-        delay_ms(20);
+        // Do not sleep here.  A device that is already attached will raise
+        // CCS/PCD once the port has settled, and an empty port has nothing
+        // useful to wait for.  The following read lets the caller proceed
+        // immediately; a later poll observes a delayed connection.
+        status = op.portsc(port_idx);
     }
 
-    let raw = op.portsc(port_idx).0;
+    let raw = status.0;
     let changes = raw & PORTSC_RW1C_MASK;
     if changes != 0 {
         op.write_portsc(port_idx, (raw & !PORTSC_RW1C_MASK) | changes);
+    }
+
+    // A disconnected port cannot become ready as a result of this poll.
+    // Waiting for CCS here made a rescan spend up to 100 ms on every empty
+    // port.  The GemiBook exposes 11 USB2 and 4 USB3 root ports, so a single
+    // scan could occupy the scheduler for seconds while the GUI appeared to
+    // stop at its previous tick marker.  Hot-plug changes raise PCD and are
+    // observed on the next poll, so an empty port must return immediately.
+    if !status.ccs() {
+        return false;
     }
 
     status = crate::timing::poll_timeout_us(100_000, || {

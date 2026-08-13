@@ -10,16 +10,34 @@
 //! scheduler_loop()
 //!   ├── update_vdso_all()       — publish time to every process's VDSO page
 //!   ├── gui::runtime_tick()     — input polling, tick_core + framebuffer render
-//!   ├── shell launch check      — via KERNEL lock (independent of SCHEDULER)
+//!   ├── launchd bootstrap       — user ELF PID 1
 //!   ├── advance_tick()
 //!   └── hlt()
 //! ```
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 use x86_64::VirtAddr;
 
 use crate::gui;
 use crate::scheduler_context::SCHEDULER;
+
+static LAUNCHD_IMAGE: &[u8] = include_bytes!(env!("FULLERENE_LAUNCHD_IMAGE"));
+/// Set by the desktop callback and consumed by PID 1 through the native ABI.
+/// Keeping the request at the kernel boundary preserves the old Nozzle launch
+/// gesture without making the kernel start the shell itself.
+static LAUNCH_SHELL_REQUESTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Request an interactive shell from the desktop action path.
+pub fn request_shell_launch() {
+    LAUNCH_SHELL_REQUESTED.store(true, Ordering::Release);
+}
+
+/// Consume one pending interactive-shell request. Only the launchd syscall
+/// handler calls this, after verifying that the caller is PID 1.
+pub fn take_shell_launch_request() -> bool {
+    LAUNCH_SHELL_REQUESTED.swap(false, Ordering::Acquire)
+}
 
 /// Read CMOS RTC and convert to microseconds since Unix epoch (1970-01-01 00:00:00 UTC).
 /// Returns `None` if RTC is unavailable or invalid.
@@ -72,23 +90,37 @@ struct AlignedStack {
 #[allow(dead_code)]
 static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack { _bytes: [0; 65536] };
 
-/// Only one interactive shell is launched at a time.  The shell is a real
-/// scheduler process, so the idle scheduler can continue consuming device
-/// queues while the shell waits for input or runs a command.
-static SHELL_PROCESS_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Set the launch‑shell flag from the solvent side.
-pub fn request_shell_launch() {
-    crate::contexts::kernel::with_kernel(|k| {
-        k.shell.request_launch();
+/// Start PID 1 through the same ELF loader used by every user program.
+/// The first allocator PID after the scheduler's internal idle slot must be
+/// one; failure is fatal because running without init would orphan lifecycle
+/// ownership and reaping.
+fn bootstrap_launchd() {
+    if let Some((pid, state)) = SCHEDULER.with_list(|list| {
+        list.iter()
+            .find(|(_, process)| process.role == crate::process::ProcessRole::Init)
+            .map(|(pid, process)| (*pid, process.state))
+    }) {
+        petroleum::serial::serial_log(format_args!(
+            "retaining existing launchd PID {} during scheduler recovery ({:?})\n",
+            pid.0, state
+        ));
+        return;
+    }
+    let pid = crate::loader::load_program(LAUNCHD_IMAGE, "launchd")
+        .expect("failed to load launchd as PID 1");
+    assert_eq!(pid.0, 1, "launchd did not receive PID 1");
+    SCHEDULER.with_process(pid, |process| {
+        process.role = crate::process::ProcessRole::Init;
     });
+    petroleum::serial::serial_log(format_args!("launchd bootstrapped as PID 1\n"));
 }
 
 /// Main kernel scheduler loop.
 ///
-/// Renders the initial desktop, then enters an idle loop that drives
-/// `gui::runtime_tick()`.  Shell (and future apps) are launched on
-/// demand.
+/// Renders the initial desktop, bootstraps launchd after GUI readiness, then
+/// enters an idle loop that drives `gui::runtime_tick()`. launchd consumes
+/// desktop shell-launch requests and creates the native shell through the ABI;
+/// the scheduler itself does not create the shell.
 pub fn scheduler_loop() -> ! {
     solvent::install_scheduler_yield(crate::process::yield_from_scheduler_stack);
     let boot_tsc = unsafe { core::arch::x86_64::_rdtsc() };
@@ -106,6 +138,12 @@ pub fn scheduler_loop() -> ! {
 
     // Render initial desktop frame.
     gui::render();
+
+    bootstrap_launchd();
+    // Give PID 1 its first turn before the device phase. This is both a
+    // useful bootstrap invariant and prevents a slow optional driver from
+    // delaying init's ability to create its managed endpoints.
+    crate::process::yield_current();
 
     // Wire kernel renderer into Solvent so runtime ticks can paint the display.
     gui::set_render_fn(gui::render);
@@ -260,28 +298,6 @@ pub fn scheduler_loop() -> ! {
         gui::pump_hid_cursor();
         crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: final HID phase returned");
 
-        // Check if the user requested a shell launch (via AppGrid / menu).
-        // Run it as a scheduler-managed kernel process instead of calling
-        // shell_main() on this stack.  The shell can then yield while waiting
-        // for input, allowing USB and other device queues to make progress.
-        if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false)
-            && !SHELL_PROCESS_ACTIVE.swap(true, Ordering::AcqRel)
-        {
-            let entry = VirtAddr::from_ptr(shell_process_main as *const ());
-            match crate::process::create_process("shell", entry, false) {
-                Ok(pid) => {
-                    petroleum::serial::serial_log(format_args!(
-                        "Launching shell process PID {}\n",
-                        pid.0
-                    ));
-                }
-                Err(error) => {
-                    SHELL_PROCESS_ACTIVE.store(false, Ordering::Release);
-                    log::error!("Failed to launch shell process: {:?}", error);
-                }
-            }
-        }
-
         // The timer interrupt intentionally does not preempt. Give ready
         // kernel tasks (for example a WASM viewer launched from the desktop)
         // an explicit scheduling point before idling again.
@@ -294,15 +310,6 @@ pub fn scheduler_loop() -> ! {
         SCHEDULER.advance_tick();
         x86_64::instructions::hlt();
     }
-}
-
-/// Shell entry-point for process spawning.
-pub extern "C" fn shell_process_main() -> ! {
-    log::info!("Shell process started");
-    crate::shell::shell_main();
-    SHELL_PROCESS_ACTIVE.store(false, Ordering::Release);
-    crate::process::terminate_process(crate::process::current_pid().unwrap(), 0);
-    petroleum::halt_loop();
 }
 
 /// Restart the scheduler loop after an NMI watchdog recovery.

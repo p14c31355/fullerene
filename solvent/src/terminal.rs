@@ -277,6 +277,10 @@ pub fn create_process_terminal(title: &str) -> Option<WindowId> {
 }
 
 pub fn write_process_terminal(window_id: WindowId, text: &str) {
+    write_process_terminal_bytes(window_id, text.as_bytes());
+}
+
+pub fn write_process_terminal_bytes(window_id: WindowId, bytes: &[u8]) {
     let mut runtime = RUNTIME_CONTEXT.runtime();
     let Some(runtime) = runtime.as_mut() else {
         return;
@@ -286,7 +290,7 @@ pub fn write_process_terminal(window_id: WindowId, text: &str) {
         .iter_mut()
         .find(|terminal| terminal.window_id == window_id)
     {
-        terminal.buf.put_str(text);
+        terminal.buf.put_bytes(bytes);
         terminal.dirty = true;
         runtime.frame_due = true;
     }

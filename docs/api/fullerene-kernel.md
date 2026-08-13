@@ -34,6 +34,7 @@ constants remain available from `fullerene_abi::syscall_numbers`.
 | 80–89 | IPC |
 | 90–99 | handles/capabilities |
 | 100–109 | clocks and timers |
+| 110–119 | process supervision |
 
 Syscall 0 is backwards compatible: with no arguments it returns
 `AbiVersion::CURRENT.pack()`. With a writable `AbiInfo` buffer and its size in
@@ -108,6 +109,27 @@ pub static SCHEDULER: spin::Mutex<SchedulerContext>;
 ```
 
 `SCHEDULER` is the only global independent of the `KERNEL` lock.
+
+Process creation records `parent_id` and `supervisor_id` independently. The
+parent owns birth lineage and ordinary `wait`; both the parent and the recorded
+supervisor may open a `ProcessControl` capability for status, stop, reap, and
+reassignment. A
+nonzero supervisor PID may be supplied to `spawn` (arg6), or supervision may
+be reassigned later and the capability transferred through the handle ABI.
+`wait` and `ProcessControlReap` return the child exit status encoded as an
+unsigned 32-bit value in `rax`; userland decodes it as an `i32`, so negative
+exit statuses are not confused with negative syscall errors.
+The bundled PID 1 launchd uses this contract from Rust userland: managed
+services are described by a static service table and are polled, reaped, and
+restarted according to their userland restart policy. The interactive shell
+is not a boot service: the desktop sends a PID-1-only launch request, and
+launchd spawns the shell only after the user invokes the existing terminal or
+shell action.
+The spawned native `shell` image is a small ABI bridge into the existing Nozzle
+runtime. `run_nozzle` accepts only a kernel-issued launchd authorization on the
+process; its name and terminal association are not authorization tokens. Its
+welcome text, prompt, command list, completion, and built-ins remain the #340
+behavior while the process remains launchd-owned.
 
 ---
 

@@ -2,7 +2,7 @@
 //!
 //! This module implements the Fast System Call mechanism using SYSCALL/SYSRET instructions.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use petroleum::mem_debug;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{GsBase, KernelGsBase, Msr};
@@ -17,8 +17,18 @@ use x86_64::registers::rflags::RFlags;
 /// stack; keeping it here lets the naked entry switch stacks without
 /// clobbering a user register.
 #[repr(C, align(16))]
+#[derive(Clone, Copy, Default)]
 struct SyscallEntryState {
     kernel_stack_top: u64,
+    frame: SyscallUserFrame,
+}
+
+/// The part of the SYSCALL entry state that belongs to the interrupted user
+/// context.  Keep this as a separate repr(C) value so saving and restoring a
+/// suspended syscall cannot silently get out of sync with the entry state.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct SyscallUserFrame {
     user_rsp: u64,
     syscall_number: u64,
     user_rip: u64,
@@ -43,57 +53,136 @@ struct SyscallEntryState {
     return_rflags: u64,
 }
 
+/// The user return frame belonging to a syscall that was cooperatively
+/// suspended before the syscall handler returned.
+///
+/// `SYSCALL_ENTRY_STATE` is per CPU, but a process may yield from inside a
+/// syscall (the native Nozzle bridge does this while waiting for input).  The
+/// CPU-global entry frame therefore has to travel with the suspended process
+/// instead of being overwritten by the next process's syscall.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SavedSyscallState {
+    frame: SyscallUserFrame,
+}
+
+impl SavedSyscallState {
+    unsafe fn capture(state: *const SyscallEntryState) -> Self {
+        let state = unsafe { &*state };
+        Self { frame: state.frame }
+    }
+
+    unsafe fn restore(self, state: *mut SyscallEntryState) {
+        let state = unsafe { &mut *state };
+        state.frame = self.frame;
+    }
+}
+
 const _: () = {
     assert!(core::mem::offset_of!(SyscallEntryState, kernel_stack_top) == 0);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_rsp) == 8);
-    assert!(core::mem::offset_of!(SyscallEntryState, syscall_number) == 16);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_rip) == 24);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_rflags) == 32);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_rbx) == 40);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_rcx) == 48);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_rdx) == 56);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_rsi) == 64);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_rdi) == 72);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_rbp) == 80);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_r8) == 88);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_r9) == 96);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_r10) == 104);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_r11) == 112);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_r12) == 120);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_r13) == 128);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_r14) == 136);
-    assert!(core::mem::offset_of!(SyscallEntryState, user_r15) == 144);
-    assert!(core::mem::offset_of!(SyscallEntryState, return_override) == 152);
-    assert!(core::mem::offset_of!(SyscallEntryState, return_rip) == 160);
-    assert!(core::mem::offset_of!(SyscallEntryState, return_rsp) == 168);
-    assert!(core::mem::offset_of!(SyscallEntryState, return_rflags) == 176);
+    assert!(core::mem::offset_of!(SyscallEntryState, frame) == 8);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_rsp) == 0);
+    assert!(core::mem::offset_of!(SyscallUserFrame, syscall_number) == 8);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_rip) == 16);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_rflags) == 24);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_rbx) == 32);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_rcx) == 40);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_rdx) == 48);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_rsi) == 56);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_rdi) == 64);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_rbp) == 72);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_r8) == 80);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_r9) == 88);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_r10) == 96);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_r11) == 104);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_r12) == 112);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_r13) == 120);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_r14) == 128);
+    assert!(core::mem::offset_of!(SyscallUserFrame, user_r15) == 136);
+    assert!(core::mem::offset_of!(SyscallUserFrame, return_override) == 144);
+    assert!(core::mem::offset_of!(SyscallUserFrame, return_rip) == 152);
+    assert!(core::mem::offset_of!(SyscallUserFrame, return_rsp) == 160);
+    assert!(core::mem::offset_of!(SyscallUserFrame, return_rflags) == 168);
 };
 
 static mut SYSCALL_ENTRY_STATE: SyscallEntryState = SyscallEntryState {
     kernel_stack_top: 0,
-    user_rsp: 0,
-    syscall_number: 0,
-    user_rip: 0,
-    user_rflags: 0,
-    user_rbx: 0,
-    user_rcx: 0,
-    user_rdx: 0,
-    user_rsi: 0,
-    user_rdi: 0,
-    user_rbp: 0,
-    user_r8: 0,
-    user_r9: 0,
-    user_r10: 0,
-    user_r11: 0,
-    user_r12: 0,
-    user_r13: 0,
-    user_r14: 0,
-    user_r15: 0,
-    return_override: 0,
-    return_rip: 0,
-    return_rsp: 0,
-    return_rflags: 0,
+    frame: SyscallUserFrame {
+        user_rsp: 0,
+        syscall_number: 0,
+        user_rip: 0,
+        user_rflags: 0,
+        user_rbx: 0,
+        user_rcx: 0,
+        user_rdx: 0,
+        user_rsi: 0,
+        user_rdi: 0,
+        user_rbp: 0,
+        user_r8: 0,
+        user_r9: 0,
+        user_r10: 0,
+        user_r11: 0,
+        user_r12: 0,
+        user_r13: 0,
+        user_r14: 0,
+        user_r15: 0,
+        return_override: 0,
+        return_rip: 0,
+        return_rsp: 0,
+        return_rflags: 0,
+    },
 };
+
+/// PID whose real hardware syscall is currently executing.  Direct
+/// `kernel_syscall()` calls from kernel compatibility code do not set this;
+/// only the SYSCALL entry wrapper does.
+const NO_ACTIVE_SYSCALL: usize = usize::MAX;
+static ACTIVE_SYSCALL_PID: AtomicUsize = AtomicUsize::new(NO_ACTIVE_SYSCALL);
+
+pub(crate) fn begin_syscall(pid: Option<crate::process::ProcessId>) {
+    ACTIVE_SYSCALL_PID.store(
+        pid.map_or(NO_ACTIVE_SYSCALL, |pid| pid.0 as usize),
+        Ordering::Release,
+    );
+}
+
+pub(crate) fn end_syscall(pid: Option<crate::process::ProcessId>) {
+    let pid = pid.map_or(NO_ACTIVE_SYSCALL, |pid| pid.0 as usize);
+    let _ = ACTIVE_SYSCALL_PID.compare_exchange(
+        pid,
+        NO_ACTIVE_SYSCALL,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
+/// Move the active hardware syscall frame into the outgoing process before a
+/// cooperative context switch can let another process use the CPU-global
+/// SYSCALL entry state.
+pub(crate) fn save_context_for_switch(pid: crate::process::ProcessId) {
+    if ACTIVE_SYSCALL_PID.load(Ordering::Acquire) != pid.0 as usize {
+        return;
+    }
+    let saved = unsafe { SavedSyscallState::capture(core::ptr::addr_of!(SYSCALL_ENTRY_STATE)) };
+    if crate::process::SCHEDULER
+        .with_process(pid, |process| process.syscall_state = Some(saved))
+        .is_some()
+    {
+        ACTIVE_SYSCALL_PID.store(NO_ACTIVE_SYSCALL, Ordering::Release);
+    }
+}
+
+/// Restore a syscall frame belonging to a process resumed inside its syscall.
+pub(crate) fn restore_context_for_switch(pid: crate::process::ProcessId) {
+    let saved = crate::process::SCHEDULER
+        .with_process(pid, |process| process.syscall_state.take())
+        .flatten();
+    if let Some(saved) = saved {
+        unsafe { saved.restore(core::ptr::addr_of_mut!(SYSCALL_ENTRY_STATE)) };
+        ACTIVE_SYSCALL_PID.store(pid.0 as usize, Ordering::Release);
+    } else {
+        ACTIVE_SYSCALL_PID.store(NO_ACTIVE_SYSCALL, Ordering::Release);
+    }
+}
 
 static FIRST_LINUX_SYSCALL_ENTRY_DIAG: AtomicBool = AtomicBool::new(false);
 
@@ -189,26 +278,26 @@ pub fn current_user_return_context() -> (crate::process::GeneralRegisters, u64, 
         (
             crate::process::GeneralRegisters {
                 rax: 0,
-                rbx: SYSCALL_ENTRY_STATE.user_rbx,
+                rbx: SYSCALL_ENTRY_STATE.frame.user_rbx,
                 // SYSRET clobbers RCX/R11; the child must start with a
                 // deterministic value for these syscall-clobbered registers.
                 rcx: 0,
-                rdx: SYSCALL_ENTRY_STATE.user_rdx,
-                rsi: SYSCALL_ENTRY_STATE.user_rsi,
-                rdi: SYSCALL_ENTRY_STATE.user_rdi,
-                rbp: SYSCALL_ENTRY_STATE.user_rbp,
-                rsp: SYSCALL_ENTRY_STATE.user_rsp,
-                r8: SYSCALL_ENTRY_STATE.user_r8,
-                r9: SYSCALL_ENTRY_STATE.user_r9,
-                r10: SYSCALL_ENTRY_STATE.user_r10,
+                rdx: SYSCALL_ENTRY_STATE.frame.user_rdx,
+                rsi: SYSCALL_ENTRY_STATE.frame.user_rsi,
+                rdi: SYSCALL_ENTRY_STATE.frame.user_rdi,
+                rbp: SYSCALL_ENTRY_STATE.frame.user_rbp,
+                rsp: SYSCALL_ENTRY_STATE.frame.user_rsp,
+                r8: SYSCALL_ENTRY_STATE.frame.user_r8,
+                r9: SYSCALL_ENTRY_STATE.frame.user_r9,
+                r10: SYSCALL_ENTRY_STATE.frame.user_r10,
                 r11: 0,
-                r12: SYSCALL_ENTRY_STATE.user_r12,
-                r13: SYSCALL_ENTRY_STATE.user_r13,
-                r14: SYSCALL_ENTRY_STATE.user_r14,
-                r15: SYSCALL_ENTRY_STATE.user_r15,
+                r12: SYSCALL_ENTRY_STATE.frame.user_r12,
+                r13: SYSCALL_ENTRY_STATE.frame.user_r13,
+                r14: SYSCALL_ENTRY_STATE.frame.user_r14,
+                r15: SYSCALL_ENTRY_STATE.frame.user_r15,
             },
-            SYSCALL_ENTRY_STATE.user_rip,
-            SYSCALL_ENTRY_STATE.user_rflags,
+            SYSCALL_ENTRY_STATE.frame.user_rip,
+            SYSCALL_ENTRY_STATE.frame.user_rflags,
         )
     }
 }
@@ -218,10 +307,10 @@ pub fn current_user_return_context() -> (crate::process::GeneralRegisters, u64, 
 /// old libc call would use a stack that execve has just replaced.
 pub fn override_user_return_context(rip: u64, rsp: u64, rflags: u64) {
     unsafe {
-        SYSCALL_ENTRY_STATE.return_rip = rip;
-        SYSCALL_ENTRY_STATE.return_rsp = rsp;
-        SYSCALL_ENTRY_STATE.return_rflags = rflags;
-        SYSCALL_ENTRY_STATE.return_override = 1;
+        SYSCALL_ENTRY_STATE.frame.return_rip = rip;
+        SYSCALL_ENTRY_STATE.frame.return_rsp = rsp;
+        SYSCALL_ENTRY_STATE.frame.return_rflags = rflags;
+        SYSCALL_ENTRY_STATE.frame.return_override = 1;
     }
 }
 
@@ -398,4 +487,48 @@ pub fn setup_syscall() {
 
     petroleum::debug_log_no_alloc!("Syscall: initialized. LSTAR: {}", entry_addr);
     mem_debug!("Syscall: setup_syscall done\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_syscall_state_round_trips_without_kernel_stack() {
+        let mut source = SyscallEntryState::default();
+        source.kernel_stack_top = 0x1111;
+        source.frame.user_rsp = 0x2222;
+        source.frame.syscall_number = 22;
+        source.frame.user_rip = 0x3333;
+        source.frame.user_rflags = 0x202;
+        source.frame.user_rbx = 0x4444;
+        source.frame.user_rcx = 0x5555;
+        source.frame.user_rdx = 0x6666;
+        source.frame.user_rsi = 0x7777;
+        source.frame.user_rdi = 0x8888;
+        source.frame.user_rbp = 0x9999;
+        source.frame.user_r8 = 0xaaaa;
+        source.frame.user_r9 = 0xbbbb;
+        source.frame.user_r10 = 0xcccc;
+        source.frame.user_r11 = 0xdddd;
+        source.frame.user_r12 = 0xeeee;
+        source.frame.user_r13 = 0xffff;
+        source.frame.user_r14 = 0x1234;
+        source.frame.user_r15 = 0x5678;
+        source.frame.return_override = 1;
+        source.frame.return_rip = 0x9abc;
+        source.frame.return_rsp = 0xdef0;
+        source.frame.return_rflags = 0x202;
+
+        let saved = unsafe { SavedSyscallState::capture(&source as *const _) };
+        let mut target = SyscallEntryState {
+            kernel_stack_top: 0xaaaa_aaaa,
+            ..SyscallEntryState::default()
+        };
+        unsafe { saved.restore(&mut target as *mut _) };
+
+        let restored = unsafe { SavedSyscallState::capture(&target as *const _) };
+        assert_eq!(saved, restored);
+        assert_eq!(target.kernel_stack_top, 0xaaaa_aaaa);
+    }
 }

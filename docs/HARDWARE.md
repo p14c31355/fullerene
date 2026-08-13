@@ -213,7 +213,7 @@ for USB3, regular reset for USB2) per port.
 ### USB hub class driver
 
 The GemiBook XPro has an internal USB 2.0 hub (WCH CH334R,
-`1d86:8091`) on a root port. External USB mass-storage devices may be
+`1a86:8091`) on a root port. External USB mass-storage devices may be
 behind this hub. Fullerene's xHCI stack now enumerates devices behind
 external hubs:
 

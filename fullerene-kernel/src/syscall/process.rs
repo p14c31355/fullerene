@@ -9,7 +9,7 @@ use petroleum::page_table::PageTableHelper;
 use x86_64::{PhysAddr, VirtAddr};
 
 use super::interface::{SyscallError, SyscallResult};
-use super::types::{Handle, HandlePerms, KernelObject};
+use super::types::{Handle, HandlePerms, KernelObject, ProcessControlState};
 use crate::process::{self, Process, ProcessState};
 
 pub(crate) fn with_current_fd_table<F, R>(f: F) -> Result<R, SyscallError>
@@ -115,6 +115,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
         parent_fpu,
         parent_user_stack,
         parent_entry_point,
+        parent_terminal_id,
     ) = {
         process::SCHEDULER
             .with_process(current_pid, |process| {
@@ -124,6 +125,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
                     crate::fpu::save_and_snapshot(process.fpu_state.as_mut()),
                     process.user_stack,
                     process.entry_point,
+                    process.terminal_id,
                 )
             })
             .ok_or(SyscallError::NoSuchProcess)?
@@ -190,11 +192,22 @@ pub(crate) fn syscall_fork() -> SyscallResult {
         user_stack: parent_user_stack,
         entry_point: parent_entry_point,
         is_user: parent_context.is_user,
+        role: if parent_context.is_user {
+            crate::process::ProcessRole::User
+        } else {
+            crate::process::ProcessRole::Kernel
+        },
         task_data: 0,
         exit_code: None,
         fault: None,
         parent_id: Some(current_pid),
+        supervisor_id: Some(current_pid),
+        reaped: false,
+        terminal_id: parent_terminal_id,
+        terminal_owner: false,
+        nozzle_authorized: false,
         dispatch_mode: None,
+        syscall_state: None,
         vdso_page: child_vdso,
         resources: process::ProcessResources::new(),
     };
@@ -205,11 +218,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
 
     process::SCHEDULER
         .add(Box::new(child_process))
-        .map_err(|_| {
-            free_kernel_stack(kernel_stack_ptr);
-            crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
-            SyscallError::OutOfMemory
-        })?;
+        .map_err(|_| SyscallError::OutOfMemory)?;
 
     Ok(child_pid as u64)
 }
@@ -220,14 +229,39 @@ pub(crate) fn syscall_wait(pid: u64) -> SyscallResult {
         return Ok(0);
     }
 
+    let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    let wait_any = pid == u64::MAX;
     let process_id = process::ProcessId(pid);
+    if !wait_any {
+        let is_child = process::SCHEDULER
+            .with_process(process_id, |child| child.parent_id == Some(current_pid))
+            .ok_or(SyscallError::NoSuchProcess)?;
+        if !is_child {
+            return Err(SyscallError::PermissionDenied);
+        }
+    }
     loop {
-        let state = process::SCHEDULER
-            .with_process(process_id, |process| (process.state, process.exit_code));
+        let state = if wait_any {
+            process::SCHEDULER.with_list(|list| {
+                list.iter()
+                    .find(|(_, process)| {
+                        process.parent_id == Some(current_pid)
+                            && process.state == ProcessState::Terminated
+                    })
+                    .map(|(_, process)| (process.id, process.state, process.exit_code))
+            })
+        } else {
+            process::SCHEDULER.with_process(process_id, |process| {
+                (process.id, process.state, process.exit_code)
+            })
+        };
 
         match state {
-            Some((ProcessState::Terminated, exit_code)) => {
-                return Ok(exit_code.unwrap_or(0) as u64);
+            Some((waited_pid, ProcessState::Terminated, exit_code)) => {
+                let _ = process::SCHEDULER.with_process(waited_pid, |process| {
+                    process.reaped = true;
+                });
+                return Ok(encode_exit_code(exit_code.unwrap_or(0)));
             }
             Some(_) => {
                 // A sibling child can also wake this parent. Re-check the
@@ -235,13 +269,159 @@ pub(crate) fn syscall_wait(pid: u64) -> SyscallResult {
                 // parent wakeup as completion of this wait.
                 process::block_current();
             }
+            None if wait_any => {
+                let has_child = process::SCHEDULER.with_list(|list| {
+                    list.iter()
+                        .any(|(_, process)| process.parent_id == Some(current_pid))
+                });
+                if has_child {
+                    process::block_current();
+                } else {
+                    return Err(SyscallError::NoSuchProcess);
+                }
+            }
             None => return Err(SyscallError::NoSuchProcess),
         }
     }
 }
 
+/// Exit codes are data, not syscall errors. Encode the signed i32 in the
+/// low 32 bits so a child returning (for example) `-1` cannot be mistaken for
+/// a negative kernel errno by user-space syscall wrappers.
+fn encode_exit_code(exit_code: i32) -> u64 {
+    exit_code as u32 as u64
+}
+
+/// Open a capability for supervising a process. The caller must be its
+/// parent or its recorded supervisor; the returned handle can then be
+/// transferred to an independent manager process.
+pub(crate) fn syscall_open_process_control(pid: u64) -> SyscallResult {
+    let target = process::ProcessId(pid);
+    let caller = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    let allowed = process::SCHEDULER
+        .with_process(target, |child| {
+            child.parent_id == Some(caller) || child.supervisor_id == Some(caller)
+        })
+        .ok_or(SyscallError::NoSuchProcess)?;
+    if !allowed {
+        return Err(SyscallError::PermissionDenied);
+    }
+    alloc_handle(KernelObject::ProcessControl(ProcessControlState {
+        pid: target,
+    }))
+}
+
+fn process_control_target(handle: u64) -> Result<process::ProcessId, SyscallError> {
+    let handle = Handle::from_raw(handle);
+    check_handle_permission(handle, HandlePerms::SIGNAL)?;
+    with_current_handle_table(|table| match table.get(handle) {
+        Some(KernelObject::ProcessControl(control)) => Ok(control.pid),
+        Some(_) => Err(SyscallError::BadHandle),
+        None => Err(SyscallError::BadHandle),
+    })
+}
+
+pub(crate) fn syscall_process_control_stop(handle: u64, exit_code: i32) -> SyscallResult {
+    let target = process_control_target(handle)?;
+    let is_init = process::SCHEDULER
+        .with_process(target, |process| process.role == process::ProcessRole::Init)
+        .ok_or(SyscallError::NoSuchProcess)?;
+    if is_init {
+        return Err(SyscallError::PermissionDenied);
+    }
+    process::terminate_process(target, exit_code);
+    Ok(0)
+}
+
+pub(crate) fn syscall_process_control_status(handle: u64) -> SyscallResult {
+    let target = process_control_target(handle)?;
+    let state = process::SCHEDULER
+        .with_process(target, |process| match process.state {
+            ProcessState::Ready => 0,
+            ProcessState::Running => 1,
+            ProcessState::Blocked => 2,
+            ProcessState::Terminated => 3,
+        })
+        .ok_or(SyscallError::NoSuchProcess)?;
+    Ok(state)
+}
+
+pub(crate) fn syscall_process_control_reap(handle: u64) -> SyscallResult {
+    let target = process_control_target(handle)?;
+    let exit_code = process::SCHEDULER
+        .with_process(target, |process| {
+            if process.state != ProcessState::Terminated {
+                return None;
+            }
+            let code = process.exit_code;
+            if code.is_some() {
+                process.reaped = true;
+            }
+            code
+        })
+        .ok_or(SyscallError::NoSuchProcess)?
+        .ok_or(SyscallError::WouldBlock)?;
+    Ok(encode_exit_code(exit_code))
+}
+
+/// Change the designated supervisor without changing the birth parent. The
+/// caller must hold the process-control capability; the manager can then be
+/// given the same handle using the ordinary capability-transfer syscall.
+pub(crate) fn syscall_process_control_assign(handle: u64, supervisor_pid: u64) -> SyscallResult {
+    let target = process_control_target(handle)?;
+    let supervisor = process::ProcessId(supervisor_pid);
+    let valid_supervisor = process::SCHEDULER
+        .with_process(supervisor, |process| {
+            process.state != ProcessState::Terminated && process.role != process::ProcessRole::Idle
+        })
+        .ok_or(SyscallError::NoSuchProcess)?;
+    if !valid_supervisor {
+        return Err(SyscallError::NoSuchProcess);
+    }
+    process::SCHEDULER
+        .with_process(target, |process| process.supervisor_id = Some(supervisor))
+        .ok_or(SyscallError::NoSuchProcess)?;
+    Ok(0)
+}
+
 pub(crate) fn syscall_getpid() -> SyscallResult {
     Ok(process::current_pid().map(|pid| pid.0).unwrap_or(0))
+}
+
+/// Poll the kernel-to-launchd desktop request queue. This is intentionally
+/// restricted to PID 1: ordinary applications request a shell through the
+/// desktop callback and cannot consume or forge launchd control messages.
+pub(crate) fn syscall_launchd_poll_request() -> SyscallResult {
+    let caller = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    let is_init = process::SCHEDULER
+        .with_process(caller, |current| current.role == process::ProcessRole::Init)
+        .ok_or(SyscallError::NoSuchProcess)?;
+    if !is_init {
+        return Err(SyscallError::PermissionDenied);
+    }
+    Ok(crate::scheduler::take_shell_launch_request() as u64)
+}
+
+/// Enter the compatibility Nozzle runtime for the launchd-owned shell image.
+///
+/// The shell image is still a normal native user ELF and remains supervised by
+/// PID 1.  Nozzle currently depends on the kernel's VFS and desktop service
+/// callbacks, so this narrow ABI bridge runs it on the calling process's
+/// terminal until the user exits.  Restricting it to the launchd shell image
+/// keeps the privileged kernel command surface out of arbitrary user ELFs.
+pub(crate) fn syscall_run_nozzle() -> SyscallResult {
+    let caller = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    let authorized = process::SCHEDULER
+        .with_process(caller, |current| {
+            current.nozzle_authorized && current.terminal_id.is_some()
+        })
+        .ok_or(SyscallError::NoSuchProcess)?;
+    if !authorized {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    crate::shell::shell_main_on_current_terminal();
+    Ok(0)
 }
 
 pub(crate) fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
@@ -283,6 +463,8 @@ pub(crate) fn syscall_spawn(
     image_len: usize,
     name_ptr: *const u8,
     name_len: usize,
+    terminal_id: u64,
+    supervisor_pid: u64,
 ) -> SyscallResult {
     if image_len == 0
         || image_len > MAX_EXECUTABLE_BYTES
@@ -317,15 +499,67 @@ pub(crate) fn syscall_spawn(
         return Err(SyscallError::InvalidArgument);
     }
 
-    crate::loader::load_program(&image, name)
-        .map(|pid| pid.0)
-        .map_err(|error| match error {
-            crate::loader::LoadError::OutOfMemory => SyscallError::OutOfMemory,
-            crate::loader::LoadError::FileNotFound => SyscallError::FileNotFound,
-            crate::loader::LoadError::InvalidFormat
-            | crate::loader::LoadError::NotExecutable
-            | crate::loader::LoadError::UnsupportedArchitecture => SyscallError::InvalidArgument,
-            crate::loader::LoadError::MappingFailed
-            | crate::loader::LoadError::AddressAlreadyMapped => SyscallError::Io,
+    let parent_id = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    let caller_is_init = process::SCHEDULER
+        .with_process(parent_id, |current| {
+            current.role == process::ProcessRole::Init
         })
+        .ok_or(SyscallError::NoSuchProcess)?;
+    if terminal_id != 0 && !process::SCHEDULER.terminal_owned_by(terminal_id, parent_id) {
+        return Err(SyscallError::PermissionDenied);
+    }
+    let supervisor_id = if supervisor_pid == 0 {
+        Some(parent_id)
+    } else {
+        let supervisor = process::ProcessId(supervisor_pid);
+        let valid_supervisor = process::SCHEDULER
+            .with_process(supervisor, |process| {
+                process.state != ProcessState::Terminated
+                    && process.role != process::ProcessRole::Idle
+            })
+            .ok_or(SyscallError::NoSuchProcess)?;
+        if !valid_supervisor {
+            return Err(SyscallError::NoSuchProcess);
+        }
+        Some(supervisor)
+    };
+    let result = crate::loader::load_program_with_relationships_and_authorization(
+        &image,
+        name,
+        parent_id,
+        supervisor_id,
+        (terminal_id != 0).then_some(terminal_id),
+        caller_is_init,
+    )
+    .map(|pid| pid.0)
+    .map_err(|error| match error {
+        crate::loader::LoadError::OutOfMemory => SyscallError::OutOfMemory,
+        crate::loader::LoadError::FileNotFound => SyscallError::FileNotFound,
+        crate::loader::LoadError::InvalidFormat
+        | crate::loader::LoadError::NotExecutable
+        | crate::loader::LoadError::UnsupportedArchitecture => SyscallError::InvalidArgument,
+        crate::loader::LoadError::MappingFailed
+        | crate::loader::LoadError::AddressAlreadyMapped => SyscallError::Io,
+    });
+    match result {
+        Ok(pid) => {
+            if terminal_id != 0
+                && !process::SCHEDULER.transfer_terminal_owner(
+                    terminal_id,
+                    parent_id,
+                    process::ProcessId(pid),
+                )
+            {
+                process::terminate_process(process::ProcessId(pid), -1);
+                return Err(SyscallError::PermissionDenied);
+            }
+            Ok(pid)
+        }
+        Err(error) => {
+            if terminal_id != 0 {
+                process::SCHEDULER.close_terminal_if_owned(terminal_id, parent_id);
+            }
+            Err(error)
+        }
+    }
 }

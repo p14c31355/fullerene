@@ -38,6 +38,28 @@ fn emit_enable_diagnostic(diagnostic: Option<UsbEnableDiagnostic>, message: &str
     }
 }
 
+/// Read the usable downstream-port count from a USB 2.0 hub descriptor.
+///
+/// The descriptor request intentionally asks for only the fixed header plus
+/// a small amount of bitmap data.  The bitmap may therefore be truncated,
+/// but the fixed seven-byte header and descriptor type must be present.  A
+/// USB 2.0 hub has at most 15 ports; accepting an unchecked bNbrPorts value
+/// would turn a malformed response into an unbounded control-transfer loop.
+fn hub_port_count(descriptor: &[u8], length: usize) -> Option<u8> {
+    const HUB_DESCRIPTOR_HEADER_LEN: usize = 7;
+    const MAX_USB2_HUB_PORTS: u8 = 15;
+
+    let available = length.min(descriptor.len());
+    if available < HUB_DESCRIPTOR_HEADER_LEN
+        || descriptor[0] < HUB_DESCRIPTOR_HEADER_LEN as u8
+        || descriptor[1] != super::DESC_HUB
+    {
+        return None;
+    }
+    let ports = descriptor[2];
+    (1..=MAX_USB2_HUB_PORTS).contains(&ports).then_some(ports)
+}
+
 /// Read-only state exposed by [`USBContext`] for shell and boot diagnostics.
 ///
 /// Keeping this as a value type avoids exposing controller ownership or MMIO
@@ -1072,15 +1094,21 @@ impl USBContext {
             };
             emit_poll_diagnostic(diagnostic, "context: hub descriptor begin");
             match HostController::control_transfer(xhci, hub_addr, &setup, &mut hub_desc) {
-                Ok(len) if len >= 4 => {
-                    let n = hub_desc[2]; // bNbrPorts
-                    log::info!("USB: hub {} has {} downstream ports", hub_addr, n);
-                    n
-                }
-                Ok(len) => {
-                    log::warn!("USB: hub descriptor too short: {} bytes", len);
-                    return false;
-                }
+                Ok(len) => match hub_port_count(&hub_desc, len) {
+                    Some(n) => {
+                        log::info!("USB: hub {} has {} downstream ports", hub_addr, n);
+                        n
+                    }
+                    None => {
+                        log::warn!(
+                            "USB: hub descriptor invalid or unsupported ({} bytes, type={:#04x}, ports={})",
+                            len,
+                            hub_desc.get(1).copied().unwrap_or(0),
+                            hub_desc.get(2).copied().unwrap_or(0),
+                        );
+                        return false;
+                    }
+                },
                 Err(error) => {
                     log::warn!("USB: hub GET_DESCRIPTOR failed: {}", error);
                     return false;
@@ -1396,5 +1424,30 @@ impl USBContext {
                 error
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hub_port_count;
+
+    #[test]
+    fn accepts_a_valid_hub_header() {
+        let descriptor = [9, 0x29, 4, 0, 0, 50, 0, 0];
+        assert_eq!(hub_port_count(&descriptor, descriptor.len()), Some(4));
+    }
+
+    #[test]
+    fn rejects_short_or_invalid_hub_headers() {
+        assert_eq!(hub_port_count(&[7, 0x29, 4, 0, 0, 50], 6), None);
+        assert_eq!(hub_port_count(&[7, 2, 4, 0, 0, 50, 0], 7), None);
+        assert_eq!(hub_port_count(&[7, 0x29, 0, 0, 0, 50, 0], 7), None);
+        assert_eq!(hub_port_count(&[7, 0x29, 16, 0, 0, 50, 0], 7), None);
+    }
+
+    #[test]
+    fn does_not_read_past_the_reported_length() {
+        let descriptor = [7, 0x29, 4, 0, 0, 50, 0, 0];
+        assert_eq!(hub_port_count(&descriptor, 2), None);
     }
 }

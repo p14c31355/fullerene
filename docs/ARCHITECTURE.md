@@ -226,6 +226,54 @@ all existing call-sites now route through `SCHEDULER.with_process()`,
 `SCHEDULER.schedule_next()`, etc.  Convenience wrappers (`block_current`,
 `context_switch`) in `process.rs` are thin delegates to `SCHEDULER`.
 
+### Process Birth, Supervision, and launchd
+
+The scheduler reserves PID 0 for the kernel idle process. The first ordinary
+process is loaded as PID 1 from the bundled static native ELF and is marked
+`Init`; this is the launchd boundary. launchd is therefore started through
+the same user ELF loader and syscall ABI as every other native program.
+
+The shell is also a static native ELF. It is not a scheduler callback or a
+boot-time kernel entry point: launchd creates a terminal endpoint and spawns
+the shell. The kernel grants the `run_nozzle` ABI bridge only to a child
+spawned by the kernel-marked launchd process; mutable process names and
+terminal IDs cannot authorize it. The ELF is a small ABI bridge into the
+existing Nozzle runtime, which still owns the VFS/desktop callbacks; Nozzle
+consequently retains its #340 welcome text, prompt, Help list, completion, and
+built-ins while the process remains launchd-owned.
+
+Process creation records two independent relationships:
+
+- `parent_id` identifies the process that created the child and is used for
+  ordinary birth/wait semantics.
+- `supervisor_id` identifies the process responsible for administration.
+
+The parent or supervisor can obtain a `ProcessControl` capability. It can
+observe state, stop, reap, or reassign supervision without becoming the
+child's birth parent. The capability can be transferred through the existing
+handle mechanism, so a future service manager can create a process while
+launchd (or another admin process) owns its lifecycle. If a parent exits, the
+kernel adopts the child under launchd while preserving the supervisor
+relationship.
+
+The bundled launchd is itself Rust-only userland. Its service table contains
+image, terminal, and restart policy; the interactive shell is an on-demand
+job rather than a boot service. The existing desktop/AppGrid terminal action
+sets a kernel request flag, and only PID 1 can consume that request through
+the native ABI. launchd then creates the terminal, spawns the shell, and
+supervises it through its `ProcessControl` capability. It polls, reaps, and
+revokes terminated children, and restarts `Always` jobs with bounded
+exponential backoff. A service that is not configured for restart is left
+stopped. Failure while bootstrapping a required service is fatal to PID 1,
+so launchd never continues with an unmanaged child. Terminal creation is
+provisional: if the subsequent spawn fails, the kernel closes the endpoint and
+removes its temporary owner; on success ownership moves to the child.
+
+This keeps launchd special only at the PID 1 bootstrap boundary. Shells,
+services, and applications are otherwise ordinary user processes; adding a
+new managed service is a userland service-table change rather than a kernel
+special case.
+
 ### VDSO (Read-Only Metadata Page)
 
 The VDSO page (`VdsoPage`) at `0x7000_0000_0000` contains **only**

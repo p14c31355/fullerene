@@ -90,6 +90,14 @@ pub fn chrono_tick(now: u64) {
             CURSOR_TIMER_ID => {
                 runtime.cursor_visible = !runtime.cursor_visible;
                 runtime.term_dirty = true;
+                // Process-owned terminals render their cursor into the
+                // window surface only when marked dirty.  The legacy shell
+                // uses `term_dirty`, so without this flag a native Nozzle
+                // prompt keeps its underscore permanently visible.
+                for terminal in &mut runtime.process_terminals {
+                    terminal.dirty = true;
+                }
+                runtime.frame_due = true;
             }
             FRAME_TIMER_ID if runtime.shell_state == ShellState::Desktop => {
                 runtime.frame_due = true;
@@ -196,11 +204,11 @@ pub fn tick_core(now: u64) {
     }
 
     // Drain the I2C-HID FIFO before consuming input.  The scheduler idle
-    // loop services this separately (scheduler.rs), but while it is blocked
-    // inside shell_main/nozzle the only entry point that runs is
-    // runtime_tick_no_fb -> tick_core.  Without this call consume_input()
-    // in poll_mouse_state always returns None and the touchpad cursor
-    // freezes for the whole Nozzle session.
+    // loop services this separately (scheduler.rs), but while a synchronous
+    // kernel-side compatibility shell/test path is active the only entry
+    // point that runs is runtime_tick_no_fb -> tick_core. Without this call
+    // consume_input() in poll_mouse_state always returns None and the
+    // touchpad cursor freezes for that session.
     nitrogen::i2c_hid::service_input();
     tick_progress("GUI tick: I2C-HID returned");
     crate::poll_mouse_state();
@@ -271,7 +279,10 @@ pub fn tick_core(now: u64) {
         runtime.shell_launch_pending = false;
         pending
     }) {
-        crate::ensure_terminal_window();
+        // The launchd-managed shell creates its own process-owned terminal.
+        // Do not create the legacy in-process Nozzle window as well; the
+        // desktop action remains the same, but there is exactly one shell
+        // terminal for the request.
         crate::launch_shell();
     }
     tick_progress("GUI tick: editor phase");

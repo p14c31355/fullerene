@@ -46,6 +46,13 @@ pub struct Cell {
     pub bg: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnsiState {
+    Normal,
+    Esc,
+    Csi,
+}
+
 impl Default for Cell {
     fn default() -> Self {
         Self {
@@ -68,6 +75,11 @@ pub struct TerminalBuffer {
     scrollback: VecDeque<Vec<Cell>>,
     /// Current scroll offset into the scrollback buffer (0 = normal view).
     scroll_offset: usize,
+    /// ANSI parser state persists across terminal writes. A syscall buffer is
+    /// not necessarily a complete terminal stream chunk.
+    ansi_state: AnsiState,
+    ansi_params: [u8; 8],
+    ansi_param_len: usize,
 }
 
 impl TerminalBuffer {
@@ -84,6 +96,9 @@ impl TerminalBuffer {
             style: TextStyle::default(),
             scrollback: VecDeque::new(),
             scroll_offset: 0,
+            ansi_state: AnsiState::Normal,
+            ansi_params: [0; 8],
+            ansi_param_len: 0,
         }
     }
 
@@ -152,61 +167,68 @@ impl TerminalBuffer {
     }
 
     pub fn put_str(&mut self, s: &str) {
-        #[derive(PartialEq)]
-        enum AnsiState {
-            Normal,
-            Esc,
-            Csi,
-        }
-        let mut state = AnsiState::Normal;
-        let mut param_buf: [u8; 8] = [0; 8];
-        let mut param_len: usize = 0;
+        self.put_bytes(s.as_bytes());
+    }
 
-        for &b in s.as_bytes() {
-            match state {
+    /// Write terminal bytes without decoding each syscall chunk as UTF-8.
+    pub fn put_bytes(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            match self.ansi_state {
                 AnsiState::Normal => {
                     if b == 0x1B {
-                        state = AnsiState::Esc;
+                        self.ansi_state = AnsiState::Esc;
                     } else {
                         self.put_byte(b);
                     }
                 }
                 AnsiState::Esc => {
                     if b == b'[' {
-                        state = AnsiState::Csi;
-                        param_len = 0;
+                        self.ansi_state = AnsiState::Csi;
+                        self.ansi_param_len = 0;
                     } else {
                         self.put_byte(0x1B);
                         self.put_byte(b);
-                        state = AnsiState::Normal;
+                        self.ansi_state = AnsiState::Normal;
                     }
                 }
                 AnsiState::Csi => {
                     if (0x30..=0x3F).contains(&b) {
-                        if param_len < param_buf.len() {
-                            param_buf[param_len] = b;
-                            param_len += 1;
+                        if self.ansi_param_len < self.ansi_params.len() {
+                            self.ansi_params[self.ansi_param_len] = b;
+                            self.ansi_param_len += 1;
                         }
                     } else {
-                        self.handle_csi(b, &param_buf[..param_len]);
-                        state = AnsiState::Normal;
+                        let params = self.ansi_params[..self.ansi_param_len].to_vec();
+                        self.handle_csi(b, &params);
+                        self.ansi_state = AnsiState::Normal;
+                        self.ansi_param_len = 0;
                     }
                 }
             }
         }
-        match state {
+
+        // Incomplete escape sequences are deliberately retained. The next
+        // write may contain the rest of the sequence.
+    }
+
+    /// Flush an incomplete terminal stream as literal bytes.
+    pub fn flush_ansi(&mut self) {
+        match self.ansi_state {
             AnsiState::Esc => {
                 self.put_byte(0x1B);
             }
             AnsiState::Csi => {
                 self.put_byte(0x1B);
                 self.put_byte(b'[');
-                for &pb in &param_buf[..param_len] {
-                    self.put_byte(pb);
+                let param_len = self.ansi_param_len;
+                for index in 0..param_len {
+                    self.put_byte(self.ansi_params[index]);
                 }
             }
             AnsiState::Normal => {}
         }
+        self.ansi_state = AnsiState::Normal;
+        self.ansi_param_len = 0;
     }
 
     fn put_byte(&mut self, b: u8) {
@@ -463,5 +485,32 @@ impl TerminalBuffer {
             result.push(Cell::default());
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TerminalBuffer, TextStyle};
+
+    #[test]
+    fn ansi_sequence_can_be_split_between_writes() {
+        let mut buffer = TerminalBuffer::new(8, 1);
+        let default = TextStyle::default();
+
+        buffer.put_bytes(b"\x1b[31");
+        assert_eq!(buffer.style(), default);
+
+        buffer.put_bytes(b"mR");
+        assert_eq!(buffer.fg(), 0xCC0000);
+        assert_eq!(buffer.cells()[0].ch, b'R');
+        assert_eq!(buffer.cells()[0].fg, 0xCC0000);
+    }
+
+    #[test]
+    fn flushing_incomplete_ansi_sequence_preserves_literal_bytes() {
+        let mut buffer = TerminalBuffer::new(8, 1);
+        buffer.put_bytes(b"\x1b[");
+        buffer.flush_ansi();
+        assert_eq!(buffer.cells()[0].ch, b'[');
     }
 }

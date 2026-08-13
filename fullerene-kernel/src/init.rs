@@ -597,7 +597,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] bootlog flushed\n");
     }
 
-    // Shell is no longer auto-started.  It is launched on demand via
-    // the AppGrid overlay or the desktop context menu (NewShell action).
-    // See `crate::scheduler::request_shell_launch()`.
+    // scheduler_loop starts launchd after GUI readiness. launchd later creates
+    // the native shell when it consumes a desktop shell-launch request; the
+    // scheduler never creates a shell-specific process directly.
 }
