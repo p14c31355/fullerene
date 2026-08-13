@@ -344,6 +344,7 @@ impl SchedulerContext {
             .count()
     }
 
+    #[cfg(test)]
     #[inline]
     fn retain_after_cleanup(id: ProcessId, process: &Process, current: usize) -> bool {
         !matches!(process.state, ProcessState::Terminated)
