@@ -252,8 +252,19 @@ launchd (or another admin process) owns its lifecycle. If a parent exits, the
 kernel adopts the child under launchd while preserving the supervisor
 relationship.
 
+The bundled launchd is itself Rust-only userland. Its service table contains
+image, terminal, and restart policy; the shell is merely the first entry. The
+manager polls each service through its `ProcessControl` capability, reaps
+terminated children, revokes the capability, and restarts `Always` jobs with
+bounded exponential backoff. A service that is not configured for restart is
+left stopped. Failure while bootstrapping a required service is fatal to PID
+1, so launchd never continues with an unmanaged child or an orphaned startup
+terminal.
+
 This keeps launchd special only at the PID 1 bootstrap boundary. Shells,
-services, and applications are otherwise ordinary user processes.
+services, and applications are otherwise ordinary user processes; adding a
+new managed service is a userland service-table change rather than a kernel
+special case.
 
 ### VDSO (Read-Only Metadata Page)
 

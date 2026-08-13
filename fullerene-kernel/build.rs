@@ -185,6 +185,15 @@ fn main() {
         .status()
         .expect("could not start rustc for launchd");
     assert!(launchd_status.success(), "launchd compilation failed");
+    // Keep the example target buildable as well as the generated kernel
+    // payload. `native_launchd.rs` embeds the shell image, so Cargo must pass
+    // the same path when it compiles the example directly (for checks and
+    // documentation tooling); the ad-hoc rustc invocation above only sets
+    // the variable for that one child process.
+    println!(
+        "cargo:rustc-env=FULLERENE_SHELL_IMAGE={}",
+        shell_out.display()
+    );
     println!(
         "cargo:rustc-env=FULLERENE_LAUNCHD_IMAGE={}",
         launchd_out.display()

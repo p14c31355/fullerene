@@ -262,7 +262,7 @@ pub(crate) fn syscall_wait(pid: u64) -> SyscallResult {
                 let _ = process::SCHEDULER.with_process(waited_pid, |process| {
                     process.reaped = true;
                 });
-                return Ok(exit_code.unwrap_or(0) as u64);
+                return Ok(encode_exit_code(exit_code.unwrap_or(0)));
             }
             Some(_) => {
                 // A sibling child can also wake this parent. Re-check the
@@ -284,6 +284,13 @@ pub(crate) fn syscall_wait(pid: u64) -> SyscallResult {
             None => return Err(SyscallError::NoSuchProcess),
         }
     }
+}
+
+/// Exit codes are data, not syscall errors. Encode the signed i32 in the
+/// low 32 bits so a child returning (for example) `-1` cannot be mistaken for
+/// a negative kernel errno by user-space syscall wrappers.
+fn encode_exit_code(exit_code: i32) -> u64 {
+    exit_code as u32 as u64
 }
 
 /// Open a capability for supervising a process. The caller must be its
@@ -355,7 +362,7 @@ pub(crate) fn syscall_process_control_reap(handle: u64) -> SyscallResult {
         })
         .ok_or(SyscallError::NoSuchProcess)?
         .ok_or(SyscallError::WouldBlock)?;
-    Ok(exit_code as u64)
+    Ok(encode_exit_code(exit_code))
 }
 
 /// Change the designated supervisor without changing the birth parent. The

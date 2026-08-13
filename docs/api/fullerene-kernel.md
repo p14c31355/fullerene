@@ -115,6 +115,12 @@ parent owns birth lineage and ordinary `wait`; the supervisor obtains a
 `ProcessControl` capability for status, stop, reap, and reassignment. A
 nonzero supervisor PID may be supplied to `spawn` (arg6), or supervision may
 be reassigned later and the capability transferred through the handle ABI.
+`wait` and `ProcessControlReap` return the child exit status encoded as an
+unsigned 32-bit value in `rax`; userland decodes it as an `i32`, so negative
+exit statuses are not confused with negative syscall errors.
+The bundled PID 1 launchd uses this contract from Rust userland: managed
+services are described by a static service table and are polled, reaped, and
+restarted according to their userland restart policy.
 
 ---
 
