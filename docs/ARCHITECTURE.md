@@ -234,9 +234,11 @@ process is loaded as PID 1 from the bundled static native ELF and is marked
 the same user ELF loader and syscall ABI as every other native program.
 
 The shell is also a static native ELF. It is not a scheduler callback or a
-kernel entry point: launchd creates a terminal endpoint, spawns the shell,
-and the shell uses fd 0/1/2 through the normal terminal-aware `read` and
-`write` syscalls.
+boot-time kernel entry point: launchd creates a terminal endpoint and spawns
+the shell. The ELF is a small ABI bridge into the existing Nozzle runtime,
+which still owns the VFS/desktop callbacks; Nozzle consequently retains its
+#340 welcome text, prompt, Help list, completion, and built-ins while the
+process remains launchd-owned.
 
 Process creation records two independent relationships:
 

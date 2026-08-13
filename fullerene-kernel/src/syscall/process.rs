@@ -403,6 +403,28 @@ pub(crate) fn syscall_launchd_poll_request() -> SyscallResult {
     Ok(crate::scheduler::take_shell_launch_request() as u64)
 }
 
+/// Enter the compatibility Nozzle runtime for the launchd-owned shell image.
+///
+/// The shell image is still a normal native user ELF and remains supervised by
+/// PID 1.  Nozzle currently depends on the kernel's VFS and desktop service
+/// callbacks, so this narrow ABI bridge runs it on the calling process's
+/// terminal until the user exits.  Restricting it to the launchd shell image
+/// keeps the privileged kernel command surface out of arbitrary user ELFs.
+pub(crate) fn syscall_run_nozzle() -> SyscallResult {
+    let caller = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    let is_shell = process::SCHEDULER
+        .with_process(caller, |current| {
+            current.name.as_ref() == "shell" && current.terminal_id.is_some()
+        })
+        .ok_or(SyscallError::NoSuchProcess)?;
+    if !is_shell {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    crate::shell::shell_main_on_current_terminal();
+    Ok(0)
+}
+
 pub(crate) fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
     if size == 0 {
         return Err(SyscallError::InvalidArgument);

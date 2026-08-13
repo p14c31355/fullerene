@@ -124,6 +124,9 @@ restarted according to their userland restart policy. The interactive shell
 is not a boot service: the desktop sends a PID-1-only launch request, and
 launchd spawns the shell only after the user invokes the existing terminal or
 shell action.
+The spawned native `shell` image is a small ABI bridge into the existing Nozzle
+runtime, so its welcome text, prompt, command list, completion, and built-ins
+remain the #340 behavior while the process remains launchd-owned.
 
 ---
 

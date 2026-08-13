@@ -1641,6 +1641,17 @@ pub fn shell_main() {
     }
 }
 
+/// Run the #340 Nozzle shell on the terminal attached to the current process.
+///
+/// launchd still creates and supervises the native `shell` process; this entry
+/// point keeps the existing Nozzle command/runtime contract until the complete
+/// VFS and desktop service surface is exposed as userland syscalls.
+pub fn shell_main_on_current_terminal() {
+    let services = nozzle_services();
+    let mut terminal = KernelTerminal::new();
+    solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
+}
+
 /// Run the native DriverKit channel fixture through the real kernel boundary.
 #[cfg(ipc_kernel_smoke)]
 pub fn run_ipc_kernel_smoke() {

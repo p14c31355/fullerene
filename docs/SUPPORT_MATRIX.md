@@ -59,6 +59,7 @@
 | 113 | process_control_reap | ✅ Full | Capability-authorized zombie collection |
 | 114 | process_control_assign | ✅ Full | Changes supervisor without changing birth parent |
 | 115 | launchd_poll_request | ✅ Full | PID 1-only desktop-to-launchd shell request |
+| 116 | run_nozzle | ✅ Full | Launchd-owned shell image enters the #340 Nozzle runtime |
 
 ## Linux Compat Syscalls
 
