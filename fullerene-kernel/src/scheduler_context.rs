@@ -43,6 +43,30 @@ const _TICK_NANOS: u64 = 2_250_000; // ~2.25 ms ≈ 1 PIT tick
 
 pub static SCHEDULER: SchedulerContext = SchedulerContext::new();
 
+/// Reclaim allocations owned by a process that failed before publication in
+/// the scheduler's process table.
+fn discard_unpublished_process(process: &mut Process) {
+    if let Some(kernel_stack_base) = process
+        .kernel_stack
+        .as_u64()
+        .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
+        .filter(|&base| base != 0)
+    {
+        let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16)
+            .expect("kernel stack layout");
+        unsafe {
+            petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout);
+        }
+        process.kernel_stack = VirtAddr::new(0);
+    }
+    if let Some(mut page_table) = process.page_table.take()
+        && let Some(pml4_frame) = page_table.pml4_frame()
+    {
+        crate::process::cleanup_process_address_space(&mut page_table);
+        crate::memory_management::deallocate_process_page_table(pml4_frame);
+    }
+}
+
 /// ── SchedulerContext ──────────────────────────────────────────────
 
 pub struct SchedulerContext {
@@ -139,6 +163,15 @@ impl SchedulerContext {
         true
     }
 
+    /// Release a PID reserved for a process that was never published.
+    /// Allocation remains monotonic; releasing only removes the in-flight
+    /// reservation so a later construction attempt cannot exhaust the table.
+    pub fn release_pid(&self, pid: ProcessId) {
+        self.reserved_pids
+            .lock()
+            .retain(|reserved| *reserved != pid);
+    }
+
     pub fn register_terminal_owner(&self, terminal_id: u64, owner: ProcessId) -> bool {
         let mut owners = self.terminal_owners.lock();
         if owners.iter().any(|(id, _)| *id == terminal_id) {
@@ -215,21 +248,38 @@ impl SchedulerContext {
     // ── Process list access ──────────────────────────────────
 
     /// Add a new process to the list.
-    pub fn add(&self, process: Box<Process>) -> Result<(), SystemError> {
+    pub fn add(&self, mut process: Box<Process>) -> Result<(), SystemError> {
         let mut procs = self.processes.lock();
+        let pid = process.id;
         if procs.len() >= MAX_PROCESSES {
+            discard_unpublished_process(&mut process);
+            self.reserved_pids
+                .lock()
+                .retain(|reserved| *reserved != pid);
             return Err(SystemError::TooManyProcesses);
         }
-        let pid = process.id;
         if procs.iter().any(|(id, _)| *id == pid) {
+            discard_unpublished_process(&mut process);
+            self.reserved_pids
+                .lock()
+                .retain(|reserved| *reserved != pid);
             return Err(SystemError::InvalidArgument);
         }
         self.reserved_pids
             .lock()
             .retain(|reserved| *reserved != pid);
-        procs
-            .push((pid, process))
-            .map_err(|_| SystemError::TooManyProcesses)
+        if let Err(error) = procs.push((pid, process)) {
+            // Keep the reservation and all process-owned allocations
+            // consistent even if the fixed-capacity push ever changes.
+            let (_, mut process) = error;
+            discard_unpublished_process(&mut process);
+            self.reserved_pids
+                .lock()
+                .retain(|reserved| *reserved != pid);
+            Err(SystemError::TooManyProcesses)
+        } else {
+            Ok(())
+        }
     }
 
     /// Run a closure on a process identified by PID.
@@ -328,23 +378,26 @@ impl SchedulerContext {
                     (process.state != ProcessState::Terminated).then_some(*id)
                 })
                 .collect();
-            let capability_targets: HeaplessVec<ProcessId, MAX_PROCESSES> = procs
-                .iter()
-                .filter(|(holder_id, _)| live_processes.contains(holder_id))
-                .flat_map(|(_, holder)| {
-                    let handles = holder.resources.handle_table.lock();
-                    let targets: HeaplessVec<ProcessId, MAX_PROCESSES> = handles
-                        .entries()
-                        .filter_map(|(_, object)| match object {
-                            crate::syscall::KernelObject::ProcessControl(control) => {
-                                Some(control.pid)
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    targets.into_iter()
-                })
-                .collect();
+            let mut capability_targets = HeaplessVec::<ProcessId, MAX_PROCESSES>::new();
+            let mut capability_targets_overflowed = false;
+            for (holder_id, holder) in procs.iter() {
+                if !live_processes.contains(holder_id) {
+                    continue;
+                }
+                let handles = holder.resources.handle_table.lock();
+                for (_, object) in handles.entries() {
+                    if let crate::syscall::KernelObject::ProcessControl(control) = object {
+                        if capability_targets.contains(&control.pid) {
+                            continue;
+                        }
+                        if capability_targets.push(control.pid).is_err() {
+                            // Never reap a zombie while the complete set of
+                            // capability targets is unknown.
+                            capability_targets_overflowed = true;
+                        }
+                    }
+                }
+            }
             let init_pid = procs
                 .iter()
                 .find_map(|(id, process)| (process.role == ProcessRole::Init).then_some(*id));
@@ -378,7 +431,8 @@ impl SchedulerContext {
                     let supervisor_alive = process
                         .supervisor_id
                         .is_some_and(|supervisor_id| live_processes.contains(&supervisor_id));
-                    let capability_holder_alive = capability_targets.contains(id);
+                    let capability_holder_alive =
+                        capability_targets_overflowed || capability_targets.contains(id);
                     if Self::should_defer_reap(
                         process.reaped,
                         parent_alive,
@@ -757,6 +811,9 @@ impl SchedulerContext {
                             error_code: 0,
                         },
                     );
+                    if let Some(old_pid) = old_pid {
+                        crate::interrupts::syscall::restore_context_for_switch(old_pid);
+                    }
                     return;
                 }
             };
@@ -789,6 +846,12 @@ impl SchedulerContext {
             }
             crate::process::mark_linux_stage(new_pid, "context-switch-enter");
             unsafe { switch_context(&plan) };
+        } else if let Some(old_pid) = old_pid {
+            // `save_context_for_switch` ran before the target lookup.  If the
+            // target disappeared, the old process continues on this CPU and
+            // must regain its syscall frame instead of leaving stale state in
+            // Process::syscall_state.
+            crate::interrupts::syscall::restore_context_for_switch(old_pid);
         }
     }
 
@@ -874,7 +937,8 @@ mod tests {
 
     #[test]
     fn unreaped_zombies_survive_cleanup_for_their_manager() {
-        let mut process = Process::new("zombie", VirtAddr::new(0), false);
+        let mut process =
+            Process::new("zombie", VirtAddr::new(0), false).expect("test process allocation");
         process.state = ProcessState::Terminated;
         assert!(SchedulerContext::retain_after_cleanup(
             process.id,
@@ -902,5 +966,6 @@ mod tests {
             false, false, false, false
         ));
         assert!(!SchedulerContext::should_defer_reap(true, true, true, true));
+        SCHEDULER.release_pid(process.id);
     }
 }

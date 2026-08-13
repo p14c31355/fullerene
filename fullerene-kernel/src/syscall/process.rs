@@ -218,11 +218,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
 
     process::SCHEDULER
         .add(Box::new(child_process))
-        .map_err(|_| {
-            free_kernel_stack(kernel_stack_ptr);
-            crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
-            SyscallError::OutOfMemory
-        })?;
+        .map_err(|_| SyscallError::OutOfMemory)?;
 
     Ok(child_pid as u64)
 }

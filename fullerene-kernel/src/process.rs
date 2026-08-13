@@ -570,11 +570,14 @@ pub struct Process {
 
 impl Process {
     /// Create a new process
-    pub fn new(name: &str, entry_point: VirtAddr, is_user: bool) -> Self {
+    pub fn new(
+        name: &str,
+        entry_point: VirtAddr,
+        is_user: bool,
+    ) -> Result<Self, petroleum::common::logging::SystemError> {
         let id = SCHEDULER.allocate_pid();
 
         Self::new_with_id(id, name, entry_point, is_user)
-            .expect("allocator returned an unavailable process ID")
     }
 
     /// Construct a process with a caller-selected PID for bootstrap roles
@@ -650,6 +653,31 @@ impl Process {
         petroleum::mem_debug!("Process: RIP set, RSP set\n");
         self.context.registers.rax = 0;
         self.context.rflags = 0x202; // Set Interrupt Enable flag
+    }
+}
+
+/// Owns a PID reservation until the process has been published successfully.
+/// Any construction or scheduler failure before that point releases the
+/// reservation through `Drop`.
+struct PidReservation {
+    pid: Option<ProcessId>,
+}
+
+impl PidReservation {
+    fn new(pid: ProcessId) -> Self {
+        Self { pid: Some(pid) }
+    }
+
+    fn commit(mut self) {
+        self.pid = None;
+    }
+}
+
+impl Drop for PidReservation {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            SCHEDULER.release_pid(pid);
+        }
     }
 }
 
@@ -864,7 +892,8 @@ pub fn create_process_with_relationships_and_authorization(
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
     mem_debug!("Process: create_process starting\n");
 
-    let mut process = Process::new(name, entry_point_address, is_user);
+    let mut process = Process::new(name, entry_point_address, is_user)?;
+    let reservation = PidReservation::new(process.id);
     process.parent_id = parent_id;
     process.supervisor_id = supervisor_id;
     process.terminal_id = terminal_id;
@@ -944,6 +973,7 @@ pub fn create_process_with_relationships_and_authorization(
 
     let pid = process.id;
     SCHEDULER.add(Box::new(process))?;
+    reservation.commit();
 
     mem_debug!("Process: create_process done\n");
     Ok(pid)
@@ -1317,9 +1347,10 @@ mod tests {
     #[test]
     fn test_process_creation() {
         let addr = VirtAddr::new(0);
-        let proc = Process::new("test", addr, false);
+        let proc = Process::new("test", addr, false).expect("test process allocation");
         assert_eq!(proc.name.as_ref(), "test");
         assert_eq!(proc.state, ProcessState::Ready);
+        SCHEDULER.release_pid(proc.id);
     }
 
     #[test]

@@ -46,6 +46,14 @@ struct LoadedLinuxImage {
     changes: Vec<PageChange>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct ProgramSpawnOptions {
+    parent_id: Option<process::ProcessId>,
+    supervisor_id: Option<process::ProcessId>,
+    terminal_id: Option<u64>,
+    nozzle_authorized: bool,
+}
+
 #[derive(Clone, Copy)]
 enum PageChange {
     New {
@@ -684,7 +692,14 @@ fn initialize_linux_stack_transaction(
 /// Load a program from raw bytes and create a process for it using goblin.
 /// If `linux_abi` is true, attaches a LinuxRuntime for Linux ABI emulation.
 pub fn load_program(image_data: &[u8], name: &str) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, &[], &[], false, None, None, None, false)
+    load_program_inner(
+        image_data,
+        name,
+        &[],
+        &[],
+        false,
+        ProgramSpawnOptions::default(),
+    )
 }
 
 /// Load a native program as a child of the requesting process.
@@ -699,10 +714,10 @@ pub fn load_program_with_parent(
         &[],
         &[],
         false,
-        Some(parent_id),
-        None,
-        None,
-        false,
+        ProgramSpawnOptions {
+            parent_id: Some(parent_id),
+            ..ProgramSpawnOptions::default()
+        },
     )
 }
 
@@ -740,10 +755,12 @@ pub fn load_program_with_relationships_and_authorization(
         &[],
         &[],
         false,
-        Some(parent_id),
-        supervisor_id,
-        terminal_id,
-        nozzle_authorized,
+        ProgramSpawnOptions {
+            parent_id: Some(parent_id),
+            supervisor_id,
+            terminal_id,
+            nozzle_authorized,
+        },
     )
 }
 
@@ -766,7 +783,12 @@ pub fn load_program_with_runtime_args(
     is_linux: bool,
 ) -> Result<process::ProcessId, LoadError> {
     load_program_inner(
-        image_data, name, argv, envp, is_linux, None, None, None, false,
+        image_data,
+        name,
+        argv,
+        envp,
+        is_linux,
+        ProgramSpawnOptions::default(),
     )
 }
 
@@ -859,10 +881,7 @@ fn load_program_inner(
     argv: &[&str],
     envp: &[&str],
     is_linux: bool,
-    parent_id: Option<process::ProcessId>,
-    supervisor_id: Option<process::ProcessId>,
-    terminal_id: Option<u64>,
-    nozzle_authorized: bool,
+    spawn: ProgramSpawnOptions,
 ) -> Result<process::ProcessId, LoadError> {
     crate::klog_fmt!(
         "[LINUX-DIAG] elf parse begin name={} bytes={} linux={}\n",
@@ -932,10 +951,10 @@ fn load_program_inner(
         name,
         entry_point_address,
         true,
-        parent_id,
-        supervisor_id,
-        terminal_id,
-        nozzle_authorized,
+        spawn.parent_id,
+        spawn.supervisor_id,
+        spawn.terminal_id,
+        spawn.nozzle_authorized,
     )?;
     crate::klog_fmt!(
         "[LINUX-DIAG] process created pid={} entry={:#x}\n",
