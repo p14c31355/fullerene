@@ -2,7 +2,7 @@
 //!
 //! Thin wrapper around the [`nozzle`] shell runtime.  Provides a
 //! `KernelTerminal` that bridges the abstract `nozzle::Terminal`
-//! trait to the kernel's raw syscall I/O.
+//! trait to the kernel's process-terminal runtime.
 
 use crate::syscall::kernel_syscall;
 use alloc::format;
@@ -1921,6 +1921,7 @@ pub fn usb_xhci_smoke() {
 struct KernelTerminal {
     history: alloc::collections::VecDeque<String>,
     pipe_stdout: Option<String>,
+    terminal_id: Option<u64>,
 }
 
 impl KernelTerminal {
@@ -1928,6 +1929,11 @@ impl KernelTerminal {
         Self {
             history: alloc::collections::VecDeque::with_capacity(128),
             pipe_stdout: None,
+            terminal_id: crate::process::current_pid().and_then(|pid| {
+                crate::process::SCHEDULER
+                    .with_process(pid, |process| process.terminal_id)
+                    .flatten()
+            }),
         }
     }
 }
@@ -1936,6 +1942,11 @@ impl nozzle::Terminal for KernelTerminal {
     fn write_str(&mut self, s: &str) {
         if let Some(ref mut output) = self.pipe_stdout {
             output.push_str(s);
+        } else if let Some(terminal_id) = self.terminal_id {
+            solvent::write_process_terminal_bytes(
+                lattice::window::WindowId(terminal_id),
+                s.as_bytes(),
+            );
         } else {
             kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
         }
@@ -1943,17 +1954,34 @@ impl nozzle::Terminal for KernelTerminal {
 
     fn read_byte(&mut self) -> Option<u8> {
         loop {
-            let mut byte = 0u8;
-            let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
-            if res > 0 {
-                return Some(byte);
+            if let Some(terminal_id) = self.terminal_id {
+                // The native shell enters Nozzle through a kernel bridge.
+                // Its local byte buffer is a kernel address, so it cannot be
+                // passed to the user-buffer-validating read syscall. Pump
+                // the GUI and consume the process terminal directly instead.
+                solvent::runtime_tick_no_fb();
+                let mut byte = [0u8; 1];
+                if solvent::read_process_terminal(lattice::window::WindowId(terminal_id), &mut byte)
+                    > 0
+                {
+                    return Some(byte[0]);
+                }
+            } else {
+                let mut byte = 0u8;
+                let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
+                if res > 0 {
+                    return Some(byte);
+                }
             }
             kernel_syscall(22, 0, 0, 0);
         }
     }
 
     fn input_available(&self) -> bool {
-        nitrogen::ps2::keyboard::input_available()
+        self.terminal_id
+            .map_or_else(nitrogen::ps2::keyboard::input_available, |terminal_id| {
+                solvent::process_terminal_has_input(lattice::window::WindowId(terminal_id))
+            })
     }
 
     fn take_stdout(&mut self) -> Option<String> {

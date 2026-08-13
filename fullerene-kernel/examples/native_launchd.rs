@@ -338,10 +338,15 @@ fn service_loop() -> ! {
     let mut shell_slot = None;
 
     loop {
-        let shell_request = unsafe { syscall(LAUNCHD_POLL_REQUEST, 0, 0, 0, 0, 0, 0) };
         let shell_is_stopped = shell_slot.map_or(true, |slot: ServiceSlot| slot.stopped);
-        if shell_request == 1 && shell_is_stopped {
-            shell_slot = Some(launch_service(&SHELL_SERVICE, 0));
+        // Do not consume a desktop request while an existing shell is still
+        // active. Otherwise a click that races with shell termination is lost
+        // and the next click appears not to restart the shell.
+        if shell_is_stopped {
+            let shell_request = unsafe { syscall(LAUNCHD_POLL_REQUEST, 0, 0, 0, 0, 0, 0) };
+            if shell_request == 1 {
+                shell_slot = Some(launch_service(&SHELL_SERVICE, 0));
+            }
         }
         shell_slot = shell_slot.map(|slot| advance_service(&SHELL_SERVICE, slot));
 

@@ -90,6 +90,14 @@ pub fn chrono_tick(now: u64) {
             CURSOR_TIMER_ID => {
                 runtime.cursor_visible = !runtime.cursor_visible;
                 runtime.term_dirty = true;
+                // Process-owned terminals render their cursor into the
+                // window surface only when marked dirty.  The legacy shell
+                // uses `term_dirty`, so without this flag a native Nozzle
+                // prompt keeps its underscore permanently visible.
+                for terminal in &mut runtime.process_terminals {
+                    terminal.dirty = true;
+                }
+                runtime.frame_due = true;
             }
             FRAME_TIMER_ID if runtime.shell_state == ShellState::Desktop => {
                 runtime.frame_due = true;
