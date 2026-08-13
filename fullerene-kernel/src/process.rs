@@ -1208,6 +1208,21 @@ pub fn yield_from_scheduler_stack() {
         target
     );
     if !SCHEDULER.yield_to(new_pid) {
+        let target_state = SCHEDULER.process_state(new_pid);
+        if matches!(target_state, None | Some(ProcessState::Terminated)) {
+            // The child may have exited before the deferred handoff reached
+            // the shell. Retrying the dead PID forever strands the shell in
+            // this callback and prevents launchd/the scheduler idle context
+            // from running again.
+            petroleum::serial::serial_log(format_args!(
+                "[LINUX-DIAG] scheduler handoff target={} is gone; falling back to round-robin\n",
+                target,
+            ));
+            if SCHEDULER.active_count() > 1 && current_pid().is_some() {
+                yield_current();
+            }
+            return;
+        }
         // The shell may observe the newly-created task during the short
         // interval in which another scheduler path has not yet marked it
         // Ready. Do not lose the explicit handoff in that race: the next
@@ -1219,7 +1234,7 @@ pub fn yield_from_scheduler_stack() {
                 "[LINUX-DIAG] scheduler handoff retry current={} target={} state={:?}\n",
                 SCHEDULER.current_pid(),
                 target,
-                SCHEDULER.process_state(new_pid),
+                target_state,
             ));
         }
     } else {
