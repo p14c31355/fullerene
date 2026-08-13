@@ -597,7 +597,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] bootlog flushed\n");
     }
 
-    // launchd and the userland shell are bootstrapped by scheduler_loop after
-    // the GUI and terminal services are ready. The scheduler never creates a
-    // shell-specific process.
+    // scheduler_loop starts launchd after GUI readiness. launchd later creates
+    // the native shell when it consumes a desktop shell-launch request; the
+    // scheduler never creates a shell-specific process directly.
 }

@@ -62,6 +62,8 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
         supervisor_id: Some(current_pid),
         reaped: false,
         terminal_id: parent_terminal_id,
+        terminal_owner: false,
+        nozzle_authorized: false,
         dispatch_mode: None,
         vdso_page: None,
         resources: process::ProcessResources::new(),

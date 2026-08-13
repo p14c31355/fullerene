@@ -164,11 +164,12 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &chunk[..chunk_len]);
             // Linux stdout/stderr belongs on the interactive terminal too.
             // Keep the serial mirror for headless diagnostics and smoke
-            // tests, while forwarding textual output to Solvent's terminal.
+            // tests, while forwarding the original bytes to Solvent's
+            // process terminal so split UTF-8 writes are not replaced.
             let text = alloc::string::String::from_utf8_lossy(&chunk[..chunk_len]);
             crate::klog_fmt!("[LINUX-STDOUT] {}", text);
             if let Some(window_id) = rt.terminal_window {
-                solvent::write_process_terminal(window_id, &text);
+                solvent::write_process_terminal_bytes(window_id, &chunk[..chunk_len]);
             } else {
                 solvent::write_terminal(&text);
             }

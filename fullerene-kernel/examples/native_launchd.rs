@@ -11,6 +11,8 @@
 
 use core::arch::asm;
 
+// Keep these freestanding payload constants synchronized with the ABI source
+// of truth in fullerene-kernel/abi/src/lib.rs.
 const EXIT: u64 = 1;
 const WRITE: u64 = 4;
 const WAIT: u64 = 7;
@@ -206,10 +208,9 @@ fn launch_service(service: &ServiceSpec, restart_count: u32) -> ServiceSlot {
         )
     };
     if (pid as i64) < 0 {
-        // There is no child to own the terminal when spawn fails. Required
-        // bootstrap jobs halt PID 1; optional jobs are retried. The latter
-        // may leave a terminal window behind because the current ABI makes
-        // terminal ownership transfer atomic only on successful spawn.
+        // There is no child to own the terminal when spawn fails. The kernel
+        // rolls back the provisional endpoint ownership, while required
+        // bootstrap jobs halt PID 1 and optional jobs are retried.
         return failed_start(service, b" spawn failed", restart_count);
     }
 
@@ -312,6 +313,25 @@ fn poll_service(service: &ServiceSpec, mut slot: ServiceSlot) -> Option<ServiceS
     })
 }
 
+/// Advance a service slot through the common stopped, cooldown, launch, and
+/// polling state machine. Keeping shell and table-managed services on this
+/// path ensures restart backoff expires consistently.
+fn advance_service(service: &ServiceSpec, mut slot: ServiceSlot) -> ServiceSlot {
+    if slot.stopped {
+        return slot;
+    }
+    if slot.pid == 0 {
+        if slot.cooldown > 0 {
+            slot.cooldown -= 1;
+            slot
+        } else {
+            launch_service(service, slot.restart_count)
+        }
+    } else {
+        poll_service(service, slot).unwrap_or(slot)
+    }
+}
+
 fn service_loop() -> ! {
     write(b"launchd: PID 1 started\n");
     let mut slots = [None; SERVICES.len()];
@@ -323,36 +343,15 @@ fn service_loop() -> ! {
         if shell_request == 1 && shell_is_stopped {
             shell_slot = Some(launch_service(&SHELL_SERVICE, 0));
         }
-        shell_slot = shell_slot.and_then(|slot| {
-            if slot.stopped {
-                Some(slot)
-            } else if slot.pid == 0 {
-                if slot.cooldown == 0 {
-                    Some(launch_service(&SHELL_SERVICE, slot.restart_count))
-                } else {
-                    Some(slot)
-                }
-            } else {
-                poll_service(&SHELL_SERVICE, slot)
-            }
-        });
+        shell_slot = shell_slot.map(|slot| advance_service(&SHELL_SERVICE, slot));
 
         let mut index = 0;
         while index < SERVICES.len() {
             let service = &SERVICES[index];
-            slots[index] = match slots[index] {
-                None => Some(launch_service(service, 0)),
-                Some(slot) if slot.stopped => Some(slot),
-                Some(mut slot) if slot.pid == 0 => {
-                    if slot.cooldown > 0 {
-                        slot.cooldown -= 1;
-                        Some(slot)
-                    } else {
-                        Some(launch_service(service, slot.restart_count))
-                    }
-                }
-                Some(slot) => poll_service(service, slot),
-            };
+            slots[index] = Some(match slots[index] {
+                None => launch_service(service, 0),
+                Some(slot) => advance_service(service, slot),
+            });
             index += 1;
         }
 

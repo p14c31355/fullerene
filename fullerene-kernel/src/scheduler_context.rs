@@ -48,8 +48,13 @@ pub static SCHEDULER: SchedulerContext = SchedulerContext::new();
 pub struct SchedulerContext {
     // ── Process list (locked) ───────────────────────────────
     processes: spin::Mutex<HeaplessVec<(ProcessId, Box<Process>), MAX_PROCESSES>>,
+    reserved_pids: spin::Mutex<HeaplessVec<ProcessId, MAX_PROCESSES>>,
+    /// Endpoints are created before a child is spawned. Keep the creator as
+    /// the temporary owner until a successful spawn transfers ownership.
+    terminal_owners: spin::Mutex<HeaplessVec<(u64, ProcessId), MAX_PROCESSES>>,
 
     // ── Schedule state (lock‑free atomics) ──────────────────
+    pid_allocator: spin::Mutex<()>,
     next_pid: AtomicUsize,
     schedule_index: AtomicUsize,
     current_pid: AtomicUsize,
@@ -68,6 +73,9 @@ impl SchedulerContext {
     pub const fn new() -> Self {
         Self {
             processes: spin::Mutex::new(HeaplessVec::new()),
+            reserved_pids: spin::Mutex::new(HeaplessVec::new()),
+            terminal_owners: spin::Mutex::new(HeaplessVec::new()),
+            pid_allocator: spin::Mutex::new(()),
             next_pid: AtomicUsize::new(1),
             schedule_index: AtomicUsize::new(0),
             current_pid: AtomicUsize::new(0),
@@ -98,7 +106,110 @@ impl SchedulerContext {
     // ── PID allocation ──────────────────────────────────────
 
     pub fn allocate_pid(&self) -> ProcessId {
+        let _guard = self.pid_allocator.lock();
         ProcessId(self.next_pid.fetch_add(1, Ordering::Relaxed) as u64)
+    }
+
+    /// Reserve a caller-selected PID and advance ordinary allocation past it.
+    /// The process-list check and allocator update are both performed before
+    /// the process is published, so `new_with_id` cannot replace an existing
+    /// process through `add`'s duplicate-PID fallback.
+    pub fn reserve_pid(&self, pid: ProcessId) -> bool {
+        if pid.0 == 0 || self.with_process(pid, |_| {}).is_some() {
+            return false;
+        }
+        let _allocator_guard = self.pid_allocator.lock();
+        let mut reserved = self.reserved_pids.lock();
+        if reserved.contains(&pid) || reserved.push(pid).is_err() {
+            return false;
+        }
+        let next = pid.0.saturating_add(1) as usize;
+        let mut current = self.next_pid.load(Ordering::Acquire);
+        while current < next {
+            match self.next_pid.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+        true
+    }
+
+    pub fn register_terminal_owner(&self, terminal_id: u64, owner: ProcessId) -> bool {
+        let mut owners = self.terminal_owners.lock();
+        if owners.iter().any(|(id, _)| *id == terminal_id) {
+            return false;
+        }
+        owners.push((terminal_id, owner)).is_ok()
+    }
+
+    pub fn terminal_owned_by(&self, terminal_id: u64, owner: ProcessId) -> bool {
+        self.terminal_owners
+            .lock()
+            .iter()
+            .any(|(id, pid)| *id == terminal_id && *pid == owner)
+    }
+
+    pub fn transfer_terminal_owner(
+        &self,
+        terminal_id: u64,
+        from: ProcessId,
+        to: ProcessId,
+    ) -> bool {
+        let mut owners = self.terminal_owners.lock();
+        if let Some((_, owner)) = owners
+            .iter_mut()
+            .find(|(id, owner)| *id == terminal_id && *owner == from)
+        {
+            *owner = to;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn close_terminal_if_owned(&self, terminal_id: u64, owner: ProcessId) -> bool {
+        let removed = {
+            let mut owners = self.terminal_owners.lock();
+            owners
+                .iter()
+                .position(|(id, pid)| *id == terminal_id && *pid == owner)
+                .map(|pos| {
+                    owners.swap_remove(pos);
+                    true
+                })
+                .unwrap_or(false)
+        };
+        if removed {
+            solvent::close_process_terminal(lattice::window::WindowId(terminal_id));
+        }
+        removed
+    }
+
+    /// Close all endpoints still provisionally owned by a process that exits
+    /// before attaching them to a child.
+    pub fn close_terminals_owned_by(&self, owner: ProcessId) {
+        let removed = {
+            let mut owners = self.terminal_owners.lock();
+            let mut removed = HeaplessVec::<u64, MAX_PROCESSES>::new();
+            let mut index = 0;
+            while index < owners.len() {
+                if owners[index].1 == owner {
+                    let (terminal_id, _) = owners.swap_remove(index);
+                    let _ = removed.push(terminal_id);
+                } else {
+                    index += 1;
+                }
+            }
+            removed
+        };
+        for terminal_id in removed {
+            solvent::close_process_terminal(lattice::window::WindowId(terminal_id));
+        }
     }
 
     // ── Process list access ──────────────────────────────────
@@ -110,10 +221,12 @@ impl SchedulerContext {
             return Err(SystemError::TooManyProcesses);
         }
         let pid = process.id;
-        // Remove stale entry with same PID (should not happen, but be safe).
-        if let Some(pos) = procs.iter().position(|(id, _)| *id == pid) {
-            let _ = procs.swap_remove(pos);
+        if procs.iter().any(|(id, _)| *id == pid) {
+            return Err(SystemError::InvalidArgument);
         }
+        self.reserved_pids
+            .lock()
+            .retain(|reserved| *reserved != pid);
         procs
             .push((pid, process))
             .map_err(|_| SystemError::TooManyProcesses)
@@ -189,8 +302,13 @@ impl SchedulerContext {
     }
 
     #[inline]
-    fn should_defer_reap(reaped: bool, parent_alive: bool, supervisor_alive: bool) -> bool {
-        !reaped && (parent_alive || supervisor_alive)
+    fn should_defer_reap(
+        reaped: bool,
+        parent_alive: bool,
+        supervisor_alive: bool,
+        capability_holder_alive: bool,
+    ) -> bool {
+        !reaped && (parent_alive || supervisor_alive || capability_holder_alive)
     }
 
     /// Remove terminated processes and reclaim their process-owned memory.
@@ -208,6 +326,23 @@ impl SchedulerContext {
                 .iter()
                 .filter_map(|(id, process)| {
                     (process.state != ProcessState::Terminated).then_some(*id)
+                })
+                .collect();
+            let capability_targets: HeaplessVec<ProcessId, MAX_PROCESSES> = procs
+                .iter()
+                .filter(|(holder_id, _)| live_processes.contains(holder_id))
+                .flat_map(|(_, holder)| {
+                    let handles = holder.resources.handle_table.lock();
+                    let targets: HeaplessVec<ProcessId, MAX_PROCESSES> = handles
+                        .entries()
+                        .filter_map(|(_, object)| match object {
+                            crate::syscall::KernelObject::ProcessControl(control) => {
+                                Some(control.pid)
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    targets.into_iter()
                 })
                 .collect();
             let init_pid = procs
@@ -243,7 +378,13 @@ impl SchedulerContext {
                     let supervisor_alive = process
                         .supervisor_id
                         .is_some_and(|supervisor_id| live_processes.contains(&supervisor_id));
-                    if Self::should_defer_reap(process.reaped, parent_alive, supervisor_alive) {
+                    let capability_holder_alive = capability_targets.contains(id);
+                    if Self::should_defer_reap(
+                        process.reaped,
+                        parent_alive,
+                        supervisor_alive,
+                        capability_holder_alive,
+                    ) {
                         continue;
                     }
                     process.reaped = true;
@@ -282,9 +423,12 @@ impl SchedulerContext {
                         crate::memory_management::deallocate_process_page_table(pml4_frame);
                     }
                 }
-                if let Some(terminal_id) = process.terminal_id.take() {
-                    solvent::close_process_terminal(lattice::window::WindowId(terminal_id));
+                if process.terminal_owner {
+                    if let Some(terminal_id) = process.terminal_id.take() {
+                        self.close_terminal_if_owned(terminal_id, *id);
+                    }
                 }
+                self.close_terminals_owned_by(*id);
                 for waiter in process.resources.cleanup() {
                     let _ = waiters.push(waiter);
                 }
@@ -690,6 +834,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selected_pid_reserves_the_next_automatic_pid() {
+        let scheduler = SchedulerContext::new();
+        assert!(scheduler.reserve_pid(ProcessId(1)));
+        assert!(!scheduler.reserve_pid(ProcessId(1)));
+        assert_eq!(scheduler.allocate_pid(), ProcessId(2));
+    }
+
+    #[test]
+    fn process_control_capability_keeps_reap_deferred() {
+        assert!(SchedulerContext::should_defer_reap(
+            false, false, false, true
+        ));
+        assert!(!SchedulerContext::should_defer_reap(
+            false, false, false, false
+        ));
+    }
+
+    #[test]
+    fn terminal_ownership_transfers_only_from_current_owner() {
+        let scheduler = SchedulerContext::new();
+        assert!(scheduler.register_terminal_owner(7, ProcessId(10)));
+        assert!(!scheduler.transfer_terminal_owner(7, ProcessId(11), ProcessId(12)));
+        assert!(scheduler.transfer_terminal_owner(7, ProcessId(10), ProcessId(12)));
+        assert!(!scheduler.terminal_owned_by(7, ProcessId(10)));
+        assert!(scheduler.terminal_owned_by(7, ProcessId(12)));
+    }
+
+    #[test]
     fn unreaped_zombies_survive_cleanup_for_their_manager() {
         let mut process = Process::new("zombie", VirtAddr::new(0), false);
         process.state = ProcessState::Terminated;
@@ -706,9 +878,18 @@ mod tests {
             usize::MAX
         ));
 
-        assert!(SchedulerContext::should_defer_reap(false, false, true));
-        assert!(SchedulerContext::should_defer_reap(false, true, false));
-        assert!(!SchedulerContext::should_defer_reap(false, false, false));
-        assert!(!SchedulerContext::should_defer_reap(true, true, true));
+        assert!(SchedulerContext::should_defer_reap(
+            false, false, true, false
+        ));
+        assert!(SchedulerContext::should_defer_reap(
+            false, true, false, false
+        ));
+        assert!(SchedulerContext::should_defer_reap(
+            false, false, false, true
+        ));
+        assert!(!SchedulerContext::should_defer_reap(
+            false, false, false, false
+        ));
+        assert!(!SchedulerContext::should_defer_reap(true, true, true, true));
     }
 }

@@ -175,7 +175,7 @@ fn main() {
         .expect("could not start rustc for native shell");
     assert!(
         shell_status.success(),
-        "native user shell compilation failed"
+        "native user shell compilation failed (rustc exit {shell_status}); it requires the x86_64-unknown-linux-gnu target and a host linker: rustup target add x86_64-unknown-linux-gnu"
     );
     let launchd_status = Command::new(&rustc)
         .args(native_args)
@@ -184,7 +184,10 @@ fn main() {
         .arg(&launchd_src)
         .status()
         .expect("could not start rustc for launchd");
-    assert!(launchd_status.success(), "launchd compilation failed");
+    assert!(
+        launchd_status.success(),
+        "launchd compilation failed (rustc exit {launchd_status}); it requires the x86_64-unknown-linux-gnu target and a host linker: rustup target add x86_64-unknown-linux-gnu"
+    );
     // Keep the example target buildable as well as the generated kernel
     // payload. `native_launchd.rs` embeds the shell image, so Cargo must pass
     // the same path when it compiles the example directly (for checks and

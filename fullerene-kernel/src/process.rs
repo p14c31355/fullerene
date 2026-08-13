@@ -549,6 +549,13 @@ pub struct Process {
     pub reaped: bool,
     /// GUI terminal endpoint attached to stdin/stdout, if any.
     pub terminal_id: Option<u64>,
+    /// Whether this process owns the terminal endpoint and may close it.
+    /// Children and threads inherit the association without inheriting this
+    /// ownership, so their exit cannot close their parent's terminal.
+    pub terminal_owner: bool,
+    /// Kernel-issued authorization to enter the privileged Nozzle bridge.
+    /// This is never derived from the process name.
+    pub nozzle_authorized: bool,
     /// Opaque data for async task futures (used by task.rs spawn/entry)
     pub task_data: u64,
     /// Runtime dispatch mode (Fullerene native, Linux ABI, etc.)
@@ -565,13 +572,22 @@ impl Process {
         let id = SCHEDULER.allocate_pid();
 
         Self::new_with_id(id, name, entry_point, is_user)
+            .expect("allocator returned an unavailable process ID")
     }
 
     /// Construct a process with a caller-selected PID for bootstrap roles
     /// such as PID 1. Ordinary processes must use `new` so the allocator can
     /// maintain uniqueness.
-    pub fn new_with_id(id: ProcessId, name: &str, entry_point: VirtAddr, is_user: bool) -> Self {
-        Self {
+    pub fn new_with_id(
+        id: ProcessId,
+        name: &str,
+        entry_point: VirtAddr,
+        is_user: bool,
+    ) -> Result<Self, petroleum::common::logging::SystemError> {
+        if !SCHEDULER.reserve_pid(id) {
+            return Err(petroleum::common::logging::SystemError::InvalidArgument);
+        }
+        Ok(Self {
             id,
             name: Box::from(name),
             state: ProcessState::Ready,
@@ -594,11 +610,13 @@ impl Process {
             supervisor_id: None,
             reaped: false,
             terminal_id: None,
+            terminal_owner: false,
+            nozzle_authorized: false,
             task_data: 0,
             dispatch_mode: None,
             vdso_page: None,
             resources: ProcessResources::new(),
-        }
+        })
     }
 
     /// Initialize process context for first execution
@@ -713,6 +731,8 @@ pub fn init(heap_start: usize, heap_end: usize) {
         supervisor_id: None,
         reaped: false,
         terminal_id: None,
+        terminal_owner: false,
+        nozzle_authorized: false,
         task_data: 0,
         dispatch_mode: None,
         vdso_page: None,
@@ -817,12 +837,35 @@ pub fn create_process_with_relationships(
     supervisor_id: Option<ProcessId>,
     terminal_id: Option<u64>,
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
+    create_process_with_relationships_and_authorization(
+        name,
+        entry_point_address,
+        is_user,
+        parent_id,
+        supervisor_id,
+        terminal_id,
+        false,
+    )
+}
+
+/// Create a process with an explicit kernel-issued Nozzle authorization.
+pub fn create_process_with_relationships_and_authorization(
+    name: &str,
+    entry_point_address: VirtAddr,
+    is_user: bool,
+    parent_id: Option<ProcessId>,
+    supervisor_id: Option<ProcessId>,
+    terminal_id: Option<u64>,
+    nozzle_authorized: bool,
+) -> Result<ProcessId, petroleum::common::logging::SystemError> {
     mem_debug!("Process: create_process starting\n");
 
     let mut process = Process::new(name, entry_point_address, is_user);
     process.parent_id = parent_id;
     process.supervisor_id = supervisor_id;
     process.terminal_id = terminal_id;
+    process.terminal_owner = terminal_id.is_some();
+    process.nozzle_authorized = nozzle_authorized;
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();

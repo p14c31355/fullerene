@@ -690,6 +690,8 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         supervisor_id: Some(current_pid),
         reaped: false,
         terminal_id: rt.terminal_window.map(|window| window.0),
+        terminal_owner: false,
+        nozzle_authorized: false,
         task_data: 0,
         vdso_page: child_vdso,
         resources: process::ProcessResources::new(),

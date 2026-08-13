@@ -684,7 +684,7 @@ fn initialize_linux_stack_transaction(
 /// Load a program from raw bytes and create a process for it using goblin.
 /// If `linux_abi` is true, attaches a LinuxRuntime for Linux ABI emulation.
 pub fn load_program(image_data: &[u8], name: &str) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, &[], &[], false, None, None, None)
+    load_program_inner(image_data, name, &[], &[], false, None, None, None, false)
 }
 
 /// Load a native program as a child of the requesting process.
@@ -702,6 +702,7 @@ pub fn load_program_with_parent(
         Some(parent_id),
         None,
         None,
+        false,
     )
 }
 
@@ -713,6 +714,26 @@ pub fn load_program_with_relationships(
     supervisor_id: Option<process::ProcessId>,
     terminal_id: Option<u64>,
 ) -> Result<process::ProcessId, LoadError> {
+    load_program_with_relationships_and_authorization(
+        image_data,
+        name,
+        parent_id,
+        supervisor_id,
+        terminal_id,
+        false,
+    )
+}
+
+/// Load a native program with lifecycle relationships and an explicit
+/// kernel-issued Nozzle authorization.
+pub fn load_program_with_relationships_and_authorization(
+    image_data: &[u8],
+    name: &str,
+    parent_id: process::ProcessId,
+    supervisor_id: Option<process::ProcessId>,
+    terminal_id: Option<u64>,
+    nozzle_authorized: bool,
+) -> Result<process::ProcessId, LoadError> {
     load_program_inner(
         image_data,
         name,
@@ -722,6 +743,7 @@ pub fn load_program_with_relationships(
         Some(parent_id),
         supervisor_id,
         terminal_id,
+        nozzle_authorized,
     )
 }
 
@@ -743,7 +765,9 @@ pub fn load_program_with_runtime_args(
     envp: &[&str],
     is_linux: bool,
 ) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, argv, envp, is_linux, None, None, None)
+    load_program_inner(
+        image_data, name, argv, envp, is_linux, None, None, None, false,
+    )
 }
 
 /// Replace the executable image in an existing Linux process address space.
@@ -838,6 +862,7 @@ fn load_program_inner(
     parent_id: Option<process::ProcessId>,
     supervisor_id: Option<process::ProcessId>,
     terminal_id: Option<u64>,
+    nozzle_authorized: bool,
 ) -> Result<process::ProcessId, LoadError> {
     crate::klog_fmt!(
         "[LINUX-DIAG] elf parse begin name={} bytes={} linux={}\n",
@@ -903,13 +928,14 @@ fn load_program_inner(
     }
 
     // Create process with the loaded program (user mode)
-    let pid = process::create_process_with_relationships(
+    let pid = process::create_process_with_relationships_and_authorization(
         name,
         entry_point_address,
         true,
         parent_id,
         supervisor_id,
         terminal_id,
+        nozzle_authorized,
     )?;
     crate::klog_fmt!(
         "[LINUX-DIAG] process created pid={} entry={:#x}\n",

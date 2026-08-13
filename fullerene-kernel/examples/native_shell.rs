@@ -11,6 +11,8 @@
 
 use core::arch::asm;
 
+// Keep these freestanding payload constants synchronized with the ABI source
+// of truth in fullerene-kernel/abi/src/lib.rs.
 const EXIT: u64 = 1;
 const RUN_NOZZLE: u64 = 116;
 

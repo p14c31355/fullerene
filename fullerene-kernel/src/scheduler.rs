@@ -95,6 +95,17 @@ static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack { _bytes: [0; 65536] 
 /// one; failure is fatal because running without init would orphan lifecycle
 /// ownership and reaping.
 fn bootstrap_launchd() {
+    if let Some((pid, state)) = SCHEDULER.with_list(|list| {
+        list.iter()
+            .find(|(_, process)| process.role == crate::process::ProcessRole::Init)
+            .map(|(pid, process)| (*pid, process.state))
+    }) {
+        petroleum::serial::serial_log(format_args!(
+            "retaining existing launchd PID {} during scheduler recovery ({:?})\n",
+            pid.0, state
+        ));
+        return;
+    }
     let pid = crate::loader::load_program(LAUNCHD_IMAGE, "launchd")
         .expect("failed to load launchd as PID 1");
     assert_eq!(pid.0, 1, "launchd did not receive PID 1");
@@ -106,9 +117,10 @@ fn bootstrap_launchd() {
 
 /// Main kernel scheduler loop.
 ///
-/// Renders the initial desktop, bootstraps launchd, then enters an idle loop
-/// that drives `gui::runtime_tick()`. Shell and future apps are userland
-/// processes managed through the native ABI.
+/// Renders the initial desktop, bootstraps launchd after GUI readiness, then
+/// enters an idle loop that drives `gui::runtime_tick()`. launchd consumes
+/// desktop shell-launch requests and creates the native shell through the ABI;
+/// the scheduler itself does not create the shell.
 pub fn scheduler_loop() -> ! {
     solvent::install_scheduler_yield(crate::process::yield_from_scheduler_stack);
     let boot_tsc = unsafe { core::arch::x86_64::_rdtsc() };

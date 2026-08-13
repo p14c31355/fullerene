@@ -235,10 +235,12 @@ the same user ELF loader and syscall ABI as every other native program.
 
 The shell is also a static native ELF. It is not a scheduler callback or a
 boot-time kernel entry point: launchd creates a terminal endpoint and spawns
-the shell. The ELF is a small ABI bridge into the existing Nozzle runtime,
-which still owns the VFS/desktop callbacks; Nozzle consequently retains its
-#340 welcome text, prompt, Help list, completion, and built-ins while the
-process remains launchd-owned.
+the shell. The kernel grants the `run_nozzle` ABI bridge only to a child
+spawned by the kernel-marked launchd process; mutable process names and
+terminal IDs cannot authorize it. The ELF is a small ABI bridge into the
+existing Nozzle runtime, which still owns the VFS/desktop callbacks; Nozzle
+consequently retains its #340 welcome text, prompt, Help list, completion, and
+built-ins while the process remains launchd-owned.
 
 Process creation records two independent relationships:
 
@@ -263,8 +265,9 @@ supervises it through its `ProcessControl` capability. It polls, reaps, and
 revokes terminated children, and restarts `Always` jobs with bounded
 exponential backoff. A service that is not configured for restart is left
 stopped. Failure while bootstrapping a required service is fatal to PID 1,
-so launchd never continues with an unmanaged child or an orphaned startup
-terminal.
+so launchd never continues with an unmanaged child. Terminal creation is
+provisional: if the subsequent spawn fails, the kernel closes the endpoint and
+removes its temporary owner; on success ownership moves to the child.
 
 This keeps launchd special only at the PID 1 bootstrap boundary. Shells,
 services, and applications are otherwise ordinary user processes; adding a

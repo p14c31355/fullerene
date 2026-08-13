@@ -93,8 +93,10 @@ pub(crate) fn syscall_write(fd: c_int, buffer: *const u8, count: usize) -> Sysca
             })
             .flatten();
         if let Some(terminal_id) = terminal_id {
-            let text = alloc::string::String::from_utf8_lossy(&kernel_buf);
-            solvent::write_process_terminal(lattice::window::WindowId(terminal_id), &text);
+            solvent::write_process_terminal_bytes(
+                lattice::window::WindowId(terminal_id),
+                &kernel_buf,
+            );
         }
         petroleum::write_serial_bytes(0x3F8, 0x3FD, &kernel_buf);
         Ok(count as u64)

@@ -38,7 +38,7 @@
 | 62 | resize_window | ✅ Full |  |
 | 63 | present_window | ✅ Full |  |
 | 64 | get_window_event | 🧩 Stub |  |
-| 65 | create_terminal | ✅ Full | Creates a process-owned terminal endpoint |
+| 65 | create_terminal | ✅ Full | Creates an endpoint; ownership attaches to the spawned process |
 | 70 | enumerate_devices | 🟡 Partial | PCI devices and registered block devices |
 | 71 | open_device | 🟡 Partial | PCI BDF, vendor:device, nvmeN/ahciN, and /dev block names |
 | 72 | device_ioctl | 🟡 Partial | PCI access, controller init, capabilities, and block I/O |
@@ -59,7 +59,7 @@
 | 113 | process_control_reap | ✅ Full | Capability-authorized zombie collection |
 | 114 | process_control_assign | ✅ Full | Changes supervisor without changing birth parent |
 | 115 | launchd_poll_request | ✅ Full | PID 1-only desktop-to-launchd shell request |
-| 116 | run_nozzle | ✅ Full | Launchd-owned shell image enters the #340 Nozzle runtime |
+| 116 | run_nozzle | ✅ Full | Kernel-issued launchd identity authorizes the shell image |
 
 ## Linux Compat Syscalls
 

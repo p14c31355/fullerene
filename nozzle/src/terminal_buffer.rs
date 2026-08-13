@@ -152,6 +152,11 @@ impl TerminalBuffer {
     }
 
     pub fn put_str(&mut self, s: &str) {
+        self.put_bytes(s.as_bytes());
+    }
+
+    /// Write terminal bytes without decoding each syscall chunk as UTF-8.
+    pub fn put_bytes(&mut self, bytes: &[u8]) {
         #[derive(PartialEq)]
         enum AnsiState {
             Normal,
@@ -162,7 +167,7 @@ impl TerminalBuffer {
         let mut param_buf: [u8; 8] = [0; 8];
         let mut param_len: usize = 0;
 
-        for &b in s.as_bytes() {
+        for &b in bytes {
             match state {
                 AnsiState::Normal => {
                     if b == 0x1B {
