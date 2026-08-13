@@ -224,13 +224,6 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
             rt.desktop.wm.raise_to_top(id);
             rt.frame_due = true;
         }
-        NewShell => {
-            // Defer shell launch — cannot call ensure_terminal_window()
-            // or launch_shell() while holding RUNTIME_CONTEXT lock (deadlock).
-            rt.shell_launch_pending = true;
-            rt.desktop.force_full_redraw();
-            rt.frame_due = true;
-        }
         TaskManager => open_info_window(rt, InfoWindow::TaskManager),
         DeviceManager => open_info_window(rt, InfoWindow::DeviceManager),
         FileManager => open_info_window(rt, InfoWindow::FileManager),

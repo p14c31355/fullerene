@@ -266,6 +266,10 @@ pub fn create_process_terminal(title: &str) -> Option<WindowId> {
         .desktop
         .wm
         .create_titled_window(100, 80, width, height, 0x000000, title);
+    // A restarted launchd shell gets a fresh process-owned terminal.  Make it
+    // the focused window immediately; otherwise keyboard routing continues to
+    // target the previously topmost window and the new Nozzle appears dead.
+    runtime.desktop.wm.raise_to_top(id);
     runtime.process_terminals.push(crate::ProcessTerminal::new(
         id,
         (width / GLYPH_W).max(1),

@@ -44,9 +44,6 @@ pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
 
 pub(crate) static BACK_BUFFER: Mutex<Option<petroleum::PageBuf<u32>>> = Mutex::new(None);
 
-/// When enabled, the kernel log ring buffer is periodically written to `/mnt/klog.txt`.
-pub static KLOG_SAVE_ENABLED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
 /// Set while the Klog Live window is open. The kernel timer uses this atomic
 /// flag to refresh the existing window's client area even if the normal event
 /// loop is blocked by a synchronous kernel operation.
@@ -186,11 +183,19 @@ pub struct RuntimeState {
     pub settings_dirty: bool,
     pub klog_live_window: Option<WindowId>,
     pub klog_live_dirty: bool,
+    pub text_viewer: Option<TextViewerState>,
     /// Window whose surface was updated by the native video presenter.
     pub(crate) video_dirty_window: Option<WindowId>,
     /// Earliest cursor position still drawn on the framebuffer while a redraw
     /// is pending. The full and lightweight render paths both consume it.
     pub(crate) cursor_redraw_from: Option<(i32, i32)>,
+}
+
+/// State for the scrollable text window opened by the WASM viewer.
+pub struct TextViewerState {
+    pub(crate) window_id: WindowId,
+    pub(crate) text: String,
+    pub(crate) scroll_row: usize,
 }
 
 /// State for a terminal attached to a process window.
@@ -283,6 +288,7 @@ pub fn init() {
         settings_dirty: false,
         klog_live_window: None,
         klog_live_dirty: false,
+        text_viewer: None,
         video_dirty_window: None,
         cursor_redraw_from: None,
     });
@@ -304,13 +310,12 @@ pub fn apply_settings(sensitivity: f32, brightness_x100: u32, top_panel_enabled:
 }
 
 /// Return the settings values needed by the kernel persistence callback.
-pub fn settings_snapshot() -> (f32, u32, bool, bool, bool, lattice::style::LatticeVariant) {
+pub fn settings_snapshot() -> (f32, u32, bool, bool, lattice::style::LatticeVariant) {
     (
         MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32 / 6.0,
         DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed),
         lattice::top_panel::is_top_panel_enabled(),
         lattice::compositor::WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed) > 0,
-        KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed),
         lattice::style::variant(),
     )
 }

@@ -726,6 +726,15 @@ pub fn poll_keyboard() {
                 }
 
                 let top_id = runtime.desktop.wm.windows().last().map(|window| window.id);
+                let text_viewer_focused = runtime
+                    .text_viewer
+                    .as_ref()
+                    .is_some_and(|viewer| Some(viewer.window_id) == top_id);
+                if text_viewer_focused {
+                    drop(runtime_guard);
+                    crate::viewer::handle_key(scancode, pressed);
+                    continue;
+                }
                 let process_terminal_id = runtime
                     .process_terminals
                     .iter()

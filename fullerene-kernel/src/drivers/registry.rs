@@ -144,6 +144,22 @@ pub fn hbd_status() -> String {
             observation.link_status,
         );
     }
+    #[cfg(not(nitrogen_no_hda))]
+    if let Some(observation) = crate::contexts::audio::with_audio(|audio| {
+        audio
+            .hda
+            .as_ref()
+            .map(nitrogen::hbd::backends::hda::observe)
+    })
+    .flatten()
+    {
+        use core::fmt::Write;
+        let _ = writeln!(
+            out,
+            "backend=hda present={} ready={}",
+            observation.controller_present, observation.controller_ready
+        );
+    }
     if out.is_empty() {
         out.push_str("hbd: no compiled backend is available\n");
     }
@@ -158,6 +174,7 @@ pub fn hbd_solve(backend: &str) -> String {
     let mut reports: Vec<ConvergenceReport> = Vec::new();
     let run_xhci = backend == "xhci" || backend == "all";
     let run_iwlwifi = backend == "iwlwifi" || backend == "all";
+    let run_hda = backend == "hda" || backend == "all";
 
     #[cfg(not(nitrogen_no_usb))]
     if run_xhci {
@@ -178,9 +195,21 @@ pub fn hbd_solve(backend: &str) -> String {
     if run_iwlwifi {
         reports.push(nitrogen::hbd::backends::iwlwifi::IwlwifiBackend::solve(budget).report);
     }
+    #[cfg(not(nitrogen_no_hda))]
+    if run_hda {
+        if let Some(report) = crate::contexts::audio::with_audio(|audio| {
+            audio.hda.as_ref().map(|controller| {
+                nitrogen::hbd::backends::hda::HdaBackend::solve(controller, budget).report
+            })
+        })
+        .flatten()
+        {
+            reports.push(report);
+        }
+    }
 
-    if !run_xhci && !run_iwlwifi {
-        return String::from("Usage: hbd status|solve <xhci|iwlwifi|all>|report\n");
+    if !run_xhci && !run_iwlwifi && !run_hda {
+        return String::from("Usage: hbd status|solve <xhci|iwlwifi|hda|all>|report\n");
     }
     let mut out = String::new();
     for report in &reports {
@@ -189,6 +218,8 @@ pub fn hbd_solve(backend: &str) -> String {
     if reports.is_empty() {
         if run_xhci {
             out.push_str("hbd: xhci solve queued; run hbd report after the next scheduler tick\n");
+        } else if run_hda {
+            out.push_str("hbd: HDA controller is unavailable\n");
         } else {
             out.push_str("hbd: requested backend is unavailable\n");
         }

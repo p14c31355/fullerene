@@ -48,14 +48,12 @@ fn close_runtime_file(handle: solvent::VfsHandle) -> Result<(), genome::FsError>
 }
 
 fn save_runtime_settings() {
-    let (sensitivity, brightness, top_panel, corner, klog_save, variant) =
-        solvent::settings_snapshot();
+    let (sensitivity, brightness, top_panel, corner, variant) = solvent::settings_snapshot();
     let data = crate::contexts::settings_persist::format_settings_toml(
         sensitivity,
         brightness,
         top_panel,
         corner,
-        klog_save,
         variant,
     );
     let _ = crate::contexts::vfs::replace_file("/etc/settings.toml", data.as_bytes());
@@ -182,7 +180,7 @@ pub fn init() {
     }
     .install();
 
-    let (sensitivity, brightness, top_panel, corner, klog_save, variant) =
+    let (sensitivity, brightness, top_panel, corner, variant) =
         crate::contexts::settings_persist::load_settings(crate::fs::read_entire_file);
     lattice::style::set_variant(variant);
     solvent::apply_settings(sensitivity, brightness, top_panel);
@@ -190,7 +188,6 @@ pub fn init() {
         if corner { 8 } else { 0 },
         core::sync::atomic::Ordering::Relaxed,
     );
-    solvent::KLOG_SAVE_ENABLED.store(klog_save, core::sync::atomic::Ordering::Relaxed);
 
     // TSC calibration was already performed in uefi_main before APIC init
     // so the APIC timer could be calibrated against the known TSC frequency.
