@@ -13,7 +13,6 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopAction {
     NewTerminal,
-    NewShell,
     TaskManager,
     DeviceManager,
     FileManager,
@@ -50,7 +49,6 @@ impl DesktopAction {
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "new_terminal" => DesktopAction::NewTerminal,
-            "new_shell" => DesktopAction::NewShell,
             "task_manager" => DesktopAction::TaskManager,
             "device_manager" => DesktopAction::DeviceManager,
             "file_manager" => DesktopAction::FileManager,

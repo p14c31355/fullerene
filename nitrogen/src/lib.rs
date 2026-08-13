@@ -32,6 +32,7 @@ pub mod debug;
 pub mod driver_api;
 pub mod driver_context;
 pub mod error;
+pub mod hbd;
 pub mod hid;
 pub mod i2c_hid;
 pub mod metrics;

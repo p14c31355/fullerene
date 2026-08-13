@@ -221,6 +221,7 @@ pub enum VirtioGpuError {
     DeviceNotReady,
     CommandFailed,
     MappingFailed,
+    MmioAccessFailed,
     InvalidDevice,
 }
 
@@ -321,52 +322,62 @@ impl VirtioGpu {
         self.w32(0x0c, (v >> 32) as u32);
     }
 
-    fn set_queue_select(&self, idx: u16) {
+    fn set_queue_select(&self, idx: u16) -> Result<(), VirtioGpuError> {
         log::info!("[VirtIO-GPU] set_queue_select: {}", idx);
         self.write_common_cfg(0x16, idx as u32, 2)
-            .expect("Direct write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)
     }
-    fn write_queue_size(&self, size: u16) {
+    fn write_queue_size(&self, size: u16) -> Result<(), VirtioGpuError> {
         log::info!("[VirtIO-GPU] write_queue_size: {}", size);
         self.write_common_cfg(0x18, size as u32, 2)
-            .expect("Direct write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)
     }
-    fn set_queue_enable(&self, en: bool) {
+    fn set_queue_enable(&self, en: bool) -> Result<(), VirtioGpuError> {
         log::info!("[VirtIO-GPU] set_queue_enable: {}", en);
         self.write_common_cfg(0x1c, u32::from(en), 2)
-            .expect("Direct write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)
     }
 
-    fn set_queue_desc(&self, a: u64) {
+    fn set_queue_desc(&self, a: u64) -> Result<(), VirtioGpuError> {
         log::info!("[VirtIO-GPU] set_queue_desc: {:#x}", a);
         self.write_common_cfg(0x20, a as u32, 4)
-            .expect("Direct write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)?;
         self.write_common_cfg(0x24, (a >> 32) as u32, 4)
-            .expect("Direct write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)
     }
 
-    fn set_queue_avail(&self, a: u64) {
+    fn set_queue_avail(&self, a: u64) -> Result<(), VirtioGpuError> {
         log::info!("[VirtIO-GPU] set_queue_avail: {:#x}", a);
         self.write_common_cfg(0x28, a as u32, 4)
-            .expect("Direct write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)?;
         self.write_common_cfg(0x2c, (a >> 32) as u32, 4)
-            .expect("Direct write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)
     }
 
-    fn set_queue_used(&self, a: u64) {
+    fn set_queue_used(&self, a: u64) -> Result<(), VirtioGpuError> {
         log::info!("[VirtIO-GPU] set_queue_used: {:#x}", a);
         self.write_common_cfg(0x30, a as u32, 4)
-            .expect("Direct write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)?;
         self.write_common_cfg(0x34, (a >> 32) as u32, 4)
-            .expect("Direct write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)
     }
 
     fn read_common_via_direct(&self, offset: u32, width: u32) -> Option<u32> {
-        let ptr = unsafe { (self.common_virt_absolute as *mut u8).add(offset as usize) };
+        let address = (self.common_virt_absolute as usize).checked_add(offset as usize)?;
+        let Ok(region) = (unsafe {
+            sealant::MmioRegion::from_address(address, width as usize, sealant::Permissions::READ)
+        }) else {
+            log::warn!(
+                "[VirtIO-GPU] read_common: MMIO region rejected off={:#x} width={}",
+                offset,
+                width
+            );
+            return None;
+        };
         let val = match width {
-            1 => Some(unsafe { core::ptr::read_volatile(ptr as *const u8) as u32 }),
-            2 => Some(unsafe { core::ptr::read_volatile(ptr as *const u16) as u32 }),
-            4 => Some(unsafe { core::ptr::read_volatile(ptr as *const u32) }),
+            1 => region.read_volatile_at::<u8>(0).ok().map(u32::from),
+            2 => region.read_volatile_at::<u16>(0).ok().map(u32::from),
+            4 => region.read_volatile_at::<u32>(0).ok(),
             _ => None,
         };
         if let Some(v) = val {
@@ -383,11 +394,15 @@ impl VirtioGpu {
     }
 
     fn write_common_via_direct(&self, offset: u32, value: u32, width: u32) -> Option<()> {
-        let ptr = unsafe { (self.common_virt_absolute as *mut u8).add(offset as usize) };
+        let address = (self.common_virt_absolute as usize).checked_add(offset as usize)?;
+        let region = unsafe {
+            sealant::MmioRegion::from_address(address, width as usize, sealant::Permissions::WRITE)
+        }
+        .ok()?;
         match width {
-            1 => unsafe { core::ptr::write_volatile(ptr as *mut u8, value as u8) },
-            2 => unsafe { core::ptr::write_volatile(ptr as *mut u16, value as u16) },
-            4 => unsafe { core::ptr::write_volatile(ptr as *mut u32, value) },
+            1 => region.write_volatile_at(0, value as u8).ok()?,
+            2 => region.write_volatile_at(0, value as u16).ok()?,
+            4 => region.write_volatile_at(0, value).ok()?,
             _ => return None,
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
@@ -487,9 +502,9 @@ impl VirtioGpu {
         );
     }
 
-    fn set_queue_msix_vector(&self, vector: u16) {
+    fn set_queue_msix_vector(&self, vector: u16) -> Result<(), VirtioGpuError> {
         self.write_common_cfg(0x1a, vector as u32, 2)
-            .expect("Type5 write failed");
+            .ok_or(VirtioGpuError::MmioAccessFailed)
     }
 
     /// # Safety
@@ -507,7 +522,7 @@ impl VirtioGpu {
         avail_phys: u64,
         used: *mut VringUsed,
         used_phys: u64,
-    ) {
+    ) -> Result<(), VirtioGpuError> {
         self.desc_table = desc;
         self.avail_ring = avail;
         self.used_ring = used;
@@ -522,7 +537,7 @@ impl VirtioGpu {
             core::ptr::write_bytes(used as *mut u8, 0, core::mem::size_of::<VringUsed>());
         }
 
-        self.set_queue_select(idx as u16);
+        self.set_queue_select(idx as u16)?;
         // Flush posted PCI MMIO write: read back queue_select to ensure
         // the write has reached the device before we read queue_size.
         let _ = self.r16(0x16);
@@ -547,12 +562,12 @@ impl VirtioGpu {
         );
 
         self.queue_notify_offs[idx as usize] = self.r16(0x1e);
-        self.write_queue_size(actual_size);
-        self.set_queue_msix_vector(0);
-        self.set_queue_desc(desc_phys);
-        self.set_queue_avail(avail_phys);
-        self.set_queue_used(used_phys);
-        self.set_queue_enable(true);
+        self.write_queue_size(actual_size)?;
+        self.set_queue_msix_vector(0)?;
+        self.set_queue_desc(desc_phys)?;
+        self.set_queue_avail(avail_phys)?;
+        self.set_queue_used(used_phys)?;
+        self.set_queue_enable(true)?;
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         self.complete_init();
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
@@ -594,6 +609,7 @@ impl VirtioGpu {
             idx,
             self.status()
         );
+        Ok(())
     }
 
     fn read_used_idx(&self) -> u16 {
@@ -753,12 +769,26 @@ impl VirtioGpu {
             self.dma_fence();
 
             let notify_off = self.get_notify_offset(0);
-            let notify_ptr = self
-                .notify_bar_base
-                .add(self.notify_cap_offset as usize)
-                .add(notify_off) as *mut u32;
-            core::ptr::write_volatile(notify_ptr, 0u32.to_le());
-            core::ptr::read_volatile(self.common_virt_absolute);
+            let Some(notify_address) = (self.notify_bar_base as usize)
+                .checked_add(self.notify_cap_offset as usize)
+                .and_then(|base| base.checked_add(notify_off))
+            else {
+                log::warn!("[VirtIO-GPU] submit_raw: notify address overflow");
+                return;
+            };
+            let Ok(notify_region) = sealant::MmioRegion::from_address(
+                notify_address,
+                core::mem::size_of::<u32>(),
+                sealant::Permissions::WRITE,
+            ) else {
+                log::warn!("[VirtIO-GPU] submit_raw: notify MMIO region rejected");
+                return;
+            };
+            if notify_region.write_volatile_at(0, 0u32.to_le()).is_err() {
+                log::warn!("[VirtIO-GPU] submit_raw: notify MMIO write failed");
+                return;
+            }
+            let _ = self.read_common_via_direct(0, 4);
         }
     }
 

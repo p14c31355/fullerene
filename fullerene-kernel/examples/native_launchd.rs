@@ -75,7 +75,7 @@ struct ServiceSlot {
 // former Nozzle launch gesture and launchd turns its request into this job.
 static SHELL_SERVICE: ServiceSpec = ServiceSpec {
     name: b"shell",
-    terminal_title: b"Terminal",
+    terminal_title: b"Nozzle",
     image: SHELL_IMAGE,
     restart: RestartPolicy::Never,
     required: false,

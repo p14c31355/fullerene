@@ -3,9 +3,7 @@
 //! Extracted from lib.rs to keep the main module focused on orchestration.
 
 use crate::runtime_context::{MOUSE_SENSITIVITY_MAX_RAW, MOUSE_SENSITIVITY_MIN_RAW};
-use crate::{
-    DISPLAY_BRIGHTNESS_X100, FB_DIMS, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY, RUNTIME_CONTEXT,
-};
+use crate::{DISPLAY_BRIGHTNESS_X100, FB_DIMS, MOUSE_SENSITIVITY, RUNTIME_CONTEXT};
 use alloc::string::String;
 use lattice::compositor::WINDOW_CORNER_RADIUS;
 use lattice::painter::Painter;
@@ -39,7 +37,7 @@ pub(crate) fn settings_handle_mouse(rt: &mut crate::RuntimeState, x: i32, y: i32
     if relative_x < 28
         || relative_x >= window.width as i32 - 28
         || relative_y < ROW_Y
-        || relative_y >= ROW_Y + ROW_HEIGHT * 7
+        || relative_y >= ROW_Y + ROW_HEIGHT * 6
     {
         return false;
     }
@@ -64,7 +62,7 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
 
     let mut sel = SETTINGS_SELECTED.lock();
 
-    const ROWS: u32 = 7;
+    const ROWS: u32 = 6;
     match key {
         KeyCode::Up => {
             *sel = sel.saturating_sub(1).min(ROWS - 1);
@@ -150,11 +148,6 @@ fn adjust_setting(rt: &mut crate::RuntimeState, row: u32, dec: bool) {
             rt.desktop.force_full_redraw();
             persist_settings();
         }
-        6 => {
-            let new_val = !KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed);
-            KLOG_SAVE_ENABLED.store(new_val, core::sync::atomic::Ordering::Relaxed);
-            persist_settings();
-        }
         _ => {}
     }
 }
@@ -190,7 +183,6 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
             .map_or("?", |p| p.name),
     };
 
-    let klog_save = KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed);
     let Some(window) = rt
         .desktop
         .wm
@@ -218,7 +210,6 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
         String::from(if top_panel { "On" } else { "Off" }),
         String::from(if corner > 0 { "Rounded" } else { "Square" }),
         String::from(wp_name),
-        String::from(if klog_save { "On" } else { "Off" }),
     ];
     let labels = [
         "Shell style",
@@ -227,7 +218,6 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
         "Top panel",
         "Window corners",
         "Wallpaper",
-        "SD kernel-log save",
     ];
     let descriptions = [
         "Choose the visual language used by the shell",
@@ -236,10 +226,9 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
         "Show or hide the desktop top panel",
         "Use rounded or square window corners",
         "Cycle desktop background styles",
-        "Save kernel logs to removable storage",
     ];
 
-    for row in 0..7u32 {
+    for row in 0..6u32 {
         let y = 112 + row as i32 * 42;
         let selected_bg = if row == sel { 0xDCEEFF } else { 0xFFFFFF };
         painter.rounded_rect(28, y, width.saturating_sub(56), 36, 8, selected_bg);

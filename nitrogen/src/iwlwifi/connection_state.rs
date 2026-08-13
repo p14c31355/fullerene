@@ -9,7 +9,7 @@ use spin::Mutex;
 
 use crate::DriverContext;
 use crate::debug;
-use crate::mmio::{self, DmaRegion};
+use crate::mmio::{self, DmaRegion, MemRegion};
 use crate::pci_health::PciHealth;
 use bonder::wifi::{self, AccessPoint, Ssid};
 
@@ -344,6 +344,12 @@ fn get_init_phase() -> WifiInitPhase {
     WifiInitPhase::from(raw)
 }
 
+/// Snapshot the explicit incremental initialization phase for HBD and
+/// diagnostics. This is read-only and does not touch PCI/MMIO state.
+pub fn wifi_init_phase() -> WifiInitPhase {
+    get_init_phase()
+}
+
 fn draw_init_hint_if_changed() {
     let phase = get_init_phase();
     let current = phase as u8;
@@ -485,6 +491,12 @@ fn perform_init_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
+            let mmio_region =
+                unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
+            let Some(gp_offset) = IwlWifiDevice::mmio_offset(CSR_GP_CNTRL) else {
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            };
             let bdf_info = {
                 let ctx = WIFI_INIT_CTX.lock();
                 pci_bdf_from_ctx(&ctx)
@@ -493,14 +505,12 @@ fn perform_init_step() {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
             }
             debug::print("iwlwifi", "step: mmio_reset");
-            IwlWifiDevice::reset_device(mmio);
+            IwlWifiDevice::reset_device(&mmio_region);
             debug::print("iwlwifi", "step: mmio_clock_req");
-            unsafe {
-                core::ptr::write_volatile(
-                    mmio.add(CSR_GP_CNTRL as usize),
-                    CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
-                );
-            }
+            mmio_region.write32(
+                gp_offset,
+                CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+            );
             mmio::write_barrier();
             mmio::disarm_mmio_watchdog();
             debug::print("iwlwifi", "step: mmio_check_clock");
@@ -536,6 +546,16 @@ fn perform_init_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
+            let mmio_region =
+                unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
+            let Some(gp_offset) = IwlWifiDevice::mmio_offset(CSR_GP_CNTRL) else {
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            };
+            let Some(hw_rev_offset) = IwlWifiDevice::mmio_offset(CSR_HW_REV) else {
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            };
             const TIMEOUT_CYCLES: u64 = 4_000_000_000;
             let bdf_info = {
                 let ctx = WIFI_INIT_CTX.lock();
@@ -545,9 +565,7 @@ fn perform_init_step() {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
             }
             let health = { WIFI_INIT_CTX.lock().health };
-            let mac_acquired = match unsafe {
-                mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize) as usize, health.as_ref())
-            } {
+            let mac_acquired = match mmio_region.checked_read32(gp_offset, health.as_ref()) {
                 mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
                 mmio::SafeReadResult::Value(_) => {
                     mmio::disarm_mmio_watchdog();
@@ -556,12 +574,10 @@ fn perform_init_step() {
                         >= TIMEOUT_CYCLES
                     {
                         debug::print("iwlwifi", "step: mmio_force_mac");
-                        unsafe {
-                            core::ptr::write_volatile(
-                                mmio.add(CSR_GP_CNTRL as usize),
-                                CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
-                            );
-                        }
+                        mmio_region.write32(
+                            gp_offset,
+                            CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+                        );
                         mmio::write_barrier();
                         crate::timing::delay_us(10_000);
                         let recovery_ok = {
@@ -578,19 +594,15 @@ fn perform_init_step() {
                             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                             }
-                            let clock_ready = match unsafe {
-                                mmio::checked_read_u32(
-                                    mmio.add(CSR_GP_CNTRL as usize) as usize,
-                                    health.as_ref(),
-                                )
-                            } {
-                                mmio::SafeReadResult::Value(v)
-                                    if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 =>
-                                {
-                                    true
-                                }
-                                _ => false,
-                            };
+                            let clock_ready =
+                                match mmio_region.checked_read32(gp_offset, health.as_ref()) {
+                                    mmio::SafeReadResult::Value(v)
+                                        if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 =>
+                                    {
+                                        true
+                                    }
+                                    _ => false,
+                                };
                             mmio::disarm_mmio_watchdog();
                             clock_ready
                         }
@@ -614,9 +626,7 @@ fn perform_init_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            let hw_rev_raw = match unsafe {
-                mmio::checked_read_u32(mmio.add(CSR_HW_REV as usize) as usize, health.as_ref())
-            } {
+            let hw_rev_raw = match mmio_region.checked_read32(hw_rev_offset, health.as_ref()) {
                 mmio::SafeReadResult::Value(v) => v,
                 _ => {
                     mmio::disarm_mmio_watchdog();
@@ -689,14 +699,20 @@ fn perform_init_step() {
                     mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                 }
                 let health = { WIFI_INIT_CTX.lock().health };
-                let mac = IwlWifiDevice::read_mac(mmio, health.as_ref());
+                let mmio_region =
+                    unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
+                let mac = IwlWifiDevice::read_mac(&mmio_region, health.as_ref());
                 mmio::disarm_mmio_watchdog();
                 mac
             };
             debug::print("iwlwifi", "step: mmio_mask_ints");
-            unsafe {
-                core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), CSR_INI_SET_MASK);
-            }
+            let mmio_region =
+                unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
+            let Some(int_mask_offset) = IwlWifiDevice::mmio_offset(CSR_INT_MASK) else {
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            };
+            mmio_region.write32(int_mask_offset, CSR_INI_SET_MASK);
             {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.mac = Some(mac);
@@ -897,10 +913,13 @@ fn perform_init_step() {
             // FH RX setup is deferred until firmware reports alive; the
             // firmware reset sequence can overwrite the FH registers.
             debug::print("iwlwifi", "rx_dma_deferred_until_alive");
+            let mmio_region =
+                unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
             let device = IwlWifiDevice {
                 mac,
                 _pci_dev: pci_dev,
                 mmio,
+                mmio_region: Some(mmio_region),
                 hw_rev,
                 ctx: driver_ctx,
                 health,

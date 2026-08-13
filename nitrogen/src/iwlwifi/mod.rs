@@ -47,7 +47,7 @@ pub use connection_state::{
     enqueue_data_frame, force_init_failed, init_wifi_manager, process_wifi_submission_queue,
     process_wifi_submission_queue_until, retry_wifi_initialization, set_wifi_driver_context,
     start_scan_if_idle, tick_wifi_device, try_init_wifi_device, try_init_wifi_device_step,
-    wifi_device_ready, wifi_init_completed, wifi_init_failed, wifi_state_snapshot,
+    wifi_device_ready, wifi_init_completed, wifi_init_failed, wifi_init_phase, wifi_state_snapshot,
 };
 pub use device::IwlWifiDevice;
 pub use device::try_create_iwl;

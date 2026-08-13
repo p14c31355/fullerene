@@ -344,6 +344,7 @@ impl SchedulerContext {
             .count()
     }
 
+    #[cfg(test)]
     #[inline]
     fn retain_after_cleanup(id: ProcessId, process: &Process, current: usize) -> bool {
         !matches!(process.state, ProcessState::Terminated)
@@ -366,6 +367,7 @@ impl SchedulerContext {
         let current = self.current_pid();
         let mut waiters = HeaplessVec::<ProcessId, MAX_PROCESSES>::new();
         let mut parents = HeaplessVec::<ProcessId, MAX_PROCESSES>::new();
+        let mut reaped = HeaplessVec::<(ProcessId, Box<Process>), MAX_PROCESSES>::new();
         {
             let mut procs = self.processes.lock();
             let blocked_parents: HeaplessVec<ProcessId, MAX_PROCESSES> = procs
@@ -415,8 +417,16 @@ impl SchedulerContext {
                     }
                 }
             }
-            for (id, process) in procs.iter_mut() {
+            // Decide and detach reaped processes while holding only the
+            // process-list lock. Resource cleanup can acquire handle-table,
+            // KERNEL, terminal, and page-table locks, so it must not happen
+            // in this critical section. Holding this lock across those calls
+            // made an unrelated keyboard/runtime path spin behind cleanup.
+            let mut index = 0;
+            while index < procs.len() {
+                let (id, process) = &mut procs[index];
                 if !matches!(process.state, ProcessState::Terminated) || id.0 as usize == current {
+                    index += 1;
                     continue;
                 }
 
@@ -439,6 +449,7 @@ impl SchedulerContext {
                         supervisor_alive,
                         capability_holder_alive,
                     ) {
+                        index += 1;
                         continue;
                     }
                     process.reaped = true;
@@ -449,47 +460,63 @@ impl SchedulerContext {
                 {
                     let _ = parents.push(parent_id);
                 }
-                if let Some(kernel_stack_base) = process
-                    .kernel_stack
-                    .as_u64()
-                    .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
-                    .filter(|&base| base != 0)
-                {
-                    let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16)
-                        .expect("kernel stack layout");
-                    unsafe {
-                        petroleum::common::memory::deallocate_layout(
-                            kernel_stack_base as *mut u8,
-                            layout,
-                        );
-                    }
-                    process.kernel_stack = VirtAddr::new(0);
-                }
-                if let Some(mut page_table) = process.page_table.take() {
-                    let handle_table = process.resources.handle_table.lock();
-                    crate::syscall::shared_buffer::cleanup_process_mappings(
-                        *id,
-                        &mut page_table,
-                        &handle_table,
+                let (reaped_id, process) = procs.remove(index);
+                let _ = reaped.push((reaped_id, process));
+            }
+        }
+
+        // A detached process may no longer be present in `self.processes`
+        // while its resources are still allocated. This is safe because the
+        // kernel is uniprocessor and cooperative here; no concurrent
+        // `with_process` call can observe the detached entry during cleanup.
+        // Reclaim detached processes without holding the global process-list
+        // lock. In particular, ProcessResources::cleanup may notify the GUI
+        // and therefore take KERNEL-owned locks.
+        for (id, mut process) in reaped {
+            if let Some(kernel_stack_base) = process
+                .kernel_stack
+                .as_u64()
+                .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
+                .filter(|&base| base != 0)
+            {
+                let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16)
+                    .expect("kernel stack layout");
+                unsafe {
+                    petroleum::common::memory::deallocate_layout(
+                        kernel_stack_base as *mut u8,
+                        layout,
                     );
-                    if let Some(pml4_frame) = page_table.pml4_frame() {
-                        crate::process::cleanup_process_address_space(&mut page_table);
-                        crate::memory_management::deallocate_process_page_table(pml4_frame);
-                    }
                 }
-                if process.terminal_owner {
-                    if let Some(terminal_id) = process.terminal_id.take() {
-                        self.close_terminal_if_owned(terminal_id, *id);
-                    }
-                }
-                self.close_terminals_owned_by(*id);
-                for waiter in process.resources.cleanup() {
-                    let _ = waiters.push(waiter);
+                process.kernel_stack = VirtAddr::new(0);
+            }
+            if let Some(mut page_table) = process.page_table.take() {
+                let handle_table = process.resources.handle_table.lock();
+                crate::syscall::shared_buffer::cleanup_process_mappings(
+                    id,
+                    &mut page_table,
+                    &handle_table,
+                );
+                drop(handle_table);
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    crate::process::cleanup_process_address_space(&mut page_table);
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
                 }
             }
-            procs.retain(|(id, p)| Self::retain_after_cleanup(*id, p, current));
-            // Removal can shift every following list index. Re-anchor the
-            // round-robin cursor to the process that owns the live CPU state.
+            if process.terminal_owner {
+                if let Some(terminal_id) = process.terminal_id.take() {
+                    self.close_terminal_if_owned(terminal_id, id);
+                }
+            }
+            self.close_terminals_owned_by(id);
+            for waiter in process.resources.cleanup() {
+                let _ = waiters.push(waiter);
+            }
+        }
+
+        {
+            let procs = self.processes.lock();
+            // Reaping no longer shifts entries while the lock is held across
+            // cleanup, so re-anchor the round-robin cursor after detachment.
             let current_index = procs
                 .iter()
                 .position(|(id, _)| id.0 as usize == current)

@@ -257,10 +257,6 @@ pub fn scheduler_loop() -> ! {
             nitrogen::iwlwifi::consume_wifi_completion_queue_until(16, wifi_phase_deadline);
             crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: WiFi phase returned");
         }
-        // Final HID + cursor pump before the GUI tick so poll_mouse_state
-        // sees the freshest possible report after every device phase.
-        gui::pump_hid_cursor();
-
         // BusyBox smoke is a synchronous ABI test. During the harness, the
         // nested runtime pump handles only input and rendering; after a
         // physical smoke run returns, normal desktop ticks resume.
@@ -292,12 +288,6 @@ pub fn scheduler_loop() -> ! {
                 "scheduler: post-GUI WiFi returned",
             );
         }
-        // Pump HID + cursor after the post-GUI Wi-Fi phase so input that
-        // arrived during firmware MMIO is reflected before the next hlt.
-        crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: final HID phase begin");
-        gui::pump_hid_cursor();
-        crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: final HID phase returned");
-
         // The timer interrupt intentionally does not preempt. Give ready
         // kernel tasks (for example a WASM viewer launched from the desktop)
         // an explicit scheduling point before idling again.
@@ -323,6 +313,10 @@ pub extern "C" fn mmio_recovery_restart() -> ! {
     unsafe {
         crate::interrupts::apic::reset_apic_controller_lock();
     }
+    // The watchdog may have interrupted I2C-HID while its controller object
+    // held the stale BAR mapping. Do not let the next scheduler tick poll or
+    // drop that object and issue another MMIO transaction.
+    nitrogen::i2c_hid::disable_after_mmio_fault();
     #[cfg(not(nitrogen_no_iwlwifi))]
     nitrogen::iwlwifi::force_init_failed();
     scheduler_loop()

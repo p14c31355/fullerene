@@ -791,38 +791,24 @@ impl IwlWifiDevice {
                 scd_rptr,
                 scd_status,
             );
-            unsafe {
-                // CSR_INT is cleared using the upstream gen1 formula:
-                // acknowledge the observed causes plus every currently
-                // masked cause. Writing only int_cause leaves HW_ERR latched
-                // on this hardware.
-                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause | !int_mask);
-                core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0);
-            }
+            // CSR_INT is cleared using the upstream gen1 formula:
+            // acknowledge the observed causes plus every currently masked
+            // cause. Writing only int_cause leaves HW_ERR latched on this
+            // hardware.
+            self.write_mmio32(CSR_INT, int_cause | !int_mask);
+            self.write_mmio32(CSR_INT_MASK, 0);
             self.fw_state = FwState::Error;
             self.scan_pending = false;
             self.iwl_state = IwlState::Disconnected;
             return;
         }
         if int_cause != 0 {
-            unsafe {
-                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
-            }
+            self.write_mmio32(CSR_INT, int_cause);
             if int_cause & (CSR_INT_BIT_FH_RX | CSR_INT_BIT_SW_RX) != 0 {
-                unsafe {
-                    core::ptr::write_volatile(
-                        self.mmio.add(CSR_FH_INT as usize),
-                        fh_cause & CSR_FH_INT_RX_MASK,
-                    );
-                }
+                self.write_mmio32(CSR_FH_INT, fh_cause & CSR_FH_INT_RX_MASK);
             }
             if int_cause & CSR_INT_BIT_FH_TX != 0 {
-                unsafe {
-                    core::ptr::write_volatile(
-                        self.mmio.add(CSR_FH_INT as usize),
-                        fh_cause & CSR_FH_INT_TX_MASK,
-                    );
-                }
+                self.write_mmio32(CSR_FH_INT, fh_cause & CSR_FH_INT_TX_MASK);
             }
             // CSR_INT reports the aggregate FH RX cause at bit 31. The
             // per-channel bits live in CSR_FH_INT; bit 18 is not the host RX

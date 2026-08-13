@@ -594,6 +594,48 @@ impl USBContext {
         info
     }
 
+    /// Run the bounded xHCI HBD solver for every active xHCI controller.
+    ///
+    /// The caller owns scheduling and may choose an appropriate budget.  A
+    /// report is returned for each controller so one failed topology does not
+    /// suppress diagnostics for another controller.
+    pub fn hbd_solve_xhci(
+        &mut self,
+        budget: crate::hbd::SolverBudget,
+    ) -> Vec<crate::hbd::ConvergenceReport> {
+        let mut reports = Vec::with_capacity(self.controllers.xhci.len());
+        for controller in &mut self.controllers.xhci {
+            reports.push(crate::hbd::backends::xhci::XhciBackend::solve(controller, budget).report);
+        }
+        reports
+    }
+
+    /// Read-only xHCI HBD observations for status/report commands.
+    pub fn hbd_xhci_status(&self) -> Vec<crate::hbd::ConvergenceReport> {
+        let mut reports = Vec::with_capacity(self.controllers.xhci.len());
+        for controller in &self.controllers.xhci {
+            let observation = crate::hbd::backends::xhci::observe(controller);
+            let running = observation.running;
+            let state = if running {
+                "observed"
+            } else {
+                "controller_stopped"
+            };
+            reports.push(crate::hbd::ConvergenceReport {
+                backend: "xhci",
+                stage: state,
+                result: crate::hbd::ReportResult::NoAction,
+                actions: 0,
+                retries: 0,
+                resets: 0,
+                constraints: crate::hbd::backends::xhci::constraint_results(&observation),
+                transitions: alloc::vec![],
+                observations: crate::hbd::backends::xhci::observation_records(&observation),
+            });
+        }
+        reports
+    }
+
     /// Compact state for the synchronous USB rescan diagnostic path. This
     /// includes candidates that have not yet become storage disks, which is
     /// the distinction needed when a retry reports only `no device`.

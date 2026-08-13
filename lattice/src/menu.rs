@@ -181,10 +181,6 @@ pub fn desktop_context_menu() -> alloc::vec::Vec<MenuItem> {
             action: alloc::string::String::from("new_terminal")
         },
         MenuItem {
-            label: alloc::string::String::from("New Shell"),
-            action: alloc::string::String::from("new_shell")
-        },
-        MenuItem {
             label: alloc::string::String::from("──"),
             action: alloc::string::String::from("separator")
         },

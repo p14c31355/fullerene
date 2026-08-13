@@ -34,8 +34,7 @@ use super::registers::{
 const UMAC_PRPH_OFFSET: u32 = 0x300000;
 const UREG_CPU_INIT_RUN: u32 = 0x00a0_5c44;
 const CSR_MAC_ADDR: u32 = 0x380;
-#[cfg(test)]
-const MMIO_MAP_SIZE: usize = 0x2000;
+const MMIO_MAP_SIZE: usize = super::device::IwlWifiDevice::MMIO_BAR_SIZE;
 const COMMAND_QUEUE_SIZE: usize = 128;
 const CONTEXT_INFO_BOOT_CTRL: u32 = modern::CSR_CTXT_INFO_BOOT_CTRL;
 const CONTEXT_INFO_ADDR: u32 = modern::CSR_CTXT_INFO_ADDR;
@@ -2009,14 +2008,26 @@ pub fn try_create_iwl_modern(
 }
 
 fn read32(mmio: *mut u32, offset: u32, health: Option<&PciHealth>) -> Option<u32> {
-    match unsafe { mmio::checked_read_u32(mmio.add(offset as usize) as usize, health) } {
+    if mmio.is_null() {
+        return None;
+    }
+    let offset = super::device::IwlWifiDevice::mmio_offset(offset)?;
+    let region = unsafe { mmio::MemRegion::new(mmio as usize, MMIO_MAP_SIZE) };
+    match region.checked_read32(offset, health) {
         SafeReadResult::Value(value) => Some(value),
         _ => None,
     }
 }
 
 fn write32(mmio: *mut u32, offset: u32, value: u32) {
-    unsafe { core::ptr::write_volatile(mmio.add(offset as usize), value) };
+    let Some(offset) = super::device::IwlWifiDevice::mmio_offset(offset) else {
+        return;
+    };
+    if mmio.is_null() {
+        return;
+    }
+    let region = unsafe { mmio::MemRegion::new(mmio as usize, MMIO_MAP_SIZE) };
+    region.write32(offset, value);
 }
 
 fn write32_bytes(mmio: *mut u32, byte_offset: u32, value: u32) {

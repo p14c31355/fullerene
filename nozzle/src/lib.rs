@@ -199,6 +199,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             "List registered hardware devices",
             builtins::cmd_devices
         ),
+        (
+            "hbd",
+            "Observe or converge hardware state",
+            builtins::cmd_hbd
+        ),
         ("theme", "Show or change desktop theme", builtins::cmd_theme),
         (
             "wallpaper",

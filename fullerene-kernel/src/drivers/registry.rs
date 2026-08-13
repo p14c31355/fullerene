@@ -16,7 +16,7 @@
 use alloc::boxed::Box;
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use alloc::collections::VecDeque;
-#[cfg(not(nitrogen_no_storage))]
+use alloc::string::String;
 use alloc::vec::Vec;
 #[cfg(not(nitrogen_no_storage))]
 use core::sync::atomic::AtomicBool as DriverAtomicBool;
@@ -28,7 +28,7 @@ use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(nitrogen_no_storage))]
 use core::{cell::UnsafeCell, mem::MaybeUninit};
-#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+use nitrogen::hbd::ConvergenceReport;
 use spin::Mutex;
 
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
@@ -49,6 +49,8 @@ use nitrogen::pci::PciDevice;
 pub use nitrogen::driver_api::DriverRegistry;
 #[cfg(not(nitrogen_no_storage))]
 use nitrogen::driver_api::StorageDriver;
+
+static HBD_REPORTS: Mutex<Vec<ConvergenceReport>> = Mutex::new(Vec::new());
 
 // ── USB storage state (formerly drivers/usb_storage.rs) ────
 
@@ -96,6 +98,14 @@ static NEXT_USB_REQUEST: AtomicU64 = AtomicU64::new(1);
 static USB_POLL_PENDING: AtomicBool = AtomicBool::new(false);
 #[cfg(not(nitrogen_no_usb))]
 static USB_POLL_CHANGED: AtomicBool = AtomicBool::new(false);
+/// HBD xHCI solves are queued from the shell and consumed in the scheduler's
+/// device phase, alongside the existing bounded USB poll.
+#[cfg(not(nitrogen_no_usb))]
+static HBD_XHCI_PENDING: AtomicBool = AtomicBool::new(false);
+/// Set by the shell status path and consumed in the scheduler's device phase.
+/// xHCI status collection performs MMIO and must never run in shell context.
+#[cfg(not(nitrogen_no_usb))]
+static HBD_STATUS_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Access the USB controller context.  Panics if not initialised.
 #[cfg(not(nitrogen_no_usb))]
@@ -113,6 +123,136 @@ where
     F: FnOnce(&mut nitrogen::usb::context::USBContext) -> R,
 {
     USB_CTX.lock().as_mut().map(f)
+}
+
+/// Read-only HBD status for the shell and post-boot diagnostics.
+pub fn hbd_status() -> String {
+    let mut out = String::new();
+    #[cfg(not(nitrogen_no_usb))]
+    {
+        HBD_STATUS_PENDING.store(true, Ordering::Release);
+        for report in HBD_REPORTS.lock().iter() {
+            if report.backend == "xhci" {
+                out.push_str(&report.compact());
+                out.push('\n');
+            }
+        }
+    }
+    #[cfg(not(nitrogen_no_iwlwifi))]
+    {
+        let observation = nitrogen::hbd::backends::iwlwifi::observe();
+        use core::fmt::Write;
+        let _ = writeln!(
+            out,
+            "backend=iwlwifi phase={} device={:?} firmware={:?} link={:?}",
+            observation.init_phase.name(),
+            observation.device_discovered,
+            observation.firmware_ready,
+            observation.link_status,
+        );
+    }
+    #[cfg(not(nitrogen_no_hda))]
+    if let Some(observation) = crate::contexts::audio::with_audio(|audio| {
+        audio
+            .hda
+            .as_ref()
+            .map(nitrogen::hbd::backends::hda::observe)
+    })
+    .flatten()
+    {
+        use core::fmt::Write;
+        let _ = writeln!(
+            out,
+            "backend=hda present={} ready={}",
+            observation.controller_present, observation.controller_ready
+        );
+    }
+    if out.is_empty() {
+        out.push_str("hbd: no compiled backend is available\n");
+    }
+    out
+}
+
+/// Run one or more explicitly requested HBD backends with finite budgets.
+/// Each backend is isolated: a failure becomes a report and does not stop
+/// the remaining backend from being observed or solved.
+pub fn hbd_solve(backend: &str) -> String {
+    let budget = nitrogen::hbd::SolverBudget::conservative();
+    let mut reports: Vec<ConvergenceReport> = Vec::new();
+    let run_xhci = backend == "xhci" || backend == "all";
+    let run_iwlwifi = backend == "iwlwifi" || backend == "all";
+    let run_hda = backend == "hda" || backend == "all";
+
+    if run_xhci || run_iwlwifi || run_hda {
+        // Clear before queueing xHCI work. The scheduler may publish an xHCI
+        // report between enqueue and the synchronous backends below.
+        HBD_REPORTS.lock().clear();
+    }
+
+    #[cfg(not(nitrogen_no_usb))]
+    if run_xhci {
+        let acquired = HBD_XHCI_PENDING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+        let accepted = acquired && enqueue_usb_poll_request();
+        if acquired && !accepted {
+            HBD_XHCI_PENDING.store(false, Ordering::Release);
+        }
+        if !accepted {
+            log::warn!("hbd: xhci solve queue is busy");
+        } else {
+            log::info!("hbd: xhci solve queued for scheduler device phase");
+        }
+    }
+    #[cfg(not(nitrogen_no_iwlwifi))]
+    if run_iwlwifi {
+        reports.push(nitrogen::hbd::backends::iwlwifi::IwlwifiBackend::solve(budget).report);
+    }
+    #[cfg(not(nitrogen_no_hda))]
+    if run_hda {
+        if let Some(report) = crate::contexts::audio::with_audio(|audio| {
+            audio.hda.as_ref().map(|controller| {
+                nitrogen::hbd::backends::hda::HdaBackend::solve(controller, budget).report
+            })
+        })
+        .flatten()
+        {
+            reports.push(report);
+        }
+    }
+
+    if !run_xhci && !run_iwlwifi && !run_hda {
+        return String::from("Usage: hbd status|solve <xhci|iwlwifi|hda|all>|report\n");
+    }
+    let mut out = String::new();
+    for report in &reports {
+        out.push_str(&report.human());
+    }
+    if reports.is_empty() {
+        if run_xhci {
+            out.push_str("hbd: xhci solve queued; run hbd report after the next scheduler tick\n");
+        } else if run_hda {
+            out.push_str("hbd: HDA controller is unavailable\n");
+        } else {
+            out.push_str("hbd: requested backend is unavailable\n");
+        }
+    }
+    HBD_REPORTS.lock().extend(reports);
+    out
+}
+
+/// Return the most recent machine-readable convergence reports.
+pub fn hbd_report() -> String {
+    let reports = HBD_REPORTS.lock();
+    if reports.is_empty() {
+        return String::from("hbd: no report available; run hbd solve all\n");
+    }
+    let mut out = String::new();
+    for report in reports.iter() {
+        out.push_str(&report.compact());
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(nitrogen_no_usb)]
@@ -829,6 +969,13 @@ pub fn process_usb_submission_queue_until(budget: usize, deadline_tsc: u64) {
     let retired = USB_RETIRED_CTX.lock().take();
     drop(retired);
 
+    if HBD_STATUS_PENDING.swap(false, Ordering::AcqRel) {
+        let reports = try_with_ctx(|ctx| ctx.hbd_xhci_status()).unwrap_or_default();
+        let mut cached = HBD_REPORTS.lock();
+        cached.retain(|report| report.backend != "xhci");
+        cached.extend(reports);
+    }
+
     for _ in 0..budget {
         if deadline_tsc != u64::MAX && unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {
             break;
@@ -848,6 +995,12 @@ pub fn process_usb_submission_queue_until(budget: usize, deadline_tsc: u64) {
             break;
         }
         let changed = poll_usb();
+        if HBD_XHCI_PENDING.swap(false, Ordering::AcqRel) {
+            let reports =
+                try_with_ctx(|ctx| ctx.hbd_solve_xhci(nitrogen::hbd::SolverBudget::conservative()))
+                    .unwrap_or_default();
+            HBD_REPORTS.lock().extend(reports);
+        }
         let found = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
 
         {
