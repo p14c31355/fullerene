@@ -75,6 +75,9 @@ pub(crate) fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
             KernelObject::SharedBuffer(buffer) => KernelObject::SharedBuffer(SharedBufferState {
                 inner: Arc::clone(&buffer.inner),
             }),
+            KernelObject::ProcessControl(control) => {
+                KernelObject::ProcessControl(ProcessControlState { pid: control.pid })
+            }
             _ => return Err(SyscallError::NotSupported),
         };
         Ok(new_obj)

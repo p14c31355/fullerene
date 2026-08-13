@@ -10,7 +10,7 @@
 //! scheduler_loop()
 //!   ├── update_vdso_all()       — publish time to every process's VDSO page
 //!   ├── gui::runtime_tick()     — input polling, tick_core + framebuffer render
-//!   ├── shell launch check      — via KERNEL lock (independent of SCHEDULER)
+//!   ├── launchd bootstrap       — user ELF PID 1
 //!   ├── advance_tick()
 //!   └── hlt()
 //! ```
@@ -20,6 +20,8 @@ use x86_64::VirtAddr;
 
 use crate::gui;
 use crate::scheduler_context::SCHEDULER;
+
+static LAUNCHD_IMAGE: &[u8] = include_bytes!(env!("FULLERENE_LAUNCHD_IMAGE"));
 
 /// Read CMOS RTC and convert to microseconds since Unix epoch (1970-01-01 00:00:00 UTC).
 /// Returns `None` if RTC is unavailable or invalid.
@@ -72,18 +74,25 @@ struct AlignedStack {
 #[allow(dead_code)]
 static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack { _bytes: [0; 65536] };
 
-/// Set the launch‑shell flag from the solvent side.
-pub fn request_shell_launch() {
-    crate::contexts::kernel::with_kernel(|k| {
-        k.shell.request_launch();
+/// Start PID 1 through the same ELF loader used by every user program.
+/// The first allocator PID after the scheduler's internal idle slot must be
+/// one; failure is fatal because running without init would orphan lifecycle
+/// ownership and reaping.
+fn bootstrap_launchd() {
+    let pid = crate::loader::load_program(LAUNCHD_IMAGE, "launchd")
+        .expect("failed to load launchd as PID 1");
+    assert_eq!(pid.0, 1, "launchd did not receive PID 1");
+    SCHEDULER.with_process(pid, |process| {
+        process.role = crate::process::ProcessRole::Init;
     });
+    petroleum::serial::serial_log(format_args!("launchd bootstrapped as PID 1\n"));
 }
 
 /// Main kernel scheduler loop.
 ///
-/// Renders the initial desktop, then enters an idle loop that drives
-/// `gui::runtime_tick()`.  Shell (and future apps) are launched on
-/// demand.
+/// Renders the initial desktop, bootstraps launchd, then enters an idle loop
+/// that drives `gui::runtime_tick()`. Shell and future apps are userland
+/// processes managed through the native ABI.
 pub fn scheduler_loop() -> ! {
     solvent::install_scheduler_yield(crate::process::yield_from_scheduler_stack);
     let boot_tsc = unsafe { core::arch::x86_64::_rdtsc() };
@@ -101,6 +110,12 @@ pub fn scheduler_loop() -> ! {
 
     // Render initial desktop frame.
     gui::render();
+
+    bootstrap_launchd();
+    // Give PID 1 its first turn before the device phase. This is both a
+    // useful bootstrap invariant and prevents a slow optional driver from
+    // delaying init's ability to create its managed endpoints.
+    crate::process::yield_current();
 
     // Wire kernel renderer into Solvent so runtime ticks can paint the display.
     gui::set_render_fn(gui::render);
@@ -254,27 +269,6 @@ pub fn scheduler_loop() -> ! {
         crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: final HID phase begin");
         gui::pump_hid_cursor();
         crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: final HID phase returned");
-
-        // Check if the user requested a shell launch (via AppGrid / menu).
-        // Run it as a scheduler-managed kernel process instead of calling
-        // shell_main() on this stack.  The shell can then yield while waiting
-        // for input, allowing USB and other device queues to make progress.
-        if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false)
-            && crate::shell::try_start_process()
-        {
-            match crate::process::create_kernel_process("shell", crate::shell::shell_process_main) {
-                Ok(pid) => {
-                    petroleum::serial::serial_log(format_args!(
-                        "Launching shell process PID {}\n",
-                        pid.0
-                    ));
-                }
-                Err(error) => {
-                    crate::shell::abort_process_start();
-                    log::error!("Failed to launch shell process: {:?}", error);
-                }
-            }
-        }
 
         // The timer interrupt intentionally does not preempt. Give ready
         // kernel tasks (for example a WASM viewer launched from the desktop)

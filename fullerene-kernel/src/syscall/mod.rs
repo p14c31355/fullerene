@@ -8,6 +8,7 @@ pub mod ipc;
 pub mod memory;
 pub mod process;
 pub mod shared_buffer;
+pub mod terminal;
 pub mod thread;
 pub mod time;
 pub mod types;
@@ -104,7 +105,7 @@ mod support_matrix {
             number: 7,
             name: "wait",
             support: Support::Partial,
-            notes: "non-blocking only",
+            notes: "parent-child wait; u64::MAX waits for any child",
         },
         SyscallInfo {
             number: 20,
@@ -123,6 +124,12 @@ mod support_matrix {
             name: "yield",
             support: Support::Full,
             notes: "",
+        },
+        SyscallInfo {
+            number: 23,
+            name: "spawn",
+            support: Support::Full,
+            notes: "copies ELF into an isolated process; arg6 may designate a supervisor",
         },
         SyscallInfo {
             number: 30,
@@ -245,6 +252,12 @@ mod support_matrix {
             notes: "returns empty data",
         },
         SyscallInfo {
+            number: 65,
+            name: "create_terminal",
+            support: Support::Full,
+            notes: "creates a process-owned terminal endpoint",
+        },
+        SyscallInfo {
             number: 70,
             name: "enumerate_devices",
             support: Support::Partial,
@@ -327,6 +340,36 @@ mod support_matrix {
             name: "uptime",
             support: Support::Full,
             notes: "",
+        },
+        SyscallInfo {
+            number: 110,
+            name: "open_process_control",
+            support: Support::Full,
+            notes: "parent or supervisor receives a transferable capability",
+        },
+        SyscallInfo {
+            number: 111,
+            name: "process_control_stop",
+            support: Support::Full,
+            notes: "capability-authorized termination",
+        },
+        SyscallInfo {
+            number: 112,
+            name: "process_control_status",
+            support: Support::Full,
+            notes: "capability-authorized state query",
+        },
+        SyscallInfo {
+            number: 113,
+            name: "process_control_reap",
+            support: Support::Full,
+            notes: "capability-authorized zombie collection",
+        },
+        SyscallInfo {
+            number: 114,
+            name: "process_control_assign",
+            support: Support::Full,
+            notes: "changes supervisor without changing birth parent",
         },
     ];
 

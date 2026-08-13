@@ -22,7 +22,21 @@ pub(crate) fn syscall_read(fd: c_int, buffer: *mut u8, count: usize) -> SyscallR
     petroleum::validate_syscall_fd(fd)?;
 
     if fd == 0 {
-        if count == 1 {
+        let terminal_id = crate::process::current_pid()
+            .and_then(|pid| {
+                crate::process::SCHEDULER.with_process(pid, |process| process.terminal_id)
+            })
+            .flatten();
+        if let Some(terminal_id) = terminal_id {
+            let mut kernel_buf = vec![0u8; count];
+            let bytes_read = solvent::read_process_terminal(
+                lattice::window::WindowId(terminal_id),
+                &mut kernel_buf,
+            );
+            unsafe { slice.copy_to_user(&kernel_buf[..bytes_read]) }
+                .map_err(|_| SyscallError::InvalidArgument)?;
+            Ok(bytes_read as u64)
+        } else if count == 1 {
             if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
                 let kernel_buf = [ch];
                 unsafe { slice.copy_to_user(&kernel_buf) }
@@ -73,6 +87,15 @@ pub(crate) fn syscall_write(fd: c_int, buffer: *const u8, count: usize) -> Sysca
     unsafe { slice.copy_from_user(&mut kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
 
     if fd == 1 || fd == 2 {
+        let terminal_id = crate::process::current_pid()
+            .and_then(|pid| {
+                crate::process::SCHEDULER.with_process(pid, |process| process.terminal_id)
+            })
+            .flatten();
+        if let Some(terminal_id) = terminal_id {
+            let text = alloc::string::String::from_utf8_lossy(&kernel_buf);
+            solvent::write_process_terminal(lattice::window::WindowId(terminal_id), &text);
+        }
         petroleum::write_serial_bytes(0x3F8, 0x3FD, &kernel_buf);
         Ok(count as u64)
     } else {

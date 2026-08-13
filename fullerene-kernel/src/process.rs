@@ -106,6 +106,17 @@ pub enum ProcessState {
     Terminated,
 }
 
+/// Process role used for lifecycle policy.  Scheduling does not otherwise
+/// privilege these roles: a user process, a service, and a shell all use the
+/// same runnable-process machinery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessRole {
+    Kernel,
+    User,
+    Idle,
+    Init,
+}
+
 /// Register snapshot kept when a user process is stopped by a CPU fault.
 ///
 /// This is the kernel-side "last safe footprint": the faulting instruction
@@ -523,12 +534,21 @@ pub struct Process {
     pub entry_point: VirtAddr,
     /// Whether the process runs in user mode (Ring 3)
     pub is_user: bool,
+    /// Lifecycle role.  This must not be inferred from the display name.
+    pub role: ProcessRole,
     /// Exit code - used for signaling ChildProcessExited signal
     pub exit_code: Option<i32>,
     /// CPU fault that caused termination, if any.
     pub fault: Option<FaultRecord>,
     /// Parent process ID (for wait() and signal propagation)
     pub parent_id: Option<ProcessId>,
+    /// Process allowed to supervise this process (start/stop/restart).
+    /// This is separate from `parent_id`, which describes birth and reaping.
+    pub supervisor_id: Option<ProcessId>,
+    /// Whether a parent or supervisor has collected the exit status.
+    pub reaped: bool,
+    /// GUI terminal endpoint attached to stdin/stdout, if any.
+    pub terminal_id: Option<u64>,
     /// Opaque data for async task futures (used by task.rs spawn/entry)
     pub task_data: u64,
     /// Runtime dispatch mode (Fullerene native, Linux ABI, etc.)
@@ -544,6 +564,13 @@ impl Process {
     pub fn new(name: &str, entry_point: VirtAddr, is_user: bool) -> Self {
         let id = SCHEDULER.allocate_pid();
 
+        Self::new_with_id(id, name, entry_point, is_user)
+    }
+
+    /// Construct a process with a caller-selected PID for bootstrap roles
+    /// such as PID 1. Ordinary processes must use `new` so the allocator can
+    /// maintain uniqueness.
+    pub fn new_with_id(id: ProcessId, name: &str, entry_point: VirtAddr, is_user: bool) -> Self {
         Self {
             id,
             name: Box::from(name),
@@ -556,9 +583,17 @@ impl Process {
             user_stack: VirtAddr::new(0),   // Will be set when allocated
             entry_point,
             is_user,
+            role: if is_user {
+                ProcessRole::User
+            } else {
+                ProcessRole::Kernel
+            },
             exit_code: None,
             fault: None,
             parent_id: None, // Will be set by fork
+            supervisor_id: None,
+            reaped: false,
+            terminal_id: None,
             task_data: 0,
             dispatch_mode: None,
             vdso_page: None,
@@ -635,7 +670,10 @@ pub fn init(heap_start: usize, heap_end: usize) {
     // Idle process — heap allocator is already initialised (see init.rs),
     // so we can safely use Box::new here.
     let idle_addr = VirtAddr::new(idle_loop as *const () as usize as u64);
-    let pid = SCHEDULER.allocate_pid();
+    // The scheduler idle loop is an internal execution context, not a
+    // process visible to userland. Keep PID 0 for it so the first ordinary
+    // ELF process can become init/launchd at PID 1.
+    let pid = ProcessId(0);
 
     let ctx = ProcessContext {
         registers: GeneralRegisters::default(),
@@ -668,9 +706,13 @@ pub fn init(heap_start: usize, heap_end: usize) {
         user_stack: VirtAddr::new(0),
         entry_point: idle_addr,
         is_user: false,
+        role: ProcessRole::Idle,
         exit_code: None,
         fault: None,
         parent_id: None,
+        supervisor_id: None,
+        reaped: false,
+        terminal_id: None,
         task_data: 0,
         dispatch_mode: None,
         vdso_page: None,
@@ -762,10 +804,25 @@ pub fn create_process_with_parent(
     is_user: bool,
     parent_id: Option<ProcessId>,
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
+    create_process_with_relationships(name, entry_point_address, is_user, parent_id, None, None)
+}
+
+/// Create a process with explicit lifecycle relationships and an optional
+/// process-owned terminal endpoint.
+pub fn create_process_with_relationships(
+    name: &str,
+    entry_point_address: VirtAddr,
+    is_user: bool,
+    parent_id: Option<ProcessId>,
+    supervisor_id: Option<ProcessId>,
+    terminal_id: Option<u64>,
+) -> Result<ProcessId, petroleum::common::logging::SystemError> {
     mem_debug!("Process: create_process starting\n");
 
     let mut process = Process::new(name, entry_point_address, is_user);
     process.parent_id = parent_id;
+    process.supervisor_id = supervisor_id;
+    process.terminal_id = terminal_id;
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
@@ -878,14 +935,24 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     let is_idle = SCHEDULER
-        .with_process(pid, |process| process.name.as_ref() == "idle")
+        .with_process(pid, |process| process.role == ProcessRole::Idle)
         .unwrap_or(false);
+    let is_init = SCHEDULER
+        .with_process(pid, |process| process.role == ProcessRole::Init)
+        .unwrap_or(false);
+    if is_init {
+        petroleum::serial::serial_log(format_args!(
+            "fatal: PID 1 (launchd) exited with status {}; halting\n",
+            exit_code
+        ));
+        petroleum::halt_loop();
+    }
     let is_current = SCHEDULER.current_pid() == pid.0 as usize;
     let to_unblock = SCHEDULER
         .with_process(pid, |process| {
             // The idle task owns neither an allocated stack nor a replacement task.
             // It is a scheduler invariant, not a terminable user process.
-            if process.name.as_ref() == "idle" {
+            if process.role == ProcessRole::Idle {
                 return Vec::new();
             }
             process.state = ProcessState::Terminated;
@@ -997,6 +1064,16 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 /// Stop a user process at a CPU exception boundary and retain its fault
 /// footprint until the normal scheduler cleanup reaps it.
 pub fn mark_faulted(pid: ProcessId, record: FaultRecord) {
+    let is_init = SCHEDULER
+        .with_process(pid, |process| process.role == ProcessRole::Init)
+        .unwrap_or(false);
+    if is_init {
+        petroleum::serial::serial_log(format_args!(
+            "fatal: PID 1 faulted at rip={:#x}; halting\n",
+            record.rip
+        ));
+        petroleum::halt_loop();
+    }
     let waiters = SCHEDULER.with_process(pid, |process| {
         process.state = ProcessState::Terminated;
         process.exit_code = Some(128);
@@ -1027,11 +1104,9 @@ pub fn schedule_next() {
 /// Get current process ID
 pub fn current_pid() -> Option<ProcessId> {
     let pid = SCHEDULER.current_pid();
-    if pid == 0 {
-        None
-    } else {
-        Some(ProcessId(pid as u64))
-    }
+    SCHEDULER
+        .process_state(ProcessId(pid as u64))
+        .map(|_| ProcessId(pid as u64))
 }
 
 /// Append a scheduler milestone to a Linux process's GUI terminal when it

@@ -34,6 +34,7 @@ constants remain available from `fullerene_abi::syscall_numbers`.
 | 80–89 | IPC |
 | 90–99 | handles/capabilities |
 | 100–109 | clocks and timers |
+| 110–119 | process supervision |
 
 Syscall 0 is backwards compatible: with no arguments it returns
 `AbiVersion::CURRENT.pack()`. With a writable `AbiInfo` buffer and its size in
@@ -108,6 +109,12 @@ pub static SCHEDULER: spin::Mutex<SchedulerContext>;
 ```
 
 `SCHEDULER` is the only global independent of the `KERNEL` lock.
+
+Process creation records `parent_id` and `supervisor_id` independently. The
+parent owns birth lineage and ordinary `wait`; the supervisor obtains a
+`ProcessControl` capability for status, stop, reap, and reassignment. A
+nonzero supervisor PID may be supplied to `spawn` (arg6), or supervision may
+be reassigned later and the capability transferred through the handle ABI.
 
 ---
 

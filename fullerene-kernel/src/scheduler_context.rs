@@ -31,7 +31,9 @@ use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
 
 use crate::context_switch::switch_context;
-use crate::process::{MAX_PROCESSES, Process, ProcessContext, ProcessId, ProcessState};
+use crate::process::{
+    MAX_PROCESSES, Process, ProcessContext, ProcessId, ProcessRole, ProcessState,
+};
 use crate::vdso;
 
 /// Scheduler tick interval in nanoseconds (for future use).
@@ -179,6 +181,18 @@ impl SchedulerContext {
             .count()
     }
 
+    #[inline]
+    fn retain_after_cleanup(id: ProcessId, process: &Process, current: usize) -> bool {
+        !matches!(process.state, ProcessState::Terminated)
+            || id.0 as usize == current
+            || !process.reaped
+    }
+
+    #[inline]
+    fn should_defer_reap(reaped: bool, parent_alive: bool, supervisor_alive: bool) -> bool {
+        !reaped && (parent_alive || supervisor_alive)
+    }
+
     /// Remove terminated processes and reclaim their process-owned memory.
     pub fn cleanup(&self) {
         let current = self.current_pid();
@@ -190,9 +204,49 @@ impl SchedulerContext {
                 .iter()
                 .filter_map(|(id, process)| (process.state == ProcessState::Blocked).then_some(*id))
                 .collect();
+            let live_processes: HeaplessVec<ProcessId, MAX_PROCESSES> = procs
+                .iter()
+                .filter_map(|(id, process)| {
+                    (process.state != ProcessState::Terminated).then_some(*id)
+                })
+                .collect();
+            let init_pid = procs
+                .iter()
+                .find_map(|(id, process)| (process.role == ProcessRole::Init).then_some(*id));
+            // Birth lineage and supervision are independent. When a parent
+            // disappears, transfer the wait/reap lineage to PID 1 while
+            // retaining an explicitly assigned supervisor if one exists.
+            if let Some(init_pid) = init_pid {
+                for (id, process) in procs.iter_mut() {
+                    if *id != init_pid
+                        && process
+                            .parent_id
+                            .is_some_and(|parent_id| !live_processes.contains(&parent_id))
+                    {
+                        process.parent_id = Some(init_pid);
+                    }
+                }
+            }
             for (id, process) in procs.iter_mut() {
                 if !matches!(process.state, ProcessState::Terminated) || id.0 as usize == current {
                     continue;
+                }
+
+                // Keep a terminated child as a lightweight zombie until its
+                // parent or a transferred ProcessControl capability reaps
+                // it. Orphans are adopted by PID 1's policy and may be
+                // reclaimed immediately when no parent remains.
+                if !process.reaped {
+                    let parent_alive = process
+                        .parent_id
+                        .is_some_and(|parent_id| live_processes.contains(&parent_id));
+                    let supervisor_alive = process
+                        .supervisor_id
+                        .is_some_and(|supervisor_id| live_processes.contains(&supervisor_id));
+                    if Self::should_defer_reap(process.reaped, parent_alive, supervisor_alive) {
+                        continue;
+                    }
+                    process.reaped = true;
                 }
 
                 if let Some(parent_id) = process.parent_id
@@ -228,13 +282,14 @@ impl SchedulerContext {
                         crate::memory_management::deallocate_process_page_table(pml4_frame);
                     }
                 }
+                if let Some(terminal_id) = process.terminal_id.take() {
+                    solvent::close_process_terminal(lattice::window::WindowId(terminal_id));
+                }
                 for waiter in process.resources.cleanup() {
                     let _ = waiters.push(waiter);
                 }
             }
-            procs.retain(|(id, p)| {
-                !matches!(p.state, ProcessState::Terminated) || id.0 as usize == current
-            });
+            procs.retain(|(id, p)| Self::retain_after_cleanup(*id, p, current));
             // Removal can shift every following list index. Re-anchor the
             // round-robin cursor to the process that owns the live CPU state.
             let current_index = procs
@@ -314,7 +369,7 @@ impl SchedulerContext {
                     .position(|(_, process)| process.state == ProcessState::Ready)
                     .or_else(|| {
                         list.iter()
-                            .position(|(_, process)| process.name.as_ref() == "idle")
+                            .position(|(_, process)| process.role == ProcessRole::Idle)
                     })
                 else {
                     return (Some(list[current_idx].0), ProcessId(0));
@@ -337,7 +392,7 @@ impl SchedulerContext {
                         // All blocked → fall back to idle.
                         if let Some(idle) = list
                             .iter()
-                            .position(|(_, p)| p.name.as_ref() == "idle")
+                            .position(|(_, p)| p.role == ProcessRole::Idle)
                         {
                             next_idx = idle;
                         }
@@ -409,7 +464,7 @@ impl SchedulerContext {
     /// Yield the current process.
     pub fn yield_current(&self) {
         let old_pid_val = self.current_pid();
-        if old_pid_val == 0 {
+        if self.process_state(ProcessId(old_pid_val as u64)).is_none() {
             return;
         }
         let (old, new) = self.schedule_next();
@@ -627,5 +682,33 @@ impl SchedulerContext {
                 vdso::update_vdso_metadata(now_us, wall_us, vdso_ref.kernel_ptr);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreaped_zombies_survive_cleanup_for_their_manager() {
+        let mut process = Process::new("zombie", VirtAddr::new(0), false);
+        process.state = ProcessState::Terminated;
+        assert!(SchedulerContext::retain_after_cleanup(
+            process.id,
+            &process,
+            usize::MAX
+        ));
+
+        process.reaped = true;
+        assert!(!SchedulerContext::retain_after_cleanup(
+            process.id,
+            &process,
+            usize::MAX
+        ));
+
+        assert!(SchedulerContext::should_defer_reap(false, false, true));
+        assert!(SchedulerContext::should_defer_reap(false, true, false));
+        assert!(!SchedulerContext::should_defer_reap(false, false, false));
+        assert!(!SchedulerContext::should_defer_reap(true, true, true));
     }
 }

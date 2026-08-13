@@ -196,11 +196,11 @@ pub fn tick_core(now: u64) {
     }
 
     // Drain the I2C-HID FIFO before consuming input.  The scheduler idle
-    // loop services this separately (scheduler.rs), but while it is blocked
-    // inside shell_main/nozzle the only entry point that runs is
-    // runtime_tick_no_fb -> tick_core.  Without this call consume_input()
-    // in poll_mouse_state always returns None and the touchpad cursor
-    // freezes for the whole Nozzle session.
+    // loop services this separately (scheduler.rs), but while a synchronous
+    // kernel-side compatibility shell/test path is active the only entry
+    // point that runs is runtime_tick_no_fb -> tick_core. Without this call
+    // consume_input() in poll_mouse_state always returns None and the
+    // touchpad cursor freezes for that session.
     nitrogen::i2c_hid::service_input();
     tick_progress("GUI tick: I2C-HID returned");
     crate::poll_mouse_state();

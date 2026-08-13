@@ -10,6 +10,7 @@ use super::ipc;
 use super::memory;
 use super::process;
 use super::shared_buffer;
+use super::terminal;
 use super::thread;
 use super::time;
 use super::window;
@@ -121,7 +122,18 @@ pub unsafe extern "sysv64" fn handle_syscall(
             arg2 as usize,
             arg3 as *const u8,
             arg4 as usize,
+            arg5,
+            arg6,
         ),
+        Ok(SyscallNumber::OpenProcessControl) => process::syscall_open_process_control(arg1),
+        Ok(SyscallNumber::ProcessControlStop) => {
+            process::syscall_process_control_stop(arg1, arg2 as i32)
+        }
+        Ok(SyscallNumber::ProcessControlStatus) => process::syscall_process_control_status(arg1),
+        Ok(SyscallNumber::ProcessControlReap) => process::syscall_process_control_reap(arg1),
+        Ok(SyscallNumber::ProcessControlAssign) => {
+            process::syscall_process_control_assign(arg1, arg2)
+        }
 
         Ok(SyscallNumber::MapMemory) => memory::syscall_map_memory(arg1, arg2, arg3),
         Ok(SyscallNumber::UnmapMemory) => memory::syscall_unmap_memory(arg1, arg2),
@@ -159,6 +171,9 @@ pub unsafe extern "sysv64" fn handle_syscall(
         Ok(SyscallNumber::PresentWindow) => window::syscall_present_window(arg1),
         Ok(SyscallNumber::GetWindowEvent) => {
             window::syscall_get_window_event(arg1, arg2 as *mut u8, arg3 as usize)
+        }
+        Ok(SyscallNumber::CreateTerminal) => {
+            terminal::syscall_create_terminal(arg1 as *const u8, arg2 as usize)
         }
 
         Ok(SyscallNumber::EnumerateDevices) => {

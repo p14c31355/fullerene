@@ -684,7 +684,7 @@ fn initialize_linux_stack_transaction(
 /// Load a program from raw bytes and create a process for it using goblin.
 /// If `linux_abi` is true, attaches a LinuxRuntime for Linux ABI emulation.
 pub fn load_program(image_data: &[u8], name: &str) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, &[], &[], false, None)
+    load_program_inner(image_data, name, &[], &[], false, None, None, None)
 }
 
 /// Load a native program as a child of the requesting process.
@@ -693,7 +693,36 @@ pub fn load_program_with_parent(
     name: &str,
     parent_id: process::ProcessId,
 ) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, &[], &[], false, Some(parent_id))
+    load_program_inner(
+        image_data,
+        name,
+        &[],
+        &[],
+        false,
+        Some(parent_id),
+        None,
+        None,
+    )
+}
+
+/// Load a native program with independent lifecycle relationships.
+pub fn load_program_with_relationships(
+    image_data: &[u8],
+    name: &str,
+    parent_id: process::ProcessId,
+    supervisor_id: Option<process::ProcessId>,
+    terminal_id: Option<u64>,
+) -> Result<process::ProcessId, LoadError> {
+    load_program_inner(
+        image_data,
+        name,
+        &[],
+        &[],
+        false,
+        Some(parent_id),
+        supervisor_id,
+        terminal_id,
+    )
 }
 
 /// Load a program, optionally with Linux ABI emulation.
@@ -714,7 +743,7 @@ pub fn load_program_with_runtime_args(
     envp: &[&str],
     is_linux: bool,
 ) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, argv, envp, is_linux, None)
+    load_program_inner(image_data, name, argv, envp, is_linux, None, None, None)
 }
 
 /// Replace the executable image in an existing Linux process address space.
@@ -807,6 +836,8 @@ fn load_program_inner(
     envp: &[&str],
     is_linux: bool,
     parent_id: Option<process::ProcessId>,
+    supervisor_id: Option<process::ProcessId>,
+    terminal_id: Option<u64>,
 ) -> Result<process::ProcessId, LoadError> {
     crate::klog_fmt!(
         "[LINUX-DIAG] elf parse begin name={} bytes={} linux={}\n",
@@ -872,7 +903,14 @@ fn load_program_inner(
     }
 
     // Create process with the loaded program (user mode)
-    let pid = process::create_process_with_parent(name, entry_point_address, true, parent_id)?;
+    let pid = process::create_process_with_relationships(
+        name,
+        entry_point_address,
+        true,
+        parent_id,
+        supervisor_id,
+        terminal_id,
+    )?;
     crate::klog_fmt!(
         "[LINUX-DIAG] process created pid={} entry={:#x}\n",
         pid.0,

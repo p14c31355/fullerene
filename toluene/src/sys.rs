@@ -131,6 +131,36 @@ pub fn close(fd: i32) -> Result<(), i64> {
 
 /// Start an ELF image in a new isolated process.
 pub fn spawn_image(image: &[u8], name: &str) -> Result<u64, i64> {
+    spawn_image_with_terminal(image, name, None)
+}
+
+/// Start an ELF image attached to a process-owned terminal endpoint.
+pub fn spawn_image_with_terminal(
+    image: &[u8],
+    name: &str,
+    terminal_id: Option<u64>,
+) -> Result<u64, i64> {
+    spawn_image_with_terminal_and_supervisor(image, name, terminal_id, None)
+}
+
+/// Start an ELF image with an explicitly designated supervisor PID.
+/// The caller remains the birth parent; only lifecycle administration is
+/// assigned to `supervisor_pid`.
+pub fn spawn_image_with_supervisor(
+    image: &[u8],
+    name: &str,
+    terminal_id: Option<u64>,
+    supervisor_pid: u64,
+) -> Result<u64, i64> {
+    spawn_image_with_terminal_and_supervisor(image, name, terminal_id, Some(supervisor_pid))
+}
+
+fn spawn_image_with_terminal_and_supervisor(
+    image: &[u8],
+    name: &str,
+    terminal_id: Option<u64>,
+    supervisor_pid: Option<u64>,
+) -> Result<u64, i64> {
     let value = unsafe {
         raw_syscall(
             SyscallNumber::Spawn,
@@ -138,11 +168,102 @@ pub fn spawn_image(image: &[u8], name: &str) -> Result<u64, i64> {
             image.len() as u64,
             name.as_ptr() as u64,
             name.len() as u64,
+            terminal_id.unwrap_or(0),
+            supervisor_pid.unwrap_or(0),
+        )
+    };
+    syscall_result(value)
+}
+
+/// Allocate a GUI terminal endpoint for a child process.
+pub fn create_terminal(title: &str) -> Result<u64, i64> {
+    let value = unsafe {
+        raw_syscall(
+            SyscallNumber::CreateTerminal,
+            title.as_ptr() as u64,
+            title.len() as u64,
+            0,
+            0,
             0,
             0,
         )
     };
     syscall_result(value)
+}
+
+/// Open a capability for controlling a child process.
+pub fn open_process_control(pid: u64) -> Result<u64, i64> {
+    let value = unsafe { raw_syscall(SyscallNumber::OpenProcessControl, pid, 0, 0, 0, 0, 0) };
+    syscall_result(value)
+}
+
+pub fn process_control_stop(handle: u64, exit_code: i32) -> Result<(), i64> {
+    let value = unsafe {
+        raw_syscall(
+            SyscallNumber::ProcessControlStop,
+            handle,
+            exit_code as u64,
+            0,
+            0,
+            0,
+            0,
+        )
+    };
+    syscall_result(value).map(|_| ())
+}
+
+pub fn process_control_status(handle: u64) -> Result<u64, i64> {
+    let value = unsafe { raw_syscall(SyscallNumber::ProcessControlStatus, handle, 0, 0, 0, 0, 0) };
+    syscall_result(value)
+}
+
+pub fn process_control_reap(handle: u64) -> Result<i32, i64> {
+    let value = unsafe { raw_syscall(SyscallNumber::ProcessControlReap, handle, 0, 0, 0, 0, 0) };
+    syscall_result(value).map(|code| code as i32)
+}
+
+/// Assign a different process as supervisor without changing the parent.
+pub fn process_control_assign(handle: u64, supervisor_pid: u64) -> Result<(), i64> {
+    let value = unsafe {
+        raw_syscall(
+            SyscallNumber::ProcessControlAssign,
+            handle,
+            supervisor_pid,
+            0,
+            0,
+            0,
+            0,
+        )
+    };
+    syscall_result(value).map(|_| ())
+}
+
+/// Transfer a capability to another process.
+pub fn transfer_handle(target_pid: u64, handle: u64) -> Result<u64, i64> {
+    let value = unsafe {
+        raw_syscall(
+            SyscallNumber::HandleTransfer,
+            target_pid,
+            handle,
+            0,
+            0,
+            0,
+            0,
+        )
+    };
+    syscall_result(value)
+}
+
+/// Duplicate a capability in the current process.
+pub fn duplicate_handle(handle: u64) -> Result<u64, i64> {
+    let value = unsafe { raw_syscall(SyscallNumber::HandleDuplicate, handle, 0, 0, 0, 0, 0) };
+    syscall_result(value)
+}
+
+/// Revoke a capability in the current process.
+pub fn revoke_handle(handle: u64) -> Result<(), i64> {
+    let value = unsafe { raw_syscall(SyscallNumber::HandleRevoke, handle, 0, 0, 0, 0, 0) };
+    syscall_result(value).map(|_| ())
 }
 
 /// Write raw bytes to stdout (fd 1).

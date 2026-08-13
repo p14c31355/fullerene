@@ -7,24 +7,12 @@
 use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 const MAX_WASM_OUTPUT_BYTES: usize = 256 * 1024;
 static WASM_OUTPUT: Mutex<Option<String>> = Mutex::new(None);
 static LAST_WASM_OUTPUT_REFRESH: AtomicU64 = AtomicU64::new(u64::MAX);
-
-/// Prevent multiple interactive shell sessions from being launched at once.
-/// This lifecycle state belongs to the shell program, not the scheduler.
-static SHELL_PROCESS_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-pub fn try_start_process() -> bool {
-    !SHELL_PROCESS_ACTIVE.swap(true, Ordering::AcqRel)
-}
-
-pub fn abort_process_start() {
-    SHELL_PROCESS_ACTIVE.store(false, Ordering::Release);
-}
 
 /// Execute a machine power transition requested by the shell or desktop.
 ///
@@ -1651,15 +1639,6 @@ pub fn shell_main() {
         let mut terminal = KernelTerminal::new();
         solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     }
-}
-
-/// Process entry wrapper for the interactive shell.
-pub extern "C" fn shell_process_main() -> ! {
-    log::info!("Shell process started");
-    shell_main();
-    SHELL_PROCESS_ACTIVE.store(false, Ordering::Release);
-    crate::process::terminate_process(crate::process::current_pid().unwrap(), 0);
-    petroleum::halt_loop();
 }
 
 /// Run the native DriverKit channel fixture through the real kernel boundary.

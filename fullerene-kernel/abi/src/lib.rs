@@ -47,6 +47,7 @@ pub enum SyscallNumber {
     ResizeWindow = 62,
     PresentWindow = 63,
     GetWindowEvent = 64,
+    CreateTerminal = 65,
     EnumerateDevices = 70,
     OpenDevice = 71,
     DeviceIoctl = 72,
@@ -61,6 +62,11 @@ pub enum SyscallNumber {
     TimerCreate = 101,
     Sleep = 102,
     Uptime = 103,
+    OpenProcessControl = 110,
+    ProcessControlStop = 111,
+    ProcessControlStatus = 112,
+    ProcessControlReap = 113,
+    ProcessControlAssign = 114,
 }
 
 impl SyscallNumber {
@@ -71,11 +77,13 @@ impl SyscallNumber {
         SharedBufferCreate, SharedBufferMap, SharedBufferUnmap,
         CreateEvent, WaitEvent, SignalEvent, SubscribeEvent,
         CreateThread, JoinThread, DetachThread, ExitThread,
-        CreateWindow, DestroyWindow, ResizeWindow, PresentWindow, GetWindowEvent,
+        CreateWindow, DestroyWindow, ResizeWindow, PresentWindow, GetWindowEvent, CreateTerminal,
         EnumerateDevices, OpenDevice, DeviceIoctl,
         ChannelCreate, ChannelSend, ChannelRecv, PipeCreate,
         HandleTransfer, HandleDuplicate, HandleRevoke,
         ClockGetTime, TimerCreate, Sleep, Uptime,
+        OpenProcessControl, ProcessControlStop, ProcessControlStatus, ProcessControlReap,
+        ProcessControlAssign,
     }
 
     #[inline]
@@ -98,11 +106,14 @@ impl TryFrom<u64> for SyscallNumber {
             CREATE_EVENT => CreateEvent, WAIT_EVENT => WaitEvent, SIGNAL_EVENT => SignalEvent, SUBSCRIBE_EVENT => SubscribeEvent,
             CREATE_THREAD => CreateThread, JOIN_THREAD => JoinThread, DETACH_THREAD => DetachThread, EXIT_THREAD => ExitThread,
             CREATE_WINDOW => CreateWindow, DESTROY_WINDOW => DestroyWindow, RESIZE_WINDOW => ResizeWindow,
-            PRESENT_WINDOW => PresentWindow, GET_WINDOW_EVENT => GetWindowEvent,
+            PRESENT_WINDOW => PresentWindow, GET_WINDOW_EVENT => GetWindowEvent, CREATE_TERMINAL => CreateTerminal,
             ENUMERATE_DEVICES => EnumerateDevices, OPEN_DEVICE => OpenDevice, DEVICE_IOCTL => DeviceIoctl,
             CHANNEL_CREATE => ChannelCreate, CHANNEL_SEND => ChannelSend, CHANNEL_RECV => ChannelRecv, PIPE_CREATE => PipeCreate,
             HANDLE_TRANSFER => HandleTransfer, HANDLE_DUPLICATE => HandleDuplicate, HANDLE_REVOKE => HandleRevoke,
             CLOCK_GETTIME => ClockGetTime, TIMER_CREATE => TimerCreate, SLEEP => Sleep, UPTIME => Uptime,
+            OPEN_PROCESS_CONTROL => OpenProcessControl, PROCESS_CONTROL_STOP => ProcessControlStop,
+            PROCESS_CONTROL_STATUS => ProcessControlStatus, PROCESS_CONTROL_REAP => ProcessControlReap,
+            PROCESS_CONTROL_ASSIGN => ProcessControlAssign,
         }
     }
 }
@@ -120,11 +131,14 @@ pub mod syscall_numbers {
         CREATE_EVENT = CreateEvent, WAIT_EVENT = WaitEvent, SIGNAL_EVENT = SignalEvent, SUBSCRIBE_EVENT = SubscribeEvent,
         CREATE_THREAD = CreateThread, JOIN_THREAD = JoinThread, DETACH_THREAD = DetachThread, EXIT_THREAD = ExitThread,
         CREATE_WINDOW = CreateWindow, DESTROY_WINDOW = DestroyWindow, RESIZE_WINDOW = ResizeWindow,
-        PRESENT_WINDOW = PresentWindow, GET_WINDOW_EVENT = GetWindowEvent,
+        PRESENT_WINDOW = PresentWindow, GET_WINDOW_EVENT = GetWindowEvent, CREATE_TERMINAL = CreateTerminal,
         ENUMERATE_DEVICES = EnumerateDevices, OPEN_DEVICE = OpenDevice, DEVICE_IOCTL = DeviceIoctl,
         CHANNEL_CREATE = ChannelCreate, CHANNEL_SEND = ChannelSend, CHANNEL_RECV = ChannelRecv, PIPE_CREATE = PipeCreate,
         HANDLE_TRANSFER = HandleTransfer, HANDLE_DUPLICATE = HandleDuplicate, HANDLE_REVOKE = HandleRevoke,
         CLOCK_GETTIME = ClockGetTime, TIMER_CREATE = TimerCreate, SLEEP = Sleep, UPTIME = Uptime,
+        OPEN_PROCESS_CONTROL = OpenProcessControl, PROCESS_CONTROL_STOP = ProcessControlStop,
+        PROCESS_CONTROL_STATUS = ProcessControlStatus, PROCESS_CONTROL_REAP = ProcessControlReap,
+        PROCESS_CONTROL_ASSIGN = ProcessControlAssign,
     }
 }
 
@@ -211,7 +225,7 @@ pub struct AbiVersion {
 impl AbiVersion {
     pub const CURRENT: Self = Self {
         major: 0,
-        minor: 5,
+        minor: 6,
         patch: 0,
         reserved: 0,
     };
@@ -251,6 +265,7 @@ pub enum Capability {
     DeviceEnumeration = 1 << 8,
     ProcessSpawn = 1 << 9,
     SharedBuffers = 1 << 10,
+    ProcessSupervision = 1 << 11,
 }
 
 impl Capability {
@@ -278,7 +293,8 @@ impl CapabilitySet {
             | Capability::TimerSystem.bit()
             | Capability::DeviceEnumeration.bit()
             | Capability::ProcessSpawn.bit()
-            | Capability::SharedBuffers.bit(),
+            | Capability::SharedBuffers.bit()
+            | Capability::ProcessSupervision.bit(),
     );
 
     #[inline]
@@ -981,6 +997,7 @@ mod tests {
             CapabilitySet::ALL_DEFINED.bits()
         );
         assert!(info.capabilities.contains(Capability::NativeSyscall));
+        assert!(info.capabilities.contains(Capability::ProcessSupervision));
     }
 
     #[test]

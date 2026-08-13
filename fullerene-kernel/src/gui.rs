@@ -167,9 +167,9 @@ pub fn init() {
         }),
         usb_poll: Some(|| crate::drivers::registry::enqueue_usb_poll()),
         shell_cmd: None,
-        launch_shell: Some(|| {
-            crate::scheduler::request_shell_launch();
-        }),
+        // launchd owns the userland shell lifecycle. The desktop does not
+        // create a shell process directly.
+        launch_shell: None,
         power_control: Some(|action| match action {
             solvent::PowerAction::Shutdown => crate::shell::system_control("shutdown"),
             solvent::PowerAction::Reboot => crate::shell::system_control("reboot"),
