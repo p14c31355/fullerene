@@ -2,7 +2,7 @@
 //!
 //! This module implements the Fast System Call mechanism using SYSCALL/SYSRET instructions.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use petroleum::mem_debug;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{GsBase, KernelGsBase, Msr};
@@ -17,6 +17,7 @@ use x86_64::registers::rflags::RFlags;
 /// stack; keeping it here lets the naked entry switch stacks without
 /// clobbering a user register.
 #[repr(C, align(16))]
+#[derive(Clone, Copy, Default)]
 struct SyscallEntryState {
     kernel_stack_top: u64,
     user_rsp: u64,
@@ -41,6 +42,95 @@ struct SyscallEntryState {
     return_rip: u64,
     return_rsp: u64,
     return_rflags: u64,
+}
+
+/// The user return frame belonging to a syscall that was cooperatively
+/// suspended before the syscall handler returned.
+///
+/// `SYSCALL_ENTRY_STATE` is per CPU, but a process may yield from inside a
+/// syscall (the native Nozzle bridge does this while waiting for input).  The
+/// CPU-global entry frame therefore has to travel with the suspended process
+/// instead of being overwritten by the next process's syscall.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SavedSyscallState {
+    user_rsp: u64,
+    syscall_number: u64,
+    user_rip: u64,
+    user_rflags: u64,
+    user_rbx: u64,
+    user_rcx: u64,
+    user_rdx: u64,
+    user_rsi: u64,
+    user_rdi: u64,
+    user_rbp: u64,
+    user_r8: u64,
+    user_r9: u64,
+    user_r10: u64,
+    user_r11: u64,
+    user_r12: u64,
+    user_r13: u64,
+    user_r14: u64,
+    user_r15: u64,
+    return_override: u64,
+    return_rip: u64,
+    return_rsp: u64,
+    return_rflags: u64,
+}
+
+impl SavedSyscallState {
+    unsafe fn capture(state: *const SyscallEntryState) -> Self {
+        let state = unsafe { &*state };
+        Self {
+            user_rsp: state.user_rsp,
+            syscall_number: state.syscall_number,
+            user_rip: state.user_rip,
+            user_rflags: state.user_rflags,
+            user_rbx: state.user_rbx,
+            user_rcx: state.user_rcx,
+            user_rdx: state.user_rdx,
+            user_rsi: state.user_rsi,
+            user_rdi: state.user_rdi,
+            user_rbp: state.user_rbp,
+            user_r8: state.user_r8,
+            user_r9: state.user_r9,
+            user_r10: state.user_r10,
+            user_r11: state.user_r11,
+            user_r12: state.user_r12,
+            user_r13: state.user_r13,
+            user_r14: state.user_r14,
+            user_r15: state.user_r15,
+            return_override: state.return_override,
+            return_rip: state.return_rip,
+            return_rsp: state.return_rsp,
+            return_rflags: state.return_rflags,
+        }
+    }
+
+    unsafe fn restore(self, state: *mut SyscallEntryState) {
+        let state = unsafe { &mut *state };
+        state.user_rsp = self.user_rsp;
+        state.syscall_number = self.syscall_number;
+        state.user_rip = self.user_rip;
+        state.user_rflags = self.user_rflags;
+        state.user_rbx = self.user_rbx;
+        state.user_rcx = self.user_rcx;
+        state.user_rdx = self.user_rdx;
+        state.user_rsi = self.user_rsi;
+        state.user_rdi = self.user_rdi;
+        state.user_rbp = self.user_rbp;
+        state.user_r8 = self.user_r8;
+        state.user_r9 = self.user_r9;
+        state.user_r10 = self.user_r10;
+        state.user_r11 = self.user_r11;
+        state.user_r12 = self.user_r12;
+        state.user_r13 = self.user_r13;
+        state.user_r14 = self.user_r14;
+        state.user_r15 = self.user_r15;
+        state.return_override = self.return_override;
+        state.return_rip = self.return_rip;
+        state.return_rsp = self.return_rsp;
+        state.return_rflags = self.return_rflags;
+    }
 }
 
 const _: () = {
@@ -94,6 +184,49 @@ static mut SYSCALL_ENTRY_STATE: SyscallEntryState = SyscallEntryState {
     return_rsp: 0,
     return_rflags: 0,
 };
+
+/// PID whose real hardware syscall is currently executing.  Direct
+/// `kernel_syscall()` calls from kernel compatibility code do not set this;
+/// only the SYSCALL entry wrapper does.
+static ACTIVE_SYSCALL_PID: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn begin_syscall(pid: Option<crate::process::ProcessId>) {
+    ACTIVE_SYSCALL_PID.store(pid.map_or(0, |pid| pid.0 as usize), Ordering::Release);
+}
+
+pub(crate) fn end_syscall(pid: Option<crate::process::ProcessId>) {
+    let pid = pid.map_or(0, |pid| pid.0 as usize);
+    let _ = ACTIVE_SYSCALL_PID.compare_exchange(pid, 0, Ordering::AcqRel, Ordering::Acquire);
+}
+
+/// Move the active hardware syscall frame into the outgoing process before a
+/// cooperative context switch can let another process use the CPU-global
+/// SYSCALL entry state.
+pub(crate) fn save_context_for_switch(pid: crate::process::ProcessId) {
+    if ACTIVE_SYSCALL_PID.load(Ordering::Acquire) != pid.0 as usize {
+        return;
+    }
+    let saved = unsafe { SavedSyscallState::capture(core::ptr::addr_of!(SYSCALL_ENTRY_STATE)) };
+    if crate::process::SCHEDULER
+        .with_process(pid, |process| process.syscall_state = Some(saved))
+        .is_some()
+    {
+        ACTIVE_SYSCALL_PID.store(0, Ordering::Release);
+    }
+}
+
+/// Restore a syscall frame belonging to a process resumed inside its syscall.
+pub(crate) fn restore_context_for_switch(pid: crate::process::ProcessId) {
+    let saved = crate::process::SCHEDULER
+        .with_process(pid, |process| process.syscall_state.take())
+        .flatten();
+    if let Some(saved) = saved {
+        unsafe { saved.restore(core::ptr::addr_of_mut!(SYSCALL_ENTRY_STATE)) };
+        ACTIVE_SYSCALL_PID.store(pid.0 as usize, Ordering::Release);
+    } else {
+        ACTIVE_SYSCALL_PID.store(0, Ordering::Release);
+    }
+}
 
 static FIRST_LINUX_SYSCALL_ENTRY_DIAG: AtomicBool = AtomicBool::new(false);
 
@@ -398,4 +531,48 @@ pub fn setup_syscall() {
 
     petroleum::debug_log_no_alloc!("Syscall: initialized. LSTAR: {}", entry_addr);
     mem_debug!("Syscall: setup_syscall done\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_syscall_state_round_trips_without_kernel_stack() {
+        let mut source = SyscallEntryState::default();
+        source.kernel_stack_top = 0x1111;
+        source.user_rsp = 0x2222;
+        source.syscall_number = 22;
+        source.user_rip = 0x3333;
+        source.user_rflags = 0x202;
+        source.user_rbx = 0x4444;
+        source.user_rcx = 0x5555;
+        source.user_rdx = 0x6666;
+        source.user_rsi = 0x7777;
+        source.user_rdi = 0x8888;
+        source.user_rbp = 0x9999;
+        source.user_r8 = 0xaaaa;
+        source.user_r9 = 0xbbbb;
+        source.user_r10 = 0xcccc;
+        source.user_r11 = 0xdddd;
+        source.user_r12 = 0xeeee;
+        source.user_r13 = 0xffff;
+        source.user_r14 = 0x1234;
+        source.user_r15 = 0x5678;
+        source.return_override = 1;
+        source.return_rip = 0x9abc;
+        source.return_rsp = 0xdef0;
+        source.return_rflags = 0x202;
+
+        let saved = unsafe { SavedSyscallState::capture(&source as *const _) };
+        let mut target = SyscallEntryState {
+            kernel_stack_top: 0xaaaa_aaaa,
+            ..SyscallEntryState::default()
+        };
+        unsafe { saved.restore(&mut target as *mut _) };
+
+        let restored = unsafe { SavedSyscallState::capture(&target as *const _) };
+        assert_eq!(saved, restored);
+        assert_eq!(target.kernel_stack_top, 0xaaaa_aaaa);
+    }
 }

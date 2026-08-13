@@ -693,6 +693,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         terminal_owner: false,
         nozzle_authorized: false,
         task_data: 0,
+        syscall_state: None,
         vdso_page: child_vdso,
         resources: process::ProcessResources::new(),
         dispatch_mode: {

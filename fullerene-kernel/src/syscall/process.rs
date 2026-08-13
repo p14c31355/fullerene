@@ -207,6 +207,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
         terminal_owner: false,
         nozzle_authorized: false,
         dispatch_mode: None,
+        syscall_state: None,
         vdso_page: child_vdso,
         resources: process::ProcessResources::new(),
     };

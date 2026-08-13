@@ -560,6 +560,8 @@ pub struct Process {
     pub task_data: u64,
     /// Runtime dispatch mode (Fullerene native, Linux ABI, etc.)
     pub dispatch_mode: Option<DispatchMode>,
+    /// User syscall entry state suspended by a cooperative context switch.
+    pub(crate) syscall_state: Option<crate::interrupts::syscall::SavedSyscallState>,
     /// Per-process VDSO page for no-interrupt syscalls
     pub vdso_page: Option<VdsoPageRef>,
     /// Per-process resources (fd table, handle table)
@@ -614,6 +616,7 @@ impl Process {
             nozzle_authorized: false,
             task_data: 0,
             dispatch_mode: None,
+            syscall_state: None,
             vdso_page: None,
             resources: ProcessResources::new(),
         })
@@ -735,6 +738,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
         nozzle_authorized: false,
         task_data: 0,
         dispatch_mode: None,
+        syscall_state: None,
         vdso_page: None,
         resources: ProcessResources::new(),
     });

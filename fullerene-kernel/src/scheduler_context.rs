@@ -685,6 +685,14 @@ impl SchedulerContext {
             return;
         }
 
+        // A user process can yield from inside a syscall (the native Nozzle
+        // bridge does this while waiting for keyboard input).  Save its
+        // SYSCALL return frame before another process is allowed to reuse the
+        // CPU-global entry state.
+        if let Some(old_pid) = old_pid {
+            crate::interrupts::syscall::save_context_for_switch(old_pid);
+        }
+
         let mut guard = self.processes.lock();
         let list = &mut *guard;
 
@@ -774,7 +782,10 @@ impl SchedulerContext {
                 crate::interrupts::syscall::prepare_user_entry();
                 crate::process::mark_linux_stage(new_pid, "user-entry-prepared");
             } else if plan.entry() == crate::context_switch::SwitchEntry::KernelContinuation {
+                crate::interrupts::syscall::restore_context_for_switch(new_pid);
                 crate::interrupts::syscall::prepare_kernel_continuation();
+            } else {
+                crate::interrupts::syscall::restore_context_for_switch(new_pid);
             }
             crate::process::mark_linux_stage(new_pid, "context-switch-enter");
             unsafe { switch_context(&plan) };
