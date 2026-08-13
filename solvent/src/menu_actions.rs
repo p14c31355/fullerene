@@ -19,6 +19,173 @@ const DEFAULT_ROWS: u32 = 25;
 const TERM_WIN_W: u32 = DEFAULT_COLS * GLYPH_W;
 const TERM_WIN_H: u32 = DEFAULT_ROWS * GLYPH_H;
 
+const KLOG_MARGIN: u32 = 16;
+const KLOG_GAP: u32 = 16;
+const KLOG_MIN_W: u32 = 240;
+const KLOG_MIN_H: u32 = 128;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl WindowRect {
+    fn right(self) -> i32 {
+        self.x.saturating_add(self.width as i32)
+    }
+
+    fn bottom(self) -> i32 {
+        self.y.saturating_add(self.height as i32)
+    }
+
+    fn intersects(self, other: Self) -> bool {
+        self.x < other.right()
+            && other.x < self.right()
+            && self.y < other.bottom()
+            && other.y < self.bottom()
+    }
+}
+
+fn align_width(width: u32) -> u32 {
+    (width / GLYPH_W).max(1) * GLYPH_W
+}
+
+fn align_height(height: u32) -> u32 {
+    (height / GLYPH_H).max(1) * GLYPH_H
+}
+
+fn align_fit(size: u32, unit: u32) -> u32 {
+    let aligned = (size / unit) * unit;
+    if aligned == 0 { size } else { aligned }
+}
+
+/// Choose a Klog Live rectangle that stays inside the work area and avoids
+/// the interactive shell whenever there is enough room to show a useful
+/// window. The fallback order is: right of shell, left of shell, below shell,
+/// then the largest in-bounds rectangle available on a very small display.
+fn klog_live_geometry(
+    fb_width: u32,
+    fb_height: u32,
+    work_top: u32,
+    work_height: u32,
+    shell: Option<WindowRect>,
+) -> WindowRect {
+    let left = KLOG_MARGIN.min(fb_width.saturating_sub(1));
+    let top = work_top.min(fb_height.saturating_sub(1));
+    let right = fb_width.saturating_sub(KLOG_MARGIN.min(fb_width));
+    let bottom = work_top.saturating_add(work_height).min(fb_height);
+    let desired_w = 100 * GLYPH_W;
+    let desired_h = 30 * GLYPH_H;
+    let max_w = right.saturating_sub(left);
+    let max_h = bottom.saturating_sub(top);
+    let shell = shell.unwrap_or(WindowRect {
+        x: left as i32,
+        y: top as i32,
+        width: 0,
+        height: 0,
+    });
+
+    let candidates = [
+        (
+            shell.right().saturating_add(KLOG_GAP as i32),
+            top as i32,
+            right.saturating_sub((shell.right().max(0) as u32).saturating_add(KLOG_GAP)),
+            max_h,
+        ),
+        (
+            left as i32,
+            top as i32,
+            (shell.x.max(left as i32) as u32).saturating_sub(left.saturating_add(KLOG_GAP)),
+            max_h,
+        ),
+        (
+            left as i32,
+            shell.bottom().saturating_add(KLOG_GAP as i32),
+            max_w,
+            bottom.saturating_sub(
+                shell
+                    .bottom()
+                    .max(top as i32)
+                    .saturating_add(KLOG_GAP as i32) as u32,
+            ),
+        ),
+    ];
+
+    for (x, y, available_w, available_h) in candidates {
+        let width = align_width(available_w.min(desired_w));
+        let height = align_height(available_h.min(desired_h));
+        if available_w < KLOG_MIN_W || available_h < KLOG_MIN_H {
+            continue;
+        }
+        let rect = WindowRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        if rect.x >= left as i32
+            && rect.y >= top as i32
+            && rect.right() <= right as i32
+            && rect.bottom() <= bottom as i32
+            && !rect.intersects(shell)
+        {
+            return rect;
+        }
+    }
+
+    // A display smaller than both windows cannot satisfy non-overlap and
+    // minimum-size constraints simultaneously. Keep the fallback bounded;
+    // the shell remains the interactive window and Klog Live is still usable.
+    WindowRect {
+        x: left as i32,
+        y: top as i32,
+        width: align_fit(max_w.min(desired_w), GLYPH_W),
+        height: align_fit(max_h.min(desired_h), GLYPH_H),
+    }
+}
+
+pub(crate) fn layout_klog_live_window(rt: &mut RuntimeState) {
+    let Some(id) = rt.klog_live_window else {
+        return;
+    };
+    let (fb_width, fb_height, _) = *FB_DIMS.lock();
+    let fb_width = fb_width.max(640);
+    let fb_height = fb_height.max(480);
+    let shell = rt
+        .term_window
+        .and_then(|shell_id| rt.desktop.wm.windows().iter().find(|w| w.id == shell_id))
+        .map(|window| WindowRect {
+            x: window.x,
+            y: window.y,
+            width: window.decorated_width(),
+            height: window.decorated_height(),
+        });
+    let rect = klog_live_geometry(
+        fb_width,
+        fb_height,
+        rt.desktop.top_panel_offset(),
+        rt.desktop.work_area(fb_width, fb_height).1,
+        shell,
+    );
+    let mut resized = false;
+    if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        if window.width != rect.width || window.height != rect.height {
+            window.surface = Surface::new(rect.width, rect.height, 0x0d0d14);
+            window.width = rect.width;
+            window.height = rect.height;
+            resized = true;
+        }
+        window.x = rect.x;
+        window.y = rect.y;
+    }
+    if resized {
+        rt.klog_live_dirty = true;
+    }
+}
+
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
 pub(crate) enum InfoWindow {
@@ -398,17 +565,18 @@ fn publish_klog_live_geometry(window: &lattice::window::Window) {
 }
 
 pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
-    const COLS: u32 = 100;
-    const ROWS: u32 = 30;
     if let Some(id) = rt.klog_live_window {
-        if let Some(window) = rt
-            .desktop
-            .wm
-            .windows()
-            .iter()
-            .find(|window| window.id == id)
-        {
-            publish_klog_live_geometry(window);
+        if rt.desktop.wm.windows().iter().any(|window| window.id == id) {
+            layout_klog_live_window(rt);
+            if let Some(window) = rt
+                .desktop
+                .wm
+                .windows()
+                .iter()
+                .find(|window| window.id == id)
+            {
+                publish_klog_live_geometry(window);
+            }
             rt.klog_live_dirty = true;
             rt.frame_due = true;
             rt.desktop.wm.raise_to_top(id);
@@ -417,15 +585,18 @@ pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
         rt.klog_live_window = None;
         crate::runtime_context::clear_klog_live_surface();
     }
+    // Start with the desired size; layout_klog_live_window will shrink and
+    // place it against the current shell and framebuffer dimensions.
     let id = rt.desktop.wm.create_titled_window(
         60,
         40,
-        COLS * GLYPH_W,
-        ROWS * GLYPH_H,
+        100 * GLYPH_W,
+        30 * GLYPH_H,
         0x0d0d14,
         "KLog Live",
     );
     rt.klog_live_window = Some(id);
+    layout_klog_live_window(rt);
     if let Some(window) = rt
         .desktop
         .wm
@@ -460,12 +631,67 @@ pub fn render_klog_live(rt: &mut RuntimeState) {
         .kernel_log
         .map(|snap| snap())
         .unwrap_or_else(|| String::from("(kernel log unavailable)\n"));
-    let lines: Vec<&str> = log.lines().rev().take(29).collect();
+    let cols = (window.surface.width() / GLYPH_W).max(1);
+    let rows = (window.surface.height() / GLYPH_H).max(2);
+    let lines: Vec<&str> = log
+        .lines()
+        .rev()
+        .take(rows.saturating_sub(1) as usize)
+        .collect();
     let text = alloc::format!(
         "--- KLog Live (auto-refresh) ---\n{}",
         lines.into_iter().rev().collect::<Vec<_>>().join("\n")
     );
-    let _ = render_text_into_surface(&mut window.surface, &text, 100, 0xAADDFF, 0x0d0d14);
+    let _ = render_text_into_surface(&mut window.surface, &text, cols, 0xAADDFF, 0x0d0d14);
     rt.desktop.invalidate_window(id);
     rt.klog_live_dirty = false;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inside(rect: WindowRect, width: u32, height: u32, top: u32, work_height: u32) -> bool {
+        rect.x >= 0
+            && rect.y >= top as i32
+            && rect.right() <= width as i32
+            && rect.bottom() <= height as i32
+            && rect.bottom() <= top.saturating_add(work_height) as i32
+    }
+
+    #[test]
+    fn klog_live_is_to_the_side_of_shell_when_room_exists() {
+        let shell = WindowRect {
+            x: 40,
+            y: 40,
+            width: TERM_WIN_W,
+            height: TERM_WIN_H,
+        };
+        let rect = klog_live_geometry(1920, 1080, 0, 1052, Some(shell));
+        assert!(inside(rect, 1920, 1080, 0, 1052));
+        assert!(!rect.intersects(shell));
+        assert!(rect.x >= shell.right() || rect.right() <= shell.x);
+    }
+
+    #[test]
+    fn klog_live_falls_below_shell_on_narrow_display() {
+        let shell = WindowRect {
+            x: 16,
+            y: 16,
+            width: 640,
+            height: 400,
+        };
+        let rect = klog_live_geometry(800, 900, 0, 872, Some(shell));
+        assert!(inside(rect, 800, 900, 0, 872));
+        assert!(!rect.intersects(shell));
+        assert!(rect.y >= shell.bottom() || rect.x >= shell.right());
+    }
+
+    #[test]
+    fn klog_live_never_leaves_screen_on_small_display() {
+        let rect = klog_live_geometry(320, 240, 24, 188, None);
+        assert!(inside(rect, 320, 240, 24, 188));
+        assert!(rect.width <= 320);
+        assert!(rect.height <= 188);
+    }
 }

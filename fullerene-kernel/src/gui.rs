@@ -315,9 +315,21 @@ pub fn render_cursor() {
 /// 2. **render** — framebuffer rendering under the `KERNEL` lock.
 ///    Full-scene and cursor-only requests both borrow a `FramebufferGuard`.
 pub fn runtime_tick(now: u64) {
+    crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: tick_core begin");
     solvent::tick_core(now);
+    crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: tick_core returned");
+    // tick_core has returned, so it owns no runtime guard. It is now safe to
+    // take the short-lived runtime guard for frame selection. The framebuffer
+    // guard below is acquired only after this guard is dropped.
     let full_frame = solvent::consume_frame_due();
     let cursor_only = !full_frame && solvent::cursor_update_due();
+    crate::drivers::registry::usb_rescan_scheduler_diag(if full_frame {
+        "GUI runtime: full frame due"
+    } else if cursor_only {
+        "GUI runtime: cursor frame due"
+    } else {
+        "GUI runtime: no frame due"
+    });
     if full_frame || cursor_only {
         let frame_start = unsafe { core::arch::x86_64::_rdtsc() };
         let video_frames = if full_frame {
@@ -326,6 +338,11 @@ pub fn runtime_tick(now: u64) {
             0
         };
         let composite_start = unsafe { core::arch::x86_64::_rdtsc() };
+        crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: framebuffer begin");
+        // Do not emit USB diagnostics while the framebuffer/kernel lock is
+        // held. Diagnostics feed the compositor's taskbar and klog path;
+        // keeping them outside this closure preserves the lock boundary.
+        crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: render begin");
         let rendered = crate::contexts::framebuffer::with_framebuffer(|framebuffer| {
             if full_frame {
                 solvent::render(framebuffer);
@@ -333,18 +350,22 @@ pub fn runtime_tick(now: u64) {
                 solvent::render_cursor_fast(framebuffer);
             }
         });
-        if video_frames != 0 {
-            crate::metrics::record_video_composite(
-                unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(composite_start),
+        crate::drivers::registry::usb_rescan_scheduler_diag("GUI runtime: render returned");
+        if rendered.is_none() {
+            crate::drivers::registry::usb_rescan_scheduler_diag(
+                "GUI runtime: framebuffer lock busy; frame deferred",
+            );
+        } else {
+            if video_frames != 0 {
+                crate::metrics::record_video_composite(
+                    unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(composite_start),
+                );
+            }
+            finish_frame(video_frames);
+            crate::metrics::record_frame_ticks(
+                unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
             );
         }
-        if rendered.is_none() {
-            crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
-        }
-        finish_frame(video_frames);
-        crate::metrics::record_frame_ticks(
-            unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
-        );
     }
 }
 

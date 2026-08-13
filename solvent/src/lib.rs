@@ -81,9 +81,9 @@ pub use callbacks::{
 };
 pub use editor_bridge::editor_handle_key;
 pub use event_loop::{
-    GLOBAL_TICK, chrono_tick, consume_frame_due, cursor_update_due, flush_frame_no_fb,
-    process_events, pump_hid_cursor, push_key_event, runtime_tick, runtime_tick_no_fb,
-    set_cursor_render_fn, set_render_fn, tick_core,
+    GLOBAL_TICK, chrono_tick, clear_tick_progress_fn, consume_frame_due, cursor_update_due,
+    flush_frame_no_fb, process_events, pump_hid_cursor, push_key_event, runtime_tick,
+    runtime_tick_no_fb, set_cursor_render_fn, set_render_fn, set_tick_progress_fn, tick_core,
 };
 pub use file::RuntimeFile;
 pub use input_loop::{
@@ -94,7 +94,7 @@ pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use runtime_context::{
     DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY,
     ProcessTerminal, RUNTIME_CONTEXT, RuntimeContext, RuntimeState, apply_settings, get_tsc_per_ms,
-    init, is_initialized, set_tsc_per_ms, settings_snapshot,
+    init, is_initialized, request_klog_live_refresh, set_tsc_per_ms, settings_snapshot,
 };
 #[cfg(not(nitrogen_no_iwlwifi))]
 pub use services::register_wifi_service;

@@ -18,7 +18,25 @@ static TICK_CORE_ACTIVE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 static CURSOR_RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
+static TICK_PROGRESS_FN: Mutex<Option<fn(&str)>> = Mutex::new(None);
 static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Install an optional diagnostic callback for the normal GUI tick. The
+/// kernel uses this only while an explicit USB request is pending.
+pub fn set_tick_progress_fn(f: fn(&str)) {
+    *TICK_PROGRESS_FN.lock() = Some(f);
+}
+
+/// Remove the diagnostic callback once the pending request completes.
+pub fn clear_tick_progress_fn() {
+    *TICK_PROGRESS_FN.lock() = None;
+}
+
+fn tick_progress(stage: &str) {
+    if let Some(f) = *TICK_PROGRESS_FN.lock() {
+        f(stage);
+    }
+}
 
 fn process_pointer_motion_only() {
     let events = RUNTIME_CONTEXT
@@ -164,6 +182,18 @@ fn service_explorer_copy() {
 pub fn tick_core(now: u64) {
     let _tick_core = TickCoreGuard::enter();
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
+    tick_progress("GUI tick: input begin");
+
+    // Kernel log producers can request this without taking the runtime lock.
+    // Consume it at the start of the next GUI tick so Klog Live does not
+    // depend on mouse motion or a coarse periodic refresh interval.
+    if crate::runtime_context::take_klog_live_refresh()
+        && let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()
+        && runtime.klog_live_window.is_some()
+    {
+        runtime.klog_live_dirty = true;
+        runtime.frame_due = true;
+    }
 
     // Drain the I2C-HID FIFO before consuming input.  The scheduler idle
     // loop services this separately (scheduler.rs), but while it is blocked
@@ -172,10 +202,14 @@ pub fn tick_core(now: u64) {
     // in poll_mouse_state always returns None and the touchpad cursor
     // freezes for the whole Nozzle session.
     nitrogen::i2c_hid::service_input();
+    tick_progress("GUI tick: I2C-HID returned");
     crate::poll_mouse_state();
+    tick_progress("GUI tick: mouse returned");
     crate::poll_keyboard();
+    tick_progress("GUI tick: keyboard returned");
     crate::clock::update_clock();
     chrono_tick(now);
+    tick_progress("GUI tick: clock returned");
 
     // Skip service ticking while inside a WASM host callback.  Services
     // like WifiService can block for seconds on firmware MMIO, which
@@ -188,6 +222,7 @@ pub fn tick_core(now: u64) {
         for service in &mut services {
             service.tick(now);
         }
+        tick_progress("GUI tick: services returned");
         let mut registry = SERVICES.lock();
         services.append(&mut *registry);
         *registry = services;
@@ -206,22 +241,13 @@ pub fn tick_core(now: u64) {
     }
 
     process_events();
+    tick_progress("GUI tick: events returned");
     // File launch may have been queued by event handlers that ran inside
     // the runtime lock.  Process it now, outside the lock, so that VFS I/O
     // (called inside launch_file) cannot deadlock with the compositor.
     if let Some(path) = crate::window_api::PENDING_LAUNCH.lock().take() {
         crate::launch_file(&path);
     }
-    // Auto-refresh the live kernel log viewer if open, every ~0.8s (50 ticks).
-    if now % 50 == 0 {
-        if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
-            if runtime.klog_live_window.is_some() {
-                runtime.klog_live_dirty = true;
-                runtime.frame_due = true;
-            }
-        }
-    }
-
     // NOTE: periodic kernel log write to SD card is DISABLED because the
     // SD card SPI driver can hang on writes, which defeats the purpose of
     // saving a crash log.  Use the shell command `klog > /mnt/klog.txt`
@@ -234,8 +260,12 @@ pub fn tick_core(now: u64) {
         }
     }
     service_explorer_navigation();
+    tick_progress("GUI tick: navigation returned");
     service_explorer_copy();
+    tick_progress("GUI tick: copy returned");
     crate::installer::service_install_request();
+    tick_progress("GUI tick: installer returned");
+    tick_progress("GUI tick: shell phase");
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.shell_launch_pending;
         runtime.shell_launch_pending = false;
@@ -244,6 +274,7 @@ pub fn tick_core(now: u64) {
         crate::ensure_terminal_window();
         crate::launch_shell();
     }
+    tick_progress("GUI tick: editor phase");
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.editor_launch_pending;
         runtime.editor_launch_pending = false;
@@ -251,6 +282,7 @@ pub fn tick_core(now: u64) {
     }) {
         crate::ensure_editor_window();
     }
+    tick_progress("GUI tick: core end");
 }
 
 /// Lightweight HID input pump for the scheduler idle loop.

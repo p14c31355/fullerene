@@ -24,8 +24,15 @@ use super::host_controller::HostController;
 use super::xhci::context::XhciContext;
 
 pub type UsbPollDiagnostic = fn(&str);
+pub type UsbEnableDiagnostic = fn(&str);
 
 fn emit_poll_diagnostic(diagnostic: Option<UsbPollDiagnostic>, message: &str) {
+    if let Some(diagnostic) = diagnostic {
+        diagnostic(message);
+    }
+}
+
+fn emit_enable_diagnostic(diagnostic: Option<UsbEnableDiagnostic>, message: &str) {
     if let Some(diagnostic) = diagnostic {
         diagnostic(message);
     }
@@ -176,15 +183,22 @@ impl ControllerManager {
     }
 
     /// Scan the PCI bus and initialise every USB controller found.
-    fn init_controllers(&mut self, ctx: &'static dyn DriverContext) {
+    fn init_controllers(
+        &mut self,
+        ctx: &'static dyn DriverContext,
+        diagnostic: Option<UsbEnableDiagnostic>,
+    ) {
         use crate::pci::{PciConfigSpace, PciScanner};
 
+        emit_enable_diagnostic(diagnostic, "enable: pci scan begin");
         log::info!("USB: scanning PCI for USB host controllers");
         let mut scanner = PciScanner::new();
         if let Err(e) = scanner.scan_all_buses() {
             log::info!("USB: PCI scan failed: {:?}", e);
+            emit_enable_diagnostic(diagnostic, "enable: pci scan failed");
             return;
         }
+        emit_enable_diagnostic(diagnostic, "enable: pci scan complete");
         let intel_routes = Self::route_intel_ports_to_xhci(scanner.get_devices());
         let intel_ports_routed = intel_routes.iter().any(|route| route.routed);
         let mut controllers: Vec<_> = scanner
@@ -330,6 +344,7 @@ impl ControllerManager {
             crate::debug::hint(b"us_pif");
             match dev.prog_if {
                 0x20 => {
+                    emit_enable_diagnostic(diagnostic, "enable: ehci init begin");
                     log::info!(
                         "USB: EHCI at {:02x}:{:02x}.{} — initialising",
                         dev.bus,
@@ -341,9 +356,11 @@ impl ControllerManager {
                         unsafe { EhciContext::new(mmio_virt as usize, ctx, health) }
                     {
                         if hc.initialize().is_ok() {
+                            emit_enable_diagnostic(diagnostic, "enable: ehci init returned");
                             log::info!("USB: EHCI init OK, {} ports", hc.n_ports());
                             self.ehci.push(Box::new(hc));
                         } else {
+                            emit_enable_diagnostic(diagnostic, "enable: ehci init failed");
                             log::info!(
                                 "USB: EHCI init failed for {:02x}:{:02x}.{}",
                                 dev.bus,
@@ -352,6 +369,7 @@ impl ControllerManager {
                             );
                         }
                     } else {
+                        emit_enable_diagnostic(diagnostic, "enable: ehci construct failed");
                         log::info!(
                             "USB: EHCI new failed for {:02x}:{:02x}.{}",
                             dev.bus,
@@ -361,6 +379,7 @@ impl ControllerManager {
                     }
                 }
                 0x30 => {
+                    emit_enable_diagnostic(diagnostic, "enable: xhci init begin");
                     log::info!(
                         "USB: xHCI at {:02x}:{:02x}.{} — initialising",
                         dev.bus,
@@ -370,11 +389,14 @@ impl ControllerManager {
                     if let Some(mut hc) =
                         unsafe { XhciContext::new(mmio_virt as usize, ctx, health) }
                     {
+                        emit_enable_diagnostic(diagnostic, "enable: xhci construct returned");
                         if hc.init().is_ok() {
+                            emit_enable_diagnostic(diagnostic, "enable: xhci init returned");
                             log::info!("USB: xHCI init OK, {} ports", hc.n_ports());
                             self.xhci.push(Box::new(hc));
                             intel_xhci_active |= dev.vendor_id == 0x8086;
                         } else {
+                            emit_enable_diagnostic(diagnostic, "enable: xhci init failed");
                             log::info!(
                                 "USB: xHCI init failed for {:02x}:{:02x}.{}",
                                 dev.bus,
@@ -383,6 +405,7 @@ impl ControllerManager {
                             );
                         }
                     } else {
+                        emit_enable_diagnostic(diagnostic, "enable: xhci construct failed");
                         log::info!(
                             "USB: xHCI new failed for {:02x}:{:02x}.{}",
                             dev.bus,
@@ -495,11 +518,22 @@ impl USBContext {
 
     /// Enable USB hardware without invoking polling or filesystem policy.
     pub fn enable(&mut self) -> Result<(), crate::DriverError> {
+        self.enable_with_diagnostic(None)
+    }
+
+    pub fn enable_with_diagnostic(
+        &mut self,
+        diagnostic: Option<UsbEnableDiagnostic>,
+    ) -> Result<(), crate::DriverError> {
         if self.enabled {
             return Ok(());
         }
-        self.controllers.init_controllers(self.driver_ctx);
+        emit_enable_diagnostic(diagnostic, "enable: init_controllers begin");
+        self.controllers
+            .init_controllers(self.driver_ctx, diagnostic);
+        emit_enable_diagnostic(diagnostic, "enable: init_controllers returned");
         self.enabled = true;
+        emit_enable_diagnostic(diagnostic, "enable: complete");
         Ok(())
     }
 

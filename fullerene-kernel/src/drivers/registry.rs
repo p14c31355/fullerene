@@ -707,11 +707,57 @@ const MAX_USB_POLL_RETRIES: u8 = 64;
 #[cfg(not(nitrogen_no_usb))]
 fn usb_rescan_diag(stage: &str) {
     crate::klog_fmt!("[USB-RESCAN] {}\n", stage);
-    // Refresh immediately as well as relying on the timer path; this makes
-    // the last completed boundary visible before a potentially non-returning
-    // MMIO access.
-    let _ = crate::klog::try_render_live_surface();
+    // Do not synchronously write the UART here.  GemiBook-class machines may
+    // have no usable COM1, and a diagnostic path must never wait on a
+    // disconnected serial transmitter. Klog and the lock-free taskbar ring
+    // remain available for on-screen/post-boot inspection.
+    // Publish a compact version through the normal compositor/taskbar path.
+    // This is the primary on-screen indicator. USB runtime diagnostics must
+    // never repaint the boot splash after the desktop owns the framebuffer.
+    let taskbar_status = match stage {
+        "queue begin" => "queue begin",
+        "queue accepted" => "queue accepted",
+        "queue rejected" => "queue rejected",
+        "activate: take context" => "activation start",
+        "activate: USBContext::enable begin" => "USB init",
+        "enable: init_controllers begin" => "controller scan",
+        "enable: pci scan begin" => "PCI scan",
+        "enable: pci scan complete" => "PCI scan done",
+        "enable: xhci init begin" => "xHCI init",
+        "enable: xhci construct returned" => "xHCI constructed",
+        "enable: xhci init returned" => "xHCI ready",
+        "enable: complete" => "USB init done",
+        "poll: controller poll begin" => "USB polling",
+        "poll: controller poll returned" => "USB poll done",
+        "poll: register pending complete" => "USB devices registered",
+        "poll: complete (device registered)" => "poll complete",
+        "poll: complete (no device)" => "poll: no device",
+        "queue complete" => "queue complete",
+        "queue retry" => "queue retry",
+        _ => stage,
+    };
+    nitrogen::debug::publish_usb_status(taskbar_status);
+    // Do not force a direct Klog Live repaint here. This callback runs from
+    // both the shell and scheduler paths; on some machines the framebuffer
+    // path can block immediately after publishing `queue accepted`. The
+    // taskbar status above is the normal compositor path, while serial/klog
+    // retain the last boundary if the machine later wedges in MMIO.
 }
+
+/// Emit scheduler-phase diagnostics only while an explicit USB request is
+/// still pending. This distinguishes a hang after `queue retry` from a hang
+/// inside the USB poll itself without adding noise to normal boot polling.
+#[cfg(not(nitrogen_no_usb))]
+pub fn usb_rescan_scheduler_diag(stage: &str) {
+    if usb_activation_pending() {
+        usb_rescan_diag(stage);
+    } else {
+        solvent::clear_tick_progress_fn();
+    }
+}
+
+#[cfg(nitrogen_no_usb)]
+pub fn usb_rescan_scheduler_diag(_stage: &str) {}
 
 /// Enqueue one coalesced USB hotplug poll from a runtime/service callback.
 #[cfg(not(nitrogen_no_usb))]
@@ -826,12 +872,15 @@ pub fn process_usb_submission_queue_until(budget: usize, deadline_tsc: u64) {
                 });
             }
             USB_POLL_PENDING.store(false, Ordering::Release);
+            usb_rescan_diag("queue complete");
+            solvent::clear_tick_progress_fn();
         } else if should_retry {
             // Leave the request at the head of the SQ and keep
             // USB_POLL_PENDING set.  Otherwise the regular USB service poll
             // callback enqueues a duplicate request on every tick, starving
             // the original rescan.  An explicit usb_rescan clears the SQ and
             // this flag before enqueueing its replacement.
+            usb_rescan_diag("queue retry");
             break;
         }
     }
@@ -1531,9 +1580,6 @@ pub fn poll_usb() -> bool {
                 usb_rescan_diag("poll: controller not enabled");
                 return false;
             }
-            usb_rescan_diag("poll: boot hint begin");
-            crate::boot_stage::draw_step_hint(b"usb_poll");
-            usb_rescan_diag("poll: boot hint returned");
             usb_rescan_diag("poll: controller poll begin");
             ctx.poll_with_diagnostic(usb_rescan_diag);
             usb_rescan_diag("poll: controller poll returned");
@@ -1556,6 +1602,11 @@ pub fn poll_usb() -> bool {
     if changed {
         let _ = crate::klog::flush_to_vfs();
     }
+    usb_rescan_diag(if changed {
+        "poll: complete (device registered)"
+    } else {
+        "poll: complete (no device)"
+    });
     changed
 }
 
@@ -1587,8 +1638,7 @@ fn activate_usb() -> bool {
         Ok(())
     } else {
         usb_rescan_diag("activate: USBContext::enable begin");
-        crate::boot_stage::draw_step_hint(b"usb_init");
-        let result = ctx.enable();
+        let result = ctx.enable_with_diagnostic(Some(usb_rescan_diag));
         usb_rescan_diag("activate: USBContext::enable returned");
         result
     };
@@ -1636,13 +1686,16 @@ fn prepare_usb_rescan() -> bool {
     true
 }
 
-/// Queue a full USB re-enumeration (clear + re-scan). Does NOT mount.
+/// Full USB re-enumeration (clear + re-scan). Does NOT mount.
 ///
-/// Controller teardown and activation are both scheduler-owned operations.
-/// The returned value reports whether the request was accepted, not whether a
-/// storage device has already been registered.
+/// The command only prepares and queues the request.  Controller activation,
+/// enumeration, and teardown all remain in scheduler context; this is
+/// important on machines where a PCIe/MMIO transaction can take an
+/// unexpectedly long time or fail to return.  The return value means that the
+/// request was accepted, not that `/dev/usb0` already exists.
 #[cfg(not(nitrogen_no_usb))]
 pub fn rescan_usb_all() -> bool {
+    solvent::set_tick_progress_fn(usb_rescan_scheduler_diag);
     usb_rescan_diag("queue begin");
     let accepted = enqueue_usb_rescan();
     usb_rescan_diag(if accepted {
@@ -1650,6 +1703,9 @@ pub fn rescan_usb_all() -> bool {
     } else {
         "queue rejected"
     });
+    if !accepted {
+        solvent::clear_tick_progress_fn();
+    }
     accepted
 }
 

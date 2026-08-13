@@ -65,6 +65,7 @@ pub fn write_fmt(args: fmt::Arguments<'_>) {
     drop(guard);
     IN_KLOG.store(false, Ordering::Release);
     KLOG_GENERATION.fetch_add(1, Ordering::Release);
+    solvent::request_klog_live_refresh();
 }
 
 /// Write a raw byte slice to the kernel log buffer.
@@ -93,6 +94,7 @@ pub fn write_bytes(bytes: &[u8]) {
     drop(guard);
     IN_KLOG.store(false, Ordering::Release);
     KLOG_GENERATION.fetch_add(1, Ordering::Release);
+    solvent::request_klog_live_refresh();
 }
 
 /// Monotonic change counter used by the timer-driven Klog Live overlay.

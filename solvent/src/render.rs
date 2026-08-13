@@ -342,11 +342,25 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     }
 
     let mut debug_msgs = nitrogen::debug::drain();
+    // USB activation can be the operation that prevents the next compositor
+    // frame. Keep its latest boundary as the taskbar's final status entry so
+    // it is not hidden behind the persistent I2C-HID status on machines such
+    // as the GemiBook.
+    let latest_usb_status = debug_msgs
+        .iter()
+        .rev()
+        .find(|(source, _)| source == "USB")
+        .cloned()
+        .or_else(nitrogen::debug::usb_status_snapshot);
     // Keep the I2C-HID result separate from the transient debug ring. Boot
     // diagnostics from VFS/Wi-Fi must not hide the touchpad result.
     if let Some(i2c_status) = nitrogen::i2c_hid::status_snapshot() {
         debug_msgs.retain(|(source, _)| source != "I2C-HID");
         debug_msgs.push(i2c_status);
+    }
+    if let Some(usb_status) = latest_usb_status {
+        debug_msgs.retain(|(source, _)| source != "USB");
+        debug_msgs.push(usb_status);
     }
     let debug_changed = if !debug_msgs.is_empty() {
         let changed = rt.desktop.taskbar.debug_msgs != debug_msgs;
