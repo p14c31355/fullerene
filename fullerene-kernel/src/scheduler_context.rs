@@ -465,6 +465,10 @@ impl SchedulerContext {
             }
         }
 
+        // A detached process may no longer be present in `self.processes`
+        // while its resources are still allocated. This is safe because the
+        // kernel is uniprocessor and cooperative here; no concurrent
+        // `with_process` call can observe the detached entry during cleanup.
         // Reclaim detached processes without holding the global process-list
         // lock. In particular, ProcessResources::cleanup may notify the GUI
         // and therefore take KERNEL-owned locks.

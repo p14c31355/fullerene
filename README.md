@@ -11,7 +11,7 @@ Fullerene is a `no_std` Rust operating system under active development. It boots
 The project is developed against QEMU and selected real hardware. Hardware and ABI support is still evolving; see the [support matrix](docs/SUPPORT_MATRIX.md) and [hardware notes](docs/HARDWARE.md) for the current status rather than treating every driver or syscall as production-ready.
 
 Nitrogen's Haber–Bosch daemon (HBD) provides bounded hardware-state
-convergence diagnostics for xHCI and iwlwifi. See [docs/HBD.md](docs/HBD.md)
+convergence diagnostics for xHCI, iwlwifi, and HDA. See [docs/HBD.md](docs/HBD.md)
 for the solver design, reports, and shell commands.
 
 ## What is implemented

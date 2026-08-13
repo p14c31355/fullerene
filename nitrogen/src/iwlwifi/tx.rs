@@ -289,11 +289,14 @@ impl IwlWifiDevice {
                     FH_TCSR_TX_CONFIG_DMA_ENABLE | FH_TCSR_TX_CONFIG_DMA_CREDIT_ENABLE,
                 );
             }
-            let chicken = self.safe_read32(FH_TX_CHICKEN_BITS).unwrap_or(!0);
-            self.write_mmio32(
-                FH_TX_CHICKEN_BITS,
-                chicken | FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN,
-            );
+            if let Some(chicken) = self.safe_read32(FH_TX_CHICKEN_BITS) {
+                self.write_mmio32(
+                    FH_TX_CHICKEN_BITS,
+                    chicken | FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN,
+                );
+            } else {
+                log::warn!("iwlwifi: unable to read FH_TX_CHICKEN_BITS; leaving it unchanged");
+            }
         }
         mmio::write_barrier();
         let fh_config = self

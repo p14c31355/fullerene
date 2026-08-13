@@ -174,6 +174,7 @@ pub fn init(ctx: &dyn DriverContext) -> Option<VirtioGpuInitResult> {
             used_virt,
             used_guard.phys(),
         )
+        .ok()?;
     };
 
     cmd_guard.forget();

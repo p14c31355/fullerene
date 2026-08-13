@@ -104,8 +104,10 @@ impl ConvergenceReport {
             for transition in &self.transitions {
                 let _ = writeln!(
                     out,
-                    "  {} -> {:?} -> {}",
-                    transition.from, transition.action, transition.to
+                    "  {} -> {} -> {}",
+                    transition.from,
+                    action_name(transition.action),
+                    transition.to
                 );
             }
         }
@@ -113,8 +115,7 @@ impl ConvergenceReport {
     }
 }
 
-#[allow(dead_code)]
-fn _action_name(action: ActionKind) -> &'static str {
+fn action_name(action: ActionKind) -> &'static str {
     match action {
         ActionKind::Observe => "observe",
         ActionKind::Retry => "retry",

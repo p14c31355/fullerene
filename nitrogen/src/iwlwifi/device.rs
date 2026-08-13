@@ -159,13 +159,12 @@ impl Drop for IwlWifiDevice {
 }
 
 impl IwlWifiDevice {
-    const MMIO_BAR_SIZE: usize = 0x2000;
+    pub(super) const MMIO_BAR_SIZE: usize = 0x2000;
 
     #[inline]
-    fn mmio_offset(reg: u32) -> usize {
-        (reg as usize)
-            .checked_mul(core::mem::size_of::<u32>())
-            .expect("iwlwifi MMIO register offset overflow")
+    pub(super) fn mmio_offset(reg: u32) -> Option<usize> {
+        let offset = (reg as usize).checked_mul(core::mem::size_of::<u32>())?;
+        (offset < Self::MMIO_BAR_SIZE).then_some(offset)
     }
 
     /// Write one device register through the Sealant capability.
@@ -176,7 +175,9 @@ impl IwlWifiDevice {
     #[inline]
     pub(super) fn write_mmio32(&self, reg: u32, value: u32) {
         if let Some(region) = &self.mmio_region {
-            region.write32(Self::mmio_offset(reg), value);
+            if let Some(offset) = Self::mmio_offset(reg) {
+                region.write32(offset, value);
+            }
         }
     }
 
@@ -288,7 +289,10 @@ impl IwlWifiDevice {
         let Some(region) = &self.mmio_region else {
             return None;
         };
-        match region.checked_read32(Self::mmio_offset(reg), health) {
+        let Some(offset) = Self::mmio_offset(reg) else {
+            return None;
+        };
+        match region.checked_read32(offset, health) {
             SafeReadResult::Value(v) => Some(v),
             _ => None,
         }
@@ -360,7 +364,7 @@ impl IwlWifiDevice {
         // BAR0 is firmware-assigned. Avoid a destructive all-ones BAR size
         // probe on a live Wi-Fi endpoint; the CSR/FH register window used by
         // firmware boot fits in the first two pages.
-        let bar0_size = 0x2000;
+        let bar0_size = Self::MMIO_BAR_SIZE;
         log::info!(
             "iwlwifi: mapping BAR0 {:#x} -> virt {:#p} ({} bytes)",
             bar0_addr,
@@ -383,11 +387,15 @@ impl IwlWifiDevice {
             .pre_mmio_access()
             .map_err(|_| IwlError::BarNotAvailable)?;
 
-        let hw_rev_raw =
-            match mmio_region.checked_read32(Self::mmio_offset(CSR_HW_REV), Some(&health)) {
-                mmio::SafeReadResult::Value(v) => v,
-                _ => return Err(IwlError::BarNotAvailable),
-            };
+        let hw_rev_raw = match Self::mmio_offset(CSR_HW_REV).and_then(|offset| {
+            match mmio_region.checked_read32(offset, Some(&health)) {
+                mmio::SafeReadResult::Value(v) => Some(v),
+                _ => None,
+            }
+        }) {
+            Some(v) => v,
+            None => return Err(IwlError::BarNotAvailable),
+        };
         let hw_rev = hw_rev_raw as u16;
         log::info!(
             "iwlwifi: CSR_HW_REV raw={:#010x} type={:#06x} step_dash={:#x}",
@@ -398,10 +406,10 @@ impl IwlWifiDevice {
 
         Self::reset_device(&mmio_region);
 
-        mmio_region.write32(
-            Self::mmio_offset(CSR_GP_CNTRL),
-            CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
-        );
+        let Some(offset) = Self::mmio_offset(CSR_GP_CNTRL) else {
+            return Err(IwlError::BarNotAvailable);
+        };
+        mmio_region.write32(offset, CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE);
         mmio::write_barrier();
         if !health.is_device_present() {
             return Err(IwlError::ClockNotReady);
@@ -411,7 +419,9 @@ impl IwlWifiDevice {
 
         let mac = Self::read_mac(&mmio_region, Some(&health));
 
-        mmio_region.write32(Self::mmio_offset(CSR_INT_MASK), 0xFFFFFFFFu32);
+        if let Some(offset) = Self::mmio_offset(CSR_INT_MASK) {
+            mmio_region.write32(offset, 0xFFFFFFFFu32);
+        }
 
         let mut tx_dma_ring = DmaRegion::alloc(ctx, TX_DMA_ALLOCATION_BYTES)
             .ok_or(IwlError::DmaAllocFailed)
@@ -588,6 +598,10 @@ impl IwlWifiDevice {
         device: PciDevice,
         mut health: PciHealth,
     ) -> Result<Self, IwlError> {
+        if mmio.is_null() {
+            debug::print("iwlwifi", "ERR null MMIO base");
+            return Err(IwlError::BarNotAvailable);
+        }
         let mmio_region = unsafe { MemRegion::new(mmio as usize, Self::MMIO_BAR_SIZE) };
         debug::print("iwlwifi", "init_after_mmio: enter");
         let _ = pci_revision;
@@ -600,10 +614,10 @@ impl IwlWifiDevice {
         Self::reset_device(&mmio_region);
 
         debug::print("iwlwifi", "mac_clock_req");
-        mmio_region.write32(
-            Self::mmio_offset(CSR_GP_CNTRL),
-            CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
-        );
+        let Some(offset) = Self::mmio_offset(CSR_GP_CNTRL) else {
+            return Err(IwlError::BarNotAvailable);
+        };
+        mmio_region.write32(offset, CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE);
         mmio::write_barrier();
         if !health.is_device_present() {
             debug::print("iwlwifi", "ERR device_gone_before_clock");
@@ -615,11 +629,15 @@ impl IwlWifiDevice {
             IwlError::ClockNotReady
         })?;
 
-        let hw_rev_raw =
-            match mmio_region.checked_read32(Self::mmio_offset(CSR_HW_REV), Some(&health)) {
-                SafeReadResult::Value(v) => v,
-                _ => return Err(IwlError::ClockNotReady),
-            };
+        let hw_rev_raw = match Self::mmio_offset(CSR_HW_REV).and_then(|offset| {
+            match mmio_region.checked_read32(offset, Some(&health)) {
+                SafeReadResult::Value(v) => Some(v),
+                _ => None,
+            }
+        }) {
+            Some(v) => v,
+            None => return Err(IwlError::ClockNotReady),
+        };
         let hw_rev = hw_rev_raw as u16;
         log::info!(
             "iwlwifi: CSR_HW_REV raw={:#010x} type={:#06x} step_dash={:#x}",
@@ -632,7 +650,9 @@ impl IwlWifiDevice {
         let mac = Self::read_mac(&mmio_region, Some(&health));
 
         debug::print("iwlwifi", "mask_ints");
-        mmio_region.write32(Self::mmio_offset(CSR_INT_MASK), 0xFFFFFFFFu32);
+        if let Some(offset) = Self::mmio_offset(CSR_INT_MASK) {
+            mmio_region.write32(offset, 0xFFFFFFFFu32);
+        }
 
         debug::print("iwlwifi", "alloc_tx_ring");
         let mut tx_dma_ring = DmaRegion::alloc(ctx, TX_DMA_ALLOCATION_BYTES)
@@ -798,11 +818,14 @@ impl IwlWifiDevice {
 
     /// Reset the device with posted-write + pure TSC delays.
     pub(super) fn reset_device(region: &MemRegion) {
-        region.write32(Self::mmio_offset(CSR_RESET), CSR_RESET_BIT_STOP_MASTER);
+        let Some(offset) = Self::mmio_offset(CSR_RESET) else {
+            return;
+        };
+        region.write32(offset, CSR_RESET_BIT_STOP_MASTER);
         crate::timing::delay_us(10_000);
-        region.write32(Self::mmio_offset(CSR_RESET), CSR_RESET_BIT_SW);
+        region.write32(offset, CSR_RESET_BIT_SW);
         crate::timing::delay_us(10_000);
-        region.write32(Self::mmio_offset(CSR_RESET), 0);
+        region.write32(offset, 0);
         crate::timing::delay_us(10_000);
     }
 
@@ -850,7 +873,8 @@ impl IwlWifiDevice {
     /// Read MAC address from the NVM (non-volatile memory) via CSR registers.
     pub(super) fn read_mac(region: &MemRegion, health: Option<&PciHealth>) -> [u8; 6] {
         let checked_read = |reg: u32| -> Option<u32> {
-            match region.checked_read32(Self::mmio_offset(reg), health) {
+            let offset = Self::mmio_offset(reg)?;
+            match region.checked_read32(offset, health) {
                 SafeReadResult::Value(v) => Some(v),
                 _ => None,
             }
@@ -1898,8 +1922,9 @@ pub(super) mod test_support {
         pub fn new_for_test(mac: [u8; 6]) -> Self {
             let ctx = HeapDriverContext::leaked();
 
-            // Fake MMIO: 2048 dwords = 8192 bytes (covers all register offsets).
-            let mmio_vec = vec![0u32; 2048].into_boxed_slice();
+            // Fake MMIO: cover the same BAR window as production code.
+            let mmio_vec =
+                vec![0u32; Self::MMIO_BAR_SIZE / core::mem::size_of::<u32>()].into_boxed_slice();
             let mmio = Box::into_raw(mmio_vec) as *mut u32;
             // Pre-set CSR_GP_CNTRL with MAC_CLOCK_READY so `wake_for_hcmd`
             // succeeds immediately on the first poll.

@@ -109,6 +109,128 @@ pub fn observe(controller: &XhciContext) -> XhciObservation {
     }
 }
 
+/// Convert one physical snapshot into the canonical HBD observation list.
+/// Status reporting and solving must use the same vocabulary and topology
+/// data, even though status is collected later by the scheduler.
+pub fn observation_records(snapshot: &XhciObservation) -> Vec<Observation> {
+    let mut records = Vec::new();
+    records.push(Observation {
+        key: "controller.running",
+        value: ObservationValue::Bool(snapshot.running),
+    });
+    records.push(Observation::integer(
+        "controller.hci_version",
+        snapshot.hci_version as u64,
+    ));
+    records.push(Observation::integer(
+        "controller.max_slots",
+        snapshot.max_slots as u64,
+    ));
+    records.push(Observation::boolean(
+        "controller.legacy_handoff",
+        snapshot.legacy_handoff,
+    ));
+    records.push(Observation::integer(
+        "root_ports",
+        snapshot.ports.len() as u64,
+    ));
+    records.push(Observation::integer(
+        "devices",
+        snapshot.devices.len() as u64,
+    ));
+    for (index, device) in snapshot.devices.iter().enumerate() {
+        records.push(Observation::owned_text(
+            if index == 0 {
+                "device.canonical"
+            } else {
+                "device.canonical.more"
+            },
+            device.canonical_path.clone(),
+        ));
+    }
+    records
+}
+
+/// Evaluate the complete xHCI constraint set from an already collected
+/// snapshot. This is shared by the solver and scheduler-owned status path.
+pub fn constraint_results(snapshot: &XhciObservation) -> Vec<ConstraintResult> {
+    let mut result = Vec::new();
+    result.push(ConstraintResult::new(
+        "capability_valid",
+        if snapshot.hci_version != 0 && snapshot.max_slots != 0 {
+            ConstraintStatus::Satisfied
+        } else {
+            ConstraintStatus::Violated
+        },
+        "HCI version and slot capacity",
+    ));
+    result.push(ConstraintResult::new(
+        "controller_running",
+        if snapshot.running {
+            ConstraintStatus::Satisfied
+        } else {
+            ConstraintStatus::Unsatisfied
+        },
+        "USBCMD/USBSTS running state",
+    ));
+    result.push(ConstraintResult::new(
+        "legacy_handoff",
+        ConstraintStatus::Satisfied,
+        if snapshot.legacy_handoff {
+            "OS ownership acquired"
+        } else {
+            "OS ownership observation complete; BIOS handoff not pending"
+        },
+    ));
+    for port in snapshot.ports.iter().filter(|port| port.connected) {
+        result.push(ConstraintResult::new(
+            "root_port_enabled",
+            if port.enabled {
+                ConstraintStatus::Satisfied
+            } else {
+                ConstraintStatus::Unsatisfied
+            },
+            "PORTSC CCS/PED",
+        ));
+    }
+    for device in &snapshot.devices {
+        let root_valid = snapshot
+            .ports
+            .iter()
+            .any(|port| port.index == device.root_port);
+        result.push(ConstraintResult::new(
+            "root_port_valid",
+            if root_valid {
+                ConstraintStatus::Satisfied
+            } else {
+                ConstraintStatus::Violated
+            },
+            "device root port exists",
+        ));
+        result.push(ConstraintResult::new(
+            "route_valid",
+            if device.route_valid {
+                ConstraintStatus::Satisfied
+            } else {
+                ConstraintStatus::Violated
+            },
+            "hub ancestry and downstream port agree",
+        ));
+        result.push(ConstraintResult::new(
+            "endpoint_configured",
+            if device.endpoint_count > 0 {
+                ConstraintStatus::Satisfied
+            } else if device.address == 0 {
+                ConstraintStatus::Unknown
+            } else {
+                ConstraintStatus::Unsatisfied
+            },
+            "endpoint model is populated",
+        ));
+    }
+    result
+}
+
 /// Convert physical port numbering and hub ancestry into a stable logical
 /// path. This is based on observed protocol/topology, not PCI IDs.
 pub fn canonical_path(
@@ -170,41 +292,7 @@ impl SolverBackend for XhciBackend<'_> {
 
     fn observe(&mut self) -> Vec<Observation> {
         let snapshot = observe(self.controller);
-        let mut records = Vec::new();
-        records.push(Observation {
-            key: "controller.running",
-            value: ObservationValue::Bool(snapshot.running),
-        });
-        records.push(Observation::integer(
-            "controller.hci_version",
-            snapshot.hci_version as u64,
-        ));
-        records.push(Observation::integer(
-            "controller.max_slots",
-            snapshot.max_slots as u64,
-        ));
-        records.push(Observation::boolean(
-            "controller.legacy_handoff",
-            snapshot.legacy_handoff,
-        ));
-        records.push(Observation::integer(
-            "root_ports",
-            snapshot.ports.len() as u64,
-        ));
-        records.push(Observation::integer(
-            "devices",
-            snapshot.devices.len() as u64,
-        ));
-        for (index, device) in snapshot.devices.iter().enumerate() {
-            records.push(Observation::owned_text(
-                if index == 0 {
-                    "device.canonical"
-                } else {
-                    "device.canonical.more"
-                },
-                device.canonical_path.clone(),
-            ));
-        }
+        let records = observation_records(&snapshot);
         self.last = Some(snapshot);
         records
     }
@@ -257,82 +345,7 @@ impl SolverBackend for XhciBackend<'_> {
                 "no observation"
             )];
         };
-        let mut result = Vec::new();
-        result.push(ConstraintResult::new(
-            "capability_valid",
-            if snapshot.hci_version != 0 && snapshot.max_slots != 0 {
-                ConstraintStatus::Satisfied
-            } else {
-                ConstraintStatus::Violated
-            },
-            "HCI version and slot capacity",
-        ));
-        result.push(ConstraintResult::new(
-            "controller_running",
-            if snapshot.running {
-                ConstraintStatus::Satisfied
-            } else {
-                ConstraintStatus::Unsatisfied
-            },
-            "USBCMD/USBSTS running state",
-        ));
-        result.push(ConstraintResult::new(
-            "legacy_handoff",
-            if snapshot.legacy_handoff {
-                ConstraintStatus::Satisfied
-            } else {
-                ConstraintStatus::Unknown
-            },
-            "OS ownership observation",
-        ));
-        for port in snapshot.ports.iter().filter(|port| port.connected) {
-            let status = if port.enabled {
-                ConstraintStatus::Satisfied
-            } else {
-                ConstraintStatus::Unsatisfied
-            };
-            result.push(ConstraintResult::new(
-                "root_port_enabled",
-                status,
-                "PORTSC CCS/PED",
-            ));
-        }
-        for device in &snapshot.devices {
-            let root_valid = snapshot
-                .ports
-                .iter()
-                .any(|port| port.index == device.root_port);
-            result.push(ConstraintResult::new(
-                "root_port_valid",
-                if root_valid {
-                    ConstraintStatus::Satisfied
-                } else {
-                    ConstraintStatus::Violated
-                },
-                "device root port exists",
-            ));
-            result.push(ConstraintResult::new(
-                "route_valid",
-                if device.route_valid {
-                    ConstraintStatus::Satisfied
-                } else {
-                    ConstraintStatus::Violated
-                },
-                "hub ancestry and downstream port agree",
-            ));
-            result.push(ConstraintResult::new(
-                "endpoint_configured",
-                if device.endpoint_count > 0 {
-                    ConstraintStatus::Satisfied
-                } else if device.address == 0 {
-                    ConstraintStatus::Unknown
-                } else {
-                    ConstraintStatus::Unsatisfied
-                },
-                "endpoint model is populated",
-            ));
-        }
-        result
+        constraint_results(snapshot)
     }
 
     fn actions(

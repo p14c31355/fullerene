@@ -25,6 +25,11 @@ the public Wi-Fi manager snapshot. Firmware/device discovery, firmware-ready
 state, and link state remain observations; unsupported or absent phases are not
 invented by the generic solver.
 
+The HDA backend observes controller presence, codec discovery, stream setup,
+and controller readiness. `hbd solve hda` runs bounded reset/initialization
+actions when the audio controller is available and reports an unavailable
+controller without making desktop boot depend on audio convergence.
+
 ## Shell interface
 
 From the Fullerene shell:
@@ -33,6 +38,7 @@ From the Fullerene shell:
 hbd status
 hbd solve xhci
 hbd solve iwlwifi
+hbd solve hda
 hbd solve all
 hbd report
 ```

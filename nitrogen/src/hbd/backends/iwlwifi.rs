@@ -88,10 +88,11 @@ impl SolverBackend for IwlwifiBackend {
             return State::new("unobserved");
         };
         match snapshot.init_phase {
-            WifiInitPhase::Failed => State::failed("failed"),
-            WifiInitPhase::Done if snapshot.device_discovered != Some(false) => {
+            WifiInitPhase::Failed => State::new("failed"),
+            WifiInitPhase::Done if snapshot.device_discovered == Some(true) => {
                 State::converged("firmware_ready")
             }
+            WifiInitPhase::Done => State::new("device_pending"),
             WifiInitPhase::Idle => State::new("discovered_pending"),
             _ => State::new(snapshot.init_phase.name()),
         }
@@ -108,7 +109,7 @@ impl SolverBackend for IwlwifiBackend {
             ConstraintResult::new(
                 "init_phase_known",
                 if snapshot.init_phase == WifiInitPhase::Failed {
-                    ConstraintStatus::Violated
+                    ConstraintStatus::Unsatisfied
                 } else {
                     ConstraintStatus::Satisfied
                 },

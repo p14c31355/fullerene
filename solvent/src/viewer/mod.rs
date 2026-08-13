@@ -11,7 +11,7 @@ const TEXT_VIEWER_ROWS: u32 = 36;
 
 fn wrapped_row_count(text: &str, cols: usize) -> usize {
     text.split('\n')
-        .map(|line| line.len().div_ceil(cols.max(1)).max(1))
+        .map(|line| line.chars().count().div_ceil(cols.max(1)).max(1))
         .sum()
 }
 
@@ -20,20 +20,23 @@ fn visible_text(text: &str, cols: usize, first_row: usize, rows: usize) -> Strin
     let mut row = 0usize;
     let end_row = first_row.saturating_add(rows);
     for line in text.split('\n') {
-        let bytes = line.as_bytes();
-        let chunks = if bytes.is_empty() {
+        let chars: alloc::vec::Vec<char> = line.chars().collect();
+        let chunks = if chars.is_empty() {
             1
         } else {
-            bytes.len().div_ceil(cols)
+            chars.len().div_ceil(cols.max(1))
         };
         for chunk in 0..chunks {
             if row >= first_row && row < end_row {
                 if !result.is_empty() {
                     result.push('\n');
                 }
-                let start = chunk * cols;
-                let end = (start + cols).min(bytes.len());
-                result.push_str(core::str::from_utf8(&bytes[start..end]).unwrap_or("?"));
+                let chunk_text: String = chars
+                    .iter()
+                    .skip(chunk * cols.max(1))
+                    .take(cols.max(1))
+                    .collect();
+                result.push_str(&chunk_text);
             }
             row += 1;
         }
@@ -112,15 +115,20 @@ pub fn handle_key(scancode: u8, pressed: bool) -> bool {
         return true;
     }
     let key = crate::scancode_to_resonance_keycode(scancode);
-    let rows = rt
+    let (rows, cols) = rt
         .desktop
         .wm
         .windows()
         .iter()
         .find(|window| window.id == viewer.window_id)
-        .map(|window| (window.surface.height() / 16).max(1) as usize)
-        .unwrap_or(TEXT_VIEWER_ROWS as usize);
-    let total_rows = wrapped_row_count(&viewer.text, TEXT_VIEWER_COLS as usize);
+        .map(|window| {
+            (
+                (window.surface.height() / 16).max(1) as usize,
+                (window.surface.width() / 8).max(1) as usize,
+            )
+        })
+        .unwrap_or((TEXT_VIEWER_ROWS as usize, TEXT_VIEWER_COLS as usize));
+    let total_rows = wrapped_row_count(&viewer.text, cols);
     let max_scroll = total_rows.saturating_sub(rows);
     match key {
         KeyCode::Escape => {

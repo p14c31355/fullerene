@@ -102,6 +102,10 @@ static USB_POLL_CHANGED: AtomicBool = AtomicBool::new(false);
 /// device phase, alongside the existing bounded USB poll.
 #[cfg(not(nitrogen_no_usb))]
 static HBD_XHCI_PENDING: AtomicBool = AtomicBool::new(false);
+/// Set by the shell status path and consumed in the scheduler's device phase.
+/// xHCI status collection performs MMIO and must never run in shell context.
+#[cfg(not(nitrogen_no_usb))]
+static HBD_STATUS_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Access the USB controller context.  Panics if not initialised.
 #[cfg(not(nitrogen_no_usb))]
@@ -125,10 +129,13 @@ where
 pub fn hbd_status() -> String {
     let mut out = String::new();
     #[cfg(not(nitrogen_no_usb))]
-    if let Some(reports) = try_with_ctx(|ctx| ctx.hbd_xhci_status()) {
-        for report in reports {
-            out.push_str(&report.compact());
-            out.push('\n');
+    {
+        HBD_STATUS_PENDING.store(true, Ordering::Release);
+        for report in HBD_REPORTS.lock().iter() {
+            if report.backend == "xhci" {
+                out.push_str(&report.compact());
+                out.push('\n');
+            }
         }
     }
     #[cfg(not(nitrogen_no_iwlwifi))]
@@ -175,6 +182,12 @@ pub fn hbd_solve(backend: &str) -> String {
     let run_xhci = backend == "xhci" || backend == "all";
     let run_iwlwifi = backend == "iwlwifi" || backend == "all";
     let run_hda = backend == "hda" || backend == "all";
+
+    if run_xhci || run_iwlwifi || run_hda {
+        // Clear before queueing xHCI work. The scheduler may publish an xHCI
+        // report between enqueue and the synchronous backends below.
+        HBD_REPORTS.lock().clear();
+    }
 
     #[cfg(not(nitrogen_no_usb))]
     if run_xhci {
@@ -224,7 +237,7 @@ pub fn hbd_solve(backend: &str) -> String {
             out.push_str("hbd: requested backend is unavailable\n");
         }
     }
-    *HBD_REPORTS.lock() = reports;
+    HBD_REPORTS.lock().extend(reports);
     out
 }
 
@@ -955,6 +968,13 @@ pub fn process_usb_submission_queue_until(budget: usize, deadline_tsc: u64) {
     // where MMIO work is allowed, rather than from `usb_rescan` in the shell.
     let retired = USB_RETIRED_CTX.lock().take();
     drop(retired);
+
+    if HBD_STATUS_PENDING.swap(false, Ordering::AcqRel) {
+        let reports = try_with_ctx(|ctx| ctx.hbd_xhci_status()).unwrap_or_default();
+        let mut cached = HBD_REPORTS.lock();
+        cached.retain(|report| report.backend != "xhci");
+        cached.extend(reports);
+    }
 
     for _ in 0..budget {
         if deadline_tsc != u64::MAX && unsafe { core::arch::x86_64::_rdtsc() } >= deadline_tsc {

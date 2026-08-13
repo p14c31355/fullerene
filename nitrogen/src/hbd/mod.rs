@@ -9,7 +9,6 @@ pub mod backends;
 pub mod constraint;
 pub mod event;
 pub mod observation;
-pub mod policy;
 pub mod report;
 pub mod solver;
 pub mod state;

@@ -628,20 +628,9 @@ impl USBContext {
                 actions: 0,
                 retries: 0,
                 resets: 0,
-                constraints: alloc::vec![crate::hbd::ConstraintResult::new(
-                    "controller_running",
-                    if running {
-                        crate::hbd::ConstraintStatus::Satisfied
-                    } else {
-                        crate::hbd::ConstraintStatus::Unsatisfied
-                    },
-                    "USBCMD/USBSTS running state",
-                )],
+                constraints: crate::hbd::backends::xhci::constraint_results(&observation),
                 transitions: alloc::vec![],
-                observations: alloc::vec![
-                    crate::hbd::Observation::integer("root_ports", observation.ports.len() as u64),
-                    crate::hbd::Observation::integer("devices", observation.devices.len() as u64),
-                ],
+                observations: crate::hbd::backends::xhci::observation_records(&observation),
             });
         }
         reports

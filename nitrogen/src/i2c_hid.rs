@@ -113,6 +113,7 @@ pub enum I2cHidError {
     NotTarget,
     InvalidBar,
     MappingFailed,
+    MmioFault,
     UnsupportedController,
     Timeout,
     TransferAborted(u32),
@@ -182,30 +183,54 @@ struct DesignWareI2c {
 }
 
 #[inline]
-fn checked_read32(region: &MemRegion, health: &PciHealth, offset: usize) -> u32 {
+fn checked_read32(
+    region: &MemRegion,
+    health: &PciHealth,
+    offset: usize,
+) -> Result<u32, I2cHidError> {
     match crate::mmio::checked_read32_with_watchdog(region, offset, health) {
-        crate::mmio::SafeReadResult::Value(value) => value,
+        crate::mmio::SafeReadResult::Value(value) => Ok(value),
         crate::mmio::SafeReadResult::DeviceGone | crate::mmio::SafeReadResult::MasterAbort => {
-            u32::MAX
+            Err(I2cHidError::MmioFault)
         }
     }
 }
 
 impl DesignWareI2c {
     #[inline]
-    fn read32(&self, offset: usize) -> u32 {
+    fn read32(&self, offset: usize) -> Result<u32, I2cHidError> {
         match crate::mmio::checked_read32_with_watchdog(&self.mmio, offset, &self.health) {
             crate::mmio::SafeReadResult::Value(value) => {
                 MMIO_READ_FAILURES.store(0, Ordering::Release);
-                value
+                Ok(value)
             }
             crate::mmio::SafeReadResult::DeviceGone | crate::mmio::SafeReadResult::MasterAbort => {
                 let failures = MMIO_READ_FAILURES.fetch_add(1, Ordering::AcqRel) + 1;
                 if failures >= MAX_CONSECUTIVE_MMIO_FAILURES {
                     MMIO_FAULTED.store(true, Ordering::Release);
                 }
-                u32::MAX
+                Err(I2cHidError::MmioFault)
             }
+        }
+    }
+
+    fn poll_register<T, F>(&self, timeout_us: u64, mut condition: F) -> Result<T, I2cHidError>
+    where
+        F: FnMut(&Self) -> Result<Option<T>, I2cHidError>,
+    {
+        let mut error = None;
+        let value = poll_timeout_us(timeout_us, || match condition(self) {
+            Ok(Some(value)) => Some(value),
+            Ok(None) => None,
+            Err(err) => {
+                error = Some(err);
+                None
+            }
+        });
+        if let Some(err) = error {
+            Err(err)
+        } else {
+            value.ok_or(I2cHidError::Timeout)
         }
     }
 
@@ -314,15 +339,15 @@ impl DesignWareI2c {
                 bar.address,
                 virt,
                 command,
-                checked_read32(&mmio, &health, IC_CON),
-                checked_read32(&mmio, &health, IC_COMP_PARAM_1),
-                checked_read32(&mmio, &health, IC_COMP_VERSION),
+                checked_read32(&mmio, &health, IC_CON).unwrap_or(0),
+                checked_read32(&mmio, &health, IC_COMP_PARAM_1).unwrap_or(0),
+                checked_read32(&mmio, &health, IC_COMP_VERSION).unwrap_or(0),
             );
             publish_status(&status);
             ctx.unmap_mmio_region(bar.address as usize, virt, MMIO_SIZE);
             return Err(I2cHidError::UnsupportedController);
         }
-        let param = checked_read32(&mmio, &health, IC_COMP_PARAM_1);
+        let param = checked_read32(&mmio, &health, IC_COMP_PARAM_1)?;
         let tx_fifo_depth = (((param >> 16) & 0xff) + 1).max(1);
         let mut controller = Self {
             mmio,
@@ -345,12 +370,11 @@ impl DesignWareI2c {
 
     fn configure(&mut self, profile: I2cHidPlatformConfig) -> Result<(), I2cHidError> {
         self.mmio.write32(IC_ENABLE, 0);
-        poll_timeout_us(10_000, || {
-            (self.read32(IC_ENABLE_STATUS) & 1 == 0).then_some(())
-        })
-        .ok_or(I2cHidError::Timeout)?;
-        let _ = self.read32(IC_CLR_INTR);
-        let _ = self.read32(IC_CLR_TX_ABRT);
+        self.poll_register(10_000, |this| {
+            Ok((this.read32(IC_ENABLE_STATUS)? & 1 == 0).then_some(()))
+        })?;
+        let _ = self.read32(IC_CLR_INTR)?;
+        let _ = self.read32(IC_CLR_TX_ABRT)?;
 
         // Match Linux's i2c_dw_scl_{h,l}cnt calculations.  The root clock
         // and electrical fall/hold times come from the platform description;
@@ -371,7 +395,7 @@ impl DesignWareI2c {
             IC_SS_SCL_LCNT,
             scl_lcnt(profile.root_clock_khz, 4_700, profile.scl_fall_ns),
         );
-        if self.read32(IC_COMP_VERSION) >= DW_IC_SDA_HOLD_MIN_VERSION {
+        if self.read32(IC_COMP_VERSION)? >= DW_IC_SDA_HOLD_MIN_VERSION {
             self.mmio.write32(
                 IC_SDA_HOLD,
                 sda_hold(profile.root_clock_khz, profile.sda_hold_ns),
@@ -390,9 +414,9 @@ impl DesignWareI2c {
             self.target,
             self.tx_fifo_depth,
             profile.bus_speed_hz,
-            self.read32(IC_FS_SCL_HCNT),
-            self.read32(IC_FS_SCL_LCNT),
-            self.read32(IC_SDA_HOLD),
+            self.read32(IC_FS_SCL_HCNT)?,
+            self.read32(IC_FS_SCL_LCNT)?,
+            self.read32(IC_SDA_HOLD)?,
         );
         crate::debug_status!(
             "I2C-HID",
@@ -408,16 +432,14 @@ impl DesignWareI2c {
 
     fn begin_transfer(&self) -> Result<(), I2cHidError> {
         // Match i2c_dw_wait_bus_not_busy() before i2c_dw_xfer_init().
-        poll_timeout_us(I2C_BUSY_TIMEOUT_US, || {
-            (self.read32(IC_STATUS) & STATUS_ACTIVITY == 0).then_some(())
-        })
-        .ok_or(I2cHidError::Timeout)?;
+        self.poll_register(I2C_BUSY_TIMEOUT_US, |this| {
+            Ok((this.read32(IC_STATUS)? & STATUS_ACTIVITY == 0).then_some(()))
+        })?;
 
         self.mmio.write32(IC_ENABLE, 0);
-        poll_timeout_us(10_000, || {
-            (self.read32(IC_ENABLE_STATUS) & 1 == 0).then_some(())
-        })
-        .ok_or(I2cHidError::Timeout)?;
+        self.poll_register(10_000, |this| {
+            Ok((this.read32(IC_ENABLE_STATUS)? & 1 == 0).then_some(()))
+        })?;
         self.mmio.write32(IC_TAR, self.target as u32);
         self.mmio.write32(
             IC_CON,
@@ -427,60 +449,60 @@ impl DesignWareI2c {
         self.mmio.write32(IC_ENABLE, 1);
         // Linux performs this dummy read for DesignWare implementations with
         // an enable-status register before clearing stale transaction state.
-        let _ = self.read32(IC_ENABLE_STATUS);
-        let _ = self.read32(IC_CLR_INTR);
-        let _ = self.read32(IC_CLR_TX_ABRT);
-        poll_timeout_us(10_000, || {
-            (self.read32(IC_ENABLE_STATUS) & 1 != 0).then_some(())
+        let _ = self.read32(IC_ENABLE_STATUS)?;
+        let _ = self.read32(IC_CLR_INTR)?;
+        let _ = self.read32(IC_CLR_TX_ABRT)?;
+        self.poll_register(10_000, |this| {
+            Ok((this.read32(IC_ENABLE_STATUS)? & 1 != 0).then_some(()))
         })
-        .ok_or(I2cHidError::Timeout)
     }
 
     fn end_transfer(&self) {
         // Linux checks that the master is no longer active before disabling
         // the adapter; disabling while SCL is still held can strand the
         // DesignWare state machine on the next transaction.
-        let _ = poll_timeout_us(10_000, || {
-            (self.read32(IC_STATUS) & (STATUS_ACTIVITY | STATUS_MASTER_ACTIVITY) == 0).then_some(())
+        let _ = self.poll_register(10_000, |this| {
+            Ok(
+                (this.read32(IC_STATUS)? & (STATUS_ACTIVITY | STATUS_MASTER_ACTIVITY) == 0)
+                    .then_some(()),
+            )
         });
         self.mmio.write32(IC_INTR_MASK, 0);
         self.mmio.write32(IC_ENABLE, 0);
-        let _ = poll_timeout_us(10_000, || {
-            (self.read32(IC_ENABLE_STATUS) & 1 == 0).then_some(())
+        let _ = self.poll_register(10_000, |this| {
+            Ok((this.read32(IC_ENABLE_STATUS)? & 1 == 0).then_some(()))
         });
     }
 
-    fn abort_source(&self) -> Option<I2cHidError> {
-        let status = self.read32(IC_RAW_INTR_STAT);
+    fn abort_source(&self) -> Result<Option<I2cHidError>, I2cHidError> {
+        let status = self.read32(IC_RAW_INTR_STAT)?;
         if status & INTR_TX_ABORT != 0 {
-            let source = self.read32(0x80);
-            let _ = self.read32(IC_CLR_TX_ABRT);
-            return Some(I2cHidError::TransferAborted(source));
+            let source = self.read32(0x80)?;
+            let _ = self.read32(IC_CLR_TX_ABRT)?;
+            return Ok(Some(I2cHidError::TransferAborted(source)));
         }
-        None
+        Ok(None)
     }
 
     fn wait_tx_space(&self) -> Result<(), I2cHidError> {
-        poll_timeout_us(10_000, || {
-            if let Some(error) = self.abort_source() {
-                return Some(Err(error));
+        self.poll_register(10_000, |this| {
+            if let Some(error) = this.abort_source()? {
+                return Ok(Some(Err(error)));
             }
-            (self.read32(IC_TXFLR) < self.tx_fifo_depth).then_some(Ok(()))
-        })
-        .unwrap_or(Err(I2cHidError::Timeout))
+            Ok((this.read32(IC_TXFLR)? < this.tx_fifo_depth).then_some(Ok(())))
+        })?
     }
 
     fn wait_rx_data(&self) -> Result<u8, I2cHidError> {
-        poll_timeout_us(10_000, || {
-            if let Some(error) = self.abort_source() {
-                return Some(Err(error));
+        self.poll_register(10_000, |this| {
+            if let Some(error) = this.abort_source()? {
+                return Ok(Some(Err(error)));
             }
-            if self.read32(IC_RXFLR) != 0 {
-                return Some(Ok(self.read32(IC_DATA_CMD) as u8));
+            if this.read32(IC_RXFLR)? != 0 {
+                return Ok(Some(Ok(this.read32(IC_DATA_CMD)? as u8)));
             }
-            None
-        })
-        .unwrap_or(Err(I2cHidError::Timeout))
+            Ok(None)
+        })?
     }
 
     fn transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), I2cHidError> {
@@ -520,18 +542,17 @@ impl DesignWareI2c {
             );
             *byte = self.wait_rx_data()?;
         }
-        poll_timeout_us(10_000, || {
-            if let Some(error) = self.abort_source() {
-                return Some(Err(error));
+        self.poll_register(10_000, |this| {
+            if let Some(error) = this.abort_source()? {
+                return Ok(Some(Err(error)));
             }
-            let status = self.read32(IC_RAW_INTR_STAT);
+            let status = this.read32(IC_RAW_INTR_STAT)?;
             if status & INTR_STOP_DET != 0 {
-                let _ = self.read32(IC_CLR_STOP_DET);
-                return Some(Ok(()));
+                let _ = this.read32(IC_CLR_STOP_DET)?;
+                return Ok(Some(Ok(())));
             }
-            (self.read32(IC_STATUS) & STATUS_MASTER_ACTIVITY == 0).then_some(Ok(()))
-        })
-        .unwrap_or(Err(I2cHidError::Timeout))
+            Ok((this.read32(IC_STATUS)? & STATUS_MASTER_ACTIVITY == 0).then_some(Ok(())))
+        })?
     }
 
     fn read_register(&mut self, register: u16, output: &mut [u8]) -> Result<(), I2cHidError> {
@@ -967,7 +988,9 @@ pub fn service_input() -> bool {
             Ok(length) => length,
             Err(error) => {
                 let failures = POLL_CONSECUTIVE_FAILURES.fetch_add(1, Ordering::AcqRel) + 1;
-                if failures >= MAX_CONSECUTIVE_MMIO_FAILURES {
+                if failures >= MAX_CONSECUTIVE_MMIO_FAILURES
+                    && matches!(error, I2cHidError::MmioFault | I2cHidError::MappingFailed)
+                {
                     MMIO_FAULTED.store(true, Ordering::Release);
                 }
                 if !POLL_ERROR_REPORTED.swap(true, Ordering::AcqRel) {

@@ -491,7 +491,12 @@ fn perform_init_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            let mmio_region = unsafe { MemRegion::new(mmio as usize, 0x2000) };
+            let mmio_region =
+                unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
+            let Some(gp_offset) = IwlWifiDevice::mmio_offset(CSR_GP_CNTRL) else {
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            };
             let bdf_info = {
                 let ctx = WIFI_INIT_CTX.lock();
                 pci_bdf_from_ctx(&ctx)
@@ -503,7 +508,7 @@ fn perform_init_step() {
             IwlWifiDevice::reset_device(&mmio_region);
             debug::print("iwlwifi", "step: mmio_clock_req");
             mmio_region.write32(
-                (CSR_GP_CNTRL as usize) * core::mem::size_of::<u32>(),
+                gp_offset,
                 CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
             );
             mmio::write_barrier();
@@ -541,7 +546,16 @@ fn perform_init_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            let mmio_region = unsafe { MemRegion::new(mmio as usize, 0x2000) };
+            let mmio_region =
+                unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
+            let Some(gp_offset) = IwlWifiDevice::mmio_offset(CSR_GP_CNTRL) else {
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            };
+            let Some(hw_rev_offset) = IwlWifiDevice::mmio_offset(CSR_HW_REV) else {
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            };
             const TIMEOUT_CYCLES: u64 = 4_000_000_000;
             let bdf_info = {
                 let ctx = WIFI_INIT_CTX.lock();
@@ -551,10 +565,7 @@ fn perform_init_step() {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
             }
             let health = { WIFI_INIT_CTX.lock().health };
-            let mac_acquired = match mmio_region.checked_read32(
-                (CSR_GP_CNTRL as usize) * core::mem::size_of::<u32>(),
-                health.as_ref(),
-            ) {
+            let mac_acquired = match mmio_region.checked_read32(gp_offset, health.as_ref()) {
                 mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
                 mmio::SafeReadResult::Value(_) => {
                     mmio::disarm_mmio_watchdog();
@@ -564,7 +575,7 @@ fn perform_init_step() {
                     {
                         debug::print("iwlwifi", "step: mmio_force_mac");
                         mmio_region.write32(
-                            (CSR_GP_CNTRL as usize) * core::mem::size_of::<u32>(),
+                            gp_offset,
                             CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
                         );
                         mmio::write_barrier();
@@ -583,17 +594,15 @@ fn perform_init_step() {
                             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                             }
-                            let clock_ready = match mmio_region.checked_read32(
-                                (CSR_GP_CNTRL as usize) * core::mem::size_of::<u32>(),
-                                health.as_ref(),
-                            ) {
-                                mmio::SafeReadResult::Value(v)
-                                    if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 =>
-                                {
-                                    true
-                                }
-                                _ => false,
-                            };
+                            let clock_ready =
+                                match mmio_region.checked_read32(gp_offset, health.as_ref()) {
+                                    mmio::SafeReadResult::Value(v)
+                                        if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 =>
+                                    {
+                                        true
+                                    }
+                                    _ => false,
+                                };
                             mmio::disarm_mmio_watchdog();
                             clock_ready
                         }
@@ -617,10 +626,7 @@ fn perform_init_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            let hw_rev_raw = match mmio_region.checked_read32(
-                (CSR_HW_REV as usize) * core::mem::size_of::<u32>(),
-                health.as_ref(),
-            ) {
+            let hw_rev_raw = match mmio_region.checked_read32(hw_rev_offset, health.as_ref()) {
                 mmio::SafeReadResult::Value(v) => v,
                 _ => {
                     mmio::disarm_mmio_watchdog();
@@ -693,17 +699,20 @@ fn perform_init_step() {
                     mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                 }
                 let health = { WIFI_INIT_CTX.lock().health };
-                let mmio_region = unsafe { MemRegion::new(mmio as usize, 0x2000) };
+                let mmio_region =
+                    unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
                 let mac = IwlWifiDevice::read_mac(&mmio_region, health.as_ref());
                 mmio::disarm_mmio_watchdog();
                 mac
             };
             debug::print("iwlwifi", "step: mmio_mask_ints");
-            let mmio_region = unsafe { MemRegion::new(mmio as usize, 0x2000) };
-            mmio_region.write32(
-                (CSR_INT_MASK as usize) * core::mem::size_of::<u32>(),
-                CSR_INI_SET_MASK,
-            );
+            let mmio_region =
+                unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
+            let Some(int_mask_offset) = IwlWifiDevice::mmio_offset(CSR_INT_MASK) else {
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            };
+            mmio_region.write32(int_mask_offset, CSR_INI_SET_MASK);
             {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.mac = Some(mac);
@@ -904,7 +913,8 @@ fn perform_init_step() {
             // FH RX setup is deferred until firmware reports alive; the
             // firmware reset sequence can overwrite the FH registers.
             debug::print("iwlwifi", "rx_dma_deferred_until_alive");
-            let mmio_region = unsafe { MemRegion::new(mmio as usize, 0x2000) };
+            let mmio_region =
+                unsafe { MemRegion::new(mmio as usize, IwlWifiDevice::MMIO_BAR_SIZE) };
             let device = IwlWifiDevice {
                 mac,
                 _pci_dev: pci_dev,
