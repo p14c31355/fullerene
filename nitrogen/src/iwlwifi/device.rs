@@ -257,6 +257,75 @@ impl IwlWifiDevice {
         );
     }
 
+    /// Arm only the gen1 RX channel while the firmware CPU is held in reset.
+    ///
+    /// Linux initializes RX and TX before loading firmware.  Keeping TX/SCD
+    /// setup behind ALIVE avoids the unsafe pre-ALIVE scheduler accesses seen
+    /// on this platform, but the firmware must have an RX ring available when
+    /// it emits REPLY_ALIVE.  Restrict this early phase to the direct FH RX
+    /// registers and refuse it once CPU reset has already been released.
+    pub(super) fn prearm_rx_before_cpu_release(&mut self) -> Result<(), crate::DriverError> {
+        if !cfg!(test) {
+            self.health
+                .check()
+                .map_err(|_| crate::DriverError::DeviceNotFound)?;
+        }
+        let reset = self
+            .safe_read32(CSR_RESET)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        if reset == 0 {
+            log::error!(
+                "iwlwifi: refusing RX pre-arm after CPU release RESET={:#010x}",
+                reset,
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+
+        self.init_rx_dma();
+        log::info!(
+            "iwlwifi: firmware boot RX pre-armed while CPU reset asserted RESET={:#010x}",
+            reset,
+        );
+        Ok(())
+    }
+
+    /// Publish the MAC/radio identity consumed by firmware's early boot code.
+    /// This is the 7000-series part of Linux's `iwl_mvm_nic_config()` and must
+    /// run after parsing PHY_SKU but before releasing the firmware CPU.
+    fn configure_legacy_nic_from_firmware(&mut self) -> Result<(), crate::DriverError> {
+        if self.phy_sku_tlv_len.is_none() {
+            log::error!("iwlwifi: firmware boot missing PHY_SKU for NIC configuration");
+            return Err(crate::DriverError::Protocol);
+        }
+
+        let current = self
+            .safe_read32(CSR_HW_IF_CONFIG)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        let fields = legacy_nic_config_fields(self.hw_rev as u32, self.phy_config);
+        let configured = (current & !CSR_HW_IF_CONFIG_NIC_MASK) | fields;
+        self.write_mmio32(CSR_HW_IF_CONFIG, configured);
+
+        // Linux also disables early-power-off reset for APMG-based devices.
+        // It prevents a short platform power transition from leaving the NIC
+        // firmware in reset while the host believes CPU release succeeded.
+        let power = self
+            .read_prph(APMG_PS_CTRL_REG)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        self.write_prph(
+            APMG_PS_CTRL_REG,
+            power | APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS,
+        );
+        mmio::write_barrier();
+        log::info!(
+            "iwlwifi: firmware boot NIC configured hw_rev={:#06x} phy_config={:#010x} CSR_HW_IF_CONFIG={:#010x} APMG_PS_CTRL={:#010x}",
+            self.hw_rev,
+            self.phy_config,
+            configured,
+            power | APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS,
+        );
+        Ok(())
+    }
+
     pub(super) fn restock_rx_buffers(&mut self, count: usize) {
         if count == 0 {
             return;
@@ -1208,6 +1277,15 @@ impl IwlWifiDevice {
         // The 7265 is a gen1 device. Linux updates FH_UCODE_LOAD_STATUS only
         // for the newer gen2 section loader; writing the gen2 section mask on
         // this device can prevent the image from reaching its alive path.
+        // Linux configures the MAC/radio identity and arms RX before starting
+        // the firmware CPU. Publishing only HAP_WAKE leaves the 2025 image's
+        // early boot environment observably different from upstream.
+        self.configure_legacy_nic_from_firmware()?;
+        // Linux's gen1 NIC initialization also arms RX before starting the
+        // firmware CPU. Do this only after service-DMA upload has completed,
+        // minimizing pre-ALIVE DMA exposure while still making REPLY_ALIVE
+        // deliverable from the first firmware instruction onward.
+        self.prearm_rx_before_cpu_release()?;
         self.log_fw_boot_registers("sections_ready");
 
         debug::print("iwlwifi", "fw: upload_done");
@@ -1463,6 +1541,13 @@ impl IwlWifiDevice {
         }
         let status = u16::from_le_bytes([payload[0], payload[1]]);
         let flags = u16::from_le_bytes([payload[2], payload[3]]);
+        let ucode_major = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+        let ucode_minor = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+        let ucode_subtype = payload[12];
+        let ucode_type = payload[13];
+        let mac = payload[14];
+        let opt = payload[15];
+        let timestamp = u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]]);
         let error_log_ptr =
             u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]);
         let scd_base_addr =
@@ -1481,27 +1566,44 @@ impl IwlWifiDevice {
             "init"
         };
         log::info!(
-            "iwlwifi: firmware.alive.rx image={} status={:#06x} flags={:#06x} error_log_ptr={:#010x} scd_base={:#010x}",
+            "iwlwifi: firmware.alive.rx image={} status={:#06x} flags={:#06x} ucode={}.{} type={:#04x} subtype={:#04x} mac={:#04x} opt={:#04x} timestamp={:#010x} error_log_ptr={:#010x} scd_base={:#010x}",
             image,
             status,
             flags,
+            ucode_major,
+            ucode_minor,
+            ucode_type,
+            ucode_subtype,
+            mac,
+            opt,
+            timestamp,
             error_log_ptr,
             scd_base_addr,
         );
     }
 
     pub(super) fn log_firmware_error_table(&mut self, command: &str) {
-        let (image, base) = if self.runtime_errlog_ptr != 0 {
-            ("runtime", self.runtime_errlog_ptr)
+        // The firmware container may publish pointers for both images. Pick
+        // the currently executing image first instead of always preferring
+        // runtime while the INIT image is still reporting its failure.
+        let (image, base) = if self.init_firmware_completed {
+            if self.runtime_errlog_ptr != 0 {
+                ("runtime", self.runtime_errlog_ptr)
+            } else {
+                ("init", self.init_errlog_ptr)
+            }
         } else if self.init_errlog_ptr != 0 {
             ("init", self.init_errlog_ptr)
         } else {
+            ("runtime", self.runtime_errlog_ptr)
+        };
+        if base == 0 {
             log::error!(
                 "iwlwifi: firmware.error_log command={} status=pointer_missing runtime=0x00000000 init=0x00000000",
                 command
             );
             return;
-        };
+        }
 
         // LOG_ERROR_TABLE_API_S_VER_3 has 38 dwords through flow_handler.
         // The first compact log only exposed the command identity; retain the

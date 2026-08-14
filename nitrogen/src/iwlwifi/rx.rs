@@ -80,9 +80,9 @@ impl IwlWifiDevice {
     ///
     /// On gen1 hardware the CSR bit only announces that firmware reached its
     /// boot interrupt. Linux completes the transition using REPLY_ALIVE from
-    /// the RX ring, which also supplies the scheduler SRAM base. Because this
-    /// driver enables RX only after the safe CSR boundary, explicitly drain
-    /// that deferred notification before submitting the first host command.
+    /// the pre-armed RX ring, which also supplies the scheduler SRAM base.
+    /// Explicitly drain that notification before submitting the first host
+    /// command or touching the TX scheduler.
     pub(super) fn wait_for_alive_rx(&mut self) -> Result<(), crate::DriverError> {
         const ALIVE_TIMEOUT_US: u64 = 500_000;
         const IWL_ALIVE_STATUS_OK: u16 = 0xcafe;
@@ -105,6 +105,12 @@ impl IwlWifiDevice {
                 let status = u16::from_le_bytes([payload[0], payload[1]]);
                 if status != IWL_ALIVE_STATUS_OK {
                     log::error!("iwlwifi: firmware ALIVE RX rejected status={:#06x}", status,);
+                    // The v3 ALIVE payload carries the authoritative LMAC
+                    // error-table address even when firmware reports DEAD.
+                    // `poll_init_notification()` records it before returning
+                    // this packet, so preserve the assertion evidence before
+                    // aborting initialization just as Linux does.
+                    self.log_firmware_error_table("init.alive.dead");
                     return Err(crate::DriverError::Protocol);
                 }
                 log::info!(

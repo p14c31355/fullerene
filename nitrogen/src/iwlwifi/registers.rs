@@ -103,6 +103,38 @@ pub const CSR_FH_INT_TX_MASK: u32 = CSR_FH_INT_BIT_TX_CHNL1 | CSR_FH_INT_BIT_TX_
 pub const CSR_UCODE_SW_BIT_RFKILL: u32 = 1 << 1;
 pub const CSR_UCODE_GP1_BIT_CMD_BLOCKED: u32 = 1 << 2;
 pub const CSR_HW_IF_CONFIG_HAP_WAKE: u32 = 0x0008_0000;
+pub const CSR_HW_IF_CONFIG_MAC_STEP_DASH_MASK: u32 = 0x0000_000f;
+pub const CSR_HW_IF_CONFIG_MAC_SI: u32 = 0x0000_0100;
+pub const CSR_HW_IF_CONFIG_RADIO_SI: u32 = 0x0000_0200;
+pub const CSR_HW_IF_CONFIG_PHY_TYPE_MASK: u32 = 0x0000_0c00;
+pub const CSR_HW_IF_CONFIG_PHY_DASH_MASK: u32 = 0x0000_3000;
+pub const CSR_HW_IF_CONFIG_PHY_STEP_MASK: u32 = 0x0000_c000;
+pub const CSR_HW_IF_CONFIG_PHY_TYPE_POS: u32 = 10;
+pub const CSR_HW_IF_CONFIG_PHY_DASH_POS: u32 = 12;
+pub const CSR_HW_IF_CONFIG_PHY_STEP_POS: u32 = 14;
+pub const CSR_HW_IF_CONFIG_NIC_MASK: u32 = CSR_HW_IF_CONFIG_MAC_STEP_DASH_MASK
+    | CSR_HW_IF_CONFIG_MAC_SI
+    | CSR_HW_IF_CONFIG_RADIO_SI
+    | CSR_HW_IF_CONFIG_PHY_TYPE_MASK
+    | CSR_HW_IF_CONFIG_PHY_DASH_MASK
+    | CSR_HW_IF_CONFIG_PHY_STEP_MASK;
+pub const FW_PHY_CFG_RADIO_TYPE_POS: u32 = 0;
+pub const FW_PHY_CFG_RADIO_STEP_POS: u32 = 2;
+pub const FW_PHY_CFG_RADIO_DASH_POS: u32 = 4;
+pub const FW_PHY_CFG_RADIO_FIELD_MASK: u32 = 0x3;
+
+/// Encode Linux's pre-boot MVM NIC identity fields for CSR_HW_IF_CONFIG.
+pub const fn legacy_nic_config_fields(hw_rev: u32, phy_config: u32) -> u32 {
+    let radio_type = (phy_config >> FW_PHY_CFG_RADIO_TYPE_POS) & FW_PHY_CFG_RADIO_FIELD_MASK;
+    let radio_step = (phy_config >> FW_PHY_CFG_RADIO_STEP_POS) & FW_PHY_CFG_RADIO_FIELD_MASK;
+    let radio_dash = (phy_config >> FW_PHY_CFG_RADIO_DASH_POS) & FW_PHY_CFG_RADIO_FIELD_MASK;
+
+    (hw_rev & CSR_HW_IF_CONFIG_MAC_STEP_DASH_MASK)
+        | (radio_type << CSR_HW_IF_CONFIG_PHY_TYPE_POS)
+        | (radio_step << CSR_HW_IF_CONFIG_PHY_STEP_POS)
+        | (radio_dash << CSR_HW_IF_CONFIG_PHY_DASH_POS)
+        | CSR_HW_IF_CONFIG_RADIO_SI
+}
 pub const CSR_GIO_CHICKEN_L1A_NO_L0S_RX: u32 = 0x0080_0000;
 pub const CSR_GIO_CHICKEN_DIS_L0S_EXIT_TIMER: u32 = 0x2000_0000;
 pub const CSR_DBG_HPET_MEM_VAL: u32 = 0xFFFF_0000;
@@ -263,8 +295,10 @@ pub const HBUS_TARG_PRPH_RADDR: u32 = (0x400 + 0x048) / 4;
 pub const HBUS_TARG_PRPH_WDAT: u32 = (0x400 + 0x04C) / 4;
 pub const HBUS_TARG_PRPH_RDAT: u32 = (0x400 + 0x050) / 4;
 pub const APMG_CLK_EN_REG: u32 = 0x3004;
+pub const APMG_PS_CTRL_REG: u32 = 0x300c;
 pub const APMG_PCIDEV_STT_REG: u32 = 0x3010;
 pub const APMG_CLK_VAL_DMA_CLK_RQT: u32 = 0x0000_0200;
+pub const APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS: u32 = 0x0040_0000;
 pub const APMG_PCIDEV_STT_L1_ACT_DIS: u32 = 0x0000_0800;
 
 // ── Firmware constants ─────────────

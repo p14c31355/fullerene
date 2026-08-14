@@ -189,11 +189,11 @@ impl IwlWifiDevice {
         let keep_warm_phys = ring_phys + TX_KEEP_WARM_OFFSET as u64;
         let scd_bc_phys = ring_phys + TX_SCD_BC_OFFSET as u64;
 
-        self.init_rx_dma();
-        crate::debug::print("iwlwifi", "dma.after_alive.rx_done");
         // The hardware ALIVE interrupt is only the safe boundary at which we
-        // may enable RX. The actual firmware ALIVE structure is delivered by
-        // RX DMA and must be consumed before Linux starts the TX scheduler.
+        // may configure the TX scheduler. RX was pre-armed while CPU reset was
+        // asserted, matching Linux, so consume the actual firmware ALIVE
+        // structure before touching any TX/SCD register.
+        crate::debug::print("iwlwifi", "dma.after_alive.rx_ready");
         if !cfg!(test) {
             self.wait_for_alive_rx()?;
         }
@@ -1975,13 +1975,50 @@ mod tests {
     }
 
     #[test]
-    fn legacy_dma_foundation_is_programmed_only_after_alive() {
+    fn alive_v3_dead_status_still_preserves_init_error_table() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.init_firmware_completed = false;
+        let mut payload = [0u8; 44];
+        payload[0..2].copy_from_slice(&0xdeadu16.to_le_bytes());
+        payload[20..24].copy_from_slice(&0x0080_e950u32.to_le_bytes());
+        payload[40..44].copy_from_slice(&0x0080_d700u32.to_le_bytes());
+
+        device.record_alive_notification(&payload);
+
+        assert_eq!(device.init_errlog_ptr, 0x0080_e950);
+        assert_eq!(device.alive_scd_base_addr, 0x0080_d700);
+    }
+
+    #[test]
+    fn linux_boot_prearms_only_rx_while_cpu_reset_is_asserted() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.write_mmio32(CSR_RESET, 1);
+
+        device.prearm_rx_before_cpu_release().unwrap();
+
+        assert_ne!(device.safe_read32(FH_MEM_RCSR_CHNL0_CONFIG_REG), Some(0));
+        assert_eq!(device.safe_read32(FH_MEM_CBBC_CMD_QUEUE), Some(0));
+        assert_eq!(device.safe_read32(FH_KW_MEM_ADDR_REG), Some(0));
+
+        device.write_mmio32(CSR_RESET, 0);
+        assert_eq!(
+            device.prearm_rx_before_cpu_release(),
+            Err(crate::DriverError::Protocol)
+        );
+    }
+
+    #[test]
+    fn legacy_tx_foundation_is_programmed_only_after_alive() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
         device.tx_head = 7;
         device.tx_tail = 3;
         device.tx_data_head = 9;
         device.tx_data_tail = 4;
         device.write_mmio32(HBUS_TARG_WRPTR, 0xCAFE_BABE);
+        // Firmware boot pre-arms RX; the ALIVE transition must preserve that
+        // ring while it brings up only the TX/SCD half of the transport.
+        device.init_rx_dma();
+        let rx_config = device.safe_read32(FH_MEM_RCSR_CHNL0_CONFIG_REG);
 
         device.start_legacy_dma_after_alive().unwrap();
 
@@ -1993,6 +2030,7 @@ mod tests {
         assert_eq!(device.rx_head, 0);
         assert_eq!(device.rx_tail, 0);
         assert_eq!(device.rx_posted, RX_QUEUE_SIZE - 1);
+        assert_eq!(device.safe_read32(FH_MEM_RCSR_CHNL0_CONFIG_REG), rx_config);
         assert_eq!(
             device.safe_read32(FH_MEM_CBBC_CMD_QUEUE),
             Some((base >> 8) as u32)

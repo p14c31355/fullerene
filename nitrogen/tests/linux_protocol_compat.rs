@@ -9,12 +9,12 @@ use std::slice;
 
 use nitrogen::iwlwifi::registers::{
     CSR_FH_INT_BIT_HI_PRIOR, CSR_FH_INT_BIT_RX_CHNL0, CSR_FH_INT_BIT_RX_CHNL1, CSR_FH_INT_RX_MASK,
-    CSR_MAC_SHADOW_REG_CTRL_ENABLE, FH_MEM_CBBC_0_15_LOWER_BOUND, FH_MEM_CBBC_16_19_LOWER_BOUND,
-    FH_MEM_CBBC_20_31_LOWER_BOUND, IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_NUM_OF_QUEUES,
-    SCD_CONTEXT_MEM_LOWER_BOUND, SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET,
-    TX_DMA_ALLOCATION_BYTES, TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE,
-    TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET, TX_TFD_RING_BYTES, fh_mem_cbbc_queue,
-    scd_trans_tbl_offset_queue,
+    CSR_HW_IF_CONFIG_HAP_WAKE, CSR_HW_IF_CONFIG_NIC_MASK, CSR_MAC_SHADOW_REG_CTRL_ENABLE,
+    FH_MEM_CBBC_0_15_LOWER_BOUND, FH_MEM_CBBC_16_19_LOWER_BOUND, FH_MEM_CBBC_20_31_LOWER_BOUND,
+    IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_NUM_OF_QUEUES, SCD_CONTEXT_MEM_LOWER_BOUND,
+    SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES,
+    TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
+    TX_TFD_RING_BYTES, fh_mem_cbbc_queue, legacy_nic_config_fields, scd_trans_tbl_offset_queue,
 };
 use nitrogen::iwlwifi::types::{
     AddStaCmdV7, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
@@ -58,6 +58,20 @@ fn linux_gen1_rx_interrupt_mask_includes_high_priority_alive() {
     assert_eq!(CSR_FH_INT_BIT_RX_CHNL1, 1 << 17);
     assert_eq!(CSR_FH_INT_BIT_HI_PRIOR, 1 << 30);
     assert_eq!(CSR_FH_INT_RX_MASK, 0x4003_0000);
+}
+
+#[test]
+fn linux_7265d_nic_config_encodes_phy_sku_before_firmware_boot() {
+    assert_eq!(CSR_HW_IF_CONFIG_NIC_MASK, 0x0000_ff0f);
+    assert_eq!(
+        legacy_nic_config_fields(0x0000_0210, 0x0033_0018),
+        0x0000_9200
+    );
+    assert_eq!(
+        (CSR_HW_IF_CONFIG_HAP_WAKE & !CSR_HW_IF_CONFIG_NIC_MASK)
+            | legacy_nic_config_fields(0x0000_0210, 0x0033_0018),
+        0x0008_9200,
+    );
 }
 
 #[test]
