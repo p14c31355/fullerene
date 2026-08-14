@@ -171,6 +171,8 @@ pub const IWL_AUX_QUEUE: u32 = 11;
 /// Number of logical scheduler queues in Linux's 7000-series configuration.
 /// This is distinct from the eight physical FH DMA channels.
 pub const IWL_NUM_OF_QUEUES: u32 = 31;
+/// Legacy MVM supports QoS TIDs 0..7; value 8 denotes non-QoS/management.
+pub const IWL_MAX_TID_COUNT: u8 = 8;
 pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
 pub const FH_MEM_CBBC_16_19_LOWER_BOUND: u32 = (0x1000 + 0xBF0) / 4;
 pub const FH_MEM_CBBC_20_31_LOWER_BOUND: u32 = (0x1000 + 0xB20) / 4;

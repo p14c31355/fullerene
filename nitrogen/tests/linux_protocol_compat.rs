@@ -11,11 +11,11 @@ use nitrogen::iwlwifi::registers::{
     CSR_FH_INT_BIT_HI_PRIOR, CSR_FH_INT_BIT_RX_CHNL0, CSR_FH_INT_BIT_RX_CHNL1, CSR_FH_INT_RX_MASK,
     CSR_HW_IF_CONFIG_HAP_WAKE, CSR_HW_IF_CONFIG_NIC_MASK, CSR_MAC_SHADOW_REG_CTRL_ENABLE,
     FH_MEM_CBBC_0_15_LOWER_BOUND, FH_MEM_CBBC_16_19_LOWER_BOUND, FH_MEM_CBBC_20_31_LOWER_BOUND,
-    IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_NUM_OF_QUEUES, SCD_CONTEXT_MEM_LOWER_BOUND,
-    SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES,
-    TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
-    TX_TFD_RING_BYTES, fh_mem_cbbc_queue, legacy_nic_config_fields, scd_trans_tbl_offset_queue,
-    tx_tfd_ring_offset,
+    IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_MAX_TID_COUNT, IWL_NUM_OF_QUEUES,
+    SCD_CONTEXT_MEM_LOWER_BOUND, SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET,
+    TX_DMA_ALLOCATION_BYTES, TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE,
+    TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET, TX_TFD_RING_BYTES, fh_mem_cbbc_queue,
+    legacy_nic_config_fields, scd_trans_tbl_offset_queue, tx_tfd_ring_offset,
 };
 use nitrogen::iwlwifi::types::{
     AddStaCmdV7, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
@@ -102,13 +102,14 @@ fn linux_v49_aux_station_payload_is_wire_compatible() {
 }
 
 #[test]
-fn linux_v49_aux_queue_config_is_sent_before_station_add() {
+fn linux_legacy_scd_queue_config_uses_the_non_qos_tid() {
     assert_eq!(size_of::<ScdTxqCfgCmdV1>(), 12);
     let payload = ScdTxqCfgCmdV1::aux(1);
     let actual = bytes(&payload);
-    // token=0, owner sta=1, tid=15, q11, enable, non-aggregate,
+    // token=0, owner sta=1, tid=8, q11, enable, non-aggregate,
     // multicast FIFO=5, window=64, ssn=0, reserved=0.
-    assert_eq!(actual, &[0, 1, 15, 11, 1, 0, 5, 64, 0, 0, 0, 0]);
+    assert_eq!(IWL_MAX_TID_COUNT, 8);
+    assert_eq!(actual, &[0, 1, 8, 11, 1, 0, 5, 64, 0, 0, 0, 0]);
 }
 
 #[test]

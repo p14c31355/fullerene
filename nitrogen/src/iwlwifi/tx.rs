@@ -404,6 +404,40 @@ impl IwlWifiDevice {
         Ok(())
     }
 
+    /// Activate the static non-DQA best-effort queue used by the 7265 MVM
+    /// transport. Linux configures this queue directly in the SCD before
+    /// ADD_STA; SCD_QUEUE_CFG is reserved for dynamically allocated queues.
+    pub(super) fn enable_data_tx_queue(&mut self) -> Result<(), crate::DriverError> {
+        let scd_base = self
+            .read_prph(SCD_SRAM_BASE_ADDR)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+
+        self.write_prph(SCD_QUEUE_STATUS_DATA, 1 << 19);
+        self.write_mmio32(HBUS_TARG_WRPTR, IWL_DATA_QUEUE << 8);
+        self.write_prph(SCD_QUEUE_RDPTR_DATA, 0);
+        self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_DATA, 0);
+        self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_DATA + 4, 64 | (64 << 16));
+
+        let chain = self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(0);
+        self.write_prph(SCD_QUEUECHAIN_SEL, chain | (1 << IWL_DATA_QUEUE));
+        let aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(0);
+        self.write_prph(SCD_AGGR_SEL, aggr & !(1 << IWL_DATA_QUEUE));
+        self.write_prph(
+            SCD_QUEUE_STATUS_DATA,
+            SCD_QUEUE_STTS_ACTIVE
+                | 2 // IWL_MVM_TX_FIFO_BE
+                | SCD_QUEUE_STTS_WSL
+                | SCD_QUEUE_STTS_MASK,
+        );
+        mmio::write_barrier();
+        log::info!(
+            "iwlwifi: legacy data queue activated: queue={} fifo=2 tfd={:#018x}",
+            IWL_DATA_QUEUE,
+            self.tx_dma_ring.dma_iova() + TX_DATA_TFD_RING_OFFSET as u64,
+        );
+        Ok(())
+    }
+
     /// Queue WPA2-PSK CCMP pairwise and group key installation commands.
     ///
     /// iwlwifi performs CCMP in the NIC/firmware.  Keeping the keys only in
@@ -770,6 +804,7 @@ impl IwlWifiDevice {
             let _ = label;
             return self.send_hcmd(opcode, group, data);
         }
+        let sequence = ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff);
         self.send_hcmd(opcode, group, data)?;
         let target = self.tx_head;
         let consumed = crate::timing::poll_timeout_us(100_000, || {
@@ -777,29 +812,57 @@ impl IwlWifiDevice {
             self.update_tx_tail(rptr);
             self.tx_tail_reached(target).then_some(())
         });
-        if consumed.is_some() {
-            self.release_mac_access_if_tx_idle();
-            log::debug!(
-                "iwlwifi: hcmd.sync.ok name={} opcode=0x{:02x} target={} rptr={}",
-                label,
-                opcode,
-                target,
-                self.tx_tail & (TX_QUEUE_SIZE - 1),
-            );
-            Ok(())
-        } else {
+        if consumed.is_none() {
             let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
             log::error!(
-                "iwlwifi: hcmd.sync.timeout name={} opcode=0x{:02x} target={} head={} tail={} rptr={:#010x}",
+                "iwlwifi: hcmd.sync.timeout name={} stage=consume opcode=0x{:02x} sequence=0x{:04x} target={} head={} tail={} rptr={:#010x}",
                 label,
                 opcode,
+                sequence,
                 target,
                 self.tx_head,
                 self.tx_tail,
                 rptr,
             );
             self.release_mac_access();
-            Err(crate::DriverError::Busy)
+            return Err(crate::DriverError::Busy);
+        }
+
+        // Linux synchronous host commands complete only after the matching
+        // firmware response has been drained. Merely observing q9's SCD read
+        // pointer allows several setup commands to accumulate behind an
+        // unread response and can stall the next descriptor indefinitely.
+        const RESPONSE_TIMEOUT_US: u64 = 500_000;
+        let deadline_tsc = unsafe { core::arch::x86_64::_rdtsc() }
+            .saturating_add(crate::timing::ticks_per_us().saturating_mul(RESPONSE_TIMEOUT_US));
+        loop {
+            match self.poll_init_notification(opcode, group, Some(sequence), deadline_tsc) {
+                Ok(Some(payload)) => {
+                    self.release_mac_access_if_tx_idle();
+                    log::info!(
+                        "iwlwifi: hcmd.sync.response name={} opcode=0x{:02x} sequence=0x{:04x} payload={} target={} rptr={}",
+                        label,
+                        opcode,
+                        sequence,
+                        payload.len(),
+                        target,
+                        self.tx_tail & (TX_QUEUE_SIZE - 1),
+                    );
+                    return Ok(());
+                }
+                Ok(None) => core::hint::spin_loop(),
+                Err(error) => {
+                    log::error!(
+                        "iwlwifi: hcmd.sync.error name={} stage=response opcode=0x{:02x} sequence=0x{:04x} error={}",
+                        label,
+                        opcode,
+                        sequence,
+                        error,
+                    );
+                    self.release_mac_access();
+                    return Err(error);
+                }
+            }
         }
     }
 
@@ -834,7 +897,7 @@ impl IwlWifiDevice {
             }
         };
 
-        match self.poll_init_notification(opcode, group, deadline_tsc)? {
+        match self.poll_init_notification(opcode, group, None, deadline_tsc)? {
             Some(payload) => {
                 self.init_response = None;
                 log::info!(
@@ -914,7 +977,7 @@ impl IwlWifiDevice {
         }
 
         if let Some((opcode, group, deadline_tsc)) = self.init_response {
-            match self.poll_init_notification(opcode, group, deadline_tsc)? {
+            match self.poll_init_notification(opcode, group, None, deadline_tsc)? {
                 None => return Err(crate::DriverError::Pending),
                 Some(response) => {
                     self.init_response = None;
@@ -1201,7 +1264,7 @@ impl IwlWifiDevice {
         if self.runtime_commands_started {
             match self.init_response {
                 Some((opcode, group, deadline_tsc)) => {
-                    match self.poll_init_notification(opcode, group, deadline_tsc)? {
+                    match self.poll_init_notification(opcode, group, None, deadline_tsc)? {
                         None => return Err(crate::DriverError::Pending),
                         Some(payload) => {
                             self.init_response = None;
@@ -1854,7 +1917,7 @@ impl IwlWifiDevice {
         // IWL_MAX_TID_COUNT marks a non-QoS management frame. PM_FRAME_ASSOC
         // is needed for association requests; authentication uses the normal
         // management timeout.
-        wire[tx + 51] = 16;
+        wire[tx + 51] = IWL_MAX_TID_COUNT;
         let pm_timeout = if frame.first().is_some_and(|fc| *fc & 0xfc == 0x00) {
             3u16
         } else {
@@ -1939,7 +2002,7 @@ mod tests {
         assert_eq!(wire[tx + 16], 0); // AP station ID
         assert_eq!(wire[tx + 49], 60); // RTS retries
         assert_eq!(wire[tx + 50], 15); // ordinary management retries
-        assert_eq!(wire[tx + 51], 16); // IWL_MAX_TID_COUNT / non-QoS
+        assert_eq!(wire[tx + 51], IWL_MAX_TID_COUNT); // non-QoS
         assert_eq!(
             u16::from_le_bytes([wire[tx + 52], wire[tx + 53]]),
             2 // PM_FRAME_MGMT for authentication
@@ -2124,6 +2187,28 @@ mod tests {
         assert_eq!(
             device.safe_read32(HBUS_TARG_WRPTR),
             Some(IWL_CMD_QUEUE << 8)
+        );
+    }
+
+    #[test]
+    fn legacy_non_dqa_data_queue_is_activated_without_a_firmware_command() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        let command_head = device.tx_head;
+
+        device.enable_data_tx_queue().unwrap();
+
+        assert_eq!(device.tx_head, command_head);
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_WRPTR),
+            Some(IWL_DATA_QUEUE << 8)
+        );
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_PRPH_WADDR),
+            Some(SCD_QUEUE_STATUS_DATA | (3 << 24))
+        );
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_PRPH_WDAT),
+            Some(SCD_QUEUE_STTS_ACTIVE | 2 | SCD_QUEUE_STTS_WSL | SCD_QUEUE_STTS_MASK)
         );
     }
 }

@@ -1984,6 +1984,19 @@ impl IwlWifiDevice {
             return Err(error);
         }
 
+        // 7265 uses the static, non-DQA scheduler. Linux activates the AC
+        // queue directly in transport before publishing the station's queue
+        // mask; it does not send SCD_QUEUE_CFG for this q4 path.
+        if let Err(error) = self.enable_data_tx_queue() {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection data queue activation failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
         let ap_sta = AddStaCmdV7::peer(0, 0, ap.bssid);
         let ap_sta_bytes = unsafe { super::as_bytes(&ap_sta) };
         if let Err(error) = self.send_hcmd_and_wait(
@@ -1996,26 +2009,6 @@ impl IwlWifiDevice {
             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
             self.wifi_conn.error_msg = Some(alloc::format!(
                 "connection AP station setup failed: {:?}",
-                error
-            ));
-            return Err(error);
-        }
-
-        // The station must exist before the legacy scheduler can bind q4 to
-        // its station ID. Linux enables the queue only after ADD_STA has been
-        // accepted by firmware.
-        let data_scd = ScdTxqCfgCmdV1::peer(0);
-        let data_scd_bytes = unsafe { super::as_bytes(&data_scd) };
-        if let Err(error) = self.send_hcmd_and_wait(
-            "CONNECT_SCD_QUEUE_CFG",
-            LegacyCmd::ScdQueueCfg as u8,
-            GroupId::Legacy as u8,
-            data_scd_bytes,
-        ) {
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(alloc::format!(
-                "connection data queue setup failed: {:?}",
                 error
             ));
             return Err(error);

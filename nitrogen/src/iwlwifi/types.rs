@@ -316,11 +316,11 @@ pub struct ScdTxqCfgCmdV1 {
 
 impl ScdTxqCfgCmdV1 {
     pub fn peer(sta_id: u8) -> Self {
-        use super::registers::IWL_DATA_QUEUE;
+        use super::registers::{IWL_DATA_QUEUE, IWL_MAX_TID_COUNT};
         Self {
             token: 0,
             sta_id,
-            tid: 16, // IWL_MAX_TID_COUNT: non-QoS management/data traffic
+            tid: IWL_MAX_TID_COUNT,
             scd_queue: IWL_DATA_QUEUE as u8,
             action: 1,    // SCD_CFG_ENABLE_QUEUE
             aggregate: 0, // non-aggregated queue
@@ -332,13 +332,13 @@ impl ScdTxqCfgCmdV1 {
     }
 
     pub fn aux(sta_id: u8) -> Self {
-        use super::registers::IWL_AUX_QUEUE;
+        use super::registers::{IWL_AUX_QUEUE, IWL_MAX_TID_COUNT};
         Self {
             token: 0,
             // Linux allocates the AUX station-table entry before enabling its
             // queue, so SCD_QUEUE_CFG must name that station (normally 1).
             sta_id,
-            tid: 15, // IWL_MAX_TID_COUNT
+            tid: IWL_MAX_TID_COUNT,
             scd_queue: IWL_AUX_QUEUE as u8,
             action: 1,    // SCD_CFG_ENABLE_QUEUE
             aggregate: 0, // non-aggregated auxiliary queue

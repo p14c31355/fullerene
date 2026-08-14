@@ -31,6 +31,28 @@ impl fmt::Display for RxHexBytes<'_> {
     }
 }
 
+/// Match a firmware command response, optionally requiring the exact q9
+/// sequence that was placed in the host-command header. Runtime setup can
+/// reuse an opcode while older responses are still present in RX, so opcode
+/// and group alone are not a sufficient synchronous-command boundary.
+const fn command_response_matches(
+    packet_opcode: u8,
+    packet_group: u8,
+    packet_sequence: u16,
+    expected_opcode: u8,
+    expected_group: u8,
+    expected_sequence: Option<u16>,
+) -> bool {
+    let group_matches = packet_group == expected_group
+        || (expected_opcode == LegacyCmd::MccUpdate as u8
+            && packet_opcode == LegacyCmd::MccUpdate as u8);
+    let sequence_matches = match expected_sequence {
+        Some(sequence) => packet_sequence == sequence,
+        None => true,
+    };
+    packet_opcode == expected_opcode && group_matches && sequence_matches
+}
+
 impl IwlWifiDevice {
     /// Advance the management-frame connection watchdog before touching the
     /// device.  A PCIe/MMIO health failure can make the RX poll return early;
@@ -93,6 +115,7 @@ impl IwlWifiDevice {
             if let Some(payload) = self.poll_init_notification(
                 LegacyCmd::ReplyAlive as u8,
                 GroupId::Legacy as u8,
+                None,
                 deadline_tsc,
             )? {
                 if payload.len() < 44 {
@@ -134,6 +157,7 @@ impl IwlWifiDevice {
         &mut self,
         opcode: u8,
         group: u8,
+        sequence: Option<u16>,
         deadline_tsc: u64,
     ) -> Result<Option<Vec<u8>>, crate::DriverError> {
         const FRAME_ALIGN: usize = 64;
@@ -272,6 +296,7 @@ impl IwlWifiDevice {
                     }
                     let packet = &frame[offset..offset + packet_len];
                     let payload = &packet[8..];
+                    let packet_sequence = u16::from_le_bytes([packet[6], packet[7]]);
                     let payload_preview = &payload[..core::cmp::min(payload.len(), 32)];
                     if packet[4] == LegacyCmd::ReplyAlive as u8
                         && packet[5] == GroupId::Legacy as u8
@@ -307,10 +332,14 @@ impl IwlWifiDevice {
                     // legacy or long notification namespace. Match its
                     // opcode independently of the namespace; all other
                     // command responses remain strict.
-                    let response_group_matches = packet[5] == group
-                        || (opcode == LegacyCmd::MccUpdate as u8
-                            && packet[4] == LegacyCmd::MccUpdate as u8);
-                    if packet[4] == opcode && response_group_matches {
+                    if command_response_matches(
+                        packet[4],
+                        packet[5],
+                        packet_sequence,
+                        opcode,
+                        group,
+                        sequence,
+                    ) {
                         matched = Some(payload.to_vec());
                     } else if packet[4] == LegacyCmd::ReplyError as u8 {
                         let error_type = payload
@@ -1251,5 +1280,44 @@ impl IwlWifiDevice {
     /// `tx_tail`, then call this method.
     pub(super) fn finish_wpa_for_test(&mut self) {
         self.finish_pending_wpa_keys();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_hcmd_response_requires_the_submitted_q9_sequence() {
+        let opcode = LegacyCmd::MacContext as u8;
+        let group = GroupId::Legacy as u8;
+
+        assert!(command_response_matches(
+            opcode,
+            group,
+            0x0918,
+            opcode,
+            group,
+            Some(0x0918),
+        ));
+        assert!(!command_response_matches(
+            opcode,
+            group,
+            0x0917,
+            opcode,
+            group,
+            Some(0x0918),
+        ));
+        assert!(!command_response_matches(
+            LegacyCmd::AddSta as u8,
+            group,
+            0x0918,
+            opcode,
+            group,
+            Some(0x0918),
+        ));
+        assert!(command_response_matches(
+            opcode, group, 0x0917, opcode, group, None,
+        ));
     }
 }
