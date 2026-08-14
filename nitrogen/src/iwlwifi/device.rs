@@ -234,33 +234,24 @@ impl IwlWifiDevice {
         // and rounds the pointer down to an 8-entry boundary.
         self.write_mmio32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG, (self.rx_posted as u32) & !7);
         mmio::write_barrier();
-        self.write_mmio32(
-            FH_MEM_RCSR_CHNL0_CONFIG_REG,
-            FH_RCSR_RX_CONFIG_CHNL_EN_ENABLE_VAL
-                | FH_RCSR_CHNL0_RX_IGNORE_RXF_EMPTY
-                | FH_RCSR_CHNL0_RX_CONFIG_IRQ_DEST_INT_HOST_VAL
-                | (FH_RCSR_RX_RB_TIMEOUT << FH_RCSR_RX_CONFIG_REG_IRQ_RBTH_POS)
-                | (8 << FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS),
-        );
+        let rx_config = FH_RCSR_RX_CONFIG_CHNL_EN_ENABLE_VAL
+            | FH_RCSR_CHNL0_RX_IGNORE_RXF_EMPTY
+            | FH_RCSR_CHNL0_RX_CONFIG_IRQ_DEST_INT_HOST_VAL
+            | (FH_RCSR_RX_RB_TIMEOUT << FH_RCSR_RX_CONFIG_REG_IRQ_RBTH_POS)
+            | (8 << FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS);
+        self.write_mmio32(FH_MEM_RCSR_CHNL0_CONFIG_REG, rx_config);
         mmio::write_barrier();
-        let rx_config = self.safe_read32(FH_MEM_RCSR_CHNL0_CONFIG_REG).unwrap_or(!0);
-        let rx_rbd_base = self
-            .safe_read32(FH_RSCSR_CHNL0_RBDCB_BASE_REG)
-            .unwrap_or(!0);
-        let rx_status_ptr = self.safe_read32(FH_RSCSR_CHNL0_STTS_WPTR_REG).unwrap_or(!0);
-        let rx_wptr = self
-            .safe_read32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG)
-            .unwrap_or(!0);
-        let int_mask = self.safe_read32(CSR_INT_MASK).unwrap_or(!0);
+        // Do not read FH registers back at this pre-firmware boundary. These
+        // non-posted reads are not part of Linux's RX init contract and some
+        // 7265 platforms do not complete them until the firmware CPU runs.
         log::info!(
-            "iwlwifi: legacy RX DMA enabled: rbd={:#018x} status={:#018x} cfg={:#010x} rbd_base={:#010x} status_ptr={:#010x} wptr={:#010x} int_mask={:#010x}",
+            "iwlwifi: legacy RX DMA programmed: rbd={:#018x} status={:#018x} cfg={:#010x} rbd_base={:#010x} status_ptr={:#010x} wptr={:#010x}",
             rx_phys,
             status_phys,
             rx_config,
-            rx_rbd_base,
-            rx_status_ptr,
-            rx_wptr,
-            int_mask,
+            (rx_phys >> 8) as u32,
+            (status_phys >> 4) as u32,
+            (self.rx_posted as u32) & !7,
         );
     }
 
@@ -988,6 +979,17 @@ impl IwlWifiDevice {
         // this setup the FH registers accept the descriptor but never raise
         // the firmware-load interrupt.
         self.prepare_firmware_dma()?;
+
+        // The Linux 7000-series configuration enables shadow registers as
+        // part of NIC initialization. In particular, queue write pointers are
+        // published through this path after ALIVE; leaving it disabled can
+        // make a valid q9 doorbell visible in CSR space but not to the SCD.
+        self.write_mmio32(CSR_MAC_SHADOW_REG_CTRL, CSR_MAC_SHADOW_REG_CTRL_ENABLE);
+        mmio::write_barrier();
+        log::info!(
+            "iwlwifi: legacy shadow registers enabled: value={:#010x}",
+            CSR_MAC_SHADOW_REG_CTRL_ENABLE,
+        );
 
         debug::print("iwlwifi", "fw: header_parse");
         let fw_ptr = fw_data.as_ptr();

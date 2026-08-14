@@ -180,7 +180,9 @@ pub struct BtCoexConfigCmd {
 
 impl BtCoexConfigCmd {
     pub const BT_COEX_NW: u32 = 1;
-    pub const BT_COEX_MPLUT_ENABLED: u32 = 1 << 1;
+    // BT_COEX_MODULES_ENABLE_E_VER_1: MPLUT is bit 0. Bit 1 is the
+    // separate MPLUT boost flag and must not be enabled as MPLUT itself.
+    pub const BT_COEX_MPLUT_ENABLED: u32 = 1 << 0;
     pub const BT_COEX_SYNC2SCO_ENABLED: u32 = 1 << 2;
     pub const BT_COEX_HIGH_BAND_RET: u32 = 1 << 4;
 
@@ -1230,7 +1232,7 @@ mod tests {
                 core::mem::size_of::<BtCoexConfigCmd>(),
             )
         };
-        assert_eq!(bytes, &[1, 0, 0, 0, 0x16, 0, 0, 0]);
+        assert_eq!(bytes, &[1, 0, 0, 0, 0x15, 0, 0, 0]);
     }
 
     #[test]

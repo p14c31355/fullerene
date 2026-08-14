@@ -999,14 +999,23 @@ fn perform_init_step() {
                 if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                     mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                 }
-                let result = {
+                // A watchdog recovery abandons the interrupted stack. Never
+                // hold WIFI_INIT_CTX across device MMIO or the abandoned
+                // Mutex guard would freeze every later desktop tick.
+                let mut dev = {
                     let mut ctx = WIFI_INIT_CTX.lock();
-                    match ctx.mmio_device.as_mut() {
-                        Some(dev) => dev.start_firmware(fw_data),
-                        None => Err(crate::DriverError::DeviceNotFound),
+                    match ctx.mmio_device.take() {
+                        Some(dev) => dev,
+                        None => {
+                            mmio::disarm_mmio_watchdog();
+                            set_init_phase(WifiInitPhase::Failed);
+                            return;
+                        }
                     }
                 };
+                let result = dev.start_firmware(fw_data);
                 mmio::disarm_mmio_watchdog();
+                WIFI_INIT_CTX.lock().mmio_device = Some(dev);
                 match result {
                     Ok(()) => {
                         log::info!(
@@ -1055,20 +1064,24 @@ fn perform_init_step() {
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
             }
-            let start_result = {
+            // Keep the global state lock out of the Sealant/MMIO fault
+            // boundary. If an NMI abandons this call, force_init_failed() can
+            // still acquire the context and let the desktop continue.
+            let mut dev = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                let dev = match ctx.mmio_device.as_mut() {
+                match ctx.mmio_device.take() {
                     Some(d) => d,
                     None => {
                         mmio::disarm_mmio_watchdog();
                         set_init_phase(WifiInitPhase::Failed);
                         return;
                     }
-                };
-                dev.set_firmware_api_profile(fw_api_profile);
-                dev.start_firmware(fw_data)
+                }
             };
+            dev.set_firmware_api_profile(fw_api_profile);
+            let start_result = dev.start_firmware(fw_data);
             mmio::disarm_mmio_watchdog();
+            WIFI_INIT_CTX.lock().mmio_device = Some(dev);
             match start_result {
                 Ok(()) => {
                     log::info!(

@@ -8,13 +8,16 @@ use std::mem::{offset_of, size_of};
 use std::slice;
 
 use nitrogen::iwlwifi::registers::{
-    IWL_AUX_QUEUE, IWL_CMD_QUEUE, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES,
-    TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
-    TX_TFD_RING_BYTES,
+    CSR_MAC_SHADOW_REG_CTRL_ENABLE, FH_MEM_CBBC_0_15_LOWER_BOUND, FH_MEM_CBBC_16_19_LOWER_BOUND,
+    FH_MEM_CBBC_20_31_LOWER_BOUND, IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_NUM_OF_QUEUES,
+    SCD_CONTEXT_MEM_LOWER_BOUND, SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET,
+    TX_DMA_ALLOCATION_BYTES, TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE,
+    TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET, TX_TFD_RING_BYTES, fh_mem_cbbc_queue,
+    scd_trans_tbl_offset_queue,
 };
 use nitrogen::iwlwifi::types::{
-    AddStaCmdV7, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanChannelCfgLmac, ScanConfigV1,
-    ScanRequestCmd, ScdTxqCfgCmdV1,
+    AddStaCmdV7, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
+    ScanChannelCfgLmac, ScanConfigV1, ScanRequestCmd, ScdTxqCfgCmdV1,
 };
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
@@ -22,6 +25,37 @@ use nitrogen::usb::xhci::transfer::linux_control_transfer_trbs;
 
 fn bytes<T>(value: &T) -> &[u8] {
     unsafe { slice::from_raw_parts(value as *const T as *const u8, size_of::<T>()) }
+}
+
+#[test]
+fn linux_7000_scheduler_uses_31_queue_geometry() {
+    assert_eq!(IWL_NUM_OF_QUEUES, 31);
+    assert_eq!(CSR_MAC_SHADOW_REG_CTRL_ENABLE, 0x800f_ffff);
+    assert_eq!(scd_trans_tbl_offset_queue(0), 0x7e0);
+    assert_eq!(scd_trans_tbl_offset_queue(31), 0x81c);
+    assert_eq!(SCD_CONTEXT_MEM_LOWER_BOUND, 0x600);
+    assert_eq!(SCD_TRANS_TBL_MEM_UPPER_BOUND, 0x81c);
+    assert_eq!(
+        (SCD_TRANS_TBL_MEM_UPPER_BOUND - SCD_CONTEXT_MEM_LOWER_BOUND) / 4,
+        135
+    );
+}
+
+#[test]
+fn linux_legacy_cbbc_register_windows_cover_all_31_queues() {
+    assert_eq!(fh_mem_cbbc_queue(0), FH_MEM_CBBC_0_15_LOWER_BOUND);
+    assert_eq!(fh_mem_cbbc_queue(15), FH_MEM_CBBC_0_15_LOWER_BOUND + 15);
+    assert_eq!(fh_mem_cbbc_queue(16), FH_MEM_CBBC_16_19_LOWER_BOUND);
+    assert_eq!(fh_mem_cbbc_queue(19), FH_MEM_CBBC_16_19_LOWER_BOUND + 3);
+    assert_eq!(fh_mem_cbbc_queue(20), FH_MEM_CBBC_20_31_LOWER_BOUND);
+    assert_eq!(fh_mem_cbbc_queue(30), FH_MEM_CBBC_20_31_LOWER_BOUND + 10);
+}
+
+#[test]
+fn linux_api29_bt_init_command_enables_the_v1_module_bits() {
+    let command = BtCoexConfigCmd::network_default();
+    assert_eq!(size_of::<BtCoexConfigCmd>(), 8);
+    assert_eq!(bytes(&command), &[1, 0, 0, 0, 0x15, 0, 0, 0]);
 }
 
 #[test]

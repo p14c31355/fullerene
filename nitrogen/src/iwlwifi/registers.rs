@@ -25,6 +25,9 @@ pub const CSR_HW_RF_ID: u32 = 0x034 / 4;
 pub const CSR_GIO: u32 = 0x03C / 4;
 pub const CSR_GIO_CHICKEN_BITS: u32 = 0x100 / 4;
 pub const CSR_MAC_SHADOW_REG_CTRL: u32 = 0x0A8 / 4;
+/// Enable the 7000-series shadow-register path, matching
+/// `iwl7000_base.shadow_reg_enable` in Linux.
+pub const CSR_MAC_SHADOW_REG_CTRL_ENABLE: u32 = 0x800F_FFFF;
 pub const CSR_DBG_HPET_MEM: u32 = 0x240 / 4;
 pub const CSR_UCODE_GP1: u32 = 0x054 / 4;
 pub const CSR_UCODE_GP1_SET: u32 = 0x058 / 4;
@@ -125,14 +128,32 @@ pub const IWL_CMD_QUEUE: u32 = 9;
 /// Minimal managed-station data queue. Linux keeps TX_CMD frames off the
 /// command queue and assigns the first ordinary data queue to the AP peer.
 pub const IWL_DATA_QUEUE: u32 = 4;
-/// Auxiliary queue used by the firmware scan station in the 7265's 16-queue
-/// non-DQA layout. Linux selects q11 for `mvm->aux_queue` in this layout;
+/// Auxiliary queue used by the firmware scan station in the 7265's non-DQA
+/// layout. Linux selects q11 for `mvm->aux_queue` in this layout;
 /// q8 is the separate off-channel reservation, not the station's TX queue.
 pub const IWL_AUX_QUEUE: u32 = 11;
+/// Number of logical scheduler queues in Linux's 7000-series configuration.
+/// This is distinct from the eight physical FH DMA channels.
+pub const IWL_NUM_OF_QUEUES: u32 = 31;
 pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
-pub const FH_MEM_CBBC_CMD_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_CMD_QUEUE;
-pub const FH_MEM_CBBC_DATA_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_DATA_QUEUE;
-pub const FH_MEM_CBBC_AUX_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_AUX_QUEUE;
+pub const FH_MEM_CBBC_16_19_LOWER_BOUND: u32 = (0x1000 + 0xBF0) / 4;
+pub const FH_MEM_CBBC_20_31_LOWER_BOUND: u32 = (0x1000 + 0xB20) / 4;
+
+/// Locate the legacy circular-buffer base register for a logical TX queue.
+/// Linux uses three discontiguous register windows for queues 0..31.
+pub const fn fh_mem_cbbc_queue(queue: u32) -> u32 {
+    if queue < 16 {
+        FH_MEM_CBBC_0_15_LOWER_BOUND + queue
+    } else if queue < 20 {
+        FH_MEM_CBBC_16_19_LOWER_BOUND + (queue - 16)
+    } else {
+        FH_MEM_CBBC_20_31_LOWER_BOUND + (queue - 20)
+    }
+}
+
+pub const FH_MEM_CBBC_CMD_QUEUE: u32 = fh_mem_cbbc_queue(IWL_CMD_QUEUE);
+pub const FH_MEM_CBBC_DATA_QUEUE: u32 = fh_mem_cbbc_queue(IWL_DATA_QUEUE);
+pub const FH_MEM_CBBC_AUX_QUEUE: u32 = fh_mem_cbbc_queue(IWL_AUX_QUEUE);
 pub const FH_KW_MEM_ADDR_REG: u32 = (0x1000 + 0x97C) / 4;
 pub const HBUS_TARG_WRPTR: u32 = (0x400 + 0x060) / 4;
 /// AX210/So/QuZ RFH free-RBD producer doorbell for RX queue 0.
@@ -165,9 +186,15 @@ pub const SCD_QUEUECHAIN_SEL: u32 = SCD_BASE + 0xE8;
 pub const SCD_AGGR_SEL: u32 = SCD_BASE + 0x248;
 /// Shared SCD SRAM range cleared by the legacy PCIe TX start sequence.
 /// It covers queue contexts, TX status entries, and the queue-to-RA/TID
-/// translation table for the 16-queue 7265 layout.
+/// translation table for the 31-queue 7000-series layout.
 pub const SCD_CONTEXT_MEM_LOWER_BOUND: u32 = 0x600;
-pub const SCD_TRANS_TBL_MEM_UPPER_BOUND: u32 = 0x800;
+pub const SCD_TRANS_TBL_MEM_LOWER_BOUND: u32 = 0x7E0;
+/// Linux's `SCD_TRANS_TBL_OFFSET_QUEUE()` rounds pairs of queue entries down
+/// to a dword boundary. Passing the queue count gives the exclusive clear end.
+pub const fn scd_trans_tbl_offset_queue(queue: u32) -> u32 {
+    (SCD_TRANS_TBL_MEM_LOWER_BOUND + queue * 2) & 0xFFFC
+}
+pub const SCD_TRANS_TBL_MEM_UPPER_BOUND: u32 = scd_trans_tbl_offset_queue(IWL_NUM_OF_QUEUES);
 pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_CMD: u32 = 0x600 + IWL_CMD_QUEUE * 8;
@@ -182,6 +209,7 @@ pub const SCD_QUEUE_STTS_WSL: u32 = 1 << 4;
 pub const SCD_QUEUE_STTS_FIFO_COMMAND: u32 = 7;
 pub const SCD_QUEUE_STTS_MASK: u32 = 0x017F_0000;
 pub const SCD_GP_CTRL_AUTO_ACTIVE_MODE: u32 = 1 << 18;
+pub const SCD_GP_CTRL_ENABLE_31_QUEUES: u32 = 1 << 0;
 
 // The legacy SCD byte-count table has one 16-bit entry for each of 256 TFDs
 // plus 64 duplicate entries, for each of the 32 possible queues. Keep it in
