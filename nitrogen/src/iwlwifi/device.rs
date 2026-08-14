@@ -1286,6 +1286,10 @@ impl IwlWifiDevice {
         // minimizing pre-ALIVE DMA exposure while still making REPLY_ALIVE
         // deliverable from the first firmware instruction onward.
         self.prearm_rx_before_cpu_release()?;
+        // Linux's matching TX init phase only publishes inert host-memory
+        // addresses and scheduler geometry. Queue/FIFO/DMA activation remains
+        // gated on a valid ALIVE payload in `start_legacy_dma_after_alive()`.
+        self.prearm_tx_foundation_before_cpu_release()?;
         self.log_fw_boot_registers("sections_ready");
 
         debug::print("iwlwifi", "fw: upload_done");

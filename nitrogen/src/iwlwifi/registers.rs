@@ -252,15 +252,45 @@ pub const SCD_GP_CTRL_ENABLE_31_QUEUES: u32 = 1 << 0;
 // the same contiguous DMA allocation as the command TFD ring, but outside the
 // ring and keep-warm areas.
 pub const TX_TFD_RING_BYTES: usize = 128 * TX_QUEUE_SIZE;
+/// Keep the three queues used by the current transport at their historical
+/// offsets, then assign every other Linux gen1 queue a distinct TFD ring.
+/// Linux allocates and publishes all 31 rings before starting firmware even
+/// though most queues are activated only later by the op-mode.
+pub const fn tx_tfd_ring_slot(queue: u32) -> usize {
+    if queue == IWL_CMD_QUEUE {
+        0
+    } else if queue == IWL_AUX_QUEUE {
+        1
+    } else if queue == IWL_DATA_QUEUE {
+        2
+    } else {
+        let mut slot = 3 + queue as usize;
+        if queue > IWL_DATA_QUEUE {
+            slot -= 1;
+        }
+        if queue > IWL_CMD_QUEUE {
+            slot -= 1;
+        }
+        if queue > IWL_AUX_QUEUE {
+            slot -= 1;
+        }
+        slot
+    }
+}
+
+pub const fn tx_tfd_ring_offset(queue: u32) -> usize {
+    tx_tfd_ring_slot(queue) * TX_TFD_RING_BYTES
+}
+
 /// The auxiliary station has its own TFD ring even though the host does not
 /// submit scan frames directly. Linux allocates one ring per scheduler queue;
 /// keeping q11 separate prevents firmware from interpreting q9 descriptors as
 /// scan traffic.
-pub const TX_AUX_TFD_RING_OFFSET: usize = TX_TFD_RING_BYTES;
+pub const TX_AUX_TFD_RING_OFFSET: usize = tx_tfd_ring_offset(IWL_AUX_QUEUE);
 /// Ordinary data queue ring. It is kept separate from both the HCMD and AUX
 /// rings because each scheduler queue owns an independent read pointer.
-pub const TX_DATA_TFD_RING_OFFSET: usize = TX_AUX_TFD_RING_OFFSET + TX_TFD_RING_BYTES;
-pub const TX_KEEP_WARM_OFFSET: usize = TX_DATA_TFD_RING_OFFSET + TX_TFD_RING_BYTES;
+pub const TX_DATA_TFD_RING_OFFSET: usize = tx_tfd_ring_offset(IWL_DATA_QUEUE);
+pub const TX_KEEP_WARM_OFFSET: usize = IWL_NUM_OF_QUEUES as usize * TX_TFD_RING_BYTES;
 pub const TX_KEEP_WARM_BYTES: usize = 0x1000;
 pub const TX_SCD_BC_OFFSET: usize = TX_KEEP_WARM_OFFSET + TX_KEEP_WARM_BYTES;
 pub const TX_SCD_BC_BYTES: usize = 32 * (256 + 64) * 2;

@@ -170,15 +170,32 @@ impl IwlWifiDevice {
         result
     }
 
-    /// Start the DMA rings and firmware-owned scheduler after ALIVE.
+    /// Publish the inert gen1 TX foundation while the firmware CPU is reset.
     ///
-    /// Linux normally publishes these rings before firmware load. On this
-    /// bare-metal/IOMMU path that caused a machine-wide freeze without an
-    /// MMIO watchdog fault, consistent with unsafe early DMA rather than a
-    /// stalled CPU read. Keep every DMA-capable register behind ALIVE until
-    /// the mapping path can be proven independently on hardware.
-    fn start_legacy_dma_after_alive(&mut self) -> Result<(), crate::DriverError> {
-        crate::debug::print("iwlwifi", "dma.after_alive.begin");
+    /// This matches Linux's `iwl_pcie_tx_init()`: deactivate the scheduler
+    /// FIFOs, publish the keep-warm and allocated queue rings, and select the
+    /// 31-queue scheduler geometry. It deliberately does not configure SCD
+    /// SRAM, activate a queue/FIFO, ring a doorbell, or enable a TX DMA
+    /// channel; those operations remain behind a valid ALIVE notification.
+    pub(super) fn prearm_tx_foundation_before_cpu_release(
+        &mut self,
+    ) -> Result<(), crate::DriverError> {
+        if !cfg!(test) {
+            self.health
+                .check()
+                .map_err(|_| crate::DriverError::DeviceNotFound)?;
+        }
+        let reset = self
+            .safe_read32(CSR_RESET)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        if reset == 0 {
+            log::error!(
+                "iwlwifi: refusing TX foundation pre-arm after CPU release RESET={:#010x}",
+                reset,
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+
         self.tx_head = 0;
         self.tx_tail = 0;
         self.tx_data_head = 0;
@@ -186,6 +203,39 @@ impl IwlWifiDevice {
         let ring_phys = self.tx_dma_ring.dma_iova();
         let aux_ring_phys = ring_phys + TX_AUX_TFD_RING_OFFSET as u64;
         let data_ring_phys = ring_phys + TX_DATA_TFD_RING_OFFSET as u64;
+        let keep_warm_phys = ring_phys + TX_KEEP_WARM_OFFSET as u64;
+
+        self.write_prph(SCD_TXFACT, 0);
+        self.write_mmio32(FH_KW_MEM_ADDR_REG, (keep_warm_phys >> 4) as u32);
+        for queue in 0..IWL_NUM_OF_QUEUES {
+            let queue_phys = ring_phys + tx_tfd_ring_offset(queue) as u64;
+            self.write_mmio32(fh_mem_cbbc_queue(queue), (queue_phys >> 8) as u32);
+        }
+        self.write_prph(
+            SCD_GP_CTRL,
+            SCD_GP_CTRL_AUTO_ACTIVE_MODE | SCD_GP_CTRL_ENABLE_31_QUEUES,
+        );
+        mmio::write_barrier();
+        log::info!(
+            "iwlwifi: firmware boot TX foundation pre-armed RESET={:#010x} kw={:#018x} q9={:#018x} q11={:#018x} q4={:#018x}",
+            reset,
+            keep_warm_phys,
+            ring_phys,
+            aux_ring_phys,
+            data_ring_phys,
+        );
+        Ok(())
+    }
+
+    /// Start the DMA rings and firmware-owned scheduler after ALIVE.
+    ///
+    /// The inert Linux-compatible foundation is already present. Keep SCD
+    /// SRAM access, queue/FIFO activation, doorbells, and every TX DMA enable
+    /// behind validation of the firmware's actual ALIVE payload.
+    fn start_legacy_dma_after_alive(&mut self) -> Result<(), crate::DriverError> {
+        crate::debug::print("iwlwifi", "dma.after_alive.begin");
+        let ring_phys = self.tx_dma_ring.dma_iova();
+        let aux_ring_phys = ring_phys + TX_AUX_TFD_RING_OFFSET as u64;
         let keep_warm_phys = ring_phys + TX_KEEP_WARM_OFFSET as u64;
         let scd_bc_phys = ring_phys + TX_SCD_BC_OFFSET as u64;
 
@@ -197,19 +247,7 @@ impl IwlWifiDevice {
         if !cfg!(test) {
             self.wait_for_alive_rx()?;
         }
-        self.write_prph(SCD_TXFACT, 0);
-        self.write_mmio32(FH_KW_MEM_ADDR_REG, (keep_warm_phys >> 4) as u32);
-        self.write_mmio32(FH_MEM_CBBC_CMD_QUEUE, (ring_phys >> 8) as u32);
-        self.write_mmio32(FH_MEM_CBBC_AUX_QUEUE, (aux_ring_phys >> 8) as u32);
-        self.write_mmio32(FH_MEM_CBBC_DATA_QUEUE, (data_ring_phys >> 8) as u32);
-        crate::debug::print("iwlwifi", "dma.after_alive.cbbc_done");
-
-        // Publish the two required Linux bits as a write-only reset value,
-        // avoiding an unnecessary indirect read-modify-write.
-        self.write_prph(
-            SCD_GP_CTRL,
-            SCD_GP_CTRL_AUTO_ACTIVE_MODE | SCD_GP_CTRL_ENABLE_31_QUEUES,
-        );
+        crate::debug::print("iwlwifi", "dma.after_alive.foundation_ready");
 
         // The command queue is FIFO mode on gen1 hardware and still needs the
         // scheduler context/active FIFO setup after firmware alive.
@@ -1990,26 +2028,54 @@ mod tests {
     }
 
     #[test]
-    fn linux_boot_prearms_only_rx_while_cpu_reset_is_asserted() {
+    fn linux_boot_prearms_rx_and_inert_tx_foundation_while_cpu_reset_is_asserted() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
         device.write_mmio32(CSR_RESET, 1);
+        device.write_mmio32(HBUS_TARG_WRPTR, 0xCAFE_BABE);
 
         device.prearm_rx_before_cpu_release().unwrap();
+        device.prearm_tx_foundation_before_cpu_release().unwrap();
 
         assert_ne!(device.safe_read32(FH_MEM_RCSR_CHNL0_CONFIG_REG), Some(0));
-        assert_eq!(device.safe_read32(FH_MEM_CBBC_CMD_QUEUE), Some(0));
-        assert_eq!(device.safe_read32(FH_KW_MEM_ADDR_REG), Some(0));
+        let base = device.tx_dma_ring.dma_iova();
+        for queue in 0..IWL_NUM_OF_QUEUES {
+            assert_eq!(
+                device.safe_read32(fh_mem_cbbc_queue(queue)),
+                Some(((base + tx_tfd_ring_offset(queue) as u64) >> 8) as u32)
+            );
+        }
+        assert_eq!(
+            device.safe_read32(FH_KW_MEM_ADDR_REG),
+            Some(((base + TX_KEEP_WARM_OFFSET as u64) >> 4) as u32)
+        );
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_PRPH_WADDR),
+            Some(SCD_GP_CTRL | (3 << 24))
+        );
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_PRPH_WDAT),
+            Some(SCD_GP_CTRL_AUTO_ACTIVE_MODE | SCD_GP_CTRL_ENABLE_31_QUEUES)
+        );
+        // Publishing ring addresses is inert: no queue doorbell and no TX
+        // DMA channel may be enabled until ALIVE has been validated.
+        assert_eq!(device.safe_read32(HBUS_TARG_WRPTR), Some(0xCAFE_BABE));
+        assert_eq!(device.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE), Some(0));
 
         device.write_mmio32(CSR_RESET, 0);
         assert_eq!(
             device.prearm_rx_before_cpu_release(),
             Err(crate::DriverError::Protocol)
         );
+        assert_eq!(
+            device.prearm_tx_foundation_before_cpu_release(),
+            Err(crate::DriverError::Protocol)
+        );
     }
 
     #[test]
-    fn legacy_tx_foundation_is_programmed_only_after_alive() {
+    fn legacy_tx_activation_after_alive_preserves_prearmed_foundation() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.write_mmio32(CSR_RESET, 1);
         device.tx_head = 7;
         device.tx_tail = 3;
         device.tx_data_head = 9;
@@ -2018,7 +2084,9 @@ mod tests {
         // Firmware boot pre-arms RX; the ALIVE transition must preserve that
         // ring while it brings up only the TX/SCD half of the transport.
         device.init_rx_dma();
+        device.prearm_tx_foundation_before_cpu_release().unwrap();
         let rx_config = device.safe_read32(FH_MEM_RCSR_CHNL0_CONFIG_REG);
+        device.write_mmio32(CSR_RESET, 0);
 
         device.start_legacy_dma_after_alive().unwrap();
 

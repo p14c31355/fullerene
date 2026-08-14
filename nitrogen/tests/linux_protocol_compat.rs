@@ -15,6 +15,7 @@ use nitrogen::iwlwifi::registers::{
     SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES,
     TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
     TX_TFD_RING_BYTES, fh_mem_cbbc_queue, legacy_nic_config_fields, scd_trans_tbl_offset_queue,
+    tx_tfd_ring_offset,
 };
 use nitrogen::iwlwifi::types::{
     AddStaCmdV7, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
@@ -259,7 +260,18 @@ fn tx_dma_allocation_covers_every_region() {
     // Linux allocates 256 legacy 128-byte TFDs per scheduler queue.
     assert_eq!(TX_TFD_RING_BYTES, 128 * TX_QUEUE_SIZE);
     assert_eq!(TX_AUX_TFD_RING_OFFSET, TX_TFD_RING_BYTES);
-    assert!(TX_KEEP_WARM_OFFSET >= TX_AUX_TFD_RING_OFFSET + TX_TFD_RING_BYTES);
+    assert_eq!(
+        TX_KEEP_WARM_OFFSET,
+        IWL_NUM_OF_QUEUES as usize * TX_TFD_RING_BYTES
+    );
+    for queue in 0..IWL_NUM_OF_QUEUES {
+        let offset = tx_tfd_ring_offset(queue);
+        assert_eq!(offset % TX_TFD_RING_BYTES, 0);
+        assert!(offset + TX_TFD_RING_BYTES <= TX_KEEP_WARM_OFFSET);
+        for previous in 0..queue {
+            assert_ne!(offset, tx_tfd_ring_offset(previous));
+        }
+    }
     assert!(TX_SCD_BC_OFFSET >= TX_KEEP_WARM_OFFSET + TX_KEEP_WARM_BYTES);
     assert!(TX_SCD_BC_OFFSET + TX_SCD_BC_BYTES <= TX_DMA_ALLOCATION_BYTES);
 }
