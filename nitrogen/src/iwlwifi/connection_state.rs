@@ -945,6 +945,7 @@ fn perform_init_step() {
                 init_response: None,
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
+                alive_scd_base_addr: 0,
                 iwl_state: IwlState::Init,
                 wifi_conn: bonder::wifi::WifiConnection::new(),
                 wpa: bonder::wpa::WpaSupplicant::new(),
@@ -1154,7 +1155,7 @@ fn perform_init_step() {
             WIFI_INIT_CTX.lock().mmio_device = Some(dev);
             match alive_result {
                 Ok(true) => {
-                    log::info!("iwlwifi: firmware alive notification received");
+                    log::info!("iwlwifi: firmware CSR ALIVE interrupt received");
                     debug::print("iwlwifi", "step: fw_alive");
                     set_init_phase(WifiInitPhase::FwInitCmds);
                 }
@@ -1344,7 +1345,7 @@ fn perform_init_step() {
             WIFI_INIT_CTX.lock().mmio_device = Some(dev);
             match result {
                 Ok(true) => {
-                    log::info!("iwlwifi: runtime firmware alive notification received");
+                    log::info!("iwlwifi: runtime firmware CSR ALIVE interrupt received");
                     set_init_phase(WifiInitPhase::FwRuntimeCmds);
                 }
                 Ok(false) => {}

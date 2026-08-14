@@ -77,6 +77,8 @@ pub struct IwlWifiDevice {
     /// SRAM pointers supplied by the firmware image for post-crash logs.
     pub runtime_errlog_ptr: u32,
     pub init_errlog_ptr: u32,
+    /// Scheduler SRAM base reported by the firmware's RX ALIVE notification.
+    pub alive_scd_base_addr: u32,
 
     /// 802.11 state.
     pub iwl_state: IwlState,
@@ -536,6 +538,7 @@ impl IwlWifiDevice {
             init_response: None,
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
+            alive_scd_base_addr: 0,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -772,6 +775,7 @@ impl IwlWifiDevice {
             init_response: None,
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
+            alive_scd_base_addr: 0,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -1019,6 +1023,7 @@ impl IwlWifiDevice {
         self.fw_build = unsafe { core::ptr::read_unaligned(fw_ptr.add(76) as *const u32) };
         self.runtime_errlog_ptr = 0;
         self.init_errlog_ptr = 0;
+        self.alive_scd_base_addr = 0;
         self.phy_config = 0;
         self.phy_sku_tlv_len = None;
         self.runtime_calib_flow = 0;
@@ -1449,34 +1454,39 @@ impl IwlWifiDevice {
     /// than from a guessed SRAM address.
     pub(super) fn record_alive_notification(&mut self, payload: &[u8]) {
         // MVM_ALIVE (API v3) starts with status/flags, followed by the LMAC
-        // alive structure.  The LMAC error-event-table pointer is therefore
-        // at payload offset 20.  Runtime firmware can emit a fresh ALIVE
-        // notification when it restarts after an assertion, even though the
-        // original firmware TLV did not provide an error-log pointer.
-        if payload.len() < 24 {
+        // alive structure. The LMAC debug-address block starts at offset 20:
+        // its error-event-table pointer is first and the SCD SRAM base is at
+        // offset 40. Linux does not start the transport TX scheduler until
+        // this RX notification has been parsed.
+        if payload.len() < 44 {
             return;
         }
         let status = u16::from_le_bytes([payload[0], payload[1]]);
         let flags = u16::from_le_bytes([payload[2], payload[3]]);
         let error_log_ptr =
             u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]);
-        if error_log_ptr == 0 {
-            return;
-        }
+        let scd_base_addr =
+            u32::from_le_bytes([payload[40], payload[41], payload[42], payload[43]]);
+        self.alive_scd_base_addr = scd_base_addr;
 
-        let (image, pointer) = if self.init_firmware_completed {
-            self.runtime_errlog_ptr = error_log_ptr;
-            ("runtime", self.runtime_errlog_ptr)
+        let image = if self.init_firmware_completed {
+            if error_log_ptr != 0 {
+                self.runtime_errlog_ptr = error_log_ptr;
+            }
+            "runtime"
         } else {
-            self.init_errlog_ptr = error_log_ptr;
-            ("init", self.init_errlog_ptr)
+            if error_log_ptr != 0 {
+                self.init_errlog_ptr = error_log_ptr;
+            }
+            "init"
         };
         log::info!(
-            "iwlwifi: firmware.alive image={} status={:#06x} flags={:#06x} error_log_ptr={:#010x}",
+            "iwlwifi: firmware.alive.rx image={} status={:#06x} flags={:#06x} error_log_ptr={:#010x} scd_base={:#010x}",
             image,
             status,
             flags,
-            pointer,
+            error_log_ptr,
+            scd_base_addr,
         );
     }
 
@@ -2009,6 +2019,7 @@ pub(super) mod test_support {
                 init_response: None,
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
+                alive_scd_base_addr: 0,
                 iwl_state: IwlState::Init,
                 wifi_conn: wifi::WifiConnection::new(),
                 wpa: WpaSupplicant::new(),

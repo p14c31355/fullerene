@@ -76,6 +76,48 @@ impl IwlWifiDevice {
         );
     }
 
+    /// Wait for the RX ALIVE notification after the CSR ALIVE edge.
+    ///
+    /// On gen1 hardware the CSR bit only announces that firmware reached its
+    /// boot interrupt. Linux completes the transition using REPLY_ALIVE from
+    /// the RX ring, which also supplies the scheduler SRAM base. Because this
+    /// driver enables RX only after the safe CSR boundary, explicitly drain
+    /// that deferred notification before submitting the first host command.
+    pub(super) fn wait_for_alive_rx(&mut self) -> Result<(), crate::DriverError> {
+        const ALIVE_TIMEOUT_US: u64 = 500_000;
+        const IWL_ALIVE_STATUS_OK: u16 = 0xcafe;
+
+        let deadline_tsc = unsafe { core::arch::x86_64::_rdtsc() }
+            .saturating_add(crate::timing::ticks_per_us().saturating_mul(ALIVE_TIMEOUT_US));
+        loop {
+            if let Some(payload) = self.poll_init_notification(
+                LegacyCmd::ReplyAlive as u8,
+                GroupId::Legacy as u8,
+                deadline_tsc,
+            )? {
+                if payload.len() < 44 {
+                    log::error!(
+                        "iwlwifi: firmware ALIVE RX payload too short: {} bytes",
+                        payload.len(),
+                    );
+                    return Err(crate::DriverError::Protocol);
+                }
+                let status = u16::from_le_bytes([payload[0], payload[1]]);
+                if status != IWL_ALIVE_STATUS_OK {
+                    log::error!("iwlwifi: firmware ALIVE RX rejected status={:#06x}", status,);
+                    return Err(crate::DriverError::Protocol);
+                }
+                log::info!(
+                    "iwlwifi: firmware ALIVE RX consumed status={:#06x} scd_base={:#010x}",
+                    status,
+                    self.alive_scd_base_addr,
+                );
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     /// Poll one command response while the INIT image is running.
     ///
     /// The normal service tick intentionally processes RX only in `Ready`
@@ -131,6 +173,18 @@ impl IwlWifiDevice {
             // emit REPLY_ERROR together with SW_ERR; returning here would
             // discard that command-specific reason.
             firmware_error = true;
+        }
+
+        // ALIVE arrives as a high-priority RX event (FH bit 30) together with
+        // RX channel 0. Acknowledge the complete Linux gen1 RX mask; clearing
+        // channel 0 alone leaves the aggregate interrupt asserted.
+        if csr_int & (CSR_INT_BIT_FH_RX | CSR_INT_BIT_SW_RX | CSR_INT_BIT_RX_PERIODIC) != 0 {
+            let fh_cause = self.safe_read32(CSR_FH_INT).unwrap_or(0);
+            self.write_mmio32(CSR_FH_INT, fh_cause & CSR_FH_INT_RX_MASK);
+            self.write_mmio32(
+                CSR_INT,
+                csr_int & (CSR_INT_BIT_FH_RX | CSR_INT_BIT_SW_RX | CSR_INT_BIT_RX_PERIODIC),
+            );
         }
 
         let gp1 = self.safe_read32(CSR_UCODE_GP1).unwrap_or(0);

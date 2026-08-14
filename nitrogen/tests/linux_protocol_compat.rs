@@ -8,6 +8,7 @@ use std::mem::{offset_of, size_of};
 use std::slice;
 
 use nitrogen::iwlwifi::registers::{
+    CSR_FH_INT_BIT_HI_PRIOR, CSR_FH_INT_BIT_RX_CHNL0, CSR_FH_INT_BIT_RX_CHNL1, CSR_FH_INT_RX_MASK,
     CSR_MAC_SHADOW_REG_CTRL_ENABLE, FH_MEM_CBBC_0_15_LOWER_BOUND, FH_MEM_CBBC_16_19_LOWER_BOUND,
     FH_MEM_CBBC_20_31_LOWER_BOUND, IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_NUM_OF_QUEUES,
     SCD_CONTEXT_MEM_LOWER_BOUND, SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET,
@@ -49,6 +50,14 @@ fn linux_legacy_cbbc_register_windows_cover_all_31_queues() {
     assert_eq!(fh_mem_cbbc_queue(19), FH_MEM_CBBC_16_19_LOWER_BOUND + 3);
     assert_eq!(fh_mem_cbbc_queue(20), FH_MEM_CBBC_20_31_LOWER_BOUND);
     assert_eq!(fh_mem_cbbc_queue(30), FH_MEM_CBBC_20_31_LOWER_BOUND + 10);
+}
+
+#[test]
+fn linux_gen1_rx_interrupt_mask_includes_high_priority_alive() {
+    assert_eq!(CSR_FH_INT_BIT_RX_CHNL0, 1 << 16);
+    assert_eq!(CSR_FH_INT_BIT_RX_CHNL1, 1 << 17);
+    assert_eq!(CSR_FH_INT_BIT_HI_PRIOR, 1 << 30);
+    assert_eq!(CSR_FH_INT_RX_MASK, 0x4003_0000);
 }
 
 #[test]
