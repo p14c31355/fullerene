@@ -2186,6 +2186,55 @@ impl IwlWifiDevice {
                     "CLEAR"
                 },
             );
+
+            // Re-ring the q5 doorbell after SCD_QUEUE_CFG and ADD_STA_QUEUE
+            // have been fully processed by firmware. The initial doorbell in
+            // enable_dqa_tx_queue may arrive before the firmware has finished
+            // configuring the SCD for q5. A fresh doorbell ensures the SCD
+            // sees the queue as ready for fetching.
+            self.kick_dqa_queue_doorbell(IWL_MGMT_QUEUE);
+
+            // Diagnostic: dump q5 SCD state before authentication. Compare
+            // with q0 to identify any missing activation condition.
+            let q5_status = self
+                .read_prph(scd_queue_status(IWL_MGMT_QUEUE))
+                .unwrap_or(!0);
+            let q5_wrptr = self
+                .read_prph(scd_queue_wrptr(IWL_MGMT_QUEUE))
+                .unwrap_or(!0);
+            let q5_rdptr = self
+                .read_prph(scd_queue_rdptr(IWL_MGMT_QUEUE))
+                .unwrap_or(!0);
+            let q0_status = self
+                .read_prph(scd_queue_status(self.command_queue()))
+                .unwrap_or(!0);
+            let q0_wrptr = self
+                .read_prph(scd_queue_wrptr(self.command_queue()))
+                .unwrap_or(!0);
+            let q0_rdptr = self
+                .read_prph(scd_queue_rdptr(self.command_queue()))
+                .unwrap_or(!0);
+            let scd_en = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            let scd_gp = self.read_prph(SCD_GP_CTRL).unwrap_or(!0);
+            let scd_txfact = self.read_prph(SCD_TXFACT).unwrap_or(!0);
+            let queuechain = self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(!0);
+            let aggr_sel = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
+            let scd_dram = self.read_prph(SCD_DRAM_BASE_ADDR).unwrap_or(!0);
+            log::info!(
+                "iwlwifi: SCD pre-auth q0 status={:#010x} wrptr={:#010x} rdptr={:#010x} | q5 status={:#010x} wrptr={:#010x} rdptr={:#010x} | scd_en={:#010x} scd_gp={:#010x} txfact={:#010x} qchain={:#010x} aggr={:#010x} dram={:#010x}",
+                q0_status,
+                q0_wrptr,
+                q0_rdptr,
+                q5_status,
+                q5_wrptr,
+                q5_rdptr,
+                scd_en,
+                scd_gp,
+                scd_txfact,
+                queuechain,
+                aggr_sel,
+                scd_dram,
+            );
         }
 
         // Linux asks firmware for a high-priority session-protection Time

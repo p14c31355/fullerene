@@ -228,9 +228,9 @@ pub const fn fh_tx_trb_channel(channel: u32) -> u32 {
 pub const SCD_BASE: u32 = 0xA02C00;
 pub const SCD_SRAM_BASE_ADDR: u32 = SCD_BASE;
 pub const SCD_DRAM_BASE_ADDR: u32 = SCD_BASE + 0x08;
-/// Chain extension is enabled by default on this generation, but is known to
-/// interact badly with the legacy scheduler. Linux disables it during TX
-/// queue setup, including for 7265 devices.
+/// Chain-extension control register. Linux writes this only when the selected
+/// device configuration advertises `scd_chain_ext_wa`; the 7265 configuration
+/// does not, so the legacy path must leave the firmware/HW default unchanged.
 pub const SCD_CHAINEXT_EN: u32 = SCD_BASE + 0x244;
 pub const SCD_TXFACT: u32 = SCD_BASE + 0x10;
 pub const SCD_GP_CTRL: u32 = SCD_BASE + 0x1A8;

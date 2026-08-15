@@ -17,6 +17,11 @@ const TFD_LENGTH_MAX: usize = 0x0fff;
 /// same purpose in place.
 const IWL_FIRST_TB_SIZE: usize = 20;
 
+// Keep the host-side SCD programming experiment available for comparison,
+// but use Linux's DQA contract by default: the transport publishes CBBC/WRPTR
+// and SCD_QUEUE_CFG lets firmware configure the dynamic queue.
+const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = false;
+
 // Legacy 7265 management/data frames use the API-v6 TX command.  A 1 Mbps
 // CCK rate is valid for the 2.4 GHz management exchange used by this driver;
 // the firmware command wrapper is the important part here, since placing the
@@ -313,10 +318,11 @@ impl IwlWifiDevice {
             // The table is also needed by the legacy scheduler even though
             // the command queue itself is non-aggregated.
             self.write_prph(SCD_DRAM_BASE_ADDR, (scd_bc_phys >> 10) as u32);
-            // The chain-extension path is enabled by default on gen1, but it
-            // is unreliable on the 7265 legacy scheduler. Keep the command
-            // queue on the ordinary TFD path, as upstream does.
-            self.write_prph(SCD_CHAINEXT_EN, 0);
+            // Linux's 7265 (`iwl7000_base_params`) does not set
+            // `scd_chain_ext_wa`, so `iwl_pcie_tx_start()` leaves this
+            // firmware/HW-controlled register untouched. In particular, do
+            // not unconditionally disable it: DQA q5 is configured later by
+            // firmware and must see the same scheduler default as Linux.
         } else {
             log::warn!(
                 "iwlwifi: unable to read SCD SRAM base; command scheduler backing table was not configured"
@@ -447,32 +453,64 @@ impl IwlWifiDevice {
         Ok(())
     }
 
-    /// Publish a DQA queue's initial write pointer. With DQA the firmware,
-    /// not the PCIe transport, owns the SCD context/status programming; the
-    /// matching SCD_QUEUE_CFG command performs that work.
+    /// Publish a DQA queue's initial write pointer. By default the firmware,
+    /// not the PCIe transport, owns the dynamic SCD context/status programming
+    /// through SCD_QUEUE_CFG. A host-side direct-SCD variant remains available
+    /// behind `DQA_HOST_DIRECT_SCD_DIAGNOSTIC` for A/B comparison.
     pub(super) fn enable_dqa_tx_queue(&mut self, queue: u32) -> Result<(), crate::DriverError> {
         if !self.fw_dqa_supported || queue >= IWL_NUM_OF_QUEUES {
             return Err(crate::DriverError::InvalidArgument);
         }
         self.wake_for_hcmd()?;
-        // Linux republishes every queue's CBBC address in
-        // iwl_trans_pcie_tx_reset(). The management queue is dormant until
-        // connection setup, so publish its ring again immediately before its
-        // first DQA write pointer in case firmware reset discarded the inert
-        // pre-ALIVE value.
         let queue_phys = self.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(queue) as u64;
         let cbbc = (queue_phys >> 8) as u32;
         self.write_mmio32(fh_mem_cbbc_queue(queue), cbbc);
         self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
+        if DQA_HOST_DIRECT_SCD_DIAGNOSTIC {
+            // Diagnostic alternative to Linux's DQA path: configure the SCD
+            // registers directly like the non-DQA path. Keep this branch for
+            // A/B comparison without making it the production experiment.
+            self.write_prph(scd_queue_status(queue), 1 << 19); // inactive
+            self.write_prph(scd_queue_rdptr(queue), 0);
+            if let Some(scd_base) = self.read_prph(SCD_SRAM_BASE_ADDR) {
+                self.write_mem32(scd_base + scd_context_queue(queue), 0);
+                self.write_mem32(scd_base + scd_context_queue(queue) + 4, 64 | (64 << 16));
+            }
+            let chain = self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(0);
+            self.write_prph(SCD_QUEUECHAIN_SEL, chain | (1 << queue));
+            let aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(0);
+            self.write_prph(SCD_AGGR_SEL, aggr & !(1 << queue));
+            self.write_prph(
+                scd_queue_status(queue),
+                SCD_QUEUE_STTS_ACTIVE
+                    | 3 // IWL_MVM_TX_FIFO_VO (management)
+                    | SCD_QUEUE_STTS_WSL
+                    | SCD_QUEUE_STTS_MASK,
+            );
+            // Add the queue to SCD_EN_CTRL. Without this, the SCD does not
+            // fetch TFDs even when SCD_QUEUE_STATUS is ACTIVE. q0 and q1 are
+            // both in SCD_EN_CTRL and work correctly; q5 must be added too.
+            let scd_en = self.read_prph(SCD_EN_CTRL).unwrap_or(0);
+            self.write_prph(SCD_EN_CTRL, scd_en | (1 << queue));
+        }
         mmio::write_barrier();
         log::info!(
-            "iwlwifi: DQA queue published: queue={} tfd={:#018x} cbbc={:#010x} readback={:#010x}",
+            "iwlwifi: DQA queue published: queue={} tfd={:#018x} cbbc={:#010x} readback={:#010x} direct_scd={} scd_en={:#010x}",
             queue,
             queue_phys,
             cbbc,
             self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0),
+            DQA_HOST_DIRECT_SCD_DIAGNOSTIC,
+            self.read_prph(SCD_EN_CTRL).unwrap_or(!0),
         );
         Ok(())
+    }
+
+    /// Re-ring the queue doorbell after firmware has configured the SCD via
+    /// SCD_QUEUE_CFG and ADD_STA_QUEUE.
+    pub(super) fn kick_dqa_queue_doorbell(&mut self, queue: u32) {
+        self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
+        mmio::write_barrier();
     }
 
     /// Activate the static non-DQA best-effort queue used by the 7265 MVM
@@ -2227,7 +2265,12 @@ impl IwlWifiDevice {
                 }
             }
         }
-        self.release_mac_access_if_tx_idle();
+        // Linux's iwl_trans_pcie_tx() grabs and releases NIC access for each
+        // TX submission. It does not hold MAC_ACCESS_REQ across the doorbell.
+        // The 7265D scheduler needs the MAC to enter power-save between
+        // submissions to advance the SCD read pointer. Force-release here to
+        // match Linux's per-frame grab/release pattern.
+        self.release_mac_access();
     }
 
     /// Publish one entry in Linux's `iwlagn_scd_bc_tbl`, including the
@@ -2312,8 +2355,6 @@ impl IwlWifiDevice {
         const TX_CMD_FLG_BT_PRIO_POS: u32 = 11;
         const TX_CMD_FLG_SEQ_CTL: u32 = 1 << 13;
         const TX_CMD_FLG_MH_PAD: u32 = 1 << 20;
-        const TX_CMD_OFFLD_PAD: u16 = 1 << 13;
-        const TX_CMD_OFFLD_MH_SIZE_POS: u32 = 8;
         let frame_type = (frame[0] & 0x0c) >> 2;
         let subtype = (frame[0] >> 4) & 0x0f;
         let bt_priority = if frame_type == 0 && subtype != 10 {
@@ -2329,15 +2370,11 @@ impl IwlWifiDevice {
             } else {
                 0
             };
-        // The firmware uses this half-word count to find the payload after
-        // the MAC header. Linux includes the CCMP IV in that boundary because
-        // it is already present in the host-provided frame on gen1.
-        let crypto_header_len = if frame[1] & 0x40 != 0 { 8 } else { 0 };
-        let mut offload_assist =
-            (((mac_header_len + crypto_header_len) / 2) as u16) << TX_CMD_OFFLD_MH_SIZE_POS;
-        if mac_padding != 0 {
-            offload_assist |= TX_CMD_OFFLD_PAD;
-        }
+        // Linux 4.14 sets offload_assist to 0 for the 7265 (sw_csum_tx is
+        // false). A non-zero value may cause the firmware to attempt TX
+        // offload processing that cannot complete on this hardware, which
+        // can prevent the SCD from advancing the read pointer.
+        let offload_assist: u16 = 0;
         wire[tx + 2..tx + 4].copy_from_slice(&offload_assist.to_le_bytes());
         wire[tx + 4..tx + 8].copy_from_slice(&tx_flags.to_le_bytes());
         wire[tx + 12..tx + 16].copy_from_slice(&rate_n_flags.to_le_bytes());
@@ -2486,7 +2523,7 @@ mod tests {
         );
         assert_eq!(
             u16::from_le_bytes([wire[tx + 2], wire[tx + 3]]),
-            12 << 8 // 24-byte MAC header in half-words
+            0 // offload_assist: Linux 4.14 sets this to 0 for 7265
         );
         assert_eq!(
             u32::from_le_bytes(wire[tx + 4..tx + 8].try_into().unwrap()),
@@ -2516,8 +2553,9 @@ mod tests {
         let flags = u32::from_le_bytes(wire[tx + 4..tx + 8].try_into().unwrap());
 
         assert_eq!(wire.len(), TX_FRAME_OFFSET + frame.len() + 2);
-        assert_ne!(offload_assist & (1 << 13), 0);
-        assert_eq!((offload_assist >> 8) & 0x1f, 13);
+        // offload_assist is 0 on 7265 (Linux 4.14 sw_csum_tx=false).
+        assert_eq!(offload_assist, 0);
+        // MH_PAD is still set in tx_flags for the 2-byte padding.
         assert_ne!(flags & (1 << 20), 0);
         assert_eq!(&wire[TX_FRAME_OFFSET..TX_FRAME_OFFSET + 26], &frame[..26]);
         assert_eq!(&wire[TX_FRAME_OFFSET + 26..TX_FRAME_OFFSET + 28], &[0, 0]);
@@ -2538,13 +2576,12 @@ mod tests {
         let ptk = [0x5a; 16];
         let wire = IwlWifiDevice::build_tx_command(&first, 0x0400, TX_RATE_6M_OFDM, Some(&ptk));
         assert_eq!(
-            (u16::from_le_bytes(
+            u16::from_le_bytes(
                 wire[TX_COMMAND_HEADER_LEN + 2..TX_COMMAND_HEADER_LEN + 4]
                     .try_into()
                     .unwrap()
-            ) >> 8)
-                & 0x1f,
-            16 // 24-byte MAC header plus eight-byte CCMP IV
+            ),
+            0 // offload_assist: Linux 4.14 sets this to 0 for 7265
         );
         assert_eq!(wire[TX_COMMAND_HEADER_LEN + 17], 0x02); // CCMP, inline key
         assert_eq!(
