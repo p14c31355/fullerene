@@ -72,13 +72,14 @@ termination of the owning process for scheduler context after the runtime lock
 is released. This makes launchd's shell slot reusable without allowing a GUI
 callback to re-enter the runtime lock.
 
-For legacy iwlwifi, the authentication exchange now records the firmware TX
-result for management frames. A failed management TX can advance the bounded
-queue plan, while a successfully consumed TX with no AP response still reaches
-the finite watchdog error path. Association-frame transmission errors are no
-longer discarded. The implementation is covered by host replay/unit tests; AP
-authentication on the affected physical adapter remains a required hardware
-validation step.
+For legacy iwlwifi, the authentication exchange now restores the dynamic q5
+SCD enable bit at the final DQA doorbell; the affected 7265D firmware otherwise
+advances the host write pointer without fetching the management TFD. It also
+records firmware TX results for management frames, advances the bounded queue
+plan after an explicit failure, and no longer discards association-frame
+transmission errors. Host replay/unit tests cover the state machine; the AP
+authentication result on the affected physical adapter remains the final
+hardware validation step.
 
 A 2026-07-30 redundancy and correctness audit reduced logic LOC without
 changing runtime contracts: repetitive command-serialisation and font/colour

@@ -247,9 +247,9 @@ impl IwlWifiDevice {
 
     /// Reassert the transport-wide scheduler mode after firmware ALIVE.
     ///
-    /// q0 is also forced active through `SCD_EN_CTRL`, while dynamically
-    /// configured DQA queues rely on auto-active mode. Preserve any unrelated
-    /// firmware-owned bits, matching Linux's pair of set-bit operations.
+    /// q0 is also forced active through `SCD_EN_CTRL`; dynamically configured
+    /// queues use auto-active mode during setup and are explicitly re-enabled
+    /// at their final doorbell. Preserve unrelated firmware-owned bits.
     fn ensure_scd_auto_active_after_alive(&mut self) -> Result<(), crate::DriverError> {
         let scd_gp_ctrl = self
             .read_prph(SCD_GP_CTRL)
@@ -289,11 +289,10 @@ impl IwlWifiDevice {
         self.write_prph(SCD_TXFACT, 0);
         self.write_prph(SCD_EN_CTRL, 0);
         // Linux sets these transport-wide scheduler bits during TX init.
-        // They are especially important for DQA queues: q0 is also forced
-        // active through SCD_EN_CTRL, while dynamically configured q5 relies
-        // on auto-active mode after SCD_QUEUE_CFG. The CPU/firmware reset may
-        // discard the pre-ALIVE write, so safely reassert the bits now that a
-        // valid ALIVE notification has established PRPH access.
+        // They are especially important for DQA queues. The CPU/firmware reset
+        // may discard the pre-ALIVE write, so safely reassert the bits now
+        // that a valid ALIVE notification has established PRPH access; the
+        // final DQA doorbell restores each dynamically configured queue bit.
         self.ensure_scd_auto_active_after_alive()?;
         let scd_base = self.read_prph(SCD_SRAM_BASE_ADDR);
         if let Some(scd_base) = scd_base {
@@ -353,8 +352,8 @@ impl IwlWifiDevice {
         );
         self.write_prph(SCD_TXFACT, 0xFF);
         // SCD_EN_CTRL is the legacy scheduler-active gate used for the
-        // command queue.  Data queues are activated by their queue status;
-        // Linux does not add them to this register.
+        // command queue. DQA data queues are restored at their final doorbell
+        // after firmware has populated their SCD context.
         self.write_prph(SCD_EN_CTRL, 1 << command_queue);
 
         {
@@ -518,8 +517,19 @@ impl IwlWifiDevice {
     }
 
     /// Re-ring the queue doorbell after firmware has configured the SCD via
-    /// SCD_QUEUE_CFG and ADD_STA_QUEUE.
+    /// SCD_QUEUE_CFG and ADD_STA_QUEUE.  The 7265D-29 firmware leaves the
+    /// dynamically configured queue out of SCD_EN_CTRL; without restoring its
+    /// bit immediately before the doorbell, the TFD write pointer advances but
+    /// the scheduler never fetches the frame.
     pub(super) fn kick_dqa_queue_doorbell(&mut self, queue: u32) {
+        if let Some(scd_en) = self.read_prph(SCD_EN_CTRL) {
+            self.write_prph(SCD_EN_CTRL, scd_en | (1 << queue));
+        } else {
+            log::warn!(
+                "iwlwifi: unable to read SCD_EN_CTRL before DQA queue={} doorbell",
+                queue,
+            );
+        }
         self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
         mmio::write_barrier();
     }

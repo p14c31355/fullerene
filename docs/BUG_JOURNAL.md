@@ -25,23 +25,23 @@ Lattice and workspace tests cover the close notification path. Physical/QEMU
 interactive shell reopening should still be included in the next runtime smoke
 run.
 
-## Entry 013 — 2026-08-16 iwlwifi management TX could strand Authenticating
+## Entry 013 — 2026-08-16 iwlwifi q5 scheduler gate stranded Authenticating
 
 ### Symptoms
 
-On legacy iwlwifi hardware, the UI could remain in `Authenticating` when the
-management-frame descriptor was rejected or its association-frame submission
-failed. The watchdog only considered a host-side queue fetch stall, and one
-association send result was discarded.
+On the affected 7265D-29 adapter, the UI remained in `Authenticating` after
+the authentication TFD was submitted. The log showed q5 `wrptr=1`,
+`rdptr=0`, and `SCD_EN_CTRL=0x00000003`; the management queue's enable bit was
+absent, so firmware never fetched the descriptor.
 
 ### Root cause and fix
 
-The RX path already receives the legacy `REPLY_TX` status, but it did not retain
-that result for authentication/association management frames. The connection
-context now records acknowledged/failed TX state, uses an explicit failed TX
-to trigger the existing finite queue fallback plan, and transitions a failed
-association submission to `Error`. A consumed TX with no AP response still
-terminates through the bounded watchdog rather than retrying indefinitely.
+The 7265D firmware populates the dynamic SCD context but leaves q5 out of
+`SCD_EN_CTRL` after `SCD_QUEUE_CFG`/`ADD_STA_QUEUE`. The final DQA doorbell now
+preserves unrelated bits and restores the queue's enable bit immediately
+before ringing `HBUS_TARG_WRPTR`. The existing RX-side `REPLY_TX` tracking also
+records management TX failures, advances the bounded fallback plan, and keeps
+association submission errors visible instead of discarding them.
 
 All 178 Nitrogen library tests pass, including iwlwifi replay tests. The
 affected adapter and AP still require physical validation because QEMU does

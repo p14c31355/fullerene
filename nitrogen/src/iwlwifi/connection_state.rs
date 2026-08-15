@@ -2281,23 +2281,22 @@ impl IwlWifiDevice {
                 ));
                 return Err(error);
             }
-            let scd_en_after_sta = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
-            log::info!(
-                "iwlwifi: SCD_EN_CTRL after ADD_STA_QUEUE scd_en={:#010x} q5_bit={}",
-                scd_en_after_sta,
-                if scd_en_after_sta & (1 << IWL_MGMT_QUEUE) != 0 {
-                    "SET"
-                } else {
-                    "CLEAR"
-                },
-            );
-
             // Re-ring the q5 doorbell after SCD_QUEUE_CFG and ADD_STA_QUEUE
             // have been fully processed by firmware. The initial doorbell in
             // enable_dqa_tx_queue may arrive before the firmware has finished
             // configuring the SCD for q5. A fresh doorbell ensures the SCD
             // sees the queue as ready for fetching.
             self.kick_dqa_queue_doorbell(IWL_MGMT_QUEUE);
+            let scd_en_after_doorbell = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            log::info!(
+                "iwlwifi: SCD_EN_CTRL after DQA doorbell scd_en={:#010x} q5_bit={}",
+                scd_en_after_doorbell,
+                if scd_en_after_doorbell & (1 << IWL_MGMT_QUEUE) != 0 {
+                    "SET"
+                } else {
+                    "CLEAR"
+                },
+            );
 
             // Diagnostic: dump q5 SCD state before authentication. Compare
             // with q0 to identify any missing activation condition.
