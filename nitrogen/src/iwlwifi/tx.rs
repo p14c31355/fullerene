@@ -11,6 +11,11 @@ use super::types::*;
 
 /// The legacy TFD stores the buffer length in bits 4..15 of `hi_n_len`.
 const TFD_LENGTH_MAX: usize = 0x0fff;
+/// Gen1 FH write-back region at the start of every TX command. Linux keeps
+/// this in a dedicated 64-byte-aligned buffer and exposes exactly 20 bytes as
+/// TB0; each Fullerene per-slot DMA buffer is page-aligned and can serve the
+/// same purpose in place.
+const IWL_FIRST_TB_SIZE: usize = 20;
 
 // Legacy 7265 management/data frames use the API-v6 TX command.  A 1 Mbps
 // CCK rate is valid for the 2.4 GHz management exchange used by this driver;
@@ -1961,7 +1966,7 @@ impl IwlWifiDevice {
             let traffic_queue = self.traffic_queue();
             let sequence = ((traffic_queue as u16) << 8) | (self.tx_data_head as u16 & 0xff);
             let rate_n_flags = self.tx_rate_n_flags();
-            let wire = Self::build_tx_command(&tx_frame, sequence, rate_n_flags);
+            let mut wire = Self::build_tx_command(&tx_frame, sequence, rate_n_flags);
             if tx_frame.len() >= 2 && (tx_frame[0] & 0x0c) >> 2 == 0 {
                 log::info!(
                     "iwlwifi: TX management frame subtype={} rate_n_flags={:#010x} band={}",
@@ -1980,14 +1985,39 @@ impl IwlWifiDevice {
                     as *mut TxDmaDesc
             };
             let buf = &mut self.tx_bufs[TX_QUEUE_SIZE + desc_idx];
+            let dma_addr = buf.dma_iova();
+            // Linux points the TX command's scratch write-back address into
+            // TB0. A zero address disables that contract and, together with
+            // a one-TB descriptor, leaves gen1 data queues unlike the
+            // transport format used by the 7265 firmware.
+            let scratch_dma = dma_addr + TX_COMMAND_HEADER_LEN as u64 + 8;
+            let tx = TX_COMMAND_HEADER_LEN;
+            wire[tx + 44..tx + 48].copy_from_slice(&(scratch_dma as u32).to_le_bytes());
+            wire[tx + 48] = ((scratch_dma >> 32) & 0x0f) as u8;
+            if wire.len() > MAX_FRAME_SIZE {
+                continue;
+            }
             buf.write_from(&wire);
 
-            let dma_addr = buf.dma_iova();
+            let mac_header_len = Self::tx_mac_header_len(&tx_frame);
+            let tb1_unaligned = TX_FRAME_OFFSET + mac_header_len - IWL_FIRST_TB_SIZE;
+            let tb1_len = (tb1_unaligned + 3) & !3;
+            let tb2_len = tx_frame.len() - mac_header_len;
+            let tb2_offset = IWL_FIRST_TB_SIZE + tb1_len;
             let desc = unsafe { &mut *desc_ptr.add(desc_idx) };
             *desc = TxDmaDesc::zeroed();
-            desc.num_tbs = 1;
+            desc.num_tbs = if tb2_len == 0 { 2 } else { 3 };
             desc.tbs[0].addr_lo = dma_addr as u32;
-            desc.tbs[0].hi_n_len = ((wire.len() as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
+            desc.tbs[0].hi_n_len =
+                ((IWL_FIRST_TB_SIZE as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
+            let tb1_dma = dma_addr + IWL_FIRST_TB_SIZE as u64;
+            desc.tbs[1].addr_lo = tb1_dma as u32;
+            desc.tbs[1].hi_n_len = ((tb1_len as u16) << 4) | ((tb1_dma >> 32) as u16 & 0x0f);
+            if tb2_len != 0 {
+                let tb2_dma = dma_addr + tb2_offset as u64;
+                desc.tbs[2].addr_lo = tb2_dma as u32;
+                desc.tbs[2].hi_n_len = ((tb2_len as u16) << 4) | ((tb2_dma >> 32) as u16 & 0x0f);
+            }
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
             // The legacy SCD does not derive an MPDU's airtime length from
@@ -2013,12 +2043,17 @@ impl IwlWifiDevice {
             mmio::write_barrier();
             if tx_frame.len() >= 2 && (tx_frame[0] & 0x0c) >> 2 == 0 {
                 log::info!(
-                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} byte_count={} wrptr={} rptr={:#010x} status={:#010x}",
+                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} byte_count={} tbs={} tb0={} tb1={} tb2={} scratch={:#018x} wrptr={} rptr={:#010x} status={:#010x}",
                     traffic_queue,
                     desc_idx,
                     tx_frame.len(),
                     wire.len(),
                     byte_count,
+                    desc.num_tbs,
+                    IWL_FIRST_TB_SIZE,
+                    tb1_len,
+                    tb2_len,
+                    scratch_dma,
                     self.tx_data_head & 0xff,
                     self.read_prph(scd_queue_rdptr(traffic_queue)).unwrap_or(!0),
                     self.read_prph(scd_queue_status(traffic_queue))
@@ -2078,7 +2113,10 @@ impl IwlWifiDevice {
     /// `iwl_mvm_set_tx_cmd()`/`iwl_mvm_set_tx_cmd_rate()` defaults for the
     /// management and non-QoS frames used by this driver.
     fn build_tx_command(frame: &[u8], sequence: u16, rate_n_flags: u32) -> Vec<u8> {
-        let mut wire = vec![0u8; TX_FRAME_OFFSET + frame.len()];
+        let mac_header_len = Self::tx_mac_header_len(frame);
+        let tb1_unaligned = TX_FRAME_OFFSET + mac_header_len - IWL_FIRST_TB_SIZE;
+        let mac_padding = ((tb1_unaligned + 3) & !3) - tb1_unaligned;
+        let mut wire = vec![0u8; TX_FRAME_OFFSET + frame.len() + mac_padding];
 
         // HcmdHeader.
         wire[0] = TX_CMD_OPCODE;
@@ -2088,18 +2126,37 @@ impl IwlWifiDevice {
         // API-v6 iwl_tx_cmd, relative to the command header.
         let tx = TX_COMMAND_HEADER_LEN;
         wire[tx..tx + 2].copy_from_slice(&(frame.len() as u16).to_le_bytes());
-        // TX_CMD_FLG_ACK | TX_CMD_FLG_SEQ_CTL | TX_CMD_FLG_BT_DIS.
+        // TX_CMD_FLG_ACK | TX_CMD_FLG_SEQ_CTL plus Linux's BT coexistence
+        // priority for 2.4 GHz management traffic.
         // Authentication/association are non-QoS management frames. Keep
         // the sequence-control bit enabled because the frame builders leave
         // sequence assignment to the firmware, as mac80211 does for these
-        // requests. Disable BT arbitration for this low-rate 2.4 GHz
-        // exchange so a SCO activity cannot defer the authentication frame.
+        // requests. Authentication/association management frames use BT
+        // priority 3; ordinary unicast data remains at priority 0.
         const TX_CMD_FLG_ACK: u32 = 1 << 3;
-        const TX_CMD_FLG_BT_DIS: u32 = 1 << 12;
+        const TX_CMD_FLG_BT_PRIO_POS: u32 = 11;
         const TX_CMD_FLG_SEQ_CTL: u32 = 1 << 13;
-        wire[tx + 4..tx + 8].copy_from_slice(
-            &(TX_CMD_FLG_ACK | TX_CMD_FLG_BT_DIS | TX_CMD_FLG_SEQ_CTL).to_le_bytes(),
-        );
+        const TX_CMD_FLG_MH_PAD: u32 = 1 << 20;
+        const TX_CMD_OFFLD_PAD: u16 = 1 << 13;
+        let frame_type = (frame[0] & 0x0c) >> 2;
+        let subtype = (frame[0] >> 4) & 0x0f;
+        let bt_priority = if frame_type == 0 && subtype != 10 {
+            3
+        } else {
+            0
+        };
+        let tx_flags = TX_CMD_FLG_ACK
+            | TX_CMD_FLG_SEQ_CTL
+            | (bt_priority << TX_CMD_FLG_BT_PRIO_POS)
+            | if mac_padding != 0 {
+                TX_CMD_FLG_MH_PAD
+            } else {
+                0
+            };
+        if mac_padding != 0 {
+            wire[tx + 2..tx + 4].copy_from_slice(&TX_CMD_OFFLD_PAD.to_le_bytes());
+        }
+        wire[tx + 4..tx + 8].copy_from_slice(&tx_flags.to_le_bytes());
         wire[tx + 12..tx + 16].copy_from_slice(&rate_n_flags.to_le_bytes());
         // sta_id=0. Protected frames use CCMP and the PTK installed in
         // firmware key-table slot 0.
@@ -2124,8 +2181,35 @@ impl IwlWifiDevice {
         };
         wire[tx + 52..tx + 54].copy_from_slice(&pm_timeout.to_le_bytes());
 
-        wire[TX_FRAME_OFFSET..].copy_from_slice(frame);
+        wire[TX_FRAME_OFFSET..TX_FRAME_OFFSET + mac_header_len]
+            .copy_from_slice(&frame[..mac_header_len]);
+        wire[TX_FRAME_OFFSET + mac_header_len + mac_padding..]
+            .copy_from_slice(&frame[mac_header_len..]);
         wire
+    }
+
+    /// Header length needed for Linux's gen1 TB1/MAC-padding split. The
+    /// current TX path emits management and three-address data frames, while
+    /// retaining the standard QoS/four-address/HT-control extensions.
+    fn tx_mac_header_len(frame: &[u8]) -> usize {
+        if frame.len() < 24 {
+            return frame.len();
+        }
+        let frame_type = (frame[0] & 0x0c) >> 2;
+        if frame_type != 2 {
+            return 24;
+        }
+        let mut len = 24;
+        if frame[1] & 0x03 == 0x03 {
+            len += 6;
+        }
+        if frame[0] & 0x80 != 0 {
+            len += 2;
+            if frame[1] & 0x80 != 0 {
+                len += 4;
+            }
+        }
+        len.min(frame.len())
     }
 
     /// Return whether the monotonic hardware TX tail has reached or passed the
@@ -2196,7 +2280,7 @@ mod tests {
         );
         assert_eq!(
             u32::from_le_bytes(wire[tx + 4..tx + 8].try_into().unwrap()),
-            (1 << 3) | (1 << 12) | (1 << 13)
+            (1 << 3) | (3 << 11) | (1 << 13)
         );
         assert_eq!(wire[tx + 16], 0); // AP station ID
         assert_eq!(wire[tx + 49], 60); // RTS retries
@@ -2207,6 +2291,26 @@ mod tests {
             2 // PM_FRAME_MGMT for authentication
         );
         assert_eq!(&wire[TX_FRAME_OFFSET..], &frame);
+    }
+
+    #[test]
+    fn api_v6_tx_command_inserts_linux_qos_mac_padding() {
+        let mut frame = [0u8; 34];
+        frame[0] = 0x88; // QoS data
+        frame[1] = 0x01; // To DS, three-address header
+        frame[26..].copy_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x88, 0x8e]);
+
+        let wire = IwlWifiDevice::build_tx_command(&frame, 0x0500, TX_RATE_1M_CCK);
+        let tx = TX_COMMAND_HEADER_LEN;
+        let offload_assist = u16::from_le_bytes(wire[tx + 2..tx + 4].try_into().unwrap());
+        let flags = u32::from_le_bytes(wire[tx + 4..tx + 8].try_into().unwrap());
+
+        assert_eq!(wire.len(), TX_FRAME_OFFSET + frame.len() + 2);
+        assert_ne!(offload_assist & (1 << 13), 0);
+        assert_ne!(flags & (1 << 20), 0);
+        assert_eq!(&wire[TX_FRAME_OFFSET..TX_FRAME_OFFSET + 26], &frame[..26]);
+        assert_eq!(&wire[TX_FRAME_OFFSET + 26..TX_FRAME_OFFSET + 28], &[0, 0]);
+        assert_eq!(&wire[TX_FRAME_OFFSET + 28..], &frame[26..]);
     }
 
     #[test]
@@ -2248,10 +2352,37 @@ mod tests {
             &device.tx_bufs[TX_QUEUE_SIZE].as_slice()[2..4],
             &0x0500u16.to_le_bytes()
         );
-        let management_desc = unsafe {
-            &*((device.tx_dma_ring.virt() + TX_MGMT_TFD_RING_OFFSET) as *const TxDmaDesc)
+        let management_desc =
+            (device.tx_dma_ring.virt() + TX_MGMT_TFD_RING_OFFSET) as *const TxDmaDesc;
+        let (num_tbs, tb0, tb1, tb2) = unsafe {
+            (
+                core::ptr::read_unaligned(core::ptr::addr_of!((*management_desc).num_tbs)),
+                core::ptr::read_unaligned(core::ptr::addr_of!((*management_desc).tbs[0])),
+                core::ptr::read_unaligned(core::ptr::addr_of!((*management_desc).tbs[1])),
+                core::ptr::read_unaligned(core::ptr::addr_of!((*management_desc).tbs[2])),
+            )
         };
-        assert_eq!(management_desc.num_tbs, 1);
+        let data_dma = device.tx_bufs[TX_QUEUE_SIZE].dma_iova();
+        let tb0_addr = tb0.addr_lo;
+        let tb0_len = tb0.hi_n_len >> 4;
+        let tb1_addr = tb1.addr_lo;
+        let tb1_len = tb1.hi_n_len >> 4;
+        let tb2_addr = tb2.addr_lo;
+        let tb2_len = tb2.hi_n_len >> 4;
+        assert_eq!(num_tbs, 3);
+        assert_eq!(tb0_addr, data_dma as u32);
+        assert_eq!(tb0_len, 20);
+        assert_eq!(tb1_addr, (data_dma + 20) as u32);
+        assert_eq!(tb1_len, 64);
+        assert_eq!(tb2_addr, (data_dma + 84) as u32);
+        assert_eq!(tb2_len, 6);
+        let scratch = &device.tx_bufs[TX_QUEUE_SIZE].as_slice()
+            [TX_COMMAND_HEADER_LEN + 44..TX_COMMAND_HEADER_LEN + 49];
+        assert_eq!(
+            u32::from_le_bytes(scratch[..4].try_into().unwrap()),
+            (data_dma + 12) as u32
+        );
+        assert_eq!(scratch[4], ((data_dma + 12) >> 32) as u8 & 0x0f);
         let byte_count_base =
             device.tx_dma_ring.virt() + TX_SCD_BC_OFFSET + IWL_MGMT_QUEUE as usize * (256 + 64) * 2;
         let primary = unsafe { core::ptr::read_unaligned(byte_count_base as *const u16) };
