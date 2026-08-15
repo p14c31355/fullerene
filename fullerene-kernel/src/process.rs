@@ -8,7 +8,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use petroleum::mem_debug;
 use petroleum::page_table::{FrameAllocatorExt, PageTableHelper as _};
 use x86_64::structures::paging::{FrameAllocator as _, PageTableFlags};
@@ -21,6 +21,9 @@ use crate::syscall::{Handle, HandlePerms, KernelObject};
 
 /// Maximum number of processes managed by the system
 pub const MAX_PROCESSES: usize = 64;
+
+const NO_TERMINAL_CLOSE_REQUEST: u64 = u64::MAX;
+static TERMINAL_CLOSE_REQUEST: AtomicU64 = AtomicU64::new(NO_TERMINAL_CLOSE_REQUEST);
 
 const NATIVE_USER_STACK_TOP: u64 = 0x0000_7fff_fffe_f000;
 const NATIVE_USER_STACK_SIZE: usize = 64 * 1024;
@@ -1006,6 +1009,31 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 
     if let Some(parent_id) = parent_to_unblock {
         unblock_process(parent_id);
+    }
+}
+
+/// Queue termination of the process that owns a process-terminal window.
+///
+/// The callback is invoked while Solvent holds its runtime lock, so it must
+/// not enter the scheduler synchronously.  The scheduler consumes the
+/// request after the GUI tick has released that lock.
+pub fn request_process_termination_for_terminal(terminal_id: u64) {
+    TERMINAL_CLOSE_REQUEST.store(terminal_id, Ordering::Release);
+}
+
+/// Apply a terminal-close request from scheduler context.
+pub fn service_terminal_close_request() {
+    let terminal_id = TERMINAL_CLOSE_REQUEST.swap(NO_TERMINAL_CLOSE_REQUEST, Ordering::Acquire);
+    if terminal_id == NO_TERMINAL_CLOSE_REQUEST {
+        return;
+    }
+    let owner = SCHEDULER.with_list(|list| {
+        list.iter()
+            .find(|(_, process)| process.terminal_owner && process.terminal_id == Some(terminal_id))
+            .map(|(pid, _)| *pid)
+    });
+    if let Some(pid) = owner {
+        terminate_process(pid, -1);
     }
 }
 

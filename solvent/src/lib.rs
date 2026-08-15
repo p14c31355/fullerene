@@ -78,6 +78,7 @@ mod window_api;
 pub use callbacks::{
     DeviceEntry, InstallerDevice, InstallerProgress, PowerAction, ProcessEntry, ProcessStateKind,
     SolventCallbacks, VfsEntry, VfsHandle, exec_shell_command, get_mounted_drives, launch_shell,
+    notify_process_terminal_closed,
 };
 pub use editor_bridge::editor_handle_key;
 pub use event_loop::{

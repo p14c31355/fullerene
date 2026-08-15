@@ -966,6 +966,7 @@ fn perform_init_step() {
                 connection_watchdog_ticks: 0,
                 auth_tx_plan: AuthTxPlan::DqaFirmware,
                 auth_tx_queue_override: None,
+                auth_tx_acknowledged: None,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
                 tx_dma_ring: tx_dma,
@@ -1973,6 +1974,7 @@ impl IwlWifiDevice {
     fn send_authentication_frame(&mut self, bssid: [u8; 6]) -> Result<(), crate::DriverError> {
         self.iwl_state = IwlState::AuthSent;
         self.connection_watchdog_ticks = 0;
+        self.auth_tx_acknowledged = None;
         let auth_frame = wifi::build_auth_frame(bssid, self.mac, 1);
         self.send_raw_80211_frame(&auth_frame)?;
         log::info!(
@@ -2030,6 +2032,7 @@ impl IwlWifiDevice {
         self.auth_tx_plan = plan;
         self.wifi_conn.status = bonder::wifi::WifiStatus::Authenticating;
         self.wifi_conn.error_msg = None;
+        self.auth_tx_acknowledged = None;
         self.send_authentication_frame(bssid)
     }
 
@@ -2037,7 +2040,7 @@ impl IwlWifiDevice {
     /// already advanced is not retried here: that indicates TX succeeded and
     /// the missing evidence is on the RX/channel side.
     pub(super) fn advance_authentication_plan(&mut self) -> bool {
-        if self.auth_tx_fetch_stalled() != Some(true) {
+        if self.auth_tx_fetch_stalled() != Some(true) && self.auth_tx_acknowledged != Some(false) {
             return false;
         }
         let Some(next) = self.auth_tx_plan.next() else {
@@ -2101,6 +2104,7 @@ impl IwlWifiDevice {
         self.gateway = [0; 4];
         self.dns_server = [0; 4];
         self.connection_watchdog_ticks = 0;
+        self.auth_tx_acknowledged = None;
 
         if let Some(password) = password {
             self.wpa.init(password, ssid.as_str(), ap.bssid, self.mac);
@@ -2414,6 +2418,7 @@ impl IwlWifiDevice {
         self.connection_watchdog_ticks = 0;
         self.auth_tx_plan = AuthTxPlan::DqaFirmware;
         self.auth_tx_queue_override = None;
+        self.auth_tx_acknowledged = None;
         log::info!("iwlwifi: disconnected");
     }
 

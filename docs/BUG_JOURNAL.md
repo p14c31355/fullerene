@@ -3,6 +3,50 @@
 This document records non-obvious software bugs encountered during
 development, their root cause analysis, and the fix applied.
 
+## Entry 012 — 2026-08-16 shell window close left launchd occupied
+
+### Symptoms
+
+Closing the shell from its desktop title bar removed the visible window, but
+opening Shell again from a desktop icon did nothing. The shell process and its
+process-terminal record were still alive, so launchd correctly believed its
+single shell slot was occupied.
+
+### Root cause and fix
+
+The title-bar path called `WindowManager::close_window` directly and bypassed
+the Solvent process-terminal cleanup path. Desktop mouse handling now returns
+the closed window identity. Solvent removes a matching process-terminal record
+and queues a kernel callback; the scheduler consumes that request after the
+runtime lock is released and terminates the owning process. This preserves the
+existing scheduler ownership model and makes the launchd slot reusable.
+
+Lattice and workspace tests cover the close notification path. Physical/QEMU
+interactive shell reopening should still be included in the next runtime smoke
+run.
+
+## Entry 013 — 2026-08-16 iwlwifi management TX could strand Authenticating
+
+### Symptoms
+
+On legacy iwlwifi hardware, the UI could remain in `Authenticating` when the
+management-frame descriptor was rejected or its association-frame submission
+failed. The watchdog only considered a host-side queue fetch stall, and one
+association send result was discarded.
+
+### Root cause and fix
+
+The RX path already receives the legacy `REPLY_TX` status, but it did not retain
+that result for authentication/association management frames. The connection
+context now records acknowledged/failed TX state, uses an explicit failed TX
+to trigger the existing finite queue fallback plan, and transitions a failed
+association submission to `Error`. A consumed TX with no AP response still
+terminates through the bounded watchdog rather than retrying indefinitely.
+
+All 178 Nitrogen library tests pass, including iwlwifi replay tests. The
+affected adapter and AP still require physical validation because QEMU does
+not emulate this Intel radio.
+
 ## Entry 009 — 2026-07-30 workspace audit fixes
 
 A full-workspace bug and redundancy sweep produced the following fixes. Each

@@ -26,6 +26,7 @@ pub struct InstallerProgress {
     pub total_bytes: u64,
 }
 pub type InstallerRunCallback = fn(&str) -> Result<InstallerProgress, String>;
+pub type ProcessTerminalClosedCallback = fn(u64);
 
 /// Requested machine power transition from the desktop UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,8 @@ pub enum PowerAction {
 pub struct SolventCallbacks {
     pub shell_cmd: Option<fn(&str) -> String>,
     pub launch_shell: Option<fn()>,
+    /// Called after the user closes a process-owned terminal window.
+    pub process_terminal_closed: Option<ProcessTerminalClosedCallback>,
     pub power_control: Option<fn(PowerAction)>,
     pub run_wasm: Option<RunWasmCallback>,
     pub heap_extend: Option<fn(usize) -> Result<(), ()>>,
@@ -71,6 +74,7 @@ impl SolventCallbacks {
         Self {
             shell_cmd: None,
             launch_shell: None,
+            process_terminal_closed: None,
             power_control: None,
             run_wasm: None,
             heap_extend: None,
@@ -117,6 +121,18 @@ pub fn launch_shell() {
     let callbacks = crate::RUNTIME_CONTEXT.callback_snapshot();
     if let Some(launch_shell) = callbacks.launch_shell {
         launch_shell();
+    }
+}
+
+/// Notify the kernel that a user closed a process-owned terminal window.
+/// Window destruction and process termination stay separate so the GUI never
+/// needs to take the scheduler lock while it owns the runtime lock.
+pub fn notify_process_terminal_closed(window_id: u64) {
+    if let Some(callback) = crate::RUNTIME_CONTEXT
+        .callback_snapshot()
+        .process_terminal_closed
+    {
+        callback(window_id);
     }
 }
 

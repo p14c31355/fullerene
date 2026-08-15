@@ -129,6 +129,10 @@ pub struct IwlWifiDevice {
     /// Optional queue override used after the static-queue fallback. Normal
     /// traffic follows the firmware capability-derived queue selection.
     pub auth_tx_queue_override: Option<u32>,
+    /// Last firmware result for the authentication/association management TX.
+    /// `Some(false)` means the descriptor was consumed but the AP did not ACK
+    /// it, which needs a queue fallback rather than an apparent hang.
+    pub auth_tx_acknowledged: Option<bool>,
 
     /// TX/RX queues.
     pub tx_queue: VecDeque<Vec<u8>>,
@@ -676,6 +680,7 @@ impl IwlWifiDevice {
             connection_watchdog_ticks: 0,
             auth_tx_plan: AuthTxPlan::DqaFirmware,
             auth_tx_queue_override: None,
+            auth_tx_acknowledged: None,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -918,6 +923,7 @@ impl IwlWifiDevice {
             connection_watchdog_ticks: 0,
             auth_tx_plan: AuthTxPlan::DqaFirmware,
             auth_tx_queue_override: None,
+            auth_tx_acknowledged: None,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -2209,6 +2215,7 @@ pub(super) mod test_support {
                 connection_watchdog_ticks: 0,
                 auth_tx_plan: AuthTxPlan::DqaFirmware,
                 auth_tx_queue_override: None,
+                auth_tx_acknowledged: None,
                 tx_queue: VecDeque::new(),
                 rx_queue: VecDeque::new(),
                 tx_dma_ring,

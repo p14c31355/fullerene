@@ -1,6 +1,6 @@
 # Fullerene Project Rules
 
-## Current implementation snapshot (2026-07-30)
+## Current implementation snapshot (2026-08-16)
 
 The repository currently implements the context-oriented architecture
 described below across the root workspace members. The main runtime path is:
@@ -65,6 +65,21 @@ The release profile keeps aggressive optimization, single-unit LTO, and abort
 panics, and strips the symbol table from shipped binaries. Debug builds retain
 symbols for diagnosis; this changes artifact metadata, not runtime code paths.
 
+The current audit keeps window and process ownership on their existing side of
+the boundary. When a process-terminal window is closed, Lattice reports its
+window identity, Solvent removes the terminal endpoint, and the kernel queues
+termination of the owning process for scheduler context after the runtime lock
+is released. This makes launchd's shell slot reusable without allowing a GUI
+callback to re-enter the runtime lock.
+
+For legacy iwlwifi, the authentication exchange now records the firmware TX
+result for management frames. A failed management TX can advance the bounded
+queue plan, while a successfully consumed TX with no AP response still reaches
+the finite watchdog error path. Association-frame transmission errors are no
+longer discarded. The implementation is covered by host replay/unit tests; AP
+authentication on the affected physical adapter remains a required hardware
+validation step.
+
 A 2026-07-30 redundancy and correctness audit reduced logic LOC without
 changing runtime contracts: repetitive command-serialisation and font/colour
 tables became table-driven `const` arrays and a shared `as_bytes` helper
@@ -76,6 +91,15 @@ and unchecked boot-path arithmetic. The `assembly.rs` hand-coded boot
 transitions remain `asm!` because no safe Rust equivalent exists for the
 CR3/GDT/stack handoff; they are already encapsulated behind safe Rust entry
 points per section 6.
+
+The 2026-08-16 pass also uses derived defaults, slice filling, iterator search,
+range predicates, and saturating arithmetic where those forms express the same
+logic directly. The workspace gate is warning-free under
+`cargo check --workspace --all-targets`; the retained benchmark example
+`fullerene-kernel/examples/native_ipc_rate.rs` continues to exercise the native
+IPC copy path. The boot assembly remains intentionally unchanged: its CR3/GDT
+and stack handoff cannot be represented by safe Rust and is already isolated in
+Petroleum's low-level entry boundary.
 
 ## 1. Overall Philosophy (Highest Priority)
 

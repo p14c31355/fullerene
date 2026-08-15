@@ -561,8 +561,21 @@ impl IwlWifiDevice {
                                 &ap_ssid,
                                 self.wpa_required,
                             );
-                            let _ = self.send_raw_80211_frame(&assoc);
-                            log::info!("iwlwifi: auth successful, associating");
+                            self.auth_tx_acknowledged = None;
+                            if let Err(error) = self.send_raw_80211_frame(&assoc) {
+                                self.iwl_state = IwlState::Disconnected;
+                                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                                self.wifi_conn.error_msg = Some(alloc::format!(
+                                    "association frame transmission failed: {:?}",
+                                    error
+                                ));
+                                log::warn!(
+                                    "iwlwifi: failed to send association frame: {:?}",
+                                    error
+                                );
+                            } else {
+                                log::info!("iwlwifi: auth successful, associating");
+                            }
                         } else {
                             self.iwl_state = IwlState::Disconnected;
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
@@ -1512,6 +1525,12 @@ impl IwlWifiDevice {
             if let Some(response) = decode_legacy_tx_response(payload) {
                 let status = response.status & TX_STATUS_MSK;
                 let acknowledged = status == TX_STATUS_SUCCESS || status == TX_STATUS_DIRECT_DONE;
+                let frame_control = response.frame_control as u8;
+                if matches!(frame_control & 0xFC, 0xB0 | 0x00)
+                    && matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent)
+                {
+                    self.auth_tx_acknowledged = Some(acknowledged);
+                }
                 log::info!(
                     "iwlwifi: TX response seq=0x{:04x} fc=0x{:04x} frames={} ack={} status=0x{:02x} retries={} rts_failures={} rate={:#010x} airtime_us={}",
                     sequence,
