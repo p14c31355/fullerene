@@ -237,6 +237,20 @@ impl IwlWifiDevice {
         Ok(())
     }
 
+    /// Reassert the transport-wide scheduler mode after firmware ALIVE.
+    ///
+    /// q0 is also forced active through `SCD_EN_CTRL`, while dynamically
+    /// configured DQA queues rely on auto-active mode. Preserve any unrelated
+    /// firmware-owned bits, matching Linux's pair of set-bit operations.
+    fn ensure_scd_auto_active_after_alive(&mut self) -> Result<(), crate::DriverError> {
+        let scd_gp_ctrl = self
+            .read_prph(SCD_GP_CTRL)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        let required = SCD_GP_CTRL_AUTO_ACTIVE_MODE | SCD_GP_CTRL_ENABLE_31_QUEUES;
+        self.write_prph(SCD_GP_CTRL, scd_gp_ctrl | required);
+        Ok(())
+    }
+
     /// Start the DMA rings and firmware-owned scheduler after ALIVE.
     ///
     /// The inert Linux-compatible foundation is already present. Keep SCD
@@ -266,6 +280,13 @@ impl IwlWifiDevice {
         // scheduler context/active FIFO setup after firmware alive.
         self.write_prph(SCD_TXFACT, 0);
         self.write_prph(SCD_EN_CTRL, 0);
+        // Linux sets these transport-wide scheduler bits during TX init.
+        // They are especially important for DQA queues: q0 is also forced
+        // active through SCD_EN_CTRL, while dynamically configured q5 relies
+        // on auto-active mode after SCD_QUEUE_CFG. The CPU/firmware reset may
+        // discard the pre-ALIVE write, so safely reassert the bits now that a
+        // valid ALIVE notification has established PRPH access.
+        self.ensure_scd_auto_active_after_alive()?;
         let scd_base = self.read_prph(SCD_SRAM_BASE_ADDR);
         if let Some(scd_base) = scd_base {
             if self.alive_scd_base_addr != 0 && self.alive_scd_base_addr != scd_base {
@@ -368,8 +389,9 @@ impl IwlWifiDevice {
         let scd_status = self.read_prph(scd_queue_status(command_queue));
         let scd_active = self.read_prph(SCD_EN_CTRL);
         let scd_chainext = self.read_prph(SCD_CHAINEXT_EN);
+        let scd_gp_ctrl = self.read_prph(SCD_GP_CTRL);
         log::info!(
-            "iwlwifi: legacy TX command queue configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} aux_q={} aux_tfd={:#018x} aux_active=false kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
+            "iwlwifi: legacy TX command queue configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} aux_q={} aux_tfd={:#018x} aux_active=false kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} scd_en={:#010x} scd_chainext={:#010x} scd_gp_ctrl={:#010x}",
             command_queue,
             SCD_QUEUE_STTS_FIFO_COMMAND,
             ring_phys,
@@ -381,6 +403,7 @@ impl IwlWifiDevice {
             scd_status.unwrap_or(!0),
             scd_active.unwrap_or(!0),
             scd_chainext.unwrap_or(!0),
+            scd_gp_ctrl.unwrap_or(!0),
         );
         crate::debug::print("iwlwifi", "dma.after_alive.done");
         Ok(())
@@ -428,12 +451,22 @@ impl IwlWifiDevice {
             return Err(crate::DriverError::InvalidArgument);
         }
         self.wake_for_hcmd()?;
+        // Linux republishes every queue's CBBC address in
+        // iwl_trans_pcie_tx_reset(). The management queue is dormant until
+        // connection setup, so publish its ring again immediately before its
+        // first DQA write pointer in case firmware reset discarded the inert
+        // pre-ALIVE value.
+        let queue_phys = self.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(queue) as u64;
+        let cbbc = (queue_phys >> 8) as u32;
+        self.write_mmio32(fh_mem_cbbc_queue(queue), cbbc);
         self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
         mmio::write_barrier();
         log::info!(
-            "iwlwifi: DQA queue published: queue={} tfd={:#018x}",
+            "iwlwifi: DQA queue published: queue={} tfd={:#018x} cbbc={:#010x} readback={:#010x}",
             queue,
-            self.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(queue) as u64,
+            queue_phys,
+            cbbc,
+            self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0),
         );
         Ok(())
     }
@@ -942,6 +975,12 @@ impl IwlWifiDevice {
                             self.release_mac_access();
                             return Err(crate::DriverError::Protocol);
                         }
+                    }
+                    if label == "CONNECT_SCD_QUEUE_CFG" {
+                        log::info!(
+                            "iwlwifi: DQA queue configuration response payload={}",
+                            HexBytes(&payload),
+                        );
                     }
                     self.release_mac_access_if_tx_idle();
                     log::info!(
@@ -2069,10 +2108,11 @@ impl IwlWifiDevice {
             // The legacy SCD does not derive an MPDU's airtime length from
             // the TFD. Linux publishes a separate byte-count entry before
             // ringing the queue doorbell; a zero entry leaves a valid TFD
-            // permanently unfetched. The table records the 802.11 payload
-            // plus CRC/delimiter and, for CCMP, the firmware-appended MIC.
+            // permanently unfetched. MVM configures the table in DWORD mode.
+            // It records the rounded DWORD count for the 802.11 payload plus
+            // CRC/delimiter and, for CCMP, the firmware-appended MIC.
             let sec_ctl = wire[TX_COMMAND_HEADER_LEN + 17];
-            let byte_count = self.update_scd_byte_count(
+            let byte_count_entry = self.update_scd_byte_count(
                 traffic_queue,
                 desc_idx,
                 tx_frame.len() as u16,
@@ -2088,22 +2128,43 @@ impl IwlWifiDevice {
             );
             mmio::write_barrier();
             if tx_frame.len() >= 2 && (tx_frame[0] & 0x0c) >> 2 == 0 {
+                let scd_rptr = self.read_prph(scd_queue_rdptr(traffic_queue)).unwrap_or(!0);
+                let scd_wrptr = self.read_prph(scd_queue_wrptr(traffic_queue)).unwrap_or(!0);
+                let scd_status = self
+                    .read_prph(scd_queue_status(traffic_queue))
+                    .unwrap_or(!0);
+                let fifo = scd_status & 0x7;
+                let byte_count_addr = self.tx_dma_ring.dma_iova()
+                    + TX_SCD_BC_OFFSET as u64
+                    + traffic_queue as u64 * (256 + 64) * 2
+                    + desc_idx as u64 * 2;
                 log::info!(
-                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} byte_count={} tbs={} tb0={} tb1={} tb2={} scratch={:#018x} wrptr={} rptr={:#010x} status={:#010x}",
+                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} bc_dwords={} bc_addr={:#018x} tbs={} tb0={} tb1={} tb2={} scratch={:#018x} sw_wrptr={} hw_wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} scd_dram={:#010x} tx_status={:#010x} tx_error={:#010x}",
                     traffic_queue,
                     desc_idx,
                     tx_frame.len(),
                     wire.len(),
-                    byte_count,
+                    byte_count_entry & 0x0fff,
+                    byte_count_addr,
                     desc.num_tbs,
                     IWL_FIRST_TB_SIZE,
                     tb1_len,
                     tb2_len,
                     scratch_dma,
                     self.tx_data_head & 0xff,
-                    self.read_prph(scd_queue_rdptr(traffic_queue)).unwrap_or(!0),
-                    self.read_prph(scd_queue_status(traffic_queue))
+                    scd_wrptr & 0xff,
+                    scd_rptr,
+                    scd_status,
+                    fifo,
+                    self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + fifo * (0x20 / 4))
                         .unwrap_or(!0),
+                    self.safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + fifo * (0x20 / 4))
+                        .unwrap_or(!0),
+                    self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + fifo * (0x20 / 4))
+                        .unwrap_or(!0),
+                    self.read_prph(SCD_DRAM_BASE_ADDR).unwrap_or(!0),
+                    self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
+                    self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
                 );
             }
         }
@@ -2112,6 +2173,9 @@ impl IwlWifiDevice {
 
     /// Publish one entry in Linux's `iwlagn_scd_bc_tbl`, including the
     /// duplicate window used when the 8-bit TFD index wraps.
+    ///
+    /// MVM unconditionally sets `trans_cfg.bc_table_dword = true`, so the
+    /// low 12 bits are a rounded-up DWORD count rather than a byte count.
     fn update_scd_byte_count(
         &mut self,
         queue: u32,
@@ -2130,6 +2194,7 @@ impl IwlWifiDevice {
         if sec_ctl & TX_CMD_SEC_MSK == TX_CMD_SEC_CCM {
             length = length.saturating_add(8); // CCMP MIC
         }
+        length = length.saturating_add(3) / 4;
         debug_assert!(length <= 0x0fff);
         debug_assert!(queue < 32);
         debug_assert!(write_ptr < TFD_QUEUE_SIZE_MAX);
@@ -2488,9 +2553,46 @@ mod tests {
         let primary = unsafe { core::ptr::read_unaligned(byte_count_base as *const u16) };
         let duplicate =
             unsafe { core::ptr::read_unaligned((byte_count_base + 256 * 2) as *const u16) };
-        // 30-byte management MPDU + four-byte CRC + four-byte delimiter.
-        assert_eq!(u16::from_le(primary), 38);
-        assert_eq!(u16::from_le(duplicate), 38);
+        // MVM's byte-count table is in DWORD mode: ceil((30 + 4 + 4) / 4).
+        assert_eq!(u16::from_le(primary), 10);
+        assert_eq!(u16::from_le(duplicate), 10);
+    }
+
+    #[test]
+    fn mvm_scd_byte_count_entries_are_rounded_dwords() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+
+        // 30-byte protected MPDU + CRC/delimiter + CCMP MIC = 46 bytes,
+        // rounded up to 12 DWORDs. The station ID occupies the high nibble.
+        let entry = device.update_scd_byte_count(IWL_MGMT_QUEUE, 7, 30, 3, 0x02);
+
+        assert_eq!(entry, 0x300c);
+        let queue_base =
+            device.tx_dma_ring.virt() + TX_SCD_BC_OFFSET + IWL_MGMT_QUEUE as usize * (256 + 64) * 2;
+        let primary = unsafe { core::ptr::read_unaligned((queue_base + 7 * 2) as *const u16) };
+        let duplicate =
+            unsafe { core::ptr::read_unaligned((queue_base + (256 + 7) * 2) as *const u16) };
+        assert_eq!(u16::from_le(primary), 0x300c);
+        assert_eq!(u16::from_le(duplicate), 0x300c);
+    }
+
+    #[test]
+    fn enabling_dqa_queue_republishes_its_cbbc_before_initial_wrptr() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.fw_dqa_supported = true;
+        device.write_mmio32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE), 0xdead_beef);
+
+        device.enable_dqa_tx_queue(IWL_MGMT_QUEUE).unwrap();
+
+        let queue_phys = device.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(IWL_MGMT_QUEUE) as u64;
+        assert_eq!(
+            device.safe_read32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE)),
+            Some((queue_phys >> 8) as u32)
+        );
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_WRPTR),
+            Some(IWL_MGMT_QUEUE << 8)
+        );
     }
 
     #[test]
@@ -2661,6 +2763,24 @@ mod tests {
         assert_eq!(
             device.safe_read32(HBUS_TARG_WRPTR),
             Some(IWL_CMD_QUEUE << 8)
+        );
+    }
+
+    #[test]
+    fn alive_reasserts_dqa_auto_active_without_clobbering_gp_control() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        let existing = 1 << 7;
+        device.write_mmio32(HBUS_TARG_PRPH_RDAT, existing);
+
+        device.ensure_scd_auto_active_after_alive().unwrap();
+
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_PRPH_WADDR),
+            Some(SCD_GP_CTRL | (3 << 24))
+        );
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_PRPH_WDAT),
+            Some(existing | SCD_GP_CTRL_AUTO_ACTIVE_MODE | SCD_GP_CTRL_ENABLE_31_QUEUES)
         );
     }
 

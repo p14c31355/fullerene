@@ -671,6 +671,15 @@ impl IwlWifiDevice {
                                 bonder::wifi::WifiStatus::Connected
                             };
                             self.wifi_conn.current_bssid = Some(bssid);
+                            log::info!(
+                                "iwlwifi: association accepted AID={} link_status={}",
+                                aid & 0x3fff,
+                                if self.wpa_required {
+                                    "Handshake"
+                                } else {
+                                    "Connected"
+                                },
+                            );
 
                             if !self.wpa_required {
                                 self.start_dhcp(aid);
@@ -809,6 +818,12 @@ impl IwlWifiDevice {
                                                         log::info!(
                                                             "iwlwifi: IP address assigned: {:?}",
                                                             self.ip_address
+                                                        );
+                                                        log::info!(
+                                                            "iwlwifi: network ready link_status=Connected ipv4={:?} gateway={:?} dns={:?}",
+                                                            self.ip_address,
+                                                            self.gateway,
+                                                            self.dns_server,
                                                         );
                                                     }
                                                     true
@@ -959,6 +974,78 @@ impl IwlWifiDevice {
                 );
                 self.process_tx_queue();
             }
+        }
+
+        // The first management TX log is emitted immediately after ringing
+        // q5, where an rptr of zero is expected.  Sample it again after the
+        // scheduler has had time to fetch the descriptor.  q0 is explicitly
+        // activated through SCD_EN_CTRL, but a DQA traffic queue relies on
+        // SCD_GP_CTRL auto-active mode, so include both controls here.
+        let management_pending = matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent);
+        if management_pending
+            && (self.connection_watchdog_ticks == 64 || self.connection_watchdog_ticks % 512 == 0)
+        {
+            let queue = self.traffic_queue();
+            let scd_status = self.read_prph(scd_queue_status(queue)).unwrap_or(!0);
+            let fifo = scd_status & 0x7;
+            let scd_en = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            let scd_gp = self.read_prph(SCD_GP_CTRL).unwrap_or(!0);
+            // SCD SRAM state: for DQA queues the firmware sets up the SCD
+            // context, queuechain, and aggr registers via SCD_QUEUE_CFG.
+            // Read them back to diagnose why the scheduler is not fetching
+            // q5 TFDs.  SCD_QUEUE_WRPTR confirms the doorbell reached the
+            // scheduler.  Context word 1 holds WIN_SIZE (bits 0-6) and
+            // FRAME_LIMIT (bits 16-22); a zero window prevents fetching.
+            let scd_wrptr = self.read_prph(scd_queue_wrptr(queue)).unwrap_or(!0);
+            let scd_rptr_hw = self.read_prph(scd_queue_rdptr(queue)).unwrap_or(!0);
+            let scd_chain = self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(!0);
+            let scd_aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
+            let scd_base = self.alive_scd_base_addr;
+            let ctx0 = self
+                .read_mem32(scd_base + scd_context_queue(queue))
+                .unwrap_or(!0);
+            let ctx1 = self
+                .read_mem32(scd_base + scd_context_queue(queue) + 4)
+                .unwrap_or(!0);
+            log::info!(
+                "iwlwifi: management TX scheduler poll tick={} phase={} queue={} sw_head={} sw_tail={} wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} scd_en={:#010x} scd_gp={:#010x} cbbc={:#010x} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} tx_status={:#010x} tx_error={:#010x}",
+                self.connection_watchdog_ticks,
+                if self.iwl_state == IwlState::AuthSent {
+                    "authentication"
+                } else {
+                    "association"
+                },
+                queue,
+                self.tx_data_head & (TX_QUEUE_SIZE - 1),
+                self.tx_data_tail & (TX_QUEUE_SIZE - 1),
+                self.safe_read32(HBUS_TARG_WRPTR).unwrap_or(!0),
+                polled_data_tx_tail.map(|tail| tail as u32).unwrap_or(!0),
+                scd_status,
+                fifo,
+                scd_en,
+                scd_gp,
+                self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
+                self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
+            );
+            log::info!(
+                "iwlwifi: SCD SRAM queue={} hw_wrptr={:#010x} hw_rdptr={:#010x} queuechain={:#010x} aggr_sel={:#010x} ctx0={:#010x} ctx1={:#010x} win_size={} frame_limit={}",
+                queue,
+                scd_wrptr & 0xff,
+                scd_rptr_hw & 0xff,
+                scd_chain,
+                scd_aggr,
+                ctx0,
+                ctx1,
+                ctx1 & 0x7f,
+                (ctx1 >> 16) & 0x7f,
+            );
         }
 
         let int_cause = match self.safe_read32(CSR_INT) {
@@ -1516,6 +1603,7 @@ impl IwlWifiDevice {
             return;
         }
         self.wifi_conn.status = bonder::wifi::WifiStatus::Connected;
+        log::info!("iwlwifi: WPA2 4-way handshake complete link_status=Connected");
         self.start_dhcp(0);
     }
 }

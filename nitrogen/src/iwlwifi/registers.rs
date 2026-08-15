@@ -244,6 +244,12 @@ pub const fn scd_trans_tbl_offset_queue(queue: u32) -> u32 {
     (SCD_TRANS_TBL_MEM_LOWER_BOUND + queue * 2) & 0xFFFC
 }
 pub const SCD_TRANS_TBL_MEM_UPPER_BOUND: u32 = scd_trans_tbl_offset_queue(IWL_NUM_OF_QUEUES);
+/// Linux's `SCD_QUEUE_WRPTR(x)`: the SCD's internal write-pointer register
+/// for each queue. The doorbell (`HBUS_TARG_WRPTR`) is the write path, but
+/// reading this register confirms the scheduler actually saw the doorbell.
+pub const fn scd_queue_wrptr(queue: u32) -> u32 {
+    SCD_BASE + 0x18 + queue * 4
+}
 pub const fn scd_queue_rdptr(queue: u32) -> u32 {
     SCD_BASE + 0x68 + queue * 4
 }
