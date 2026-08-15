@@ -2087,6 +2087,24 @@ impl IwlWifiDevice {
                 ));
                 return Err(error);
             }
+            // Diagnose whether the firmware activated q5 in SCD_EN_CTRL after
+            // processing SCD_QUEUE_CFG.  q1 (aux) ends up in SCD_EN_CTRL after
+            // its SCD_QUEUE_CFG during init; if q5 is missing here, the
+            // scheduler will not fetch its TFDs.
+            let scd_en_after_cfg = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            let scd_status_after_cfg = self
+                .read_prph(scd_queue_status(IWL_MGMT_QUEUE))
+                .unwrap_or(!0);
+            log::info!(
+                "iwlwifi: SCD_EN_CTRL after SCD_QUEUE_CFG scd_en={:#010x} q5_bit={} q5_status={:#010x}",
+                scd_en_after_cfg,
+                if scd_en_after_cfg & (1 << IWL_MGMT_QUEUE) != 0 {
+                    "SET"
+                } else {
+                    "CLEAR"
+                },
+                scd_status_after_cfg,
+            );
             let queue_update = AddStaCmdV7::peer_queue_update(0, 0, ap.bssid);
             if let Err(error) = self.send_hcmd_and_wait(
                 "CONNECT_ADD_STA_QUEUE",
@@ -2102,6 +2120,16 @@ impl IwlWifiDevice {
                 ));
                 return Err(error);
             }
+            let scd_en_after_sta = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            log::info!(
+                "iwlwifi: SCD_EN_CTRL after ADD_STA_QUEUE scd_en={:#010x} q5_bit={}",
+                scd_en_after_sta,
+                if scd_en_after_sta & (1 << IWL_MGMT_QUEUE) != 0 {
+                    "SET"
+                } else {
+                    "CLEAR"
+                },
+            );
         }
 
         // Linux asks firmware for a high-priority session-protection Time
