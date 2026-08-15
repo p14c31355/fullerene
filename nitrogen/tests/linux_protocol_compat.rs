@@ -19,9 +19,9 @@ use nitrogen::iwlwifi::registers::{
     tx_tfd_ring_offset,
 };
 use nitrogen::iwlwifi::types::{
-    AddStaCmdV7, BindingContextCmdV1, BtCoexConfigCmd, DqaEnableCmdV1, MacContextCmd,
+    AddStaCmdV7, AddStaKeyCmd, BindingContextCmdV1, BtCoexConfigCmd, DqaEnableCmdV1, MacContextCmd,
     MccUpdateCmdV1, MccUpdateCmdV2, PHY_BAND_5, PhyContextCmdV1, ScanChannelCfgLmac, ScanConfigV1,
-    ScanRequestCmd, ScdTxqCfgCmdV1,
+    ScanRequestCmd, ScdTxqCfgCmdV1, TimeEventCmdV2,
 };
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
@@ -82,6 +82,23 @@ fn linux_api29_bt_init_command_enables_the_v1_module_bits() {
     let command = BtCoexConfigCmd::network_default();
     assert_eq!(size_of::<BtCoexConfigCmd>(), 8);
     assert_eq!(bytes(&command), &[1, 0, 0, 0, 0x15, 0, 0, 0]);
+}
+
+#[test]
+fn linux_v414_association_commands_use_fixed_7265d_wire_layouts() {
+    let event = TimeEventCmdV2::association_protection(0);
+    assert_eq!(size_of::<TimeEventCmdV2>(), 36);
+    assert_eq!(&bytes(&event)[28..36], &[0x58, 0x02, 0, 0, 1, 0, 3, 8]);
+
+    let station = AddStaCmdV7::associated_peer(0, 0, 0x1234);
+    let station = bytes(&station);
+    assert_eq!(station[0], 1);
+    assert_eq!(&station[36..38], &0x1234u16.to_le_bytes());
+    assert_eq!(&station[40..44], &[0; 4]);
+
+    // The shipped 7265D-29 image lacks API-change bit 29, selecting
+    // ADD_MODIFY_STA_KEY_API_S_VER_1 rather than its 76-byte v2 successor.
+    assert_eq!(size_of::<AddStaKeyCmd>(), 64);
 }
 
 #[test]

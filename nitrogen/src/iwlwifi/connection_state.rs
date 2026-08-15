@@ -954,6 +954,7 @@ fn perform_init_step() {
                 wpa_keys_installed: false,
                 tx_pn: 1,
                 wpa_key_command_end: None,
+                wpa_key_pending_sequences: [None; 2],
                 pending_wpa_message4: None,
                 dhcp: None,
                 scan_results: Vec::new(),
@@ -961,6 +962,7 @@ fn perform_init_step() {
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
                 last_rx_phy_channel: 0,
+                last_rx_system_timestamp: 0,
                 connection_watchdog_ticks: 0,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
@@ -1901,12 +1903,25 @@ impl IwlWifiDevice {
                 rssi: -50,
                 security,
                 beacon_interval: beacon.beacon_interval,
+                beacon_timestamp: beacon.timestamp,
+                device_timestamp: self.last_rx_system_timestamp,
+                dtim_count: beacon.dtim_count,
+                dtim_period: beacon.dtim_period,
             };
-            if self
+            if let Some(existing) = self
                 .scan_results
-                .iter()
-                .any(|existing| existing.bssid == ap.bssid)
+                .iter_mut()
+                .find(|existing| existing.bssid == ap.bssid)
             {
+                // Active scan responses commonly omit TIM. Preserve the AP
+                // entry but enrich it when a later beacon supplies DTIM sync.
+                if existing.dtim_period == 0 && ap.dtim_period != 0 {
+                    existing.beacon_interval = ap.beacon_interval;
+                    existing.beacon_timestamp = ap.beacon_timestamp;
+                    existing.device_timestamp = ap.device_timestamp;
+                    existing.dtim_count = ap.dtim_count;
+                    existing.dtim_period = ap.dtim_period;
+                }
                 return;
             }
             log::info!(
@@ -1953,6 +1968,7 @@ impl IwlWifiDevice {
         self.wpa_required = password.is_some();
         self.wpa_keys_installed = false;
         self.wpa_key_command_end = None;
+        self.wpa_key_pending_sequences = [None; 2];
         self.pending_wpa_message4 = None;
         self.ip_address = [0; 4];
         self.subnet_mask = [0; 4];
@@ -2088,6 +2104,26 @@ impl IwlWifiDevice {
             }
         }
 
+        // mac80211's mgd_prepare_tx starts a high-priority time event before
+        // the first authentication frame. This prevents the firmware
+        // scheduler from taking the PHY off the selected BSS channel while
+        // the authentication/association exchange is in flight.
+        let session = TimeEventCmdV2::association_protection(0);
+        if let Err(error) = self.send_hcmd_and_wait(
+            "CONNECT_TIME_EVENT",
+            LegacyCmd::TimeEvent as u8,
+            GroupId::Legacy as u8,
+            unsafe { super::as_bytes(&session) },
+        ) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection session protection failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
         self.iwl_state = IwlState::AuthSent;
         let auth_frame = wifi::build_auth_frame(ap.bssid, self.mac, 1);
         if let Err(error) = self.send_raw_80211_frame(&auth_frame) {
@@ -2155,6 +2191,7 @@ impl IwlWifiDevice {
         self.wpa_required = false;
         self.wpa_keys_installed = false;
         self.wpa_key_command_end = None;
+        self.wpa_key_pending_sequences = [None; 2];
         self.pending_wpa_message4 = None;
         self.iwl_state = IwlState::Disconnected;
         self.connection_watchdog_ticks = 0;

@@ -480,9 +480,30 @@ impl IwlWifiDevice {
                                 .find(|ap| ap.bssid == bssid)
                                 .map(|ap| ap.channel)
                                 .unwrap_or(1);
+                            let ap_timing = self
+                                .scan_results
+                                .iter()
+                                .find(|ap| ap.bssid == bssid)
+                                .map(|ap| {
+                                    (
+                                        ap.beacon_interval,
+                                        ap.dtim_period,
+                                        ap.dtim_count,
+                                        ap.beacon_timestamp,
+                                        ap.device_timestamp,
+                                    )
+                                })
+                                .unwrap_or((100, 0, 0, 0, 0));
                             let mac_context =
                                 MacContextCmd::sta_for_bssid_on_channel(self.mac, bssid, channel)
-                                    .associated(aid);
+                                    .associated_with_ap(
+                                        aid,
+                                        ap_timing.0,
+                                        ap_timing.1,
+                                        ap_timing.2,
+                                        ap_timing.3,
+                                        ap_timing.4,
+                                    );
                             let mac_context_bytes = unsafe { super::as_bytes(&mac_context) };
                             if let Err(error) = self.send_hcmd(
                                 LegacyCmd::MacContext as u8,
@@ -498,6 +519,31 @@ impl IwlWifiDevice {
                                 ));
                                 log::warn!(
                                     "iwlwifi: failed to publish associated MAC context: {:?}",
+                                    error
+                                );
+                                return;
+                            }
+
+                            // Linux's AUTH -> ASSOC station transition also
+                            // updates the firmware peer entry with the AID.
+                            // Keep this behind MAC_CONTEXT on the same command
+                            // queue; synchronously polling RX from inside this
+                            // RX-buffer walk would re-enter ring accounting.
+                            let associated_peer = AddStaCmdV7::associated_peer(0, 0, aid);
+                            if let Err(error) = self.send_hcmd(
+                                LegacyCmd::AddSta as u8,
+                                GroupId::Legacy as u8,
+                                unsafe { super::as_bytes(&associated_peer) },
+                            ) {
+                                self.iwl_state = IwlState::Disconnected;
+                                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                                self.connection_watchdog_ticks = 0;
+                                self.wifi_conn.error_msg = Some(alloc::format!(
+                                    "associated peer station setup failed: {:?}",
+                                    error
+                                ));
+                                log::warn!(
+                                    "iwlwifi: failed to publish associated peer station: {:?}",
                                     error
                                 );
                                 return;
@@ -716,6 +762,7 @@ impl IwlWifiDevice {
         self.wpa.state = WpaState::Error;
         self.wpa_keys_installed = false;
         self.wpa_key_command_end = None;
+        self.wpa_key_pending_sequences = [None; 2];
         self.pending_wpa_message4 = None;
         self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
         self.wifi_conn.error_msg = Some(alloc::string::String::from(reason));
@@ -1140,6 +1187,36 @@ impl IwlWifiDevice {
         let group = data[5];
         let sequence = u16::from_le_bytes([data[6], data[7]]);
 
+        if command == LegacyCmd::AddStaKey as u8
+            && group == GroupId::Legacy as u8
+            && self
+                .wpa_key_pending_sequences
+                .iter()
+                .any(|pending| *pending == Some(sequence))
+        {
+            let payload = &data[8..packet_len];
+            let status = payload
+                .get(..4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
+            if status != Some(1) {
+                log::warn!(
+                    "iwlwifi: ADD_STA_KEY failed sequence=0x{:04x} status={:?} payload={}",
+                    sequence,
+                    status,
+                    payload.len(),
+                );
+                self.wpa_failed("firmware rejected a CCMP key");
+                return;
+            }
+            for pending in &mut self.wpa_key_pending_sequences {
+                if *pending == Some(sequence) {
+                    *pending = None;
+                }
+            }
+            log::info!("iwlwifi: ADD_STA_KEY accepted sequence=0x{:04x}", sequence,);
+            return;
+        }
+
         // Scan-complete notification.
         if command == LegacyCmd::ScanOffloadCompleteNotif as u8 {
             let payload = &data[8..packet_len];
@@ -1188,6 +1265,8 @@ impl IwlWifiDevice {
             let payload = &data[8..packet_len];
             // iwl_rx_phy_info: channel is at byte offset 22 (le16).
             if payload.len() >= 24 {
+                self.last_rx_system_timestamp =
+                    u32::from_le_bytes(payload[4..8].try_into().unwrap());
                 let channel = u16::from_le_bytes([payload[22], payload[23]]);
                 self.last_rx_phy_channel = channel;
             }
@@ -1252,6 +1331,9 @@ impl IwlWifiDevice {
         if !self.tx_tail_reached(command_end) {
             return;
         }
+        if self.wpa_key_pending_sequences.iter().any(Option::is_some) {
+            return;
+        }
 
         self.wpa_key_command_end = None;
         self.wpa_keys_installed = true;
@@ -1295,6 +1377,7 @@ impl IwlWifiDevice {
     /// have been consumed.  In tests, call `drain_tx()` first to advance
     /// `tx_tail`, then call this method.
     pub(super) fn finish_wpa_for_test(&mut self) {
+        self.wpa_key_pending_sequences = [None; 2];
         self.finish_pending_wpa_keys();
     }
 }
@@ -1302,6 +1385,21 @@ impl IwlWifiDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_sta_key_reply_clears_only_the_matching_pending_sequence() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.wpa_key_pending_sequences = [Some(0x090a), Some(0x090b)];
+        let mut reply = [0u8; 12];
+        reply[4] = LegacyCmd::AddStaKey as u8;
+        reply[5] = GroupId::Legacy as u8;
+        reply[6..8].copy_from_slice(&0x090au16.to_le_bytes());
+        reply[8..12].copy_from_slice(&1u32.to_le_bytes());
+
+        device.inject_rx_notification(&reply);
+
+        assert_eq!(device.wpa_key_pending_sequences, [None, Some(0x090b)]);
+    }
 
     #[test]
     fn runtime_hcmd_response_requires_the_submitted_q9_sequence() {

@@ -94,10 +94,11 @@ pub struct IwlWifiDevice {
     /// Next CCMP packet number for protected data frames.
     pub tx_pn: u64,
     /// End position of the queued pair/group key commands, awaiting TX-ring
-    /// consumption.  A command response path is not available in this
-    /// firmware interface, so the data path stays blocked until the ring has
-    /// consumed the commands at minimum.
+    /// consumption. The data path also waits for both firmware status replies.
     pub wpa_key_command_end: Option<usize>,
+    /// Exact command-queue sequences awaiting successful ADD_STA_KEY replies.
+    /// Message 4 remains blocked until both replies report ADD_STA_SUCCESS.
+    pub wpa_key_pending_sequences: [Option<u16>; 2],
     /// EAPOL Message 4 is held until the key commands have been consumed.
     pub pending_wpa_message4: Option<Vec<u8>>,
     pub dhcp: Option<DhcpClient>,
@@ -116,6 +117,8 @@ pub struct IwlWifiDevice {
     /// Parameter Set IE, so the channel can only be determined from this
     /// PHY metadata.
     pub last_rx_phy_channel: u16,
+    /// GP2/system timestamp paired with the last RX PHY notification.
+    pub last_rx_system_timestamp: u32,
     /// Service ticks since the current authentication/association request.
     /// This bounds a lost management-frame exchange instead of leaving the
     /// public connection status in Authenticating forever.
@@ -648,6 +651,7 @@ impl IwlWifiDevice {
             wpa_keys_installed: false,
             tx_pn: 1,
             wpa_key_command_end: None,
+            wpa_key_pending_sequences: [None; 2],
             pending_wpa_message4: None,
             dhcp: None,
             scan_results: Vec::new(),
@@ -655,6 +659,7 @@ impl IwlWifiDevice {
             scan_pending: false,
             scan_result_grace_ticks: 0,
             last_rx_phy_channel: 0,
+            last_rx_system_timestamp: 0,
             connection_watchdog_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
@@ -886,6 +891,7 @@ impl IwlWifiDevice {
             wpa_keys_installed: false,
             tx_pn: 1,
             wpa_key_command_end: None,
+            wpa_key_pending_sequences: [None; 2],
             pending_wpa_message4: None,
             dhcp: None,
             scan_results: Vec::new(),
@@ -893,6 +899,7 @@ impl IwlWifiDevice {
             scan_pending: false,
             scan_result_grace_ticks: 0,
             last_rx_phy_channel: 0,
+            last_rx_system_timestamp: 0,
             connection_watchdog_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
@@ -2171,6 +2178,7 @@ pub(super) mod test_support {
                 wpa_keys_installed: false,
                 tx_pn: 1,
                 wpa_key_command_end: None,
+                wpa_key_pending_sequences: [None; 2],
                 pending_wpa_message4: None,
                 dhcp: None,
                 scan_results: Vec::new(),
@@ -2178,6 +2186,7 @@ pub(super) mod test_support {
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
                 last_rx_phy_channel: 0,
+                last_rx_system_timestamp: 0,
                 connection_watchdog_ticks: 0,
                 tx_queue: VecDeque::new(),
                 rx_queue: VecDeque::new(),

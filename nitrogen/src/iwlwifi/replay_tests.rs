@@ -235,10 +235,13 @@ fn open_network_full_flow() {
 
     // 4. Inject assoc response (success, AID=1)
     let assoc_resp = build_assoc_response(AP_BSSID, CLIENT_MAC, 0, 1);
+    let tx_head_before_assoc_update = dev.tx_head;
     dev.inject_rx_frame(&assoc_resp);
     assert_eq!(dev.iwl_state, IwlState::Connected);
     assert_eq!(dev.wifi_conn.status, wifi::WifiStatus::Connected);
     assert!(!dev.wpa_required);
+    // MAC_CONTEXT modify and ADD_STA modify are ordered before data TX.
+    assert_eq!(dev.tx_head, tx_head_before_assoc_update + 2);
 
     // DHCP discover should have been sent
     let dhcp_tx = dev.last_tx_frame();

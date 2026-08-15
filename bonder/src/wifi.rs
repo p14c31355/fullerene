@@ -82,6 +82,10 @@ pub struct AccessPoint {
     pub rssi: Rssi,
     pub security: Security,
     pub beacon_interval: u16,
+    pub beacon_timestamp: u64,
+    pub device_timestamp: u32,
+    pub dtim_count: u8,
+    pub dtim_period: u8,
 }
 
 /// 802.11 frame types.
@@ -188,6 +192,8 @@ pub struct BeaconFrame {
     pub ssid: Option<Ssid>,
     pub rates: Vec<u8>,
     pub ds_channel: Option<u8>,
+    pub dtim_count: u8,
+    pub dtim_period: u8,
     pub rsn: Option<RsnInfo>,
 }
 
@@ -345,6 +351,8 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
     let mut ssid = None;
     let mut rates = Vec::new();
     let mut ds_channel = None;
+    let mut dtim_count = 0;
+    let mut dtim_period = 0;
     let mut rsn = None;
 
     // Tagged parameters
@@ -372,6 +380,13 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
                 // DS Parameter Set (channel)
                 if tag_len >= 1 {
                     ds_channel = Some(frame[offset]);
+                }
+            }
+            5 => {
+                // TIM: DTIM Count, DTIM Period, Bitmap Control, bitmap.
+                if tag_len >= 4 {
+                    dtim_count = frame[offset];
+                    dtim_period = frame[offset + 1];
                 }
             }
             48 if tag_len >= 2 => {
@@ -449,6 +464,8 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
         ssid,
         rates,
         ds_channel,
+        dtim_count,
+        dtim_period,
         rsn,
     })
 }
@@ -785,6 +802,17 @@ mod tests {
         assert!(beacon.rsn.is_none());
         assert_eq!(beacon.beacon_interval, 100);
         assert_eq!(beacon.rates, vec![0x82, 0x84, 0x8B, 0x96]);
+    }
+
+    #[test]
+    fn parse_beacon_preserves_dtim_count_and_period() {
+        let bssid = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let mut frame = build_beacon_frame(8, bssid, b"TimedAP", 6, 0x0001, None);
+        frame.extend_from_slice(&[5, 4, 2, 3, 0, 0]);
+
+        let beacon = parse_beacon(&frame).expect("beacon parse");
+        assert_eq!(beacon.dtim_count, 2);
+        assert_eq!(beacon.dtim_period, 3);
     }
 
     #[test]
@@ -1130,6 +1158,10 @@ mod tests {
             rssi: -50,
             security: Security::Open,
             beacon_interval: 100,
+            beacon_timestamp: 0,
+            device_timestamp: 0,
+            dtim_count: 0,
+            dtim_period: 0,
         });
         conn.add_scan_result(AccessPoint {
             ssid: Ssid::new(b"AP2"),
@@ -1138,6 +1170,10 @@ mod tests {
             rssi: -60,
             security: Security::Wpa2Psk,
             beacon_interval: 100,
+            beacon_timestamp: 0,
+            device_timestamp: 0,
+            dtim_count: 0,
+            dtim_period: 0,
         });
         assert_eq!(conn.scan_results.len(), 2);
 
@@ -1149,6 +1185,10 @@ mod tests {
             rssi: -40,
             security: Security::Open,
             beacon_interval: 100,
+            beacon_timestamp: 0,
+            device_timestamp: 0,
+            dtim_count: 0,
+            dtim_period: 0,
         });
         assert_eq!(conn.scan_results.len(), 2);
 

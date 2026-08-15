@@ -113,6 +113,9 @@ pub enum LegacyCmd {
     Disassoc = 0x1C,
     AddSta = 0x18,
     MacContext = 0x28,
+    /// Keep the BSS channel protected while authentication/association is in
+    /// progress (`TIME_EVENT_CMD`).
+    TimeEvent = 0x29,
     TxAntConfig = 0x98,
     RxonAssoc = 0x20,
     PowerDown = 0x26,
@@ -136,12 +139,12 @@ pub enum LegacyCmd {
     ScanOffloadCompleteNotif = 0xe7,
 }
 
-/// ADD_STA_KEY command payload used by the 7000-series firmware API.
+/// ADD_STA_KEY command API v1 used by the 7265/7265D firmware images.
 ///
-/// The common part is kept byte-oriented here because this driver supports
-/// firmware revisions with different response layouts, while the key command
-/// input layout is stable: station id, key slot, flags, 32-byte key storage,
-/// and a 16-byte receive sequence counter.
+/// The 52-byte common prefix is followed by 12 bytes of legacy TKIP receive
+/// state even for CCMP keys. The 7265D-29 image does not advertise API-change
+/// bit 29 (`IWL_UCODE_TLV_API_TKIP_MIC_KEYS`), so sending only the common
+/// prefix is not a valid command for this firmware.
 #[repr(C, packed)]
 pub struct AddStaKeyCmd {
     pub sta_id: u8,
@@ -149,6 +152,9 @@ pub struct AddStaKeyCmd {
     pub key_flags: u16,
     pub key: [u8; 32],
     pub rx_security_seq: [u8; 16],
+    pub tkip_rx_tsc_byte2: u8,
+    pub reserved: u8,
+    pub tkip_rx_ttak: [u16; 5],
 }
 
 /// MCC_UPDATE_CMD API v1 payload — sets the regulatory country code for LAR.
@@ -463,6 +469,43 @@ pub struct MacStaData {
     pub ctwin: u32,
 }
 
+/// TIME_EVENT_CMD API v2 used by 7000-series firmware.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct TimeEventCmdV2 {
+    pub id_and_color: u32,
+    pub action: u32,
+    pub id: u32,
+    pub apply_time: u32,
+    pub max_delay: u32,
+    pub depends_on: u32,
+    pub interval: u32,
+    pub duration: u32,
+    pub repeat: u8,
+    pub max_frags: u8,
+    pub policy: u16,
+}
+
+impl TimeEventCmdV2 {
+    /// Linux's unassociated managed-station session protection.
+    pub const fn association_protection(mac_index: u8) -> Self {
+        Self {
+            id_and_color: mac_index as u32,
+            action: 1, // FW_CTXT_ACTION_ADD
+            id: 0,     // TE_BSS_STA_AGGRESSIVE_ASSOC
+            apply_time: 0,
+            max_delay: 500,
+            depends_on: 0,
+            interval: 1,
+            duration: 600,
+            repeat: 1,
+            max_frags: 0, // TE_V2_FRAG_NONE
+            // Notify on event start/end and begin immediately.
+            policy: (1 << 0) | (1 << 1) | (1 << 11),
+        }
+    }
+}
+
 /// MAC_CONTEXT_CMD (0x28) payload for a minimal STA context.
 ///
 /// This is the packed `MAC_CONTEXT_CMD_API_S_VER_1` layout used by the
@@ -605,11 +648,33 @@ impl MacContextCmd {
         context
     }
 
-    /// Mark the station context associated after a successful association
-    /// response. The AP supplies the association ID in that response.
-    pub fn associated(mut self, aid: u16) -> Self {
-        self.sta.is_assoc = 1;
+    /// Fill the associated-station timing data captured from an AP beacon.
+    /// Linux only sets `is_assoc` once the DTIM period is known.
+    pub fn associated_with_ap(
+        mut self,
+        aid: u16,
+        beacon_interval: u16,
+        dtim_period: u8,
+        dtim_count: u8,
+        beacon_tsf: u64,
+        device_timestamp: u32,
+    ) -> Self {
+        let beacon_interval = u32::from(beacon_interval);
+        let dtim_interval = beacon_interval.saturating_mul(u32::from(dtim_period));
+        self.sta.beacon_interval = beacon_interval;
+        self.sta.beacon_interval_reciprocal = reciprocal(beacon_interval);
+        self.sta.dtim_interval = dtim_interval;
+        self.sta.dtim_interval_reciprocal = reciprocal(dtim_interval);
         self.sta.assoc_id = aid as u32;
+        if dtim_period != 0 {
+            let dtim_offset_us = u32::from(dtim_count)
+                .saturating_mul(beacon_interval)
+                .saturating_mul(1024);
+            self.sta.dtim_tsf = beacon_tsf.saturating_add(u64::from(dtim_offset_us));
+            self.sta.dtim_time = device_timestamp.wrapping_add(dtim_offset_us);
+            self.sta.assoc_beacon_arrive_time = device_timestamp;
+            self.sta.is_assoc = 1;
+        }
         self
     }
 
@@ -619,6 +684,10 @@ impl MacContextCmd {
         let ac = core::ptr::addr_of!(self.ac) as *const MacQosAc;
         unsafe { ac.add(index).read_unaligned() }
     }
+}
+
+const fn reciprocal(value: u32) -> u32 {
+    if value == 0 { 0 } else { u32::MAX / value }
 }
 
 /// ADD_STA command API v7, used by the old (pre-v12) station API.
@@ -728,6 +797,19 @@ impl AddStaCmdV7 {
         command.add_modify = 1; // STA_MODE_MODIFY
         command.modify_mask = 1 << 7; // STA_MODIFY_QUEUES
         command.tfd_queue_msk = 1 << super::registers::IWL_MGMT_QUEUE;
+        command
+    }
+
+    /// Publish the association ID on an existing AP station.
+    ///
+    /// Linux sends a full ADD_STA update when mac80211 moves the peer from
+    /// AUTH to ASSOC. For an update that does not modify queues, `addr` and
+    /// `tfd_queue_msk` are deliberately left zero; firmware retains the
+    /// values installed by the earlier ADD_STA/STA_MODIFY_QUEUES commands.
+    pub fn associated_peer(mac_index: u8, sta_id: u8, aid: u16) -> Self {
+        let mut command = Self::peer(mac_index, sta_id, [0; 6]);
+        command.add_modify = 1; // STA_MODE_MODIFY
+        command.assoc_id = aid;
         command
     }
 }
@@ -1303,7 +1385,94 @@ pub enum IwlError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BtCoexConfigCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanConfigV1};
+    use super::{
+        AddStaCmdV7, AddStaKeyCmd, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
+        ScanConfigV1, TimeEventCmdV2,
+    };
+
+    #[test]
+    fn associated_mac_context_uses_beacon_dtim_sync() {
+        let command = MacContextCmd::sta_for_bssid([2; 6], [3; 6]).associated_with_ap(
+            7,
+            100,
+            3,
+            2,
+            0x0102_0304_0506_0708,
+            0x1020_3040,
+        );
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const MacContextCmd).cast::<u8>(),
+                core::mem::size_of::<MacContextCmd>(),
+            )
+        };
+        let offset_us = 2 * 100 * 1024;
+
+        assert_eq!(&bytes[100..104], &1u32.to_le_bytes());
+        assert_eq!(
+            &bytes[104..108],
+            &0x1020_3040u32.wrapping_add(offset_us).to_le_bytes()
+        );
+        assert_eq!(
+            &bytes[108..116],
+            &0x0102_0304_0506_0708u64
+                .saturating_add(u64::from(offset_us))
+                .to_le_bytes()
+        );
+        assert_eq!(&bytes[116..120], &100u32.to_le_bytes());
+        assert_eq!(&bytes[120..124], &(u32::MAX / 100).to_le_bytes());
+        assert_eq!(&bytes[124..128], &300u32.to_le_bytes());
+        assert_eq!(&bytes[128..132], &(u32::MAX / 300).to_le_bytes());
+        assert_eq!(&bytes[136..140], &7u32.to_le_bytes());
+        assert_eq!(&bytes[140..144], &0x1020_3040u32.to_le_bytes());
+    }
+
+    #[test]
+    fn ccmp_station_key_uses_linux_api_v1_fixed_size() {
+        assert_eq!(core::mem::size_of::<AddStaKeyCmd>(), 64);
+    }
+
+    #[test]
+    fn association_time_event_matches_linux_api_v2_wire_layout() {
+        let command = TimeEventCmdV2::association_protection(0);
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const TimeEventCmdV2).cast::<u8>(),
+                core::mem::size_of::<TimeEventCmdV2>(),
+            )
+        };
+
+        assert_eq!(bytes.len(), 36);
+        assert_eq!(&bytes[0..4], &0u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
+        assert_eq!(&bytes[8..12], &0u32.to_le_bytes());
+        assert_eq!(&bytes[16..20], &500u32.to_le_bytes());
+        assert_eq!(&bytes[24..28], &1u32.to_le_bytes());
+        assert_eq!(&bytes[28..32], &600u32.to_le_bytes());
+        assert_eq!(&bytes[32..34], &[1, 0]);
+        assert_eq!(&bytes[34..36], &0x0803u16.to_le_bytes());
+    }
+
+    #[test]
+    fn associated_peer_update_matches_linux_v7_station_transition() {
+        let command = AddStaCmdV7::associated_peer(0, 0, 0x1234);
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const AddStaCmdV7).cast::<u8>(),
+                core::mem::size_of::<AddStaCmdV7>(),
+            )
+        };
+
+        assert_eq!(bytes.len(), 44);
+        assert_eq!(bytes[0], 1); // STA_MODE_MODIFY
+        assert_eq!(&bytes[4..8], &[0; 4]); // MAC context index/color 0
+        assert_eq!(&bytes[8..14], &[0; 6]); // retained for non-queue update
+        assert_eq!(bytes[16], 0); // station 0
+        assert_eq!(bytes[17], 0); // no STA_MODIFY_* field selected
+        assert_eq!(&bytes[24..28], &0x3c02_0000u32.to_le_bytes());
+        assert_eq!(&bytes[36..38], &0x1234u16.to_le_bytes());
+        assert_eq!(&bytes[40..44], &[0; 4]); // retain existing queue mask
+    }
 
     #[test]
     fn bt_config_network_default_has_upstream_wire_layout() {

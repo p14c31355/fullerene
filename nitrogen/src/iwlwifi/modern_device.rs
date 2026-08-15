@@ -867,6 +867,10 @@ impl ModernIwlWifiDevice {
             rssi: -50,
             security: wifi::security_from_beacon(beacon.capability, beacon.rsn.as_ref()),
             beacon_interval: beacon.beacon_interval,
+            beacon_timestamp: beacon.timestamp,
+            device_timestamp: 0,
+            dtim_count: beacon.dtim_count,
+            dtim_period: beacon.dtim_period,
         };
         if !self
             .scan_results

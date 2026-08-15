@@ -489,6 +489,7 @@ impl IwlWifiDevice {
         gtk_key_index: u8,
     ) -> Result<usize, crate::DriverError> {
         const STA_KEY_FLG_CCM: u16 = 2;
+        const STA_KEY_FLG_WEP_KEY_MAP: u16 = 1 << 3;
         const STA_KEY_FLG_KEYID_POS: u16 = 8;
         const STA_KEY_MULTICAST: u16 = 1 << 14;
 
@@ -496,9 +497,12 @@ impl IwlWifiDevice {
             // The AP is the first peer station in this minimal STA mode.
             sta_id: 0,
             key_offset: 0,
-            key_flags: STA_KEY_FLG_CCM,
+            key_flags: STA_KEY_FLG_CCM | STA_KEY_FLG_WEP_KEY_MAP,
             key: [0; 32],
             rx_security_seq: [0; 16],
+            tkip_rx_tsc_byte2: 0,
+            reserved: 0,
+            tkip_rx_ttak: [0; 5],
         };
         pairwise.key[..16].copy_from_slice(&ptk);
 
@@ -506,15 +510,24 @@ impl IwlWifiDevice {
             sta_id: 0,
             key_offset: 1,
             key_flags: STA_KEY_FLG_CCM
+                | STA_KEY_FLG_WEP_KEY_MAP
                 | STA_KEY_MULTICAST
                 | ((gtk_key_index as u16 & 0x03) << STA_KEY_FLG_KEYID_POS),
             key: [0; 32],
             rx_security_seq: [0; 16],
+            tkip_rx_tsc_byte2: 0,
+            reserved: 0,
+            tkip_rx_ttak: [0; 5],
         };
         group.key[..16].copy_from_slice(&gtk);
 
         let pairwise_bytes = unsafe { super::as_bytes(&pairwise) };
         let group_bytes = unsafe { super::as_bytes(&group) };
+
+        let command_queue = self.command_queue() as u16;
+        let pairwise_sequence = (command_queue << 8) | (self.tx_head as u16 & 0xff);
+        let group_sequence = (command_queue << 8) | (self.tx_head.wrapping_add(1) as u16 & 0xff);
+        self.wpa_key_pending_sequences = [Some(pairwise_sequence), Some(group_sequence)];
 
         self.send_hcmd(
             LegacyCmd::AddStaKey as u8,
@@ -901,6 +914,28 @@ impl IwlWifiDevice {
                         if status & 0xff != 1 {
                             log::error!(
                                 "iwlwifi: hcmd.sync.error name={} stage=status add_sta_status={:#010x}",
+                                label,
+                                status,
+                            );
+                            self.release_mac_access();
+                            return Err(crate::DriverError::Protocol);
+                        }
+                    }
+                    if opcode == LegacyCmd::TimeEvent as u8 {
+                        if payload.len() < 16 {
+                            log::error!(
+                                "iwlwifi: hcmd.sync.error name={} stage=status reason=short_time_event_response payload={}",
+                                label,
+                                payload.len(),
+                            );
+                            self.release_mac_access();
+                            return Err(crate::DriverError::Protocol);
+                        }
+                        let status =
+                            u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                        if status & 1 == 0 {
+                            log::error!(
+                                "iwlwifi: hcmd.sync.error name={} stage=status time_event_status={:#010x}",
                                 label,
                                 status,
                             );
@@ -2138,6 +2173,7 @@ impl IwlWifiDevice {
         const TX_CMD_FLG_SEQ_CTL: u32 = 1 << 13;
         const TX_CMD_FLG_MH_PAD: u32 = 1 << 20;
         const TX_CMD_OFFLD_PAD: u16 = 1 << 13;
+        const TX_CMD_OFFLD_MH_SIZE_POS: u32 = 8;
         let frame_type = (frame[0] & 0x0c) >> 2;
         let subtype = (frame[0] >> 4) & 0x0f;
         let bt_priority = if frame_type == 0 && subtype != 10 {
@@ -2153,9 +2189,16 @@ impl IwlWifiDevice {
             } else {
                 0
             };
+        // The firmware uses this half-word count to find the payload after
+        // the MAC header. Linux includes the CCMP IV in that boundary because
+        // it is already present in the host-provided frame on gen1.
+        let crypto_header_len = if frame[1] & 0x40 != 0 { 8 } else { 0 };
+        let mut offload_assist =
+            (((mac_header_len + crypto_header_len) / 2) as u16) << TX_CMD_OFFLD_MH_SIZE_POS;
         if mac_padding != 0 {
-            wire[tx + 2..tx + 4].copy_from_slice(&TX_CMD_OFFLD_PAD.to_le_bytes());
+            offload_assist |= TX_CMD_OFFLD_PAD;
         }
+        wire[tx + 2..tx + 4].copy_from_slice(&offload_assist.to_le_bytes());
         wire[tx + 4..tx + 8].copy_from_slice(&tx_flags.to_le_bytes());
         wire[tx + 12..tx + 16].copy_from_slice(&rate_n_flags.to_le_bytes());
         // sta_id=0. Protected frames use CCMP and the PTK installed in
@@ -2266,6 +2309,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ccmp_key_commands_match_linux_v1_flags_and_trailer() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        let end = device
+            .install_wpa_keys([0x11; 16], [0x22; 16], 1)
+            .expect("queue CCMP keys");
+
+        assert_eq!(end, 2);
+        let pairwise = device.tx_bufs[0].as_slice();
+        let group = device.tx_bufs[1].as_slice();
+        assert_eq!(&pairwise[..4], &[LegacyCmd::AddStaKey as u8, 0, 0, 9]);
+        assert_eq!(&group[..4], &[LegacyCmd::AddStaKey as u8, 0, 1, 9]);
+        assert_eq!(u16::from_le_bytes([pairwise[6], pairwise[7]]), 0x000a);
+        assert_eq!(u16::from_le_bytes([group[6], group[7]]), 0x410a);
+        assert_eq!(&pairwise[8..24], &[0x11; 16]);
+        assert_eq!(&group[8..24], &[0x22; 16]);
+        assert_eq!(&pairwise[56..68], &[0; 12]);
+        assert_eq!(&group[56..68], &[0; 12]);
+    }
+
+    #[test]
     fn api_v6_tx_command_has_linux_management_defaults() {
         let frame = [0xb0u8; 30];
         let wire = IwlWifiDevice::build_tx_command(&frame, 0x0918, TX_RATE_1M_CCK);
@@ -2277,6 +2340,10 @@ mod tests {
         assert_eq!(
             u16::from_le_bytes([wire[tx], wire[tx + 1]]),
             frame.len() as u16
+        );
+        assert_eq!(
+            u16::from_le_bytes([wire[tx + 2], wire[tx + 3]]),
+            12 << 8 // 24-byte MAC header in half-words
         );
         assert_eq!(
             u32::from_le_bytes(wire[tx + 4..tx + 8].try_into().unwrap()),
@@ -2307,6 +2374,7 @@ mod tests {
 
         assert_eq!(wire.len(), TX_FRAME_OFFSET + frame.len() + 2);
         assert_ne!(offload_assist & (1 << 13), 0);
+        assert_eq!((offload_assist >> 8) & 0x1f, 13);
         assert_ne!(flags & (1 << 20), 0);
         assert_eq!(&wire[TX_FRAME_OFFSET..TX_FRAME_OFFSET + 26], &frame[..26]);
         assert_eq!(&wire[TX_FRAME_OFFSET + 26..TX_FRAME_OFFSET + 28], &[0, 0]);
@@ -2325,6 +2393,15 @@ mod tests {
         assert_eq!(&first[32..40], &[0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0]);
 
         let wire = IwlWifiDevice::build_tx_command(&first, 0x0400, TX_RATE_6M_OFDM);
+        assert_eq!(
+            (u16::from_le_bytes(
+                wire[TX_COMMAND_HEADER_LEN + 2..TX_COMMAND_HEADER_LEN + 4]
+                    .try_into()
+                    .unwrap()
+            ) >> 8)
+                & 0x1f,
+            16 // 24-byte MAC header plus eight-byte CCMP IV
+        );
         assert_eq!(wire[TX_COMMAND_HEADER_LEN + 17], 0x12); // CCMP | key table
         assert_eq!(wire[TX_COMMAND_HEADER_LEN + 20], 0); // PTK slot 0
     }
