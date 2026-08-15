@@ -125,12 +125,15 @@ impl IwlWifiDevice {
         mmio::write_barrier();
     }
 
-    /// Drop the host-command wake request only after every TX descriptor has
-    /// been fetched. Linux keeps the 7000-series NIC awake while the command
-    /// queue is non-empty; releasing it immediately after the doorbell leaves
-    /// a race where firmware can sleep before q9 advances its read pointer.
+    /// Drop the host-command wake request once the command queue is empty.
+    ///
+    /// Linux's `cmd_hold_nic_awake` tracks host commands only.  A pending DQA
+    /// data/management descriptor must not extend that hold: the 7265's
+    /// scheduler is responsible for fetching q5 after its write-pointer
+    /// doorbell, and keeping MAC_ACCESS_REQ asserted until q5 is reclaimed
+    /// is not the upstream power-management contract.
     fn release_mac_access_if_tx_idle(&mut self) {
-        if self.tx_head == self.tx_tail && self.tx_data_head == self.tx_data_tail {
+        if self.tx_head == self.tx_tail {
             self.release_mac_access();
         }
     }
@@ -2083,6 +2086,11 @@ impl IwlWifiDevice {
                 continue;
             }
             buf.write_from(&wire);
+            let auth_dma_wire = if (tx_frame[0] >> 4) & 0x0f == 11 {
+                Some(buf.as_slice()[..wire.len()].to_vec())
+            } else {
+                None
+            };
 
             let mac_header_len = Self::tx_mac_header_len(&tx_frame);
             let tb1_unaligned = TX_FRAME_OFFSET + mac_header_len - IWL_FIRST_TB_SIZE;
@@ -2162,7 +2170,7 @@ impl IwlWifiDevice {
                     + (256 + desc_idx) * 2) as *const u16;
                 let bc_duplicate = unsafe { core::ptr::read_volatile(bc_dup_ptr) };
                 log::info!(
-                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} bc_dwords={} bc_addr={:#018x} tbs={} tb0={} tb1={} tb2={} scratch={:#018x} sw_wrptr={} hw_wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} scd_dram={:#010x} tx_status={:#010x} tx_error={:#010x}",
+                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} bc_dwords={} bc_addr={:#018x} tbs={} tb0={} tb1={} tb2={} scratch={:#018x} sw_wrptr={} hw_wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} scd_dram={:#010x} scd_txfact={:#010x} fh_tx_trb={:#010x} tx_status={:#010x} tx_error={:#010x} gp_cntrl={:#010x} gp1={:#010x}",
                     traffic_queue,
                     desc_idx,
                     tx_frame.len(),
@@ -2186,8 +2194,12 @@ impl IwlWifiDevice {
                     self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + fifo * (0x20 / 4))
                         .unwrap_or(!0),
                     self.read_prph(SCD_DRAM_BASE_ADDR).unwrap_or(!0),
+                    self.read_prph(SCD_TXFACT).unwrap_or(!0),
+                    self.safe_read32(fh_tx_trb_channel(fifo)).unwrap_or(!0),
                     self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
                     self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
+                    self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+                    self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0),
                 );
                 log::info!(
                     "iwlwifi: TFD raw queue={} slot={} tfd_hex={} bc_primary={:#06x} bc_duplicate={:#06x} tb0_addr={:#010x} tb0_hnlen={:#06x} tb1_addr={:#010x} tb1_hnlen={:#06x} tb2_addr={:#010x} tb2_hnlen={:#06x}",
@@ -2203,6 +2215,15 @@ impl IwlWifiDevice {
                     unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[2].addr_lo)) },
                     unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[2].hi_n_len)) },
                 );
+                if let Some(dma_wire) = auth_dma_wire {
+                    log::info!(
+                        "iwlwifi: TX auth DMA buffer queue={} slot={} dma_wire_match={} wire_hex={}",
+                        traffic_queue,
+                        desc_idx,
+                        dma_wire == wire,
+                        HexBytes(&dma_wire),
+                    );
+                }
             }
         }
         self.release_mac_access_if_tx_idle();
@@ -2656,7 +2677,7 @@ mod tests {
     }
 
     #[test]
-    fn host_command_holds_mac_access_until_tx_queues_are_empty() {
+    fn host_command_releases_mac_access_when_command_queue_is_empty() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
 
         device.send_hcmd(0x01, GroupId::Legacy as u8, &[]).unwrap();
@@ -2665,6 +2686,10 @@ mod tests {
             0,
         );
 
+        // Linux releases the host-command wake hold when q0 is empty even if
+        // a DQA data queue still has an outstanding descriptor.
+        device.tx_data_head = 1;
+        device.tx_data_tail = 0;
         device.tx_tail = device.tx_head;
         device.release_mac_access_if_tx_idle();
         assert_eq!(

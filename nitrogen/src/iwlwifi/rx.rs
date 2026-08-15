@@ -1007,8 +1007,10 @@ impl IwlWifiDevice {
             let ctx1 = self
                 .read_mem32(scd_base + scd_context_queue(queue) + 4)
                 .unwrap_or(!0);
+            let scd_txfact = self.read_prph(SCD_TXFACT).unwrap_or(!0);
+            let fh_tx_trb = self.safe_read32(fh_tx_trb_channel(fifo)).unwrap_or(!0);
             log::info!(
-                "iwlwifi: management TX scheduler poll tick={} phase={} queue={} sw_head={} sw_tail={} wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} scd_en={:#010x} scd_gp={:#010x} cbbc={:#010x} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} tx_status={:#010x} tx_error={:#010x}",
+                "iwlwifi: management TX scheduler poll tick={} phase={} queue={} sw_head={} sw_tail={} wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} scd_en={:#010x} scd_gp={:#010x} cbbc={:#010x} scd_txfact={:#010x} fh_tx_trb={:#010x} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} tx_status={:#010x} tx_error={:#010x} gp_cntrl={:#010x} gp1={:#010x}",
                 self.connection_watchdog_ticks,
                 if self.iwl_state == IwlState::AuthSent {
                     "authentication"
@@ -1025,6 +1027,8 @@ impl IwlWifiDevice {
                 scd_en,
                 scd_gp,
                 self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0),
+                scd_txfact,
+                fh_tx_trb,
                 self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + fifo * (0x20 / 4))
                     .unwrap_or(!0),
                 self.safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + fifo * (0x20 / 4))
@@ -1033,6 +1037,8 @@ impl IwlWifiDevice {
                     .unwrap_or(!0),
                 self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
                 self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
+                self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+                self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0),
             );
             log::info!(
                 "iwlwifi: SCD SRAM queue={} hw_wrptr={:#010x} hw_rdptr={:#010x} queuechain={:#010x} aggr_sel={:#010x} ctx0={:#010x} ctx1={:#010x} win_size={} frame_limit={}",

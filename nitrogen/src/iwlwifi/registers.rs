@@ -221,6 +221,10 @@ pub const FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN: u32 = 0x0000_0002;
 pub const FH_TSSR_TX_STATUS_REG: u32 = (0x1000 + 0xEB0) / 4;
 pub const FH_TSSR_TX_ERROR_REG: u32 = (0x1000 + 0xEB8) / 4;
 pub const FH_TX_TRB_CHNL0: u32 = (0x1000 + 0x958) / 4;
+/// Linux's `FH_TX_TRB_REG(chan)`: one TRB register per physical FH FIFO.
+pub const fn fh_tx_trb_channel(channel: u32) -> u32 {
+    FH_TX_TRB_CHNL0 + channel
+}
 pub const SCD_BASE: u32 = 0xA02C00;
 pub const SCD_SRAM_BASE_ADDR: u32 = SCD_BASE;
 pub const SCD_DRAM_BASE_ADDR: u32 = SCD_BASE + 0x08;

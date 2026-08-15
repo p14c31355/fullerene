@@ -2095,6 +2095,22 @@ impl IwlWifiDevice {
             let scd_status_after_cfg = self
                 .read_prph(scd_queue_status(IWL_MGMT_QUEUE))
                 .unwrap_or(!0);
+            let aux_queue = IWL_DQA_AUX_QUEUE;
+            let aux_scd_status = self.read_prph(scd_queue_status(aux_queue)).unwrap_or(!0);
+            let aux_scd_wrptr = self.read_prph(scd_queue_wrptr(aux_queue)).unwrap_or(!0);
+            let aux_scd_rdptr = self.read_prph(scd_queue_rdptr(aux_queue)).unwrap_or(!0);
+            let aux_ctx0 = self
+                .read_mem32(self.alive_scd_base_addr + scd_context_queue(aux_queue))
+                .unwrap_or(!0);
+            let aux_ctx1 = self
+                .read_mem32(self.alive_scd_base_addr + scd_context_queue(aux_queue) + 4)
+                .unwrap_or(!0);
+            let aux_trans_tbl = self
+                .read_mem32(self.alive_scd_base_addr + scd_trans_tbl_offset_queue(aux_queue))
+                .unwrap_or(!0);
+            let aux_tx_stts = self
+                .read_mem32(self.alive_scd_base_addr + scd_tx_stts_queue_offset(aux_queue))
+                .unwrap_or(!0);
             log::info!(
                 "iwlwifi: SCD_EN_CTRL after SCD_QUEUE_CFG scd_en={:#010x} q5_bit={} q5_status={:#010x}",
                 scd_en_after_cfg,
@@ -2104,6 +2120,16 @@ impl IwlWifiDevice {
                     "CLEAR"
                 },
                 scd_status_after_cfg,
+            );
+            log::info!(
+                "iwlwifi: SCD DQA compare q1 status={:#010x} wrptr={:#010x} rdptr={:#010x} ctx0={:#010x} ctx1={:#010x} trans_tbl={:#010x} tx_stts={:#010x}",
+                aux_scd_status,
+                aux_scd_wrptr,
+                aux_scd_rdptr,
+                aux_ctx0,
+                aux_ctx1,
+                aux_trans_tbl,
+                aux_tx_stts,
             );
             let queue_update = AddStaCmdV7::peer_queue_update(0, 0, ap.bssid);
             if let Err(error) = self.send_hcmd_and_wait(
