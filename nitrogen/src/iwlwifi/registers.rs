@@ -184,6 +184,11 @@ pub const IWL_AUX_QUEUE: u32 = IWL_LEGACY_AUX_QUEUE;
 pub const IWL_NUM_OF_QUEUES: u32 = 31;
 /// Legacy MVM supports QoS TIDs 0..7; value 8 denotes non-QoS/management.
 pub const IWL_MAX_TID_COUNT: u8 = 8;
+/// Linux allocates only 16 software entries for DQA management queues.
+/// This is not the SCD_QUEUE_CFG `window`/frame-limit field; the gen1
+/// scheduler still uses IWL_FRAME_LIMIT for the management queue.
+pub const IWL_MGMT_QUEUE_SIZE: u8 = 16;
+pub const IWL_FRAME_LIMIT: u8 = 64;
 pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
 pub const FH_MEM_CBBC_16_19_LOWER_BOUND: u32 = (0x1000 + 0xBF0) / 4;
 pub const FH_MEM_CBBC_20_31_LOWER_BOUND: u32 = (0x1000 + 0xB20) / 4;

@@ -517,18 +517,16 @@ impl IwlWifiDevice {
     }
 
     /// Re-ring the queue doorbell after firmware has configured the SCD via
-    /// SCD_QUEUE_CFG and ADD_STA_QUEUE.  The 7265D-29 firmware leaves the
-    /// dynamically configured queue out of SCD_EN_CTRL; without restoring its
-    /// bit immediately before the doorbell, the TFD write pointer advances but
-    /// the scheduler never fetches the frame.
+    /// SCD_QUEUE_CFG and ADD_STA_QUEUE.
+    ///
+    /// Linux normally leaves SCD_EN_CTRL ownership to firmware for DQA. The
+    /// API-29 7265D image differs: without q5 in this register, its FH TRB
+    /// remains zero even though SCD_QUEUE_STATUS is active. Keep this quirk
+    /// limited to the API-29 DQA image; other firmware follows Linux exactly.
     pub(super) fn kick_dqa_queue_doorbell(&mut self, queue: u32) {
-        if let Some(scd_en) = self.read_prph(SCD_EN_CTRL) {
+        if self.fw_dqa_supported && self.fw_api_ver == IWL_FW_API29_MAX {
+            let scd_en = self.read_prph(SCD_EN_CTRL).unwrap_or(0);
             self.write_prph(SCD_EN_CTRL, scd_en | (1 << queue));
-        } else {
-            log::warn!(
-                "iwlwifi: unable to read SCD_EN_CTRL before DQA queue={} doorbell",
-                queue,
-            );
         }
         self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
         mmio::write_barrier();
@@ -2208,9 +2206,10 @@ impl IwlWifiDevice {
             // The legacy SCD does not derive an MPDU's airtime length from
             // the TFD. Linux publishes a separate byte-count entry before
             // ringing the queue doorbell; a zero entry leaves a valid TFD
-            // permanently unfetched. MVM configures the table in DWORD mode.
-            // It records the rounded DWORD count for the 802.11 payload plus
-            // CRC/delimiter and, for CCMP, the firmware-appended MIC.
+            // permanently unfetched. The 7265 is a pre-9000 gen1 device and
+            // Gen1's SCD table records the 802.11 payload plus CRC/delimiter
+            // and, for CCMP, the firmware-appended MIC in DWORDs on the
+            // 7000-series transport used by the 7265.
             let sec_ctl = wire[TX_COMMAND_HEADER_LEN + 17];
             let byte_count_entry = self.update_scd_byte_count(
                 traffic_queue,
@@ -2329,8 +2328,9 @@ impl IwlWifiDevice {
     /// Publish one entry in Linux's `iwlagn_scd_bc_tbl`, including the
     /// duplicate window used when the 8-bit TFD index wraps.
     ///
-    /// MVM unconditionally sets `trans_cfg.bc_table_dword = true`, so the
-    /// low 12 bits are a rounded-up DWORD count rather than a byte count.
+    /// 7265/7000-series gen1 firmware consumes the low 12 bits as DWORDs.
+    /// Linux's gen1 transport adds CRC/delimiter (and a security trailer when
+    /// applicable), then rounds the result up to a DWORD before publishing it.
     fn update_scd_byte_count(
         &mut self,
         queue: u32,
@@ -2349,11 +2349,11 @@ impl IwlWifiDevice {
         if sec_ctl & TX_CMD_SEC_MSK == TX_CMD_SEC_CCM {
             length = length.saturating_add(8); // CCMP MIC
         }
-        length = length.saturating_add(3) / 4;
         debug_assert!(length <= 0x0fff);
         debug_assert!(queue < 32);
         debug_assert!(write_ptr < TFD_QUEUE_SIZE_MAX);
-        let entry = (length & 0x0fff) | ((sta_id as u16) << 12);
+        let dwords = length.saturating_add(3) / 4;
+        let entry = (dwords & 0x0fff) | ((sta_id as u16) << 12);
         let table_base = self.tx_dma_ring.virt() + TX_SCD_BC_OFFSET;
         let queue_base = table_base + queue as usize * TFD_QUEUE_BC_SIZE * 2;
         let primary = queue_base + write_ptr * 2;
@@ -2702,17 +2702,19 @@ mod tests {
         let primary = unsafe { core::ptr::read_unaligned(byte_count_base as *const u16) };
         let duplicate =
             unsafe { core::ptr::read_unaligned((byte_count_base + 256 * 2) as *const u16) };
-        // MVM's byte-count table is in DWORD mode: ceil((30 + 4 + 4) / 4).
+        // 7265's 7000-series gen1 table stores DWORDs: ceil((30 + CRC +
+        // delimiter) / 4) = 10.
         assert_eq!(u16::from_le(primary), 10);
         assert_eq!(u16::from_le(duplicate), 10);
     }
 
     #[test]
-    fn mvm_scd_byte_count_entries_are_rounded_dwords() {
+    fn legacy_scd_byte_count_entries_store_dwords() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
 
         // 30-byte protected MPDU + CRC/delimiter + CCMP MIC = 46 bytes,
-        // rounded up to 12 DWORDs. The station ID occupies the high nibble.
+        // rounded up to 12 DWORDs.
+        // The station ID occupies the high nibble.
         let entry = device.update_scd_byte_count(IWL_MGMT_QUEUE, 7, 30, 3, 0x02);
 
         assert_eq!(entry, 0x300c);
@@ -2737,6 +2739,25 @@ mod tests {
         assert_eq!(
             device.safe_read32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE)),
             Some((queue_phys >> 8) as u32)
+        );
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_WRPTR),
+            Some(IWL_MGMT_QUEUE << 8)
+        );
+    }
+
+    #[test]
+    fn api29_dqa_doorbell_enables_only_the_legacy_firmware_queue_gate() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.fw_dqa_supported = true;
+        device.fw_api_ver = IWL_FW_API29_MAX;
+        device.write_mmio32(HBUS_TARG_PRPH_RDAT, 1 << IWL_DQA_CMD_QUEUE);
+
+        device.kick_dqa_queue_doorbell(IWL_MGMT_QUEUE);
+
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_PRPH_WDAT),
+            Some((1 << IWL_DQA_CMD_QUEUE) | (1 << IWL_MGMT_QUEUE))
         );
         assert_eq!(
             device.safe_read32(HBUS_TARG_WRPTR),

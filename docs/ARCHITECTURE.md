@@ -77,9 +77,11 @@ SCD enable bit at the final DQA doorbell; the affected 7265D firmware otherwise
 advances the host write pointer without fetching the management TFD. It also
 records firmware TX results for management frames, advances the bounded queue
 plan after an explicit failure, and no longer discards association-frame
-transmission errors. Host replay/unit tests cover the state machine; the AP
-authentication result on the affected physical adapter remains the final
-hardware validation step.
+transmission errors. The DQA management queue follows Linux's gen1 scheduler
+frame limit of 64; Linux's separate 16-entry management allocation is a host
+software queue capacity, not the SCD command window. Host replay/unit tests
+cover the state machine; the AP authentication result on the affected physical
+adapter remains the final hardware validation step.
 
 A 2026-07-30 redundancy and correctness audit reduced logic LOC without
 changing runtime contracts: repetitive command-serialisation and font/colour

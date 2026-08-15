@@ -25,27 +25,65 @@ Lattice and workspace tests cover the close notification path. Physical/QEMU
 interactive shell reopening should still be included in the next runtime smoke
 run.
 
-## Entry 013 — 2026-08-16 iwlwifi q5 scheduler gate stranded Authenticating
+## Entry 013 — 2026-08-16 iwlwifi q5 scheduler and gen1 byte count
 
 ### Symptoms
 
 On the affected 7265D-29 adapter, the UI remained in `Authenticating` after
-the authentication TFD was submitted. The log showed q5 `wrptr=1`,
-`rdptr=0`, and `SCD_EN_CTRL=0x00000003`; the management queue's enable bit was
-absent, so firmware never fetched the descriptor.
+the authentication TFD was submitted. The new log showed q5 `wrptr=1`,
+`rdptr=0`, while `SCD_EN_CTRL=0x00000023` after the experimental q5 gate was
+added. Therefore the gate was not the missing condition.
 
 ### Root cause and fix
 
-The 7265D firmware populates the dynamic SCD context but leaves q5 out of
-`SCD_EN_CTRL` after `SCD_QUEUE_CFG`/`ADD_STA_QUEUE`. The final DQA doorbell now
-preserves unrelated bits and restores the queue's enable bit immediately
-before ringing `HBUS_TARG_WRPTR`. The existing RX-side `REPLY_TX` tracking also
-records management TX failures, advances the bounded fallback plan, and keeps
-association submission errors visible instead of discarding them.
+The 7265 is a 7000-series gen1 device. Its scheduler byte-count table stores
+DWORDs: Linux adds CRC/delimiter (and a security trailer when applicable),
+then rounds the result up to four bytes. The table therefore publishes
+`bc_dwords=0x000a` for the 30-byte authentication frame. An intermediate
+implementation incorrectly published the raw byte count `0x0026`; the
+latest implementation follows the Linux gen1 conversion.
 
-All 178 Nitrogen library tests pass, including iwlwifi replay tests. The
-affected adapter and AP still require physical validation because QEMU does
-not emulate this Intel radio.
+An intermediate follow-up log showed this API-29 7265D image leaving
+`FH_TRB=0` and the FIFO buffer idle unless q5 was restored in `SCD_EN_CTRL`.
+That gate remains enabled only for this firmware/API combination; other DQA
+images retain the Linux ownership rule. The later fl-auth9 log proves that the
+gate is necessary for the observed active FH state, but it is not sufficient
+to make the scheduler consume q5's TFD.
+
+The connected Linux capture initially appeared to expose one more wire-level
+difference, but the source comparison corrected that interpretation:
+`IWL_MGMT_QUEUE_SIZE=16` is the host-side software allocation, while
+`SCD_QUEUE_CFG.window` is the gen1 scheduler frame limit. Linux defines the
+latter as `IWL_FRAME_LIMIT=64` and uses it for this management queue. Fullerene
+therefore retains 64 in the command; the auxiliary queue also remains 64.
+
+The fl-auth8 retest used the temporary 16 value and still showed q5
+`hw_wrptr=1` with `hw_rdptr=0`. Its SRAM snapshot was `ctx1=0x00400010`
+(`win_size=16`, `frame_limit=64`), proving that the experimental value reached
+firmware but did not make the scheduler consume the TFD. The temporary value
+has been reverted to the Linux-compatible 64; q5 scheduler/TFD consumption is
+still unresolved.
+
+All Nitrogen library tests pass, including the corrected byte-count and
+API-29 gate assertions. The affected adapter and AP still require physical
+validation because QEMU does not emulate this Intel radio.
+
+## Entry 014 — 2026-08-16 fl-auth9 confirms q5 scheduler consumption stall
+
+### Evidence
+
+The Linux-compatible 64-entry configuration is now visible in firmware:
+`ctx1=0x00400040` (`win_size=64`, `frame_limit=64`). The q5 gate and FH path
+are active (`SCD_EN_CTRL=0x23`, `FH_TRB=0x80305000`), and the TFD/byte-count
+layout remains valid (`3 TB`, `20+64+6`, `bc_dwords=10`).
+
+Nevertheless, q5 remains at `hw_wrptr=1`, `hw_rdptr=0` through ticks 64, 512,
+and 1024. No `REPLY_TX` or authentication response is observed. This rules
+out the experimental window value as the immediate cause and leaves the
+firmware-owned DQA queue activation/TFD-fetch path as the next bounded target;
+the AP has not yet received an authentication frame. The capture ends before
+the 4,000-tick watchdog threshold, so the existing `DqaHostScd` and static-q4
+fallback plans were not exercised in this log.
 
 ## Entry 009 — 2026-07-30 workspace audit fixes
 

@@ -385,7 +385,7 @@ pub struct ScdTxqCfgCmdV1 {
 
 impl ScdTxqCfgCmdV1 {
     pub fn peer(sta_id: u8) -> Self {
-        use super::registers::{IWL_MAX_TID_COUNT, IWL_MGMT_QUEUE};
+        use super::registers::{IWL_FRAME_LIMIT, IWL_MAX_TID_COUNT, IWL_MGMT_QUEUE};
         Self {
             token: 0,
             sta_id,
@@ -397,7 +397,9 @@ impl ScdTxqCfgCmdV1 {
             // aggregate-capable; management queues remain non-aggregated.
             aggregate: 0,
             tx_fifo: 3, // IWL_MVM_TX_FIFO_VO (management AC)
-            window: 64,
+            // IWL_MGMT_QUEUE_SIZE is the host-side software queue capacity.
+            // Linux's gen1 SCD_QUEUE_CFG uses IWL_FRAME_LIMIT (64) here.
+            window: IWL_FRAME_LIMIT,
             ssn: 0,
             reserved: 0,
         }
@@ -1422,7 +1424,7 @@ pub enum IwlError {
 mod tests {
     use super::{
         AddStaCmdV7, AddStaKeyCmd, AuthTxPlan, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1,
-        MccUpdateCmdV2, ScanConfigV1, TimeEventCmdV2,
+        MccUpdateCmdV2, ScanConfigV1, ScdTxqCfgCmdV1, TimeEventCmdV2,
     };
 
     #[test]
@@ -1433,6 +1435,17 @@ mod tests {
         assert_eq!(AuthTxPlan::DqaFirmware.name(), "dqa_firmware");
         assert_eq!(AuthTxPlan::DqaHostScd.name(), "dqa_host_scd");
         assert_eq!(AuthTxPlan::StaticQueue.name(), "static_queue");
+    }
+
+    #[test]
+    fn dqa_management_queue_uses_linux_frame_limit() {
+        let command = ScdTxqCfgCmdV1::peer(0);
+
+        assert_eq!(command.scd_queue, 5);
+        assert_eq!(command.tid, 8);
+        assert_eq!(command.tx_fifo, 3);
+        assert_eq!(command.window, 64);
+        assert_eq!(command.aggregate, 0);
     }
 
     #[test]
