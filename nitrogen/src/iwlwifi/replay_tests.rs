@@ -266,6 +266,11 @@ fn wpa2_full_handshake_flow() {
     assert_eq!(dev.iwl_state, IwlState::AuthSent);
     assert!(dev.wpa_required);
     assert_eq!(dev.wpa.state, WpaState::WaitMsg1);
+    assert!(
+        (0..dev.tx_head).all(|index| dev.tx_bufs[index % dev.tx_bufs.len()].as_slice()[0]
+            != LegacyCmd::TimeEvent as u8),
+        "7265D API29 must not receive the firmware-asserting TIME_EVENT command"
+    );
 
     // 3. Auth response
     let auth_resp = build_auth_response(AP_BSSID, CLIENT_MAC, 0);

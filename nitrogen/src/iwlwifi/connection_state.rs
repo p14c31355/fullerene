@@ -2104,25 +2104,20 @@ impl IwlWifiDevice {
             }
         }
 
-        // mac80211's mgd_prepare_tx starts a high-priority time event before
-        // the first authentication frame. This prevents the firmware
-        // scheduler from taking the PHY off the selected BSS channel while
-        // the authentication/association exchange is in flight.
-        let session = TimeEventCmdV2::association_protection(0);
-        if let Err(error) = self.send_hcmd_and_wait(
-            "CONNECT_TIME_EVENT",
-            LegacyCmd::TimeEvent as u8,
-            GroupId::Legacy as u8,
-            unsafe { super::as_bytes(&session) },
-        ) {
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(alloc::format!(
-                "connection session protection failed: {:?}",
-                error
-            ));
-            return Err(error);
-        }
+        // Linux asks firmware for a high-priority session-protection Time
+        // Event here, but it is an optimisation rather than a prerequisite
+        // for authentication. The production 7265D-29 image used by this
+        // device asserts synchronously on the otherwise wire-compatible v2
+        // command (error hcmd 0x29, ADVANCED_SYSASSERT). Keep the selected PHY
+        // bound and proceed directly to authentication instead of crashing
+        // runtime firmware. The fixed-channel connection path has no active
+        // scan after this point, so it cannot intentionally leave the BSS
+        // channel during the exchange.
+        log::info!(
+            "iwlwifi: connection session protection skipped for 7265D API {}; using bound PHY channel {}",
+            self.fw_api_ver,
+            ap.channel,
+        );
 
         self.iwl_state = IwlState::AuthSent;
         let auth_frame = wifi::build_auth_frame(ap.bssid, self.mac, 1);

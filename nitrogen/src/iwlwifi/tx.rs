@@ -2001,7 +2001,18 @@ impl IwlWifiDevice {
             let traffic_queue = self.traffic_queue();
             let sequence = ((traffic_queue as u16) << 8) | (self.tx_data_head as u16 & 0xff);
             let rate_n_flags = self.tx_rate_n_flags();
-            let mut wire = Self::build_tx_command(&tx_frame, sequence, rate_n_flags);
+            let protected = tx_frame.len() >= 2 && tx_frame[1] & 0x40 != 0;
+            let ccmp_key = if protected {
+                self.wpa.key_material().map(|(ptk, _, _)| ptk)
+            } else {
+                None
+            };
+            if protected && ccmp_key.is_none() {
+                log::error!("iwlwifi: protected TX frame has no active pairwise CCMP key");
+                continue;
+            }
+            let mut wire =
+                Self::build_tx_command(&tx_frame, sequence, rate_n_flags, ccmp_key.as_ref());
             if tx_frame.len() >= 2 && (tx_frame[0] & 0x0c) >> 2 == 0 {
                 log::info!(
                     "iwlwifi: TX management frame subtype={} rate_n_flags={:#010x} band={}",
@@ -2147,7 +2158,12 @@ impl IwlWifiDevice {
     /// calls this `struct iwl_tx_cmd`. The values below mirror Linux's
     /// `iwl_mvm_set_tx_cmd()`/`iwl_mvm_set_tx_cmd_rate()` defaults for the
     /// management and non-QoS frames used by this driver.
-    fn build_tx_command(frame: &[u8], sequence: u16, rate_n_flags: u32) -> Vec<u8> {
+    fn build_tx_command(
+        frame: &[u8],
+        sequence: u16,
+        rate_n_flags: u32,
+        ccmp_key: Option<&[u8; 16]>,
+    ) -> Vec<u8> {
         let mac_header_len = Self::tx_mac_header_len(frame);
         let tb1_unaligned = TX_FRAME_OFFSET + mac_header_len - IWL_FIRST_TB_SIZE;
         let mac_padding = ((tb1_unaligned + 3) & !3) - tb1_unaligned;
@@ -2201,12 +2217,15 @@ impl IwlWifiDevice {
         wire[tx + 2..tx + 4].copy_from_slice(&offload_assist.to_le_bytes());
         wire[tx + 4..tx + 8].copy_from_slice(&tx_flags.to_le_bytes());
         wire[tx + 12..tx + 16].copy_from_slice(&rate_n_flags.to_le_bytes());
-        // sta_id=0. Protected frames use CCMP and the PTK installed in
-        // firmware key-table slot 0.
+        // sta_id=0. For CCMP, Linux v4.14 copies the pairwise key into every
+        // legacy TX command. KEY_FROM_TABLE is used by its GCMP path, not by
+        // the 7265D CCMP path.
         wire[tx + 16] = 0;
         if frame.len() >= 2 && frame[1] & 0x40 != 0 {
-            wire[tx + 17] = 0x02 | 0x10; // TX_CMD_SEC_CCM | KEY_FROM_TABLE
-            wire[tx + 20] = 0; // PTK key-table index
+            wire[tx + 17] = 0x02; // TX_CMD_SEC_CCM
+            if let Some(key) = ccmp_key {
+                wire[tx + 20..tx + 36].copy_from_slice(key);
+            }
         }
         wire[tx + 40..tx + 44].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
         // Linux uses 60 RTS retries and 15 data retries for ordinary
@@ -2331,7 +2350,7 @@ mod tests {
     #[test]
     fn api_v6_tx_command_has_linux_management_defaults() {
         let frame = [0xb0u8; 30];
-        let wire = IwlWifiDevice::build_tx_command(&frame, 0x0918, TX_RATE_1M_CCK);
+        let wire = IwlWifiDevice::build_tx_command(&frame, 0x0918, TX_RATE_1M_CCK, None);
         let tx = TX_COMMAND_HEADER_LEN;
 
         assert_eq!(wire[0], TX_CMD_OPCODE);
@@ -2367,7 +2386,7 @@ mod tests {
         frame[1] = 0x01; // To DS, three-address header
         frame[26..].copy_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x88, 0x8e]);
 
-        let wire = IwlWifiDevice::build_tx_command(&frame, 0x0500, TX_RATE_1M_CCK);
+        let wire = IwlWifiDevice::build_tx_command(&frame, 0x0500, TX_RATE_1M_CCK, None);
         let tx = TX_COMMAND_HEADER_LEN;
         let offload_assist = u16::from_le_bytes(wire[tx + 2..tx + 4].try_into().unwrap());
         let flags = u32::from_le_bytes(wire[tx + 4..tx + 8].try_into().unwrap());
@@ -2382,7 +2401,7 @@ mod tests {
     }
 
     #[test]
-    fn protected_frames_use_increasing_ccmp_pns_and_key_table_slot_zero() {
+    fn protected_frames_use_increasing_ccmp_pns_and_inline_pairwise_key() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
         device.wifi_conn.current_bssid = Some([0x10, 0x20, 0x30, 0x40, 0x50, 0x60]);
 
@@ -2392,7 +2411,8 @@ mod tests {
         assert_eq!(&second[24..32], &[2, 0, 0, 0x20, 0, 0, 0, 0]);
         assert_eq!(&first[32..40], &[0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0]);
 
-        let wire = IwlWifiDevice::build_tx_command(&first, 0x0400, TX_RATE_6M_OFDM);
+        let ptk = [0x5a; 16];
+        let wire = IwlWifiDevice::build_tx_command(&first, 0x0400, TX_RATE_6M_OFDM, Some(&ptk));
         assert_eq!(
             (u16::from_le_bytes(
                 wire[TX_COMMAND_HEADER_LEN + 2..TX_COMMAND_HEADER_LEN + 4]
@@ -2402,8 +2422,11 @@ mod tests {
                 & 0x1f,
             16 // 24-byte MAC header plus eight-byte CCMP IV
         );
-        assert_eq!(wire[TX_COMMAND_HEADER_LEN + 17], 0x12); // CCMP | key table
-        assert_eq!(wire[TX_COMMAND_HEADER_LEN + 20], 0); // PTK slot 0
+        assert_eq!(wire[TX_COMMAND_HEADER_LEN + 17], 0x02); // CCMP, inline key
+        assert_eq!(
+            &wire[TX_COMMAND_HEADER_LEN + 20..TX_COMMAND_HEADER_LEN + 36],
+            &ptk
+        );
     }
 
     #[test]
