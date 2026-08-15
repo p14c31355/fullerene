@@ -12,7 +12,7 @@ use nitrogen::iwlwifi::registers::{
     CSR_HW_IF_CONFIG_HAP_WAKE, CSR_HW_IF_CONFIG_NIC_MASK, CSR_MAC_SHADOW_REG_CTRL_ENABLE,
     FH_MEM_CBBC_0_15_LOWER_BOUND, FH_MEM_CBBC_16_19_LOWER_BOUND, FH_MEM_CBBC_20_31_LOWER_BOUND,
     IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_DATA_QUEUE, IWL_DQA_AUX_QUEUE, IWL_DQA_CMD_QUEUE,
-    IWL_MAX_TID_COUNT, IWL_NUM_OF_QUEUES, SCD_CONTEXT_MEM_LOWER_BOUND,
+    IWL_MAX_TID_COUNT, IWL_MGMT_QUEUE, IWL_NUM_OF_QUEUES, SCD_CONTEXT_MEM_LOWER_BOUND,
     SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES,
     TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
     TX_TFD_RING_BYTES, fh_mem_cbbc_queue, legacy_nic_config_fields, scd_trans_tbl_offset_queue,
@@ -120,6 +120,7 @@ fn linux_v414_7265d_dqa_payloads_are_wire_compatible() {
     assert_eq!(IWL_DQA_CMD_QUEUE, 0);
     assert_eq!(IWL_DQA_AUX_QUEUE, 1);
     assert_eq!(IWL_DATA_QUEUE, 4);
+    assert_eq!(IWL_MGMT_QUEUE, 5);
     assert_eq!(bytes(&DqaEnableCmdV1::linux_7000()), &[0, 0, 0, 0]);
     assert_eq!(
         bytes(&ScdTxqCfgCmdV1::dqa_aux(1)),
@@ -127,7 +128,7 @@ fn linux_v414_7265d_dqa_payloads_are_wire_compatible() {
     );
     assert_eq!(
         bytes(&ScdTxqCfgCmdV1::peer(0)),
-        &[0, 0, 8, 4, 1, 1, 1, 64, 0, 0, 0, 0]
+        &[0, 0, 8, 5, 1, 0, 3, 64, 0, 0, 0, 0]
     );
 
     let peer = AddStaCmdV7::peer(0, 0, [1, 2, 3, 4, 5, 6]);
@@ -142,7 +143,7 @@ fn linux_v414_7265d_dqa_payloads_are_wire_compatible() {
     assert_eq!(update_bytes[17], 1 << 7);
     assert_eq!(
         &update_bytes[40..44],
-        &(1u32 << IWL_DATA_QUEUE).to_le_bytes()
+        &(1u32 << IWL_MGMT_QUEUE).to_le_bytes()
     );
 }
 

@@ -205,6 +205,18 @@ impl IwlWifiDevice {
         }
     }
 
+    /// Scheduler queue used by this minimal non-QoS station TX path.
+    /// Linux allocates the first free DQA management queue for management,
+    /// EAPOL, and the other non-QoS frames emitted by the current stack.
+    #[inline]
+    pub(super) fn traffic_queue(&self) -> u32 {
+        if self.fw_dqa_supported {
+            IWL_MGMT_QUEUE
+        } else {
+            IWL_DATA_QUEUE
+        }
+    }
+
     pub(super) fn tx_desc_mut(&mut self, idx: usize) -> &mut TxDmaDesc {
         unsafe { &mut *(self.tx_dma_ring.virt() as *mut TxDmaDesc).add(idx) }
     }

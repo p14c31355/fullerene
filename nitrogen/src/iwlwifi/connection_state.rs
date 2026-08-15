@@ -830,7 +830,7 @@ fn perform_init_step() {
                     return;
                 }
                 let mut tx_bufs: Vec<DmaRegion> = Vec::new();
-                // Keep q9 host-command and q4 data payloads in disjoint DMA
+                // Keep host-command and traffic payloads in disjoint DMA
                 // slots; their queue heads advance independently.
                 for _ in 0..TX_QUEUE_SIZE * 2 {
                     let mut buf = match DmaRegion::alloc(driver_ctx, MAX_FRAME_SIZE) {
@@ -2005,8 +2005,8 @@ impl IwlWifiDevice {
         }
 
         // DQA stations are added without a static queue mask. Linux attaches
-        // the BSS-client q4 only after ADD_STA succeeds. Pre-DQA firmware
-        // keeps the transport-programmed static queue ordering.
+        // the selected management/non-QoS queue only after ADD_STA succeeds.
+        // Pre-DQA firmware keeps the transport-programmed static queue.
         if !self.fw_dqa_supported {
             if let Err(error) = self.enable_data_tx_queue() {
                 self.iwl_state = IwlState::Disconnected;
@@ -2047,7 +2047,7 @@ impl IwlWifiDevice {
         }
 
         if self.fw_dqa_supported {
-            if let Err(error) = self.enable_dqa_tx_queue(IWL_DATA_QUEUE) {
+            if let Err(error) = self.enable_dqa_tx_queue(IWL_MGMT_QUEUE) {
                 self.iwl_state = IwlState::Disconnected;
                 self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
                 self.wifi_conn.error_msg = Some(alloc::format!(

@@ -830,8 +830,8 @@ impl IwlWifiDevice {
     }
 
     /// Submit a runtime setup command and wait until the command queue has
-    /// consumed it. The AP station must be fully published on q9 before a
-    /// TX_CMD is doorbelled on q4.
+    /// consumed it. The AP station must be fully published on the command
+    /// queue before a TX_CMD is doorbelled on its traffic queue.
     pub(super) fn send_hcmd_and_wait(
         &mut self,
         label: &str,
@@ -1958,7 +1958,8 @@ impl IwlWifiDevice {
             }
 
             let tx_frame = self.tx_queue.pop_front().unwrap();
-            let sequence = ((IWL_DATA_QUEUE as u16) << 8) | (self.tx_data_head as u16 & 0xff);
+            let traffic_queue = self.traffic_queue();
+            let sequence = ((traffic_queue as u16) << 8) | (self.tx_data_head as u16 & 0xff);
             let rate_n_flags = self.tx_rate_n_flags();
             let wire = Self::build_tx_command(&tx_frame, sequence, rate_n_flags);
             if tx_frame.len() >= 2 && (tx_frame[0] & 0x0c) >> 2 == 0 {
@@ -1975,7 +1976,8 @@ impl IwlWifiDevice {
             }
             let desc_idx = self.tx_data_head % TX_QUEUE_SIZE;
             let desc_ptr = unsafe {
-                (self.tx_dma_ring.virt() as *mut u8).add(TX_DATA_TFD_RING_OFFSET) as *mut TxDmaDesc
+                (self.tx_dma_ring.virt() as *mut u8).add(tx_tfd_ring_offset(traffic_queue))
+                    as *mut TxDmaDesc
             };
             let buf = &mut self.tx_bufs[TX_QUEUE_SIZE + desc_idx];
             buf.write_from(&wire);
@@ -1988,15 +1990,84 @@ impl IwlWifiDevice {
             desc.tbs[0].hi_n_len = ((wire.len() as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
+            // The legacy SCD does not derive an MPDU's airtime length from
+            // the TFD. Linux publishes a separate byte-count entry before
+            // ringing the queue doorbell; a zero entry leaves a valid TFD
+            // permanently unfetched. The table records the 802.11 payload
+            // plus CRC/delimiter and, for CCMP, the firmware-appended MIC.
+            let sec_ctl = wire[TX_COMMAND_HEADER_LEN + 17];
+            let byte_count = self.update_scd_byte_count(
+                traffic_queue,
+                desc_idx,
+                tx_frame.len() as u16,
+                0,
+                sec_ctl,
+            );
+
             self.tx_data_head = self.tx_data_head.wrapping_add(1);
             mmio::write_barrier();
             self.write_mmio32(
                 HBUS_TARG_WRPTR,
-                (self.tx_data_head as u32 & 0xff) | (IWL_DATA_QUEUE << 8),
+                (self.tx_data_head as u32 & 0xff) | (traffic_queue << 8),
             );
             mmio::write_barrier();
+            if tx_frame.len() >= 2 && (tx_frame[0] & 0x0c) >> 2 == 0 {
+                log::info!(
+                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} byte_count={} wrptr={} rptr={:#010x} status={:#010x}",
+                    traffic_queue,
+                    desc_idx,
+                    tx_frame.len(),
+                    wire.len(),
+                    byte_count,
+                    self.tx_data_head & 0xff,
+                    self.read_prph(scd_queue_rdptr(traffic_queue)).unwrap_or(!0),
+                    self.read_prph(scd_queue_status(traffic_queue))
+                        .unwrap_or(!0),
+                );
+            }
         }
         self.release_mac_access_if_tx_idle();
+    }
+
+    /// Publish one entry in Linux's `iwlagn_scd_bc_tbl`, including the
+    /// duplicate window used when the 8-bit TFD index wraps.
+    fn update_scd_byte_count(
+        &mut self,
+        queue: u32,
+        write_ptr: usize,
+        frame_len: u16,
+        sta_id: u8,
+        sec_ctl: u8,
+    ) -> u16 {
+        const TFD_QUEUE_SIZE_MAX: usize = 256;
+        const TFD_QUEUE_SIZE_BC_DUP: usize = 64;
+        const TFD_QUEUE_BC_SIZE: usize = TFD_QUEUE_SIZE_MAX + TFD_QUEUE_SIZE_BC_DUP;
+        const TX_CMD_SEC_MSK: u8 = 0x07;
+        const TX_CMD_SEC_CCM: u8 = 0x02;
+
+        let mut length = frame_len.saturating_add(4 + 4); // CRC + delimiter
+        if sec_ctl & TX_CMD_SEC_MSK == TX_CMD_SEC_CCM {
+            length = length.saturating_add(8); // CCMP MIC
+        }
+        debug_assert!(length <= 0x0fff);
+        debug_assert!(queue < 32);
+        debug_assert!(write_ptr < TFD_QUEUE_SIZE_MAX);
+        let entry = (length & 0x0fff) | ((sta_id as u16) << 12);
+        let table_base = self.tx_dma_ring.virt() + TX_SCD_BC_OFFSET;
+        let queue_base = table_base + queue as usize * TFD_QUEUE_BC_SIZE * 2;
+        let primary = queue_base + write_ptr * 2;
+        unsafe {
+            core::ptr::write_unaligned(primary as *mut u16, entry.to_le());
+        }
+        mmio::cache_flush(primary);
+        if write_ptr < TFD_QUEUE_SIZE_BC_DUP {
+            let duplicate = queue_base + (TFD_QUEUE_SIZE_MAX + write_ptr) * 2;
+            unsafe {
+                core::ptr::write_unaligned(duplicate as *mut u16, entry.to_le());
+            }
+            mmio::cache_flush(duplicate);
+        }
+        entry
     }
 
     /// Build the legacy API-v6 TX command consumed by the 7265 firmware.
@@ -2157,6 +2228,7 @@ mod tests {
     #[test]
     fn command_and_data_queues_use_disjoint_dma_buffers() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.fw_dqa_supported = true;
         device.send_hcmd(0x01, GroupId::Legacy as u8, &[]).unwrap();
         device.send_raw_80211_frame(&[0xb0; 30]).unwrap();
 
@@ -2168,6 +2240,26 @@ mod tests {
         );
         assert!(!device.tx_bufs[0].as_slice().is_empty());
         assert!(!device.tx_bufs[TX_QUEUE_SIZE].as_slice().is_empty());
+        assert_eq!(
+            device.safe_read32(HBUS_TARG_WRPTR),
+            Some((IWL_MGMT_QUEUE << 8) | 1)
+        );
+        assert_eq!(
+            &device.tx_bufs[TX_QUEUE_SIZE].as_slice()[2..4],
+            &0x0500u16.to_le_bytes()
+        );
+        let management_desc = unsafe {
+            &*((device.tx_dma_ring.virt() + TX_MGMT_TFD_RING_OFFSET) as *const TxDmaDesc)
+        };
+        assert_eq!(management_desc.num_tbs, 1);
+        let byte_count_base =
+            device.tx_dma_ring.virt() + TX_SCD_BC_OFFSET + IWL_MGMT_QUEUE as usize * (256 + 64) * 2;
+        let primary = unsafe { core::ptr::read_unaligned(byte_count_base as *const u16) };
+        let duplicate =
+            unsafe { core::ptr::read_unaligned((byte_count_base + 256 * 2) as *const u16) };
+        // 30-byte management MPDU + four-byte CRC + four-byte delimiter.
+        assert_eq!(u16::from_le(primary), 38);
+        assert_eq!(u16::from_le(duplicate), 38);
     }
 
     #[test]

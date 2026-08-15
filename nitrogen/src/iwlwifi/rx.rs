@@ -768,7 +768,7 @@ impl IwlWifiDevice {
             None
         };
         let polled_data_tx_tail = if self.fw_state == FwState::Ready {
-            self.read_prph(SCD_QUEUE_RDPTR_DATA)
+            self.read_prph(scd_queue_rdptr(self.traffic_queue()))
                 .map(|value| value as usize)
         } else {
             None
@@ -943,7 +943,7 @@ impl IwlWifiDevice {
                 if let Some(hardware_tail) = self.read_prph(scd_queue_rdptr(self.command_queue())) {
                     self.update_tx_tail(hardware_tail as usize);
                 }
-                if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_DATA) {
+                if let Some(hardware_tail) = self.read_prph(scd_queue_rdptr(self.traffic_queue())) {
                     self.update_data_tx_tail(hardware_tail as usize);
                 }
                 self.process_tx_queue();

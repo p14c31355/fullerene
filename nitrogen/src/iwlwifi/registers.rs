@@ -165,9 +165,12 @@ pub const IWL_LEGACY_CMD_QUEUE: u32 = 9;
 pub const IWL_DQA_CMD_QUEUE: u32 = 0;
 /// Backwards-compatible name for the pre-DQA command queue.
 pub const IWL_CMD_QUEUE: u32 = IWL_LEGACY_CMD_QUEUE;
-/// Minimal managed-station data queue. Linux keeps TX_CMD frames off the
-/// command queue and assigns the first ordinary data queue to the AP peer.
+/// Reserved BSS-client data queue in the DQA layout, and the minimal static
+/// data queue used by the pre-DQA path.
 pub const IWL_DATA_QUEUE: u32 = 4;
+/// First DQA management queue. Linux prefers q5..q8 for management and
+/// non-QoS frames before falling back to the reserved BSS-client/data pool.
+pub const IWL_MGMT_QUEUE: u32 = 5;
 /// Auxiliary queue used by the firmware scan station in the 7265's non-DQA
 /// layout. Linux selects q15 for `mvm->aux_queue` on 31-queue hardware;
 /// q8 is the separate off-channel reservation, not the station's TX queue.
@@ -309,6 +312,8 @@ pub const TX_AUX_TFD_RING_OFFSET: usize = tx_tfd_ring_offset(IWL_AUX_QUEUE);
 /// Ordinary data queue ring. It is kept separate from both the HCMD and AUX
 /// rings because each scheduler queue owns an independent read pointer.
 pub const TX_DATA_TFD_RING_OFFSET: usize = tx_tfd_ring_offset(IWL_DATA_QUEUE);
+/// DQA management/non-QoS queue used for the first authentication exchange.
+pub const TX_MGMT_TFD_RING_OFFSET: usize = tx_tfd_ring_offset(IWL_MGMT_QUEUE);
 pub const TX_KEEP_WARM_OFFSET: usize = IWL_NUM_OF_QUEUES as usize * TX_TFD_RING_BYTES;
 pub const TX_KEEP_WARM_BYTES: usize = 0x1000;
 pub const TX_SCD_BC_OFFSET: usize = TX_KEEP_WARM_OFFSET + TX_KEEP_WARM_BYTES;

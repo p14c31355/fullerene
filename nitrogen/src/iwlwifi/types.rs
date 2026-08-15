@@ -351,17 +351,18 @@ pub struct ScdTxqCfgCmdV1 {
 
 impl ScdTxqCfgCmdV1 {
     pub fn peer(sta_id: u8) -> Self {
-        use super::registers::{IWL_DATA_QUEUE, IWL_MAX_TID_COUNT};
+        use super::registers::{IWL_MAX_TID_COUNT, IWL_MGMT_QUEUE};
         Self {
             token: 0,
             sta_id,
             tid: IWL_MAX_TID_COUNT,
-            scd_queue: IWL_DATA_QUEUE as u8,
+            scd_queue: IWL_MGMT_QUEUE as u8,
             action: 1, // SCD_CFG_ENABLE_QUEUE
-            // q4 is the dedicated DQA BSS-client queue. Linux marks it
-            // aggregate-capable even for the initial non-QoS management TID.
-            aggregate: 1,
-            tx_fifo: 1, // IWL_MVM_TX_FIFO_BE
+            // Linux selects q5 from the management pool for the initial
+            // non-QoS authentication frame. Only q4 and q10+ are marked
+            // aggregate-capable; management queues remain non-aggregated.
+            aggregate: 0,
+            tx_fifo: 3, // IWL_MVM_TX_FIFO_VO (management AC)
             window: 64,
             ssn: 0,
             reserved: 0,
@@ -685,9 +686,9 @@ impl AddStaCmdV7 {
 
     /// Add the AP peer used by a managed station connection.
     ///
-    /// The 7265 reserves station 0 for the AP of the station interface. The
-    /// first ordinary data queue is assigned to that peer before the first
-    /// authentication frame is submitted.
+    /// The 7265 reserves station 0 for the AP of the station interface. DQA
+    /// adds the station with no queue mask, then attaches the first available
+    /// management queue before submitting authentication.
     pub fn peer(mac_index: u8, sta_id: u8, bssid: [u8; 6]) -> Self {
         Self {
             add_modify: 0, // STA_MODE_ADD
@@ -721,12 +722,12 @@ impl AddStaCmdV7 {
         command
     }
 
-    /// Attach the configured DQA BSS-client queue to an existing AP station.
+    /// Attach the configured DQA management queue to an existing AP station.
     pub fn peer_queue_update(mac_index: u8, sta_id: u8, bssid: [u8; 6]) -> Self {
         let mut command = Self::peer(mac_index, sta_id, bssid);
         command.add_modify = 1; // STA_MODE_MODIFY
         command.modify_mask = 1 << 7; // STA_MODIFY_QUEUES
-        command.tfd_queue_msk = 1 << super::registers::IWL_DATA_QUEUE;
+        command.tfd_queue_msk = 1 << super::registers::IWL_MGMT_QUEUE;
         command
     }
 }
