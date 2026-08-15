@@ -259,6 +259,11 @@ pub const fn scd_queue_status(queue: u32) -> u32 {
 pub const fn scd_context_queue(queue: u32) -> u32 {
     0x600 + queue * 8
 }
+/// Linux's `SCD_TX_STTS_QUEUE_OFFSET(x)`: the 16-byte TX status SRAM entry
+/// for each queue.  Used for diagnostics only.
+pub const fn scd_tx_stts_queue_offset(queue: u32) -> u32 {
+    0x6A0 + queue * 16
+}
 pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_CMD: u32 = 0x600 + IWL_CMD_QUEUE * 8;

@@ -1046,6 +1046,23 @@ impl IwlWifiDevice {
                 ctx1 & 0x7f,
                 (ctx1 >> 16) & 0x7f,
             );
+            // Read the SCD translation table entry and TX status SRAM entry
+            // for q5.  The translation table maps RA/TID to queue; a non-
+            // aggregate queue does not use it, but a stale non-zero value
+            // could misdirect the scheduler.  The TX status SRAM entry is
+            // another firmware-owned field that should be non-zero for an
+            // active queue.
+            let trans_tbl = self
+                .read_mem32(scd_base + scd_trans_tbl_offset_queue(queue))
+                .unwrap_or(!0);
+            let tx_stts = self
+                .read_mem32(scd_base + scd_tx_stts_queue_offset(queue))
+                .unwrap_or(!0);
+            log::info!(
+                "iwlwifi: SCD SRAM q5 extra trans_tbl={:#010x} tx_stts={:#010x}",
+                trans_tbl,
+                tx_stts,
+            );
         }
 
         let int_cause = match self.safe_read32(CSR_INT) {

@@ -2138,6 +2138,29 @@ impl IwlWifiDevice {
                     + TX_SCD_BC_OFFSET as u64
                     + traffic_queue as u64 * (256 + 64) * 2
                     + desc_idx as u64 * 2;
+                // Dump the raw TFD bytes and the DMA byte-count entry so that
+                // any TFD layout mismatch with Linux is visible without a
+                // hardware debugger.  The TFD is 128 bytes; only show the
+                // active TB region (reserved + num_tbs + up to 3 TBs = 22 bytes)
+                // plus the byte-count entry on the DMA ring.
+                let tfd_ptr = desc as *const TxDmaDesc as *const u8;
+                let mut tfd_hex = alloc::string::String::new();
+                for i in 0..(4 + 3 * core::mem::size_of::<TxDmaTb>()) {
+                    use alloc::fmt::Write;
+                    let _ = write!(tfd_hex, "{:02x} ", unsafe {
+                        core::ptr::read_volatile(tfd_ptr.add(i))
+                    });
+                }
+                let bc_ptr = (self.tx_dma_ring.virt()
+                    + TX_SCD_BC_OFFSET
+                    + traffic_queue as usize * (256 + 64) * 2
+                    + desc_idx * 2) as *const u16;
+                let bc_primary = unsafe { core::ptr::read_volatile(bc_ptr) };
+                let bc_dup_ptr = (self.tx_dma_ring.virt()
+                    + TX_SCD_BC_OFFSET
+                    + traffic_queue as usize * (256 + 64) * 2
+                    + (256 + desc_idx) * 2) as *const u16;
+                let bc_duplicate = unsafe { core::ptr::read_volatile(bc_dup_ptr) };
                 log::info!(
                     "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} bc_dwords={} bc_addr={:#018x} tbs={} tb0={} tb1={} tb2={} scratch={:#018x} sw_wrptr={} hw_wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} scd_dram={:#010x} tx_status={:#010x} tx_error={:#010x}",
                     traffic_queue,
@@ -2165,6 +2188,20 @@ impl IwlWifiDevice {
                     self.read_prph(SCD_DRAM_BASE_ADDR).unwrap_or(!0),
                     self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
                     self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
+                );
+                log::info!(
+                    "iwlwifi: TFD raw queue={} slot={} tfd_hex={} bc_primary={:#06x} bc_duplicate={:#06x} tb0_addr={:#010x} tb0_hnlen={:#06x} tb1_addr={:#010x} tb1_hnlen={:#06x} tb2_addr={:#010x} tb2_hnlen={:#06x}",
+                    traffic_queue,
+                    desc_idx,
+                    tfd_hex,
+                    u16::from(bc_primary),
+                    u16::from(bc_duplicate),
+                    unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].addr_lo)) },
+                    unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].hi_n_len)) },
+                    unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[1].addr_lo)) },
+                    unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[1].hi_n_len)) },
+                    unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[2].addr_lo)) },
+                    unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[2].hi_n_len)) },
                 );
             }
         }
