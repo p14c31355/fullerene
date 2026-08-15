@@ -88,6 +88,8 @@ pub enum LegacyCmd {
     /// BT_CONFIG_CMD used by the non-unified 7000-series INIT sequence.
     BtConfig = 0x9b,
     PhyContext = 0x08,
+    /// Bind one or more MAC contexts to a PHY context.
+    BindingContext = 0x2b,
     /// PHY configuration and calibration control used before MAC contexts.
     PhyConfiguration = 0x6a,
     /// Legacy LMAC scan configuration.  Sent as SCAN_CFG_CMD in the
@@ -281,6 +283,39 @@ impl PhyContextCmdV1 {
             rxchain_info: (0x03 << 1) | (2 << 10) | (2 << 12),
             acquisition_data: 0,
             dsp_cfg_flags: 0,
+        }
+    }
+
+    pub fn modify_on_channel(id: u8, channel: u8) -> Self {
+        let mut command = Self::add(id);
+        command.action = 2; // FW_CTXT_ACTION_MODIFY
+        command.channel.band = if channel > 14 {
+            PHY_BAND_5
+        } else {
+            PHY_BAND_24
+        };
+        command.channel.channel = channel;
+        command
+    }
+}
+
+/// BINDING_CONTEXT_CMD API v1 used by the non-CDB 7265 firmware.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct BindingContextCmdV1 {
+    pub id_and_color: u32,
+    pub action: u32,
+    pub macs: [u32; 3],
+    pub phy: u32,
+}
+
+impl BindingContextCmdV1 {
+    pub const fn add_single(binding_id: u8, mac_id: u8, phy_id: u8) -> Self {
+        Self {
+            id_and_color: binding_id as u32,
+            action: 1, // FW_CTXT_ACTION_ADD
+            macs: [mac_id as u32, u32::MAX, u32::MAX],
+            phy: phy_id as u32,
         }
     }
 }

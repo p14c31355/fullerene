@@ -1964,6 +1964,25 @@ impl IwlWifiDevice {
             self.wpa.init(password, ssid.as_str(), ap.bssid, self.mac);
         }
 
+        // Linux retunes the bound PHY context before updating the BSS MAC
+        // context and adding the AP peer. Scanning is off-channel and does
+        // not leave PHY context 0 on the selected AP's channel.
+        let phy_context = PhyContextCmdV1::modify_on_channel(0, ap.channel);
+        if let Err(error) = self.send_hcmd_and_wait(
+            "CONNECT_PHY_CONTEXT",
+            LegacyCmd::PhyContext as u8,
+            GroupId::Legacy as u8,
+            unsafe { super::as_bytes(&phy_context) },
+        ) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection PHY channel setup failed: {:?}",
+                error
+            ));
+            return Err(error);
+        }
+
         // Linux updates the BSS MAC context and adds the AP peer before
         // transmitting authentication. TX_CMD carries sta_id=0 for this
         // minimal managed-station path; without the ADD_STA entry the 7265
@@ -2006,6 +2025,12 @@ impl IwlWifiDevice {
             AddStaCmdV7::legacy_peer(0, 0, ap.bssid)
         };
         let ap_sta_bytes = unsafe { super::as_bytes(&ap_sta) };
+        log::info!(
+            "iwlwifi: connection station add sta_id=0 mac_id_color=0 channel={} dqa={} payload={}",
+            ap.channel,
+            self.fw_dqa_supported,
+            ap_sta_bytes.len(),
+        );
         if let Err(error) = self.send_hcmd_and_wait(
             "CONNECT_ADD_STA",
             LegacyCmd::AddSta as u8,

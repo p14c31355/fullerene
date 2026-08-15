@@ -1219,7 +1219,29 @@ impl IwlWifiDevice {
         Err(crate::DriverError::Pending)
     }
 
-    /// Send MCC_UPDATE after MAC_CONTEXT has been accepted and wait for its
+    /// Bind the station MAC context to PHY context 0. Linux creates this
+    /// binding after both contexts and before any peer station is added.
+    fn send_runtime_binding(&mut self) -> Result<(), crate::DriverError> {
+        let binding = BindingContextCmdV1::add_single(0, 0, 0);
+        let bytes = unsafe { super::as_bytes(&binding) };
+        self.send_init_hcmd(
+            "BINDING_CONTEXT",
+            LegacyCmd::BindingContext as u8,
+            GroupId::Legacy as u8,
+            bytes,
+        )?;
+        log::info!(
+            "iwlwifi: init.config name=binding_context action=add binding=0 mac=0 phy=0 payload={}",
+            bytes.len(),
+        );
+        self.wait_init_hcmd_response(
+            "BINDING_CONTEXT",
+            LegacyCmd::BindingContext as u8,
+            GroupId::Legacy as u8,
+        )
+    }
+
+    /// Send MCC_UPDATE after BINDING_CONTEXT has been accepted and wait for its
     /// firmware response before submitting SCAN_CONFIG. Linux treats MCC as a
     /// synchronous command; descriptor consumption alone is not sufficient.
     fn send_runtime_mcc(&mut self) -> Result<(), crate::DriverError> {
@@ -1341,6 +1363,22 @@ impl IwlWifiDevice {
                             );
                             match opcode {
                                 x if x == LegacyCmd::MacContext as u8 => {
+                                    self.send_runtime_binding()?;
+                                    self.send_runtime_mcc()?;
+                                    self.send_runtime_scan_config()?;
+                                }
+                                x if x == LegacyCmd::BindingContext as u8 => {
+                                    if payload.len() < 4
+                                        || u32::from_le_bytes([
+                                            payload[0], payload[1], payload[2], payload[3],
+                                        ]) != 0
+                                    {
+                                        log::error!(
+                                            "iwlwifi: init.config name=binding_context status=invalid payload={}",
+                                            payload.len(),
+                                        );
+                                        return Err(crate::DriverError::Protocol);
+                                    }
                                     self.send_runtime_mcc()?;
                                     self.send_runtime_scan_config()?;
                                 }

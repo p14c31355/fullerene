@@ -19,8 +19,9 @@ use nitrogen::iwlwifi::registers::{
     tx_tfd_ring_offset,
 };
 use nitrogen::iwlwifi::types::{
-    AddStaCmdV7, BtCoexConfigCmd, DqaEnableCmdV1, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
-    ScanChannelCfgLmac, ScanConfigV1, ScanRequestCmd, ScdTxqCfgCmdV1,
+    AddStaCmdV7, BindingContextCmdV1, BtCoexConfigCmd, DqaEnableCmdV1, MacContextCmd,
+    MccUpdateCmdV1, MccUpdateCmdV2, PHY_BAND_5, PhyContextCmdV1, ScanChannelCfgLmac, ScanConfigV1,
+    ScanRequestCmd, ScdTxqCfgCmdV1,
 };
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
@@ -143,6 +144,30 @@ fn linux_v414_7265d_dqa_payloads_are_wire_compatible() {
         &update_bytes[40..44],
         &(1u32 << IWL_DATA_QUEUE).to_le_bytes()
     );
+}
+
+#[test]
+fn linux_v414_binding_and_channel_update_precede_peer_station() {
+    let binding = BindingContextCmdV1::add_single(0, 0, 0);
+    assert_eq!(size_of::<BindingContextCmdV1>(), 24);
+    assert_eq!(
+        bytes(&binding),
+        &[
+            0, 0, 0, 0, // binding id/color 0
+            1, 0, 0, 0, // FW_CTXT_ACTION_ADD
+            0, 0, 0, 0, // MAC 0
+            0xff, 0xff, 0xff, 0xff, // invalid MAC
+            0xff, 0xff, 0xff, 0xff, // invalid MAC
+            0, 0, 0, 0, // PHY 0
+        ]
+    );
+
+    let phy = PhyContextCmdV1::modify_on_channel(0, 36);
+    let phy_bytes = bytes(&phy);
+    assert_eq!(size_of::<PhyContextCmdV1>(), 36);
+    assert_eq!(&phy_bytes[4..8], &2u32.to_le_bytes());
+    assert_eq!(phy_bytes[16], PHY_BAND_5);
+    assert_eq!(phy_bytes[17], 36);
 }
 
 #[test]
