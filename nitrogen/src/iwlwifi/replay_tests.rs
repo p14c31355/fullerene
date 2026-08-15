@@ -6,6 +6,7 @@
 //! builds the correct TX frames.
 
 use super::device::IwlWifiDevice;
+use super::registers::TX_QUEUE_SIZE;
 use super::types::*;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -267,8 +268,9 @@ fn wpa2_full_handshake_flow() {
     assert!(dev.wpa_required);
     assert_eq!(dev.wpa.state, WpaState::WaitMsg1);
     assert!(
-        (0..dev.tx_head).all(|index| dev.tx_bufs[index % dev.tx_bufs.len()].as_slice()[0]
-            != LegacyCmd::TimeEvent as u8),
+        (0..dev.tx_head)
+            .all(|index| dev.tx_bufs[index % TX_QUEUE_SIZE].as_slice()[0]
+                != LegacyCmd::TimeEvent as u8),
         "7265D API29 must not receive the firmware-asserting TIME_EVENT command"
     );
 

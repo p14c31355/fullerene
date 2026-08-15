@@ -667,11 +667,9 @@ impl MacContextCmd {
         self.sta.dtim_interval_reciprocal = reciprocal(dtim_interval);
         self.sta.assoc_id = aid as u32;
         if dtim_period != 0 {
-            let dtim_offset_us = u32::from(dtim_count)
-                .saturating_mul(beacon_interval)
-                .saturating_mul(1024);
-            self.sta.dtim_tsf = beacon_tsf.saturating_add(u64::from(dtim_offset_us));
-            self.sta.dtim_time = device_timestamp.wrapping_add(dtim_offset_us);
+            let dtim_offset_us = u64::from(dtim_count) * u64::from(beacon_interval) * 1024;
+            self.sta.dtim_tsf = beacon_tsf.saturating_add(dtim_offset_us);
+            self.sta.dtim_time = device_timestamp.wrapping_add(dtim_offset_us as u32);
             self.sta.assoc_beacon_arrive_time = device_timestamp;
             self.sta.is_assoc = 1;
         }
@@ -770,7 +768,9 @@ impl AddStaCmdV7 {
             modify_mask: 0,
             reserved3: 0,
             station_flags: 0,
-            // Linux permits firmware to update FAT/MIMO flags for the peer.
+            // Linux permits firmware to update FAT/MIMO flags and the
+            // dynamic-SMPS RTS/MIMO protection bit (STA_FLG_RTS_MIMO_PROT,
+            // bit 17) for the peer.
             station_flags_msk: 0x3c02_0000,
             add_immediate_ba_tid: 0,
             remove_immediate_ba_tid: 0,

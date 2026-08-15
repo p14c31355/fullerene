@@ -1908,7 +1908,7 @@ impl IwlWifiDevice {
                 dtim_count: beacon.dtim_count,
                 dtim_period: beacon.dtim_period,
             };
-            if let Some(existing) = self
+            let enrich_scan_result = if let Some(existing) = self
                 .scan_results
                 .iter_mut()
                 .find(|existing| existing.bssid == ap.bssid)
@@ -1921,7 +1921,32 @@ impl IwlWifiDevice {
                     existing.device_timestamp = ap.device_timestamp;
                     existing.dtim_count = ap.dtim_count;
                     existing.dtim_period = ap.dtim_period;
+                    true
+                } else {
+                    false
                 }
+            } else {
+                false
+            };
+            if enrich_scan_result {
+                if let Some(existing) = self
+                    .wifi_conn
+                    .scan_results
+                    .iter_mut()
+                    .find(|existing| existing.bssid == ap.bssid)
+                {
+                    existing.beacon_interval = ap.beacon_interval;
+                    existing.beacon_timestamp = ap.beacon_timestamp;
+                    existing.device_timestamp = ap.device_timestamp;
+                    existing.dtim_count = ap.dtim_count;
+                    existing.dtim_period = ap.dtim_period;
+                }
+            }
+            if self
+                .scan_results
+                .iter()
+                .any(|existing| existing.bssid == ap.bssid)
+            {
                 return;
             }
             log::info!(
@@ -2099,19 +2124,24 @@ impl IwlWifiDevice {
             let aux_scd_status = self.read_prph(scd_queue_status(aux_queue)).unwrap_or(!0);
             let aux_scd_wrptr = self.read_prph(scd_queue_wrptr(aux_queue)).unwrap_or(!0);
             let aux_scd_rdptr = self.read_prph(scd_queue_rdptr(aux_queue)).unwrap_or(!0);
-            let aux_ctx0 = self
-                .read_mem32(self.alive_scd_base_addr + scd_context_queue(aux_queue))
-                .unwrap_or(!0);
-            let aux_ctx1 = self
-                .read_mem32(self.alive_scd_base_addr + scd_context_queue(aux_queue) + 4)
-                .unwrap_or(!0);
-            let aux_trans_tbl = self
-                .read_mem32(self.alive_scd_base_addr + scd_trans_tbl_offset_queue(aux_queue))
-                .unwrap_or(!0);
-            let aux_tx_stts = self
-                .read_mem32(self.alive_scd_base_addr + scd_tx_stts_queue_offset(aux_queue))
-                .unwrap_or(!0);
-            log::info!(
+            let (aux_ctx0, aux_ctx1, aux_trans_tbl, aux_tx_stts) = if self.alive_scd_base_addr != 0
+            {
+                (
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(aux_queue))
+                        .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(aux_queue) + 4)
+                        .unwrap_or(!0),
+                    self.read_mem32(
+                        self.alive_scd_base_addr + scd_trans_tbl_offset_queue(aux_queue),
+                    )
+                    .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_tx_stts_queue_offset(aux_queue))
+                        .unwrap_or(!0),
+                )
+            } else {
+                (!0, !0, !0, !0)
+            };
+            log::debug!(
                 "iwlwifi: SCD_EN_CTRL after SCD_QUEUE_CFG scd_en={:#010x} q5_bit={} q5_status={:#010x}",
                 scd_en_after_cfg,
                 if scd_en_after_cfg & (1 << IWL_MGMT_QUEUE) != 0 {
@@ -2121,7 +2151,7 @@ impl IwlWifiDevice {
                 },
                 scd_status_after_cfg,
             );
-            log::info!(
+            log::debug!(
                 "iwlwifi: SCD DQA compare q1 status={:#010x} wrptr={:#010x} rdptr={:#010x} ctx0={:#010x} ctx1={:#010x} trans_tbl={:#010x} tx_stts={:#010x}",
                 aux_scd_status,
                 aux_scd_wrptr,

@@ -1422,7 +1422,9 @@ impl IwlWifiDevice {
             let status = payload
                 .get(..4)
                 .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
-            if status != Some(1) {
+            // ADD_STA_SUCCESS is reported in the low byte, as in
+            // `send_hcmd_and_wait()` for ADD_STA.
+            if status.map(|status| status & 0xff) != Some(1) {
                 log::warn!(
                     "iwlwifi: ADD_STA_KEY failed sequence=0x{:04x} status={:?} payload={}",
                     sequence,

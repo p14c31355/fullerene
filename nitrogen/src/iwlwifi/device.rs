@@ -328,8 +328,12 @@ impl IwlWifiDevice {
     /// This is the 7000-series part of Linux's `iwl_mvm_nic_config()` and must
     /// run after parsing PHY_SKU but before releasing the firmware CPU.
     fn configure_legacy_nic_from_firmware(&mut self) -> Result<(), crate::DriverError> {
-        if self.phy_sku_tlv_len.is_none() {
-            log::error!("iwlwifi: firmware boot missing PHY_SKU for NIC configuration");
+        if self.phy_sku_tlv_len.is_none() || self.phy_config == 0 {
+            log::error!(
+                "iwlwifi: firmware boot missing PHY_SKU for NIC configuration tlv_len={:?} phy_config={:#010x}",
+                self.phy_sku_tlv_len,
+                self.phy_config,
+            );
             return Err(crate::DriverError::Protocol);
         }
 

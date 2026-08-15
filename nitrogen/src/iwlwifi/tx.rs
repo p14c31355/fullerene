@@ -416,22 +416,23 @@ impl IwlWifiDevice {
     /// auxiliary scan station. Linux does not start AUX as part of transport
     /// TX start; it enables the queue on demand from the MVM setup sequence.
     fn enable_aux_tx_queue(&mut self) -> Result<(), crate::DriverError> {
+        let queue = IWL_AUX_QUEUE;
         let scd_base = self
             .read_prph(SCD_SRAM_BASE_ADDR)
             .ok_or(crate::DriverError::DeviceNotFound)?;
 
-        self.write_prph(SCD_QUEUE_STATUS_AUX, 1 << 19);
-        self.write_mmio32(HBUS_TARG_WRPTR, IWL_AUX_QUEUE << 8);
-        self.write_prph(SCD_QUEUE_RDPTR_AUX, 0);
-        self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_AUX, 0);
-        self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_AUX + 4, 64 | (64 << 16));
+        self.write_prph(scd_queue_status(queue), 1 << 19);
+        self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
+        self.write_prph(scd_queue_rdptr(queue), 0);
+        self.write_mem32(scd_base + scd_context_queue(queue), 0);
+        self.write_mem32(scd_base + scd_context_queue(queue) + 4, 64 | (64 << 16));
 
         let chain = self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(0);
-        self.write_prph(SCD_QUEUECHAIN_SEL, chain | (1 << IWL_AUX_QUEUE));
+        self.write_prph(SCD_QUEUECHAIN_SEL, chain | (1 << queue));
         let aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(0);
-        self.write_prph(SCD_AGGR_SEL, aggr & !(1 << IWL_AUX_QUEUE));
+        self.write_prph(SCD_AGGR_SEL, aggr & !(1 << queue));
         self.write_prph(
-            SCD_QUEUE_STATUS_AUX,
+            scd_queue_status(queue),
             SCD_QUEUE_STTS_ACTIVE
                 | 5 // IWL_MVM_TX_FIFO_MCAST
                 | SCD_QUEUE_STTS_WSL
@@ -440,8 +441,8 @@ impl IwlWifiDevice {
         mmio::write_barrier();
         log::info!(
             "iwlwifi: legacy AUX queue activated: queue={} fifo=5 tfd={:#018x}",
-            IWL_AUX_QUEUE,
-            self.tx_dma_ring.dma_iova() + TX_AUX_TFD_RING_OFFSET as u64,
+            queue,
+            self.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(queue) as u64,
         );
         Ok(())
     }
