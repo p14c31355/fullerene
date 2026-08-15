@@ -42,9 +42,9 @@ pub(super) fn send_init_firmware_commands(
 ///
 /// 7265D is still a pre-new-station-API 7000-series device. Its runtime
 /// station, PHY context, MAC context, MCC, and LMAC scan command payloads
-/// therefore use the existing legacy wire layouts. The separate entry point
-/// is deliberate: future API-29 capability-driven UMAC/DQA additions can be
-/// made here without changing API-17 behavior or widening device matching.
+/// therefore use the existing legacy station/PHY/MAC wire layouts. Queue
+/// ownership is capability-driven: the API-29 image advertises DQA and the
+/// shared runtime path selects Linux's q0/q1/q4 setup from that bit.
 pub(super) fn send_runtime_commands(device: &mut IwlWifiDevice) -> Result<(), crate::DriverError> {
     if !is_api29(device.fw_api_ver) {
         log::error!(
@@ -54,8 +54,9 @@ pub(super) fn send_runtime_commands(device: &mut IwlWifiDevice) -> Result<(), cr
         return Err(crate::DriverError::Protocol);
     }
     log::info!(
-        "iwlwifi: api29.runtime dispatch fw_api={} legacy_7000_wire=true",
-        device.fw_api_ver
+        "iwlwifi: api29.runtime dispatch fw_api={} legacy_station_wire=true dqa={}",
+        device.fw_api_ver,
+        device.fw_dqa_supported,
     );
     device.send_init_commands_legacy()
 }

@@ -185,7 +185,9 @@ impl IwlWifiDevice {
             let reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
             let gp_cntrl = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
             let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
-            let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
+            let rptr = self
+                .read_prph(scd_queue_rdptr(self.command_queue()))
+                .unwrap_or(!0);
             log::error!(
                 "iwlwifi: init.rx.error firmware_failure opcode=0x{:02x} group=0x{:02x} CSR_INT={:#010x} FH_INT={:#010x} UCODE_GP1={:#010x} GP_DRIVER={:#010x} RESET={:#010x} GP_CNTRL={:#010x} SCD_RDPTR={:#010x}",
                 opcode,
@@ -760,7 +762,7 @@ impl IwlWifiDevice {
         // both shared-memory pointers so queue accounting does not remain
         // stuck at the last interrupt.
         let polled_tx_tail = if self.fw_state == FwState::Ready {
-            self.read_prph(SCD_QUEUE_RDPTR_CMD)
+            self.read_prph(scd_queue_rdptr(self.command_queue()))
                 .map(|value| value as usize)
         } else {
             None
@@ -803,8 +805,12 @@ impl IwlWifiDevice {
             None => return,
         };
         if self.scan_pending && (self.scan_channel == 0 || self.scan_channel % 512 == 0) {
-            let scd_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
-            let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
+            let scd_rptr = self
+                .read_prph(scd_queue_rdptr(self.command_queue()))
+                .unwrap_or(!0);
+            let scd_status = self
+                .read_prph(scd_queue_status(self.command_queue()))
+                .unwrap_or(!0);
             let tx_cfg = self
                 .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4))
                 .unwrap_or(!0);
@@ -856,14 +862,18 @@ impl IwlWifiDevice {
             let tx_error = self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0);
             let tx_trb = self.safe_read32(FH_TX_TRB_CHNL0).unwrap_or(!0);
             let tx_cfg = self
-                .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4))
+                .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4))
                 .unwrap_or(!0);
             let csr_gp1 = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
             let csr_gp_driver = self.safe_read32(CSR_GP_DRIVER).unwrap_or(!0);
             let csr_reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
             let csr_gp_cntrl = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
-            let scd_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
-            let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
+            let scd_rptr = self
+                .read_prph(scd_queue_rdptr(self.command_queue()))
+                .unwrap_or(!0);
+            let scd_status = self
+                .read_prph(scd_queue_status(self.command_queue()))
+                .unwrap_or(!0);
             log::error!(
                 "iwlwifi: FH hardware error: CSR_INT={:#010x} CSR_INT_MASK={:#010x} FH_INT={:#010x} UCODE_GP1={:#010x} GP_DRIVER={:#010x} RESET={:#010x} GP_CNTRL={:#010x} TSSR_STATUS={:#010x} TSSR_ERROR={:#010x} TX_TRB={:#010x} TX_CFG={:#010x} SCD_RDPTR={} SCD_STATUS={:#010x}",
                 int_cause,
@@ -930,7 +940,7 @@ impl IwlWifiDevice {
                 // The pointer was polled above. Re-read only when an actual
                 // FH_TX cause is present, since the interrupt and the SCD
                 // pointer are independent on this generation.
-                if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_CMD) {
+                if let Some(hardware_tail) = self.read_prph(scd_queue_rdptr(self.command_queue())) {
                     self.update_tx_tail(hardware_tail as usize);
                 }
                 if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_DATA) {
@@ -1027,13 +1037,19 @@ impl IwlWifiDevice {
                 self.wifi_conn.finish_scan();
                 self.iwl_state = IwlState::Disconnected;
                 self.scan_result_grace_ticks = SCAN_RESULT_GRACE_TICKS;
-                let tx_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
-                let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
+                let tx_rptr = self
+                    .read_prph(scd_queue_rdptr(self.command_queue()))
+                    .unwrap_or(!0);
+                let scd_status = self
+                    .read_prph(scd_queue_status(self.command_queue()))
+                    .unwrap_or(!0);
                 let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
                 let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
                 let int_mask = self.safe_read32(CSR_INT_MASK).unwrap_or(!0);
                 let tx_cfg = self
-                    .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4))
+                    .safe_read32(
+                        FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4),
+                    )
                     .unwrap_or(!0);
                 let rx_closed = self.rx_status().closed_rb_num;
                 let rx_finished = self.rx_status().finished_rb_num;

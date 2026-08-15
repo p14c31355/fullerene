@@ -11,14 +11,15 @@ use nitrogen::iwlwifi::registers::{
     CSR_FH_INT_BIT_HI_PRIOR, CSR_FH_INT_BIT_RX_CHNL0, CSR_FH_INT_BIT_RX_CHNL1, CSR_FH_INT_RX_MASK,
     CSR_HW_IF_CONFIG_HAP_WAKE, CSR_HW_IF_CONFIG_NIC_MASK, CSR_MAC_SHADOW_REG_CTRL_ENABLE,
     FH_MEM_CBBC_0_15_LOWER_BOUND, FH_MEM_CBBC_16_19_LOWER_BOUND, FH_MEM_CBBC_20_31_LOWER_BOUND,
-    IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_MAX_TID_COUNT, IWL_NUM_OF_QUEUES,
-    SCD_CONTEXT_MEM_LOWER_BOUND, SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET,
-    TX_DMA_ALLOCATION_BYTES, TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE,
-    TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET, TX_TFD_RING_BYTES, fh_mem_cbbc_queue,
-    legacy_nic_config_fields, scd_trans_tbl_offset_queue, tx_tfd_ring_offset,
+    IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_DATA_QUEUE, IWL_DQA_AUX_QUEUE, IWL_DQA_CMD_QUEUE,
+    IWL_MAX_TID_COUNT, IWL_NUM_OF_QUEUES, SCD_CONTEXT_MEM_LOWER_BOUND,
+    SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES,
+    TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
+    TX_TFD_RING_BYTES, fh_mem_cbbc_queue, legacy_nic_config_fields, scd_trans_tbl_offset_queue,
+    tx_tfd_ring_offset,
 };
 use nitrogen::iwlwifi::types::{
-    AddStaCmdV7, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
+    AddStaCmdV7, BtCoexConfigCmd, DqaEnableCmdV1, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
     ScanChannelCfgLmac, ScanConfigV1, ScanRequestCmd, ScdTxqCfgCmdV1,
 };
 use nitrogen::usb::UsbSetupPacket;
@@ -85,19 +86,20 @@ fn linux_api29_bt_init_command_enables_the_v1_module_bits() {
 #[test]
 fn linux_v49_aux_station_payload_is_wire_compatible() {
     assert_eq!(IWL_CMD_QUEUE, 9);
-    assert_eq!(IWL_AUX_QUEUE, 11);
+    // 7265 has 31 scheduler queues, so Linux v4.9 selects AUX q15.
+    assert_eq!(IWL_AUX_QUEUE, 15);
     assert_eq!(size_of::<AddStaCmdV7>(), 44);
 
     // Linux v4.9 iwl_mvm_add_aux_sta(): MAC_INDEX_AUX is 4, while the
     // internal station-table entry is allocated as sta_id 1. The queue mask
-    // must advertise q11 before ADD_STA is sent.
+    // must advertise q15 before ADD_STA is sent.
     let payload = AddStaCmdV7::aux(4, 1);
     let actual = bytes(&payload);
     let mut expected = [0u8; 44];
     expected[2..4].copy_from_slice(&0xffffu16.to_le_bytes());
     expected[4..8].copy_from_slice(&4u32.to_le_bytes());
     expected[16] = 1;
-    expected[40..44].copy_from_slice(&(1u32 << 11).to_le_bytes());
+    expected[40..44].copy_from_slice(&(1u32 << 15).to_le_bytes());
     assert_eq!(actual, expected);
 }
 
@@ -106,10 +108,41 @@ fn linux_legacy_scd_queue_config_uses_the_non_qos_tid() {
     assert_eq!(size_of::<ScdTxqCfgCmdV1>(), 12);
     let payload = ScdTxqCfgCmdV1::aux(1);
     let actual = bytes(&payload);
-    // token=0, owner sta=1, tid=8, q11, enable, non-aggregate,
+    // token=0, owner sta=1, tid=8, q15, enable, non-aggregate,
     // multicast FIFO=5, window=64, ssn=0, reserved=0.
     assert_eq!(IWL_MAX_TID_COUNT, 8);
-    assert_eq!(actual, &[0, 1, 8, 11, 1, 0, 5, 64, 0, 0, 0, 0]);
+    assert_eq!(actual, &[0, 1, 8, 15, 1, 0, 5, 64, 0, 0, 0, 0]);
+}
+
+#[test]
+fn linux_v414_7265d_dqa_payloads_are_wire_compatible() {
+    assert_eq!(IWL_DQA_CMD_QUEUE, 0);
+    assert_eq!(IWL_DQA_AUX_QUEUE, 1);
+    assert_eq!(IWL_DATA_QUEUE, 4);
+    assert_eq!(bytes(&DqaEnableCmdV1::linux_7000()), &[0, 0, 0, 0]);
+    assert_eq!(
+        bytes(&ScdTxqCfgCmdV1::dqa_aux(1)),
+        &[0, 1, 8, 1, 1, 0, 5, 64, 0, 0, 0, 0]
+    );
+    assert_eq!(
+        bytes(&ScdTxqCfgCmdV1::peer(0)),
+        &[0, 0, 8, 4, 1, 1, 1, 64, 0, 0, 0, 0]
+    );
+
+    let peer = AddStaCmdV7::peer(0, 0, [1, 2, 3, 4, 5, 6]);
+    let peer_bytes = bytes(&peer);
+    assert_eq!(&peer_bytes[8..14], &[1, 2, 3, 4, 5, 6]);
+    assert_eq!(&peer_bytes[24..28], &0x3c02_0000u32.to_le_bytes());
+    assert_eq!(&peer_bytes[40..44], &[0, 0, 0, 0]);
+
+    let update = AddStaCmdV7::peer_queue_update(0, 0, [1, 2, 3, 4, 5, 6]);
+    let update_bytes = bytes(&update);
+    assert_eq!(update_bytes[0], 1);
+    assert_eq!(update_bytes[17], 1 << 7);
+    assert_eq!(
+        &update_bytes[40..44],
+        &(1u32 << IWL_DATA_QUEUE).to_le_bytes()
+    );
 }
 
 #[test]

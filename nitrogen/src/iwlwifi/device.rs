@@ -53,6 +53,8 @@ pub struct IwlWifiDevice {
     pub fw_lar_supported: bool,
     pub fw_lar_v2: bool,
     pub fw_umac_scan_supported: bool,
+    /// Firmware capability bit 12: dynamic queue allocation is required.
+    pub fw_dqa_supported: bool,
     pub phy_config: u32,
     pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
@@ -184,6 +186,24 @@ impl IwlWifiDevice {
     }
 
     // ── DMA helpers ──────────────────────────────────
+
+    #[inline]
+    pub(super) fn command_queue(&self) -> u32 {
+        if self.fw_dqa_supported {
+            IWL_DQA_CMD_QUEUE
+        } else {
+            IWL_LEGACY_CMD_QUEUE
+        }
+    }
+
+    #[inline]
+    pub(super) fn auxiliary_queue(&self) -> u32 {
+        if self.fw_dqa_supported {
+            IWL_DQA_AUX_QUEUE
+        } else {
+            IWL_LEGACY_AUX_QUEUE
+        }
+    }
 
     pub(super) fn tx_desc_mut(&mut self, idx: usize) -> &mut TxDmaDesc {
         unsafe { &mut *(self.tx_dma_ring.virt() as *mut TxDmaDesc).add(idx) }
@@ -592,6 +612,7 @@ impl IwlWifiDevice {
             fw_lar_supported: false,
             fw_lar_v2: false,
             fw_umac_scan_supported: false,
+            fw_dqa_supported: false,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -829,6 +850,7 @@ impl IwlWifiDevice {
             fw_lar_supported: false,
             fw_lar_v2: false,
             fw_umac_scan_supported: false,
+            fw_dqa_supported: false,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -922,6 +944,7 @@ impl IwlWifiDevice {
         self.fw_lar_supported = false;
         self.fw_lar_v2 = false;
         self.fw_umac_scan_supported = false;
+        self.fw_dqa_supported = false;
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
         self.tx_head = 0;
@@ -1174,17 +1197,19 @@ impl IwlWifiDevice {
                         if api_index == 0 {
                             self.fw_lar_supported = capabilities & (1 << 1) != 0;
                             self.fw_umac_scan_supported = capabilities & (1 << 2) != 0;
+                            self.fw_dqa_supported = capabilities & (1 << 12) != 0;
                         }
                         if api_index == 2 {
                             self.fw_lar_v2 = capabilities & (1 << 9) != 0;
                         }
                         log::info!(
-                            "iwlwifi: firmware.capabilities api_index={} bitmap={:#010x} lar={} lar_v2={} umac_scan={}",
+                            "iwlwifi: firmware.capabilities api_index={} bitmap={:#010x} lar={} lar_v2={} umac_scan={} dqa={}",
                             api_index,
                             capabilities,
                             self.fw_lar_supported,
                             self.fw_lar_v2,
                             self.fw_umac_scan_supported,
+                            self.fw_dqa_supported,
                         );
                     }
                 }
@@ -2110,6 +2135,7 @@ pub(super) mod test_support {
                 fw_lar_supported: false,
                 fw_lar_v2: false,
                 fw_umac_scan_supported: false,
+                fw_dqa_supported: false,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,

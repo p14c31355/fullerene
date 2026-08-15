@@ -160,14 +160,22 @@ pub const FH_RCSR_RX_RB_TIMEOUT: u32 = 0x11;
 /// Linux's `IWL_MVM_CMD_QUEUE` is queue 9. Queue 4 is a data queue in this
 /// layout; using it for HCMDs can appear to work for simple commands but
 /// corrupts the scheduler state when ADD_STA configures the AUX station.
-pub const IWL_CMD_QUEUE: u32 = 9;
+pub const IWL_LEGACY_CMD_QUEUE: u32 = 9;
+/// DQA command queue selected by Linux when capability bit 12 is present.
+pub const IWL_DQA_CMD_QUEUE: u32 = 0;
+/// Backwards-compatible name for the pre-DQA command queue.
+pub const IWL_CMD_QUEUE: u32 = IWL_LEGACY_CMD_QUEUE;
 /// Minimal managed-station data queue. Linux keeps TX_CMD frames off the
 /// command queue and assigns the first ordinary data queue to the AP peer.
 pub const IWL_DATA_QUEUE: u32 = 4;
 /// Auxiliary queue used by the firmware scan station in the 7265's non-DQA
-/// layout. Linux selects q11 for `mvm->aux_queue` in this layout;
+/// layout. Linux selects q15 for `mvm->aux_queue` on 31-queue hardware;
 /// q8 is the separate off-channel reservation, not the station's TX queue.
-pub const IWL_AUX_QUEUE: u32 = 11;
+pub const IWL_LEGACY_AUX_QUEUE: u32 = 15;
+/// DQA auxiliary queue used by the API-29 7265D firmware.
+pub const IWL_DQA_AUX_QUEUE: u32 = 1;
+/// Backwards-compatible name for the pre-DQA auxiliary queue.
+pub const IWL_AUX_QUEUE: u32 = IWL_LEGACY_AUX_QUEUE;
 /// Number of logical scheduler queues in Linux's 7000-series configuration.
 /// This is distinct from the eight physical FH DMA channels.
 pub const IWL_NUM_OF_QUEUES: u32 = 31;
@@ -198,7 +206,7 @@ pub const HBUS_TARG_WRPTR: u32 = (0x400 + 0x060) / 4;
 pub const RFH_Q0_FRBDCB_WIDX_TRG: u32 = 0x1C80 / 4;
 pub const FH_TCSR_CHNL_TX_CONFIG_BASE: u32 = (0x1000 + 0xD00) / 4;
 /// The FH has eight physical TX DMA channels. Logical scheduler queues
-/// (including command q9 and the auxiliary q11) select one of these channels
+/// (including command q9 and the auxiliary q15) select one of these channels
 /// through their SCD FIFO, so they must not be used as TCSR channel numbers.
 pub const FH_TCSR_CHNL_NUM: u32 = 8;
 pub const FH_TCSR_CHNL_TX_CREDIT_BASE: u32 = FH_TCSR_CHNL_TX_CONFIG_BASE + 1;
@@ -233,6 +241,15 @@ pub const fn scd_trans_tbl_offset_queue(queue: u32) -> u32 {
     (SCD_TRANS_TBL_MEM_LOWER_BOUND + queue * 2) & 0xFFFC
 }
 pub const SCD_TRANS_TBL_MEM_UPPER_BOUND: u32 = scd_trans_tbl_offset_queue(IWL_NUM_OF_QUEUES);
+pub const fn scd_queue_rdptr(queue: u32) -> u32 {
+    SCD_BASE + 0x68 + queue * 4
+}
+pub const fn scd_queue_status(queue: u32) -> u32 {
+    SCD_BASE + 0x10C + queue * 4
+}
+pub const fn scd_context_queue(queue: u32) -> u32 {
+    0x600 + queue * 8
+}
 pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_CMD: u32 = 0x600 + IWL_CMD_QUEUE * 8;
@@ -286,7 +303,7 @@ pub const fn tx_tfd_ring_offset(queue: u32) -> usize {
 
 /// The auxiliary station has its own TFD ring even though the host does not
 /// submit scan frames directly. Linux allocates one ring per scheduler queue;
-/// keeping q11 separate prevents firmware from interpreting q9 descriptors as
+/// keeping q15 separate prevents firmware from interpreting q9 descriptors as
 /// scan traffic.
 pub const TX_AUX_TFD_RING_OFFSET: usize = tx_tfd_ring_offset(IWL_AUX_QUEUE);
 /// Ordinary data queue ring. It is kept separate from both the HCMD and AUX

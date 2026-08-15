@@ -930,6 +930,7 @@ fn perform_init_step() {
                 fw_lar_supported: false,
                 fw_lar_v2: false,
                 fw_umac_scan_supported: false,
+                fw_dqa_supported: false,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
@@ -1984,20 +1985,26 @@ impl IwlWifiDevice {
             return Err(error);
         }
 
-        // 7265 uses the static, non-DQA scheduler. Linux activates the AC
-        // queue directly in transport before publishing the station's queue
-        // mask; it does not send SCD_QUEUE_CFG for this q4 path.
-        if let Err(error) = self.enable_data_tx_queue() {
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(alloc::format!(
-                "connection data queue activation failed: {:?}",
-                error
-            ));
-            return Err(error);
+        // DQA stations are added without a static queue mask. Linux attaches
+        // the BSS-client q4 only after ADD_STA succeeds. Pre-DQA firmware
+        // keeps the transport-programmed static queue ordering.
+        if !self.fw_dqa_supported {
+            if let Err(error) = self.enable_data_tx_queue() {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection data queue activation failed: {:?}",
+                    error
+                ));
+                return Err(error);
+            }
         }
 
-        let ap_sta = AddStaCmdV7::peer(0, 0, ap.bssid);
+        let ap_sta = if self.fw_dqa_supported {
+            AddStaCmdV7::peer(0, 0, ap.bssid)
+        } else {
+            AddStaCmdV7::legacy_peer(0, 0, ap.bssid)
+        };
         let ap_sta_bytes = unsafe { super::as_bytes(&ap_sta) };
         if let Err(error) = self.send_hcmd_and_wait(
             "CONNECT_ADD_STA",
@@ -2012,6 +2019,48 @@ impl IwlWifiDevice {
                 error
             ));
             return Err(error);
+        }
+
+        if self.fw_dqa_supported {
+            if let Err(error) = self.enable_dqa_tx_queue(IWL_DATA_QUEUE) {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection DQA queue publication failed: {:?}",
+                    error
+                ));
+                return Err(error);
+            }
+            let queue = ScdTxqCfgCmdV1::peer(0);
+            if let Err(error) = self.send_hcmd_and_wait(
+                "CONNECT_SCD_QUEUE_CFG",
+                LegacyCmd::ScdQueueCfg as u8,
+                GroupId::Legacy as u8,
+                unsafe { super::as_bytes(&queue) },
+            ) {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection DQA queue setup failed: {:?}",
+                    error
+                ));
+                return Err(error);
+            }
+            let queue_update = AddStaCmdV7::peer_queue_update(0, 0, ap.bssid);
+            if let Err(error) = self.send_hcmd_and_wait(
+                "CONNECT_ADD_STA_QUEUE",
+                LegacyCmd::AddSta as u8,
+                GroupId::Legacy as u8,
+                unsafe { super::as_bytes(&queue_update) },
+            ) {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection DQA queue ownership update failed: {:?}",
+                    error
+                ));
+                return Err(error);
+            }
         }
 
         self.iwl_state = IwlState::AuthSent;
