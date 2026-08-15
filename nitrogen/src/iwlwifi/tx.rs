@@ -458,6 +458,17 @@ impl IwlWifiDevice {
     /// through SCD_QUEUE_CFG. A host-side direct-SCD variant remains available
     /// behind `DQA_HOST_DIRECT_SCD_DIAGNOSTIC` for A/B comparison.
     pub(super) fn enable_dqa_tx_queue(&mut self, queue: u32) -> Result<(), crate::DriverError> {
+        self.enable_dqa_tx_queue_with_mode(queue, DQA_HOST_DIRECT_SCD_DIAGNOSTIC)
+    }
+
+    /// Publish a DQA queue with an explicit SCD mode for the bounded
+    /// authentication fallback. The normal path remains firmware-owned;
+    /// `direct_scd=true` is only a controlled diagnostic alternative.
+    pub(super) fn enable_dqa_tx_queue_with_mode(
+        &mut self,
+        queue: u32,
+        direct_scd: bool,
+    ) -> Result<(), crate::DriverError> {
         if !self.fw_dqa_supported || queue >= IWL_NUM_OF_QUEUES {
             return Err(crate::DriverError::InvalidArgument);
         }
@@ -466,7 +477,7 @@ impl IwlWifiDevice {
         let cbbc = (queue_phys >> 8) as u32;
         self.write_mmio32(fh_mem_cbbc_queue(queue), cbbc);
         self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
-        if DQA_HOST_DIRECT_SCD_DIAGNOSTIC {
+        if direct_scd {
             // Diagnostic alternative to Linux's DQA path: configure the SCD
             // registers directly like the non-DQA path. Keep this branch for
             // A/B comparison without making it the production experiment.
@@ -500,7 +511,7 @@ impl IwlWifiDevice {
             queue_phys,
             cbbc,
             self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0),
-            DQA_HOST_DIRECT_SCD_DIAGNOSTIC,
+            direct_scd,
             self.read_prph(SCD_EN_CTRL).unwrap_or(!0),
         );
         Ok(())
@@ -511,6 +522,38 @@ impl IwlWifiDevice {
     pub(super) fn kick_dqa_queue_doorbell(&mut self, queue: u32) {
         self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
         mmio::write_barrier();
+    }
+
+    /// Abandon a stalled traffic queue before switching to another queue.
+    /// This is only called after the watchdog observed no scheduler progress;
+    /// clearing the queue prevents its old TFD from racing the fallback.
+    pub(super) fn abandon_stalled_traffic_queue(&mut self, queue: u32) {
+        self.write_prph(scd_queue_status(queue), 1 << 19);
+        self.write_prph(scd_queue_rdptr(queue), 0);
+        self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
+        let ring = self.tx_dma_ring.virt() + tx_tfd_ring_offset(queue);
+        unsafe {
+            core::ptr::write_bytes(ring as *mut u8, 0, TX_TFD_RING_BYTES);
+        }
+        mmio::cache_flush_range(ring, TX_TFD_RING_BYTES);
+        self.tx_queue.clear();
+        self.tx_data_head = 0;
+        self.tx_data_tail = 0;
+        mmio::write_barrier();
+    }
+
+    /// Return whether the currently selected authentication queue has an
+    /// outstanding descriptor that the scheduler has not consumed. `None`
+    /// means the queue state could not be observed; an unknown hardware state
+    /// must not be treated as permission to mutate queues.
+    pub(super) fn auth_tx_fetch_stalled(&mut self) -> Option<bool> {
+        if self.tx_data_head == self.tx_data_tail {
+            return Some(false);
+        }
+        self.read_prph(scd_queue_rdptr(self.traffic_queue()))
+            .map(|rptr| {
+                (rptr as usize & (TX_QUEUE_SIZE - 1)) == (self.tx_data_tail & (TX_QUEUE_SIZE - 1))
+            })
     }
 
     /// Activate the static non-DQA best-effort queue used by the 7265 MVM

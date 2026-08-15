@@ -964,6 +964,8 @@ fn perform_init_step() {
                 last_rx_phy_channel: 0,
                 last_rx_system_timestamp: 0,
                 connection_watchdog_ticks: 0,
+                auth_tx_plan: AuthTxPlan::DqaFirmware,
+                auth_tx_queue_override: None,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
                 tx_dma_ring: tx_dma,
@@ -1967,6 +1969,99 @@ impl IwlWifiDevice {
         }
     }
 
+    /// Submit the current AP authentication frame using the selected queue.
+    fn send_authentication_frame(&mut self, bssid: [u8; 6]) -> Result<(), crate::DriverError> {
+        self.iwl_state = IwlState::AuthSent;
+        self.connection_watchdog_ticks = 0;
+        let auth_frame = wifi::build_auth_frame(bssid, self.mac, 1);
+        self.send_raw_80211_frame(&auth_frame)?;
+        log::info!(
+            "iwlwifi: authenticating with plan={} queue={} ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+            self.auth_tx_plan.name(),
+            self.traffic_queue(),
+            bssid[0],
+            bssid[1],
+            bssid[2],
+            bssid[3],
+            bssid[4],
+            bssid[5],
+        );
+        Ok(())
+    }
+
+    /// Rebuild the traffic-queue state for the next bounded authentication
+    /// plan. A stalled queue is abandoned before q4 is enabled so an old q5
+    /// descriptor cannot race the fallback.
+    fn retry_authentication_with_plan(
+        &mut self,
+        plan: AuthTxPlan,
+        bssid: [u8; 6],
+    ) -> Result<(), crate::DriverError> {
+        log::warn!(
+            "iwlwifi: authentication TX fallback from={} to={}",
+            self.auth_tx_plan.name(),
+            plan.name(),
+        );
+        self.abandon_stalled_traffic_queue(self.traffic_queue());
+        self.auth_tx_queue_override = None;
+
+        match plan {
+            AuthTxPlan::DqaFirmware => {
+                self.enable_dqa_tx_queue_with_mode(IWL_MGMT_QUEUE, false)?;
+                self.kick_dqa_queue_doorbell(IWL_MGMT_QUEUE);
+            }
+            AuthTxPlan::DqaHostScd => {
+                self.enable_dqa_tx_queue_with_mode(IWL_MGMT_QUEUE, true)?;
+                self.kick_dqa_queue_doorbell(IWL_MGMT_QUEUE);
+            }
+            AuthTxPlan::StaticQueue => {
+                self.auth_tx_queue_override = Some(IWL_DATA_QUEUE);
+                self.enable_data_tx_queue()?;
+                let queue_update = AddStaCmdV7::peer_queue_update_for(0, 0, bssid, IWL_DATA_QUEUE);
+                self.send_hcmd_and_wait(
+                    "CONNECT_FALLBACK_ADD_STA_QUEUE",
+                    LegacyCmd::AddSta as u8,
+                    GroupId::Legacy as u8,
+                    unsafe { super::as_bytes(&queue_update) },
+                )?;
+            }
+        }
+
+        self.auth_tx_plan = plan;
+        self.wifi_conn.status = bonder::wifi::WifiStatus::Authenticating;
+        self.wifi_conn.error_msg = None;
+        self.send_authentication_frame(bssid)
+    }
+
+    /// Advance once after a bounded authentication timeout. A queue that
+    /// already advanced is not retried here: that indicates TX succeeded and
+    /// the missing evidence is on the RX/channel side.
+    pub(super) fn advance_authentication_plan(&mut self) -> bool {
+        if self.auth_tx_fetch_stalled() != Some(true) {
+            return false;
+        }
+        let Some(next) = self.auth_tx_plan.next() else {
+            return false;
+        };
+        let Some(ssid) = self.wifi_conn.current_ssid.clone() else {
+            return false;
+        };
+        let Some(ap) = self.scan_results.iter().find(|ap| ap.ssid == ssid).cloned() else {
+            return false;
+        };
+        match self.retry_authentication_with_plan(next, ap.bssid) {
+            Ok(()) => true,
+            Err(error) => {
+                log::warn!(
+                    "iwlwifi: authentication fallback plan={} failed before TX: {:?}",
+                    next.name(),
+                    error,
+                );
+                false
+            }
+        }
+    }
+
     pub fn connect(
         &mut self,
         ssid: &Ssid,
@@ -1995,6 +2090,12 @@ impl IwlWifiDevice {
         self.wpa_key_command_end = None;
         self.wpa_key_pending_sequences = [None; 2];
         self.pending_wpa_message4 = None;
+        self.auth_tx_plan = if self.fw_dqa_supported {
+            AuthTxPlan::DqaFirmware
+        } else {
+            AuthTxPlan::StaticQueue
+        };
+        self.auth_tx_queue_override = None;
         self.ip_address = [0; 4];
         self.subnet_mask = [0; 4];
         self.gateway = [0; 4];
@@ -2252,9 +2353,7 @@ impl IwlWifiDevice {
             ap.channel,
         );
 
-        self.iwl_state = IwlState::AuthSent;
-        let auth_frame = wifi::build_auth_frame(ap.bssid, self.mac, 1);
-        if let Err(error) = self.send_raw_80211_frame(&auth_frame) {
+        if let Err(error) = self.send_authentication_frame(ap.bssid) {
             self.iwl_state = IwlState::Disconnected;
             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
             self.wifi_conn.error_msg = Some(alloc::format!(
@@ -2264,16 +2363,6 @@ impl IwlWifiDevice {
             log::warn!("iwlwifi: failed to send authentication frame: {:?}", error);
             return Err(error);
         }
-        log::info!(
-            "iwlwifi: authenticating with {} ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
-            ssid,
-            ap.bssid[0],
-            ap.bssid[1],
-            ap.bssid[2],
-            ap.bssid[3],
-            ap.bssid[4],
-            ap.bssid[5],
-        );
         Ok(())
     }
 
@@ -2323,6 +2412,8 @@ impl IwlWifiDevice {
         self.pending_wpa_message4 = None;
         self.iwl_state = IwlState::Disconnected;
         self.connection_watchdog_ticks = 0;
+        self.auth_tx_plan = AuthTxPlan::DqaFirmware;
+        self.auth_tx_queue_override = None;
         log::info!("iwlwifi: disconnected");
     }
 

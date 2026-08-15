@@ -171,6 +171,10 @@ impl IwlWifiDevice {
                 };
                 if handshake_pending {
                     self.wpa_failed("WPA2 handshake timeout");
+                } else if self.iwl_state == IwlState::AuthSent && self.advance_authentication_plan()
+                {
+                    // The bounded TX solver selected and submitted the next
+                    // queue plan. Keep the public state in Authenticating.
                 } else {
                     self.iwl_state = IwlState::Disconnected;
                     self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
