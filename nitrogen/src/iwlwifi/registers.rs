@@ -25,6 +25,9 @@ pub const CSR_HW_RF_ID: u32 = 0x034 / 4;
 pub const CSR_GIO: u32 = 0x03C / 4;
 pub const CSR_GIO_CHICKEN_BITS: u32 = 0x100 / 4;
 pub const CSR_MAC_SHADOW_REG_CTRL: u32 = 0x0A8 / 4;
+/// Enable the 7000-series shadow-register path, matching
+/// `iwl7000_base.shadow_reg_enable` in Linux.
+pub const CSR_MAC_SHADOW_REG_CTRL_ENABLE: u32 = 0x800F_FFFF;
 pub const CSR_DBG_HPET_MEM: u32 = 0x240 / 4;
 pub const CSR_UCODE_GP1: u32 = 0x054 / 4;
 pub const CSR_UCODE_GP1_SET: u32 = 0x058 / 4;
@@ -90,12 +93,48 @@ pub const CSR_INI_SET_MASK: u32 = CSR_INT_BIT_FH_RX
     | CSR_INT_BIT_ALIVE
     | CSR_INT_BIT_RX_PERIODIC;
 pub const CSR_FH_INT_BIT_TX_CHNL0: u32 = 1 << 0;
+pub const CSR_FH_INT_BIT_TX_CHNL1: u32 = 1 << 1;
 pub const CSR_FH_INT_BIT_RX_CHNL0: u32 = 1 << 16;
-pub const CSR_FH_INT_RX_MASK: u32 = 1 << 16;
-pub const CSR_FH_INT_TX_MASK: u32 = 1 << 0;
+pub const CSR_FH_INT_BIT_RX_CHNL1: u32 = 1 << 17;
+pub const CSR_FH_INT_BIT_HI_PRIOR: u32 = 1 << 30;
+pub const CSR_FH_INT_RX_MASK: u32 =
+    CSR_FH_INT_BIT_HI_PRIOR | CSR_FH_INT_BIT_RX_CHNL1 | CSR_FH_INT_BIT_RX_CHNL0;
+pub const CSR_FH_INT_TX_MASK: u32 = CSR_FH_INT_BIT_TX_CHNL1 | CSR_FH_INT_BIT_TX_CHNL0;
 pub const CSR_UCODE_SW_BIT_RFKILL: u32 = 1 << 1;
 pub const CSR_UCODE_GP1_BIT_CMD_BLOCKED: u32 = 1 << 2;
 pub const CSR_HW_IF_CONFIG_HAP_WAKE: u32 = 0x0008_0000;
+pub const CSR_HW_IF_CONFIG_MAC_STEP_DASH_MASK: u32 = 0x0000_000f;
+pub const CSR_HW_IF_CONFIG_MAC_SI: u32 = 0x0000_0100;
+pub const CSR_HW_IF_CONFIG_RADIO_SI: u32 = 0x0000_0200;
+pub const CSR_HW_IF_CONFIG_PHY_TYPE_MASK: u32 = 0x0000_0c00;
+pub const CSR_HW_IF_CONFIG_PHY_DASH_MASK: u32 = 0x0000_3000;
+pub const CSR_HW_IF_CONFIG_PHY_STEP_MASK: u32 = 0x0000_c000;
+pub const CSR_HW_IF_CONFIG_PHY_TYPE_POS: u32 = 10;
+pub const CSR_HW_IF_CONFIG_PHY_DASH_POS: u32 = 12;
+pub const CSR_HW_IF_CONFIG_PHY_STEP_POS: u32 = 14;
+pub const CSR_HW_IF_CONFIG_NIC_MASK: u32 = CSR_HW_IF_CONFIG_MAC_STEP_DASH_MASK
+    | CSR_HW_IF_CONFIG_MAC_SI
+    | CSR_HW_IF_CONFIG_RADIO_SI
+    | CSR_HW_IF_CONFIG_PHY_TYPE_MASK
+    | CSR_HW_IF_CONFIG_PHY_DASH_MASK
+    | CSR_HW_IF_CONFIG_PHY_STEP_MASK;
+pub const FW_PHY_CFG_RADIO_TYPE_POS: u32 = 0;
+pub const FW_PHY_CFG_RADIO_STEP_POS: u32 = 2;
+pub const FW_PHY_CFG_RADIO_DASH_POS: u32 = 4;
+pub const FW_PHY_CFG_RADIO_FIELD_MASK: u32 = 0x3;
+
+/// Encode Linux's pre-boot MVM NIC identity fields for CSR_HW_IF_CONFIG.
+pub const fn legacy_nic_config_fields(hw_rev: u32, phy_config: u32) -> u32 {
+    let radio_type = (phy_config >> FW_PHY_CFG_RADIO_TYPE_POS) & FW_PHY_CFG_RADIO_FIELD_MASK;
+    let radio_step = (phy_config >> FW_PHY_CFG_RADIO_STEP_POS) & FW_PHY_CFG_RADIO_FIELD_MASK;
+    let radio_dash = (phy_config >> FW_PHY_CFG_RADIO_DASH_POS) & FW_PHY_CFG_RADIO_FIELD_MASK;
+
+    (hw_rev & CSR_HW_IF_CONFIG_MAC_STEP_DASH_MASK)
+        | (radio_type << CSR_HW_IF_CONFIG_PHY_TYPE_POS)
+        | (radio_step << CSR_HW_IF_CONFIG_PHY_STEP_POS)
+        | (radio_dash << CSR_HW_IF_CONFIG_PHY_DASH_POS)
+        | CSR_HW_IF_CONFIG_RADIO_SI
+}
 pub const CSR_GIO_CHICKEN_L1A_NO_L0S_RX: u32 = 0x0080_0000;
 pub const CSR_GIO_CHICKEN_DIS_L0S_EXIT_TIMER: u32 = 0x2000_0000;
 pub const CSR_DBG_HPET_MEM_VAL: u32 = 0xFFFF_0000;
@@ -121,25 +160,56 @@ pub const FH_RCSR_RX_RB_TIMEOUT: u32 = 0x11;
 /// Linux's `IWL_MVM_CMD_QUEUE` is queue 9. Queue 4 is a data queue in this
 /// layout; using it for HCMDs can appear to work for simple commands but
 /// corrupts the scheduler state when ADD_STA configures the AUX station.
-pub const IWL_CMD_QUEUE: u32 = 9;
-/// Minimal managed-station data queue. Linux keeps TX_CMD frames off the
-/// command queue and assigns the first ordinary data queue to the AP peer.
+pub const IWL_LEGACY_CMD_QUEUE: u32 = 9;
+/// DQA command queue selected by Linux when capability bit 12 is present.
+pub const IWL_DQA_CMD_QUEUE: u32 = 0;
+/// Backwards-compatible name for the pre-DQA command queue.
+pub const IWL_CMD_QUEUE: u32 = IWL_LEGACY_CMD_QUEUE;
+/// Reserved BSS-client data queue in the DQA layout, and the minimal static
+/// data queue used by the pre-DQA path.
 pub const IWL_DATA_QUEUE: u32 = 4;
-/// Auxiliary queue used by the firmware scan station in the 7265's 16-queue
-/// non-DQA layout. Linux selects q11 for `mvm->aux_queue` in this layout;
+/// First DQA management queue. Linux prefers q5..q8 for management and
+/// non-QoS frames before falling back to the reserved BSS-client/data pool.
+pub const IWL_MGMT_QUEUE: u32 = 5;
+/// Auxiliary queue used by the firmware scan station in the 7265's non-DQA
+/// layout. Linux selects q15 for `mvm->aux_queue` on 31-queue hardware;
 /// q8 is the separate off-channel reservation, not the station's TX queue.
-pub const IWL_AUX_QUEUE: u32 = 11;
+pub const IWL_LEGACY_AUX_QUEUE: u32 = 15;
+/// DQA auxiliary queue used by the API-29 7265D firmware.
+pub const IWL_DQA_AUX_QUEUE: u32 = 1;
+/// Backwards-compatible name for the pre-DQA auxiliary queue.
+pub const IWL_AUX_QUEUE: u32 = IWL_LEGACY_AUX_QUEUE;
+/// Number of logical scheduler queues in Linux's 7000-series configuration.
+/// This is distinct from the eight physical FH DMA channels.
+pub const IWL_NUM_OF_QUEUES: u32 = 31;
+/// Legacy MVM supports QoS TIDs 0..7; value 8 denotes non-QoS/management.
+pub const IWL_MAX_TID_COUNT: u8 = 8;
 pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
-pub const FH_MEM_CBBC_CMD_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_CMD_QUEUE;
-pub const FH_MEM_CBBC_DATA_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_DATA_QUEUE;
-pub const FH_MEM_CBBC_AUX_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_AUX_QUEUE;
+pub const FH_MEM_CBBC_16_19_LOWER_BOUND: u32 = (0x1000 + 0xBF0) / 4;
+pub const FH_MEM_CBBC_20_31_LOWER_BOUND: u32 = (0x1000 + 0xB20) / 4;
+
+/// Locate the legacy circular-buffer base register for a logical TX queue.
+/// Linux uses three discontiguous register windows for queues 0..31.
+pub const fn fh_mem_cbbc_queue(queue: u32) -> u32 {
+    if queue < 16 {
+        FH_MEM_CBBC_0_15_LOWER_BOUND + queue
+    } else if queue < 20 {
+        FH_MEM_CBBC_16_19_LOWER_BOUND + (queue - 16)
+    } else {
+        FH_MEM_CBBC_20_31_LOWER_BOUND + (queue - 20)
+    }
+}
+
+pub const FH_MEM_CBBC_CMD_QUEUE: u32 = fh_mem_cbbc_queue(IWL_CMD_QUEUE);
+pub const FH_MEM_CBBC_DATA_QUEUE: u32 = fh_mem_cbbc_queue(IWL_DATA_QUEUE);
+pub const FH_MEM_CBBC_AUX_QUEUE: u32 = fh_mem_cbbc_queue(IWL_AUX_QUEUE);
 pub const FH_KW_MEM_ADDR_REG: u32 = (0x1000 + 0x97C) / 4;
 pub const HBUS_TARG_WRPTR: u32 = (0x400 + 0x060) / 4;
 /// AX210/So/QuZ RFH free-RBD producer doorbell for RX queue 0.
 pub const RFH_Q0_FRBDCB_WIDX_TRG: u32 = 0x1C80 / 4;
 pub const FH_TCSR_CHNL_TX_CONFIG_BASE: u32 = (0x1000 + 0xD00) / 4;
 /// The FH has eight physical TX DMA channels. Logical scheduler queues
-/// (including command q9 and the auxiliary q11) select one of these channels
+/// (including command q9 and the auxiliary q15) select one of these channels
 /// through their SCD FIFO, so they must not be used as TCSR channel numbers.
 pub const FH_TCSR_CHNL_NUM: u32 = 8;
 pub const FH_TCSR_CHNL_TX_CREDIT_BASE: u32 = FH_TCSR_CHNL_TX_CONFIG_BASE + 1;
@@ -151,6 +221,10 @@ pub const FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN: u32 = 0x0000_0002;
 pub const FH_TSSR_TX_STATUS_REG: u32 = (0x1000 + 0xEB0) / 4;
 pub const FH_TSSR_TX_ERROR_REG: u32 = (0x1000 + 0xEB8) / 4;
 pub const FH_TX_TRB_CHNL0: u32 = (0x1000 + 0x958) / 4;
+/// Linux's `FH_TX_TRB_REG(chan)`: one TRB register per physical FH FIFO.
+pub const fn fh_tx_trb_channel(channel: u32) -> u32 {
+    FH_TX_TRB_CHNL0 + channel
+}
 pub const SCD_BASE: u32 = 0xA02C00;
 pub const SCD_SRAM_BASE_ADDR: u32 = SCD_BASE;
 pub const SCD_DRAM_BASE_ADDR: u32 = SCD_BASE + 0x08;
@@ -165,9 +239,35 @@ pub const SCD_QUEUECHAIN_SEL: u32 = SCD_BASE + 0xE8;
 pub const SCD_AGGR_SEL: u32 = SCD_BASE + 0x248;
 /// Shared SCD SRAM range cleared by the legacy PCIe TX start sequence.
 /// It covers queue contexts, TX status entries, and the queue-to-RA/TID
-/// translation table for the 16-queue 7265 layout.
+/// translation table for the 31-queue 7000-series layout.
 pub const SCD_CONTEXT_MEM_LOWER_BOUND: u32 = 0x600;
-pub const SCD_TRANS_TBL_MEM_UPPER_BOUND: u32 = 0x800;
+pub const SCD_TRANS_TBL_MEM_LOWER_BOUND: u32 = 0x7E0;
+/// Linux's `SCD_TRANS_TBL_OFFSET_QUEUE()` rounds pairs of queue entries down
+/// to a dword boundary. Passing the queue count gives the exclusive clear end.
+pub const fn scd_trans_tbl_offset_queue(queue: u32) -> u32 {
+    (SCD_TRANS_TBL_MEM_LOWER_BOUND + queue * 2) & 0xFFFC
+}
+pub const SCD_TRANS_TBL_MEM_UPPER_BOUND: u32 = scd_trans_tbl_offset_queue(IWL_NUM_OF_QUEUES);
+/// Linux's `SCD_QUEUE_WRPTR(x)`: the SCD's internal write-pointer register
+/// for each queue. The doorbell (`HBUS_TARG_WRPTR`) is the write path, but
+/// reading this register confirms the scheduler actually saw the doorbell.
+pub const fn scd_queue_wrptr(queue: u32) -> u32 {
+    SCD_BASE + 0x18 + queue * 4
+}
+pub const fn scd_queue_rdptr(queue: u32) -> u32 {
+    SCD_BASE + 0x68 + queue * 4
+}
+pub const fn scd_queue_status(queue: u32) -> u32 {
+    SCD_BASE + 0x10C + queue * 4
+}
+pub const fn scd_context_queue(queue: u32) -> u32 {
+    0x600 + queue * 8
+}
+/// Linux's `SCD_TX_STTS_QUEUE_OFFSET(x)`: the 16-byte TX status SRAM entry
+/// for each queue.  Used for diagnostics only.
+pub const fn scd_tx_stts_queue_offset(queue: u32) -> u32 {
+    0x6A0 + queue * 16
+}
 pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_CMD: u32 = 0x600 + IWL_CMD_QUEUE * 8;
@@ -182,21 +282,54 @@ pub const SCD_QUEUE_STTS_WSL: u32 = 1 << 4;
 pub const SCD_QUEUE_STTS_FIFO_COMMAND: u32 = 7;
 pub const SCD_QUEUE_STTS_MASK: u32 = 0x017F_0000;
 pub const SCD_GP_CTRL_AUTO_ACTIVE_MODE: u32 = 1 << 18;
+pub const SCD_GP_CTRL_ENABLE_31_QUEUES: u32 = 1 << 0;
 
 // The legacy SCD byte-count table has one 16-bit entry for each of 256 TFDs
 // plus 64 duplicate entries, for each of the 32 possible queues. Keep it in
 // the same contiguous DMA allocation as the command TFD ring, but outside the
 // ring and keep-warm areas.
 pub const TX_TFD_RING_BYTES: usize = 128 * TX_QUEUE_SIZE;
+/// Keep the three queues used by the current transport at their historical
+/// offsets, then assign every other Linux gen1 queue a distinct TFD ring.
+/// Linux allocates and publishes all 31 rings before starting firmware even
+/// though most queues are activated only later by the op-mode.
+pub const fn tx_tfd_ring_slot(queue: u32) -> usize {
+    if queue == IWL_CMD_QUEUE {
+        0
+    } else if queue == IWL_AUX_QUEUE {
+        1
+    } else if queue == IWL_DATA_QUEUE {
+        2
+    } else {
+        let mut slot = 3 + queue as usize;
+        if queue > IWL_DATA_QUEUE {
+            slot -= 1;
+        }
+        if queue > IWL_CMD_QUEUE {
+            slot -= 1;
+        }
+        if queue > IWL_AUX_QUEUE {
+            slot -= 1;
+        }
+        slot
+    }
+}
+
+pub const fn tx_tfd_ring_offset(queue: u32) -> usize {
+    tx_tfd_ring_slot(queue) * TX_TFD_RING_BYTES
+}
+
 /// The auxiliary station has its own TFD ring even though the host does not
 /// submit scan frames directly. Linux allocates one ring per scheduler queue;
-/// keeping q11 separate prevents firmware from interpreting q9 descriptors as
+/// keeping q15 separate prevents firmware from interpreting q9 descriptors as
 /// scan traffic.
-pub const TX_AUX_TFD_RING_OFFSET: usize = TX_TFD_RING_BYTES;
+pub const TX_AUX_TFD_RING_OFFSET: usize = tx_tfd_ring_offset(IWL_AUX_QUEUE);
 /// Ordinary data queue ring. It is kept separate from both the HCMD and AUX
 /// rings because each scheduler queue owns an independent read pointer.
-pub const TX_DATA_TFD_RING_OFFSET: usize = TX_AUX_TFD_RING_OFFSET + TX_TFD_RING_BYTES;
-pub const TX_KEEP_WARM_OFFSET: usize = TX_DATA_TFD_RING_OFFSET + TX_TFD_RING_BYTES;
+pub const TX_DATA_TFD_RING_OFFSET: usize = tx_tfd_ring_offset(IWL_DATA_QUEUE);
+/// DQA management/non-QoS queue used for the first authentication exchange.
+pub const TX_MGMT_TFD_RING_OFFSET: usize = tx_tfd_ring_offset(IWL_MGMT_QUEUE);
+pub const TX_KEEP_WARM_OFFSET: usize = IWL_NUM_OF_QUEUES as usize * TX_TFD_RING_BYTES;
 pub const TX_KEEP_WARM_BYTES: usize = 0x1000;
 pub const TX_SCD_BC_OFFSET: usize = TX_KEEP_WARM_OFFSET + TX_KEEP_WARM_BYTES;
 pub const TX_SCD_BC_BYTES: usize = 32 * (256 + 64) * 2;
@@ -231,8 +364,10 @@ pub const HBUS_TARG_PRPH_RADDR: u32 = (0x400 + 0x048) / 4;
 pub const HBUS_TARG_PRPH_WDAT: u32 = (0x400 + 0x04C) / 4;
 pub const HBUS_TARG_PRPH_RDAT: u32 = (0x400 + 0x050) / 4;
 pub const APMG_CLK_EN_REG: u32 = 0x3004;
+pub const APMG_PS_CTRL_REG: u32 = 0x300c;
 pub const APMG_PCIDEV_STT_REG: u32 = 0x3010;
 pub const APMG_CLK_VAL_DMA_CLK_RQT: u32 = 0x0000_0200;
+pub const APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS: u32 = 0x0040_0000;
 pub const APMG_PCIDEV_STT_L1_ACT_DIS: u32 = 0x0000_0800;
 
 // ── Firmware constants ─────────────

@@ -17,6 +17,104 @@ use super::types::*;
 /// in Authenticating forever when an AP or RX path drops the response.
 const CONNECTION_WATCHDOG_TICKS: u32 = 4_000;
 
+const RX_MPDU_RES_STATUS_CRC_OK: u32 = 1 << 0;
+const RX_MPDU_RES_STATUS_OVERRUN_OK: u32 = 1 << 1;
+const RX_MPDU_RES_STATUS_MIC_OK: u32 = 1 << 6;
+const RX_MPDU_RES_STATUS_SEC_CCM_ENC: u32 = 2 << 8;
+const RX_MPDU_RES_STATUS_SEC_ENC_MSK: u32 = 7 << 8;
+const IEEE80211_CCMP_HDR_LEN: usize = 8;
+const REPLY_TX_CMD: u8 = 0x1c;
+const TX_STATUS_MSK: u16 = 0x00ff;
+const TX_STATUS_SUCCESS: u16 = 0x01;
+const TX_STATUS_DIRECT_DONE: u16 = 0x02;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LegacyRxMpdu<'a> {
+    frame: &'a [u8],
+    status: u32,
+    decrypted: bool,
+    crypto_header_len: usize,
+    crypto_trailer_len: usize,
+}
+
+/// Decode the gen1 `REPLY_RX_MPDU_CMD` payload used by 7265D firmware.
+/// Linux reads the status word immediately after the `byte_count` bytes; it
+/// is not part of the 802.11 frame and is not aligned separately.
+fn decode_legacy_rx_mpdu(payload: &[u8]) -> Option<LegacyRxMpdu<'_>> {
+    if payload.len() < 8 {
+        return None;
+    }
+    let byte_count = u16::from_le_bytes([payload[0], payload[1]]) as usize;
+    let frame_end = 4usize.checked_add(byte_count)?;
+    let status_end = frame_end.checked_add(4)?;
+    if byte_count < 2 || status_end > payload.len() {
+        return None;
+    }
+    let frame = &payload[4..frame_end];
+    let status = u32::from_le_bytes(payload[frame_end..status_end].try_into().ok()?);
+
+    // mac80211 ultimately rejects bad-FCS/FIFO frames outside monitor mode.
+    if status & (RX_MPDU_RES_STATUS_CRC_OK | RX_MPDU_RES_STATUS_OVERRUN_OK)
+        != RX_MPDU_RES_STATUS_CRC_OK | RX_MPDU_RES_STATUS_OVERRUN_OK
+    {
+        return None;
+    }
+
+    let protected = frame[1] & 0x40 != 0;
+    if !protected || status & RX_MPDU_RES_STATUS_SEC_ENC_MSK == 0 {
+        return Some(LegacyRxMpdu {
+            frame,
+            status,
+            decrypted: false,
+            crypto_header_len: 0,
+            crypto_trailer_len: 0,
+        });
+    }
+
+    // This driver only negotiates CCMP. Linux v4.14 accepts a hardware-CCMP
+    // result only when MIC_OK is set, marks it decrypted, and tells mac80211
+    // that the still-present crypto header is eight bytes long.
+    if status & RX_MPDU_RES_STATUS_SEC_ENC_MSK != RX_MPDU_RES_STATUS_SEC_CCM_ENC
+        || status & RX_MPDU_RES_STATUS_MIC_OK == 0
+    {
+        return None;
+    }
+    Some(LegacyRxMpdu {
+        frame,
+        status,
+        decrypted: true,
+        crypto_header_len: IEEE80211_CCMP_HDR_LEN,
+        crypto_trailer_len: 8,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LegacyTxResponse {
+    frame_count: u8,
+    failure_rts: u8,
+    failure_frame: u8,
+    initial_rate: u32,
+    wireless_media_time: u16,
+    frame_control: u16,
+    status: u16,
+}
+
+/// Decode `iwl_mvm_tx_resp_v3`, the non-TFH response used by 7265D.
+fn decode_legacy_tx_response(payload: &[u8]) -> Option<LegacyTxResponse> {
+    if payload.len() < 40 {
+        return None;
+    }
+    Some(LegacyTxResponse {
+        frame_count: payload[0],
+        failure_rts: payload[2],
+        failure_frame: payload[3],
+        initial_rate: u32::from_le_bytes(payload[4..8].try_into().ok()?),
+        wireless_media_time: u16::from_le_bytes(payload[8..10].try_into().ok()?),
+        frame_control: u16::from_le_bytes(payload[34..36].try_into().ok()?),
+        status: u16::from_le_bytes(payload[36..38].try_into().ok()?),
+    })
+}
+
 struct RxHexBytes<'a>(&'a [u8]);
 
 impl fmt::Display for RxHexBytes<'_> {
@@ -31,23 +129,53 @@ impl fmt::Display for RxHexBytes<'_> {
     }
 }
 
+/// Match a firmware command response, optionally requiring the exact q9
+/// sequence that was placed in the host-command header. Runtime setup can
+/// reuse an opcode while older responses are still present in RX, so opcode
+/// and group alone are not a sufficient synchronous-command boundary.
+const fn command_response_matches(
+    packet_opcode: u8,
+    packet_group: u8,
+    packet_sequence: u16,
+    expected_opcode: u8,
+    expected_group: u8,
+    expected_sequence: Option<u16>,
+) -> bool {
+    let group_matches = packet_group == expected_group
+        || (expected_opcode == LegacyCmd::MccUpdate as u8
+            && packet_opcode == LegacyCmd::MccUpdate as u8);
+    let sequence_matches = match expected_sequence {
+        Some(sequence) => packet_sequence == sequence,
+        None => true,
+    };
+    packet_opcode == expected_opcode && group_matches && sequence_matches
+}
+
 impl IwlWifiDevice {
     /// Advance the management-frame connection watchdog before touching the
     /// device.  A PCIe/MMIO health failure can make the RX poll return early;
     /// the user-facing state must still leave `Authenticating`/`Associating`
     /// instead of remaining there forever.
     fn advance_connection_watchdog(&mut self) {
-        if matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent) {
+        let management_pending = matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent);
+        let handshake_pending = self.wifi_conn.status == bonder::wifi::WifiStatus::Handshake;
+        if management_pending || handshake_pending {
             self.connection_watchdog_ticks = self.connection_watchdog_ticks.saturating_add(1);
             if self.connection_watchdog_ticks > CONNECTION_WATCHDOG_TICKS {
-                let phase = if self.iwl_state == IwlState::AuthSent {
+                let phase = if handshake_pending {
+                    "WPA2 handshake"
+                } else if self.iwl_state == IwlState::AuthSent {
                     "authentication"
                 } else {
                     "association"
                 };
-                self.iwl_state = IwlState::Disconnected;
-                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-                self.wifi_conn.error_msg = Some(alloc::format!("{} response timeout", phase));
+                if handshake_pending {
+                    self.wpa_failed("WPA2 handshake timeout");
+                } else {
+                    self.iwl_state = IwlState::Disconnected;
+                    self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                    self.wifi_conn.error_msg = Some(alloc::format!("{} response timeout", phase));
+                }
                 self.connection_watchdog_ticks = 0;
                 log::warn!("iwlwifi: {} response timeout", phase);
             }
@@ -76,6 +204,55 @@ impl IwlWifiDevice {
         );
     }
 
+    /// Wait for the RX ALIVE notification after the CSR ALIVE edge.
+    ///
+    /// On gen1 hardware the CSR bit only announces that firmware reached its
+    /// boot interrupt. Linux completes the transition using REPLY_ALIVE from
+    /// the pre-armed RX ring, which also supplies the scheduler SRAM base.
+    /// Explicitly drain that notification before submitting the first host
+    /// command or touching the TX scheduler.
+    pub(super) fn wait_for_alive_rx(&mut self) -> Result<(), crate::DriverError> {
+        const ALIVE_TIMEOUT_US: u64 = 500_000;
+        const IWL_ALIVE_STATUS_OK: u16 = 0xcafe;
+
+        let deadline_tsc = unsafe { core::arch::x86_64::_rdtsc() }
+            .saturating_add(crate::timing::ticks_per_us().saturating_mul(ALIVE_TIMEOUT_US));
+        loop {
+            if let Some(payload) = self.poll_init_notification(
+                LegacyCmd::ReplyAlive as u8,
+                GroupId::Legacy as u8,
+                None,
+                deadline_tsc,
+            )? {
+                if payload.len() < 44 {
+                    log::error!(
+                        "iwlwifi: firmware ALIVE RX payload too short: {} bytes",
+                        payload.len(),
+                    );
+                    return Err(crate::DriverError::Protocol);
+                }
+                let status = u16::from_le_bytes([payload[0], payload[1]]);
+                if status != IWL_ALIVE_STATUS_OK {
+                    log::error!("iwlwifi: firmware ALIVE RX rejected status={:#06x}", status,);
+                    // The v3 ALIVE payload carries the authoritative LMAC
+                    // error-table address even when firmware reports DEAD.
+                    // `poll_init_notification()` records it before returning
+                    // this packet, so preserve the assertion evidence before
+                    // aborting initialization just as Linux does.
+                    self.log_firmware_error_table("init.alive.dead");
+                    return Err(crate::DriverError::Protocol);
+                }
+                log::info!(
+                    "iwlwifi: firmware ALIVE RX consumed status={:#06x} scd_base={:#010x}",
+                    status,
+                    self.alive_scd_base_addr,
+                );
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     /// Poll one command response while the INIT image is running.
     ///
     /// The normal service tick intentionally processes RX only in `Ready`
@@ -86,6 +263,7 @@ impl IwlWifiDevice {
         &mut self,
         opcode: u8,
         group: u8,
+        sequence: Option<u16>,
         deadline_tsc: u64,
     ) -> Result<Option<Vec<u8>>, crate::DriverError> {
         const FRAME_ALIGN: usize = 64;
@@ -113,7 +291,9 @@ impl IwlWifiDevice {
             let reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
             let gp_cntrl = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
             let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
-            let rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
+            let rptr = self
+                .read_prph(scd_queue_rdptr(self.command_queue()))
+                .unwrap_or(!0);
             log::error!(
                 "iwlwifi: init.rx.error firmware_failure opcode=0x{:02x} group=0x{:02x} CSR_INT={:#010x} FH_INT={:#010x} UCODE_GP1={:#010x} GP_DRIVER={:#010x} RESET={:#010x} GP_CNTRL={:#010x} SCD_RDPTR={:#010x}",
                 opcode,
@@ -131,6 +311,18 @@ impl IwlWifiDevice {
             // emit REPLY_ERROR together with SW_ERR; returning here would
             // discard that command-specific reason.
             firmware_error = true;
+        }
+
+        // ALIVE arrives as a high-priority RX event (FH bit 30) together with
+        // RX channel 0. Acknowledge the complete Linux gen1 RX mask; clearing
+        // channel 0 alone leaves the aggregate interrupt asserted.
+        if csr_int & (CSR_INT_BIT_FH_RX | CSR_INT_BIT_SW_RX | CSR_INT_BIT_RX_PERIODIC) != 0 {
+            let fh_cause = self.safe_read32(CSR_FH_INT).unwrap_or(0);
+            self.write_mmio32(CSR_FH_INT, fh_cause & CSR_FH_INT_RX_MASK);
+            self.write_mmio32(
+                CSR_INT,
+                csr_int & (CSR_INT_BIT_FH_RX | CSR_INT_BIT_SW_RX | CSR_INT_BIT_RX_PERIODIC),
+            );
         }
 
         let gp1 = self.safe_read32(CSR_UCODE_GP1).unwrap_or(0);
@@ -212,6 +404,7 @@ impl IwlWifiDevice {
                     }
                     let packet = &frame[offset..offset + packet_len];
                     let payload = &packet[8..];
+                    let packet_sequence = u16::from_le_bytes([packet[6], packet[7]]);
                     let payload_preview = &payload[..core::cmp::min(payload.len(), 32)];
                     if packet[4] == LegacyCmd::ReplyAlive as u8
                         && packet[5] == GroupId::Legacy as u8
@@ -247,10 +440,14 @@ impl IwlWifiDevice {
                     // legacy or long notification namespace. Match its
                     // opcode independently of the namespace; all other
                     // command responses remain strict.
-                    let response_group_matches = packet[5] == group
-                        || (opcode == LegacyCmd::MccUpdate as u8
-                            && packet[4] == LegacyCmd::MccUpdate as u8);
-                    if packet[4] == opcode && response_group_matches {
+                    if command_response_matches(
+                        packet[4],
+                        packet[5],
+                        packet_sequence,
+                        opcode,
+                        group,
+                        sequence,
+                    ) {
                         matched = Some(payload.to_vec());
                     } else if packet[4] == LegacyCmd::ReplyError as u8 {
                         let error_type = payload
@@ -309,7 +506,13 @@ impl IwlWifiDevice {
         Ok(None)
     }
 
-    fn process_rx_frame(&mut self, frame: &[u8], rx_decrypted: bool) {
+    fn process_rx_frame(
+        &mut self,
+        frame: &[u8],
+        rx_decrypted: bool,
+        crypto_header_len: usize,
+        crypto_trailer_len: usize,
+    ) {
         if frame.len() < 2 {
             return;
         }
@@ -389,9 +592,30 @@ impl IwlWifiDevice {
                                 .find(|ap| ap.bssid == bssid)
                                 .map(|ap| ap.channel)
                                 .unwrap_or(1);
+                            let ap_timing = self
+                                .scan_results
+                                .iter()
+                                .find(|ap| ap.bssid == bssid)
+                                .map(|ap| {
+                                    (
+                                        ap.beacon_interval,
+                                        ap.dtim_period,
+                                        ap.dtim_count,
+                                        ap.beacon_timestamp,
+                                        ap.device_timestamp,
+                                    )
+                                })
+                                .unwrap_or((100, 0, 0, 0, 0));
                             let mac_context =
                                 MacContextCmd::sta_for_bssid_on_channel(self.mac, bssid, channel)
-                                    .associated(aid);
+                                    .associated_with_ap(
+                                        aid,
+                                        ap_timing.0,
+                                        ap_timing.1,
+                                        ap_timing.2,
+                                        ap_timing.3,
+                                        ap_timing.4,
+                                    );
                             let mac_context_bytes = unsafe { super::as_bytes(&mac_context) };
                             if let Err(error) = self.send_hcmd(
                                 LegacyCmd::MacContext as u8,
@@ -411,6 +635,31 @@ impl IwlWifiDevice {
                                 );
                                 return;
                             }
+
+                            // Linux's AUTH -> ASSOC station transition also
+                            // updates the firmware peer entry with the AID.
+                            // Keep this behind MAC_CONTEXT on the same command
+                            // queue; synchronously polling RX from inside this
+                            // RX-buffer walk would re-enter ring accounting.
+                            let associated_peer = AddStaCmdV7::associated_peer(0, 0, aid);
+                            if let Err(error) = self.send_hcmd(
+                                LegacyCmd::AddSta as u8,
+                                GroupId::Legacy as u8,
+                                unsafe { super::as_bytes(&associated_peer) },
+                            ) {
+                                self.iwl_state = IwlState::Disconnected;
+                                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                                self.connection_watchdog_ticks = 0;
+                                self.wifi_conn.error_msg = Some(alloc::format!(
+                                    "associated peer station setup failed: {:?}",
+                                    error
+                                ));
+                                log::warn!(
+                                    "iwlwifi: failed to publish associated peer station: {:?}",
+                                    error
+                                );
+                                return;
+                            }
                             self.iwl_state = IwlState::Connected;
                             self.connection_watchdog_ticks = 0;
                             self.wifi_conn.status = if self.wpa_required {
@@ -422,6 +671,15 @@ impl IwlWifiDevice {
                                 bonder::wifi::WifiStatus::Connected
                             };
                             self.wifi_conn.current_bssid = Some(bssid);
+                            log::info!(
+                                "iwlwifi: association accepted AID={} link_status={}",
+                                aid & 0x3fff,
+                                if self.wpa_required {
+                                    "Handshake"
+                                } else {
+                                    "Connected"
+                                },
+                            );
 
                             if !self.wpa_required {
                                 self.start_dhcp(aid);
@@ -438,11 +696,13 @@ impl IwlWifiDevice {
             (2, subtype) => {
                 let header_len = if subtype & 0x08 != 0 { 26 } else { 24 };
                 if frame.len() > header_len {
-                    let llc_offset = header_len;
-                    if frame.len() > llc_offset + 8 {
+                    let protected = frame[1] & 0x40 != 0;
+                    let llc_offset = header_len + if protected { crypto_header_len } else { 0 };
+                    let payload_end = frame.len().saturating_sub(crypto_trailer_len);
+                    if payload_end > llc_offset + 8 {
                         let ether_type =
                             u16::from_be_bytes([frame[llc_offset + 6], frame[llc_offset + 7]]);
-                        let data = &frame[llc_offset + 8..];
+                        let data = &frame[llc_offset + 8..payload_end];
                         if self.wpa_required && ether_type == 0x888E && frame.len() >= 16 {
                             let from_ap = self
                                 .wifi_conn
@@ -455,13 +715,11 @@ impl IwlWifiDevice {
                             }
                         }
                         if self.wpa_required && ether_type != 0x888E {
-                            let protected = frame[1] & 0x40 != 0;
                             // Before the handshake completes, discard every data
-                            // frame.  Afterward, require either the Protected bit
-                            // or an explicit firmware decryption/authentication
-                            // status; this handles firmware that clears Protected
-                            // after decrypting without allowing plaintext fallback.
-                            if !self.wpa_keys_installed || (!protected && !rx_decrypted) {
+                            // frame. Afterward, require the authenticated CCMP
+                            // result from the firmware status trailer; the header's
+                            // Protected bit alone does not prove decryption/MIC.
+                            if !self.wpa_keys_installed || !rx_decrypted {
                                 return;
                             }
                         }
@@ -474,6 +732,7 @@ impl IwlWifiDevice {
                                 match self.wpa.state {
                                     WpaState::WaitMsg1 => {
                                         if let Ok(reply) = self.wpa.handle_message_1(data) {
+                                            self.connection_watchdog_ticks = 0;
                                             if self.send_eapol_frame(&reply).is_err() {
                                                 self.wpa_failed("could not send EAPOL message 2");
                                             }
@@ -507,6 +766,7 @@ impl IwlWifiDevice {
                                             // TX tail over both key commands.
                                             self.wpa_key_command_end = Some(key_command_end);
                                             self.pending_wpa_message4 = Some(reply);
+                                            self.connection_watchdog_ticks = 0;
                                         }
                                         Err(_) => {
                                             self.wpa_failed("EAPOL message 3 authentication failed")
@@ -558,6 +818,12 @@ impl IwlWifiDevice {
                                                         log::info!(
                                                             "iwlwifi: IP address assigned: {:?}",
                                                             self.ip_address
+                                                        );
+                                                        log::info!(
+                                                            "iwlwifi: network ready link_status=Connected ipv4={:?} gateway={:?} dns={:?}",
+                                                            self.ip_address,
+                                                            self.gateway,
+                                                            self.dns_server,
                                                         );
                                                     }
                                                     true
@@ -625,6 +891,7 @@ impl IwlWifiDevice {
         self.wpa.state = WpaState::Error;
         self.wpa_keys_installed = false;
         self.wpa_key_command_end = None;
+        self.wpa_key_pending_sequences = [None; 2];
         self.pending_wpa_message4 = None;
         self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
         self.wifi_conn.error_msg = Some(alloc::string::String::from(reason));
@@ -671,13 +938,13 @@ impl IwlWifiDevice {
         // both shared-memory pointers so queue accounting does not remain
         // stuck at the last interrupt.
         let polled_tx_tail = if self.fw_state == FwState::Ready {
-            self.read_prph(SCD_QUEUE_RDPTR_CMD)
+            self.read_prph(scd_queue_rdptr(self.command_queue()))
                 .map(|value| value as usize)
         } else {
             None
         };
         let polled_data_tx_tail = if self.fw_state == FwState::Ready {
-            self.read_prph(SCD_QUEUE_RDPTR_DATA)
+            self.read_prph(scd_queue_rdptr(self.traffic_queue()))
                 .map(|value| value as usize)
         } else {
             None
@@ -709,13 +976,112 @@ impl IwlWifiDevice {
             }
         }
 
+        // The first management TX log is emitted immediately after ringing
+        // q5, where an rptr of zero is expected.  Sample it again after the
+        // scheduler has had time to fetch the descriptor.  q0 is explicitly
+        // activated through SCD_EN_CTRL, but a DQA traffic queue relies on
+        // SCD_GP_CTRL auto-active mode, so include both controls here.
+        let management_pending = matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent);
+        if management_pending
+            && (self.connection_watchdog_ticks == 64 || self.connection_watchdog_ticks % 512 == 0)
+        {
+            let queue = self.traffic_queue();
+            let scd_status = self.read_prph(scd_queue_status(queue)).unwrap_or(!0);
+            let fifo = scd_status & 0x7;
+            let scd_en = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            let scd_gp = self.read_prph(SCD_GP_CTRL).unwrap_or(!0);
+            // SCD SRAM state: for DQA queues the firmware sets up the SCD
+            // context, queuechain, and aggr registers via SCD_QUEUE_CFG.
+            // Read them back to diagnose why the scheduler is not fetching
+            // q5 TFDs.  SCD_QUEUE_WRPTR confirms the doorbell reached the
+            // scheduler.  Context word 1 holds WIN_SIZE (bits 0-6) and
+            // FRAME_LIMIT (bits 16-22); a zero window prevents fetching.
+            let scd_wrptr = self.read_prph(scd_queue_wrptr(queue)).unwrap_or(!0);
+            let scd_rptr_hw = self.read_prph(scd_queue_rdptr(queue)).unwrap_or(!0);
+            let scd_chain = self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(!0);
+            let scd_aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
+            let scd_base = self.alive_scd_base_addr;
+            let ctx0 = self
+                .read_mem32(scd_base + scd_context_queue(queue))
+                .unwrap_or(!0);
+            let ctx1 = self
+                .read_mem32(scd_base + scd_context_queue(queue) + 4)
+                .unwrap_or(!0);
+            let scd_txfact = self.read_prph(SCD_TXFACT).unwrap_or(!0);
+            let fh_tx_trb = self.safe_read32(fh_tx_trb_channel(fifo)).unwrap_or(!0);
+            log::info!(
+                "iwlwifi: management TX scheduler poll tick={} phase={} queue={} sw_head={} sw_tail={} wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} scd_en={:#010x} scd_gp={:#010x} cbbc={:#010x} scd_txfact={:#010x} fh_tx_trb={:#010x} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} tx_status={:#010x} tx_error={:#010x} gp_cntrl={:#010x} gp1={:#010x}",
+                self.connection_watchdog_ticks,
+                if self.iwl_state == IwlState::AuthSent {
+                    "authentication"
+                } else {
+                    "association"
+                },
+                queue,
+                self.tx_data_head & (TX_QUEUE_SIZE - 1),
+                self.tx_data_tail & (TX_QUEUE_SIZE - 1),
+                self.safe_read32(HBUS_TARG_WRPTR).unwrap_or(!0),
+                polled_data_tx_tail.map(|tail| tail as u32).unwrap_or(!0),
+                scd_status,
+                fifo,
+                scd_en,
+                scd_gp,
+                self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0),
+                scd_txfact,
+                fh_tx_trb,
+                self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + fifo * (0x20 / 4))
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
+                self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
+                self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+                self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0),
+            );
+            log::info!(
+                "iwlwifi: SCD SRAM queue={} hw_wrptr={:#010x} hw_rdptr={:#010x} queuechain={:#010x} aggr_sel={:#010x} ctx0={:#010x} ctx1={:#010x} win_size={} frame_limit={}",
+                queue,
+                scd_wrptr & 0xff,
+                scd_rptr_hw & 0xff,
+                scd_chain,
+                scd_aggr,
+                ctx0,
+                ctx1,
+                ctx1 & 0x7f,
+                (ctx1 >> 16) & 0x7f,
+            );
+            // Read the SCD translation table entry and TX status SRAM entry
+            // for q5.  The translation table maps RA/TID to queue; a non-
+            // aggregate queue does not use it, but a stale non-zero value
+            // could misdirect the scheduler.  The TX status SRAM entry is
+            // another firmware-owned field that should be non-zero for an
+            // active queue.
+            let trans_tbl = self
+                .read_mem32(scd_base + scd_trans_tbl_offset_queue(queue))
+                .unwrap_or(!0);
+            let tx_stts = self
+                .read_mem32(scd_base + scd_tx_stts_queue_offset(queue))
+                .unwrap_or(!0);
+            log::info!(
+                "iwlwifi: SCD SRAM q5 extra trans_tbl={:#010x} tx_stts={:#010x}",
+                trans_tbl,
+                tx_stts,
+            );
+        }
+
         let int_cause = match self.safe_read32(CSR_INT) {
             Some(value) => value,
             None => return,
         };
         if self.scan_pending && (self.scan_channel == 0 || self.scan_channel % 512 == 0) {
-            let scd_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
-            let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
+            let scd_rptr = self
+                .read_prph(scd_queue_rdptr(self.command_queue()))
+                .unwrap_or(!0);
+            let scd_status = self
+                .read_prph(scd_queue_status(self.command_queue()))
+                .unwrap_or(!0);
             let tx_cfg = self
                 .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4))
                 .unwrap_or(!0);
@@ -767,14 +1133,18 @@ impl IwlWifiDevice {
             let tx_error = self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0);
             let tx_trb = self.safe_read32(FH_TX_TRB_CHNL0).unwrap_or(!0);
             let tx_cfg = self
-                .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4))
+                .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4))
                 .unwrap_or(!0);
             let csr_gp1 = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
             let csr_gp_driver = self.safe_read32(CSR_GP_DRIVER).unwrap_or(!0);
             let csr_reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
             let csr_gp_cntrl = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
-            let scd_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
-            let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
+            let scd_rptr = self
+                .read_prph(scd_queue_rdptr(self.command_queue()))
+                .unwrap_or(!0);
+            let scd_status = self
+                .read_prph(scd_queue_status(self.command_queue()))
+                .unwrap_or(!0);
             log::error!(
                 "iwlwifi: FH hardware error: CSR_INT={:#010x} CSR_INT_MASK={:#010x} FH_INT={:#010x} UCODE_GP1={:#010x} GP_DRIVER={:#010x} RESET={:#010x} GP_CNTRL={:#010x} TSSR_STATUS={:#010x} TSSR_ERROR={:#010x} TX_TRB={:#010x} TX_CFG={:#010x} SCD_RDPTR={} SCD_STATUS={:#010x}",
                 int_cause,
@@ -841,10 +1211,10 @@ impl IwlWifiDevice {
                 // The pointer was polled above. Re-read only when an actual
                 // FH_TX cause is present, since the interrupt and the SCD
                 // pointer are independent on this generation.
-                if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_CMD) {
+                if let Some(hardware_tail) = self.read_prph(scd_queue_rdptr(self.command_queue())) {
                     self.update_tx_tail(hardware_tail as usize);
                 }
-                if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_DATA) {
+                if let Some(hardware_tail) = self.read_prph(scd_queue_rdptr(self.traffic_queue())) {
                     self.update_data_tx_tail(hardware_tail as usize);
                 }
                 self.process_tx_queue();
@@ -938,13 +1308,19 @@ impl IwlWifiDevice {
                 self.wifi_conn.finish_scan();
                 self.iwl_state = IwlState::Disconnected;
                 self.scan_result_grace_ticks = SCAN_RESULT_GRACE_TICKS;
-                let tx_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
-                let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
+                let tx_rptr = self
+                    .read_prph(scd_queue_rdptr(self.command_queue()))
+                    .unwrap_or(!0);
+                let scd_status = self
+                    .read_prph(scd_queue_status(self.command_queue()))
+                    .unwrap_or(!0);
                 let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
                 let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
                 let int_mask = self.safe_read32(CSR_INT_MASK).unwrap_or(!0);
                 let tx_cfg = self
-                    .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4))
+                    .safe_read32(
+                        FH_TCSR_CHNL_TX_CONFIG_BASE + SCD_QUEUE_STTS_FIFO_COMMAND * (0x20 / 4),
+                    )
                     .unwrap_or(!0);
                 let rx_closed = self.rx_status().closed_rb_num;
                 let rx_finished = self.rx_status().finished_rb_num;
@@ -1035,6 +1411,38 @@ impl IwlWifiDevice {
         let group = data[5];
         let sequence = u16::from_le_bytes([data[6], data[7]]);
 
+        if command == LegacyCmd::AddStaKey as u8
+            && group == GroupId::Legacy as u8
+            && self
+                .wpa_key_pending_sequences
+                .iter()
+                .any(|pending| *pending == Some(sequence))
+        {
+            let payload = &data[8..packet_len];
+            let status = payload
+                .get(..4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
+            // ADD_STA_SUCCESS is reported in the low byte, as in
+            // `send_hcmd_and_wait()` for ADD_STA.
+            if status.map(|status| status & 0xff) != Some(1) {
+                log::warn!(
+                    "iwlwifi: ADD_STA_KEY failed sequence=0x{:04x} status={:?} payload={}",
+                    sequence,
+                    status,
+                    payload.len(),
+                );
+                self.wpa_failed("firmware rejected a CCMP key");
+                return;
+            }
+            for pending in &mut self.wpa_key_pending_sequences {
+                if *pending == Some(sequence) {
+                    *pending = None;
+                }
+            }
+            log::info!("iwlwifi: ADD_STA_KEY accepted sequence=0x{:04x}", sequence,);
+            return;
+        }
+
         // Scan-complete notification.
         if command == LegacyCmd::ScanOffloadCompleteNotif as u8 {
             let payload = &data[8..packet_len];
@@ -1083,8 +1491,41 @@ impl IwlWifiDevice {
             let payload = &data[8..packet_len];
             // iwl_rx_phy_info: channel is at byte offset 22 (le16).
             if payload.len() >= 24 {
+                self.last_rx_system_timestamp =
+                    u32::from_le_bytes(payload[4..8].try_into().unwrap());
                 let channel = u16::from_le_bytes([payload[22], payload[23]]);
                 self.last_rx_phy_channel = channel;
+            }
+            return;
+        }
+
+        // 7265D uses the v3 (non-TFH) TX response. Record whether the AP
+        // acknowledged authentication/association and how many firmware
+        // retries were needed; this is the authoritative boundary between a
+        // queue/descriptor problem and a missing over-the-air response.
+        if command == REPLY_TX_CMD {
+            let payload = &data[8..packet_len];
+            if let Some(response) = decode_legacy_tx_response(payload) {
+                let status = response.status & TX_STATUS_MSK;
+                let acknowledged = status == TX_STATUS_SUCCESS || status == TX_STATUS_DIRECT_DONE;
+                log::info!(
+                    "iwlwifi: TX response seq=0x{:04x} fc=0x{:04x} frames={} ack={} status=0x{:02x} retries={} rts_failures={} rate={:#010x} airtime_us={}",
+                    sequence,
+                    response.frame_control,
+                    response.frame_count,
+                    acknowledged,
+                    status,
+                    response.failure_frame,
+                    response.failure_rts,
+                    response.initial_rate,
+                    response.wireless_media_time,
+                );
+            } else {
+                log::warn!(
+                    "iwlwifi: truncated legacy TX response seq=0x{:04x} payload={}",
+                    sequence,
+                    payload.len(),
+                );
             }
             return;
         }
@@ -1096,16 +1537,34 @@ impl IwlWifiDevice {
         if command == LegacyCmd::ReplyRxMpduCmd as u8 && packet_len >= 12 {
             let payload = &data[8..packet_len];
             let byte_count = u16::from_le_bytes([payload[0], payload[1]]) as usize;
-            let frame_end = 12usize.saturating_add(byte_count).min(packet_len);
             log::info!(
-                "iwlwifi: RX MPDU notification group=0x{:02x} seq=0x{:04x} bytes={} frame_bytes={}",
+                "iwlwifi: RX MPDU notification group=0x{:02x} seq=0x{:04x} bytes={}",
                 group,
                 sequence,
                 byte_count,
-                frame_end.saturating_sub(12)
             );
-            if frame_end >= 36 {
-                self.process_rx_frame(&data[12..frame_end], false);
+            if let Some(mpdu) = decode_legacy_rx_mpdu(payload) {
+                log::debug!(
+                    "iwlwifi: RX MPDU status={:#010x} decrypted={} crypto_header={} crypto_trailer={}",
+                    mpdu.status,
+                    mpdu.decrypted,
+                    mpdu.crypto_header_len,
+                    mpdu.crypto_trailer_len,
+                );
+                if mpdu.frame.len() >= 24 {
+                    self.process_rx_frame(
+                        mpdu.frame,
+                        mpdu.decrypted,
+                        mpdu.crypto_header_len,
+                        mpdu.crypto_trailer_len,
+                    );
+                }
+            } else {
+                log::warn!(
+                    "iwlwifi: rejected malformed or unauthenticated RX MPDU bytes={} payload={}",
+                    byte_count,
+                    payload.len(),
+                );
             }
             return;
         }
@@ -1125,6 +1584,13 @@ impl IwlWifiDevice {
                 bad_seq,
                 service,
             );
+            if self
+                .wpa_key_pending_sequences
+                .iter()
+                .any(|pending| *pending == Some(bad_seq))
+            {
+                self.wpa_failed("firmware rejected a CCMP key command");
+            }
             return;
         }
 
@@ -1147,6 +1613,9 @@ impl IwlWifiDevice {
         if !self.tx_tail_reached(command_end) {
             return;
         }
+        if self.wpa_key_pending_sequences.iter().any(Option::is_some) {
+            return;
+        }
 
         self.wpa_key_command_end = None;
         self.wpa_keys_installed = true;
@@ -1159,6 +1628,7 @@ impl IwlWifiDevice {
             return;
         }
         self.wifi_conn.status = bonder::wifi::WifiStatus::Connected;
+        log::info!("iwlwifi: WPA2 4-way handshake complete link_status=Connected");
         self.start_dhcp(0);
     }
 }
@@ -1170,13 +1640,13 @@ impl IwlWifiDevice {
     /// Inject an 802.11 frame directly into the RX processing path, bypassing
     /// the DMA ring and MMIO.  This simulates a frame received from firmware.
     pub(super) fn inject_rx_frame(&mut self, frame: &[u8]) {
-        self.process_rx_frame(frame, false);
+        self.process_rx_frame(frame, false, 0, 0);
     }
 
     /// Inject an 802.11 frame that the firmware has already CCMP-decrypted.
     /// Use this for data frames received after WPA keys are installed.
     pub(super) fn inject_rx_frame_decrypted(&mut self, frame: &[u8]) {
-        self.process_rx_frame(frame, true);
+        self.process_rx_frame(frame, true, 0, 0);
     }
 
     /// Inject a raw firmware notification directly into packet processing.
@@ -1190,6 +1660,199 @@ impl IwlWifiDevice {
     /// have been consumed.  In tests, call `drain_tx()` first to advance
     /// `tx_tail`, then call this method.
     pub(super) fn finish_wpa_for_test(&mut self) {
+        self.wpa_key_pending_sequences = [None; 2];
         self.finish_pending_wpa_keys();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_mpdu_payload(frame: &[u8], status: u32) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(4 + frame.len() + 4);
+        payload.extend_from_slice(&(frame.len() as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(frame);
+        payload.extend_from_slice(&status.to_le_bytes());
+        payload
+    }
+
+    #[test]
+    fn legacy_ccmp_rx_uses_unaligned_trailing_status_and_keeps_eight_byte_iv() {
+        let mut frame = [0u8; 35];
+        frame[0] = 0x08;
+        frame[1] = 0x42; // FromDS + Protected
+        let status = RX_MPDU_RES_STATUS_CRC_OK
+            | RX_MPDU_RES_STATUS_OVERRUN_OK
+            | RX_MPDU_RES_STATUS_MIC_OK
+            | RX_MPDU_RES_STATUS_SEC_CCM_ENC;
+        let payload = legacy_mpdu_payload(&frame, status);
+
+        let decoded = decode_legacy_rx_mpdu(&payload).expect("valid CCMP MPDU");
+
+        assert_eq!(decoded.frame, frame);
+        assert!(decoded.decrypted);
+        assert_eq!(decoded.crypto_header_len, IEEE80211_CCMP_HDR_LEN);
+        assert_eq!(decoded.crypto_trailer_len, 8);
+    }
+
+    #[test]
+    fn legacy_tx_response_uses_linux_v3_fixed_offsets() {
+        let mut payload = [0u8; 40];
+        payload[0] = 1;
+        payload[2] = 2;
+        payload[3] = 3;
+        payload[4..8].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        payload[8..10].copy_from_slice(&77u16.to_le_bytes());
+        payload[34..36].copy_from_slice(&0x00b0u16.to_le_bytes());
+        payload[36..38].copy_from_slice(&TX_STATUS_SUCCESS.to_le_bytes());
+
+        assert_eq!(
+            decode_legacy_tx_response(&payload),
+            Some(LegacyTxResponse {
+                frame_count: 1,
+                failure_rts: 2,
+                failure_frame: 3,
+                initial_rate: 0x1234_5678,
+                wireless_media_time: 77,
+                frame_control: 0x00b0,
+                status: TX_STATUS_SUCCESS,
+            })
+        );
+        assert!(decode_legacy_tx_response(&payload[..39]).is_none());
+    }
+
+    #[test]
+    fn legacy_ccmp_rx_rejects_bad_mic_bad_fcs_and_missing_status() {
+        let mut frame = [0u8; 32];
+        frame[0] = 0x08;
+        frame[1] = 0x42;
+        let good_transport = RX_MPDU_RES_STATUS_CRC_OK | RX_MPDU_RES_STATUS_OVERRUN_OK;
+
+        assert!(
+            decode_legacy_rx_mpdu(&legacy_mpdu_payload(
+                &frame,
+                good_transport | RX_MPDU_RES_STATUS_SEC_CCM_ENC,
+            ))
+            .is_none()
+        );
+        assert!(
+            decode_legacy_rx_mpdu(&legacy_mpdu_payload(
+                &frame,
+                RX_MPDU_RES_STATUS_OVERRUN_OK
+                    | RX_MPDU_RES_STATUS_MIC_OK
+                    | RX_MPDU_RES_STATUS_SEC_CCM_ENC,
+            ))
+            .is_none()
+        );
+
+        let mut truncated = legacy_mpdu_payload(
+            &frame,
+            good_transport | RX_MPDU_RES_STATUS_MIC_OK | RX_MPDU_RES_STATUS_SEC_CCM_ENC,
+        );
+        truncated.truncate(truncated.len() - 1);
+        assert!(decode_legacy_rx_mpdu(&truncated).is_none());
+    }
+
+    #[test]
+    fn decrypted_ccmp_data_strips_iv_and_mic_before_llc_delivery() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.wpa_required = true;
+        device.wpa_keys_installed = true;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&[0x08, 0x42, 0, 0]); // data, FromDS, Protected
+        frame.extend_from_slice(&device.mac);
+        frame.extend_from_slice(&[0x10, 0x20, 0x30, 0x40, 0x50, 0x60]);
+        frame.extend_from_slice(&[0; 8]); // addr3 + sequence control
+        frame.extend_from_slice(&[1, 0, 0, 0x20, 0, 0, 0, 0]); // CCMP IV
+        frame.extend_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x12, 0x34]);
+        frame.push(0x7b);
+        frame.extend_from_slice(&[0xa5; 8]); // CCMP MIC
+
+        device.process_rx_frame(&frame, true, 8, 8);
+
+        assert_eq!(device.rx_queue.pop_front().as_deref(), Some(&[0x7b][..]));
+    }
+
+    #[test]
+    fn add_sta_key_reply_clears_only_the_matching_pending_sequence() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.wpa_key_pending_sequences = [Some(0x090a), Some(0x090b)];
+        let mut reply = [0u8; 12];
+        reply[4] = LegacyCmd::AddStaKey as u8;
+        reply[5] = GroupId::Legacy as u8;
+        reply[6..8].copy_from_slice(&0x090au16.to_le_bytes());
+        reply[8..12].copy_from_slice(&1u32.to_le_bytes());
+
+        device.inject_rx_notification(&reply);
+
+        assert_eq!(device.wpa_key_pending_sequences, [None, Some(0x090b)]);
+    }
+
+    #[test]
+    fn reply_error_for_a_pending_key_fails_the_handshake() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.wifi_conn.status = bonder::wifi::WifiStatus::Handshake;
+        device.wpa_key_pending_sequences = [Some(0x090a), Some(0x090b)];
+        let mut reply = [0u8; 20];
+        reply[4] = LegacyCmd::ReplyError as u8;
+        reply[5] = GroupId::Legacy as u8;
+        reply[8..12].copy_from_slice(&1u32.to_le_bytes());
+        reply[12] = LegacyCmd::AddStaKey as u8;
+        reply[14..16].copy_from_slice(&0x090bu16.to_le_bytes());
+
+        device.inject_rx_notification(&reply);
+
+        assert_eq!(device.wifi_conn.status, bonder::wifi::WifiStatus::Error);
+        assert_eq!(device.wpa_key_pending_sequences, [None; 2]);
+    }
+
+    #[test]
+    fn handshake_watchdog_is_finite() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.iwl_state = IwlState::Connected;
+        device.wifi_conn.status = bonder::wifi::WifiStatus::Handshake;
+
+        for _ in 0..=CONNECTION_WATCHDOG_TICKS {
+            device.advance_connection_watchdog();
+        }
+
+        assert_eq!(device.wifi_conn.status, bonder::wifi::WifiStatus::Error);
+        assert_eq!(device.wpa.state, WpaState::Error);
+    }
+
+    #[test]
+    fn runtime_hcmd_response_requires_the_submitted_q9_sequence() {
+        let opcode = LegacyCmd::MacContext as u8;
+        let group = GroupId::Legacy as u8;
+
+        assert!(command_response_matches(
+            opcode,
+            group,
+            0x0918,
+            opcode,
+            group,
+            Some(0x0918),
+        ));
+        assert!(!command_response_matches(
+            opcode,
+            group,
+            0x0917,
+            opcode,
+            group,
+            Some(0x0918),
+        ));
+        assert!(!command_response_matches(
+            LegacyCmd::AddSta as u8,
+            group,
+            0x0918,
+            opcode,
+            group,
+            Some(0x0918),
+        ));
+        assert!(command_response_matches(
+            opcode, group, 0x0917, opcode, group, None,
+        ));
     }
 }

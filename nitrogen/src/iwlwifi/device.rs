@@ -53,6 +53,8 @@ pub struct IwlWifiDevice {
     pub fw_lar_supported: bool,
     pub fw_lar_v2: bool,
     pub fw_umac_scan_supported: bool,
+    /// Firmware capability bit 12: dynamic queue allocation is required.
+    pub fw_dqa_supported: bool,
     pub phy_config: u32,
     pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
@@ -77,6 +79,8 @@ pub struct IwlWifiDevice {
     /// SRAM pointers supplied by the firmware image for post-crash logs.
     pub runtime_errlog_ptr: u32,
     pub init_errlog_ptr: u32,
+    /// Scheduler SRAM base reported by the firmware's RX ALIVE notification.
+    pub alive_scd_base_addr: u32,
 
     /// 802.11 state.
     pub iwl_state: IwlState,
@@ -90,10 +94,11 @@ pub struct IwlWifiDevice {
     /// Next CCMP packet number for protected data frames.
     pub tx_pn: u64,
     /// End position of the queued pair/group key commands, awaiting TX-ring
-    /// consumption.  A command response path is not available in this
-    /// firmware interface, so the data path stays blocked until the ring has
-    /// consumed the commands at minimum.
+    /// consumption. The data path also waits for both firmware status replies.
     pub wpa_key_command_end: Option<usize>,
+    /// Exact command-queue sequences awaiting successful ADD_STA_KEY replies.
+    /// Message 4 remains blocked until both replies report ADD_STA_SUCCESS.
+    pub wpa_key_pending_sequences: [Option<u16>; 2],
     /// EAPOL Message 4 is held until the key commands have been consumed.
     pub pending_wpa_message4: Option<Vec<u8>>,
     pub dhcp: Option<DhcpClient>,
@@ -112,6 +117,8 @@ pub struct IwlWifiDevice {
     /// Parameter Set IE, so the channel can only be determined from this
     /// PHY metadata.
     pub last_rx_phy_channel: u16,
+    /// GP2/system timestamp paired with the last RX PHY notification.
+    pub last_rx_system_timestamp: u32,
     /// Service ticks since the current authentication/association request.
     /// This bounds a lost management-frame exchange instead of leaving the
     /// public connection status in Authenticating forever.
@@ -183,6 +190,36 @@ impl IwlWifiDevice {
 
     // ── DMA helpers ──────────────────────────────────
 
+    #[inline]
+    pub(super) fn command_queue(&self) -> u32 {
+        if self.fw_dqa_supported {
+            IWL_DQA_CMD_QUEUE
+        } else {
+            IWL_LEGACY_CMD_QUEUE
+        }
+    }
+
+    #[inline]
+    pub(super) fn auxiliary_queue(&self) -> u32 {
+        if self.fw_dqa_supported {
+            IWL_DQA_AUX_QUEUE
+        } else {
+            IWL_LEGACY_AUX_QUEUE
+        }
+    }
+
+    /// Scheduler queue used by this minimal non-QoS station TX path.
+    /// Linux allocates the first free DQA management queue for management,
+    /// EAPOL, and the other non-QoS frames emitted by the current stack.
+    #[inline]
+    pub(super) fn traffic_queue(&self) -> u32 {
+        if self.fw_dqa_supported {
+            IWL_MGMT_QUEUE
+        } else {
+            IWL_DATA_QUEUE
+        }
+    }
+
     pub(super) fn tx_desc_mut(&mut self, idx: usize) -> &mut TxDmaDesc {
         unsafe { &mut *(self.tx_dma_ring.virt() as *mut TxDmaDesc).add(idx) }
     }
@@ -234,34 +271,98 @@ impl IwlWifiDevice {
         // and rounds the pointer down to an 8-entry boundary.
         self.write_mmio32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG, (self.rx_posted as u32) & !7);
         mmio::write_barrier();
-        self.write_mmio32(
-            FH_MEM_RCSR_CHNL0_CONFIG_REG,
-            FH_RCSR_RX_CONFIG_CHNL_EN_ENABLE_VAL
-                | FH_RCSR_CHNL0_RX_IGNORE_RXF_EMPTY
-                | FH_RCSR_CHNL0_RX_CONFIG_IRQ_DEST_INT_HOST_VAL
-                | (FH_RCSR_RX_RB_TIMEOUT << FH_RCSR_RX_CONFIG_REG_IRQ_RBTH_POS)
-                | (8 << FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS),
-        );
+        let rx_config = FH_RCSR_RX_CONFIG_CHNL_EN_ENABLE_VAL
+            | FH_RCSR_CHNL0_RX_IGNORE_RXF_EMPTY
+            | FH_RCSR_CHNL0_RX_CONFIG_IRQ_DEST_INT_HOST_VAL
+            | (FH_RCSR_RX_RB_TIMEOUT << FH_RCSR_RX_CONFIG_REG_IRQ_RBTH_POS)
+            | (8 << FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS);
+        self.write_mmio32(FH_MEM_RCSR_CHNL0_CONFIG_REG, rx_config);
         mmio::write_barrier();
-        let rx_config = self.safe_read32(FH_MEM_RCSR_CHNL0_CONFIG_REG).unwrap_or(!0);
-        let rx_rbd_base = self
-            .safe_read32(FH_RSCSR_CHNL0_RBDCB_BASE_REG)
-            .unwrap_or(!0);
-        let rx_status_ptr = self.safe_read32(FH_RSCSR_CHNL0_STTS_WPTR_REG).unwrap_or(!0);
-        let rx_wptr = self
-            .safe_read32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG)
-            .unwrap_or(!0);
-        let int_mask = self.safe_read32(CSR_INT_MASK).unwrap_or(!0);
+        // Do not read FH registers back at this pre-firmware boundary. These
+        // non-posted reads are not part of Linux's RX init contract and some
+        // 7265 platforms do not complete them until the firmware CPU runs.
         log::info!(
-            "iwlwifi: legacy RX DMA enabled: rbd={:#018x} status={:#018x} cfg={:#010x} rbd_base={:#010x} status_ptr={:#010x} wptr={:#010x} int_mask={:#010x}",
+            "iwlwifi: legacy RX DMA programmed: rbd={:#018x} status={:#018x} cfg={:#010x} rbd_base={:#010x} status_ptr={:#010x} wptr={:#010x}",
             rx_phys,
             status_phys,
             rx_config,
-            rx_rbd_base,
-            rx_status_ptr,
-            rx_wptr,
-            int_mask,
+            (rx_phys >> 8) as u32,
+            (status_phys >> 4) as u32,
+            (self.rx_posted as u32) & !7,
         );
+    }
+
+    /// Arm only the gen1 RX channel while the firmware CPU is held in reset.
+    ///
+    /// Linux initializes RX and TX before loading firmware.  Keeping TX/SCD
+    /// setup behind ALIVE avoids the unsafe pre-ALIVE scheduler accesses seen
+    /// on this platform, but the firmware must have an RX ring available when
+    /// it emits REPLY_ALIVE.  Restrict this early phase to the direct FH RX
+    /// registers and refuse it once CPU reset has already been released.
+    pub(super) fn prearm_rx_before_cpu_release(&mut self) -> Result<(), crate::DriverError> {
+        if !cfg!(test) {
+            self.health
+                .check()
+                .map_err(|_| crate::DriverError::DeviceNotFound)?;
+        }
+        let reset = self
+            .safe_read32(CSR_RESET)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        if reset == 0 {
+            log::error!(
+                "iwlwifi: refusing RX pre-arm after CPU release RESET={:#010x}",
+                reset,
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+
+        self.init_rx_dma();
+        log::info!(
+            "iwlwifi: firmware boot RX pre-armed while CPU reset asserted RESET={:#010x}",
+            reset,
+        );
+        Ok(())
+    }
+
+    /// Publish the MAC/radio identity consumed by firmware's early boot code.
+    /// This is the 7000-series part of Linux's `iwl_mvm_nic_config()` and must
+    /// run after parsing PHY_SKU but before releasing the firmware CPU.
+    fn configure_legacy_nic_from_firmware(&mut self) -> Result<(), crate::DriverError> {
+        if self.phy_sku_tlv_len.is_none() || self.phy_config == 0 {
+            log::error!(
+                "iwlwifi: firmware boot missing PHY_SKU for NIC configuration tlv_len={:?} phy_config={:#010x}",
+                self.phy_sku_tlv_len,
+                self.phy_config,
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+
+        let current = self
+            .safe_read32(CSR_HW_IF_CONFIG)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        let fields = legacy_nic_config_fields(self.hw_rev as u32, self.phy_config);
+        let configured = (current & !CSR_HW_IF_CONFIG_NIC_MASK) | fields;
+        self.write_mmio32(CSR_HW_IF_CONFIG, configured);
+
+        // Linux also disables early-power-off reset for APMG-based devices.
+        // It prevents a short platform power transition from leaving the NIC
+        // firmware in reset while the host believes CPU release succeeded.
+        let power = self
+            .read_prph(APMG_PS_CTRL_REG)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        self.write_prph(
+            APMG_PS_CTRL_REG,
+            power | APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS,
+        );
+        mmio::write_barrier();
+        log::info!(
+            "iwlwifi: firmware boot NIC configured hw_rev={:#06x} phy_config={:#010x} CSR_HW_IF_CONFIG={:#010x} APMG_PS_CTRL={:#010x}",
+            self.hw_rev,
+            self.phy_config,
+            configured,
+            power | APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS,
+        );
+        Ok(())
     }
 
     pub(super) fn restock_rx_buffers(&mut self, count: usize) {
@@ -530,6 +631,7 @@ impl IwlWifiDevice {
             fw_lar_supported: false,
             fw_lar_v2: false,
             fw_umac_scan_supported: false,
+            fw_dqa_supported: false,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -545,6 +647,7 @@ impl IwlWifiDevice {
             init_response: None,
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
+            alive_scd_base_addr: 0,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -552,6 +655,7 @@ impl IwlWifiDevice {
             wpa_keys_installed: false,
             tx_pn: 1,
             wpa_key_command_end: None,
+            wpa_key_pending_sequences: [None; 2],
             pending_wpa_message4: None,
             dhcp: None,
             scan_results: Vec::new(),
@@ -559,6 +663,7 @@ impl IwlWifiDevice {
             scan_pending: false,
             scan_result_grace_ticks: 0,
             last_rx_phy_channel: 0,
+            last_rx_system_timestamp: 0,
             connection_watchdog_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
@@ -766,6 +871,7 @@ impl IwlWifiDevice {
             fw_lar_supported: false,
             fw_lar_v2: false,
             fw_umac_scan_supported: false,
+            fw_dqa_supported: false,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -781,6 +887,7 @@ impl IwlWifiDevice {
             init_response: None,
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
+            alive_scd_base_addr: 0,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -788,6 +895,7 @@ impl IwlWifiDevice {
             wpa_keys_installed: false,
             tx_pn: 1,
             wpa_key_command_end: None,
+            wpa_key_pending_sequences: [None; 2],
             pending_wpa_message4: None,
             dhcp: None,
             scan_results: Vec::new(),
@@ -795,6 +903,7 @@ impl IwlWifiDevice {
             scan_pending: false,
             scan_result_grace_ticks: 0,
             last_rx_phy_channel: 0,
+            last_rx_system_timestamp: 0,
             connection_watchdog_ticks: 0,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
@@ -858,6 +967,7 @@ impl IwlWifiDevice {
         self.fw_lar_supported = false;
         self.fw_lar_v2 = false;
         self.fw_umac_scan_supported = false;
+        self.fw_dqa_supported = false;
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
         self.tx_head = 0;
@@ -989,6 +1099,17 @@ impl IwlWifiDevice {
         // the firmware-load interrupt.
         self.prepare_firmware_dma()?;
 
+        // The Linux 7000-series configuration enables shadow registers as
+        // part of NIC initialization. In particular, queue write pointers are
+        // published through this path after ALIVE; leaving it disabled can
+        // make a valid q9 doorbell visible in CSR space but not to the SCD.
+        self.write_mmio32(CSR_MAC_SHADOW_REG_CTRL, CSR_MAC_SHADOW_REG_CTRL_ENABLE);
+        mmio::write_barrier();
+        log::info!(
+            "iwlwifi: legacy shadow registers enabled: value={:#010x}",
+            CSR_MAC_SHADOW_REG_CTRL_ENABLE,
+        );
+
         debug::print("iwlwifi", "fw: header_parse");
         let fw_ptr = fw_data.as_ptr();
 
@@ -1017,6 +1138,7 @@ impl IwlWifiDevice {
         self.fw_build = unsafe { core::ptr::read_unaligned(fw_ptr.add(76) as *const u32) };
         self.runtime_errlog_ptr = 0;
         self.init_errlog_ptr = 0;
+        self.alive_scd_base_addr = 0;
         self.phy_config = 0;
         self.phy_sku_tlv_len = None;
         self.runtime_calib_flow = 0;
@@ -1098,17 +1220,19 @@ impl IwlWifiDevice {
                         if api_index == 0 {
                             self.fw_lar_supported = capabilities & (1 << 1) != 0;
                             self.fw_umac_scan_supported = capabilities & (1 << 2) != 0;
+                            self.fw_dqa_supported = capabilities & (1 << 12) != 0;
                         }
                         if api_index == 2 {
                             self.fw_lar_v2 = capabilities & (1 << 9) != 0;
                         }
                         log::info!(
-                            "iwlwifi: firmware.capabilities api_index={} bitmap={:#010x} lar={} lar_v2={} umac_scan={}",
+                            "iwlwifi: firmware.capabilities api_index={} bitmap={:#010x} lar={} lar_v2={} umac_scan={} dqa={}",
                             api_index,
                             capabilities,
                             self.fw_lar_supported,
                             self.fw_lar_v2,
                             self.fw_umac_scan_supported,
+                            self.fw_dqa_supported,
                         );
                     }
                 }
@@ -1201,6 +1325,19 @@ impl IwlWifiDevice {
         // The 7265 is a gen1 device. Linux updates FH_UCODE_LOAD_STATUS only
         // for the newer gen2 section loader; writing the gen2 section mask on
         // this device can prevent the image from reaching its alive path.
+        // Linux configures the MAC/radio identity and arms RX before starting
+        // the firmware CPU. Publishing only HAP_WAKE leaves the 2025 image's
+        // early boot environment observably different from upstream.
+        self.configure_legacy_nic_from_firmware()?;
+        // Linux's gen1 NIC initialization also arms RX before starting the
+        // firmware CPU. Do this only after service-DMA upload has completed,
+        // minimizing pre-ALIVE DMA exposure while still making REPLY_ALIVE
+        // deliverable from the first firmware instruction onward.
+        self.prearm_rx_before_cpu_release()?;
+        // Linux's matching TX init phase only publishes inert host-memory
+        // addresses and scheduler geometry. Queue/FIFO/DMA activation remains
+        // gated on a valid ALIVE payload in `start_legacy_dma_after_alive()`.
+        self.prearm_tx_foundation_before_cpu_release()?;
         self.log_fw_boot_registers("sections_ready");
 
         debug::print("iwlwifi", "fw: upload_done");
@@ -1447,49 +1584,78 @@ impl IwlWifiDevice {
     /// than from a guessed SRAM address.
     pub(super) fn record_alive_notification(&mut self, payload: &[u8]) {
         // MVM_ALIVE (API v3) starts with status/flags, followed by the LMAC
-        // alive structure.  The LMAC error-event-table pointer is therefore
-        // at payload offset 20.  Runtime firmware can emit a fresh ALIVE
-        // notification when it restarts after an assertion, even though the
-        // original firmware TLV did not provide an error-log pointer.
-        if payload.len() < 24 {
+        // alive structure. The LMAC debug-address block starts at offset 20:
+        // its error-event-table pointer is first and the SCD SRAM base is at
+        // offset 40. Linux does not start the transport TX scheduler until
+        // this RX notification has been parsed.
+        if payload.len() < 44 {
             return;
         }
         let status = u16::from_le_bytes([payload[0], payload[1]]);
         let flags = u16::from_le_bytes([payload[2], payload[3]]);
+        let ucode_major = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+        let ucode_minor = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+        let ucode_subtype = payload[12];
+        let ucode_type = payload[13];
+        let mac = payload[14];
+        let opt = payload[15];
+        let timestamp = u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]]);
         let error_log_ptr =
             u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]);
-        if error_log_ptr == 0 {
-            return;
-        }
+        let scd_base_addr =
+            u32::from_le_bytes([payload[40], payload[41], payload[42], payload[43]]);
+        self.alive_scd_base_addr = scd_base_addr;
 
-        let (image, pointer) = if self.init_firmware_completed {
-            self.runtime_errlog_ptr = error_log_ptr;
-            ("runtime", self.runtime_errlog_ptr)
+        let image = if self.init_firmware_completed {
+            if error_log_ptr != 0 {
+                self.runtime_errlog_ptr = error_log_ptr;
+            }
+            "runtime"
         } else {
-            self.init_errlog_ptr = error_log_ptr;
-            ("init", self.init_errlog_ptr)
+            if error_log_ptr != 0 {
+                self.init_errlog_ptr = error_log_ptr;
+            }
+            "init"
         };
         log::info!(
-            "iwlwifi: firmware.alive image={} status={:#06x} flags={:#06x} error_log_ptr={:#010x}",
+            "iwlwifi: firmware.alive.rx image={} status={:#06x} flags={:#06x} ucode={}.{} type={:#04x} subtype={:#04x} mac={:#04x} opt={:#04x} timestamp={:#010x} error_log_ptr={:#010x} scd_base={:#010x}",
             image,
             status,
             flags,
-            pointer,
+            ucode_major,
+            ucode_minor,
+            ucode_type,
+            ucode_subtype,
+            mac,
+            opt,
+            timestamp,
+            error_log_ptr,
+            scd_base_addr,
         );
     }
 
     pub(super) fn log_firmware_error_table(&mut self, command: &str) {
-        let (image, base) = if self.runtime_errlog_ptr != 0 {
-            ("runtime", self.runtime_errlog_ptr)
+        // The firmware container may publish pointers for both images. Pick
+        // the currently executing image first instead of always preferring
+        // runtime while the INIT image is still reporting its failure.
+        let (image, base) = if self.init_firmware_completed {
+            if self.runtime_errlog_ptr != 0 {
+                ("runtime", self.runtime_errlog_ptr)
+            } else {
+                ("init", self.init_errlog_ptr)
+            }
         } else if self.init_errlog_ptr != 0 {
             ("init", self.init_errlog_ptr)
         } else {
+            ("runtime", self.runtime_errlog_ptr)
+        };
+        if base == 0 {
             log::error!(
                 "iwlwifi: firmware.error_log command={} status=pointer_missing runtime=0x00000000 init=0x00000000",
                 command
             );
             return;
-        };
+        }
 
         // LOG_ERROR_TABLE_API_S_VER_3 has 38 dwords through flow_handler.
         // The first compact log only exposed the command identity; retain the
@@ -1992,6 +2158,7 @@ pub(super) mod test_support {
                 fw_lar_supported: false,
                 fw_lar_v2: false,
                 fw_umac_scan_supported: false,
+                fw_dqa_supported: false,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
@@ -2007,6 +2174,7 @@ pub(super) mod test_support {
                 init_response: None,
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
+                alive_scd_base_addr: 0,
                 iwl_state: IwlState::Init,
                 wifi_conn: wifi::WifiConnection::new(),
                 wpa: WpaSupplicant::new(),
@@ -2014,6 +2182,7 @@ pub(super) mod test_support {
                 wpa_keys_installed: false,
                 tx_pn: 1,
                 wpa_key_command_end: None,
+                wpa_key_pending_sequences: [None; 2],
                 pending_wpa_message4: None,
                 dhcp: None,
                 scan_results: Vec::new(),
@@ -2021,6 +2190,7 @@ pub(super) mod test_support {
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
                 last_rx_phy_channel: 0,
+                last_rx_system_timestamp: 0,
                 connection_watchdog_ticks: 0,
                 tx_queue: VecDeque::new(),
                 rx_queue: VecDeque::new(),

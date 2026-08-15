@@ -88,6 +88,8 @@ pub enum LegacyCmd {
     /// BT_CONFIG_CMD used by the non-unified 7000-series INIT sequence.
     BtConfig = 0x9b,
     PhyContext = 0x08,
+    /// Bind one or more MAC contexts to a PHY context.
+    BindingContext = 0x2b,
     /// PHY configuration and calibration control used before MAC contexts.
     PhyConfiguration = 0x6a,
     /// Legacy LMAC scan configuration.  Sent as SCAN_CFG_CMD in the
@@ -111,6 +113,9 @@ pub enum LegacyCmd {
     Disassoc = 0x1C,
     AddSta = 0x18,
     MacContext = 0x28,
+    /// Keep the BSS channel protected while authentication/association is in
+    /// progress (`TIME_EVENT_CMD`).
+    TimeEvent = 0x29,
     TxAntConfig = 0x98,
     RxonAssoc = 0x20,
     PowerDown = 0x26,
@@ -134,12 +139,12 @@ pub enum LegacyCmd {
     ScanOffloadCompleteNotif = 0xe7,
 }
 
-/// ADD_STA_KEY command payload used by the 7000-series firmware API.
+/// ADD_STA_KEY command API v1 used by the 7265/7265D firmware images.
 ///
-/// The common part is kept byte-oriented here because this driver supports
-/// firmware revisions with different response layouts, while the key command
-/// input layout is stable: station id, key slot, flags, 32-byte key storage,
-/// and a 16-byte receive sequence counter.
+/// The 52-byte common prefix is followed by 12 bytes of legacy TKIP receive
+/// state even for CCMP keys. The 7265D-29 image does not advertise API-change
+/// bit 29 (`IWL_UCODE_TLV_API_TKIP_MIC_KEYS`), so sending only the common
+/// prefix is not a valid command for this firmware.
 #[repr(C, packed)]
 pub struct AddStaKeyCmd {
     pub sta_id: u8,
@@ -147,6 +152,9 @@ pub struct AddStaKeyCmd {
     pub key_flags: u16,
     pub key: [u8; 32],
     pub rx_security_seq: [u8; 16],
+    pub tkip_rx_tsc_byte2: u8,
+    pub reserved: u8,
+    pub tkip_rx_ttak: [u16; 5],
 }
 
 /// MCC_UPDATE_CMD API v1 payload — sets the regulatory country code for LAR.
@@ -180,7 +188,9 @@ pub struct BtCoexConfigCmd {
 
 impl BtCoexConfigCmd {
     pub const BT_COEX_NW: u32 = 1;
-    pub const BT_COEX_MPLUT_ENABLED: u32 = 1 << 1;
+    // BT_COEX_MODULES_ENABLE_E_VER_1: MPLUT is bit 0. Bit 1 is the
+    // separate MPLUT boost flag and must not be enabled as MPLUT itself.
+    pub const BT_COEX_MPLUT_ENABLED: u32 = 1 << 0;
     pub const BT_COEX_SYNC2SCO_ENABLED: u32 = 1 << 2;
     pub const BT_COEX_HIGH_BAND_RET: u32 = 1 << 4;
 
@@ -281,6 +291,39 @@ impl PhyContextCmdV1 {
             dsp_cfg_flags: 0,
         }
     }
+
+    pub fn modify_on_channel(id: u8, channel: u8) -> Self {
+        let mut command = Self::add(id);
+        command.action = 2; // FW_CTXT_ACTION_MODIFY
+        command.channel.band = if channel > 14 {
+            PHY_BAND_5
+        } else {
+            PHY_BAND_24
+        };
+        command.channel.channel = channel;
+        command
+    }
+}
+
+/// BINDING_CONTEXT_CMD API v1 used by the non-CDB 7265 firmware.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct BindingContextCmdV1 {
+    pub id_and_color: u32,
+    pub action: u32,
+    pub macs: [u32; 3],
+    pub phy: u32,
+}
+
+impl BindingContextCmdV1 {
+    pub const fn add_single(binding_id: u8, mac_id: u8, phy_id: u8) -> Self {
+        Self {
+            id_and_color: binding_id as u32,
+            action: 1, // FW_CTXT_ACTION_ADD
+            macs: [mac_id as u32, u32::MAX, u32::MAX],
+            phy: phy_id as u32,
+        }
+    }
 }
 
 /// PHY_CONFIGURATION_CMD payload used by the API-v17 runtime firmware.
@@ -314,15 +357,18 @@ pub struct ScdTxqCfgCmdV1 {
 
 impl ScdTxqCfgCmdV1 {
     pub fn peer(sta_id: u8) -> Self {
-        use super::registers::IWL_DATA_QUEUE;
+        use super::registers::{IWL_MAX_TID_COUNT, IWL_MGMT_QUEUE};
         Self {
             token: 0,
             sta_id,
-            tid: 16, // IWL_MAX_TID_COUNT: non-QoS management/data traffic
-            scd_queue: IWL_DATA_QUEUE as u8,
-            action: 1,    // SCD_CFG_ENABLE_QUEUE
-            aggregate: 0, // non-aggregated queue
-            tx_fifo: 2,   // IWL_MVM_TX_FIFO_BE
+            tid: IWL_MAX_TID_COUNT,
+            scd_queue: IWL_MGMT_QUEUE as u8,
+            action: 1, // SCD_CFG_ENABLE_QUEUE
+            // Linux selects q5 from the management pool for the initial
+            // non-QoS authentication frame. Only q4 and q10+ are marked
+            // aggregate-capable; management queues remain non-aggregated.
+            aggregate: 0,
+            tx_fifo: 3, // IWL_MVM_TX_FIFO_VO (management AC)
             window: 64,
             ssn: 0,
             reserved: 0,
@@ -330,13 +376,13 @@ impl ScdTxqCfgCmdV1 {
     }
 
     pub fn aux(sta_id: u8) -> Self {
-        use super::registers::IWL_AUX_QUEUE;
+        use super::registers::{IWL_AUX_QUEUE, IWL_MAX_TID_COUNT};
         Self {
             token: 0,
             // Linux allocates the AUX station-table entry before enabling its
             // queue, so SCD_QUEUE_CFG must name that station (normally 1).
             sta_id,
-            tid: 15, // IWL_MAX_TID_COUNT
+            tid: IWL_MAX_TID_COUNT,
             scd_queue: IWL_AUX_QUEUE as u8,
             action: 1,    // SCD_CFG_ENABLE_QUEUE
             aggregate: 0, // non-aggregated auxiliary queue
@@ -344,6 +390,27 @@ impl ScdTxqCfgCmdV1 {
             window: 64,
             ssn: 0,
             reserved: 0,
+        }
+    }
+
+    pub fn dqa_aux(sta_id: u8) -> Self {
+        let mut command = Self::aux(sta_id);
+        command.scd_queue = super::registers::IWL_DQA_AUX_QUEUE as u8;
+        command
+    }
+}
+
+/// DQA_ENABLE_CMD API v1 payload. The 7265D API-29 image expects q0.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct DqaEnableCmdV1 {
+    pub cmd_queue: u32,
+}
+
+impl DqaEnableCmdV1 {
+    pub const fn linux_7000() -> Self {
+        Self {
+            cmd_queue: super::registers::IWL_DQA_CMD_QUEUE,
         }
     }
 }
@@ -400,6 +467,43 @@ pub struct MacStaData {
     pub assoc_id: u32,
     pub assoc_beacon_arrive_time: u32,
     pub ctwin: u32,
+}
+
+/// TIME_EVENT_CMD API v2 used by 7000-series firmware.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct TimeEventCmdV2 {
+    pub id_and_color: u32,
+    pub action: u32,
+    pub id: u32,
+    pub apply_time: u32,
+    pub max_delay: u32,
+    pub depends_on: u32,
+    pub interval: u32,
+    pub duration: u32,
+    pub repeat: u8,
+    pub max_frags: u8,
+    pub policy: u16,
+}
+
+impl TimeEventCmdV2 {
+    /// Linux's unassociated managed-station session protection.
+    pub const fn association_protection(mac_index: u8) -> Self {
+        Self {
+            id_and_color: mac_index as u32,
+            action: 1, // FW_CTXT_ACTION_ADD
+            id: 0,     // TE_BSS_STA_AGGRESSIVE_ASSOC
+            apply_time: 0,
+            max_delay: 500,
+            depends_on: 0,
+            interval: 1,
+            duration: 600,
+            repeat: 1,
+            max_frags: 0, // TE_V2_FRAG_NONE
+            // Notify on event start/end and begin immediately.
+            policy: (1 << 0) | (1 << 1) | (1 << 11),
+        }
+    }
 }
 
 /// MAC_CONTEXT_CMD (0x28) payload for a minimal STA context.
@@ -544,11 +648,31 @@ impl MacContextCmd {
         context
     }
 
-    /// Mark the station context associated after a successful association
-    /// response. The AP supplies the association ID in that response.
-    pub fn associated(mut self, aid: u16) -> Self {
-        self.sta.is_assoc = 1;
+    /// Fill the associated-station timing data captured from an AP beacon.
+    /// Linux only sets `is_assoc` once the DTIM period is known.
+    pub fn associated_with_ap(
+        mut self,
+        aid: u16,
+        beacon_interval: u16,
+        dtim_period: u8,
+        dtim_count: u8,
+        beacon_tsf: u64,
+        device_timestamp: u32,
+    ) -> Self {
+        let beacon_interval = u32::from(beacon_interval);
+        let dtim_interval = beacon_interval.saturating_mul(u32::from(dtim_period));
+        self.sta.beacon_interval = beacon_interval;
+        self.sta.beacon_interval_reciprocal = reciprocal(beacon_interval);
+        self.sta.dtim_interval = dtim_interval;
+        self.sta.dtim_interval_reciprocal = reciprocal(dtim_interval);
         self.sta.assoc_id = aid as u32;
+        if dtim_period != 0 {
+            let dtim_offset_us = u64::from(dtim_count) * u64::from(beacon_interval) * 1024;
+            self.sta.dtim_tsf = beacon_tsf.saturating_add(dtim_offset_us);
+            self.sta.dtim_time = device_timestamp.wrapping_add(dtim_offset_us as u32);
+            self.sta.assoc_beacon_arrive_time = device_timestamp;
+            self.sta.is_assoc = 1;
+        }
         self
     }
 
@@ -558,6 +682,10 @@ impl MacContextCmd {
         let ac = core::ptr::addr_of!(self.ac) as *const MacQosAc;
         unsafe { ac.add(index).read_unaligned() }
     }
+}
+
+const fn reciprocal(value: u32) -> u32 {
+    if value == 0 { 0 } else { u32::MAX / value }
 }
 
 /// ADD_STA command API v7, used by the old (pre-v12) station API.
@@ -587,7 +715,7 @@ pub struct AddStaCmdV7 {
 
 impl AddStaCmdV7 {
     pub fn aux(mac_index: u8, sta_id: u8) -> Self {
-        // The 7265 non-DQA layout reserves queue 11 for the auxiliary
+        // The 31-queue 7265 non-DQA layout reserves queue 15 for auxiliary
         // station.  Linux advertises that queue in tfd_queue_msk even when
         // the first scan is passive; leaving it zero makes API-v17 firmware
         // reject the station command before it can return ADD_STA status.
@@ -617,13 +745,18 @@ impl AddStaCmdV7 {
         }
     }
 
+    pub fn dqa_aux(mac_index: u8, sta_id: u8) -> Self {
+        let mut command = Self::aux(mac_index, sta_id);
+        command.tfd_queue_msk = 1 << super::registers::IWL_DQA_AUX_QUEUE;
+        command
+    }
+
     /// Add the AP peer used by a managed station connection.
     ///
-    /// The 7265 reserves station 0 for the AP of the station interface. The
-    /// first ordinary data queue is assigned to that peer before the first
-    /// authentication frame is submitted.
+    /// The 7265 reserves station 0 for the AP of the station interface. DQA
+    /// adds the station with no queue mask, then attaches the first available
+    /// management queue before submitting authentication.
     pub fn peer(mac_index: u8, sta_id: u8, bssid: [u8; 6]) -> Self {
-        use super::registers::IWL_DATA_QUEUE;
         Self {
             add_modify: 0, // STA_MODE_ADD
             awake_acs: 0,
@@ -635,7 +768,10 @@ impl AddStaCmdV7 {
             modify_mask: 0,
             reserved3: 0,
             station_flags: 0,
-            station_flags_msk: 0,
+            // Linux permits firmware to update FAT/MIMO flags and the
+            // dynamic-SMPS RTS/MIMO protection bit (STA_FLG_RTS_MIMO_PROT,
+            // bit 17) for the peer.
+            station_flags_msk: 0x3c02_0000,
             add_immediate_ba_tid: 0,
             remove_immediate_ba_tid: 0,
             add_immediate_ba_ssn: 0,
@@ -643,8 +779,38 @@ impl AddStaCmdV7 {
             sleep_state_flags: 0,
             assoc_id: 0,
             beamform_flags: 0,
-            tfd_queue_msk: 1 << IWL_DATA_QUEUE,
+            // In DQA mode queues are attached after ADD_STA using
+            // SCD_QUEUE_CFG, so the initial station owns no static queue.
+            tfd_queue_msk: 0,
         }
+    }
+
+    pub fn legacy_peer(mac_index: u8, sta_id: u8, bssid: [u8; 6]) -> Self {
+        let mut command = Self::peer(mac_index, sta_id, bssid);
+        command.tfd_queue_msk = 1 << super::registers::IWL_DATA_QUEUE;
+        command
+    }
+
+    /// Attach the configured DQA management queue to an existing AP station.
+    pub fn peer_queue_update(mac_index: u8, sta_id: u8, bssid: [u8; 6]) -> Self {
+        let mut command = Self::peer(mac_index, sta_id, bssid);
+        command.add_modify = 1; // STA_MODE_MODIFY
+        command.modify_mask = 1 << 7; // STA_MODIFY_QUEUES
+        command.tfd_queue_msk = 1 << super::registers::IWL_MGMT_QUEUE;
+        command
+    }
+
+    /// Publish the association ID on an existing AP station.
+    ///
+    /// Linux sends a full ADD_STA update when mac80211 moves the peer from
+    /// AUTH to ASSOC. For an update that does not modify queues, `addr` and
+    /// `tfd_queue_msk` are deliberately left zero; firmware retains the
+    /// values installed by the earlier ADD_STA/STA_MODIFY_QUEUES commands.
+    pub fn associated_peer(mac_index: u8, sta_id: u8, aid: u16) -> Self {
+        let mut command = Self::peer(mac_index, sta_id, [0; 6]);
+        command.add_modify = 1; // STA_MODE_MODIFY
+        command.assoc_id = aid;
+        command
     }
 }
 
@@ -1219,7 +1385,94 @@ pub enum IwlError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BtCoexConfigCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanConfigV1};
+    use super::{
+        AddStaCmdV7, AddStaKeyCmd, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
+        ScanConfigV1, TimeEventCmdV2,
+    };
+
+    #[test]
+    fn associated_mac_context_uses_beacon_dtim_sync() {
+        let command = MacContextCmd::sta_for_bssid([2; 6], [3; 6]).associated_with_ap(
+            7,
+            100,
+            3,
+            2,
+            0x0102_0304_0506_0708,
+            0x1020_3040,
+        );
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const MacContextCmd).cast::<u8>(),
+                core::mem::size_of::<MacContextCmd>(),
+            )
+        };
+        let offset_us = 2 * 100 * 1024;
+
+        assert_eq!(&bytes[100..104], &1u32.to_le_bytes());
+        assert_eq!(
+            &bytes[104..108],
+            &0x1020_3040u32.wrapping_add(offset_us).to_le_bytes()
+        );
+        assert_eq!(
+            &bytes[108..116],
+            &0x0102_0304_0506_0708u64
+                .saturating_add(u64::from(offset_us))
+                .to_le_bytes()
+        );
+        assert_eq!(&bytes[116..120], &100u32.to_le_bytes());
+        assert_eq!(&bytes[120..124], &(u32::MAX / 100).to_le_bytes());
+        assert_eq!(&bytes[124..128], &300u32.to_le_bytes());
+        assert_eq!(&bytes[128..132], &(u32::MAX / 300).to_le_bytes());
+        assert_eq!(&bytes[136..140], &7u32.to_le_bytes());
+        assert_eq!(&bytes[140..144], &0x1020_3040u32.to_le_bytes());
+    }
+
+    #[test]
+    fn ccmp_station_key_uses_linux_api_v1_fixed_size() {
+        assert_eq!(core::mem::size_of::<AddStaKeyCmd>(), 64);
+    }
+
+    #[test]
+    fn association_time_event_matches_linux_api_v2_wire_layout() {
+        let command = TimeEventCmdV2::association_protection(0);
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const TimeEventCmdV2).cast::<u8>(),
+                core::mem::size_of::<TimeEventCmdV2>(),
+            )
+        };
+
+        assert_eq!(bytes.len(), 36);
+        assert_eq!(&bytes[0..4], &0u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
+        assert_eq!(&bytes[8..12], &0u32.to_le_bytes());
+        assert_eq!(&bytes[16..20], &500u32.to_le_bytes());
+        assert_eq!(&bytes[24..28], &1u32.to_le_bytes());
+        assert_eq!(&bytes[28..32], &600u32.to_le_bytes());
+        assert_eq!(&bytes[32..34], &[1, 0]);
+        assert_eq!(&bytes[34..36], &0x0803u16.to_le_bytes());
+    }
+
+    #[test]
+    fn associated_peer_update_matches_linux_v7_station_transition() {
+        let command = AddStaCmdV7::associated_peer(0, 0, 0x1234);
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const AddStaCmdV7).cast::<u8>(),
+                core::mem::size_of::<AddStaCmdV7>(),
+            )
+        };
+
+        assert_eq!(bytes.len(), 44);
+        assert_eq!(bytes[0], 1); // STA_MODE_MODIFY
+        assert_eq!(&bytes[4..8], &[0; 4]); // MAC context index/color 0
+        assert_eq!(&bytes[8..14], &[0; 6]); // retained for non-queue update
+        assert_eq!(bytes[16], 0); // station 0
+        assert_eq!(bytes[17], 0); // no STA_MODIFY_* field selected
+        assert_eq!(&bytes[24..28], &0x3c02_0000u32.to_le_bytes());
+        assert_eq!(&bytes[36..38], &0x1234u16.to_le_bytes());
+        assert_eq!(&bytes[40..44], &[0; 4]); // retain existing queue mask
+    }
 
     #[test]
     fn bt_config_network_default_has_upstream_wire_layout() {
@@ -1230,7 +1483,7 @@ mod tests {
                 core::mem::size_of::<BtCoexConfigCmd>(),
             )
         };
-        assert_eq!(bytes, &[1, 0, 0, 0, 0x16, 0, 0, 0]);
+        assert_eq!(bytes, &[1, 0, 0, 0, 0x15, 0, 0, 0]);
     }
 
     #[test]

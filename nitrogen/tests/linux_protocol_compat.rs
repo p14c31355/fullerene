@@ -8,13 +8,20 @@ use std::mem::{offset_of, size_of};
 use std::slice;
 
 use nitrogen::iwlwifi::registers::{
-    IWL_AUX_QUEUE, IWL_CMD_QUEUE, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES,
+    CSR_FH_INT_BIT_HI_PRIOR, CSR_FH_INT_BIT_RX_CHNL0, CSR_FH_INT_BIT_RX_CHNL1, CSR_FH_INT_RX_MASK,
+    CSR_HW_IF_CONFIG_HAP_WAKE, CSR_HW_IF_CONFIG_NIC_MASK, CSR_MAC_SHADOW_REG_CTRL_ENABLE,
+    FH_MEM_CBBC_0_15_LOWER_BOUND, FH_MEM_CBBC_16_19_LOWER_BOUND, FH_MEM_CBBC_20_31_LOWER_BOUND,
+    IWL_AUX_QUEUE, IWL_CMD_QUEUE, IWL_DATA_QUEUE, IWL_DQA_AUX_QUEUE, IWL_DQA_CMD_QUEUE,
+    IWL_MAX_TID_COUNT, IWL_MGMT_QUEUE, IWL_NUM_OF_QUEUES, SCD_CONTEXT_MEM_LOWER_BOUND,
+    SCD_TRANS_TBL_MEM_UPPER_BOUND, TX_AUX_TFD_RING_OFFSET, TX_DMA_ALLOCATION_BYTES,
     TX_KEEP_WARM_BYTES, TX_KEEP_WARM_OFFSET, TX_QUEUE_SIZE, TX_SCD_BC_BYTES, TX_SCD_BC_OFFSET,
-    TX_TFD_RING_BYTES,
+    TX_TFD_RING_BYTES, fh_mem_cbbc_queue, legacy_nic_config_fields, scd_trans_tbl_offset_queue,
+    tx_tfd_ring_offset,
 };
 use nitrogen::iwlwifi::types::{
-    AddStaCmdV7, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2, ScanChannelCfgLmac, ScanConfigV1,
-    ScanRequestCmd, ScdTxqCfgCmdV1,
+    AddStaCmdV7, AddStaKeyCmd, BindingContextCmdV1, BtCoexConfigCmd, DqaEnableCmdV1, MacContextCmd,
+    MccUpdateCmdV1, MccUpdateCmdV2, PHY_BAND_5, PhyContextCmdV1, ScanChannelCfgLmac, ScanConfigV1,
+    ScanRequestCmd, ScdTxqCfgCmdV1, TimeEventCmdV2,
 };
 use nitrogen::usb::UsbSetupPacket;
 use nitrogen::usb::xhci::ring::{trb_flag, trb_type};
@@ -25,32 +32,160 @@ fn bytes<T>(value: &T) -> &[u8] {
 }
 
 #[test]
+fn linux_7000_scheduler_uses_31_queue_geometry() {
+    assert_eq!(IWL_NUM_OF_QUEUES, 31);
+    assert_eq!(CSR_MAC_SHADOW_REG_CTRL_ENABLE, 0x800f_ffff);
+    assert_eq!(scd_trans_tbl_offset_queue(0), 0x7e0);
+    assert_eq!(scd_trans_tbl_offset_queue(31), 0x81c);
+    assert_eq!(SCD_CONTEXT_MEM_LOWER_BOUND, 0x600);
+    assert_eq!(SCD_TRANS_TBL_MEM_UPPER_BOUND, 0x81c);
+    assert_eq!(
+        (SCD_TRANS_TBL_MEM_UPPER_BOUND - SCD_CONTEXT_MEM_LOWER_BOUND) / 4,
+        135
+    );
+}
+
+#[test]
+fn linux_legacy_cbbc_register_windows_cover_all_31_queues() {
+    assert_eq!(fh_mem_cbbc_queue(0), FH_MEM_CBBC_0_15_LOWER_BOUND);
+    assert_eq!(fh_mem_cbbc_queue(15), FH_MEM_CBBC_0_15_LOWER_BOUND + 15);
+    assert_eq!(fh_mem_cbbc_queue(16), FH_MEM_CBBC_16_19_LOWER_BOUND);
+    assert_eq!(fh_mem_cbbc_queue(19), FH_MEM_CBBC_16_19_LOWER_BOUND + 3);
+    assert_eq!(fh_mem_cbbc_queue(20), FH_MEM_CBBC_20_31_LOWER_BOUND);
+    assert_eq!(fh_mem_cbbc_queue(30), FH_MEM_CBBC_20_31_LOWER_BOUND + 10);
+}
+
+#[test]
+fn linux_gen1_rx_interrupt_mask_includes_high_priority_alive() {
+    assert_eq!(CSR_FH_INT_BIT_RX_CHNL0, 1 << 16);
+    assert_eq!(CSR_FH_INT_BIT_RX_CHNL1, 1 << 17);
+    assert_eq!(CSR_FH_INT_BIT_HI_PRIOR, 1 << 30);
+    assert_eq!(CSR_FH_INT_RX_MASK, 0x4003_0000);
+}
+
+#[test]
+fn linux_7265d_nic_config_encodes_phy_sku_before_firmware_boot() {
+    assert_eq!(CSR_HW_IF_CONFIG_NIC_MASK, 0x0000_ff0f);
+    assert_eq!(
+        legacy_nic_config_fields(0x0000_0210, 0x0033_0018),
+        0x0000_9200
+    );
+    assert_eq!(
+        (CSR_HW_IF_CONFIG_HAP_WAKE & !CSR_HW_IF_CONFIG_NIC_MASK)
+            | legacy_nic_config_fields(0x0000_0210, 0x0033_0018),
+        0x0008_9200,
+    );
+}
+
+#[test]
+fn linux_api29_bt_init_command_enables_the_v1_module_bits() {
+    let command = BtCoexConfigCmd::network_default();
+    assert_eq!(size_of::<BtCoexConfigCmd>(), 8);
+    assert_eq!(bytes(&command), &[1, 0, 0, 0, 0x15, 0, 0, 0]);
+}
+
+#[test]
+fn linux_v414_association_commands_use_fixed_7265d_wire_layouts() {
+    let event = TimeEventCmdV2::association_protection(0);
+    assert_eq!(size_of::<TimeEventCmdV2>(), 36);
+    assert_eq!(&bytes(&event)[28..36], &[0x58, 0x02, 0, 0, 1, 0, 3, 8]);
+
+    let station = AddStaCmdV7::associated_peer(0, 0, 0x1234);
+    let station = bytes(&station);
+    assert_eq!(station[0], 1);
+    assert_eq!(&station[36..38], &0x1234u16.to_le_bytes());
+    assert_eq!(&station[40..44], &[0; 4]);
+
+    // The shipped 7265D-29 image lacks API-change bit 29, selecting
+    // ADD_MODIFY_STA_KEY_API_S_VER_1 rather than its 76-byte v2 successor.
+    assert_eq!(size_of::<AddStaKeyCmd>(), 64);
+}
+
+#[test]
 fn linux_v49_aux_station_payload_is_wire_compatible() {
     assert_eq!(IWL_CMD_QUEUE, 9);
-    assert_eq!(IWL_AUX_QUEUE, 11);
+    // 7265 has 31 scheduler queues, so Linux v4.9 selects AUX q15.
+    assert_eq!(IWL_AUX_QUEUE, 15);
     assert_eq!(size_of::<AddStaCmdV7>(), 44);
 
     // Linux v4.9 iwl_mvm_add_aux_sta(): MAC_INDEX_AUX is 4, while the
     // internal station-table entry is allocated as sta_id 1. The queue mask
-    // must advertise q11 before ADD_STA is sent.
+    // must advertise q15 before ADD_STA is sent.
     let payload = AddStaCmdV7::aux(4, 1);
     let actual = bytes(&payload);
     let mut expected = [0u8; 44];
     expected[2..4].copy_from_slice(&0xffffu16.to_le_bytes());
     expected[4..8].copy_from_slice(&4u32.to_le_bytes());
     expected[16] = 1;
-    expected[40..44].copy_from_slice(&(1u32 << 11).to_le_bytes());
+    expected[40..44].copy_from_slice(&(1u32 << 15).to_le_bytes());
     assert_eq!(actual, expected);
 }
 
 #[test]
-fn linux_v49_aux_queue_config_is_sent_before_station_add() {
+fn linux_legacy_scd_queue_config_uses_the_non_qos_tid() {
     assert_eq!(size_of::<ScdTxqCfgCmdV1>(), 12);
     let payload = ScdTxqCfgCmdV1::aux(1);
     let actual = bytes(&payload);
-    // token=0, owner sta=1, tid=15, q11, enable, non-aggregate,
+    // token=0, owner sta=1, tid=8, q15, enable, non-aggregate,
     // multicast FIFO=5, window=64, ssn=0, reserved=0.
-    assert_eq!(actual, &[0, 1, 15, 11, 1, 0, 5, 64, 0, 0, 0, 0]);
+    assert_eq!(IWL_MAX_TID_COUNT, 8);
+    assert_eq!(actual, &[0, 1, 8, 15, 1, 0, 5, 64, 0, 0, 0, 0]);
+}
+
+#[test]
+fn linux_v414_7265d_dqa_payloads_are_wire_compatible() {
+    assert_eq!(IWL_DQA_CMD_QUEUE, 0);
+    assert_eq!(IWL_DQA_AUX_QUEUE, 1);
+    assert_eq!(IWL_DATA_QUEUE, 4);
+    assert_eq!(IWL_MGMT_QUEUE, 5);
+    assert_eq!(bytes(&DqaEnableCmdV1::linux_7000()), &[0, 0, 0, 0]);
+    assert_eq!(
+        bytes(&ScdTxqCfgCmdV1::dqa_aux(1)),
+        &[0, 1, 8, 1, 1, 0, 5, 64, 0, 0, 0, 0]
+    );
+    assert_eq!(
+        bytes(&ScdTxqCfgCmdV1::peer(0)),
+        &[0, 0, 8, 5, 1, 0, 3, 64, 0, 0, 0, 0]
+    );
+
+    let peer = AddStaCmdV7::peer(0, 0, [1, 2, 3, 4, 5, 6]);
+    let peer_bytes = bytes(&peer);
+    assert_eq!(&peer_bytes[8..14], &[1, 2, 3, 4, 5, 6]);
+    assert_eq!(&peer_bytes[24..28], &0x3c02_0000u32.to_le_bytes());
+    assert_eq!(&peer_bytes[40..44], &[0, 0, 0, 0]);
+
+    let update = AddStaCmdV7::peer_queue_update(0, 0, [1, 2, 3, 4, 5, 6]);
+    let update_bytes = bytes(&update);
+    assert_eq!(update_bytes[0], 1);
+    assert_eq!(update_bytes[17], 1 << 7);
+    assert_eq!(
+        &update_bytes[40..44],
+        &(1u32 << IWL_MGMT_QUEUE).to_le_bytes()
+    );
+}
+
+#[test]
+fn linux_v414_binding_and_channel_update_precede_peer_station() {
+    let binding = BindingContextCmdV1::add_single(0, 0, 0);
+    assert_eq!(size_of::<BindingContextCmdV1>(), 24);
+    assert_eq!(
+        bytes(&binding),
+        &[
+            0, 0, 0, 0, // binding id/color 0
+            1, 0, 0, 0, // FW_CTXT_ACTION_ADD
+            0, 0, 0, 0, // MAC 0
+            0xff, 0xff, 0xff, 0xff, // invalid MAC
+            0xff, 0xff, 0xff, 0xff, // invalid MAC
+            0, 0, 0, 0, // PHY 0
+        ]
+    );
+
+    let phy = PhyContextCmdV1::modify_on_channel(0, 36);
+    let phy_bytes = bytes(&phy);
+    assert_eq!(size_of::<PhyContextCmdV1>(), 36);
+    assert_eq!(&phy_bytes[4..8], &2u32.to_le_bytes());
+    assert_eq!(phy_bytes[16], PHY_BAND_5);
+    assert_eq!(phy_bytes[17], 36);
 }
 
 #[test]
@@ -202,7 +337,18 @@ fn tx_dma_allocation_covers_every_region() {
     // Linux allocates 256 legacy 128-byte TFDs per scheduler queue.
     assert_eq!(TX_TFD_RING_BYTES, 128 * TX_QUEUE_SIZE);
     assert_eq!(TX_AUX_TFD_RING_OFFSET, TX_TFD_RING_BYTES);
-    assert!(TX_KEEP_WARM_OFFSET >= TX_AUX_TFD_RING_OFFSET + TX_TFD_RING_BYTES);
+    assert_eq!(
+        TX_KEEP_WARM_OFFSET,
+        IWL_NUM_OF_QUEUES as usize * TX_TFD_RING_BYTES
+    );
+    for queue in 0..IWL_NUM_OF_QUEUES {
+        let offset = tx_tfd_ring_offset(queue);
+        assert_eq!(offset % TX_TFD_RING_BYTES, 0);
+        assert!(offset + TX_TFD_RING_BYTES <= TX_KEEP_WARM_OFFSET);
+        for previous in 0..queue {
+            assert_ne!(offset, tx_tfd_ring_offset(previous));
+        }
+    }
     assert!(TX_SCD_BC_OFFSET >= TX_KEEP_WARM_OFFSET + TX_KEEP_WARM_BYTES);
     assert!(TX_SCD_BC_OFFSET + TX_SCD_BC_BYTES <= TX_DMA_ALLOCATION_BYTES);
 }

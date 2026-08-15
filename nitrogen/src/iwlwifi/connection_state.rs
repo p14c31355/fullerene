@@ -830,7 +830,7 @@ fn perform_init_step() {
                     return;
                 }
                 let mut tx_bufs: Vec<DmaRegion> = Vec::new();
-                // Keep q9 host-command and q4 data payloads in disjoint DMA
+                // Keep host-command and traffic payloads in disjoint DMA
                 // slots; their queue heads advance independently.
                 for _ in 0..TX_QUEUE_SIZE * 2 {
                     let mut buf = match DmaRegion::alloc(driver_ctx, MAX_FRAME_SIZE) {
@@ -930,6 +930,7 @@ fn perform_init_step() {
                 fw_lar_supported: false,
                 fw_lar_v2: false,
                 fw_umac_scan_supported: false,
+                fw_dqa_supported: false,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
@@ -945,6 +946,7 @@ fn perform_init_step() {
                 init_response: None,
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
+                alive_scd_base_addr: 0,
                 iwl_state: IwlState::Init,
                 wifi_conn: bonder::wifi::WifiConnection::new(),
                 wpa: bonder::wpa::WpaSupplicant::new(),
@@ -952,6 +954,7 @@ fn perform_init_step() {
                 wpa_keys_installed: false,
                 tx_pn: 1,
                 wpa_key_command_end: None,
+                wpa_key_pending_sequences: [None; 2],
                 pending_wpa_message4: None,
                 dhcp: None,
                 scan_results: Vec::new(),
@@ -959,6 +962,7 @@ fn perform_init_step() {
                 scan_pending: false,
                 scan_result_grace_ticks: 0,
                 last_rx_phy_channel: 0,
+                last_rx_system_timestamp: 0,
                 connection_watchdog_ticks: 0,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
@@ -999,14 +1003,23 @@ fn perform_init_step() {
                 if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                     mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                 }
-                let result = {
+                // A watchdog recovery abandons the interrupted stack. Never
+                // hold WIFI_INIT_CTX across device MMIO or the abandoned
+                // Mutex guard would freeze every later desktop tick.
+                let mut dev = {
                     let mut ctx = WIFI_INIT_CTX.lock();
-                    match ctx.mmio_device.as_mut() {
-                        Some(dev) => dev.start_firmware(fw_data),
-                        None => Err(crate::DriverError::DeviceNotFound),
+                    match ctx.mmio_device.take() {
+                        Some(dev) => dev,
+                        None => {
+                            mmio::disarm_mmio_watchdog();
+                            set_init_phase(WifiInitPhase::Failed);
+                            return;
+                        }
                     }
                 };
+                let result = dev.start_firmware(fw_data);
                 mmio::disarm_mmio_watchdog();
+                WIFI_INIT_CTX.lock().mmio_device = Some(dev);
                 match result {
                     Ok(()) => {
                         log::info!(
@@ -1055,20 +1068,24 @@ fn perform_init_step() {
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
             }
-            let start_result = {
+            // Keep the global state lock out of the Sealant/MMIO fault
+            // boundary. If an NMI abandons this call, force_init_failed() can
+            // still acquire the context and let the desktop continue.
+            let mut dev = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                let dev = match ctx.mmio_device.as_mut() {
+                match ctx.mmio_device.take() {
                     Some(d) => d,
                     None => {
                         mmio::disarm_mmio_watchdog();
                         set_init_phase(WifiInitPhase::Failed);
                         return;
                     }
-                };
-                dev.set_firmware_api_profile(fw_api_profile);
-                dev.start_firmware(fw_data)
+                }
             };
+            dev.set_firmware_api_profile(fw_api_profile);
+            let start_result = dev.start_firmware(fw_data);
             mmio::disarm_mmio_watchdog();
+            WIFI_INIT_CTX.lock().mmio_device = Some(dev);
             match start_result {
                 Ok(()) => {
                     log::info!(
@@ -1141,7 +1158,7 @@ fn perform_init_step() {
             WIFI_INIT_CTX.lock().mmio_device = Some(dev);
             match alive_result {
                 Ok(true) => {
-                    log::info!("iwlwifi: firmware alive notification received");
+                    log::info!("iwlwifi: firmware CSR ALIVE interrupt received");
                     debug::print("iwlwifi", "step: fw_alive");
                     set_init_phase(WifiInitPhase::FwInitCmds);
                 }
@@ -1331,7 +1348,7 @@ fn perform_init_step() {
             WIFI_INIT_CTX.lock().mmio_device = Some(dev);
             match result {
                 Ok(true) => {
-                    log::info!("iwlwifi: runtime firmware alive notification received");
+                    log::info!("iwlwifi: runtime firmware CSR ALIVE interrupt received");
                     set_init_phase(WifiInitPhase::FwRuntimeCmds);
                 }
                 Ok(false) => {}
@@ -1886,7 +1903,45 @@ impl IwlWifiDevice {
                 rssi: -50,
                 security,
                 beacon_interval: beacon.beacon_interval,
+                beacon_timestamp: beacon.timestamp,
+                device_timestamp: self.last_rx_system_timestamp,
+                dtim_count: beacon.dtim_count,
+                dtim_period: beacon.dtim_period,
             };
+            let enrich_scan_result = if let Some(existing) = self
+                .scan_results
+                .iter_mut()
+                .find(|existing| existing.bssid == ap.bssid)
+            {
+                // Active scan responses commonly omit TIM. Preserve the AP
+                // entry but enrich it when a later beacon supplies DTIM sync.
+                if existing.dtim_period == 0 && ap.dtim_period != 0 {
+                    existing.beacon_interval = ap.beacon_interval;
+                    existing.beacon_timestamp = ap.beacon_timestamp;
+                    existing.device_timestamp = ap.device_timestamp;
+                    existing.dtim_count = ap.dtim_count;
+                    existing.dtim_period = ap.dtim_period;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if enrich_scan_result {
+                if let Some(existing) = self
+                    .wifi_conn
+                    .scan_results
+                    .iter_mut()
+                    .find(|existing| existing.bssid == ap.bssid)
+                {
+                    existing.beacon_interval = ap.beacon_interval;
+                    existing.beacon_timestamp = ap.beacon_timestamp;
+                    existing.device_timestamp = ap.device_timestamp;
+                    existing.dtim_count = ap.dtim_count;
+                    existing.dtim_period = ap.dtim_period;
+                }
+            }
             if self
                 .scan_results
                 .iter()
@@ -1938,6 +1993,7 @@ impl IwlWifiDevice {
         self.wpa_required = password.is_some();
         self.wpa_keys_installed = false;
         self.wpa_key_command_end = None;
+        self.wpa_key_pending_sequences = [None; 2];
         self.pending_wpa_message4 = None;
         self.ip_address = [0; 4];
         self.subnet_mask = [0; 4];
@@ -1947,6 +2003,25 @@ impl IwlWifiDevice {
 
         if let Some(password) = password {
             self.wpa.init(password, ssid.as_str(), ap.bssid, self.mac);
+        }
+
+        // Linux retunes the bound PHY context before updating the BSS MAC
+        // context and adding the AP peer. Scanning is off-channel and does
+        // not leave PHY context 0 on the selected AP's channel.
+        let phy_context = PhyContextCmdV1::modify_on_channel(0, ap.channel);
+        if let Err(error) = self.send_hcmd_and_wait(
+            "CONNECT_PHY_CONTEXT",
+            LegacyCmd::PhyContext as u8,
+            GroupId::Legacy as u8,
+            unsafe { super::as_bytes(&phy_context) },
+        ) {
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(alloc::format!(
+                "connection PHY channel setup failed: {:?}",
+                error
+            ));
+            return Err(error);
         }
 
         // Linux updates the BSS MAC context and adds the AP peer before
@@ -1970,8 +2045,33 @@ impl IwlWifiDevice {
             return Err(error);
         }
 
-        let ap_sta = AddStaCmdV7::peer(0, 0, ap.bssid);
+        // DQA stations are added without a static queue mask. Linux attaches
+        // the selected management/non-QoS queue only after ADD_STA succeeds.
+        // Pre-DQA firmware keeps the transport-programmed static queue.
+        if !self.fw_dqa_supported {
+            if let Err(error) = self.enable_data_tx_queue() {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection data queue activation failed: {:?}",
+                    error
+                ));
+                return Err(error);
+            }
+        }
+
+        let ap_sta = if self.fw_dqa_supported {
+            AddStaCmdV7::peer(0, 0, ap.bssid)
+        } else {
+            AddStaCmdV7::legacy_peer(0, 0, ap.bssid)
+        };
         let ap_sta_bytes = unsafe { super::as_bytes(&ap_sta) };
+        log::info!(
+            "iwlwifi: connection station add sta_id=0 mac_id_color=0 channel={} dqa={} payload={}",
+            ap.channel,
+            self.fw_dqa_supported,
+            ap_sta_bytes.len(),
+        );
         if let Err(error) = self.send_hcmd_and_wait(
             "CONNECT_ADD_STA",
             LegacyCmd::AddSta as u8,
@@ -1987,25 +2087,121 @@ impl IwlWifiDevice {
             return Err(error);
         }
 
-        // The station must exist before the legacy scheduler can bind q4 to
-        // its station ID. Linux enables the queue only after ADD_STA has been
-        // accepted by firmware.
-        let data_scd = ScdTxqCfgCmdV1::peer(0);
-        let data_scd_bytes = unsafe { super::as_bytes(&data_scd) };
-        if let Err(error) = self.send_hcmd_and_wait(
-            "CONNECT_SCD_QUEUE_CFG",
-            LegacyCmd::ScdQueueCfg as u8,
-            GroupId::Legacy as u8,
-            data_scd_bytes,
-        ) {
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(alloc::format!(
-                "connection data queue setup failed: {:?}",
-                error
-            ));
-            return Err(error);
+        if self.fw_dqa_supported {
+            if let Err(error) = self.enable_dqa_tx_queue(IWL_MGMT_QUEUE) {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection DQA queue publication failed: {:?}",
+                    error
+                ));
+                return Err(error);
+            }
+            let queue = ScdTxqCfgCmdV1::peer(0);
+            if let Err(error) = self.send_hcmd_and_wait(
+                "CONNECT_SCD_QUEUE_CFG",
+                LegacyCmd::ScdQueueCfg as u8,
+                GroupId::Legacy as u8,
+                unsafe { super::as_bytes(&queue) },
+            ) {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection DQA queue setup failed: {:?}",
+                    error
+                ));
+                return Err(error);
+            }
+            // Diagnose whether the firmware activated q5 in SCD_EN_CTRL after
+            // processing SCD_QUEUE_CFG.  q1 (aux) ends up in SCD_EN_CTRL after
+            // its SCD_QUEUE_CFG during init; if q5 is missing here, the
+            // scheduler will not fetch its TFDs.
+            let scd_en_after_cfg = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            let scd_status_after_cfg = self
+                .read_prph(scd_queue_status(IWL_MGMT_QUEUE))
+                .unwrap_or(!0);
+            let aux_queue = IWL_DQA_AUX_QUEUE;
+            let aux_scd_status = self.read_prph(scd_queue_status(aux_queue)).unwrap_or(!0);
+            let aux_scd_wrptr = self.read_prph(scd_queue_wrptr(aux_queue)).unwrap_or(!0);
+            let aux_scd_rdptr = self.read_prph(scd_queue_rdptr(aux_queue)).unwrap_or(!0);
+            let (aux_ctx0, aux_ctx1, aux_trans_tbl, aux_tx_stts) = if self.alive_scd_base_addr != 0
+            {
+                (
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(aux_queue))
+                        .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(aux_queue) + 4)
+                        .unwrap_or(!0),
+                    self.read_mem32(
+                        self.alive_scd_base_addr + scd_trans_tbl_offset_queue(aux_queue),
+                    )
+                    .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_tx_stts_queue_offset(aux_queue))
+                        .unwrap_or(!0),
+                )
+            } else {
+                (!0, !0, !0, !0)
+            };
+            log::debug!(
+                "iwlwifi: SCD_EN_CTRL after SCD_QUEUE_CFG scd_en={:#010x} q5_bit={} q5_status={:#010x}",
+                scd_en_after_cfg,
+                if scd_en_after_cfg & (1 << IWL_MGMT_QUEUE) != 0 {
+                    "SET"
+                } else {
+                    "CLEAR"
+                },
+                scd_status_after_cfg,
+            );
+            log::debug!(
+                "iwlwifi: SCD DQA compare q1 status={:#010x} wrptr={:#010x} rdptr={:#010x} ctx0={:#010x} ctx1={:#010x} trans_tbl={:#010x} tx_stts={:#010x}",
+                aux_scd_status,
+                aux_scd_wrptr,
+                aux_scd_rdptr,
+                aux_ctx0,
+                aux_ctx1,
+                aux_trans_tbl,
+                aux_tx_stts,
+            );
+            let queue_update = AddStaCmdV7::peer_queue_update(0, 0, ap.bssid);
+            if let Err(error) = self.send_hcmd_and_wait(
+                "CONNECT_ADD_STA_QUEUE",
+                LegacyCmd::AddSta as u8,
+                GroupId::Legacy as u8,
+                unsafe { super::as_bytes(&queue_update) },
+            ) {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection DQA queue ownership update failed: {:?}",
+                    error
+                ));
+                return Err(error);
+            }
+            let scd_en_after_sta = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            log::info!(
+                "iwlwifi: SCD_EN_CTRL after ADD_STA_QUEUE scd_en={:#010x} q5_bit={}",
+                scd_en_after_sta,
+                if scd_en_after_sta & (1 << IWL_MGMT_QUEUE) != 0 {
+                    "SET"
+                } else {
+                    "CLEAR"
+                },
+            );
         }
+
+        // Linux asks firmware for a high-priority session-protection Time
+        // Event here, but it is an optimisation rather than a prerequisite
+        // for authentication. The production 7265D-29 image used by this
+        // device asserts synchronously on the otherwise wire-compatible v2
+        // command (error hcmd 0x29, ADVANCED_SYSASSERT). Keep the selected PHY
+        // bound and proceed directly to authentication instead of crashing
+        // runtime firmware. The fixed-channel connection path has no active
+        // scan after this point, so it cannot intentionally leave the BSS
+        // channel during the exchange.
+        log::info!(
+            "iwlwifi: connection session protection skipped for 7265D API {}; using bound PHY channel {}",
+            self.fw_api_ver,
+            ap.channel,
+        );
 
         self.iwl_state = IwlState::AuthSent;
         let auth_frame = wifi::build_auth_frame(ap.bssid, self.mac, 1);
@@ -2074,6 +2270,7 @@ impl IwlWifiDevice {
         self.wpa_required = false;
         self.wpa_keys_installed = false;
         self.wpa_key_command_end = None;
+        self.wpa_key_pending_sequences = [None; 2];
         self.pending_wpa_message4 = None;
         self.iwl_state = IwlState::Disconnected;
         self.connection_watchdog_ticks = 0;
