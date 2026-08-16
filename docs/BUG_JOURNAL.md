@@ -864,3 +864,42 @@ before/after the real authentication doorbell.
   compatibility tests passed.
 - Real hardware validation remains pending; the decisive result is q5
   `hw_rdptr: 0 -> 1` or a TX completion after the reordered sequence.
+
+## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
+
+### Evidence
+
+fl-snap3 does not fail at the initial station creation.  The first
+`CONNECT_ADD_STA` command returns status `0x00000001` with a four-byte response,
+and its command-queue target and read pointer both advance from 29 to 30.
+The failure is the reordered `CONNECT_ADD_STA_QUEUE` command immediately
+afterwards: it is submitted as opcode `0x18`, sequence `0x001e`, and the
+firmware asserts with `error_id=0x000021a0` before CBBC publication,
+`SCD_QUEUE_CFG`, or the authentication TFD.
+
+The capture is running firmware `29.2666559981`, build
+`CoreCycle26_stab::9ef079ed`.  This is the older blob from Entry 019, not the
+Linux-tested `29.4063824552` / `CoreCycle26_stab::f2390aa8` blob used by
+fl-auth15 and later successful initialization captures.  The failing payload
+contains the expected Linux-shaped `STA_MODIFY_QUEUES` fields, including
+`modify_mask=0x80` and `tfd_queue_msk=0x20`; the old firmware nevertheless
+rejects this queue-ownership update with the same assert class already seen in
+Entry 018.
+
+### Conclusion
+
+This run confirms that the initial `ADD_STA` is genuine, but it cannot validate
+the Linux queue-order experiment because the firmware image is different and
+asserts at the queue-owner update.  The `SCD_RDPTR=0x1f` printed in the assert
+record is the command queue pointer, not q5's SCD read pointer.  No conclusion
+about q5 fetching or TIME EVENT can be drawn from this run.
+
+### Next experiment
+
+Repeat the current reordered connection path once with the known-good
+`29.4063824552` / `f2390aa8` firmware.  Do not add a fallback queue form for
+`29.2666559981`: both its DQA queue update and legacy static-q4 ownership form
+already have recorded `0x21a0` asserts.  If the newer image accepts
+`CONNECT_ADD_STA_QUEUE`, continue to the q5 `hw_rdptr` measurement; if it also
+asserts, then compare the exact queue-update payload and command version before
+changing the ordering hypothesis.
