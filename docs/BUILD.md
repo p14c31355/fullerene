@@ -352,8 +352,13 @@ The repository's warning gate is:
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
-cargo test -p lattice -p nitrogen -p solvent -p chronoline -p nozzle --lib
+cargo test --workspace --exclude bellows --exclude fullerene-kernel
 ```
+
+The host test gate covers every host-runnable workspace member. `bellows` and
+`fullerene-kernel` are UEFI-only; validate them with the UEFI/QEMU smoke paths
+below or with a physical hardware run instead of attempting to link their
+`no_std` examples into a host test binary.
 
 The retained `fullerene-kernel/examples/native_ipc_rate.rs` is a native user ELF
 benchmark for the Fullerene syscall boundary; it is embedded/run by the kernel,

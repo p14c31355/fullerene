@@ -2235,6 +2235,10 @@ impl IwlWifiDevice {
             );
 
             self.tx_data_head = self.tx_data_head.wrapping_add(1);
+            let handshake_frame = tx_frame.len() >= 2 && matches!(tx_frame[0] & 0xfc, 0xb0 | 0x00);
+            if handshake_frame {
+                self.auth_tx_sequence = Some(sequence);
+            }
             mmio::write_barrier();
             self.write_mmio32(
                 HBUS_TARG_WRPTR,
@@ -2332,12 +2336,11 @@ impl IwlWifiDevice {
                 }
             }
         }
-        // Linux's iwl_trans_pcie_tx() grabs and releases NIC access for each
-        // TX submission. It does not hold MAC_ACCESS_REQ across the doorbell.
-        // The 7265D scheduler needs the MAC to enter power-save between
-        // submissions to advance the SCD read pointer. Force-release here to
-        // match Linux's per-frame grab/release pattern.
-        self.release_mac_access();
+        // Release only after the q0 host-command ring is empty. A data-frame
+        // submission may be interleaved with a pending host command, and
+        // dropping MAC_ACCESS_REQ in that case can suspend the command before
+        // firmware consumes it.
+        self.release_mac_access_if_tx_idle();
     }
 
     /// Publish one entry in Linux's `iwlagn_scd_bc_tbl`, including the
@@ -2818,6 +2821,21 @@ mod tests {
         device.tx_tail = device.tx_head;
         device.release_mac_access_if_tx_idle();
         assert_eq!(
+            device.safe_read32(CSR_GP_CNTRL).unwrap() & CSR_GP_CNTRL_MAC_ACCESS_REQ,
+            0,
+        );
+    }
+
+    #[test]
+    fn pending_host_command_keeps_mac_access_held() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.write_mmio32(CSR_GP_CNTRL, CSR_GP_CNTRL_MAC_ACCESS_REQ);
+        device.tx_head = 1;
+        device.tx_tail = 0;
+
+        device.release_mac_access_if_tx_idle();
+
+        assert_ne!(
             device.safe_read32(CSR_GP_CNTRL).unwrap() & CSR_GP_CNTRL_MAC_ACCESS_REQ,
             0,
         );

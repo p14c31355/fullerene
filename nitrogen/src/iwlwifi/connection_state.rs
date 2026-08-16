@@ -967,6 +967,7 @@ fn perform_init_step() {
                 auth_tx_plan: AuthTxPlan::DqaFirmware,
                 auth_tx_queue_override: None,
                 auth_tx_acknowledged: None,
+                auth_tx_sequence: None,
                 tx_queue: alloc::collections::VecDeque::new(),
                 rx_queue: alloc::collections::VecDeque::new(),
                 tx_dma_ring: tx_dma,
@@ -1975,6 +1976,7 @@ impl IwlWifiDevice {
         self.iwl_state = IwlState::AuthSent;
         self.connection_watchdog_ticks = 0;
         self.auth_tx_acknowledged = None;
+        self.auth_tx_sequence = None;
         let auth_frame = wifi::build_auth_frame(bssid, self.mac, 1);
         self.send_raw_80211_frame(&auth_frame)?;
         log::info!(
@@ -2006,6 +2008,7 @@ impl IwlWifiDevice {
         );
         self.abandon_stalled_traffic_queue(self.traffic_queue());
         self.auth_tx_queue_override = None;
+        self.auth_tx_sequence = None;
 
         match plan {
             AuthTxPlan::DqaFirmware => {
@@ -2105,6 +2108,7 @@ impl IwlWifiDevice {
         self.dns_server = [0; 4];
         self.connection_watchdog_ticks = 0;
         self.auth_tx_acknowledged = None;
+        self.auth_tx_sequence = None;
 
         if let Some(password) = password {
             self.wpa.init(password, ssid.as_str(), ap.bssid, self.mac);
@@ -2417,6 +2421,7 @@ impl IwlWifiDevice {
         self.auth_tx_plan = AuthTxPlan::DqaFirmware;
         self.auth_tx_queue_override = None;
         self.auth_tx_acknowledged = None;
+        self.auth_tx_sequence = None;
         log::info!("iwlwifi: disconnected");
     }
 

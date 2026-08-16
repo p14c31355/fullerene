@@ -48,12 +48,11 @@ pub unsafe extern "C" fn memmove(
     source: *const c_void,
     length: usize,
 ) -> *mut c_void {
-    if (destination as usize) <= (source as usize) {
-        unsafe { memcpy(destination, source, length) }
-    } else {
-        unsafe { core::ptr::copy(source.cast::<u8>(), destination.cast::<u8>(), length) };
-        destination
-    }
+    // `copy` has memmove semantics for both forward and backward overlap.
+    // Comparing the starting addresses alone does not prove that the ranges
+    // are disjoint (for example, dst=100, src=101, len=2).
+    unsafe { core::ptr::copy(source.cast::<u8>(), destination.cast::<u8>(), length) };
+    destination
 }
 
 #[unsafe(no_mangle)]

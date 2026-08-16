@@ -133,6 +133,10 @@ pub struct IwlWifiDevice {
     /// `Some(false)` means the descriptor was consumed but the AP did not ACK
     /// it, which needs a queue fallback rather than an apparent hang.
     pub auth_tx_acknowledged: Option<bool>,
+    /// Command-header sequence of the currently active authentication or
+    /// association TX descriptor. Firmware can report an old descriptor after
+    /// a queue fallback, so RX must match this before changing the result.
+    pub auth_tx_sequence: Option<u16>,
 
     /// TX/RX queues.
     pub tx_queue: VecDeque<Vec<u8>>,
@@ -681,6 +685,7 @@ impl IwlWifiDevice {
             auth_tx_plan: AuthTxPlan::DqaFirmware,
             auth_tx_queue_override: None,
             auth_tx_acknowledged: None,
+            auth_tx_sequence: None,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -924,6 +929,7 @@ impl IwlWifiDevice {
             auth_tx_plan: AuthTxPlan::DqaFirmware,
             auth_tx_queue_override: None,
             auth_tx_acknowledged: None,
+            auth_tx_sequence: None,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -995,6 +1001,7 @@ impl IwlWifiDevice {
         self.tx_data_tail = 0;
         self.auth_tx_plan = AuthTxPlan::DqaFirmware;
         self.auth_tx_queue_override = None;
+        self.auth_tx_sequence = None;
         self.rx_head = 0;
         self.rx_tail = 0;
         self.rx_posted = 0;
@@ -2216,6 +2223,7 @@ pub(super) mod test_support {
                 auth_tx_plan: AuthTxPlan::DqaFirmware,
                 auth_tx_queue_override: None,
                 auth_tx_acknowledged: None,
+                auth_tx_sequence: None,
                 tx_queue: VecDeque::new(),
                 rx_queue: VecDeque::new(),
                 tx_dma_ring,

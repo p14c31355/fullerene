@@ -28,6 +28,17 @@ const TX_STATUS_MSK: u16 = 0x00ff;
 const TX_STATUS_SUCCESS: u16 = 0x01;
 const TX_STATUS_DIRECT_DONE: u16 = 0x02;
 
+fn active_management_tx_matches(
+    frame_control: u8,
+    state: IwlState,
+    expected_sequence: Option<u16>,
+    response_sequence: u16,
+) -> bool {
+    matches!(frame_control & 0xfc, 0xb0 | 0x00)
+        && matches!(state, IwlState::AuthSent | IwlState::AssocSent)
+        && expected_sequence == Some(response_sequence)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LegacyRxMpdu<'a> {
     frame: &'a [u8],
@@ -1527,10 +1538,24 @@ impl IwlWifiDevice {
                 let status = response.status & TX_STATUS_MSK;
                 let acknowledged = status == TX_STATUS_SUCCESS || status == TX_STATUS_DIRECT_DONE;
                 let frame_control = response.frame_control as u8;
-                if matches!(frame_control & 0xFC, 0xB0 | 0x00)
+                if active_management_tx_matches(
+                    frame_control,
+                    self.iwl_state,
+                    self.auth_tx_sequence,
+                    sequence,
+                ) {
+                    self.auth_tx_acknowledged = Some(acknowledged);
+                    // A duplicate/late response must not affect a later
+                    // authentication plan after this descriptor retires.
+                    self.auth_tx_sequence = None;
+                } else if matches!(frame_control & 0xfc, 0xb0 | 0x00)
                     && matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent)
                 {
-                    self.auth_tx_acknowledged = Some(acknowledged);
+                    log::debug!(
+                        "iwlwifi: ignoring stale management TX response seq=0x{:04x} expected={:?}",
+                        sequence,
+                        self.auth_tx_sequence,
+                    );
                 }
                 log::info!(
                     "iwlwifi: TX response seq=0x{:04x} fc=0x{:04x} frames={} ack={} status=0x{:02x} retries={} rts_failures={} rate={:#010x} airtime_us={}",
@@ -1692,6 +1717,28 @@ impl IwlWifiDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_management_tx_response_does_not_match_new_plan() {
+        assert!(active_management_tx_matches(
+            0xb0,
+            IwlState::AuthSent,
+            Some(0x0501),
+            0x0501,
+        ));
+        assert!(!active_management_tx_matches(
+            0xb0,
+            IwlState::AuthSent,
+            Some(0x0501),
+            0x0500,
+        ));
+        assert!(!active_management_tx_matches(
+            0xb0,
+            IwlState::Disconnected,
+            Some(0x0501),
+            0x0501,
+        ));
+    }
 
     fn legacy_mpdu_payload(frame: &[u8], status: u32) -> Vec<u8> {
         let mut payload = Vec::with_capacity(4 + frame.len() + 4);
