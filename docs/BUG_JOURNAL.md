@@ -957,28 +957,47 @@ this raw status transition should be retained in the next comparison, but it
 must not be called Linux's `SCD_ACT_EN` bit without further decoding. Linux
 defines that field at bit 19, not raw bit 7.
 
-## Entry 031 — 2026-08-17 Linux gen1 SCD_TXFACT steady-state mismatch
+## Entry 031 — 2026-08-17 Linux gen1 SCD_TXFACT steady-state mismatch (rejected)
 
 ### Linux comparison
 
-Linux `iwl_pcie_tx_start()` raises `SCD_TXFACT` to `0xff` only while enabling
-the FH DMA channels, then calls `iwl_scd_deactivate_fifos()` and leaves it at
-zero.  The fl-fw2 snapshot still showed `scd_txfact=0xff` at q5 setup and
-after the authentication doorbell.
+The initial comparison incorrectly attributed `iwl_scd_deactivate_fifos()` to
+the end of `iwl_pcie_tx_start()`.  In the Linux source, deactivation occurs in
+`iwl_pcie_tx_init()` before the later start sequence, and in the TX stop path.
+`iwl_pcie_tx_start()` calls `iwl_scd_activate_fifos()` after configuring the
+command queue and leaves `SCD_TXFACT=0xff` active on return.
 
 ### Change
 
-Fullerene now keeps the Linux activation pulse but writes `SCD_TXFACT=0` after
-FH channel/chicken-bit setup, before firmware-owned DQA queue configuration.
-No Q5 TFD, authentication frame, byte-count, or station sequence was changed;
-this is an isolated scheduler-initialization experiment.
+The experiment wrote `SCD_TXFACT=0` after FH channel/chicken-bit setup.  On
+hardware this prevented the first `BT_CONFIG_INIT_API29` command from being
+consumed: q0 `wrptr=1`, `rdptr=0`, and initialization stopped before NVM and
+connection setup.  This rejects the experiment as a Q5 fix and confirms that
+the command FIFO needs the active `0xff` state after TX start.
 
 ### Hardware criterion
 
-The next run should show `txfact=0` in the pre-auth and post-doorbell
-snapshots.  The decisive result remains q5 `SCD_QUEUE_RDPTR: 0 -> 1`, or a
-`REPLY_TX`/FH transaction.  If it still remains zero, the next comparison is
-the Linux separate coherent first-TB buffer, not another 802.11-layer change.
+Fullerene now restores Linux's `SCD_TXFACT=0xff` post-start state and logs it
+in the legacy TX command-queue line.  The next run must first pass
+`BT_CONFIG_INIT_API29`; only then is the q5 `SCD_QUEUE_RDPTR: 0 -> 1` test
+meaningful.  If q5 still remains at zero, the next comparison is the Linux
+separate coherent first-TB buffer, not another 802.11-layer change.
+
+## Entry 032 — 2026-08-17 fl-fail rejects post-start SCD_TXFACT=0
+
+`fl-fail.txt` tested the Entry 031 build with firmware
+`CoreCycle26_stab::f2390aa8` / API 29.  Initialization reached ALIVE and
+programmed the legacy TX foundation, but the first `BT_CONFIG_INIT_API29`
+descriptor was not consumed:
+
+```text
+wrptr=1 rptr=0 scd_status=0x1f scd_en=0x1
+init.hcmd.error ... consumed=false ...
+```
+
+This is a transport-start regression before DQA or Q5 exists.  The Linux
+`tx_start()` ordering requires the activated scheduler FIFOs to remain active;
+the `SCD_TXFACT=0` write was therefore removed from the post-FH setup path.
 
 ## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
 

@@ -356,11 +356,10 @@ impl IwlWifiDevice {
                 | SCD_QUEUE_STTS_FIFO_COMMAND
                 | SCD_QUEUE_STTS_MASK,
         );
-        // Linux iwl_pcie_tx_start() briefly activates all scheduler FIFOs
-        // while enabling the FH DMA channels, then deactivates them again.
-        // Leaving TXFACT at 0xff is not the steady-state gen1 DQA setup and
-        // differs from the 7265 transport path; SCD_QUEUE_CFG is responsible
-        // for making a firmware-owned DQA queue usable later.
+        // Linux iwl_pcie_tx_start() activates all scheduler FIFOs while
+        // enabling the FH DMA channels and leaves TXFACT at 0xff.  The
+        // corresponding deactivation belongs to tx_init/tx_stop, not to this
+        // post-ALIVE start path; q0 host commands must remain fetchable.
         self.write_prph(SCD_TXFACT, 0xFF);
         // SCD_EN_CTRL is the legacy scheduler-active gate used for the
         // command queue. DQA data queues are restored at their final doorbell
@@ -401,11 +400,6 @@ impl IwlWifiDevice {
                     "iwlwifi: unable to read APMG_PCIDEV_STT_REG; leaving L1-active state unchanged"
                 );
             }
-
-            // Match Linux's iwl_scd_deactivate_fifos() after the FH channel
-            // setup.  Do not leave all FIFO bits asserted while firmware is
-            // subsequently configuring DQA queues through SCD_QUEUE_CFG.
-            self.write_prph(SCD_TXFACT, 0);
         }
         mmio::write_barrier();
         let fh_config = self
@@ -415,7 +409,7 @@ impl IwlWifiDevice {
         let scd_chainext = self.read_prph(SCD_CHAINEXT_EN);
         let scd_gp_ctrl = self.read_prph(SCD_GP_CTRL);
         log::info!(
-            "iwlwifi: legacy TX command queue configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} aux_q={} aux_tfd={:#018x} aux_active=false kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} scd_en={:#010x} scd_chainext={:#010x} scd_gp_ctrl={:#010x}",
+            "iwlwifi: legacy TX command queue configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} aux_q={} aux_tfd={:#018x} aux_active=false kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} scd_en={:#010x} scd_chainext={:#010x} scd_gp_ctrl={:#010x} scd_txfact={:#010x}",
             command_queue,
             SCD_QUEUE_STTS_FIFO_COMMAND,
             ring_phys,
@@ -428,6 +422,7 @@ impl IwlWifiDevice {
             scd_active.unwrap_or(!0),
             scd_chainext.unwrap_or(!0),
             scd_gp_ctrl.unwrap_or(!0),
+            self.read_prph(SCD_TXFACT).unwrap_or(!0),
         );
         crate::debug::print("iwlwifi", "dma.after_alive.done");
         Ok(())
@@ -3212,9 +3207,6 @@ mod tests {
             device.safe_read32(HBUS_TARG_WRPTR),
             Some(IWL_CMD_QUEUE << 8)
         );
-        // Linux deactivates the temporary all-FIFO setup pulse before
-        // returning from iwl_pcie_tx_start().
-        assert_eq!(device.read_prph(SCD_TXFACT), Some(0));
     }
 
     #[test]
