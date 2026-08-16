@@ -516,29 +516,44 @@ impl IwlWifiDevice {
         Ok(())
     }
 
-    /// Re-ring the queue doorbell after firmware has configured the SCD via
-    /// SCD_QUEUE_CFG and ADD_STA_QUEUE.
+    /// Restore the API-29 DQA scheduler gate after firmware has configured a
+    /// queue through SCD_QUEUE_CFG and ADD_STA_QUEUE.
     ///
-    /// Linux normally leaves SCD_EN_CTRL ownership to firmware for DQA. The
-    /// API-29 7265D image differs: without q5 in this register, its FH TRB
-    /// remains zero even though SCD_QUEUE_STATUS is active. Keep this quirk
-    /// limited to the API-29 DQA image; other firmware follows Linux exactly.
-    pub(super) fn kick_dqa_queue_doorbell(&mut self, queue: u32) {
+    /// Linux does not issue a second zero-pointer doorbell at this point: the
+    /// first post-configuration doorbell is the TFD's actual write pointer.
+    /// The API-29 7265D image still needs q5 in SCD_EN_CTRL, however; without
+    /// that bit its FH TRB remains zero even though SCD_QUEUE_STATUS is active.
+    /// Keep this firmware quirk separate from the doorbell so the normal DQA
+    /// pointer sequence remains Linux-compatible.
+    pub(super) fn ensure_api29_dqa_scheduler_gate(&mut self, queue: u32) {
         if self.fw_dqa_supported && self.fw_api_ver == IWL_FW_API29_MAX {
             let scd_en = self.read_prph(SCD_EN_CTRL).unwrap_or(0);
             self.write_prph(SCD_EN_CTRL, scd_en | (1 << queue));
         }
-        self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
-        mmio::write_barrier();
     }
 
     /// Abandon a stalled traffic queue before switching to another queue.
     /// This is only called after the watchdog observed no scheduler progress;
     /// clearing the queue prevents its old TFD from racing the fallback.
+    /// API-29 DQA normally adds the traffic queue to SCD_EN_CTRL as a local
+    /// compatibility workaround, so release that extra gate here. The rest
+    /// of the queue teardown follows Linux's gen1 txq_disable sequence:
+    /// deactivate the queue and clear its scheduler status entry. In
+    /// particular, do not ring a zero write pointer while disabling a queue;
+    /// that is a new doorbell, not a teardown operation, and can race the
+    /// command queue during the fallback transition.
     pub(super) fn abandon_stalled_traffic_queue(&mut self, queue: u32) {
         self.write_prph(scd_queue_status(queue), 1 << 19);
         self.write_prph(scd_queue_rdptr(queue), 0);
-        self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
+        if let Some(scd_en) = self.read_prph(SCD_EN_CTRL) {
+            self.write_prph(SCD_EN_CTRL, scd_en & !(1 << queue));
+        }
+        if self.alive_scd_base_addr != 0 {
+            let status = self.alive_scd_base_addr + scd_tx_stts_queue_offset(queue);
+            for offset in (0..16).step_by(4) {
+                self.write_mem32(status + offset, 0);
+            }
+        }
         let ring = self.tx_dma_ring.virt() + tx_tfd_ring_offset(queue);
         unsafe {
             core::ptr::write_bytes(ring as *mut u8, 0, TX_TFD_RING_BYTES);
@@ -2747,22 +2762,20 @@ mod tests {
     }
 
     #[test]
-    fn api29_dqa_doorbell_enables_only_the_legacy_firmware_queue_gate() {
+    fn api29_dqa_gate_does_not_issue_a_zero_pointer_doorbell() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
         device.fw_dqa_supported = true;
         device.fw_api_ver = IWL_FW_API29_MAX;
         device.write_mmio32(HBUS_TARG_PRPH_RDAT, 1 << IWL_DQA_CMD_QUEUE);
+        device.write_mmio32(HBUS_TARG_WRPTR, 0x1234_5678);
 
-        device.kick_dqa_queue_doorbell(IWL_MGMT_QUEUE);
+        device.ensure_api29_dqa_scheduler_gate(IWL_MGMT_QUEUE);
 
         assert_eq!(
             device.safe_read32(HBUS_TARG_PRPH_WDAT),
             Some((1 << IWL_DQA_CMD_QUEUE) | (1 << IWL_MGMT_QUEUE))
         );
-        assert_eq!(
-            device.safe_read32(HBUS_TARG_WRPTR),
-            Some(IWL_MGMT_QUEUE << 8)
-        );
+        assert_eq!(device.safe_read32(HBUS_TARG_WRPTR), Some(0x1234_5678));
     }
 
     #[test]

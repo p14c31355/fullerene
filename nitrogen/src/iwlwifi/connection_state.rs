@@ -2010,11 +2010,11 @@ impl IwlWifiDevice {
         match plan {
             AuthTxPlan::DqaFirmware => {
                 self.enable_dqa_tx_queue_with_mode(IWL_MGMT_QUEUE, false)?;
-                self.kick_dqa_queue_doorbell(IWL_MGMT_QUEUE);
+                self.ensure_api29_dqa_scheduler_gate(IWL_MGMT_QUEUE);
             }
             AuthTxPlan::DqaHostScd => {
                 self.enable_dqa_tx_queue_with_mode(IWL_MGMT_QUEUE, true)?;
-                self.kick_dqa_queue_doorbell(IWL_MGMT_QUEUE);
+                self.ensure_api29_dqa_scheduler_gate(IWL_MGMT_QUEUE);
             }
             AuthTxPlan::StaticQueue => {
                 self.auth_tx_queue_override = Some(IWL_DATA_QUEUE);
@@ -2281,17 +2281,16 @@ impl IwlWifiDevice {
                 ));
                 return Err(error);
             }
-            // Re-ring the q5 doorbell after SCD_QUEUE_CFG and ADD_STA_QUEUE
-            // have been fully processed by firmware. The initial doorbell in
-            // enable_dqa_tx_queue may arrive before the firmware has finished
-            // configuring the SCD for q5. A fresh doorbell ensures the SCD
-            // sees the queue as ready for fetching.
-            self.kick_dqa_queue_doorbell(IWL_MGMT_QUEUE);
-            let scd_en_after_doorbell = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            // API-29 needs q5 restored in SCD_EN_CTRL after firmware has
+            // accepted the queue ownership update. Do not issue a second
+            // zero-pointer doorbell here: Linux's first post-configuration
+            // doorbell is the actual TFD write pointer in process_tx_queue().
+            self.ensure_api29_dqa_scheduler_gate(IWL_MGMT_QUEUE);
+            let scd_en_after_setup = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
             log::info!(
-                "iwlwifi: SCD_EN_CTRL after DQA doorbell scd_en={:#010x} q5_bit={}",
-                scd_en_after_doorbell,
-                if scd_en_after_doorbell & (1 << IWL_MGMT_QUEUE) != 0 {
+                "iwlwifi: SCD_EN_CTRL after DQA queue setup scd_en={:#010x} q5_bit={}",
+                scd_en_after_setup,
+                if scd_en_after_setup & (1 << IWL_MGMT_QUEUE) != 0 {
                     "SET"
                 } else {
                     "CLEAR"
