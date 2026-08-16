@@ -865,6 +865,55 @@ before/after the real authentication doorbell.
 - Real hardware validation remains pending; the decisive result is q5
   `hw_rdptr: 0 -> 1` or a TX completion after the reordered sequence.
 
+## Entry 029 — 2026-08-17 fl-fw falsifies the old-firmware hypothesis
+
+### Evidence
+
+fl-fw is using the Linux-tested firmware `29.4063824552`, build
+`CoreCycle26_stab::f2390aa8`, and still asserts on the reordered
+`CONNECT_ADD_STA_QUEUE` command with `error_id=0x000021a0`.  The initial
+`CONNECT_ADD_STA` succeeds; the assert occurs before CBBC publication and
+before `SCD_QUEUE_CFG`.
+
+This is a direct A/B result against fl-auth21 through fl-auth25, which use the
+same firmware family and accept the sequence:
+
+```text
+CONNECT_SCD_QUEUE_CFG
+CONNECT_ADD_STA_QUEUE
+authentication TFD
+```
+
+The failing and successful `ADD_STA_QUEUE` payloads are the same 44-byte
+Linux-shaped `STA_MODIFY_QUEUES` payload (`modify_mask=0x80`,
+`tfd_queue_msk=0x20`).  The distinguishing variable is the command order.
+
+### Correction
+
+The DQA connection path is restored to the firmware-accepted order:
+
+```text
+CBBC / initial WR_PTR
+SCD_QUEUE_CFG
+ADD_STA_QUEUE
+API-29 gate observation
+authentication TFD
+```
+
+The earlier Linux comparison had conflated Linux's host-side queue mapping
+update inside `iwl_mvm_enable_txq()` with the later firmware-side
+`iwl_mvm_sta_send_to_fw(..., STA_MODIFY_QUEUES)` command.  Linux sends the
+firmware station update after `SCD_QUEUE_CFG`; the new comments and snapshots
+make that distinction explicit.
+
+### Validation
+
+- `cargo check --workspace --all-targets` passed.
+- `cargo test -p nitrogen --all-targets`: 182 unit tests and 17 Linux
+  compatibility tests passed.
+- The next hardware run should reach the existing q5 fetch boundary instead
+  of asserting during station setup.
+
 ## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
 
 ### Evidence

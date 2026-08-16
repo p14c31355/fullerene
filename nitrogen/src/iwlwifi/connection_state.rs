@@ -2286,39 +2286,19 @@ impl IwlWifiDevice {
         }
 
         if self.fw_dqa_supported {
-            // Linux gen1 iwl_mvm_enable_txq() updates the station's queue
-            // mask before it enables/configures the transport queue.  The
-            // firmware must therefore know that STA 0 owns q5 before the
-            // first q5 CBBC/WR_PTR publication and SCD_QUEUE_CFG command.
-            // The previous Fullerene order was SCD_QUEUE_CFG -> ADD_STA
-            // queue update, which let SCD see a queue with no station owner.
+            // Linux gen1 iwl_mvm_enable_txq() updates its host-side queue
+            // mapping before enabling the transport queue, then publishes
+            // the CBBC and sends SCD_QUEUE_CFG.  The firmware-side
+            // STA_MODIFY_QUEUES command is sent afterwards by
+            // iwl_mvm_sta_alloc_queue().  fl-auth21..25 show that this
+            // API-29 firmware accepts SCD_QUEUE_CFG -> ADD_STA_QUEUE, while
+            // fl-fw asserts when the firmware command is moved earlier.
             let queue_update = AddStaCmdV7::peer_queue_update(0, 0, ap.bssid);
             let queue_update_mask = queue_update.tfd_queue_msk;
-            log::info!(
-                "iwlwifi: CONNECT_ADD_STA_QUEUE owner sta_id={} queue={} tfd_queue_msk={:#010x} phase=before_transport_queue",
-                queue_update.sta_id,
-                IWL_MGMT_QUEUE,
-                queue_update_mask,
-            );
-            if let Err(error) = self.send_hcmd_and_wait(
-                "CONNECT_ADD_STA_QUEUE",
-                LegacyCmd::AddSta as u8,
-                GroupId::Legacy as u8,
-                unsafe { super::as_bytes(&queue_update) },
-            ) {
-                self.iwl_state = IwlState::Disconnected;
-                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-                self.wifi_conn.error_msg = Some(alloc::format!(
-                    "connection DQA queue ownership update failed: {:?}",
-                    error
-                ));
-                return Err(error);
-            }
-            self.log_dqa_scheduler_snapshot("after_add_sta_queue", queue_update_mask);
 
-            // Linux now publishes the transport-side DQA ring, then sends
-            // SCD_QUEUE_CFG.  The queue config HCMD consumes the CBBC that
-            // was published for this already-owned station queue.
+            // Linux publishes the transport-side DQA ring, then sends
+            // SCD_QUEUE_CFG.  The firmware-side station queue update follows
+            // that command in the gen1 DQA path.
             if let Err(error) = self.enable_dqa_tx_queue(IWL_MGMT_QUEUE) {
                 self.iwl_state = IwlState::Disconnected;
                 self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
@@ -2394,6 +2374,28 @@ impl IwlWifiDevice {
                 aux_trans_tbl,
                 aux_tx_stts,
             );
+            log::info!(
+                "iwlwifi: CONNECT_ADD_STA_QUEUE owner sta_id={} queue={} tfd_queue_msk={:#010x} phase=after_scd_queue_cfg",
+                queue_update.sta_id,
+                IWL_MGMT_QUEUE,
+                queue_update_mask,
+            );
+            if let Err(error) = self.send_hcmd_and_wait(
+                "CONNECT_ADD_STA_QUEUE",
+                LegacyCmd::AddSta as u8,
+                GroupId::Legacy as u8,
+                unsafe { super::as_bytes(&queue_update) },
+            ) {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection DQA queue ownership update failed: {:?}",
+                    error
+                ));
+                return Err(error);
+            }
+            self.log_dqa_scheduler_snapshot("after_add_sta_queue", queue_update_mask);
+
             // API-29 needs q5 restored in SCD_EN_CTRL after firmware has
             // accepted the queue ownership update. Do not issue a second
             // zero-pointer doorbell here: Linux's first post-configuration
