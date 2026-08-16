@@ -396,12 +396,6 @@ pub const RX_BUFFER_SIZE: usize = 4096;
 // Host commands also carry the largest API-v17 PHY calibration database
 // section (just over 3 KiB), so the command DMA buffers must be a full page.
 pub const MAX_FRAME_SIZE: usize = 4096;
-/// Linux gen1 keeps command/data payloads and the per-slot first TB in
-/// separate DMA allocations. The third group is the 20-byte TB0 write-back
-/// area used by the 7265 transport.
-pub const TX_DMA_BUFFER_GROUPS: usize = 3;
-pub const IWL_FIRST_TB_SIZE: usize = 20;
-pub const TX_FIRST_TB_BUFFER_BASE: usize = TX_QUEUE_SIZE * 2;
 
 // ── Firmware image ─────────────────
 
