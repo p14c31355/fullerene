@@ -2271,6 +2271,13 @@ impl IwlWifiDevice {
                 aux_tx_stts,
             );
             let queue_update = AddStaCmdV7::peer_queue_update(0, 0, ap.bssid);
+            let queue_update_mask = queue_update.tfd_queue_msk;
+            log::info!(
+                "iwlwifi: CONNECT_ADD_STA_QUEUE owner sta_id={} queue={} tfd_queue_msk={:#010x}",
+                queue_update.sta_id,
+                IWL_MGMT_QUEUE,
+                queue_update_mask,
+            );
             if let Err(error) = self.send_hcmd_and_wait(
                 "CONNECT_ADD_STA_QUEUE",
                 LegacyCmd::AddSta as u8,
@@ -2312,6 +2319,21 @@ impl IwlWifiDevice {
             let q5_rdptr = self
                 .read_prph(scd_queue_rdptr(IWL_MGMT_QUEUE))
                 .unwrap_or(!0);
+            let q5_cbbc = self
+                .safe_read32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE))
+                .unwrap_or(!0);
+            let (q5_ctx0, q5_ctx1) = if self.alive_scd_base_addr != 0 {
+                (
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(IWL_MGMT_QUEUE))
+                        .unwrap_or(!0),
+                    self.read_mem32(
+                        self.alive_scd_base_addr + scd_context_queue(IWL_MGMT_QUEUE) + 4,
+                    )
+                    .unwrap_or(!0),
+                )
+            } else {
+                (!0, !0)
+            };
             let q0_status = self
                 .read_prph(scd_queue_status(self.command_queue()))
                 .unwrap_or(!0);
@@ -2328,13 +2350,17 @@ impl IwlWifiDevice {
             let aggr_sel = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
             let scd_dram = self.read_prph(SCD_DRAM_BASE_ADDR).unwrap_or(!0);
             log::info!(
-                "iwlwifi: SCD pre-auth q0 status={:#010x} wrptr={:#010x} rdptr={:#010x} | q5 status={:#010x} wrptr={:#010x} rdptr={:#010x} | scd_en={:#010x} scd_gp={:#010x} txfact={:#010x} qchain={:#010x} aggr={:#010x} dram={:#010x}",
+                "iwlwifi: SCD pre-auth q0 status={:#010x} wrptr={:#010x} rdptr={:#010x} | q5 status={:#010x} wrptr={:#010x} rdptr={:#010x} cbbc={:#010x} ctx0={:#010x} ctx1={:#010x} sta_queue_mask={:#010x} | scd_en={:#010x} scd_gp={:#010x} txfact={:#010x} qchain={:#010x} aggr={:#010x} dram={:#010x}",
                 q0_status,
                 q0_wrptr,
                 q0_rdptr,
                 q5_status,
                 q5_wrptr,
                 q5_rdptr,
+                q5_cbbc,
+                q5_ctx0,
+                q5_ctx1,
+                1u32 << IWL_MGMT_QUEUE,
                 scd_en,
                 scd_gp,
                 scd_txfact,

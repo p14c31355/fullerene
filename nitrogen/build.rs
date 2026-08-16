@@ -17,7 +17,7 @@
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -98,4 +98,25 @@ fn main() {
     println!("cargo:rerun-if-changed={}", ignore_path.display());
     println!("cargo:rerun-if-env-changed=NITROGEN_DRIVERIGNORE");
     println!("cargo:rerun-if-changed=build.rs");
+
+    // Keep tracked firmware as the default, while allowing local hardware
+    // tests to use an external blob without modifying the submodule pointer.
+    let default_fw =
+        PathBuf::from(&manifest_dir).join("../bonder/iwlwifi/intel/iwlwifi/iwlwifi-7265D-29.ucode");
+    let configured_fw = env::var_os("FULLERENE_IWLWIFI_7265D_FW")
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                PathBuf::from(&manifest_dir).join(path)
+            }
+        })
+        .unwrap_or(default_fw);
+    println!("cargo:rerun-if-env-changed=FULLERENE_IWLWIFI_7265D_FW");
+    println!("cargo:rerun-if-changed={}", configured_fw.display());
+    println!(
+        "cargo:rustc-env=FULLERENE_IWLWIFI_7265D_FW={}",
+        configured_fw.display()
+    );
 }
