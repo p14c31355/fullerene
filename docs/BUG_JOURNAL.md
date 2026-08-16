@@ -1039,6 +1039,27 @@ already records `bc_primary=0x000a` and `bc_duplicate=0x000a` after the Q5
 authentication submit, while Q5 still remained `wrptr=1 / rdptr=0`.  Repeating
 that byte-count-only A/B would duplicate an existing negative result.
 
+## Entry 035 — 2026-08-17 Linux-equivalent runtime CBBC ownership A/B
+
+The Linux gen1 path publishes all `FH_MEM_CBBC_QUEUE(n)` values in
+`iwl_trans_pcie_tx_reset()`, before `iwl_pcie_tx_start()` releases the
+firmware CPU.  Later `iwl_trans_pcie_txq_enable(..., cfg=NULL)` only resets
+the software queue pointers and writes the initial `HBUS_TARG_WRPTR`; it does
+not rewrite the CBBC for a DQA queue.
+
+Fullerene was re-writing q5's CBBC in `enable_dqa_tx_queue()` after ALIVE and
+immediately before `SCD_QUEUE_CFG`.  The address was normally identical, but
+that was a real ownership/order difference at the FH/SCD boundary.  The new
+default preserves the pre-ALIVE CBBC and leaves the old behavior behind the
+explicit `DQA_RUNTIME_CBBC_REPUBLISH_DIAGNOSTIC` switch.  The submit log now
+prints `runtime_cbbc_republish=false` and the CBBC readback.
+
+This is a bounded transport-only A/B.  It does not change `SCD_EN_CTRL`,
+`SCD_QUEUE_CFG`, `ADD_STA_QUEUE`, TFD layout, byte counts, authentication
+frame contents, or RX/WPA handling.  A positive result is q5
+`SCD_QUEUE_RDPTR: 0 -> 1` or a `REPLY_TX`; an unchanged `wrptr=1 / rdptr=0`
+with `FH_TX_TRB=0` rejects this ownership-order hypothesis as well.
+
 ## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
 
 ### Evidence

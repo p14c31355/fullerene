@@ -28,6 +28,12 @@ const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = false;
 // switch explicit so the old behavior can be re-enabled for one hardware run.
 const API29_DQA_HOST_SCD_GATE_DIAGNOSTIC: bool = false;
 
+// Linux publishes every gen1 CBBC during iwl_pcie_tx_reset(), before the
+// firmware CPU is released.  iwl_trans_pcie_txq_enable() does not rewrite
+// the CBBC when a DQA queue is later enabled; retain a diagnostic switch for
+// the old Fullerene behavior, but keep the Linux ownership/order by default.
+const DQA_RUNTIME_CBBC_REPUBLISH_DIAGNOSTIC: bool = false;
+
 // Legacy 7265 management/data frames use the API-v6 TX command.  A 1 Mbps
 // CCK rate is valid for the 2.4 GHz management exchange used by this driver;
 // the firmware command wrapper is the important part here, since placing the
@@ -485,7 +491,9 @@ impl IwlWifiDevice {
         self.wake_for_hcmd()?;
         let queue_phys = self.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(queue) as u64;
         let cbbc = (queue_phys >> 8) as u32;
-        self.write_mmio32(fh_mem_cbbc_queue(queue), cbbc);
+        if DQA_RUNTIME_CBBC_REPUBLISH_DIAGNOSTIC {
+            self.write_mmio32(fh_mem_cbbc_queue(queue), cbbc);
+        }
         self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
         if direct_scd {
             // Diagnostic alternative to Linux's DQA path: configure the SCD
@@ -516,11 +524,12 @@ impl IwlWifiDevice {
         }
         mmio::write_barrier();
         log::info!(
-            "iwlwifi: DQA queue published: queue={} tfd={:#018x} cbbc={:#010x} readback={:#010x} direct_scd={} scd_en={:#010x}",
+            "iwlwifi: DQA queue published: queue={} tfd={:#018x} cbbc={:#010x} readback={:#010x} runtime_cbbc_republish={} direct_scd={} scd_en={:#010x}",
             queue,
             queue_phys,
             cbbc,
             self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0),
+            DQA_RUNTIME_CBBC_REPUBLISH_DIAGNOSTIC,
             direct_scd,
             self.read_prph(SCD_EN_CTRL).unwrap_or(!0),
         );
@@ -2987,17 +2996,18 @@ mod tests {
     }
 
     #[test]
-    fn enabling_dqa_queue_republishes_its_cbbc_before_initial_wrptr() {
+    fn enabling_dqa_queue_preserves_prearmed_cbbc_before_initial_wrptr() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
         device.fw_dqa_supported = true;
-        device.write_mmio32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE), 0xdead_beef);
+        let queue_phys = device.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(IWL_MGMT_QUEUE) as u64;
+        let prearmed_cbbc = (queue_phys >> 8) as u32;
+        device.write_mmio32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE), prearmed_cbbc);
 
         device.enable_dqa_tx_queue(IWL_MGMT_QUEUE).unwrap();
 
-        let queue_phys = device.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(IWL_MGMT_QUEUE) as u64;
         assert_eq!(
             device.safe_read32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE)),
-            Some((queue_phys >> 8) as u32)
+            Some(prearmed_cbbc)
         );
         assert_eq!(
             device.safe_read32(HBUS_TARG_WRPTR),
