@@ -914,6 +914,72 @@ make that distinction explicit.
 - The next hardware run should reach the existing q5 fetch boundary instead
   of asserting during station setup.
 
+## Entry 030 — 2026-08-17 fl-fw2 reaches q5 fetch with the gate disabled
+
+### Evidence
+
+fl-fw2 loads the Linux-tested `29.4063824552` / `f2390aa8` firmware and
+accepts the corrected connection sequence:
+
+```text
+CONNECT_ADD_STA             success
+CBBC publication             success
+CONNECT_SCD_QUEUE_CFG        success
+CONNECT_ADD_STA_QUEUE        success
+```
+
+Immediately before authentication, q5 is firmware-configured as queue 5 on
+FIFO 3 with `status=0x0000009b`, `active=true`, `ctx1=0x00400040`, and
+`queue_owned=true`. The authentication TFD is published with `hw_wrptr=1`,
+the expected three TBs, and `dma_wire_match=true`.
+
+The API-29 host gate is disabled and observed as:
+
+```text
+SCD_EN_CTRL=0x00000003
+q5_bit=CLEAR
+```
+
+After submission the queue remains at `hw_wrptr=1`, `hw_rdptr=0` through
+ticks 64, 512, 1024, and 1536. `FH_TX_TRB` remains zero and no `REPLY_TX`
+arrives. Earlier captures with the host gate forced (`SCD_EN_CTRL=0x23`) had
+the same q5 read-pointer stall, although their FH snapshot differed.
+
+### Conclusion
+
+The firmware image and `ADD_STA_QUEUE` order are now validated. The direct
+host-side `SCD_EN_CTRL` q5 write is not sufficient to make the scheduler fetch
+the TFD and is not the primary root cause by itself. The remaining boundary is
+now the dynamic q5 SCD-to-FH handoff after the real doorbell.
+
+The q5 status changes from `0x9b` before the doorbell to `0x1b` afterwards;
+this raw status transition should be retained in the next comparison, but it
+must not be called Linux's `SCD_ACT_EN` bit without further decoding. Linux
+defines that field at bit 19, not raw bit 7.
+
+## Entry 031 — 2026-08-17 Linux gen1 SCD_TXFACT steady-state mismatch
+
+### Linux comparison
+
+Linux `iwl_pcie_tx_start()` raises `SCD_TXFACT` to `0xff` only while enabling
+the FH DMA channels, then calls `iwl_scd_deactivate_fifos()` and leaves it at
+zero.  The fl-fw2 snapshot still showed `scd_txfact=0xff` at q5 setup and
+after the authentication doorbell.
+
+### Change
+
+Fullerene now keeps the Linux activation pulse but writes `SCD_TXFACT=0` after
+FH channel/chicken-bit setup, before firmware-owned DQA queue configuration.
+No Q5 TFD, authentication frame, byte-count, or station sequence was changed;
+this is an isolated scheduler-initialization experiment.
+
+### Hardware criterion
+
+The next run should show `txfact=0` in the pre-auth and post-doorbell
+snapshots.  The decisive result remains q5 `SCD_QUEUE_RDPTR: 0 -> 1`, or a
+`REPLY_TX`/FH transaction.  If it still remains zero, the next comparison is
+the Linux separate coherent first-TB buffer, not another 802.11-layer change.
+
 ## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
 
 ### Evidence
