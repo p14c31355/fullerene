@@ -22,6 +22,12 @@ const IWL_FIRST_TB_SIZE: usize = 20;
 // and SCD_QUEUE_CFG lets firmware configure the dynamic queue.
 const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = false;
 
+// Linux's gen1 DQA path does not set SCD_EN_CTRL for a dynamically allocated
+// data queue. The old API-29 workaround did not move q5's read pointer on the
+// affected 7265D and prevented a clean upstream-equivalent A/B run. Keep the
+// switch explicit so the old behavior can be re-enabled for one hardware run.
+const API29_DQA_HOST_SCD_GATE_DIAGNOSTIC: bool = false;
+
 // Legacy 7265 management/data frames use the API-v6 TX command.  A 1 Mbps
 // CCK rate is valid for the 2.4 GHz management exchange used by this driver;
 // the firmware command wrapper is the important part here, since placing the
@@ -516,28 +522,43 @@ impl IwlWifiDevice {
         Ok(())
     }
 
-    /// Restore the API-29 DQA scheduler gate after firmware has configured a
-    /// queue through SCD_QUEUE_CFG and ADD_STA_QUEUE.
+    /// Optionally restore the old API-29 DQA scheduler gate after firmware has
+    /// configured a queue through SCD_QUEUE_CFG and ADD_STA_QUEUE.
     ///
     /// Linux does not issue a second zero-pointer doorbell at this point: the
     /// first post-configuration doorbell is the TFD's actual write pointer.
-    /// The API-29 7265D image still needs q5 in SCD_EN_CTRL, however; without
-    /// that bit its FH TRB remains zero even though SCD_QUEUE_STATUS is active.
-    /// Keep this firmware quirk separate from the doorbell so the normal DQA
-    /// pointer sequence remains Linux-compatible.
+    /// This is intentionally disabled for the Linux-compatible A/B experiment:
+    /// upstream leaves activation of firmware-owned DQA queues to firmware.
+    /// Keep the diagnostic switch separate from the doorbell so either result
+    /// can be identified without changing the pointer sequence.
     pub(super) fn ensure_api29_dqa_scheduler_gate(&mut self, queue: u32) {
         if self.fw_dqa_supported && self.fw_api_ver == IWL_FW_API29_MAX {
-            let scd_en = self.read_prph(SCD_EN_CTRL).unwrap_or(0);
-            self.write_prph(SCD_EN_CTRL, scd_en | (1 << queue));
+            let before = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            if API29_DQA_HOST_SCD_GATE_DIAGNOSTIC {
+                self.write_prph(SCD_EN_CTRL, before | (1 << queue));
+            }
+            let after = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+            log::info!(
+                "iwlwifi: API29 DQA host SCD gate queue={} enabled={} scd_en_before={:#010x} scd_en_after={:#010x} qbit={}",
+                queue,
+                API29_DQA_HOST_SCD_GATE_DIAGNOSTIC,
+                before,
+                after,
+                if after & (1 << queue) != 0 {
+                    "SET"
+                } else {
+                    "CLEAR"
+                },
+            );
         }
     }
 
     /// Abandon a stalled traffic queue before switching to another queue.
     /// This is only called after the watchdog observed no scheduler progress;
     /// clearing the queue prevents its old TFD from racing the fallback.
-    /// API-29 DQA normally adds the traffic queue to SCD_EN_CTRL as a local
-    /// compatibility workaround, so release that extra gate here. The rest
-    /// of the queue teardown follows Linux's gen1 txq_disable sequence:
+    /// A diagnostic run may have added the traffic queue to SCD_EN_CTRL as a
+    /// local compatibility workaround, so release that extra gate here. The
+    /// rest of the queue teardown follows Linux's gen1 txq_disable sequence:
     /// deactivate the queue and clear its scheduler status entry. In
     /// particular, do not ring a zero write pointer while disabling a queue;
     /// that is a new doorbell, not a teardown operation, and can race the
@@ -2252,6 +2273,31 @@ impl IwlWifiDevice {
                     .read_prph(scd_queue_status(traffic_queue))
                     .unwrap_or(!0);
                 let fifo = scd_status & 0x7;
+                let scd_en = self.read_prph(SCD_EN_CTRL).unwrap_or(!0);
+                let scd_gp = self.read_prph(SCD_GP_CTRL).unwrap_or(!0);
+                let scd_chain = self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(!0);
+                let scd_aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
+                let scd_base = self.alive_scd_base_addr;
+                let ctx0 = self
+                    .read_mem32(scd_base + scd_context_queue(traffic_queue))
+                    .unwrap_or(!0);
+                let ctx1 = self
+                    .read_mem32(scd_base + scd_context_queue(traffic_queue) + 4)
+                    .unwrap_or(!0);
+                let trans_tbl = self
+                    .read_mem32(scd_base + scd_trans_tbl_offset_queue(traffic_queue))
+                    .unwrap_or(!0);
+                let tx_stts = self
+                    .read_mem32(scd_base + scd_tx_stts_queue_offset(traffic_queue))
+                    .unwrap_or(!0);
+                let cbbc = self
+                    .safe_read32(fh_mem_cbbc_queue(traffic_queue))
+                    .unwrap_or(!0);
+                let station_queue_mask = if self.fw_dqa_supported {
+                    1u32 << traffic_queue
+                } else {
+                    1u32 << IWL_DATA_QUEUE
+                };
                 let byte_count_addr = self.tx_dma_ring.dma_iova()
                     + TX_SCD_BC_OFFSET as u64
                     + traffic_queue as u64 * (256 + 64) * 2
@@ -2280,7 +2326,7 @@ impl IwlWifiDevice {
                     + (256 + desc_idx) * 2) as *const u16;
                 let bc_duplicate = unsafe { core::ptr::read_volatile(bc_dup_ptr) };
                 log::info!(
-                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} bc_dwords={} bc_addr={:#018x} tbs={} tb0={} tb1={} tb2={} scratch={:#018x} sw_wrptr={} hw_wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} scd_dram={:#010x} scd_txfact={:#010x} fh_tx_trb={:#010x} tx_status={:#010x} tx_error={:#010x} gp_cntrl={:#010x} gp1={:#010x}",
+                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} bc_dwords={} bc_addr={:#018x} tbs={} tb0={} tb1={} tb2={} scratch={:#018x} sta_queue_mask={:#010x} cbbc={:#010x} sw_wrptr={} hw_wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} scd_en={:#010x} scd_gp={:#010x} qchain={:#010x} aggr={:#010x} ctx0={:#010x} ctx1={:#010x} trans_tbl={:#010x} tx_stts={:#010x} scd_dram={:#010x} scd_txfact={:#010x} fh_tx_trb={:#010x} tx_status={:#010x} tx_error={:#010x} gp_cntrl={:#010x} gp1={:#010x}",
                     traffic_queue,
                     desc_idx,
                     tx_frame.len(),
@@ -2292,6 +2338,8 @@ impl IwlWifiDevice {
                     tb1_len,
                     tb2_len,
                     scratch_dma,
+                    station_queue_mask,
+                    cbbc,
                     self.tx_data_head & 0xff,
                     scd_wrptr & 0xff,
                     scd_rptr,
@@ -2303,6 +2351,14 @@ impl IwlWifiDevice {
                         .unwrap_or(!0),
                     self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + fifo * (0x20 / 4))
                         .unwrap_or(!0),
+                    scd_en,
+                    scd_gp,
+                    scd_chain,
+                    scd_aggr,
+                    ctx0,
+                    ctx1,
+                    trans_tbl,
+                    tx_stts,
                     self.read_prph(SCD_DRAM_BASE_ADDR).unwrap_or(!0),
                     self.read_prph(SCD_TXFACT).unwrap_or(!0),
                     self.safe_read32(fh_tx_trb_channel(fifo)).unwrap_or(!0),
@@ -2765,7 +2821,7 @@ mod tests {
     }
 
     #[test]
-    fn api29_dqa_gate_does_not_issue_a_zero_pointer_doorbell() {
+    fn api29_dqa_gate_is_linux_owned_by_default() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
         device.fw_dqa_supported = true;
         device.fw_api_ver = IWL_FW_API29_MAX;
@@ -2774,10 +2830,7 @@ mod tests {
 
         device.ensure_api29_dqa_scheduler_gate(IWL_MGMT_QUEUE);
 
-        assert_eq!(
-            device.safe_read32(HBUS_TARG_PRPH_WDAT),
-            Some((1 << IWL_DQA_CMD_QUEUE) | (1 << IWL_MGMT_QUEUE))
-        );
+        assert_eq!(device.safe_read32(HBUS_TARG_PRPH_WDAT), Some(0));
         assert_eq!(device.safe_read32(HBUS_TARG_WRPTR), Some(0x1234_5678));
     }
 

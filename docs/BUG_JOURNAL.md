@@ -303,6 +303,60 @@ timeout path is nevertheless valuable: the next fix should preserve the
 initial q5 evidence, prevent a stalled q5 fallback from blocking the command
 queue, and make the gate-cleared experiment independently observable.
 
+## Entry 026 — 2026-08-16 API-29 firmware TLV alignment audit
+
+### Linux comparison
+
+Linux's `iwl_parse_tlv_firmware()` advances every record by
+`sizeof(struct iwl_ucode_tlv) + ALIGN(tlv_len, 4)`. Fullerene already used
+that boundary for the normal path, but the `SEC_INIT`/`SEC_RT` skip and
+separator paths advanced only to the unpadded payload end. That is a real
+parser discrepancy for a non-word-sized TLV preceding a section record.
+
+The API-29 image in the new hardware log is otherwise parsed consistently:
+API 29/build, `TLV_ENABLED_CAPABILITIES` index 0 bit 12 (DQA), PHY_SKU,
+runtime calibration, and all three selected sections are observed before
+ALIVE. `SCD_QUEUE_CFG` also returns the expected q5 response. Therefore this
+TLV issue is fixed as a correctness hole, but the current q5 `RDPTR=0`
+failure is not proven to originate in the firmware-file TLV stream.
+
+### Change
+
+The legacy parser now computes and validates one aligned `next_tlv` boundary,
+uses it on every skip path, and rejects truncated/overflowing records instead
+of silently continuing. It also logs the Linux API-change bitmap (including
+bit 29, without changing key-command selection) so the physical run can
+confirm that the selected firmware's API flags were read at the same offset.
+
+The q5 SCD gate, authentication frame, WPA path, and RX parser were not
+changed by this audit.
+
+## Entry 025 — 2026-08-16 API-29 DQA gate A/B matches Linux ownership
+
+### Linux comparison
+
+Linux gen1 `iwl_trans_pcie_txq_enable()` receives `cfg == NULL` for a DQA
+queue. In that branch it initializes the queue pointers and publishes the
+initial `HBUS_TARG_WRPTR`, but it does not write `SCD_EN_CTRL`, queue status,
+queuechain, aggregation, context, or the RA/TID translation entry. The only
+`SCD_EN_CTRL` update in the function is for the command queue. `ADD_STA`
+publishes the station's `tfd_queue_msk` separately through the MVM path.
+
+### Change
+
+`ensure_api29_dqa_scheduler_gate()` now defaults to observation-only. The
+former q5 `SCD_EN_CTRL` write remains behind
+`API29_DQA_HOST_SCD_GATE_DIAGNOSTIC = false`, and logs before/after values and
+the q5 bit so a physical run is an unambiguous A/B result. The direct-SCD
+fallback remains separate. Authentication/WPA/RX parsing and the auth frame
+layout were not changed.
+
+The submit log now includes q5 CBBC, station queue mask, SCD control bits,
+context words, translation/TX-status words, and FH state in the same record as
+the post-doorbell pointers. The first hardware validation for this build is
+`qbit=CLEAR` followed by `hw_wrptr=1` and `hw_rdptr=1` (or a TX completion).
+No physical result is claimed by this entry yet.
+
 ## Entry 009 — 2026-07-30 workspace audit fixes
 
 A full-workspace bug and redundancy sweep produced the following fixes. Each

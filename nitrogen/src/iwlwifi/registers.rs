@@ -404,6 +404,8 @@ pub const TLV_SEC_INIT: u32 = 20;
 pub const TLV_SEC_WOWLAN: u32 = 21;
 pub const TLV_DEF_CALIB: u32 = 22;
 pub const TLV_PHY_SKU: u32 = 23;
+/// Firmware API-change bitmap entries (`api_index`, `api_flags`).
+pub const TLV_API_CHANGES_SET: u32 = 29;
 /// Firmware capability bitmap entries (`api_index`, `api_capa`).
 pub const TLV_ENABLED_CAPABILITIES: u32 = 30;
 /// Firmware TLVs containing the runtime/init error-log SRAM addresses.

@@ -1196,11 +1196,24 @@ impl IwlWifiDevice {
             let tlv_data_off = off + 8;
             let tlv_end = match tlv_data_off.checked_add(tlv_len as usize) {
                 Some(end) => end,
-                None => break,
+                None => return Err(crate::DriverError::Protocol),
             };
 
             if tlv_end > fw_data.len() {
-                break;
+                return Err(crate::DriverError::Protocol);
+            }
+
+            // Linux advances by ALIGN(tlv_len, 4), not merely by the
+            // unpadded payload end.  This matters when an image contains a
+            // non-word-sized metadata TLV before the SEC_* records: otherwise
+            // a SEC record for the other image can make the next header start
+            // in its padding bytes and shift the whole parse.
+            let next_tlv = tlv_end
+                .checked_add(3)
+                .map(|end| end & !3)
+                .ok_or(crate::DriverError::Protocol)?;
+            if next_tlv > fw_data.len() {
+                return Err(crate::DriverError::Protocol);
             }
 
             match tlv_type {
@@ -1232,6 +1245,22 @@ impl IwlWifiDevice {
                             core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
                         };
                         log::info!("iwlwifi: firmware.phy_sku config={:#010x}", self.phy_config,);
+                    }
+                }
+                TLV_API_CHANGES_SET => {
+                    if tlv_len == 8 {
+                        let api_index: u32 = unsafe {
+                            core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
+                        };
+                        let api_flags: u32 = unsafe {
+                            core::ptr::read_unaligned(fw_ptr.add(tlv_data_off + 4) as *const u32)
+                        };
+                        log::info!(
+                            "iwlwifi: firmware.api_changes api_index={} bitmap={:#010x} tkip_mic_keys={}",
+                            api_index,
+                            api_flags,
+                            api_index == 0 && api_flags & (1 << 29) != 0,
+                        );
                     }
                 }
                 TLV_ENABLED_CAPABILITIES => {
@@ -1290,11 +1319,11 @@ impl IwlWifiDevice {
                         FirmwareImage::Runtime => TLV_SEC_RT,
                     };
                     if tlv_type != wanted {
-                        off = tlv_end;
+                        off = next_tlv;
                         continue;
                     }
                     if tlv_len < 4 {
-                        off = tlv_end;
+                        off = next_tlv;
                         continue;
                     }
                     let target: u32 = unsafe {
@@ -1303,7 +1332,7 @@ impl IwlWifiDevice {
                     if target == FW_CPU1_CPU2_SEPARATOR_SECTION
                         || target == FW_PAGING_SEPARATOR_SECTION
                     {
-                        off = tlv_end;
+                        off = next_tlv;
                         continue;
                     }
                     let data_size = tlv_len - 4;
@@ -1343,7 +1372,7 @@ impl IwlWifiDevice {
                 }
                 _ => {}
             }
-            off = tlv_end.saturating_add(3) & !3;
+            off = next_tlv;
         }
 
         if section_count == 0 {
