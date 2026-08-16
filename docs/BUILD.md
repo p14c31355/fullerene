@@ -23,6 +23,16 @@ git -C bonder/iwlwifi sparse-checkout set intel/iwlwifi
 The UEFI build requires the matching firmware files to be present in that
 directory.
 
+For a local 7265D firmware experiment, keep the replacement outside the
+submodule and override it only for that build:
+
+```bash
+FULLERENE_IWLWIFI_7265D_FW=/path/to/iwlwifi-7265D-29.ucode \
+  cargo run -p flasks --bin flasks -- --iso-only
+```
+
+Without the environment variable, the tracked submodule firmware is used.
+
 The repository includes third‑party application port definitions that are
 automatically built from submodule sources and embedded into the kernel
 via a CPIO initramfs archive.

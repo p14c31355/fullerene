@@ -4,14 +4,14 @@ use super::device::IwlWifiDevice;
 use super::registers::*;
 use super::types::{FirmwareBlob, FirmwareProfile};
 
-// Keep the firmware source aligned with Linux's canonical linux-firmware
-// repository.  The repository stores Intel firmware below intel/iwlwifi/.
+// Keep the default firmware source aligned with the tracked linux-firmware
+// submodule. A build-time override is available for hardware experiments so
+// replacing a local firmware blob does not dirty or advance the submodule.
 const FW_7260_17: &[u8] =
     include_bytes!("../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-7260-17.ucode");
 const FW_7265_17: &[u8] =
     include_bytes!("../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-7265-17.ucode");
-const FW_7265D_29: &[u8] =
-    include_bytes!("../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-7265D-29.ucode");
+const FW_7265D_29: &[u8] = include_bytes!(env!("FULLERENE_IWLWIFI_7265D_FW"));
 
 /// Select firmware using the raw CSR_HW_REV value, before the type field is
 /// shifted for display.  The 7265 and 7265D share PCI IDs, so this distinction
