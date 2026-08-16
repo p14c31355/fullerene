@@ -12,8 +12,10 @@ use super::types::*;
 /// The legacy TFD stores the buffer length in bits 4..15 of `hi_n_len`.
 const TFD_LENGTH_MAX: usize = 0x0fff;
 /// Gen1 FH write-back region at the start of every TX command. Linux keeps
-/// this in a dedicated per-slot coherent buffer; the shared register constant
-/// is used by both allocation and descriptor construction.
+/// this in a dedicated 64-byte-aligned buffer and exposes exactly 20 bytes as
+/// TB0; each Fullerene per-slot DMA buffer is page-aligned and can serve the
+/// same purpose in place.
+const IWL_FIRST_TB_SIZE: usize = 20;
 
 // Keep the host-side SCD programming experiment available for comparison,
 // but use Linux's DQA contract by default: the transport publishes CBBC/WRPTR
@@ -2349,12 +2351,13 @@ impl IwlWifiDevice {
                 (self.tx_dma_ring.virt() as *mut u8).add(tx_tfd_ring_offset(traffic_queue))
                     as *mut TxDmaDesc
             };
-            // Linux points the TX command's scratch write-back address into
-            // the separate first-TB buffer, not into the payload buffer.
-            let first_tb_dma = self.tx_bufs[TX_FIRST_TB_BUFFER_BASE + desc_idx].dma_iova();
-            let scratch_dma = first_tb_dma + TX_COMMAND_HEADER_LEN as u64 + 8;
             let buf = &mut self.tx_bufs[TX_QUEUE_SIZE + desc_idx];
             let dma_addr = buf.dma_iova();
+            // Linux points the TX command's scratch write-back address into
+            // TB0. A zero address disables that contract and, together with
+            // a one-TB descriptor, leaves gen1 data queues unlike the
+            // transport format used by the 7265 firmware.
+            let scratch_dma = dma_addr + TX_COMMAND_HEADER_LEN as u64 + 8;
             let tx = TX_COMMAND_HEADER_LEN;
             wire[tx + 44..tx + 48].copy_from_slice(&(scratch_dma as u32).to_le_bytes());
             wire[tx + 48] = ((scratch_dma >> 32) & 0x0f) as u8;
@@ -2367,8 +2370,6 @@ impl IwlWifiDevice {
             } else {
                 None
             };
-            self.tx_bufs[TX_FIRST_TB_BUFFER_BASE + desc_idx].write_from(&wire[..IWL_FIRST_TB_SIZE]);
-
             let mac_header_len = Self::tx_mac_header_len(&tx_frame);
             let tb1_unaligned = TX_FRAME_OFFSET + mac_header_len - IWL_FIRST_TB_SIZE;
             let tb1_len = (tb1_unaligned + 3) & !3;
@@ -2377,9 +2378,9 @@ impl IwlWifiDevice {
             let desc = unsafe { &mut *desc_ptr.add(desc_idx) };
             *desc = TxDmaDesc::zeroed();
             desc.num_tbs = if tb2_len == 0 { 2 } else { 3 };
-            desc.tbs[0].addr_lo = first_tb_dma as u32;
+            desc.tbs[0].addr_lo = dma_addr as u32;
             desc.tbs[0].hi_n_len =
-                ((IWL_FIRST_TB_SIZE as u16) << 4) | ((first_tb_dma >> 32) as u16 & 0x0f);
+                ((IWL_FIRST_TB_SIZE as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
             let tb1_dma = dma_addr + IWL_FIRST_TB_SIZE as u64;
             desc.tbs[1].addr_lo = tb1_dma as u32;
             desc.tbs[1].hi_n_len = ((tb1_len as u16) << 4) | ((tb1_dma >> 32) as u16 & 0x0f);
@@ -2390,27 +2391,20 @@ impl IwlWifiDevice {
             }
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
-            // The legacy SCD uses the byte-count table only for
-            // Scheduler-ACK/aggregate queues. Linux configures the 7265
-            // management queue as FIFO/non-aggregate, so Q5 must not be
-            // treated as a Scheduler-ACK queue merely because a byte-count
-            // table exists in the shared TX DMA allocation. Keep the table
-            // writer available for aggregate data queues, but make this
-            // distinction explicit for the Q5 A/B experiment.
+            // Linux updates the byte-count table for every gen1 TX queue,
+            // including FIFO/non-aggregate management queues. SCD_AGGR_SEL
+            // controls aggregation; it does not suppress the byte-count
+            // entry used by the transport when it fetches a TFD.
             let sec_ctl = wire[TX_COMMAND_HEADER_LEN + 17];
             let scd_aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
             let scheduler_ack = (scd_aggr & (1 << traffic_queue)) != 0;
-            let byte_count_entry = if scheduler_ack {
-                self.update_scd_byte_count(
-                    traffic_queue,
-                    desc_idx,
-                    tx_frame.len() as u16,
-                    0,
-                    sec_ctl,
-                )
-            } else {
-                0
-            };
+            let byte_count_entry = self.update_scd_byte_count(
+                traffic_queue,
+                desc_idx,
+                tx_frame.len() as u16,
+                0,
+                sec_ctl,
+            );
 
             self.tx_data_head = self.tx_data_head.wrapping_add(1);
             let handshake_frame = tx_frame.len() >= 2 && matches!(tx_frame[0] & 0xfc, 0xb0 | 0x00);
@@ -2499,7 +2493,7 @@ impl IwlWifiDevice {
                     (frame_seq_ctrl >> 4) & 0x0fff
                 };
                 log::info!(
-                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} frame_seq_ctrl={:#06x} frame_ssn={} bc_mode={} bc_dwords={} bc_addr={:#018x} tbs={} tb0={} tb1={} tb2={} first_tb={:#018x} scratch={:#018x} sta_queue_mask={:#010x} cbbc={:#010x} sw_wrptr={} hw_wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} scd_en={:#010x} scd_gp={:#010x} qchain={:#010x} aggr={:#010x} ctx0={:#010x} ctx1={:#010x} trans_tbl={:#010x} tx_stts={:#010x} scd_dram={:#010x} scd_txfact={:#010x} fh_tx_trb={:#010x} tx_status={:#010x} tx_error={:#010x} gp_cntrl={:#010x} gp1={:#010x}",
+                    "iwlwifi: TX management submitted queue={} slot={} frame={} wire={} frame_seq_ctrl={:#06x} frame_ssn={} bc_mode={} bc_dwords={} bc_addr={:#018x} tbs={} tb0={} tb1={} tb2={} scratch={:#018x} sta_queue_mask={:#010x} cbbc={:#010x} sw_wrptr={} hw_wrptr={:#010x} rptr={:#010x} status={:#010x} fifo={} fifo_cfg={:#010x} fifo_credit={:#010x} fifo_buf={:#010x} scd_en={:#010x} scd_gp={:#010x} qchain={:#010x} aggr={:#010x} ctx0={:#010x} ctx1={:#010x} trans_tbl={:#010x} tx_stts={:#010x} scd_dram={:#010x} scd_txfact={:#010x} fh_tx_trb={:#010x} tx_status={:#010x} tx_error={:#010x} gp_cntrl={:#010x} gp1={:#010x}",
                     traffic_queue,
                     desc_idx,
                     tx_frame.len(),
@@ -2517,7 +2511,6 @@ impl IwlWifiDevice {
                     IWL_FIRST_TB_SIZE,
                     tb1_len,
                     tb2_len,
-                    first_tb_dma,
                     scratch_dma,
                     station_queue_mask,
                     cbbc,
@@ -2933,7 +2926,6 @@ mod tests {
             )
         };
         let data_dma = device.tx_bufs[TX_QUEUE_SIZE].dma_iova();
-        let first_tb_dma = device.tx_bufs[TX_FIRST_TB_BUFFER_BASE].dma_iova();
         let tb0_addr = tb0.addr_lo;
         let tb0_len = tb0.hi_n_len >> 4;
         let tb1_addr = tb1.addr_lo;
@@ -2941,34 +2933,28 @@ mod tests {
         let tb2_addr = tb2.addr_lo;
         let tb2_len = tb2.hi_n_len >> 4;
         assert_eq!(num_tbs, 3);
-        assert_eq!(tb0_addr, first_tb_dma as u32);
+        assert_eq!(tb0_addr, data_dma as u32);
         assert_eq!(tb0_len, 20);
         assert_eq!(tb1_addr, (data_dma + 20) as u32);
         assert_eq!(tb1_len, 64);
         assert_eq!(tb2_addr, (data_dma + 84) as u32);
         assert_eq!(tb2_len, 6);
-        assert_eq!(
-            &device.tx_bufs[TX_FIRST_TB_BUFFER_BASE].as_slice()[..IWL_FIRST_TB_SIZE],
-            &device.tx_bufs[TX_QUEUE_SIZE].as_slice()[..IWL_FIRST_TB_SIZE]
-        );
         let scratch = &device.tx_bufs[TX_QUEUE_SIZE].as_slice()
             [TX_COMMAND_HEADER_LEN + 44..TX_COMMAND_HEADER_LEN + 49];
         assert_eq!(
             u32::from_le_bytes(scratch[..4].try_into().unwrap()),
-            (first_tb_dma + 12) as u32
+            (data_dma + 12) as u32
         );
-        assert_eq!(scratch[4], ((first_tb_dma + 12) >> 32) as u8 & 0x0f);
+        assert_eq!(scratch[4], ((data_dma + 12) >> 32) as u8 & 0x0f);
         let byte_count_base =
             device.tx_dma_ring.virt() + TX_SCD_BC_OFFSET + IWL_MGMT_QUEUE as usize * (256 + 64) * 2;
         let primary = unsafe { core::ptr::read_unaligned(byte_count_base as *const u16) };
         let duplicate =
             unsafe { core::ptr::read_unaligned((byte_count_base + 256 * 2) as *const u16) };
-        // Q5 is Linux's FIFO/non-aggregate management queue, so the
-        // Scheduler-ACK byte-count table is intentionally untouched by the
-        // submit path. The table writer itself is covered below for the
-        // aggregate/Scheduler-ACK path.
-        assert_eq!(u16::from_le(primary), 0);
-        assert_eq!(u16::from_le(duplicate), 0);
+        // Linux updates the byte-count table even for Q5's FIFO/non-aggregate
+        // management path.
+        assert_eq!(u16::from_le(primary), 10);
+        assert_eq!(u16::from_le(duplicate), 10);
     }
 
     #[test]

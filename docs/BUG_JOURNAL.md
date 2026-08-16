@@ -1021,9 +1021,28 @@ the command header/TX-command prefix into it, points the scratch write-back
 address there, and maps the remainder from the payload buffer as TB1/TB2.
 Fullerene previously used one payload allocation for all three TBs.
 
-The next A/B build implements only that Linux first-TB layout.  It leaves the
-Q5 setup, station ownership, authentication frame, and scheduler registers
-unchanged.
+## Entry 034 — 2026-08-17 fl-fw4 rejects separate first-TB as the fetch cause
+
+`fl-fw4.txt` used the separate first-TB layout.  The TFD now proves the Linux
+address arrangement:
+
+```text
+TB0 = first_tb_dma       0x03aa9000
+TB1 = payload_dma + 20   0x039a9014
+TB2 = payload_dma + 84   0x039a9054
+scratch = first_tb_dma+12
+```
+
+Despite this, Q5 remained `wrptr=1 / rdptr=0` for all observed ticks, with
+`FH_TX_TRB=0` and no `REPLY_TX`.  The first-TB change is therefore rejected
+and has been removed from the next experiment.
+
+The remaining Linux transport difference selected for the next A/B is that
+`iwl_pcie_txq_update_byte_cnt_tbl()` updates the SCD byte-count entry for
+every gen1 TX queue, including FIFO/non-aggregate q5.  Fullerene previously
+suppressed this entry whenever `SCD_AGGR_SEL` did not contain q5.  The next
+build restores the Linux unconditional byte-count update; no Q5 setup,
+station ownership, or authentication frame layout is changed.
 
 ## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
 
