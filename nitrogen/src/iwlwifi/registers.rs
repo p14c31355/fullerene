@@ -233,11 +233,14 @@ pub const fn fh_tx_trb_channel(channel: u32) -> u32 {
 pub const SCD_BASE: u32 = 0xA02C00;
 pub const SCD_SRAM_BASE_ADDR: u32 = SCD_BASE;
 pub const SCD_DRAM_BASE_ADDR: u32 = SCD_BASE + 0x08;
+pub const SCD_AIT: u32 = SCD_BASE + 0x0C;
 /// Chain-extension control register. Linux writes this only when the selected
 /// device configuration advertises `scd_chain_ext_wa`; the 7265 configuration
 /// does not, so the legacy path must leave the firmware/HW default unchanged.
 pub const SCD_CHAINEXT_EN: u32 = SCD_BASE + 0x244;
 pub const SCD_TXFACT: u32 = SCD_BASE + 0x10;
+pub const SCD_ACTIVE: u32 = SCD_BASE + 0x14;
+pub const SCD_INTERRUPT_MASK: u32 = SCD_BASE + 0x108;
 pub const SCD_GP_CTRL: u32 = SCD_BASE + 0x1A8;
 pub const SCD_EN_CTRL: u32 = SCD_BASE + 0x254;
 pub const SCD_QUEUECHAIN_SEL: u32 = SCD_BASE + 0xE8;
@@ -284,6 +287,7 @@ pub const SCD_QUEUE_STATUS_AUX: u32 = SCD_BASE + 0x10C + IWL_AUX_QUEUE * 4;
 pub const SCD_CONTEXT_QUEUE_AUX: u32 = 0x600 + IWL_AUX_QUEUE * 8;
 pub const SCD_QUEUE_STTS_ACTIVE: u32 = 1 << 3;
 pub const SCD_QUEUE_STTS_WSL: u32 = 1 << 4;
+pub const SCD_QUEUE_STTS_SCD_ACK: u32 = 1 << 8;
 pub const SCD_QUEUE_STTS_FIFO_COMMAND: u32 = 7;
 pub const SCD_QUEUE_STTS_MASK: u32 = 0x017F_0000;
 pub const SCD_GP_CTRL_AUTO_ACTIVE_MODE: u32 = 1 << 18;
@@ -404,10 +408,14 @@ pub const TLV_SEC_INIT: u32 = 20;
 pub const TLV_SEC_WOWLAN: u32 = 21;
 pub const TLV_DEF_CALIB: u32 = 22;
 pub const TLV_PHY_SKU: u32 = 23;
+/// Firmware flags bitmap (Linux IWL_UCODE_TLV_FLAGS).
+pub const TLV_FLAGS: u32 = 18;
 /// Firmware API-change bitmap entries (`api_index`, `api_flags`).
 pub const TLV_API_CHANGES_SET: u32 = 29;
 /// Firmware capability bitmap entries (`api_index`, `api_capa`).
 pub const TLV_ENABLED_CAPABILITIES: u32 = 30;
+/// Firmware command version entries (`cmd`, `group`, `cmd_ver`, `notif_ver`).
+pub const TLV_CMD_VERSIONS: u32 = 48;
 /// Firmware TLVs containing the runtime/init error-log SRAM addresses.
 pub const TLV_RUNT_ERRLOG_PTR: u32 = 10;
 pub const TLV_INIT_ERRLOG_PTR: u32 = 13;

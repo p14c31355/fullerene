@@ -55,6 +55,13 @@ pub struct IwlWifiDevice {
     pub fw_umac_scan_supported: bool,
     /// Firmware capability bit 12: dynamic queue allocation is required.
     pub fw_dqa_supported: bool,
+    /// Firmware capability bit 54: use SESSION_PROTECTION_CMD instead of the
+    /// legacy TIME_EVENT_CMD for management-TX session protection.
+    pub fw_session_prot_supported: bool,
+    /// Command-version TLV entry for TIME_EVENT_CMD (0x29), if advertised.
+    pub fw_time_event_cmd_version: Option<(u8, u8)>,
+    /// Firmware TLV_FLAGS value used by Linux's legacy API-version checks.
+    pub fw_ucode_flags: u32,
     pub phy_config: u32,
     pub phy_sku_tlv_len: Option<u32>,
     pub runtime_calib_flow: u32,
@@ -649,6 +656,9 @@ impl IwlWifiDevice {
             fw_lar_v2: false,
             fw_umac_scan_supported: false,
             fw_dqa_supported: false,
+            fw_session_prot_supported: false,
+            fw_time_event_cmd_version: None,
+            fw_ucode_flags: 0,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -893,6 +903,9 @@ impl IwlWifiDevice {
             fw_lar_v2: false,
             fw_umac_scan_supported: false,
             fw_dqa_supported: false,
+            fw_session_prot_supported: false,
+            fw_time_event_cmd_version: None,
+            fw_ucode_flags: 0,
             phy_config: 0,
             phy_sku_tlv_len: None,
             runtime_calib_flow: 0,
@@ -993,6 +1006,9 @@ impl IwlWifiDevice {
         self.fw_lar_v2 = false;
         self.fw_umac_scan_supported = false;
         self.fw_dqa_supported = false;
+        self.fw_session_prot_supported = false;
+        self.fw_time_event_cmd_version = None;
+        self.fw_ucode_flags = 0;
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
         self.tx_head = 0;
@@ -1269,6 +1285,40 @@ impl IwlWifiDevice {
                         );
                     }
                 }
+                TLV_FLAGS => {
+                    if tlv_len == 4 {
+                        self.fw_ucode_flags = unsafe {
+                            core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
+                        };
+                        log::info!(
+                            "iwlwifi: firmware.ucode_flags bitmap={:#010x}",
+                            self.fw_ucode_flags,
+                        );
+                    }
+                }
+                TLV_CMD_VERSIONS => {
+                    if tlv_len % 4 == 0 {
+                        let entries = (tlv_len / 4) as usize;
+                        for index in 0..entries {
+                            let entry = unsafe { fw_ptr.add(tlv_data_off + index * 4) };
+                            let cmd = unsafe { core::ptr::read_unaligned(entry as *const u32) };
+                            let cmd_id = (cmd & 0xff) as u8;
+                            let group = ((cmd >> 8) & 0xff) as u8;
+                            let cmd_ver = ((cmd >> 16) & 0xff) as u8;
+                            let notif_ver = ((cmd >> 24) & 0xff) as u8;
+                            if cmd_id == LegacyCmd::TimeEvent as u8 && group == 0 {
+                                self.fw_time_event_cmd_version = Some((cmd_ver, notif_ver));
+                                log::info!(
+                                    "iwlwifi: firmware.command_version opcode=0x{:02x} group=0x{:02x} cmd_ver={} notif_ver={}",
+                                    cmd_id,
+                                    group,
+                                    cmd_ver,
+                                    notif_ver,
+                                );
+                            }
+                        }
+                    }
+                }
                 TLV_ENABLED_CAPABILITIES => {
                     if tlv_len == 8 {
                         let api_index: u32 = unsafe {
@@ -1288,14 +1338,18 @@ impl IwlWifiDevice {
                         if api_index == 2 {
                             self.fw_lar_v2 = capabilities & (1 << 9) != 0;
                         }
+                        if api_index == 1 {
+                            self.fw_session_prot_supported = capabilities & (1 << 22) != 0;
+                        }
                         log::info!(
-                            "iwlwifi: firmware.capabilities api_index={} bitmap={:#010x} lar={} lar_v2={} umac_scan={} dqa={}",
+                            "iwlwifi: firmware.capabilities api_index={} bitmap={:#010x} lar={} lar_v2={} umac_scan={} dqa={} session_prot={}",
                             api_index,
                             capabilities,
                             self.fw_lar_supported,
                             self.fw_lar_v2,
                             self.fw_umac_scan_supported,
                             self.fw_dqa_supported,
+                            self.fw_session_prot_supported,
                         );
                     }
                 }
@@ -2222,6 +2276,9 @@ pub(super) mod test_support {
                 fw_lar_v2: false,
                 fw_umac_scan_supported: false,
                 fw_dqa_supported: false,
+                fw_session_prot_supported: false,
+                fw_time_event_cmd_version: None,
+                fw_ucode_flags: 0,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,

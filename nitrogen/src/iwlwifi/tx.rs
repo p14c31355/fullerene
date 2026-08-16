@@ -47,7 +47,7 @@ const _: () = assert!(
 );
 const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 148);
 
-struct HexBytes<'a>(&'a [u8]);
+pub(super) struct HexBytes<'a>(pub(super) &'a [u8]);
 
 impl fmt::Display for HexBytes<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1030,7 +1030,10 @@ impl IwlWifiDevice {
         let sequence = ((command_queue as u16) << 8) | (self.tx_head as u16 & 0xff);
         if matches!(
             label,
-            "CONNECT_ADD_STA" | "CONNECT_SCD_QUEUE_CFG" | "CONNECT_ADD_STA_QUEUE"
+            "CONNECT_ADD_STA"
+                | "CONNECT_SCD_QUEUE_CFG"
+                | "CONNECT_ADD_STA_QUEUE"
+                | "CONNECT_TIME_EVENT"
         ) {
             log::info!(
                 "iwlwifi: hcmd.sync.submit name={} opcode=0x{:02x} group=0x{:02x} payload_len={} payload_hex={}",
@@ -1086,6 +1089,14 @@ impl IwlWifiDevice {
                         }
                         let status =
                             u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                        log::info!(
+                            "iwlwifi: add_sta.response name={} status={:#010x} status_low={:#04x} payload_len={} payload_hex={}",
+                            label,
+                            status,
+                            status & 0xff,
+                            payload.len(),
+                            HexBytes(&payload),
+                        );
                         if status & 0xff != 1 {
                             log::error!(
                                 "iwlwifi: hcmd.sync.error name={} stage=status add_sta_status={:#010x}",
@@ -1108,6 +1119,19 @@ impl IwlWifiDevice {
                         }
                         let status =
                             u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                        log::info!(
+                            "iwlwifi: time_event.response status={:#010x} id={:#010x} unique_id={:#010x} id_and_color={:#010x} payload_hex={}",
+                            status,
+                            u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]),
+                            u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]),
+                            u32::from_le_bytes([
+                                payload[12],
+                                payload[13],
+                                payload[14],
+                                payload[15]
+                            ]),
+                            HexBytes(&payload),
+                        );
                         if status & 1 == 0 {
                             log::error!(
                                 "iwlwifi: hcmd.sync.error name={} stage=status time_event_status={:#010x}",
@@ -1121,6 +1145,24 @@ impl IwlWifiDevice {
                     if label == "CONNECT_SCD_QUEUE_CFG" {
                         log::info!(
                             "iwlwifi: DQA queue configuration response payload={}",
+                            HexBytes(&payload),
+                        );
+                    }
+                    if matches!(
+                        label,
+                        "CONNECT_PHY_CONTEXT"
+                            | "CONNECT_MAC_CONTEXT"
+                            | "CONNECT_ADD_STA"
+                            | "CONNECT_SCD_QUEUE_CFG"
+                            | "CONNECT_ADD_STA_QUEUE"
+                            | "CONNECT_TIME_EVENT"
+                    ) {
+                        log::info!(
+                            "iwlwifi: hcmd.sync.response_payload name={} opcode=0x{:02x} group=0x{:02x} sequence=0x{:04x} payload_hex={}",
+                            label,
+                            opcode,
+                            group,
+                            sequence,
                             HexBytes(&payload),
                         );
                     }
@@ -1150,6 +1192,99 @@ impl IwlWifiDevice {
                 }
             }
         }
+    }
+
+    /// Dump the complete gen1 SCD/FH state relevant to a dynamic queue.
+    ///
+    /// DQA queue setup is firmware-owned on API 29, so a queue can look
+    /// configured from the HCMD response while still being invisible to the
+    /// scheduler.  Keep this read-only snapshot at each setup boundary so a
+    /// single hardware run distinguishes host publication, firmware queue
+    /// configuration, station ownership, and the actual TX doorbell.
+    pub(super) fn log_dqa_scheduler_snapshot(&mut self, label: &str, sta_queue_mask: u32) {
+        const DIAG_QUEUES: [u32; 3] = [IWL_CMD_QUEUE, IWL_DQA_AUX_QUEUE, IWL_MGMT_QUEUE];
+        const DIAG_FIFOS: [u32; 3] = [3, 5, 7];
+
+        log::info!(
+            "iwlwifi: dqa.snapshot.begin label={} sta_queue_mask={:#010x} hbus_wrptr={:#010x} csr_gp={:#010x} csr_gp1={:#010x} scd_active={:#010x} scd_ait={:#010x} scd_en={:#010x} scd_gp={:#010x} scd_interrupt_mask={:#010x} qchain={:#010x} chainext={:#010x} aggr={:#010x} txfact={:#010x} scd_dram={:#010x} scd_base={:#010x} fh_chicken={:#010x} fh_tx_status={:#010x} fh_tx_error={:#010x}",
+            label,
+            sta_queue_mask,
+            self.safe_read32(HBUS_TARG_WRPTR).unwrap_or(!0),
+            self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+            self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0),
+            self.read_prph(SCD_ACTIVE).unwrap_or(!0),
+            self.read_prph(SCD_AIT).unwrap_or(!0),
+            self.read_prph(SCD_EN_CTRL).unwrap_or(!0),
+            self.read_prph(SCD_GP_CTRL).unwrap_or(!0),
+            self.read_prph(SCD_INTERRUPT_MASK).unwrap_or(!0),
+            self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(!0),
+            self.read_prph(SCD_CHAINEXT_EN).unwrap_or(!0),
+            self.read_prph(SCD_AGGR_SEL).unwrap_or(!0),
+            self.read_prph(SCD_TXFACT).unwrap_or(!0),
+            self.read_prph(SCD_DRAM_BASE_ADDR).unwrap_or(!0),
+            self.alive_scd_base_addr,
+            self.safe_read32(FH_TX_CHICKEN_BITS).unwrap_or(!0),
+            self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
+            self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
+        );
+
+        for queue in DIAG_QUEUES {
+            let status = self.read_prph(scd_queue_status(queue)).unwrap_or(!0);
+            let wrptr = self.read_prph(scd_queue_wrptr(queue)).unwrap_or(!0);
+            let rdptr = self.read_prph(scd_queue_rdptr(queue)).unwrap_or(!0);
+            let cbbc = self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0);
+            let (ctx0, ctx1, trans_tbl, tx_stts) = if self.alive_scd_base_addr != 0 {
+                (
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(queue))
+                        .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(queue) + 4)
+                        .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_trans_tbl_offset_queue(queue))
+                        .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_tx_stts_queue_offset(queue))
+                        .unwrap_or(!0),
+                )
+            } else {
+                (!0, !0, !0, !0)
+            };
+            log::info!(
+                "iwlwifi: dqa.snapshot.queue label={} queue={} status={:#010x} fifo={} active={} wsl={} scd_ack={} bit7={} wrptr={:#010x} rdptr={:#010x} cbbc={:#010x} ctx0={:#010x} ctx1={:#010x} trans_tbl={:#010x} tx_stts={:#010x} queue_owned={}",
+                label,
+                queue,
+                status,
+                status & 0x7,
+                (status & SCD_QUEUE_STTS_ACTIVE) != 0,
+                (status & SCD_QUEUE_STTS_WSL) != 0,
+                (status & SCD_QUEUE_STTS_SCD_ACK) != 0,
+                (status & (1 << 7)) != 0,
+                wrptr,
+                rdptr,
+                cbbc,
+                ctx0,
+                ctx1,
+                trans_tbl,
+                tx_stts,
+                (sta_queue_mask & (1 << queue)) != 0,
+            );
+        }
+
+        for fifo in DIAG_FIFOS {
+            let stride = fifo * (0x20 / 4);
+            log::info!(
+                "iwlwifi: dqa.snapshot.fh label={} fifo={} config={:#010x} credit={:#010x} buf_status={:#010x} trb={:#010x}",
+                label,
+                fifo,
+                self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + stride)
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + stride)
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + stride)
+                    .unwrap_or(!0),
+                self.safe_read32(fh_tx_trb_channel(fifo)).unwrap_or(!0),
+            );
+        }
+
+        log::info!("iwlwifi: dqa.snapshot.end label={}", label);
     }
 
     /// Wait for the firmware response to a synchronous runtime setup command.
@@ -2432,6 +2567,7 @@ impl IwlWifiDevice {
                         HexBytes(&dma_wire),
                     );
                 }
+                self.log_dqa_scheduler_snapshot("after_auth_doorbell", 1u32 << traffic_queue);
             }
         }
         // Release only after the q0 host-command ring is empty. A data-frame

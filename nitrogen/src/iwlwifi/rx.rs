@@ -450,6 +450,52 @@ impl IwlWifiDevice {
                     {
                         self.save_phy_db_notification(&packet[8..]);
                     }
+                    if packet[4] == LegacyCmd::TimeEventNotification as u8
+                        && packet[5] == GroupId::Legacy as u8
+                    {
+                        if payload.len() >= 24 {
+                            log::info!(
+                                "iwlwifi: time_event.notification timestamp={:#010x} session_id={:#010x} unique_id={:#010x} id_and_color={:#010x} action={:#010x} status={:#010x} payload_hex={}",
+                                u32::from_le_bytes([
+                                    payload[0], payload[1], payload[2], payload[3]
+                                ]),
+                                u32::from_le_bytes([
+                                    payload[4], payload[5], payload[6], payload[7]
+                                ]),
+                                u32::from_le_bytes([
+                                    payload[8],
+                                    payload[9],
+                                    payload[10],
+                                    payload[11]
+                                ]),
+                                u32::from_le_bytes([
+                                    payload[12],
+                                    payload[13],
+                                    payload[14],
+                                    payload[15]
+                                ]),
+                                u32::from_le_bytes([
+                                    payload[16],
+                                    payload[17],
+                                    payload[18],
+                                    payload[19]
+                                ]),
+                                u32::from_le_bytes([
+                                    payload[20],
+                                    payload[21],
+                                    payload[22],
+                                    payload[23]
+                                ]),
+                                RxHexBytes(payload),
+                            );
+                        } else {
+                            log::warn!(
+                                "iwlwifi: time_event.notification short payload_len={} payload_hex={}",
+                                payload.len(),
+                                RxHexBytes(payload),
+                            );
+                        }
+                    }
                     // MCC_UPDATE is a legacy command, but older 7000-series
                     // firmware has emitted its response through either the
                     // legacy or long notification namespace. Match its

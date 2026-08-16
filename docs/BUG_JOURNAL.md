@@ -827,3 +827,40 @@ enumeration path.
 - `cargo check -p nitrogen` passed.
 - `cargo check -p fullerene-kernel --target x86_64-unknown-uefi` passed.
 - Formatting and `git diff --check` passed.
+
+## Entry 027 — 2026-08-17 Linux gen1 DQA station ownership order
+
+### Linux comparison
+
+Linux v4.14's `iwl_mvm_enable_txq()` first sends the AP station update with
+`STA_MODIFY_QUEUES`, then calls the PCIe transport queue-enable path, and only
+after that sends `SCD_QUEUE_CFG`.  The transport path publishes the DQA CBBC
+and initial write pointer; the station queue mask is already owned by the
+firmware when SCD configures the queue.
+
+Fullerene had the queue-configuration order reversed: it published q5 and
+sent `SCD_QUEUE_CFG`, then sent `CONNECT_ADD_STA_QUEUE`.  The q5 snapshots
+showed an apparently active SCD context, but this did not prove that the
+firmware scheduler had a valid station owner at the point it accepted the
+queue configuration.
+
+### Change
+
+The DQA connection path now sends `CONNECT_ADD_STA_QUEUE` before q5 CBBC/WRPTR
+publication and `CONNECT_SCD_QUEUE_CFG`.  The existing q5 gate workaround,
+TIME_EVENT experiment, authentication frame, WPA path, and RX parser were not
+changed by this comparison patch.  Diagnostics retain snapshots after station
+ownership, after CBBC publication, after SCD configuration, and immediately
+before/after the real authentication doorbell.
+
+### Validation
+
+- Linux source comparison: `mvm/utils.c` `iwl_mvm_enable_txq()` and
+  `mvm/sta.c` `iwl_mvm_sta_send_to_fw()`.
+- TFD comparison remains unchanged and byte-compatible: 128-byte gen1 TFD,
+  three TBs of 20/64/6 bytes, and scratch at TB0+12.
+- `cargo check --workspace --all-targets` passed.
+- `cargo test -p nitrogen --all-targets`: 182 unit tests and 17 Linux
+  compatibility tests passed.
+- Real hardware validation remains pending; the decisive result is q5
+  `hw_rdptr: 0 -> 1` or a TX completion after the reordered sequence.
