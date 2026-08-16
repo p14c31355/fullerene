@@ -1070,11 +1070,12 @@ impl IwlWifiDevice {
                 (ctx1 >> 16) & 0x7f,
             );
             // Read the SCD translation table entry and TX status SRAM entry
-            // for q5.  The translation table maps RA/TID to queue; a non-
-            // aggregate queue does not use it, but a stale non-zero value
-            // could misdirect the scheduler.  The TX status SRAM entry is
-            // another firmware-owned field that should be non-zero for an
-            // active queue.
+            // for q5. The translation table maps RA/TID to queue; Linux
+            // leaves it zero for a non-aggregate DQA management queue, so a
+            // stale non-zero value would be suspicious. The TX status entry
+            // is firmware-owned aggregation/reclaim state and may remain
+            // zero before the first fetch/completion; zero is not itself a
+            // queue-activation failure.
             let trans_tbl = self
                 .read_mem32(scd_base + scd_trans_tbl_offset_queue(queue))
                 .unwrap_or(!0);

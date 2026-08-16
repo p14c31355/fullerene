@@ -219,6 +219,90 @@ does not modify `HBUS_TARG_WRPTR`; the next real-device log will distinguish
 the Linux-compatible pointer sequence from the remaining firmware-specific
 SCD gate behavior.
 
+## Entry 022 — 2026-08-16 fl-auth16 matches Linux SCD context semantics
+
+### Evidence
+
+fl-auth16 is running the Linux-tested `CoreCycle26_stab::f2390aa8` firmware
+without an assert. After `CONNECT_SCD_QUEUE_CFG` and `CONNECT_ADD_STA_QUEUE`,
+q5 reports:
+
+- `ctx0=0x00000000`
+- `ctx1=0x00400040` (`window=64`, `frame_limit=64`)
+- `trans_tbl=0x00000000`
+- `tx_stts=0x00000000`
+- `queuechain` contains q5, `SCD_QUEUE_STATUS=0x0000009b`, and
+  `SCD_EN_CTRL` contains q5
+
+Linux's gen1 transport passes `cfg=NULL` for a DQA queue, so it intentionally
+does not write the host-side SCD context, status, chain, aggregation, or
+translation entry. It only initializes the queue pointers; the subsequent
+`SCD_QUEUE_CFG` command supplies the firmware-owned queue configuration. For
+the non-aggregate management queue, Linux also does not need an RA/TID
+translation entry. Therefore q5's context and zero translation entry in
+fl-auth16 are not the cause of the fetch stall. A zero TX-status entry before
+the first fetch is also not sufficient evidence of failure.
+
+### Remaining difference
+
+The remaining host-side deviation is the API-29 compatibility write that
+restores q5 in `SCD_EN_CTRL`; Linux leaves dynamic-queue activation ownership
+to firmware. fl-auth16 confirms that this gate makes the FH path non-idle, but
+q5 still remains at `hw_rdptr=0`. The next comparison should therefore A/B
+that single gate, rather than rewriting the already Linux-compatible context
+or translation table.
+
+## Entry 023 — 2026-08-16 fl-auth17 repeats the q5 fetch stall
+
+### Evidence
+
+fl-auth17 reaches the same AP (`Buffalo-G-2218`, BSSID
+`f0:f8:4a:e8:22:18`, channel 11) and uses the same Linux-matched firmware
+`CoreCycle26_stab::f2390aa8` / ucode `29.4063824552`. The connection commands
+all succeed, the authentication TFD is submitted with three TBs and matching
+byte counts, and the FH path is non-idle (`FH_TRB=0x80305000`).
+
+The run still reports `SCD_EN_CTRL=0x00000023` with q5 set. q5 remains at
+`hw_wrptr=1`, `hw_rdptr=0` through ticks 64, 512, 1024, and 1536, with no
+`REPLY_TX`, authentication response, association, or DHCP completion. The
+capture therefore does not demonstrate a regression or a successful
+authentication.
+
+This is not an A/B test with the API-29 q5 gate removed: the log explicitly
+shows `q5_bit=SET`. Compared with fl-auth16, the observed q5 SCD/FH values are
+effectively unchanged; the smaller non-padding line count reflects a shorter
+capture, not a scheduler fix. The next physical test must either log
+`q5_bit=CLEAR` with `SCD_EN_CTRL=0x00000003`, or retain the gate and vary one
+other scheduler input so that each experiment has an unambiguous result.
+
+## Entry 024 — 2026-08-16 fl-auth18 reaches the full authentication fallback chain
+
+### Evidence
+
+Waiting through the watchdog timeout adds useful evidence, but does not
+authenticate. The initial `dqa_firmware` attempt remains stalled through tick
+3584 with q5 at `hw_wrptr=1`, `hw_rdptr=0`. There is still no `REPLY_TX`,
+authentication response, association, or DHCP completion.
+
+The driver then falls back to `dqa_host_scd`. This second submission changes
+the FH/FIFO observation (`FH_TRB=0x80305001`, `fifo_buf=0x00001620`, and
+`tx_status=0x07f70001`), so the host-SCD path does cause additional transport
+activity, but q5's scheduler read pointer remains zero and no response is
+received. This is not a successful fetch; it is a second stalled descriptor
+on the same q5.
+
+Finally, the static-q4 fallback activates q4, but
+`CONNECT_FALLBACK_ADD_STA_QUEUE` times out while consuming at command-queue
+position `target=31`, `head=31`, `tail=30`, `rptr=0x1e`. The fallback chain is
+therefore blocked by the command queue after the q5 stall, rather than proving
+that static q4 transmission works or fails on air.
+
+The run still has `SCD_EN_CTRL=0x00000023` with q5 set, so it remains neither
+the requested q5-gate A/B test nor a successful Linux-equivalent run. The
+timeout path is nevertheless valuable: the next fix should preserve the
+initial q5 evidence, prevent a stalled q5 fallback from blocking the command
+queue, and make the gate-cleared experiment independently observable.
+
 ## Entry 009 — 2026-07-30 workspace audit fixes
 
 A full-workspace bug and redundancy sweep produced the following fixes. Each
