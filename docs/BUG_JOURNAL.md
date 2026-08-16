@@ -999,12 +999,12 @@ This is a transport-start regression before DQA or Q5 exists.  The Linux
 `tx_start()` ordering requires the activated scheduler FIFOs to remain active;
 the `SCD_TXFACT=0` write was therefore removed from the post-FH setup path.
 
-## Entry 033 — 2026-08-17 fl-fw3 validates TXFACT and isolates the first-TB difference
+## Entry 033 — 2026-08-17 fl-fw3 validates TXFACT and isolates the Q5 fetch boundary
 
-`fl-fw3.txt` uses the restored post-start scheduler state and records
-`scd_txfact=0xff` in the legacy TX setup, during Q5 setup, and after the Q5
-doorbell.  The first `BT_CONFIG_INIT_API29` and all connection setup commands
-are consumed successfully, so the Entry 031 regression is gone.
+`fl-fw3.txt` uses the restored Linux gen1 scheduler state and records
+`scd_txfact=0xff` during legacy TX setup, Q5 setup, and after the Q5 doorbell.
+The first `BT_CONFIG_INIT_API29` and all connection setup commands are
+consumed successfully, so the Entry 031 transport-start regression is gone.
 
 The Q5 boundary is unchanged:
 
@@ -1015,16 +1015,13 @@ FH fifo 3:        config=0x80000008 trb=0
 ```
 
 No `REPLY_TX` or FH transaction follows.  This rejects `SCD_TXFACT` as the
-Q5 fetch cause and makes the remaining transport discrepancy actionable:
-Linux allocates a separate coherent per-slot 20-byte first-TB buffer, copies
-the command header/TX-command prefix into it, points the scratch write-back
-address there, and maps the remainder from the payload buffer as TB1/TB2.
-Fullerene previously used one payload allocation for all three TBs.
+Q5 fetch cause.  It also means that the next investigation must remain below
+the 802.11 layer, at the dynamic SCD-to-FH handoff.
 
 ## Entry 034 — 2026-08-17 fl-fw4 rejects separate first-TB as the fetch cause
 
-`fl-fw4.txt` used the separate first-TB layout.  The TFD now proves the Linux
-address arrangement:
+`fl-fw4.txt` tested the Linux-style separate coherent first-TB layout.  The
+TFD showed the intended arrangement:
 
 ```text
 TB0 = first_tb_dma       0x03aa9000
@@ -1033,16 +1030,14 @@ TB2 = payload_dma + 84   0x039a9054
 scratch = first_tb_dma+12
 ```
 
-Despite this, Q5 remained `wrptr=1 / rdptr=0` for all observed ticks, with
-`FH_TX_TRB=0` and no `REPLY_TX`.  The first-TB change is therefore rejected
-and has been removed from the next experiment.
+Despite this, Q5 remained `wrptr=1 / rdptr=0` through the observed ticks,
+with `FH_TX_TRB=0` and no `REPLY_TX`.  The first-TB layout change is therefore
+rejected and must not remain as the next hardware experiment.
 
-The remaining Linux transport difference selected for the next A/B is that
-`iwl_pcie_txq_update_byte_cnt_tbl()` updates the SCD byte-count entry for
-every gen1 TX queue, including FIFO/non-aggregate q5.  Fullerene previously
-suppressed this entry whenever `SCD_AGGR_SEL` did not contain q5.  The next
-build restores the Linux unconditional byte-count update; no Q5 setup,
-station ownership, or authentication frame layout is changed.
+The byte-count path is also not a new untested candidate: `fl-auth22.txt`
+already records `bc_primary=0x000a` and `bc_duplicate=0x000a` after the Q5
+authentication submit, while Q5 still remained `wrptr=1 / rdptr=0`.  Repeating
+that byte-count-only A/B would duplicate an existing negative result.
 
 ## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
 

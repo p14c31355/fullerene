@@ -2370,6 +2370,7 @@ impl IwlWifiDevice {
             } else {
                 None
             };
+
             let mac_header_len = Self::tx_mac_header_len(&tx_frame);
             let tb1_unaligned = TX_FRAME_OFFSET + mac_header_len - IWL_FIRST_TB_SIZE;
             let tb1_len = (tb1_unaligned + 3) & !3;
@@ -2391,20 +2392,27 @@ impl IwlWifiDevice {
             }
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
-            // Linux updates the byte-count table for every gen1 TX queue,
-            // including FIFO/non-aggregate management queues. SCD_AGGR_SEL
-            // controls aggregation; it does not suppress the byte-count
-            // entry used by the transport when it fetches a TFD.
+            // The legacy SCD uses the byte-count table only for
+            // Scheduler-ACK/aggregate queues. Linux configures the 7265
+            // management queue as FIFO/non-aggregate, so Q5 must not be
+            // treated as a Scheduler-ACK queue merely because a byte-count
+            // table exists in the shared TX DMA allocation. Keep the table
+            // writer available for aggregate data queues, but make this
+            // distinction explicit for the Q5 A/B experiment.
             let sec_ctl = wire[TX_COMMAND_HEADER_LEN + 17];
             let scd_aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
             let scheduler_ack = (scd_aggr & (1 << traffic_queue)) != 0;
-            let byte_count_entry = self.update_scd_byte_count(
-                traffic_queue,
-                desc_idx,
-                tx_frame.len() as u16,
-                0,
-                sec_ctl,
-            );
+            let byte_count_entry = if scheduler_ack {
+                self.update_scd_byte_count(
+                    traffic_queue,
+                    desc_idx,
+                    tx_frame.len() as u16,
+                    0,
+                    sec_ctl,
+                )
+            } else {
+                0
+            };
 
             self.tx_data_head = self.tx_data_head.wrapping_add(1);
             let handshake_frame = tx_frame.len() >= 2 && matches!(tx_frame[0] & 0xfc, 0xb0 | 0x00);
@@ -2951,10 +2959,12 @@ mod tests {
         let primary = unsafe { core::ptr::read_unaligned(byte_count_base as *const u16) };
         let duplicate =
             unsafe { core::ptr::read_unaligned((byte_count_base + 256 * 2) as *const u16) };
-        // Linux updates the byte-count table even for Q5's FIFO/non-aggregate
-        // management path.
-        assert_eq!(u16::from_le(primary), 10);
-        assert_eq!(u16::from_le(duplicate), 10);
+        // Q5 is Linux's FIFO/non-aggregate management queue, so the
+        // Scheduler-ACK byte-count table is intentionally untouched by the
+        // submit path. The table writer itself is covered below for the
+        // aggregate/Scheduler-ACK path.
+        assert_eq!(u16::from_le(primary), 0);
+        assert_eq!(u16::from_le(duplicate), 0);
     }
 
     #[test]
