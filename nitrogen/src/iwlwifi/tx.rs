@@ -2296,18 +2296,20 @@ impl IwlWifiDevice {
                 let scd_gp = self.read_prph(SCD_GP_CTRL).unwrap_or(!0);
                 let scd_chain = self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(!0);
                 let scd_base = self.alive_scd_base_addr;
-                let ctx0 = self
-                    .read_mem32(scd_base + scd_context_queue(traffic_queue))
-                    .unwrap_or(!0);
-                let ctx1 = self
-                    .read_mem32(scd_base + scd_context_queue(traffic_queue) + 4)
-                    .unwrap_or(!0);
-                let trans_tbl = self
-                    .read_mem32(scd_base + scd_trans_tbl_offset_queue(traffic_queue))
-                    .unwrap_or(!0);
-                let tx_stts = self
-                    .read_mem32(scd_base + scd_tx_stts_queue_offset(traffic_queue))
-                    .unwrap_or(!0);
+                let (ctx0, ctx1, trans_tbl, tx_stts) = if scd_base != 0 {
+                    (
+                        self.read_mem32(scd_base + scd_context_queue(traffic_queue))
+                            .unwrap_or(!0),
+                        self.read_mem32(scd_base + scd_context_queue(traffic_queue) + 4)
+                            .unwrap_or(!0),
+                        self.read_mem32(scd_base + scd_trans_tbl_offset_queue(traffic_queue))
+                            .unwrap_or(!0),
+                        self.read_mem32(scd_base + scd_tx_stts_queue_offset(traffic_queue))
+                            .unwrap_or(!0),
+                    )
+                } else {
+                    (!0, !0, !0, !0)
+                };
                 let cbbc = self
                     .safe_read32(fh_mem_cbbc_queue(traffic_queue))
                     .unwrap_or(!0);

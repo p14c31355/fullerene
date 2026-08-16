@@ -2322,12 +2322,18 @@ impl IwlWifiDevice {
             let q5_cbbc = self
                 .safe_read32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE))
                 .unwrap_or(!0);
-            let q5_ctx0 = self
-                .read_mem32(self.alive_scd_base_addr + scd_context_queue(IWL_MGMT_QUEUE))
-                .unwrap_or(!0);
-            let q5_ctx1 = self
-                .read_mem32(self.alive_scd_base_addr + scd_context_queue(IWL_MGMT_QUEUE) + 4)
-                .unwrap_or(!0);
+            let (q5_ctx0, q5_ctx1) = if self.alive_scd_base_addr != 0 {
+                (
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(IWL_MGMT_QUEUE))
+                        .unwrap_or(!0),
+                    self.read_mem32(
+                        self.alive_scd_base_addr + scd_context_queue(IWL_MGMT_QUEUE) + 4,
+                    )
+                    .unwrap_or(!0),
+                )
+            } else {
+                (!0, !0)
+            };
             let q0_status = self
                 .read_prph(scd_queue_status(self.command_queue()))
                 .unwrap_or(!0);

@@ -1248,10 +1248,16 @@ impl IwlWifiDevice {
                     }
                 }
                 TLV_API_CHANGES_SET => {
-                    if tlv_len == 8 {
-                        let api_index: u32 = unsafe {
-                            core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
-                        };
+                    if tlv_len != 8 {
+                        return Err(crate::DriverError::Protocol);
+                    }
+                    let api_index: u32 = unsafe {
+                        core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
+                    };
+                    // Linux exposes 69 API bits, represented as three u32
+                    // entries in the firmware bitmap.
+                    const API_BITMAP_ENTRIES: u32 = 3;
+                    if api_index < API_BITMAP_ENTRIES {
                         let api_flags: u32 = unsafe {
                             core::ptr::read_unaligned(fw_ptr.add(tlv_data_off + 4) as *const u32)
                         };
