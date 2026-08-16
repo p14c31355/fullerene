@@ -488,10 +488,10 @@ fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
         fs::write(out_dir.join("busybox"), &data).unwrap_or_else(|error| {
             panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
         });
-        if !stage_busybox_runtime(&out_dir, &path, &data) {
+        if !stage_busybox_runtime(out_dir, &path, &data) {
             continue;
         }
-        write_busybox_contract(&out_dir);
+        write_busybox_contract(out_dir);
         println!("cargo:rustc-cfg=have_busybox");
         return true;
     }

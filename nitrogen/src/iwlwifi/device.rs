@@ -123,6 +123,20 @@ pub struct IwlWifiDevice {
     /// This bounds a lost management-frame exchange instead of leaving the
     /// public connection status in Authenticating forever.
     pub connection_watchdog_ticks: u32,
+    /// Current bounded authentication TX plan. A stalled plan is advanced by
+    /// the connection watchdog after its queue has had enough time to fetch.
+    pub auth_tx_plan: AuthTxPlan,
+    /// Optional queue override used after the static-queue fallback. Normal
+    /// traffic follows the firmware capability-derived queue selection.
+    pub auth_tx_queue_override: Option<u32>,
+    /// Last firmware result for the authentication/association management TX.
+    /// `Some(false)` means the descriptor was consumed but the AP did not ACK
+    /// it, which needs a queue fallback rather than an apparent hang.
+    pub auth_tx_acknowledged: Option<bool>,
+    /// Command-header sequence of the currently active authentication or
+    /// association TX descriptor. Firmware can report an old descriptor after
+    /// a queue fallback, so RX must match this before changing the result.
+    pub auth_tx_sequence: Option<u16>,
 
     /// TX/RX queues.
     pub tx_queue: VecDeque<Vec<u8>>,
@@ -213,6 +227,9 @@ impl IwlWifiDevice {
     /// EAPOL, and the other non-QoS frames emitted by the current stack.
     #[inline]
     pub(super) fn traffic_queue(&self) -> u32 {
+        if let Some(queue) = self.auth_tx_queue_override {
+            return queue;
+        }
         if self.fw_dqa_supported {
             IWL_MGMT_QUEUE
         } else {
@@ -665,6 +682,10 @@ impl IwlWifiDevice {
             last_rx_phy_channel: 0,
             last_rx_system_timestamp: 0,
             connection_watchdog_ticks: 0,
+            auth_tx_plan: AuthTxPlan::DqaFirmware,
+            auth_tx_queue_override: None,
+            auth_tx_acknowledged: None,
+            auth_tx_sequence: None,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -905,6 +926,10 @@ impl IwlWifiDevice {
             last_rx_phy_channel: 0,
             last_rx_system_timestamp: 0,
             connection_watchdog_ticks: 0,
+            auth_tx_plan: AuthTxPlan::DqaFirmware,
+            auth_tx_queue_override: None,
+            auth_tx_acknowledged: None,
+            auth_tx_sequence: None,
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
             tx_dma_ring,
@@ -974,6 +999,9 @@ impl IwlWifiDevice {
         self.tx_tail = 0;
         self.tx_data_head = 0;
         self.tx_data_tail = 0;
+        self.auth_tx_plan = AuthTxPlan::DqaFirmware;
+        self.auth_tx_queue_override = None;
+        self.auth_tx_sequence = None;
         self.rx_head = 0;
         self.rx_tail = 0;
         self.rx_posted = 0;
@@ -2192,6 +2220,10 @@ pub(super) mod test_support {
                 last_rx_phy_channel: 0,
                 last_rx_system_timestamp: 0,
                 connection_watchdog_ticks: 0,
+                auth_tx_plan: AuthTxPlan::DqaFirmware,
+                auth_tx_queue_override: None,
+                auth_tx_acknowledged: None,
+                auth_tx_sequence: None,
                 tx_queue: VecDeque::new(),
                 rx_queue: VecDeque::new(),
                 tx_dma_ring,

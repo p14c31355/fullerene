@@ -3,7 +3,7 @@
 
 //! Minimal native user ELF used by the QEMU IPC smoke path.
 
-use core::arch::asm;
+use core::{arch::asm, ffi::c_void};
 
 const REQUESTS: u64 = 100_000;
 // Keep these standalone literals synchronized with
@@ -31,40 +31,37 @@ fn panic_handler(_: &core::panic::PanicInfo<'_>) -> ! {
 pub extern "C" fn rust_eh_personality() {}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn memcpy(destination: *mut u8, source: *const u8, length: usize) -> *mut u8 {
-    for index in 0..length {
-        unsafe {
-            destination.add(index).write(source.add(index).read());
-        }
-    }
+pub unsafe extern "C" fn memcpy(
+    destination: *mut c_void,
+    source: *const c_void,
+    length: usize,
+) -> *mut c_void {
+    unsafe {
+        core::ptr::copy_nonoverlapping(source.cast::<u8>(), destination.cast::<u8>(), length)
+    };
     destination
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memmove(
-    destination: *mut u8,
-    source: *const u8,
+    destination: *mut c_void,
+    source: *const c_void,
     length: usize,
-) -> *mut u8 {
-    if (destination as usize) <= (source as usize) {
-        unsafe { memcpy(destination, source, length) }
-    } else {
-        for index in (0..length).rev() {
-            unsafe {
-                destination.add(index).write(source.add(index).read());
-            }
-        }
-        destination
-    }
+) -> *mut c_void {
+    // `copy` has memmove semantics for both forward and backward overlap.
+    // Comparing the starting addresses alone does not prove that the ranges
+    // are disjoint (for example, dst=100, src=101, len=2).
+    unsafe { core::ptr::copy(source.cast::<u8>(), destination.cast::<u8>(), length) };
+    destination
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn memset(destination: *mut u8, value: i32, length: usize) -> *mut u8 {
-    for index in 0..length {
-        unsafe {
-            destination.add(index).write(value as u8);
-        }
-    }
+pub unsafe extern "C" fn memset(
+    destination: *mut c_void,
+    value: i32,
+    length: usize,
+) -> *mut c_void {
+    unsafe { core::ptr::write_bytes(destination.cast::<u8>(), value as u8, length) };
     destination
 }
 

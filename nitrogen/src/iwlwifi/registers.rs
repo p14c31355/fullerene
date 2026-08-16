@@ -184,6 +184,11 @@ pub const IWL_AUX_QUEUE: u32 = IWL_LEGACY_AUX_QUEUE;
 pub const IWL_NUM_OF_QUEUES: u32 = 31;
 /// Legacy MVM supports QoS TIDs 0..7; value 8 denotes non-QoS/management.
 pub const IWL_MAX_TID_COUNT: u8 = 8;
+/// Linux allocates only 16 software entries for DQA management queues.
+/// This is not the SCD_QUEUE_CFG `window`/frame-limit field; the gen1
+/// scheduler still uses IWL_FRAME_LIMIT for the management queue.
+pub const IWL_MGMT_QUEUE_SIZE: u8 = 16;
+pub const IWL_FRAME_LIMIT: u8 = 64;
 pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
 pub const FH_MEM_CBBC_16_19_LOWER_BOUND: u32 = (0x1000 + 0xBF0) / 4;
 pub const FH_MEM_CBBC_20_31_LOWER_BOUND: u32 = (0x1000 + 0xB20) / 4;
@@ -228,9 +233,9 @@ pub const fn fh_tx_trb_channel(channel: u32) -> u32 {
 pub const SCD_BASE: u32 = 0xA02C00;
 pub const SCD_SRAM_BASE_ADDR: u32 = SCD_BASE;
 pub const SCD_DRAM_BASE_ADDR: u32 = SCD_BASE + 0x08;
-/// Chain extension is enabled by default on this generation, but is known to
-/// interact badly with the legacy scheduler. Linux disables it during TX
-/// queue setup, including for 7265 devices.
+/// Chain-extension control register. Linux writes this only when the selected
+/// device configuration advertises `scd_chain_ext_wa`; the 7265 configuration
+/// does not, so the legacy path must leave the firmware/HW default unchanged.
 pub const SCD_CHAINEXT_EN: u32 = SCD_BASE + 0x244;
 pub const SCD_TXFACT: u32 = SCD_BASE + 0x10;
 pub const SCD_GP_CTRL: u32 = SCD_BASE + 0x1A8;

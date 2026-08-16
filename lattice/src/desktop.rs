@@ -255,7 +255,7 @@ impl Desktop {
     /// Press mouse button at current cursor position.
     ///
     /// `fb_width` / `fb_height` are required for maximize toggle.
-    pub fn mouse_down(&mut self, fb_width: u32, fb_height: u32) {
+    pub fn mouse_down(&mut self, fb_width: u32, fb_height: u32) -> Option<WindowId> {
         let cx = self.cursor.x;
         let cy = self.cursor.y;
 
@@ -293,12 +293,12 @@ impl Desktop {
                     network_menu::PWD_DIALOG_W,
                     network_menu::PWD_DIALOG_H,
                 ));
-                return;
+                return None;
             } else {
                 // Click outside dialog - dismiss
                 self.dismiss_password_dialog();
                 self.dismiss_network_menu();
-                return;
+                return None;
             }
         }
 
@@ -318,12 +318,12 @@ impl Desktop {
                     self.net_selected_idx = Some(ap_idx);
                     self.activate_network_ap(ap_idx, fb_width, fb_height);
                 }
-                return;
+                return None;
             }
 
             // Click outside - dismiss
             self.dismiss_network_menu();
-            return;
+            return None;
         }
 
         // If a menu is open, check if click hits it
@@ -346,7 +346,7 @@ impl Desktop {
                 self.wm
                     .dirty_rects
                     .push(crate::scene::DirtyRect::new(menu_x, menu_y, menu_w, menu_h));
-                return;
+                return None;
             }
             // Click outside menu — dismiss
             self.active_menu = None;
@@ -354,7 +354,7 @@ impl Desktop {
             self.wm
                 .dirty_rects
                 .push(crate::scene::DirtyRect::new(menu_x, menu_y, menu_w, menu_h));
-            return;
+            return None;
         }
 
         // Check WiFi icon click (before taskbar window check)
@@ -367,7 +367,7 @@ impl Desktop {
             wifi_icon_x,
         ) {
             self.menu_action_pending = Some(DesktopAction::ShowNetworkMenu);
-            return;
+            return None;
         }
 
         // The power control sits between WiFi and the clock.
@@ -378,7 +378,7 @@ impl Desktop {
             && self.cursor.y >= bar_y
         {
             self.menu_action_pending = Some(DesktopAction::ShowPowerMenu);
-            return;
+            return None;
         }
 
         // Check taskbar clicks first — restore minimized windows or focus.
@@ -393,7 +393,7 @@ impl Desktop {
                     self.wm.raise_to_top(tb_id);
                 }
             }
-            return;
+            return None;
         }
 
         // Check title bar buttons first (topmost window with title bar hit)
@@ -418,7 +418,7 @@ impl Desktop {
                         fb_width,
                         crate::style::taskbar_height(),
                     ));
-                    return;
+                    return Some(id);
                 }
                 crate::common::ChromeHit::Minimize => {
                     self.wm.minimize_window(id);
@@ -428,19 +428,20 @@ impl Desktop {
                         fb_width,
                         crate::style::taskbar_height(),
                     ));
-                    return;
+                    return None;
                 }
                 crate::common::ChromeHit::Maximize => {
                     let (ww, wh) = self.work_area(fb_width, fb_height);
                     let wy = self.top_panel_offset() as i32;
                     self.wm.toggle_maximize(id, 0, wy, ww, wh);
-                    return;
+                    return None;
                 }
                 _ => {}
             }
         }
 
         self.wm.on_mouse_down(self.cursor.x, self.cursor.y);
+        None
     }
 
     /// Force a full-screen redraw on the next frame.
@@ -1270,6 +1271,27 @@ mod tests {
         assert_eq!(win.y, 40);
 
         dt.mouse_up();
+    }
+
+    #[test]
+    fn closing_a_titled_window_reports_its_id_after_removal() {
+        let mut dt = Desktop::new(0x202020);
+        let id = dt
+            .wm
+            .create_titled_window(10, 10, 100, 100, 0xFF0000, "Test");
+        let window = dt
+            .wm
+            .windows()
+            .iter()
+            .find(|window| window.id == id)
+            .unwrap();
+        dt.set_cursor(
+            crate::style::title_button_x(window.x, window.width, 0) + 2,
+            window.y + 5,
+        );
+
+        assert_eq!(dt.mouse_down(1024, 768), Some(id));
+        assert!(dt.wm.windows().iter().all(|window| window.id != id));
     }
 
     #[test]

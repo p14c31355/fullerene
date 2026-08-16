@@ -345,6 +345,28 @@ The workspace release profile uses aborting panics, LTO, one codegen unit, and
 strips debug information from the produced binaries; none of these changes
 alter the runtime ABI or framebuffer behavior.
 
+## Current verification gate (2026-08-16)
+
+The repository's warning gate is:
+
+```bash
+cargo fmt --all -- --check
+cargo check --workspace --all-targets
+cargo test --workspace --exclude bellows --exclude fullerene-kernel
+```
+
+The host test gate covers every host-runnable workspace member. `bellows` and
+`fullerene-kernel` are UEFI-only; validate them with the UEFI/QEMU smoke paths
+below or with a physical hardware run instead of attempting to link their
+`no_std` examples into a host test binary.
+
+The retained `fullerene-kernel/examples/native_ipc_rate.rs` is a native user ELF
+benchmark for the Fullerene syscall boundary; it is embedded/run by the kernel,
+not linked as a host process. It remains available for repeatable on-system
+measurements. Release artifacts should be inspected with `size`/`stat` after a
+target build; the root release profile already enables LTO, one codegen unit,
+symbol stripping, and `panic=abort`.
+
 ## Manual Build Steps
 
 For manual building without the task runner:

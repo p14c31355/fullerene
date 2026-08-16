@@ -168,6 +168,7 @@ pub fn init() {
         // Preserve the former Nozzle/AppGrid launch gesture, but let PID 1
         // consume the request and spawn the native shell through launchd.
         launch_shell: Some(crate::scheduler::request_shell_launch),
+        process_terminal_closed: Some(crate::process::request_process_termination_for_terminal),
         power_control: Some(|action| match action {
             solvent::PowerAction::Shutdown => crate::shell::system_control("shutdown"),
             solvent::PowerAction::Reboot => crate::shell::system_control("reboot"),

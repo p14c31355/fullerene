@@ -52,6 +52,34 @@ pub enum IwlState {
     Disconnected,
 }
 
+/// Bounded authentication-TX plans. The order is intentional: start with
+/// the Linux-compatible DQA path, then try the host-side SCD diagnostic, and
+/// finally fall back to the statically configured q4 queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthTxPlan {
+    DqaFirmware,
+    DqaHostScd,
+    StaticQueue,
+}
+
+impl AuthTxPlan {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::DqaFirmware => "dqa_firmware",
+            Self::DqaHostScd => "dqa_host_scd",
+            Self::StaticQueue => "static_queue",
+        }
+    }
+
+    pub const fn next(self) -> Option<Self> {
+        match self {
+            Self::DqaFirmware => Some(Self::DqaHostScd),
+            Self::DqaHostScd => Some(Self::StaticQueue),
+            Self::StaticQueue => None,
+        }
+    }
+}
+
 /// Number of service ticks for which RX beacons remain eligible after the
 /// firmware reports scan completion.  The notification and the final RX DMA
 /// buffers are not guaranteed to reach the host in the same interrupt.
@@ -357,7 +385,7 @@ pub struct ScdTxqCfgCmdV1 {
 
 impl ScdTxqCfgCmdV1 {
     pub fn peer(sta_id: u8) -> Self {
-        use super::registers::{IWL_MAX_TID_COUNT, IWL_MGMT_QUEUE};
+        use super::registers::{IWL_FRAME_LIMIT, IWL_MAX_TID_COUNT, IWL_MGMT_QUEUE};
         Self {
             token: 0,
             sta_id,
@@ -369,7 +397,9 @@ impl ScdTxqCfgCmdV1 {
             // aggregate-capable; management queues remain non-aggregated.
             aggregate: 0,
             tx_fifo: 3, // IWL_MVM_TX_FIFO_VO (management AC)
-            window: 64,
+            // IWL_MGMT_QUEUE_SIZE is the host-side software queue capacity.
+            // Linux's gen1 SCD_QUEUE_CFG uses IWL_FRAME_LIMIT (64) here.
+            window: IWL_FRAME_LIMIT,
             ssn: 0,
             reserved: 0,
         }
@@ -793,10 +823,17 @@ impl AddStaCmdV7 {
 
     /// Attach the configured DQA management queue to an existing AP station.
     pub fn peer_queue_update(mac_index: u8, sta_id: u8, bssid: [u8; 6]) -> Self {
+        Self::peer_queue_update_for(mac_index, sta_id, bssid, super::registers::IWL_MGMT_QUEUE)
+    }
+
+    /// Attach an arbitrary statically configured queue to the AP peer. This
+    /// is used by the bounded authentication fallback when DQA q5 cannot
+    /// fetch its TFD.
+    pub fn peer_queue_update_for(mac_index: u8, sta_id: u8, bssid: [u8; 6], queue: u32) -> Self {
         let mut command = Self::peer(mac_index, sta_id, bssid);
         command.add_modify = 1; // STA_MODE_MODIFY
         command.modify_mask = 1 << 7; // STA_MODIFY_QUEUES
-        command.tfd_queue_msk = 1 << super::registers::IWL_MGMT_QUEUE;
+        command.tfd_queue_msk = 1 << queue;
         command
     }
 
@@ -1386,9 +1423,30 @@ pub enum IwlError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddStaCmdV7, AddStaKeyCmd, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1, MccUpdateCmdV2,
-        ScanConfigV1, TimeEventCmdV2,
+        AddStaCmdV7, AddStaKeyCmd, AuthTxPlan, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1,
+        MccUpdateCmdV2, ScanConfigV1, ScdTxqCfgCmdV1, TimeEventCmdV2,
     };
+
+    #[test]
+    fn authentication_tx_plans_are_finite_and_ordered() {
+        assert_eq!(AuthTxPlan::DqaFirmware.next(), Some(AuthTxPlan::DqaHostScd));
+        assert_eq!(AuthTxPlan::DqaHostScd.next(), Some(AuthTxPlan::StaticQueue));
+        assert_eq!(AuthTxPlan::StaticQueue.next(), None);
+        assert_eq!(AuthTxPlan::DqaFirmware.name(), "dqa_firmware");
+        assert_eq!(AuthTxPlan::DqaHostScd.name(), "dqa_host_scd");
+        assert_eq!(AuthTxPlan::StaticQueue.name(), "static_queue");
+    }
+
+    #[test]
+    fn dqa_management_queue_uses_linux_frame_limit() {
+        let command = ScdTxqCfgCmdV1::peer(0);
+
+        assert_eq!(command.scd_queue, 5);
+        assert_eq!(command.tid, 8);
+        assert_eq!(command.tx_fifo, 3);
+        assert_eq!(command.window, 64);
+        assert_eq!(command.aggregate, 0);
+    }
 
     #[test]
     fn associated_mac_context_uses_beacon_dtim_sync() {
@@ -1472,6 +1530,15 @@ mod tests {
         assert_eq!(&bytes[24..28], &0x3c02_0000u32.to_le_bytes());
         assert_eq!(&bytes[36..38], &0x1234u16.to_le_bytes());
         assert_eq!(&bytes[40..44], &[0; 4]); // retain existing queue mask
+    }
+
+    #[test]
+    fn peer_queue_update_can_select_static_fallback_queue() {
+        let command = AddStaCmdV7::peer_queue_update_for(0, 0, [0xaa; 6], 4);
+        let queue_mask = command.tfd_queue_msk;
+        assert_eq!(command.add_modify, 1);
+        assert_eq!(command.modify_mask, 1 << 7);
+        assert_eq!(queue_mask, 1 << 4);
     }
 
     #[test]

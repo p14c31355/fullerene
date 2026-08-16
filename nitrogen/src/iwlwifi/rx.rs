@@ -28,6 +28,17 @@ const TX_STATUS_MSK: u16 = 0x00ff;
 const TX_STATUS_SUCCESS: u16 = 0x01;
 const TX_STATUS_DIRECT_DONE: u16 = 0x02;
 
+fn active_management_tx_matches(
+    frame_control: u8,
+    state: IwlState,
+    expected_sequence: Option<u16>,
+    response_sequence: u16,
+) -> bool {
+    matches!(frame_control & 0xfc, 0xb0 | 0x00)
+        && matches!(state, IwlState::AuthSent | IwlState::AssocSent)
+        && expected_sequence == Some(response_sequence)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LegacyRxMpdu<'a> {
     frame: &'a [u8],
@@ -171,6 +182,10 @@ impl IwlWifiDevice {
                 };
                 if handshake_pending {
                     self.wpa_failed("WPA2 handshake timeout");
+                } else if self.iwl_state == IwlState::AuthSent && self.advance_authentication_plan()
+                {
+                    // The bounded TX solver selected and submitted the next
+                    // queue plan. Keep the public state in Authenticating.
                 } else {
                     self.iwl_state = IwlState::Disconnected;
                     self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
@@ -557,8 +572,21 @@ impl IwlWifiDevice {
                                 &ap_ssid,
                                 self.wpa_required,
                             );
-                            let _ = self.send_raw_80211_frame(&assoc);
-                            log::info!("iwlwifi: auth successful, associating");
+                            self.auth_tx_acknowledged = None;
+                            if let Err(error) = self.send_raw_80211_frame(&assoc) {
+                                self.iwl_state = IwlState::Disconnected;
+                                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                                self.wifi_conn.error_msg = Some(alloc::format!(
+                                    "association frame transmission failed: {:?}",
+                                    error
+                                ));
+                                log::warn!(
+                                    "iwlwifi: failed to send association frame: {:?}",
+                                    error
+                                );
+                            } else {
+                                log::info!("iwlwifi: auth successful, associating");
+                            }
                         } else {
                             self.iwl_state = IwlState::Disconnected;
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
@@ -1053,11 +1081,12 @@ impl IwlWifiDevice {
                 (ctx1 >> 16) & 0x7f,
             );
             // Read the SCD translation table entry and TX status SRAM entry
-            // for q5.  The translation table maps RA/TID to queue; a non-
-            // aggregate queue does not use it, but a stale non-zero value
-            // could misdirect the scheduler.  The TX status SRAM entry is
-            // another firmware-owned field that should be non-zero for an
-            // active queue.
+            // for q5. The translation table maps RA/TID to queue; Linux
+            // leaves it zero for a non-aggregate DQA management queue, so a
+            // stale non-zero value would be suspicious. The TX status entry
+            // is firmware-owned aggregation/reclaim state and may remain
+            // zero before the first fetch/completion; zero is not itself a
+            // queue-activation failure.
             let trans_tbl = self
                 .read_mem32(scd_base + scd_trans_tbl_offset_queue(queue))
                 .unwrap_or(!0);
@@ -1508,6 +1537,26 @@ impl IwlWifiDevice {
             if let Some(response) = decode_legacy_tx_response(payload) {
                 let status = response.status & TX_STATUS_MSK;
                 let acknowledged = status == TX_STATUS_SUCCESS || status == TX_STATUS_DIRECT_DONE;
+                let frame_control = response.frame_control as u8;
+                if active_management_tx_matches(
+                    frame_control,
+                    self.iwl_state,
+                    self.auth_tx_sequence,
+                    sequence,
+                ) {
+                    self.auth_tx_acknowledged = Some(acknowledged);
+                    // A duplicate/late response must not affect a later
+                    // authentication plan after this descriptor retires.
+                    self.auth_tx_sequence = None;
+                } else if matches!(frame_control & 0xfc, 0xb0 | 0x00)
+                    && matches!(self.iwl_state, IwlState::AuthSent | IwlState::AssocSent)
+                {
+                    log::debug!(
+                        "iwlwifi: ignoring stale management TX response seq=0x{:04x} expected={:?}",
+                        sequence,
+                        self.auth_tx_sequence,
+                    );
+                }
                 log::info!(
                     "iwlwifi: TX response seq=0x{:04x} fc=0x{:04x} frames={} ack={} status=0x{:02x} retries={} rts_failures={} rate={:#010x} airtime_us={}",
                     sequence,
@@ -1668,6 +1717,28 @@ impl IwlWifiDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_management_tx_response_does_not_match_new_plan() {
+        assert!(active_management_tx_matches(
+            0xb0,
+            IwlState::AuthSent,
+            Some(0x0501),
+            0x0501,
+        ));
+        assert!(!active_management_tx_matches(
+            0xb0,
+            IwlState::AuthSent,
+            Some(0x0501),
+            0x0500,
+        ));
+        assert!(!active_management_tx_matches(
+            0xb0,
+            IwlState::Disconnected,
+            Some(0x0501),
+            0x0501,
+        ));
+    }
 
     fn legacy_mpdu_payload(frame: &[u8], status: u32) -> Vec<u8> {
         let mut payload = Vec::with_capacity(4 + frame.len() + 4);

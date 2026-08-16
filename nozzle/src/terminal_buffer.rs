@@ -382,9 +382,7 @@ impl TerminalBuffer {
             fg: self.style.fg,
             bg: self.style.bg,
         };
-        for cell in &mut self.cells {
-            *cell = blank;
-        }
+        self.cells.fill(blank);
         self.cursor_col = 0;
         self.cursor_row = 0;
     }

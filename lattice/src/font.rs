@@ -309,7 +309,7 @@ impl Glyph<'_> {
 /// Use [`glyph_for_codepoint`] for Unicode‑aware glyph rendering.
 #[inline]
 pub fn glyph(ch: u8) -> Glyph<'static> {
-    if ch >= 0x20 && ch <= 0x7E {
+    if (0x20..=0x7E).contains(&ch) {
         ascii_glyph(ch)
     } else {
         ascii_glyph(b' ')
@@ -327,7 +327,7 @@ fn ascii_glyph(ch: u8) -> Glyph<'static> {
 /// the bitmap rows as a glyph.  The result is cached in [`EMBEDDED_GLYPH_CACHE`]
 /// so the rasterisation only happens once.
 fn embedded_glyph(ch: u8) -> Glyph<'static> {
-    let idx = if ch >= 0x20 && ch <= 0x7E {
+    let idx = if (0x20..=0x7E).contains(&ch) {
         (ch - 0x20) as usize
     } else {
         0
@@ -379,7 +379,7 @@ fn embedded_glyph_data() -> &'static [u8] {
 }
 
 fn psf_glyph(psf: &PsfFont, ch: u8) -> Glyph<'static> {
-    let idx = if ch >= 0x20 && ch <= 0x7E {
+    let idx = if (0x20..=0x7E).contains(&ch) {
         (ch - 0x20) as usize
     } else {
         0

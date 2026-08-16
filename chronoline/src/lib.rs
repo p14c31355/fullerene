@@ -33,16 +33,11 @@ pub enum TimerMode {
     Repeating { interval_ticks: u64 },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum TimerPolicy {
     FixedRate,
+    #[default]
     FixedDelay,
-}
-
-impl Default for TimerPolicy {
-    fn default() -> Self {
-        TimerPolicy::FixedDelay
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

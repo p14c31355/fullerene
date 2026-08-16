@@ -338,7 +338,23 @@ impl EventHandler for WmEventHandler {
 
                 rt.desktop.set_cursor(cx, cy);
                 let (fw, fh, _stride) = *FB_DIMS.lock();
-                rt.desktop.mouse_down(fw, fh);
+                if let Some(window_id) = rt.desktop.mouse_down(fw, fh) {
+                    // Lattice removes the window, while the process lifecycle
+                    // callback belongs to the kernel. Drop the GUI-side
+                    // endpoint before asking the scheduler to stop its owner.
+                    let process_terminal = rt
+                        .process_terminals
+                        .iter()
+                        .any(|terminal| terminal.window_id == window_id);
+                    if process_terminal {
+                        rt.process_terminals
+                            .retain(|terminal| terminal.window_id != window_id);
+                        crate::notify_process_terminal_closed(window_id.0);
+                    }
+                    rt.desktop.force_full_redraw();
+                    rt.frame_due = true;
+                    return true;
+                }
                 rt.frame_due = true;
 
                 if let Some(action) = rt.desktop.menu_action_pending.take() {

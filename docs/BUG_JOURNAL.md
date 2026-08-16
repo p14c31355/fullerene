@@ -3,6 +3,306 @@
 This document records non-obvious software bugs encountered during
 development, their root cause analysis, and the fix applied.
 
+## Entry 012 — 2026-08-16 shell window close left launchd occupied
+
+### Symptoms
+
+Closing the shell from its desktop title bar removed the visible window, but
+opening Shell again from a desktop icon did nothing. The shell process and its
+process-terminal record were still alive, so launchd correctly believed its
+single shell slot was occupied.
+
+### Root cause and fix
+
+The title-bar path called `WindowManager::close_window` directly and bypassed
+the Solvent process-terminal cleanup path. Desktop mouse handling now returns
+the closed window identity. Solvent removes a matching process-terminal record
+and queues a kernel callback; the scheduler consumes that request after the
+runtime lock is released and terminates the owning process. This preserves the
+existing scheduler ownership model and makes the launchd slot reusable.
+
+Lattice and workspace tests cover the close notification path. Physical/QEMU
+interactive shell reopening should still be included in the next runtime smoke
+run.
+
+## Entry 013 — 2026-08-16 iwlwifi q5 scheduler and gen1 byte count
+
+### Symptoms
+
+On the affected 7265D-29 adapter, the UI remained in `Authenticating` after
+the authentication TFD was submitted. The new log showed q5 `wrptr=1`,
+`rdptr=0`, while `SCD_EN_CTRL=0x00000023` after the experimental q5 gate was
+added. Therefore the gate was not the missing condition.
+
+### Root cause and fix
+
+The 7265 is a 7000-series gen1 device. Its scheduler byte-count table stores
+DWORDs: Linux adds CRC/delimiter (and a security trailer when applicable),
+then rounds the result up to four bytes. The table therefore publishes
+`bc_dwords=0x000a` for the 30-byte authentication frame. An intermediate
+implementation incorrectly published the raw byte count `0x0026`; the
+latest implementation follows the Linux gen1 conversion.
+
+An intermediate follow-up log showed this API-29 7265D image leaving
+`FH_TRB=0` and the FIFO buffer idle unless q5 was restored in `SCD_EN_CTRL`.
+That gate remains enabled only for this firmware/API combination; other DQA
+images retain the Linux ownership rule. The later fl-auth9 log proves that the
+gate is necessary for the observed active FH state, but it is not sufficient
+to make the scheduler consume q5's TFD.
+
+The connected Linux capture initially appeared to expose one more wire-level
+difference, but the source comparison corrected that interpretation:
+`IWL_MGMT_QUEUE_SIZE=16` is the host-side software allocation, while
+`SCD_QUEUE_CFG.window` is the gen1 scheduler frame limit. Linux defines the
+latter as `IWL_FRAME_LIMIT=64` and uses it for this management queue. Fullerene
+therefore retains 64 in the command; the auxiliary queue also remains 64.
+
+The fl-auth8 retest used the temporary 16 value and still showed q5
+`hw_wrptr=1` with `hw_rdptr=0`. Its SRAM snapshot was `ctx1=0x00400010`
+(`win_size=16`, `frame_limit=64`), proving that the experimental value reached
+firmware but did not make the scheduler consume the TFD. The temporary value
+has been reverted to the Linux-compatible 64; q5 scheduler/TFD consumption is
+still unresolved.
+
+All Nitrogen library tests pass, including the corrected byte-count and
+API-29 gate assertions. The affected adapter and AP still require physical
+validation because QEMU does not emulate this Intel radio.
+
+## Entry 014 — 2026-08-16 fl-auth9 confirms q5 scheduler consumption stall
+
+### Evidence
+
+The Linux-compatible 64-entry configuration is now visible in firmware:
+`ctx1=0x00400040` (`win_size=64`, `frame_limit=64`). The q5 gate and FH path
+are active (`SCD_EN_CTRL=0x23`, `FH_TRB=0x80305000`), and the TFD/byte-count
+layout remains valid (`3 TB`, `20+64+6`, `bc_dwords=10`).
+
+Nevertheless, q5 remains at `hw_wrptr=1`, `hw_rdptr=0` through ticks 64, 512,
+and 1024. No `REPLY_TX` or authentication response is observed. This rules
+out the experimental window value as the immediate cause and leaves the
+firmware-owned DQA queue activation/TFD-fetch path as the next bounded target;
+the AP has not yet received an authentication frame. The capture ends before
+the 4,000-tick watchdog threshold, so the existing `DqaHostScd` and static-q4
+fallback plans were not exercised in this log.
+
+## Entry 015 — 2026-08-16 fallback transition retained the stalled q5 owner
+
+### Evidence
+
+fl-auth10 exercised both fallback stages. The firmware-owned DQA path and the
+host-direct SCD path each submitted a valid q5 TFD but remained at
+`hw_wrptr=1`, `hw_rdptr=0`. The direct path changed the FH snapshot slightly
+(`FH_TRB=0x80305001`, FIFO buffer `0x00001620`) but did not consume the TFD.
+
+When switching to the static q4 path, q4 activation completed, but the next
+`CONNECT_FALLBACK_ADD_STA_QUEUE` command could not be consumed by q0:
+`target=31`, `rptr=0x1e`, followed by `Busy`. The stalled q5 had previously
+been marked inactive and its TFD ring cleared, but its scheduler ownership
+bits were left set. The fallback transition now also clears q5 from
+`SCD_EN_CTRL`, `SCD_QUEUECHAIN_SEL`, and `SCD_AGGR_SEL` before publishing the
+next queue. This prevents a dead q5 owner from blocking the shared gen1
+scheduler during q4 reconfiguration.
+
+## Entry 016 — 2026-08-16 q5 ownership cleanup alone did not release q0
+
+### Evidence
+
+fl-auth11 still reaches the same boundary. Both q5 DQA attempts submit a
+valid authentication TFD and remain at `hw_rdptr=0`; the static q4 queue is
+then activated, but `CONNECT_FALLBACK_ADD_STA_QUEUE` remains unconsumed by
+q0 (`target=33`, `rptr=0x20`). No `REPLY_TX`, authentication response, or
+association follows. The earlier q5 bitmap cleanup is therefore not the
+complete cause of the q0 stall.
+
+### Follow-up
+
+The fallback teardown is being brought in line with Linux gen1
+`iwl_trans_pcie_txq_disable`: deactivate the queue, clear all four dwords of
+its SCD TX-status entry, and do not issue a zero-pointer doorbell while
+tearing it down. The next real-device log will distinguish stale SCD status
+from a remaining shared-scheduler or command-queue problem.
+
+## Entry 017 — 2026-08-16 API-29 authentication moved to static q4 first
+
+### Evidence
+
+fl-auth12 reproduced the fl-auth11 boundary after the Linux-style teardown:
+q5 remained at `hw_rdptr=0`, and q0 stopped while consuming the static queue
+update (`target=32`, `rptr=0x1f`). No q4 authentication TFD was submitted.
+
+### Change
+
+The API-29 DQA setup is retained for station/firmware initialization, but
+authentication now selects the Linux static q4 queue before any q5 management
+TFD is posted. The AP station is added with q4 already in its queue mask;
+API29 asserts when q4 is attached later through a DQA STA_MODIFY command.
+Other firmware/API combinations keep the existing DQA-first order.
+
+## Entry 018 — 2026-08-16 API-29 static queue ownership must be present at ADD_STA
+
+### Evidence
+
+fl-auth13 reached q4 activation and consumed the static queue command, but
+the subsequent DQA-style `STA_MODIFY_QUEUES` command caused a runtime
+firmware assertion (`error_id=0x000021a0`, command `0x001f0018`). This proves
+the previous q5-to-q4 transition problem was not solved by attaching q4 to an
+already DQA-created station.
+
+### Change
+
+The API-29 static-first path now activates q4 before `CONNECT_ADD_STA` and
+uses the legacy station layout with q4 already present in
+`tfd_queue_msk`. It no longer sends a later DQA queue-modify command. The
+first authentication TFD should therefore be the next decisive hardware
+check.
+
+## Entry 019 — 2026-08-16 system Linux firmware is newer than the embedded blob
+
+### Evidence
+
+fl-auth14 shows that the API-29 runtime rejects both forms of static-q4
+station ownership: DQA `STA_MODIFY_QUEUES` asserted in fl-auth13, while the
+legacy q4 `ADD_STA` asserted here (`error_id=0x000021a0`). The log stops before
+any authentication TFD is submitted.
+
+The successful Linux report uses firmware `29.4063824552.0`, whereas the ISO
+used by these logs reported `29.2666559981` (`CoreCycle26_stab::9ef079ed`).
+The installed Linux `iwlwifi-7265D-29.ucode` is
+`CoreCycle26_stab::f2390aa8` and is now used as the workspace firmware source,
+preserving the Linux-tested firmware/runtime pairing. The API-29 connection
+path remains DQA-first; the unsuccessful static-q4 experiment is not kept as
+the default path.
+
+## Entry 020 — 2026-08-16 fl-auth15 loads the Linux firmware cleanly, but q5 still does not fetch
+
+### Evidence
+
+fl-auth15 reports `CoreCycle26_stab::f2390aa8` and ucode
+`29.4063824552`, matching the firmware used by the successful Linux capture.
+`CONNECT_PHY_CONTEXT`, `CONNECT_MAC_CONTEXT`, `CONNECT_ADD_STA`,
+`CONNECT_SCD_QUEUE_CFG`, and `CONNECT_ADD_STA_QUEUE` all complete without the
+previous `ADVANCED_SYSASSERT` (`error_id=0x000021a0`).
+
+The capture still ends in `Authenticating`. The q5 authentication TFD is
+submitted with `hw_wrptr=1`, but the hardware remains at `hw_rdptr=0` through
+ticks 64, 512, 1024, 1536, and 2048. There is no `REPLY_TX`, authentication
+response, association, or DHCP completion. The remaining bounded target is
+therefore the host-side SCD/FH fetch setup, not the old firmware mismatch or
+the rejected static-q4 ownership forms.
+
+Both fl-auth14 and fl-auth15 are 131,072 bytes, indicating a fixed capture
+buffer limit rather than a reduction in stored file capacity. The non-padding
+log lines decrease from 370 to 312 because the new run avoids the firmware
+assert/fallback sequence. This is a meaningful reduction in failure noise and
+an improvement in initialization stability, but it is not yet evidence of a
+faster or successful AP connection.
+
+## Entry 021 — 2026-08-16 align the q5 post-configuration doorbell with Linux
+
+### Linux comparison
+
+Linux gen1 DQA setup publishes the queue's CBBC and an initial zero write
+pointer before `SCD_QUEUE_CFG`. After firmware processes `SCD_QUEUE_CFG` and
+the station queue mask is updated, Linux does not ring that queue again with a
+zero pointer; the next doorbell is the real TFD write pointer (`1` for the
+first management frame). Fullerene was issuing an extra q5 `HBUS_TARG_WRPTR`
+write of `0` after `CONNECT_ADD_STA_QUEUE`, immediately before the
+authentication TFD.
+
+### Change
+
+The extra zero-pointer doorbell was removed. The API-29 compatibility path
+still restores q5 in `SCD_EN_CTRL`, because fl-auth15 showed that this firmware
+needs the gate for a non-idle FH path, but it no longer couples that gate write
+to a second doorbell. The unit test now asserts that the compatibility write
+does not modify `HBUS_TARG_WRPTR`; the next real-device log will distinguish
+the Linux-compatible pointer sequence from the remaining firmware-specific
+SCD gate behavior.
+
+## Entry 022 — 2026-08-16 fl-auth16 matches Linux SCD context semantics
+
+### Evidence
+
+fl-auth16 is running the Linux-tested `CoreCycle26_stab::f2390aa8` firmware
+without an assert. After `CONNECT_SCD_QUEUE_CFG` and `CONNECT_ADD_STA_QUEUE`,
+q5 reports:
+
+- `ctx0=0x00000000`
+- `ctx1=0x00400040` (`window=64`, `frame_limit=64`)
+- `trans_tbl=0x00000000`
+- `tx_stts=0x00000000`
+- `queuechain` contains q5, `SCD_QUEUE_STATUS=0x0000009b`, and
+  `SCD_EN_CTRL` contains q5
+
+Linux's gen1 transport passes `cfg=NULL` for a DQA queue, so it intentionally
+does not write the host-side SCD context, status, chain, aggregation, or
+translation entry. It only initializes the queue pointers; the subsequent
+`SCD_QUEUE_CFG` command supplies the firmware-owned queue configuration. For
+the non-aggregate management queue, Linux also does not need an RA/TID
+translation entry. Therefore q5's context and zero translation entry in
+fl-auth16 are not the cause of the fetch stall. A zero TX-status entry before
+the first fetch is also not sufficient evidence of failure.
+
+### Remaining difference
+
+The remaining host-side deviation is the API-29 compatibility write that
+restores q5 in `SCD_EN_CTRL`; Linux leaves dynamic-queue activation ownership
+to firmware. fl-auth16 confirms that this gate makes the FH path non-idle, but
+q5 still remains at `hw_rdptr=0`. The next comparison should therefore A/B
+that single gate, rather than rewriting the already Linux-compatible context
+or translation table.
+
+## Entry 023 — 2026-08-16 fl-auth17 repeats the q5 fetch stall
+
+### Evidence
+
+fl-auth17 reaches the same AP (`Buffalo-G-2218`, BSSID
+`f0:f8:4a:e8:22:18`, channel 11) and uses the same Linux-matched firmware
+`CoreCycle26_stab::f2390aa8` / ucode `29.4063824552`. The connection commands
+all succeed, the authentication TFD is submitted with three TBs and matching
+byte counts, and the FH path is non-idle (`FH_TRB=0x80305000`).
+
+The run still reports `SCD_EN_CTRL=0x00000023` with q5 set. q5 remains at
+`hw_wrptr=1`, `hw_rdptr=0` through ticks 64, 512, 1024, and 1536, with no
+`REPLY_TX`, authentication response, association, or DHCP completion. The
+capture therefore does not demonstrate a regression or a successful
+authentication.
+
+This is not an A/B test with the API-29 q5 gate removed: the log explicitly
+shows `q5_bit=SET`. Compared with fl-auth16, the observed q5 SCD/FH values are
+effectively unchanged; the smaller non-padding line count reflects a shorter
+capture, not a scheduler fix. The next physical test must either log
+`q5_bit=CLEAR` with `SCD_EN_CTRL=0x00000003`, or retain the gate and vary one
+other scheduler input so that each experiment has an unambiguous result.
+
+## Entry 024 — 2026-08-16 fl-auth18 reaches the full authentication fallback chain
+
+### Evidence
+
+Waiting through the watchdog timeout adds useful evidence, but does not
+authenticate. The initial `dqa_firmware` attempt remains stalled through tick
+3584 with q5 at `hw_wrptr=1`, `hw_rdptr=0`. There is still no `REPLY_TX`,
+authentication response, association, or DHCP completion.
+
+The driver then falls back to `dqa_host_scd`. This second submission changes
+the FH/FIFO observation (`FH_TRB=0x80305001`, `fifo_buf=0x00001620`, and
+`tx_status=0x07f70001`), so the host-SCD path does cause additional transport
+activity, but q5's scheduler read pointer remains zero and no response is
+received. This is not a successful fetch; it is a second stalled descriptor
+on the same q5.
+
+Finally, the static-q4 fallback activates q4, but
+`CONNECT_FALLBACK_ADD_STA_QUEUE` times out while consuming at command-queue
+position `target=31`, `head=31`, `tail=30`, `rptr=0x1e`. The fallback chain is
+therefore blocked by the command queue after the q5 stall, rather than proving
+that static q4 transmission works or fails on air.
+
+The run still has `SCD_EN_CTRL=0x00000023` with q5 set, so it remains neither
+the requested q5-gate A/B test nor a successful Linux-equivalent run. The
+timeout path is nevertheless valuable: the next fix should preserve the
+initial q5 evidence, prevent a stalled q5 fallback from blocking the command
+queue, and make the gate-cleared experiment independently observable.
+
 ## Entry 009 — 2026-07-30 workspace audit fixes
 
 A full-workspace bug and redundancy sweep produced the following fixes. Each

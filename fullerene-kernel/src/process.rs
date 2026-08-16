@@ -8,7 +8,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use petroleum::mem_debug;
 use petroleum::page_table::{FrameAllocatorExt, PageTableHelper as _};
 use x86_64::structures::paging::{FrameAllocator as _, PageTableFlags};
@@ -21,6 +21,90 @@ use crate::syscall::{Handle, HandlePerms, KernelObject};
 
 /// Maximum number of processes managed by the system
 pub const MAX_PROCESSES: usize = 64;
+
+const TERMINAL_CLOSE_QUEUE_CAPACITY: usize = MAX_PROCESSES;
+
+/// One publication slot in the terminal-close SPSC/MPSC hand-off queue.
+///
+/// The callback normally has one producer (the GUI runtime), but reserving
+/// the head with CAS also keeps the queue correct if a second interrupt-side
+/// producer is introduced later. `ready` publishes the value after the head
+/// reservation, so a consumer never reads a partially-written request.
+struct TerminalCloseSlot {
+    ready: AtomicUsize,
+    value: AtomicU64,
+}
+
+impl TerminalCloseSlot {
+    const fn new() -> Self {
+        Self {
+            ready: AtomicUsize::new(0),
+            value: AtomicU64::new(0),
+        }
+    }
+}
+
+struct TerminalCloseQueue {
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    slots: [TerminalCloseSlot; TERMINAL_CLOSE_QUEUE_CAPACITY],
+}
+
+impl TerminalCloseQueue {
+    const fn new() -> Self {
+        Self {
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            slots: [const { TerminalCloseSlot::new() }; TERMINAL_CLOSE_QUEUE_CAPACITY],
+        }
+    }
+
+    fn push(&self, terminal_id: u64) -> bool {
+        let mut head = self.head.load(Ordering::Relaxed);
+        loop {
+            let tail = self.tail.load(Ordering::Acquire);
+            if head.wrapping_sub(tail) >= TERMINAL_CLOSE_QUEUE_CAPACITY {
+                return false;
+            }
+            match self.head.compare_exchange_weak(
+                head,
+                head.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    let slot = &self.slots[head % TERMINAL_CLOSE_QUEUE_CAPACITY];
+                    slot.value.store(terminal_id, Ordering::Relaxed);
+                    slot.ready.store(head.wrapping_add(1), Ordering::Release);
+                    return true;
+                }
+                Err(observed) => head = observed,
+            }
+        }
+    }
+
+    fn pop(&self) -> Option<u64> {
+        let tail = self.tail.load(Ordering::Relaxed);
+        if tail == self.head.load(Ordering::Acquire) {
+            return None;
+        }
+        let slot = &self.slots[tail % TERMINAL_CLOSE_QUEUE_CAPACITY];
+        // A producer may have reserved the head and been interrupted before
+        // publishing its value. Preserve FIFO order and try again next tick.
+        if slot.ready.load(Ordering::Acquire) != tail.wrapping_add(1) {
+            return None;
+        }
+        let terminal_id = slot.value.load(Ordering::Relaxed);
+        slot.ready.store(
+            tail.wrapping_add(TERMINAL_CLOSE_QUEUE_CAPACITY + 1),
+            Ordering::Release,
+        );
+        self.tail.store(tail.wrapping_add(1), Ordering::Release);
+        Some(terminal_id)
+    }
+}
+
+static TERMINAL_CLOSE_QUEUE: TerminalCloseQueue = TerminalCloseQueue::new();
 
 const NATIVE_USER_STACK_TOP: u64 = 0x0000_7fff_fffe_f000;
 const NATIVE_USER_STACK_SIZE: usize = 64 * 1024;
@@ -1009,6 +1093,40 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
     }
 }
 
+/// Queue termination of the process that owns a process-terminal window.
+///
+/// The callback is invoked while Solvent holds its runtime lock, so it must
+/// not enter the scheduler synchronously.  The scheduler consumes the
+/// request after the GUI tick has released that lock.
+pub fn request_process_termination_for_terminal(terminal_id: u64) {
+    if !TERMINAL_CLOSE_QUEUE.push(terminal_id) {
+        // The queue is sized to MAX_PROCESSES, so reaching this means callers
+        // are producing close notifications faster than scheduler context can
+        // service them. Keep the existing processes intact and make the loss
+        // visible instead of silently overwriting an earlier request.
+        log::warn!(
+            "terminal close queue full; dropping request for window {}",
+            terminal_id
+        );
+    }
+}
+
+/// Apply a terminal-close request from scheduler context.
+pub fn service_terminal_close_request() {
+    while let Some(terminal_id) = TERMINAL_CLOSE_QUEUE.pop() {
+        let owner = SCHEDULER.with_list(|list| {
+            list.iter()
+                .find(|(_, process)| {
+                    process.terminal_owner && process.terminal_id == Some(terminal_id)
+                })
+                .map(|(pid, _)| *pid)
+        });
+        if let Some(pid) = owner {
+            terminate_process(pid, -1);
+        }
+    }
+}
+
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     let is_idle = SCHEDULER
@@ -1313,6 +1431,16 @@ pub fn unblock_process(pid: ProcessId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_close_queue_preserves_fifo_requests() {
+        let queue = TerminalCloseQueue::new();
+        assert!(queue.push(41));
+        assert!(queue.push(42));
+        assert_eq!(queue.pop(), Some(41));
+        assert_eq!(queue.pop(), Some(42));
+        assert_eq!(queue.pop(), None);
+    }
 
     struct FakeProcessAddressSpace {
         bytes: Vec<u8>,

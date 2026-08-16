@@ -264,11 +264,13 @@ pub fn scheduler_loop() -> ! {
         {
             crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: GUI phase begin");
             gui::runtime_tick(SCHEDULER.current_tick());
+            crate::process::service_terminal_close_request();
             crate::drivers::registry::usb_rescan_scheduler_diag("scheduler: GUI phase returned");
         }
         #[cfg(linux_busybox_smoke)]
         if !solvent::headless_smoke_active() {
             gui::runtime_tick(SCHEDULER.current_tick());
+            crate::process::service_terminal_close_request();
         }
 
         // The GUI/service tick above is the producer for Wi-Fi requests (the

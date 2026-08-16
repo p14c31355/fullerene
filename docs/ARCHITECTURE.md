@@ -1,6 +1,6 @@
 # Fullerene Project Rules
 
-## Current implementation snapshot (2026-07-30)
+## Current implementation snapshot (2026-08-16)
 
 The repository currently implements the context-oriented architecture
 described below across the root workspace members. The main runtime path is:
@@ -65,6 +65,28 @@ The release profile keeps aggressive optimization, single-unit LTO, and abort
 panics, and strips the symbol table from shipped binaries. Debug builds retain
 symbols for diagnosis; this changes artifact metadata, not runtime code paths.
 
+The current audit keeps window and process ownership on their existing side of
+the boundary. When a process-terminal window is closed, Lattice reports its
+window identity, Solvent removes the terminal endpoint, and the kernel queues
+termination of the owning process for scheduler context after the runtime lock
+is released. This makes launchd's shell slot reusable without allowing a GUI
+callback to re-enter the runtime lock.
+
+For legacy iwlwifi, the authentication exchange follows Linux gen1's DQA
+ordering: publish the CBBC and initial zero write pointer before
+`SCD_QUEUE_CFG`, attach the station queue after that command, and make the
+first post-configuration doorbell the TFD's actual write pointer. The affected
+API-29 7265D firmware still needs a narrowly scoped q5 `SCD_EN_CTRL` gate
+restored after queue ownership is accepted; this compatibility write does not
+emit a second zero-pointer doorbell. The driver records firmware TX results for
+management frames, advances the bounded queue plan after an explicit failure,
+and no longer discards association-frame transmission errors. The DQA
+management queue follows Linux's gen1 scheduler frame limit of 64; Linux's
+separate 16-entry management allocation is a host software queue capacity, not
+the SCD command window. Host replay/unit tests cover the state machine; the AP
+authentication result on the affected physical adapter remains the final
+hardware validation step.
+
 A 2026-07-30 redundancy and correctness audit reduced logic LOC without
 changing runtime contracts: repetitive command-serialisation and font/colour
 tables became table-driven `const` arrays and a shared `as_bytes` helper
@@ -76,6 +98,15 @@ and unchecked boot-path arithmetic. The `assembly.rs` hand-coded boot
 transitions remain `asm!` because no safe Rust equivalent exists for the
 CR3/GDT/stack handoff; they are already encapsulated behind safe Rust entry
 points per section 6.
+
+The 2026-08-16 pass also uses derived defaults, slice filling, iterator search,
+range predicates, and saturating arithmetic where those forms express the same
+logic directly. The workspace gate is warning-free under
+`cargo check --workspace --all-targets`; the retained benchmark example
+`fullerene-kernel/examples/native_ipc_rate.rs` continues to exercise the native
+IPC copy path. The boot assembly remains intentionally unchanged: its CR3/GDT
+and stack handoff cannot be represented by safe Rust and is already isolated in
+Petroleum's low-level entry boundary.
 
 ## 1. Overall Philosophy (Highest Priority)
 
