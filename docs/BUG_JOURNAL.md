@@ -999,6 +999,32 @@ This is a transport-start regression before DQA or Q5 exists.  The Linux
 `tx_start()` ordering requires the activated scheduler FIFOs to remain active;
 the `SCD_TXFACT=0` write was therefore removed from the post-FH setup path.
 
+## Entry 033 — 2026-08-17 fl-fw3 validates TXFACT and isolates the first-TB difference
+
+`fl-fw3.txt` uses the restored post-start scheduler state and records
+`scd_txfact=0xff` in the legacy TX setup, during Q5 setup, and after the Q5
+doorbell.  The first `BT_CONFIG_INIT_API29` and all connection setup commands
+are consumed successfully, so the Entry 031 regression is gone.
+
+The Q5 boundary is unchanged:
+
+```text
+Q5 before submit: status=0x9b wrptr=0 rdptr=0 ctx1=0x00400040
+Q5 after submit:  status=0x1b wrptr=1 rdptr=0
+FH fifo 3:        config=0x80000008 trb=0
+```
+
+No `REPLY_TX` or FH transaction follows.  This rejects `SCD_TXFACT` as the
+Q5 fetch cause and makes the remaining transport discrepancy actionable:
+Linux allocates a separate coherent per-slot 20-byte first-TB buffer, copies
+the command header/TX-command prefix into it, points the scratch write-back
+address there, and maps the remainder from the payload buffer as TB1/TB2.
+Fullerene previously used one payload allocation for all three TBs.
+
+The next A/B build implements only that Linux first-TB layout.  It leaves the
+Q5 setup, station ownership, authentication frame, and scheduler registers
+unchanged.
+
 ## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
 
 ### Evidence

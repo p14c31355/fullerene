@@ -587,11 +587,15 @@ impl IwlWifiDevice {
         let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
 
         let init_result = (|| -> Result<(), IwlError> {
-            // Keep q9 host-command and q4 data payloads in disjoint DMA
-            // slots; their queue heads advance independently.
-            for _ in 0..TX_QUEUE_SIZE * 2 {
-                let mut buf =
-                    DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+            // Keep q9 host-command, q4 data payload, and Linux-compatible
+            // first-TB buffers in disjoint DMA slots.
+            for index in 0..TX_QUEUE_SIZE * TX_DMA_BUFFER_GROUPS {
+                let size = if index >= TX_FIRST_TB_BUFFER_BASE {
+                    IWL_FIRST_TB_SIZE
+                } else {
+                    MAX_FRAME_SIZE
+                };
+                let mut buf = DmaRegion::alloc(ctx, size).ok_or(IwlError::DmaAllocFailed)?;
                 if buf
                     .dma_map(
                         ctx,
@@ -832,11 +836,15 @@ impl IwlWifiDevice {
 
         debug::print("iwlwifi", "alloc_tx_bufs");
         let init_result = (|| -> Result<(), IwlError> {
-            // Keep q9 host-command and q4 data payloads in disjoint DMA
-            // slots; their queue heads advance independently.
-            for _ in 0..TX_QUEUE_SIZE * 2 {
-                let mut buf =
-                    DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+            // Keep q9 host-command, q4 data payload, and Linux-compatible
+            // first-TB buffers in disjoint DMA slots.
+            for index in 0..TX_QUEUE_SIZE * TX_DMA_BUFFER_GROUPS {
+                let size = if index >= TX_FIRST_TB_BUFFER_BASE {
+                    IWL_FIRST_TB_SIZE
+                } else {
+                    MAX_FRAME_SIZE
+                };
+                let mut buf = DmaRegion::alloc(ctx, size).ok_or(IwlError::DmaAllocFailed)?;
                 if buf
                     .dma_map(
                         ctx,
@@ -2240,10 +2248,15 @@ pub(super) mod test_support {
             rx_dma_ring.dma_map(ctx, 0).expect("RX ring map");
 
             let mut tx_bufs = Vec::new();
-            // Keep q9 host-command and q4 data payloads in disjoint DMA
-            // slots; their queue heads advance independently.
-            for _ in 0..TX_QUEUE_SIZE * 2 {
-                let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).expect("TX buf DMA");
+            // Keep q9 host-command, q4 data payload, and Linux-compatible
+            // first-TB buffers in disjoint DMA slots.
+            for index in 0..TX_QUEUE_SIZE * TX_DMA_BUFFER_GROUPS {
+                let size = if index >= TX_FIRST_TB_BUFFER_BASE {
+                    IWL_FIRST_TB_SIZE
+                } else {
+                    MAX_FRAME_SIZE
+                };
+                let mut buf = DmaRegion::alloc(ctx, size).expect("TX buf DMA");
                 buf.dma_map(ctx, 0).expect("TX buf map");
                 tx_bufs.push(buf);
             }

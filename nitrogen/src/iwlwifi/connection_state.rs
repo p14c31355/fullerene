@@ -840,10 +840,15 @@ fn perform_init_step() {
                     return;
                 }
                 let mut tx_bufs: Vec<DmaRegion> = Vec::new();
-                // Keep host-command and traffic payloads in disjoint DMA
-                // slots; their queue heads advance independently.
-                for _ in 0..TX_QUEUE_SIZE * 2 {
-                    let mut buf = match DmaRegion::alloc(driver_ctx, MAX_FRAME_SIZE) {
+                // Keep host-command, traffic payload, and Linux-compatible
+                // first-TB buffers in disjoint DMA slots.
+                for index in 0..TX_QUEUE_SIZE * TX_DMA_BUFFER_GROUPS {
+                    let size = if index >= TX_FIRST_TB_BUFFER_BASE {
+                        IWL_FIRST_TB_SIZE
+                    } else {
+                        MAX_FRAME_SIZE
+                    };
+                    let mut buf = match DmaRegion::alloc(driver_ctx, size) {
                         Some(b) => b,
                         None => {
                             break;
@@ -861,7 +866,7 @@ fn perform_init_step() {
                     }
                     tx_bufs.push(buf);
                 }
-                if tx_bufs.len() < TX_QUEUE_SIZE * 2 {
+                if tx_bufs.len() < TX_QUEUE_SIZE * TX_DMA_BUFFER_GROUPS {
                     for mut b in tx_bufs {
                         b.free(driver_ctx);
                     }
