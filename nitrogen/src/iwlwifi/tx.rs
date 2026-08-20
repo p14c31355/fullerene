@@ -20,7 +20,7 @@ const IWL_FIRST_TB_SIZE: usize = 20;
 // Keep the host-side SCD programming experiment available for comparison,
 // but use Linux's DQA contract by default: the transport publishes CBBC/WRPTR
 // and SCD_QUEUE_CFG lets firmware configure the dynamic queue.
-const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = false;
+const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = true;
 
 // Linux's gen1 DQA path does not set SCD_EN_CTRL for a dynamically allocated
 // data queue. The old API-29 workaround did not move q5's read pointer on the
