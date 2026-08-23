@@ -88,6 +88,8 @@ pub struct IwlWifiDevice {
     pub init_errlog_ptr: u32,
     /// Scheduler SRAM base reported by the firmware's RX ALIVE notification.
     pub alive_scd_base_addr: u32,
+    /// TIME_EVENT response/notification correlation state.
+    pub time_event_state: Option<TimeEventState>,
 
     /// 802.11 state.
     pub iwl_state: IwlState,
@@ -675,6 +677,7 @@ impl IwlWifiDevice {
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             alive_scd_base_addr: 0,
+            time_event_state: None,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -922,6 +925,7 @@ impl IwlWifiDevice {
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             alive_scd_base_addr: 0,
+            time_event_state: None,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -1009,6 +1013,7 @@ impl IwlWifiDevice {
         self.fw_session_prot_supported = false;
         self.fw_time_event_cmd_version = None;
         self.fw_ucode_flags = 0;
+        self.time_event_state = None;
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
         self.tx_head = 0;
@@ -2295,6 +2300,7 @@ pub(super) mod test_support {
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
                 alive_scd_base_addr: 0,
+                time_event_state: None,
                 iwl_state: IwlState::Init,
                 wifi_conn: wifi::WifiConnection::new(),
                 wpa: WpaSupplicant::new(),

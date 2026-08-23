@@ -583,6 +583,16 @@ impl IwlWifiDevice {
         if let Some(scd_en) = self.read_prph(SCD_EN_CTRL) {
             self.write_prph(SCD_EN_CTRL, scd_en & !(1 << queue));
         }
+        // A DQA queue may also remain in the scheduler chain or aggregate
+        // bitmap after firmware-owned teardown. Leaving either bit set makes
+        // the subsequent static-queue fallback contend with the abandoned
+        // q5 owner and can stall the q0 command queue as well.
+        if let Some(queuechain) = self.read_prph(SCD_QUEUECHAIN_SEL) {
+            self.write_prph(SCD_QUEUECHAIN_SEL, queuechain & !(1 << queue));
+        }
+        if let Some(aggr) = self.read_prph(SCD_AGGR_SEL) {
+            self.write_prph(SCD_AGGR_SEL, aggr & !(1 << queue));
+        }
         if self.alive_scd_base_addr != 0 {
             let status = self.alive_scd_base_addr + scd_tx_stts_queue_offset(queue);
             for offset in (0..16).step_by(4) {
@@ -1058,7 +1068,23 @@ impl IwlWifiDevice {
                 HexBytes(data),
             );
         }
-        self.send_hcmd(opcode, group, data)?;
+        if opcode == LegacyCmd::TimeEvent as u8 {
+            self.time_event_state = TimeEventState::from_command(data);
+            if self.time_event_state.is_none() {
+                log::error!(
+                    "iwlwifi: hcmd.sync.error name={} stage=submit reason=short_time_event_command payload={}",
+                    label,
+                    data.len(),
+                );
+                return Err(crate::DriverError::Protocol);
+            }
+        }
+        if let Err(error) = self.send_hcmd(opcode, group, data) {
+            if opcode == LegacyCmd::TimeEvent as u8 {
+                self.time_event_state = None;
+            }
+            return Err(error);
+        }
         let target = self.tx_head;
         let consumed = crate::timing::poll_timeout_us(100_000, || {
             let rptr = self.read_prph(scd_queue_rdptr(command_queue))? as usize;
@@ -1078,6 +1104,9 @@ impl IwlWifiDevice {
                 rptr,
             );
             self.release_mac_access();
+            if opcode == LegacyCmd::TimeEvent as u8 {
+                self.time_event_state = None;
+            }
             return Err(crate::DriverError::Busy);
         }
 
@@ -1129,15 +1158,20 @@ impl IwlWifiDevice {
                                 payload.len(),
                             );
                             self.release_mac_access();
+                            self.time_event_state = None;
                             return Err(crate::DriverError::Protocol);
                         }
                         let status =
                             u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                        let response_id =
+                            u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                        let response_unique_id =
+                            u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
                         log::info!(
                             "iwlwifi: time_event.response status={:#010x} id={:#010x} unique_id={:#010x} id_and_color={:#010x} payload_hex={}",
                             status,
-                            u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]),
-                            u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]),
+                            response_id,
+                            response_unique_id,
                             u32::from_le_bytes([
                                 payload[12],
                                 payload[13],
@@ -1146,6 +1180,21 @@ impl IwlWifiDevice {
                             ]),
                             HexBytes(&payload),
                         );
+                        let state_valid = self.time_event_state.as_mut().is_some_and(|state| {
+                            state.record_response(response_unique_id);
+                            state.id == response_id && state.unique_id.is_some()
+                        });
+                        if !state_valid {
+                            log::error!(
+                                "iwlwifi: hcmd.sync.error name={} stage=status reason=time_event_response_mismatch response_id={:#010x} unique_id={:#010x}",
+                                label,
+                                response_id,
+                                response_unique_id,
+                            );
+                            self.release_mac_access();
+                            self.time_event_state = None;
+                            return Err(crate::DriverError::Protocol);
+                        }
                         if status & 1 == 0 {
                             log::error!(
                                 "iwlwifi: hcmd.sync.error name={} stage=status time_event_status={:#010x}",
@@ -1153,6 +1202,7 @@ impl IwlWifiDevice {
                                 status,
                             );
                             self.release_mac_access();
+                            self.time_event_state = None;
                             return Err(crate::DriverError::Protocol);
                         }
                     }
@@ -1202,6 +1252,9 @@ impl IwlWifiDevice {
                         error,
                     );
                     self.release_mac_access();
+                    if opcode == LegacyCmd::TimeEvent as u8 {
+                        self.time_event_state = None;
+                    }
                     return Err(error);
                 }
             }

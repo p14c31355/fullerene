@@ -960,6 +960,7 @@ fn perform_init_step() {
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
                 alive_scd_base_addr: 0,
+                time_event_state: None,
                 iwl_state: IwlState::Init,
                 wifi_conn: bonder::wifi::WifiConnection::new(),
                 wpa: bonder::wpa::WpaSupplicant::new(),
@@ -1990,6 +1991,7 @@ impl IwlWifiDevice {
         self.connection_watchdog_ticks = 0;
         self.auth_tx_acknowledged = None;
         self.auth_tx_sequence = None;
+        self.time_event_state = None;
         let auth_frame = wifi::build_auth_frame(bssid, self.mac, 1);
         self.send_raw_80211_frame(&auth_frame)?;
         log::info!(
@@ -2538,6 +2540,7 @@ impl IwlWifiDevice {
         self.auth_tx_queue_override = None;
         self.auth_tx_acknowledged = None;
         self.auth_tx_sequence = None;
+        self.time_event_state = None;
         log::info!("iwlwifi: disconnected");
     }
 
