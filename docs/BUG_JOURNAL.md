@@ -1373,3 +1373,38 @@ positive result is q5 `RDPTR: 0 -> 1` or a `REPLY_TX`; if q5 remains at
 `WRPTR=1/RDPTR=0`, the next comparison is the per-queue DQA transport state
 (`queue_used`, software read/write pointers, and the initial doorbell) before
 `SCD_QUEUE_CFG`.
+
+## Entry 043 — 2026-08-24 7265D firmware stability and stale station reuse
+
+### Evidence
+
+The latest hardware capture, `202608240756.txt`, uses the same Intel 7265D
+firmware line as the successful Linux capture: `iwlwifi-7265D-29`, API 29,
+build `4063824552`, `CoreCycle26_stab::f2390aa8`. INIT/ALIVE, runtime
+initialisation, and repeated scans complete normally, so the capture provides
+no evidence of a corrupt or unstable firmware image.
+
+The failure occurs when the first `Buffalo-G-2218` authentication remains
+pending on q5 (`WRPTR=1/RDPTR=0`) and a second connection to `Buffalo-A-2218`
+reuses station ID 0. The second `CONNECT_ADD_STA` produces firmware
+`error_id=0x00002073` (`ADVANCED_SYSASSERT_OR_UNKNOWN`). This is consistent
+with a stale host-side station/queue lifecycle, not with a firmware-version
+mismatch.
+
+### Correction
+
+Before a validated reconnect, Fullerene now tears down the previous failed
+connection: it abandons the stalled data queue, sends `REMOVE_STA` for the
+managed AP, and resets authentication, WPA, DHCP, and watchdog state. The
+same cleanup runs when the authentication or association watchdog reaches its
+terminal timeout. Invalid target SSIDs and incompatible security parameters
+are validated first, so a rejected request does not tear down a working
+connection.
+
+### Disposition
+
+The firmware is the known Linux-supported final 7265D/Core26 `-29.ucode` line,
+and the identical build connects successfully under Linux. The fix still
+requires a fresh Nitrogen hardware run. The expected next trace is one
+`CONNECT_ADD_STA` per attempt, no `0x2073` assert on reconnect, and q5
+`RDPTR` progress or a `REPLY_TX` for the 5 GHz authentication test.

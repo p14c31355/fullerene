@@ -187,7 +187,7 @@ impl IwlWifiDevice {
                     // The bounded TX solver selected and submitted the next
                     // queue plan. Keep the public state in Authenticating.
                 } else {
-                    self.iwl_state = IwlState::Disconnected;
+                    self.reset_failed_connection();
                     self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
                     self.wifi_conn.error_msg = Some(alloc::format!("{} response timeout", phase));
                 }

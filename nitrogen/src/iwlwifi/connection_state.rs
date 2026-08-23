@@ -2123,6 +2123,59 @@ impl IwlWifiDevice {
         }
     }
 
+    /// Remove the managed AP station without queueing another management
+    /// frame. This is used after failed authentication, where the current q5
+    /// TFD may still be stuck in the scheduler.
+    fn remove_ap_station(&mut self) {
+        let ap_bssid = self.wifi_conn.current_bssid.or_else(|| {
+            self.wifi_conn.current_ssid.as_ref().and_then(|ssid| {
+                self.scan_results
+                    .iter()
+                    .find(|ap| ap.ssid == *ssid)
+                    .map(|ap| ap.bssid)
+            })
+        });
+        let Some(ap_bssid) = ap_bssid else {
+            return;
+        };
+
+        let remove_sta = RemoveStaCmd::new(0);
+        let _ = self.send_hcmd(LegacyCmd::RemoveSta as u8, GroupId::Legacy as u8, unsafe {
+            super::as_bytes(&remove_sta)
+        });
+        log::debug!(
+            "iwlwifi: removed AP station 0 ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+            ap_bssid[0],
+            ap_bssid[1],
+            ap_bssid[2],
+            ap_bssid[3],
+            ap_bssid[4],
+            ap_bssid[5],
+        );
+    }
+
+    /// Tear down a failed connection before the station ID or its traffic
+    /// queue can be reused by a new connection request.
+    pub(super) fn reset_failed_connection(&mut self) {
+        self.abandon_stalled_traffic_queue(self.traffic_queue());
+        self.remove_ap_station();
+        self.dhcp = None;
+        self.wifi_conn.disconnect();
+        self.wpa = bonder::wpa::WpaSupplicant::new();
+        self.wpa_required = false;
+        self.wpa_keys_installed = false;
+        self.wpa_key_command_end = None;
+        self.wpa_key_pending_sequences = [None; 2];
+        self.pending_wpa_message4 = None;
+        self.iwl_state = IwlState::Disconnected;
+        self.connection_watchdog_ticks = 0;
+        self.auth_tx_plan = AuthTxPlan::DqaFirmware;
+        self.auth_tx_queue_override = None;
+        self.auth_tx_acknowledged = None;
+        self.auth_tx_sequence = None;
+        self.time_event_state = None;
+    }
+
     fn connection_failure<T>(
         &mut self,
         context: &str,
@@ -2155,6 +2208,10 @@ impl IwlWifiDevice {
         }
         if password.is_some() && ap.security != bonder::wifi::Security::Wpa2Psk {
             return Err(crate::DriverError::NotSupported);
+        }
+        if self.wifi_conn.current_ssid.is_some() {
+            log::info!("iwlwifi: replacing previous connection before reconnect");
+            self.reset_failed_connection();
         }
         self.wifi_conn.connect(ssid, password);
         // The authentication frame is the first TX operation after the
