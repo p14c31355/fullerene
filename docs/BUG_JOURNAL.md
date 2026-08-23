@@ -1232,7 +1232,7 @@ already have recorded `0x21a0` asserts.  If the newer image accepts
 asserts, then compare the exact queue-update payload and command version before
 changing the ordering hypothesis.
 
-## Entry 027 — 2026-08-23 q5 rdptr=0 root cause: missing byte-count table entry
+## Entry 027 — 2026-08-23 q5 byte-count parity experiment
 
 ### Symptoms
 
@@ -1241,12 +1241,12 @@ From fl-auth9 through fl-auth25, q5 (DQA management queue) remained at
 `REPLY_TX`, authentication response, or association followed. The SCD context,
 queue status, queuechain, and SCD_EN_CTRL all appeared correctly configured.
 
-### Root cause
+### Hypothesis
 
 The gen1 SCD byte-count table (`iwlagn_scd_bc_tbl`) was only being written for
 queues marked in `SCD_AGGR_SEL` (Scheduler-ACK / aggregate queues). q5 is a
 FIFO/non-aggregate management queue, so the byte-count entry at slot 0 was left
-as zero.
+as zero in earlier captures.
 
 Linux's gen1 transport (`iwl_pcie_txq_build_tfd` with
 `trans->cfg->base_params->bc_table_dword=true` for 7265) writes the byte-count
@@ -1254,6 +1254,9 @@ table **unconditionally for every TFD on every queue** — including FIFO
 non-aggregate queues. The SCD scheduler uses the byte-count table to decide
 whether a TFD has data to fetch. A zero entry means "no data", so the scheduler
 never advances the read pointer.
+
+This made the byte-count entry a valid Linux-parity correction candidate, but
+not yet a proven root cause.
 
 This is why q0 (command queue, FIFO 7) worked despite the same code path: the
 command queue uses `send_hcmd()` / `send_init_hcmd()` which do not go through
@@ -1264,14 +1267,14 @@ non-aggregate but the SCD queue status was written with the full
 was never actually used for TX data in the connection path (only scan, which is
 firmware-initiated).
 
-### Fix
+### Linux-parity correction
 
 `process_tx_queue()` in `tx.rs` now calls `update_scd_byte_count()`
 unconditionally for every TFD, matching Linux's `iwlagn_update_bc_tbl()`. The
 `scheduler_ack` flag is retained only for the diagnostic log line that
 distinguishes "fifo" vs "scheduler-ack" mode.
 
-### Validation
+### Validation and disposition
 
 - All 77 nitrogen iwlwifi unit tests pass, including the updated
   `command_and_data_queues_use_disjoint_dma_buffers` test which now asserts
@@ -1280,7 +1283,14 @@ distinguishes "fifo" vs "scheduler-ack" mode.
 - Physical hardware validation is required to confirm q5 `hw_rdptr` advances
   past 0.
 
-## Entry 040 — 2026-08-24 q5 TX wake hold covers outstanding data TFDs
+The later `202608240709.txt` capture published `bc_dwords=10` and both
+`bc_primary=0x000a` and `bc_duplicate=0x000a`, yet q5 still remained at
+`hw_wrptr=1`, `hw_rdptr=0`, with `FH_TRB=0`. Therefore the missing byte-count
+entry is not the root cause of the remaining authentication stall. The
+unconditional table update remains because it matches Linux, but the cause is
+still under investigation.
+
+## Entry 040 — 2026-08-24 q5 TX wake-hold experiment rejected
 
 ### Evidence
 
@@ -1288,21 +1298,21 @@ The fixed API-29 run `202608240642.txt` no longer asserts at TIME_EVENT, and
 the authentication TFD reaches q5 with a valid CBBC, byte-count entry, TFD,
 and write pointer.  It nevertheless remains at `hw_wrptr=1`, `hw_rdptr=0`
 while `GP_CNTRL` changes from `0x080403cd` at submission to
-`0x080403c5` during the watchdog polls; the MAC access request is released
-before the q5 descriptor is consumed.
+`0x080403c5` during the watchdog polls; this suggested a wake-hold experiment.
 
-### Fix
+### Experiment
 
-`release_mac_access_if_tx_idle()` now requires both the host-command and
-data-TX rings to be empty.  The data-tail path already invokes this helper
-after hardware completion, so the wake request remains bounded to outstanding
-TX work and is released after reclaim.  This supplies the bare-metal
-equivalent of Linux's runtime-PM reference held for an outstanding
-non-command TFD.
+The experiment temporarily required both the host-command and data-TX rings
+to be empty before releasing `MAC_ACCESS_REQ`.  It was not supported by the
+upstream Linux transport contract and is therefore reverted.
 
 ### Validation
 
-The unit test now covers both sides of the invariant: a pending data TFD keeps
-the request asserted after q0 drains, and advancing the data tail releases it.
-Physical validation is still required; success is q5 `hw_rdptr=1` followed by
-`REPLY_TX` and the AP authentication response.
+The new run `202608240709.txt` kept `GP_CNTRL=0x080403cd` throughout the q5
+polls, but still showed `hw_wrptr=1`, `hw_rdptr=0`, `FH_TRB=0`, and no
+`REPLY_TX`.  The wake-hold hypothesis is consequently rejected.  The unit
+test is restored to Linux's command-only wake-hold behavior.
+
+Physical validation is still required; the next decisive comparison is the
+Linux `iwl_trans_txq_enable_cfg(..., cfg=NULL)` DQA transport initialization
+and its queue-used/read-write-pointer state before `SCD_QUEUE_CFG`.

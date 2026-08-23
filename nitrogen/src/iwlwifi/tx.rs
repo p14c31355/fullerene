@@ -142,15 +142,15 @@ impl IwlWifiDevice {
         mmio::write_barrier();
     }
 
-    /// Drop the NIC wake request only after every TX ring is idle.
+    /// Drop the host-command wake request once the command queue is empty.
     ///
-    /// Linux uses a separate runtime-PM reference for the first outstanding
-    /// non-command TFD. Fullerene has no runtime-PM layer, so the equivalent
-    /// protection is to retain MAC_ACCESS_REQ while a data/management TFD is
-    /// pending. Releasing it immediately after the q5 doorbell lets the
-    /// 7265D enter its low-power state before the scheduler fetches the TFD.
+    /// Linux's `cmd_hold_nic_awake` tracks host commands only. A pending DQA
+    /// data/management descriptor must not extend that hold: the 7265's
+    /// scheduler is responsible for fetching q5 after its write-pointer
+    /// doorbell, and keeping MAC_ACCESS_REQ asserted until q5 is reclaimed
+    /// is not the upstream power-management contract.
     fn release_mac_access_if_tx_idle(&mut self) {
-        if self.tx_head == self.tx_tail && self.tx_data_head == self.tx_data_tail {
+        if self.tx_head == self.tx_tail {
             self.release_mac_access();
         }
     }
@@ -2465,13 +2465,10 @@ impl IwlWifiDevice {
 
             // Linux's gen1 transport writes the SCD byte-count table for
             // every TFD on every queue — not only for Scheduler-ACK /
-            // aggregate queues.  The 7265 base_params set bc_table_dword=true,
+            // aggregate queues. The 7265 base_params set bc_table_dword=true,
             // so iwl_pcie_txq_build_tfd() unconditionally calls
-            // iwlagn_update_bc_tbl().  Skipping the byte-count entry for a
-            // FIFO/non-aggregate queue leaves a zero entry, and the SCD
-            // scheduler treats that as "no data to fetch" — the TFD is never
-            // consumed and hw_rdptr stays at 0.  This is the root cause of the
-            // q5 management-queue fetch stall observed from fl-auth9 onward.
+            // iwlagn_update_bc_tbl(). Keep the same transport contract here;
+            // the hardware captures below also verify the published entry.
             let sec_ctl = wire[TX_COMMAND_HEADER_LEN + 17];
             let scd_aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
             let scheduler_ack = (scd_aggr & (1 << traffic_queue)) != 0;
@@ -3136,7 +3133,7 @@ mod tests {
     }
 
     #[test]
-    fn host_command_keeps_mac_access_held_while_data_is_pending() {
+    fn host_command_releases_mac_access_when_command_queue_is_empty() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
 
         device.send_hcmd(0x01, GroupId::Legacy as u8, &[]).unwrap();
@@ -3145,18 +3142,11 @@ mod tests {
             0,
         );
 
-        // A data TFD needs the same wake protection until its scheduler tail
-        // advances. This is Fullerene's runtime-PM equivalent on bare metal.
+        // Linux releases the host-command wake hold when q0 is empty even if
+        // a DQA data queue still has an outstanding descriptor.
         device.tx_data_head = 1;
         device.tx_data_tail = 0;
         device.tx_tail = device.tx_head;
-        device.release_mac_access_if_tx_idle();
-        assert_ne!(
-            device.safe_read32(CSR_GP_CNTRL).unwrap() & CSR_GP_CNTRL_MAC_ACCESS_REQ,
-            0,
-        );
-
-        device.tx_data_tail = device.tx_data_head;
         device.release_mac_access_if_tx_idle();
         assert_eq!(
             device.safe_read32(CSR_GP_CNTRL).unwrap() & CSR_GP_CNTRL_MAC_ACCESS_REQ,
