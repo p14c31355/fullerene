@@ -2157,6 +2157,11 @@ impl IwlWifiDevice {
             return Err(crate::DriverError::NotSupported);
         }
         self.wifi_conn.connect(ssid, password);
+        // The authentication frame is the first TX operation after the
+        // connection request. Publish the selected BSSID now, rather than
+        // waiting for the association response, so TX rate selection can
+        // distinguish 5 GHz from 2.4 GHz during authentication.
+        self.wifi_conn.current_bssid = Some(ap.bssid);
         self.wpa_required = password.is_some();
         self.wpa_keys_installed = false;
         self.wpa_key_command_end = None;

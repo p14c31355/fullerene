@@ -1317,6 +1317,33 @@ Physical validation is still required; the next decisive comparison is the
 Linux `iwl_trans_txq_enable_cfg(..., cfg=NULL)` DQA transport initialization
 and its queue-used/read-write-pointer state before `SCD_QUEUE_CFG`.
 
+## Entry 042 — 2026-08-24 5 GHz authentication selected an illegal CCK rate
+
+### Evidence
+
+The Linux capture in `linux-wifi-connected-20260815-231412/report.txt` connects
+the same 7265D revision and firmware (`29.4063824552`) to `Buffalo-G-2218`,
+while `202608240736.txt` selects the 5 GHz `Buffalo-A-2218` AP on channel 48.
+Despite that selection, the Fullerene authentication log reports
+`rate_n_flags=0x0000420a` and `band=2.4GHz`. That is the 1 Mbps CCK rate. The
+5 GHz authentication TFD is accepted by the command path but cannot be
+transmitted by the radio, matching the observed q5 `WRPTR=1/RDPTR=0` stall and
+absent `REPLY_TX`.
+
+### Root cause and correction
+
+`tx_rate_n_flags()` determines the band from `wifi_conn.current_bssid`, but
+`connect()` only populated that BSSID after association. The first
+authentication frame consequently used the fallback 2.4 GHz rate. `connect()`
+now publishes the selected AP BSSID before any authentication TX, and a replay
+test verifies that a channel-36 authentication frame selects `0x0000410d`
+(6 Mbps OFDM).
+
+The earlier Linux-compatible wake correction remains in place; this rate bug
+was independent of the MAC wake state and is the next hardware-validation
+candidate. Success is indicated by q5 `RDPTR` advancing and receipt of the AP
+authentication response.
+
 ## Entry 041 — 2026-08-24 Linux TX doorbell wake condition
 
 ### Evidence
