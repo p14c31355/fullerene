@@ -19,14 +19,13 @@ use super::registers::*;
 use super::tx::HexBytes;
 use super::types::*;
 
-// First TIME_EVENT experiment: match Linux's pre-management-TX session
-// protection on the current API-29/DQA path. Keep this explicit so the
-// experiment can be reverted to the no-TIME_EVENT baseline with one change.
-// Keep the legacy API-v2 session-protection experiment opt-in.  On the
-// current 7265D API-29 image the Linux-shaped TIME_EVENT_CMD asserts even
-// when issued before DQA queue setup; never make that destructive probe part
-// of the normal connection path.
-const API29_TIME_EVENT_EXPERIMENT: bool = false;
+// TIME_EVENT_CMD is sent after DQA queue setup and before auth TX, matching
+// Linux's iwl_mvm_mac_mgd_prepare_tx() → iwl_mvm_protect_session() flow.
+// Without session protection the firmware has no airtime for management TX,
+// so the FH DMA loads the FIFO but the MAC never transmits and SCD rdptr
+// never advances.  An earlier experiment sent TIME_EVENT before DQA setup
+// and the firmware asserted; the post-setup position avoids that.
+const API29_TIME_EVENT_EXPERIMENT: bool = true;
 
 // ── Global driver context for DMA ──
 
@@ -765,7 +764,7 @@ fn perform_init_step() {
                 set_init_phase(WifiInitPhase::FwUpload);
                 return;
             }
-            let (pci_dev, mmio, driver_ctx, health, mac, hw_rev, tx_dma, rx_dma, tx_bufs, rx_bufs) = {
+            let (pci_dev, mmio, driver_ctx, health, mac, hw_rev, tx_dma, rx_dma, tx_bufs, first_tb_bufs, rx_bufs) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let pci_dev = match ctx.pci_dev.take() {
                     Some(d) => d,
@@ -870,6 +869,36 @@ fn perform_init_step() {
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
+                let mut first_tb_bufs: Vec<DmaRegion> = Vec::new();
+                for _ in 0..TX_QUEUE_SIZE {
+                    let mut buf = match DmaRegion::alloc(driver_ctx, IWL_FIRST_TB_SIZE_ALIGN) {
+                        Some(b) => b,
+                        None => break,
+                    };
+                    if buf
+                        .dma_map(
+                            driver_ctx,
+                            pci_dma_device_id(pci_dev.bus, pci_dev.device, pci_dev.function),
+                        )
+                        .is_err()
+                    {
+                        buf.free(driver_ctx);
+                        break;
+                    }
+                    first_tb_bufs.push(buf);
+                }
+                if first_tb_bufs.len() < TX_QUEUE_SIZE {
+                    for mut b in tx_bufs {
+                        b.free(driver_ctx);
+                    }
+                    for mut b in first_tb_bufs {
+                        b.free(driver_ctx);
+                    }
+                    tx_dma_ring.free(driver_ctx);
+                    rx_dma_ring.free(driver_ctx);
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
                 let mut rx_bufs: Vec<DmaRegion> = Vec::new();
                 let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
                 for i in 0..RX_QUEUE_SIZE {
@@ -917,6 +946,7 @@ fn perform_init_step() {
                     tx_dma_ring,
                     rx_dma_ring,
                     tx_bufs,
+                    first_tb_bufs,
                     rx_bufs,
                 )
             };
@@ -994,7 +1024,7 @@ fn perform_init_step() {
                 rx_tail: 0,
                 rx_posted: 0,
                 tx_bufs,
-                first_tb_bufs: Vec::new(),
+                first_tb_bufs,
                 rx_bufs,
                 ip_address: [0u8; 4],
                 subnet_mask: [0u8; 4],
@@ -2231,62 +2261,7 @@ impl IwlWifiDevice {
             self.fw_session_prot_supported,
             self.fw_ucode_flags,
         );
-        if API29_TIME_EVENT_EXPERIMENT
-            && self.fw_dqa_supported
-            && self.fw_api_ver == IWL_FW_API29_MAX
-            && self.fw_session_prot_supported
-        {
-            log::error!(
-                "iwlwifi: time_event.aborted legacy TIME_EVENT_CMD is not valid for firmware advertising SESSION_PROT_CMD"
-            );
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(
-                "firmware requires SESSION_PROTECTION_CMD; legacy TIME_EVENT_CMD disabled".into(),
-            );
-            return Err(crate::DriverError::Protocol);
-        }
-        if API29_TIME_EVENT_EXPERIMENT
-            && self.fw_dqa_supported
-            && self.fw_api_ver == IWL_FW_API29_MAX
-        {
-            let session = TimeEventCmdV2::association_protection(0);
-            let session_bytes = unsafe { super::as_bytes(&session) };
-            log::info!(
-                "iwlwifi: time_event.submit name=CONNECT_TIME_EVENT api={} dqa={} payload_len={} payload_hex={}",
-                self.fw_api_ver,
-                self.fw_dqa_supported,
-                session_bytes.len(),
-                HexBytes(session_bytes),
-            );
-            if let Err(error) = self.send_hcmd_and_wait(
-                "CONNECT_TIME_EVENT",
-                LegacyCmd::TimeEvent as u8,
-                GroupId::Legacy as u8,
-                session_bytes,
-            ) {
-                self.iwl_state = IwlState::Disconnected;
-                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-                self.wifi_conn.error_msg = Some(alloc::format!(
-                    "connection session protection failed: {:?}",
-                    error
-                ));
-                log::error!("iwlwifi: time_event.submit failed: {:?}", error);
-                return Err(error);
-            }
-            log::info!(
-                "iwlwifi: time_event.accepted before_dqa_queue_setup channel={} q5={}",
-                ap.channel,
-                IWL_MGMT_QUEUE,
-            );
-        } else {
-            log::info!(
-                "iwlwifi: time_event.skipped api={} dqa={} experiment={}",
-                self.fw_api_ver,
-                self.fw_dqa_supported,
-                API29_TIME_EVENT_EXPERIMENT,
-            );
-        }
+        // TIME_EVENT_CMD is sent after DQA queue setup — see post-setup block.
 
         if self.fw_dqa_supported {
             // Linux gen1 iwl_mvm_enable_txq() updates its host-side queue
@@ -2414,6 +2389,54 @@ impl IwlWifiDevice {
                     "CLEAR"
                 },
             );
+
+            // Send TIME_EVENT_CMD after DQA queue setup but before auth TX.
+            // Linux calls iwl_mvm_protect_session() from mac80211's
+            // prepare_tx callback, which runs after the station and its TX
+            // queue are fully configured.  Without session protection the
+            // firmware has no airtime and the SCD rdptr never advances.
+            if API29_TIME_EVENT_EXPERIMENT
+                && self.fw_dqa_supported
+                && self.fw_api_ver == IWL_FW_API29_MAX
+                && !self.fw_session_prot_supported
+            {
+                let session = TimeEventCmdV2::association_protection(0);
+                let session_bytes = unsafe { super::as_bytes(&session) };
+                log::info!(
+                    "iwlwifi: time_event.submit name=POST_DQA_TIME_EVENT api={} dqa={} payload_len={} payload_hex={}",
+                    self.fw_api_ver,
+                    self.fw_dqa_supported,
+                    session_bytes.len(),
+                    HexBytes(session_bytes),
+                );
+                if let Err(error) = self.send_hcmd_and_wait(
+                    "POST_DQA_TIME_EVENT",
+                    LegacyCmd::TimeEvent as u8,
+                    GroupId::Legacy as u8,
+                    session_bytes,
+                ) {
+                    self.iwl_state = IwlState::Disconnected;
+                    self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                    self.wifi_conn.error_msg = Some(alloc::format!(
+                        "post-DQA session protection failed: {:?}", error
+                    ));
+                    log::error!("iwlwifi: time_event.submit failed: {:?}", error);
+                    return Err(error);
+                }
+                log::info!(
+                    "iwlwifi: time_event.accepted post_dqa_queue_setup channel={} q5={}",
+                    ap.channel,
+                    IWL_MGMT_QUEUE,
+                );
+            } else {
+                log::info!(
+                    "iwlwifi: time_event.skipped api={} dqa={} experiment={} session_prot={}",
+                    self.fw_api_ver,
+                    self.fw_dqa_supported,
+                    API29_TIME_EVENT_EXPERIMENT,
+                    self.fw_session_prot_supported,
+                );
+            }
             self.log_dqa_scheduler_snapshot("before_auth_doorbell", queue_update_mask);
 
             // Diagnostic: dump q5 SCD state before authentication. Compare

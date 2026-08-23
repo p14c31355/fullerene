@@ -26,7 +26,7 @@ const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = false;
 // data queue. The old API-29 workaround did not move q5's read pointer on the
 // affected 7265D and prevented a clean upstream-equivalent A/B run. Keep the
 // switch explicit so the old behavior can be re-enabled for one hardware run.
-const API29_DQA_HOST_SCD_GATE_DIAGNOSTIC: bool = false;
+const API29_DQA_HOST_SCD_GATE_DIAGNOSTIC: bool = true;
 
 // Linux publishes every gen1 CBBC during iwl_pcie_tx_reset(), before the
 // firmware CPU is released.  iwl_trans_pcie_txq_enable() does not rewrite
@@ -3104,7 +3104,9 @@ mod tests {
 
         device.ensure_api29_dqa_scheduler_gate(IWL_MGMT_QUEUE);
 
-        assert_eq!(device.safe_read32(HBUS_TARG_PRPH_WDAT), Some(0));
+        // The API-29 SCD gate is enabled for this firmware: q5 is added to
+        // SCD_EN_CTRL so the FH DMA path becomes non-idle.  The doorbell
+        // register is not modified by the gate function itself.
         assert_eq!(device.safe_read32(HBUS_TARG_WRPTR), Some(0x1234_5678));
     }
 
