@@ -101,6 +101,10 @@ pub const CSR_FH_INT_RX_MASK: u32 =
     CSR_FH_INT_BIT_HI_PRIOR | CSR_FH_INT_BIT_RX_CHNL1 | CSR_FH_INT_BIT_RX_CHNL0;
 pub const CSR_FH_INT_TX_MASK: u32 = CSR_FH_INT_BIT_TX_CHNL1 | CSR_FH_INT_BIT_TX_CHNL0;
 pub const CSR_UCODE_SW_BIT_RFKILL: u32 = 1 << 1;
+/// Linux checks this firmware-owned bit before ringing a TX doorbell.  A
+/// zero value means the MAC is running and the doorbell can be written
+/// without asserting `MAC_ACCESS_REQ`.
+pub const CSR_UCODE_GP1_BIT_MAC_SLEEP: u32 = 1 << 0;
 pub const CSR_UCODE_GP1_BIT_CMD_BLOCKED: u32 = 1 << 2;
 pub const CSR_HW_IF_CONFIG_HAP_WAKE: u32 = 0x0008_0000;
 pub const CSR_HW_IF_CONFIG_MAC_STEP_DASH_MASK: u32 = 0x0000_000f;

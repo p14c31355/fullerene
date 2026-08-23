@@ -1316,3 +1316,33 @@ test is restored to Linux's command-only wake-hold behavior.
 Physical validation is still required; the next decisive comparison is the
 Linux `iwl_trans_txq_enable_cfg(..., cfg=NULL)` DQA transport initialization
 and its queue-used/read-write-pointer state before `SCD_QUEUE_CFG`.
+
+## Entry 041 — 2026-08-24 Linux TX doorbell wake condition
+
+### Evidence
+
+The Linux gen1 PCIe TX path checks the firmware-owned `MAC_SLEEP` bit in
+`CSR_UCODE_DRV_GP1` before asserting `CSR_GP_CNTRL_MAC_ACCESS_REQ`.  When the
+MAC is already awake, it writes the queue write pointer directly.  In
+`202608240709.txt`, the pre-authentication snapshot reports GP1 without the
+sleep bit and `CSR_GP_CNTRL` without `MAC_ACCESS_REQ`, while the Fullerene q5
+submission changes `CSR_GP_CNTRL` to `0x080403cd` and leaves that request held
+through the failed polls.
+
+### Correction
+
+`process_tx_queue()` now follows the same split: it reads `CSR_UCODE_GP1` and
+calls the existing host-command wake path only when `MAC_SLEEP` is set.
+Host-command submission retains its stronger wake behavior because command
+processing performs internal scheduler and register operations.  The new unit
+test verifies that an awake data-TX doorbell does not set a persistent
+`MAC_ACCESS_REQ` hold.
+
+### Disposition
+
+This is a Linux-parity correction motivated by a concrete hardware trace, not
+yet a confirmed complete fix for q5.  Re-test on the 7265D is required.  A
+positive result is q5 `RDPTR: 0 -> 1` or a `REPLY_TX`; if q5 remains at
+`WRPTR=1/RDPTR=0`, the next comparison is the per-queue DQA transport state
+(`queue_used`, software read/write pointers, and the initial doorbell) before
+`SCD_QUEUE_CFG`.

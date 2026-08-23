@@ -127,6 +127,21 @@ impl IwlWifiDevice {
         Ok(())
     }
 
+    /// Follow Linux's gen1 TX doorbell path: request a wake only when the
+    /// firmware reports that the MAC is sleeping. Host-command setup still
+    /// uses `wake_for_hcmd`, because it must hold MAC access across internal
+    /// scheduler/register operations.
+    #[inline]
+    fn wake_for_tx(&mut self) -> Result<(), crate::DriverError> {
+        let gp1 = self
+            .safe_read32(CSR_UCODE_GP1)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        if gp1 & CSR_UCODE_GP1_BIT_MAC_SLEEP != 0 {
+            self.wake_for_hcmd()?;
+        }
+        Ok(())
+    }
+
     /// Release the MAC wake request after the command queue becomes empty.
     ///
     /// The request is deliberately held across descriptor submission and
@@ -2365,7 +2380,7 @@ impl IwlWifiDevice {
             self.release_mac_access_if_tx_idle();
             return;
         }
-        if self.wake_for_hcmd().is_err() {
+        if self.wake_for_tx().is_err() {
             return;
         }
 
@@ -3151,6 +3166,23 @@ mod tests {
         assert_eq!(
             device.safe_read32(CSR_GP_CNTRL).unwrap() & CSR_GP_CNTRL_MAC_ACCESS_REQ,
             0,
+        );
+    }
+
+    #[test]
+    fn data_doorbell_does_not_take_power_management_wake_hold() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+
+        // Linux's iwl_pcie_txq_inc_wr_ptr writes the doorbell directly when
+        // GP1 does not report MAC_SLEEP. This keeps an ordinary DQA TX frame
+        // from turning a transient wake request into a persistent hold.
+        device.write_mmio32(CSR_GP_CNTRL, CSR_GP_CNTRL_INIT_DONE);
+        device.write_mmio32(CSR_UCODE_GP1, 0);
+        device.wake_for_tx().unwrap();
+
+        assert_eq!(
+            device.safe_read32(CSR_GP_CNTRL),
+            Some(CSR_GP_CNTRL_INIT_DONE)
         );
     }
 
