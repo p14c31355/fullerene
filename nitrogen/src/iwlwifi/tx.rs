@@ -142,15 +142,15 @@ impl IwlWifiDevice {
         mmio::write_barrier();
     }
 
-    /// Drop the host-command wake request once the command queue is empty.
+    /// Drop the NIC wake request only after every TX ring is idle.
     ///
-    /// Linux's `cmd_hold_nic_awake` tracks host commands only.  A pending DQA
-    /// data/management descriptor must not extend that hold: the 7265's
-    /// scheduler is responsible for fetching q5 after its write-pointer
-    /// doorbell, and keeping MAC_ACCESS_REQ asserted until q5 is reclaimed
-    /// is not the upstream power-management contract.
+    /// Linux uses a separate runtime-PM reference for the first outstanding
+    /// non-command TFD. Fullerene has no runtime-PM layer, so the equivalent
+    /// protection is to retain MAC_ACCESS_REQ while a data/management TFD is
+    /// pending. Releasing it immediately after the q5 doorbell lets the
+    /// 7265D enter its low-power state before the scheduler fetches the TFD.
     fn release_mac_access_if_tx_idle(&mut self) {
-        if self.tx_head == self.tx_tail {
+        if self.tx_head == self.tx_tail && self.tx_data_head == self.tx_data_tail {
             self.release_mac_access();
         }
     }
@@ -3136,7 +3136,7 @@ mod tests {
     }
 
     #[test]
-    fn host_command_releases_mac_access_when_command_queue_is_empty() {
+    fn host_command_keeps_mac_access_held_while_data_is_pending() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
 
         device.send_hcmd(0x01, GroupId::Legacy as u8, &[]).unwrap();
@@ -3145,11 +3145,18 @@ mod tests {
             0,
         );
 
-        // Linux releases the host-command wake hold when q0 is empty even if
-        // a DQA data queue still has an outstanding descriptor.
+        // A data TFD needs the same wake protection until its scheduler tail
+        // advances. This is Fullerene's runtime-PM equivalent on bare metal.
         device.tx_data_head = 1;
         device.tx_data_tail = 0;
         device.tx_tail = device.tx_head;
+        device.release_mac_access_if_tx_idle();
+        assert_ne!(
+            device.safe_read32(CSR_GP_CNTRL).unwrap() & CSR_GP_CNTRL_MAC_ACCESS_REQ,
+            0,
+        );
+
+        device.tx_data_tail = device.tx_data_head;
         device.release_mac_access_if_tx_idle();
         assert_eq!(
             device.safe_read32(CSR_GP_CNTRL).unwrap() & CSR_GP_CNTRL_MAC_ACCESS_REQ,

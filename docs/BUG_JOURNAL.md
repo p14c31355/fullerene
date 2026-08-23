@@ -1279,3 +1279,30 @@ distinguishes "fifo" vs "scheduler-ack" mode.
   than 0.
 - Physical hardware validation is required to confirm q5 `hw_rdptr` advances
   past 0.
+
+## Entry 040 — 2026-08-24 q5 TX wake hold covers outstanding data TFDs
+
+### Evidence
+
+The fixed API-29 run `202608240642.txt` no longer asserts at TIME_EVENT, and
+the authentication TFD reaches q5 with a valid CBBC, byte-count entry, TFD,
+and write pointer.  It nevertheless remains at `hw_wrptr=1`, `hw_rdptr=0`
+while `GP_CNTRL` changes from `0x080403cd` at submission to
+`0x080403c5` during the watchdog polls; the MAC access request is released
+before the q5 descriptor is consumed.
+
+### Fix
+
+`release_mac_access_if_tx_idle()` now requires both the host-command and
+data-TX rings to be empty.  The data-tail path already invokes this helper
+after hardware completion, so the wake request remains bounded to outstanding
+TX work and is released after reclaim.  This supplies the bare-metal
+equivalent of Linux's runtime-PM reference held for an outstanding
+non-command TFD.
+
+### Validation
+
+The unit test now covers both sides of the invariant: a pending data TFD keeps
+the request asserted after q0 drains, and advancing the data tail releases it.
+Physical validation is still required; success is q5 `hw_rdptr=1` followed by
+`REPLY_TX` and the AP authentication response.
