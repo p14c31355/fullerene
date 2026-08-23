@@ -20,7 +20,7 @@ const IWL_FIRST_TB_SIZE: usize = 20;
 // Keep the host-side SCD programming experiment available for comparison,
 // but use Linux's DQA contract by default: the transport publishes CBBC/WRPTR
 // and SCD_QUEUE_CFG lets firmware configure the dynamic queue.
-const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = true;
+const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = false;
 
 // Linux's gen1 DQA path does not set SCD_EN_CTRL for a dynamically allocated
 // data queue. The old API-29 workaround did not move q5's read pointer on the
@@ -3013,6 +3013,20 @@ mod tests {
             device.safe_read32(HBUS_TARG_WRPTR),
             Some(IWL_MGMT_QUEUE << 8)
         );
+    }
+
+    #[test]
+    fn enabling_dqa_queue_leaves_scd_programming_to_firmware_by_default() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.fw_dqa_supported = true;
+        device.write_mmio32(HBUS_TARG_PRPH_WDAT, 0xdead_beef);
+
+        device.enable_dqa_tx_queue(IWL_MGMT_QUEUE).unwrap();
+
+        // A dynamic queue is configured by SCD_QUEUE_CFG.  The host-direct
+        // path is diagnostic-only because it leaves q5 at wrptr=1/rdptr=0 on
+        // the affected API-29 firmware.
+        assert_eq!(device.safe_read32(HBUS_TARG_PRPH_WDAT), Some(0xdead_beef));
     }
 
     #[test]

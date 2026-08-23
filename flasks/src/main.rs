@@ -1,7 +1,12 @@
 // fullerene/flasks/src/main.rs
 use clap::Parser;
 use isobemak::{BootInfo, IsoImage, UefiBootInfo, build_iso};
-use std::{env, io, path::PathBuf, process::Command};
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
 
 use env_logger;
 
@@ -83,14 +88,75 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    let firmware_override = prepare_default_iwlwifi_firmware(&workspace_root)?;
+    let firmware_path = firmware_override.as_ref().map(|file| file.path());
+
     if args.iso_only {
-        let iso_path = create_iso(&workspace_root, profile, false)?;
+        let iso_path = create_iso(&workspace_root, profile, false, firmware_path)?;
         println!("ISO rebuilt at {}", iso_path.display());
         return Ok(());
     }
 
-    run_qemu(&workspace_root, &args, profile)?;
+    run_qemu(&workspace_root, &args, profile, firmware_path)?;
     Ok(())
+}
+
+const LINUX_TESTED_FIRMWARE_COMMIT: &str = "11b7607b738eceacdf32505cb77b8151602bff9b";
+const LINUX_TESTED_FIRMWARE_PATH: &str = "iwlwifi-7265D-29.ucode";
+
+/// Return the firmware path that should be passed to nested Cargo builds.
+///
+/// The tracked linux-firmware tip currently contains the older 9ef079ed
+/// 7265D blob, while the Linux baseline used 29.4063824552.0 / f2390aa8.
+/// That known-good blob is retained in the submodule history, so the default
+/// ISO build extracts it to a temporary file without modifying the submodule.
+/// An explicit environment override always wins and is inherited unchanged.
+fn prepare_default_iwlwifi_firmware(
+    workspace_root: &Path,
+) -> io::Result<Option<tempfile::NamedTempFile>> {
+    if let Some(path) = env::var_os("FULLERENE_IWLWIFI_7265D_FW") {
+        log::info!(
+            "Using explicit 7265D firmware override {}",
+            Path::new(&path).display()
+        );
+        return Ok(None);
+    }
+
+    let submodule = workspace_root.join("bonder").join("iwlwifi");
+    let mut git = Command::new("git");
+    git.current_dir(&submodule)
+        .args([
+            "show",
+            &format!(
+                "{}:{}",
+                LINUX_TESTED_FIRMWARE_COMMIT, LINUX_TESTED_FIRMWARE_PATH
+            ),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = git.output()?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "Linux-tested 7265D firmware is unavailable in the linux-firmware submodule: {}",
+                detail.trim()
+            ),
+        ));
+    }
+
+    let target_dir = workspace_root.join("target");
+    fs::create_dir_all(&target_dir)?;
+    let mut firmware = tempfile::NamedTempFile::new_in(target_dir)?;
+    firmware.write_all(&output.stdout)?;
+    firmware.as_file_mut().flush()?;
+    log::info!(
+        "Defaulting 7265D firmware to Linux-tested commit {} ({} bytes)",
+        LINUX_TESTED_FIRMWARE_COMMIT,
+        output.stdout.len()
+    );
+    Ok(Some(firmware))
 }
 
 fn setup_ovmf(workspace_root: &PathBuf) -> io::Result<()> {
@@ -140,6 +206,7 @@ fn build_uefi_package(
     features: Option<&str>,
     profile: BuildProfile,
     qemu_smoke_exit: bool,
+    firmware_path: Option<&Path>,
 ) -> io::Result<()> {
     let mut args: Vec<&str> = vec![
         "build",
@@ -165,6 +232,9 @@ fn build_uefi_package(
     if qemu_smoke_exit && env::var_os("FULLERENE_USB_XHCI_SMOKE").is_some() {
         cargo.env("FULLERENE_USB_XHCI_SMOKE", "1");
     }
+    if let Some(path) = firmware_path {
+        cargo.env("FULLERENE_IWLWIFI_7265D_FW", path);
+    }
     let status = cargo.args(&args).status()?;
     if !status.success() {
         return Err(io::Error::other(format!("{} build failed", package)));
@@ -176,6 +246,7 @@ fn create_iso(
     workspace_root: &PathBuf,
     profile: BuildProfile,
     qemu_smoke_exit: bool,
+    firmware_path: Option<&Path>,
 ) -> io::Result<PathBuf> {
     // --- 1. Build fullerene-kernel (no_std) ---
     build_uefi_package(
@@ -184,6 +255,7 @@ fn create_iso(
         None,
         profile,
         qemu_smoke_exit,
+        firmware_path,
     )?;
 
     let target_dir = workspace_root
@@ -205,6 +277,7 @@ fn create_iso(
     let status = Command::new("cargo")
         .current_dir(workspace_root)
         .env("KERNEL_BIN_PATH", &kernel_path)
+        .envs(firmware_path.map(|path| ("FULLERENE_IWLWIFI_7265D_FW", path)))
         .args([
             "build",
             "-q",
@@ -253,8 +326,9 @@ fn create_iso(
 fn create_iso_and_setup(
     workspace_root: &PathBuf,
     profile: BuildProfile,
+    firmware_path: Option<&Path>,
 ) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
-    let iso_path = create_iso(workspace_root, profile, true)?;
+    let iso_path = create_iso(workspace_root, profile, true, firmware_path)?;
 
     let ovmf_fd_path = workspace_root
         .join("flasks")
@@ -276,10 +350,15 @@ fn create_iso_and_setup(
     Ok((iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd))
 }
 
-fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io::Result<()> {
+fn run_qemu(
+    workspace_root: &PathBuf,
+    args: &Args,
+    profile: BuildProfile,
+    firmware_path: Option<&Path>,
+) -> io::Result<()> {
     log::info!("Starting QEMU...");
     let (iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd) =
-        create_iso_and_setup(&workspace_root, profile)?;
+        create_iso_and_setup(&workspace_root, profile, firmware_path)?;
 
     // --- 4. Run QEMU with the created ISO ---
 

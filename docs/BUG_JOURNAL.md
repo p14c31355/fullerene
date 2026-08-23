@@ -1060,6 +1060,41 @@ frame contents, or RX/WPA handling.  A positive result is q5
 `SCD_QUEUE_RDPTR: 0 -> 1` or a `REPLY_TX`; an unchanged `wrptr=1 / rdptr=0`
 with `FH_TX_TRB=0` rejects this ownership-order hypothesis as well.
 
+## Entry 036 — 2026-08-23 Ventoy baseline rejects the authentication-layer hypothesis
+
+### Same-device comparison
+
+The Ventoy capture contains a successful Linux connection and the Fullerene
+captures from the same machine. Both use Intel PCI `8086:095b`, subsystem
+`8086:5210`, firmware `29.4063824552.0`, BSSID `f0:f8:4a:e8:22:18`, and the
+same 2.4 GHz channel. Linux completes `authenticate -> authenticated ->
+associate -> associated` and receives DHCP; Fullerene stops before any
+`REPLY_TX` or authentication response.
+
+### Root-cause boundary
+
+Across the Fullerene A/B captures, q5's first authentication TFD is valid and
+the host doorbell advances `WRPTR` from 0 to 1, but the scheduler never advances
+`RDPTR` from 0. With the Linux-owned DQA gate the corresponding `FH_TX_TRB`
+remains zero. The same boundary persists when the host gate is forced, when
+the separate Linux-style first-TB buffer is used, when byte-count entries are
+written (`0x000a`), and after the Linux firmware/order/CBBC/TXFACT comparisons.
+Therefore the failure is below 802.11 authentication, at the API-29 dynamic
+q5 SCD-to-FH handoff; password, WPA parsing, AP rejection, and RX parsing are
+not the cause of the observed stall.
+
+### Correction
+
+The host-direct SCD diagnostic is disabled by default again. Firmware retains
+ownership of the dynamic q5 context through `SCD_QUEUE_CFG`, matching the
+Linux DQA contract; the host-direct path remains available only through the
+bounded fallback/diagnostic mode. The rejected unconditional FIFO byte-count
+change is not kept.
+
+Hardware confirmation still requires one Fullerene run after this change. The
+decisive success signal is q5 `RDPTR: 0 -> 1` or a `REPLY_TX`, followed by the
+Linux-equivalent authentication response.
+
 ## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
 
 ### Evidence
