@@ -144,6 +144,8 @@ pub enum LegacyCmd {
     /// Keep the BSS channel protected while authentication/association is in
     /// progress (`TIME_EVENT_CMD`).
     TimeEvent = 0x29,
+    /// Firmware notification emitted when a time event starts or ends.
+    TimeEventNotification = 0x2a,
     TxAntConfig = 0x98,
     RxonAssoc = 0x20,
     PowerDown = 0x26,

@@ -28,6 +28,12 @@ const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = false;
 // switch explicit so the old behavior can be re-enabled for one hardware run.
 const API29_DQA_HOST_SCD_GATE_DIAGNOSTIC: bool = false;
 
+// Linux publishes every gen1 CBBC during iwl_pcie_tx_reset(), before the
+// firmware CPU is released.  iwl_trans_pcie_txq_enable() does not rewrite
+// the CBBC when a DQA queue is later enabled; retain a diagnostic switch for
+// the old Fullerene behavior, but keep the Linux ownership/order by default.
+const DQA_RUNTIME_CBBC_REPUBLISH_DIAGNOSTIC: bool = false;
+
 // Legacy 7265 management/data frames use the API-v6 TX command.  A 1 Mbps
 // CCK rate is valid for the 2.4 GHz management exchange used by this driver;
 // the firmware command wrapper is the important part here, since placing the
@@ -47,7 +53,7 @@ const _: () = assert!(
 );
 const _: () = assert!(core::mem::size_of::<MacContextCmd>() == 148);
 
-struct HexBytes<'a>(&'a [u8]);
+pub(super) struct HexBytes<'a>(pub(super) &'a [u8]);
 
 impl fmt::Display for HexBytes<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -356,6 +362,10 @@ impl IwlWifiDevice {
                 | SCD_QUEUE_STTS_FIFO_COMMAND
                 | SCD_QUEUE_STTS_MASK,
         );
+        // Linux iwl_pcie_tx_start() activates all scheduler FIFOs while
+        // enabling the FH DMA channels and leaves TXFACT at 0xff.  The
+        // corresponding deactivation belongs to tx_init/tx_stop, not to this
+        // post-ALIVE start path; q0 host commands must remain fetchable.
         self.write_prph(SCD_TXFACT, 0xFF);
         // SCD_EN_CTRL is the legacy scheduler-active gate used for the
         // command queue. DQA data queues are restored at their final doorbell
@@ -405,7 +415,7 @@ impl IwlWifiDevice {
         let scd_chainext = self.read_prph(SCD_CHAINEXT_EN);
         let scd_gp_ctrl = self.read_prph(SCD_GP_CTRL);
         log::info!(
-            "iwlwifi: legacy TX command queue configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} aux_q={} aux_tfd={:#018x} aux_active=false kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} scd_en={:#010x} scd_chainext={:#010x} scd_gp_ctrl={:#010x}",
+            "iwlwifi: legacy TX command queue configured: cmd_q={} cmd_fifo={} cmd_tfd={:#018x} aux_q={} aux_tfd={:#018x} aux_active=false kw={:#018x} scd_bc={:#018x} fh_cmd_cfg={:#010x} scd_status={:#010x} scd_en={:#010x} scd_chainext={:#010x} scd_gp_ctrl={:#010x} scd_txfact={:#010x}",
             command_queue,
             SCD_QUEUE_STTS_FIFO_COMMAND,
             ring_phys,
@@ -418,6 +428,7 @@ impl IwlWifiDevice {
             scd_active.unwrap_or(!0),
             scd_chainext.unwrap_or(!0),
             scd_gp_ctrl.unwrap_or(!0),
+            self.read_prph(SCD_TXFACT).unwrap_or(!0),
         );
         crate::debug::print("iwlwifi", "dma.after_alive.done");
         Ok(())
@@ -480,7 +491,9 @@ impl IwlWifiDevice {
         self.wake_for_hcmd()?;
         let queue_phys = self.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(queue) as u64;
         let cbbc = (queue_phys >> 8) as u32;
-        self.write_mmio32(fh_mem_cbbc_queue(queue), cbbc);
+        if DQA_RUNTIME_CBBC_REPUBLISH_DIAGNOSTIC {
+            self.write_mmio32(fh_mem_cbbc_queue(queue), cbbc);
+        }
         self.write_mmio32(HBUS_TARG_WRPTR, queue << 8);
         if direct_scd {
             // Diagnostic alternative to Linux's DQA path: configure the SCD
@@ -511,11 +524,12 @@ impl IwlWifiDevice {
         }
         mmio::write_barrier();
         log::info!(
-            "iwlwifi: DQA queue published: queue={} tfd={:#018x} cbbc={:#010x} readback={:#010x} direct_scd={} scd_en={:#010x}",
+            "iwlwifi: DQA queue published: queue={} tfd={:#018x} cbbc={:#010x} readback={:#010x} runtime_cbbc_republish={} direct_scd={} scd_en={:#010x}",
             queue,
             queue_phys,
             cbbc,
             self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0),
+            DQA_RUNTIME_CBBC_REPUBLISH_DIAGNOSTIC,
             direct_scd,
             self.read_prph(SCD_EN_CTRL).unwrap_or(!0),
         );
@@ -1030,7 +1044,10 @@ impl IwlWifiDevice {
         let sequence = ((command_queue as u16) << 8) | (self.tx_head as u16 & 0xff);
         if matches!(
             label,
-            "CONNECT_ADD_STA" | "CONNECT_SCD_QUEUE_CFG" | "CONNECT_ADD_STA_QUEUE"
+            "CONNECT_ADD_STA"
+                | "CONNECT_SCD_QUEUE_CFG"
+                | "CONNECT_ADD_STA_QUEUE"
+                | "CONNECT_TIME_EVENT"
         ) {
             log::info!(
                 "iwlwifi: hcmd.sync.submit name={} opcode=0x{:02x} group=0x{:02x} payload_len={} payload_hex={}",
@@ -1086,6 +1103,14 @@ impl IwlWifiDevice {
                         }
                         let status =
                             u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                        log::info!(
+                            "iwlwifi: add_sta.response name={} status={:#010x} status_low={:#04x} payload_len={} payload_hex={}",
+                            label,
+                            status,
+                            status & 0xff,
+                            payload.len(),
+                            HexBytes(&payload),
+                        );
                         if status & 0xff != 1 {
                             log::error!(
                                 "iwlwifi: hcmd.sync.error name={} stage=status add_sta_status={:#010x}",
@@ -1108,6 +1133,19 @@ impl IwlWifiDevice {
                         }
                         let status =
                             u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                        log::info!(
+                            "iwlwifi: time_event.response status={:#010x} id={:#010x} unique_id={:#010x} id_and_color={:#010x} payload_hex={}",
+                            status,
+                            u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]),
+                            u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]),
+                            u32::from_le_bytes([
+                                payload[12],
+                                payload[13],
+                                payload[14],
+                                payload[15]
+                            ]),
+                            HexBytes(&payload),
+                        );
                         if status & 1 == 0 {
                             log::error!(
                                 "iwlwifi: hcmd.sync.error name={} stage=status time_event_status={:#010x}",
@@ -1121,6 +1159,24 @@ impl IwlWifiDevice {
                     if label == "CONNECT_SCD_QUEUE_CFG" {
                         log::info!(
                             "iwlwifi: DQA queue configuration response payload={}",
+                            HexBytes(&payload),
+                        );
+                    }
+                    if matches!(
+                        label,
+                        "CONNECT_PHY_CONTEXT"
+                            | "CONNECT_MAC_CONTEXT"
+                            | "CONNECT_ADD_STA"
+                            | "CONNECT_SCD_QUEUE_CFG"
+                            | "CONNECT_ADD_STA_QUEUE"
+                            | "CONNECT_TIME_EVENT"
+                    ) {
+                        log::info!(
+                            "iwlwifi: hcmd.sync.response_payload name={} opcode=0x{:02x} group=0x{:02x} sequence=0x{:04x} payload_hex={}",
+                            label,
+                            opcode,
+                            group,
+                            sequence,
                             HexBytes(&payload),
                         );
                     }
@@ -1150,6 +1206,99 @@ impl IwlWifiDevice {
                 }
             }
         }
+    }
+
+    /// Dump the complete gen1 SCD/FH state relevant to a dynamic queue.
+    ///
+    /// DQA queue setup is firmware-owned on API 29, so a queue can look
+    /// configured from the HCMD response while still being invisible to the
+    /// scheduler.  Keep this read-only snapshot at each setup boundary so a
+    /// single hardware run distinguishes host publication, firmware queue
+    /// configuration, station ownership, and the actual TX doorbell.
+    pub(super) fn log_dqa_scheduler_snapshot(&mut self, label: &str, sta_queue_mask: u32) {
+        const DIAG_QUEUES: [u32; 3] = [IWL_CMD_QUEUE, IWL_DQA_AUX_QUEUE, IWL_MGMT_QUEUE];
+        const DIAG_FIFOS: [u32; 3] = [3, 5, 7];
+
+        log::info!(
+            "iwlwifi: dqa.snapshot.begin label={} sta_queue_mask={:#010x} hbus_wrptr={:#010x} csr_gp={:#010x} csr_gp1={:#010x} scd_active={:#010x} scd_ait={:#010x} scd_en={:#010x} scd_gp={:#010x} scd_interrupt_mask={:#010x} qchain={:#010x} chainext={:#010x} aggr={:#010x} txfact={:#010x} scd_dram={:#010x} scd_base={:#010x} fh_chicken={:#010x} fh_tx_status={:#010x} fh_tx_error={:#010x}",
+            label,
+            sta_queue_mask,
+            self.safe_read32(HBUS_TARG_WRPTR).unwrap_or(!0),
+            self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0),
+            self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0),
+            self.read_prph(SCD_ACTIVE).unwrap_or(!0),
+            self.read_prph(SCD_AIT).unwrap_or(!0),
+            self.read_prph(SCD_EN_CTRL).unwrap_or(!0),
+            self.read_prph(SCD_GP_CTRL).unwrap_or(!0),
+            self.read_prph(SCD_INTERRUPT_MASK).unwrap_or(!0),
+            self.read_prph(SCD_QUEUECHAIN_SEL).unwrap_or(!0),
+            self.read_prph(SCD_CHAINEXT_EN).unwrap_or(!0),
+            self.read_prph(SCD_AGGR_SEL).unwrap_or(!0),
+            self.read_prph(SCD_TXFACT).unwrap_or(!0),
+            self.read_prph(SCD_DRAM_BASE_ADDR).unwrap_or(!0),
+            self.alive_scd_base_addr,
+            self.safe_read32(FH_TX_CHICKEN_BITS).unwrap_or(!0),
+            self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0),
+            self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0),
+        );
+
+        for queue in DIAG_QUEUES {
+            let status = self.read_prph(scd_queue_status(queue)).unwrap_or(!0);
+            let wrptr = self.read_prph(scd_queue_wrptr(queue)).unwrap_or(!0);
+            let rdptr = self.read_prph(scd_queue_rdptr(queue)).unwrap_or(!0);
+            let cbbc = self.safe_read32(fh_mem_cbbc_queue(queue)).unwrap_or(!0);
+            let (ctx0, ctx1, trans_tbl, tx_stts) = if self.alive_scd_base_addr != 0 {
+                (
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(queue))
+                        .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_context_queue(queue) + 4)
+                        .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_trans_tbl_offset_queue(queue))
+                        .unwrap_or(!0),
+                    self.read_mem32(self.alive_scd_base_addr + scd_tx_stts_queue_offset(queue))
+                        .unwrap_or(!0),
+                )
+            } else {
+                (!0, !0, !0, !0)
+            };
+            log::info!(
+                "iwlwifi: dqa.snapshot.queue label={} queue={} status={:#010x} fifo={} active={} wsl={} scd_ack={} bit7={} wrptr={:#010x} rdptr={:#010x} cbbc={:#010x} ctx0={:#010x} ctx1={:#010x} trans_tbl={:#010x} tx_stts={:#010x} queue_owned={}",
+                label,
+                queue,
+                status,
+                status & 0x7,
+                (status & SCD_QUEUE_STTS_ACTIVE) != 0,
+                (status & SCD_QUEUE_STTS_WSL) != 0,
+                (status & SCD_QUEUE_STTS_SCD_ACK) != 0,
+                (status & (1 << 7)) != 0,
+                wrptr,
+                rdptr,
+                cbbc,
+                ctx0,
+                ctx1,
+                trans_tbl,
+                tx_stts,
+                (sta_queue_mask & (1 << queue)) != 0,
+            );
+        }
+
+        for fifo in DIAG_FIFOS {
+            let stride = fifo * (0x20 / 4);
+            log::info!(
+                "iwlwifi: dqa.snapshot.fh label={} fifo={} config={:#010x} credit={:#010x} buf_status={:#010x} trb={:#010x}",
+                label,
+                fifo,
+                self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + stride)
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_CREDIT_BASE + stride)
+                    .unwrap_or(!0),
+                self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_BASE + stride)
+                    .unwrap_or(!0),
+                self.safe_read32(fh_tx_trb_channel(fifo)).unwrap_or(!0),
+            );
+        }
+
+        log::info!("iwlwifi: dqa.snapshot.end label={}", label);
     }
 
     /// Wait for the firmware response to a synchronous runtime setup command.
@@ -2432,6 +2581,7 @@ impl IwlWifiDevice {
                         HexBytes(&dma_wire),
                     );
                 }
+                self.log_dqa_scheduler_snapshot("after_auth_doorbell", 1u32 << traffic_queue);
             }
         }
         // Release only after the q0 host-command ring is empty. A data-frame
@@ -2846,22 +2996,37 @@ mod tests {
     }
 
     #[test]
-    fn enabling_dqa_queue_republishes_its_cbbc_before_initial_wrptr() {
+    fn enabling_dqa_queue_preserves_prearmed_cbbc_before_initial_wrptr() {
         let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
         device.fw_dqa_supported = true;
-        device.write_mmio32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE), 0xdead_beef);
+        let queue_phys = device.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(IWL_MGMT_QUEUE) as u64;
+        let prearmed_cbbc = (queue_phys >> 8) as u32;
+        device.write_mmio32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE), prearmed_cbbc);
 
         device.enable_dqa_tx_queue(IWL_MGMT_QUEUE).unwrap();
 
-        let queue_phys = device.tx_dma_ring.dma_iova() + tx_tfd_ring_offset(IWL_MGMT_QUEUE) as u64;
         assert_eq!(
             device.safe_read32(fh_mem_cbbc_queue(IWL_MGMT_QUEUE)),
-            Some((queue_phys >> 8) as u32)
+            Some(prearmed_cbbc)
         );
         assert_eq!(
             device.safe_read32(HBUS_TARG_WRPTR),
             Some(IWL_MGMT_QUEUE << 8)
         );
+    }
+
+    #[test]
+    fn enabling_dqa_queue_leaves_scd_programming_to_firmware_by_default() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+        device.fw_dqa_supported = true;
+        device.write_mmio32(HBUS_TARG_PRPH_WDAT, 0xdead_beef);
+
+        device.enable_dqa_tx_queue(IWL_MGMT_QUEUE).unwrap();
+
+        // A dynamic queue is configured by SCD_QUEUE_CFG.  The host-direct
+        // path is diagnostic-only because it leaves q5 at wrptr=1/rdptr=0 on
+        // the affected API-29 firmware.
+        assert_eq!(device.safe_read32(HBUS_TARG_PRPH_WDAT), Some(0xdead_beef));
     }
 
     #[test]

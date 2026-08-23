@@ -827,3 +827,309 @@ enumeration path.
 - `cargo check -p nitrogen` passed.
 - `cargo check -p fullerene-kernel --target x86_64-unknown-uefi` passed.
 - Formatting and `git diff --check` passed.
+
+## Entry 027 — 2026-08-17 Linux gen1 DQA station ownership order
+
+### Linux comparison
+
+Linux v4.14's `iwl_mvm_enable_txq()` first sends the AP station update with
+`STA_MODIFY_QUEUES`, then calls the PCIe transport queue-enable path, and only
+after that sends `SCD_QUEUE_CFG`.  The transport path publishes the DQA CBBC
+and initial write pointer; the station queue mask is already owned by the
+firmware when SCD configures the queue.
+
+Fullerene had the queue-configuration order reversed: it published q5 and
+sent `SCD_QUEUE_CFG`, then sent `CONNECT_ADD_STA_QUEUE`.  The q5 snapshots
+showed an apparently active SCD context, but this did not prove that the
+firmware scheduler had a valid station owner at the point it accepted the
+queue configuration.
+
+### Change
+
+The DQA connection path now sends `CONNECT_ADD_STA_QUEUE` before q5 CBBC/WRPTR
+publication and `CONNECT_SCD_QUEUE_CFG`.  The existing q5 gate workaround,
+TIME_EVENT experiment, authentication frame, WPA path, and RX parser were not
+changed by this comparison patch.  Diagnostics retain snapshots after station
+ownership, after CBBC publication, after SCD configuration, and immediately
+before/after the real authentication doorbell.
+
+### Validation
+
+- Linux source comparison: `mvm/utils.c` `iwl_mvm_enable_txq()` and
+  `mvm/sta.c` `iwl_mvm_sta_send_to_fw()`.
+- TFD comparison remains unchanged and byte-compatible: 128-byte gen1 TFD,
+  three TBs of 20/64/6 bytes, and scratch at TB0+12.
+- `cargo check --workspace --all-targets` passed.
+- `cargo test -p nitrogen --all-targets`: 182 unit tests and 17 Linux
+  compatibility tests passed.
+- Real hardware validation remains pending; the decisive result is q5
+  `hw_rdptr: 0 -> 1` or a TX completion after the reordered sequence.
+
+## Entry 029 — 2026-08-17 fl-fw falsifies the old-firmware hypothesis
+
+### Evidence
+
+fl-fw is using the Linux-tested firmware `29.4063824552`, build
+`CoreCycle26_stab::f2390aa8`, and still asserts on the reordered
+`CONNECT_ADD_STA_QUEUE` command with `error_id=0x000021a0`.  The initial
+`CONNECT_ADD_STA` succeeds; the assert occurs before CBBC publication and
+before `SCD_QUEUE_CFG`.
+
+This is a direct A/B result against fl-auth21 through fl-auth25, which use the
+same firmware family and accept the sequence:
+
+```text
+CONNECT_SCD_QUEUE_CFG
+CONNECT_ADD_STA_QUEUE
+authentication TFD
+```
+
+The failing and successful `ADD_STA_QUEUE` payloads are the same 44-byte
+Linux-shaped `STA_MODIFY_QUEUES` payload (`modify_mask=0x80`,
+`tfd_queue_msk=0x20`).  The distinguishing variable is the command order.
+
+### Correction
+
+The DQA connection path is restored to the firmware-accepted order:
+
+```text
+CBBC / initial WR_PTR
+SCD_QUEUE_CFG
+ADD_STA_QUEUE
+API-29 gate observation
+authentication TFD
+```
+
+The earlier Linux comparison had conflated Linux's host-side queue mapping
+update inside `iwl_mvm_enable_txq()` with the later firmware-side
+`iwl_mvm_sta_send_to_fw(..., STA_MODIFY_QUEUES)` command.  Linux sends the
+firmware station update after `SCD_QUEUE_CFG`; the new comments and snapshots
+make that distinction explicit.
+
+### Validation
+
+- `cargo check --workspace --all-targets` passed.
+- `cargo test -p nitrogen --all-targets`: 182 unit tests and 17 Linux
+  compatibility tests passed.
+- The next hardware run should reach the existing q5 fetch boundary instead
+  of asserting during station setup.
+
+## Entry 030 — 2026-08-17 fl-fw2 reaches q5 fetch with the gate disabled
+
+### Evidence
+
+fl-fw2 loads the Linux-tested `29.4063824552` / `f2390aa8` firmware and
+accepts the corrected connection sequence:
+
+```text
+CONNECT_ADD_STA             success
+CBBC publication             success
+CONNECT_SCD_QUEUE_CFG        success
+CONNECT_ADD_STA_QUEUE        success
+```
+
+Immediately before authentication, q5 is firmware-configured as queue 5 on
+FIFO 3 with `status=0x0000009b`, `active=true`, `ctx1=0x00400040`, and
+`queue_owned=true`. The authentication TFD is published with `hw_wrptr=1`,
+the expected three TBs, and `dma_wire_match=true`.
+
+The API-29 host gate is disabled and observed as:
+
+```text
+SCD_EN_CTRL=0x00000003
+q5_bit=CLEAR
+```
+
+After submission the queue remains at `hw_wrptr=1`, `hw_rdptr=0` through
+ticks 64, 512, 1024, and 1536. `FH_TX_TRB` remains zero and no `REPLY_TX`
+arrives. Earlier captures with the host gate forced (`SCD_EN_CTRL=0x23`) had
+the same q5 read-pointer stall, although their FH snapshot differed.
+
+### Conclusion
+
+The firmware image and `ADD_STA_QUEUE` order are now validated. The direct
+host-side `SCD_EN_CTRL` q5 write is not sufficient to make the scheduler fetch
+the TFD and is not the primary root cause by itself. The remaining boundary is
+now the dynamic q5 SCD-to-FH handoff after the real doorbell.
+
+The q5 status changes from `0x9b` before the doorbell to `0x1b` afterwards;
+this raw status transition should be retained in the next comparison, but it
+must not be called Linux's `SCD_ACT_EN` bit without further decoding. Linux
+defines that field at bit 19, not raw bit 7.
+
+## Entry 031 — 2026-08-17 Linux gen1 SCD_TXFACT steady-state mismatch (rejected)
+
+### Linux comparison
+
+The initial comparison incorrectly attributed `iwl_scd_deactivate_fifos()` to
+the end of `iwl_pcie_tx_start()`.  In the Linux source, deactivation occurs in
+`iwl_pcie_tx_init()` before the later start sequence, and in the TX stop path.
+`iwl_pcie_tx_start()` calls `iwl_scd_activate_fifos()` after configuring the
+command queue and leaves `SCD_TXFACT=0xff` active on return.
+
+### Change
+
+The experiment wrote `SCD_TXFACT=0` after FH channel/chicken-bit setup.  On
+hardware this prevented the first `BT_CONFIG_INIT_API29` command from being
+consumed: q0 `wrptr=1`, `rdptr=0`, and initialization stopped before NVM and
+connection setup.  This rejects the experiment as a Q5 fix and confirms that
+the command FIFO needs the active `0xff` state after TX start.
+
+### Hardware criterion
+
+Fullerene now restores Linux's `SCD_TXFACT=0xff` post-start state and logs it
+in the legacy TX command-queue line.  The next run must first pass
+`BT_CONFIG_INIT_API29`; only then is the q5 `SCD_QUEUE_RDPTR: 0 -> 1` test
+meaningful.  If q5 still remains at zero, the next comparison is the Linux
+separate coherent first-TB buffer, not another 802.11-layer change.
+
+## Entry 032 — 2026-08-17 fl-fail rejects post-start SCD_TXFACT=0
+
+`fl-fail.txt` tested the Entry 031 build with firmware
+`CoreCycle26_stab::f2390aa8` / API 29.  Initialization reached ALIVE and
+programmed the legacy TX foundation, but the first `BT_CONFIG_INIT_API29`
+descriptor was not consumed:
+
+```text
+wrptr=1 rptr=0 scd_status=0x1f scd_en=0x1
+init.hcmd.error ... consumed=false ...
+```
+
+This is a transport-start regression before DQA or Q5 exists.  The Linux
+`tx_start()` ordering requires the activated scheduler FIFOs to remain active;
+the `SCD_TXFACT=0` write was therefore removed from the post-FH setup path.
+
+## Entry 033 — 2026-08-17 fl-fw3 validates TXFACT and isolates the Q5 fetch boundary
+
+`fl-fw3.txt` uses the restored Linux gen1 scheduler state and records
+`scd_txfact=0xff` during legacy TX setup, Q5 setup, and after the Q5 doorbell.
+The first `BT_CONFIG_INIT_API29` and all connection setup commands are
+consumed successfully, so the Entry 031 transport-start regression is gone.
+
+The Q5 boundary is unchanged:
+
+```text
+Q5 before submit: status=0x9b wrptr=0 rdptr=0 ctx1=0x00400040
+Q5 after submit:  status=0x1b wrptr=1 rdptr=0
+FH fifo 3:        config=0x80000008 trb=0
+```
+
+No `REPLY_TX` or FH transaction follows.  This rejects `SCD_TXFACT` as the
+Q5 fetch cause.  It also means that the next investigation must remain below
+the 802.11 layer, at the dynamic SCD-to-FH handoff.
+
+## Entry 034 — 2026-08-17 fl-fw4 rejects separate first-TB as the fetch cause
+
+`fl-fw4.txt` tested the Linux-style separate coherent first-TB layout.  The
+TFD showed the intended arrangement:
+
+```text
+TB0 = first_tb_dma       0x03aa9000
+TB1 = payload_dma + 20   0x039a9014
+TB2 = payload_dma + 84   0x039a9054
+scratch = first_tb_dma+12
+```
+
+Despite this, Q5 remained `wrptr=1 / rdptr=0` through the observed ticks,
+with `FH_TX_TRB=0` and no `REPLY_TX`.  The first-TB layout change is therefore
+rejected and must not remain as the next hardware experiment.
+
+The byte-count path is also not a new untested candidate: `fl-auth22.txt`
+already records `bc_primary=0x000a` and `bc_duplicate=0x000a` after the Q5
+authentication submit, while Q5 still remained `wrptr=1 / rdptr=0`.  Repeating
+that byte-count-only A/B would duplicate an existing negative result.
+
+## Entry 035 — 2026-08-17 Linux-equivalent runtime CBBC ownership A/B
+
+The Linux gen1 path publishes all `FH_MEM_CBBC_QUEUE(n)` values in
+`iwl_trans_pcie_tx_reset()`, before `iwl_pcie_tx_start()` releases the
+firmware CPU.  Later `iwl_trans_pcie_txq_enable(..., cfg=NULL)` only resets
+the software queue pointers and writes the initial `HBUS_TARG_WRPTR`; it does
+not rewrite the CBBC for a DQA queue.
+
+Fullerene was re-writing q5's CBBC in `enable_dqa_tx_queue()` after ALIVE and
+immediately before `SCD_QUEUE_CFG`.  The address was normally identical, but
+that was a real ownership/order difference at the FH/SCD boundary.  The new
+default preserves the pre-ALIVE CBBC and leaves the old behavior behind the
+explicit `DQA_RUNTIME_CBBC_REPUBLISH_DIAGNOSTIC` switch.  The submit log now
+prints `runtime_cbbc_republish=false` and the CBBC readback.
+
+This is a bounded transport-only A/B.  It does not change `SCD_EN_CTRL`,
+`SCD_QUEUE_CFG`, `ADD_STA_QUEUE`, TFD layout, byte counts, authentication
+frame contents, or RX/WPA handling.  A positive result is q5
+`SCD_QUEUE_RDPTR: 0 -> 1` or a `REPLY_TX`; an unchanged `wrptr=1 / rdptr=0`
+with `FH_TX_TRB=0` rejects this ownership-order hypothesis as well.
+
+## Entry 036 — 2026-08-23 Ventoy baseline rejects the authentication-layer hypothesis
+
+### Same-device comparison
+
+The Ventoy capture contains a successful Linux connection and the Fullerene
+captures from the same machine. Both use Intel PCI `8086:095b`, subsystem
+`8086:5210`, firmware `29.4063824552.0`, BSSID `f0:f8:4a:e8:22:18`, and the
+same 2.4 GHz channel. Linux completes `authenticate -> authenticated ->
+associate -> associated` and receives DHCP; Fullerene stops before any
+`REPLY_TX` or authentication response.
+
+### Root-cause boundary
+
+Across the Fullerene A/B captures, q5's first authentication TFD is valid and
+the host doorbell advances `WRPTR` from 0 to 1, but the scheduler never advances
+`RDPTR` from 0. With the Linux-owned DQA gate the corresponding `FH_TX_TRB`
+remains zero. The same boundary persists when the host gate is forced, when
+the separate Linux-style first-TB buffer is used, when byte-count entries are
+written (`0x000a`), and after the Linux firmware/order/CBBC/TXFACT comparisons.
+Therefore the failure is below 802.11 authentication, at the API-29 dynamic
+q5 SCD-to-FH handoff; password, WPA parsing, AP rejection, and RX parsing are
+not the cause of the observed stall.
+
+### Correction
+
+The host-direct SCD diagnostic is disabled by default again. Firmware retains
+ownership of the dynamic q5 context through `SCD_QUEUE_CFG`, matching the
+Linux DQA contract; the host-direct path remains available only through the
+bounded fallback/diagnostic mode. The rejected unconditional FIFO byte-count
+change is not kept.
+
+Hardware confirmation still requires one Fullerene run after this change. The
+decisive success signal is q5 `RDPTR: 0 -> 1` or a `REPLY_TX`, followed by the
+Linux-equivalent authentication response.
+
+## Entry 028 — 2026-08-17 fl-snap3 is an old-firmware ADD_STA_QUEUE assert
+
+### Evidence
+
+fl-snap3 does not fail at the initial station creation.  The first
+`CONNECT_ADD_STA` command returns status `0x00000001` with a four-byte response,
+and its command-queue target and read pointer both advance from 29 to 30.
+The failure is the reordered `CONNECT_ADD_STA_QUEUE` command immediately
+afterwards: it is submitted as opcode `0x18`, sequence `0x001e`, and the
+firmware asserts with `error_id=0x000021a0` before CBBC publication,
+`SCD_QUEUE_CFG`, or the authentication TFD.
+
+The capture is running firmware `29.2666559981`, build
+`CoreCycle26_stab::9ef079ed`.  This is the older blob from Entry 019, not the
+Linux-tested `29.4063824552` / `CoreCycle26_stab::f2390aa8` blob used by
+fl-auth15 and later successful initialization captures.  The failing payload
+contains the expected Linux-shaped `STA_MODIFY_QUEUES` fields, including
+`modify_mask=0x80` and `tfd_queue_msk=0x20`; the old firmware nevertheless
+rejects this queue-ownership update with the same assert class already seen in
+Entry 018.
+
+### Conclusion
+
+This run confirms that the initial `ADD_STA` is genuine, but it cannot validate
+the Linux queue-order experiment because the firmware image is different and
+asserts at the queue-owner update.  The `SCD_RDPTR=0x1f` printed in the assert
+record is the command queue pointer, not q5's SCD read pointer.  No conclusion
+about q5 fetching or TIME EVENT can be drawn from this run.
+
+### Next experiment
+
+Repeat the current reordered connection path once with the known-good
+`29.4063824552` / `f2390aa8` firmware.  Do not add a fallback queue form for
+`29.2666559981`: both its DQA queue update and legacy static-q4 ownership form
+already have recorded `0x21a0` asserts.  If the newer image accepts
+`CONNECT_ADD_STA_QUEUE`, continue to the q5 `hw_rdptr` measurement; if it also
+asserts, then compare the exact queue-update payload and command version before
+changing the ordering hypothesis.

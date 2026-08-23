@@ -16,7 +16,17 @@ use bonder::wifi::{self, AccessPoint, Ssid};
 use super::device::IwlWifiDevice;
 use super::firmware::select_firmware_list;
 use super::registers::*;
+use super::tx::HexBytes;
 use super::types::*;
+
+// First TIME_EVENT experiment: match Linux's pre-management-TX session
+// protection on the current API-29/DQA path. Keep this explicit so the
+// experiment can be reverted to the no-TIME_EVENT baseline with one change.
+// Keep the legacy API-v2 session-protection experiment opt-in.  On the
+// current 7265D API-29 image the Linux-shaped TIME_EVENT_CMD asserts even
+// when issued before DQA queue setup; never make that destructive probe part
+// of the normal connection path.
+const API29_TIME_EVENT_EXPERIMENT: bool = false;
 
 // ── Global driver context for DMA ──
 
@@ -931,6 +941,9 @@ fn perform_init_step() {
                 fw_lar_v2: false,
                 fw_umac_scan_supported: false,
                 fw_dqa_supported: false,
+                fw_session_prot_supported: false,
+                fw_time_event_cmd_version: None,
+                fw_ucode_flags: 0,
                 phy_config: 0,
                 phy_sku_tlv_len: None,
                 runtime_calib_flow: 0,
@@ -2196,7 +2209,96 @@ impl IwlWifiDevice {
             return Err(error);
         }
 
+        // Linux invokes mgd_prepare_tx after the AP station exists but before
+        // the first management TX allocates/configures its dynamic queue.
+        // Keep TIME_EVENT_CMD in that same phase.  Sending it after
+        // SCD_QUEUE_CFG/ADD_STA queue ownership is accepted causes this API29
+        // image to assert, even though the 36-byte command matches Linux.
+        let (time_event_cmd_ver, time_event_notif_ver) = self
+            .fw_time_event_cmd_version
+            .map(|(cmd, notif)| (cmd as u32, notif as u32))
+            .unwrap_or((u32::MAX, u32::MAX));
+        log::info!(
+            "iwlwifi: time_event.api_selection api={} build={} legacy_opcode=0x{:02x} group=0x00 cmd_ver={} notif_ver={} session_prot_cap={} ucode_flags={:#010x}",
+            self.fw_api_ver,
+            self.fw_build,
+            LegacyCmd::TimeEvent as u8,
+            time_event_cmd_ver,
+            time_event_notif_ver,
+            self.fw_session_prot_supported,
+            self.fw_ucode_flags,
+        );
+        if API29_TIME_EVENT_EXPERIMENT
+            && self.fw_dqa_supported
+            && self.fw_api_ver == IWL_FW_API29_MAX
+            && self.fw_session_prot_supported
+        {
+            log::error!(
+                "iwlwifi: time_event.aborted legacy TIME_EVENT_CMD is not valid for firmware advertising SESSION_PROT_CMD"
+            );
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+            self.wifi_conn.error_msg = Some(
+                "firmware requires SESSION_PROTECTION_CMD; legacy TIME_EVENT_CMD disabled".into(),
+            );
+            return Err(crate::DriverError::Protocol);
+        }
+        if API29_TIME_EVENT_EXPERIMENT
+            && self.fw_dqa_supported
+            && self.fw_api_ver == IWL_FW_API29_MAX
+        {
+            let session = TimeEventCmdV2::association_protection(0);
+            let session_bytes = unsafe { super::as_bytes(&session) };
+            log::info!(
+                "iwlwifi: time_event.submit name=CONNECT_TIME_EVENT api={} dqa={} payload_len={} payload_hex={}",
+                self.fw_api_ver,
+                self.fw_dqa_supported,
+                session_bytes.len(),
+                HexBytes(session_bytes),
+            );
+            if let Err(error) = self.send_hcmd_and_wait(
+                "CONNECT_TIME_EVENT",
+                LegacyCmd::TimeEvent as u8,
+                GroupId::Legacy as u8,
+                session_bytes,
+            ) {
+                self.iwl_state = IwlState::Disconnected;
+                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                self.wifi_conn.error_msg = Some(alloc::format!(
+                    "connection session protection failed: {:?}",
+                    error
+                ));
+                log::error!("iwlwifi: time_event.submit failed: {:?}", error);
+                return Err(error);
+            }
+            log::info!(
+                "iwlwifi: time_event.accepted before_dqa_queue_setup channel={} q5={}",
+                ap.channel,
+                IWL_MGMT_QUEUE,
+            );
+        } else {
+            log::info!(
+                "iwlwifi: time_event.skipped api={} dqa={} experiment={}",
+                self.fw_api_ver,
+                self.fw_dqa_supported,
+                API29_TIME_EVENT_EXPERIMENT,
+            );
+        }
+
         if self.fw_dqa_supported {
+            // Linux gen1 iwl_mvm_enable_txq() updates its host-side queue
+            // mapping before enabling the transport queue, then publishes
+            // the CBBC and sends SCD_QUEUE_CFG.  The firmware-side
+            // STA_MODIFY_QUEUES command is sent afterwards by
+            // iwl_mvm_sta_alloc_queue().  fl-auth21..25 show that this
+            // API-29 firmware accepts SCD_QUEUE_CFG -> ADD_STA_QUEUE, while
+            // fl-fw asserts when the firmware command is moved earlier.
+            let queue_update = AddStaCmdV7::peer_queue_update(0, 0, ap.bssid);
+            let queue_update_mask = queue_update.tfd_queue_msk;
+
+            // Linux publishes the transport-side DQA ring, then sends
+            // SCD_QUEUE_CFG.  The firmware-side station queue update follows
+            // that command in the gen1 DQA path.
             if let Err(error) = self.enable_dqa_tx_queue(IWL_MGMT_QUEUE) {
                 self.iwl_state = IwlState::Disconnected;
                 self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
@@ -2206,6 +2308,7 @@ impl IwlWifiDevice {
                 ));
                 return Err(error);
             }
+            self.log_dqa_scheduler_snapshot("after_cbbc_publish", queue_update_mask);
             let queue = ScdTxqCfgCmdV1::peer(0);
             if let Err(error) = self.send_hcmd_and_wait(
                 "CONNECT_SCD_QUEUE_CFG",
@@ -2221,6 +2324,7 @@ impl IwlWifiDevice {
                 ));
                 return Err(error);
             }
+            self.log_dqa_scheduler_snapshot("after_scd_queue_cfg", queue_update_mask);
             // Diagnose whether the firmware activated q5 in SCD_EN_CTRL after
             // processing SCD_QUEUE_CFG.  q1 (aux) ends up in SCD_EN_CTRL after
             // its SCD_QUEUE_CFG during init; if q5 is missing here, the
@@ -2270,10 +2374,8 @@ impl IwlWifiDevice {
                 aux_trans_tbl,
                 aux_tx_stts,
             );
-            let queue_update = AddStaCmdV7::peer_queue_update(0, 0, ap.bssid);
-            let queue_update_mask = queue_update.tfd_queue_msk;
             log::info!(
-                "iwlwifi: CONNECT_ADD_STA_QUEUE owner sta_id={} queue={} tfd_queue_msk={:#010x}",
+                "iwlwifi: CONNECT_ADD_STA_QUEUE owner sta_id={} queue={} tfd_queue_msk={:#010x} phase=after_scd_queue_cfg",
                 queue_update.sta_id,
                 IWL_MGMT_QUEUE,
                 queue_update_mask,
@@ -2292,6 +2394,8 @@ impl IwlWifiDevice {
                 ));
                 return Err(error);
             }
+            self.log_dqa_scheduler_snapshot("after_add_sta_queue", queue_update_mask);
+
             // API-29 needs q5 restored in SCD_EN_CTRL after firmware has
             // accepted the queue ownership update. Do not issue a second
             // zero-pointer doorbell here: Linux's first post-configuration
@@ -2307,6 +2411,7 @@ impl IwlWifiDevice {
                     "CLEAR"
                 },
             );
+            self.log_dqa_scheduler_snapshot("before_auth_doorbell", queue_update_mask);
 
             // Diagnostic: dump q5 SCD state before authentication. Compare
             // with q0 to identify any missing activation condition.
@@ -2369,21 +2474,6 @@ impl IwlWifiDevice {
                 scd_dram,
             );
         }
-
-        // Linux asks firmware for a high-priority session-protection Time
-        // Event here, but it is an optimisation rather than a prerequisite
-        // for authentication. The production 7265D-29 image used by this
-        // device asserts synchronously on the otherwise wire-compatible v2
-        // command (error hcmd 0x29, ADVANCED_SYSASSERT). Keep the selected PHY
-        // bound and proceed directly to authentication instead of crashing
-        // runtime firmware. The fixed-channel connection path has no active
-        // scan after this point, so it cannot intentionally leave the BSS
-        // channel during the exchange.
-        log::info!(
-            "iwlwifi: connection session protection skipped for 7265D API {}; using bound PHY channel {}",
-            self.fw_api_ver,
-            ap.channel,
-        );
 
         if let Err(error) = self.send_authentication_frame(ap.bssid) {
             self.iwl_state = IwlState::Disconnected;
