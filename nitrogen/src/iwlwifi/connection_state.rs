@@ -994,6 +994,7 @@ fn perform_init_step() {
                 rx_tail: 0,
                 rx_posted: 0,
                 tx_bufs,
+                first_tb_bufs: Vec::new(),
                 rx_bufs,
                 ip_address: [0u8; 4],
                 subnet_mask: [0u8; 4],

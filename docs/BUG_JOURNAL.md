@@ -1133,3 +1133,51 @@ already have recorded `0x21a0` asserts.  If the newer image accepts
 `CONNECT_ADD_STA_QUEUE`, continue to the q5 `hw_rdptr` measurement; if it also
 asserts, then compare the exact queue-update payload and command version before
 changing the ordering hypothesis.
+
+## Entry 027 — 2026-08-23 q5 rdptr=0 root cause: missing byte-count table entry
+
+### Symptoms
+
+From fl-auth9 through fl-auth25, q5 (DQA management queue) remained at
+`hw_wrptr=1`, `hw_rdptr=0` after the authentication TFD was submitted. No
+`REPLY_TX`, authentication response, or association followed. The SCD context,
+queue status, queuechain, and SCD_EN_CTRL all appeared correctly configured.
+
+### Root cause
+
+The gen1 SCD byte-count table (`iwlagn_scd_bc_tbl`) was only being written for
+queues marked in `SCD_AGGR_SEL` (Scheduler-ACK / aggregate queues). q5 is a
+FIFO/non-aggregate management queue, so the byte-count entry at slot 0 was left
+as zero.
+
+Linux's gen1 transport (`iwl_pcie_txq_build_tfd` with
+`trans->cfg->base_params->bc_table_dword=true` for 7265) writes the byte-count
+table **unconditionally for every TFD on every queue** — including FIFO
+non-aggregate queues. The SCD scheduler uses the byte-count table to decide
+whether a TFD has data to fetch. A zero entry means "no data", so the scheduler
+never advances the read pointer.
+
+This is why q0 (command queue, FIFO 7) worked despite the same code path: the
+command queue uses `send_hcmd()` / `send_init_hcmd()` which do not go through
+`process_tx_queue()` and thus never hit the conditional byte-count skip. q1
+(aux) also worked because its SCD_QUEUE_CFG path configured it as
+non-aggregate but the SCD queue status was written with the full
+`SCD_QUEUE_STTS_MASK` by the host-direct `enable_aux_tx_queue()` path — and q1
+was never actually used for TX data in the connection path (only scan, which is
+firmware-initiated).
+
+### Fix
+
+`process_tx_queue()` in `tx.rs` now calls `update_scd_byte_count()`
+unconditionally for every TFD, matching Linux's `iwlagn_update_bc_tbl()`. The
+`scheduler_ack` flag is retained only for the diagnostic log line that
+distinguishes "fifo" vs "scheduler-ack" mode.
+
+### Validation
+
+- All 77 nitrogen iwlwifi unit tests pass, including the updated
+  `command_and_data_queues_use_disjoint_dma_buffers` test which now asserts
+  the byte-count entry is `0x000a` (10 DWORDs for a 30-byte auth frame) rather
+  than 0.
+- Physical hardware validation is required to confirm q5 `hw_rdptr` advances
+  past 0.

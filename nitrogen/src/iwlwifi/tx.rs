@@ -13,9 +13,9 @@ use super::types::*;
 const TFD_LENGTH_MAX: usize = 0x0fff;
 /// Gen1 FH write-back region at the start of every TX command. Linux keeps
 /// this in a dedicated 64-byte-aligned buffer and exposes exactly 20 bytes as
-/// TB0; each Fullerene per-slot DMA buffer is page-aligned and can serve the
-/// same purpose in place.
-const IWL_FIRST_TB_SIZE: usize = 20;
+/// TB0; each Fullerene per-slot first-TB DMA buffer is allocated at this
+/// alignment and can serve the same purpose in place.
+const IWL_FIRST_TB_SIZE: usize = super::registers::IWL_FIRST_TB_SIZE;
 
 // Keep the host-side SCD programming experiment available for comparison,
 // but use Linux's DQA contract by default: the transport publishes CBBC/WRPTR
@@ -2415,17 +2415,24 @@ impl IwlWifiDevice {
             };
             let buf = &mut self.tx_bufs[TX_QUEUE_SIZE + desc_idx];
             let dma_addr = buf.dma_iova();
-            // Linux points the TX command's scratch write-back address into
-            // TB0. A zero address disables that contract and, together with
-            // a one-TB descriptor, leaves gen1 data queues unlike the
-            // transport format used by the 7265 firmware.
-            let scratch_dma = dma_addr + TX_COMMAND_HEADER_LEN as u64 + 8;
+            // TB0 points to a separate per-slot DMA buffer (first_tb_bufs),
+            // matching Linux's txq->first_tb_bufs.  The firmware writes back
+            // TX status into the scratch field inside TB0, so it must not
+            // share a DMA page with TB1/TB2.
+            let tb0_buf = &mut self.first_tb_bufs[desc_idx];
+            let tb0_dma = tb0_buf.dma_iova();
+            // Linux: scratch_phys = tb0_phys + sizeof(iwl_cmd_header) + offsetof(scratch)
+            //                        = tb0_phys + 4 + 8 = tb0_phys + 12
+            let scratch_dma = tb0_dma + TX_COMMAND_HEADER_LEN as u64 + 8;
             let tx = TX_COMMAND_HEADER_LEN;
             wire[tx + 44..tx + 48].copy_from_slice(&(scratch_dma as u32).to_le_bytes());
             wire[tx + 48] = ((scratch_dma >> 32) & 0x0f) as u8;
             if wire.len() > MAX_FRAME_SIZE {
                 continue;
             }
+            // Copy the first IWL_FIRST_TB_SIZE bytes into the separate TB0
+            // buffer, then the rest into the main frame buffer.
+            tb0_buf.write_from(&wire[..IWL_FIRST_TB_SIZE]);
             buf.write_from(&wire);
             let auth_dma_wire = if (tx_frame[0] >> 4) & 0x0f == 11 {
                 Some(buf.as_slice()[..wire.len()].to_vec())
@@ -2441,9 +2448,11 @@ impl IwlWifiDevice {
             let desc = unsafe { &mut *desc_ptr.add(desc_idx) };
             *desc = TxDmaDesc::zeroed();
             desc.num_tbs = if tb2_len == 0 { 2 } else { 3 };
-            desc.tbs[0].addr_lo = dma_addr as u32;
+            // TB0 → separate first_tb_bufs DMA region (20 bytes)
+            desc.tbs[0].addr_lo = tb0_dma as u32;
             desc.tbs[0].hi_n_len =
-                ((IWL_FIRST_TB_SIZE as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
+                ((IWL_FIRST_TB_SIZE as u16) << 4) | ((tb0_dma >> 32) as u16 & 0x0f);
+            // TB1 → main frame buffer, offset by IWL_FIRST_TB_SIZE
             let tb1_dma = dma_addr + IWL_FIRST_TB_SIZE as u64;
             desc.tbs[1].addr_lo = tb1_dma as u32;
             desc.tbs[1].hi_n_len = ((tb1_len as u16) << 4) | ((tb1_dma >> 32) as u16 & 0x0f);
@@ -2454,27 +2463,25 @@ impl IwlWifiDevice {
             }
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
-            // The legacy SCD uses the byte-count table only for
-            // Scheduler-ACK/aggregate queues. Linux configures the 7265
-            // management queue as FIFO/non-aggregate, so Q5 must not be
-            // treated as a Scheduler-ACK queue merely because a byte-count
-            // table exists in the shared TX DMA allocation. Keep the table
-            // writer available for aggregate data queues, but make this
-            // distinction explicit for the Q5 A/B experiment.
+            // Linux's gen1 transport writes the SCD byte-count table for
+            // every TFD on every queue — not only for Scheduler-ACK /
+            // aggregate queues.  The 7265 base_params set bc_table_dword=true,
+            // so iwl_pcie_txq_build_tfd() unconditionally calls
+            // iwlagn_update_bc_tbl().  Skipping the byte-count entry for a
+            // FIFO/non-aggregate queue leaves a zero entry, and the SCD
+            // scheduler treats that as "no data to fetch" — the TFD is never
+            // consumed and hw_rdptr stays at 0.  This is the root cause of the
+            // q5 management-queue fetch stall observed from fl-auth9 onward.
             let sec_ctl = wire[TX_COMMAND_HEADER_LEN + 17];
             let scd_aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
             let scheduler_ack = (scd_aggr & (1 << traffic_queue)) != 0;
-            let byte_count_entry = if scheduler_ack {
-                self.update_scd_byte_count(
-                    traffic_queue,
-                    desc_idx,
-                    tx_frame.len() as u16,
-                    0,
-                    sec_ctl,
-                )
-            } else {
-                0
-            };
+            let byte_count_entry = self.update_scd_byte_count(
+                traffic_queue,
+                desc_idx,
+                tx_frame.len() as u16,
+                0,
+                sec_ctl,
+            );
 
             self.tx_data_head = self.tx_data_head.wrapping_add(1);
             let handshake_frame = tx_frame.len() >= 2 && matches!(tx_frame[0] & 0xfc, 0xb0 | 0x00);
@@ -2616,8 +2623,8 @@ impl IwlWifiDevice {
                     traffic_queue,
                     desc_idx,
                     tfd_hex,
-                    u16::from(bc_primary),
-                    u16::from(bc_duplicate),
+                    bc_primary,
+                    bc_duplicate,
                     unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].addr_lo)) },
                     unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].hi_n_len)) },
                     unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[1].addr_lo)) },
@@ -2996,6 +3003,7 @@ mod tests {
             )
         };
         let data_dma = device.tx_bufs[TX_QUEUE_SIZE].dma_iova();
+        let tb0_dma = device.first_tb_bufs[0].dma_iova();
         let tb0_addr = tb0.addr_lo;
         let tb0_len = tb0.hi_n_len >> 4;
         let tb1_addr = tb1.addr_lo;
@@ -3003,30 +3011,34 @@ mod tests {
         let tb2_addr = tb2.addr_lo;
         let tb2_len = tb2.hi_n_len >> 4;
         assert_eq!(num_tbs, 3);
-        assert_eq!(tb0_addr, data_dma as u32);
+        // TB0 points to the separate first_tb_bufs DMA region
+        assert_eq!(tb0_addr, tb0_dma as u32);
         assert_eq!(tb0_len, 20);
+        // TB1/TB2 point into the main frame buffer
         assert_eq!(tb1_addr, (data_dma + 20) as u32);
         assert_eq!(tb1_len, 64);
         assert_eq!(tb2_addr, (data_dma + 84) as u32);
         assert_eq!(tb2_len, 6);
+        // Scratch writeback address is inside TB0's DMA region
         let scratch = &device.tx_bufs[TX_QUEUE_SIZE].as_slice()
             [TX_COMMAND_HEADER_LEN + 44..TX_COMMAND_HEADER_LEN + 49];
         assert_eq!(
             u32::from_le_bytes(scratch[..4].try_into().unwrap()),
-            (data_dma + 12) as u32
+            (tb0_dma + 12) as u32
         );
-        assert_eq!(scratch[4], ((data_dma + 12) >> 32) as u8 & 0x0f);
+        assert_eq!(scratch[4], ((tb0_dma + 12) >> 32) as u8 & 0x0f);
         let byte_count_base =
             device.tx_dma_ring.virt() + TX_SCD_BC_OFFSET + IWL_MGMT_QUEUE as usize * (256 + 64) * 2;
         let primary = unsafe { core::ptr::read_unaligned(byte_count_base as *const u16) };
         let duplicate =
             unsafe { core::ptr::read_unaligned((byte_count_base + 256 * 2) as *const u16) };
-        // Q5 is Linux's FIFO/non-aggregate management queue, so the
-        // Scheduler-ACK byte-count table is intentionally untouched by the
-        // submit path. The table writer itself is covered below for the
-        // aggregate/Scheduler-ACK path.
-        assert_eq!(u16::from_le(primary), 0);
-        assert_eq!(u16::from_le(duplicate), 0);
+        // Linux's gen1 transport writes the SCD byte-count table for every
+        // TFD on every queue, including FIFO/non-aggregate management queues.
+        // A 30-byte management frame with no CCMP yields 38 bytes (frame +
+        // CRC + delimiter), rounded up to 10 DWORDs, with sta_id=0 in the
+        // high nibble.
+        assert_eq!(u16::from_le(primary), 0x000a);
+        assert_eq!(u16::from_le(duplicate), 0x000a);
     }
 
     #[test]

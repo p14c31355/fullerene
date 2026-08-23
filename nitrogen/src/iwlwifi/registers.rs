@@ -397,6 +397,13 @@ pub const RX_BUFFER_SIZE: usize = 4096;
 // section (just over 3 KiB), so the command DMA buffers must be a full page.
 pub const MAX_FRAME_SIZE: usize = 4096;
 
+/// Linux's `IWL_FIRST_TB_SIZE` = 20 bytes, the first TB of every gen1 TFD.
+pub const IWL_FIRST_TB_SIZE: usize = 20;
+/// Linux's `IWL_FIRST_TB_SIZE_ALIGN` = `ALIGN(20, 64)` = 64.  Each per-slot
+/// first-TB DMA buffer is allocated at this alignment so firmware writeback
+/// never crosses a cache line boundary.
+pub const IWL_FIRST_TB_SIZE_ALIGN: usize = 64;
+
 // ── Firmware image ─────────────────
 
 pub const IWL_FW_MAGIC: u32 = 0x0a4c5749;
