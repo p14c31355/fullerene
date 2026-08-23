@@ -12,6 +12,33 @@ rust-version.workspace = true
 name = "fullerene-kernel"
 path = "src/main.rs"
 
+# These are freestanding payloads consumed by the UEFI/native smoke paths.
+# They are not host test harnesses: compiling them as tests enables unwinding
+# against a no_std binary and fails before the payload can be checked.
+[[example]]
+name = "linux_musl_hello"
+test = false
+bench = false
+required-features = ["native-payload"]
+
+[[example]]
+name = "native_shell"
+test = false
+bench = false
+required-features = ["native-payload"]
+
+[[example]]
+name = "native_launchd"
+test = false
+bench = false
+required-features = ["native-payload"]
+
+[[example]]
+name = "native_ipc_rate"
+test = false
+bench = false
+required-features = ["native-payload"]
+
 [dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",
@@ -58,6 +85,7 @@ busybox-build = { path = "../toluene/busybox-build" }
 [features]
 default = []
 user_space = []
+native-payload = []
 
 [dev-dependencies]
 petroleum = { path = "../petroleum", features = ["std"] }

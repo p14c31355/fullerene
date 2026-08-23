@@ -764,7 +764,19 @@ fn perform_init_step() {
                 set_init_phase(WifiInitPhase::FwUpload);
                 return;
             }
-            let (pci_dev, mmio, driver_ctx, health, mac, hw_rev, tx_dma, rx_dma, tx_bufs, first_tb_bufs, rx_bufs) = {
+            let (
+                pci_dev,
+                mmio,
+                driver_ctx,
+                health,
+                mac,
+                hw_rev,
+                tx_dma,
+                rx_dma,
+                tx_bufs,
+                first_tb_bufs,
+                rx_bufs,
+            ) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let pci_dev = match ctx.pci_dev.take() {
                     Some(d) => d,
@@ -2114,6 +2126,17 @@ impl IwlWifiDevice {
         }
     }
 
+    fn connection_failure<T>(
+        &mut self,
+        context: &str,
+        error: crate::DriverError,
+    ) -> Result<T, crate::DriverError> {
+        self.iwl_state = IwlState::Disconnected;
+        self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+        self.wifi_conn.error_msg = Some(alloc::format!("{context}: {error:?}"));
+        Err(error)
+    }
+
     pub fn connect(
         &mut self,
         ssid: &Ssid,
@@ -2170,13 +2193,7 @@ impl IwlWifiDevice {
             GroupId::Legacy as u8,
             unsafe { super::as_bytes(&phy_context) },
         ) {
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(alloc::format!(
-                "connection PHY channel setup failed: {:?}",
-                error
-            ));
-            return Err(error);
+            return self.connection_failure("connection PHY channel setup failed", error);
         }
 
         // Linux updates the BSS MAC context and adds the AP peer before
@@ -2191,13 +2208,7 @@ impl IwlWifiDevice {
             GroupId::Legacy as u8,
             mac_context_bytes,
         ) {
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(alloc::format!(
-                "connection MAC context setup failed: {:?}",
-                error
-            ));
-            return Err(error);
+            return self.connection_failure("connection MAC context setup failed", error);
         }
 
         // DQA stations are added without a static queue mask. Linux attaches
@@ -2205,13 +2216,7 @@ impl IwlWifiDevice {
         // Pre-DQA firmware keeps the transport-programmed static queue.
         if !self.fw_dqa_supported {
             if let Err(error) = self.enable_data_tx_queue() {
-                self.iwl_state = IwlState::Disconnected;
-                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-                self.wifi_conn.error_msg = Some(alloc::format!(
-                    "connection data queue activation failed: {:?}",
-                    error
-                ));
-                return Err(error);
+                return self.connection_failure("connection data queue activation failed", error);
             }
         }
 
@@ -2233,13 +2238,7 @@ impl IwlWifiDevice {
             GroupId::Legacy as u8,
             ap_sta_bytes,
         ) {
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(alloc::format!(
-                "connection AP station setup failed: {:?}",
-                error
-            ));
-            return Err(error);
+            return self.connection_failure("connection AP station setup failed", error);
         }
 
         // Linux invokes mgd_prepare_tx after the AP station exists but before
@@ -2278,13 +2277,7 @@ impl IwlWifiDevice {
             // SCD_QUEUE_CFG.  The firmware-side station queue update follows
             // that command in the gen1 DQA path.
             if let Err(error) = self.enable_dqa_tx_queue(IWL_MGMT_QUEUE) {
-                self.iwl_state = IwlState::Disconnected;
-                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-                self.wifi_conn.error_msg = Some(alloc::format!(
-                    "connection DQA queue publication failed: {:?}",
-                    error
-                ));
-                return Err(error);
+                return self.connection_failure("connection DQA queue publication failed", error);
             }
             self.log_dqa_scheduler_snapshot("after_cbbc_publish", queue_update_mask);
             let queue = ScdTxqCfgCmdV1::peer(0);
@@ -2294,13 +2287,7 @@ impl IwlWifiDevice {
                 GroupId::Legacy as u8,
                 unsafe { super::as_bytes(&queue) },
             ) {
-                self.iwl_state = IwlState::Disconnected;
-                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-                self.wifi_conn.error_msg = Some(alloc::format!(
-                    "connection DQA queue setup failed: {:?}",
-                    error
-                ));
-                return Err(error);
+                return self.connection_failure("connection DQA queue setup failed", error);
             }
             self.log_dqa_scheduler_snapshot("after_scd_queue_cfg", queue_update_mask);
             // Diagnose whether the firmware activated q5 in SCD_EN_CTRL after
@@ -2364,13 +2351,8 @@ impl IwlWifiDevice {
                 GroupId::Legacy as u8,
                 unsafe { super::as_bytes(&queue_update) },
             ) {
-                self.iwl_state = IwlState::Disconnected;
-                self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-                self.wifi_conn.error_msg = Some(alloc::format!(
-                    "connection DQA queue ownership update failed: {:?}",
-                    error
-                ));
-                return Err(error);
+                return self
+                    .connection_failure("connection DQA queue ownership update failed", error);
             }
             self.log_dqa_scheduler_snapshot("after_add_sta_queue", queue_update_mask);
 
@@ -2415,13 +2397,8 @@ impl IwlWifiDevice {
                     GroupId::Legacy as u8,
                     session_bytes,
                 ) {
-                    self.iwl_state = IwlState::Disconnected;
-                    self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-                    self.wifi_conn.error_msg = Some(alloc::format!(
-                        "post-DQA session protection failed: {:?}", error
-                    ));
                     log::error!("iwlwifi: time_event.submit failed: {:?}", error);
-                    return Err(error);
+                    return self.connection_failure("post-DQA session protection failed", error);
                 }
                 log::info!(
                     "iwlwifi: time_event.accepted post_dqa_queue_setup channel={} q5={}",
@@ -2502,14 +2479,8 @@ impl IwlWifiDevice {
         }
 
         if let Err(error) = self.send_authentication_frame(ap.bssid) {
-            self.iwl_state = IwlState::Disconnected;
-            self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
-            self.wifi_conn.error_msg = Some(alloc::format!(
-                "authentication frame transmission failed: {:?}",
-                error
-            ));
             log::warn!("iwlwifi: failed to send authentication frame: {:?}", error);
-            return Err(error);
+            return self.connection_failure("authentication frame transmission failed", error);
         }
         Ok(())
     }

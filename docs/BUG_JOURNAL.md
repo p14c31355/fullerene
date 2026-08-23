@@ -1,5 +1,43 @@
 # Software Bug Journal
 
+## Entry 037 — 2026-08-24 API-29 DQA host gate restored to Linux default
+
+### Finding
+
+The source comments and the Linux-compatible DQA tests described q5
+activation as firmware-owned, but `API29_DQA_HOST_SCD_GATE_DIAGNOSTIC` was
+still set to `true`. That made the production path write q5 into
+`SCD_EN_CTRL` after `ADD_STA_QUEUE`, even though the bounded A/B workaround
+had already been rejected as a cause of the `WRPTR=1/RDPTR=0` stall.
+
+### Change
+
+The diagnostic switch is now `false` by default. The explicit branch remains
+available for a controlled hardware comparison, while the normal path leaves
+dynamic queue activation to the API-29 firmware. A unit test now verifies that
+the default path does not alter the peripheral gate value or emit another
+doorbell.
+
+The repeated connection-error state transition was also factored into one
+typed helper. This reduces control-flow duplication without changing the
+error status or message returned to callers. Bonder's management-frame
+builders now reserve their fixed/derived capacity, and
+`bonder/examples/bench_wifi_frames.rs` records the host-side allocation path
+through `Instant` for repeatable optimization measurements.
+
+### Validation
+
+- `cargo check --workspace --all-targets`: passed without compiler warnings.
+- `cargo test -p nitrogen --all-targets`: 185 unit tests and 17 Linux
+  compatibility tests passed.
+- `cargo test --workspace`: passed; the freestanding kernel payload examples
+  are opt-in and the ignored throughput test remains intentionally manual.
+- `cargo run -p bonder --release --example bench_wifi_frames`: completed;
+  the measured host run reported 12.6 ns/auth frame, 24.0 ns/WPA2
+  association, and 12.6 ns/deauth frame. Values are machine-dependent.
+- Real 7265D AP authentication is still the required hardware gate; source
+  and replay tests cannot prove a physical q5 `RDPTR` advance.
+
 This document records non-obvious software bugs encountered during
 development, their root cause analysis, and the fix applied.
 

@@ -493,7 +493,7 @@ pub fn security_from_beacon(capability: u16, rsn: Option<&RsnInfo>) -> Security 
 
 /// Build a probe request frame.
 pub fn build_probe_request(target: Option<&Ssid>) -> Vec<u8> {
-    let mut frame = Vec::new();
+    let mut frame = Vec::with_capacity(64 + target.map_or(0, Ssid::len));
 
     // Frame control: type=management(0), subtype=probe request(4)
     frame.push(0x40);
@@ -543,7 +543,7 @@ pub fn build_probe_request(target: Option<&Ssid>) -> Vec<u8> {
 
 /// Build an authentication frame (open system).
 pub fn build_auth_frame(bssid: Bssid, client_mac: Bssid, seq: u16) -> Vec<u8> {
-    let mut frame = Vec::new();
+    let mut frame = Vec::with_capacity(30);
 
     // Frame control: type=management(0), subtype=auth(11)
     frame.push(0xB0);
@@ -584,7 +584,7 @@ pub fn build_assoc_request_with_security(
     ssid: &Ssid,
     privacy: bool,
 ) -> Vec<u8> {
-    let mut frame = Vec::new();
+    let mut frame = Vec::with_capacity(64 + ssid.len() + usize::from(privacy) * 22);
 
     // Frame control: type=management(0), subtype=assoc request(0)
     frame.push(0x00);
@@ -635,7 +635,7 @@ pub fn build_assoc_request_with_security(
 
 /// Build a deauthentication frame.
 pub fn build_deauth(bssid: Bssid, client_mac: Bssid, reason: u16) -> Vec<u8> {
-    let mut frame = Vec::new();
+    let mut frame = Vec::with_capacity(26);
 
     // Frame control: type=management(0), subtype=deauth(12)
     frame.push(0xC0);
@@ -672,7 +672,7 @@ mod tests {
     ) -> Vec<u8> {
         let mut f = Vec::new();
         // Frame control: management type (0), subtype in upper nibble
-        f.push((subtype << 4) | 0x00);
+        f.push(subtype << 4);
         f.push(0x00);
         // Duration
         f.extend_from_slice(&[0x00, 0x00]);

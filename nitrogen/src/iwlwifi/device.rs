@@ -618,8 +618,8 @@ impl IwlWifiDevice {
             // for TB0 of data/management TFDs.  The firmware writes back to
             // this region, so it must not overlap TB1/TB2's DMA page.
             for _ in 0..TX_QUEUE_SIZE {
-                let mut buf =
-                    DmaRegion::alloc(ctx, IWL_FIRST_TB_SIZE_ALIGN).ok_or(IwlError::DmaAllocFailed)?;
+                let mut buf = DmaRegion::alloc(ctx, IWL_FIRST_TB_SIZE_ALIGN)
+                    .ok_or(IwlError::DmaAllocFailed)?;
                 if buf
                     .dma_map(
                         ctx,
@@ -2307,8 +2307,7 @@ pub(super) mod test_support {
 
             let mut first_tb_bufs = Vec::new();
             for _ in 0..TX_QUEUE_SIZE {
-                let mut buf =
-                    DmaRegion::alloc(ctx, IWL_FIRST_TB_SIZE_ALIGN).expect("first_tb DMA");
+                let mut buf = DmaRegion::alloc(ctx, IWL_FIRST_TB_SIZE_ALIGN).expect("first_tb DMA");
                 buf.dma_map(ctx, 0).expect("first_tb map");
                 first_tb_bufs.push(buf);
             }

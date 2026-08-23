@@ -24,9 +24,9 @@ const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = false;
 
 // Linux's gen1 DQA path does not set SCD_EN_CTRL for a dynamically allocated
 // data queue. The old API-29 workaround did not move q5's read pointer on the
-// affected 7265D and prevented a clean upstream-equivalent A/B run. Keep the
-// switch explicit so the old behavior can be re-enabled for one hardware run.
-const API29_DQA_HOST_SCD_GATE_DIAGNOSTIC: bool = true;
+// affected 7265D. Keep the switch explicit for a bounded hardware A/B, but
+// leave firmware-owned queue activation as the production default.
+const API29_DQA_HOST_SCD_GATE_DIAGNOSTIC: bool = false;
 
 // Linux publishes every gen1 CBBC during iwl_pcie_tx_reset(), before the
 // firmware CPU is released.  iwl_trans_pcie_txq_enable() does not rewrite
@@ -3101,13 +3101,15 @@ mod tests {
         device.fw_api_ver = IWL_FW_API29_MAX;
         device.write_mmio32(HBUS_TARG_PRPH_RDAT, 1 << IWL_DQA_CMD_QUEUE);
         device.write_mmio32(HBUS_TARG_WRPTR, 0x1234_5678);
+        device.write_mmio32(HBUS_TARG_PRPH_WDAT, 0xdead_beef);
 
         device.ensure_api29_dqa_scheduler_gate(IWL_MGMT_QUEUE);
 
-        // The API-29 SCD gate is enabled for this firmware: q5 is added to
-        // SCD_EN_CTRL so the FH DMA path becomes non-idle.  The doorbell
-        // register is not modified by the gate function itself.
+        // Firmware owns activation of a dynamic q5 queue. The diagnostic
+        // switch must not alter either the doorbell or the peripheral value
+        // in the Linux-compatible default path.
         assert_eq!(device.safe_read32(HBUS_TARG_WRPTR), Some(0x1234_5678));
+        assert_eq!(device.safe_read32(HBUS_TARG_PRPH_WDAT), Some(0xdead_beef));
     }
 
     #[test]

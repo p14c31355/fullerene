@@ -43,6 +43,9 @@ The embedded `toluene/viewer` and `toluene/emulsion` WASM outputs are included
 in this gate and require the `wasm32-wasip1` target. The optional Linux ELF
 port binaries are not required for this gate; build them only when testing the
 packaged application path with `FULLERENE_BUILD_PORTS=1`.
+The freestanding `fullerene-kernel` payload examples are also opt-in because
+they are not host test harnesses; enable them explicitly with
+`cargo check -p fullerene-kernel --examples --features native-payload`.
 
 For rendering changes, the reusable host example compares the compositor's
 pixel output and can be run with:
@@ -53,6 +56,8 @@ cargo run -p lattice --example render_ppm
 cargo run -p lattice --release --example bench_render
 # WASM viewer image decode/downsample path
 cargo run --manifest-path toluene/viewer/Cargo.toml --release --example bench_image -- /path/to/image.jpg
+# 802.11 management-frame construction/allocation path
+cargo run -p bonder --release --example bench_wifi_frames
 ```
 
 For the DriverKit IPC envelope, run the bounded request/response stress
