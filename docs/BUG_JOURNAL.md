@@ -41,6 +41,41 @@ through `Instant` for repeatable optimization measurements.
 This document records non-obvious software bugs encountered during
 development, their root cause analysis, and the fix applied.
 
+## Entry 038 — 2026-08-24 API-29 TIME_EVENT caused a firmware assert
+
+### Finding
+
+The real-device log `202608240623.txt` reports an Intel 7265D API-29 image
+(`iwlwifi-7265D-29`, build `4063824552`) with `dqa=true` but
+`session_prot=false`. The connection setup through `CONNECT_ADD_STA_QUEUE`
+was accepted. The driver then submitted `POST_DQA_TIME_EVENT` and the
+firmware immediately reported `error_id=0x00001986`
+(`ADVANCED_SYSASSERT_OR_UNKNOWN`) for opcode `0x29`; authentication TX was
+never reached. The same sequence and assertion are present in
+`202608231937.txt`.
+
+### Change
+
+The API-29 TIME_EVENT experiment is disabled by default and is additionally
+gated on the firmware's explicit session-protection capability. This keeps
+the command available for a future compatible image without sending it to
+the affected 7265D firmware. Older runs such as `202608231913.txt` show the
+correct fallback behavior: the command is skipped and the authentication TFD
+is submitted, although that run still has the separate q5 scheduler stall
+(`hw_wrptr=1`, `hw_rdptr=0`, `FH_TRB=0`).
+
+### Validation
+
+- `cargo fmt --all -- --check`, `git diff --check`, and
+  `cargo check -p nitrogen --all-targets` passed.
+- `cargo test -p nitrogen --all-targets` passed: 185 unit tests and 17 Linux
+  compatibility tests.
+- Strict `cargo clippy -p nitrogen --all-targets -- -D warnings` remains
+  blocked by pre-existing warnings outside this change; no new warning was
+  introduced by the TIME_EVENT gate.
+- A new 7265D hardware run must confirm that the firmware assert is gone and
+  expose the remaining q5 consumption issue without the crash masking it.
+
 ## Entry 012 — 2026-08-16 shell window close left launchd occupied
 
 ### Symptoms

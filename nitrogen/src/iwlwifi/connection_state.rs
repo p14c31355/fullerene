@@ -19,13 +19,10 @@ use super::registers::*;
 use super::tx::HexBytes;
 use super::types::*;
 
-// TIME_EVENT_CMD is sent after DQA queue setup and before auth TX, matching
-// Linux's iwl_mvm_mac_mgd_prepare_tx() → iwl_mvm_protect_session() flow.
-// Without session protection the firmware has no airtime for management TX,
-// so the FH DMA loads the FIFO but the MAC never transmits and SCD rdptr
-// never advances.  An earlier experiment sent TIME_EVENT before DQA setup
-// and the firmware asserted; the post-setup position avoids that.
-const API29_TIME_EVENT_EXPERIMENT: bool = true;
+// Keep this switch available for a bounded hardware experiment, but leave it
+// off by default. API-29 7265D firmware advertises no session-protection
+// capability and asserts if it receives this command.
+const API29_TIME_EVENT_EXPERIMENT: bool = false;
 
 // ── Global driver context for DMA ──
 
@@ -2243,9 +2240,8 @@ impl IwlWifiDevice {
 
         // Linux invokes mgd_prepare_tx after the AP station exists but before
         // the first management TX allocates/configures its dynamic queue.
-        // Keep TIME_EVENT_CMD in that same phase.  Sending it after
-        // SCD_QUEUE_CFG/ADD_STA queue ownership is accepted causes this API29
-        // image to assert, even though the 36-byte command matches Linux.
+        // Keep the capability/version observation here; unsupported API-29
+        // images must not receive TIME_EVENT_CMD.
         let (time_event_cmd_ver, time_event_notif_ver) = self
             .fw_time_event_cmd_version
             .map(|(cmd, notif)| (cmd as u32, notif as u32))
@@ -2372,15 +2368,15 @@ impl IwlWifiDevice {
                 },
             );
 
-            // Send TIME_EVENT_CMD after DQA queue setup but before auth TX.
             // Linux calls iwl_mvm_protect_session() from mac80211's
             // prepare_tx callback, which runs after the station and its TX
-            // queue are fully configured.  Without session protection the
-            // firmware has no airtime and the SCD rdptr never advances.
+            // queue are fully configured. Only send the command when the
+            // firmware explicitly advertises session protection; the 7265D
+            // API-29 image asserts on this otherwise valid-looking command.
             if API29_TIME_EVENT_EXPERIMENT
                 && self.fw_dqa_supported
                 && self.fw_api_ver == IWL_FW_API29_MAX
-                && !self.fw_session_prot_supported
+                && self.fw_session_prot_supported
             {
                 let session = TimeEventCmdV2::association_protection(0);
                 let session_bytes = unsafe { super::as_bytes(&session) };
