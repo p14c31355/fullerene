@@ -76,6 +76,31 @@ is submitted, although that run still has the separate q5 scheduler stall
 - A new 7265D hardware run must confirm that the firmware assert is gone and
   expose the remaining q5 consumption issue without the crash masking it.
 
+## Entry 039 — 2026-08-24 TIME_EVENT退行の除去を実機で確認
+
+### Evidence
+
+The follow-up log `202608240642.txt` reports
+`time_event.skipped api=29 dqa=true experiment=false session_prot=false`.
+There is no firmware error record or `ADVANCED_SYSASSERT` after this point,
+and the driver reaches authentication-TFD submission with the expected
+`bc_dwords=10`, three TFD buffers, and q5 queue ownership.
+
+The original authentication problem remains isolated: q5 stays at
+`hw_wrptr=1`, `hw_rdptr=0`, and `FH_TRB=0` at ticks 64, 512, and 1024. The
+queue context is still Linux-compatible (`win_size=64`, `frame_limit=64`),
+and the configured FIFO remains active (`fifo=3`, `config=0x80000008`). The
+Linux-owned default leaves q5 out of `SCD_EN_CTRL` (`scd_en=0x00000003`), but
+earlier host-gate runs also failed to advance q5, so enabling that bit alone
+is not a sufficient fix.
+
+### Status
+
+The TIME_EVENT firmware-crash regression is resolved and hardware-confirmed.
+The remaining work is the q5 scheduler/FH fetch path; no speculative register
+change is promoted until the next bounded A/B run identifies a necessary
+condition for `RDPTR` progress.
+
 ## Entry 012 — 2026-08-16 shell window close left launchd occupied
 
 ### Symptoms
