@@ -12,9 +12,12 @@ rust-version.workspace = true
 name = "fullerene-kernel"
 path = "src/main.rs"
 
-# These are freestanding payloads consumed by the UEFI/native smoke paths.
-# They are not host test harnesses: compiling them as tests enables unwinding
-# against a no_std binary and fails before the payload can be checked.
+# These examples are consumed by the UEFI/native smoke paths. The native_*
+# entries are freestanding no_std payloads, so they are not host test
+# harnesses: compiling those entries as tests enables unwinding against a
+# no_std binary and fails before the payload can be checked. linux_musl_hello
+# is a std-based host smoke example and is kept test-disabled for the same
+# explicit-example policy.
 [[example]]
 name = "linux_musl_hello"
 test = false

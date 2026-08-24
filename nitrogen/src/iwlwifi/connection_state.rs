@@ -2211,6 +2211,10 @@ impl IwlWifiDevice {
         }
         if self.wifi_conn.current_ssid.is_some() {
             log::info!("iwlwifi: replacing previous connection before reconnect");
+            if let Some(previous_bssid) = self.wifi_conn.current_bssid {
+                let deauth = wifi::build_deauth(previous_bssid, self.mac, 3);
+                let _ = self.send_raw_80211_frame(&deauth);
+            }
             self.reset_failed_connection();
         }
         self.wifi_conn.connect(ssid, password);

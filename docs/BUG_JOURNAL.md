@@ -1,6 +1,6 @@
 # Software Bug Journal
 
-## Entry 037 — 2026-08-24 API-29 DQA host gate restored to Linux default
+## Entry 037 — 2026-08-23 UTC / 2026-08-24 JST API-29 DQA host gate restored to Linux default
 
 ### Finding
 
@@ -41,7 +41,7 @@ through `Instant` for repeatable optimization measurements.
 This document records non-obvious software bugs encountered during
 development, their root cause analysis, and the fix applied.
 
-## Entry 038 — 2026-08-24 API-29 TIME_EVENT caused a firmware assert
+## Entry 038 — 2026-08-23 UTC / 2026-08-24 JST API-29 TIME_EVENT caused a firmware assert
 
 ### Finding
 
@@ -76,7 +76,7 @@ is submitted, although that run still has the separate q5 scheduler stall
 - A new 7265D hardware run must confirm that the firmware assert is gone and
   expose the remaining q5 consumption issue without the crash masking it.
 
-## Entry 039 — 2026-08-24 TIME_EVENT退行の除去を実機で確認
+## Entry 039 — 2026-08-23 UTC / 2026-08-24 JST TIME_EVENT退行の除去を実機で確認
 
 ### Evidence
 
@@ -1290,7 +1290,7 @@ entry is not the root cause of the remaining authentication stall. The
 unconditional table update remains because it matches Linux, but the cause is
 still under investigation.
 
-## Entry 040 — 2026-08-24 q5 TX wake-hold experiment rejected
+## Entry 040 — 2026-08-23 UTC / 2026-08-24 JST q5 TX wake-hold experiment rejected
 
 ### Evidence
 
@@ -1317,7 +1317,7 @@ Physical validation is still required; the next decisive comparison is the
 Linux `iwl_trans_txq_enable_cfg(..., cfg=NULL)` DQA transport initialization
 and its queue-used/read-write-pointer state before `SCD_QUEUE_CFG`.
 
-## Entry 042 — 2026-08-24 5 GHz authentication selected an illegal CCK rate
+## Entry 042 — 2026-08-23 UTC / 2026-08-24 JST 5 GHz authentication selected an illegal CCK rate
 
 ### Evidence
 
@@ -1344,7 +1344,7 @@ was independent of the MAC wake state and is the next hardware-validation
 candidate. Success is indicated by q5 `RDPTR` advancing and receipt of the AP
 authentication response.
 
-## Entry 041 — 2026-08-24 Linux TX doorbell wake condition
+## Entry 041 — 2026-08-23 UTC / 2026-08-24 JST Linux TX doorbell wake condition
 
 ### Evidence
 
@@ -1374,7 +1374,7 @@ positive result is q5 `RDPTR: 0 -> 1` or a `REPLY_TX`; if q5 remains at
 (`queue_used`, software read/write pointers, and the initial doorbell) before
 `SCD_QUEUE_CFG`.
 
-## Entry 043 — 2026-08-24 7265D firmware stability and stale station reuse
+## Entry 043 — 2026-08-23 UTC / 2026-08-24 JST 7265D firmware stability and stale station reuse
 
 ### Evidence
 

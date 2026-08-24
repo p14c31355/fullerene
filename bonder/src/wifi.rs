@@ -493,7 +493,7 @@ pub fn security_from_beacon(capability: u16, rsn: Option<&RsnInfo>) -> Security 
 
 /// Build a probe request frame.
 pub fn build_probe_request(target: Option<&Ssid>) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(64 + target.map_or(0, Ssid::len));
+    let mut frame = Vec::with_capacity(70 + target.map_or(0, Ssid::len));
 
     // Frame control: type=management(0), subtype=probe request(4)
     frame.push(0x40);

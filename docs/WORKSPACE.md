@@ -46,13 +46,27 @@ usual host development commands focused; `cargo check --workspace` includes
 all members. `toluene/cargo` is a vendored third-party Cargo source tree and is
 not a root-workspace member.
 
-The current tracked-source census (2026-08-24), excluding `target/` and the
-vendored `toluene/cargo`, `toluene/busybox`, `toluene/netsurf`,
-`toluene/freedoom`, and `toluene/vscodium` trees, is 419 Rust files and
-140,521 Rust LOC. These are repository counts, not generated-artifact sizes;
+The current tracked-source census (2026-08-23 UTC / 2026-08-24 JST), excluding
+`target/` and the vendored `toluene/cargo`, `toluene/busybox`, `toluene/netsurf`,
+`toluene/freedoom`, and `toluene/vscodium` trees, is 420 Rust files and
+140,646 Rust LOC. These are repository counts, not generated-artifact sizes;
 the nested `toluene/viewer` and `toluene/emulsion` applications remain
 separate workspaces. Refactor LOC claims should name the excluded subtrees
-and the command used to count them. Generated and vendored inputs are not
+and use this reproducible command (the two output lines are the file count and
+total Rust LOC):
+
+```sh
+rust_files="$(git ls-files -- '*.rs' \
+  ':(exclude)toluene/cargo/**' \
+  ':(exclude)toluene/busybox/**' \
+  ':(exclude)toluene/netsurf/**' \
+  ':(exclude)toluene/freedoom/**' \
+  ':(exclude)toluene/vscodium/**')"
+printf '%s\n' "$rust_files" | sed '/^$/d' | wc -l
+printf '%s\n' "$rust_files" | sed '/^$/d' | xargs wc -l | tail -n 1
+```
+
+Generated and vendored inputs are not
 Fullerene architecture-refactor targets. The Linux personality has a single
 source tree at `solvent/linux`; the kernel integrates it through the explicitly
 named `solvent_linux` module path, with no kernel-side symlink or compatibility

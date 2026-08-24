@@ -1,6 +1,6 @@
 # Fullerene Project Rules
 
-## Current implementation snapshot (2026-08-24)
+## Current implementation snapshot (2026-08-23 UTC / 2026-08-24 JST)
 
 The repository currently implements the context-oriented architecture
 described below across the root workspace members. The main runtime path is:
