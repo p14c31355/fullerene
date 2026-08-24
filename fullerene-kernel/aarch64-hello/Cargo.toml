@@ -1,0 +1,16 @@
+[package]
+name = "fullerene-kernel-aarch64"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "fullerene-kernel"
+path = "src/main.rs"
+
+# This package is intentionally dependency-free. It is the first AArch64
+# boot milestone and must not pull the x86_64 kernel's PCI/UEFI dependency
+# graph into the aarch64-unknown-none build.

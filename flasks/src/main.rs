@@ -104,6 +104,13 @@ impl Arch {
             Self::Aarch64 => "fullerene-kernel",
         }
     }
+
+    fn cargo_package(self) -> &'static str {
+        match self {
+            Self::X86_64 => "fullerene-kernel",
+            Self::Aarch64 => "fullerene-kernel-aarch64",
+        }
+    }
 }
 
 impl Platform {
@@ -259,7 +266,9 @@ fn build_aarch64_kernel(workspace_root: &Path, profile: BuildProfile) -> io::Res
             "build",
             "-q",
             "--package",
-            "fullerene-kernel",
+            target.cargo_package(),
+            "--bin",
+            target.kernel_artifact(),
             "--target",
             target.rust_target(),
             "--profile",
@@ -273,7 +282,7 @@ fn build_aarch64_kernel(workspace_root: &Path, profile: BuildProfile) -> io::Res
     let status = cargo.status()?;
     if !status.success() {
         return Err(io::Error::other(format!(
-            "{} build failed; the target was selected, but the kernel or one of its dependencies is not AArch64-compatible yet",
+            "{} build failed; the AArch64 bootstrap kernel or its target toolchain is not ready",
             target.rust_target()
         )));
     }
