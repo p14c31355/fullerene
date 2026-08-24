@@ -1,5 +1,5 @@
 // fullerene/flasks/src/main.rs
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use isobemak::{BootInfo, IsoImage, UefiBootInfo, build_iso};
 use std::{
     env, fs,
@@ -12,9 +12,21 @@ use env_logger;
 
 #[derive(Parser)]
 struct Args {
+    /// Action to perform. When omitted, run the default x86_64 UEFI image.
+    #[arg(value_enum, default_value_t = Action::Run)]
+    command: Action,
+
     /// Clone the stable version of OVMF (edk2) into flasks/ovmf/edk2
     #[arg(long)]
     clone_ovmf: bool,
+
+    /// Target CPU architecture.
+    #[arg(long, value_enum, default_value_t = Arch::X86_64)]
+    arch: Arch,
+
+    /// Target platform. Defaults to pc-uefi for x86_64 and qemu-virt for AArch64.
+    #[arg(long, value_enum)]
+    platform: Option<Platform>,
 
     /// Run QEMU in headless mode (no GUI)
     #[arg(long)]
@@ -47,6 +59,119 @@ struct Args {
     resolution: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum Action {
+    Build,
+    Run,
+    Debug,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum Arch {
+    #[value(name = "x86_64", alias = "x86-64", alias = "amd64")]
+    X86_64,
+    #[value(name = "aarch64", alias = "aa", alias = "arm64")]
+    Aarch64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum Platform {
+    #[value(name = "pc-uefi")]
+    PcUefi,
+    #[value(name = "qemu-virt")]
+    QemuVirt,
+    Bramble,
+}
+
+impl Arch {
+    fn rust_target(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64-unknown-uefi",
+            Self::Aarch64 => "aarch64-unknown-none",
+        }
+    }
+
+    fn default_platform(self) -> Platform {
+        match self {
+            Self::X86_64 => Platform::PcUefi,
+            Self::Aarch64 => Platform::QemuVirt,
+        }
+    }
+
+    fn kernel_artifact(self) -> &'static str {
+        match self {
+            Self::X86_64 => "fullerene-kernel.efi",
+            Self::Aarch64 => "fullerene-kernel",
+        }
+    }
+}
+
+impl Platform {
+    fn qemu_binary(self) -> &'static str {
+        match self {
+            Self::PcUefi => "qemu-system-x86_64",
+            Self::QemuVirt | Self::Bramble => "qemu-system-aarch64",
+        }
+    }
+
+    fn qemu_machine(self) -> &'static str {
+        match self {
+            Self::PcUefi => "q35,usb=off,pcspk-audiodev=speaker",
+            Self::QemuVirt => "virt",
+            Self::Bramble => "bramble",
+        }
+    }
+
+    fn qemu_cpu(self) -> &'static str {
+        match self {
+            Self::PcUefi => "qemu64,+smap,+invtsc",
+            Self::QemuVirt => "cortex-a72",
+            Self::Bramble => "cortex-a72",
+        }
+    }
+
+    fn validate(self, arch: Arch) -> io::Result<()> {
+        let valid_pair = matches!(
+            (arch, self),
+            (Arch::X86_64, Self::PcUefi)
+                | (Arch::Aarch64, Self::QemuVirt)
+                | (Arch::Aarch64, Self::Bramble)
+        );
+        if !valid_pair {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("platform {:?} is not available for {:?}", self, arch),
+            ));
+        }
+        if self == Self::Bramble {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the bramble platform is reserved for a future hardware backend",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Target {
+    arch: Arch,
+    platform: Platform,
+}
+
+impl Target {
+    fn from_args(args: &Args) -> io::Result<Self> {
+        let platform = args
+            .platform
+            .unwrap_or_else(|| args.arch.default_platform());
+        platform.validate(args.arch)?;
+        Ok(Self {
+            arch: args.arch,
+            platform,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuildProfile {
     Release,
@@ -77,11 +202,35 @@ fn main() -> io::Result<()> {
     // Initialize env_logger - it will respect RUST_LOG environment variable for filtering
     env_logger::init();
     let args = Args::parse();
-    let profile = BuildProfile::from_debug(args.debug);
+    let target = Target::from_args(&args)?;
+    let profile = BuildProfile::from_debug(args.debug || args.command == Action::Debug);
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("Failed to get workspace root")
         .to_path_buf();
+
+    if target.arch == Arch::Aarch64 {
+        if args.clone_ovmf || args.iso_only {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OVMF and ISO options are only available for the x86_64 pc-uefi platform",
+            ));
+        }
+
+        let kernel_path = build_aarch64_kernel(&workspace_root, profile)?;
+        if args.command == Action::Build {
+            println!("AArch64 kernel built at {}", kernel_path.display());
+            return Ok(());
+        }
+
+        run_aarch64_qemu(
+            &kernel_path,
+            target.platform,
+            args.command == Action::Debug,
+            args.timeout,
+        )?;
+        return Ok(());
+    }
 
     if args.clone_ovmf {
         setup_ovmf(&workspace_root)?;
@@ -91,13 +240,129 @@ fn main() -> io::Result<()> {
     let firmware_override = prepare_default_iwlwifi_firmware(&workspace_root)?;
     let firmware_path = firmware_override.as_ref().map(|file| file.path());
 
-    if args.iso_only {
+    if args.command == Action::Build || args.iso_only {
         let iso_path = create_iso(&workspace_root, profile, false, firmware_path)?;
         println!("ISO rebuilt at {}", iso_path.display());
         return Ok(());
     }
 
     run_qemu(&workspace_root, &args, profile, firmware_path)?;
+    Ok(())
+}
+
+fn build_aarch64_kernel(workspace_root: &Path, profile: BuildProfile) -> io::Result<PathBuf> {
+    let target = Arch::Aarch64;
+    let mut cargo = Command::new("cargo");
+    cargo
+        .current_dir(workspace_root)
+        .args([
+            "build",
+            "-q",
+            "--package",
+            "fullerene-kernel",
+            "--target",
+            target.rust_target(),
+            "--profile",
+            profile.cargo_name(),
+        ])
+        // Keep the linker choice in the architecture-specific build path. The
+        // bare-metal target is shipped with Rust's lld linker, so this does not
+        // require a host C cross-toolchain.
+        .env("CARGO_TARGET_AARCH64_UNKNOWN_NONE_LINKER", "rust-lld");
+
+    let status = cargo.status()?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "{} build failed; the target was selected, but the kernel or one of its dependencies is not AArch64-compatible yet",
+            target.rust_target()
+        )));
+    }
+
+    let artifact = workspace_root
+        .join("target")
+        .join(target.rust_target())
+        .join(profile.artifact_directory())
+        .join(target.kernel_artifact());
+    if !artifact.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "AArch64 kernel artifact was not produced at {}; the kernel entry point/linker layout is not wired yet",
+                artifact.display()
+            ),
+        ));
+    }
+    Ok(artifact)
+}
+
+fn aarch64_qemu_args(artifact: &Path, platform: Platform, debug: bool) -> io::Result<Vec<String>> {
+    if platform != Platform::QemuVirt {
+        platform.validate(Arch::Aarch64)?;
+    }
+
+    let mut args = vec![
+        "-M".to_string(),
+        platform.qemu_machine().to_string(),
+        "-cpu".to_string(),
+        platform.qemu_cpu().to_string(),
+        "-m".to_string(),
+        "1G".to_string(),
+        "-smp".to_string(),
+        "1".to_string(),
+        "-nographic".to_string(),
+        "-kernel".to_string(),
+        artifact.display().to_string(),
+        "-no-reboot".to_string(),
+        "-no-shutdown".to_string(),
+    ];
+    if debug {
+        args.extend(["-S".to_string(), "-s".to_string()]);
+    }
+    Ok(args)
+}
+
+fn run_aarch64_qemu(
+    artifact: &Path,
+    platform: Platform,
+    debug: bool,
+    timeout: Option<u64>,
+) -> io::Result<()> {
+    let mut qemu = Command::new(platform.qemu_binary());
+    let qemu_args = aarch64_qemu_args(artifact, platform, debug)?;
+    log::info!(
+        "Starting {} for AArch64 kernel {}",
+        platform.qemu_binary(),
+        artifact.display()
+    );
+    qemu.args(&qemu_args);
+
+    let mut child = qemu.spawn()?;
+    if let Some(timeout_secs) = timeout {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        loop {
+            match child.try_wait()? {
+                Some(status) => {
+                    if !status.success() {
+                        return Err(io::Error::other("AArch64 QEMU execution failed"));
+                    }
+                    return Ok(());
+                }
+                None if std::time::Instant::now() >= deadline => {
+                    child.kill()?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("AArch64 QEMU timed out after {timeout_secs} seconds"),
+                    ));
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(100)),
+            }
+        }
+    }
+
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(io::Error::other("AArch64 QEMU execution failed"));
+    }
     Ok(())
 }
 
@@ -373,16 +638,16 @@ fn run_qemu(
 
     let iso_path_str = iso_path.to_str().expect("ISO path should be valid UTF-8");
 
-    let mut qemu_cmd = Command::new("qemu-system-x86_64");
+    let mut qemu_cmd = Command::new(Platform::PcUefi.qemu_binary());
     let mut qemu_args: Vec<String> = vec![
         "-m".to_string(),
         "4G".to_string(),
         "-cpu".to_string(),
-        "qemu64,+smap,+invtsc".to_string(),
+        Platform::PcUefi.qemu_cpu().to_string(),
         "-smp".to_string(),
         "1".to_string(),
         "-M".to_string(),
-        "q35,usb=off,pcspk-audiodev=speaker".to_string(),
+        Platform::PcUefi.qemu_machine().to_string(),
     ];
 
     // --- VGA device (dynamic) ---
@@ -529,6 +794,12 @@ fn run_qemu(
         "hda-duplex,audiodev=hda".to_string(),
     ]);
 
+    if args.command == Action::Debug {
+        // Match the AArch64 debug action: pause at reset and expose the GDB
+        // stub on the conventional port.
+        qemu_args.extend(["-S".to_string(), "-s".to_string()]);
+    }
+
     qemu_cmd.args(&qemu_args);
 
     // Keep the temporary file alive until QEMU exits
@@ -594,7 +865,9 @@ fn run_qemu(
 
 #[cfg(test)]
 mod tests {
-    use super::BuildProfile;
+    use super::{Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args};
+    use clap::Parser;
+    use std::path::Path;
 
     #[test]
     fn release_is_the_default_profile() {
@@ -608,5 +881,56 @@ mod tests {
         let profile = BuildProfile::from_debug(true);
         assert_eq!(profile.cargo_name(), "dev");
         assert_eq!(profile.artifact_directory(), "debug");
+    }
+
+    #[test]
+    fn aarch64_run_selects_qemu_virt_defaults() {
+        let args = Args::try_parse_from(["flasks", "run", "--arch", "aarch64"]).unwrap();
+        let target = super::Target::from_args(&args).unwrap();
+        assert_eq!(args.command, Action::Run);
+        assert_eq!(target.arch, Arch::Aarch64);
+        assert_eq!(target.platform, Platform::QemuVirt);
+        assert_eq!(target.arch.rust_target(), "aarch64-unknown-none");
+    }
+
+    #[test]
+    fn aa_is_an_aarch64_alias() {
+        let args = Args::try_parse_from(["flasks", "run", "--arch", "aa"]).unwrap();
+        assert_eq!(args.arch, Arch::Aarch64);
+    }
+
+    #[test]
+    fn aarch64_qemu_command_uses_virt_and_kernel_artifact() {
+        let args = aarch64_qemu_args(
+            Path::new("target/aarch64-unknown-none/release/fullerene-kernel"),
+            Platform::QemuVirt,
+            false,
+        )
+        .unwrap();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-M" && pair[1] == "virt")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-cpu" && pair[1] == "cortex-a72")
+        );
+        assert!(args.iter().any(|arg| arg == "-nographic"));
+        assert!(args.iter().any(|arg| arg.ends_with("fullerene-kernel")));
+    }
+
+    #[test]
+    fn bramble_is_reserved_without_being_aliased_to_aarch64_qemu() {
+        let args = Args::try_parse_from([
+            "flasks",
+            "run",
+            "--arch",
+            "aarch64",
+            "--platform",
+            "bramble",
+        ])
+        .unwrap();
+        let error = super::Target::from_args(&args).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
     }
 }
