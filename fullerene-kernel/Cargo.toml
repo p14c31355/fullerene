@@ -12,6 +12,10 @@ rust-version.workspace = true
 name = "fullerene-kernel"
 path = "src/main.rs"
 
+[[bin]]
+name = "fullerene-kernel-aarch64"
+path = "src/arch/aarch64/main.rs"
+
 # These examples are consumed by the UEFI/native smoke paths. The native_*
 # entries are freestanding no_std payloads, so they are not host test
 # harnesses: compiling those entries as tests enables unwinding against a
@@ -42,7 +46,7 @@ test = false
 bench = false
 required-features = ["native-payload"]
 
-[dependencies]
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",
   "abi_x86_interrupt",

@@ -588,10 +588,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fullerene-kernel-aarch64"
-version = "0.1.0"
-
-[[package]]
 name = "fullerene-tools"
 version = "0.1.0"
 dependencies = [

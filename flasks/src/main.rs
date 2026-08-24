@@ -101,14 +101,14 @@ impl Arch {
     fn kernel_artifact(self) -> &'static str {
         match self {
             Self::X86_64 => "fullerene-kernel.efi",
-            Self::Aarch64 => "fullerene-kernel",
+            Self::Aarch64 => "fullerene-kernel-aarch64",
         }
     }
 
     fn cargo_package(self) -> &'static str {
         match self {
             Self::X86_64 => "fullerene-kernel",
-            Self::Aarch64 => "fullerene-kernel-aarch64",
+            Self::Aarch64 => "fullerene-kernel",
         }
     }
 }
@@ -909,9 +909,15 @@ mod tests {
     }
 
     #[test]
+    fn aarch64_uses_the_fullerene_kernel_arch_target() {
+        assert_eq!(Arch::Aarch64.cargo_package(), "fullerene-kernel");
+        assert_eq!(Arch::Aarch64.kernel_artifact(), "fullerene-kernel-aarch64");
+    }
+
+    #[test]
     fn aarch64_qemu_command_uses_virt_and_kernel_artifact() {
         let args = aarch64_qemu_args(
-            Path::new("target/aarch64-unknown-none/release/fullerene-kernel"),
+            Path::new("target/aarch64-unknown-none/release/fullerene-kernel-aarch64"),
             Platform::QemuVirt,
             false,
         )
@@ -925,7 +931,10 @@ mod tests {
                 .any(|pair| pair[0] == "-cpu" && pair[1] == "cortex-a72")
         );
         assert!(args.iter().any(|arg| arg == "-nographic"));
-        assert!(args.iter().any(|arg| arg.ends_with("fullerene-kernel")));
+        assert!(
+            args.iter()
+                .any(|arg| arg.ends_with("fullerene-kernel-aarch64"))
+        );
     }
 
     #[test]

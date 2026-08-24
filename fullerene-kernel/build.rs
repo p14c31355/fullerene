@@ -7,6 +7,14 @@ use std::process::Command;
 use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_glibc_x86_64_elf};
 
 fn main() {
+    // The AArch64 bootstrap binary is intentionally dependency-free. Avoid
+    // the x86_64 kernel's generated userland/assets while building it; those
+    // steps require host tools and x86-only target support.
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        println!("cargo:rerun-if-changed=src/arch/aarch64");
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
