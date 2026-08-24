@@ -1,7 +1,105 @@
 # Software Bug Journal
 
+## Entry 037 — 2026-08-23 UTC / 2026-08-24 JST API-29 DQA host gate restored to Linux default
+
+### Finding
+
+The source comments and the Linux-compatible DQA tests described q5
+activation as firmware-owned, but `API29_DQA_HOST_SCD_GATE_DIAGNOSTIC` was
+still set to `true`. That made the production path write q5 into
+`SCD_EN_CTRL` after `ADD_STA_QUEUE`, even though the bounded A/B workaround
+had already been rejected as a cause of the `WRPTR=1/RDPTR=0` stall.
+
+### Change
+
+The diagnostic switch is now `false` by default. The explicit branch remains
+available for a controlled hardware comparison, while the normal path leaves
+dynamic queue activation to the API-29 firmware. A unit test now verifies that
+the default path does not alter the peripheral gate value or emit another
+doorbell.
+
+The repeated connection-error state transition was also factored into one
+typed helper. This reduces control-flow duplication without changing the
+error status or message returned to callers. Bonder's management-frame
+builders now reserve their fixed/derived capacity, and
+`bonder/examples/bench_wifi_frames.rs` records the host-side allocation path
+through `Instant` for repeatable optimization measurements.
+
+### Validation
+
+- `cargo check --workspace --all-targets`: passed without compiler warnings.
+- `cargo test -p nitrogen --all-targets`: 185 unit tests and 17 Linux
+  compatibility tests passed.
+- `cargo test --workspace`: passed; the freestanding kernel payload examples
+  are opt-in and the ignored throughput test remains intentionally manual.
+- `cargo run -p bonder --release --example bench_wifi_frames`: completed;
+  the measured host run reported 12.6 ns/auth frame, 24.0 ns/WPA2
+  association, and 12.6 ns/deauth frame. Values are machine-dependent.
+- Real 7265D AP authentication is still the required hardware gate; source
+  and replay tests cannot prove a physical q5 `RDPTR` advance.
+
 This document records non-obvious software bugs encountered during
 development, their root cause analysis, and the fix applied.
+
+## Entry 038 — 2026-08-23 UTC / 2026-08-24 JST API-29 TIME_EVENT caused a firmware assert
+
+### Finding
+
+The real-device log `202608240623.txt` reports an Intel 7265D API-29 image
+(`iwlwifi-7265D-29`, build `4063824552`) with `dqa=true` but
+`session_prot=false`. The connection setup through `CONNECT_ADD_STA_QUEUE`
+was accepted. The driver then submitted `POST_DQA_TIME_EVENT` and the
+firmware immediately reported `error_id=0x00001986`
+(`ADVANCED_SYSASSERT_OR_UNKNOWN`) for opcode `0x29`; authentication TX was
+never reached. The same sequence and assertion are present in
+`202608231937.txt`.
+
+### Change
+
+The API-29 TIME_EVENT experiment is disabled by default and is additionally
+gated on the firmware's explicit session-protection capability. This keeps
+the command available for a future compatible image without sending it to
+the affected 7265D firmware. Older runs such as `202608231913.txt` show the
+correct fallback behavior: the command is skipped and the authentication TFD
+is submitted, although that run still has the separate q5 scheduler stall
+(`hw_wrptr=1`, `hw_rdptr=0`, `FH_TRB=0`).
+
+### Validation
+
+- `cargo fmt --all -- --check`, `git diff --check`, and
+  `cargo check -p nitrogen --all-targets` passed.
+- `cargo test -p nitrogen --all-targets` passed: 185 unit tests and 17 Linux
+  compatibility tests.
+- Strict `cargo clippy -p nitrogen --all-targets -- -D warnings` remains
+  blocked by pre-existing warnings outside this change; no new warning was
+  introduced by the TIME_EVENT gate.
+- A new 7265D hardware run must confirm that the firmware assert is gone and
+  expose the remaining q5 consumption issue without the crash masking it.
+
+## Entry 039 — 2026-08-23 UTC / 2026-08-24 JST TIME_EVENT退行の除去を実機で確認
+
+### Evidence
+
+The follow-up log `202608240642.txt` reports
+`time_event.skipped api=29 dqa=true experiment=false session_prot=false`.
+There is no firmware error record or `ADVANCED_SYSASSERT` after this point,
+and the driver reaches authentication-TFD submission with the expected
+`bc_dwords=10`, three TFD buffers, and q5 queue ownership.
+
+The original authentication problem remains isolated: q5 stays at
+`hw_wrptr=1`, `hw_rdptr=0`, and `FH_TRB=0` at ticks 64, 512, and 1024. The
+queue context is still Linux-compatible (`win_size=64`, `frame_limit=64`),
+and the configured FIFO remains active (`fifo=3`, `config=0x80000008`). The
+Linux-owned default leaves q5 out of `SCD_EN_CTRL` (`scd_en=0x00000003`), but
+earlier host-gate runs also failed to advance q5, so enabling that bit alone
+is not a sufficient fix.
+
+### Status
+
+The TIME_EVENT firmware-crash regression is resolved and hardware-confirmed.
+The remaining work is the q5 scheduler/FH fetch path; no speculative register
+change is promoted until the next bounded A/B run identifies a necessary
+condition for `RDPTR` progress.
 
 ## Entry 012 — 2026-08-16 shell window close left launchd occupied
 
@@ -1133,3 +1231,180 @@ already have recorded `0x21a0` asserts.  If the newer image accepts
 `CONNECT_ADD_STA_QUEUE`, continue to the q5 `hw_rdptr` measurement; if it also
 asserts, then compare the exact queue-update payload and command version before
 changing the ordering hypothesis.
+
+## Entry 027 — 2026-08-23 q5 byte-count parity experiment
+
+### Symptoms
+
+From fl-auth9 through fl-auth25, q5 (DQA management queue) remained at
+`hw_wrptr=1`, `hw_rdptr=0` after the authentication TFD was submitted. No
+`REPLY_TX`, authentication response, or association followed. The SCD context,
+queue status, queuechain, and SCD_EN_CTRL all appeared correctly configured.
+
+### Hypothesis
+
+The gen1 SCD byte-count table (`iwlagn_scd_bc_tbl`) was only being written for
+queues marked in `SCD_AGGR_SEL` (Scheduler-ACK / aggregate queues). q5 is a
+FIFO/non-aggregate management queue, so the byte-count entry at slot 0 was left
+as zero in earlier captures.
+
+Linux's gen1 transport (`iwl_pcie_txq_build_tfd` with
+`trans->cfg->base_params->bc_table_dword=true` for 7265) writes the byte-count
+table **unconditionally for every TFD on every queue** — including FIFO
+non-aggregate queues. The SCD scheduler uses the byte-count table to decide
+whether a TFD has data to fetch. A zero entry means "no data", so the scheduler
+never advances the read pointer.
+
+This made the byte-count entry a valid Linux-parity correction candidate, but
+not yet a proven root cause.
+
+This is why q0 (command queue, FIFO 7) worked despite the same code path: the
+command queue uses `send_hcmd()` / `send_init_hcmd()` which do not go through
+`process_tx_queue()` and thus never hit the conditional byte-count skip. q1
+(aux) also worked because its SCD_QUEUE_CFG path configured it as
+non-aggregate but the SCD queue status was written with the full
+`SCD_QUEUE_STTS_MASK` by the host-direct `enable_aux_tx_queue()` path — and q1
+was never actually used for TX data in the connection path (only scan, which is
+firmware-initiated).
+
+### Linux-parity correction
+
+`process_tx_queue()` in `tx.rs` now calls `update_scd_byte_count()`
+unconditionally for every TFD, matching Linux's `iwlagn_update_bc_tbl()`. The
+`scheduler_ack` flag is retained only for the diagnostic log line that
+distinguishes "fifo" vs "scheduler-ack" mode.
+
+### Validation and disposition
+
+- All 77 nitrogen iwlwifi unit tests pass, including the updated
+  `command_and_data_queues_use_disjoint_dma_buffers` test which now asserts
+  the byte-count entry is `0x000a` (10 DWORDs for a 30-byte auth frame) rather
+  than 0.
+- Physical hardware validation is required to confirm q5 `hw_rdptr` advances
+  past 0.
+
+The later `202608240709.txt` capture published `bc_dwords=10` and both
+`bc_primary=0x000a` and `bc_duplicate=0x000a`, yet q5 still remained at
+`hw_wrptr=1`, `hw_rdptr=0`, with `FH_TRB=0`. Therefore the missing byte-count
+entry is not the root cause of the remaining authentication stall. The
+unconditional table update remains because it matches Linux, but the cause is
+still under investigation.
+
+## Entry 040 — 2026-08-23 UTC / 2026-08-24 JST q5 TX wake-hold experiment rejected
+
+### Evidence
+
+The fixed API-29 run `202608240642.txt` no longer asserts at TIME_EVENT, and
+the authentication TFD reaches q5 with a valid CBBC, byte-count entry, TFD,
+and write pointer.  It nevertheless remains at `hw_wrptr=1`, `hw_rdptr=0`
+while `GP_CNTRL` changes from `0x080403cd` at submission to
+`0x080403c5` during the watchdog polls; this suggested a wake-hold experiment.
+
+### Experiment
+
+The experiment temporarily required both the host-command and data-TX rings
+to be empty before releasing `MAC_ACCESS_REQ`.  It was not supported by the
+upstream Linux transport contract and is therefore reverted.
+
+### Validation
+
+The new run `202608240709.txt` kept `GP_CNTRL=0x080403cd` throughout the q5
+polls, but still showed `hw_wrptr=1`, `hw_rdptr=0`, `FH_TRB=0`, and no
+`REPLY_TX`.  The wake-hold hypothesis is consequently rejected.  The unit
+test is restored to Linux's command-only wake-hold behavior.
+
+Physical validation is still required; the next decisive comparison is the
+Linux `iwl_trans_txq_enable_cfg(..., cfg=NULL)` DQA transport initialization
+and its queue-used/read-write-pointer state before `SCD_QUEUE_CFG`.
+
+## Entry 042 — 2026-08-23 UTC / 2026-08-24 JST 5 GHz authentication selected an illegal CCK rate
+
+### Evidence
+
+The Linux capture in `linux-wifi-connected-20260815-231412/report.txt` connects
+the same 7265D revision and firmware (`29.4063824552`) to `Buffalo-G-2218`,
+while `202608240736.txt` selects the 5 GHz `Buffalo-A-2218` AP on channel 48.
+Despite that selection, the Fullerene authentication log reports
+`rate_n_flags=0x0000420a` and `band=2.4GHz`. That is the 1 Mbps CCK rate. The
+5 GHz authentication TFD is accepted by the command path but cannot be
+transmitted by the radio, matching the observed q5 `WRPTR=1/RDPTR=0` stall and
+absent `REPLY_TX`.
+
+### Root cause and correction
+
+`tx_rate_n_flags()` determines the band from `wifi_conn.current_bssid`, but
+`connect()` only populated that BSSID after association. The first
+authentication frame consequently used the fallback 2.4 GHz rate. `connect()`
+now publishes the selected AP BSSID before any authentication TX, and a replay
+test verifies that a channel-36 authentication frame selects `0x0000410d`
+(6 Mbps OFDM).
+
+The earlier Linux-compatible wake correction remains in place; this rate bug
+was independent of the MAC wake state and is the next hardware-validation
+candidate. Success is indicated by q5 `RDPTR` advancing and receipt of the AP
+authentication response.
+
+## Entry 041 — 2026-08-23 UTC / 2026-08-24 JST Linux TX doorbell wake condition
+
+### Evidence
+
+The Linux gen1 PCIe TX path checks the firmware-owned `MAC_SLEEP` bit in
+`CSR_UCODE_DRV_GP1` before asserting `CSR_GP_CNTRL_MAC_ACCESS_REQ`.  When the
+MAC is already awake, it writes the queue write pointer directly.  In
+`202608240709.txt`, the pre-authentication snapshot reports GP1 without the
+sleep bit and `CSR_GP_CNTRL` without `MAC_ACCESS_REQ`, while the Fullerene q5
+submission changes `CSR_GP_CNTRL` to `0x080403cd` and leaves that request held
+through the failed polls.
+
+### Correction
+
+`process_tx_queue()` now follows the same split: it reads `CSR_UCODE_GP1` and
+calls the existing host-command wake path only when `MAC_SLEEP` is set.
+Host-command submission retains its stronger wake behavior because command
+processing performs internal scheduler and register operations.  The new unit
+test verifies that an awake data-TX doorbell does not set a persistent
+`MAC_ACCESS_REQ` hold.
+
+### Disposition
+
+This is a Linux-parity correction motivated by a concrete hardware trace, not
+yet a confirmed complete fix for q5.  Re-test on the 7265D is required.  A
+positive result is q5 `RDPTR: 0 -> 1` or a `REPLY_TX`; if q5 remains at
+`WRPTR=1/RDPTR=0`, the next comparison is the per-queue DQA transport state
+(`queue_used`, software read/write pointers, and the initial doorbell) before
+`SCD_QUEUE_CFG`.
+
+## Entry 043 — 2026-08-23 UTC / 2026-08-24 JST 7265D firmware stability and stale station reuse
+
+### Evidence
+
+The latest hardware capture, `202608240756.txt`, uses the same Intel 7265D
+firmware line as the successful Linux capture: `iwlwifi-7265D-29`, API 29,
+build `4063824552`, `CoreCycle26_stab::f2390aa8`. INIT/ALIVE, runtime
+initialisation, and repeated scans complete normally, so the capture provides
+no evidence of a corrupt or unstable firmware image.
+
+The failure occurs when the first `Buffalo-G-2218` authentication remains
+pending on q5 (`WRPTR=1/RDPTR=0`) and a second connection to `Buffalo-A-2218`
+reuses station ID 0. The second `CONNECT_ADD_STA` produces firmware
+`error_id=0x00002073` (`ADVANCED_SYSASSERT_OR_UNKNOWN`). This is consistent
+with a stale host-side station/queue lifecycle, not with a firmware-version
+mismatch.
+
+### Correction
+
+Before a validated reconnect, Fullerene now tears down the previous failed
+connection: it abandons the stalled data queue, sends `REMOVE_STA` for the
+managed AP, and resets authentication, WPA, DHCP, and watchdog state. The
+same cleanup runs when the authentication or association watchdog reaches its
+terminal timeout. Invalid target SSIDs and incompatible security parameters
+are validated first, so a rejected request does not tear down a working
+connection.
+
+### Disposition
+
+The firmware is the known Linux-supported final 7265D/Core26 `-29.ucode` line,
+and the identical build connects successfully under Linux. The fix still
+requires a fresh Nitrogen hardware run. The expected next trace is one
+`CONNECT_ADD_STA` per attempt, no `0x2073` assert on reconnect, and q5
+`RDPTR` progress or a `REPLY_TX` for the 5 GHz authentication test.

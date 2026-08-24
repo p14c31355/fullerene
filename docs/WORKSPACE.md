@@ -46,16 +46,31 @@ usual host development commands focused; `cargo check --workspace` includes
 all members. `toluene/cargo` is a vendored third-party Cargo source tree and is
 not a root-workspace member.
 
-The current working-tree source census (2026-08-16), excluding `target/`, is
-1,797 Rust files and 481,829 Rust LOC. This includes checked-out port and
-third-party inputs. Excluding `toluene/cargo`, `toluene/busybox`,
-`toluene/netsurf`, `toluene/freedoom`, and `toluene/vscodium`, the owned
-workspace surface is 433 Rust files and 139,452 Rust LOC. The same census
-contains 3,513 Rust/C/assembly source files before those port exclusions.
-These figures are working-tree counts; generated and vendored inputs are not
-architecture-refactor targets. The Linux personality has a single source tree
-at `solvent/linux`; the kernel integrates it through the explicitly named
-`solvent_linux` module path, with no kernel-side symlink or compatibility alias.
+The current tracked-source census (2026-08-23 UTC / 2026-08-24 JST), excluding
+`target/` and the vendored `toluene/cargo`, `toluene/busybox`, `toluene/netsurf`,
+`toluene/freedoom`, and `toluene/vscodium` trees, is 420 Rust files and
+140,646 Rust LOC. These are repository counts, not generated-artifact sizes;
+the nested `toluene/viewer` and `toluene/emulsion` applications remain
+separate workspaces. Refactor LOC claims should name the excluded subtrees
+and use this reproducible command (the two output lines are the file count and
+total Rust LOC):
+
+```sh
+rust_files="$(git ls-files -- '*.rs' \
+  ':(exclude)toluene/cargo/**' \
+  ':(exclude)toluene/busybox/**' \
+  ':(exclude)toluene/netsurf/**' \
+  ':(exclude)toluene/freedoom/**' \
+  ':(exclude)toluene/vscodium/**')"
+printf '%s\n' "$rust_files" | sed '/^$/d' | wc -l
+printf '%s\n' "$rust_files" | sed '/^$/d' | xargs wc -l | tail -n 1
+```
+
+Generated and vendored inputs are not
+Fullerene architecture-refactor targets. The Linux personality has a single
+source tree at `solvent/linux`; the kernel integrates it through the explicitly
+named `solvent_linux` module path, with no kernel-side symlink or compatibility
+alias.
 The large `toluene/busybox` and `toluene/vscodium` trees are vendored inputs,
 not Fullerene-owned architecture layers; changes to their integration belong
 in `fullerene-kernel/build.rs`, the ELF loader, and the runtime terminal bridge.

@@ -501,6 +501,84 @@ pub struct MacStaData {
     pub ctwin: u32,
 }
 
+/// Decoded TIME_EVENT_NOTIFICATION API v2 payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeEventNotification {
+    pub timestamp: u32,
+    pub session_id: u32,
+    pub unique_id: u32,
+    pub id_and_color: u32,
+    pub action: u32,
+    pub status: u32,
+}
+
+impl TimeEventNotification {
+    pub fn from_payload(payload: &[u8]) -> Option<Self> {
+        if payload.len() < 24 {
+            return None;
+        }
+        let word = |offset: usize| {
+            u32::from_le_bytes(payload[offset..offset + 4].try_into().ok().unwrap())
+        };
+        Some(Self {
+            timestamp: word(0),
+            session_id: word(4),
+            unique_id: word(8),
+            id_and_color: word(12),
+            action: word(16),
+            status: word(20),
+        })
+    }
+}
+
+/// Host-side correlation state for a TIME_EVENT command and its asynchronous
+/// notification. A start notification may arrive immediately after the
+/// command response, so retain an early notification until unique_id is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeEventState {
+    pub id: u32,
+    pub id_and_color: u32,
+    pub unique_id: Option<u32>,
+    pub notification: Option<TimeEventNotification>,
+}
+
+impl TimeEventState {
+    pub fn from_command(payload: &[u8]) -> Option<Self> {
+        if payload.len() < 12 {
+            return None;
+        }
+        Some(Self {
+            id_and_color: u32::from_le_bytes(payload[0..4].try_into().ok()?),
+            id: u32::from_le_bytes(payload[8..12].try_into().ok()?),
+            unique_id: None,
+            notification: None,
+        })
+    }
+
+    pub fn record_response(&mut self, unique_id: u32) {
+        self.unique_id = Some(unique_id);
+        if self
+            .notification
+            .is_some_and(|notification| notification.unique_id != unique_id)
+        {
+            self.notification = None;
+        }
+    }
+
+    pub fn record_notification(&mut self, notification: TimeEventNotification) -> bool {
+        if notification.id_and_color != self.id_and_color {
+            return false;
+        }
+        if let Some(unique_id) = self.unique_id {
+            if notification.unique_id != unique_id {
+                return false;
+            }
+        }
+        self.notification = Some(notification);
+        true
+    }
+}
+
 /// TIME_EVENT_CMD API v2 used by 7000-series firmware.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -1426,7 +1504,8 @@ pub enum IwlError {
 mod tests {
     use super::{
         AddStaCmdV7, AddStaKeyCmd, AuthTxPlan, BtCoexConfigCmd, MacContextCmd, MccUpdateCmdV1,
-        MccUpdateCmdV2, ScanConfigV1, ScdTxqCfgCmdV1, TimeEventCmdV2,
+        MccUpdateCmdV2, ScanConfigV1, ScdTxqCfgCmdV1, TimeEventCmdV2, TimeEventNotification,
+        TimeEventState,
     };
 
     #[test]
@@ -1511,6 +1590,66 @@ mod tests {
         assert_eq!(&bytes[28..32], &600u32.to_le_bytes());
         assert_eq!(&bytes[32..34], &[1, 0]);
         assert_eq!(&bytes[34..36], &0x0803u16.to_le_bytes());
+    }
+
+    #[test]
+    fn time_event_state_correlates_response_and_early_notification() {
+        let command = TimeEventCmdV2::association_protection(0);
+        let command_bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const TimeEventCmdV2).cast::<u8>(),
+                core::mem::size_of::<TimeEventCmdV2>(),
+            )
+        };
+        let mut state = TimeEventState::from_command(command_bytes).unwrap();
+        let notification = TimeEventNotification {
+            timestamp: 1,
+            session_id: 2,
+            unique_id: 0x44,
+            id_and_color: 0,
+            action: 1,
+            status: 0,
+        };
+
+        // Linux registers the notification waiter before sending the command,
+        // so the notification may be observed before its response unique_id.
+        assert!(state.record_notification(notification));
+        assert_eq!(state.notification, Some(notification));
+        state.record_response(0x44);
+        assert_eq!(state.unique_id, Some(0x44));
+        assert_eq!(state.notification, Some(notification));
+
+        let wrong_id = TimeEventNotification {
+            unique_id: 0x45,
+            ..notification
+        };
+        assert!(!state.record_notification(wrong_id));
+        assert_eq!(state.notification, Some(notification));
+    }
+
+    #[test]
+    fn time_event_state_discards_notification_with_wrong_response_id() {
+        let command = TimeEventCmdV2::association_protection(0);
+        let command_bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&command as *const TimeEventCmdV2).cast::<u8>(),
+                core::mem::size_of::<TimeEventCmdV2>(),
+            )
+        };
+        let mut state = TimeEventState::from_command(command_bytes).unwrap();
+        let notification = TimeEventNotification {
+            timestamp: 1,
+            session_id: 2,
+            unique_id: 0x44,
+            id_and_color: 0,
+            action: 1,
+            status: 0,
+        };
+
+        assert!(state.record_notification(notification));
+        state.record_response(0x45);
+        assert_eq!(state.unique_id, Some(0x45));
+        assert_eq!(state.notification, None);
     }
 
     #[test]

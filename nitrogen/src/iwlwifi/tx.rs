@@ -13,9 +13,9 @@ use super::types::*;
 const TFD_LENGTH_MAX: usize = 0x0fff;
 /// Gen1 FH write-back region at the start of every TX command. Linux keeps
 /// this in a dedicated 64-byte-aligned buffer and exposes exactly 20 bytes as
-/// TB0; each Fullerene per-slot DMA buffer is page-aligned and can serve the
-/// same purpose in place.
-const IWL_FIRST_TB_SIZE: usize = 20;
+/// TB0; each Fullerene per-slot first-TB DMA buffer is allocated at this
+/// alignment and can serve the same purpose in place.
+const IWL_FIRST_TB_SIZE: usize = super::registers::IWL_FIRST_TB_SIZE;
 
 // Keep the host-side SCD programming experiment available for comparison,
 // but use Linux's DQA contract by default: the transport publishes CBBC/WRPTR
@@ -24,8 +24,8 @@ const DQA_HOST_DIRECT_SCD_DIAGNOSTIC: bool = false;
 
 // Linux's gen1 DQA path does not set SCD_EN_CTRL for a dynamically allocated
 // data queue. The old API-29 workaround did not move q5's read pointer on the
-// affected 7265D and prevented a clean upstream-equivalent A/B run. Keep the
-// switch explicit so the old behavior can be re-enabled for one hardware run.
+// affected 7265D. Keep the switch explicit for a bounded hardware A/B, but
+// leave firmware-owned queue activation as the production default.
 const API29_DQA_HOST_SCD_GATE_DIAGNOSTIC: bool = false;
 
 // Linux publishes every gen1 CBBC during iwl_pcie_tx_reset(), before the
@@ -127,6 +127,21 @@ impl IwlWifiDevice {
         Ok(())
     }
 
+    /// Follow Linux's gen1 TX doorbell path: request a wake only when the
+    /// firmware reports that the MAC is sleeping. Host-command setup still
+    /// uses `wake_for_hcmd`, because it must hold MAC access across internal
+    /// scheduler/register operations.
+    #[inline]
+    fn wake_for_tx(&mut self) -> Result<(), crate::DriverError> {
+        let gp1 = self
+            .safe_read32(CSR_UCODE_GP1)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        if gp1 & CSR_UCODE_GP1_BIT_MAC_SLEEP != 0 {
+            self.wake_for_hcmd()?;
+        }
+        Ok(())
+    }
+
     /// Release the MAC wake request after the command queue becomes empty.
     ///
     /// The request is deliberately held across descriptor submission and
@@ -144,7 +159,7 @@ impl IwlWifiDevice {
 
     /// Drop the host-command wake request once the command queue is empty.
     ///
-    /// Linux's `cmd_hold_nic_awake` tracks host commands only.  A pending DQA
+    /// Linux's `cmd_hold_nic_awake` tracks host commands only. A pending DQA
     /// data/management descriptor must not extend that hold: the 7265's
     /// scheduler is responsible for fetching q5 after its write-pointer
     /// doorbell, and keeping MAC_ACCESS_REQ asserted until q5 is reclaimed
@@ -582,6 +597,16 @@ impl IwlWifiDevice {
         self.write_prph(scd_queue_rdptr(queue), 0);
         if let Some(scd_en) = self.read_prph(SCD_EN_CTRL) {
             self.write_prph(SCD_EN_CTRL, scd_en & !(1 << queue));
+        }
+        // A DQA queue may also remain in the scheduler chain or aggregate
+        // bitmap after firmware-owned teardown. Leaving either bit set makes
+        // the subsequent static-queue fallback contend with the abandoned
+        // q5 owner and can stall the q0 command queue as well.
+        if let Some(queuechain) = self.read_prph(SCD_QUEUECHAIN_SEL) {
+            self.write_prph(SCD_QUEUECHAIN_SEL, queuechain & !(1 << queue));
+        }
+        if let Some(aggr) = self.read_prph(SCD_AGGR_SEL) {
+            self.write_prph(SCD_AGGR_SEL, aggr & !(1 << queue));
         }
         if self.alive_scd_base_addr != 0 {
             let status = self.alive_scd_base_addr + scd_tx_stts_queue_offset(queue);
@@ -1058,7 +1083,23 @@ impl IwlWifiDevice {
                 HexBytes(data),
             );
         }
-        self.send_hcmd(opcode, group, data)?;
+        if opcode == LegacyCmd::TimeEvent as u8 {
+            self.time_event_state = TimeEventState::from_command(data);
+            if self.time_event_state.is_none() {
+                log::error!(
+                    "iwlwifi: hcmd.sync.error name={} stage=submit reason=short_time_event_command payload={}",
+                    label,
+                    data.len(),
+                );
+                return Err(crate::DriverError::Protocol);
+            }
+        }
+        if let Err(error) = self.send_hcmd(opcode, group, data) {
+            if opcode == LegacyCmd::TimeEvent as u8 {
+                self.time_event_state = None;
+            }
+            return Err(error);
+        }
         let target = self.tx_head;
         let consumed = crate::timing::poll_timeout_us(100_000, || {
             let rptr = self.read_prph(scd_queue_rdptr(command_queue))? as usize;
@@ -1078,6 +1119,9 @@ impl IwlWifiDevice {
                 rptr,
             );
             self.release_mac_access();
+            if opcode == LegacyCmd::TimeEvent as u8 {
+                self.time_event_state = None;
+            }
             return Err(crate::DriverError::Busy);
         }
 
@@ -1129,15 +1173,20 @@ impl IwlWifiDevice {
                                 payload.len(),
                             );
                             self.release_mac_access();
+                            self.time_event_state = None;
                             return Err(crate::DriverError::Protocol);
                         }
                         let status =
                             u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                        let response_id =
+                            u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                        let response_unique_id =
+                            u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
                         log::info!(
                             "iwlwifi: time_event.response status={:#010x} id={:#010x} unique_id={:#010x} id_and_color={:#010x} payload_hex={}",
                             status,
-                            u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]),
-                            u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]),
+                            response_id,
+                            response_unique_id,
                             u32::from_le_bytes([
                                 payload[12],
                                 payload[13],
@@ -1146,6 +1195,21 @@ impl IwlWifiDevice {
                             ]),
                             HexBytes(&payload),
                         );
+                        let state_valid = self.time_event_state.as_mut().is_some_and(|state| {
+                            state.record_response(response_unique_id);
+                            state.id == response_id && state.unique_id.is_some()
+                        });
+                        if !state_valid {
+                            log::error!(
+                                "iwlwifi: hcmd.sync.error name={} stage=status reason=time_event_response_mismatch response_id={:#010x} unique_id={:#010x}",
+                                label,
+                                response_id,
+                                response_unique_id,
+                            );
+                            self.release_mac_access();
+                            self.time_event_state = None;
+                            return Err(crate::DriverError::Protocol);
+                        }
                         if status & 1 == 0 {
                             log::error!(
                                 "iwlwifi: hcmd.sync.error name={} stage=status time_event_status={:#010x}",
@@ -1153,6 +1217,7 @@ impl IwlWifiDevice {
                                 status,
                             );
                             self.release_mac_access();
+                            self.time_event_state = None;
                             return Err(crate::DriverError::Protocol);
                         }
                     }
@@ -1202,6 +1267,9 @@ impl IwlWifiDevice {
                         error,
                     );
                     self.release_mac_access();
+                    if opcode == LegacyCmd::TimeEvent as u8 {
+                        self.time_event_state = None;
+                    }
                     return Err(error);
                 }
             }
@@ -2312,7 +2380,7 @@ impl IwlWifiDevice {
             self.release_mac_access_if_tx_idle();
             return;
         }
-        if self.wake_for_hcmd().is_err() {
+        if self.wake_for_tx().is_err() {
             return;
         }
 
@@ -2362,17 +2430,24 @@ impl IwlWifiDevice {
             };
             let buf = &mut self.tx_bufs[TX_QUEUE_SIZE + desc_idx];
             let dma_addr = buf.dma_iova();
-            // Linux points the TX command's scratch write-back address into
-            // TB0. A zero address disables that contract and, together with
-            // a one-TB descriptor, leaves gen1 data queues unlike the
-            // transport format used by the 7265 firmware.
-            let scratch_dma = dma_addr + TX_COMMAND_HEADER_LEN as u64 + 8;
+            // TB0 points to a separate per-slot DMA buffer (first_tb_bufs),
+            // matching Linux's txq->first_tb_bufs.  The firmware writes back
+            // TX status into the scratch field inside TB0, so it must not
+            // share a DMA page with TB1/TB2.
+            let tb0_buf = &mut self.first_tb_bufs[desc_idx];
+            let tb0_dma = tb0_buf.dma_iova();
+            // Linux: scratch_phys = tb0_phys + sizeof(iwl_cmd_header) + offsetof(scratch)
+            //                        = tb0_phys + 4 + 8 = tb0_phys + 12
+            let scratch_dma = tb0_dma + TX_COMMAND_HEADER_LEN as u64 + 8;
             let tx = TX_COMMAND_HEADER_LEN;
             wire[tx + 44..tx + 48].copy_from_slice(&(scratch_dma as u32).to_le_bytes());
             wire[tx + 48] = ((scratch_dma >> 32) & 0x0f) as u8;
             if wire.len() > MAX_FRAME_SIZE {
                 continue;
             }
+            // Copy the first IWL_FIRST_TB_SIZE bytes into the separate TB0
+            // buffer, then the rest into the main frame buffer.
+            tb0_buf.write_from(&wire[..IWL_FIRST_TB_SIZE]);
             buf.write_from(&wire);
             let auth_dma_wire = if (tx_frame[0] >> 4) & 0x0f == 11 {
                 Some(buf.as_slice()[..wire.len()].to_vec())
@@ -2388,9 +2463,11 @@ impl IwlWifiDevice {
             let desc = unsafe { &mut *desc_ptr.add(desc_idx) };
             *desc = TxDmaDesc::zeroed();
             desc.num_tbs = if tb2_len == 0 { 2 } else { 3 };
-            desc.tbs[0].addr_lo = dma_addr as u32;
+            // TB0 → separate first_tb_bufs DMA region (20 bytes)
+            desc.tbs[0].addr_lo = tb0_dma as u32;
             desc.tbs[0].hi_n_len =
-                ((IWL_FIRST_TB_SIZE as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
+                ((IWL_FIRST_TB_SIZE as u16) << 4) | ((tb0_dma >> 32) as u16 & 0x0f);
+            // TB1 → main frame buffer, offset by IWL_FIRST_TB_SIZE
             let tb1_dma = dma_addr + IWL_FIRST_TB_SIZE as u64;
             desc.tbs[1].addr_lo = tb1_dma as u32;
             desc.tbs[1].hi_n_len = ((tb1_len as u16) << 4) | ((tb1_dma >> 32) as u16 & 0x0f);
@@ -2401,27 +2478,22 @@ impl IwlWifiDevice {
             }
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
-            // The legacy SCD uses the byte-count table only for
-            // Scheduler-ACK/aggregate queues. Linux configures the 7265
-            // management queue as FIFO/non-aggregate, so Q5 must not be
-            // treated as a Scheduler-ACK queue merely because a byte-count
-            // table exists in the shared TX DMA allocation. Keep the table
-            // writer available for aggregate data queues, but make this
-            // distinction explicit for the Q5 A/B experiment.
+            // Linux's gen1 transport writes the SCD byte-count table for
+            // every TFD on every queue — not only for Scheduler-ACK /
+            // aggregate queues. The 7265 base_params set bc_table_dword=true,
+            // so iwl_pcie_txq_build_tfd() unconditionally calls
+            // iwlagn_update_bc_tbl(). Keep the same transport contract here;
+            // the hardware captures below also verify the published entry.
             let sec_ctl = wire[TX_COMMAND_HEADER_LEN + 17];
             let scd_aggr = self.read_prph(SCD_AGGR_SEL).unwrap_or(!0);
             let scheduler_ack = (scd_aggr & (1 << traffic_queue)) != 0;
-            let byte_count_entry = if scheduler_ack {
-                self.update_scd_byte_count(
-                    traffic_queue,
-                    desc_idx,
-                    tx_frame.len() as u16,
-                    0,
-                    sec_ctl,
-                )
-            } else {
-                0
-            };
+            let byte_count_entry = self.update_scd_byte_count(
+                traffic_queue,
+                desc_idx,
+                tx_frame.len() as u16,
+                0,
+                sec_ctl,
+            );
 
             self.tx_data_head = self.tx_data_head.wrapping_add(1);
             let handshake_frame = tx_frame.len() >= 2 && matches!(tx_frame[0] & 0xfc, 0xb0 | 0x00);
@@ -2563,8 +2635,8 @@ impl IwlWifiDevice {
                     traffic_queue,
                     desc_idx,
                     tfd_hex,
-                    u16::from(bc_primary),
-                    u16::from(bc_duplicate),
+                    bc_primary,
+                    bc_duplicate,
                     unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].addr_lo)) },
                     unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[0].hi_n_len)) },
                     unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(desc.tbs[1].addr_lo)) },
@@ -2943,6 +3015,7 @@ mod tests {
             )
         };
         let data_dma = device.tx_bufs[TX_QUEUE_SIZE].dma_iova();
+        let tb0_dma = device.first_tb_bufs[0].dma_iova();
         let tb0_addr = tb0.addr_lo;
         let tb0_len = tb0.hi_n_len >> 4;
         let tb1_addr = tb1.addr_lo;
@@ -2950,30 +3023,34 @@ mod tests {
         let tb2_addr = tb2.addr_lo;
         let tb2_len = tb2.hi_n_len >> 4;
         assert_eq!(num_tbs, 3);
-        assert_eq!(tb0_addr, data_dma as u32);
+        // TB0 points to the separate first_tb_bufs DMA region
+        assert_eq!(tb0_addr, tb0_dma as u32);
         assert_eq!(tb0_len, 20);
+        // TB1/TB2 point into the main frame buffer
         assert_eq!(tb1_addr, (data_dma + 20) as u32);
         assert_eq!(tb1_len, 64);
         assert_eq!(tb2_addr, (data_dma + 84) as u32);
         assert_eq!(tb2_len, 6);
+        // Scratch writeback address is inside TB0's DMA region
         let scratch = &device.tx_bufs[TX_QUEUE_SIZE].as_slice()
             [TX_COMMAND_HEADER_LEN + 44..TX_COMMAND_HEADER_LEN + 49];
         assert_eq!(
             u32::from_le_bytes(scratch[..4].try_into().unwrap()),
-            (data_dma + 12) as u32
+            (tb0_dma + 12) as u32
         );
-        assert_eq!(scratch[4], ((data_dma + 12) >> 32) as u8 & 0x0f);
+        assert_eq!(scratch[4], ((tb0_dma + 12) >> 32) as u8 & 0x0f);
         let byte_count_base =
             device.tx_dma_ring.virt() + TX_SCD_BC_OFFSET + IWL_MGMT_QUEUE as usize * (256 + 64) * 2;
         let primary = unsafe { core::ptr::read_unaligned(byte_count_base as *const u16) };
         let duplicate =
             unsafe { core::ptr::read_unaligned((byte_count_base + 256 * 2) as *const u16) };
-        // Q5 is Linux's FIFO/non-aggregate management queue, so the
-        // Scheduler-ACK byte-count table is intentionally untouched by the
-        // submit path. The table writer itself is covered below for the
-        // aggregate/Scheduler-ACK path.
-        assert_eq!(u16::from_le(primary), 0);
-        assert_eq!(u16::from_le(duplicate), 0);
+        // Linux's gen1 transport writes the SCD byte-count table for every
+        // TFD on every queue, including FIFO/non-aggregate management queues.
+        // A 30-byte management frame with no CCMP yields 38 bytes (frame +
+        // CRC + delimiter), rounded up to 10 DWORDs, with sta_id=0 in the
+        // high nibble.
+        assert_eq!(u16::from_le(primary), 0x000a);
+        assert_eq!(u16::from_le(duplicate), 0x000a);
     }
 
     #[test]
@@ -3036,11 +3113,15 @@ mod tests {
         device.fw_api_ver = IWL_FW_API29_MAX;
         device.write_mmio32(HBUS_TARG_PRPH_RDAT, 1 << IWL_DQA_CMD_QUEUE);
         device.write_mmio32(HBUS_TARG_WRPTR, 0x1234_5678);
+        device.write_mmio32(HBUS_TARG_PRPH_WDAT, 0xdead_beef);
 
         device.ensure_api29_dqa_scheduler_gate(IWL_MGMT_QUEUE);
 
-        assert_eq!(device.safe_read32(HBUS_TARG_PRPH_WDAT), Some(0));
+        // Firmware owns activation of a dynamic q5 queue. The diagnostic
+        // switch must not alter either the doorbell or the peripheral value
+        // in the Linux-compatible default path.
         assert_eq!(device.safe_read32(HBUS_TARG_WRPTR), Some(0x1234_5678));
+        assert_eq!(device.safe_read32(HBUS_TARG_PRPH_WDAT), Some(0xdead_beef));
     }
 
     #[test]
@@ -3085,6 +3166,23 @@ mod tests {
         assert_eq!(
             device.safe_read32(CSR_GP_CNTRL).unwrap() & CSR_GP_CNTRL_MAC_ACCESS_REQ,
             0,
+        );
+    }
+
+    #[test]
+    fn data_doorbell_does_not_take_power_management_wake_hold() {
+        let mut device = IwlWifiDevice::new_for_test([0x02, 0, 0, 0, 0, 1]);
+
+        // Linux's iwl_pcie_txq_inc_wr_ptr writes the doorbell directly when
+        // GP1 does not report MAC_SLEEP. This keeps an ordinary DQA TX frame
+        // from turning a transient wake request into a persistent hold.
+        device.write_mmio32(CSR_GP_CNTRL, CSR_GP_CNTRL_INIT_DONE);
+        device.write_mmio32(CSR_UCODE_GP1, 0);
+        device.wake_for_tx().unwrap();
+
+        assert_eq!(
+            device.safe_read32(CSR_GP_CNTRL),
+            Some(CSR_GP_CNTRL_INIT_DONE)
         );
     }
 

@@ -187,7 +187,7 @@ impl IwlWifiDevice {
                     // The bounded TX solver selected and submitted the next
                     // queue plan. Keep the public state in Authenticating.
                 } else {
-                    self.iwl_state = IwlState::Disconnected;
+                    self.reset_failed_connection();
                     self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
                     self.wifi_conn.error_msg = Some(alloc::format!("{} response timeout", phase));
                 }
@@ -453,39 +453,20 @@ impl IwlWifiDevice {
                     if packet[4] == LegacyCmd::TimeEventNotification as u8
                         && packet[5] == GroupId::Legacy as u8
                     {
-                        if payload.len() >= 24 {
+                        if let Some(notification) = TimeEventNotification::from_payload(payload) {
+                            let matched_time_event = self
+                                .time_event_state
+                                .as_mut()
+                                .is_some_and(|state| state.record_notification(notification));
                             log::info!(
-                                "iwlwifi: time_event.notification timestamp={:#010x} session_id={:#010x} unique_id={:#010x} id_and_color={:#010x} action={:#010x} status={:#010x} payload_hex={}",
-                                u32::from_le_bytes([
-                                    payload[0], payload[1], payload[2], payload[3]
-                                ]),
-                                u32::from_le_bytes([
-                                    payload[4], payload[5], payload[6], payload[7]
-                                ]),
-                                u32::from_le_bytes([
-                                    payload[8],
-                                    payload[9],
-                                    payload[10],
-                                    payload[11]
-                                ]),
-                                u32::from_le_bytes([
-                                    payload[12],
-                                    payload[13],
-                                    payload[14],
-                                    payload[15]
-                                ]),
-                                u32::from_le_bytes([
-                                    payload[16],
-                                    payload[17],
-                                    payload[18],
-                                    payload[19]
-                                ]),
-                                u32::from_le_bytes([
-                                    payload[20],
-                                    payload[21],
-                                    payload[22],
-                                    payload[23]
-                                ]),
+                                "iwlwifi: time_event.notification timestamp={:#010x} session_id={:#010x} unique_id={:#010x} id_and_color={:#010x} action={:#010x} status={:#010x} matched={} payload_hex={}",
+                                notification.timestamp,
+                                notification.session_id,
+                                notification.unique_id,
+                                notification.id_and_color,
+                                notification.action,
+                                notification.status,
+                                matched_time_event,
                                 RxHexBytes(payload),
                             );
                         } else {

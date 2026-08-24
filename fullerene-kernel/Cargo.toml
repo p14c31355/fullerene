@@ -12,6 +12,36 @@ rust-version.workspace = true
 name = "fullerene-kernel"
 path = "src/main.rs"
 
+# These examples are consumed by the UEFI/native smoke paths. The native_*
+# entries are freestanding no_std payloads, so they are not host test
+# harnesses: compiling those entries as tests enables unwinding against a
+# no_std binary and fails before the payload can be checked. linux_musl_hello
+# is a std-based host smoke example and is kept test-disabled for the same
+# explicit-example policy.
+[[example]]
+name = "linux_musl_hello"
+test = false
+bench = false
+required-features = ["native-payload"]
+
+[[example]]
+name = "native_shell"
+test = false
+bench = false
+required-features = ["native-payload"]
+
+[[example]]
+name = "native_launchd"
+test = false
+bench = false
+required-features = ["native-payload"]
+
+[[example]]
+name = "native_ipc_rate"
+test = false
+bench = false
+required-features = ["native-payload"]
+
 [dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",
@@ -58,6 +88,7 @@ busybox-build = { path = "../toluene/busybox-build" }
 [features]
 default = []
 user_space = []
+native-payload = []
 
 [dev-dependencies]
 petroleum = { path = "../petroleum", features = ["std"] }

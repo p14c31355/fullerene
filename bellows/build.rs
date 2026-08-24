@@ -19,7 +19,7 @@ fn main() {
     let kernel_path = match env::var("KERNEL_BIN_PATH") {
         Ok(p) => PathBuf::from(p),
         Err(_) => {
-            fs::write(&dest, &[]).unwrap();
+            fs::write(&dest, []).unwrap();
             return;
         }
     };

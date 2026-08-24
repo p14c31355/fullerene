@@ -18,6 +18,7 @@ use bonder::wpa::{
 const CLIENT_MAC: Bssid = [0x94, 0x65, 0x9C, 0x44, 0x73, 0xD4];
 const AP_BSSID: Bssid = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
 const SSID: &[u8] = b"TestAP";
+const FIVE_GHZ_AP_BSSID: Bssid = [0x00, 0x11, 0x22, 0x33, 0x44, 0x66];
 
 // ── Frame builders ──────────────────────────────────────────────
 
@@ -345,6 +346,23 @@ fn wpa2_full_handshake_flow() {
 
     // IP address not yet assigned (DHCP not completed)
     assert_eq!(dev.ip_address, [0u8; 4]);
+}
+
+#[test]
+fn five_ghz_auth_selects_ofdm_rate_before_association() {
+    let mut dev = IwlWifiDevice::new_for_test(CLIENT_MAC);
+    dev.iwl_state = IwlState::Scanning;
+    dev.scan_pending = true;
+
+    dev.inject_rx_frame(&build_beacon(FIVE_GHZ_AP_BSSID, SSID, 36, 0x0001, None));
+    dev.connect(&Ssid::new(SSID), None).expect("connect");
+
+    assert_eq!(dev.wifi_conn.current_bssid, Some(FIVE_GHZ_AP_BSSID));
+    let tx = &dev.tx_bufs[TX_QUEUE_SIZE].as_slice()[TX_COMMAND_HEADER_LEN..];
+    assert_eq!(
+        u32::from_le_bytes(tx[12..16].try_into().unwrap()),
+        0x0000_410d
+    );
 }
 
 #[test]

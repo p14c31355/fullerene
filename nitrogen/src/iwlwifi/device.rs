@@ -88,6 +88,8 @@ pub struct IwlWifiDevice {
     pub init_errlog_ptr: u32,
     /// Scheduler SRAM base reported by the firmware's RX ALIVE notification.
     pub alive_scd_base_addr: u32,
+    /// TIME_EVENT response/notification correlation state.
+    pub time_event_state: Option<TimeEventState>,
 
     /// 802.11 state.
     pub iwl_state: IwlState,
@@ -162,6 +164,10 @@ pub struct IwlWifiDevice {
 
     /// DMA buffers.
     pub tx_bufs: Vec<DmaRegion>,
+    /// Per-slot first-TB buffers for data/management queues, matching Linux's
+    /// `txq->first_tb_bufs`.  TB0 points here so firmware writeback does not
+    /// race with TB1/TB2 in the same DMA page.
+    pub first_tb_bufs: Vec<DmaRegion>,
     pub rx_bufs: Vec<DmaRegion>,
 
     /// IP configuration (from DHCP).
@@ -176,6 +182,9 @@ unsafe impl Send for IwlWifiDevice {}
 impl Drop for IwlWifiDevice {
     fn drop(&mut self) {
         for mut buf in self.tx_bufs.drain(..) {
+            buf.free(self.ctx);
+        }
+        for mut buf in self.first_tb_bufs.drain(..) {
             buf.free(self.ctx);
         }
         for mut buf in self.rx_bufs.drain(..) {
@@ -583,6 +592,7 @@ impl IwlWifiDevice {
             return Err(IwlError::DmaAllocFailed);
         }
         let mut tx_bufs = Vec::new();
+        let mut first_tb_bufs = Vec::new();
         let mut rx_bufs = Vec::new();
         let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
 
@@ -603,6 +613,24 @@ impl IwlWifiDevice {
                     return Err(IwlError::DmaAllocFailed);
                 }
                 tx_bufs.push(buf);
+            }
+            // Linux allocates a separate DMA-coherent array (first_tb_bufs)
+            // for TB0 of data/management TFDs.  The firmware writes back to
+            // this region, so it must not overlap TB1/TB2's DMA page.
+            for _ in 0..TX_QUEUE_SIZE {
+                let mut buf = DmaRegion::alloc(ctx, IWL_FIRST_TB_SIZE_ALIGN)
+                    .ok_or(IwlError::DmaAllocFailed)?;
+                if buf
+                    .dma_map(
+                        ctx,
+                        pci_dma_device_id(device.bus, device.device, device.function),
+                    )
+                    .is_err()
+                {
+                    buf.free(ctx);
+                    return Err(IwlError::DmaAllocFailed);
+                }
+                first_tb_bufs.push(buf);
             }
             for i in 0..RX_QUEUE_SIZE {
                 let mut buf =
@@ -628,6 +656,9 @@ impl IwlWifiDevice {
 
         if let Err(e) = init_result {
             for mut buf in tx_bufs {
+                buf.free(ctx);
+            }
+            for mut buf in first_tb_bufs {
                 buf.free(ctx);
             }
             for mut buf in rx_bufs {
@@ -675,6 +706,7 @@ impl IwlWifiDevice {
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             alive_scd_base_addr: 0,
+            time_event_state: None,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -708,6 +740,7 @@ impl IwlWifiDevice {
             rx_tail: 0,
             rx_posted: 0,
             tx_bufs,
+            first_tb_bufs,
             rx_bufs,
             ip_address: [0u8; 4],
             subnet_mask: [0u8; 4],
@@ -827,6 +860,7 @@ impl IwlWifiDevice {
             return Err(IwlError::DmaAllocFailed);
         }
         let mut tx_bufs = Vec::new();
+        let mut first_tb_bufs = Vec::new();
         let mut rx_bufs = Vec::new();
         let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
 
@@ -848,6 +882,23 @@ impl IwlWifiDevice {
                     return Err(IwlError::DmaAllocFailed);
                 }
                 tx_bufs.push(buf);
+            }
+            // Separate DMA-coherent buffers for TB0 (first 20 bytes) of
+            // data/management TFDs — see init() for rationale.
+            for _ in 0..TX_QUEUE_SIZE {
+                let mut buf = DmaRegion::alloc(ctx, IWL_FIRST_TB_SIZE_ALIGN)
+                    .ok_or(IwlError::DmaAllocFailed)?;
+                if buf
+                    .dma_map(
+                        ctx,
+                        pci_dma_device_id(device.bus, device.device, device.function),
+                    )
+                    .is_err()
+                {
+                    buf.free(ctx);
+                    return Err(IwlError::DmaAllocFailed);
+                }
+                first_tb_bufs.push(buf);
             }
             debug::print("iwlwifi", "alloc_rx_bufs");
             for i in 0..RX_QUEUE_SIZE {
@@ -875,6 +926,9 @@ impl IwlWifiDevice {
         if let Err(e) = init_result {
             debug::print("iwlwifi", "ERR init_result");
             for mut buf in tx_bufs {
+                buf.free(ctx);
+            }
+            for mut buf in first_tb_bufs {
                 buf.free(ctx);
             }
             for mut buf in rx_bufs {
@@ -922,6 +976,7 @@ impl IwlWifiDevice {
             runtime_errlog_ptr: 0,
             init_errlog_ptr: 0,
             alive_scd_base_addr: 0,
+            time_event_state: None,
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
@@ -955,6 +1010,7 @@ impl IwlWifiDevice {
             rx_tail: 0,
             rx_posted: 0,
             tx_bufs,
+            first_tb_bufs,
             rx_bufs,
             ip_address: [0u8; 4],
             subnet_mask: [0u8; 4],
@@ -1009,6 +1065,7 @@ impl IwlWifiDevice {
         self.fw_session_prot_supported = false;
         self.fw_time_event_cmd_version = None;
         self.fw_ucode_flags = 0;
+        self.time_event_state = None;
         self.runtime_calib_flow = 0;
         self.runtime_calib_event = 0;
         self.tx_head = 0;
@@ -2248,6 +2305,13 @@ pub(super) mod test_support {
                 tx_bufs.push(buf);
             }
 
+            let mut first_tb_bufs = Vec::new();
+            for _ in 0..TX_QUEUE_SIZE {
+                let mut buf = DmaRegion::alloc(ctx, IWL_FIRST_TB_SIZE_ALIGN).expect("first_tb DMA");
+                buf.dma_map(ctx, 0).expect("first_tb map");
+                first_tb_bufs.push(buf);
+            }
+
             let mut rx_bufs = Vec::new();
             let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
             for i in 0..RX_QUEUE_SIZE {
@@ -2295,6 +2359,7 @@ pub(super) mod test_support {
                 runtime_errlog_ptr: 0,
                 init_errlog_ptr: 0,
                 alive_scd_base_addr: 0,
+                time_event_state: None,
                 iwl_state: IwlState::Init,
                 wifi_conn: wifi::WifiConnection::new(),
                 wpa: WpaSupplicant::new(),
@@ -2328,6 +2393,7 @@ pub(super) mod test_support {
                 rx_tail: 0,
                 rx_posted: 0,
                 tx_bufs,
+                first_tb_bufs,
                 rx_bufs,
                 ip_address: [0; 4],
                 subnet_mask: [0; 4],
