@@ -650,36 +650,76 @@ fn build_aarch64_kernel(
 }
 
 fn build_aarch64_raw_kernel(elf: &Path) -> io::Result<PathBuf> {
-    let objcopy = ["llvm-objcopy", "aarch64-linux-gnu-objcopy", "objcopy"]
-        .into_iter()
-        .find(|candidate| {
-            Command::new(candidate)
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|status| status.success())
-                .unwrap_or(false)
-        })
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "no objcopy was found for AArch64 raw output",
-            )
-        })?;
     let raw = elf.with_extension("bin");
-    let status = Command::new(objcopy)
-        .args(["-O", "binary"])
-        .arg(elf)
-        .arg(&raw)
-        .status()?;
-    if !status.success() || !raw.is_file() {
-        return Err(io::Error::other(format!(
-            "failed to convert AArch64 ELF kernel {} to raw binary",
-            elf.display()
-        )));
+    let mut failures = Vec::new();
+
+    for objcopy in aarch64_objcopy_candidates() {
+        let version = Command::new(&objcopy)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !matches!(version, Ok(status) if status.success()) {
+            continue;
+        }
+
+        let status = Command::new(&objcopy)
+            .args(["-O", "binary"])
+            .arg(elf)
+            .arg(&raw)
+            .status();
+        match status {
+            Ok(status) if status.success() && raw.is_file() => return Ok(raw),
+            Ok(status) => failures.push(format!("{} exited with {status}", objcopy.display())),
+            Err(error) => failures.push(format!("{}: {error}", objcopy.display())),
+        }
+        let _ = fs::remove_file(&raw);
     }
-    Ok(raw)
+
+    if failures.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no objcopy was found for AArch64 raw output; install llvm-tools-preview or binutils for AArch64",
+        ));
+    }
+    Err(io::Error::other(format!(
+        "failed to convert AArch64 ELF kernel {} to raw binary; tried: {}",
+        elf.display(),
+        failures.join(", ")
+    )))
+}
+
+fn aarch64_objcopy_candidates() -> Vec<PathBuf> {
+    let mut candidates = [
+        "llvm-objcopy",
+        "rust-objcopy",
+        "aarch64-linux-gnu-objcopy",
+        "objcopy",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect::<Vec<_>>();
+
+    // `llvm-tools-preview` installs llvm-objcopy inside the Rust sysroot but
+    // does not put it on PATH. This is the reliable fallback on CI runners
+    // that provide the component without installing a host LLVM package.
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    if let Ok(output) = Command::new(rustc).args(["--print", "sysroot"]).output()
+        && output.status.success()
+    {
+        let rustlib =
+            PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()).join("lib/rustlib");
+        if let Ok(hosts) = fs::read_dir(rustlib) {
+            for host in hosts.flatten() {
+                let candidate = host.path().join("bin/llvm-objcopy");
+                if candidate.is_file() {
+                    candidates.insert(2, candidate);
+                }
+            }
+        }
+    }
+
+    candidates
 }
 
 /// Wrap the freestanding entry point in the 64-byte arm64 Linux Image header.
