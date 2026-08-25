@@ -15,6 +15,8 @@ path = "src/main.rs"
 [[bin]]
 name = "fullerene-kernel-aarch64"
 path = "src/arch/aarch64/main.rs"
+test = false
+bench = false
 
 # These examples are consumed by the UEFI/native smoke paths. The native_*
 # entries are freestanding no_std payloads, so they are not host test

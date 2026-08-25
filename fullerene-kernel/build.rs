@@ -11,6 +11,19 @@ fn main() {
     // the x86_64 kernel's generated userland/assets while building it; those
     // steps require host tools and x86-only target support.
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+        let platform = env::var("FULLERENE_AARCH64_PLATFORM").unwrap_or_default();
+        let linker_script = out_dir.join("aarch64-linker.ld");
+        fs::write(&linker_script, aarch64_linker_script(&platform)).unwrap();
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_bramble)");
+        if platform == "bramble" {
+            println!("cargo:rustc-cfg=fullerene_aarch64_bramble");
+        }
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_PLATFORM");
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64=-T{}",
+            linker_script.display()
+        );
         println!("cargo:rerun-if-changed=src/arch/aarch64");
         return;
     }
@@ -413,6 +426,73 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=have_emulsion_wasm");
     }
+}
+
+/// Generate the tiny platform-specific linker script for the freestanding
+/// AArch64 bootstrap image. Keeping this in Rust makes the repository's
+/// architecture/platform layout the source of truth while still giving lld
+/// the script syntax it requires at link time.
+fn aarch64_linker_script(platform: &str) -> String {
+    let image_base = if platform == "bramble" {
+        // Bramble's DRAM starts at 0x80000000. The standard arm64 Image
+        // text offset is 0x80000, and the generated 64-byte Image header is
+        // immediately before the Rust payload.
+        "0x80080040"
+    } else {
+        "0x42000040"
+    };
+
+    format!(
+        r#"ENTRY(_start)
+
+SECTIONS
+{{
+    /* The generated Linux Image header occupies the 64 bytes immediately
+       before this payload. */
+    . = {image_base};
+
+    .text.boot : ALIGN(4)
+    {{
+        KEEP(*(.text.boot))
+    }}
+
+    .text.exception_vectors : ALIGN(2K)
+    {{
+        KEEP(*(.text.exception_vectors))
+    }}
+
+    .text : ALIGN(4K)
+    {{
+        *(.text .text.*)
+    }}
+
+    .rodata : ALIGN(4K)
+    {{
+        *(.rodata .rodata.*)
+    }}
+
+    .data : ALIGN(4K)
+    {{
+        *(.data .data.*)
+    }}
+
+    .bss (NOLOAD) : ALIGN(4K)
+    {{
+        . = ALIGN(0x200000);
+        __bss_start = .;
+        *(.bss .bss.* COMMON)
+        . = ALIGN(4K);
+        __bss_end = .;
+    }}
+
+    /DISCARD/ :
+    {{
+        *(.eh_frame .eh_frame_hdr)
+        *(.comment)
+    }}
+}}
+"#
+    )
 }
 
 /// Validate and stage a dynamically linked glibc x86_64 BusyBox and its

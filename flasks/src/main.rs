@@ -10,6 +10,8 @@ use std::{
 
 use env_logger;
 
+mod fastboot;
+
 #[derive(Parser)]
 struct Args {
     /// Action to perform. When omitted, run the default x86_64 UEFI image.
@@ -44,6 +46,14 @@ struct Args {
     #[arg(long)]
     debug: bool,
 
+    /// Patch a Bramble Android v3 boot.img template with the generated Image.lz4.
+    #[arg(long, value_name = "BOOT_IMG")]
+    boot_template: Option<PathBuf>,
+
+    /// Output path for --boot-template (defaults beside the template).
+    #[arg(long, value_name = "BOOT_IMG")]
+    boot_output: Option<PathBuf>,
+
     /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
     #[arg(long, default_value = "virtio-gpu")]
     vga: String,
@@ -57,6 +67,10 @@ struct Args {
     /// reference instead of making every curve and glyph look pixel-doubled.
     #[arg(long, default_value = "1920x1080")]
     resolution: String,
+
+    /// Android boot image for the non-destructive Fastboot `boot` action.
+    #[arg(value_name = "IMAGE")]
+    image: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -64,6 +78,8 @@ enum Action {
     Build,
     Run,
     Debug,
+    Device,
+    Boot,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -124,7 +140,7 @@ impl Platform {
     fn qemu_machine(self) -> &'static str {
         match self {
             Self::PcUefi => "q35,usb=off,pcspk-audiodev=speaker",
-            Self::QemuVirt => "virt",
+            Self::QemuVirt => "virt,gic-version=3",
             Self::Bramble => "bramble",
         }
     }
@@ -137,7 +153,7 @@ impl Platform {
         }
     }
 
-    fn validate(self, arch: Arch) -> io::Result<()> {
+    fn validate_pair(self, arch: Arch) -> io::Result<()> {
         let valid_pair = matches!(
             (arch, self),
             (Arch::X86_64, Self::PcUefi)
@@ -150,10 +166,21 @@ impl Platform {
                 format!("platform {:?} is not available for {:?}", self, arch),
             ));
         }
-        if self == Self::Bramble {
+        Ok(())
+    }
+
+    fn validate(self, arch: Arch, action: Action) -> io::Result<()> {
+        self.validate_pair(arch)?;
+        if action == Action::Boot && (arch != Arch::Aarch64 || self != Self::Bramble) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "the bramble platform is reserved for a future hardware backend",
+                "boot currently requires the AArch64 bramble platform",
+            ));
+        }
+        if self == Self::Bramble && !matches!(action, Action::Build | Action::Boot) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the bramble platform can build a raw kernel, but run/debug deployment is not wired yet",
             ));
         }
         Ok(())
@@ -171,7 +198,7 @@ impl Target {
         let platform = args
             .platform
             .unwrap_or_else(|| args.arch.default_platform());
-        platform.validate(args.arch)?;
+        platform.validate(args.arch, args.command)?;
         Ok(Self {
             arch: args.arch,
             platform,
@@ -209,12 +236,55 @@ fn main() -> io::Result<()> {
     // Initialize env_logger - it will respect RUST_LOG environment variable for filtering
     env_logger::init();
     let args = Args::parse();
+    if args.command == Action::Device {
+        if args.image.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "device does not accept an image path",
+            ));
+        }
+        return fastboot::run_device();
+    }
+    if args.command == Action::Boot {
+        if args.image.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "boot requires an Android boot image path",
+            ));
+        }
+    } else if args.image.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "an image path is only valid with the boot action",
+        ));
+    }
     let target = Target::from_args(&args)?;
     let profile = BuildProfile::from_debug(args.debug || args.command == Action::Debug);
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("Failed to get workspace root")
         .to_path_buf();
+
+    if args.boot_template.is_some()
+        && (target.arch != Arch::Aarch64 || target.platform != Platform::Bramble)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--boot-template is only available for the AArch64 bramble platform",
+        ));
+    }
+    if args.boot_template.is_none() && args.boot_output.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--boot-output requires --boot-template",
+        ));
+    }
+    if args.boot_template.is_some() && args.command != Action::Build {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--boot-template is only available with the build action",
+        ));
+    }
 
     if target.arch == Arch::Aarch64 {
         if args.clone_ovmf || args.iso_only {
@@ -224,9 +294,38 @@ fn main() -> io::Result<()> {
             ));
         }
 
-        let kernel_path = build_aarch64_kernel(&workspace_root, profile)?;
+        if args.command == Action::Boot {
+            if target.platform != Platform::Bramble {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "boot currently requires --platform bramble",
+                ));
+            }
+            return fastboot::run_boot(args.image.as_deref().unwrap());
+        }
+
+        let kernel_path = build_aarch64_kernel(&workspace_root, profile, target.platform)?;
         if args.command == Action::Build {
-            println!("AArch64 kernel built at {}", kernel_path.display());
+            let raw_kernel_path = build_aarch64_raw_kernel(&kernel_path)?;
+            let image_path = build_aarch64_image(&raw_kernel_path)?;
+            let image_lz4_path = build_aarch64_lz4(&image_path)?;
+            println!("AArch64 ELF kernel built at {}", kernel_path.display());
+            println!("AArch64 raw kernel built at {}", raw_kernel_path.display());
+            println!("AArch64 Image built at {}", image_path.display());
+            println!("AArch64 Image.lz4 built at {}", image_lz4_path.display());
+            if let Some(template) = args.boot_template.as_deref() {
+                let output = args.boot_output.clone().unwrap_or_else(|| {
+                    template
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join("fullerene-bramble-boot.img")
+                });
+                patch_bramble_boot_image(template, &image_lz4_path, &output)?;
+                println!(
+                    "Bramble temporary boot image built at {} (use only with an unlocked device)",
+                    output.display()
+                );
+            }
             return Ok(());
         }
 
@@ -257,7 +356,11 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn build_aarch64_kernel(workspace_root: &Path, profile: BuildProfile) -> io::Result<PathBuf> {
+fn build_aarch64_kernel(
+    workspace_root: &Path,
+    profile: BuildProfile,
+    platform: Platform,
+) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
     let mut cargo = Command::new("cargo");
     cargo
@@ -277,7 +380,15 @@ fn build_aarch64_kernel(workspace_root: &Path, profile: BuildProfile) -> io::Res
         // Keep the linker choice in the architecture-specific build path. The
         // bare-metal target is shipped with Rust's lld linker, so this does not
         // require a host C cross-toolchain.
-        .env("CARGO_TARGET_AARCH64_UNKNOWN_NONE_LINKER", "rust-lld");
+        .env("CARGO_TARGET_AARCH64_UNKNOWN_NONE_LINKER", "rust-lld")
+        .env(
+            "FULLERENE_AARCH64_PLATFORM",
+            match platform {
+                Platform::Bramble => "bramble",
+                Platform::QemuVirt => "qemu-virt",
+                Platform::PcUefi => "pc-uefi",
+            },
+        );
 
     let status = cargo.status()?;
     if !status.success() {
@@ -304,9 +415,310 @@ fn build_aarch64_kernel(workspace_root: &Path, profile: BuildProfile) -> io::Res
     Ok(artifact)
 }
 
+fn build_aarch64_raw_kernel(elf: &Path) -> io::Result<PathBuf> {
+    let objcopy = ["llvm-objcopy", "aarch64-linux-gnu-objcopy", "objcopy"]
+        .into_iter()
+        .find(|candidate| {
+            Command::new(candidate)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no objcopy was found for AArch64 raw output",
+            )
+        })?;
+    let raw = elf.with_extension("bin");
+    let status = Command::new(objcopy)
+        .args(["-O", "binary"])
+        .arg(elf)
+        .arg(&raw)
+        .status()?;
+    if !status.success() || !raw.is_file() {
+        return Err(io::Error::other(format!(
+            "failed to convert AArch64 ELF kernel {} to raw binary",
+            elf.display()
+        )));
+    }
+    Ok(raw)
+}
+
+/// Wrap the freestanding entry point in the 64-byte arm64 Linux Image header.
+///
+/// The first instruction branches over the header into Fullerene's entry
+/// point. This keeps the payload usable by Android boot image loaders that
+/// expect an uncompressed AArch64 Image rather than an ELF or a naked flat
+/// binary.
+fn build_aarch64_image(raw: &Path) -> io::Result<PathBuf> {
+    let payload = fs::read(raw)?;
+    let image = make_aarch64_image(&payload);
+    let image_path = raw.with_extension("Image");
+    fs::write(&image_path, image)?;
+    Ok(image_path)
+}
+
+fn make_aarch64_image(payload: &[u8]) -> Vec<u8> {
+    const IMAGE_HEADER_SIZE: usize = 64;
+    const TEXT_OFFSET: u64 = 0x0008_0000;
+    const FLAG_PAGE_SIZE_4K: u64 = 1 << 1;
+    const ARM64_IMAGE_MAGIC: u32 = 0x644d_5241;
+
+    let mut image = Vec::with_capacity(IMAGE_HEADER_SIZE + payload.len());
+    // b +64: Fullerene's entry point follows the Linux Image metadata.
+    image.extend_from_slice(&0x1400_0010u32.to_le_bytes());
+    image.extend_from_slice(&0xd503_201fu32.to_le_bytes());
+    image.extend_from_slice(&TEXT_OFFSET.to_le_bytes());
+    image.extend_from_slice(&((IMAGE_HEADER_SIZE + payload.len()) as u64).to_le_bytes());
+    image.extend_from_slice(&FLAG_PAGE_SIZE_4K.to_le_bytes());
+    image.extend_from_slice(&0u64.to_le_bytes());
+    image.extend_from_slice(&0u64.to_le_bytes());
+    image.extend_from_slice(&0u64.to_le_bytes());
+    image.extend_from_slice(&ARM64_IMAGE_MAGIC.to_le_bytes());
+    image.extend_from_slice(&0u32.to_le_bytes());
+    debug_assert_eq!(image.len(), IMAGE_HEADER_SIZE);
+    image.extend_from_slice(payload);
+    image
+}
+
+/// Emit the legacy LZ4 stream used by Linux `Image.lz4` targets without
+/// requiring a host lz4 executable.
+///
+/// Android's kernel build invokes `lz4c -l`, which is not the modern LZ4 frame
+/// format. Each legacy block below contains a valid LZ4 literal-only sequence;
+/// it is deliberately uncompressed, but remains compatible with the kernel
+/// decompressor and keeps this Rust-only workspace toolchain-independent.
+fn build_aarch64_lz4(image: &Path) -> io::Result<PathBuf> {
+    let payload = fs::read(image)?;
+    let compressed = make_lz4_legacy(&payload);
+    let output = image.with_extension("Image.lz4");
+    fs::write(&output, compressed)?;
+    Ok(output)
+}
+
+fn make_lz4_legacy(payload: &[u8]) -> Vec<u8> {
+    const LZ4_LEGACY_MAGIC: u32 = 0x184c_2102;
+    const BLOCK_MAX: usize = 8 * 1024 * 1024;
+
+    let mut stream = Vec::with_capacity(4 + payload.len() + payload.len() / BLOCK_MAX * 16 + 4);
+    stream.extend_from_slice(&LZ4_LEGACY_MAGIC.to_le_bytes());
+    for block in payload.chunks(BLOCK_MAX) {
+        let encoded = encode_lz4_literals(block);
+        stream.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+        stream.extend_from_slice(&encoded);
+    }
+    // Legacy LZ4 marks the end of the stream with a zero-sized block.
+    stream.extend_from_slice(&0u32.to_le_bytes());
+    stream
+}
+
+fn encode_lz4_literals(payload: &[u8]) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(payload.len() + payload.len() / 255 + 1);
+    let literal_length = payload.len();
+    let token_length = literal_length.min(15);
+    encoded.push((token_length as u8) << 4);
+    if literal_length >= 15 {
+        let mut remaining = literal_length - 15;
+        while remaining >= 255 {
+            encoded.push(255);
+            remaining -= 255;
+        }
+        encoded.push(remaining as u8);
+    }
+    encoded.extend_from_slice(payload);
+    encoded
+}
+
+fn patch_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io::Result<()> {
+    const PAGE_SIZE: usize = 4096;
+    const HEADER_SIZE_OFFSET: usize = 20;
+    const HEADER_VERSION_OFFSET: usize = 40;
+    const KERNEL_SIZE_OFFSET: usize = 8;
+    const RAMDISK_SIZE_OFFSET: usize = 12;
+
+    let template_bytes = fs::read(template)?;
+    if template == output {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "boot template and output path must be different",
+        ));
+    }
+    if template_bytes.len() < PAGE_SIZE || &template_bytes[..8] != b"ANDROID!" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Bramble boot template is not an Android boot image",
+        ));
+    }
+    let header_version = read_le_u32(&template_bytes, HEADER_VERSION_OFFSET)?;
+    if header_version != 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "Bramble boot patcher supports Android boot header v3, found v{header_version}"
+            ),
+        ));
+    }
+    let header_size = read_le_u32(&template_bytes, HEADER_SIZE_OFFSET)? as usize;
+    if header_size == 0 || header_size > PAGE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid Android v3 boot header size {header_size}"),
+        ));
+    }
+    // A factory boot partition image commonly ends with an AVB vbmeta block
+    // and a 64-byte AVB footer. The temporary `fastboot boot` path is intended
+    // for an unlocked device, so do not carry stale hashes over a replacement
+    // kernel. Keep only the original Android boot image before the AVB block.
+    let template_bytes = strip_avb_metadata(&template_bytes)?;
+    if template_bytes.len() < PAGE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "AVB-stripped boot template is smaller than one Android page",
+        ));
+    }
+
+    let old_kernel_size = read_le_u32(&template_bytes, KERNEL_SIZE_OFFSET)? as usize;
+    let ramdisk_size = read_le_u32(&template_bytes, RAMDISK_SIZE_OFFSET)? as usize;
+    let old_kernel_offset = align_up_checked(PAGE_SIZE, PAGE_SIZE)?;
+    let old_ramdisk_offset = align_up_checked(
+        old_kernel_offset
+            .checked_add(old_kernel_size)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "kernel offset overflows"))?,
+        PAGE_SIZE,
+    )?;
+    let old_tail_offset = align_up_checked(
+        old_ramdisk_offset
+            .checked_add(ramdisk_size)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "ramdisk offset overflows")
+            })?,
+        PAGE_SIZE,
+    )?;
+    if old_tail_offset > template_bytes.len()
+        || old_ramdisk_offset
+            .checked_add(ramdisk_size)
+            .is_none_or(|end| end > template_bytes.len())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot template has truncated kernel or ramdisk payload",
+        ));
+    }
+
+    let kernel_bytes = fs::read(kernel)?;
+    let kernel_size = u32::try_from(kernel_bytes.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "generated kernel exceeds Android v3 size",
+        )
+    })?;
+    let mut header = template_bytes[..PAGE_SIZE].to_vec();
+    write_le_u32(&mut header, KERNEL_SIZE_OFFSET, kernel_size)?;
+
+    let mut image = header;
+    append_padded(&mut image, &kernel_bytes, PAGE_SIZE)?;
+    append_padded(
+        &mut image,
+        &template_bytes[old_ramdisk_offset..old_ramdisk_offset + ramdisk_size],
+        PAGE_SIZE,
+    )?;
+    image.extend_from_slice(&template_bytes[old_tail_offset..]);
+    fs::write(output, image)?;
+    Ok(())
+}
+
+fn strip_avb_metadata(image: &[u8]) -> io::Result<&[u8]> {
+    const AVB_FOOTER_SIZE: usize = 64;
+    if image.len() < AVB_FOOTER_SIZE
+        || &image[image.len() - AVB_FOOTER_SIZE..image.len() - AVB_FOOTER_SIZE + 4] != b"AVBf"
+    {
+        return Ok(image);
+    }
+
+    let footer = &image[image.len() - AVB_FOOTER_SIZE..];
+    let version_major = u32::from_be_bytes(footer[4..8].try_into().unwrap());
+    let version_minor = u32::from_be_bytes(footer[8..12].try_into().unwrap());
+    if version_major != 1 || version_minor != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("unsupported AVB footer version {version_major}.{version_minor}"),
+        ));
+    }
+    let original_image_size = u64::from_be_bytes(footer[12..20].try_into().unwrap());
+    let vbmeta_offset = u64::from_be_bytes(footer[20..28].try_into().unwrap());
+    let vbmeta_size = u64::from_be_bytes(footer[28..36].try_into().unwrap());
+    let footer_offset = image.len() - AVB_FOOTER_SIZE;
+    let original_image_size = usize::try_from(original_image_size).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "AVB original image size overflows host",
+        )
+    })?;
+    let vbmeta_offset = usize::try_from(vbmeta_offset).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "AVB vbmeta offset overflows host",
+        )
+    })?;
+    let vbmeta_size = usize::try_from(vbmeta_size).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "AVB vbmeta size overflows host")
+    })?;
+    if original_image_size > footer_offset
+        || vbmeta_offset > footer_offset
+        || vbmeta_size > footer_offset - vbmeta_offset
+        || vbmeta_offset + vbmeta_size > footer_offset
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "AVB footer points outside the boot image",
+        ));
+    }
+    Ok(&image[..original_image_size])
+}
+
+fn read_le_u32(bytes: &[u8], offset: usize) -> io::Result<u32> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "integer overflow"))?;
+    let value = bytes
+        .get(offset..end)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "boot header is truncated"))?;
+    Ok(u32::from_le_bytes(value.try_into().unwrap()))
+}
+
+fn write_le_u32(bytes: &mut [u8], offset: usize, value: u32) -> io::Result<()> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "integer overflow"))?;
+    let target = bytes
+        .get_mut(offset..end)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "boot header is truncated"))?;
+    target.copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn align_up_checked(value: usize, alignment: usize) -> io::Result<usize> {
+    debug_assert!(alignment.is_power_of_two());
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value & !(alignment - 1))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "alignment overflows"))
+}
+
+fn append_padded(output: &mut Vec<u8>, payload: &[u8], alignment: usize) -> io::Result<()> {
+    output.extend_from_slice(payload);
+    let padded_len = align_up_checked(payload.len(), alignment)?;
+    output.resize(output.len() + padded_len - payload.len(), 0);
+    Ok(())
+}
+
 fn aarch64_qemu_args(artifact: &Path, platform: Platform, debug: bool) -> io::Result<Vec<String>> {
     if platform != Platform::QemuVirt {
-        platform.validate(Arch::Aarch64)?;
+        platform.validate(Arch::Aarch64, Action::Run)?;
     }
 
     let mut args = vec![
@@ -874,9 +1286,13 @@ fn run_qemu(
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args};
+    use super::{
+        Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args, encode_lz4_literals,
+        make_aarch64_image, make_lz4_legacy, patch_bramble_boot_image, strip_avb_metadata,
+    };
     use clap::Parser;
-    use std::path::Path;
+    use std::{fs, path::Path};
+    use tempfile::tempdir;
 
     #[test]
     fn release_is_the_default_profile() {
@@ -924,7 +1340,7 @@ mod tests {
         .unwrap();
         assert!(
             args.windows(2)
-                .any(|pair| pair[0] == "-M" && pair[1] == "virt")
+                .any(|pair| pair[0] == "-M" && pair[1] == "virt,gic-version=3")
         );
         assert!(
             args.windows(2)
@@ -950,5 +1366,123 @@ mod tests {
         .unwrap();
         let error = super::Target::from_args(&args).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn bramble_build_is_allowed_to_produce_a_raw_kernel() {
+        let args = Args::try_parse_from([
+            "flasks",
+            "build",
+            "--arch",
+            "aarch64",
+            "--platform",
+            "bramble",
+        ])
+        .unwrap();
+        let target = super::Target::from_args(&args).unwrap();
+        assert_eq!(target.platform, Platform::Bramble);
+    }
+
+    #[test]
+    fn bramble_boot_template_replaces_kernel_and_preserves_ramdisk() {
+        let directory = tempdir().unwrap();
+        let template = directory.path().join("boot.img");
+        let kernel = directory.path().join("Image.lz4");
+        let output = directory.path().join("patched-boot.img");
+
+        let mut boot = vec![0u8; 4096];
+        boot[..8].copy_from_slice(b"ANDROID!");
+        boot[8..12].copy_from_slice(&3u32.to_le_bytes());
+        boot[12..16].copy_from_slice(&5u32.to_le_bytes());
+        boot[20..24].copy_from_slice(&1580u32.to_le_bytes());
+        boot[40..44].copy_from_slice(&3u32.to_le_bytes());
+        boot.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
+        boot.resize(8192, 0);
+        boot.extend_from_slice(b"ramfs");
+        boot.resize(12288, 0);
+        boot.extend_from_slice(b"tail");
+        fs::write(&template, boot).unwrap();
+        fs::write(&kernel, b"new Image.lz4").unwrap();
+
+        patch_bramble_boot_image(&template, &kernel, &output).unwrap();
+        let patched = fs::read(&output).unwrap();
+        assert_eq!(&patched[..8], b"ANDROID!");
+        assert_eq!(u32::from_le_bytes(patched[8..12].try_into().unwrap()), 13);
+        assert_eq!(&patched[4096..4109], b"new Image.lz4");
+        assert_eq!(&patched[8192..8197], b"ramfs");
+        assert_eq!(&patched[12288..], b"tail");
+    }
+
+    #[test]
+    fn avb_footer_is_removed_before_boot_image_patching() {
+        let mut image = vec![0x5a; 8192];
+        let footer_offset = image.len();
+        image.extend_from_slice(&[0xa5; 128]);
+        let mut footer = [0u8; 64];
+        footer[..4].copy_from_slice(b"AVBf");
+        footer[4..8].copy_from_slice(&1u32.to_be_bytes());
+        footer[8..12].copy_from_slice(&0u32.to_be_bytes());
+        footer[12..20].copy_from_slice(&(footer_offset as u64).to_be_bytes());
+        footer[20..28].copy_from_slice(&(footer_offset as u64).to_be_bytes());
+        footer[28..36].copy_from_slice(&(128u64).to_be_bytes());
+        image.extend_from_slice(&footer);
+
+        let stripped = strip_avb_metadata(&image).unwrap();
+        assert_eq!(stripped.len(), footer_offset);
+        assert_eq!(stripped, &[0x5a; 8192]);
+    }
+
+    #[test]
+    fn boot_patcher_rejects_avb_footer_with_too_small_original_image() {
+        let directory = tempdir().unwrap();
+        let template = directory.path().join("boot.img");
+        let kernel = directory.path().join("Image.lz4");
+        let output = directory.path().join("patched-boot.img");
+
+        let mut image = vec![0u8; 4096];
+        image[..8].copy_from_slice(b"ANDROID!");
+        image[40..44].copy_from_slice(&3u32.to_le_bytes());
+        image.extend_from_slice(&[0xa5; 128]);
+        let mut footer = [0u8; 64];
+        footer[..4].copy_from_slice(b"AVBf");
+        footer[4..8].copy_from_slice(&1u32.to_be_bytes());
+        footer[12..20].copy_from_slice(&(32u64).to_be_bytes());
+        footer[20..28].copy_from_slice(&(4096u64).to_be_bytes());
+        footer[28..36].copy_from_slice(&(128u64).to_be_bytes());
+        image.extend_from_slice(&footer);
+        fs::write(&template, image).unwrap();
+        fs::write(&kernel, b"kernel").unwrap();
+
+        let error = patch_bramble_boot_image(&template, &kernel, &output).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn aarch64_image_has_branch_header_and_arm64_magic() {
+        let image = make_aarch64_image(&[0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(
+            u32::from_le_bytes(image[0..4].try_into().unwrap()),
+            0x1400_0010
+        );
+        assert_eq!(&image[56..60], b"ARMd");
+        assert_eq!(&image[64..], &[0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(
+            u64::from_le_bytes(image[8..16].try_into().unwrap()),
+            0x80000
+        );
+    }
+
+    #[test]
+    fn lz4_legacy_stream_uses_literal_blocks() {
+        let payload = b"fullerene-aarch64";
+        let frame = make_lz4_legacy(payload);
+        assert_eq!(&frame[0..4], &[0x02, 0x21, 0x4c, 0x18]);
+        let block_size = u32::from_le_bytes(frame[4..8].try_into().unwrap()) as usize;
+        let encoded = encode_lz4_literals(payload);
+        assert_eq!(block_size, encoded.len());
+        assert_eq!(&frame[8..8 + block_size], encoded.as_slice());
+        assert_eq!(&frame[8 + block_size..], &[0, 0, 0, 0]);
+        assert_eq!(frame[8] >> 4, 15);
+        assert_eq!(&encoded[2..], payload);
     }
 }

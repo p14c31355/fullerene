@@ -86,6 +86,47 @@ cargo run -q -p flasks -- --debug --vga std
 cargo run -q -p flasks -- --headless --vga none
 ```
 
+### AArch64 / Bramble bring-up
+
+Install the bare-metal target and AArch64 QEMU, then use the same runner for
+the AArch64 bootstrap kernel on QEMU virt:
+
+```bash
+rustup target add aarch64-unknown-none
+cargo run -q -p flasks -- build --arch aarch64 --platform qemu-virt
+cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt
+```
+
+For Pixel 4a 5G (Bramble), build the Linux arm64 legacy-format `Image.lz4`
+payload and, when available, patch an Android v3 `boot.img` template:
+
+```bash
+cargo run -q -p flasks -- build --arch aarch64 --platform bramble
+cargo run -q -p flasks -- build --arch aarch64 --platform bramble \
+  --boot-template /path/to/stock/boot.img \
+  --boot-output /path/to/fullerene-boot.img
+```
+
+The Bramble patcher preserves the ramdisk and removes any stale AVB metadata
+from a factory template; the result is intended only for `fastboot boot` on an
+unlocked development device. It does not sign or flash partitions.
+Android v3 keeps the board DTB in the companion `vendor_boot.img`; Flasks
+leaves that image untouched and relies on the Bramble bootloader to pass its
+DTB in the AArch64 boot registers.
+
+Once a Bramble is in Fastboot mode, Flasks can inspect it and perform the
+non-destructive RAM boot path. The image argument must be a patched Android
+`boot.img`, not the raw `Image.lz4` artifact:
+
+```bash
+cargo run -q -p flasks -- device
+cargo run -q -p flasks -- boot --arch aarch64 --platform bramble \
+  /path/to/fullerene-boot.img
+```
+
+The boot command refuses any Fastboot product other than `bramble`, refuses
+multiple connected devices, and does not expose `flash` or `erase`.
+
 Important Flasks options are `--vga <virtio-gpu|std|qxl|cirrus|none>`, `--display <gtk|sdl|none|curses>`, `--resolution <WxH>`, `--headless`, `--timeout <seconds>`, `--iso-only`, `--debug`, and `--clone-ovmf`. QEMU diagnostics are written to `qemu_log.txt`; set `RUST_LOG=debug` for more verbose task-runner logs.
 
 For prerequisites, manual build steps, application ports, BusyBox, smoke tests, and the complete QEMU option reference, see [docs/BUILD.md](docs/BUILD.md).
