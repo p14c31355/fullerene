@@ -87,7 +87,12 @@ extern "C" fn probe_entry() -> ! {
 
     // PSCI SYSTEM_RESET, SMC32 calling convention: 0x84000009.
     unsafe {
-        asm!("mov w0, #0x8400", "movk w0, #9", "smc #0", options(nostack));
+        asm!(
+            "mov w0, #9",
+            "movk w0, #0x8400, lsl #16",
+            "smc #0",
+            options(nostack)
+        );
     }
 
     // A conforming PSCI implementation does not return from SYSTEM_RESET.

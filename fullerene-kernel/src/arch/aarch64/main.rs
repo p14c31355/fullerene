@@ -255,10 +255,12 @@ extern "C" fn aarch64_rust_entry(fdt_address: u64, _arg1: u64, fdt_arg2: u64) ->
     // phone boot path the redistributor may still be owned by firmware; USB
     // is polled during this early diagnostic phase and does not depend on it.
     #[cfg(fullerene_aarch64_bramble)]
-    if usb::init_usb2_only() {
-        uart::puts("platform: bramble USB2 gadget: ready\n");
+    usb::clear_dma_memory();
+    #[cfg(fullerene_aarch64_bramble)]
+    if usb::init_usb2_handoff() {
+        uart::puts("platform: bramble USB2 gadget handoff: ready\n");
     } else {
-        uart::puts("platform: bramble USB2 gadget: failed\n");
+        uart::puts("platform: bramble USB2 gadget handoff: failed\n");
     }
 
     if bramble {

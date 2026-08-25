@@ -502,6 +502,22 @@ SECTIONS
         __bss_end = .;
     }}
 
+    /*
+       The Bramble DWC3 device tree gives the USB controller an SMMU IOVA pool
+       beginning at 0x90000000. That is not a physical DRAM address. For the
+       handoff diagnostic, the SMMU stream is switched to BYPASS and these
+       objects therefore need to remain in the image's physical DRAM mapping.
+       Keep the section separate from .bss so the bootstrap clears it
+       explicitly before handing the physical addresses to DWC3.
+    */
+    .usb_dma (NOLOAD) : ALIGN(4K)
+    {{
+        __usb_dma_start = .;
+        KEEP(*(.usb_dma .usb_dma.*))
+        . = ALIGN(4K);
+        __usb_dma_end = .;
+    }}
+
     /DISCARD/ :
     {{
         *(.eh_frame .eh_frame_hdr)

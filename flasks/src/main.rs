@@ -394,8 +394,18 @@ fn main() -> io::Result<()> {
             return Ok(());
         }
 
+        let qemu_artifact = if target.platform == Platform::QemuVirt {
+            // QEMU passes the explicitly supplied DTB in x0 for an arm64
+            // Linux Image. It does not do that reliably for a freestanding
+            // ELF, so keep the ELF as the build artifact but boot the same
+            // Image format that the Android loader will consume.
+            let raw_kernel_path = build_aarch64_raw_kernel(&kernel_path)?;
+            build_aarch64_image(&raw_kernel_path)?
+        } else {
+            kernel_path
+        };
         run_aarch64_qemu(
-            &kernel_path,
+            &qemu_artifact,
             target.platform,
             args.command == Action::Debug,
             args.timeout,
@@ -910,8 +920,16 @@ fn run_aarch64_qemu(
     debug: bool,
     timeout: Option<u64>,
 ) -> io::Result<()> {
+    let qemu_dtb = if platform == Platform::QemuVirt {
+        Some(TemporaryQemuDtb::create()?)
+    } else {
+        None
+    };
     let mut qemu = Command::new(platform.qemu_binary());
-    let qemu_args = aarch64_qemu_args(artifact, platform, debug)?;
+    let mut qemu_args = aarch64_qemu_args(artifact, platform, debug)?;
+    if let Some(dtb) = qemu_dtb.as_ref() {
+        qemu_args.extend(["-dtb".to_string(), dtb.path.display().to_string()]);
+    }
     log::info!(
         "Starting {} for AArch64 kernel {}",
         platform.qemu_binary(),
@@ -947,6 +965,61 @@ fn run_aarch64_qemu(
         return Err(io::Error::other("AArch64 QEMU execution failed"));
     }
     Ok(())
+}
+
+/// QEMU's `-kernel` path does not reliably provide its generated DTB in x0
+/// for a freestanding ELF. Dump the machine's own DTB first, then explicitly
+/// pass it to the real run. This keeps QEMU on the same DTB discovery path as
+/// an Android bootloader and prevents the platform defaults from hiding
+/// parser or address-cell bugs.
+struct TemporaryQemuDtb {
+    path: PathBuf,
+}
+
+impl TemporaryQemuDtb {
+    fn create() -> io::Result<Self> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| {
+                io::Error::other(format!("system clock is before UNIX epoch: {error}"))
+            })?
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "fullerene-qemu-virt-{}-{nonce}.dtb",
+            std::process::id()
+        ));
+        let machine = format!("virt,gic-version=3,dumpdtb={}", path.display());
+        let status = Command::new("qemu-system-aarch64")
+            .args([
+                "-M",
+                &machine,
+                "-cpu",
+                "cortex-a72",
+                "-m",
+                "1G",
+                "-nographic",
+            ])
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other(
+                "qemu-system-aarch64 could not generate a virt device tree",
+            ));
+        }
+        let size = fs::metadata(&path)?.len();
+        if size < 40 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("QEMU generated an invalid DTB at {}", path.display()),
+            ));
+        }
+        Ok(Self { path })
+    }
+}
+
+impl Drop for TemporaryQemuDtb {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 const LINUX_TESTED_FIRMWARE_COMMIT: &str = "11b7607b738eceacdf32505cb77b8151602bff9b";
