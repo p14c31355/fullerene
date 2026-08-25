@@ -82,10 +82,68 @@ global_asm!(
          mov x5, #(3 << 20)\n\
          msr CPACR_EL1, x5\n\
          isb\n\
+         // Android bootloaders may place an Image at a different physical\n\
+         // base. Apply the PIE's relative relocations before entering Rust;\n\
+         // x0 remains the bootloader-provided DTB address.\n\
+         adr x7, _start\n\
+         sub sp, sp, #16\n\
+         str x0, [sp]\n\
+         mov x0, x7\n\
+         bl aarch64_apply_relocations\n\
+         ldr x0, [sp]\n\
+         add sp, sp, #16\n\
          b aarch64_rust_entry\n\
      .size aarch64_el1_entry, . - aarch64_el1_entry\n\
      ",
     stack_size = const BOOT_STACK_SIZE,
+);
+
+#[cfg(fullerene_aarch64_bramble)]
+const LINK_ENTRY: usize = 0x8008_0040;
+#[cfg(not(fullerene_aarch64_bramble))]
+const LINK_ENTRY: usize = 0x4200_0040;
+
+// This runs before the PIE's GOT is valid. Keep it as position-independent
+// assembly embedded in this Rust source: a Rust implementation can itself
+// acquire a GOT relocation before it has had a chance to apply the records.
+global_asm!(
+    ".section .text.boot,\"ax\"\n\
+     .balign 4\n\
+     .global aarch64_apply_relocations\n\
+     .type aarch64_apply_relocations, %function\n\
+     aarch64_apply_relocations:\n\
+         movz x11, #{entry_0}\n\
+         movk x11, #{entry_1}, lsl #16\n\
+         movk x11, #{entry_2}, lsl #32\n\
+         movk x11, #{entry_3}, lsl #48\n\
+         sub x10, x0, x11\n\
+         adr x8, __rela_dyn_start\n\
+         adr x9, __rela_dyn_end\n\
+     1:\n\
+         cmp x8, x9\n\
+         b.hs 2f\n\
+         ldr x11, [x8]\n\
+         ldr w12, [x8, #8]\n\
+         cmp w12, #0x403\n\
+         b.eq 3f\n\
+         cmp w12, #0x101\n\
+         b.ne 4f\n\
+     3:\n\
+         ldr x13, [x8, #16]\n\
+         add x14, x11, x10\n\
+         add x13, x13, x10\n\
+         str x13, [x14]\n\
+     4:\n\
+         add x8, x8, #24\n\
+         b 1b\n\
+     2:\n\
+         ret\n\
+     .size aarch64_apply_relocations, . - aarch64_apply_relocations\n\
+     ",
+    entry_0 = const (LINK_ENTRY & 0xffff),
+    entry_1 = const ((LINK_ENTRY >> 16) & 0xffff),
+    entry_2 = const ((LINK_ENTRY >> 32) & 0xffff),
+    entry_3 = const ((LINK_ENTRY >> 48) & 0xffff),
 );
 
 #[unsafe(no_mangle)]
@@ -197,10 +255,10 @@ extern "C" fn aarch64_rust_entry(fdt_address: u64, _arg1: u64, fdt_arg2: u64) ->
     // phone boot path the redistributor may still be owned by firmware; USB
     // is polled during this early diagnostic phase and does not depend on it.
     #[cfg(fullerene_aarch64_bramble)]
-    if usb::init() {
-        uart::puts("platform: bramble USB gadget: ready\n");
+    if usb::init_usb2_only() {
+        uart::puts("platform: bramble USB2 gadget: ready\n");
     } else {
-        uart::puts("platform: bramble USB gadget: failed\n");
+        uart::puts("platform: bramble USB2 gadget: failed\n");
     }
 
     if bramble {

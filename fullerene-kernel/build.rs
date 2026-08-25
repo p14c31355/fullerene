@@ -24,6 +24,14 @@ fn main() {
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64=-T{}",
             linker_script.display()
         );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-probe=-T{}",
+            linker_script.display()
+        );
         println!("cargo:rerun-if-changed=src/arch/aarch64");
         return;
     }
@@ -474,6 +482,15 @@ SECTIONS
     .data : ALIGN(4K)
     {{
         *(.data .data.*)
+    }}
+
+    /* Keep static-PIE relocation records inside the flat Image. The Rust
+       bootstrap applies them before normal code touches relocated data. */
+    .rela.dyn : ALIGN(8)
+    {{
+        __rela_dyn_start = .;
+        *(.rela.dyn)
+        __rela_dyn_end = .;
     }}
 
     .bss (NOLOAD) : ALIGN(4K)

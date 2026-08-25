@@ -59,6 +59,15 @@ struct Args {
     #[arg(long)]
     boot_uncompressed: bool,
 
+    /// Build the dependency-free AArch64 entry probe. If it reaches Rust,
+    /// it resets through PSCI; on Bramble this should return to fastboot.
+    #[arg(long)]
+    entry_probe: bool,
+
+    /// Build the dependency-free Bramble USB gadget probe.
+    #[arg(long)]
+    usb_probe: bool,
+
     /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
     #[arg(long, default_value = "virtio-gpu")]
     vga: String,
@@ -296,6 +305,32 @@ fn main() -> io::Result<()> {
             "--boot-template is only available with the build action",
         ));
     }
+    if args.entry_probe
+        && (target.arch != Arch::Aarch64
+            || !matches!(target.platform, Platform::QemuVirt | Platform::Bramble)
+            || args.command != Action::Build)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--entry-probe requires build --arch aarch64 --platform qemu-virt or bramble",
+        ));
+    }
+    if args.usb_probe
+        && (target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || args.command != Action::Build)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-probe requires build --arch aarch64 --platform bramble",
+        ));
+    }
+    if args.entry_probe && args.usb_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--entry-probe and --usb-probe are mutually exclusive",
+        ));
+    }
 
     if target.arch == Arch::Aarch64 {
         if args.clone_ovmf || args.iso_only {
@@ -315,12 +350,26 @@ fn main() -> io::Result<()> {
             return fastboot::run_boot(args.image.as_deref().unwrap());
         }
 
-        let kernel_path = build_aarch64_kernel(&workspace_root, profile, target.platform)?;
+        let kernel_artifact = if args.usb_probe {
+            "fullerene-kernel-aarch64-usb-probe"
+        } else if args.entry_probe {
+            "fullerene-kernel-aarch64-probe"
+        } else {
+            target.arch.kernel_artifact()
+        };
+        let kernel_path =
+            build_aarch64_kernel(&workspace_root, profile, target.platform, kernel_artifact)?;
         if args.command == Action::Build {
             let raw_kernel_path = build_aarch64_raw_kernel(&kernel_path)?;
             let image_path = build_aarch64_image(&raw_kernel_path)?;
             let image_lz4_path = build_aarch64_lz4(&image_path)?;
-            println!("AArch64 ELF kernel built at {}", kernel_path.display());
+            if args.usb_probe {
+                println!("AArch64 USB probe built at {}", kernel_path.display());
+            } else if args.entry_probe {
+                println!("Bramble entry probe built at {}", kernel_path.display());
+            } else {
+                println!("AArch64 ELF kernel built at {}", kernel_path.display());
+            }
             println!("AArch64 raw kernel built at {}", raw_kernel_path.display());
             println!("AArch64 Image built at {}", image_path.display());
             println!("AArch64 Image.lz4 built at {}", image_lz4_path.display());
@@ -376,6 +425,7 @@ fn build_aarch64_kernel(
     workspace_root: &Path,
     profile: BuildProfile,
     platform: Platform,
+    kernel_artifact: &str,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
     let mut cargo = Command::new("cargo");
@@ -387,7 +437,7 @@ fn build_aarch64_kernel(
             "--package",
             target.cargo_package(),
             "--bin",
-            target.kernel_artifact(),
+            kernel_artifact,
             "--target",
             target.rust_target(),
             "--profile",
@@ -406,6 +456,14 @@ fn build_aarch64_kernel(
             },
         );
 
+    // Android's Bramble bootloader may relocate an arm64 Image. Build the
+    // freestanding binary as a static PIE and let the Rust bootstrap apply
+    // its R_AARCH64_RELATIVE entries before normal Rust code runs.
+    let mut rustflags = env::var("RUSTFLAGS").unwrap_or_default();
+    rustflags.push_str(" -C relocation-model=pic -C link-arg=-pie");
+    rustflags.push_str(" -C link-arg=-z -C link-arg=notext");
+    cargo.env("RUSTFLAGS", rustflags);
+
     let status = cargo.status()?;
     if !status.success() {
         return Err(io::Error::other(format!(
@@ -418,7 +476,7 @@ fn build_aarch64_kernel(
         .join("target")
         .join(target.rust_target())
         .join(profile.artifact_directory())
-        .join(target.kernel_artifact());
+        .join(kernel_artifact);
     if !artifact.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -485,7 +543,10 @@ fn make_aarch64_image(payload: &[u8]) -> Vec<u8> {
     // and stack which are not present in the flat payload emitted by objcopy.
     // Advertise the mapped image footprint, not only the file length, so an
     // Android bootloader will keep the kernel's .bss out of its workspace.
-    const IMAGE_MEMORY_SIZE: u64 = 0x0020_0000;
+    // The linker reserves the bootstrap BSS after the 0x80000 text offset.
+    // Keep a rounded-up 4 MiB footprint in the arm64 header so Android's
+    // bootloader does not reuse the tail of that reservation as workspace.
+    const IMAGE_MEMORY_SIZE: u64 = 0x0040_0000;
     const FLAG_PAGE_SIZE_4K: u64 = 1 << 1;
     const ARM64_IMAGE_MAGIC: u32 = 0x644d_5241;
 

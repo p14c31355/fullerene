@@ -78,10 +78,14 @@ const HSPHY_CTRL2: usize = 0x64;
 const HSPHY_CFG0: usize = 0x94;
 const HSPHY_REFCLK_CTRL: usize = 0xa0;
 const HSPHY_RTUNE_SEL: usize = 0xb4;
+const HSPHY_TEST0: usize = 0x80;
+const HSPHY_TEST1: usize = 0x84;
 
 const HSPHY_UTMI_SLEEPM: u32 = 1 << 0;
+const HSPHY_UTMI_ATE_RESET: u32 = 1 << 0;
 const HSPHY_UTMI_POR: u32 = 1 << 1;
 const HSPHY_COMMON0_FSEL_MASK: u32 = 0x7 << 4;
+const HSPHY_COMMON0_VATESTENB_MASK: u32 = 0x3;
 const HSPHY_COMMON1_VBUSVLDEXTSEL0: u32 = 1 << 4;
 const HSPHY_COMMON1_PLLBTUNE: u32 = 1 << 5;
 const HSPHY_COMMON2_VREGBYPASS: u32 = 1 << 0;
@@ -89,6 +93,9 @@ const HSPHY_CTRL1_VBUSVLDEXT0: u32 = 1 << 0;
 const HSPHY_CTRL2_SUSPEND_N: u32 = 1 << 2;
 const HSPHY_CTRL2_SUSPEND_N_SEL: u32 = 1 << 3;
 const HSPHY_CFG0_CMN_CTRL_OVERRIDE_EN: u32 = 1 << 1;
+const HSPHY_TEST1_TESTDATAOUTSEL: u32 = 1 << 4;
+const HSPHY_TEST1_TOGGLE_2WR: u32 = 1 << 6;
+const HSPHY_TEST0_DATA_MASK: u32 = 0xff;
 
 const PIPE_UTMI_CLK_SEL: u32 = 1 << 0;
 const PIPE3_PHYSTATUS_SW: u32 = 1 << 3;
@@ -254,8 +261,12 @@ const QMP_INIT: [(usize, u32); 146] = [
 ];
 
 const DCTL_RUN_STOP: u32 = 1 << 31;
+const DCFG_SPEED_MASK: u32 = 7;
 const DCFG_DEVADDR_MASK: u32 = 0x7f << 3;
+const DCFG_HIGHSPEED: u32 = 0;
+const DCFG_SUPERSPEED: u32 = 4;
 const DSTS_CONNECTSPD_MASK: u32 = 7;
+const DSTS_DEVCTRLHLT: u32 = 1 << 22;
 const DSTS_SUPERSPEED: u32 = 4;
 
 const DEVTEN_DISCONNECT: u32 = 1 << 0;
@@ -442,10 +453,19 @@ unsafe fn init_qmp_phy() -> bool {
 
 unsafe fn gcc_reset(offset: usize) {
     unsafe { gcc_set(offset, 1) };
-    for _ in 0..10_000 {
+    // The Qualcomm HS PHY driver waits 100--150 us between asserting and
+    // deasserting its reset.  A bootloader handoff can leave the reset branch
+    // in a partially settled state, so keep the same margin here for both the
+    // PHY and DWC3 reset branches.  This is deliberately a calibrated-free
+    // lower bound: on the slowest supported Bramble CPUs it is still longer
+    // than the documented PHY interval.
+    for _ in 0..250_000 {
         unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
     }
     unsafe { gcc_clear(offset, 1) };
+    for _ in 0..250_000 {
+        unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
+    }
 }
 
 /// Apply the small, non-calibration portion of the SM7250 USB2 PHY setup.
@@ -494,6 +514,17 @@ unsafe fn init_hsphy() {
             HSPHY_COMMON2_VREGBYPASS,
             HSPHY_COMMON2_VREGBYPASS,
         );
+        // The SNPS Femto driver uses the ATE/test toggle sequence to commit
+        // the PHY's analog override values before releasing POR.
+        hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_ATE_RESET, HSPHY_UTMI_ATE_RESET);
+        hsphy_update(
+            HSPHY_TEST1,
+            HSPHY_TEST1_TESTDATAOUTSEL,
+            HSPHY_TEST1_TESTDATAOUTSEL,
+        );
+        hsphy_update(HSPHY_TEST1, HSPHY_TEST1_TOGGLE_2WR, HSPHY_TEST1_TOGGLE_2WR);
+        hsphy_update(HSPHY_COMMON0, HSPHY_COMMON0_VATESTENB_MASK, 0);
+        hsphy_update(HSPHY_TEST0, HSPHY_TEST0_DATA_MASK, 0);
         hsphy_update(
             HSPHY_CTRL2,
             HSPHY_CTRL2_SUSPEND_N_SEL | HSPHY_CTRL2_SUSPEND_N,
@@ -832,6 +863,15 @@ unsafe fn process_event(raw: u32) {
 
 /// Initialize the Bramble DWC3 in peripheral mode and connect the pull-up.
 pub fn init() -> bool {
+    init_with_super_speed(true)
+}
+
+/// Initialize only the USB2 path for the dependency-free hardware probe.
+pub fn init_usb2_only() -> bool {
+    init_with_super_speed(false)
+}
+
+fn init_with_super_speed(super_speed: bool) -> bool {
     unsafe {
         let snpsid = read(GSNPSID);
         uart::put_hex("usb: DWC3 GSNPSID=", snpsid as u64);
@@ -841,8 +881,10 @@ pub fn init() -> bool {
         // framework yet, so perform the small branch/reset part directly.
         gcc_reset(GCC_USB30_PRIM_BCR);
         gcc_reset(GCC_QUSB2PHY_PRIM_BCR);
-        gcc_reset(GCC_USB3_PHY_PRIM_BCR);
-        gcc_reset(GCC_USB3_DP_PHY_PRIM_BCR);
+        if super_speed {
+            gcc_reset(GCC_USB3_PHY_PRIM_BCR);
+            gcc_reset(GCC_USB3_DP_PHY_PRIM_BCR);
+        }
         for offset in [
             GCC_USB30_PRIM_MASTER_CLK,
             GCC_CFG_NOC_USB3_PRIM_AXI_CLK,
@@ -858,15 +900,26 @@ pub fn init() -> bool {
         }
 
         init_hsphy();
-        gcc_reset(GCC_USB3_DP_PHY_PRIM_BCR);
-        gcc_reset(GCC_USB3_PHY_PRIM_BCR);
-        let qmp_ready = init_qmp_phy();
-        select_utmi_pipe_clock();
+        let qmp_ready = if super_speed {
+            gcc_reset(GCC_USB3_DP_PHY_PRIM_BCR);
+            gcc_reset(GCC_USB3_PHY_PRIM_BCR);
+            init_qmp_phy()
+        } else {
+            false
+        };
+        // The Qualcomm glue only selects the UTMI fallback clock when no
+        // SuperSpeed PHY is available. Applying that sequence after a
+        // successful QMP bring-up can hold the SS link in the wrong state.
+        if !qmp_ready {
+            select_utmi_pipe_clock();
+        }
 
         // Match the QCOM DWC3 glue's peripheral-mode VBUS override.  The
         // bootloader's fastboot role is not a complete kernel-side OTG
         // session, so relying on the core alone leaves the device halted.
-        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24); // LANE0_PWR_PRESENT
+        if qmp_ready {
+            qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24); // LANE0_PWR_PRESENT
+        }
         qscratch_set(
             QSCRATCH_HS_PHY_CTRL,
             (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
@@ -917,6 +970,11 @@ pub fn init() -> bool {
         write(GUSB3PIPECTL0, usb3);
 
         let event_address = addr_of!(EVENTS) as usize as u64;
+        // The event ring lives in the normal-cacheable early heap mapping.
+        // Evict any CPU-side zero-fill before handing the buffer to DWC3;
+        // otherwise a later cache writeback could overwrite an event that the
+        // controller has already posted.
+        cache_clean(addr_of!(EVENTS) as usize, EVENT_BUFFER_SIZE);
         write(GEVNTADRLO0, event_address as u32);
         write(GEVNTADRHI0, (event_address >> 32) as u32);
         write(GEVNTSIZ0, EVENT_BUFFER_SIZE as u32);
@@ -925,14 +983,27 @@ pub fn init() -> bool {
         EP0_STATE = Ep0State::Setup;
         CONFIGURED = false;
 
+        // The bootloader may leave DCFG in the speed/address state of its
+        // Fastboot session. Reset both fields explicitly before enabling the
+        // pull-up; Linux's gadget path selects the maximum PHY-backed speed
+        // at the same point in its start sequence.
+        let mut dcfg = read(DCFG) & !(DCFG_SPEED_MASK | DCFG_DEVADDR_MASK);
+        dcfg |= if qmp_ready {
+            DCFG_SUPERSPEED
+        } else {
+            DCFG_HIGHSPEED
+        };
+        write(DCFG, dcfg);
+
         if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
             uart::puts("usb: DEPSTARTCFG failed\n");
             return false;
         }
-        // Use the SuperSpeed-sized EP0 until Connect Done tells us the link
-        // speed, matching the DWC3 programming model.
-        if !configure_endpoint(0, MAX_PACKET_SIZE, false)
-            || !configure_endpoint(1, MAX_PACKET_SIZE, false)
+        // Use a USB2-sized EP0 for the first probe; the normal kernel starts
+        // with the SuperSpeed-sized endpoint and adjusts it on Connect Done.
+        let ep0_packet_size = if qmp_ready { MAX_PACKET_SIZE } else { 64 };
+        if !configure_endpoint(0, ep0_packet_size, false)
+            || !configure_endpoint(1, ep0_packet_size, false)
         {
             uart::puts("usb: EP0 configuration failed\n");
             return false;
@@ -947,6 +1018,18 @@ pub fn init() -> bool {
         let mut dctl = read(DCTL);
         dctl |= DCTL_RUN_STOP;
         write(DCTL, dctl);
+        let mut halted = true;
+        for _ in 0..100_000 {
+            if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
+                halted = false;
+                break;
+            }
+            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        }
+        if halted {
+            uart::put_hex("usb: DWC3 remained halted, DSTS=", read(DSTS) as u64);
+            return false;
+        }
         uart::puts("usb: Fullerene DWC3 gadget connected\n");
     }
     true
