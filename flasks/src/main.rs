@@ -481,6 +481,11 @@ fn build_aarch64_image(raw: &Path) -> io::Result<PathBuf> {
 fn make_aarch64_image(payload: &[u8]) -> Vec<u8> {
     const IMAGE_HEADER_SIZE: usize = 64;
     const TEXT_OFFSET: u64 = 0x0008_0000;
+    // The freestanding image has a sizeable zero-initialized bootstrap heap
+    // and stack which are not present in the flat payload emitted by objcopy.
+    // Advertise the mapped image footprint, not only the file length, so an
+    // Android bootloader will keep the kernel's .bss out of its workspace.
+    const IMAGE_MEMORY_SIZE: u64 = 0x0020_0000;
     const FLAG_PAGE_SIZE_4K: u64 = 1 << 1;
     const ARM64_IMAGE_MAGIC: u32 = 0x644d_5241;
 
@@ -489,7 +494,11 @@ fn make_aarch64_image(payload: &[u8]) -> Vec<u8> {
     image.extend_from_slice(&0x1400_0010u32.to_le_bytes());
     image.extend_from_slice(&0xd503_201fu32.to_le_bytes());
     image.extend_from_slice(&TEXT_OFFSET.to_le_bytes());
-    image.extend_from_slice(&((IMAGE_HEADER_SIZE + payload.len()) as u64).to_le_bytes());
+    image.extend_from_slice(
+        &((IMAGE_HEADER_SIZE + payload.len()) as u64)
+            .max(IMAGE_MEMORY_SIZE)
+            .to_le_bytes(),
+    );
     // Fullerene's freestanding payload is linked at the Bramble DRAM base
     // plus text_offset; unlike a relocatable Linux Image it cannot be placed
     // at an arbitrary physical base.

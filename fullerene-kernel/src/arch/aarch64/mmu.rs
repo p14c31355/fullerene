@@ -95,11 +95,15 @@ fn block_descriptor(physical: u64, device: bool) -> u64 {
 fn is_mmio(physical: u64) -> bool {
     matches!(
         physical,
-        // QEMU virt GIC and PL011.
-        0x0800_0000..=0x09ff_ffff
+            // QEMU virt GIC and PL011.
+            0x0800_0000..=0x09ff_ffff
+            // SM7250 GCC clock/reset controller at 0x00100000.
+            | 0x0010_0000..=0x001f_ffff
             // SM7250 QUP/GENI UART2 at 0x00988000.
             | 0x0080_0000..=0x009f_ffff
             // SM7250 GICD/GICR region.
             | 0x17a0_0000..=0x17bf_ffff
+            // SM7250 DWC3 USB controller at 0x0a600000.
+            | 0x0a60_0000..=0x0a6f_ffff
     )
 }

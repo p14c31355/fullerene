@@ -14,6 +14,8 @@ mod mmu;
 mod platform;
 mod timer;
 mod uart;
+#[cfg(fullerene_aarch64_bramble)]
+mod usb;
 
 const BOOT_STACK_SIZE: usize = 64 * 1024;
 
@@ -191,6 +193,16 @@ extern "C" fn aarch64_rust_entry(fdt_address: u64, _arg1: u64, fdt_arg2: u64) ->
     uart::puts("timer: generic counter ready, ticks=");
     uart::put_hex_value(elapsed);
 
+    // Bring up the USB handoff before touching the GIC redistributor.  On a
+    // phone boot path the redistributor may still be owned by firmware; USB
+    // is polled during this early diagnostic phase and does not depend on it.
+    #[cfg(fullerene_aarch64_bramble)]
+    if usb::init() {
+        uart::puts("platform: bramble USB gadget: ready\n");
+    } else {
+        uart::puts("platform: bramble USB gadget: failed\n");
+    }
+
     if bramble {
         platform::bramble::init_interrupt_controller(gicd_base, gicr_base);
     } else {
@@ -200,6 +212,8 @@ extern "C" fn aarch64_rust_entry(fdt_address: u64, _arg1: u64, fdt_arg2: u64) ->
     exceptions::enable_irqs();
     uart::puts("aarch64 early boot complete; waiting for timer irq\n");
     loop {
+        #[cfg(fullerene_aarch64_bramble)]
+        usb::poll();
         unsafe { core::arch::asm!("wfe", options(nomem, nostack, preserves_flags)) };
     }
 }
