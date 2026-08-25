@@ -118,7 +118,7 @@ cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt
 ```
 
 The Bramble build emits an ELF, flat binary, Linux arm64 `Image`, and a
-legacy-format `Image.lz4` compatible with the Android kernel loader:
+LZ4-frame `Image.lz4` compatible with the Android kernel loader:
 
 ```bash
 cargo run -q -p flasks -- build --arch aarch64 --platform bramble

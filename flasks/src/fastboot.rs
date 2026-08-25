@@ -126,30 +126,45 @@ async fn send_boot_command(info: &DeviceInfo) -> io::Result<()> {
     // Fastboot bootloaders commonly detach immediately after accepting boot.
     // Give a response a short window for diagnostics, but do not require it
     // after the command has been transferred successfully.
+    enum BootResponse {
+        Accepted(String),
+        Failed(String),
+        Disconnected(io::Error),
+    }
+
     let response = tokio::time::timeout(Duration::from_millis(750), async {
         loop {
             ep_in.submit(Buffer::new(max_in));
-            let bytes = ep_in.next_complete().await.into_result().map_err(other)?;
+            let bytes = match ep_in.next_complete().await.into_result() {
+                Ok(bytes) => bytes,
+                Err(error) => return Ok(BootResponse::Disconnected(other(error))),
+            };
             let text = String::from_utf8_lossy(&bytes).into_owned();
             if text.starts_with("INFO") || text.starts_with("TEXT") {
                 println!("Fastboot: {}", text.trim());
                 continue;
             }
             if text.starts_with("FAIL") {
-                return Err(other(format!("Fastboot boot failed: {text}")));
+                return Ok(BootResponse::Failed(text));
             }
             if text.starts_with("OKAY") {
-                return Ok(text);
+                return Ok(BootResponse::Accepted(text));
             }
             return Err(other(format!("unexpected Fastboot boot response: {text}")));
         }
     })
     .await;
     match response {
-        Ok(Ok(text)) => {
+        Ok(Ok(BootResponse::Accepted(text))) => {
             println!("Fastboot boot accepted: {}", text.trim());
         }
-        Ok(Err(error)) => println!("Fastboot boot command sent; device disconnected ({error})"),
+        Ok(Ok(BootResponse::Failed(text))) => {
+            return Err(other(format!("Fastboot boot failed: {text}")));
+        }
+        Ok(Ok(BootResponse::Disconnected(error))) => {
+            println!("Fastboot boot command sent; device disconnected ({error})");
+        }
+        Ok(Err(error)) => return Err(error),
         Err(_) => println!("Fastboot boot command sent; waiting for device reboot"),
     }
     Ok(())

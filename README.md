@@ -97,7 +97,7 @@ cargo run -q -p flasks -- build --arch aarch64 --platform qemu-virt
 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt
 ```
 
-For Pixel 4a 5G (Bramble), build the Linux arm64 legacy-format `Image.lz4`
+For Pixel 4a 5G (Bramble), build the Linux arm64 LZ4-frame `Image.lz4`
 payload and, when available, patch an Android v3 `boot.img` template:
 
 ```bash

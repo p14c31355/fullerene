@@ -54,6 +54,11 @@ struct Args {
     #[arg(long, value_name = "BOOT_IMG")]
     boot_output: Option<PathBuf>,
 
+    /// Put the uncompressed ARM64 Image in the Bramble boot template.
+    /// Useful for isolating bootloader LZ4 decompression from kernel entry.
+    #[arg(long)]
+    boot_uncompressed: bool,
+
     /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
     #[arg(long, default_value = "virtio-gpu")]
     vga: String,
@@ -279,6 +284,12 @@ fn main() -> io::Result<()> {
             "--boot-output requires --boot-template",
         ));
     }
+    if args.boot_template.is_none() && args.boot_uncompressed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--boot-uncompressed requires --boot-template",
+        ));
+    }
     if args.boot_template.is_some() && args.command != Action::Build {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -320,7 +331,12 @@ fn main() -> io::Result<()> {
                         .unwrap_or_else(|| Path::new("."))
                         .join("fullerene-bramble-boot.img")
                 });
-                patch_bramble_boot_image(template, &image_lz4_path, &output)?;
+                let boot_kernel = if args.boot_uncompressed {
+                    &image_path
+                } else {
+                    &image_lz4_path
+                };
+                patch_bramble_boot_image(template, boot_kernel, &output)?;
                 println!(
                     "Bramble temporary boot image built at {} (use only with an unlocked device)",
                     output.display()
@@ -474,6 +490,9 @@ fn make_aarch64_image(payload: &[u8]) -> Vec<u8> {
     image.extend_from_slice(&0xd503_201fu32.to_le_bytes());
     image.extend_from_slice(&TEXT_OFFSET.to_le_bytes());
     image.extend_from_slice(&((IMAGE_HEADER_SIZE + payload.len()) as u64).to_le_bytes());
+    // Fullerene's freestanding payload is linked at the Bramble DRAM base
+    // plus text_offset; unlike a relocatable Linux Image it cannot be placed
+    // at an arbitrary physical base.
     image.extend_from_slice(&FLAG_PAGE_SIZE_4K.to_le_bytes());
     image.extend_from_slice(&0u64.to_le_bytes());
     image.extend_from_slice(&0u64.to_le_bytes());
@@ -485,42 +504,47 @@ fn make_aarch64_image(payload: &[u8]) -> Vec<u8> {
     image
 }
 
-/// Emit the legacy LZ4 stream used by Linux `Image.lz4` targets without
-/// requiring a host lz4 executable.
+/// Emit the LZ4 frame used by the Bramble Android 14 kernel without requiring
+/// a host lz4 executable.
 ///
-/// Android's kernel build invokes `lz4c -l`, which is not the modern LZ4 frame
-/// format. Each legacy block below contains a valid LZ4 literal-only sequence;
-/// it is deliberately uncompressed, but remains compatible with the kernel
-/// decompressor and keeps this Rust-only workspace toolchain-independent.
+/// The stock Bramble `Image.lz4` is a modern LZ4 frame (magic `04 22 4d 18`),
+/// not the older legacy stream. Each block below is a valid literal-only LZ4
+/// block. It is intentionally simple, but uses a normal compressed block
+/// rather than the stored-block extension accepted by newer LZ4 readers; a
+/// few Android bootloaders only implement the former.
 fn build_aarch64_lz4(image: &Path) -> io::Result<PathBuf> {
     let payload = fs::read(image)?;
-    let compressed = make_lz4_legacy(&payload);
+    let compressed = make_lz4_frame(&payload);
     let output = image.with_extension("Image.lz4");
     fs::write(&output, compressed)?;
     Ok(output)
 }
 
-fn make_lz4_legacy(payload: &[u8]) -> Vec<u8> {
-    const LZ4_LEGACY_MAGIC: u32 = 0x184c_2102;
-    const BLOCK_MAX: usize = 8 * 1024 * 1024;
+fn make_lz4_frame(payload: &[u8]) -> Vec<u8> {
+    const LZ4_FRAME_MAGIC: u32 = 0x184d_2204;
+    const FLG: u8 = 0x64; // version 01, independent blocks, content checksum
+    const BD: u8 = 0x70; // 4 MiB maximum block size
+    const BLOCK_MAX: usize = 4 * 1024 * 1024;
 
-    let mut stream = Vec::with_capacity(4 + payload.len() + payload.len() / BLOCK_MAX * 16 + 4);
-    stream.extend_from_slice(&LZ4_LEGACY_MAGIC.to_le_bytes());
+    let mut frame = Vec::with_capacity(4 + 3 + payload.len() + payload.len() / BLOCK_MAX * 4 + 8);
+    frame.extend_from_slice(&LZ4_FRAME_MAGIC.to_le_bytes());
+    frame.extend_from_slice(&[FLG, BD]);
+    frame.push((xxhash32(&[FLG, BD], 0) >> 8) as u8);
     for block in payload.chunks(BLOCK_MAX) {
         let encoded = encode_lz4_literals(block);
-        stream.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
-        stream.extend_from_slice(&encoded);
+        let block_size = u32::try_from(encoded.len()).expect("LZ4 block size fits in u32");
+        frame.extend_from_slice(&block_size.to_le_bytes());
+        frame.extend_from_slice(&encoded);
     }
-    // Legacy LZ4 marks the end of the stream with a zero-sized block.
-    stream.extend_from_slice(&0u32.to_le_bytes());
-    stream
+    frame.extend_from_slice(&0u32.to_le_bytes());
+    frame.extend_from_slice(&xxhash32(payload, 0).to_le_bytes());
+    frame
 }
 
 fn encode_lz4_literals(payload: &[u8]) -> Vec<u8> {
-    let mut encoded = Vec::with_capacity(payload.len() + payload.len() / 255 + 1);
+    let mut encoded = Vec::with_capacity(payload.len() + payload.len() / 255 + 2);
     let literal_length = payload.len();
-    let token_length = literal_length.min(15);
-    encoded.push((token_length as u8) << 4);
+    encoded.push((literal_length.min(15) as u8) << 4);
     if literal_length >= 15 {
         let mut remaining = literal_length - 15;
         while remaining >= 255 {
@@ -531,6 +555,74 @@ fn encode_lz4_literals(payload: &[u8]) -> Vec<u8> {
     }
     encoded.extend_from_slice(payload);
     encoded
+}
+
+fn xxhash32(input: &[u8], seed: u32) -> u32 {
+    const PRIME1: u32 = 2_654_435_761;
+    const PRIME2: u32 = 2_246_822_519;
+    const PRIME3: u32 = 3_266_489_917;
+    const PRIME4: u32 = 668_265_263;
+    const PRIME5: u32 = 374_761_393;
+
+    let mut index = 0;
+    let mut hash;
+    if input.len() >= 16 {
+        let mut v1 = seed.wrapping_add(PRIME1).wrapping_add(PRIME2);
+        let mut v2 = seed.wrapping_add(PRIME2);
+        let mut v3 = seed;
+        let mut v4 = seed.wrapping_sub(PRIME1);
+        while index <= input.len() - 16 {
+            v1 = xxhash_round(
+                v1,
+                u32::from_le_bytes(input[index..index + 4].try_into().unwrap()),
+            );
+            v2 = xxhash_round(
+                v2,
+                u32::from_le_bytes(input[index + 4..index + 8].try_into().unwrap()),
+            );
+            v3 = xxhash_round(
+                v3,
+                u32::from_le_bytes(input[index + 8..index + 12].try_into().unwrap()),
+            );
+            v4 = xxhash_round(
+                v4,
+                u32::from_le_bytes(input[index + 12..index + 16].try_into().unwrap()),
+            );
+            index += 16;
+        }
+        hash = v1
+            .rotate_left(1)
+            .wrapping_add(v2.rotate_left(7))
+            .wrapping_add(v3.rotate_left(12))
+            .wrapping_add(v4.rotate_left(18));
+    } else {
+        hash = seed.wrapping_add(PRIME5);
+    }
+    hash = hash.wrapping_add(input.len() as u32);
+    while index + 4 <= input.len() {
+        hash = hash.wrapping_add(
+            u32::from_le_bytes(input[index..index + 4].try_into().unwrap()).wrapping_mul(PRIME3),
+        );
+        hash = hash.rotate_left(17).wrapping_mul(PRIME4);
+        index += 4;
+    }
+    while index < input.len() {
+        hash = hash.wrapping_add((input[index] as u32).wrapping_mul(PRIME5));
+        hash = hash.rotate_left(11).wrapping_mul(PRIME1);
+        index += 1;
+    }
+    hash ^= hash >> 15;
+    hash = hash.wrapping_mul(PRIME2);
+    hash ^= hash >> 13;
+    hash = hash.wrapping_mul(PRIME3);
+    hash ^ (hash >> 16)
+}
+
+fn xxhash_round(accumulator: u32, input: u32) -> u32 {
+    accumulator
+        .wrapping_add(input.wrapping_mul(2_246_822_519))
+        .rotate_left(13)
+        .wrapping_mul(2_654_435_761)
 }
 
 fn patch_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io::Result<()> {
@@ -1287,8 +1379,8 @@ fn run_qemu(
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args, encode_lz4_literals,
-        make_aarch64_image, make_lz4_legacy, patch_bramble_boot_image, strip_avb_metadata,
+        Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args, make_aarch64_image,
+        make_lz4_frame, patch_bramble_boot_image, strip_avb_metadata, xxhash32,
     };
     use clap::Parser;
     use std::{fs, path::Path};
@@ -1470,19 +1562,28 @@ mod tests {
             u64::from_le_bytes(image[8..16].try_into().unwrap()),
             0x80000
         );
+        assert_eq!(u64::from_le_bytes(image[24..32].try_into().unwrap()), 0x02);
     }
 
     #[test]
-    fn lz4_legacy_stream_uses_literal_blocks() {
+    fn lz4_frame_uses_literal_blocks_and_checksums() {
         let payload = b"fullerene-aarch64";
-        let frame = make_lz4_legacy(payload);
-        assert_eq!(&frame[0..4], &[0x02, 0x21, 0x4c, 0x18]);
-        let block_size = u32::from_le_bytes(frame[4..8].try_into().unwrap()) as usize;
-        let encoded = encode_lz4_literals(payload);
-        assert_eq!(block_size, encoded.len());
-        assert_eq!(&frame[8..8 + block_size], encoded.as_slice());
-        assert_eq!(&frame[8 + block_size..], &[0, 0, 0, 0]);
-        assert_eq!(frame[8] >> 4, 15);
-        assert_eq!(&encoded[2..], payload);
+        let frame = make_lz4_frame(payload);
+        assert_eq!(&frame[0..4], &[0x04, 0x22, 0x4d, 0x18]);
+        assert_eq!(&frame[4..6], &[0x64, 0x70]);
+        assert_eq!(frame[6], (xxhash32(&frame[4..6], 0) >> 8) as u8);
+        let block_size = u32::from_le_bytes(frame[7..11].try_into().unwrap()) as usize;
+        assert_eq!(block_size, payload.len() + 2);
+        assert_eq!(frame[11] >> 4, 15);
+        assert_eq!(frame[12], (payload.len() - 15) as u8);
+        assert_eq!(&frame[13..13 + payload.len()], payload);
+        assert_eq!(
+            &frame[13 + payload.len()..17 + payload.len()],
+            &[0, 0, 0, 0]
+        );
+        assert_eq!(
+            &frame[17 + payload.len()..],
+            &xxhash32(payload, 0).to_le_bytes()
+        );
     }
 }
