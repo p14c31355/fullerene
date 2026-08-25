@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-use core::arch::global_asm;
+use core::arch::{asm, global_asm};
 
 mod allocator;
 mod exceptions;
@@ -19,12 +19,31 @@ mod usb;
 
 const BOOT_STACK_SIZE: usize = 64 * 1024;
 
+/// Values supplied by the bootloader and captured before the bootstrap starts
+/// using caller-saved registers.  This is deliberately `repr(C)`: the entry
+/// stub owns the layout until it hands a pointer to Rust.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct Aarch64BootContext {
+    pub x0: usize,
+    pub x1: usize,
+    pub x2: usize,
+    pub x3: usize,
+    pub current_el: usize,
+    pub entry_sp: usize,
+    pub relocation_delta: isize,
+}
+
+// Keep SP 16-byte aligned when the context is allocated. The final 8 bytes
+// are padding reserved for the bootstrap frame, not part of the C layout.
+const BOOT_CONTEXT_SIZE: usize = (core::mem::size_of::<Aarch64BootContext>() + 15) & !15;
+
 #[unsafe(no_mangle)]
 static mut AARCH64_BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];
 
 // QEMU -kernel enters at _start without promising a usable SP. Establish a
-// known, aligned stack before calling any Rust code. This is also the shape
-// that the eventual Bramble entry path will replace with its boot contract.
+// known, aligned stack before calling any Rust code, then capture the complete
+// boot handoff in a stable context before any relocation or EL transition.
 global_asm!(
     ".section .text.boot,\"ax\"\n\
      .balign 4\n\
@@ -35,6 +54,7 @@ global_asm!(
          add x9, x9, :lo12:AARCH64_BOOT_STACK\n\
          mov x10, #{stack_size}\n\
          add sp, x9, x10\n\
+         mov x6, sp\n\
          adrp x11, __bss_start\n\
          add x11, x11, :lo12:__bss_start\n\
          adrp x12, __bss_end\n\
@@ -45,9 +65,20 @@ global_asm!(
          str xzr, [x11], #8\n\
          b 1b\n\
      2:\n\
+         // The boot stack is part of .bss, so capture handoff registers only\n\
+         // after the clear. x19 is callee-saved and survives the relocation\n\
+         // call below; it holds the context pointer until Rust entry.\n\
+         sub sp, sp, #{context_size}\n\
+         mov x19, sp\n\
+         stp x0, x1, [x19]\n\
+         stp x2, x3, [x19, #16]\n\
+         mrs x5, CurrentEL\n\
+         str x5, [x19, #32]\n\
+         str x6, [x19, #40]\n\
+         str xzr, [x19, #48]\n\
          // QEMU may enter at EL1; Android-style AArch64 bootloaders may hand\n\
          // off at EL2. Normalize the latter to EL1h while preserving x0\n\
-         // (the DTB address) and the bootstrap stack.\n\
+         // through the context and preserving the bootstrap stack.\n\
          mrs x5, CurrentEL\n\
          and x5, x5, #0xc\n\
          cmp x5, #0x8\n\
@@ -84,20 +115,17 @@ global_asm!(
          isb\n\
          // Android bootloaders may place an Image at a different physical\n\
          // base. Apply the PIE's relative relocations before entering Rust;\n\
-         // x0 remains the bootloader-provided DTB address.\n\
+         // the handoff values remain in the context while x0 is scratch.\n\
          adr x7, _start\n\
-         sub sp, sp, #32\n\
-         stp x0, x1, [sp]\n\
-         stp x2, x3, [sp, #16]\n\
          mov x0, x7\n\
          bl aarch64_apply_relocations\n\
-         ldp x2, x3, [sp, #16]\n\
-         ldp x0, x1, [sp]\n\
-         add sp, sp, #32\n\
+         str x0, [x19, #48]\n\
+         mov x0, x19\n\
          b aarch64_rust_entry\n\
      .size aarch64_el1_entry, . - aarch64_el1_entry\n\
      ",
     stack_size = const BOOT_STACK_SIZE,
+    context_size = const BOOT_CONTEXT_SIZE,
 );
 
 #[cfg(fullerene_aarch64_bramble)]
@@ -105,51 +133,53 @@ const LINK_ENTRY: usize = 0x8008_0040;
 #[cfg(not(fullerene_aarch64_bramble))]
 const LINK_ENTRY: usize = 0x4200_0040;
 
-// This runs before the PIE's GOT is valid. Keep it as position-independent
-// assembly embedded in this Rust source: a Rust implementation can itself
-// acquire a GOT relocation before it has had a chance to apply the records.
-global_asm!(
-    ".section .text.boot,\"ax\"\n\
-     .balign 4\n\
-     .global aarch64_apply_relocations\n\
-     .type aarch64_apply_relocations, %function\n\
-     aarch64_apply_relocations:\n\
-         movz x11, #{entry_0}\n\
-         movk x11, #{entry_1}, lsl #16\n\
-         movk x11, #{entry_2}, lsl #32\n\
-         movk x11, #{entry_3}, lsl #48\n\
-         sub x10, x0, x11\n\
-         adr x8, __rela_dyn_start\n\
-         adr x9, __rela_dyn_end\n\
-     1:\n\
-         cmp x8, x9\n\
-         b.hs 2f\n\
-         ldr x11, [x8]\n\
-         ldr w12, [x8, #8]\n\
-         cmp w12, #0x403\n\
-         b.eq 3f\n\
-         cmp w12, #0x101\n\
-         b.ne 4f\n\
-     3:\n\
-         ldr x13, [x8, #16]\n\
-         add x14, x11, x10\n\
-         add x13, x13, x10\n\
-         str x13, [x14]\n\
-     4:\n\
-         add x8, x8, #24\n\
-         b 1b\n\
-     2:\n\
-         ret\n\
-     .size aarch64_apply_relocations, . - aarch64_apply_relocations\n\
-     ",
-    entry_0 = const (LINK_ENTRY & 0xffff),
-    entry_1 = const ((LINK_ENTRY >> 16) & 0xffff),
-    entry_2 = const ((LINK_ENTRY >> 32) & 0xffff),
-    entry_3 = const ((LINK_ENTRY >> 48) & 0xffff),
-);
+/// Apply the small relocation set emitted by the static-PIE linker.
+///
+/// This function is called before the normal Rust entry, so it intentionally
+/// only uses PC-relative local code, linker symbols, and immediates. It must
+/// not acquire a GOT-backed reference of its own.
+#[unsafe(no_mangle)]
+extern "C" fn aarch64_apply_relocations(runtime_entry: usize) -> isize {
+    let relocation_delta = runtime_entry.wrapping_sub(LINK_ENTRY) as isize;
+    let (mut cursor, end): (usize, usize);
+    unsafe {
+        // These must be PC-relative: the GOT is one of the things this loop
+        // may be fixing up, so it cannot be read before the loop runs.
+        asm!(
+            "adr {cursor}, __rela_dyn_start",
+            "adr {end}, __rela_dyn_end",
+            cursor = out(reg) cursor,
+            end = out(reg) end,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+
+    while cursor < end {
+        let offset = unsafe { core::ptr::read_unaligned(cursor as *const usize) };
+        let relocation_type = unsafe { core::ptr::read_unaligned((cursor + 8) as *const u32) };
+        if relocation_type == 0x403 || relocation_type == 0x101 {
+            let addend = unsafe { core::ptr::read_unaligned((cursor + 16) as *const usize) };
+            let target = offset.wrapping_add(relocation_delta as usize) as *mut usize;
+            unsafe {
+                target.write(addend.wrapping_add(relocation_delta as usize));
+            }
+        }
+        cursor += 24;
+    }
+
+    relocation_delta
+}
 
 #[unsafe(no_mangle)]
-extern "C" fn aarch64_rust_entry(fdt_address: u64, arg1: u64, fdt_arg2: u64, arg3: u64) -> ! {
+extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
+    // The context lives at the top of the bootstrap stack. Copy it before
+    // Rust starts using that stack for ordinary locals and call frames.
+    let boot = unsafe { core::ptr::read(boot_context) };
+    let fdt_address = boot.x0 as u64;
+    let arg1 = boot.x1 as u64;
+    let fdt_arg2 = boot.x2 as u64;
+    let arg3 = boot.x3 as u64;
+
     // Establish a compiled-in console before looking at any bootloader
     // pointer. A vendor trampoline can hand us an invalid or absent DTB;
     // touching that address before VBAR and UART are ready turns a useful
@@ -171,6 +201,9 @@ extern "C" fn aarch64_rust_entry(fdt_address: u64, arg1: u64, fdt_arg2: u64, arg
     uart::put_hex("boot: x1=", arg1);
     uart::put_hex("boot: x2=", fdt_arg2);
     uart::put_hex("boot: x3=", arg3);
+    uart::put_hex("boot: currentel=", boot.current_el as u64);
+    uart::put_hex("boot: entry_sp=", boot.entry_sp as u64);
+    uart::put_hex("boot: relocation_delta=", boot.relocation_delta as u64);
 
     // The architectural arm64 boot contract puts the physical DTB address in
     // x0 and requires x1..x3 to be zero.  A vendor fastboot path is allowed
