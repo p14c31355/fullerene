@@ -370,6 +370,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             uart::puts("platform: bramble USB2 cold fallback: failed\n");
         }
     }
+    // USB setup itself remains trace-only; emit the compact ring only after
+    // controller initialization has returned and UART is safe to use again.
+    #[cfg(fullerene_aarch64_bramble)]
+    usb::dump_trace();
 
     if bramble {
         platform::bramble::init_interrupt_controller(gicd_base, gicr_base);

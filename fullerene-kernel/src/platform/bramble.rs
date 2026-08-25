@@ -46,7 +46,6 @@ const TYPEC_MISC_STATUS: u16 = PM8150B_TYPEC_BASE + 0x0b;
 const TYPEC_MODE_CFG: u16 = PM8150B_TYPEC_BASE + 0x44;
 const TYPEC_CC_ATTACHED: u8 = 1 << 0;
 const TYPEC_CC_ORIENTATION: u8 = 1 << 1;
-const TYPEC_SNK_SRC_MODE: u8 = 1 << 6;
 const TYPEC_EN_SNK_ONLY: u8 = 1 << 1;
 const TYPEC_EN_SRC_ONLY: u8 = 1 << 2;
 
@@ -202,22 +201,23 @@ pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     // The USB cable is attached to a host during `fastboot boot`; the phone
     // must therefore remain a sink and expose a USB device, not source VBUS.
     // Preserve unrelated PMIC bits and only replace the source/sink selection.
-    let source_role = misc_status & TYPEC_SNK_SRC_MODE != 0;
     // During a `fastboot boot` handoff the PMIC can report CC detached for a
     // short interval while the bootloader is tearing down its gadget.  The
     // cable is nevertheless the boot transport that brought us here, so do
     // not discard the device-role request solely because that transient bit
     // is clear.  Reassert sink-only whenever the current mode is not already
     // an unambiguous sink configuration.
-    if writable && (source_role || mode & TYPEC_EN_SNK_ONLY == 0) {
+    if writable {
         let requested = (mode & !(TYPEC_EN_SNK_ONLY | TYPEC_EN_SRC_ONLY)) | TYPEC_EN_SNK_ONLY;
-        if requested != mode {
-            let mut new_mode = requested;
-            sink_mode_written =
-                unsafe { spmi_transfer(version, apid, TYPEC_MODE_CFG, &mut new_mode, true) };
-            if sink_mode_written {
-                mode = requested;
-            }
+        // A Fastboot handoff can leave the PMIC register already set to
+        // sink-only while its Type-C session is nevertheless detached. A
+        // same-value write is intentional here: it retriggers the PMIC role
+        // evaluation without changing the negotiated power role.
+        let mut new_mode = requested;
+        sink_mode_written =
+            unsafe { spmi_transfer(version, apid, TYPEC_MODE_CFG, &mut new_mode, true) };
+        if sink_mode_written {
+            mode = requested;
         }
     }
     Some(TypecState {

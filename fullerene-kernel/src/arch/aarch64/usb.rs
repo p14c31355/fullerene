@@ -453,6 +453,52 @@ static mut CONTROL_HAS_DATA: bool = false;
 static mut CONFIGURED: bool = false;
 static mut ENDPOINTS_READY: bool = false;
 
+const USB_TRACE_CAPACITY: usize = 128;
+
+// Numeric events keep the early USB path independent of UART, locks, and
+// formatting. The buffer is CPU-owned; it is placed beside the DMA objects so
+// a probe can preserve the same identity-mapped address discipline.
+const TRACE_INIT: u32 = 1;
+const TRACE_DEVICE_RESET: u32 = 2;
+const TRACE_DEVICE_CONNECT: u32 = 3;
+const TRACE_EP_COMMAND_ISSUE: u32 = 4;
+const TRACE_EP_COMMAND_DONE: u32 = 5;
+const TRACE_EP_COMMAND_TIMEOUT: u32 = 6;
+const TRACE_SETUP_QUEUED: u32 = 7;
+const TRACE_SETUP_RECEIVED: u32 = 8;
+const TRACE_DESCRIPTOR_QUEUED: u32 = 9;
+const TRACE_STATUS_QUEUED: u32 = 10;
+const TRACE_TRANSFER_COMPLETE: u32 = 11;
+const TRACE_USB_RESET: u32 = 12;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UsbTraceEntry {
+    sequence: u32,
+    event: u32,
+    request: u32,
+    value: u32,
+    index: u32,
+    length: u32,
+    ep0_state: u32,
+    status: u32,
+}
+
+const EMPTY_USB_TRACE: UsbTraceEntry = UsbTraceEntry {
+    sequence: 0,
+    event: 0,
+    request: 0,
+    value: 0,
+    index: 0,
+    length: 0,
+    ep0_state: 0,
+    status: 0,
+};
+
+#[unsafe(link_section = ".usb_dma")]
+static mut USB_TRACE: [UsbTraceEntry; USB_TRACE_CAPACITY] = [EMPTY_USB_TRACE; USB_TRACE_CAPACITY];
+static mut USB_TRACE_HEAD: usize = 0;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ep0State {
     Setup,
@@ -473,6 +519,62 @@ pub fn clear_dma_memory() {
             write_volatile(current as *mut u64, 0);
         }
         current += core::mem::size_of::<u64>();
+    }
+    unsafe { USB_TRACE_HEAD = 0 };
+}
+
+#[inline(always)]
+fn ep0_state_code(state: Ep0State) -> u32 {
+    match state {
+        Ep0State::Setup => 1,
+        Ep0State::Data => 2,
+        Ep0State::Status => 3,
+    }
+}
+
+#[inline(always)]
+fn trace_event(event: u32, request: u32, value: u32, index: u32, length: u32, status: u32) {
+    unsafe {
+        let head = USB_TRACE_HEAD;
+        let slot = head % USB_TRACE_CAPACITY;
+        let entry = UsbTraceEntry {
+            sequence: head.wrapping_add(1) as u32,
+            event,
+            request,
+            value,
+            index,
+            length,
+            ep0_state: ep0_state_code(EP0_STATE),
+            status,
+        };
+        write_volatile(
+            addr_of_mut!(USB_TRACE).cast::<UsbTraceEntry>().add(slot),
+            entry,
+        );
+        USB_TRACE_HEAD = head.wrapping_add(1);
+    }
+}
+
+/// Dump the post-mortem USB trace after the controller has reached a safe
+/// UART-visible stage. The hot path above never calls this or formats text.
+pub fn dump_trace() {
+    unsafe {
+        let head = USB_TRACE_HEAD;
+        let count = head.min(USB_TRACE_CAPACITY);
+        let start = head.saturating_sub(count);
+        uart::puts("usb trace begin\n");
+        for offset in 0..count {
+            let slot = (start + offset) % USB_TRACE_CAPACITY;
+            let entry = read_volatile(addr_of!(USB_TRACE).cast::<UsbTraceEntry>().add(slot));
+            uart::put_hex("usb trace event=", entry.event as u64);
+            uart::put_hex(" request=", entry.request as u64);
+            uart::put_hex(" value=", entry.value as u64);
+            uart::put_hex(" index=", entry.index as u64);
+            uart::put_hex(" length=", entry.length as u64);
+            uart::put_hex(" state=", entry.ep0_state as u64);
+            uart::put_hex(" status=", entry.status as u64);
+        }
+        uart::puts("usb trace end\n");
     }
 }
 
@@ -907,6 +1009,7 @@ unsafe fn select_utmi_pipe_clock() {
 /// ever allowing the peripheral pull-up to become visible.
 unsafe fn device_soft_reset() -> bool {
     unsafe {
+        trace_event(TRACE_DEVICE_RESET, 0, 0, 0, 0, read(DCTL));
         // Match Linux's reconnect path: clear stale endpoint/device state
         // without touching the already-running Qualcomm PHY and clock
         // branches. RUN_STOP must be cleared in the same write; preserving
@@ -1066,6 +1169,14 @@ unsafe fn send_ep_command(
     param1: u32,
     param2: u32,
 ) -> bool {
+    trace_event(
+        TRACE_EP_COMMAND_ISSUE,
+        command,
+        endpoint as u32,
+        param0,
+        param1,
+        param2,
+    );
     unsafe {
         write(dep_reg(endpoint, 0x00), param2);
         write(dep_reg(endpoint, 0x04), param1);
@@ -1075,10 +1186,26 @@ unsafe fn send_ep_command(
     for _ in 0..100_000 {
         let status = unsafe { read(dep_reg(endpoint, 0x0c)) };
         if status & DEPCMD_CMDACT == 0 {
+            trace_event(
+                TRACE_EP_COMMAND_DONE,
+                command,
+                endpoint as u32,
+                status,
+                0,
+                unsafe { read(DSTS) },
+            );
             return status & 0xf000 == 0;
         }
         unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
     }
+    trace_event(
+        TRACE_EP_COMMAND_TIMEOUT,
+        command,
+        endpoint as u32,
+        unsafe { read(dep_reg(endpoint, 0x0c)) },
+        0,
+        unsafe { read(DSTS) },
+    );
     log_puts("usb: DWC3 endpoint command timeout\n");
     false
 }
@@ -1140,6 +1267,7 @@ unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32)
 }
 
 unsafe fn start_setup() {
+    trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, unsafe { read(DSTS) });
     unsafe {
         prepare_trb(0, addr_of!(SETUP_PACKET).cast::<u8>(), 8, TRB_CONTROL_SETUP);
         let _ = start_transfer(0, addr_of!(EP0_TRBS).cast::<Trb>());
@@ -1191,6 +1319,9 @@ unsafe fn start_status(endpoint: usize) {
     } else {
         TRB_CONTROL_STATUS2
     };
+    trace_event(TRACE_STATUS_QUEUED, 0, endpoint as u32, kind, 0, unsafe {
+        read(DSTS)
+    });
     unsafe {
         prepare_trb(0, addr_of_mut!(EP0_TRBS).cast::<u8>(), 0, kind);
         let _ = start_transfer(endpoint, addr_of!(EP0_TRBS).cast::<Trb>());
@@ -1225,6 +1356,14 @@ unsafe fn handle_setup() {
     let index = u16::from_le_bytes([packet[4], packet[5]]);
     let requested_length = u16::from_le_bytes([packet[6], packet[7]]) as usize;
     let direction_in = request_type & 0x80 != 0;
+    trace_event(
+        TRACE_SETUP_RECEIVED,
+        request as u32,
+        value as u32,
+        index as u32,
+        requested_length as u32,
+        unsafe { read(DSTS) },
+    );
     unsafe {
         CONTROL_IN = direction_in;
         CONTROL_HAS_DATA = requested_length != 0;
@@ -1247,6 +1386,14 @@ unsafe fn handle_setup() {
                     addr_of!(RESPONSE.0).cast::<u8>(),
                     length,
                     TRB_CONTROL_DATA,
+                );
+                trace_event(
+                    TRACE_DESCRIPTOR_QUEUED,
+                    request as u32,
+                    value as u32,
+                    index as u32,
+                    length as u32,
+                    unsafe { read(DSTS) },
                 );
                 EP0_STATE = Ep0State::Data;
                 let _ = start_transfer(1, addr_of!(EP0_TRBS).cast::<Trb>());
@@ -1337,8 +1484,12 @@ unsafe fn process_event(raw: u32) {
         let device_event = (raw >> DEVICE_EVENT_KIND_SHIFT) & DEVICE_EVENT_KIND_MASK;
         match device_event {
             0 => {}
-            1 => unsafe { restart_control_after_reset() },
+            1 => {
+                trace_event(TRACE_USB_RESET, 0, 0, 0, 0, raw);
+                unsafe { restart_control_after_reset() }
+            }
             2 => {
+                trace_event(TRACE_DEVICE_CONNECT, 0, 0, 0, 0, raw);
                 let speed = unsafe { read(DSTS) & DSTS_CONNECTSPD_MASK };
                 log_puts("usb: connect done, speed=");
                 log_hex_value(speed as u64);
@@ -1370,6 +1521,14 @@ unsafe fn process_event(raw: u32) {
     let event = (raw >> 6) & 0xf;
     let status = (raw >> 12) & 0xf;
     if event == 1 {
+        trace_event(
+            TRACE_TRANSFER_COMPLETE,
+            event,
+            endpoint as u32,
+            status,
+            0,
+            raw,
+        );
         unsafe {
             match EP0_STATE {
                 Ep0State::Setup => handle_setup(),
@@ -1523,6 +1682,10 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
             qscratch_reg(QSCRATCH_GENERAL_CFG),
             general | QSCRATCH_GENERAL_CFG_XHCI_REV,
         );
+        // The bare path intentionally skips DWC3 reset, but it still needs
+        // the Qualcomm glue's UTMI-as-PIPE clock selection when the Fastboot
+        // session did not leave that mux configured for the temporary image.
+        select_utmi_pipe_clock();
 
         let gctl = read_volatile(reg(GCTL));
         write_volatile(
@@ -1547,6 +1710,7 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
 /// usable as a standalone probe.
 pub fn init_usb2_gadget_handoff() -> bool {
     unsafe {
+        trace_event(TRACE_INIT, 0, 0, 0, 0, read(GSNPSID));
         // Keep the Qualcomm session valid, but do not assert RUN_STOP yet.
         // The previous probe briefly exposed an EP0-less device and then
         // stopped it while the host was already asking for a descriptor.
@@ -1564,17 +1728,16 @@ pub fn init_usb2_gadget_handoff() -> bool {
             (gctl & !GCTL_PRTCAPDIR_MASK) | GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG,
         );
 
-        // The Bramble bootloader does not always emit a fresh attach if the
-        // pull-up is held until after endpoint setup.  Start the known-good
-        // physical USB2 session first, then install EP0 immediately while the
-        // host's reset/enumeration window is open.  This is probe-only; the
-        // normal path still configures the gadget before Run/Stop.
-        if !init_usb2_bare_pullup_handoff() {
+        // Fastboot leaves the DWC3 device controller running while its host
+        // endpoint is torn down. Stop that state before issuing any endpoint
+        // command; SETEPCONFIG/DEPSTARTCFG are only valid while halted.
+        if !stop_running_device() || !device_soft_reset() {
+            log_puts("usb gadget handoff: DWC3 reset failed\n");
             return false;
         }
 
         // The bootloader can leave the USB2 core in suspend/LPM state even
-        // though the physical pull-up is visible. Reapply only the
+        // though the Type-C session is valid. Reapply only the
         // controller-side wakeup bits; do not reset the PHY or clocks.
         qscratch_set(QSCRATCH_GENERAL_CFG, QSCRATCH_GENERAL_CFG_XHCI_REV);
         let mut usb2 = read(GUSB2PHYCFG0);
@@ -1616,8 +1779,7 @@ pub fn init_usb2_gadget_handoff() -> bool {
         // assert Run/Stop. Without this sequence the PHY can advertise a
         // USB2 pull-up while every host descriptor request times out at EP0.
         if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0)
-            || !send_ep_command(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)
-            || !send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)
+            || !allocate_transfer_resources()
             || !configure_endpoint(0, 64, false)
             || !configure_endpoint(1, 64, false)
         {
@@ -1627,6 +1789,28 @@ pub fn init_usb2_gadget_handoff() -> bool {
         ENDPOINTS_READY = true;
         write(DALEPENA, 0b11);
         start_setup();
+
+        // Connect only after the event ring, transfer resources, EP0
+        // descriptors, and first SETUP TRB are ready. This produces a fresh
+        // USB2 attach without exposing an EP0-less device to the host.
+        let mut dctl = read(DCTL);
+        dctl &= !DCTL_TRGTULST_MASK;
+        // Bramble's DWC3 is an older revision whose device reconnect path
+        // uses RxDetect to terminate the stale Fastboot link before the new
+        // peripheral pull-up is advertised.
+        dctl |= DCTL_TRGTULST_RX_DET | DCTL_RUN_STOP;
+        write(DCTL, dctl);
+        for _ in 0..1_000_000u32 {
+            if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
+                log_puts("usb gadget handoff: DWC3 RUN/STOP active\n");
+                break;
+            }
+            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        }
+        if read(DSTS) & DSTS_DEVCTRLHLT != 0 {
+            log_puts("usb gadget handoff: DWC3 RUN/STOP timeout\n");
+            return false;
+        }
 
         log_puts("usb gadget handoff: EP0 running\n");
         true

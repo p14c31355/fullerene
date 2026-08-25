@@ -278,6 +278,15 @@ extern "C" fn usb_probe_entry() -> ! {
     )))]
     uart::puts("fullerene usb probe: gadget init failed\n");
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    if usb::init_usb2_bare_pullup_handoff() {
+        // Keep a physical USB2 attach visible even when the EP0/DMA stage
+        // failed. This separates a controller/PHY handoff failure from a
+        // descriptor or endpoint-command failure on the host.
+        loop {
+            usb::poll();
+        }
+    }
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     loop {
         // Keep the physical pull-up alive after a gadget-stage failure so the
         // host log can distinguish EP0/DMA failure from an early MMIO abort.
