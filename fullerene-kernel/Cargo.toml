@@ -30,6 +30,24 @@ path = "src/arch/aarch64/usb_probe.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "fullerene-kernel-aarch64-usb-pullup-probe"
+path = "src/arch/aarch64/usb_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fullerene-kernel-aarch64-usb-bare-pullup-probe"
+path = "src/arch/aarch64/usb_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fullerene-kernel-aarch64-usb-gadget-handoff-probe"
+path = "src/arch/aarch64/usb_probe.rs"
+test = false
+bench = false
+
 # These examples are consumed by the UEFI/native smoke paths. The native_*
 # entries are freestanding no_std payloads, so they are not host test
 # harnesses: compiling those entries as tests enables unwinding against a

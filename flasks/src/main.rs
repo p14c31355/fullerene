@@ -68,6 +68,19 @@ struct Args {
     #[arg(long)]
     usb_probe: bool,
 
+    /// Build the Bramble USB2 physical pull-up probe without DMA or EP0.
+    #[arg(long)]
+    usb_pullup_probe: bool,
+
+    /// Build the minimal Bramble USB2 pull-up probe without UART, reset,
+    /// readback, DMA, or EP0 setup.
+    #[arg(long)]
+    usb_bare_pullup_probe: bool,
+
+    /// Build the Bramble USB2 gadget handoff probe with EP0 descriptors.
+    #[arg(long)]
+    usb_gadget_handoff_probe: bool,
+
     /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
     #[arg(long, default_value = "virtio-gpu")]
     vga: String,
@@ -325,10 +338,56 @@ fn main() -> io::Result<()> {
             "--usb-probe requires build --arch aarch64 --platform bramble",
         ));
     }
-    if args.entry_probe && args.usb_probe {
+    if args.usb_pullup_probe
+        && (target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || args.command != Action::Build)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--entry-probe and --usb-probe are mutually exclusive",
+            "--usb-pullup-probe requires build --arch aarch64 --platform bramble",
+        ));
+    }
+    if args.usb_bare_pullup_probe
+        && (target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || args.command != Action::Build)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-bare-pullup-probe requires build --arch aarch64 --platform bramble",
+        ));
+    }
+    if args.usb_gadget_handoff_probe
+        && (target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || args.command != Action::Build)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-probe requires build --arch aarch64 --platform bramble",
+        ));
+    }
+    if (args.usb_probe
+        || args.usb_pullup_probe
+        || args.usb_bare_pullup_probe
+        || args.usb_gadget_handoff_probe)
+        && args.entry_probe
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--entry-probe and USB probes are mutually exclusive",
+        ));
+    }
+    if (args.usb_probe as u8
+        + args.usb_pullup_probe as u8
+        + args.usb_bare_pullup_probe as u8
+        + args.usb_gadget_handoff_probe as u8)
+        > 1
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "USB probe modes are mutually exclusive",
         ));
     }
 
@@ -350,7 +409,13 @@ fn main() -> io::Result<()> {
             return fastboot::run_boot(args.image.as_deref().unwrap());
         }
 
-        let kernel_artifact = if args.usb_probe {
+        let kernel_artifact = if args.usb_gadget_handoff_probe {
+            "fullerene-kernel-aarch64-usb-gadget-handoff-probe"
+        } else if args.usb_bare_pullup_probe {
+            "fullerene-kernel-aarch64-usb-bare-pullup-probe"
+        } else if args.usb_pullup_probe {
+            "fullerene-kernel-aarch64-usb-pullup-probe"
+        } else if args.usb_probe {
             "fullerene-kernel-aarch64-usb-probe"
         } else if args.entry_probe {
             "fullerene-kernel-aarch64-probe"
@@ -363,7 +428,22 @@ fn main() -> io::Result<()> {
             let raw_kernel_path = build_aarch64_raw_kernel(&kernel_path)?;
             let image_path = build_aarch64_image(&raw_kernel_path)?;
             let image_lz4_path = build_aarch64_lz4(&image_path)?;
-            if args.usb_probe {
+            if args.usb_gadget_handoff_probe {
+                println!(
+                    "AArch64 USB gadget handoff probe built at {}",
+                    kernel_path.display()
+                );
+            } else if args.usb_bare_pullup_probe {
+                println!(
+                    "AArch64 bare USB pull-up probe built at {}",
+                    kernel_path.display()
+                );
+            } else if args.usb_pullup_probe {
+                println!(
+                    "AArch64 USB pull-up probe built at {}",
+                    kernel_path.display()
+                );
+            } else if args.usb_probe {
                 println!("AArch64 USB probe built at {}", kernel_path.display());
             } else if args.entry_probe {
                 println!("Bramble entry probe built at {}", kernel_path.display());
@@ -465,6 +545,15 @@ fn build_aarch64_kernel(
                 Platform::PcUefi => "pc-uefi",
             },
         );
+    if kernel_artifact == "fullerene-kernel-aarch64-usb-pullup-probe" {
+        cargo.env("FULLERENE_AARCH64_USB_PULLUP_PROBE", "1");
+    }
+    if kernel_artifact == "fullerene-kernel-aarch64-usb-bare-pullup-probe" {
+        cargo.env("FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE", "1");
+    }
+    if kernel_artifact == "fullerene-kernel-aarch64-usb-gadget-handoff-probe" {
+        cargo.env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE", "1");
+    }
 
     // Android's Bramble bootloader may relocate an arm64 Image. Build the
     // freestanding binary as a static PIE and let the Rust bootstrap apply

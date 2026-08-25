@@ -16,10 +16,23 @@ fn main() {
         let linker_script = out_dir.join("aarch64-linker.ld");
         fs::write(&linker_script, aarch64_linker_script(&platform)).unwrap();
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_bramble)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_pullup_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
         if platform == "bramble" {
             println!("cargo:rustc-cfg=fullerene_aarch64_bramble");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_PULLUP_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_pullup_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_bare_pullup_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_probe");
+        }
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_PLATFORM");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PULLUP_PROBE");
         println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64=-T{}",
             linker_script.display()
@@ -30,6 +43,18 @@ fn main() {
         );
         println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-pullup-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-bare-pullup-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-gadget-handoff-probe=-T{}",
             linker_script.display()
         );
         println!("cargo:rerun-if-changed=src/arch/aarch64");

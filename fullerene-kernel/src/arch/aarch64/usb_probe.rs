@@ -73,7 +73,6 @@ global_asm!(
     stack_size = const STACK_SIZE,
 );
 
-#[cfg(fullerene_aarch64_bramble)]
 const LINK_ENTRY: usize = 0x8008_0040;
 
 // The Android bootloader may relocate the Image before jumping to it. Keep
@@ -93,6 +92,11 @@ global_asm!(
          // disconnected. The vector table above turns this timer IRQ into a\n\
          // PS_HOLD reset; the watchdog is disabled once gadget setup returns.\n\
          mrs x5, CNTFRQ_EL0\n\
+         // Leave enough time for Qualcomm MMIO synchronization, GENI UART\n\
+         // diagnostics, and the DWC3 reset handshake before the recovery\n\
+         // timer can reboot the handset.\n\
+         mov x6, #60\n\
+         mul x5, x5, x6\n\
          msr CNTP_TVAL_EL0, x5\n\
          mov w5, #1\n\
          msr CNTP_CTL_EL0, x5\n\
@@ -168,22 +172,63 @@ global_asm!(
 
 #[unsafe(no_mangle)]
 extern "C" fn usb_probe_entry() -> ! {
+    #[cfg(not(any(
+        fullerene_aarch64_usb_bare_pullup_probe,
+        fullerene_aarch64_usb_gadget_handoff_probe
+    )))]
     uart::init_qcom_geni(0x0098_8000);
+    #[cfg(not(any(
+        fullerene_aarch64_usb_bare_pullup_probe,
+        fullerene_aarch64_usb_gadget_handoff_probe
+    )))]
     uart::puts("fullerene usb probe: entry\n");
 
+    #[cfg(not(fullerene_aarch64_usb_bare_pullup_probe))]
     usb::clear_dma_memory();
+    #[cfg(not(any(
+        fullerene_aarch64_usb_bare_pullup_probe,
+        fullerene_aarch64_usb_gadget_handoff_probe
+    )))]
     uart::puts("fullerene usb probe: DMA region cleared\n");
-    if usb::init_usb2_handoff() {
+    let gadget_ready = if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
+        usb::init_usb2_gadget_handoff()
+    } else if cfg!(fullerene_aarch64_usb_bare_pullup_probe) {
+        usb::init_usb2_bare_pullup_handoff()
+    } else if cfg!(fullerene_aarch64_usb_pullup_probe) {
+        usb::init_usb2_pullup_handoff()
+    } else {
+        usb::init_usb2_handoff()
+    };
+    if gadget_ready {
         unsafe {
             asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
         }
-        uart::puts("fullerene usb probe: gadget running\n");
+        #[cfg(not(any(
+            fullerene_aarch64_usb_bare_pullup_probe,
+            fullerene_aarch64_usb_gadget_handoff_probe
+        )))]
+        uart::puts(if cfg!(fullerene_aarch64_usb_pullup_probe) {
+            "fullerene usb probe: physical pull-up running\n"
+        } else {
+            "fullerene usb probe: gadget running\n"
+        });
         loop {
             usb::poll();
         }
     }
 
+    #[cfg(not(any(
+        fullerene_aarch64_usb_bare_pullup_probe,
+        fullerene_aarch64_usb_gadget_handoff_probe
+    )))]
     uart::puts("fullerene usb probe: gadget init failed\n");
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    loop {
+        // Keep the physical pull-up alive after a gadget-stage failure so the
+        // host log can distinguish EP0/DMA failure from an early MMIO abort.
+        usb::poll();
+    }
+    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
     reset_after_probe_failure();
 }
 
