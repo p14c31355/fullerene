@@ -75,30 +75,41 @@ extern "C" fn probe_entry() -> ! {
         unsafe { asm!("nop", options(nomem, nostack, preserves_flags)) };
     }
 
-    // The Lito DT exposes Qualcomm's PS_HOLD restart register. The Linux
-    // restart driver writes zero there as its non-secure fallback when the
-    // secure deassert-PS-HOLD call is unavailable. Use the same documented
-    // path on Bramble so this probe does not depend on the bootloader
-    // implementing PSCI SYSTEM_RESET for a fastboot-loaded image.
-    #[cfg(fullerene_aarch64_bramble)]
-    unsafe {
-        core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
-    }
-
-    // PSCI SYSTEM_RESET, SMC32 calling convention: 0x84000009.
-    unsafe {
-        asm!(
-            "mov w0, #9",
-            "movk w0, #0x8400, lsl #16",
-            "smc #0",
-            options(nostack)
-        );
-    }
-
-    // A conforming PSCI implementation does not return from SYSTEM_RESET.
-    // Keep the CPU parked if firmware rejects the call, rather than falling
-    // through into arbitrary memory.
+    #[cfg(fullerene_aarch64_entry_halt_probe)]
     loop {
+        // Deliberately remain in the loaded image. If this loop is reached,
+        // the bootloader accepted the compressed Image and transferred
+        // control through the AArch64 entry path; do not reset into Android.
         core::hint::spin_loop();
+    }
+
+    #[cfg(not(fullerene_aarch64_entry_halt_probe))]
+    {
+        // The Lito DT exposes Qualcomm's PS_HOLD restart register. The Linux
+        // restart driver writes zero there as its non-secure fallback when the
+        // secure deassert-PS-­HOLD call is unavailable. Use the same documented
+        // path on Bramble so this probe does not depend on the bootloader
+        // implementing PSCI SYSTEM_RESET for a fastboot-loaded image.
+        #[cfg(fullerene_aarch64_bramble)]
+        unsafe {
+            core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
+        }
+
+        // PSCI SYSTEM_RESET, SMC32 calling convention: 0x84000009.
+        unsafe {
+            asm!(
+                "mov w0, #9",
+                "movk w0, #0x8400, lsl #16",
+                "smc #0",
+                options(nostack)
+            );
+        }
+
+        // A conforming PSCI implementation does not return from SYSTEM_RESET.
+        // Keep the CPU parked if firmware rejects the call, rather than falling
+        // through into arbitrary memory.
+        loop {
+            core::hint::spin_loop();
+        }
     }
 }

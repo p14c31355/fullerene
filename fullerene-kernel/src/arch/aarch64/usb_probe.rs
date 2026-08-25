@@ -6,6 +6,8 @@ use core::{
     panic::PanicInfo,
 };
 
+#[path = "../../platform/mod.rs"]
+mod platform;
 mod uart;
 mod usb;
 
@@ -183,18 +185,27 @@ extern "C" fn usb_probe_entry() -> ! {
     )))]
     uart::puts("fullerene usb probe: entry\n");
 
-    #[cfg(not(fullerene_aarch64_usb_bare_pullup_probe))]
+    #[cfg(not(any(
+        fullerene_aarch64_usb_bare_pullup_probe,
+        fullerene_aarch64_usb_halt_probe
+    )))]
     usb::clear_dma_memory();
     #[cfg(not(any(
         fullerene_aarch64_usb_bare_pullup_probe,
-        fullerene_aarch64_usb_gadget_handoff_probe
+        fullerene_aarch64_usb_gadget_handoff_probe,
+        fullerene_aarch64_usb_halt_probe
     )))]
     uart::puts("fullerene usb probe: DMA region cleared\n");
     let gadget_ready = if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
         usb::init_usb2_gadget_handoff()
     } else if cfg!(fullerene_aarch64_usb_bare_pullup_probe) {
         usb::init_usb2_bare_pullup_handoff()
-    } else if cfg!(fullerene_aarch64_usb_pullup_probe) {
+    } else if cfg!(fullerene_aarch64_usb_cold_halt_probe) {
+        usb::init()
+    } else if cfg!(any(
+        fullerene_aarch64_usb_pullup_probe,
+        fullerene_aarch64_usb_halt_probe
+    )) {
         usb::init_usb2_pullup_handoff()
     } else {
         usb::init_usb2_handoff()
@@ -228,10 +239,30 @@ extern "C" fn usb_probe_entry() -> ! {
         // host log can distinguish EP0/DMA failure from an early MMIO abort.
         usb::poll();
     }
-    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
+    #[cfg(fullerene_aarch64_usb_halt_probe)]
+    loop {
+        // Preserve the failed handoff for host-side observation instead of
+        // immediately rebooting into Android or Fastboot.
+        usb::poll();
+    }
+    #[cfg(fullerene_aarch64_usb_cold_halt_probe)]
+    loop {
+        // Preserve the cold PHY/clock handoff for host-side observation.
+        usb::poll();
+    }
+    #[cfg(not(any(
+        fullerene_aarch64_usb_gadget_handoff_probe,
+        fullerene_aarch64_usb_halt_probe,
+        fullerene_aarch64_usb_cold_halt_probe
+    )))]
     reset_after_probe_failure();
 }
 
+#[cfg(not(any(
+    fullerene_aarch64_usb_gadget_handoff_probe,
+    fullerene_aarch64_usb_halt_probe,
+    fullerene_aarch64_usb_cold_halt_probe
+)))]
 fn reset_after_probe_failure() -> ! {
     // Make a failed USB handoff recoverable without another battery-cycle.
     // This is the same Qualcomm PS_HOLD path used by the entry probe, with

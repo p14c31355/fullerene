@@ -47,6 +47,7 @@ struct Args {
     debug: bool,
 
     /// Patch a Bramble Android v3 boot.img template with the generated Image.lz4.
+    /// For `run`/`debug`, the patched image is also sent with Fastboot.
     #[arg(long, value_name = "BOOT_IMG")]
     boot_template: Option<PathBuf>,
 
@@ -64,6 +65,11 @@ struct Args {
     #[arg(long)]
     entry_probe: bool,
 
+    /// Build the compressed AArch64 entry probe and halt after Rust entry.
+    /// This makes entry success observable instead of resetting into Android.
+    #[arg(long)]
+    entry_halt_probe: bool,
+
     /// Build the dependency-free Bramble USB gadget probe.
     #[arg(long)]
     usb_probe: bool,
@@ -71,6 +77,14 @@ struct Args {
     /// Build the Bramble USB2 physical pull-up probe without DMA or EP0.
     #[arg(long)]
     usb_pullup_probe: bool,
+
+    /// Build the USB2 pull-up probe and halt instead of resetting on failure.
+    #[arg(long)]
+    usb_halt_probe: bool,
+
+    /// Build the cold USB3/QMP probe and halt instead of resetting on failure.
+    #[arg(long)]
+    usb_cold_halt_probe: bool,
 
     /// Build the minimal Bramble USB2 pull-up probe without UART, reset,
     /// readback, DMA, or EP0 setup.
@@ -204,12 +218,6 @@ impl Platform {
                 "boot currently requires the AArch64 bramble platform",
             ));
         }
-        if self == Self::Bramble && !matches!(action, Action::Build | Action::Boot) {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "the bramble platform can build a raw kernel, but run/debug deployment is not wired yet",
-            ));
-        }
         Ok(())
     }
 }
@@ -312,10 +320,21 @@ fn main() -> io::Result<()> {
             "--boot-uncompressed requires --boot-template",
         ));
     }
-    if args.boot_template.is_some() && args.command != Action::Build {
+    if args.boot_template.is_some()
+        && !matches!(args.command, Action::Build | Action::Run | Action::Debug)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--boot-template is only available with the build action",
+            "--boot-template is only available with build, run, or debug",
+        ));
+    }
+    if target.platform == Platform::Bramble
+        && matches!(args.command, Action::Run | Action::Debug)
+        && args.boot_template.is_none()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Bramble run/debug requires --boot-template pointing to a stock Android boot.img",
         ));
     }
     if args.entry_probe
@@ -326,6 +345,16 @@ fn main() -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--entry-probe requires build --arch aarch64 --platform qemu-virt or bramble",
+        ));
+    }
+    if args.entry_halt_probe
+        && (target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || args.command != Action::Build)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--entry-halt-probe requires build --arch aarch64 --platform bramble",
         ));
     }
     if args.usb_probe
@@ -346,6 +375,26 @@ fn main() -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb-pullup-probe requires build --arch aarch64 --platform bramble",
+        ));
+    }
+    if args.usb_halt_probe
+        && (target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || args.command != Action::Build)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-halt-probe requires build --arch aarch64 --platform bramble",
+        ));
+    }
+    if args.usb_cold_halt_probe
+        && (target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || args.command != Action::Build)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-cold-halt-probe requires build --arch aarch64 --platform bramble",
         ));
     }
     if args.usb_bare_pullup_probe
@@ -370,17 +419,27 @@ fn main() -> io::Result<()> {
     }
     if (args.usb_probe
         || args.usb_pullup_probe
+        || args.usb_halt_probe
+        || args.usb_cold_halt_probe
         || args.usb_bare_pullup_probe
         || args.usb_gadget_handoff_probe)
-        && args.entry_probe
+        && (args.entry_probe || args.entry_halt_probe)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--entry-probe and USB probes are mutually exclusive",
+            "entry probes and USB probes are mutually exclusive",
+        ));
+    }
+    if args.entry_probe && args.entry_halt_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--entry-probe and --entry-halt-probe are mutually exclusive",
         ));
     }
     if (args.usb_probe as u8
         + args.usb_pullup_probe as u8
+        + args.usb_halt_probe as u8
+        + args.usb_cold_halt_probe as u8
         + args.usb_bare_pullup_probe as u8
         + args.usb_gadget_handoff_probe as u8)
         > 1
@@ -413,10 +472,16 @@ fn main() -> io::Result<()> {
             "fullerene-kernel-aarch64-usb-gadget-handoff-probe"
         } else if args.usb_bare_pullup_probe {
             "fullerene-kernel-aarch64-usb-bare-pullup-probe"
+        } else if args.usb_halt_probe {
+            "fullerene-kernel-aarch64-usb-halt-probe"
+        } else if args.usb_cold_halt_probe {
+            "fullerene-kernel-aarch64-usb-cold-halt-probe"
         } else if args.usb_pullup_probe {
             "fullerene-kernel-aarch64-usb-pullup-probe"
         } else if args.usb_probe {
             "fullerene-kernel-aarch64-usb-probe"
+        } else if args.entry_halt_probe {
+            "fullerene-kernel-aarch64-entry-halt-probe"
         } else if args.entry_probe {
             "fullerene-kernel-aarch64-probe"
         } else {
@@ -424,6 +489,33 @@ fn main() -> io::Result<()> {
         };
         let kernel_path =
             build_aarch64_kernel(&workspace_root, profile, target.platform, kernel_artifact)?;
+        if target.platform == Platform::Bramble
+            && matches!(args.command, Action::Run | Action::Debug)
+        {
+            let raw_kernel_path = build_aarch64_raw_kernel(&kernel_path)?;
+            let image_path = build_aarch64_image(&raw_kernel_path)?;
+            let image_lz4_path = build_aarch64_lz4(&image_path)?;
+            let template = args.boot_template.as_deref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Bramble run/debug requires --boot-template",
+                )
+            })?;
+            let output = args.boot_output.clone().unwrap_or_else(|| {
+                env::temp_dir().join(format!("fullerene-bramble-boot-{}.img", std::process::id()))
+            });
+            let boot_kernel = if args.boot_uncompressed {
+                &image_path
+            } else {
+                &image_lz4_path
+            };
+            patch_bramble_boot_image(template, boot_kernel, &output)?;
+            println!(
+                "Bramble boot image prepared at {}; sending with Fastboot",
+                output.display()
+            );
+            return fastboot::run_boot(&output);
+        }
         if args.command == Action::Build {
             let raw_kernel_path = build_aarch64_raw_kernel(&kernel_path)?;
             let image_path = build_aarch64_image(&raw_kernel_path)?;
@@ -438,6 +530,13 @@ fn main() -> io::Result<()> {
                     "AArch64 bare USB pull-up probe built at {}",
                     kernel_path.display()
                 );
+            } else if args.usb_halt_probe {
+                println!("AArch64 USB halt probe built at {}", kernel_path.display());
+            } else if args.usb_cold_halt_probe {
+                println!(
+                    "AArch64 USB cold halt probe built at {}",
+                    kernel_path.display()
+                );
             } else if args.usb_pullup_probe {
                 println!(
                     "AArch64 USB pull-up probe built at {}",
@@ -445,6 +544,11 @@ fn main() -> io::Result<()> {
                 );
             } else if args.usb_probe {
                 println!("AArch64 USB probe built at {}", kernel_path.display());
+            } else if args.entry_halt_probe {
+                println!(
+                    "Bramble entry halt probe built at {}",
+                    kernel_path.display()
+                );
             } else if args.entry_probe {
                 println!("Bramble entry probe built at {}", kernel_path.display());
             } else {
@@ -548,11 +652,20 @@ fn build_aarch64_kernel(
     if kernel_artifact == "fullerene-kernel-aarch64-usb-pullup-probe" {
         cargo.env("FULLERENE_AARCH64_USB_PULLUP_PROBE", "1");
     }
+    if kernel_artifact == "fullerene-kernel-aarch64-usb-halt-probe" {
+        cargo.env("FULLERENE_AARCH64_USB_HALT_PROBE", "1");
+    }
+    if kernel_artifact == "fullerene-kernel-aarch64-usb-cold-halt-probe" {
+        cargo.env("FULLERENE_AARCH64_USB_COLD_HALT_PROBE", "1");
+    }
     if kernel_artifact == "fullerene-kernel-aarch64-usb-bare-pullup-probe" {
         cargo.env("FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE", "1");
     }
     if kernel_artifact == "fullerene-kernel-aarch64-usb-gadget-handoff-probe" {
         cargo.env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE", "1");
+    }
+    if kernel_artifact == "fullerene-kernel-aarch64-entry-halt-probe" {
+        cargo.env("FULLERENE_AARCH64_ENTRY_HALT_PROBE", "1");
     }
 
     // Android's Bramble bootloader may relocate an arm64 Image. Build the
@@ -1678,7 +1791,7 @@ mod tests {
     }
 
     #[test]
-    fn bramble_is_reserved_without_being_aliased_to_aarch64_qemu() {
+    fn bramble_run_target_is_distinct_from_aarch64_qemu() {
         let args = Args::try_parse_from([
             "flasks",
             "run",
@@ -1688,8 +1801,9 @@ mod tests {
             "bramble",
         ])
         .unwrap();
-        let error = super::Target::from_args(&args).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        let target = super::Target::from_args(&args).unwrap();
+        assert_eq!(target.arch, Arch::Aarch64);
+        assert_eq!(target.platform, Platform::Bramble);
     }
 
     #[test]

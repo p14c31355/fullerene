@@ -147,23 +147,48 @@ global_asm!(
 );
 
 #[unsafe(no_mangle)]
-extern "C" fn aarch64_rust_entry(fdt_address: u64, _arg1: u64, fdt_arg2: u64) -> ! {
-    // QEMU's direct kernel loader leaves the DTB at the virt machine's
-    // conventional address, while Android/Linux-style AArch64 handoff puts
-    // it in x0. Prefer an actually valid FDT over either convention. A
-    // Bramble bootloader is expected to pass a DTB from vendor_boot, but the
-    // hard-coded platform backend keeps the first UART diagnostic alive if a
-    // development boot path omits it.
-    let dtb_address = if cfg!(fullerene_aarch64_bramble) {
-        // The Android arm64 boot contract passes the vendor_boot DTB in x0.
-        // Do not probe x2 on Bramble: it is not a DTB argument there and may
-        // point at unrelated physical memory.
-        fdt::inspect(fdt_address).map(|_| fdt_address)
+extern "C" fn aarch64_rust_entry(fdt_address: u64, arg1: u64, fdt_arg2: u64, arg3: u64) -> ! {
+    // Establish a compiled-in console before looking at any bootloader
+    // pointer. A vendor trampoline can hand us an invalid or absent DTB;
+    // touching that address before VBAR and UART are ready turns a useful
+    // handoff failure into an invisible synchronous abort.
+    let compiled_bramble = cfg!(fullerene_aarch64_bramble);
+    let early_uart_base = if compiled_bramble {
+        platform::bramble::UART_BASE
+    } else {
+        platform::qemu_virt::UART_BASE
+    };
+    if compiled_bramble {
+        uart::init_qcom_geni(early_uart_base as u64);
+    } else {
+        uart::init_at(early_uart_base as u64);
+    }
+    exceptions::install();
+    uart::puts("fullerene: entered Rust before DTB discovery\n");
+    uart::put_hex("boot: x0=", fdt_address);
+    uart::put_hex("boot: x1=", arg1);
+    uart::put_hex("boot: x2=", fdt_arg2);
+    uart::put_hex("boot: x3=", arg3);
+
+    // The architectural arm64 boot contract puts the physical DTB address in
+    // x0 and requires x1..x3 to be zero.  A vendor fastboot path is allowed
+    // to use a different trampoline, however, so accept x2 as a guarded
+    // fallback for bring-up.  Never prefer x2 over a valid x0: otherwise a
+    // normal Android handoff can be mistaken for a missing DTB.
+    let dtb_address = if compiled_bramble {
+        // The Pixel fastboot trampoline is not required to expose the
+        // vendor_boot DTB to an arbitrary replacement kernel.  All early
+        // Bramble addresses below are compiled from the vendor DT and do not
+        // need a speculative read through x0/x2.  Once the fixed platform
+        // path is stable, the handoff DTB can be adopted as an optional
+        // source of overlays rather than a prerequisite for entering Rust.
+        None
     } else {
         [fdt_address, fdt_arg2]
             .into_iter()
+            .filter(|address| *address != 0 && *address % 8 == 0)
             .find(|address| fdt::inspect(*address).is_some())
-            .or_else(|| Some(platform::qemu_virt::DTB_BASE))
+            .or(Some(platform::qemu_virt::DTB_BASE))
     };
     let qcom_uart = dtb_address.and_then(|address| {
         fdt::find_compatible(address, b"qcom,geni-debug-uart")
@@ -202,7 +227,9 @@ extern "C" fn aarch64_rust_entry(fdt_address: u64, _arg1: u64, fdt_arg2: u64) ->
         }
     }
     uart::put_hex("boot: x0=", fdt_address);
+    uart::put_hex("boot: x1=", arg1);
     uart::put_hex("boot: x2=", fdt_arg2);
+    uart::put_hex("boot: x3=", arg3);
     uart::put_hex(
         "gicd: base=",
         gicd_base.unwrap_or(if bramble {
@@ -234,7 +261,6 @@ extern "C" fn aarch64_rust_entry(fdt_address: u64, _arg1: u64, fdt_arg2: u64) ->
         uart::puts("dtb: not supplied; using compiled platform defaults\n");
     }
 
-    exceptions::install();
     uart::puts("arch: aarch64, exception vectors: ready\n");
     uart::put_hex("currentel: ", exceptions::current_el() as u64);
 
@@ -255,12 +281,36 @@ extern "C" fn aarch64_rust_entry(fdt_address: u64, _arg1: u64, fdt_arg2: u64) ->
     // phone boot path the redistributor may still be owned by firmware; USB
     // is polled during this early diagnostic phase and does not depend on it.
     #[cfg(fullerene_aarch64_bramble)]
+    if let Some(typec) = unsafe { platform::bramble::prepare_usb_device_role() } {
+        uart::put_hex("platform: PMIC arbiter=", typec.arbiter_version as u64);
+        uart::put_hex("platform: Type-C status=", typec.misc_status as u64);
+        uart::put_hex("platform: Type-C mode=", typec.mode as u64);
+        uart::put_hex(
+            "platform: Type-C orientation=",
+            typec.orientation_reverse as u64,
+        );
+        if typec.sink_mode_written {
+            uart::puts("platform: Type-C sink-only selected\n");
+        }
+    } else {
+        uart::puts("platform: Type-C SPMI state unavailable\n");
+    }
+    #[cfg(fullerene_aarch64_bramble)]
     usb::clear_dma_memory();
     #[cfg(fullerene_aarch64_bramble)]
     if usb::init_usb2_handoff() {
         uart::puts("platform: bramble USB2 gadget handoff: ready\n");
     } else {
         uart::puts("platform: bramble USB2 gadget handoff: failed\n");
+        // `fastboot boot` may jump through a vendor trampoline that tears
+        // down the Fastboot controller before entering the image.  In that
+        // case preserving the bootloader's PHY state cannot work; retry with
+        // the complete Qualcomm USB2 platform sequence.
+        if usb::init_usb2_only() {
+            uart::puts("platform: bramble USB2 cold fallback: ready\n");
+        } else {
+            uart::puts("platform: bramble USB2 cold fallback: failed\n");
+        }
     }
 
     if bramble {

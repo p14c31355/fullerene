@@ -309,6 +309,8 @@ const DCFG_SPEED_MASK: u32 = 7;
 const DCFG_DEVADDR_MASK: u32 = 0x7f << 3;
 const DCFG_HIGHSPEED: u32 = 0;
 const DCFG_SUPERSPEED: u32 = 4;
+const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
+const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
 const DSTS_CONNECTSPD_MASK: u32 = 7;
 const DSTS_DEVCTRLHLT: u32 = 1 << 22;
 const DSTS_DCNRD: u32 = 1 << 23;
@@ -387,6 +389,7 @@ static mut EP0_STATE: Ep0State = Ep0State::Setup;
 static mut CONTROL_IN: bool = false;
 static mut CONTROL_HAS_DATA: bool = false;
 static mut CONFIGURED: bool = false;
+static mut ENDPOINTS_READY: bool = false;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ep0State {
@@ -471,6 +474,20 @@ unsafe fn smmu_reg(offset: usize) -> *mut u32 {
 /// implementation.
 pub fn bypass_dwc3_smmu() -> bool {
     unsafe {
+        // A RAM-booted image does not own the bootloader's context bank. The
+        // architectural global client-protection disable is the least
+        // ambiguous handoff for this diagnostic: it makes the physical
+        // addresses in .usb_dma visible without depending on the firmware's
+        // stream-match table or context-bank assignment.
+        let scr0_after = read_volatile(smmu_reg(SMMU_SCR0));
+        if scr0_after != u32::MAX {
+            write_volatile(smmu_reg(SMMU_SCR0), scr0_after | SMMU_SCR0_CLIENTPD);
+            core::arch::asm!("dsb sy", options(nostack));
+            if read_volatile(smmu_reg(SMMU_SCR0)) & SMMU_SCR0_CLIENTPD != 0 {
+                return true;
+            }
+        }
+
         // qsmmuv500 exposes at most 128 stream-matching groups through the
         // architectural register space. Reading an unused group is harmless;
         // do not write one unless it matches DWC3's stream ID.
@@ -493,26 +510,12 @@ pub fn bypass_dwc3_smmu() -> bool {
             }
         }
 
-        // If the implementation is in stream-indexing mode, S2CR is indexed
-        // by the stream ID itself. The readback guard avoids touching a
-        // completely inaccessible SMMU aperture on handsets that keep it
-        // secure-owned.
-        let address = SMMU_S2CR_BASE + DWC3_STREAM_ID as usize * 4;
-        let s2cr = read_volatile(smmu_reg(address));
-        if s2cr != u32::MAX {
-            let bypassed = (s2cr & !SMMU_S2CR_TYPE_MASK) | SMMU_S2CR_TYPE_BYPASS;
-            write_volatile(smmu_reg(address), bypassed);
-            core::arch::asm!("dsb sy", options(nostack));
-            if read_volatile(smmu_reg(address)) & SMMU_S2CR_TYPE_MASK == SMMU_S2CR_TYPE_BYPASS {
-                return true;
-            }
-        }
-
         // Last-resort handoff diagnostic. If the secure-owned firmware did
-        // not expose a writable stream entry, CLIENTPD disables SMMU client
-        // protection and lets DWC3 use the physical addresses in .usb_dma.
-        // This affects Apps SMMU clients only and is undone by the next full
-        // platform reboot; it is not the production IOMMU policy.
+        // not expose a writable matching stream entry, CLIENTPD makes client
+        // transactions bypass SMMU translation and lets DWC3 use the
+        // physical addresses in .usb_dma. This affects Apps SMMU clients
+        // only and is undone by the next full platform reboot; it is not the
+        // production IOMMU policy.
         let scr0 = read_volatile(smmu_reg(SMMU_SCR0));
         if scr0 != u32::MAX {
             write_volatile(smmu_reg(SMMU_SCR0), scr0 | SMMU_SCR0_CLIENTPD);
@@ -1084,8 +1087,9 @@ unsafe fn process_event(raw: u32) {
             1 => unsafe {
                 CONFIGURED = false;
                 EP0_STATE = Ep0State::Setup;
+                ENDPOINTS_READY = false;
                 write(DCFG, read(DCFG) & !DCFG_DEVADDR_MASK);
-                start_setup();
+                write(DALEPENA, 0);
             },
             2 => {
                 let speed = unsafe { read(DSTS) & DSTS_CONNECTSPD_MASK };
@@ -1095,8 +1099,19 @@ unsafe fn process_event(raw: u32) {
                 // size and modifies it after Connect Done.
                 let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
                 unsafe {
-                    let _ = configure_endpoint(0, max_packet, true);
-                    let _ = configure_endpoint(1, max_packet, true);
+                    let first_connect = !ENDPOINTS_READY;
+                    let endpoints_ready = if first_connect {
+                        configure_endpoint(0, max_packet, false)
+                            && configure_endpoint(1, max_packet, false)
+                    } else {
+                        configure_endpoint(0, max_packet, true)
+                            && configure_endpoint(1, max_packet, true)
+                    };
+                    if endpoints_ready {
+                        ENDPOINTS_READY = true;
+                        write(DALEPENA, 0b11);
+                        start_setup();
+                    }
                 }
             }
             _ => {}
@@ -1162,6 +1177,11 @@ pub fn init_usb2_pullup_handoff() -> bool {
     unsafe {
         log_hex("usb pullup: DWC3 GSNPSID=", read(GSNPSID) as u64);
 
+        // Qualcomm's glue asserts LANE0_PWR_PRESENT together with the HS
+        // VBUS/session override when entering peripheral mode. This is also
+        // required on the USB2-only handoff path; it is not gated on QMP PHY
+        // calibration in the Linux role-switch path.
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(
             QSCRATCH_HS_PHY_CTRL,
             (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
@@ -1179,11 +1199,19 @@ pub fn init_usb2_pullup_handoff() -> bool {
         }
 
         qscratch_set(
+            QSCRATCH_SS_PHY_CTRL,
+            1 << 24, // LANE0_PWR_PRESENT
+        );
+        qscratch_set(
             QSCRATCH_HS_PHY_CTRL,
             (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
         );
         qscratch_set(QSCRATCH_CGCTL, 0x18);
         qscratch_set(QSCRATCH_GENERAL_CFG, QSCRATCH_GENERAL_CFG_XHCI_REV);
+        // Fastboot handoff skips the cold-start clock setup above, but a
+        // USB2-only device still needs Qualcomm's UTMI-as-PIPE selection.
+        // Linux performs this during the DWC3 post-reset callback.
+        select_utmi_pipe_clock();
 
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
@@ -1230,7 +1258,10 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
         write_volatile(reg(DALEPENA), 0b11);
 
         let dctl = read_volatile(reg(DCTL));
-        write_volatile(reg(DCTL), (dctl & !DCTL_CSFTRST) | DCTL_RUN_STOP);
+        write_volatile(
+            reg(DCTL),
+            (dctl & !(DCTL_CSFTRST | DCTL_TRGTULST_MASK)) | DCTL_TRGTULST_RX_DET | DCTL_RUN_STOP,
+        );
     }
     true
 }
@@ -1241,15 +1272,28 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
 /// host can see the physical pull-up.
 pub fn init_usb2_gadget_handoff() -> bool {
     unsafe {
-        if !init_usb2_bare_pullup_handoff() {
-            return false;
-        }
+        // Keep the Qualcomm session valid, but do not assert RUN_STOP yet.
+        // The previous probe briefly exposed an EP0-less device and then
+        // stopped it while the host was already asking for a descriptor.
+        // Configure the complete gadget while halted and connect once at the
+        // end, matching the DWC3 gadget start contract.
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24); // LANE0_PWR_PRESENT
+        qscratch_set(
+            QSCRATCH_HS_PHY_CTRL,
+            (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
+        );
+        qscratch_set(QSCRATCH_CGCTL, 0x18);
+        let gctl = read(GCTL);
+        write(
+            GCTL,
+            (gctl & !GCTL_PRTCAPDIR_MASK) | GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG,
+        );
 
-        // Keep the successful v12 pull-up asserted while the host observes
-        // the connection. Stopping the device here makes the physical link
-        // too brief for xHCI to issue the first descriptor request.
-        for _ in 0..100_000_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        // DWC3 endpoint commands are defined while the device controller is
+        // halted. A Fastboot handoff may leave it running, so stop it before
+        // programming the event ring and EP0.
+        if !stop_running_device() {
+            return false;
         }
 
         // v17 proved that pull-up and the EP0 programming path are reached,
@@ -1257,6 +1301,15 @@ pub fn init_usb2_gadget_handoff() -> bool {
         // identity/bypass route now that the physical link is already alive;
         // this isolates DWC3 DMA translation from the USB session handoff.
         let _ = bypass_dwc3_smmu();
+
+        // The bootloader can leave the USB2 core in suspend/LPM state even
+        // though the physical pull-up is visible. Reapply only the
+        // controller-side wakeup bits; do not reset the PHY or clocks.
+        qscratch_set(QSCRATCH_GENERAL_CFG, QSCRATCH_GENERAL_CFG_XHCI_REV);
+        select_utmi_pipe_clock();
+        let mut usb2 = read(GUSB2PHYCFG0);
+        usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        write(GUSB2PHYCFG0, usb2);
 
         // This probe is entered with the normal cache/MMU state disabled, so
         // the linker-reserved region is directly usable by DWC3. Still clean
@@ -1270,25 +1323,20 @@ pub fn init_usb2_gadget_handoff() -> bool {
         EVENT_OFFSET = 0;
         EP0_STATE = Ep0State::Setup;
         CONFIGURED = false;
+        ENDPOINTS_READY = false;
 
         write(DCFG, DCFG_HIGHSPEED);
-        if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
-            log_puts("usb gadget handoff: DEPSTARTCFG failed\n");
-            return false;
-        }
-        if !configure_endpoint(0, 64, false) || !configure_endpoint(1, 64, false) {
-            log_puts("usb gadget handoff: EP0 configuration failed\n");
-            return false;
-        }
-        write(DALEPENA, 0b11);
+        write(DALEPENA, 0);
         write(
             DEVTEN,
             DEVTEN_DISCONNECT | DEVTEN_USB_RESET | DEVTEN_CONNECT_DONE,
         );
-        start_setup();
 
         let dctl = read(DCTL);
-        write(DCTL, dctl | DCTL_RUN_STOP);
+        write(
+            DCTL,
+            (dctl & !DCTL_TRGTULST_MASK) | DCTL_TRGTULST_RX_DET | DCTL_RUN_STOP,
+        );
         for _ in 0..100_000u32 {
             if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
                 log_puts("usb gadget handoff: EP0 running\n");
@@ -1306,6 +1354,15 @@ pub fn init_usb2_gadget_handoff() -> bool {
 
 fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bool) -> bool {
     unsafe {
+        if reset_platform && !super::platform::bramble::enable_usb30_gdsc() {
+            // Fastboot itself proves that the USB power domain was usable
+            // immediately before the handoff.  Some Pixel bootloaders keep
+            // the GDSC under secure/RPMh ownership, so a direct software
+            // poll can time out even though the existing rail vote is still
+            // valid.  Treat this as a non-fatal ownership warning and keep
+            // the bootloader's vote rather than abandoning the controller.
+            uart::puts("usb: USB3 GDSC PWR_ON not observable; preserving vote\n");
+        }
         let snpsid = read(GSNPSID);
         uart::put_hex("usb: DWC3 GSNPSID=", snpsid as u64);
 
@@ -1313,6 +1370,14 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // the Qualcomm glue.  A RAM-booted Fullerene image has no clock
         // framework yet, so perform the small branch/reset part directly.
         let qmp_ready = if reset_platform {
+            if !super::platform::bramble::configure_usb_clocks() {
+                // The same applies to GCC RCG command-update bits: they may
+                // be secure-owned after the vendor fastboot handoff.  The
+                // active Fastboot link already selected usable rates, so
+                // continue with those rates instead of treating ownership as
+                // a hardware failure.
+                uart::puts("usb: GCC USB RCG update not observable; preserving rates\n");
+            }
             gcc_reset(GCC_USB30_PRIM_BCR);
             gcc_reset(GCC_QUSB2PHY_PRIM_BCR);
             if super_speed {
@@ -1347,7 +1412,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // Match the QCOM DWC3 glue's peripheral-mode VBUS override.  The
         // bootloader's fastboot role is not a complete kernel-side OTG
         // session, so relying on the core alone leaves the device halted.
-        if qmp_ready {
+        if qmp_ready || !reset_platform {
             qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24); // LANE0_PWR_PRESENT
         }
         qscratch_set(
@@ -1411,7 +1476,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 
         // Core reset restores the QSCRATCH-facing state on some DWC3
         // revisions, so re-apply the Qualcomm glue votes after reset.
-        if qmp_ready {
+        if qmp_ready || !reset_platform {
             qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24); // LANE0_PWR_PRESENT
         }
         qscratch_set(
@@ -1427,7 +1492,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // USB2-only cold starts need the same post-reset UTMI clock selection
         // as the Qualcomm glue. Preserve the bootloader's selection during a
         // Fastboot handoff because it may be part of the active link state.
-        if !super_speed && reset_platform {
+        if !super_speed {
             select_utmi_pipe_clock();
         }
 

@@ -25,6 +25,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "fullerene-kernel-aarch64-entry-halt-probe"
+path = "src/arch/aarch64/probe.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "fullerene-kernel-aarch64-usb-probe"
 path = "src/arch/aarch64/usb_probe.rs"
 test = false
@@ -32,6 +38,18 @@ bench = false
 
 [[bin]]
 name = "fullerene-kernel-aarch64-usb-pullup-probe"
+path = "src/arch/aarch64/usb_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fullerene-kernel-aarch64-usb-halt-probe"
+path = "src/arch/aarch64/usb_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fullerene-kernel-aarch64-usb-cold-halt-probe"
 path = "src/arch/aarch64/usb_probe.rs"
 test = false
 bench = false

@@ -107,5 +107,8 @@ fn is_mmio(physical: u64) -> bool {
             | 0x0a60_0000..=0x0a6f_ffff
             // SM7250 Apps SMMU global register space at 0x15000000.
             | 0x1500_0000..=0x150f_ffff
+            // SM7250 SPMI arbiter (PM8150B Type-C) core, channels,
+            // observer, interrupt, and configuration windows.
+            | 0x0c40_0000..=0x0e7f_ffff
     )
 }

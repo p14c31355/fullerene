@@ -16,7 +16,10 @@ fn main() {
         let linker_script = out_dir.join("aarch64-linker.ld");
         fs::write(&linker_script, aarch64_linker_script(&platform)).unwrap();
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_bramble)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_entry_halt_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_pullup_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_halt_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_cold_halt_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
         if platform == "bramble" {
@@ -25,6 +28,15 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_PULLUP_PROBE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_pullup_probe");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_HALT_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_halt_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_COLD_HALT_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_cold_halt_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_ENTRY_HALT_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_entry_halt_probe");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_bare_pullup_probe");
         }
@@ -32,7 +44,12 @@ fn main() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_probe");
         }
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_PLATFORM");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_ENTRY_HALT_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PULLUP_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HALT_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_COLD_HALT_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE");
         println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64=-T{}",
             linker_script.display()
@@ -42,11 +59,23 @@ fn main() {
             linker_script.display()
         );
         println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-entry-halt-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-probe=-T{}",
             linker_script.display()
         );
         println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-pullup-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-halt-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-cold-halt-probe=-T{}",
             linker_script.display()
         );
         println!(
@@ -475,6 +504,19 @@ fn aarch64_linker_script(platform: &str) -> String {
         "0x42000040"
     };
 
+    let usb_dma_origin = if platform == "bramble" {
+        // The Bramble vendor DT reserves 0x80000000..0x80600000 for the
+        // hypervisor and marks it no-map.  The kernel image itself is linked
+        // near that address, so placing DMA objects immediately after .bss
+        // puts DWC3's event ring/TRBs in a region that is not valid for the
+        // USB client.  0x9b800000 is the first byte after the fixed
+        // modem_wlan carveout (0x8c000000..0x9b800000) and leaves the small
+        // DMA section below the next fixed carveout at 0x9f400000.
+        ". = 0x9b800000;"
+    } else {
+        ""
+    };
+
     format!(
         r#"ENTRY(_start)
 
@@ -535,6 +577,7 @@ SECTIONS
        Keep the section separate from .bss so the bootstrap clears it
        explicitly before handing the physical addresses to DWC3.
     */
+    {usb_dma_origin}
     .usb_dma (NOLOAD) : ALIGN(4K)
     {{
         __usb_dma_start = .;
