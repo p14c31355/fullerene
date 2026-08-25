@@ -31,18 +31,18 @@ global_asm!(
      .global _start\n\
      .type _start, %function\n\
      _start:\n\
-         adrp x1, AARCH64_BOOT_STACK\n\
-         add x1, x1, :lo12:AARCH64_BOOT_STACK\n\
-         mov x2, #{stack_size}\n\
-         add sp, x1, x2\n\
-         adrp x3, __bss_start\n\
-         add x3, x3, :lo12:__bss_start\n\
-         adrp x4, __bss_end\n\
-         add x4, x4, :lo12:__bss_end\n\
+         adrp x9, AARCH64_BOOT_STACK\n\
+         add x9, x9, :lo12:AARCH64_BOOT_STACK\n\
+         mov x10, #{stack_size}\n\
+         add sp, x9, x10\n\
+         adrp x11, __bss_start\n\
+         add x11, x11, :lo12:__bss_start\n\
+         adrp x12, __bss_end\n\
+         add x12, x12, :lo12:__bss_end\n\
      1:\n\
-         cmp x3, x4\n\
+         cmp x11, x12\n\
          b.hs 2f\n\
-         str xzr, [x3], #8\n\
+         str xzr, [x11], #8\n\
          b 1b\n\
      2:\n\
          // QEMU may enter at EL1; Android-style AArch64 bootloaders may hand\n\
@@ -86,12 +86,14 @@ global_asm!(
          // base. Apply the PIE's relative relocations before entering Rust;\n\
          // x0 remains the bootloader-provided DTB address.\n\
          adr x7, _start\n\
-         sub sp, sp, #16\n\
-         str x0, [sp]\n\
+         sub sp, sp, #32\n\
+         stp x0, x1, [sp]\n\
+         stp x2, x3, [sp, #16]\n\
          mov x0, x7\n\
          bl aarch64_apply_relocations\n\
-         ldr x0, [sp]\n\
-         add sp, sp, #16\n\
+         ldp x2, x3, [sp, #16]\n\
+         ldp x0, x1, [sp]\n\
+         add sp, sp, #32\n\
          b aarch64_rust_entry\n\
      .size aarch64_el1_entry, . - aarch64_el1_entry\n\
      ",

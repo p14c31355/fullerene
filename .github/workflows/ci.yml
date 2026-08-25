@@ -65,11 +65,66 @@ jobs:
       - name: Restrict linux-firmware checkout
         run: git -C bonder/iwlwifi sparse-checkout set intel/iwlwifi
       - name: Build kernel
-        run: cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
+        run: cargo build -Z build-std=core,alloc --package fullerene-kernel --bin fullerene-kernel --target x86_64-unknown-uefi
       - name: Build bootloader
         env:
           KERNEL_BIN_PATH: ${{ github.workspace }}/target/x86_64-unknown-uefi/debug/fullerene-kernel.efi
         run: cargo check -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi
+
+  aarch64:
+    name: AArch64 build and QEMU smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rust-src, llvm-tools-preview, rustfmt
+          targets: aarch64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+      - name: Install AArch64 QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes qemu-system-arm
+      - name: Restrict linux-firmware checkout
+        run: git -C bonder/iwlwifi sparse-checkout set intel/iwlwifi
+      - name: Build all AArch64 entry and USB probe modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=(cargo build -Z build-std=core,alloc --package fullerene-kernel --features aarch64 --target aarch64-unknown-none -q)
+          env -u FULLERENE_AARCH64_ENTRY_HALT_PROBE \
+            -u FULLERENE_AARCH64_USB_PULLUP_PROBE \
+            -u FULLERENE_AARCH64_USB_HALT_PROBE \
+            -u FULLERENE_AARCH64_USB_COLD_HALT_PROBE \
+            -u FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE \
+            -u FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE \
+            "${target[@]}" --bin fullerene-kernel-aarch64
+          "${target[@]}" --bin fullerene-kernel-aarch64-probe
+          FULLERENE_AARCH64_ENTRY_HALT_PROBE=1 "${target[@]}" --bin fullerene-kernel-aarch64-entry-halt-probe
+          for mode in \
+            FULLERENE_AARCH64_USB_PULLUP_PROBE \
+            FULLERENE_AARCH64_USB_HALT_PROBE \
+            FULLERENE_AARCH64_USB_COLD_HALT_PROBE \
+            FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE \
+            FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE; do
+            env "$mode=1" "${target[@]}" --bin fullerene-kernel-aarch64-usb-probe
+          done
+      - name: Boot the QEMU virt path
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          timeout --signal=TERM 15s cargo run -q -p flasks -- run \
+            --arch aarch64 --platform qemu-virt --headless 2>&1 | tee /tmp/fullerene-aarch64-qemu.log
+          status=${PIPESTATUS[0]}
+          set -e
+          grep -q "fullerene:" /tmp/fullerene-aarch64-qemu.log
+          if [[ "$status" -ne 0 && "$status" -ne 124 && "$status" -ne 143 ]]; then
+            exit "$status"
+          fi
 
   drivers:
     name: Driver tests (${{ matrix.profile }})

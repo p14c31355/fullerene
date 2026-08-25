@@ -103,8 +103,10 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
                 depth += 1;
                 let parent = states[depth - 1];
                 states[depth] = NodeState {
-                    address_cells: parent.address_cells,
-                    size_cells: parent.size_cells,
+                    address_cells: parent.child_address_cells,
+                    size_cells: parent.child_size_cells,
+                    child_address_cells: parent.child_address_cells,
+                    child_size_cells: parent.child_size_cells,
                     ..NodeState::new()
                 };
                 while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
@@ -148,9 +150,9 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
                 let name = unsafe { strings.add(name_offset as usize) };
                 let state = &mut states[depth];
                 if c_string_eq(name, strings_end, b"#address-cells") && length >= 4 {
-                    state.address_cells = read_be32(value, 0)? as u8;
+                    state.child_address_cells = read_be32(value, 0)? as u8;
                 } else if c_string_eq(name, strings_end, b"#size-cells") && length >= 4 {
-                    state.size_cells = read_be32(value, 0)? as u8;
+                    state.child_size_cells = read_be32(value, 0)? as u8;
                 } else if c_string_eq(name, strings_end, b"compatible") {
                     state.compatible = compatible_list_contains(value, length, target);
                 } else if c_string_eq(name, strings_end, b"status") {
@@ -181,6 +183,8 @@ fn read_be32(base: *const u8, offset: u32) -> Option<u32> {
 struct NodeState {
     address_cells: u8,
     size_cells: u8,
+    child_address_cells: u8,
+    child_size_cells: u8,
     compatible: bool,
     enabled: bool,
     regions: [Option<Region>; 2],
@@ -191,6 +195,8 @@ impl NodeState {
         Self {
             address_cells: 2,
             size_cells: 1,
+            child_address_cells: 2,
+            child_size_cells: 1,
             compatible: false,
             enabled: true,
             regions: [None; 2],

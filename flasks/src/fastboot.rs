@@ -22,9 +22,7 @@ pub fn run_device() -> io::Result<()> {
             }
             for info in &devices {
                 print_device(info);
-                print_var(info, "product").await;
-                print_var(info, "serialno").await;
-                print_var(info, "version").await;
+                print_vars(info, &["product", "serialno", "version"]).await;
             }
             Ok(())
         })
@@ -86,13 +84,21 @@ async fn single_device() -> io::Result<DeviceInfo> {
     }
 }
 
-async fn print_var(info: &DeviceInfo, name: &str) {
+async fn print_vars(info: &DeviceInfo, names: &[&str]) {
     match NusbFastBoot::from_info(info).await {
-        Ok(mut fastboot) => match fastboot.get_var(name).await {
-            Ok(value) => println!("{name}: {}", value.trim()),
-            Err(error) => println!("{name}: unavailable ({error})"),
-        },
-        Err(error) => println!("{name}: unavailable ({error})"),
+        Ok(mut fastboot) => {
+            for name in names {
+                match fastboot.get_var(name).await {
+                    Ok(value) => println!("{name}: {}", value.trim()),
+                    Err(error) => println!("{name}: unavailable ({error})"),
+                }
+            }
+        }
+        Err(error) => {
+            for name in names {
+                println!("{name}: unavailable ({error})");
+            }
+        }
     }
 }
 

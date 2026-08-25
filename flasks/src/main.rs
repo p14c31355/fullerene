@@ -241,6 +241,113 @@ impl Target {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Aarch64Probe {
+    selected: bool,
+    flag: &'static str,
+    artifact: &'static str,
+    env: Option<&'static str>,
+    bramble_only: bool,
+}
+
+fn aarch64_probe_specs(args: &Args) -> [Aarch64Probe; 8] {
+    [
+        Aarch64Probe {
+            selected: args.entry_probe,
+            flag: "--entry-probe",
+            artifact: "fullerene-kernel-aarch64-probe",
+            env: None,
+            bramble_only: false,
+        },
+        Aarch64Probe {
+            selected: args.entry_halt_probe,
+            flag: "--entry-halt-probe",
+            artifact: "fullerene-kernel-aarch64-entry-halt-probe",
+            env: Some("FULLERENE_AARCH64_ENTRY_HALT_PROBE"),
+            bramble_only: true,
+        },
+        Aarch64Probe {
+            selected: args.usb_probe,
+            flag: "--usb-probe",
+            artifact: "fullerene-kernel-aarch64-usb-probe",
+            env: None,
+            bramble_only: true,
+        },
+        Aarch64Probe {
+            selected: args.usb_pullup_probe,
+            flag: "--usb-pullup-probe",
+            artifact: "fullerene-kernel-aarch64-usb-probe",
+            env: Some("FULLERENE_AARCH64_USB_PULLUP_PROBE"),
+            bramble_only: true,
+        },
+        Aarch64Probe {
+            selected: args.usb_halt_probe,
+            flag: "--usb-halt-probe",
+            artifact: "fullerene-kernel-aarch64-usb-probe",
+            env: Some("FULLERENE_AARCH64_USB_HALT_PROBE"),
+            bramble_only: true,
+        },
+        Aarch64Probe {
+            selected: args.usb_cold_halt_probe,
+            flag: "--usb-cold-halt-probe",
+            artifact: "fullerene-kernel-aarch64-usb-probe",
+            env: Some("FULLERENE_AARCH64_USB_COLD_HALT_PROBE"),
+            bramble_only: true,
+        },
+        Aarch64Probe {
+            selected: args.usb_bare_pullup_probe,
+            flag: "--usb-bare-pullup-probe",
+            artifact: "fullerene-kernel-aarch64-usb-probe",
+            env: Some("FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE"),
+            bramble_only: true,
+        },
+        Aarch64Probe {
+            selected: args.usb_gadget_handoff_probe,
+            flag: "--usb-gadget-handoff-probe",
+            artifact: "fullerene-kernel-aarch64-usb-probe",
+            env: Some("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE"),
+            bramble_only: true,
+        },
+    ]
+}
+
+fn selected_aarch64_probe(args: &Args, target: Target) -> io::Result<Option<Aarch64Probe>> {
+    let specs = aarch64_probe_specs(args);
+    let selected: Vec<_> = specs
+        .iter()
+        .copied()
+        .filter(|probe| probe.selected)
+        .collect();
+    if selected.len() > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "AArch64 probe modes are mutually exclusive",
+        ));
+    }
+    let Some(probe) = selected.first().copied() else {
+        return Ok(None);
+    };
+    if target.arch != Arch::Aarch64
+        || target.platform == Platform::PcUefi
+        || probe.bramble_only && target.platform != Platform::Bramble
+        || args.command != Action::Build
+    {
+        let platform = if probe.bramble_only {
+            "bramble"
+        } else {
+            "qemu-virt or bramble"
+        };
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} requires build --arch aarch64 --platform {}",
+                probe.flag, platform
+            ),
+        ));
+    }
+    Ok(Some(probe))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuildProfile {
     Release,
@@ -337,118 +444,7 @@ fn main() -> io::Result<()> {
             "Bramble run/debug requires --boot-template pointing to a stock Android boot.img",
         ));
     }
-    if args.entry_probe
-        && (target.arch != Arch::Aarch64
-            || !matches!(target.platform, Platform::QemuVirt | Platform::Bramble)
-            || args.command != Action::Build)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--entry-probe requires build --arch aarch64 --platform qemu-virt or bramble",
-        ));
-    }
-    if args.entry_halt_probe
-        && (target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
-            || args.command != Action::Build)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--entry-halt-probe requires build --arch aarch64 --platform bramble",
-        ));
-    }
-    if args.usb_probe
-        && (target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
-            || args.command != Action::Build)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--usb-probe requires build --arch aarch64 --platform bramble",
-        ));
-    }
-    if args.usb_pullup_probe
-        && (target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
-            || args.command != Action::Build)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--usb-pullup-probe requires build --arch aarch64 --platform bramble",
-        ));
-    }
-    if args.usb_halt_probe
-        && (target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
-            || args.command != Action::Build)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--usb-halt-probe requires build --arch aarch64 --platform bramble",
-        ));
-    }
-    if args.usb_cold_halt_probe
-        && (target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
-            || args.command != Action::Build)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--usb-cold-halt-probe requires build --arch aarch64 --platform bramble",
-        ));
-    }
-    if args.usb_bare_pullup_probe
-        && (target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
-            || args.command != Action::Build)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--usb-bare-pullup-probe requires build --arch aarch64 --platform bramble",
-        ));
-    }
-    if args.usb_gadget_handoff_probe
-        && (target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
-            || args.command != Action::Build)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--usb-gadget-handoff-probe requires build --arch aarch64 --platform bramble",
-        ));
-    }
-    if (args.usb_probe
-        || args.usb_pullup_probe
-        || args.usb_halt_probe
-        || args.usb_cold_halt_probe
-        || args.usb_bare_pullup_probe
-        || args.usb_gadget_handoff_probe)
-        && (args.entry_probe || args.entry_halt_probe)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "entry probes and USB probes are mutually exclusive",
-        ));
-    }
-    if args.entry_probe && args.entry_halt_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--entry-probe and --entry-halt-probe are mutually exclusive",
-        ));
-    }
-    if (args.usb_probe as u8
-        + args.usb_pullup_probe as u8
-        + args.usb_halt_probe as u8
-        + args.usb_cold_halt_probe as u8
-        + args.usb_bare_pullup_probe as u8
-        + args.usb_gadget_handoff_probe as u8)
-        > 1
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "USB probe modes are mutually exclusive",
-        ));
-    }
+    let selected_probe = selected_aarch64_probe(&args, target)?;
 
     if target.arch == Arch::Aarch64 {
         if args.clone_ovmf || args.iso_only {
@@ -468,27 +464,16 @@ fn main() -> io::Result<()> {
             return fastboot::run_boot(args.image.as_deref().unwrap());
         }
 
-        let kernel_artifact = if args.usb_gadget_handoff_probe {
-            "fullerene-kernel-aarch64-usb-gadget-handoff-probe"
-        } else if args.usb_bare_pullup_probe {
-            "fullerene-kernel-aarch64-usb-bare-pullup-probe"
-        } else if args.usb_halt_probe {
-            "fullerene-kernel-aarch64-usb-halt-probe"
-        } else if args.usb_cold_halt_probe {
-            "fullerene-kernel-aarch64-usb-cold-halt-probe"
-        } else if args.usb_pullup_probe {
-            "fullerene-kernel-aarch64-usb-pullup-probe"
-        } else if args.usb_probe {
-            "fullerene-kernel-aarch64-usb-probe"
-        } else if args.entry_halt_probe {
-            "fullerene-kernel-aarch64-entry-halt-probe"
-        } else if args.entry_probe {
-            "fullerene-kernel-aarch64-probe"
-        } else {
-            target.arch.kernel_artifact()
-        };
-        let kernel_path =
-            build_aarch64_kernel(&workspace_root, profile, target.platform, kernel_artifact)?;
+        let kernel_artifact = selected_probe
+            .map(|probe| probe.artifact)
+            .unwrap_or_else(|| target.arch.kernel_artifact());
+        let kernel_path = build_aarch64_kernel(
+            &workspace_root,
+            profile,
+            target.platform,
+            kernel_artifact,
+            selected_probe.and_then(|probe| probe.env),
+        )?;
         if target.platform == Platform::Bramble
             && matches!(args.command, Action::Run | Action::Debug)
         {
@@ -520,37 +505,12 @@ fn main() -> io::Result<()> {
             let raw_kernel_path = build_aarch64_raw_kernel(&kernel_path)?;
             let image_path = build_aarch64_image(&raw_kernel_path)?;
             let image_lz4_path = build_aarch64_lz4(&image_path)?;
-            if args.usb_gadget_handoff_probe {
+            if let Some(probe) = selected_probe {
                 println!(
-                    "AArch64 USB gadget handoff probe built at {}",
+                    "AArch64 {} built at {}",
+                    probe.flag.trim_start_matches("--"),
                     kernel_path.display()
                 );
-            } else if args.usb_bare_pullup_probe {
-                println!(
-                    "AArch64 bare USB pull-up probe built at {}",
-                    kernel_path.display()
-                );
-            } else if args.usb_halt_probe {
-                println!("AArch64 USB halt probe built at {}", kernel_path.display());
-            } else if args.usb_cold_halt_probe {
-                println!(
-                    "AArch64 USB cold halt probe built at {}",
-                    kernel_path.display()
-                );
-            } else if args.usb_pullup_probe {
-                println!(
-                    "AArch64 USB pull-up probe built at {}",
-                    kernel_path.display()
-                );
-            } else if args.usb_probe {
-                println!("AArch64 USB probe built at {}", kernel_path.display());
-            } else if args.entry_halt_probe {
-                println!(
-                    "Bramble entry halt probe built at {}",
-                    kernel_path.display()
-                );
-            } else if args.entry_probe {
-                println!("Bramble entry probe built at {}", kernel_path.display());
             } else {
                 println!("AArch64 ELF kernel built at {}", kernel_path.display());
             }
@@ -620,6 +580,7 @@ fn build_aarch64_kernel(
     profile: BuildProfile,
     platform: Platform,
     kernel_artifact: &str,
+    probe_env: Option<&str>,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
     let mut cargo = Command::new("cargo");
@@ -630,6 +591,8 @@ fn build_aarch64_kernel(
             "-q",
             "--package",
             target.cargo_package(),
+            "--features",
+            "aarch64",
             "--bin",
             kernel_artifact,
             "--target",
@@ -649,23 +612,8 @@ fn build_aarch64_kernel(
                 Platform::PcUefi => "pc-uefi",
             },
         );
-    if kernel_artifact == "fullerene-kernel-aarch64-usb-pullup-probe" {
-        cargo.env("FULLERENE_AARCH64_USB_PULLUP_PROBE", "1");
-    }
-    if kernel_artifact == "fullerene-kernel-aarch64-usb-halt-probe" {
-        cargo.env("FULLERENE_AARCH64_USB_HALT_PROBE", "1");
-    }
-    if kernel_artifact == "fullerene-kernel-aarch64-usb-cold-halt-probe" {
-        cargo.env("FULLERENE_AARCH64_USB_COLD_HALT_PROBE", "1");
-    }
-    if kernel_artifact == "fullerene-kernel-aarch64-usb-bare-pullup-probe" {
-        cargo.env("FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE", "1");
-    }
-    if kernel_artifact == "fullerene-kernel-aarch64-usb-gadget-handoff-probe" {
-        cargo.env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE", "1");
-    }
-    if kernel_artifact == "fullerene-kernel-aarch64-entry-halt-probe" {
-        cargo.env("FULLERENE_AARCH64_ENTRY_HALT_PROBE", "1");
+    if let Some(probe_env) = probe_env {
+        cargo.env(probe_env, "1");
     }
 
     // Android's Bramble bootloader may relocate an arm64 Image. Build the
@@ -807,13 +755,18 @@ fn make_lz4_frame(payload: &[u8]) -> Vec<u8> {
     const FLG: u8 = 0x64; // version 01, independent blocks, content checksum
     const BD: u8 = 0x70; // 4 MiB maximum block size
     const BLOCK_MAX: usize = 4 * 1024 * 1024;
+    // Literal-only encoding adds one token byte and one length byte for each
+    // 255 bytes after the first 15. Keep the encoded block within the BD
+    // maximum instead of splitting the unencoded payload at that boundary.
+    const PAYLOAD_MAX: usize = BLOCK_MAX - (2 + BLOCK_MAX / 255);
 
     let mut frame = Vec::with_capacity(4 + 3 + payload.len() + payload.len() / BLOCK_MAX * 4 + 8);
     frame.extend_from_slice(&LZ4_FRAME_MAGIC.to_le_bytes());
     frame.extend_from_slice(&[FLG, BD]);
     frame.push((xxhash32(&[FLG, BD], 0) >> 8) as u8);
-    for block in payload.chunks(BLOCK_MAX) {
+    for block in payload.chunks(PAYLOAD_MAX) {
         let encoded = encode_lz4_literals(block);
+        debug_assert!(encoded.len() <= BLOCK_MAX);
         let block_size = u32::try_from(encoded.len()).expect("LZ4 block size fits in u32");
         frame.extend_from_slice(&block_size.to_le_bytes());
         frame.extend_from_slice(&encoded);
@@ -1931,5 +1884,24 @@ mod tests {
             &frame[17 + payload.len()..],
             &xxhash32(payload, 0).to_le_bytes()
         );
+    }
+
+    #[test]
+    fn lz4_frame_keeps_each_encoded_block_within_bd_limit() {
+        let payload = vec![0x5a; 4 * 1024 * 1024 + 1024];
+        let frame = make_lz4_frame(&payload);
+        let mut cursor = 7;
+        let mut blocks = 0;
+        loop {
+            let size = u32::from_le_bytes(frame[cursor..cursor + 4].try_into().unwrap()) as usize;
+            cursor += 4;
+            if size == 0 {
+                break;
+            }
+            assert!(size <= 4 * 1024 * 1024);
+            cursor += size;
+            blocks += 1;
+        }
+        assert!(blocks >= 2);
     }
 }

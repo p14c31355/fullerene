@@ -29,8 +29,18 @@ pub fn init(gicd_base: usize, gicr_base: usize) {
     unsafe {
         let waker = read32(gicr_base + GICR_WAKER);
         write32(gicr_base + GICR_WAKER, waker & !(1 << 1));
-        while read32(gicr_base + GICR_WAKER) & (1 << 2) != 0 {
+        let mut awake = false;
+        for _ in 0..100_000 {
+            if read32(gicr_base + GICR_WAKER) & (1 << 2) == 0 {
+                awake = true;
+                break;
+            }
             core::hint::spin_loop();
+        }
+        if !awake {
+            // A redistributor still owned by firmware is not safe to program.
+            // Leave the caller's polling path alive, but do not spin forever.
+            return;
         }
 
         write32(

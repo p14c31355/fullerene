@@ -15,54 +15,28 @@ path = "src/main.rs"
 [[bin]]
 name = "fullerene-kernel-aarch64"
 path = "src/arch/aarch64/main.rs"
+required-features = ["aarch64"]
 test = false
 bench = false
 
 [[bin]]
 name = "fullerene-kernel-aarch64-probe"
 path = "src/arch/aarch64/probe.rs"
+required-features = ["aarch64"]
 test = false
 bench = false
 
 [[bin]]
 name = "fullerene-kernel-aarch64-entry-halt-probe"
 path = "src/arch/aarch64/probe.rs"
+required-features = ["aarch64"]
 test = false
 bench = false
 
 [[bin]]
 name = "fullerene-kernel-aarch64-usb-probe"
 path = "src/arch/aarch64/usb_probe.rs"
-test = false
-bench = false
-
-[[bin]]
-name = "fullerene-kernel-aarch64-usb-pullup-probe"
-path = "src/arch/aarch64/usb_probe.rs"
-test = false
-bench = false
-
-[[bin]]
-name = "fullerene-kernel-aarch64-usb-halt-probe"
-path = "src/arch/aarch64/usb_probe.rs"
-test = false
-bench = false
-
-[[bin]]
-name = "fullerene-kernel-aarch64-usb-cold-halt-probe"
-path = "src/arch/aarch64/usb_probe.rs"
-test = false
-bench = false
-
-[[bin]]
-name = "fullerene-kernel-aarch64-usb-bare-pullup-probe"
-path = "src/arch/aarch64/usb_probe.rs"
-test = false
-bench = false
-
-[[bin]]
-name = "fullerene-kernel-aarch64-usb-gadget-handoff-probe"
-path = "src/arch/aarch64/usb_probe.rs"
+required-features = ["aarch64"]
 test = false
 bench = false
 
@@ -141,6 +115,7 @@ busybox-build = { path = "../toluene/busybox-build" }
 
 [features]
 default = []
+aarch64 = []
 user_space = []
 native-payload = []
 

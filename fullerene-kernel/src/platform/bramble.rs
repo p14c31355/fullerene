@@ -265,9 +265,8 @@ unsafe fn gcc_reg(offset: usize) -> *mut u32 {
 
 /// Program one Qualcomm RCG2 clock source and commit the change.
 ///
-/// The Lito GCC driver describes the USB master clock as GPLL0/4.5 and the
-/// mock UTMI clock as GPLL0-even/5.  RCG2 stores a half-integer divider as
-/// `2 * divisor - 1`, hence 9 and 5 below.  Keeping this in the platform
+/// The Lito GCC driver describes the USB master clock as parent 1 divided by
+/// 8 and the mock UTMI clock as parent 0 with no divider. Keeping this in the platform
 /// layer prevents the DWC3 driver from depending on GCC register layout.
 unsafe fn configure_rcg(cmd_offset: usize, parent: u32, divider: u32) -> bool {
     unsafe {
@@ -299,12 +298,12 @@ unsafe fn configure_rcg(cmd_offset: usize, parent: u32, divider: u32) -> bool {
 /// `qcom,core-clk-rate-hs = 66666667`'s source tables.
 pub unsafe fn configure_usb_clocks() -> bool {
     unsafe {
-        // gcc_usb30_prim_master_clk_src: GPLL0_OUT_MAIN / 4.5.
-        if !configure_rcg(0xf020, 1, 9) {
+        // gcc_usb30_prim_master_clk_src.
+        if !configure_rcg(0xf020, 1, 8) {
             return false;
         }
-        // gcc_usb30_prim_mock_utmi_clk_src: GPLL0_OUT_EVEN / 5.
-        configure_rcg(0xf038, 6, 5)
+        // gcc_usb30_prim_mock_utmi_clk_src.
+        configure_rcg(0xf038, 0, 0)
     }
 }
 

@@ -66,26 +66,6 @@ fn main() {
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-probe=-T{}",
             linker_script.display()
         );
-        println!(
-            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-pullup-probe=-T{}",
-            linker_script.display()
-        );
-        println!(
-            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-halt-probe=-T{}",
-            linker_script.display()
-        );
-        println!(
-            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-cold-halt-probe=-T{}",
-            linker_script.display()
-        );
-        println!(
-            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-bare-pullup-probe=-T{}",
-            linker_script.display()
-        );
-        println!(
-            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-gadget-handoff-probe=-T{}",
-            linker_script.display()
-        );
         println!("cargo:rerun-if-changed=src/arch/aarch64");
         return;
     }

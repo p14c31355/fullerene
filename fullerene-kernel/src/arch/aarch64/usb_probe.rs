@@ -103,6 +103,42 @@ global_asm!(
          mov w5, #1\n\
          msr CNTP_CTL_EL0, x5\n\
          isb\n\
+         // The recovery timer is the EL1 physical-timer PPI (INTID 30).
+         // This standalone probe does not run the normal Rust GIC init, so
+         // bring up the Bramble redistributor and CPU interface before
+         // unmasking IRQs. Bound the firmware-owned redistributor wait.
+         movz x8, #0x6000\n\
+         movk x8, #0x17a, lsl #16\n\
+         ldr w9, [x8, #0x14]\n\
+         bic w9, w9, #2\n\
+         str w9, [x8, #0x14]\n\
+         mov w10, #0xffff\n\
+         movk w10, #1, lsl #16\n\
+     4:\n\
+         ldr w9, [x8, #0x14]\n\
+         tst w9, #4\n\
+         b.eq 5f\n\
+         subs w10, w10, #1\n\
+         b.ne 4b\n\
+         b usb_probe_exception_reset\n\
+     5:\n\
+         add x8, x8, #0x10000\n\
+         ldr w9, [x8, #0x80]\n\
+         mov w10, #0x40000000\n\
+         orr w9, w9, w10\n\
+         str w9, [x8, #0x80]\n\
+         mov w10, #0xa0\n\
+         strb w10, [x8, #0x41e]\n\
+         mov w10, #0x40000000\n\
+         str w10, [x8, #0x100]\n\
+         mov x10, #1\n\
+         msr ICC_SRE_EL1, x10\n\
+         isb\n\
+         mov x10, #0xff\n\
+         msr ICC_PMR_EL1, x10\n\
+         mov x10, #1\n\
+         msr ICC_IGRPEN1_EL1, x10\n\
+         isb\n\
          msr DAIFClr, #2\n\
          adr x7, _start\n\
          sub sp, sp, #16\n\
@@ -281,6 +317,10 @@ fn reset_after_probe_failure() -> ! {
             "mov w0, #9",
             "movk w0, #0x8400, lsl #16",
             "smc #0",
+            out("x0") _,
+            out("x1") _,
+            out("x2") _,
+            out("x3") _,
             options(nostack)
         );
     }

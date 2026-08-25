@@ -613,11 +613,10 @@ pub fn configure_dwc3_smmu() -> bool {
             log_puts("usb: Apps SMMU has no usable context banks\n");
             return false;
         }
-        let gr1_page = num_pages;
-        // ARM SMMU v2 numbers context-bank pages immediately after the
-        // GR1 window: CB(n) is page `numpage + n`, not after the count of
-        // context banks.
-        let cb_base_page = gr1_page;
+        // The GR0 window is page 0 and GR1 is page 1. Context-bank pages start
+        // after the implementation-defined number of global pages.
+        let gr1_page = 1usize;
+        let cb_base_page = num_pages;
         log_hex("usb: Apps SMMU ID0=", id0 as u64);
         log_hex("usb: Apps SMMU ID1=", id1 as u64);
         log_hex("usb: Apps SMMU pages=", num_pages as u64);
@@ -1335,8 +1334,7 @@ unsafe fn process_event(raw: u32) {
         // DWC3's device event layout is: one_bit[0], device_event[1:7],
         // type[8:11].  The device_event field is zero for ordinary device
         // events; type carries Disconnect, USB Reset, and Connect Done.
-        let device_event =
-            (raw >> DEVICE_EVENT_KIND_SHIFT) & DEVICE_EVENT_KIND_MASK;
+        let device_event = (raw >> DEVICE_EVENT_KIND_SHIFT) & DEVICE_EVENT_KIND_MASK;
         match device_event {
             0 => {}
             1 => unsafe { restart_control_after_reset() },

@@ -101,6 +101,10 @@ extern "C" fn probe_entry() -> ! {
                 "mov w0, #9",
                 "movk w0, #0x8400, lsl #16",
                 "smc #0",
+                out("x0") _,
+                out("x1") _,
+                out("x2") _,
+                out("x3") _,
                 options(nostack)
             );
         }

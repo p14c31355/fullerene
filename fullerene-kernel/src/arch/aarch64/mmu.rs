@@ -73,7 +73,12 @@ pub fn init() {
         asm!("mrs {sctlr}, SCTLR_EL1", sctlr = out(reg) sctlr, options(nomem, nostack));
         sctlr &= !(1 << 19); // WXN would make the RW bootstrap blocks non-executable.
         sctlr |= 1 | (1 << 2) | (1 << 12); // MMU, data cache, instruction cache.
-        asm!("msr SCTLR_EL1, {sctlr}", sctlr = in(reg) sctlr, options(nostack));
+        asm!(
+            "msr SCTLR_EL1, {sctlr}",
+            "isb",
+            sctlr = in(reg) sctlr,
+            options(nostack)
+        );
         asm!("ic iallu", "dsb sy", "isb", options(nostack));
     }
 }
@@ -93,26 +98,17 @@ fn block_descriptor(physical: u64, device: bool) -> u64 {
 }
 
 fn is_mmio(physical: u64) -> bool {
-    matches!(
-        physical,
-            // QEMU virt GIC and PL011.
-            0x0800_0000..=0x09ff_ffff
-            // SM7250 GCC clock/reset controller at 0x00100000.
-            | 0x0010_0000..=0x001f_ffff
-            // SM7250 QUP/GENI UART2 at 0x00988000.
-            | 0x0080_0000..=0x009f_ffff
-            // SM7250 GICD/GICR region.
-            | 0x17a0_0000..=0x17bf_ffff
-            // SM7250 DWC3 USB controller at 0x0a600000.
-            | 0x0a60_0000..=0x0a6f_ffff
-            // SM7250 Apps SMMU global registers plus GR1/context-bank pages
-            // (the latter are immediately above the global page window).
-            // Keep the complete 0x15000000..0x153fffff aperture Device
-            // memory; translating the context-bank pages as Normal memory
-            // can make a DWC3 SMMU handoff hang before the first USB event.
-            | 0x1500_0000..=0x153f_ffff
-            // SM7250 SPMI arbiter (PM8150B Type-C) core, channels,
-            // observer, interrupt, and configuration windows.
-            | 0x0c40_0000..=0x0e7f_ffff
-    )
+    const MMIO_RANGES: &[(u64, u64)] = &[
+        (0x0800_0000, 0x09ff_ffff),
+        (0x0010_0000, 0x001f_ffff),
+        (0x0080_0000, 0x009f_ffff),
+        (0x17a0_0000, 0x17bf_ffff),
+        (0x0a60_0000, 0x0a6f_ffff),
+        (0x1500_0000, 0x153f_ffff),
+        (0x0c40_0000, 0x0e7f_ffff),
+    ];
+    let block_end = physical.saturating_add(BLOCK_SIZE - 1);
+    MMIO_RANGES
+        .iter()
+        .any(|(start, end)| physical <= *end && block_end >= *start)
 }
