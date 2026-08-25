@@ -112,12 +112,20 @@ jobs:
             FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE; do
             env "$mode=1" "${target[@]}" --bin fullerene-kernel-aarch64-usb-probe
           done
+      - name: Prebuild the release artifact used by Flasks
+        run: |
+          CARGO_TARGET_AARCH64_UNKNOWN_NONE_LINKER=rust-lld \
+          FULLERENE_AARCH64_PLATFORM=qemu-virt \
+          RUSTFLAGS="-C relocation-model=pic -C link-arg=-pie -C link-arg=-z -C link-arg=notext" \
+          cargo build -q --release -Z build-std=core,alloc \
+            --package fullerene-kernel --features aarch64 \
+            --bin fullerene-kernel-aarch64 --target aarch64-unknown-none
       - name: Boot the QEMU virt path
         shell: bash
         run: |
           set -o pipefail
           set +e
-          timeout --signal=TERM 15s cargo run -q -p flasks -- run \
+          timeout --signal=TERM 90s cargo run -q -p flasks -- run \
             --arch aarch64 --platform qemu-virt --headless 2>&1 | tee /tmp/fullerene-aarch64-qemu.log
           status=${PIPESTATUS[0]}
           set -e
