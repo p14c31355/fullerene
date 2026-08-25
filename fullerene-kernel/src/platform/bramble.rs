@@ -46,6 +46,7 @@ const TYPEC_MISC_STATUS: u16 = PM8150B_TYPEC_BASE + 0x0b;
 const TYPEC_MODE_CFG: u16 = PM8150B_TYPEC_BASE + 0x44;
 const TYPEC_CC_ATTACHED: u8 = 1 << 0;
 const TYPEC_CC_ORIENTATION: u8 = 1 << 1;
+const TYPEC_DISABLE_CMD: u8 = 1 << 0;
 const TYPEC_EN_SNK_ONLY: u8 = 1 << 1;
 const TYPEC_EN_SRC_ONLY: u8 = 1 << 2;
 
@@ -209,13 +210,16 @@ pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     // an unambiguous sink configuration.
     if writable {
         let requested = (mode & !(TYPEC_EN_SNK_ONLY | TYPEC_EN_SRC_ONLY)) | TYPEC_EN_SNK_ONLY;
-        // A Fastboot handoff can leave the PMIC register already set to
-        // sink-only while its Type-C session is nevertheless detached. A
-        // same-value write is intentional here: it retriggers the PMIC role
-        // evaluation without changing the negotiated power role.
+        // The upstream Qualcomm PMIC Type-C driver forces the state machine
+        // through DISABLE before selecting a new power role. A same-value
+        // write is not sufficient after Fastboot has torn down its gadget:
+        // the PMIC can retain sink-only in the register while its attach
+        // evaluation remains stopped.
+        let mut disable = TYPEC_DISABLE_CMD;
+        let disabled = unsafe { spmi_transfer(version, apid, TYPEC_MODE_CFG, &mut disable, true) };
         let mut new_mode = requested;
-        sink_mode_written =
-            unsafe { spmi_transfer(version, apid, TYPEC_MODE_CFG, &mut new_mode, true) };
+        sink_mode_written = disabled
+            && unsafe { spmi_transfer(version, apid, TYPEC_MODE_CFG, &mut new_mode, true) };
         if sink_mode_written {
             mode = requested;
         }

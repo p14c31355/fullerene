@@ -89,6 +89,10 @@ pub fn enable_irqs() {
 
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_exception_sync() -> ! {
+    #[cfg(fullerene_aarch64_bramble)]
+    super::usb::trace_marker(super::usb::TRACE_EXCEPTION_SYNC, 0);
+    #[cfg(fullerene_aarch64_bramble)]
+    super::usb::dump_trace();
     uart::puts("aarch64 exception: synchronous fault\n");
     report_exception_state();
     halt()

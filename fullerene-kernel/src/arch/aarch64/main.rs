@@ -339,7 +339,19 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     // phone boot path the redistributor may still be owned by firmware; USB
     // is polled during this early diagnostic phase and does not depend on it.
     #[cfg(fullerene_aarch64_bramble)]
+    usb::dump_trace();
+    #[cfg(fullerene_aarch64_bramble)]
+    usb::clear_dma_memory();
+    #[cfg(fullerene_aarch64_bramble)]
+    usb::trace_marker(usb::TRACE_BOOT_USB_ENTRY, 0);
+    #[cfg(fullerene_aarch64_bramble)]
+    usb::trace_marker(usb::TRACE_TYPEC_BEGIN, 0);
+    #[cfg(fullerene_aarch64_bramble)]
     if let Some(typec) = unsafe { platform::bramble::prepare_usb_device_role() } {
+        usb::trace_marker(
+            usb::TRACE_TYPEC_DONE,
+            (typec.sink_mode_written as u32) | ((typec.misc_status as u32) << 8),
+        );
         uart::put_hex("platform: PMIC arbiter=", typec.arbiter_version as u64);
         uart::put_hex("platform: Type-C status=", typec.misc_status as u64);
         uart::put_hex("platform: Type-C mode=", typec.mode as u64);
@@ -351,10 +363,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             uart::puts("platform: Type-C sink-only selected\n");
         }
     } else {
+        usb::trace_marker(usb::TRACE_TYPEC_DONE, 0xffff_ffff);
         uart::puts("platform: Type-C SPMI state unavailable\n");
     }
     #[cfg(fullerene_aarch64_bramble)]
-    usb::clear_dma_memory();
+    usb::trace_marker(usb::TRACE_USB_HANDOFF_BEGIN, 0);
     #[cfg(fullerene_aarch64_bramble)]
     if usb::init_usb2_handoff() {
         uart::puts("platform: bramble USB2 gadget handoff: ready\n");
@@ -370,7 +383,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             uart::puts("platform: bramble USB2 cold fallback: failed\n");
         }
     }
-    // USB setup itself remains trace-only; emit the compact ring only after
+    // USB setup itself remains trace-only; emit the compact ring after
     // controller initialization has returned and UART is safe to use again.
     #[cfg(fullerene_aarch64_bramble)]
     usb::dump_trace();

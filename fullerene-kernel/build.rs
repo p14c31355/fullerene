@@ -550,6 +550,19 @@ SECTIONS
     }}
 
     /*
+       This is a warm-reset-retained post-mortem area. It must not be part of
+       .bss or .usb_dma: the bootstrap and USB setup deliberately clear both
+       of those regions. The next boot can dump the previous attempt before
+       starting a new trace.
+    */
+    {usb_dma_origin}
+    .usb_trace (NOLOAD) : ALIGN(4K)
+    {{
+        KEEP(*(.usb_trace .usb_trace.*))
+        . = ALIGN(4K);
+    }}
+
+    /*
        The Bramble DWC3 device tree gives the USB controller an SMMU IOVA pool
        beginning at 0x90000000. That is not a physical DRAM address. For the
        handoff diagnostic, the SMMU stream is switched to BYPASS and these
@@ -557,7 +570,6 @@ SECTIONS
        Keep the section separate from .bss so the bootstrap clears it
        explicitly before handing the physical addresses to DWC3.
     */
-    {usb_dma_origin}
     .usb_dma (NOLOAD) : ALIGN(4K)
     {{
         __usb_dma_start = .;

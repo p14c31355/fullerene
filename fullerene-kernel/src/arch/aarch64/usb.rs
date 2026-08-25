@@ -169,6 +169,9 @@ const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 const DCTL_CSFTRST: u32 = 1 << 30;
 const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
 const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
+// Linux applies the RxDetect reconnect workaround only through DWC3 1.87a.
+// GSNPSID carries the same full revision value used by the upstream driver.
+const DWC3_REVISION_187A: u32 = 0x5533_187a;
 
 const HSPHY_UTMI_CTRL0: usize = 0x3c;
 const HSPHY_UTMI_CTRL5: usize = 0x50;
@@ -453,7 +456,7 @@ static mut CONTROL_HAS_DATA: bool = false;
 static mut CONFIGURED: bool = false;
 static mut ENDPOINTS_READY: bool = false;
 
-const USB_TRACE_CAPACITY: usize = 128;
+const USB_TRACE_CAPACITY: usize = 256;
 
 // Numeric events keep the early USB path independent of UART, locks, and
 // formatting. The buffer is CPU-owned; it is placed beside the DMA objects so
@@ -470,6 +473,13 @@ const TRACE_DESCRIPTOR_QUEUED: u32 = 9;
 const TRACE_STATUS_QUEUED: u32 = 10;
 const TRACE_TRANSFER_COMPLETE: u32 = 11;
 const TRACE_USB_RESET: u32 = 12;
+pub const TRACE_BOOT_USB_ENTRY: u32 = 13;
+pub const TRACE_TYPEC_BEGIN: u32 = 14;
+pub const TRACE_TYPEC_DONE: u32 = 15;
+pub const TRACE_USB_HANDOFF_BEGIN: u32 = 16;
+const TRACE_DWC3_RESET_BEGIN: u32 = 17;
+const TRACE_QSCRATCH_BEGIN: u32 = 18;
+pub const TRACE_EXCEPTION_SYNC: u32 = 19;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -495,9 +505,26 @@ const EMPTY_USB_TRACE: UsbTraceEntry = UsbTraceEntry {
     status: 0,
 };
 
-#[unsafe(link_section = ".usb_dma")]
-static mut USB_TRACE: [UsbTraceEntry; USB_TRACE_CAPACITY] = [EMPTY_USB_TRACE; USB_TRACE_CAPACITY];
-static mut USB_TRACE_HEAD: usize = 0;
+const USB_TRACE_MAGIC: u32 = 0x4655_5452; // "FUTR"
+const USB_TRACE_VERSION: u32 = 1;
+
+#[repr(C, align(4096))]
+struct UsbTraceBuffer {
+    magic: u32,
+    version: u32,
+    head: u32,
+    reserved: u32,
+    entries: [UsbTraceEntry; USB_TRACE_CAPACITY],
+}
+
+#[unsafe(link_section = ".usb_trace")]
+static mut USB_TRACE: UsbTraceBuffer = UsbTraceBuffer {
+    magic: 0,
+    version: 0,
+    head: 0,
+    reserved: 0,
+    entries: [EMPTY_USB_TRACE; USB_TRACE_CAPACITY],
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ep0State {
@@ -520,7 +547,27 @@ pub fn clear_dma_memory() {
         }
         current += core::mem::size_of::<u64>();
     }
-    unsafe { USB_TRACE_HEAD = 0 };
+    trace_begin();
+}
+
+/// Initialize the retained trace header and append a boot boundary marker.
+/// The entry array is intentionally not cleared, so a subsequent boot can
+/// inspect the last attempt after a warm reset.
+fn trace_begin() {
+    unsafe {
+        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
+        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
+        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION {
+            write_volatile(addr_of_mut!(USB_TRACE).cast::<u32>(), USB_TRACE_MAGIC);
+            write_volatile(
+                addr_of_mut!(USB_TRACE).cast::<u32>().add(1),
+                USB_TRACE_VERSION,
+            );
+            write_volatile(addr_of_mut!(USB_TRACE).cast::<u32>().add(2), 0);
+            write_volatile(addr_of_mut!(USB_TRACE).cast::<u32>().add(3), 0);
+        }
+    }
+    trace_event(TRACE_BOOT_USB_ENTRY, 0, 0, 0, 0, 0);
 }
 
 #[inline(always)]
@@ -535,10 +582,11 @@ fn ep0_state_code(state: Ep0State) -> u32 {
 #[inline(always)]
 fn trace_event(event: u32, request: u32, value: u32, index: u32, length: u32, status: u32) {
     unsafe {
-        let head = USB_TRACE_HEAD;
-        let slot = head % USB_TRACE_CAPACITY;
+        let head_ptr = addr_of_mut!(USB_TRACE).cast::<u32>().add(2);
+        let head = read_volatile(head_ptr);
+        let slot = (head as usize) % USB_TRACE_CAPACITY;
         let entry = UsbTraceEntry {
-            sequence: head.wrapping_add(1) as u32,
+            sequence: head.wrapping_add(1),
             event,
             request,
             value,
@@ -548,24 +596,42 @@ fn trace_event(event: u32, request: u32, value: u32, index: u32, length: u32, st
             status,
         };
         write_volatile(
-            addr_of_mut!(USB_TRACE).cast::<UsbTraceEntry>().add(slot),
+            addr_of_mut!(USB_TRACE.entries)
+                .cast::<UsbTraceEntry>()
+                .add(slot),
             entry,
         );
-        USB_TRACE_HEAD = head.wrapping_add(1);
+        write_volatile(head_ptr, head.wrapping_add(1));
     }
+}
+
+/// Add a marker without touching the controller. This is used around PMIC
+/// and platform transitions where the next MMIO access itself may abort.
+pub fn trace_marker(event: u32, status: u32) {
+    trace_event(event, 0, 0, 0, 0, status);
 }
 
 /// Dump the post-mortem USB trace after the controller has reached a safe
 /// UART-visible stage. The hot path above never calls this or formats text.
 pub fn dump_trace() {
     unsafe {
-        let head = USB_TRACE_HEAD;
-        let count = head.min(USB_TRACE_CAPACITY);
-        let start = head.saturating_sub(count);
+        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
+        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
+        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION {
+            uart::puts("usb trace: no retained record\n");
+            return;
+        }
+        let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2));
+        let count = (head as usize).min(USB_TRACE_CAPACITY);
+        let start = (head as usize).saturating_sub(count);
         uart::puts("usb trace begin\n");
         for offset in 0..count {
             let slot = (start + offset) % USB_TRACE_CAPACITY;
-            let entry = read_volatile(addr_of!(USB_TRACE).cast::<UsbTraceEntry>().add(slot));
+            let entry = read_volatile(
+                addr_of!(USB_TRACE.entries)
+                    .cast::<UsbTraceEntry>()
+                    .add(slot),
+            );
             uart::put_hex("usb trace event=", entry.event as u64);
             uart::put_hex(" request=", entry.request as u64);
             uart::put_hex(" value=", entry.value as u64);
@@ -1009,13 +1075,15 @@ unsafe fn select_utmi_pipe_clock() {
 /// ever allowing the peripheral pull-up to become visible.
 unsafe fn device_soft_reset() -> bool {
     unsafe {
-        trace_event(TRACE_DEVICE_RESET, 0, 0, 0, 0, read(DCTL));
+        trace_event(TRACE_DWC3_RESET_BEGIN, 0, 0, 0, 0, 0);
+        trace_event(TRACE_DEVICE_RESET, 0, 0, 0, 0, 0);
+        let initial_dctl = read(DCTL);
         // Match Linux's reconnect path: clear stale endpoint/device state
         // without touching the already-running Qualcomm PHY and clock
         // branches. RUN_STOP must be cleared in the same write; preserving
         // Fastboot's RUN_STOP bit can leave the device half-running while
         // CSFTRST is asserted.
-        let mut dctl = read(DCTL);
+        let mut dctl = initial_dctl;
         dctl |= DCTL_CSFTRST;
         dctl &= !DCTL_RUN_STOP;
         write(DCTL, dctl);
@@ -1117,6 +1185,15 @@ unsafe fn stop_running_device() -> bool {
 }
 
 #[inline]
+fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
+    dctl &= !DCTL_TRGTULST_MASK;
+    if (snpsid & 0xffff_0000) == 0x5533_0000 && snpsid <= DWC3_REVISION_187A {
+        dctl |= DCTL_TRGTULST_RX_DET;
+    }
+    dctl | DCTL_RUN_STOP
+}
+
+#[inline]
 unsafe fn read(offset: usize) -> u32 {
     unsafe { read_volatile(reg(offset)) }
 }
@@ -1128,6 +1205,7 @@ unsafe fn write(offset: usize, value: u32) {
 
 #[inline]
 unsafe fn qscratch_set(offset: usize, mask: u32) {
+    trace_event(TRACE_QSCRATCH_BEGIN, offset as u32, mask, 0, 0, 0);
     let value = unsafe { read_qscratch(offset) } | mask;
     unsafe { write_qscratch(offset, value) };
     // The QCOM glue driver performs a readback to make the peripheral-mode
@@ -1636,13 +1714,17 @@ pub fn init_usb2_pullup_handoff() -> bool {
 
         write(DCFG, DCFG_HIGHSPEED);
         write(DALEPENA, 0b11);
-        // Fastboot leaves the USB2 link in its old negotiated state. Select
-        // RxDetect while restarting the device controller so the PHY emits
-        // a fresh attach/pull-up transition instead of waiting for the stale
-        // Fastboot link state to expire.
-        let mut dctl = read(DCTL);
-        dctl &= !DCTL_TRGTULST_MASK;
-        dctl |= DCTL_TRGTULST_RX_DET | DCTL_RUN_STOP;
+        // Fastboot leaves the USB2 link in its old negotiated state. Apply
+        // the upstream RxDetect workaround only when GSNPSID identifies a
+        // DWC3 revision for which that workaround is specified.
+        let dctl = run_stop_value(read(DCTL), read(GSNPSID));
+        // Keep the Qualcomm glue's VBUS/session override adjacent to the
+        // connect transition, matching dwc3_qcom_run_stop_notifier().
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
+        qscratch_set(
+            QSCRATCH_HS_PHY_CTRL,
+            (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
+        );
         write(DCTL, dctl);
         for _ in 0..1_000_000u32 {
             if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
@@ -1659,14 +1741,26 @@ pub fn init_usb2_pullup_handoff() -> bool {
 /// Perform only the writes needed to request a USB2 device pull-up.
 ///
 /// This is intentionally a last-resort diagnostic. It avoids UART, DWC3
-/// reset, register readback, event rings, endpoint commands, and SMMU access.
-/// If this does not make the phone visible on the host, the failure is below
-/// the normal gadget path: entry/exception handling, the Qualcomm USB glue,
-/// the PHY/session state, or the bootloader's USB handoff itself.
+/// reset, event rings, endpoint commands, and SMMU access. The QSCRATCH VBUS
+/// writes still use the Qualcomm glue's read-modify-write/readback sequence;
+/// that ordering is part of the physical connect contract. If this does not
+/// make the phone visible on the host, the failure is below the normal gadget
+/// path: entry/exception handling, the Qualcomm USB glue, the PHY/session
+/// state, or the bootloader's USB handoff itself.
 pub fn init_usb2_bare_pullup_handoff() -> bool {
     unsafe {
-        write_volatile(qscratch_reg(QSCRATCH_HS_PHY_CTRL), (1 << 20) | (1 << 28));
-        write_volatile(qscratch_reg(QSCRATCH_CGCTL), 0x18);
+        // Match dwc3_qcom_vbus_override_enable(): the Qualcomm glue asserts
+        // both the SuperSpeed lane power-present vote and the USB2
+        // VBUS/session override, even when the gadget is intentionally
+        // limited to USB2.  Writing only HS_PHY_CTRL leaves the role change
+        // incomplete on platforms whose Type-C glue gates the pull-up with
+        // the SS-side vote.
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24); // LANE0_PWR_PRESENT
+        qscratch_set(
+            QSCRATCH_HS_PHY_CTRL,
+            (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
+        );
+        qscratch_set(QSCRATCH_CGCTL, 0x18);
         // Fastboot may leave the core in the USB2 suspended state when it
         // tears down its gadget just before jumping to the temporary image.
         // Waking the UTMI block is still below the EP0/DMA boundary and is
@@ -1695,11 +1789,16 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
         write_volatile(reg(DCFG), DCFG_HIGHSPEED);
         write_volatile(reg(DALEPENA), 0b11);
 
-        let dctl = read_volatile(reg(DCTL));
-        write_volatile(
-            reg(DCTL),
-            (dctl & !(DCTL_CSFTRST | DCTL_TRGTULST_MASK)) | DCTL_TRGTULST_RX_DET | DCTL_RUN_STOP,
+        let dctl = run_stop_value(read_volatile(reg(DCTL)), read_volatile(reg(GSNPSID)));
+        // Qualcomm's glue reasserts the VBUS override immediately before
+        // enabling RUN_STOP so a stale Fastboot session cannot suppress the
+        // connect-done transition.
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
+        qscratch_set(
+            QSCRATCH_HS_PHY_CTRL,
+            (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
         );
+        write_volatile(reg(DCTL), dctl & !DCTL_CSFTRST);
     }
     true
 }
@@ -1710,7 +1809,9 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
 /// usable as a standalone probe.
 pub fn init_usb2_gadget_handoff() -> bool {
     unsafe {
-        trace_event(TRACE_INIT, 0, 0, 0, 0, read(GSNPSID));
+        trace_event(TRACE_INIT, 0, 0, 0, 0, 0);
+        let snpsid = read(GSNPSID);
+        trace_event(TRACE_INIT, 0, 0, 0, 0, snpsid);
         // Keep the Qualcomm session valid, but do not assert RUN_STOP yet.
         // The previous probe briefly exposed an EP0-less device and then
         // stopped it while the host was already asking for a descriptor.
@@ -1793,12 +1894,14 @@ pub fn init_usb2_gadget_handoff() -> bool {
         // Connect only after the event ring, transfer resources, EP0
         // descriptors, and first SETUP TRB are ready. This produces a fresh
         // USB2 attach without exposing an EP0-less device to the host.
-        let mut dctl = read(DCTL);
-        dctl &= !DCTL_TRGTULST_MASK;
-        // Bramble's DWC3 is an older revision whose device reconnect path
-        // uses RxDetect to terminate the stale Fastboot link before the new
-        // peripheral pull-up is advertised.
-        dctl |= DCTL_TRGTULST_RX_DET | DCTL_RUN_STOP;
+        let dctl = run_stop_value(read(DCTL), read(GSNPSID));
+        // Reassert the Qualcomm VBUS/session vote immediately before the
+        // final Run/Stop write; this is the glue driver's pre_run_stop hook.
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
+        qscratch_set(
+            QSCRATCH_HS_PHY_CTRL,
+            (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
+        );
         write(DCTL, dctl);
         for _ in 0..1_000_000u32 {
             if read(DSTS) & DSTS_DEVCTRLHLT == 0 {

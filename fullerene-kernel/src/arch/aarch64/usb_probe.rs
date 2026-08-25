@@ -210,13 +210,19 @@ global_asm!(
 
 #[unsafe(no_mangle)]
 extern "C" fn usb_probe_entry() -> ! {
+    usb::clear_dma_memory();
+    usb::trace_marker(usb::TRACE_BOOT_USB_ENTRY, 0);
     // A `fastboot boot` handoff can stop the DWC3 gadget while the PMIC
     // Type-C state machine remains in a transient role.  Reuse the platform
     // layer's sink/device-role preparation before the controller probe so the
     // USB-only diagnostics exercise the same physical attach contract as the
     // normal Bramble entry path.
     #[cfg(fullerene_aarch64_bramble)]
+    usb::trace_marker(usb::TRACE_TYPEC_BEGIN, 0);
+    #[cfg(fullerene_aarch64_bramble)]
     let _typec_state = unsafe { platform::bramble::prepare_usb_device_role() };
+    #[cfg(fullerene_aarch64_bramble)]
+    usb::trace_marker(usb::TRACE_TYPEC_DONE, 0);
 
     #[cfg(not(any(
         fullerene_aarch64_usb_bare_pullup_probe,
@@ -233,7 +239,6 @@ extern "C" fn usb_probe_entry() -> ! {
         fullerene_aarch64_usb_bare_pullup_probe,
         fullerene_aarch64_usb_halt_probe
     )))]
-    usb::clear_dma_memory();
     #[cfg(not(any(
         fullerene_aarch64_usb_bare_pullup_probe,
         fullerene_aarch64_usb_gadget_handoff_probe,
