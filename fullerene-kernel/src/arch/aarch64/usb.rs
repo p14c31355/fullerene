@@ -35,18 +35,74 @@ unsafe extern "C" {
 
 const DWC3_BASE: usize = 0x0a60_0000;
 // Lito/SM7250's Apps SMMU owns the DWC3 stream ID declared by the board DT.
-// This is used only by the bootloader-handoff diagnostic below; the eventual
-// Fullerene driver should install a real context-bank mapping instead.
+// The early Bramble path installs a small identity map in a context bank so
+// the USB buffers remain inside the IOVA pool declared by the vendor DT.
 const APPS_SMMU_BASE: usize = 0x1500_0000;
 const DWC3_STREAM_ID: u32 = 0xe0;
+const SMMU_ID0: usize = 0x20;
+const SMMU_ID1: usize = 0x24;
+const SMMU_ID0_NUMSMRG_MASK: u32 = 0xff;
+const SMMU_ID1_PAGESIZE: u32 = 1 << 31;
+const SMMU_ID1_NUMPAGENDXB_SHIFT: u32 = 28;
+const SMMU_ID1_NUMPAGENDXB_MASK: u32 = 0x7;
+const SMMU_ID1_NUMS2CB_SHIFT: u32 = 16;
+const SMMU_ID1_NUMS2CB_MASK: u32 = 0xff;
+const SMMU_ID1_NUMCB_MASK: u32 = 0xff;
 const SMMU_SMR_BASE: usize = 0x800;
 const SMMU_S2CR_BASE: usize = 0xc00;
-const SMMU_SCR0: usize = 0x00;
+const SMMU_TLB_ALL_H: usize = 0x6c;
+const SMMU_TLB_SYNC: usize = 0x70;
+const SMMU_TLB_STATUS: usize = 0x74;
+const SMMU_TLB_STATUS_ACTIVE: u32 = 1;
 const SMMU_SMR_VALID: u32 = 1 << 31;
 const SMMU_SMR_MASK_SHIFT: u32 = 16;
 const SMMU_S2CR_TYPE_MASK: u32 = 0x3 << 16;
-const SMMU_S2CR_TYPE_BYPASS: u32 = 0x1 << 16;
-const SMMU_SCR0_CLIENTPD: u32 = 1 << 0;
+const SMMU_S2CR_TYPE_TRANS: u32 = 0;
+const SMMU_S2CR_CBNDX_MASK: u32 = 0xff;
+const SMMU_GR1_CBAR_BASE: usize = 0x00;
+const SMMU_GR1_CBA2R_BASE: usize = 0x800;
+const SMMU_CBA2R_VA64: u32 = 1;
+const SMMU_CBAR_S1_TRANS_S2_BYPASS: u32 = 1 << 16;
+const SMMU_CBAR_S1_MEMATTR_WB: u32 = 0xf << 12;
+const SMMU_CBAR_S1_BPSHCFG_NSH: u32 = 3 << 8;
+const SMMU_CB_SCTLR: usize = 0x00;
+const SMMU_CB_TCR2: usize = 0x10;
+const SMMU_CB_TTBR0: usize = 0x20;
+const SMMU_CB_TTBR1: usize = 0x28;
+const SMMU_CB_TCR: usize = 0x30;
+const SMMU_CB_CONTEXTIDR: usize = 0x34;
+const SMMU_CB_MAIR0: usize = 0x38;
+const SMMU_CB_MAIR1: usize = 0x3c;
+const SMMU_SCTLR_S1_ASIDPNE: u32 = 1 << 12;
+const SMMU_SCTLR_CFIE: u32 = 1 << 6;
+const SMMU_SCTLR_CFRE: u32 = 1 << 5;
+const SMMU_SCTLR_AFE: u32 = 1 << 2;
+const SMMU_SCTLR_TRE: u32 = 1 << 1;
+const SMMU_SCTLR_M: u32 = 1;
+const SMMU_TCR_EPD1: u32 = 1 << 23;
+const SMMU_TCR_SH0_INNER: u32 = 3 << 12;
+const SMMU_TCR_ORGN0_WBWA: u32 = 1 << 10;
+const SMMU_TCR_IRGN0_WBWA: u32 = 1 << 8;
+const SMMU_TCR_T0SZ_32BIT: u32 = 32;
+const SMMU_TCR2_SEP_UPSTREAM: u32 = 0x7 << 15;
+const SMMU_TCR2_AS: u32 = 1 << 4;
+const SMMU_TCR2_PASIZE_40BIT: u32 = 2;
+
+#[repr(C, align(4096))]
+struct SmmuTable([u64; 512]);
+
+// With T0SZ=32 and a 4 KiB granule, TTBR0 points at a level-1 table. Four
+// 1 GiB block descriptors cover the complete 32-bit IOVA space, including
+// the vendor DT's 0x90000000..0xf0000000 USB pool and our 0x9b800000 DMA
+// section. This table is cleared together with the other USB DMA objects.
+#[unsafe(link_section = ".usb_dma")]
+static mut SMMU_L1: SmmuTable = SmmuTable([0; 512]);
+
+const SMMU_DESC_VALID: u64 = 1;
+const SMMU_DESC_AF: u64 = 1 << 10;
+const SMMU_DESC_SH_INNER: u64 = 3 << 8;
+const SMMU_DESC_ATTR_NORMAL: u64 = 0;
+const SMMU_DESC_XN: u64 = (1 << 53) | (1 << 54);
 const GCC_BASE: usize = 0x0010_0000;
 const HSPHY_BASE: usize = 0x088e_3000;
 const QMP_BASE: usize = 0x088e_8000;
@@ -111,6 +167,8 @@ const GUSB3PIPECTL_SUSPHY: u32 = 1 << 17;
 const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 
 const DCTL_CSFTRST: u32 = 1 << 30;
+const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
+const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
 
 const HSPHY_UTMI_CTRL0: usize = 0x3c;
 const HSPHY_UTMI_CTRL5: usize = 0x50;
@@ -309,8 +367,6 @@ const DCFG_SPEED_MASK: u32 = 7;
 const DCFG_DEVADDR_MASK: u32 = 0x7f << 3;
 const DCFG_HIGHSPEED: u32 = 0;
 const DCFG_SUPERSPEED: u32 = 4;
-const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
-const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
 const DSTS_CONNECTSPD_MASK: u32 = 7;
 const DSTS_DEVCTRLHLT: u32 = 1 << 22;
 const DSTS_DCNRD: u32 = 1 << 23;
@@ -344,6 +400,7 @@ const TRB_CONTROL_DATA: u32 = 5 << 4;
 
 const EVENT_BUFFER_SIZE: usize = 4096;
 const MAX_PACKET_SIZE: u32 = 512;
+const DWC3_ENDPOINTS: usize = 32;
 
 #[repr(C, align(4096))]
 struct EventBuffer([u8; EVENT_BUFFER_SIZE]);
@@ -463,69 +520,214 @@ unsafe fn smmu_reg(offset: usize) -> *mut u32 {
     (APPS_SMMU_BASE + offset) as *mut u32
 }
 
-/// Route the DWC3 stream around a stale bootloader context bank.
-///
-/// The Android DT binds DWC3 stream ID 0xe0 to `apps_smmu`. A RAM-booted
-/// image does not yet own that context bank, so a DWC3 DMA transaction can
-/// fault before the first event reaches the ring. ARM SMMU v2 hardware can
-/// express the stream either through an SMR/S2CR match or directly through an
-/// indexed S2CR. We preserve the existing match and change only its type to
-/// BYPASS. This is deliberately a handoff diagnostic, not the final IOMMU
-/// implementation.
-pub fn bypass_dwc3_smmu() -> bool {
+#[inline]
+unsafe fn smmu_page_reg(page_size: usize, page: usize, offset: usize) -> *mut u32 {
+    (APPS_SMMU_BASE + page * page_size + offset) as *mut u32
+}
+
+#[inline]
+unsafe fn smmu_page_write(page_size: usize, page: usize, offset: usize, value: u32) {
+    unsafe { write_volatile(smmu_page_reg(page_size, page, offset), value) };
+}
+
+#[inline]
+unsafe fn smmu_page_write64(page_size: usize, page: usize, offset: usize, value: u64) {
+    unsafe { write_volatile(smmu_page_reg(page_size, page, offset).cast::<u64>(), value) };
+}
+
+unsafe fn smmu_tlb_sync() {
     unsafe {
-        // A RAM-booted image does not own the bootloader's context bank. The
-        // architectural global client-protection disable is the least
-        // ambiguous handoff for this diagnostic: it makes the physical
-        // addresses in .usb_dma visible without depending on the firmware's
-        // stream-match table or context-bank assignment.
-        let scr0_after = read_volatile(smmu_reg(SMMU_SCR0));
-        if scr0_after != u32::MAX {
-            write_volatile(smmu_reg(SMMU_SCR0), scr0_after | SMMU_SCR0_CLIENTPD);
-            core::arch::asm!("dsb sy", options(nostack));
-            if read_volatile(smmu_reg(SMMU_SCR0)) & SMMU_SCR0_CLIENTPD != 0 {
-                return true;
+        write_volatile(smmu_reg(SMMU_TLB_ALL_H), 0);
+        write_volatile(smmu_reg(SMMU_TLB_SYNC), 0);
+        for _ in 0..100_000u32 {
+            if read_volatile(smmu_reg(SMMU_TLB_STATUS)) & SMMU_TLB_STATUS_ACTIVE == 0 {
+                break;
             }
+            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
+unsafe fn install_smmu_identity_table() {
+    unsafe {
+        for index in 0..4usize {
+            let physical = (index as u64) << 30;
+            let descriptor = physical
+                | SMMU_DESC_VALID
+                | SMMU_DESC_AF
+                | SMMU_DESC_SH_INNER
+                | SMMU_DESC_ATTR_NORMAL
+                | SMMU_DESC_XN;
+            write_volatile(addr_of_mut!(SMMU_L1.0[index]), descriptor);
+        }
+        for index in 4..512usize {
+            write_volatile(addr_of_mut!(SMMU_L1.0[index]), 0);
+        }
+        cache_clean(
+            addr_of!(SMMU_L1) as usize,
+            core::mem::size_of::<SmmuTable>(),
+        );
+    }
+}
+
+/// Install an AArch64 stage-1 identity mapping for DWC3's stream ID.
+///
+/// Bramble's vendor DT assigns DWC3 stream ID 0xe0 to the Apps SMMU and puts
+/// USB buffers in the 0x90000000..0xf0000000 IOVA pool. Qualcomm's SMMU-500
+/// firmware can reject a direct BYPASS write by turning it into FAULT, so a
+/// real context-bank map is required here. We preserve the existing SMR and
+/// route it to a context bank configured as S1 translation + S2 bypass.
+pub fn configure_dwc3_smmu() -> bool {
+    unsafe {
+        let id0 = read_volatile(smmu_reg(SMMU_ID0));
+        let id1 = read_volatile(smmu_reg(SMMU_ID1));
+        if id0 == 0 || id0 == u32::MAX || id1 == 0 || id1 == u32::MAX {
+            log_puts("usb: Apps SMMU identification unavailable\n");
+            return false;
         }
 
-        // qsmmuv500 exposes at most 128 stream-matching groups through the
-        // architectural register space. Reading an unused group is harmless;
-        // do not write one unless it matches DWC3's stream ID.
-        for index in 0..128usize {
+        let num_smrs = ((id0 & SMMU_ID0_NUMSMRG_MASK) as usize).min(128);
+        let page_size = if id1 & SMMU_ID1_PAGESIZE != 0 {
+            0x10000
+        } else {
+            0x1000
+        };
+        if page_size != 0x1000 {
+            // The table below is intentionally 4 KiB-granule LPAE. Do not
+            // enable a mismatched table on a future 64 KiB-only SMMU.
+            log_puts("usb: Apps SMMU requires unsupported 64K tables\n");
+            return false;
+        }
+
+        let num_pages =
+            1usize << (((id1 >> SMMU_ID1_NUMPAGENDXB_SHIFT) & SMMU_ID1_NUMPAGENDXB_MASK) + 1);
+        let num_s2_context_banks =
+            ((id1 >> SMMU_ID1_NUMS2CB_SHIFT) & SMMU_ID1_NUMS2CB_MASK) as usize;
+        let num_context_banks = (id1 & SMMU_ID1_NUMCB_MASK) as usize;
+        if num_pages == 0 || num_context_banks == 0 {
+            log_puts("usb: Apps SMMU has no usable context banks\n");
+            return false;
+        }
+        let gr1_page = num_pages;
+        // ARM SMMU v2 numbers context-bank pages immediately after the
+        // GR1 window: CB(n) is page `numpage + n`, not after the count of
+        // context banks.
+        let cb_base_page = gr1_page;
+        log_hex("usb: Apps SMMU ID0=", id0 as u64);
+        log_hex("usb: Apps SMMU ID1=", id1 as u64);
+        log_hex("usb: Apps SMMU pages=", num_pages as u64);
+
+        let mut matched = None;
+        for index in 0..num_smrs {
             let smr = read_volatile(smmu_reg(SMMU_SMR_BASE + index * 4));
             if smr & SMMU_SMR_VALID == 0 {
                 continue;
             }
-            let id = smr & 0x7fff;
+            let id = smr & 0xffff;
             let mask = (smr >> SMMU_SMR_MASK_SHIFT) & 0x7fff;
             if ((DWC3_STREAM_ID ^ id) & !mask) == 0 {
-                let address = SMMU_S2CR_BASE + index * 4;
-                let s2cr = read_volatile(smmu_reg(address));
-                let bypassed = (s2cr & !SMMU_S2CR_TYPE_MASK) | SMMU_S2CR_TYPE_BYPASS;
-                write_volatile(smmu_reg(address), bypassed);
-                core::arch::asm!("dsb sy", options(nostack));
-                if read_volatile(smmu_reg(address)) & SMMU_S2CR_TYPE_MASK == SMMU_S2CR_TYPE_BYPASS {
-                    return true;
-                }
+                matched = Some((index, read_volatile(smmu_reg(SMMU_S2CR_BASE + index * 4))));
+                break;
             }
         }
+        let Some((smr_index, old_s2cr)) = matched else {
+            log_puts("usb: DWC3 stream 0xe0 has no SMMU match\n");
+            return false;
+        };
 
-        // Last-resort handoff diagnostic. If the secure-owned firmware did
-        // not expose a writable matching stream entry, CLIENTPD makes client
-        // transactions bypass SMMU translation and lets DWC3 use the
-        // physical addresses in .usb_dma. This affects Apps SMMU clients
-        // only and is undone by the next full platform reboot; it is not the
-        // production IOMMU policy.
-        let scr0 = read_volatile(smmu_reg(SMMU_SCR0));
-        if scr0 != u32::MAX {
-            write_volatile(smmu_reg(SMMU_SCR0), scr0 | SMMU_SCR0_CLIENTPD);
-            core::arch::asm!("dsb sy", options(nostack));
-            if read_volatile(smmu_reg(SMMU_SCR0)) & SMMU_SCR0_CLIENTPD != 0 {
-                return true;
+        let old_type = old_s2cr & SMMU_S2CR_TYPE_MASK;
+        let old_cb = (old_s2cr & SMMU_S2CR_CBNDX_MASK) as usize;
+        let cbndx = if old_type == SMMU_S2CR_TYPE_TRANS {
+            if old_cb >= num_context_banks || old_cb < num_s2_context_banks {
+                log_puts("usb: DWC3 SMMU context bank is out of range\n");
+                return false;
             }
+            old_cb
+        } else {
+            // This is the same reserved-last-context-bank strategy used by
+            // Linux's qcom_smmu bypass-quirk path for firmware that refuses
+            // BYPASS S2CR values.
+            num_context_banks - 1
+        };
+        log_hex("usb: DWC3 SMMU SMR=", smr_index as u64);
+        log_hex("usb: DWC3 SMMU CB=", cbndx as u64);
+
+        install_smmu_identity_table();
+
+        // Stop the bank before changing its format and page-table pointer.
+        smmu_page_write(page_size, cb_base_page + cbndx, SMMU_CB_SCTLR, 0);
+        smmu_page_write(
+            page_size,
+            gr1_page,
+            SMMU_GR1_CBA2R_BASE + cbndx * 4,
+            SMMU_CBA2R_VA64,
+        );
+        smmu_page_write(
+            page_size,
+            gr1_page,
+            SMMU_GR1_CBAR_BASE + cbndx * 4,
+            SMMU_CBAR_S1_TRANS_S2_BYPASS | SMMU_CBAR_S1_MEMATTR_WB | SMMU_CBAR_S1_BPSHCFG_NSH,
+        );
+
+        let cb_page = cb_base_page + cbndx;
+        // 4 KiB granule, 32-bit IOVA, inner-shareable WBWA walks, and a
+        // 40-bit output address size. TCR2 selects the AArch64 format.
+        smmu_page_write(
+            page_size,
+            cb_page,
+            SMMU_CB_TCR2,
+            SMMU_TCR2_SEP_UPSTREAM | SMMU_TCR2_AS | SMMU_TCR2_PASIZE_40BIT,
+        );
+        smmu_page_write(
+            page_size,
+            cb_page,
+            SMMU_CB_TCR,
+            SMMU_TCR_EPD1
+                | SMMU_TCR_SH0_INNER
+                | SMMU_TCR_ORGN0_WBWA
+                | SMMU_TCR_IRGN0_WBWA
+                | SMMU_TCR_T0SZ_32BIT,
+        );
+        smmu_page_write64(
+            page_size,
+            cb_page,
+            SMMU_CB_TTBR0,
+            addr_of!(SMMU_L1) as usize as u64,
+        );
+        smmu_page_write64(page_size, cb_page, SMMU_CB_TTBR1, 0);
+        smmu_page_write(page_size, cb_page, SMMU_CB_CONTEXTIDR, 0);
+        smmu_page_write(page_size, cb_page, SMMU_CB_MAIR0, 0xff);
+        smmu_page_write(page_size, cb_page, SMMU_CB_MAIR1, 0);
+        smmu_page_write(
+            page_size,
+            cb_page,
+            SMMU_CB_SCTLR,
+            SMMU_SCTLR_S1_ASIDPNE
+                | SMMU_SCTLR_CFIE
+                | SMMU_SCTLR_CFRE
+                | SMMU_SCTLR_AFE
+                | SMMU_SCTLR_TRE
+                | SMMU_SCTLR_M,
+        );
+
+        // S2CR type TRANS is zero; preserve privilege and EXID bits from the
+        // firmware entry while replacing only the context-bank selector.
+        let new_s2cr = (old_s2cr & !SMMU_S2CR_CBNDX_MASK) & !SMMU_S2CR_TYPE_MASK
+            | ((cbndx as u32) & SMMU_S2CR_CBNDX_MASK)
+            | SMMU_S2CR_TYPE_TRANS;
+        let s2cr_address = SMMU_S2CR_BASE + smr_index * 4;
+        write_volatile(smmu_reg(s2cr_address), new_s2cr);
+        core::arch::asm!("dsb sy", options(nostack));
+        let readback = read_volatile(smmu_reg(s2cr_address));
+        if readback & SMMU_S2CR_TYPE_MASK != SMMU_S2CR_TYPE_TRANS
+            || (readback & SMMU_S2CR_CBNDX_MASK) as usize != cbndx
+        {
+            log_puts("usb: DWC3 SMMU S2CR translation rejected\n");
+            return false;
         }
+        smmu_tlb_sync();
+        true
     }
-    false
 }
 
 #[inline]
@@ -886,8 +1088,18 @@ unsafe fn configure_endpoint(endpoint: usize, max_packet: u32, modify: bool) -> 
     if !unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, 0) } {
         return false;
     }
-    if !modify && !unsafe { send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) } {
-        return false;
+    true
+}
+
+unsafe fn allocate_transfer_resources() -> bool {
+    // DEPSTARTCFG establishes the configuration window. The DWC3 gadget
+    // driver then assigns one transfer resource to every hardware endpoint,
+    // not only to EP0/EP1; doing this only for control EPs can make the first
+    // SETEPCONFIG or STARTTRANSFER command fail on Qualcomm's core.
+    for endpoint in 0..DWC3_ENDPOINTS {
+        if !unsafe { send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) } {
+            return false;
+        }
     }
     true
 }
@@ -1222,8 +1434,13 @@ pub fn init_usb2_pullup_handoff() -> bool {
 
         write(DCFG, DCFG_HIGHSPEED);
         write(DALEPENA, 0b11);
+        // Fastboot leaves the USB2 link in its old negotiated state. Select
+        // RxDetect while restarting the device controller so the PHY emits
+        // a fresh attach/pull-up transition instead of waiting for the stale
+        // Fastboot link state to expire.
         let mut dctl = read(DCTL);
-        dctl |= DCTL_RUN_STOP;
+        dctl &= !DCTL_TRGTULST_MASK;
+        dctl |= DCTL_TRGTULST_RX_DET | DCTL_RUN_STOP;
         write(DCTL, dctl);
         for _ in 0..1_000_000u32 {
             if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
@@ -1248,6 +1465,21 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
     unsafe {
         write_volatile(qscratch_reg(QSCRATCH_HS_PHY_CTRL), (1 << 20) | (1 << 28));
         write_volatile(qscratch_reg(QSCRATCH_CGCTL), 0x18);
+        // Fastboot may leave the core in the USB2 suspended state when it
+        // tears down its gadget just before jumping to the temporary image.
+        // Waking the UTMI block is still below the EP0/DMA boundary and is
+        // required before DCTL.Run/Stop can produce a new pull-up.
+        let mut usb2 = read_volatile(reg(GUSB2PHYCFG0));
+        usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        write_volatile(reg(GUSB2PHYCFG0), usb2);
+        let mut usb3 = read_volatile(reg(GUSB3PIPECTL0));
+        usb3 |= GUSB3PIPECTL_SUSPHY;
+        write_volatile(reg(GUSB3PIPECTL0), usb3);
+        let general = read_volatile(qscratch_reg(QSCRATCH_GENERAL_CFG));
+        write_volatile(
+            qscratch_reg(QSCRATCH_GENERAL_CFG),
+            general | QSCRATCH_GENERAL_CFG_XHCI_REV,
+        );
 
         let gctl = read_volatile(reg(GCTL));
         write_volatile(
@@ -1289,27 +1521,39 @@ pub fn init_usb2_gadget_handoff() -> bool {
             (gctl & !GCTL_PRTCAPDIR_MASK) | GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG,
         );
 
-        // DWC3 endpoint commands are defined while the device controller is
-        // halted. A Fastboot handoff may leave it running, so stop it before
-        // programming the event ring and EP0.
-        if !stop_running_device() {
+        // Use the known-good physical handoff once to force the controller
+        // out of Fastboot's stale link state. We immediately stop it again
+        // below before issuing endpoint commands, so this is only a session
+        // transition and not the final gadget configuration.
+        if !init_usb2_bare_pullup_handoff() {
             return false;
         }
 
-        // v17 proved that pull-up and the EP0 programming path are reached,
-        // but the host's descriptor request timed out. Enable the diagnostic
-        // identity/bypass route now that the physical link is already alive;
-        // this isolates DWC3 DMA translation from the USB session handoff.
-        let _ = bypass_dwc3_smmu();
+        // Keep Fastboot's live peripheral session for this stage probe. The
+        // SM7250 Type-C glue does not reliably emit a second attach after a
+        // software stop, so configure EP0 against the already-running DWC3
+        // session and only touch Run/Stop after the setup TRB is queued.
+        // Deliberately leave the SMMU untouched in this stage probe. The
+        // event ring, SETUP packet, and TRBs are still programmed below, but
+        // this run isolates DWC3's endpoint state from a possible secure-owned
+        // Apps-SMMU handoff. The normal Fullerene path keeps the real mapping.
 
         // The bootloader can leave the USB2 core in suspend/LPM state even
         // though the physical pull-up is visible. Reapply only the
         // controller-side wakeup bits; do not reset the PHY or clocks.
         qscratch_set(QSCRATCH_GENERAL_CFG, QSCRATCH_GENERAL_CFG_XHCI_REV);
-        select_utmi_pipe_clock();
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
         write(GUSB2PHYCFG0, usb2);
+        let mut usb3 = read(GUSB3PIPECTL0);
+        usb3 |= GUSB3PIPECTL_SUSPHY;
+        write(GUSB3PIPECTL0, usb3);
+
+        // The EP0 TRBs and event ring are behind Bramble's Apps SMMU stream
+        // match. Try the real identity route now that the controller session
+        // is alive; leave the physical diagnostic non-fatal if firmware owns
+        // the stream table.
+        let _smmu_ready = configure_dwc3_smmu();
 
         // This probe is entered with the normal cache/MMU state disabled, so
         // the linker-reserved region is directly usable by DWC3. Still clean
@@ -1331,6 +1575,22 @@ pub fn init_usb2_gadget_handoff() -> bool {
             DEVTEN,
             DEVTEN_DISCONNECT | DEVTEN_USB_RESET | DEVTEN_CONNECT_DONE,
         );
+
+        // DWC3's device-start contract is: reserve the endpoint resources,
+        // configure both directions of EP0, queue the first SETUP TRB, then
+        // assert Run/Stop. Without this sequence the PHY can advertise a
+        // USB2 pull-up while every host descriptor request times out at EP0.
+        if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0)
+            || !send_ep_command(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)
+            || !send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)
+            || !configure_endpoint(0, 64, false)
+            || !configure_endpoint(1, 64, false)
+        {
+            log_puts("usb gadget handoff: EP0 configuration failed\n");
+            return false;
+        }
+        write(DALEPENA, 0b11);
+        start_setup();
 
         let dctl = read(DCTL);
         write(
@@ -1474,6 +1734,15 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             }
         }
 
+        // Fastboot leaves the USB2 PHY powered, but the DWC3 handoff can
+        // clear the PHY's session-valid state while stopping the old gadget.
+        // Reapply the non-destructive Femto PHY programming on the USB2
+        // handoff path; this does not assert the GCC PHY reset or touch the
+        // Type-C power domain.
+        if !super_speed && !reset_platform {
+            init_hsphy();
+        }
+
         // Core reset restores the QSCRATCH-facing state on some DWC3
         // revisions, so re-apply the Qualcomm glue votes after reset.
         if qmp_ready || !reset_platform {
@@ -1490,16 +1759,18 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         qscratch_set(QSCRATCH_GENERAL_CFG, QSCRATCH_GENERAL_CFG_XHCI_REV);
 
         // USB2-only cold starts need the same post-reset UTMI clock selection
-        // as the Qualcomm glue. Preserve the bootloader's selection during a
-        // Fastboot handoff because it may be part of the active link state.
-        if !super_speed {
+        // as the Qualcomm glue. Bramble has a QMP PIPE clock and does not set
+        // the DT's select-utmi-as-pipe-clk property, so a Fastboot handoff
+        // must preserve the already-running PIPE clock instead of switching
+        // it underneath the live Type-C session.
+        if !super_speed && reset_platform {
             select_utmi_pipe_clock();
         }
 
-        if bypass_dwc3_smmu() {
-            uart::puts("usb: DWC3 SMMU bypassed\n");
+        if configure_dwc3_smmu() {
+            uart::puts("usb: DWC3 SMMU identity map ready\n");
         } else {
-            uart::puts("usb: DWC3 SMMU bypass unavailable\n");
+            uart::puts("usb: DWC3 SMMU identity map unavailable\n");
         }
 
         let mut usb2 = read(GUSB2PHYCFG0);
@@ -1548,6 +1819,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 
         if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
             uart::puts("usb: DEPSTARTCFG failed\n");
+            return false;
+        }
+        if !allocate_transfer_resources() {
+            uart::puts("usb: transfer resource setup failed\n");
             return false;
         }
         // Use a USB2-sized EP0 for the first probe; the normal kernel starts

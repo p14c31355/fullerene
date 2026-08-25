@@ -105,8 +105,12 @@ fn is_mmio(physical: u64) -> bool {
             | 0x17a0_0000..=0x17bf_ffff
             // SM7250 DWC3 USB controller at 0x0a600000.
             | 0x0a60_0000..=0x0a6f_ffff
-            // SM7250 Apps SMMU global register space at 0x15000000.
-            | 0x1500_0000..=0x150f_ffff
+            // SM7250 Apps SMMU global registers plus GR1/context-bank pages
+            // (the latter are immediately above the global page window).
+            // Keep the complete 0x15000000..0x153fffff aperture Device
+            // memory; translating the context-bank pages as Normal memory
+            // can make a DWC3 SMMU handoff hang before the first USB event.
+            | 0x1500_0000..=0x153f_ffff
             // SM7250 SPMI arbiter (PM8150B Type-C) core, channels,
             // observer, interrupt, and configuration windows.
             | 0x0c40_0000..=0x0e7f_ffff

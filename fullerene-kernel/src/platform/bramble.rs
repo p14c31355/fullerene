@@ -202,9 +202,14 @@ pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     // The USB cable is attached to a host during `fastboot boot`; the phone
     // must therefore remain a sink and expose a USB device, not source VBUS.
     // Preserve unrelated PMIC bits and only replace the source/sink selection.
-    let attached = misc_status & TYPEC_CC_ATTACHED != 0;
     let source_role = misc_status & TYPEC_SNK_SRC_MODE != 0;
-    if writable && attached && (source_role || mode & TYPEC_EN_SNK_ONLY == 0) {
+    // During a `fastboot boot` handoff the PMIC can report CC detached for a
+    // short interval while the bootloader is tearing down its gadget.  The
+    // cable is nevertheless the boot transport that brought us here, so do
+    // not discard the device-role request solely because that transient bit
+    // is clear.  Reassert sink-only whenever the current mode is not already
+    // an unambiguous sink configuration.
+    if writable && (source_role || mode & TYPEC_EN_SNK_ONLY == 0) {
         let requested = (mode & !(TYPEC_EN_SNK_ONLY | TYPEC_EN_SRC_ONLY)) | TYPEC_EN_SNK_ONLY;
         if requested != mode {
             let mut new_mode = requested;
