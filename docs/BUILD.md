@@ -3,8 +3,9 @@
 ## Prerequisites
 
 - Rust nightly toolchain (required for no_std and UEFI targets): Install via `rustup toolchain install nightly`.
-- The `wasm32-wasip1` and `x86_64-unknown-linux-musl` Rust targets (required by the kernel's embedded WASM and Linux fixture builds) are installed by the toolchain file.
+- The `aarch64-unknown-none`, `wasm32-wasip1`, and `x86_64-unknown-linux-musl` Rust targets (required by the AArch64 bootstrap, embedded WASM, and Linux fixture builds) are installed by the toolchain file or `rustup target add`.
 - QEMU: Install on Linux/macOS via package manager (e.g., `apt install qemu-system-x86` on Ubuntu).
+- AArch64 QEMU (`qemu-system-aarch64`) is required for the `qemu-virt` regression path.
 - OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, run with `--clone-ovmf` to copy from system installation or download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
 
 ## Application Ports
@@ -104,6 +105,52 @@ Run the task runner, which handles building, ISO creation, and QEMU emulation:
 ```bash
 cargo run -p flasks --bin flasks
 ```
+
+### AArch64 QEMU and Bramble artifacts
+
+The AArch64 path is a separate bare-metal artifact under the same
+`fullerene-kernel` package:
+
+```bash
+rustup target add aarch64-unknown-none
+cargo run -q -p flasks -- build --arch aarch64 --platform qemu-virt
+cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt
+```
+
+The Bramble build emits an ELF, flat binary, Linux arm64 `Image`, and a
+LZ4-frame `Image.lz4` compatible with the Android kernel loader:
+
+```bash
+cargo run -q -p flasks -- build --arch aarch64 --platform bramble
+```
+
+An Android v3 boot template can be patched with the generated `Image.lz4`:
+
+```bash
+cargo run -q -p flasks -- build --arch aarch64 --platform bramble \
+  --boot-template /path/to/boot.img \
+  --boot-output /path/to/fullerene-boot.img
+```
+
+The patcher keeps the existing ramdisk and removes stale AVB metadata because
+it cannot sign the resulting image. Use an unlocked development device; this
+is a temporary `fastboot boot` image, not a partition-flashing artifact.
+For Android v3 devices the DTB is supplied by the companion
+`vendor_boot.img`; this path leaves vendor_boot untouched and consumes the DTB
+passed by the bootloader in the AArch64 entry registers.
+
+With a Bramble in Fastboot mode, Flasks can inspect the USB device and send a
+non-destructive RAM boot. The command checks `getvar:product` and accepts only
+`bramble`; it refuses multiple connected Fastboot devices:
+
+```bash
+cargo run -q -p flasks -- device
+cargo run -q -p flasks -- boot --arch aarch64 --platform bramble \
+  /path/to/fullerene-boot.img
+```
+
+The `boot` action does not write a partition. `flash` and `erase` are not
+exposed by Flasks yet.
 
 This command:
 1. Builds optimized `fullerene-kernel` and `bellows` artifacts with the `release` profile for the UEFI target `x86_64-unknown-uefi`.

@@ -1,6 +1,6 @@
 [toolchain]
 channel = "nightly"
 components = ["rust-src", "llvm-tools-preview", "rustfmt", "clippy"]
-targets = ["x86_64-unknown-uefi", "wasm32-wasip1", "x86_64-unknown-linux-musl"]
+targets = ["x86_64-unknown-uefi", "aarch64-unknown-none", "wasm32-wasip1", "x86_64-unknown-linux-musl"]
 build-std = ["core", "alloc"]
 build-std-features = ["compiler-builtins-mem"]

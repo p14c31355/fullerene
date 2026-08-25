@@ -7,6 +7,69 @@ use std::process::Command;
 use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_glibc_x86_64_elf};
 
 fn main() {
+    // The AArch64 bootstrap binary is intentionally dependency-free. Avoid
+    // the x86_64 kernel's generated userland/assets while building it; those
+    // steps require host tools and x86-only target support.
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+        let platform = env::var("FULLERENE_AARCH64_PLATFORM").unwrap_or_default();
+        let linker_script = out_dir.join("aarch64-linker.ld");
+        fs::write(&linker_script, aarch64_linker_script(&platform)).unwrap();
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_bramble)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_entry_halt_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_pullup_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_halt_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_cold_halt_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
+        if platform == "bramble" {
+            println!("cargo:rustc-cfg=fullerene_aarch64_bramble");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_PULLUP_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_pullup_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_HALT_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_halt_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_COLD_HALT_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_cold_halt_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_ENTRY_HALT_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_entry_halt_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_bare_pullup_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_probe");
+        }
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_PLATFORM");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_ENTRY_HALT_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PULLUP_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HALT_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_COLD_HALT_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE");
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-entry-halt-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-probe=-T{}",
+            linker_script.display()
+        );
+        println!("cargo:rerun-if-changed=src/arch/aarch64");
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
@@ -405,6 +468,112 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=have_emulsion_wasm");
     }
+}
+
+/// Generate the tiny platform-specific linker script for the freestanding
+/// AArch64 bootstrap image. Keeping this in Rust makes the repository's
+/// architecture/platform layout the source of truth while still giving lld
+/// the script syntax it requires at link time.
+fn aarch64_linker_script(platform: &str) -> String {
+    let image_base = if platform == "bramble" {
+        // Bramble's DRAM starts at 0x80000000. The standard arm64 Image
+        // text offset is 0x80000, and the generated 64-byte Image header is
+        // immediately before the Rust payload.
+        "0x80080040"
+    } else {
+        "0x42000040"
+    };
+
+    let usb_dma_origin = if platform == "bramble" {
+        // The Bramble vendor DT reserves 0x80000000..0x80600000 for the
+        // hypervisor and marks it no-map.  The kernel image itself is linked
+        // near that address, so placing DMA objects immediately after .bss
+        // puts DWC3's event ring/TRBs in a region that is not valid for the
+        // USB client.  0x9b800000 is the first byte after the fixed
+        // modem_wlan carveout (0x8c000000..0x9b800000) and leaves the small
+        // DMA section below the next fixed carveout at 0x9f400000.
+        ". = 0x9b800000;"
+    } else {
+        ""
+    };
+
+    format!(
+        r#"ENTRY(_start)
+
+SECTIONS
+{{
+    /* The generated Linux Image header occupies the 64 bytes immediately
+       before this payload. */
+    . = {image_base};
+
+    .text.boot : ALIGN(4)
+    {{
+        KEEP(*(.text.boot))
+    }}
+
+    .text.exception_vectors : ALIGN(2K)
+    {{
+        KEEP(*(.text.exception_vectors))
+    }}
+
+    .text : ALIGN(4K)
+    {{
+        *(.text .text.*)
+    }}
+
+    .rodata : ALIGN(4K)
+    {{
+        *(.rodata .rodata.*)
+    }}
+
+    .data : ALIGN(4K)
+    {{
+        *(.data .data.*)
+    }}
+
+    /* Keep static-PIE relocation records inside the flat Image. The Rust
+       bootstrap applies them before normal code touches relocated data. */
+    .rela.dyn : ALIGN(8)
+    {{
+        __rela_dyn_start = .;
+        *(.rela.dyn)
+        __rela_dyn_end = .;
+    }}
+
+    .bss (NOLOAD) : ALIGN(4K)
+    {{
+        . = ALIGN(0x200000);
+        __bss_start = .;
+        *(.bss .bss.* COMMON)
+        . = ALIGN(4K);
+        __bss_end = .;
+    }}
+
+    /*
+       The Bramble DWC3 device tree gives the USB controller an SMMU IOVA pool
+       beginning at 0x90000000. That is not a physical DRAM address. For the
+       handoff diagnostic, the SMMU stream is switched to BYPASS and these
+       objects therefore need to remain in the image's physical DRAM mapping.
+       Keep the section separate from .bss so the bootstrap clears it
+       explicitly before handing the physical addresses to DWC3.
+    */
+    {usb_dma_origin}
+    .usb_dma (NOLOAD) : ALIGN(4K)
+    {{
+        __usb_dma_start = .;
+        KEEP(*(.usb_dma .usb_dma.*))
+        . = ALIGN(4K);
+        __usb_dma_end = .;
+    }}
+
+    /DISCARD/ :
+    {{
+        *(.eh_frame .eh_frame_hdr)
+        *(.comment)
+    }}
+}}
+"#
+    )
 }
 
 /// Validate and stage a dynamically linked glibc x86_64 BusyBox and its

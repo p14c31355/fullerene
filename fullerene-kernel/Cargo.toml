@@ -12,6 +12,34 @@ rust-version.workspace = true
 name = "fullerene-kernel"
 path = "src/main.rs"
 
+[[bin]]
+name = "fullerene-kernel-aarch64"
+path = "src/arch/aarch64/main.rs"
+required-features = ["aarch64"]
+test = false
+bench = false
+
+[[bin]]
+name = "fullerene-kernel-aarch64-probe"
+path = "src/arch/aarch64/probe.rs"
+required-features = ["aarch64"]
+test = false
+bench = false
+
+[[bin]]
+name = "fullerene-kernel-aarch64-entry-halt-probe"
+path = "src/arch/aarch64/probe.rs"
+required-features = ["aarch64"]
+test = false
+bench = false
+
+[[bin]]
+name = "fullerene-kernel-aarch64-usb-probe"
+path = "src/arch/aarch64/usb_probe.rs"
+required-features = ["aarch64"]
+test = false
+bench = false
+
 # These examples are consumed by the UEFI/native smoke paths. The native_*
 # entries are freestanding no_std payloads, so they are not host test
 # harnesses: compiling those entries as tests enables unwinding against a
@@ -42,7 +70,7 @@ test = false
 bench = false
 required-features = ["native-payload"]
 
-[dependencies]
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",
   "abi_x86_interrupt",
@@ -87,6 +115,7 @@ busybox-build = { path = "../toluene/busybox-build" }
 
 [features]
 default = []
+aarch64 = []
 user_space = []
 native-payload = []
 
