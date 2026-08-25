@@ -1,4 +1,5 @@
 //! BootContext — boot-time information from UEFI/BIOS.
+use fullerene_abi::boot::BootInfo;
 use petroleum::common::uefi::FullereneFramebufferConfig;
 use petroleum::page_table::memory_map::MemoryMapDescriptor;
 
@@ -81,6 +82,7 @@ impl RuntimeInfo {
 }
 
 pub struct BootContext {
+    pub boot_info: Option<BootInfo>,
     pub memory_map: MemoryMapInfo,
     pub framebuffer: BootFramebufferInfo,
     pub acpi: AcpiInfo,
@@ -98,9 +100,19 @@ pub struct BootContext {
 unsafe impl Send for BootContext {}
 unsafe impl Sync for BootContext {}
 
+fn read_boot_info(kernel_args: *const petroleum::assembly::KernelArgs) -> Option<BootInfo> {
+    let args = unsafe { kernel_args.as_ref()? };
+    if args.boot_info_address == 0 {
+        return None;
+    }
+    let info = unsafe { (args.boot_info_address as *const BootInfo).as_ref()? };
+    info.is_valid().then_some(*info)
+}
+
 impl BootContext {
     pub const fn empty() -> Self {
         Self {
+            boot_info: None,
             memory_map: MemoryMapInfo::new(),
             framebuffer: BootFramebufferInfo::new(),
             acpi: AcpiInfo::new(),
@@ -129,7 +141,7 @@ impl BootContext {
         } else {
             (0, 0, 0, 0)
         };
-        Self { memory_map:MemoryMapInfo{entries:memory_map,usable_bytes:0},framebuffer:BootFramebufferInfo{config:FullereneFramebufferConfig{address:a,width:w,height:h,pixel_format:petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,bpp,stride:w*(bpp/8)}},acpi:AcpiInfo{rsdp_address,parsed:false},runtime:RuntimeInfo{kernel_args_ptr:kernel_args,kernel_args_available:!kernel_args.is_null()},framebuffer_config:FullereneFramebufferConfig{address:a,width:w,height:h,pixel_format:petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,bpp,stride:w*(bpp/8)},memory_map_entries:memory_map,rsdp_address,kernel_args }
+        Self { boot_info: read_boot_info(kernel_args), memory_map:MemoryMapInfo{entries:memory_map,usable_bytes:0},framebuffer:BootFramebufferInfo{config:FullereneFramebufferConfig{address:a,width:w,height:h,pixel_format:petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,bpp,stride:w*(bpp/8)}},acpi:AcpiInfo{rsdp_address,parsed:false},runtime:RuntimeInfo{kernel_args_ptr:kernel_args,kernel_args_available:!kernel_args.is_null()},framebuffer_config:FullereneFramebufferConfig{address:a,width:w,height:h,pixel_format:petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,bpp,stride:w*(bpp/8)},memory_map_entries:memory_map,rsdp_address,kernel_args }
     }
     pub fn has_valid_framebuffer(&self) -> bool {
         self.framebuffer.has_valid_fb()
@@ -153,6 +165,7 @@ pub fn init_boot() {
 pub fn set_kernel_args(kernel_args: *const petroleum::assembly::KernelArgs) {
     let mut boot = BOOT.lock();
     let context = boot.get_or_insert_with(BootContext::empty);
+    context.boot_info = read_boot_info(kernel_args);
     context.kernel_args = kernel_args;
     context.runtime.kernel_args_ptr = kernel_args;
     context.runtime.kernel_args_available = !kernel_args.is_null();

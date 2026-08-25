@@ -5,6 +5,7 @@
 extern crate alloc;
 
 use core::arch::{asm, global_asm};
+use fullerene_abi::boot::{self, BootArchitecture, BootInfo, BootPlatform};
 
 mod allocator;
 mod exceptions;
@@ -170,6 +171,17 @@ extern "C" fn aarch64_apply_relocations(runtime_entry: usize) -> isize {
     relocation_delta
 }
 
+fn make_boot_info(platform: BootPlatform, dtb_address: Option<u64>) -> BootInfo {
+    let mut info = BootInfo::new(BootArchitecture::Aarch64, platform);
+    if let Some(address) = dtb_address {
+        info.fdt_address = address;
+        if fdt::inspect(address).is_some() {
+            info.flags |= boot::flags::FDT;
+        }
+    }
+    info
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     // The context lives at the top of the bootstrap stack. Copy it before
@@ -234,6 +246,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     let gicr_region =
         dtb_address.and_then(|address| fdt::find_compatible_nth(address, b"arm,gic-v3", 1));
     let bramble = cfg!(fullerene_aarch64_bramble) || qcom_uart.is_some();
+    let boot_info = make_boot_info(
+        if bramble {
+            BootPlatform::Bramble
+        } else {
+            BootPlatform::QemuVirt
+        },
+        dtb_address,
+    );
     let gicd_base = gicd_region.map(|region| region.base as usize);
     let gicr_base = gicr_region.map(|region| region.base as usize);
     let uart_region = if bramble { qcom_uart } else { pl011_uart };
@@ -265,6 +285,9 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     uart::put_hex("boot: x1=", arg1);
     uart::put_hex("boot: x2=", fdt_arg2);
     uart::put_hex("boot: x3=", arg3);
+    uart::put_hex("bootinfo: size=", BootInfo::BYTE_SIZE as u64);
+    uart::put_hex("bootinfo: flags=", boot_info.flags);
+    uart::put_hex("bootinfo: fdt=", boot_info.fdt_address);
     uart::put_hex(
         "gicd: base=",
         gicd_base.unwrap_or(if bramble {

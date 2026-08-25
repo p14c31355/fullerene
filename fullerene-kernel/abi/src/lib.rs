@@ -7,6 +7,8 @@
 
 use core::convert::TryFrom;
 
+pub mod boot;
+
 macro_rules! all_syscall { ($($v:ident),* $(,)?) => { pub const ALL: &'static [Self] = &[$(Self::$v),*]; }; }
 macro_rules! all_error { ($($v:ident),* $(,)?) => { pub const ALL: &'static [Self] = &[$(Self::$v),*]; }; }
 

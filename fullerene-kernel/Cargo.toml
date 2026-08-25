@@ -110,6 +110,9 @@ log = { workspace = true }
 wasi_runtime = { path = "../solvent/wasi" }
 # shell-words = "1.1"  # Cannot use in no_std kernel
 
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+fullerene-abi = { path = "abi" }
+
 [build-dependencies]
 busybox-build = { path = "../toluene/busybox-build" }
 
