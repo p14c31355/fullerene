@@ -375,6 +375,11 @@ const DSTS_SUPERSPEED: u32 = 4;
 const DEVTEN_DISCONNECT: u32 = 1 << 0;
 const DEVTEN_USB_RESET: u32 = 1 << 1;
 const DEVTEN_CONNECT_DONE: u32 = 1 << 2;
+// DWC3 event words use bit 0 to distinguish endpoint events from
+// device-specific events.  For a device event, bits 1..7 are zero and the
+// Reset/Connect Done kind is stored in the four-bit type field at bits 8..11.
+const DEVICE_EVENT_KIND_SHIFT: u32 = 8;
+const DEVICE_EVENT_KIND_MASK: u32 = 0x0f;
 
 const DEPCMD_CMDACT: u32 = 1 << 10;
 const DEPCMD_DEPSTARTCFG: u32 = 0x09;
@@ -1142,6 +1147,45 @@ unsafe fn start_setup() {
     }
 }
 
+/// Re-arm the control endpoint after the host has issued a USB bus reset.
+///
+/// A bus reset terminates the setup transfer which was queued before the
+/// host began enumeration, but it does not perform a DWC3 core reset.  The
+/// transfer resources and endpoint configuration therefore remain usable.
+/// Keeping DALEPENA cleared here leaves the device with a pull-up and no EP0,
+/// which is indistinguishable from a dead gadget to the host.
+unsafe fn restart_control_after_reset() {
+    unsafe {
+        CONFIGURED = false;
+        EP0_STATE = Ep0State::Setup;
+        CONTROL_IN = false;
+        CONTROL_HAS_DATA = false;
+
+        let mut dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
+        let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
+        let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
+        dcfg &= !DCFG_SPEED_MASK;
+        dcfg |= if speed == DSTS_SUPERSPEED {
+            DCFG_SUPERSPEED
+        } else {
+            DCFG_HIGHSPEED
+        };
+        write(DCFG, dcfg);
+
+        // USB reset ends the active EP0 transfer, but the endpoint remains
+        // configured on the non-core-reset path.  Reconfigure defensively
+        // if a preceding Connect Done event did not get processed.
+        if !ENDPOINTS_READY {
+            ENDPOINTS_READY = configure_endpoint(0, max_packet, false)
+                && configure_endpoint(1, max_packet, false);
+        }
+        if ENDPOINTS_READY {
+            write(DALEPENA, 0b11);
+            start_setup();
+        }
+    }
+}
+
 unsafe fn start_status(endpoint: usize) {
     let kind = if unsafe { CONTROL_HAS_DATA } {
         TRB_CONTROL_STATUS3
@@ -1289,20 +1333,13 @@ unsafe fn process_event(raw: u32) {
     let endpoint_event = (raw & 1) == 0;
     if !endpoint_event {
         // DWC3's device event layout is: one_bit[0], device_event[1:7],
-        // type[8:11]. The type field carries Disconnect, USB Reset, and
-        // Connect Done. Reading bits 1:7 here would classify every event as
-        // the reserved device-event marker and tear down the pull-up when a
-        // host actually connects.
-        let device_event = (raw >> 8) & 0xf;
+        // type[8:11].  The device_event field is zero for ordinary device
+        // events; type carries Disconnect, USB Reset, and Connect Done.
+        let device_event =
+            (raw >> DEVICE_EVENT_KIND_SHIFT) & DEVICE_EVENT_KIND_MASK;
         match device_event {
             0 => {}
-            1 => unsafe {
-                CONFIGURED = false;
-                EP0_STATE = Ep0State::Setup;
-                ENDPOINTS_READY = false;
-                write(DCFG, read(DCFG) & !DCFG_DEVADDR_MASK);
-                write(DALEPENA, 0);
-            },
+            1 => unsafe { restart_control_after_reset() },
             2 => {
                 let speed = unsafe { read(DSTS) & DSTS_CONNECTSPD_MASK };
                 log_puts("usb: connect done, speed=");
@@ -1372,9 +1409,17 @@ pub fn init_usb2_only() -> bool {
 /// blocks during a `fastboot boot` handoff can remove the Type-C pull-up before
 /// the new gadget has a chance to enumerate.
 pub fn init_usb2_handoff() -> bool {
-    // Preserve the bootloader-owned PHY and clock branches, but perform the
-    // DWC3 core soft reset required for a device-side reconnect after the
-    // previous Fastboot gadget has been disconnected.
+    // Prefer the handoff sequence that preserves the bootloader-owned PHY and
+    // brings EP0 up immediately after the physical USB2 reconnect.  This is
+    // also the path used by the Bramble probe, and unlike the cold fallback it
+    // does not rewrite the vendor-owned Apps SMMU context before the first
+    // descriptor transfer.
+    if init_usb2_gadget_handoff() {
+        return true;
+    }
+
+    // If the bootloader did not leave a usable peripheral session, recover by
+    // performing the more invasive DWC3 device reset and SMMU setup.
     init_with_super_speed(false, true, false)
 }
 
@@ -1498,10 +1543,10 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
     true
 }
 
-/// Reuse the pull-up-only handoff, then add the minimum DWC3 gadget state
+/// Reuse the physical USB2 handoff, then add the minimum DWC3 gadget state
 /// needed to answer USB control transfers. The PHY and Qualcomm session
-/// remain untouched; this is the next diagnostic step after proving that the
-/// host can see the physical pull-up.
+/// remain untouched; this is the early Bramble handoff path and is also
+/// usable as a standalone probe.
 pub fn init_usb2_gadget_handoff() -> bool {
     unsafe {
         // Keep the Qualcomm session valid, but do not assert RUN_STOP yet.
@@ -1521,22 +1566,14 @@ pub fn init_usb2_gadget_handoff() -> bool {
             (gctl & !GCTL_PRTCAPDIR_MASK) | GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG,
         );
 
-        // Use the known-good physical handoff once to force the controller
-        // out of Fastboot's stale link state. We immediately stop it again
-        // below before issuing endpoint commands, so this is only a session
-        // transition and not the final gadget configuration.
+        // The Bramble bootloader does not always emit a fresh attach if the
+        // pull-up is held until after endpoint setup.  Start the known-good
+        // physical USB2 session first, then install EP0 immediately while the
+        // host's reset/enumeration window is open.  This is probe-only; the
+        // normal path still configures the gadget before Run/Stop.
         if !init_usb2_bare_pullup_handoff() {
             return false;
         }
-
-        // Keep Fastboot's live peripheral session for this stage probe. The
-        // SM7250 Type-C glue does not reliably emit a second attach after a
-        // software stop, so configure EP0 against the already-running DWC3
-        // session and only touch Run/Stop after the setup TRB is queued.
-        // Deliberately leave the SMMU untouched in this stage probe. The
-        // event ring, SETUP packet, and TRBs are still programmed below, but
-        // this run isolates DWC3's endpoint state from a possible secure-owned
-        // Apps-SMMU handoff. The normal Fullerene path keeps the real mapping.
 
         // The bootloader can leave the USB2 core in suspend/LPM state even
         // though the physical pull-up is visible. Reapply only the
@@ -1549,15 +1586,15 @@ pub fn init_usb2_gadget_handoff() -> bool {
         usb3 |= GUSB3PIPECTL_SUSPHY;
         write(GUSB3PIPECTL0, usb3);
 
-        // The EP0 TRBs and event ring are behind Bramble's Apps SMMU stream
-        // match. Try the real identity route now that the controller session
-        // is alive; leave the physical diagnostic non-fatal if firmware owns
-        // the stream table.
-        let _smmu_ready = configure_dwc3_smmu();
+        // Deliberately leave the Apps SMMU untouched in this stage probe.
+        // The purpose here is to isolate DWC3 endpoint/event handling from
+        // the vendor-owned DMA context.  The production path configures the
+        // SMMU below; this probe must still reach the physical pull-up if
+        // that context is not writable during a fastboot handoff.
 
-        // This probe is entered with the normal cache/MMU state disabled, so
-        // the linker-reserved region is directly usable by DWC3. Still clean
-        // it for the same handoff ordering used by the normal gadget path.
+        // The linker-reserved region is identity-mapped by the early AArch64
+        // MMU path. Clean it for the same handoff ordering whether this entry
+        // is reached from the standalone probe or from the normal kernel.
         let event_address = addr_of!(EVENTS) as usize as u64;
         cache_clean(addr_of!(EVENTS) as usize, EVENT_BUFFER_SIZE);
         write(GEVNTADRLO0, event_address as u32);
@@ -1589,27 +1626,13 @@ pub fn init_usb2_gadget_handoff() -> bool {
             log_puts("usb gadget handoff: EP0 configuration failed\n");
             return false;
         }
+        ENDPOINTS_READY = true;
         write(DALEPENA, 0b11);
         start_setup();
 
-        let dctl = read(DCTL);
-        write(
-            DCTL,
-            (dctl & !DCTL_TRGTULST_MASK) | DCTL_TRGTULST_RX_DET | DCTL_RUN_STOP,
-        );
-        for _ in 0..100_000u32 {
-            if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
-                log_puts("usb gadget handoff: EP0 running\n");
-                return true;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
-        log_hex(
-            "usb gadget handoff: DWC3 remained halted, DSTS=",
-            read(DSTS) as u64,
-        );
+        log_puts("usb gadget handoff: EP0 running\n");
+        true
     }
-    false
 }
 
 fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bool) -> bool {
@@ -1834,6 +1857,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             uart::puts("usb: EP0 configuration failed\n");
             return false;
         }
+        ENDPOINTS_READY = true;
         write(DALEPENA, 0b11);
         write(
             DEVTEN,
