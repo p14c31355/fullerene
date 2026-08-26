@@ -132,6 +132,23 @@ cargo run -q -p flasks -- build --arch aarch64 --platform bramble \
   --boot-output /path/to/fullerene-boot.img
 ```
 
+The Bramble image path performs a preflight audit before it is reported as
+ready: it re-reads the Android v3 header, verifies the generated kernel bytes,
+checks page padding, and compares the ramdisk and trailing vendor data with
+the stock template. `Image` and `Image.lz4` are also decoded and checked at
+creation time. To run the QEMU shared USB protocol self-test before the
+Bramble build (and before a `run`/Fastboot handoff), add:
+
+```bash
+cargo run -q -p flasks -- run --arch aarch64 --platform bramble \
+  --boot-template /path/to/boot.img \
+  --qemu-preflight
+```
+
+This QEMU preflight uses `virt` for the generic Rust/DWC3 protocol model. It
+does not claim to emulate Bramble's SM7250 PHY, Qualcomm Type-C glue, or SMMU;
+those remain hardware-only checks.
+
 The patcher keeps the existing ramdisk and removes stale AVB metadata because
 it cannot sign the resulting image. Use an unlocked development device; this
 is a temporary `fastboot boot` image, not a partition-flashing artifact.

@@ -100,6 +100,12 @@ struct Args {
     #[arg(long)]
     qemu_usb_sim: bool,
 
+    /// Run the QEMU virt USB protocol self-test before building or booting a
+    /// Bramble artifact. This validates the shared Rust/DWC3 protocol path;
+    /// Qualcomm PHY, Type-C, and SMMU behavior still requires hardware.
+    #[arg(long)]
+    qemu_preflight: bool,
+
     /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
     #[arg(long, default_value = "virtio-gpu")]
     vga: String,
@@ -459,6 +465,16 @@ fn main() -> io::Result<()> {
             "--qemu-usb-sim requires AArch64 QEMU virt run/debug",
         ));
     }
+    if args.qemu_preflight
+        && (target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--qemu-preflight requires AArch64 Bramble build/run/debug",
+        ));
+    }
     let selected_probe = selected_aarch64_probe(&args, target)?;
 
     if target.arch == Arch::Aarch64 {
@@ -476,7 +492,13 @@ fn main() -> io::Result<()> {
                     "boot currently requires --platform bramble",
                 ));
             }
-            return fastboot::run_boot(args.image.as_deref().unwrap());
+            let image = args.image.as_deref().unwrap();
+            audit_android_boot_image(image)?;
+            return fastboot::run_boot(image);
+        }
+
+        if args.qemu_preflight {
+            run_aarch64_qemu_preflight(&workspace_root, profile, args.timeout.or(Some(10)))?;
         }
 
         let kernel_artifact = selected_probe
@@ -511,6 +533,7 @@ fn main() -> io::Result<()> {
                 &image_lz4_path
             };
             patch_bramble_boot_image(template, boot_kernel, &output)?;
+            audit_bramble_boot_image(template, boot_kernel, &output)?;
             println!(
                 "Bramble boot image prepared at {}; sending with Fastboot",
                 output.display()
@@ -546,6 +569,7 @@ fn main() -> io::Result<()> {
                     &image_lz4_path
                 };
                 patch_bramble_boot_image(template, boot_kernel, &output)?;
+                audit_bramble_boot_image(template, boot_kernel, &output)?;
                 println!(
                     "Bramble temporary boot image built at {} (use only with an unlocked device)",
                     output.display()
@@ -670,6 +694,27 @@ fn build_aarch64_kernel(
     Ok(artifact)
 }
 
+fn run_aarch64_qemu_preflight(
+    workspace_root: &Path,
+    profile: BuildProfile,
+    timeout: Option<u64>,
+) -> io::Result<()> {
+    println!("QEMU Bramble preflight: building the qemu-virt self-test artifact");
+    let kernel = build_aarch64_kernel(
+        workspace_root,
+        profile,
+        Platform::QemuVirt,
+        Arch::Aarch64.kernel_artifact(),
+        None,
+        true,
+    )?;
+    let raw = build_aarch64_raw_kernel(&kernel)?;
+    let image = build_aarch64_image(&raw)?;
+    run_aarch64_qemu(&image, Platform::QemuVirt, false, timeout, true)?;
+    println!("QEMU Bramble preflight: PASS");
+    Ok(())
+}
+
 fn build_aarch64_raw_kernel(elf: &Path) -> io::Result<PathBuf> {
     let raw = elf.with_extension("bin");
     let mut failures = Vec::new();
@@ -754,12 +799,13 @@ fn build_aarch64_image(raw: &Path) -> io::Result<PathBuf> {
     let image = make_aarch64_image(&payload);
     let image_path = raw.with_extension("Image");
     fs::write(&image_path, image)?;
+    audit_aarch64_image(&image_path, raw)?;
     Ok(image_path)
 }
 
 fn make_aarch64_image(payload: &[u8]) -> Vec<u8> {
-    const IMAGE_HEADER_SIZE: usize = 64;
-    const TEXT_OFFSET: u64 = 0x0008_0000;
+    const IMAGE_HEADER_SIZE: usize = AARCH64_IMAGE_HEADER_SIZE;
+    const TEXT_OFFSET: u64 = AARCH64_IMAGE_TEXT_OFFSET;
     // The freestanding image has a sizeable zero-initialized bootstrap heap
     // and stack which are not present in the flat payload emitted by objcopy.
     // Advertise the mapped image footprint, not only the file length, so an
@@ -767,9 +813,9 @@ fn make_aarch64_image(payload: &[u8]) -> Vec<u8> {
     // The linker reserves the bootstrap BSS after the 0x80000 text offset.
     // Keep a rounded-up 4 MiB footprint in the arm64 header so Android's
     // bootloader does not reuse the tail of that reservation as workspace.
-    const IMAGE_MEMORY_SIZE: u64 = 0x0040_0000;
-    const FLAG_PAGE_SIZE_4K: u64 = 1 << 1;
-    const ARM64_IMAGE_MAGIC: u32 = 0x644d_5241;
+    const IMAGE_MEMORY_SIZE: u64 = AARCH64_IMAGE_MEMORY_SIZE;
+    const FLAG_PAGE_SIZE_4K: u64 = AARCH64_IMAGE_FLAG_PAGE_SIZE_4K;
+    const ARM64_IMAGE_MAGIC: u32 = AARCH64_IMAGE_MAGIC;
 
     let mut image = Vec::with_capacity(IMAGE_HEADER_SIZE + payload.len());
     // b +64: Fullerene's entry point follows the Linux Image metadata.
@@ -808,7 +854,183 @@ fn build_aarch64_lz4(image: &Path) -> io::Result<PathBuf> {
     let compressed = make_lz4_frame(&payload);
     let output = image.with_extension("Image.lz4");
     fs::write(&output, compressed)?;
+    audit_lz4_frame(&output, image)?;
     Ok(output)
+}
+
+const AARCH64_IMAGE_HEADER_SIZE: usize = 64;
+const AARCH64_IMAGE_TEXT_OFFSET: u64 = 0x0008_0000;
+const AARCH64_IMAGE_MEMORY_SIZE: u64 = 0x0040_0000;
+const AARCH64_IMAGE_FLAG_PAGE_SIZE_4K: u64 = 1 << 1;
+const AARCH64_IMAGE_MAGIC: u32 = 0x644d_5241;
+
+fn audit_aarch64_image(image: &Path, raw: &Path) -> io::Result<()> {
+    let image_bytes = fs::read(image)?;
+    let raw_bytes = fs::read(raw)?;
+    audit_aarch64_image_bytes(&image_bytes, &raw_bytes).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "AArch64 Image audit failed for {}: {error}",
+                image.display()
+            ),
+        )
+    })
+}
+
+fn audit_aarch64_image_bytes(image: &[u8], raw: &[u8]) -> io::Result<()> {
+    if image.len() != AARCH64_IMAGE_HEADER_SIZE + raw.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Image length is {}, expected {}",
+                image.len(),
+                AARCH64_IMAGE_HEADER_SIZE + raw.len()
+            ),
+        ));
+    }
+    if read_u32(image, 0)? != 0x1400_0010 || read_u32(image, 4)? != 0xd503_201f {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Image entry header is not the Fullerene branch/NOP pair",
+        ));
+    }
+    if read_u64(image, 8)? != AARCH64_IMAGE_TEXT_OFFSET {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Image text offset does not target the Bramble load contract",
+        ));
+    }
+    let advertised_size = read_u64(image, 16)?;
+    let expected_size = (image.len() as u64).max(AARCH64_IMAGE_MEMORY_SIZE);
+    if advertised_size != expected_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Image advertised memory size {advertised_size:#x}, expected {expected_size:#x}"
+            ),
+        ));
+    }
+    if read_u64(image, 24)? != AARCH64_IMAGE_FLAG_PAGE_SIZE_4K
+        || read_u32(image, 56)? != AARCH64_IMAGE_MAGIC
+        || read_u32(image, 60)? != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Image flags, magic, or reserved field is invalid",
+        ));
+    }
+    if &image[AARCH64_IMAGE_HEADER_SIZE..] != raw {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Image payload differs from the raw AArch64 kernel",
+        ));
+    }
+    Ok(())
+}
+
+fn audit_lz4_frame(frame: &Path, image: &Path) -> io::Result<()> {
+    let frame_bytes = fs::read(frame)?;
+    let image_bytes = fs::read(image)?;
+    let decoded = decode_literal_lz4_frame(&frame_bytes)?;
+    if decoded != image_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Image.lz4 audit failed for {}: decoded payload differs from {}",
+                frame.display(),
+                image.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn decode_literal_lz4_frame(frame: &[u8]) -> io::Result<Vec<u8>> {
+    const LZ4_FRAME_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
+    const FLG: u8 = 0x64;
+    const BD: u8 = 0x70;
+    const BLOCK_MAX: usize = 4 * 1024 * 1024;
+
+    if frame.len() < 11 || frame[..4] != LZ4_FRAME_MAGIC || frame[4] != FLG || frame[5] != BD {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported or truncated LZ4 frame header",
+        ));
+    }
+    if frame[6] != (xxhash32(&frame[4..6], 0) >> 8) as u8 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "LZ4 frame descriptor checksum mismatch",
+        ));
+    }
+
+    let mut cursor = 7;
+    let mut decoded = Vec::new();
+    loop {
+        let block_size = read_u32(frame, cursor)? as usize;
+        cursor = cursor
+            .checked_add(4)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "LZ4 cursor overflow"))?;
+        if block_size == 0 {
+            break;
+        }
+        if block_size > BLOCK_MAX || block_size > frame.len().saturating_sub(cursor) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LZ4 block exceeds the frame",
+            ));
+        }
+        let block = &frame[cursor..cursor + block_size];
+        cursor += block_size;
+        let token = *block
+            .first()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty LZ4 block"))?;
+        if token & 0x0f != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "LZ4 audit only accepts Fullerene literal-only blocks",
+            ));
+        }
+        let mut block_cursor = 1;
+        let mut literal_len = (token >> 4) as usize;
+        if literal_len == 15 {
+            loop {
+                let extension = *block.get(block_cursor).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "truncated LZ4 literal length")
+                })?;
+                block_cursor += 1;
+                literal_len = literal_len.checked_add(extension as usize).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "LZ4 literal length overflow")
+                })?;
+                if extension != 255 {
+                    break;
+                }
+            }
+        }
+        if literal_len != block.len().saturating_sub(block_cursor) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LZ4 literal block has an inconsistent length",
+            ));
+        }
+        decoded.extend_from_slice(&block[block_cursor..]);
+    }
+    let checksum = read_u32(frame, cursor)?;
+    cursor += 4;
+    if cursor != frame.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing bytes after LZ4 content checksum",
+        ));
+    }
+    if checksum != xxhash32(&decoded, 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "LZ4 content checksum mismatch",
+        ));
+    }
+    Ok(decoded)
 }
 
 fn make_lz4_frame(payload: &[u8]) -> Vec<u8> {
@@ -1019,6 +1241,220 @@ fn patch_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
     Ok(())
 }
 
+fn audit_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io::Result<()> {
+    const PAGE_SIZE: usize = 4096;
+    const KERNEL_SIZE_OFFSET: usize = 8;
+    const RAMDISK_SIZE_OFFSET: usize = 12;
+    const HEADER_SIZE_OFFSET: usize = 20;
+    const HEADER_VERSION_OFFSET: usize = 40;
+
+    let template_storage = fs::read(template)?;
+    let template_bytes = strip_avb_metadata(&template_storage)?;
+    let output_bytes = fs::read(output)?;
+    let kernel_bytes = fs::read(kernel)?;
+    if template_bytes.len() < PAGE_SIZE
+        || output_bytes.len() < PAGE_SIZE
+        || &template_bytes[..8] != b"ANDROID!"
+        || &output_bytes[..8] != b"ANDROID!"
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit found a missing Android header",
+        ));
+    }
+    if read_le_u32(&template_bytes, HEADER_VERSION_OFFSET)? != 3
+        || read_le_u32(&output_bytes, HEADER_VERSION_OFFSET)? != 3
+        || read_le_u32(&output_bytes, HEADER_SIZE_OFFSET)? == 0
+        || read_le_u32(&output_bytes, HEADER_SIZE_OFFSET)? as usize > PAGE_SIZE
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit requires an Android v3 header within the first page",
+        ));
+    }
+
+    let old_kernel_size = read_le_u32(&template_bytes, KERNEL_SIZE_OFFSET)? as usize;
+    let ramdisk_size = read_le_u32(&template_bytes, RAMDISK_SIZE_OFFSET)? as usize;
+    let kernel_size = read_le_u32(&output_bytes, KERNEL_SIZE_OFFSET)? as usize;
+    if kernel_size != kernel_bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "boot audit kernel size is {kernel_size}, expected {}",
+                kernel_bytes.len()
+            ),
+        ));
+    }
+    if read_le_u32(&output_bytes, RAMDISK_SIZE_OFFSET)? as usize != ramdisk_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit changed the ramdisk size",
+        ));
+    }
+    let mut expected_header = template_bytes[..PAGE_SIZE].to_vec();
+    write_le_u32(
+        &mut expected_header,
+        KERNEL_SIZE_OFFSET,
+        u32::try_from(kernel_bytes.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "boot audit kernel is too large")
+        })?,
+    )?;
+    if output_bytes[..PAGE_SIZE] != expected_header {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit header differs from the template outside kernel size",
+        ));
+    }
+
+    let old_ramdisk_offset = align_up_checked(
+        PAGE_SIZE.checked_add(old_kernel_size).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "boot audit kernel offset overflows",
+            )
+        })?,
+        PAGE_SIZE,
+    )?;
+    let old_tail_offset = align_up_checked(
+        old_ramdisk_offset
+            .checked_add(ramdisk_size)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "boot audit overflows"))?,
+        PAGE_SIZE,
+    )?;
+    if old_tail_offset > template_bytes.len()
+        || old_ramdisk_offset + ramdisk_size > template_bytes.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit template payload is truncated",
+        ));
+    }
+
+    let new_ramdisk_offset = align_up_checked(
+        PAGE_SIZE
+            .checked_add(kernel_bytes.len())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "boot audit overflows"))?,
+        PAGE_SIZE,
+    )?;
+    let new_tail_offset = align_up_checked(
+        new_ramdisk_offset
+            .checked_add(ramdisk_size)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "boot audit overflows"))?,
+        PAGE_SIZE,
+    )?;
+    if new_tail_offset > output_bytes.len()
+        || PAGE_SIZE + kernel_bytes.len() > output_bytes.len()
+        || new_ramdisk_offset + ramdisk_size > output_bytes.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit output payload is truncated",
+        ));
+    }
+    if &output_bytes[PAGE_SIZE..PAGE_SIZE + kernel_bytes.len()] != kernel_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit kernel payload differs from the generated payload",
+        ));
+    }
+    if output_bytes[PAGE_SIZE + kernel_bytes.len()..new_ramdisk_offset]
+        .iter()
+        .any(|byte| *byte != 0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit found non-zero kernel alignment padding",
+        ));
+    }
+    if &output_bytes[new_ramdisk_offset..new_ramdisk_offset + ramdisk_size]
+        != &template_bytes[old_ramdisk_offset..old_ramdisk_offset + ramdisk_size]
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit ramdisk differs from the stock template",
+        ));
+    }
+    if output_bytes[new_ramdisk_offset + ramdisk_size..new_tail_offset]
+        .iter()
+        .any(|byte| *byte != 0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit found non-zero ramdisk alignment padding",
+        ));
+    }
+    if &output_bytes[new_tail_offset..] != &template_bytes[old_tail_offset..] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boot audit tail differs from the stock template",
+        ));
+    }
+    println!(
+        "Bramble boot audit: PASS (kernel={} bytes, ramdisk={} bytes, tail={} bytes)",
+        kernel_bytes.len(),
+        ramdisk_size,
+        template_bytes.len() - old_tail_offset
+    );
+    Ok(())
+}
+
+fn audit_android_boot_image(image: &Path) -> io::Result<()> {
+    const PAGE_SIZE: usize = 4096;
+    const KERNEL_SIZE_OFFSET: usize = 8;
+    const RAMDISK_SIZE_OFFSET: usize = 12;
+    const HEADER_SIZE_OFFSET: usize = 20;
+    const HEADER_VERSION_OFFSET: usize = 40;
+
+    let storage = fs::read(image)?;
+    let bytes = strip_avb_metadata(&storage)?;
+    if bytes.len() < PAGE_SIZE || &bytes[..8] != b"ANDROID!" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Fastboot image audit: missing Android boot header",
+        ));
+    }
+    if read_le_u32(bytes, HEADER_VERSION_OFFSET)? != 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Fastboot image audit: only Android boot header v3 is supported",
+        ));
+    }
+    let header_size = read_le_u32(bytes, HEADER_SIZE_OFFSET)? as usize;
+    if header_size == 0 || header_size > PAGE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Fastboot image audit: invalid v3 header size",
+        ));
+    }
+    let kernel_size = read_le_u32(bytes, KERNEL_SIZE_OFFSET)? as usize;
+    let ramdisk_size = read_le_u32(bytes, RAMDISK_SIZE_OFFSET)? as usize;
+    let ramdisk_offset = align_up_checked(
+        PAGE_SIZE.checked_add(kernel_size).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "Fastboot image audit overflow")
+        })?,
+        PAGE_SIZE,
+    )?;
+    let tail_offset = align_up_checked(
+        ramdisk_offset.checked_add(ramdisk_size).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "Fastboot image audit overflow")
+        })?,
+        PAGE_SIZE,
+    )?;
+    if tail_offset > bytes.len() || ramdisk_offset + ramdisk_size > bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Fastboot image audit: kernel or ramdisk exceeds image",
+        ));
+    }
+    println!(
+        "Fastboot image audit: PASS (kernel={} bytes, ramdisk={} bytes, tail={} bytes)",
+        kernel_size,
+        ramdisk_size,
+        bytes.len() - tail_offset
+    );
+    Ok(())
+}
+
 fn strip_avb_metadata(image: &[u8]) -> io::Result<&[u8]> {
     const AVB_FOOTER_SIZE: usize = 64;
     if image.len() < AVB_FOOTER_SIZE
@@ -1076,6 +1512,26 @@ fn read_le_u32(bytes: &[u8], offset: usize) -> io::Result<u32> {
         .get(offset..end)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "boot header is truncated"))?;
     Ok(u32::from_le_bytes(value.try_into().unwrap()))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> io::Result<u32> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "integer overflow"))?;
+    let value = bytes
+        .get(offset..end)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "buffer is truncated"))?;
+    Ok(u32::from_le_bytes(value.try_into().unwrap()))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> io::Result<u64> {
+    let end = offset
+        .checked_add(8)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "integer overflow"))?;
+    let value = bytes
+        .get(offset..end)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "buffer is truncated"))?;
+    Ok(u64::from_le_bytes(value.try_into().unwrap()))
 }
 
 fn write_le_u32(bytes: &mut [u8], offset: usize, value: u32) -> io::Result<()> {
@@ -1750,8 +2206,9 @@ fn run_qemu(
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args, make_aarch64_image,
-        make_lz4_frame, patch_bramble_boot_image, strip_avb_metadata, xxhash32,
+        Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args, audit_aarch64_image_bytes,
+        audit_android_boot_image, audit_bramble_boot_image, decode_literal_lz4_frame,
+        make_aarch64_image, make_lz4_frame, patch_bramble_boot_image, strip_avb_metadata, xxhash32,
     };
     use clap::Parser;
     use std::{fs, path::Path};
@@ -1870,12 +2327,39 @@ mod tests {
         fs::write(&kernel, b"new Image.lz4").unwrap();
 
         patch_bramble_boot_image(&template, &kernel, &output).unwrap();
+        audit_bramble_boot_image(&template, &kernel, &output).unwrap();
+        audit_android_boot_image(&output).unwrap();
         let patched = fs::read(&output).unwrap();
         assert_eq!(&patched[..8], b"ANDROID!");
         assert_eq!(u32::from_le_bytes(patched[8..12].try_into().unwrap()), 13);
         assert_eq!(&patched[4096..4109], b"new Image.lz4");
         assert_eq!(&patched[8192..8197], b"ramfs");
         assert_eq!(&patched[12288..], b"tail");
+    }
+
+    #[test]
+    fn boot_audit_rejects_kernel_payload_corruption() {
+        let directory = tempdir().unwrap();
+        let template = directory.path().join("boot.img");
+        let kernel = directory.path().join("Image.lz4");
+        let output = directory.path().join("patched-boot.img");
+
+        let mut boot = vec![0u8; 4096];
+        boot[..8].copy_from_slice(b"ANDROID!");
+        boot[12..16].copy_from_slice(&5u32.to_le_bytes());
+        boot[20..24].copy_from_slice(&3u32.to_le_bytes());
+        boot[40..44].copy_from_slice(&3u32.to_le_bytes());
+        boot.resize(8192, 0);
+        boot.extend_from_slice(b"ramfs");
+        boot.resize(12288, 0);
+        fs::write(&template, boot).unwrap();
+        fs::write(&kernel, b"kernel").unwrap();
+
+        patch_bramble_boot_image(&template, &kernel, &output).unwrap();
+        let mut corrupted = fs::read(&output).unwrap();
+        corrupted[4096] ^= 1;
+        fs::write(&output, corrupted).unwrap();
+        assert!(audit_bramble_boot_image(&template, &kernel, &output).is_err());
     }
 
     #[test]
@@ -1958,6 +2442,26 @@ mod tests {
             &frame[17 + payload.len()..],
             &xxhash32(payload, 0).to_le_bytes()
         );
+        assert_eq!(decode_literal_lz4_frame(&frame).unwrap(), payload);
+    }
+
+    #[test]
+    fn lz4_audit_rejects_a_modified_content_checksum() {
+        let mut frame = make_lz4_frame(b"fullerene-aarch64");
+        let last = frame.len() - 1;
+        frame[last] ^= 1;
+        assert!(decode_literal_lz4_frame(&frame).is_err());
+    }
+
+    #[test]
+    fn aarch64_image_audit_checks_payload_and_header() {
+        let raw = [0xaa, 0xbb, 0xcc, 0xdd];
+        let image = make_aarch64_image(&raw);
+        audit_aarch64_image_bytes(&image, &raw).unwrap();
+
+        let mut corrupted = image;
+        corrupted[56] = 0;
+        assert!(audit_aarch64_image_bytes(&corrupted, &raw).is_err());
     }
 
     #[test]
