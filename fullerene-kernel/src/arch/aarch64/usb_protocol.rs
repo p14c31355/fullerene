@@ -12,7 +12,7 @@ pub enum ControlAction {
     StatusIn,
     StatusOut,
     Setup,
-    Unsupported,
+    Stall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +94,7 @@ impl Ep0Simulator {
 
     pub fn on_setup(&mut self, packet: [u8; 8], response: &mut [u8]) -> ControlAction {
         if self.state != Ep0State::Setup {
-            return ControlAction::Unsupported;
+            return ControlAction::Stall;
         }
 
         let request_type = packet[0];
@@ -148,7 +148,7 @@ impl Ep0Simulator {
         }
 
         self.state = Ep0State::Setup;
-        ControlAction::Unsupported
+        ControlAction::Stall
     }
 
     pub fn on_transfer_complete(&mut self) -> ControlAction {
@@ -242,6 +242,20 @@ mod tests {
         ep0.reset();
         assert_eq!(ep0.address(), 0);
         assert!(!ep0.configured());
+        assert_eq!(
+            ep0.on_setup([0x80, 6, 0, 1, 0, 0, 18, 0], &mut response),
+            ControlAction::DataIn(18)
+        );
+    }
+
+    #[test]
+    fn unsupported_control_request_stalls_instead_of_leaving_ep0_idle() {
+        let mut ep0 = Ep0Simulator::new();
+        let mut response = [0; 512];
+        assert_eq!(
+            ep0.on_setup([0, 0x7f, 0, 0, 0, 0, 0, 0], &mut response),
+            ControlAction::Stall
+        );
         assert_eq!(
             ep0.on_setup([0x80, 6, 0, 1, 0, 0, 18, 0], &mut response),
             ControlAction::DataIn(18)

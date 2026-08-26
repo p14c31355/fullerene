@@ -109,7 +109,7 @@ extern "C" fn aarch64_exception_irq() {
         );
     }
     #[cfg(fullerene_aarch64_bramble)]
-    let usb_irq = interrupt_id as u32 == super::platform::bramble::USB_DWC3_IRQ;
+    let usb_irq = super::platform::bramble::is_usb_irq(interrupt_id as u32);
     #[cfg(not(fullerene_aarch64_bramble))]
     let usb_irq = false;
     if !usb_irq {

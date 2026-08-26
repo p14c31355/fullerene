@@ -174,6 +174,98 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
     None
 }
 
+/// Read one 32-bit big-endian property from the first enabled node matching
+/// `target`. This is deliberately allocation-free and is used for the small
+/// Qualcomm USB contract fields that are not encoded in `reg` (DMA pool,
+/// clock rates, GSI count, and PM QoS latency).
+pub fn find_compatible_property_u32(
+    address: u64,
+    target: &[u8],
+    property: &[u8],
+    index: usize,
+) -> Option<u32> {
+    let header = inspect(address)?;
+    let base = address as *const u8;
+    let structure = unsafe { base.add(header.structure_offset as usize) };
+    let strings = unsafe { base.add(header.strings_offset as usize) };
+    let structure_end = unsafe { structure.add(header.structure_size as usize) };
+    let strings_end = unsafe { strings.add(header.strings_size as usize) };
+    let mut cursor = structure;
+    let mut depth = 0usize;
+    let mut states = [PropertyNodeState::new(); 16];
+
+    while (cursor as usize) < (structure_end as usize) {
+        if (structure_end as usize) - (cursor as usize) < 4 {
+            return None;
+        }
+        let token = read_be32(cursor, 0)?;
+        cursor = unsafe { cursor.add(4) };
+        match token {
+            FDT_BEGIN_NODE => {
+                if depth + 1 >= states.len() {
+                    return None;
+                }
+                depth += 1;
+                states[depth] = PropertyNodeState::new();
+                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
+                    cursor = unsafe { cursor.add(1) };
+                }
+                if (cursor as usize) >= (structure_end as usize) {
+                    return None;
+                }
+                cursor = align4(unsafe { cursor.add(1) });
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_END_NODE => {
+                if depth == 0 {
+                    return None;
+                }
+                let state = states[depth];
+                if state.enabled && state.compatible && state.property_value.is_some() {
+                    return state.property_value;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            FDT_PROP => {
+                if (structure_end as usize) - (cursor as usize) < 8 {
+                    return None;
+                }
+                let length = read_be32(cursor, 0)? as usize;
+                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
+                let value = unsafe { cursor.add(8) };
+                let value_end = (value as usize).checked_add(length)? as *const u8;
+                if (value_end as usize) > (structure_end as usize)
+                    || name_offset >= header.strings_size
+                {
+                    return None;
+                }
+                let name = unsafe { strings.add(name_offset as usize) };
+                let state = &mut states[depth];
+                if c_string_eq(name, strings_end, b"compatible") {
+                    state.compatible = compatible_list_contains(value, length, target);
+                } else if c_string_eq(name, strings_end, b"status") {
+                    state.enabled = !c_string_eq(value, value_end, b"disabled");
+                } else if c_string_eq(name, strings_end, property) {
+                    let offset = index.checked_mul(4)?;
+                    if offset.checked_add(4)? <= length {
+                        state.property_value = read_be32(value, offset as u32);
+                    }
+                }
+                cursor = align4(value_end);
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_NOP => {}
+            FDT_END => return None,
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn read_be32(base: *const u8, offset: u32) -> Option<u32> {
     let value = unsafe { read_volatile(base.add(offset as usize) as *const u32) };
     Some(u32::from_be(value))
@@ -188,6 +280,23 @@ struct NodeState {
     compatible: bool,
     enabled: bool,
     regions: [Option<Region>; 2],
+}
+
+#[derive(Clone, Copy)]
+struct PropertyNodeState {
+    compatible: bool,
+    enabled: bool,
+    property_value: Option<u32>,
+}
+
+impl PropertyNodeState {
+    const fn new() -> Self {
+        Self {
+            compatible: false,
+            enabled: true,
+            property_value: None,
+        }
+    }
 }
 
 impl NodeState {

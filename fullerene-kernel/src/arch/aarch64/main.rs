@@ -361,11 +361,17 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     #[cfg(fullerene_aarch64_bramble)]
     usb::trace_marker(usb::TRACE_TYPEC_BEGIN, 0);
     #[cfg(fullerene_aarch64_bramble)]
+    usb::note_platform_powered();
+    #[cfg(fullerene_aarch64_bramble)]
     if let Some(typec) = unsafe { platform::bramble::prepare_usb_device_role() } {
         usb::set_typec_orientation(typec.orientation_reverse);
+        usb::note_typec_attached(typec.attached);
         usb::trace_marker(
             usb::TRACE_TYPEC_DONE,
-            (typec.sink_mode_written as u32) | ((typec.misc_status as u32) << 8),
+            (typec.sink_mode_written as u32)
+                | ((typec.attached as u32) << 1)
+                | ((typec.attach_settled as u32) << 2)
+                | ((typec.misc_status as u32) << 8),
         );
         uart::put_hex("platform: PMIC arbiter=", typec.arbiter_version as u64);
         uart::put_hex("platform: Type-C status=", typec.misc_status as u64);
@@ -373,6 +379,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
         uart::put_hex(
             "platform: Type-C orientation=",
             typec.orientation_reverse as u64,
+        );
+        uart::put_hex("platform: Type-C attached=", typec.attached as u64);
+        uart::put_hex(
+            "platform: Type-C attach-settled=",
+            typec.attach_settled as u64,
         );
         if typec.sink_mode_written {
             uart::puts("platform: Type-C sink-only selected\n");

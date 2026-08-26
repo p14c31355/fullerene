@@ -24,7 +24,7 @@ fn expect_model_queue(ok: bool, name: &str) -> bool {
         if ok {
             ControlAction::Setup
         } else {
-            ControlAction::Unsupported
+            ControlAction::Stall
         },
         ControlAction::Setup,
         name,
@@ -210,7 +210,7 @@ pub fn run() -> bool {
         if final_state {
             ControlAction::Setup
         } else {
-            ControlAction::Unsupported
+            ControlAction::Stall
         },
         ControlAction::Setup,
         "final EP0/controller state",

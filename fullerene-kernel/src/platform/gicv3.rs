@@ -53,6 +53,16 @@ unsafe fn enable_spi(gicd_base: usize, interrupt_id: u32) {
     }
 }
 
+/// Enable additional parent SPIs after platform-specific interrupt
+/// controllers (such as Qualcomm PDC) have translated their child lines.
+/// This keeps the generic GIC setup reusable while preserving the distinction
+/// between a PDC pin and its GIC parent interrupt.
+pub unsafe fn enable_spis(gicd_base: usize, interrupts: &[u32]) {
+    for &interrupt_id in interrupts {
+        unsafe { enable_spi(gicd_base, interrupt_id) };
+    }
+}
+
 unsafe fn write64(address: usize, value: u64) {
     unsafe { core::ptr::write_volatile(address as *mut u64, value) };
 }
