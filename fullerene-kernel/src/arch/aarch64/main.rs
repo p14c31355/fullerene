@@ -258,8 +258,6 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             let hs_phy = fdt::find_compatible(address, b"qcom,usb-hsphy-snps-femto");
             let qmp_phy = fdt::find_compatible(address, b"qcom,usb-ssphy-qmp-dp-combo");
             let gcc = fdt::find_compatible(address, b"qcom,gcc-lito");
-            let apps_smmu = fdt::find_compatible_nth(address, b"qcom,qsmmu-v500", 1)
-                .or_else(|| fdt::find_compatible(address, b"qcom,qsmmu-v500"));
             let pdc = fdt::find_compatible(address, b"qcom,lito-pdc");
             let usb_node = b"qcom,dwc-usb3-msm";
             let mut contract = platform::bramble::UsbDtContract::empty();
@@ -287,7 +285,22 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             };
             // `iommus = <&apps_smmu SID 0>`: cell 0 is the phandle, cell 1
             // is the stream ID consumed by the SMMU context-bank setup.
+            let usb_smmu_phandle =
+                fdt::find_compatible_property_u32(address, usb_node, b"iommus", 0);
             contract.stream_id = fdt::find_compatible_property_u32(address, usb_node, b"iommus", 1);
+            // Resolve the SMMU through the consumer's phandle. The Lito DT
+            // has both KGSL and Apps-SMMU nodes with the same compatible;
+            // relying on their source-order would make a valid DT overlay
+            // select the wrong SMMU and its capabilities.
+            let apps_smmu = usb_smmu_phandle
+                .and_then(|phandle| fdt::find_phandle_region(address, phandle))
+                .or_else(|| fdt::find_compatible_nth(address, b"qcom,qsmmu-v500", 1))
+                .or_else(|| fdt::find_compatible(address, b"qcom,qsmmu-v500"));
+            contract.smmu_use_3_level_tables = usb_smmu_phandle
+                .and_then(|phandle| {
+                    fdt::find_phandle_property_u32(address, phandle, b"qcom,use-3-lvl-tables", 0)
+                })
+                .map(|_| true);
             // Lito's `interrupts-extended` tuples are
             // (PDC phandle, pin, trigger), (GIC phandle, type, SPI,
             // trigger), then two more PDC tuples.  The child DWC3 node has

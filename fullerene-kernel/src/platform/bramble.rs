@@ -744,6 +744,10 @@ pub struct UsbPlatformResources {
     /// array is fixed because the Android binding has a fixed 18-slot ABI.
     pub qmp_reg_offsets: [usize; 18],
     pub apps_smmu_base: usize,
+    /// The Android Apps-SMMU DT sets qcom,use-3-lvl-tables.  This selects the
+    /// 39-bit AArch64 IOVA aperture used when a fresh context is installed;
+    /// it does not require every mapping to terminate at an L3 page entry.
+    pub smmu_use_3_level_tables: bool,
     pub pdc_base: usize,
     pub gdsc: usize,
     pub controller_clocks: &'static [ClockResource; 6],
@@ -774,6 +778,7 @@ pub struct UsbPlatformResources {
 pub struct UsbDtContract {
     pub dma_pool: Option<(u64, u64)>,
     pub stream_id: Option<u32>,
+    pub smmu_use_3_level_tables: Option<bool>,
     pub qmp_reg_offsets: [Option<u32>; 18],
     pub core_clk_rate_hz: Option<u32>,
     pub core_clk_rate_hs_hz: Option<u32>,
@@ -828,6 +833,7 @@ impl UsbDtContract {
         Self {
             dma_pool: None,
             stream_id: None,
+            smmu_use_3_level_tables: None,
             qmp_reg_offsets: [None; 18],
             core_clk_rate_hz: None,
             core_clk_rate_hs_hz: None,
@@ -1291,6 +1297,7 @@ pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
     // apps_smmu: qcom,qsmmu-v500 at 0x15000000 in msm-arm-smmu-lito.dtsi.
     // 0x0c600000 belongs to the SPMI arbiter channel window.
     apps_smmu_base: 0x1500_0000,
+    smmu_use_3_level_tables: true,
     pdc_base: USB_PDC_BASE,
     gdsc: USB30_PRIM_GDSC,
     controller_clocks: &BRAMBLE_CONTROLLER_CLOCKS,
@@ -1470,6 +1477,10 @@ pub fn install_usb_resource_contract(
                 resources.dma_pool.stream_id = stream_id;
                 installed = true;
             }
+        }
+        if let Some(use_3_level_tables) = contract.smmu_use_3_level_tables {
+            resources.smmu_use_3_level_tables = use_3_level_tables;
+            installed = true;
         }
         if contract.qmp_reg_offsets.iter().all(Option::is_some) {
             let offsets = contract.qmp_reg_offsets.map(Option::unwrap);
@@ -2991,6 +3002,7 @@ mod tests {
         assert_eq!(resources.qmp_reg_offsets[14], 0x1c8c);
         assert_eq!(resources.qmp_reg_offsets[15], 0x1c18);
         assert_eq!(resources.apps_smmu_base, 0x1500_0000);
+        assert!(resources.smmu_use_3_level_tables);
         assert_eq!(resources.pdc_base, 0x0b22_0000);
         assert_eq!(pdc_parent_irq(14), Some(494));
         assert_eq!(pdc_parent_irq(9), Some(489));

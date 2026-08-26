@@ -186,6 +186,128 @@ pub fn find_compatible_property_u32(
     property: &[u8],
     index: usize,
 ) -> Option<u32> {
+    find_compatible_nth_property_u32(address, target, property, index, 0)
+}
+
+/// Read one 32-bit property from the `node_index`th enabled node whose
+/// `compatible` list contains `target`. Qualcomm DTs commonly contain more
+/// than one `qcom,qsmmu-v500` node (for example KGSL followed by Apps-SMMU),
+/// so selecting the first compatible node is not sufficient for SMMU options.
+pub fn find_compatible_nth_property_u32(
+    address: u64,
+    target: &[u8],
+    property: &[u8],
+    index: usize,
+    node_index: usize,
+) -> Option<u32> {
+    let header = inspect(address)?;
+    let base = address as *const u8;
+    let structure = unsafe { base.add(header.structure_offset as usize) };
+    let strings = unsafe { base.add(header.strings_offset as usize) };
+    let structure_end = unsafe { structure.add(header.structure_size as usize) };
+    let strings_end = unsafe { strings.add(header.strings_size as usize) };
+    let mut cursor = structure;
+    let mut depth = 0usize;
+    let mut states = [PropertyNodeState::new(); 16];
+    let mut matching_nodes = 0usize;
+
+    while (cursor as usize) < (structure_end as usize) {
+        if (structure_end as usize) - (cursor as usize) < 4 {
+            return None;
+        }
+        let token = read_be32(cursor, 0)?;
+        cursor = unsafe { cursor.add(4) };
+        match token {
+            FDT_BEGIN_NODE => {
+                if depth + 1 >= states.len() {
+                    return None;
+                }
+                depth += 1;
+                states[depth] = PropertyNodeState::new();
+                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
+                    cursor = unsafe { cursor.add(1) };
+                }
+                if (cursor as usize) >= (structure_end as usize) {
+                    return None;
+                }
+                cursor = align4(unsafe { cursor.add(1) });
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_END_NODE => {
+                if depth == 0 {
+                    return None;
+                }
+                let state = states[depth];
+                if state.enabled && state.compatible {
+                    let selected = matching_nodes == node_index;
+                    matching_nodes = matching_nodes.saturating_add(1);
+                    if selected {
+                        return state.property_value;
+                    }
+                }
+                depth = depth.saturating_sub(1);
+            }
+            FDT_PROP => {
+                if (structure_end as usize) - (cursor as usize) < 8 {
+                    return None;
+                }
+                let length = read_be32(cursor, 0)? as usize;
+                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
+                let value = unsafe { cursor.add(8) };
+                let value_end = (value as usize).checked_add(length)? as *const u8;
+                if (value_end as usize) > (structure_end as usize)
+                    || name_offset >= header.strings_size
+                {
+                    return None;
+                }
+                let name = unsafe { strings.add(name_offset as usize) };
+                let state = &mut states[depth];
+                if c_string_eq(name, strings_end, b"phandle")
+                    || c_string_eq(name, strings_end, b"linux,phandle")
+                {
+                    if length >= 4 {
+                        state.phandle = read_be32(value, 0);
+                    }
+                } else if c_string_eq(name, strings_end, b"compatible") {
+                    state.compatible = compatible_list_contains(value, length, target);
+                } else if c_string_eq(name, strings_end, b"status") {
+                    state.enabled = !c_string_eq(value, value_end, b"disabled");
+                } else if c_string_eq(name, strings_end, property) {
+                    state.property_seen = true;
+                    if length == 0 {
+                        state.property_value = Some(0);
+                    } else {
+                        let offset = index.checked_mul(4)?;
+                        if offset.checked_add(4)? <= length {
+                            state.property_value = read_be32(value, offset as u32);
+                        }
+                    }
+                }
+                cursor = align4(value_end);
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_NOP => {}
+            FDT_END => return None,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Read one 32-bit property from the enabled node identified by a phandle.
+/// This is used for provider capabilities such as
+/// `qcom,use-3-lvl-tables`, where selecting the nth compatible node would
+/// silently bind the consumer to the wrong SMMU if the DT node order changes.
+pub fn find_phandle_property_u32(
+    address: u64,
+    target: u32,
+    property: &[u8],
+    index: usize,
+) -> Option<u32> {
     let header = inspect(address)?;
     let base = address as *const u8;
     let structure = unsafe { base.add(header.structure_offset as usize) };
@@ -225,7 +347,7 @@ pub fn find_compatible_property_u32(
                     return None;
                 }
                 let state = states[depth];
-                if state.enabled && state.compatible && state.property_value.is_some() {
+                if state.enabled && state.phandle == Some(target) {
                     return state.property_value;
                 }
                 depth = depth.saturating_sub(1);
@@ -245,8 +367,12 @@ pub fn find_compatible_property_u32(
                 }
                 let name = unsafe { strings.add(name_offset as usize) };
                 let state = &mut states[depth];
-                if c_string_eq(name, strings_end, b"compatible") {
-                    state.compatible = compatible_list_contains(value, length, target);
+                if c_string_eq(name, strings_end, b"phandle")
+                    || c_string_eq(name, strings_end, b"linux,phandle")
+                {
+                    if length >= 4 {
+                        state.phandle = read_be32(value, 0);
+                    }
                 } else if c_string_eq(name, strings_end, b"status") {
                     state.enabled = !c_string_eq(value, value_end, b"disabled");
                 } else if c_string_eq(name, strings_end, property) {
@@ -499,6 +625,14 @@ pub fn find_phandle_property_region(
     property: &[u8],
 ) -> Option<Region> {
     let target = find_compatible_property_u32(address, source_node, property, 0)?;
+    find_phandle_region(address, target)
+}
+
+/// Return the first `reg` tuple of the enabled node carrying `target` as its
+/// `phandle`/`linux,phandle`.  This is the non-ambiguous counterpart to a
+/// compatible-string lookup: Qualcomm DTs contain multiple instances of
+/// providers such as `qcom,qsmmu-v500`.
+pub fn find_phandle_region(address: u64, target: u32) -> Option<Region> {
     let header = inspect(address)?;
     let base = address as *const u8;
     let structure = unsafe { base.add(header.structure_offset as usize) };
@@ -622,6 +756,7 @@ struct PropertyNodeState {
     enabled: bool,
     property_seen: bool,
     property_value: Option<u32>,
+    phandle: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -674,6 +809,7 @@ impl PropertyNodeState {
             enabled: true,
             property_seen: false,
             property_value: None,
+            phandle: None,
         }
     }
 }

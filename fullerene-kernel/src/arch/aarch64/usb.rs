@@ -86,6 +86,25 @@ const SMMU_CB_TCR: usize = 0x30;
 const SMMU_CB_CONTEXTIDR: usize = 0x34;
 const SMMU_CB_MAIR0: usize = 0x38;
 const SMMU_CB_MAIR1: usize = 0x3c;
+const SMMU_CB_RESUME: usize = 0x08;
+const SMMU_CB_FSR: usize = 0x58;
+const SMMU_CB_FAR: usize = 0x60;
+const SMMU_CB_FSYNR0: usize = 0x68;
+const SMMU_GR0_FSR: usize = 0x48;
+const SMMU_GR0_FSYNR0: usize = 0x50;
+const SMMU_RESUME_TERMINATE: u32 = 1;
+const SMMU_GLOBAL_FSR_FAULT: u32 = 1 << 1;
+const SMMU_FSR_SS: u32 = 1 << 30;
+const SMMU_FSR_FAULT: u32 = (1 << 31)
+    | (1 << 30)
+    | (1 << 8)
+    | (1 << 7)
+    | (1 << 6)
+    | (1 << 5)
+    | (1 << 4)
+    | (1 << 3)
+    | (1 << 2)
+    | (1 << 1);
 const SMMU_SCTLR_S1_ASIDPNE: u32 = 1 << 12;
 const SMMU_SCTLR_CFIE: u32 = 1 << 6;
 const SMMU_SCTLR_CFRE: u32 = 1 << 5;
@@ -97,6 +116,7 @@ const SMMU_TCR_SH0_INNER: u32 = 3 << 12;
 const SMMU_TCR_ORGN0_WBWA: u32 = 1 << 10;
 const SMMU_TCR_IRGN0_WBWA: u32 = 1 << 8;
 const SMMU_TCR_T0SZ_32BIT: u32 = 32;
+const SMMU_TCR_T0SZ_39BIT: u32 = 25;
 const SMMU_TCR2_SEP_UPSTREAM: u32 = 0x7 << 15;
 const SMMU_TCR2_AS: u32 = 1 << 4;
 const SMMU_TCR2_PASIZE_40BIT: u32 = 2;
@@ -113,9 +133,14 @@ struct SmmuTable([u64; 512]);
 static mut SMMU_L1: SmmuTable = SmmuTable([0; 512]);
 #[unsafe(link_section = ".usb_dma")]
 static mut SMMU_L2: [SmmuTable; 4] = [SmmuTable([0; 512]); 4];
+static mut SMMU_CONTEXT_PAGE: usize = usize::MAX;
+static mut SMMU_CONTEXT_PAGE_SIZE: usize = 0;
 
 const SMMU_DESC_VALID: u64 = 1;
 const SMMU_DESC_TABLE: u64 = 3;
+const SMMU_DESC_BLOCK: u64 = 1;
+const SMMU_DESC_TYPE_MASK: u64 = 3;
+const SMMU_DESC_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const SMMU_DESC_AF: u64 = 1 << 10;
 const SMMU_DESC_SH_INNER: u64 = 3 << 8;
 const SMMU_DESC_ATTR_NORMAL: u64 = 0;
@@ -677,6 +702,10 @@ pub const TRACE_PLATFORM_IRQ: u32 = 25;
 pub const TRACE_UDC_REARM: u32 = 26;
 const TRACE_SMMU_BEGIN: u32 = 27;
 const TRACE_SMMU_READY: u32 = 28;
+const TRACE_SMMU_HANDOFF: u32 = 34;
+const TRACE_SMMU_PRESERVED: u32 = 35;
+const TRACE_SMMU_FAULT: u32 = 36;
+const TRACE_SMMU_GLOBAL_FAULT: u32 = 37;
 const TRACE_UTMI_CLOCK: u32 = 29;
 const TRACE_EVENT_RING_READY: u32 = 30;
 const TRACE_DWC3_HALTED: u32 = 31;
@@ -922,8 +951,106 @@ unsafe fn smmu_page_write(page_size: usize, page: usize, offset: usize, value: u
 }
 
 #[inline]
+unsafe fn smmu_page_read(page_size: usize, page: usize, offset: usize) -> u32 {
+    unsafe { read_volatile(smmu_page_reg(page_size, page, offset)) }
+}
+
+#[inline]
 unsafe fn smmu_page_write64(page_size: usize, page: usize, offset: usize, value: u64) {
     unsafe { write_volatile(smmu_page_reg(page_size, page, offset).cast::<u64>(), value) };
+}
+
+#[inline]
+unsafe fn smmu_page_read64(page_size: usize, page: usize, offset: usize) -> u64 {
+    unsafe { read_volatile(smmu_page_reg(page_size, page, offset).cast::<u64>()) }
+}
+
+/// Verify that an already-live S1 context translates the complete linker DMA
+/// section as an identity map. A Fastboot handoff may safely preserve Linux's
+/// context only when its page tables cover every Fullerene TRB/event object;
+/// preserving an unrelated bootloader map would make the first DMA fault look
+/// like an EP0 protocol failure.
+unsafe fn smmu_context_maps_identity(ttbr0: u64, tcr: u32, start: usize, end: usize) -> bool {
+    let iova_start = start as u64;
+    let iova_end = end as u64;
+    if ttbr0 == 0
+        || ttbr0 == u64::MAX
+        || start >= end
+        || iova_end > (1u64 << 39)
+        || (tcr >> 14) & 0x3 != 0
+    {
+        return false;
+    }
+
+    // Linux's qcom,use-3-lvl-tables caps the AArch64 aperture at 39 bits;
+    // T0SZ=25 (39-bit) and T0SZ=32 (32-bit) both use an L1->L2->L3 walk for
+    // a 4 KiB granule. This checker intentionally refuses an unfamiliar
+    // format instead of guessing at a table level.
+    let iova_bits = 64u32.saturating_sub(tcr & 0x3f);
+    if !(30..=39).contains(&iova_bits) {
+        return false;
+    }
+
+    // Linux stores the context ASID in TTBR0[63:48]. It is not part of the
+    // physical page-table address and must be removed before the CPU-side
+    // identity walk below; otherwise a live Android context can appear
+    // unmapped solely because its ASID is non-zero.
+    let table_root = ttbr0 & 0x0000_ffff_ffff_f000;
+    let read_entry = |base: u64, index: u64| -> Option<u64> {
+        let offset = index.checked_mul(8)?;
+        let address = base.checked_add(offset)?;
+        (address <= usize::MAX as u64)
+            .then(|| unsafe { read_volatile(address as usize as *const u64) })
+    };
+    let maps_one_2m_block = |address: u64| -> bool {
+        let l1_index = (address >> 30) & 0x1ff;
+        let Some(l1) = read_entry(table_root, l1_index) else {
+            return false;
+        };
+        match l1 & SMMU_DESC_TYPE_MASK {
+            // An existing Android/IOMMU mapping may use a 1 GiB identity
+            // block for a large DMA aperture. It is just as valid for the
+            // preservation check as the finer-grained L2/L3 forms.
+            SMMU_DESC_BLOCK => {
+                l1 & SMMU_DESC_ADDRESS_MASK == address & !((1u64 << 30) - 1)
+                    && l1 & SMMU_DESC_VALID != 0
+            }
+            SMMU_DESC_TABLE => {
+                let l2_base = l1 & SMMU_DESC_ADDRESS_MASK;
+                let l2_index = (address >> 21) & 0x1ff;
+                let Some(l2) = read_entry(l2_base, l2_index) else {
+                    return false;
+                };
+                let block_base = address & !((1u64 << 21) - 1);
+                match l2 & SMMU_DESC_TYPE_MASK {
+                    SMMU_DESC_BLOCK => {
+                        l2 & SMMU_DESC_ADDRESS_MASK == block_base && l2 & SMMU_DESC_VALID != 0
+                    }
+                    SMMU_DESC_TABLE => {
+                        let l3_base = l2 & SMMU_DESC_ADDRESS_MASK;
+                        let l3_index = (address >> 12) & 0x1ff;
+                        let Some(l3) = read_entry(l3_base, l3_index) else {
+                            return false;
+                        };
+                        l3 & SMMU_DESC_TYPE_MASK == SMMU_DESC_TABLE
+                            && l3 & SMMU_DESC_ADDRESS_MASK == address & !0xfff
+                            && l3 & SMMU_DESC_VALID != 0
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    };
+
+    let mut address = iova_start & !((1u64 << 21) - 1);
+    while address < iova_end {
+        if !maps_one_2m_block(address) {
+            return false;
+        }
+        address = address.saturating_add(1u64 << 21);
+    }
+    true
 }
 
 unsafe fn smmu_tlb_sync() {
@@ -936,6 +1063,47 @@ unsafe fn smmu_tlb_sync() {
             }
             core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
         }
+    }
+}
+
+/// Consume an Apps-SMMU context fault using the same ordering as Linux's
+/// arm_smmu_context_fault(): sample FSR/FAR/FSYNR0, retain the evidence, then
+/// clear FSR and terminate a stalled transaction. This is polled because the
+/// early Fullerene image does not yet own the SMMU context-fault IRQ domain.
+unsafe fn service_smmu_fault() {
+    let global_fsr = unsafe { read_volatile(smmu_reg(SMMU_GR0_FSR)) };
+    if global_fsr != 0 && global_fsr != u32::MAX && global_fsr & SMMU_GLOBAL_FSR_FAULT != 0 {
+        let global_fsynr0 = unsafe { read_volatile(smmu_reg(SMMU_GR0_FSYNR0)) };
+        trace_event(TRACE_SMMU_GLOBAL_FAULT, global_fsr, global_fsynr0, 0, 0, 0);
+        log_hex("usb: Apps SMMU global fault FSR=", global_fsr as u64);
+        unsafe { write_volatile(smmu_reg(SMMU_GR0_FSR), global_fsr) };
+        unsafe { core::arch::asm!("dsb sy", options(nostack)) };
+    }
+    let page = unsafe { SMMU_CONTEXT_PAGE };
+    let page_size = unsafe { SMMU_CONTEXT_PAGE_SIZE };
+    if page == usize::MAX || page_size == 0 {
+        return;
+    }
+    let fsr = unsafe { smmu_page_read(page_size, page, SMMU_CB_FSR) };
+    if fsr == 0 || fsr == u32::MAX || fsr & SMMU_FSR_FAULT == 0 {
+        return;
+    }
+    let far = unsafe { smmu_page_read64(page_size, page, SMMU_CB_FAR) };
+    let fsynr0 = unsafe { smmu_page_read(page_size, page, SMMU_CB_FSYNR0) };
+    trace_event(
+        TRACE_SMMU_FAULT,
+        fsr,
+        fsynr0,
+        far as u32,
+        (far >> 32) as u32,
+        page as u32,
+    );
+    log_hex("usb: Apps SMMU context fault FSR=", fsr as u64);
+    log_hex("usb: Apps SMMU FAR=", far);
+    unsafe { smmu_page_write(page_size, page, SMMU_CB_FSR, fsr) };
+    unsafe { core::arch::asm!("dsb sy", options(nostack)) };
+    if fsr & SMMU_FSR_SS != 0 {
+        unsafe { smmu_page_write(page_size, page, SMMU_CB_RESUME, SMMU_RESUME_TERMINATE) };
     }
 }
 
@@ -1012,6 +1180,10 @@ unsafe fn install_smmu_identity_table(pool: super::platform::bramble::DmaPoolRes
 /// route it to a context bank configured as S1 translation + S2 bypass.
 pub fn configure_dwc3_smmu() -> bool {
     unsafe {
+        // A failed reconfiguration must not leave the fault poller pointing
+        // at a context bank from an earlier controller lifetime.
+        SMMU_CONTEXT_PAGE = usize::MAX;
+        SMMU_CONTEXT_PAGE_SIZE = 0;
         let pool = super::platform::bramble::usb_resources().dma_pool;
         let dma_start = addr_of!(__usb_dma_start) as usize;
         let dma_end = addr_of!(__usb_dma_end) as usize;
@@ -1102,6 +1274,38 @@ pub fn configure_dwc3_smmu() -> bool {
         };
         log_hex("usb: DWC3 SMMU SMR=", smr_index as u64);
         log_hex("usb: DWC3 SMMU CB=", cbndx as u64);
+        SMMU_CONTEXT_PAGE = cb_base_page + cbndx;
+        SMMU_CONTEXT_PAGE_SIZE = page_size;
+
+        // Linux's SMMU driver owns this context, not the DWC3 glue. A
+        // Fastboot handoff can therefore arrive with a valid stage-1 map
+        // already installed for the same stream. Replacing that context
+        // underneath firmware is unsafe: the controller may still have an
+        // outstanding transaction using the old page tables, and changing
+        // TTBR0 can turn a benign handoff into a stream fault. Preserve a
+        // live translation context and use the declared pool check above as
+        // the ownership boundary for Fullerene's DMA objects.
+        if old_type == SMMU_S2CR_TYPE_TRANS {
+            let cb_page = cb_base_page + cbndx;
+            let sctlr = smmu_page_read(page_size, cb_page, SMMU_CB_SCTLR);
+            let ttbr0 = smmu_page_read64(page_size, cb_page, SMMU_CB_TTBR0);
+            let tcr = smmu_page_read(page_size, cb_page, SMMU_CB_TCR);
+            if sctlr & SMMU_SCTLR_M != 0
+                && smmu_context_maps_identity(ttbr0, tcr, dma_start, dma_end)
+            {
+                trace_event(
+                    TRACE_SMMU_PRESERVED,
+                    smr_index as u32,
+                    cbndx as u32,
+                    sctlr,
+                    ttbr0 as u32,
+                    (ttbr0 >> 32) as u32,
+                );
+                log_puts("usb: preserving active Apps SMMU translation\n");
+                return true;
+            }
+            log_puts("usb: active Apps SMMU map does not cover Fullerene DMA\n");
+        }
 
         if !install_smmu_identity_table(pool) {
             log_puts("usb: DT DMA pool is not 2 MiB aligned/32-bit addressable\n");
@@ -1132,15 +1336,16 @@ pub fn configure_dwc3_smmu() -> bool {
             SMMU_CB_TCR2,
             SMMU_TCR2_SEP_UPSTREAM | SMMU_TCR2_AS | SMMU_TCR2_PASIZE_40BIT,
         );
+        let t0sz = if super::platform::bramble::usb_resources().smmu_use_3_level_tables {
+            SMMU_TCR_T0SZ_39BIT
+        } else {
+            SMMU_TCR_T0SZ_32BIT
+        };
         smmu_page_write(
             page_size,
             cb_page,
             SMMU_CB_TCR,
-            SMMU_TCR_EPD1
-                | SMMU_TCR_SH0_INNER
-                | SMMU_TCR_ORGN0_WBWA
-                | SMMU_TCR_IRGN0_WBWA
-                | SMMU_TCR_T0SZ_32BIT,
+            SMMU_TCR_EPD1 | SMMU_TCR_SH0_INNER | SMMU_TCR_ORGN0_WBWA | SMMU_TCR_IRGN0_WBWA | t0sz,
         );
         smmu_page_write64(
             page_size,
@@ -2859,7 +3064,12 @@ unsafe fn handle_setup() {
                 read(DSTS),
             );
             EP0_STATE = Ep0State::Data;
-            let _ = start_transfer(1, addr_of!(EP0_TRBS).cast::<Trb>());
+            if !start_transfer(1, addr_of!(EP0_TRBS).cast::<Trb>()) {
+                // A failed DATA-IN command must not leave EP0 in the Data
+                // state: the next host request would otherwise be consumed
+                // by a stale state machine with no active TRB.
+                stall_control(1);
+            }
         },
         ControlAction::StatusIn => unsafe {
             EP0_STATE = Ep0State::Status;
@@ -2993,6 +3203,10 @@ unsafe fn process_event(raw: u32) {
             unsafe { complete_bulk_transfer(endpoint, status, raw) };
             return;
         }
+        if status != 0 {
+            unsafe { recover_control_transfer(endpoint, status, raw) };
+            return;
+        }
         trace_event(
             TRACE_TRANSFER_COMPLETE,
             event,
@@ -3065,6 +3279,36 @@ unsafe fn process_event(raw: u32) {
                 }
             }
         }
+    }
+}
+
+/// Recover EP0 after a non-success transfer-complete status.
+///
+/// DWC3 can report a completed control transfer with an error status when a
+/// host aborts the request, the link changes, or the controller loses the
+/// transfer resource during a handoff. Linux removes the old request before
+/// queueing the next SETUP; treating the event as a normal Data/Status
+/// transition would instead leave EP0 pointing at a retired TRB and produce
+/// another host timeout. Revoke the resource first, clear the software state,
+/// and rearm SETUP only after the endpoint ownership boundary is restored.
+unsafe fn recover_control_transfer(endpoint: usize, status: u32, raw: u32) {
+    trace_event(
+        TRACE_USB_DEVICE_ERROR,
+        endpoint as u32,
+        raw,
+        status,
+        EP0_STATE as u32,
+        read(DSTS),
+    );
+    if endpoint < 2 && EP0_RESOURCE_INDEX[endpoint] != 0 {
+        let _ = end_transfer(endpoint);
+        EP0_RESOURCE_INDEX[endpoint] = 0;
+    }
+    EP0_STATE = Ep0State::Setup;
+    CONTROL_IN = false;
+    CONTROL_HAS_DATA = false;
+    if ENDPOINTS_READY {
+        let _ = rearm_setup();
     }
 }
 
@@ -4157,25 +4401,35 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // Fastboot handoff reset; it does not retune the GCC source clock.
         update_dwc3_ref_clock();
 
-        // Linux/Android do not rewrite the Apps-SMMU context as part of the
-        // DWC3 gadget start: the IOMMU owner installs that context before the
-        // USB driver receives the device.  In particular, a Fastboot handoff
-        // must not replace a live firmware stream mapping while its teardown
-        // transaction is still settling.  The linker-reserved DMA section is
-        // therefore used only when the complete cold platform path owns the
-        // SMMU; the non-destructive handoff preserves the firmware context.
-        if reset_platform {
-            if configure_dwc3_smmu() {
-                uart::puts("usb: DWC3 SMMU DMA-pool map ready\n");
-            } else {
-                // A cold platform path owns the context it just selected;
-                // proceeding with an unverified IOVA map would turn the first
-                // TRB into an opaque DMA fault.
-                uart::puts("usb: DWC3 SMMU DMA-pool map unavailable\n");
-                return false;
-            }
+        // Linux/Android install the Apps-SMMU context before the DWC3 gadget
+        // receives a request. A `fastboot boot` image has no IOMMU framework
+        // to inherit that ownership, so the handoff must do the equivalent
+        // after the old DWC3 session has been stopped/reset and before any
+        // Fullerene event/TRB address is published. This is deliberately
+        // performed for both cold and Fastboot paths; preserving a live
+        // firmware mapping while using a different DMA pool is not a valid
+        // non-destructive handoff.
+        let smmu_ready = configure_dwc3_smmu();
+        trace_event(
+            TRACE_SMMU_HANDOFF,
+            smmu_ready as u32,
+            reset_platform as u32,
+            super::platform::bramble::usb_resources().dma_pool.stream_id,
+            super::platform::bramble::usb_resources().dma_pool.iova_base as u32,
+            super::platform::bramble::usb_resources().dma_pool.size as u32,
+        );
+        if smmu_ready {
+            uart::puts("usb: DWC3 SMMU DMA-pool map ready\n");
         } else {
-            uart::puts("usb: preserving firmware DWC3 SMMU context for handoff\n");
+            // Proceeding with an unverified IOVA map would turn the first
+            // SETUP TRB into an opaque DMA fault, so let the caller choose its
+            // explicit recovery/fallback path.
+            uart::puts(if reset_platform {
+                "usb: DWC3 SMMU DMA-pool map unavailable\n"
+            } else {
+                "usb: Fastboot SMMU handoff map unavailable\n"
+            });
+            return false;
         }
 
         let mut usb2 = read(GUSB2PHYCFG0);
@@ -4311,6 +4565,14 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 /// the early boot loop until the normal interrupt controller owns the device.
 pub fn poll() {
     unsafe {
+        let runtime = USB_RUNTIME_STATE;
+        if !matches!(
+            runtime,
+            super::platform::bramble::UsbRuntimeState::Off
+                | super::platform::bramble::UsbRuntimeState::Suspended
+        ) {
+            service_smmu_fault();
+        }
         service_power_event();
         if RESUME_PENDING {
             RESUME_PENDING = false;
