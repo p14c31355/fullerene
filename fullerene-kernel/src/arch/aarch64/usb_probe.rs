@@ -90,6 +90,19 @@ global_asm!(
          add x5, x5, :lo12:usb_probe_vectors\n\
          msr VBAR_EL1, x5\n\
          isb\n\
+         // The bare pull-up probe must isolate USB MMIO from the optional\n\
+         // GIC/timer setup below. Some firmware-owned redistributors reject\n\
+         // these accesses before Rust has a chance to test the controller.\n\
+         .if {minimal}\n\
+             adr x7, _start\n\
+             sub sp, sp, #16\n\
+             str x0, [sp]\n\
+             mov x0, x7\n\
+             bl aarch64_usb_probe_apply_relocations\n\
+             ldr x0, [sp]\n\
+             add sp, sp, #16\n\
+             b usb_probe_entry\n\
+         .endif\n\
          // Keep a failed MMIO handoff from leaving the phone permanently\n\
          // disconnected. The vector table above turns this timer IRQ into a\n\
          // PS_HOLD reset; the watchdog is disabled once gadget setup returns.\n\
@@ -186,7 +199,11 @@ global_asm!(
      // of parking forever with the phone disconnected from USB.\n\
      usb_probe_vectors:\n\
      .rept 16\n\
-         b usb_probe_exception_reset\n\
+         .if {gadget_exception}\n\
+             b usb_probe_exception_fallback\n\
+         .else\n\
+             b usb_probe_exception_reset\n\
+         .endif\n\
          .space 124\n\
      .endr\n\
      .type usb_probe_exception_reset, %function\n\
@@ -206,22 +223,82 @@ global_asm!(
     entry_1 = const ((LINK_ENTRY >> 16) & 0xffff),
     entry_2 = const ((LINK_ENTRY >> 32) & 0xffff),
     entry_3 = const ((LINK_ENTRY >> 48) & 0xffff),
+    gadget_exception = const if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
+        1
+    } else {
+        0
+    },
+    minimal = const if cfg!(any(
+        fullerene_aarch64_usb_bare_pullup_probe,
+        fullerene_aarch64_usb_gadget_handoff_probe
+    )) {
+        1
+    } else {
+        0
+    },
 );
+
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+#[unsafe(no_mangle)]
+extern "C" fn usb_probe_exception_fallback() -> ! {
+    // Keep a synchronous abort during the experimental EP0 path observable.
+    // The known-good bare sequence avoids DMA/event-ring accesses and leaves
+    // the host with a physical attach instead of immediately rebooting to
+    // Android, which distinguishes an exception from an ordinary DWC3
+    // command failure.
+    let _ = usb::init_usb2_bare_pullup_handoff();
+    loop {
+        unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
+    }
+}
 
 #[unsafe(no_mangle)]
 extern "C" fn usb_probe_entry() -> ! {
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    usb::trace_probe_begin();
+
+    // The bare pull-up probe deliberately stays below the DMA/trace boundary:
+    // an invalid retained DRAM aperture must not mask a controller-only
+    // handoff result. Keep the gadget probe below the bulk clear as well for
+    // now: its first purpose is to distinguish EP0 setup from a standalone
+    // probe's access to the linker-reserved DMA aperture.
+    #[cfg(not(any(
+        fullerene_aarch64_usb_bare_pullup_probe,
+        fullerene_aarch64_usb_gadget_handoff_probe
+    )))]
     usb::clear_dma_memory();
+    #[cfg(not(any(
+        fullerene_aarch64_usb_bare_pullup_probe,
+        fullerene_aarch64_usb_gadget_handoff_probe
+    )))]
     usb::trace_marker(usb::TRACE_BOOT_USB_ENTRY, 0);
-    // A `fastboot boot` handoff can stop the DWC3 gadget while the PMIC
-    // Type-C state machine remains in a transient role.  Reuse the platform
-    // layer's sink/device-role preparation before the controller probe so the
-    // USB-only diagnostics exercise the same physical attach contract as the
-    // normal Bramble entry path.
-    #[cfg(fullerene_aarch64_bramble)]
+    // The normal Bramble entry prepares the PMIC Type-C role here.  The
+    // gadget-handoff probe intentionally skips that SPMI access: if the
+    // standalone probe resets before reaching DWC3, this keeps the probe
+    // useful for separating a PMIC aperture fault from a controller fault.
+    #[cfg(all(
+        fullerene_aarch64_bramble,
+        not(any(
+            fullerene_aarch64_usb_gadget_handoff_probe,
+            fullerene_aarch64_usb_bare_pullup_probe
+        ))
+    ))]
     usb::trace_marker(usb::TRACE_TYPEC_BEGIN, 0);
-    #[cfg(fullerene_aarch64_bramble)]
+    #[cfg(all(
+        fullerene_aarch64_bramble,
+        not(any(
+            fullerene_aarch64_usb_gadget_handoff_probe,
+            fullerene_aarch64_usb_bare_pullup_probe
+        ))
+    ))]
     let _typec_state = unsafe { platform::bramble::prepare_usb_device_role() };
-    #[cfg(fullerene_aarch64_bramble)]
+    #[cfg(all(
+        fullerene_aarch64_bramble,
+        not(any(
+            fullerene_aarch64_usb_gadget_handoff_probe,
+            fullerene_aarch64_usb_bare_pullup_probe
+        ))
+    ))]
     usb::trace_marker(usb::TRACE_TYPEC_DONE, 0);
 
     #[cfg(not(any(
@@ -263,6 +340,13 @@ extern "C" fn usb_probe_entry() -> ! {
         unsafe {
             asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
         }
+        #[cfg(fullerene_aarch64_usb_bare_pullup_probe)]
+        loop {
+            // The bare probe intentionally never reads the event/DMA path;
+            // keep only the physical pull-up state alive while testing the
+            // controller MMIO sequence itself.
+            unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
+        }
         #[cfg(not(any(
             fullerene_aarch64_usb_bare_pullup_probe,
             fullerene_aarch64_usb_gadget_handoff_probe
@@ -283,19 +367,14 @@ extern "C" fn usb_probe_entry() -> ! {
     )))]
     uart::puts("fullerene usb probe: gadget init failed\n");
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
-    if usb::init_usb2_bare_pullup_handoff() {
-        // Keep a physical USB2 attach visible even when the EP0/DMA stage
-        // failed. This separates a controller/PHY handoff failure from a
-        // descriptor or endpoint-command failure on the host.
+    {
+        // Keep a physical USB2 attach visible after an EP0/DMA failure, but
+        // do not enter the event-ring poller: that path is precisely what
+        // this fallback is isolating.
+        let _ = usb::init_usb2_bare_pullup_handoff();
         loop {
-            usb::poll();
+            unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
         }
-    }
-    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
-    loop {
-        // Keep the physical pull-up alive after a gadget-stage failure so the
-        // host log can distinguish EP0/DMA failure from an early MMIO abort.
-        usb::poll();
     }
     #[cfg(fullerene_aarch64_usb_halt_probe)]
     loop {

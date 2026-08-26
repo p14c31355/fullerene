@@ -37,7 +37,10 @@ const DWC3_BASE: usize = 0x0a60_0000;
 // Lito/SM7250's Apps SMMU owns the DWC3 stream ID declared by the board DT.
 // The early Bramble path installs a small identity map in a context bank so
 // the USB buffers remain inside the IOVA pool declared by the vendor DT.
-const APPS_SMMU_BASE: usize = 0x1500_0000;
+// Google’s Bramble/Lito DTS places apps-smmu at 0x0c600000; 0x15000000 was
+// an incorrect address and could send the probe into its exception fallback
+// before the first EP0 transfer.
+const APPS_SMMU_BASE: usize = 0x0c60_0000;
 const DWC3_STREAM_ID: u32 = 0xe0;
 const SMMU_ID0: usize = 0x20;
 const SMMU_ID1: usize = 0x24;
@@ -385,7 +388,10 @@ const DEVICE_EVENT_KIND_SHIFT: u32 = 8;
 const DEVICE_EVENT_KIND_MASK: u32 = 0x0f;
 
 const DEPCMD_CMDACT: u32 = 1 << 10;
+const DEPCMD_HIPRI_FORCERM: u32 = 1 << 11;
+const DEPCMD_PARAM_SHIFT: u32 = 16;
 const DEPCMD_DEPSTARTCFG: u32 = 0x09;
+const DEPCMD_ENDTRANSFER: u32 = 0x08;
 const DEPCMD_STARTTRANSFER: u32 = 0x06;
 const DEPCMD_SETTRANSFRESOURCE: u32 = 0x02;
 const DEPCMD_SETEPCONFIG: u32 = 0x01;
@@ -408,7 +414,6 @@ const TRB_CONTROL_DATA: u32 = 5 << 4;
 
 const EVENT_BUFFER_SIZE: usize = 4096;
 const MAX_PACKET_SIZE: u32 = 512;
-const DWC3_ENDPOINTS: usize = 32;
 
 #[repr(C, align(4096))]
 struct EventBuffer([u8; EVENT_BUFFER_SIZE]);
@@ -605,6 +610,13 @@ fn trace_event(event: u32, request: u32, value: u32, index: u32, length: u32, st
     }
 }
 
+/// Start a retained trace for the standalone handoff probe without clearing
+/// the previous attempt. A subsequent normal Fullerene boot can dump it over
+/// UART before starting a new trace.
+pub fn trace_probe_begin() {
+    trace_begin();
+}
+
 /// Add a marker without touching the controller. This is used around PMIC
 /// and platform transitions where the next MMIO access itself may abort.
 pub fn trace_marker(event: u32, status: u32) {
@@ -655,11 +667,12 @@ static DEVICE_DESCRIPTOR: [u8; 18] = [
 static CONFIG_DESCRIPTOR: [u8; 18] = [9, 2, 18, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 0, 0xff, 0, 0, 0];
 
 static LANGID_DESCRIPTOR: [u8; 4] = [4, 3, 0x09, 0x04];
-static MANUFACTURER_DESCRIPTOR: [u8; 18] = [
-    18, 3, b'F', 0, b'u', 0, b'l', 0, b'l', 0, b'e', 0, b'r', 0, b'e', 0, b'n', 0,
+static MANUFACTURER_DESCRIPTOR: [u8; 20] = [
+    20, 3, b'F', 0, b'u', 0, b'l', 0, b'l', 0, b'e', 0, b'r', 0, b'e', 0, b'n', 0,
+    b'e', 0,
 ];
 static PRODUCT_DESCRIPTOR: [u8; 36] = [
-    34, 3, b'F', 0, b'u', 0, b'l', 0, b'l', 0, b'e', 0, b'r', 0, b'e', 0, b'n', 0, b'e', 0, b' ',
+    36, 3, b'F', 0, b'u', 0, b'l', 0, b'l', 0, b'e', 0, b'r', 0, b'e', 0, b'n', 0, b'e', 0, b' ',
     0, b'A', 0, b'A', 0, b'r', 0, b'c', 0, b'h', 0, b'6', 0, b'4', 0,
 ];
 
@@ -1219,6 +1232,17 @@ unsafe fn dep_reg(endpoint: usize, offset: usize) -> usize {
 }
 
 unsafe fn cache_clean(address: usize, length: usize) {
+    // DWC3 and the Apps SMMU consume these objects by DMA.  The probe may be
+    // entered with the bootloader's caches enabled, so a no-op here would
+    // leave the freshly written TRB/page table only in the CPU cache.
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    {
+        // The standalone handoff enters with an unknown cache/MMU regime.
+        // Do not turn cache maintenance itself into an exception before the
+        // physical pull-up; the normal kernel path uses the real operation.
+        let _ = (address, length);
+        return;
+    }
     let start = address & !63;
     let end = address.saturating_add(length).saturating_add(63) & !63;
     let mut line = start;
@@ -1297,18 +1321,12 @@ unsafe fn configure_endpoint(endpoint: usize, max_packet: u32, modify: bool) -> 
     if !unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, 0) } {
         return false;
     }
-    true
-}
-
-unsafe fn allocate_transfer_resources() -> bool {
-    // DEPSTARTCFG establishes the configuration window. The DWC3 gadget
-    // driver then assigns one transfer resource to every hardware endpoint,
-    // not only to EP0/EP1; doing this only for control EPs can make the first
-    // SETEPCONFIG or STARTTRANSFER command fail on Qualcomm's core.
-    for endpoint in 0..DWC3_ENDPOINTS {
-        if !unsafe { send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) } {
-            return false;
-        }
+    // Linux allocates a transfer resource immediately after configuring each
+    // endpoint.  DEPSTARTCFG only resets the allocation window; issuing
+    // SETTRANSFRESOURCE for every possible endpoint is not equivalent and can
+    // make the handoff fail before the first pull-up.
+    if !modify {
+        return unsafe { send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) };
     }
     true
 }
@@ -1344,11 +1362,11 @@ unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32)
     }
 }
 
-unsafe fn start_setup() {
+unsafe fn start_setup() -> bool {
     trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, unsafe { read(DSTS) });
     unsafe {
         prepare_trb(0, addr_of!(SETUP_PACKET).cast::<u8>(), 8, TRB_CONTROL_SETUP);
-        let _ = start_transfer(0, addr_of!(EP0_TRBS).cast::<Trb>());
+        start_transfer(0, addr_of!(EP0_TRBS).cast::<Trb>())
     }
 }
 
@@ -1747,7 +1765,7 @@ pub fn init_usb2_pullup_handoff() -> bool {
 /// make the phone visible on the host, the failure is below the normal gadget
 /// path: entry/exception handling, the Qualcomm USB glue, the PHY/session
 /// state, or the bootloader's USB handoff itself.
-pub fn init_usb2_bare_pullup_handoff() -> bool {
+unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
     unsafe {
         // Match dwc3_qcom_vbus_override_enable(): the Qualcomm glue asserts
         // both the SuperSpeed lane power-present vote and the USB2
@@ -1798,9 +1816,112 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
             QSCRATCH_HS_PHY_CTRL,
             (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
         );
-        write_volatile(reg(DCTL), dctl & !DCTL_CSFTRST);
+        // A gadget handoff uses the same proven PHY/session preparation but
+        // keeps Run/Stop clear until its event ring and EP0 commands are
+        // ready. The standalone bare probe requests the pull-up immediately.
+        let dctl = if connect {
+            dctl & !DCTL_CSFTRST
+        } else {
+            dctl & !(DCTL_RUN_STOP | DCTL_CSFTRST)
+        };
+        write_volatile(reg(DCTL), dctl);
     }
     true
+}
+
+pub fn init_usb2_bare_pullup_handoff() -> bool {
+    unsafe { init_usb2_bare_pullup_handoff_inner(true) }
+}
+
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
+    // Use the known-good physical handoff so the Qualcomm PHY/session state
+    // is re-established.  Do not halt the controller here: on Bramble that
+    // tears down the Fastboot-owned Type-C session and prevents the second
+    // USB2 attach entirely.
+    if !unsafe { init_usb2_bare_pullup_handoff_inner(true) } {
+        return false;
+    }
+
+    // The Fastboot session may have left the DWC3 stream behind an SMMU
+    // mapping that only covers its own buffers.  Our TRBs/event ring are
+    // intentionally identity-addressed in the 0x9b800000 DMA section.  Keep
+    // the proven PHY/pull-up transition first, then install the identity map
+    // before handing any new DMA object to DWC3.
+    let _ = configure_dwc3_smmu();
+
+    let event_address = addr_of!(EVENTS) as usize as u64;
+    unsafe {
+        // Reusing the bootloader's DMA context must not expose stale event
+        // words from the previous Fastboot session to the polled consumer.
+        let event_words = addr_of_mut!(EVENTS).cast::<u32>();
+        for index in 0..(EVENT_BUFFER_SIZE / core::mem::size_of::<u32>()) {
+            write_volatile(event_words.add(index), 0);
+        }
+        cache_clean(addr_of!(EVENTS) as usize, EVENT_BUFFER_SIZE);
+        write(GEVNTADRLO0, event_address as u32);
+        write(GEVNTADRHI0, (event_address >> 32) as u32);
+        write(GEVNTSIZ0, EVENT_BUFFER_SIZE as u32);
+        write(GEVNTCOUNT0, 0);
+        EVENT_OFFSET = 0;
+        EP0_STATE = Ep0State::Setup;
+        CONFIGURED = false;
+        // Fastboot leaves the control endpoints configured.  Do not issue
+        // DEPSTARTCFG/SETEPCONFIG while Run/Stop is still active; that command
+        // sequence requires a halted controller and was sending the probe to
+        // its bare-pullup fallback.
+        ENDPOINTS_READY = true;
+        write(DCFG, DCFG_HIGHSPEED);
+        write(DALEPENA, 0b11);
+        write(
+            DEVTEN,
+            DEVTEN_DISCONNECT | DEVTEN_USB_RESET | DEVTEN_CONNECT_DONE,
+        );
+        // Fastboot can leave a control transfer active on either EP0
+        // direction.  End that transfer in-place while keeping RUN/STOP and
+        // the Qualcomm session alive.  Resource index 1 is the EP0 resource
+        // used by the DWC3 gadget path; an already-idle endpoint simply
+        // reports a command error, which is harmless here.
+        let endtransfer = DEPCMD_ENDTRANSFER
+            | DEPCMD_HIPRI_FORCERM
+            | (1 << DEPCMD_PARAM_SHIFT);
+        let _ = send_ep_command(0, endtransfer, 0, 0, 0);
+        let _ = send_ep_command(1, endtransfer, 0, 0, 0);
+        // Fastboot may have configured these control endpoints for the
+        // SuperSpeed session it just ended.  Linux modifies both directions
+        // to the USB2 EP0 maximum packet size after Connect Done; retaining
+        // 512 bytes while DCFG advertises High-Speed can leave the first
+        // 8-byte SETUP transfer unserviceable.
+        if !configure_endpoint(0, 64, true) || !configure_endpoint(1, 64, true) {
+            log_puts("usb gadget handoff: USB2 EP0 modify failed\n");
+            return false;
+        }
+        // The endpoint configuration may survive the bootloader handoff
+        // while its resource allocation does not.  Re-establish one resource
+        // for each physical EP0 direction before queueing SETUP.
+        let _ = send_ep_command(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+        let _ = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+        if !start_setup() {
+            log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
+            return false;
+        }
+
+        let dctl = run_stop_value(read(DCTL), read(GSNPSID));
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
+        qscratch_set(
+            QSCRATCH_HS_PHY_CTRL,
+            (1 << 20) | (1 << 28),
+        );
+        write(DCTL, dctl);
+        for _ in 0..1_000_000u32 {
+            if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
+                return true;
+            }
+            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        }
+        log_puts("usb gadget handoff: DWC3 RUN/STOP timeout\n");
+    }
+    false
 }
 
 /// Reuse the physical USB2 handoff, then add the minimum DWC3 gadget state
@@ -1809,14 +1930,26 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
 /// usable as a standalone probe.
 pub fn init_usb2_gadget_handoff() -> bool {
     unsafe {
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        return init_usb2_gadget_reuse_fastboot_ep0();
+
+        // The bare probe is the proven physical baseline on Bramble. Start
+        // the gadget diagnostic from that exact pull-up sequence, then add
+        // EP0 state on top of it. This makes a failure in the gadget setup
+        // observable instead of hiding the already-working link behind a
+        // second, subtly different pre-connect sequence.
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        if !init_usb2_bare_pullup_handoff_inner(true) {
+            return false;
+        }
         trace_event(TRACE_INIT, 0, 0, 0, 0, 0);
         let snpsid = read(GSNPSID);
         trace_event(TRACE_INIT, 0, 0, 0, 0, snpsid);
-        // Keep the Qualcomm session valid, but do not assert RUN_STOP yet.
-        // The previous probe briefly exposed an EP0-less device and then
-        // stopped it while the host was already asking for a descriptor.
-        // Configure the complete gadget while halted and connect once at the
-        // end, matching the DWC3 gadget start contract.
+        // Keep the Qualcomm session valid while the DWC3 device state is
+        // rebuilt. The physical handoff above is deliberately first so the
+        // probe preserves the working Bramble reconnect contract; the soft
+        // reset below then clears the old Fastboot endpoint state before the
+        // complete gadget is connected again.
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24); // LANE0_PWR_PRESENT
         qscratch_set(
             QSCRATCH_HS_PHY_CTRL,
@@ -1830,8 +1963,18 @@ pub fn init_usb2_gadget_handoff() -> bool {
         );
 
         // Fastboot leaves the DWC3 device controller running while its host
-        // endpoint is torn down. Stop that state before issuing any endpoint
-        // command; SETEPCONFIG/DEPSTARTCFG are only valid while halted.
+        // endpoint is torn down. After the proven PHY/session preparation,
+        // follow Linux's soft-connect order and reset the device state before
+        // issuing endpoint commands. The gadget probe intentionally omits
+        // stop_running_device(): the bare preparation already cleared
+        // Run/Stop and that extra ownership transition was the earlier
+        // pre-pull-up failure point.
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        if !device_soft_reset() {
+            log_puts("usb gadget handoff: DWC3 device reset failed\n");
+            return false;
+        }
+        #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
         if !stop_running_device() || !device_soft_reset() {
             log_puts("usb gadget handoff: DWC3 reset failed\n");
             return false;
@@ -1880,7 +2023,6 @@ pub fn init_usb2_gadget_handoff() -> bool {
         // assert Run/Stop. Without this sequence the PHY can advertise a
         // USB2 pull-up while every host descriptor request times out at EP0.
         if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0)
-            || !allocate_transfer_resources()
             || !configure_endpoint(0, 64, false)
             || !configure_endpoint(1, 64, false)
         {
@@ -2127,10 +2269,6 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 
         if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
             uart::puts("usb: DEPSTARTCFG failed\n");
-            return false;
-        }
-        if !allocate_transfer_resources() {
-            uart::puts("usb: transfer resource setup failed\n");
             return false;
         }
         // Use a USB2-sized EP0 for the first probe; the normal kernel starts
