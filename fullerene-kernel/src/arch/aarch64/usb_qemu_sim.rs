@@ -3,7 +3,7 @@
 use super::{
     uart,
     usb_dwc3_sim::Dwc3DeviceModel,
-    usb_protocol::{ControlAction, Ep0Simulator},
+    usb_protocol::{CONFIG_DESCRIPTOR, ControlAction, Ep0Simulator},
     usb_regs::{
         DEVICE_EVENT_CONNECT_DONE, DEVICE_EVENT_USB_RESET, EP_EVENT_TRANSFER_COMPLETE,
         EP_EVENT_XFER_NOT_READY, EP_XFER_NOT_READY_STATUS, device_event_kind, endpoint_event_kind,
@@ -137,10 +137,13 @@ pub fn run() -> bool {
     passed &= expect_setup(&mut dwc3, config_setup, "config SETUP received");
     passed &= expect_action(
         ep0.on_setup(config_setup, &mut response),
-        ControlAction::DataIn(18),
+        ControlAction::DataIn(CONFIG_DESCRIPTOR.len()),
         "GET_DESCRIPTOR config",
     );
-    passed &= expect_model_queue(dwc3.queue_data_in(18), "DWC3 config DATA IN TRB queue");
+    passed &= expect_model_queue(
+        dwc3.queue_data_in(CONFIG_DESCRIPTOR.len()),
+        "DWC3 config DATA IN TRB queue",
+    );
     passed &= expect_transfer_complete(&mut dwc3, 1, "config DATA IN complete");
     passed &= expect_action(
         ep0.on_transfer_complete(),

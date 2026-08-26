@@ -44,6 +44,29 @@ pub struct ResetResource {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PowerOwner {
+    SecureFirmware,
+    AppsCpu,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsbRailResource {
+    pub name: &'static str,
+    pub min_uv: u32,
+    pub max_uv: u32,
+    pub max_load_ua: u32,
+    pub program_voltage: bool,
+    pub owner: PowerOwner,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsbPowerResources {
+    pub hs_phy_rails: &'static [UsbRailResource; 3],
+    pub qmp_core: UsbRailResource,
+    pub qmp_vbus_valid_override: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsbIrqKind {
     Pdc,
     GicSpi,
@@ -52,6 +75,7 @@ pub enum UsbIrqKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IrqTrigger {
     RisingEdge,
+    EdgeBoth,
     LevelHigh,
 }
 
@@ -60,6 +84,17 @@ pub struct IrqResource {
     pub name: &'static str,
     pub number: u32,
     pub kind: UsbIrqKind,
+    pub trigger: IrqTrigger,
+}
+
+/// One SPMI child interrupt specifier from the PMIC DT.  The first Type-C
+/// interrupt is delivered through the SPMI arbiter's summary GIC SPI; the
+/// remaining fields are consumed by the PMIC interrupt block itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpmiIrqResource {
+    pub sid: u8,
+    pub peripheral_id: u8,
+    pub irq: u8,
     pub trigger: IrqTrigger,
 }
 
@@ -80,6 +115,84 @@ pub struct DmaPoolResource {
     pub iova_base: usize,
     pub size: usize,
     pub stream_id: u32,
+}
+
+/// Validate a DMA object against the IOVA window advertised by the platform
+/// DT.  The Qualcomm USB path must not hand DWC3 a CPU pointer outside this
+/// window: an identity-mapped early buffer may look usable to the CPU while
+/// the Apps SMMU still rejects the stream ID.  Keeping this check pure makes
+/// it usable by both the boot-time allocator and host-side tests.
+pub const fn dma_region_valid(
+    pool: DmaPoolResource,
+    address: u64,
+    length: u64,
+    alignment: u64,
+) -> bool {
+    if length == 0 || alignment == 0 || address % alignment != 0 {
+        return false;
+    }
+    let Some(pool_end) = (pool.iova_base as u64).checked_add(pool.size as u64) else {
+        return false;
+    };
+    let Some(region_end) = address.checked_add(length) else {
+        return false;
+    };
+    address >= pool.iova_base as u64 && region_end <= pool_end
+}
+
+/// No-heap allocator for the DT-declared USB DMA window. This is the early
+/// boot equivalent of dma_pool_alloc(): allocations are monotonic for one
+/// controller lifetime and are never handed back while DWC3 may still own a
+/// TRB. The allocator itself is platform-neutral and therefore testable
+/// without MMIO.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmaPoolAllocator {
+    base: u64,
+    end: u64,
+    next: u64,
+}
+
+impl DmaPoolAllocator {
+    pub const fn new(pool: DmaPoolResource, first_free: u64) -> Option<Self> {
+        let Some(end) = (pool.iova_base as u64).checked_add(pool.size as u64) else {
+            return None;
+        };
+        let base = if first_free > pool.iova_base as u64 {
+            first_free
+        } else {
+            pool.iova_base as u64
+        };
+        if base >= end {
+            return None;
+        }
+        Some(Self {
+            base,
+            end,
+            next: base,
+        })
+    }
+
+    pub const fn allocate(&mut self, size: u64, alignment: u64) -> Option<u64> {
+        if size == 0 || alignment == 0 || !alignment.is_power_of_two() {
+            return None;
+        }
+        let Some(next_aligned) = self.next.checked_add(alignment - 1) else {
+            return None;
+        };
+        let aligned = next_aligned & !(alignment - 1);
+        let Some(end) = aligned.checked_add(size) else {
+            return None;
+        };
+        if end > self.end {
+            return None;
+        }
+        self.next = end;
+        Some(aligned)
+    }
+
+    pub const fn remaining(&self) -> u64 {
+        self.end.saturating_sub(self.next)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +226,64 @@ pub struct RpmhRscResource {
     pub active_tcs_offset: u8,
     pub sleep_tcs_offset: u8,
     pub wake_tcs_offset: u8,
+}
+
+/// Register layout selected from the Apps-RSC hardware revision.  Linux does
+/// not assume that every Qualcomm target uses the v2.7 command stride: the
+/// driver reads RSC_DRV_ID and selects the v3.0 register table for major
+/// revisions >= 3.  Keep the selector pure so it can be tested without
+/// touching secure-owned RPMh registers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RpmhRegisterLayout {
+    tcs_stride: usize,
+    command_stride: usize,
+    wait_for_completion: usize,
+    control: usize,
+    status: usize,
+    command_enable: usize,
+    command_msgid: usize,
+    command_address: usize,
+    command_data: usize,
+    command_status: usize,
+}
+
+const RPMH_RSC_ID: usize = 0x00;
+const RPMH_RSC_MAJOR_SHIFT: u32 = 16;
+const RPMH_RSC_MAJOR_MASK: u32 = 0xff;
+
+const RPMH_LAYOUT_V27: RpmhRegisterLayout = RpmhRegisterLayout {
+    tcs_stride: 672,
+    command_stride: 20,
+    wait_for_completion: 0x10,
+    control: 0x14,
+    status: 0x18,
+    command_enable: 0x1c,
+    command_msgid: 0x30,
+    command_address: 0x34,
+    command_data: 0x38,
+    command_status: 0x3c,
+};
+
+const RPMH_LAYOUT_V30: RpmhRegisterLayout = RpmhRegisterLayout {
+    tcs_stride: 672,
+    command_stride: 24,
+    wait_for_completion: 0x20,
+    control: 0x24,
+    status: 0x28,
+    command_enable: 0x2c,
+    command_msgid: 0x34,
+    command_address: 0x38,
+    command_data: 0x3c,
+    command_status: 0x40,
+};
+
+fn rpmh_register_layout(rsc_id: u32) -> Option<RpmhRegisterLayout> {
+    let major = (rsc_id >> RPMH_RSC_MAJOR_SHIFT) & RPMH_RSC_MAJOR_MASK;
+    match major {
+        0 => None,
+        1 | 2 => Some(RPMH_LAYOUT_V27),
+        _ => Some(RPMH_LAYOUT_V30),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,6 +531,43 @@ pub enum UsbRuntimeEvent {
     Resume,
 }
 
+/// Platform resource state corresponding to the resources Linux keeps in the
+/// Qualcomm glue driver's private object.  The MMIO helpers below update this
+/// only after a readback/transaction succeeds; callers can therefore
+/// distinguish "the write was attempted" from "the resource is live".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsbResourceState {
+    pub gdsc_enabled: bool,
+    pub clock_branches_enabled: bool,
+    /// Bit 0..3 correspond to the four DT reset resources in `resets`.
+    pub reset_released_mask: u8,
+    pub bus_vote: Option<UsbBusVote>,
+    pub irq_routes_enabled: bool,
+}
+
+const EMPTY_USB_RESOURCE_STATE: UsbResourceState = UsbResourceState {
+    gdsc_enabled: false,
+    clock_branches_enabled: false,
+    reset_released_mask: 0,
+    bus_vote: None,
+    irq_routes_enabled: false,
+};
+
+static mut USB_RESOURCE_STATE: UsbResourceState = EMPTY_USB_RESOURCE_STATE;
+
+/// Return a snapshot of the platform lifecycle without exposing a mutable
+/// reference to the early-boot singleton.
+pub fn usb_resource_state() -> UsbResourceState {
+    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(USB_RESOURCE_STATE)) }
+}
+
+fn set_usb_resource_state(update: impl FnOnce(&mut UsbResourceState)) {
+    unsafe {
+        let state = &mut *core::ptr::addr_of_mut!(USB_RESOURCE_STATE);
+        update(state);
+    }
+}
+
 /// The state transitions Linux spreads across the Qualcomm glue, PHY, UDC,
 /// and gadget callbacks. Keeping the transition table explicit makes the
 /// early-boot implementation reject invalid ordering instead of issuing a
@@ -387,16 +595,19 @@ pub unsafe fn enable_usb_clock_branches() -> bool {
     let resources = usb_resources();
     let mut ok = true;
     for clock in resources.controller_clocks {
-        let address = (GCC_BASE + clock.branch_offset) as *mut u32;
+        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
         let value = unsafe { core::ptr::read_volatile(address) } | 1;
         unsafe { core::ptr::write_volatile(address, value) };
         ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
     }
     for clock in resources.qmp_clocks {
-        let address = (GCC_BASE + clock.branch_offset) as *mut u32;
+        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
         let value = unsafe { core::ptr::read_volatile(address) } | 1;
         unsafe { core::ptr::write_volatile(address, value) };
         ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
+    }
+    if ok {
+        set_usb_resource_state(|state| state.clock_branches_enabled = true);
     }
     ok
 }
@@ -412,7 +623,7 @@ pub unsafe fn disable_usb_clock_branches() -> bool {
         if clock.name == "xo" {
             continue;
         }
-        let address = (GCC_BASE + clock.branch_offset) as *mut u32;
+        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
         let value = unsafe { core::ptr::read_volatile(address) } & !1;
         unsafe { core::ptr::write_volatile(address, value) };
         ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
@@ -421,10 +632,13 @@ pub unsafe fn disable_usb_clock_branches() -> bool {
         if clock.name == "ref" {
             continue;
         }
-        let address = (GCC_BASE + clock.branch_offset) as *mut u32;
+        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
         let value = unsafe { core::ptr::read_volatile(address) } & !1;
         unsafe { core::ptr::write_volatile(address, value) };
         ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
+    }
+    if ok {
+        set_usb_resource_state(|state| state.clock_branches_enabled = false);
     }
     ok
 }
@@ -439,7 +653,7 @@ pub unsafe fn reset_usb_blocks(super_speed: bool) -> bool {
         if !super_speed && index >= 2 {
             continue;
         }
-        let address = (GCC_BASE + reset.offset) as *mut u32;
+        let address = (resources.gcc_base + reset.offset) as *mut u32;
         let asserted = unsafe { core::ptr::read_volatile(address) } | 1;
         unsafe { core::ptr::write_volatile(address, asserted) };
         ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
@@ -449,6 +663,10 @@ pub unsafe fn reset_usb_blocks(super_speed: bool) -> bool {
         unsafe { core::ptr::write_volatile(address, asserted & !1) };
         ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
     }
+    if ok {
+        let mask = if super_speed { 0x0f } else { 0x03 };
+        set_usb_resource_state(|state| state.reset_released_mask |= mask);
+    }
     ok
 }
 
@@ -456,16 +674,23 @@ pub unsafe fn reset_usb_blocks(super_speed: bool) -> bool {
 pub struct UsbPlatformResources {
     pub dwc3_base: usize,
     pub dwc3_size: usize,
+    pub gcc_base: usize,
     pub qscratch_base: usize,
     pub hs_phy_base: usize,
     pub qmp_phy_base: usize,
+    /// QMP combo-PHY register offsets from qcom,qmp-phy-reg-offset.  The
+    /// array is fixed because the Android binding has a fixed 18-slot ABI.
+    pub qmp_reg_offsets: [usize; 18],
     pub apps_smmu_base: usize,
     pub pdc_base: usize,
     pub gdsc: usize,
     pub controller_clocks: &'static [ClockResource; 6],
     pub qmp_clocks: &'static [ClockResource; 4],
     pub resets: &'static [ResetResource; 4],
-    pub irqs: &'static [IrqResource; 5],
+    pub power: UsbPowerResources,
+    pub irqs: [IrqResource; 5],
+    pub typec_irq: SpmiIrqResource,
+    pub spmi_parent_irq: u32,
     pub dma_pool: DmaPoolResource,
     pub gsi: GsiResource,
     pub rpmh_rsc: RpmhRscResource,
@@ -483,6 +708,7 @@ pub struct UsbPlatformResources {
 pub struct UsbDtContract {
     pub dma_pool: Option<(u64, u64)>,
     pub stream_id: Option<u32>,
+    pub qmp_reg_offsets: [Option<u32>; 18],
     pub core_clk_rate_hz: Option<u32>,
     pub core_clk_rate_hs_hz: Option<u32>,
     pub gsi_event_buffer_count: Option<u32>,
@@ -495,6 +721,13 @@ pub struct UsbDtContract {
     /// four modes and three paths. `None` means the property was not present
     /// or was too short to be installed safely.
     pub bus_vectors: [[Option<u32>; 4]; 12],
+    /// IRQ numbers in the order of the active resource table:
+    /// dp_hs_phy, pwr_event, ss_phy, dm_hs_phy, dwc3.
+    pub irq_numbers: [Option<u32>; 5],
+    /// The first four cells of the Type-C SPMI interrupt specifier and the
+    /// SPMI arbiter's `periph_irq` parent SPI.
+    pub typec_irq: [Option<u32>; 4],
+    pub spmi_parent_irq: Option<u32>,
 }
 
 impl UsbDtContract {
@@ -502,6 +735,7 @@ impl UsbDtContract {
         Self {
             dma_pool: None,
             stream_id: None,
+            qmp_reg_offsets: [None; 18],
             core_clk_rate_hz: None,
             core_clk_rate_hs_hz: None,
             gsi_event_buffer_count: None,
@@ -511,6 +745,9 @@ impl UsbDtContract {
             bus_mode_count: None,
             bus_path_count: None,
             bus_vectors: [[None; 4]; 12],
+            irq_numbers: [None; 5],
+            typec_irq: [None; 4],
+            spmi_parent_irq: None,
         }
     }
 }
@@ -591,6 +828,14 @@ const BRAMBLE_QMP_CLOCKS: [ClockResource; 4] = [
     },
 ];
 
+// qcom,lito-qmp-usb3.h / lito-usb.dtsi, in the exact order consumed by the
+// Android msm-ssusb-qmp driver. Slot 6 is intentionally 0xffff because the
+// combo-PHY does not expose the USB-only PCS_MISC_TYPEC_CTRL register.
+const BRAMBLE_QMP_REG_OFFSETS: [usize; 18] = [
+    0x1c14, 0x1f08, 0x1f14, 0x1c40, 0x1c00, 0x1c44, 0xffff, 0x2a18, 0x0000, 0x0004, 0x001c, 0x0000,
+    0x0010, 0x000c, 0x1c8c, 0x1c18, 0x1c50, 0x1c70,
+];
+
 const BRAMBLE_USB_RESETS: [ResetResource; 4] = [
     ResetResource {
         name: "core_reset",
@@ -609,6 +854,53 @@ const BRAMBLE_USB_RESETS: [ResetResource; 4] = [
         offset: 0x50008,
     },
 ];
+
+// Regulator resources declared by lito-usb.dtsi. The PM8150B rails are
+// secure-firmware-owned during a RAM boot: we describe their exact voltage
+// and load contract here, but do not guess PMIC register offsets in the Apps
+// CPU path. The bootloader therefore remains responsible for enabling them
+// until a real RPMh regulator client is available.
+const BRAMBLE_HS_PHY_RAILS: [UsbRailResource; 3] = [
+    UsbRailResource {
+        name: "vdd",
+        min_uv: 880_000,
+        max_uv: 880_000,
+        max_load_ua: 0,
+        program_voltage: true,
+        owner: PowerOwner::SecureFirmware,
+    },
+    UsbRailResource {
+        name: "vdda18",
+        min_uv: 1_704_000,
+        max_uv: 1_800_000,
+        max_load_ua: 19_000,
+        program_voltage: false,
+        owner: PowerOwner::SecureFirmware,
+    },
+    UsbRailResource {
+        name: "vdda33",
+        min_uv: 3_050_000,
+        max_uv: 3_300_000,
+        max_load_ua: 16_000,
+        program_voltage: false,
+        owner: PowerOwner::SecureFirmware,
+    },
+];
+
+const BRAMBLE_QMP_CORE_RAIL: UsbRailResource = UsbRailResource {
+    name: "core",
+    min_uv: 880_000,
+    max_uv: 880_000,
+    max_load_ua: 47_000,
+    program_voltage: true,
+    owner: PowerOwner::SecureFirmware,
+};
+
+const BRAMBLE_USB_POWER: UsbPowerResources = UsbPowerResources {
+    hs_phy_rails: &BRAMBLE_HS_PHY_RAILS,
+    qmp_core: BRAMBLE_QMP_CORE_RAIL,
+    qmp_vbus_valid_override: true,
+};
 
 const BRAMBLE_USB_IRQS: [IrqResource; 5] = [
     IrqResource {
@@ -642,6 +934,13 @@ const BRAMBLE_USB_IRQS: [IrqResource; 5] = [
         trigger: IrqTrigger::LevelHigh,
     },
 ];
+
+const BRAMBLE_TYPEC_IRQ: SpmiIrqResource = SpmiIrqResource {
+    sid: PM8150B_SID,
+    peripheral_id: (PM8150B_TYPEC_PPID & 0xff) as u8,
+    irq: 0,
+    trigger: IrqTrigger::RisingEdge,
+};
 
 const BRAMBLE_GSI: GsiResource = GsiResource {
     event_buffer_count: 3,
@@ -767,9 +1066,11 @@ const BRAMBLE_BUS_VECTORS: [[BusVoteVector; 3]; 4] = [
 pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
     dwc3_base: 0x0a60_0000,
     dwc3_size: 0xcd00,
+    gcc_base: GCC_BASE,
     qscratch_base: 0x0a6f_8800,
     hs_phy_base: 0x088e_3000,
     qmp_phy_base: 0x088e_8000,
+    qmp_reg_offsets: BRAMBLE_QMP_REG_OFFSETS,
     // apps_smmu: qcom,qsmmu-v500 at 0x15000000 in msm-arm-smmu-lito.dtsi.
     // 0x0c600000 belongs to the SPMI arbiter channel window.
     apps_smmu_base: 0x1500_0000,
@@ -778,7 +1079,11 @@ pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
     controller_clocks: &BRAMBLE_CONTROLLER_CLOCKS,
     qmp_clocks: &BRAMBLE_QMP_CLOCKS,
     resets: &BRAMBLE_USB_RESETS,
-    irqs: &BRAMBLE_USB_IRQS,
+    power: BRAMBLE_USB_POWER,
+    irqs: BRAMBLE_USB_IRQS,
+    typec_irq: BRAMBLE_TYPEC_IRQ,
+    // qcom,spmi-pmic-arb's `periph_irq` summary line in Kona/Lito DT.
+    spmi_parent_irq: 481,
     dma_pool: DmaPoolResource {
         iova_base: 0x9000_0000,
         size: 0x6000_0000,
@@ -799,11 +1104,46 @@ pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
 
 static mut ACTIVE_USB_RESOURCES: UsbPlatformResources = BRAMBLE_USB_RESOURCES;
 
+/// Replace the compiled GCC provider base with the DT node selected for this
+/// boot. Clock IDs/branch offsets remain provider-specific, but the provider
+/// MMIO base itself is a normal DT resource and must not be hard-coded in the
+/// runtime path.
+pub fn install_usb_gcc_base(base: Option<u64>) -> bool {
+    let Some(base) = base else {
+        return false;
+    };
+    if base > usize::MAX as u64 {
+        return false;
+    }
+    unsafe {
+        (*core::ptr::addr_of_mut!(ACTIVE_USB_RESOURCES)).gcc_base = base as usize;
+    }
+    true
+}
+
 /// Return the resource view selected for the current boot.  It starts with
 /// the compiled Bramble contract and may be replaced by validated DT values
 /// before any USB register is touched.
 pub fn usb_resources() -> UsbPlatformResources {
     unsafe { ACTIVE_USB_RESOURCES }
+}
+
+/// Validate the DT-described rail contract before touching PHY registers.
+/// This is intentionally a contract check, not a fabricated PMIC driver:
+/// PM8150B regulator enable/voltage changes belong to RPMh/secure firmware.
+pub fn usb_power_contract_valid(super_speed: bool) -> bool {
+    let power = usb_resources().power;
+    let hs_valid = power.hs_phy_rails.iter().all(|rail| {
+        (!rail.program_voltage || (rail.min_uv != 0 && rail.min_uv <= rail.max_uv))
+            && rail.owner == PowerOwner::SecureFirmware
+    });
+    let qmp_valid = !super_speed
+        || (power.qmp_core.min_uv != 0
+            && power.qmp_core.min_uv <= power.qmp_core.max_uv
+            && power.qmp_core.max_load_ua != 0
+            && power.qmp_core.owner == PowerOwner::SecureFirmware
+            && power.qmp_vbus_valid_override);
+    hs_valid && qmp_valid
 }
 
 /// Install the address-bearing portion of the Qualcomm USB DT contract. The
@@ -886,6 +1226,15 @@ pub fn install_usb_resource_contract(
                 installed = true;
             }
         }
+        if contract.qmp_reg_offsets.iter().all(Option::is_some) {
+            let offsets = contract.qmp_reg_offsets.map(Option::unwrap);
+            // 0xffff is the binding's explicit "not implemented" slot;
+            // reject only offsets outside the 16-bit QMP register window.
+            if offsets.iter().all(|offset| *offset <= 0xffff) {
+                resources.qmp_reg_offsets = offsets.map(|offset| offset as usize);
+                installed = true;
+            }
+        }
         if let Some(rate) = contract.core_clk_rate_hz {
             if rate != 0 {
                 resources.core_clk_rate_hz = rate;
@@ -895,6 +1244,43 @@ pub fn install_usb_resource_contract(
         if let Some(rate) = contract.core_clk_rate_hs_hz {
             if rate != 0 {
                 resources.core_clk_rate_hs_hz = rate;
+                installed = true;
+            }
+        }
+        for (irq, number) in resources.irqs.iter_mut().zip(contract.irq_numbers) {
+            if let Some(number) = number {
+                if number < 1024 {
+                    irq.number = number;
+                    installed = true;
+                }
+            }
+        }
+        if let ([Some(sid), Some(peripheral_id), Some(irq), Some(flags)], Some(parent)) =
+            (contract.typec_irq, contract.spmi_parent_irq)
+        {
+            // The Android SPMI binding is <sid peripheral irq flags>.  This
+            // early path supports the same edge-rising primary interrupt as
+            // qcom-pmic-typec; reject other encodings instead of installing
+            // a resource with an incorrect PMIC polarity.
+            let trigger = match flags & 0xf {
+                1 => Some(IrqTrigger::RisingEdge),
+                3 => Some(IrqTrigger::EdgeBoth),
+                4 => Some(IrqTrigger::LevelHigh),
+                _ => None,
+            };
+            if sid < 16
+                && peripheral_id < 256
+                && irq < 8
+                && parent < 1024
+                && let Some(trigger) = trigger
+            {
+                resources.typec_irq = SpmiIrqResource {
+                    sid: sid as u8,
+                    peripheral_id: peripheral_id as u8,
+                    irq: irq as u8,
+                    trigger,
+                };
+                resources.spmi_parent_irq = parent;
                 installed = true;
             }
         }
@@ -987,15 +1373,64 @@ const TYPEC_MISC_STATUS: u16 = PM8150B_TYPEC_BASE + 0x0b;
 const TYPEC_MODE_CFG: u16 = PM8150B_TYPEC_BASE + 0x44;
 const TYPEC_CC_ATTACHED: u8 = 1 << 0;
 const TYPEC_CC_ORIENTATION: u8 = 1 << 1;
-const TYPEC_DISABLE_CMD: u8 = 1 << 0;
+const TYPEC_SNK_SRC_MODE: u8 = 1 << 6;
+const TYPEC_INTR_EN_CFG_1: u16 = PM8150B_TYPEC_BASE + 0x5e;
+const TYPEC_VCONN_CONTROL: u16 = PM8150B_TYPEC_BASE + 0x46;
+const TYPEC_VCONN_EN_SRC: u8 = 1 << 0;
+const TYPEC_VCONN_EN_VALUE: u8 = 1 << 1;
+const TYPEC_EXIT_STATE_CFG: u16 = PM8150B_TYPEC_BASE + 0x50;
+const TYPEC_SEL_SRC_UPPER_REF: u8 = 1 << 2;
 const TYPEC_EN_SNK_ONLY: u8 = 1 << 1;
 const TYPEC_EN_SRC_ONLY: u8 = 1 << 2;
 
+// QPNP interrupt block registers used by the SPMI irq-domain path.  The
+// Type-C child node's first interrupt is the one consumed by the Android
+// qcom-pmic-typec driver; it is still a real PMIC interrupt, not a second
+// DWC3/GIC line.
+const QPNPINT_SET_TYPE: u16 = PM8150B_TYPEC_BASE + 0x11;
+const QPNPINT_POLARITY_HIGH: u16 = PM8150B_TYPEC_BASE + 0x12;
+const QPNPINT_POLARITY_LOW: u16 = PM8150B_TYPEC_BASE + 0x13;
+const QPNPINT_LATCHED_CLR: u16 = PM8150B_TYPEC_BASE + 0x14;
+const QPNPINT_EN_SET: u16 = PM8150B_TYPEC_BASE + 0x15;
+const SPMI_PIC_ACC_ENABLE: usize = 0x100;
+const SPMI_PIC_IRQ_CLEAR: usize = 0x108;
+
 const PDC_IRQ_ENABLE_BANK: usize = 0x10;
 const PDC_IRQ_CONFIG: usize = 0x110;
+const PDC_VERSION: usize = 0x1000;
 const PDC_IRQ_CONFIG_MASK: u32 = 0x7;
 const PDC_LEVEL_HIGH: u32 = 0b100;
 const PDC_EDGE_RISING: u32 = 0b110;
+const PDC_VERSION_3_2: u32 = 0x0302_00;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PdcRegisterLayout {
+    enable_bank: Option<usize>,
+    irq_enable_bit: Option<u32>,
+}
+
+fn pdc_register_layout(version: u32) -> PdcRegisterLayout {
+    if version >= PDC_VERSION_3_2 {
+        // PDC v3.2 removed IRQ_ENABLE_BANK. Direct-PDC lines are enabled in
+        // IRQ_CFG itself, while GPIO status/mask moved to bits 5/4.
+        PdcRegisterLayout {
+            enable_bank: None,
+            irq_enable_bit: Some(3),
+        }
+    } else if version >= 0x0300_00 {
+        // v3.0 keeps the enable bank and adds GPIO status/mask at 4/3.
+        PdcRegisterLayout {
+            enable_bank: Some(PDC_IRQ_ENABLE_BANK),
+            irq_enable_bit: None,
+        }
+    } else {
+        // v2.7 has only the enable bank and the three type bits.
+        PdcRegisterLayout {
+            enable_bank: Some(PDC_IRQ_ENABLE_BANK),
+            irq_enable_bit: None,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PdcPinRange {
@@ -1044,23 +1479,62 @@ pub fn pdc_parent_irq(pin: u32) -> Option<u32> {
 }
 
 pub fn is_usb_irq(interrupt_id: u32) -> bool {
-    interrupt_id == USB_DWC3_IRQ
-        || interrupt_id == USB_PWR_EVENT_IRQ
-        || interrupt_id == USB_PDC_DP_HS_PARENT_IRQ
-        || interrupt_id == USB_PDC_SS_PARENT_IRQ
-        || interrupt_id == USB_PDC_DM_HS_PARENT_IRQ
+    let resources = usb_resources();
+    interrupt_id == resources.spmi_parent_irq
+        || resources.irqs.iter().any(|irq| {
+            irq.number == interrupt_id
+                || (irq.kind == UsbIrqKind::Pdc && pdc_parent_irq(irq.number) == Some(interrupt_id))
+        })
+}
+
+pub fn usb_controller_irq() -> u32 {
+    usb_resources().irqs[4].number
+}
+
+pub fn usb_power_event_irq() -> u32 {
+    usb_resources().irqs[1].number
+}
+
+pub fn usb_typec_parent_irq() -> u32 {
+    usb_resources().spmi_parent_irq
 }
 
 #[derive(Clone, Copy)]
 pub struct TypecState {
     pub arbiter_version: u32,
+    /// SPMI APID selected during discovery. Keeping this in the live state is
+    /// what lets an IRQ/poll transition re-read the same PMIC peripheral
+    /// instead of repeating a potentially destructive APID scan.
+    pub apid: usize,
+    pub writable: bool,
     pub misc_status: u8,
     pub mode: u8,
     pub orientation_reverse: bool,
+    pub role: UsbRole,
     pub sink_mode_written: bool,
     pub attached: bool,
     pub attach_settled: bool,
     pub phase: TypecPhase,
+}
+
+/// Role reported by the PMIC Type-C state machine. The USB gadget is allowed
+/// to advertise only for `Device`; a CC-attached source is a host role and
+/// must not be treated as a usable USB2 device session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsbRole {
+    None,
+    Device,
+    Host,
+}
+
+pub const fn typec_role(misc_status: u8) -> UsbRole {
+    if misc_status & TYPEC_CC_ATTACHED == 0 {
+        UsbRole::None
+    } else if misc_status & TYPEC_SNK_SRC_MODE != 0 {
+        UsbRole::Host
+    } else {
+        UsbRole::Device
+    }
 }
 
 /// Qualcomm's Type-C glue is a state machine, not a one-shot sink bit.  Keep
@@ -1081,6 +1555,136 @@ pub enum TypecEvent {
     SinkOnlySelected,
     AttachDetected,
     DetachDetected,
+}
+
+/// Refresh the PM8150B Type-C attach state after the initial role request.
+/// Linux receives this information from the PMIC interrupt domain; the
+/// early-boot path has the same state transition but may be entered before a
+/// stable GIC owner exists, so callers can invoke it from either polling or
+/// the USB-related parent IRQ path.
+pub unsafe fn refresh_usb_device_role(state: &mut TypecState) -> Option<TypecEvent> {
+    let mut status = 0u8;
+    if !unsafe {
+        spmi_transfer(
+            state.arbiter_version,
+            state.apid,
+            TYPEC_MISC_STATUS,
+            &mut status,
+            false,
+        )
+    } {
+        return None;
+    }
+    let was_attached = state.attached;
+    let was_role = state.role;
+    state.misc_status = status;
+    state.orientation_reverse = status & TYPEC_CC_ORIENTATION != 0;
+    state.role = typec_role(status);
+    state.attached = state.role == UsbRole::Device;
+    if state.attached == was_attached && state.role == was_role {
+        return None;
+    }
+    let event = if state.role == UsbRole::Device {
+        TypecEvent::AttachDetected
+    } else {
+        TypecEvent::DetachDetected
+    };
+    state.phase = typec_transition(state.phase, event);
+    state.attach_settled = state.attached;
+    Some(event)
+}
+
+const fn spmi_irq_polarity(trigger: IrqTrigger) -> (u8, u8, u8) {
+    match trigger {
+        IrqTrigger::RisingEdge => (1, 1, 0),
+        IrqTrigger::EdgeBoth => (1, 1, 1),
+        IrqTrigger::LevelHigh => (0, 1, 0),
+    }
+}
+
+/// Complete the part normally supplied by the SPMI irq domain for the
+/// qcom-pmic-typec platform IRQ.  This programs the PMIC edge/polarity,
+/// clears a stale latch, enables the child bit, and finally enables the
+/// APID's arbiter access bit.  The GIC parent is routed separately by
+/// `init_interrupt_controller` after the distributor is ready.
+pub unsafe fn configure_typec_irq(state: &TypecState) -> bool {
+    let resource = usb_resources().typec_irq;
+    if !state.writable
+        || resource.sid != PM8150B_SID
+        || resource.peripheral_id != (PM8150B_TYPEC_PPID & 0xff) as u8
+        || resource.irq >= 8
+    {
+        return false;
+    }
+    let bit = 1u8 << resource.irq;
+    let (edge, high, low) = spmi_irq_polarity(resource.trigger);
+    let mut value = if edge != 0 { bit } else { 0 };
+    if !unsafe {
+        spmi_update_bits(
+            state.arbiter_version,
+            state.apid,
+            QPNPINT_SET_TYPE,
+            bit,
+            value,
+        )
+    } {
+        return false;
+    }
+    value = if high != 0 { bit } else { 0 };
+    if !unsafe {
+        spmi_update_bits(
+            state.arbiter_version,
+            state.apid,
+            QPNPINT_POLARITY_HIGH,
+            bit,
+            value,
+        )
+    } {
+        return false;
+    }
+    value = if low != 0 { bit } else { 0 };
+    if !unsafe {
+        spmi_update_bits(
+            state.arbiter_version,
+            state.apid,
+            QPNPINT_POLARITY_LOW,
+            bit,
+            value,
+        )
+    } {
+        return false;
+    }
+
+    // qpnpint_irq_unmask() clears the PMIC latch before enabling the bit.
+    let mut command = bit;
+    if !unsafe {
+        spmi_transfer(
+            state.arbiter_version,
+            state.apid,
+            QPNPINT_LATCHED_CLR,
+            &mut command,
+            true,
+        )
+    } || !unsafe {
+        spmi_transfer(
+            state.arbiter_version,
+            state.apid,
+            QPNPINT_EN_SET,
+            &mut command,
+            true,
+        )
+    } {
+        return false;
+    }
+
+    // pmic_arb_acc_enable_v5() and pmic_arb_irq_clear_v5() are in the write
+    // channel window, one 64-KiB APID window per peripheral.
+    let offset = spmi_channel_offset(state.arbiter_version, state.apid, false);
+    unsafe {
+        spmi_write(SPMI_CHANNELS, offset + SPMI_PIC_IRQ_CLEAR, bit as u32);
+        spmi_write(SPMI_CHANNELS, offset + SPMI_PIC_ACC_ENABLE, 1);
+    }
+    true
 }
 
 pub const fn typec_transition(phase: TypecPhase, event: TypecEvent) -> TypecPhase {
@@ -1216,6 +1820,19 @@ unsafe fn spmi_transfer(
     false
 }
 
+/// Apply the masked register update used by the Linux regmap Type-C driver.
+/// PMIC register writes are not ordinary memory stores: preserve unrelated
+/// bits and only publish the requested field after the read transaction has
+/// completed.
+unsafe fn spmi_update_bits(version: u32, apid: usize, address: u16, mask: u8, value: u8) -> bool {
+    let mut current = 0u8;
+    if !unsafe { spmi_transfer(version, apid, address, &mut current, false) } {
+        return false;
+    }
+    let mut written = (current & !mask) | (value & mask);
+    unsafe { spmi_transfer(version, apid, address, &mut written, true) }
+}
+
 /// Read PM8150B Type-C state and select sink-only mode for a host-connected
 /// phone.  This is intentionally a small, synchronous handoff operation: it
 /// does not install the PMIC interrupt controller or pretend to replace the
@@ -1250,21 +1867,47 @@ pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     // is clear.  Reassert sink-only whenever the current mode is not already
     // an unambiguous sink configuration.
     if writable {
+        // Mirror qcom_pmic_typec_typec_hw_init(): disable Type-C interrupt
+        // reporting while the initial role fields are changed, select UFP /
+        // sink-only, leave VCONN under the PMIC policy, and select the source
+        // upper reference for the exit state. The previous implementation
+        // forced a transient DISABLE command before MODE_CFG; that is not the
+        // Linux flow and can leave the CC state machine detached during a
+        // Fastboot handoff.
+        let interrupts_disabled =
+            unsafe { spmi_update_bits(version, apid, TYPEC_INTR_EN_CFG_1, 0xff, 0) };
         let requested = (mode & !(TYPEC_EN_SNK_ONLY | TYPEC_EN_SRC_ONLY)) | TYPEC_EN_SNK_ONLY;
-        // The upstream Qualcomm PMIC Type-C driver forces the state machine
-        // through DISABLE before selecting a new power role. A same-value
-        // write is not sufficient after Fastboot has torn down its gadget:
-        // the PMIC can retain sink-only in the register while its attach
-        // evaluation remains stopped.
-        let mut disable = TYPEC_DISABLE_CMD;
-        let disabled = unsafe { spmi_transfer(version, apid, TYPEC_MODE_CFG, &mut disable, true) };
-        if disabled {
+        let mode_selected = unsafe {
+            spmi_update_bits(
+                version,
+                apid,
+                TYPEC_MODE_CFG,
+                TYPEC_EN_SNK_ONLY | TYPEC_EN_SRC_ONLY,
+                TYPEC_EN_SNK_ONLY,
+            )
+        };
+        let vconn_configured = unsafe {
+            spmi_update_bits(
+                version,
+                apid,
+                TYPEC_VCONN_CONTROL,
+                TYPEC_VCONN_EN_SRC | TYPEC_VCONN_EN_VALUE,
+                TYPEC_VCONN_EN_SRC,
+            )
+        };
+        let exit_state_configured = unsafe {
+            spmi_update_bits(
+                version,
+                apid,
+                TYPEC_EXIT_STATE_CFG,
+                TYPEC_SEL_SRC_UPPER_REF,
+                TYPEC_SEL_SRC_UPPER_REF,
+            )
+        };
+        sink_mode_written =
+            interrupts_disabled && mode_selected && vconn_configured && exit_state_configured;
+        if mode_selected {
             phase = typec_transition(phase, TypecEvent::SinkOnlySelected);
-        }
-        let mut new_mode = requested;
-        sink_mode_written = disabled
-            && unsafe { spmi_transfer(version, apid, TYPEC_MODE_CFG, &mut new_mode, true) };
-        if sink_mode_written {
             mode = requested;
         }
     }
@@ -1274,7 +1917,8 @@ pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     // Fastboot handoff briefly reports detached while it tears down its own
     // gadget, so use a bounded poll and preserve the last observed state in
     // the returned contract instead of treating the role write as an attach.
-    let mut attached = misc_status & TYPEC_CC_ATTACHED != 0;
+    let mut role = typec_role(misc_status);
+    let mut attached = role == UsbRole::Device;
     if attached {
         phase = typec_transition(phase, TypecEvent::AttachDetected);
     } else if sink_mode_written {
@@ -1288,7 +1932,8 @@ pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
                 break;
             }
             misc_status = status;
-            attached = status & TYPEC_CC_ATTACHED != 0;
+            role = typec_role(status);
+            attached = role == UsbRole::Device;
             if attached {
                 phase = typec_transition(phase, TypecEvent::AttachDetected);
                 attach_settled = true;
@@ -1301,9 +1946,12 @@ pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     }
     Some(TypecState {
         arbiter_version: version,
+        apid,
+        writable,
         misc_status,
         mode,
         orientation_reverse: misc_status & TYPEC_CC_ORIENTATION != 0,
+        role: typec_role(misc_status),
         sink_mode_written,
         attached,
         attach_settled,
@@ -1313,20 +1961,29 @@ pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
 
 unsafe fn configure_pdc_irq(irq: IrqResource) -> bool {
     let base = usb_resources().pdc_base;
-    let config = (irq.trigger == IrqTrigger::RisingEdge)
+    let version = unsafe { core::ptr::read_volatile((base + PDC_VERSION) as *const u32) };
+    let layout = pdc_register_layout(version);
+    let config = matches!(irq.trigger, IrqTrigger::RisingEdge | IrqTrigger::EdgeBoth)
         .then_some(PDC_EDGE_RISING)
         .unwrap_or(PDC_LEVEL_HIGH);
     let config_address = (base + PDC_IRQ_CONFIG + irq.number as usize * 4) as *mut u32;
     let mut value = unsafe { core::ptr::read_volatile(config_address) };
     value = (value & !PDC_IRQ_CONFIG_MASK) | config;
+    if let Some(bit) = layout.irq_enable_bit {
+        value |= 1 << bit;
+    }
     unsafe { core::ptr::write_volatile(config_address, value) };
     let _ = unsafe { core::ptr::read_volatile(config_address) };
 
-    let bank_address = (base + PDC_IRQ_ENABLE_BANK + (irq.number as usize / 32) * 4) as *mut u32;
-    let mut bank = unsafe { core::ptr::read_volatile(bank_address) };
-    bank |= 1 << (irq.number % 32);
-    unsafe { core::ptr::write_volatile(bank_address, bank) };
-    unsafe { core::ptr::read_volatile(bank_address) & (1 << (irq.number % 32)) != 0 }
+    if let Some(enable_bank) = layout.enable_bank {
+        let bank_address = (base + enable_bank + (irq.number as usize / 32) * 4) as *mut u32;
+        let mut bank = unsafe { core::ptr::read_volatile(bank_address) };
+        bank |= 1 << (irq.number % 32);
+        unsafe { core::ptr::write_volatile(bank_address, bank) };
+        unsafe { core::ptr::read_volatile(bank_address) & (1 << (irq.number % 32)) != 0 }
+    } else {
+        unsafe { core::ptr::read_volatile(config_address) & (1 << 3) != 0 }
+    }
 }
 
 /// Program the three USB PDC pins exactly as the Qualcomm PDC irqchip does:
@@ -1337,7 +1994,7 @@ pub unsafe fn configure_usb_pdc_irqs() -> bool {
     let mut ok = true;
     for irq in resources.irqs {
         if irq.kind == UsbIrqKind::Pdc {
-            ok &= unsafe { configure_pdc_irq(*irq) };
+            ok &= unsafe { configure_pdc_irq(irq) };
         }
     }
     ok
@@ -1348,6 +2005,9 @@ pub unsafe fn configure_usb_pdc_irqs() -> bool {
 /// not touched here: those rails are controlled by secure firmware and are
 /// already enabled by the Pixel boot chain for a temporary boot image.
 pub unsafe fn enable_usb30_gdsc() -> bool {
+    if !usb_power_contract_valid(true) {
+        return false;
+    }
     let address = usb_resources().gdsc as *mut u32;
     let mut value = unsafe { core::ptr::read_volatile(address) };
     value &= !(GDSC_HW_CONTROL | GDSC_SW_OVERRIDE | GDSC_WAIT_MASK);
@@ -1361,6 +2021,7 @@ pub unsafe fn enable_usb30_gdsc() -> bool {
 
     for _ in 0..1_000_000u32 {
         if unsafe { core::ptr::read_volatile(address) } & GDSC_PWR_ON != 0 {
+            set_usb_resource_state(|state| state.gdsc_enabled = true);
             return true;
         }
         unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
@@ -1374,7 +2035,7 @@ const GCC_CFG_SRC_SEL_MASK: u32 = 0x7 << 8;
 
 #[inline]
 unsafe fn gcc_reg(offset: usize) -> *mut u32 {
-    (GCC_BASE + offset) as *mut u32
+    (usb_resources().gcc_base + offset) as *mut u32
 }
 
 /// Program one Qualcomm RCG2 clock source and commit the change.
@@ -1438,7 +2099,11 @@ pub unsafe fn apply_usb_performance(vote: UsbBusVote) -> bool {
     if unsafe { !configure_usb_clocks(vote) } {
         return false;
     }
-    unsafe { apply_usb_bus_vote(vote) }
+    if unsafe { !apply_usb_bus_vote(vote) } {
+        return false;
+    }
+    set_usb_resource_state(|state| state.bus_vote = Some(vote));
+    true
 }
 
 pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usize>) {
@@ -1447,17 +2112,27 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
     unsafe {
         let _ = configure_usb_pdc_irqs();
     }
-    super::gicv3::init(gicd, gicr, Some(USB_DWC3_IRQ));
+    let gic_ready = super::gicv3::init(gicd, gicr, Some(usb_controller_irq()));
     unsafe {
-        super::gicv3::enable_spis(
-            gicd,
-            &[
-                USB_PWR_EVENT_IRQ,
-                USB_PDC_DP_HS_PARENT_IRQ,
-                USB_PDC_SS_PARENT_IRQ,
-                USB_PDC_DM_HS_PARENT_IRQ,
-            ],
-        );
+        let mut spis = [0u32; 6];
+        let mut count = 0usize;
+        for irq in usb_resources().irqs {
+            if irq.kind == UsbIrqKind::GicSpi && irq.number != usb_controller_irq() {
+                spis[count] = irq.number;
+                count += 1;
+            }
+        }
+        let spmi_parent = usb_typec_parent_irq();
+        if spmi_parent != usb_controller_irq()
+            && !spis[..count].iter().any(|irq| *irq == spmi_parent)
+        {
+            spis[count] = spmi_parent;
+            count += 1;
+        }
+        super::gicv3::enable_spis(gicd, &spis[..count]);
+    }
+    if gic_ready {
+        set_usb_resource_state(|state| state.irq_routes_enabled = true);
     }
 }
 
@@ -1546,16 +2221,6 @@ pub unsafe fn command_db_read_addr(id: &[u8; 8]) -> Option<u32> {
     )
 }
 
-const RPMH_TCS_STRIDE: usize = 672;
-const RPMH_CMD_STRIDE: usize = 20;
-const RPMH_CMD_WAIT_FOR_CMPL: usize = 0x10;
-const RPMH_CONTROL: usize = 0x14;
-const RPMH_STATUS: usize = 0x18;
-const RPMH_CMD_ENABLE: usize = 0x1c;
-const RPMH_CMD_MSGID: usize = 0x30;
-const RPMH_CMD_ADDR: usize = 0x34;
-const RPMH_CMD_DATA: usize = 0x38;
-const RPMH_CMD_STATUS: usize = 0x3c;
 const RPMH_TCS_AMC_ENABLE: u32 = 1 << 16;
 const RPMH_TCS_AMC_TRIGGER: u32 = 1 << 24;
 const RPMH_CMD_MSGID_LEN: u32 = 8;
@@ -1607,13 +2272,24 @@ unsafe fn send_usb_rpmh_vote(vote: UsbBusVote) -> bool {
     }
 
     let resources = usb_resources().rpmh_rsc;
+    // Linux reads the RSC driver ID at the driver base before selecting its
+    // register table.  Never write a guessed layout to secure-owned RPMh
+    // state: an unreadable/invalid ID is a hard refusal, preserving the
+    // bootloader's existing vote.
+    let rsc_id = unsafe { core::ptr::read_volatile(rpmh_reg(resources.driver_base, RPMH_RSC_ID)) };
+    let Some(layout) = rpmh_register_layout(rsc_id) else {
+        return false;
+    };
     let tcs_base = resources.driver_base + resources.tcs_offset;
     let mut selected = None;
     for tcs in resources.active_tcs_offset..resources.active_tcs_offset + resources.active_tcs {
-        let base = tcs_base + tcs as usize * RPMH_TCS_STRIDE;
-        let status = unsafe { core::ptr::read_volatile(rpmh_reg(base, RPMH_STATUS)) };
-        let enabled = unsafe { core::ptr::read_volatile(rpmh_reg(base, RPMH_CMD_ENABLE)) };
-        if status != 0 && enabled == 0 {
+        let base = tcs_base + tcs as usize * layout.tcs_stride;
+        // The upstream driver owns a software tcs_in_use bitmap and treats
+        // CMD_ENABLE as the hardware in-flight guard.  STATUS is not an
+        // "idle" predicate; requiring it to be non-zero made a valid idle
+        // TCS look unavailable on controllers that report zero there.
+        let enabled = unsafe { core::ptr::read_volatile(rpmh_reg(base, layout.command_enable)) };
+        if enabled == 0 {
             selected = Some(base);
             break;
         }
@@ -1622,9 +2298,12 @@ unsafe fn send_usb_rpmh_vote(vote: UsbBusVote) -> bool {
         return false;
     };
 
-    if !unsafe { rpmh_write_sync(base, RPMH_CONTROL, 0) }
-        || !unsafe { rpmh_write_sync(base, RPMH_CMD_ENABLE, 0) }
-        || !unsafe { rpmh_write_sync(base, RPMH_CMD_WAIT_FOR_CMPL, 0) }
+    // __tcs_set_trigger() first clears trigger, then enable, with a
+    // readback after each transition.  The final trigger is written only
+    // after all command slots have been populated.
+    if !unsafe { rpmh_write_sync(base, layout.control, 0) }
+        || !unsafe { rpmh_write_sync(base, layout.command_enable, 0) }
+        || !unsafe { rpmh_write_sync(base, layout.wait_for_completion, 0) }
     {
         return false;
     }
@@ -1632,27 +2311,34 @@ unsafe fn send_usb_rpmh_vote(vote: UsbBusVote) -> bool {
     let mut enable = 0;
     let mut wait_for_completion = 0;
     for (index, command) in commands.iter().enumerate() {
-        let offset = index * RPMH_CMD_STRIDE;
+        let offset = index * layout.command_stride;
         let msgid = RPMH_CMD_MSGID_LEN | RPMH_CMD_MSGID_RESP_REQ | RPMH_CMD_MSGID_WRITE;
         unsafe {
-            core::ptr::write_volatile(rpmh_reg(base, RPMH_CMD_MSGID + offset), msgid);
-            core::ptr::write_volatile(rpmh_reg(base, RPMH_CMD_ADDR + offset), command.address);
-            core::ptr::write_volatile(rpmh_reg(base, RPMH_CMD_DATA + offset), command.data);
+            core::ptr::write_volatile(rpmh_reg(base, layout.command_msgid + offset), msgid);
+            core::ptr::write_volatile(
+                rpmh_reg(base, layout.command_address + offset),
+                command.address,
+            );
+            core::ptr::write_volatile(rpmh_reg(base, layout.command_data + offset), command.data);
         }
         enable |= 1 << index;
         wait_for_completion |= 1 << index;
     }
-    if !unsafe { rpmh_write_sync(base, RPMH_CMD_WAIT_FOR_CMPL, wait_for_completion) }
-        || !unsafe { rpmh_write_sync(base, RPMH_CMD_ENABLE, enable) }
-        || !unsafe {
-            rpmh_write_sync(
-                base,
-                RPMH_CONTROL,
-                RPMH_TCS_AMC_ENABLE | RPMH_TCS_AMC_TRIGGER,
-            )
-        }
+    if !unsafe { rpmh_write_sync(base, layout.wait_for_completion, wait_for_completion) }
+        || !unsafe { rpmh_write_sync(base, layout.command_enable, enable) }
+        || !unsafe { rpmh_write_sync(base, layout.control, RPMH_TCS_AMC_ENABLE) }
     {
         return false;
+    }
+    // Linux writes the trigger as the final relaxed write.  It is a command
+    // edge, not a stable register value, so waiting for readback equality can
+    // turn a successfully launched transaction into a false timeout.
+    unsafe {
+        core::ptr::write_volatile(
+            rpmh_reg(base, layout.control),
+            RPMH_TCS_AMC_ENABLE | RPMH_TCS_AMC_TRIGGER,
+        );
+        core::arch::asm!("dsb sy", options(nostack));
     }
 
     let mut complete = false;
@@ -1660,7 +2346,10 @@ unsafe fn send_usb_rpmh_vote(vote: UsbBusVote) -> bool {
         complete = true;
         for index in 0..bcm_votes.count {
             let status = unsafe {
-                core::ptr::read_volatile(rpmh_reg(base, RPMH_CMD_STATUS + index * RPMH_CMD_STRIDE))
+                core::ptr::read_volatile(rpmh_reg(
+                    base,
+                    layout.command_status + index * layout.command_stride,
+                ))
             };
             if status & (RPMH_CMD_STATUS_ISSUED | RPMH_CMD_STATUS_COMPLETE)
                 != (RPMH_CMD_STATUS_ISSUED | RPMH_CMD_STATUS_COMPLETE)
@@ -1676,9 +2365,9 @@ unsafe fn send_usb_rpmh_vote(vote: UsbBusVote) -> bool {
 
     // Always release the TCS, including the error path. A failed completion
     // must not strand an active TCS and make later runtime-PM votes hang.
-    let released = unsafe { rpmh_write_sync(base, RPMH_CONTROL, 0) }
-        && unsafe { rpmh_write_sync(base, RPMH_CMD_ENABLE, 0) }
-        && unsafe { rpmh_write_sync(base, RPMH_CMD_WAIT_FOR_CMPL, 0) };
+    let released = unsafe { rpmh_write_sync(base, layout.control, 0) }
+        && unsafe { rpmh_write_sync(base, layout.command_enable, 0) }
+        && unsafe { rpmh_write_sync(base, layout.wait_for_completion, 0) };
     complete && released
 }
 
@@ -1699,9 +2388,15 @@ mod tests {
         let resources = BRAMBLE_USB_RESOURCES;
         assert_eq!(resources.dwc3_base, 0x0a60_0000);
         assert_eq!(resources.dwc3_size, 0xcd00);
+        assert_eq!(resources.gcc_base, GCC_BASE);
         assert_eq!(resources.qscratch_base, 0x0a6f_8800);
         assert_eq!(resources.hs_phy_base, 0x088e_3000);
         assert_eq!(resources.qmp_phy_base, 0x088e_8000);
+        assert_eq!(resources.qmp_reg_offsets[0], 0x1c14);
+        assert_eq!(resources.qmp_reg_offsets[1], 0x1f08);
+        assert_eq!(resources.qmp_reg_offsets[2], 0x1f14);
+        assert_eq!(resources.qmp_reg_offsets[14], 0x1c8c);
+        assert_eq!(resources.qmp_reg_offsets[15], 0x1c18);
         assert_eq!(resources.apps_smmu_base, 0x1500_0000);
         assert_eq!(resources.pdc_base, 0x0b22_0000);
         assert_eq!(pdc_parent_irq(14), Some(494));
@@ -1725,6 +2420,17 @@ mod tests {
         assert_eq!(resources.pm_qos_latency_us, 61);
         assert_eq!(resources.bus_vote.mode_count, 4);
         assert_eq!(resources.bus_vote.path_count, 3);
+        assert!(usb_power_contract_valid(true));
+        assert_eq!(resources.power.hs_phy_rails[0].name, "vdd");
+        assert_eq!(resources.power.hs_phy_rails[0].min_uv, 880_000);
+        assert_eq!(resources.power.hs_phy_rails[1].min_uv, 1_704_000);
+        assert_eq!(resources.power.hs_phy_rails[1].max_uv, 1_800_000);
+        assert_eq!(resources.power.hs_phy_rails[1].max_load_ua, 19_000);
+        assert_eq!(resources.power.hs_phy_rails[2].min_uv, 3_050_000);
+        assert_eq!(resources.power.hs_phy_rails[2].max_uv, 3_300_000);
+        assert_eq!(resources.power.hs_phy_rails[2].max_load_ua, 16_000);
+        assert_eq!(resources.power.qmp_core.max_load_ua, 47_000);
+        assert!(resources.power.qmp_vbus_valid_override);
     }
 
     #[test]
@@ -1772,6 +2478,37 @@ mod tests {
         assert_eq!(irqs[3].trigger, IrqTrigger::RisingEdge);
         assert_eq!(irqs[4].number, 240);
         assert_eq!(irqs[4].kind, UsbIrqKind::GicSpi);
+        assert_eq!(BRAMBLE_USB_RESOURCES.spmi_parent_irq, 481);
+        assert_eq!(BRAMBLE_USB_RESOURCES.typec_irq.sid, 2);
+        assert_eq!(BRAMBLE_USB_RESOURCES.typec_irq.peripheral_id, 0x15);
+        assert_eq!(BRAMBLE_USB_RESOURCES.typec_irq.irq, 0);
+        assert_eq!(
+            BRAMBLE_USB_RESOURCES.typec_irq.trigger,
+            IrqTrigger::RisingEdge
+        );
+    }
+
+    #[test]
+    fn typec_spmi_parent_is_a_usb_irq_and_polarity_matches_dt() {
+        assert!(is_usb_irq(481));
+        assert_eq!(spmi_irq_polarity(IrqTrigger::RisingEdge), (1, 1, 0));
+        assert_eq!(spmi_irq_polarity(IrqTrigger::EdgeBoth), (1, 1, 1));
+        assert_eq!(spmi_irq_polarity(IrqTrigger::LevelHigh), (0, 1, 0));
+    }
+
+    #[test]
+    fn pdc_register_layout_matches_supported_linux_revisions() {
+        let v27 = pdc_register_layout(0x0207_00);
+        assert_eq!(v27.enable_bank, Some(PDC_IRQ_ENABLE_BANK));
+        assert_eq!(v27.irq_enable_bit, None);
+
+        let v30 = pdc_register_layout(0x0300_00);
+        assert_eq!(v30.enable_bank, Some(PDC_IRQ_ENABLE_BANK));
+        assert_eq!(v30.irq_enable_bit, None);
+
+        let v32 = pdc_register_layout(PDC_VERSION_3_2);
+        assert_eq!(v32.enable_bank, None);
+        assert_eq!(v32.irq_enable_bit, Some(3));
     }
 
     #[test]
@@ -1790,6 +2527,25 @@ mod tests {
                 data: 0,
             }
         );
+    }
+
+    #[test]
+    fn rpmh_register_layout_tracks_controller_major_revision() {
+        let v27 = rpmh_register_layout(0x0207_00).unwrap();
+        assert_eq!(v27.command_stride, 20);
+        assert_eq!(v27.wait_for_completion, 0x10);
+        assert_eq!(v27.control, 0x14);
+        assert_eq!(v27.command_status, 0x3c);
+
+        let v30 = rpmh_register_layout(0x0300_00).unwrap();
+        assert_eq!(v30.command_stride, 24);
+        assert_eq!(v30.wait_for_completion, 0x20);
+        assert_eq!(v30.control, 0x24);
+        assert_eq!(v30.command_status, 0x40);
+
+        // An invalid read must not be interpreted as v2.7 and must never
+        // result in a speculative write to the secure-owned RSC block.
+        assert_eq!(rpmh_register_layout(0), None);
     }
 
     #[test]
@@ -1840,6 +2596,36 @@ mod tests {
     }
 
     #[test]
+    fn dma_region_validation_enforces_pool_bounds_and_alignment() {
+        let pool = DmaPoolResource {
+            iova_base: 0x9000_0000,
+            size: 0x1000,
+            stream_id: 0xe0,
+        };
+        assert!(dma_region_valid(pool, 0x9000_0000, 0x100, 0x40));
+        assert!(dma_region_valid(pool, 0x9000_0f00, 0x100, 0x100));
+        assert!(!dma_region_valid(pool, 0x9000_0001, 0x100, 0x40));
+        assert!(!dma_region_valid(pool, 0x9000_0f80, 0x100, 0x40));
+        assert!(!dma_region_valid(pool, 0x8fff_f000, 0x100, 0x100));
+        assert!(!dma_region_valid(pool, 0x9000_0000, 0, 0x40));
+    }
+
+    #[test]
+    fn dma_pool_allocator_is_monotonic_and_aligned() {
+        let pool = DmaPoolResource {
+            iova_base: 0x9000_0000,
+            size: 0x1000,
+            stream_id: 0xe0,
+        };
+        let mut allocator = DmaPoolAllocator::new(pool, 0x9000_0101).unwrap();
+        assert_eq!(allocator.allocate(0x20, 0x40), Some(0x9000_0140));
+        assert_eq!(allocator.allocate(0x10, 0x100), Some(0x9000_0200));
+        assert_eq!(allocator.allocate(0x1000, 0x40), None);
+        assert!(allocator.remaining() < 0x1000);
+        assert_eq!(DmaPoolAllocator::new(pool, 0x9000_1000), None);
+    }
+
+    #[test]
     fn command_db_lookup_obeys_linux_header_layout_and_bounds() {
         let mut db = [0u8; 256];
         db[4..8].copy_from_slice(&CMD_DB_MAGIC);
@@ -1876,6 +2662,16 @@ mod tests {
         assert_eq!(
             typec_transition(phase, TypecEvent::DetachDetected),
             TypecPhase::Detached
+        );
+    }
+
+    #[test]
+    fn typec_role_distinguishes_unattached_device_and_host() {
+        assert_eq!(typec_role(0), UsbRole::None);
+        assert_eq!(typec_role(TYPEC_CC_ATTACHED), UsbRole::Device);
+        assert_eq!(
+            typec_role(TYPEC_CC_ATTACHED | TYPEC_SNK_SRC_MODE),
+            UsbRole::Host
         );
     }
 }

@@ -257,10 +257,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
                 .or_else(|| fdt::find_compatible(address, b"qcom,dwc-usb3-msm"));
             let hs_phy = fdt::find_compatible(address, b"qcom,usb-hsphy-snps-femto");
             let qmp_phy = fdt::find_compatible(address, b"qcom,usb-ssphy-qmp-dp-combo");
+            let gcc = fdt::find_compatible(address, b"qcom,gcc-lito");
             let apps_smmu = fdt::find_compatible_nth(address, b"qcom,qsmmu-v500", 1)
                 .or_else(|| fdt::find_compatible(address, b"qcom,qsmmu-v500"));
             let pdc = fdt::find_compatible(address, b"qcom,lito-pdc");
             let usb_node = b"qcom,dwc-usb3-msm";
+            let _ = platform::bramble::install_usb_gcc_base(gcc.map(|r| r.base));
             let mut contract = platform::bramble::UsbDtContract::empty();
             contract.dma_pool = match (
                 fdt::find_compatible_property_u32(
@@ -282,6 +284,38 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             // `iommus = <&apps_smmu SID 0>`: cell 0 is the phandle, cell 1
             // is the stream ID consumed by the SMMU context-bank setup.
             contract.stream_id = fdt::find_compatible_property_u32(address, usb_node, b"iommus", 1);
+            // Lito's `interrupts-extended` tuples are
+            // (PDC phandle, pin, trigger), (GIC phandle, type, SPI,
+            // trigger), then two more PDC tuples.  The child DWC3 node has
+            // the usual (type, number, trigger) `interrupts` property.
+            contract.irq_numbers[0] =
+                fdt::find_compatible_property_u32(address, usb_node, b"interrupts-extended", 1);
+            contract.irq_numbers[1] =
+                fdt::find_compatible_property_u32(address, usb_node, b"interrupts-extended", 5);
+            contract.irq_numbers[2] =
+                fdt::find_compatible_property_u32(address, usb_node, b"interrupts-extended", 8);
+            contract.irq_numbers[3] =
+                fdt::find_compatible_property_u32(address, usb_node, b"interrupts-extended", 11);
+            contract.irq_numbers[4] =
+                fdt::find_compatible_property_u32(address, b"snps,dwc3", b"interrupts", 1);
+            // The PM8150B Type-C child has no compatible string in the
+            // Android PMIC DT. Its first SPMI interrupt is the platform IRQ
+            // consumed by qcom-pmic-typec; the SPMI arbiter exposes the
+            // corresponding summary as its `periph_irq` GIC SPI.
+            for index in 0..4 {
+                contract.typec_irq[index] =
+                    fdt::find_named_property_u32(address, b"qcom,typec@1500", b"interrupts", index);
+            }
+            contract.spmi_parent_irq =
+                fdt::find_compatible_property_u32(address, b"qcom,spmi-pmic-arb", b"interrupts", 1);
+            for index in 0..18 {
+                contract.qmp_reg_offsets[index] = fdt::find_compatible_property_u32(
+                    address,
+                    b"qcom,usb-ssphy-qmp-dp-combo",
+                    b"qcom,qmp-phy-reg-offset",
+                    index,
+                );
+            }
             contract.core_clk_rate_hz =
                 fdt::find_compatible_property_u32(address, usb_node, b"qcom,core-clk-rate", 0);
             contract.core_clk_rate_hs_hz =
@@ -445,8 +479,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     usb::note_platform_powered();
     #[cfg(fullerene_aarch64_bramble)]
     if let Some(typec) = unsafe { platform::bramble::prepare_usb_device_role() } {
+        usb::install_typec_state(typec);
         usb::set_typec_orientation(typec.orientation_reverse);
         usb::note_typec_attached(typec.attached);
+        if unsafe { platform::bramble::configure_typec_irq(&typec) } {
+            uart::puts("platform: Type-C SPMI IRQ unmasked\n");
+        } else {
+            uart::puts("platform: Type-C SPMI IRQ unavailable; polling retained\n");
+        }
         usb::trace_marker(
             usb::TRACE_TYPEC_DONE,
             (typec.sink_mode_written as u32)
@@ -462,6 +502,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             typec.orientation_reverse as u64,
         );
         uart::put_hex("platform: Type-C attached=", typec.attached as u64);
+        uart::put_hex("platform: Type-C role=", typec.role as u64);
         uart::put_hex(
             "platform: Type-C attach-settled=",
             typec.attach_settled as u64,

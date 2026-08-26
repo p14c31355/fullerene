@@ -273,6 +273,105 @@ pub fn find_compatible_property_u32(
     None
 }
 
+/// Read a 32-bit property from an enabled node identified by its full DT
+/// node name (for example `qcom,typec@1500`).  SPMI child nodes deliberately
+/// do not carry a `compatible` property in the Android PMIC DT; their
+/// interrupt specifiers therefore have to be discovered by node name.
+pub fn find_named_property_u32(
+    address: u64,
+    node_name: &[u8],
+    property: &[u8],
+    index: usize,
+) -> Option<u32> {
+    let header = inspect(address)?;
+    let base = address as *const u8;
+    let structure = unsafe { base.add(header.structure_offset as usize) };
+    let strings = unsafe { base.add(header.strings_offset as usize) };
+    let structure_end = unsafe { structure.add(header.structure_size as usize) };
+    let strings_end = unsafe { strings.add(header.strings_size as usize) };
+    let mut cursor = structure;
+    let mut depth = 0usize;
+    let mut states = [PropertyNodeState::new(); 16];
+
+    while (cursor as usize) < (structure_end as usize) {
+        if (structure_end as usize) - (cursor as usize) < 4 {
+            return None;
+        }
+        let token = read_be32(cursor, 0)?;
+        cursor = unsafe { cursor.add(4) };
+        match token {
+            FDT_BEGIN_NODE => {
+                if depth + 1 >= states.len() {
+                    return None;
+                }
+                depth += 1;
+                let node_start = cursor;
+                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
+                    cursor = unsafe { cursor.add(1) };
+                }
+                if (cursor as usize) >= (structure_end as usize) {
+                    return None;
+                }
+                states[depth] = PropertyNodeState {
+                    name_matches: c_string_eq(node_start, structure_end, node_name),
+                    ..PropertyNodeState::new()
+                };
+                cursor = align4(unsafe { cursor.add(1) });
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_END_NODE => {
+                if depth == 0 {
+                    return None;
+                }
+                let state = states[depth];
+                if state.enabled && state.name_matches && state.property_value.is_some() {
+                    return state.property_value;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            FDT_PROP => {
+                if (structure_end as usize) - (cursor as usize) < 8 {
+                    return None;
+                }
+                let length = read_be32(cursor, 0)? as usize;
+                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
+                let value = unsafe { cursor.add(8) };
+                let value_end = (value as usize).checked_add(length)? as *const u8;
+                if (value_end as usize) > (structure_end as usize)
+                    || name_offset >= header.strings_size
+                {
+                    return None;
+                }
+                let name = unsafe { strings.add(name_offset as usize) };
+                let state = &mut states[depth];
+                if c_string_eq(name, strings_end, b"status") {
+                    state.enabled = !c_string_eq(value, value_end, b"disabled");
+                } else if c_string_eq(name, strings_end, property) {
+                    state.property_seen = true;
+                    if length == 0 {
+                        state.property_value = Some(0);
+                    } else {
+                        let offset = index.checked_mul(4)?;
+                        if offset.checked_add(4)? <= length {
+                            state.property_value = read_be32(value, offset as u32);
+                        }
+                    }
+                }
+                cursor = align4(value_end);
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_NOP => {}
+            FDT_END => return None,
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn read_be32(base: *const u8, offset: u32) -> Option<u32> {
     let value = unsafe { read_volatile(base.add(offset as usize) as *const u32) };
     Some(u32::from_be(value))
@@ -292,6 +391,7 @@ struct NodeState {
 #[derive(Clone, Copy)]
 struct PropertyNodeState {
     compatible: bool,
+    name_matches: bool,
     enabled: bool,
     property_seen: bool,
     property_value: Option<u32>,
@@ -301,6 +401,7 @@ impl PropertyNodeState {
     const fn new() -> Self {
         Self {
             compatible: false,
+            name_matches: false,
             enabled: true,
             property_seen: false,
             property_value: None,

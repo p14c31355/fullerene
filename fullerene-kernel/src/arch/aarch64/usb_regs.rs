@@ -38,6 +38,7 @@ pub const DEPCMD_HIPRI_FORCERM: u32 = 1 << 11;
 pub const DEPCMD_PARAM_SHIFT: u32 = 16;
 pub const DEPCMD_DEPSTARTCFG: u32 = 0x09;
 pub const DEPCMD_ENDTRANSFER: u32 = 0x08;
+pub const DEPCMD_UPDATETRANSFER: u32 = 0x07;
 pub const DEPCMD_STARTTRANSFER: u32 = 0x06;
 pub const DEPCMD_CLEARSTALL: u32 = 0x05;
 pub const DEPCMD_SETSTALL: u32 = 0x04;
@@ -54,6 +55,8 @@ pub const DEPCFG_MAX_PACKET_SHIFT: u32 = 3;
 
 pub const TRB_HWO: u32 = 1 << 0;
 pub const TRB_LST: u32 = 1 << 1;
+pub const TRB_CHN: u32 = 1 << 2;
+pub const TRB_CSP: u32 = 1 << 3;
 pub const TRB_ISP_IMI: u32 = 1 << 10;
 pub const TRB_IOC: u32 = 1 << 11;
 pub const TRB_CONTROL_SETUP: u32 = 2 << 4;
@@ -61,6 +64,7 @@ pub const TRB_NORMAL: u32 = 1 << 4;
 pub const TRB_CONTROL_STATUS2: u32 = 3 << 4;
 pub const TRB_CONTROL_STATUS3: u32 = 4 << 4;
 pub const TRB_CONTROL_DATA: u32 = 5 << 4;
+pub const TRB_LINK: u32 = 8 << 4;
 
 pub const EP_EVENT_TRANSFER_COMPLETE: u32 = 1;
 pub const EP_EVENT_XFER_NOT_READY: u32 = 3;

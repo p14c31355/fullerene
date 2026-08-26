@@ -70,7 +70,7 @@ unsafe fn write64(address: usize, value: u64) {
 /// Bring up the local GICv3 redistributor, the EL1 physical timer PPI, and
 /// optionally one platform SPI. Both QEMU virt and SM7250 expose an ARM
 /// GICv3; only the MMIO bases and the platform SPI differ.
-pub fn init(gicd_base: usize, gicr_base: usize, usb_irq: Option<u32>) {
+pub fn init(gicd_base: usize, gicr_base: usize, usb_irq: Option<u32>) -> bool {
     let sgi_base = gicr_base + GICR_SGI_BASE;
     unsafe {
         let waker = read32(gicr_base + GICR_WAKER);
@@ -86,7 +86,7 @@ pub fn init(gicd_base: usize, gicr_base: usize, usb_irq: Option<u32>) {
         if !awake {
             // A redistributor still owned by firmware is not safe to program.
             // Leave the caller's polling path alive, but do not spin forever.
-            return;
+            return false;
         }
 
         write32(
@@ -109,4 +109,5 @@ pub fn init(gicd_base: usize, gicr_base: usize, usb_irq: Option<u32>) {
         asm!("msr ICC_IGRPEN1_EL1, {value}", value = in(reg) 1u64, options(nostack));
         asm!("isb", options(nostack));
     }
+    true
 }
