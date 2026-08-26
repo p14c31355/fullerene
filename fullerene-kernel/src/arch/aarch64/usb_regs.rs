@@ -7,7 +7,10 @@ pub const DCFG_SUPERSPEED: u32 = 4;
 pub const DCTL_RUN_STOP: u32 = 1 << 31;
 pub const DSTS_CONNECTSPD_MASK: u32 = 7;
 pub const DSTS_DEVCTRLHLT: u32 = 1 << 22;
-pub const DSTS_DCNRD: u32 = 1 << 23;
+// DWC3_DSTS_DCNRD is bit 29. Bit 23 is COREIDLE; treating it as
+// controller-not-ready makes a post-reset handoff race the DWC3 device state
+// machine and can issue EP0 commands before the core accepts them.
+pub const DSTS_DCNRD: u32 = 1 << 29;
 pub const DSTS_SUPERSPEED: u32 = 4;
 
 pub const DEVTEN_DISCONNECT: u32 = 1 << 0;
@@ -79,4 +82,25 @@ pub const fn endpoint_event_status(raw: u32) -> u32 {
 
 pub const fn device_event_kind(raw: u32) -> u32 {
     (raw >> DEVICE_EVENT_KIND_SHIFT) & DEVICE_EVENT_KIND_MASK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dwc3_status_bits_match_upstream_layout() {
+        assert_eq!(DSTS_DEVCTRLHLT, 1 << 22);
+        assert_eq!(DSTS_DCNRD, 1 << 29);
+        assert_ne!(DSTS_DCNRD, 1 << 23); // COREIDLE, not DCNRD
+    }
+
+    #[test]
+    fn device_and_endpoint_events_keep_their_hardware_bit_layout() {
+        assert_eq!(device_event_kind(device_event(DEVICE_EVENT_USB_RESET)), 1);
+        let raw = endpoint_event(1, EP_EVENT_XFER_NOT_READY, EP_XFER_NOT_READY_STATUS);
+        assert_eq!(endpoint_from_event(raw), 1);
+        assert_eq!(endpoint_event_kind(raw), EP_EVENT_XFER_NOT_READY);
+        assert_eq!(endpoint_event_status(raw), EP_XFER_NOT_READY_STATUS);
+    }
 }

@@ -1,10 +1,11 @@
-//! Minimal polled DWC3 device-mode bring-up for the Bramble USB-C port.
+//! Minimal DWC3 device-mode bring-up for the Bramble USB-C port.
 //!
 //! This is deliberately a descriptor-only gadget for the first hardware
 //! milestone.  It is enough to make the Fullerene handoff observable from the
 //! host without depending on Android's ADB implementation.  The event ring
-//! and EP0 control transfers are polled because the early boot image does not
-//! install a DWC3 interrupt route yet.
+//! and EP0 control transfers are polled during early boot. The normal Bramble
+//! path also routes the Android DT's DWC3 SPI through GICv3, but polling remains
+//! active as a recovery path when firmware retains ownership of the GIC.
 
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
@@ -1442,7 +1443,7 @@ unsafe fn handle_setup() {
                     value as u32,
                     index as u32,
                     length as u32,
-                    unsafe { read(DSTS) },
+                    read(DSTS),
                 );
                 EP0_STATE = Ep0State::Data;
                 let _ = start_transfer(1, addr_of!(EP0_TRBS).cast::<Trb>());
@@ -1948,11 +1949,16 @@ pub fn init_usb2_gadget_handoff() -> bool {
         usb3 |= GUSB3PIPECTL_SUSPHY;
         write(GUSB3PIPECTL0, usb3);
 
-        // Deliberately leave the Apps SMMU untouched in this stage probe.
-        // The purpose here is to isolate DWC3 endpoint/event handling from
-        // the vendor-owned DMA context.  The production path configures the
-        // SMMU below; this probe must still reach the physical pull-up if
-        // that context is not writable during a fastboot handoff.
+        // The normal handoff owns the halted controller at this point. Match
+        // the Android DT's DWC3 -> Apps-SMMU stream binding before exposing
+        // any new event/TRB address to hardware. The standalone gadget probe
+        // returns through init_usb2_gadget_reuse_fastboot_ep0() above and
+        // intentionally keeps this operation separate for fault isolation.
+        if configure_dwc3_smmu() {
+            log_puts("usb gadget handoff: DWC3 SMMU identity map ready\n");
+        } else {
+            log_puts("usb gadget handoff: DWC3 SMMU identity map unavailable\n");
+        }
 
         // The linker-reserved region is identity-mapped by the early AArch64
         // MMU path. Clean it for the same handoff ordering whether this entry

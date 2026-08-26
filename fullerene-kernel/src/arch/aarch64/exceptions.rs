@@ -108,9 +108,19 @@ extern "C" fn aarch64_exception_irq() {
             options(nomem, nostack)
         );
     }
-    uart::put_hex("aarch64 exception: irq id=", interrupt_id);
     #[cfg(fullerene_aarch64_bramble)]
-    if interrupt_id as u32 == super::platform::bramble::USB_DWC3_IRQ {
+    let usb_irq = interrupt_id as u32 == super::platform::bramble::USB_DWC3_IRQ;
+    #[cfg(not(fullerene_aarch64_bramble))]
+    let usb_irq = false;
+    if !usb_irq {
+        // DWC3's IRQ path must stay free of UART MMIO: a host SETUP can
+        // arrive immediately after Connect Done, and the UART transaction
+        // is much slower than draining the event buffer. Keep diagnostics
+        // for timer and unexpected interrupts only.
+        uart::put_hex("aarch64 exception: irq id=", interrupt_id);
+    }
+    #[cfg(fullerene_aarch64_bramble)]
+    if usb_irq {
         // DWC3's event buffer is the source of truth. The IRQ handler only
         // drains it; transfer state transitions remain shared with the early
         // polling path so a pending event cannot be processed twice.
@@ -118,6 +128,12 @@ extern "C" fn aarch64_exception_irq() {
     }
     if interrupt_id as u32 == super::timer::TIMER_PPI {
         super::timer::arm_ms(100);
+    }
+    if usb_irq {
+        // Make the event-count acknowledgement visible before deasserting a
+        // level-sensitive SPI. This mirrors the readl/writel ordering in the
+        // Linux DWC3 interrupt path and prevents an avoidable IRQ retrigger.
+        unsafe { asm!("dsb sy", options(nostack)) };
     }
     unsafe {
         asm!(

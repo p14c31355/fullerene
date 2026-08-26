@@ -410,11 +410,17 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     }
     timer::arm_ms(100);
     exceptions::enable_irqs();
-    uart::puts("aarch64 early boot complete; waiting for timer irq\n");
+    uart::puts("aarch64 early boot complete; waiting for timer irq / USB events\n");
     loop {
         #[cfg(fullerene_aarch64_bramble)]
         usb::poll();
-        unsafe { core::arch::asm!("wfe", options(nomem, nostack, preserves_flags)) };
+        // Bramble keeps polling even if firmware-owned GIC state prevents
+        // installing the USB SPI route. QEMU has no hardware USB path here,
+        // so it can sleep on the timer as before.
+        #[cfg(not(fullerene_aarch64_bramble))]
+        unsafe {
+            core::arch::asm!("wfe", options(nomem, nostack, preserves_flags))
+        };
     }
 }
 
