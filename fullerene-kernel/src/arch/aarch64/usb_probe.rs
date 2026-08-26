@@ -79,6 +79,24 @@ global_asm!(
 
 const LINK_ENTRY: usize = 0x8008_0040;
 
+#[inline]
+fn probe_counter() -> u64 {
+    let value: u64;
+    unsafe {
+        asm!("mrs {value}, CNTPCT_EL0", value = out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
+#[inline]
+fn probe_counter_frequency() -> u64 {
+    let value: u64;
+    unsafe {
+        asm!("mrs {value}, CNTFRQ_EL0", value = out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
 // The Android bootloader may relocate the Image before jumping to it. Keep
 // this routine in assembly because the Rust/GOT addresses are not usable
 // until the dynamic relative relocations have been applied.
@@ -248,10 +266,9 @@ extern "C" fn usb_probe_exception_fallback() -> ! {
     // the host with a physical attach instead of immediately rebooting to
     // Android, which distinguishes an exception from an ordinary DWC3
     // command failure.
+    usb::trace_marker(usb::TRACE_EXCEPTION_SYNC, 0);
     let _ = usb::init_usb2_bare_pullup_handoff();
-    loop {
-        unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
-    }
+    reset_after_probe_failure();
 }
 
 #[unsafe(no_mangle)]
@@ -368,6 +385,29 @@ extern "C" fn usb_probe_entry() -> ! {
         } else {
             "fullerene usb probe: gadget running\n"
         });
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        {
+            // A successful init with no host-visible attach is still a
+            // failed diagnostic from the user's perspective. Keep the trace
+            // across a warm reset, but do not leave the handset permanently
+            // outside Fastboot when the cable/session never produces an
+            // event. Activity extends the deadline, so a real enumeration is
+            // not interrupted by this recovery path.
+            let frequency = probe_counter_frequency();
+            let mut deadline = probe_counter().saturating_add(frequency.saturating_mul(30));
+            let mut last_head = usb::trace_head();
+            loop {
+                usb::poll();
+                let head = usb::trace_head();
+                if head != last_head {
+                    last_head = head;
+                    deadline = probe_counter().saturating_add(frequency.saturating_mul(30));
+                } else if frequency != 0 && probe_counter() >= deadline {
+                    usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
+                    reset_after_probe_failure();
+                }
+            }
+        }
         loop {
             usb::poll();
         }
@@ -384,7 +424,12 @@ extern "C" fn usb_probe_entry() -> ! {
         // do not enter the event-ring poller: that path is precisely what
         // this fallback is isolating.
         let _ = usb::init_usb2_bare_pullup_handoff();
+        let frequency = probe_counter_frequency();
+        let deadline = probe_counter().saturating_add(frequency.saturating_mul(30));
         loop {
+            if frequency != 0 && probe_counter() >= deadline {
+                reset_after_probe_failure();
+            }
             unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
         }
     }
@@ -407,11 +452,6 @@ extern "C" fn usb_probe_entry() -> ! {
     reset_after_probe_failure();
 }
 
-#[cfg(not(any(
-    fullerene_aarch64_usb_gadget_handoff_probe,
-    fullerene_aarch64_usb_halt_probe,
-    fullerene_aarch64_usb_cold_halt_probe
-)))]
 fn reset_after_probe_failure() -> ! {
     // Make a failed USB handoff recoverable without another battery-cycle.
     // This is the same Qualcomm PS_HOLD path used by the entry probe, with

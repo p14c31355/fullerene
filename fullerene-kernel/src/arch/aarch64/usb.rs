@@ -101,16 +101,20 @@ const SMMU_TCR2_AS: u32 = 1 << 4;
 const SMMU_TCR2_PASIZE_40BIT: u32 = 2;
 
 #[repr(C, align(4096))]
+#[derive(Clone, Copy)]
 struct SmmuTable([u64; 512]);
 
-// With T0SZ=32 and a 4 KiB granule, TTBR0 points at a level-1 table. Four
-// 1 GiB block descriptors cover the complete 32-bit IOVA space, including
-// the vendor DT's 0x90000000..0xf0000000 USB pool and our 0x9b800000 DMA
-// section. This table is cleared together with the other USB DMA objects.
+// With T0SZ=32 and a 4 KiB granule, TTBR0 points at a level-1 table. The
+// vendor DT's 0x90000000..0xf0000000 pool is represented by level-2 2 MiB
+// identity blocks; addresses outside the pool are left unmapped. These tables
+// are cleared together with the other USB DMA objects.
 #[unsafe(link_section = ".usb_dma")]
 static mut SMMU_L1: SmmuTable = SmmuTable([0; 512]);
+#[unsafe(link_section = ".usb_dma")]
+static mut SMMU_L2: [SmmuTable; 4] = [SmmuTable([0; 512]); 4];
 
 const SMMU_DESC_VALID: u64 = 1;
+const SMMU_DESC_TABLE: u64 = 3;
 const SMMU_DESC_AF: u64 = 1 << 10;
 const SMMU_DESC_SH_INNER: u64 = 3 << 8;
 const SMMU_DESC_ATTR_NORMAL: u64 = 0;
@@ -411,6 +415,71 @@ const QMP_INIT: [(usize, u32); 146] = [
     (0x1f38, 0x07), // USB3_DP_PCS_USB3_RXEQTRAINING_DFE_TIME_S2
 ];
 
+/// Active PHY tables. The compiled values are the Bramble fallback, while
+/// the DT path may replace them after validating the complete vendor
+/// property. Keeping the delay array separate preserves the compact static
+/// table and still executes the DT's third cell rather than silently dropping
+/// it.
+static mut ACTIVE_QMP_INIT: [(usize, u32); 146] = QMP_INIT;
+static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
+static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] =
+    [(0x6c, 0x63), (0x70, 0x85), (0x74, 0x17)];
+
+/// Install the complete PHY programming properties from the bootloader DTB.
+/// A partial or malformed property is rejected as a unit, leaving the known
+/// Bramble fallback in place. The QMP binding terminates its 146 triples with
+/// `<0xffffffff 0xffffffff 0>`, which is a sentinel and is not written.
+pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>; 441]) -> bool {
+    let mut installed = false;
+
+    if hs_raw.iter().all(Option::is_some) {
+        let mut entries = [(0usize, 0u32); 3];
+        let mut valid = true;
+        for index in 0..3 {
+            let value = hs_raw[index * 2].unwrap();
+            let offset = hs_raw[index * 2 + 1].unwrap();
+            valid &= value <= 0xff
+                && matches!(offset, 0x6c | 0x70 | 0x74)
+                && entries[..index]
+                    .iter()
+                    .all(|entry| entry.0 != offset as usize);
+            entries[index] = (offset as usize, value);
+        }
+        if valid {
+            unsafe { ACTIVE_HSPHY_PARAM_OVERRIDE = entries };
+            installed = true;
+        }
+    }
+
+    if qmp_raw.iter().all(Option::is_some)
+        && qmp_raw[438] == Some(u32::MAX)
+        && qmp_raw[439] == Some(u32::MAX)
+        && qmp_raw[440] == Some(0)
+    {
+        let mut entries = [(0usize, 0u32); 146];
+        let mut delays = [0u32; 146];
+        let mut valid = true;
+        for index in 0..146 {
+            let raw = index * 3;
+            let offset = qmp_raw[raw].unwrap();
+            let value = qmp_raw[raw + 1].unwrap();
+            let delay_us = qmp_raw[raw + 2].unwrap();
+            valid &= offset <= 0x2fff && value <= 0xff && delay_us <= 1_000_000;
+            entries[index] = (offset as usize, value);
+            delays[index] = delay_us;
+        }
+        if valid {
+            unsafe {
+                ACTIVE_QMP_INIT = entries;
+                ACTIVE_QMP_INIT_DELAY_US = delays;
+            }
+            installed = true;
+        }
+    }
+
+    installed
+}
+
 const EVENT_BUFFER_SIZE: usize = 4096;
 const MAX_PACKET_SIZE: u32 = 512;
 
@@ -570,6 +639,7 @@ pub const TRACE_USB_HANDOFF_BEGIN: u32 = 16;
 const TRACE_DWC3_RESET_BEGIN: u32 = 17;
 const TRACE_QSCRATCH_BEGIN: u32 = 18;
 pub const TRACE_EXCEPTION_SYNC: u32 = 19;
+pub const TRACE_PROBE_WATCHDOG: u32 = 33;
 const TRACE_LINK_STATUS: u32 = 20;
 const TRACE_USB_WAKEUP: u32 = 21;
 const TRACE_USB_SUSPEND: u32 = 22;
@@ -742,6 +812,13 @@ pub fn trace_marker(event: u32, status: u32) {
     trace_event(event, 0, 0, 0, 0, status);
 }
 
+/// Read the retained trace cursor without changing the controller state.
+/// Standalone probes use this as a watchdog activity signal: an EP0/device
+/// event advances the cursor, while a completely absent USB session does not.
+pub fn trace_head() -> u32 {
+    unsafe { read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2)) }
+}
+
 /// Dump the post-mortem USB trace after the controller has reached a safe
 /// UART-visible stage. The hot path above never calls this or formats text.
 pub fn dump_trace() {
@@ -834,26 +911,68 @@ unsafe fn smmu_tlb_sync() {
     }
 }
 
-unsafe fn install_smmu_identity_table() {
+unsafe fn install_smmu_identity_table(pool: super::platform::bramble::DmaPoolResource) -> bool {
+    let pool_base = pool.iova_base as u64;
+    let Some(pool_end) = pool_base.checked_add(pool.size as u64) else {
+        return false;
+    };
+    // This table format intentionally maps only complete 2 MiB blocks. The
+    // Android Lito pool is aligned to that granularity; refusing an unusual
+    // DT pool is safer than exposing bytes outside the declared DMA window.
+    if pool_base & 0x1f_ffff != 0
+        || pool_end & 0x1f_ffff != 0
+        || pool_end > (1u64 << 32)
+        || pool_base >= pool_end
+    {
+        return false;
+    }
+
     unsafe {
-        for index in 0..4usize {
-            let physical = (index as u64) << 30;
-            let descriptor = physical
-                | SMMU_DESC_VALID
-                | SMMU_DESC_AF
-                | SMMU_DESC_SH_INNER
-                | SMMU_DESC_ATTR_NORMAL
-                | SMMU_DESC_XN;
-            write_volatile(addr_of_mut!(SMMU_L1.0[index]), descriptor);
-        }
-        for index in 4..512usize {
+        for index in 0..512usize {
             write_volatile(addr_of_mut!(SMMU_L1.0[index]), 0);
+        }
+        for table in 0..4usize {
+            for index in 0..512usize {
+                write_volatile(addr_of_mut!(SMMU_L2[table].0[index]), 0);
+            }
+        }
+
+        for l1_index in 0..4usize {
+            let l1_base = (l1_index as u64) << 30;
+            let l1_end = l1_base + (1u64 << 30);
+            if pool_base >= l1_end || pool_end <= l1_base {
+                continue;
+            }
+            // The L1 table descriptor points at the corresponding 4 KiB
+            // level-2 table. Each L2 entry describes a 2 MiB block.
+            let table_address = addr_of!(SMMU_L2[l1_index]) as usize as u64;
+            write_volatile(
+                addr_of_mut!(SMMU_L1.0[l1_index]),
+                (table_address & !0xfff) | SMMU_DESC_TABLE,
+            );
+            for l2_index in 0..512usize {
+                let physical = l1_base + (l2_index as u64) * (1u64 << 21);
+                if physical >= pool_base && physical + (1u64 << 21) <= pool_end {
+                    let descriptor = physical
+                        | SMMU_DESC_VALID
+                        | SMMU_DESC_AF
+                        | SMMU_DESC_SH_INNER
+                        | SMMU_DESC_ATTR_NORMAL
+                        | SMMU_DESC_XN;
+                    write_volatile(addr_of_mut!(SMMU_L2[l1_index].0[l2_index]), descriptor);
+                }
+            }
         }
         cache_clean(
             addr_of!(SMMU_L1) as usize,
             core::mem::size_of::<SmmuTable>(),
         );
+        cache_clean(
+            addr_of!(SMMU_L2) as usize,
+            core::mem::size_of::<[SmmuTable; 4]>(),
+        );
     }
+    true
 }
 
 /// Install an AArch64 stage-1 identity mapping for DWC3's stream ID.
@@ -956,7 +1075,10 @@ pub fn configure_dwc3_smmu() -> bool {
         log_hex("usb: DWC3 SMMU SMR=", smr_index as u64);
         log_hex("usb: DWC3 SMMU CB=", cbndx as u64);
 
-        install_smmu_identity_table();
+        if !install_smmu_identity_table(pool) {
+            log_puts("usb: DT DMA pool is not 2 MiB aligned/32-bit addressable\n");
+            return false;
+        }
 
         // Stop the bank before changing its format and page-table pointer.
         smmu_page_write(page_size, cb_base_page + cbndx, SMMU_CB_SCTLR, 0);
@@ -1084,8 +1206,13 @@ unsafe fn init_qmp_phy() -> bool {
         let _ = read_volatile(qmp_reg(phy_mode));
         write_volatile(qmp_reg(reset_override), 0x00);
 
-        for &(offset, value) in QMP_INIT.iter() {
+        for index in 0..146 {
+            let (offset, value) = ACTIVE_QMP_INIT[index];
             write_volatile(qmp_reg(offset), value);
+            let delay_us = ACTIVE_QMP_INIT_DELAY_US[index];
+            if delay_us != 0 {
+                super::timer::delay_us(delay_us as u64);
+            }
         }
 
         write_volatile(qmp_reg(com_sw_reset), 0x00);
@@ -1188,9 +1315,10 @@ unsafe fn init_hsphy() {
         );
 
         // qcom,param-override-seq is encoded as (value, register offset).
-        write_volatile(hsphy_reg(0x6c), 0x63);
-        write_volatile(hsphy_reg(0x70), 0x85);
-        write_volatile(hsphy_reg(0x74), 0x17);
+        for index in 0..3 {
+            let (offset, value) = ACTIVE_HSPHY_PARAM_OVERRIDE[index];
+            write_volatile(hsphy_reg(offset), value);
+        }
 
         // Bramble does not declare an external-calibration resistor, so the
         // upstream driver enables the internal RTUNE path.
@@ -1618,6 +1746,8 @@ pub unsafe fn configure_gsi_channel_with_buffers(
         || event_buffer > count
         || ring_base == 0
         || ring_base & 0x3ff != 0
+        || doorbell == 0
+        || doorbell & 0x3 != 0
         || doorbell >> 32 != 0
         || buffer_base > usize::MAX as u64
         || buffer_length == 0
@@ -2051,13 +2181,84 @@ pub unsafe fn enable_gsi_data_endpoint(
         if !configure_endpoint_kind(endpoint, max_packet, DEPCFG_EP_TYPE_BULK, false) {
             return false;
         }
-        if !enable_gsi_wrapper() {
-            return false;
-        }
         if !udc_mut().configure_endpoint(endpoint_address, max_packet as u16, true) {
             return false;
         }
         write(DALEPENA, read(DALEPENA) | (1 << endpoint));
+    }
+    true
+}
+
+/// Bind a complete GSI data endpoint in the same order as the Android client:
+/// configure the DWC3 endpoint, allocate the ring/request pool, publish the
+/// client doorbell, then enable the wrapper. A caller receives the owned
+/// request-pool pointers and can pass the first one to `queue_gsi_transfer`.
+pub unsafe fn configure_gsi_data_endpoint(
+    endpoint: usize,
+    event_buffer: u32,
+    max_packet: u32,
+    doorbell: u64,
+    buffer_length: usize,
+) -> Option<(*mut u8, *mut u8)> {
+    if !unsafe { enable_gsi_data_endpoint(endpoint, event_buffer, max_packet) } {
+        return None;
+    }
+    let allocation =
+        unsafe { allocate_gsi_channel(endpoint, event_buffer, doorbell, buffer_length) };
+    if allocation.is_none() {
+        let address = endpoint as u8 | if endpoint & 1 != 0 { 0x80 } else { 0 };
+        unsafe {
+            let _ = udc_mut().disable_endpoint(address);
+            write(DALEPENA, read(DALEPENA) & !(1 << endpoint));
+        }
+        return None;
+    }
+    if !unsafe { enable_gsi_wrapper() } {
+        unsafe {
+            let _ = disable_gsi_data_endpoint(endpoint, event_buffer);
+        }
+        return None;
+    }
+    allocation
+}
+
+/// Tear down one GSI endpoint after its request has completed or been
+/// cancelled. ENDTRANSFER precedes UDC removal, and the global wrapper is
+/// disabled only once no channel remains published.
+pub unsafe fn disable_gsi_data_endpoint(endpoint: usize, event_buffer: u32) -> bool {
+    let count = super::platform::bramble::usb_resources()
+        .gsi
+        .event_buffer_count
+        .min(3);
+    if endpoint < 2 || endpoint >= 8 || event_buffer == 0 || event_buffer > count {
+        return false;
+    }
+    let index = (event_buffer - 1) as usize;
+    unsafe {
+        if !GSI_CHANNEL_READY[index] || GSI_CHANNEL_ENDPOINT[index] != endpoint {
+            return false;
+        }
+        if GSI_RING_ACTIVE[index] && !end_gsi_transfer(endpoint, event_buffer) {
+            return false;
+        }
+        let address = endpoint as u8 | if endpoint & 1 != 0 { 0x80 } else { 0 };
+        let _ = udc_mut().disable_endpoint(address);
+        write(DALEPENA, read(DALEPENA) & !(1 << endpoint));
+        GSI_PENDING[index] = false;
+        GSI_REQUEST_SLOTS[index] = usize::MAX;
+        GSI_RING_ACTIVE[index] = false;
+        GSI_RESOURCE_INDEX[index] = 0;
+        GSI_CHANNEL_READY[index] = false;
+        GSI_CHANNEL_ENDPOINT[index] = 0;
+
+        let no_channels = !GSI_CHANNEL_READY[0] && !GSI_CHANNEL_READY[1] && !GSI_CHANNEL_READY[2];
+        if no_channels {
+            let offset = super::platform::bramble::usb_resources()
+                .gsi
+                .general_cfg_offset;
+            let value = read_qscratch(offset) & !GSI_EN;
+            write_qscratch(offset, value);
+        }
     }
     true
 }
@@ -2217,6 +2418,22 @@ unsafe fn start_setup() -> bool {
     }
 }
 
+/// Re-arm EP0 only after a successful STARTTRANSFER command. On failure the
+/// endpoint is removed from DALEPENA so a host cannot continue sending SETUP
+/// packets into a stale resource; the next Connect Done/USB reset can rebuild
+/// the endpoint allocation.
+unsafe fn rearm_setup() -> bool {
+    if unsafe { start_setup() } {
+        return true;
+    }
+    unsafe {
+        trace_event(TRACE_USB_DEVICE_ERROR, 0, 0, 0, 0, read(DSTS));
+        write(DALEPENA, read(DALEPENA) & !0b11);
+        ENDPOINTS_READY = false;
+    }
+    false
+}
+
 /// Tear down every opt-in GSI channel before a USB reset or Type-C detach.
 /// Linux removes queued gadget requests before reusing the endpoint; merely
 /// clearing the bookkeeping here would leave DWC3 owning stale TRBs and an
@@ -2289,7 +2506,7 @@ unsafe fn restart_control_after_reset() {
             let _ = udc_mut().configure_endpoint(0, max_packet as u16, false);
             let _ = udc_mut().configure_endpoint(1, max_packet as u16, false);
             write(DALEPENA, 0b11);
-            start_setup();
+            rearm_setup();
         }
     }
 }
@@ -2329,7 +2546,7 @@ unsafe fn sync_gadget_state() {
     }
 }
 
-unsafe fn start_status(endpoint: usize) {
+unsafe fn start_status(endpoint: usize) -> bool {
     let kind = if unsafe { CONTROL_HAS_DATA } {
         TRB_CONTROL_STATUS3
     } else {
@@ -2340,7 +2557,7 @@ unsafe fn start_status(endpoint: usize) {
     });
     unsafe {
         prepare_trb(0, addr_of_mut!(EP0_TRBS).cast::<u8>(), 0, kind);
-        let _ = start_transfer(endpoint, addr_of!(EP0_TRBS).cast::<Trb>());
+        start_transfer(endpoint, addr_of!(EP0_TRBS).cast::<Trb>())
     }
 }
 
@@ -2412,7 +2629,9 @@ unsafe fn handle_setup() {
             EP0_STATE = Ep0State::Status;
             // SET_ADDRESS/SET_CONFIGURATION become visible only after this
             // status IN transfer completes, matching gadget-core semantics.
-            start_status(1);
+            if !start_status(1) {
+                stall_control(if direction_in { 1 } else { 0 });
+            }
         },
         ControlAction::Stall => {
             log_puts("usb: unsupported control request\n");
@@ -2481,7 +2700,7 @@ unsafe fn process_event(raw: u32) {
                         let _ = udc_mut().configure_endpoint(0, max_packet as u16, false);
                         let _ = udc_mut().configure_endpoint(1, max_packet as u16, false);
                         write(DALEPENA, 0b11);
-                        start_setup();
+                        rearm_setup();
                         note_runtime_event(
                             super::platform::bramble::UsbRuntimeEvent::ControllerStarted,
                         );
@@ -2551,8 +2770,16 @@ unsafe fn process_event(raw: u32) {
                     let action = GadgetDriver::on_transfer_complete(gadget_mut());
                     EP0_STATE = Ep0State::Status;
                     match action {
-                        ControlAction::StatusOut => start_status(0),
-                        ControlAction::StatusIn => start_status(1),
+                        ControlAction::StatusOut => {
+                            if !start_status(0) {
+                                stall_control(0);
+                            }
+                        }
+                        ControlAction::StatusIn => {
+                            if !start_status(1) {
+                                stall_control(1);
+                            }
+                        }
                         _ => stall_control(if CONTROL_IN { 1 } else { 0 }),
                     }
                 }
@@ -2560,7 +2787,7 @@ unsafe fn process_event(raw: u32) {
                     ControlAction::Setup => {
                         sync_gadget_state();
                         EP0_STATE = Ep0State::Setup;
-                        start_setup();
+                        rearm_setup();
                     }
                     ControlAction::SetHalt(address) => {
                         let endpoint = (address & 0x7f) as usize;
@@ -2569,7 +2796,7 @@ unsafe fn process_event(raw: u32) {
                         {
                             sync_gadget_state();
                             EP0_STATE = Ep0State::Setup;
-                            start_setup();
+                            rearm_setup();
                         } else {
                             stall_control(if CONTROL_IN { 1 } else { 0 });
                         }
@@ -2581,7 +2808,7 @@ unsafe fn process_event(raw: u32) {
                         {
                             sync_gadget_state();
                             EP0_STATE = Ep0State::Setup;
-                            start_setup();
+                            rearm_setup();
                         } else {
                             stall_control(if CONTROL_IN { 1 } else { 0 });
                         }
@@ -2594,7 +2821,10 @@ unsafe fn process_event(raw: u32) {
     } else if event == 3 && status == 2 {
         unsafe {
             if EP0_STATE == Ep0State::Status {
-                start_status(if CONTROL_HAS_DATA && CONTROL_IN { 0 } else { 1 });
+                let endpoint = if CONTROL_HAS_DATA && CONTROL_IN { 0 } else { 1 };
+                if !start_status(endpoint) {
+                    stall_control(endpoint);
+                }
             }
         }
     }
@@ -2879,6 +3109,12 @@ pub fn handle_platform_irq(interrupt_id: u32) {
             service_power_event();
         }
         poll_typec_state(true);
+        if interrupt_id == super::platform::bramble::usb_typec_parent_irq() {
+            let state = &*addr_of!(TYPEC_STATE);
+            if !super::platform::bramble::acknowledge_typec_irq(state) {
+                trace_event(TRACE_USB_DEVICE_ERROR, interrupt_id, 0, 0, 0, 0);
+            }
+        }
     }
 }
 
@@ -2915,8 +3151,16 @@ pub fn runtime_suspend() -> bool {
                 ) {
                     log_puts("usb: RPMh suspend vote unavailable\n");
                 }
+                if QMP_PHY_READY {
+                    if !super::platform::bramble::disable_usb30_gdsc() {
+                        log_puts("usb: USB3 GDSC collapse not observable\n");
+                    }
+                }
                 if !super::platform::bramble::disable_usb_clock_branches() {
                     log_puts("usb: USB clock gate readback unavailable\n");
+                }
+                if !super::platform::bramble::apply_usb_power(false, QMP_PHY_READY) {
+                    log_puts("usb: RPMh regulator disable unavailable\n");
                 }
                 return true;
             }
@@ -2931,6 +3175,12 @@ pub fn runtime_suspend() -> bool {
 /// run/stop notifier ordering.
 pub fn runtime_resume() -> bool {
     unsafe {
+        if !super::platform::bramble::apply_usb_power(true, QMP_PHY_READY) {
+            log_puts("usb: RPMh regulator enable unavailable\n");
+        }
+        if !super::platform::bramble::enable_usb30_gdsc() {
+            log_puts("usb: USB3 GDSC restore not observable\n");
+        }
         if !super::platform::bramble::enable_usb_clock_branches() {
             log_puts("usb: USB clock ungate readback unavailable\n");
         }
@@ -2956,8 +3206,8 @@ pub fn runtime_resume() -> bool {
             if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
                 udc_mut().resume();
                 note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Resume);
-                if ENDPOINTS_READY {
-                    start_setup();
+                if ENDPOINTS_READY && !rearm_setup() {
+                    return false;
                 }
                 return true;
             }
@@ -3120,7 +3370,10 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
             (gctl & !GCTL_PRTCAPDIR_MASK) | GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG,
         );
         write_volatile(reg(DCFG), DCFG_HIGHSPEED);
-        write_volatile(reg(DALEPENA), 0b11);
+        // Linux disables endpoint advertising before stopping the device
+        // controller.  In a Fastboot reuse this also prevents a stale EP0
+        // resource from receiving a transaction while Run/Stop is draining.
+        write_volatile(reg(DALEPENA), if connect { 0b11 } else { 0 });
 
         let dctl = run_stop_value(read_volatile(reg(DCTL)), read_volatile(reg(GSNPSID)));
         // Qualcomm's glue reasserts the VBUS override immediately before
@@ -3172,7 +3425,10 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // intentionally identity-addressed in the 0x9b800000 DMA section.  Keep
     // the proven PHY/pull-up transition first, then install the identity map
     // before handing any new DMA object to DWC3.
-    let _ = configure_dwc3_smmu();
+    if !configure_dwc3_smmu() {
+        log_puts("usb gadget handoff: DWC3 SMMU pool map unavailable\n");
+        return false;
+    }
 
     let event_address = addr_of!(EVENTS) as usize as u64;
     unsafe {
@@ -3244,6 +3500,15 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // reports a command error, which is harmless here.
         let _ = end_transfer(0);
         let _ = end_transfer(1);
+        // Reopen DWC3's transfer-resource allocation window after taking
+        // ownership from Fastboot.  Reusing the old endpoint configuration
+        // without DEPSTARTCFG can leave SETEPCONFIG/SETTRANSFRESOURCE tied to
+        // the bootloader's allocation epoch even though the controller is
+        // halted and the stale transfers have been ended.
+        if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
+            log_puts("usb gadget handoff: DEPSTARTCFG failed\n");
+            return false;
+        }
         // Fastboot may have configured these control endpoints for the
         // SuperSpeed session it just ended.  Linux modifies both directions
         // to the USB2 EP0 maximum packet size after Connect Done; retaining
@@ -3357,9 +3622,10 @@ pub fn init_usb2_gadget_handoff() -> bool {
         // essential when Fastboot's stream mapping covered only its own
         // buffers and not the Fullerene linker-reserved DMA section.
         if configure_dwc3_smmu() {
-            log_puts("usb gadget handoff: DWC3 SMMU identity map ready\n");
+            log_puts("usb gadget handoff: DWC3 SMMU DMA-pool map ready\n");
         } else {
-            log_puts("usb gadget handoff: SMMU rewrite unavailable; preserving context\n");
+            log_puts("usb gadget handoff: DWC3 SMMU DMA-pool map unavailable\n");
+            return false;
         }
 
         // The linker-reserved region is identity-mapped by the early AArch64
@@ -3432,7 +3698,10 @@ pub fn init_usb2_gadget_handoff() -> bool {
         let _ = udc_mut().configure_endpoint(0, 64, false);
         let _ = udc_mut().configure_endpoint(1, 64, false);
         write(DALEPENA, 0b11);
-        start_setup();
+        if !start_setup() {
+            log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
+            return false;
+        }
 
         // Connect only after the event ring, transfer resources, EP0
         // descriptors, and first SETUP TRB are ready. This produces a fresh
@@ -3466,6 +3735,10 @@ pub fn init_usb2_gadget_handoff() -> bool {
 fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bool) -> bool {
     unsafe {
         QMP_PHY_READY = false;
+        if !super::platform::bramble::usb_power_contract_valid(super_speed) {
+            uart::puts("usb: DT power contract invalid\n");
+            return false;
+        }
         let performance = super::platform::bramble::usb_performance_state(
             super::platform::bramble::UsbBusVote::Nominal,
         );
@@ -3481,6 +3754,15 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // intentionally skips this write because Fastboot owns a live clock
         // domain that must not be retuned underneath the controller.
         if reset_platform {
+            if !super::platform::bramble::apply_usb_power(true, super_speed) {
+                uart::puts("usb: RPMh USB PHY regulator contract unavailable\n");
+                return false;
+            }
+            if !super::platform::bramble::enable_usb30_gdsc() {
+                // Some Pixel bootloaders keep the GDSC under secure/RPMh
+                // ownership. Treat this as a non-fatal ownership warning.
+                uart::puts("usb: USB3 GDSC PWR_ON not observable; preserving vote\n");
+            }
             if !super::platform::bramble::apply_usb_performance(performance.vote) {
                 // A cold platform start may not have an idle Apps-RSC TCS or
                 // may reject a GCC update. Preserve the firmware vote/rate
@@ -3488,11 +3770,6 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 uart::puts(
                     "usb: nominal clock/interconnect transition unavailable; preserving firmware state\n",
                 );
-            }
-            if !super::platform::bramble::enable_usb30_gdsc() {
-                // Some Pixel bootloaders keep the GDSC under secure/RPMh
-                // ownership. Treat this as a non-fatal ownership warning.
-                uart::puts("usb: USB3 GDSC PWR_ON not observable; preserving vote\n");
             }
         }
         let snpsid = read(GSNPSID);
@@ -3596,13 +3873,13 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // SMMU; the non-destructive handoff preserves the firmware context.
         if reset_platform {
             if configure_dwc3_smmu() {
-                uart::puts("usb: DWC3 SMMU identity map ready\n");
+                uart::puts("usb: DWC3 SMMU DMA-pool map ready\n");
             } else {
-                // Keep the existing behavior as a diagnostic fallback: a
-                // firmware context may already cover the linker-reserved
-                // section, and endpoint command results will expose a bad
-                // mapping without corrupting the platform-owned context.
-                uart::puts("usb: DWC3 SMMU identity map unavailable; preserving context\n");
+                // A cold platform path owns the context it just selected;
+                // proceeding with an unverified IOVA map would turn the first
+                // TRB into an opaque DMA fault.
+                uart::puts("usb: DWC3 SMMU DMA-pool map unavailable\n");
+                return false;
             }
         } else {
             uart::puts("usb: preserving firmware DWC3 SMMU context for handoff\n");
@@ -3707,7 +3984,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 | DEVTEN_HIBERNATION_REQUEST
                 | DEVTEN_SUSPEND,
         );
-        start_setup();
+        if !start_setup() {
+            uart::puts("usb: SETUP STARTTRANSFER failed\n");
+            return false;
+        }
 
         let mut dctl = read(DCTL);
         dctl |= DCTL_RUN_STOP;

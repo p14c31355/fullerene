@@ -35,3 +35,11 @@ pub fn delay_ms(milliseconds: u64) {
         core::hint::spin_loop();
     }
 }
+
+pub fn delay_us(microseconds: u64) {
+    let ticks = frequency().saturating_mul(microseconds) / 1_000_000;
+    let start = counter();
+    while counter().wrapping_sub(start) < ticks {
+        core::hint::spin_loop();
+    }
+}

@@ -372,6 +372,233 @@ pub fn find_named_property_u32(
     None
 }
 
+/// A small, allocation-free copy of a DT string.  This is used for supply
+/// phandles: a PHY's `*-supply` property contains only a phandle, while the
+/// RPMh regulator resource name is determined by the referenced regulator
+/// node's `regulator-name`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StringValue {
+    pub bytes: [u8; 48],
+    pub len: usize,
+}
+
+/// Resolve one phandle-valued property on the first compatible node and
+/// return a string property from the referenced enabled node. The helper
+/// deliberately requires an exact phandle match and a bounded string copy; a
+/// missing/ambiguous supply is reported to the platform layer instead of
+/// turning into a guessed PMIC resource.
+pub fn find_phandle_property_string(
+    address: u64,
+    source_node: &[u8],
+    property: &[u8],
+    index: usize,
+    target_property: &[u8],
+) -> Option<StringValue> {
+    let target = find_compatible_property_u32(address, source_node, property, index)?;
+    let header = inspect(address)?;
+    let base = address as *const u8;
+    let structure = unsafe { base.add(header.structure_offset as usize) };
+    let strings = unsafe { base.add(header.strings_offset as usize) };
+    let structure_end = unsafe { structure.add(header.structure_size as usize) };
+    let strings_end = unsafe { strings.add(header.strings_size as usize) };
+    let mut cursor = structure;
+    let mut depth = 0usize;
+    let mut states = [PhandleNodeState::new(); 16];
+
+    while (cursor as usize) < (structure_end as usize) {
+        if (structure_end as usize) - (cursor as usize) < 4 {
+            return None;
+        }
+        let token = read_be32(cursor, 0)?;
+        cursor = unsafe { cursor.add(4) };
+        match token {
+            FDT_BEGIN_NODE => {
+                if depth + 1 >= states.len() {
+                    return None;
+                }
+                depth += 1;
+                states[depth] = PhandleNodeState::new();
+                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
+                    cursor = unsafe { cursor.add(1) };
+                }
+                if (cursor as usize) >= (structure_end as usize) {
+                    return None;
+                }
+                cursor = align4(unsafe { cursor.add(1) });
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_END_NODE => {
+                if depth == 0 {
+                    return None;
+                }
+                let state = states[depth];
+                if state.enabled && state.phandle == Some(target) && state.value.is_some() {
+                    return state.value;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            FDT_PROP => {
+                if (structure_end as usize) - (cursor as usize) < 8 {
+                    return None;
+                }
+                let length = read_be32(cursor, 0)? as usize;
+                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
+                let value = unsafe { cursor.add(8) };
+                let value_end = (value as usize).checked_add(length)? as *const u8;
+                if (value_end as usize) > (structure_end as usize)
+                    || name_offset >= header.strings_size
+                {
+                    return None;
+                }
+                let name = unsafe { strings.add(name_offset as usize) };
+                let state = &mut states[depth];
+                if c_string_eq(name, strings_end, b"status") {
+                    state.enabled = !c_string_eq(value, value_end, b"disabled");
+                } else if c_string_eq(name, strings_end, b"phandle")
+                    || c_string_eq(name, strings_end, b"linux,phandle")
+                {
+                    if length >= 4 {
+                        state.phandle = read_be32(value, 0);
+                    }
+                } else if c_string_eq(name, strings_end, target_property) {
+                    if length == 0 || length > 48 {
+                        return None;
+                    }
+                    let mut string = StringValue {
+                        bytes: [0; 48],
+                        len: length,
+                    };
+                    for offset in 0..length {
+                        string.bytes[offset] = unsafe { *value.add(offset) };
+                    }
+                    string.len = length.saturating_sub(1);
+                    state.value = Some(string);
+                }
+                cursor = align4(value_end);
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_NOP => {}
+            FDT_END => return None,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Resolve one phandle-valued property on the first compatible node and
+/// return the first `reg` tuple from the referenced node. Qualcomm glue
+/// resources such as `USB3_GDSC-supply` are represented this way: the
+/// consumer node does not carry the GDSC MMIO address itself.
+pub fn find_phandle_property_region(
+    address: u64,
+    source_node: &[u8],
+    property: &[u8],
+) -> Option<Region> {
+    let target = find_compatible_property_u32(address, source_node, property, 0)?;
+    let header = inspect(address)?;
+    let base = address as *const u8;
+    let structure = unsafe { base.add(header.structure_offset as usize) };
+    let strings = unsafe { base.add(header.strings_offset as usize) };
+    let structure_end = unsafe { structure.add(header.structure_size as usize) };
+    let strings_end = unsafe { strings.add(header.strings_size as usize) };
+    let mut cursor = structure;
+    let mut depth = 0usize;
+    let mut states = [PhandleRegionNodeState::new(); 16];
+
+    while (cursor as usize) < (structure_end as usize) {
+        if (structure_end as usize) - (cursor as usize) < 4 {
+            return None;
+        }
+        let token = read_be32(cursor, 0)?;
+        cursor = unsafe { cursor.add(4) };
+        match token {
+            FDT_BEGIN_NODE => {
+                if depth + 1 >= states.len() {
+                    return None;
+                }
+                depth += 1;
+                let parent = states[depth - 1];
+                states[depth] = PhandleRegionNodeState {
+                    address_cells: parent.child_address_cells,
+                    size_cells: parent.child_size_cells,
+                    child_address_cells: parent.child_address_cells,
+                    child_size_cells: parent.child_size_cells,
+                    ..PhandleRegionNodeState::new()
+                };
+                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
+                    cursor = unsafe { cursor.add(1) };
+                }
+                if (cursor as usize) >= (structure_end as usize) {
+                    return None;
+                }
+                cursor = align4(unsafe { cursor.add(1) });
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_END_NODE => {
+                if depth == 0 {
+                    return None;
+                }
+                let state = states[depth];
+                // A regulator provider may be marked `status = "disabled"`
+                // in a shared SoC include and enabled by a board overlay or
+                // consumed through a proxy. The phandle is the authoritative
+                // resource identity here; unlike a discover-by-compatible
+                // lookup, this explicit supply reference is not ambiguous.
+                if state.phandle == Some(target) {
+                    return state.regions[0];
+                }
+                depth = depth.saturating_sub(1);
+            }
+            FDT_PROP => {
+                if (structure_end as usize) - (cursor as usize) < 8 {
+                    return None;
+                }
+                let length = read_be32(cursor, 0)? as usize;
+                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
+                let value = unsafe { cursor.add(8) };
+                let value_end = (value as usize).checked_add(length)? as *const u8;
+                if (value_end as usize) > (structure_end as usize)
+                    || name_offset >= header.strings_size
+                {
+                    return None;
+                }
+                let name = unsafe { strings.add(name_offset as usize) };
+                let state = &mut states[depth];
+                if c_string_eq(name, strings_end, b"status") {
+                    state.enabled = !c_string_eq(value, value_end, b"disabled");
+                } else if c_string_eq(name, strings_end, b"phandle")
+                    || c_string_eq(name, strings_end, b"linux,phandle")
+                {
+                    if length >= 4 {
+                        state.phandle = read_be32(value, 0);
+                    }
+                } else if c_string_eq(name, strings_end, b"#address-cells") && length >= 4 {
+                    state.child_address_cells = read_be32(value, 0)? as u8;
+                } else if c_string_eq(name, strings_end, b"#size-cells") && length >= 4 {
+                    state.child_size_cells = read_be32(value, 0)? as u8;
+                } else if c_string_eq(name, strings_end, b"reg") {
+                    state.regions =
+                        read_regions(value, length, state.address_cells, state.size_cells);
+                }
+                cursor = align4(value_end);
+                if (cursor as usize) > (structure_end as usize) {
+                    return None;
+                }
+            }
+            FDT_NOP => {}
+            FDT_END => return None,
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn read_be32(base: *const u8, offset: u32) -> Option<u32> {
     let value = unsafe { read_volatile(base.add(offset as usize) as *const u32) };
     Some(u32::from_be(value))
@@ -395,6 +622,48 @@ struct PropertyNodeState {
     enabled: bool,
     property_seen: bool,
     property_value: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+struct PhandleNodeState {
+    enabled: bool,
+    phandle: Option<u32>,
+    value: Option<StringValue>,
+}
+
+#[derive(Clone, Copy)]
+struct PhandleRegionNodeState {
+    address_cells: u8,
+    size_cells: u8,
+    child_address_cells: u8,
+    child_size_cells: u8,
+    enabled: bool,
+    phandle: Option<u32>,
+    regions: [Option<Region>; 2],
+}
+
+impl PhandleRegionNodeState {
+    const fn new() -> Self {
+        Self {
+            address_cells: 2,
+            size_cells: 1,
+            child_address_cells: 2,
+            child_size_cells: 1,
+            enabled: true,
+            phandle: None,
+            regions: [None; 2],
+        }
+    }
+}
+
+impl PhandleNodeState {
+    const fn new() -> Self {
+        Self {
+            enabled: true,
+            phandle: None,
+            value: None,
+        }
+    }
 }
 
 impl PropertyNodeState {

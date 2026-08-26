@@ -262,8 +262,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
                 .or_else(|| fdt::find_compatible(address, b"qcom,qsmmu-v500"));
             let pdc = fdt::find_compatible(address, b"qcom,lito-pdc");
             let usb_node = b"qcom,dwc-usb3-msm";
-            let _ = platform::bramble::install_usb_gcc_base(gcc.map(|r| r.base));
             let mut contract = platform::bramble::UsbDtContract::empty();
+            contract.gdsc =
+                fdt::find_phandle_property_region(address, usb_node, b"USB3_GDSC-supply")
+                    .map(|region| (region.base, region.size));
+            contract.vbus_reg_base = fdt::find_compatible(address, b"qcom,pm8150b-vbus-reg")
+                .and_then(|region| (region.base <= u32::MAX as u64).then_some(region.base as u32));
             contract.dma_pool = match (
                 fdt::find_compatible_property_u32(
                     address,
@@ -316,6 +320,150 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
                     index,
                 );
             }
+            // Clock specifiers are <provider-phandle provider-local-id>.
+            // Keep the provider ID separate from the MMIO base: GCC's ID to
+            // register map is SoC/provider specific and must be validated
+            // before a DT-selected provider base is accepted.
+            for (slot, cell) in contract
+                .controller_clock_ids
+                .iter_mut()
+                .zip([1usize, 3, 5, 7, 9, 11])
+            {
+                *slot = fdt::find_compatible_property_u32(address, usb_node, b"clocks", cell);
+            }
+            for (slot, cell) in contract.qmp_clock_ids.iter_mut().zip([1usize, 3, 5, 7]) {
+                *slot = fdt::find_compatible_property_u32(
+                    address,
+                    b"qcom,usb-ssphy-qmp-dp-combo",
+                    b"clocks",
+                    cell,
+                );
+            }
+            contract.hs_phy_clock_id = fdt::find_compatible_property_u32(
+                address,
+                b"qcom,usb-hsphy-snps-femto",
+                b"clocks",
+                1,
+            );
+            // The reset arrays are also provider-local specifiers. The QMP
+            // binding lists USB3 PHY reset first and USB3 DP PHY reset
+            // second, while the active resource table exposes that order.
+            contract.reset_ids[0] =
+                fdt::find_compatible_property_u32(address, usb_node, b"resets", 1);
+            contract.reset_ids[1] = fdt::find_compatible_property_u32(
+                address,
+                b"qcom,usb-hsphy-snps-femto",
+                b"resets",
+                1,
+            );
+            contract.reset_ids[2] = fdt::find_compatible_property_u32(
+                address,
+                b"qcom,usb-ssphy-qmp-dp-combo",
+                b"resets",
+                3,
+            );
+            contract.reset_ids[3] = fdt::find_compatible_property_u32(
+                address,
+                b"qcom,usb-ssphy-qmp-dp-combo",
+                b"resets",
+                1,
+            );
+            for index in 0..6 {
+                contract.hs_param_override[index] = fdt::find_compatible_property_u32(
+                    address,
+                    b"qcom,usb-hsphy-snps-femto",
+                    b"qcom,param-override-seq",
+                    index,
+                );
+            }
+            for index in 0..441 {
+                contract.qmp_init_seq[index] = fdt::find_compatible_property_u32(
+                    address,
+                    b"qcom,usb-ssphy-qmp-dp-combo",
+                    b"qcom,qmp-phy-init-seq",
+                    index,
+                );
+            }
+            for index in 0..3 {
+                contract.hs_vdd_voltage_level[index] = fdt::find_compatible_property_u32(
+                    address,
+                    b"qcom,usb-hsphy-snps-femto",
+                    b"qcom,vdd-voltage-level",
+                    index,
+                );
+                contract.qmp_vdd_voltage_level[index] = fdt::find_compatible_property_u32(
+                    address,
+                    b"qcom,usb-ssphy-qmp-dp-combo",
+                    b"qcom,vdd-voltage-level",
+                    index,
+                );
+            }
+            contract.qmp_vdd_max_load_ua = fdt::find_compatible_property_u32(
+                address,
+                b"qcom,usb-ssphy-qmp-dp-combo",
+                b"qcom,vdd-max-load-uA",
+                0,
+            );
+            for index in 0..3 {
+                contract.qmp_core_voltage_level[index] = fdt::find_compatible_property_u32(
+                    address,
+                    b"qcom,usb-ssphy-qmp-dp-combo",
+                    b"qcom,core-voltage-level",
+                    index,
+                );
+            }
+            contract.qmp_core_max_load_ua = fdt::find_compatible_property_u32(
+                address,
+                b"qcom,usb-ssphy-qmp-dp-combo",
+                b"qcom,core-max-load-uA",
+                0,
+            );
+            contract.qmp_vbus_valid_override = qmp_phy.map(|_| {
+                fdt::find_compatible_property_u32(
+                    address,
+                    b"qcom,usb-ssphy-qmp-dp-combo",
+                    b"qcom,vbus-valid-override",
+                    0,
+                )
+                .is_some()
+            });
+            // The PHY nodes carry supply phandles, not RPMh resource IDs.
+            // Resolve each phandle back to its regulator-name and only then
+            // map the Android PMIC name to a Command DB resource.  A missing
+            // or unknown supply remains unset and cannot cause a guessed
+            // PMIC vote.
+            let supplies = [
+                (
+                    b"qcom,usb-hsphy-snps-femto".as_slice(),
+                    b"vdd-supply".as_slice(),
+                ),
+                (
+                    b"qcom,usb-hsphy-snps-femto".as_slice(),
+                    b"vdda18-supply".as_slice(),
+                ),
+                (
+                    b"qcom,usb-hsphy-snps-femto".as_slice(),
+                    b"vdda33-supply".as_slice(),
+                ),
+                (
+                    b"qcom,usb-ssphy-qmp-dp-combo".as_slice(),
+                    b"vdd-supply".as_slice(),
+                ),
+                (
+                    b"qcom,usb-ssphy-qmp-dp-combo".as_slice(),
+                    b"core-supply".as_slice(),
+                ),
+            ];
+            for (slot, (node, property)) in contract.supply_resource_ids.iter_mut().zip(supplies) {
+                if let Some(name) =
+                    fdt::find_phandle_property_string(address, node, property, 0, b"regulator-name")
+                {
+                    *slot = platform::bramble::rpmh_resource_id_from_regulator_name(
+                        &name.bytes,
+                        name.len,
+                    );
+                }
+            }
             contract.core_clk_rate_hz =
                 fdt::find_compatible_property_u32(address, usb_node, b"qcom,core-clk-rate", 0);
             contract.core_clk_rate_hs_hz =
@@ -352,6 +500,28 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
                         flat * 4 + field,
                     );
                 }
+            }
+            let provider_ids_complete = contract
+                .controller_clock_ids
+                .iter()
+                .chain(contract.qmp_clock_ids.iter())
+                .chain(contract.reset_ids.iter())
+                .chain(core::iter::once(&contract.hs_phy_clock_id))
+                .all(Option::is_some);
+            if provider_ids_complete
+                && platform::bramble::usb_dt_clock_reset_contract_valid(&contract)
+            {
+                let _ = platform::bramble::install_usb_gcc_base(gcc.map(|r| r.base));
+            } else {
+                uart::puts(
+                    "platform: GCC clock/reset provider IDs absent/mismatch; retaining compiled base\n",
+                );
+            }
+            #[cfg(fullerene_aarch64_bramble)]
+            if !usb::install_dt_phy_sequences(contract.hs_param_override, contract.qmp_init_seq) {
+                uart::puts(
+                    "platform: PHY init properties absent/invalid; retaining compiled tables\n",
+                );
             }
             if platform::bramble::install_usb_resource_contract(
                 dwc3.map(|r| (r.base, r.size)),
