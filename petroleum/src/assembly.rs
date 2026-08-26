@@ -29,6 +29,8 @@ pub struct KernelArgs {
     pub bootloader_image_size: u64,
     pub kernel_image_ptr: u64,
     pub kernel_image_size: u64,
+    /// Physical address of the versioned `fullerene_abi::boot::BootInfo`.
+    pub boot_info_address: u64,
 }
 
 #[repr(C)]

@@ -22,6 +22,7 @@ fn main() {
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_cold_halt_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_qemu_usb_sim)");
         if platform == "bramble" {
             println!("cargo:rustc-cfg=fullerene_aarch64_bramble");
         }
@@ -43,6 +44,9 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_probe");
         }
+        if env::var_os("FULLERENE_AARCH64_QEMU_USB_SIM").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_qemu_usb_sim");
+        }
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_PLATFORM");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_ENTRY_HALT_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PULLUP_PROBE");
@@ -50,6 +54,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_COLD_HALT_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_QEMU_USB_SIM");
         println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64=-T{}",
             linker_script.display()
@@ -550,12 +555,8 @@ SECTIONS
     }}
 
     /*
-       The Bramble DWC3 device tree gives the USB controller an SMMU IOVA pool
-       beginning at 0x90000000. That is not a physical DRAM address. For the
-       handoff diagnostic, the SMMU stream is switched to BYPASS and these
-       objects therefore need to remain in the image's physical DRAM mapping.
-       Keep the section separate from .bss so the bootstrap clears it
-       explicitly before handing the physical addresses to DWC3.
+       DWC3 DMA objects have a fixed Bramble address. Keep .usb_dma first so
+       retaining the post-mortem trace cannot move the event ring or TRBs.
     */
     {usb_dma_origin}
     .usb_dma (NOLOAD) : ALIGN(4K)
@@ -564,6 +565,17 @@ SECTIONS
         KEEP(*(.usb_dma .usb_dma.*))
         . = ALIGN(4K);
         __usb_dma_end = .;
+    }}
+
+    /*
+       This is a warm-reset-retained post-mortem area. It must not be part of
+       .bss or .usb_dma: the bootstrap clears the DMA region while the next
+       boot can dump this trace before starting a new attempt.
+    */
+    .usb_trace (NOLOAD) : ALIGN(4K)
+    {{
+        KEEP(*(.usb_trace .usb_trace.*))
+        . = ALIGN(4K);
     }}
 
     /DISCARD/ :

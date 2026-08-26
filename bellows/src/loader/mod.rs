@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use core::ffi::c_void;
+use fullerene_abi::boot::BootInfo;
 use petroleum::common::{
     BellowsError, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
     EfiBootServices, EfiFile, EfiLoadedImageProtocol, EfiMemoryType, EfiSimpleFileSystem,
@@ -388,6 +389,7 @@ pub fn exit_boot_services_and_jump(
     kernel_entry_phys: u64,
     bootloader_payload: (usize, usize),
     kernel_payload: (usize, usize),
+    loaded_kernel_size: u64,
     _entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
     // Immediate debug prints on entry to pinpoint exact hang location
@@ -711,7 +713,22 @@ pub fn exit_boot_services_and_jump(
         fb_pixel_format = 0;
     }
 
+    let boot_info_phys = kernel_args_phys_aligned
+        .checked_add(core::mem::size_of::<petroleum::assembly::KernelArgs>() as u64)
+        .ok_or(BellowsError::AllocationFailed("BootInfo address overflow."))?;
+    let boot_info = super::arch::x86_64::make_boot_info(
+        kernel_phys_start.as_u64(),
+        loaded_kernel_size,
+        kernel_entry_virt,
+        map_phys_addr as u64,
+        final_map_size as u64,
+        descriptor_size as u64,
+        (fb_addr != 0).then_some((fb_addr, fb_width, fb_height, fb_stride, fb_bpp)),
+    );
+    debug_assert!(boot_info.is_valid());
+
     unsafe {
+        core::ptr::write_volatile(boot_info_phys as *mut BootInfo, boot_info);
         let kernel_args_ptr = kernel_args_phys_aligned as *mut petroleum::assembly::KernelArgs;
         core::ptr::write_volatile(
             kernel_args_ptr,
@@ -733,6 +750,7 @@ pub fn exit_boot_services_and_jump(
                 bootloader_image_size: bootloader_payload.1 as u64,
                 kernel_image_ptr: kernel_payload.0 as u64,
                 kernel_image_size: kernel_payload.1 as u64,
+                boot_info_address: boot_info_phys as u64,
             },
         );
 

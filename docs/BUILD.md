@@ -132,6 +132,23 @@ cargo run -q -p flasks -- build --arch aarch64 --platform bramble \
   --boot-output /path/to/fullerene-boot.img
 ```
 
+The Bramble image path performs a preflight audit before it is reported as
+ready: it re-reads the Android v3 header, verifies the generated kernel bytes,
+checks page padding, and compares the ramdisk and trailing vendor data with
+the stock template. `Image` and `Image.lz4` are also decoded and checked at
+creation time. To run the QEMU shared USB protocol self-test before the
+Bramble build (and before a `run`/Fastboot handoff), add:
+
+```bash
+cargo run -q -p flasks -- run --arch aarch64 --platform bramble \
+  --boot-template /path/to/boot.img \
+  --qemu-preflight
+```
+
+This QEMU preflight uses `virt` for the generic Rust/DWC3 protocol model. It
+does not claim to emulate Bramble's SM7250 PHY, Qualcomm Type-C glue, or SMMU;
+those remain hardware-only checks.
+
 The patcher keeps the existing ramdisk and removes stale AVB metadata because
 it cannot sign the resulting image. Use an unlocked development device; this
 is a temporary `fastboot boot` image, not a partition-flashing artifact.
@@ -296,6 +313,26 @@ prints:
 ```text
 [usb-xhci-smoke] PASS: usb_rescan registered /dev/usb0
 ```
+
+### QEMU USB EP0 protocol self-test
+
+The AArch64 self-test runs the shared Fullerene control-endpoint protocol on
+QEMU's `virt` machine. It uses QEMU's PL011 serial console for diagnostics
+and ARM semihosting to terminate the emulator automatically:
+
+```bash
+cargo run -q -p flasks -- run \
+  --arch aarch64 \
+  --platform qemu-virt \
+  --qemu-usb-sim
+```
+
+The test covers DWC3 endpoint configuration, SETUP/DATA/STATUS TRBs,
+device and endpoint event encoding, EP0 re-arming, device/configuration
+descriptors, and the status completion of `SET_ADDRESS` and
+`SET_CONFIGURATION`. It models the DWC3 device-mode register protocol but
+does not emulate the SM7250 PHY, Qualcomm Type-C glue, or SMMU; those remain
+hardware-only.
 
 Nozzle exposes the Linux and WASI launchers through this single command:
 

@@ -79,6 +79,94 @@ pub fn find_compatible(address: u64, target: &[u8]) -> Option<Region> {
 /// redistributor, so early platform discovery needs both without knowing the
 /// SoC's hard-coded addresses.
 pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<Region> {
+    let mut states = [NodeState::new(); 16];
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => {
+                let parent = states[depth - 1];
+                states[depth] = NodeState {
+                    address_cells: parent.child_address_cells,
+                    size_cells: parent.child_size_cells,
+                    child_address_cells: parent.child_address_cells,
+                    child_size_cells: parent.child_size_cells,
+                    ..NodeState::new()
+                };
+            }
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"#address-cells") && item.length >= 4 {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_address_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells") && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_size_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"compatible") {
+                    state.compatible = compatible_list_contains(item.value, item.length, target);
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, b"reg") {
+                    state.regions = read_regions(
+                        item.value,
+                        item.length,
+                        state.address_cells,
+                        state.size_cells,
+                    );
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.compatible {
+                    if let Some(region) = state.regions.get(index).and_then(|region| *region) {
+                        result = Some(region);
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
+}
+
+#[derive(Clone, Copy)]
+struct StructureProperty {
+    name: *const u8,
+    name_end: *const u8,
+    value: *const u8,
+    value_end: *const u8,
+    length: usize,
+}
+
+#[derive(Clone, Copy)]
+enum StructureEvent {
+    BeginNode {
+        depth: usize,
+        name: *const u8,
+        name_end: *const u8,
+    },
+    Property {
+        depth: usize,
+        property: StructureProperty,
+    },
+    EndNode {
+        depth: usize,
+    },
+}
+
+/// Walk the structure block once, keeping all token, pointer-bound, node-name,
+/// and alignment checks in one place. The callback returns false to stop after
+/// finding a value; malformed or unterminated trees return `None`.
+fn walk_structure<F>(address: u64, mut visit: F) -> Option<()>
+where
+    F: FnMut(StructureEvent) -> bool,
+{
     let header = inspect(address)?;
     let base = address as *const u8;
     let structure = unsafe { base.add(header.structure_offset as usize) };
@@ -87,7 +175,6 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
     let strings_end = unsafe { strings.add(header.strings_size as usize) };
     let mut cursor = structure;
     let mut depth = 0usize;
-    let mut states = [NodeState::new(); 16];
 
     while (cursor as usize) < (structure_end as usize) {
         if (structure_end as usize) - (cursor as usize) < 4 {
@@ -97,40 +184,35 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
         cursor = unsafe { cursor.add(4) };
         match token {
             FDT_BEGIN_NODE => {
-                if depth + 1 >= states.len() {
+                if depth + 1 >= 16 {
                     return None;
                 }
                 depth += 1;
-                let parent = states[depth - 1];
-                states[depth] = NodeState {
-                    address_cells: parent.child_address_cells,
-                    size_cells: parent.child_size_cells,
-                    child_address_cells: parent.child_address_cells,
-                    child_size_cells: parent.child_size_cells,
-                    ..NodeState::new()
-                };
+                let name = cursor;
                 while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
                     cursor = unsafe { cursor.add(1) };
                 }
                 if (cursor as usize) >= (structure_end as usize) {
                     return None;
                 }
-                cursor = unsafe { cursor.add(1) };
-                cursor = align4(cursor);
+                cursor = align4_checked(unsafe { cursor.add(1) })?;
                 if (cursor as usize) > (structure_end as usize) {
                     return None;
+                }
+                if !visit(StructureEvent::BeginNode {
+                    depth,
+                    name,
+                    name_end: structure_end,
+                }) {
+                    return Some(());
                 }
             }
             FDT_END_NODE => {
                 if depth == 0 {
                     return None;
                 }
-                if states[depth].enabled && states[depth].compatible {
-                    if let Some(region) =
-                        states[depth].regions.get(index).and_then(|region| *region)
-                    {
-                        return Some(region);
-                    }
+                if !visit(StructureEvent::EndNode { depth }) {
+                    return Some(());
                 }
                 depth = depth.saturating_sub(1);
             }
@@ -148,22 +230,21 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
                     return None;
                 }
                 let name = unsafe { strings.add(name_offset as usize) };
-                let state = &mut states[depth];
-                if c_string_eq(name, strings_end, b"#address-cells") && length >= 4 {
-                    state.child_address_cells = read_be32(value, 0)? as u8;
-                } else if c_string_eq(name, strings_end, b"#size-cells") && length >= 4 {
-                    state.child_size_cells = read_be32(value, 0)? as u8;
-                } else if c_string_eq(name, strings_end, b"compatible") {
-                    state.compatible = compatible_list_contains(value, length, target);
-                } else if c_string_eq(name, strings_end, b"status") {
-                    state.enabled = !c_string_eq(value, value_end, b"disabled");
-                } else if c_string_eq(name, strings_end, b"reg") {
-                    state.regions =
-                        read_regions(value, length, state.address_cells, state.size_cells);
-                }
-                cursor = align4(value_end);
+                cursor = align4_checked(value_end)?;
                 if (cursor as usize) > (structure_end as usize) {
                     return None;
+                }
+                if !visit(StructureEvent::Property {
+                    depth,
+                    property: StructureProperty {
+                        name,
+                        name_end: strings_end,
+                        value,
+                        value_end,
+                        length,
+                    },
+                }) {
+                    return Some(());
                 }
             }
             FDT_NOP => {}
@@ -172,6 +253,343 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
         }
     }
     None
+}
+
+/// Read one 32-bit big-endian property from the first enabled node matching
+/// `target`. This is deliberately allocation-free and is used for the small
+/// Qualcomm USB contract fields that are not encoded in `reg` (DMA pool,
+/// clock rates, GSI count, and PM QoS latency). A zero-length property is
+/// returned as `Some(0)` so the same primitive can also detect DT boolean
+/// properties such as `qcom,gsi-disable-io-coherency`.
+pub fn find_compatible_property_u32(
+    address: u64,
+    target: &[u8],
+    property: &[u8],
+    index: usize,
+) -> Option<u32> {
+    find_compatible_nth_property_u32(address, target, property, index, 0)
+}
+
+/// Read one 32-bit property from the `node_index`th enabled node whose
+/// `compatible` list contains `target`. Qualcomm DTs commonly contain more
+/// than one `qcom,qsmmu-v500` node (for example KGSL followed by Apps-SMMU),
+/// so selecting the first compatible node is not sufficient for SMMU options.
+pub fn find_compatible_nth_property_u32(
+    address: u64,
+    target: &[u8],
+    property: &[u8],
+    index: usize,
+    node_index: usize,
+) -> Option<u32> {
+    let mut states = [PropertyNodeState::new(); 16];
+    let mut matching_nodes = 0usize;
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => states[depth] = PropertyNodeState::new(),
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
+                {
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"compatible") {
+                    state.compatible = compatible_list_contains(item.value, item.length, target);
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, property) {
+                    if item.length == 0 {
+                        state.property_value = Some(0);
+                    } else if let Some(offset) = index.checked_mul(4) {
+                        if offset.checked_add(4).is_some_and(|end| end <= item.length) {
+                            state.property_value = read_be32(item.value, offset as u32);
+                        }
+                    }
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.compatible {
+                    let selected = matching_nodes == node_index;
+                    matching_nodes = matching_nodes.saturating_add(1);
+                    if selected {
+                        result = state.property_value;
+                        if result.is_some() {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
+}
+
+/// Read one 32-bit property from the enabled node identified by a phandle.
+/// This is used for provider capabilities such as
+/// `qcom,use-3-lvl-tables`, where selecting the nth compatible node would
+/// silently bind the consumer to the wrong SMMU if the DT node order changes.
+pub fn find_phandle_property_u32(
+    address: u64,
+    target: u32,
+    property: &[u8],
+    index: usize,
+) -> Option<u32> {
+    let mut states = [PropertyNodeState::new(); 16];
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => states[depth] = PropertyNodeState::new(),
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
+                {
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, property) {
+                    if item.length == 0 {
+                        state.property_value = Some(0);
+                    } else if let Some(offset) = index.checked_mul(4) {
+                        if offset.checked_add(4).is_some_and(|end| end <= item.length) {
+                            state.property_value = read_be32(item.value, offset as u32);
+                        }
+                    }
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.phandle == Some(target) {
+                    result = state.property_value;
+                    if result.is_some() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
+}
+
+/// Read a 32-bit property from an enabled node identified by its full DT
+/// node name (for example `qcom,typec@1500`).  SPMI child nodes deliberately
+/// do not carry a `compatible` property in the Android PMIC DT; their
+/// interrupt specifiers therefore have to be discovered by node name.
+pub fn find_named_property_u32(
+    address: u64,
+    node_name: &[u8],
+    property: &[u8],
+    index: usize,
+) -> Option<u32> {
+    let mut states = [PropertyNodeState::new(); 16];
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode {
+                depth,
+                name,
+                name_end,
+            } => {
+                states[depth] = PropertyNodeState {
+                    name_matches: c_string_eq(name, name_end, node_name),
+                    ..PropertyNodeState::new()
+                };
+            }
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, property) {
+                    if item.length == 0 {
+                        state.property_value = Some(0);
+                    } else if let Some(offset) = index.checked_mul(4) {
+                        if offset.checked_add(4).is_some_and(|end| end <= item.length) {
+                            state.property_value = read_be32(item.value, offset as u32);
+                        }
+                    }
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.name_matches {
+                    result = state.property_value;
+                    if result.is_some() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
+}
+
+/// A small, allocation-free copy of a DT string.  This is used for supply
+/// phandles: a PHY's `*-supply` property contains only a phandle, while the
+/// RPMh regulator resource name is determined by the referenced regulator
+/// node's `regulator-name`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StringValue {
+    pub bytes: [u8; 48],
+    pub len: usize,
+}
+
+/// Resolve one phandle-valued property on the first compatible node and
+/// return a string property from the referenced enabled node. The helper
+/// deliberately requires an exact phandle match and a bounded string copy; a
+/// missing/ambiguous supply is reported to the platform layer instead of
+/// turning into a guessed PMIC resource.
+pub fn find_phandle_property_string(
+    address: u64,
+    source_node: &[u8],
+    property: &[u8],
+    index: usize,
+    target_property: &[u8],
+) -> Option<StringValue> {
+    let target = find_compatible_property_u32(address, source_node, property, index)?;
+    let mut states = [PhandleNodeState::new(); 16];
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => states[depth] = PhandleNodeState::new(),
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
+                {
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
+                    }
+                } else if c_string_eq(item.name, item.name_end, target_property) {
+                    if item.length == 0 || item.length > 48 {
+                        state.value = None;
+                    } else {
+                        let mut string = StringValue {
+                            bytes: [0; 48],
+                            len: item.length.saturating_sub(1),
+                        };
+                        for offset in 0..item.length {
+                            string.bytes[offset] = unsafe { *item.value.add(offset) };
+                        }
+                        state.value = Some(string);
+                    }
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.phandle == Some(target) {
+                    result = state.value;
+                    if result.is_some() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
+}
+
+/// Resolve one phandle-valued property on the first compatible node and
+/// return the first `reg` tuple from the referenced node. Qualcomm glue
+/// resources such as `USB3_GDSC-supply` are represented this way: the
+/// consumer node does not carry the GDSC MMIO address itself.
+pub fn find_phandle_property_region(
+    address: u64,
+    source_node: &[u8],
+    property: &[u8],
+) -> Option<Region> {
+    let target = find_compatible_property_u32(address, source_node, property, 0)?;
+    find_phandle_region(address, target)
+}
+
+/// Return the first `reg` tuple of the enabled node carrying `target` as its
+/// `phandle`/`linux,phandle`.  This is the non-ambiguous counterpart to a
+/// compatible-string lookup: Qualcomm DTs contain multiple instances of
+/// providers such as `qcom,qsmmu-v500`.
+pub fn find_phandle_region(address: u64, target: u32) -> Option<Region> {
+    let mut states = [PhandleRegionNodeState::new(); 16];
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => {
+                let parent = states[depth - 1];
+                states[depth] = PhandleRegionNodeState {
+                    address_cells: parent.child_address_cells,
+                    size_cells: parent.child_size_cells,
+                    child_address_cells: parent.child_address_cells,
+                    child_size_cells: parent.child_size_cells,
+                    ..PhandleRegionNodeState::new()
+                };
+            }
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
+                {
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"#address-cells")
+                    && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_address_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells") && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_size_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"reg") {
+                    state.regions = read_regions(
+                        item.value,
+                        item.length,
+                        state.address_cells,
+                        state.size_cells,
+                    );
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                // A phandle explicitly referenced by a consumer is the
+                // authoritative resource identity, even when a shared SoC
+                // include marks the provider disabled.
+                if state.phandle == Some(target) {
+                    result = state.regions[0];
+                    if result.is_some() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
 }
 
 fn read_be32(base: *const u8, offset: u32) -> Option<u32> {
@@ -190,6 +608,67 @@ struct NodeState {
     regions: [Option<Region>; 2],
 }
 
+#[derive(Clone, Copy)]
+struct PropertyNodeState {
+    compatible: bool,
+    name_matches: bool,
+    enabled: bool,
+    property_value: Option<u32>,
+    phandle: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+struct PhandleNodeState {
+    enabled: bool,
+    phandle: Option<u32>,
+    value: Option<StringValue>,
+}
+
+#[derive(Clone, Copy)]
+struct PhandleRegionNodeState {
+    address_cells: u8,
+    size_cells: u8,
+    child_address_cells: u8,
+    child_size_cells: u8,
+    phandle: Option<u32>,
+    regions: [Option<Region>; 2],
+}
+
+impl PhandleRegionNodeState {
+    const fn new() -> Self {
+        Self {
+            address_cells: 2,
+            size_cells: 1,
+            child_address_cells: 2,
+            child_size_cells: 1,
+            phandle: None,
+            regions: [None; 2],
+        }
+    }
+}
+
+impl PhandleNodeState {
+    const fn new() -> Self {
+        Self {
+            enabled: true,
+            phandle: None,
+            value: None,
+        }
+    }
+}
+
+impl PropertyNodeState {
+    const fn new() -> Self {
+        Self {
+            compatible: false,
+            name_matches: false,
+            enabled: true,
+            property_value: None,
+            phandle: None,
+        }
+    }
+}
+
 impl NodeState {
     const fn new() -> Self {
         Self {
@@ -204,8 +683,8 @@ impl NodeState {
     }
 }
 
-fn align4(pointer: *const u8) -> *const u8 {
-    (((pointer as usize) + 3) & !3) as *const u8
+fn align4_checked(pointer: *const u8) -> Option<*const u8> {
+    Some(((pointer as usize).checked_add(3)? & !3) as *const u8)
 }
 
 fn c_string_eq(pointer: *const u8, end: *const u8, target: &[u8]) -> bool {

@@ -11,6 +11,7 @@ petroleum::define_alloc_error_handler!();
 
 static KERNEL_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kernel.bin"));
 
+mod arch;
 mod loader;
 
 use loader::{exit_boot_services_and_jump, init_heap, load_efi_image};
@@ -122,6 +123,7 @@ pub unsafe extern "efiapi" fn efi_main(
         kernel_entry_phys,
         payloads.0,
         payloads.1,
+        efi_image_size as u64,
         entry,
     ) {
         Ok(_) => unreachable!(),
