@@ -109,6 +109,13 @@ extern "C" fn aarch64_exception_irq() {
         );
     }
     uart::put_hex("aarch64 exception: irq id=", interrupt_id);
+    #[cfg(fullerene_aarch64_bramble)]
+    if interrupt_id as u32 == super::platform::bramble::USB_DWC3_IRQ {
+        // DWC3's event buffer is the source of truth. The IRQ handler only
+        // drains it; transfer state transitions remain shared with the early
+        // polling path so a pending event cannot be processed twice.
+        super::usb::poll();
+    }
     if interrupt_id as u32 == super::timer::TIMER_PPI {
         super::timer::arm_ms(100);
     }

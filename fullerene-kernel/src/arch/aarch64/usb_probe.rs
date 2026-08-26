@@ -301,6 +301,16 @@ extern "C" fn usb_probe_entry() -> ! {
             fullerene_aarch64_usb_bare_pullup_probe
         ))
     ))]
+    if let Some(typec) = _typec_state {
+        usb::set_typec_orientation(typec.orientation_reverse);
+    }
+    #[cfg(all(
+        fullerene_aarch64_bramble,
+        not(any(
+            fullerene_aarch64_usb_gadget_handoff_probe,
+            fullerene_aarch64_usb_bare_pullup_probe
+        ))
+    ))]
     usb::trace_marker(usb::TRACE_TYPEC_DONE, 0);
 
     #[cfg(not(any(

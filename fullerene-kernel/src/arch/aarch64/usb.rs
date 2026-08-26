@@ -212,6 +212,7 @@ const PIPE_UTMI_CLK_DIS: u32 = 1 << 8;
 const QMP_COM_PHY_MODE_CTRL: usize = 0x0000;
 const QMP_COM_SW_RESET: usize = 0x0004;
 const QMP_COM_POWER_DOWN_CTRL: usize = 0x0008;
+const QMP_COM_TYPEC_CTRL: usize = 0x0010;
 const QMP_COM_RESET_OVRD_CTRL: usize = 0x001c;
 const QMP_PCS_STATUS1: usize = 0x1c14;
 const QMP_PCS_POWER_DOWN_CONTROL: usize = 0x1c40;
@@ -407,6 +408,7 @@ static mut CONTROL_IN: bool = false;
 static mut CONTROL_HAS_DATA: bool = false;
 static mut CONFIGURED: bool = false;
 static mut ENDPOINTS_READY: bool = false;
+static mut TYPEC_LANE_B: bool = false;
 
 const USB_TRACE_CAPACITY: usize = 256;
 
@@ -876,13 +878,18 @@ unsafe fn hsphy_update(offset: usize, mask: u32, value: u32) {
 
 unsafe fn init_qmp_phy() -> bool {
     unsafe {
-        // Match msm_ssphy_qmp_init(): put the combo PHY in USB+DP mode,
-        // power its common and PCS blocks, then apply the Lito table.
-        write_volatile(qmp_reg(QMP_COM_RESET_OVRD_CTRL), 0x0f);
-        write_volatile(qmp_reg(QMP_COM_PHY_MODE_CTRL), 0x03);
-        write_volatile(qmp_reg(QMP_COM_RESET_OVRD_CTRL), 0x00);
+        // Match msm_ssphy_qmp_init(): power the common and PCS blocks before
+        // selecting the Type-C lane and USB+DP combo mode. The lane value is
+        // 2 for lane A and 3 for lane B, as used by the Android QMP driver.
         write_volatile(qmp_reg(QMP_COM_POWER_DOWN_CTRL), 0x01);
         write_volatile(qmp_reg(QMP_PCS_POWER_DOWN_CONTROL), 0x01);
+        let lane = if TYPEC_LANE_B { 0x03 } else { 0x02 };
+        write_volatile(qmp_reg(QMP_COM_RESET_OVRD_CTRL), 0x0f);
+        write_volatile(qmp_reg(QMP_COM_TYPEC_CTRL), lane);
+        let _ = read_volatile(qmp_reg(QMP_COM_TYPEC_CTRL));
+        write_volatile(qmp_reg(QMP_COM_PHY_MODE_CTRL), 0x03);
+        let _ = read_volatile(qmp_reg(QMP_COM_PHY_MODE_CTRL));
+        write_volatile(qmp_reg(QMP_COM_RESET_OVRD_CTRL), 0x00);
 
         for &(offset, value) in QMP_INIT.iter() {
             write_volatile(qmp_reg(offset), value);
@@ -1206,7 +1213,24 @@ unsafe fn send_ep_command(
         param1,
         param2,
     );
+    let mut saved_usb2_config = 0;
     unsafe {
+        // The DWC3 programming guide requires SUSPENDUSB2 and ENBLSLPM to be
+        // clear while issuing endpoint commands at USB2 speeds. Linux does
+        // this in dwc3_send_gadget_ep_cmd(); a Fastboot handoff commonly
+        // leaves one or both bits set after tearing down its gadget.
+        let command_kind = command & 0x0f;
+        if command_kind == DEPCMD_ENDTRANSFER
+            || read(DSTS) & DSTS_CONNECTSPD_MASK != DSTS_SUPERSPEED
+        {
+            let mut usb2 = read(GUSB2PHYCFG0);
+            saved_usb2_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+            if saved_usb2_config != 0 {
+                usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+                write(GUSB2PHYCFG0, usb2);
+                let _ = read(GUSB2PHYCFG0);
+            }
+        }
         write(dep_reg(endpoint, 0x00), param2);
         write(dep_reg(endpoint, 0x04), param1);
         write(dep_reg(endpoint, 0x08), param0);
@@ -1223,7 +1247,14 @@ unsafe fn send_ep_command(
                 0,
                 unsafe { read(DSTS) },
             );
-            return status & 0xf000 == 0;
+            let success = status & 0xf000 == 0;
+            if saved_usb2_config != 0 {
+                unsafe {
+                    let usb2 = read(GUSB2PHYCFG0);
+                    write(GUSB2PHYCFG0, usb2 | saved_usb2_config);
+                }
+            }
+            return success;
         }
         unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
     }
@@ -1235,6 +1266,12 @@ unsafe fn send_ep_command(
         0,
         unsafe { read(DSTS) },
     );
+    if saved_usb2_config != 0 {
+        unsafe {
+            let usb2 = read(GUSB2PHYCFG0);
+            write(GUSB2PHYCFG0, usb2 | saved_usb2_config);
+        }
+    }
     log_puts("usb: DWC3 endpoint command timeout\n");
     false
 }
@@ -1571,6 +1608,15 @@ pub fn init() -> bool {
 /// Initialize only the USB2 path for the dependency-free hardware probe.
 pub fn init_usb2_only() -> bool {
     init_with_super_speed(false, true, true)
+}
+
+/// Pass the PMIC/Type-C cable orientation into the QMP combo PHY path.
+/// Android programs the QMP Type-C control register after the PHY is powered
+/// and before releasing the combo-PHY reset override.
+pub fn set_typec_orientation(orientation_reverse: bool) {
+    unsafe {
+        TYPEC_LANE_B = orientation_reverse;
+    }
 }
 
 /// Take over the USB controller without resetting the PHY or clock branches.

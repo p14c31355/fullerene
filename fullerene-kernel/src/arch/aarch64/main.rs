@@ -362,6 +362,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     usb::trace_marker(usb::TRACE_TYPEC_BEGIN, 0);
     #[cfg(fullerene_aarch64_bramble)]
     if let Some(typec) = unsafe { platform::bramble::prepare_usb_device_role() } {
+        usb::set_typec_orientation(typec.orientation_reverse);
         usb::trace_marker(
             usb::TRACE_TYPEC_DONE,
             (typec.sink_mode_written as u32) | ((typec.misc_status as u32) << 8),

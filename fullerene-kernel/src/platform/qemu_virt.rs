@@ -12,5 +12,6 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
     super::gicv3::init(
         gicd_base.unwrap_or(GICD_BASE),
         gicr_base.unwrap_or(GICR_BASE),
+        None,
     );
 }

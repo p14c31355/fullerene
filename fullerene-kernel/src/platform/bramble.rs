@@ -5,6 +5,8 @@
 pub const UART_BASE: usize = 0x0098_8000;
 pub const GICD_BASE: usize = 0x17a0_0000;
 pub const GICR_BASE: usize = 0x17a6_0000;
+/// Android's Lito DT routes the primary DWC3 device event interrupt here.
+pub const USB_DWC3_IRQ: u32 = 240;
 
 /// GCC register block and USB3 power-domain registers from the Lito DT.
 pub const GCC_BASE: usize = 0x0010_0000;
@@ -315,5 +317,6 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
     super::gicv3::init(
         gicd_base.unwrap_or(GICD_BASE),
         gicr_base.unwrap_or(GICR_BASE),
+        Some(USB_DWC3_IRQ),
     );
 }
