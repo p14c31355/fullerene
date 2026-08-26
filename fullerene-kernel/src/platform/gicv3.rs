@@ -97,6 +97,7 @@ unsafe fn write64(address: usize, value: u64) {
 /// Bring up the local GICv3 redistributor, the EL1 physical timer PPI, and
 /// optionally one platform SPI. Both QEMU virt and SM7250 expose an ARM
 /// GICv3; only the MMIO bases and the platform SPI differ.
+#[must_use]
 pub fn init(gicd_base: usize, gicr_base: usize, usb_irq: Option<u32>) -> bool {
     let sgi_base = gicr_base + GICR_SGI_BASE;
     unsafe {

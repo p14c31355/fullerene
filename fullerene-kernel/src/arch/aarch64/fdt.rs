@@ -79,6 +79,94 @@ pub fn find_compatible(address: u64, target: &[u8]) -> Option<Region> {
 /// redistributor, so early platform discovery needs both without knowing the
 /// SoC's hard-coded addresses.
 pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<Region> {
+    let mut states = [NodeState::new(); 16];
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => {
+                let parent = states[depth - 1];
+                states[depth] = NodeState {
+                    address_cells: parent.child_address_cells,
+                    size_cells: parent.child_size_cells,
+                    child_address_cells: parent.child_address_cells,
+                    child_size_cells: parent.child_size_cells,
+                    ..NodeState::new()
+                };
+            }
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"#address-cells") && item.length >= 4 {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_address_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells") && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_size_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"compatible") {
+                    state.compatible = compatible_list_contains(item.value, item.length, target);
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, b"reg") {
+                    state.regions = read_regions(
+                        item.value,
+                        item.length,
+                        state.address_cells,
+                        state.size_cells,
+                    );
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.compatible {
+                    if let Some(region) = state.regions.get(index).and_then(|region| *region) {
+                        result = Some(region);
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
+}
+
+#[derive(Clone, Copy)]
+struct StructureProperty {
+    name: *const u8,
+    name_end: *const u8,
+    value: *const u8,
+    value_end: *const u8,
+    length: usize,
+}
+
+#[derive(Clone, Copy)]
+enum StructureEvent {
+    BeginNode {
+        depth: usize,
+        name: *const u8,
+        name_end: *const u8,
+    },
+    Property {
+        depth: usize,
+        property: StructureProperty,
+    },
+    EndNode {
+        depth: usize,
+    },
+}
+
+/// Walk the structure block once, keeping all token, pointer-bound, node-name,
+/// and alignment checks in one place. The callback returns false to stop after
+/// finding a value; malformed or unterminated trees return `None`.
+fn walk_structure<F>(address: u64, mut visit: F) -> Option<()>
+where
+    F: FnMut(StructureEvent) -> bool,
+{
     let header = inspect(address)?;
     let base = address as *const u8;
     let structure = unsafe { base.add(header.structure_offset as usize) };
@@ -87,7 +175,6 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
     let strings_end = unsafe { strings.add(header.strings_size as usize) };
     let mut cursor = structure;
     let mut depth = 0usize;
-    let mut states = [NodeState::new(); 16];
 
     while (cursor as usize) < (structure_end as usize) {
         if (structure_end as usize) - (cursor as usize) < 4 {
@@ -97,40 +184,35 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
         cursor = unsafe { cursor.add(4) };
         match token {
             FDT_BEGIN_NODE => {
-                if depth + 1 >= states.len() {
+                if depth + 1 >= 16 {
                     return None;
                 }
                 depth += 1;
-                let parent = states[depth - 1];
-                states[depth] = NodeState {
-                    address_cells: parent.child_address_cells,
-                    size_cells: parent.child_size_cells,
-                    child_address_cells: parent.child_address_cells,
-                    child_size_cells: parent.child_size_cells,
-                    ..NodeState::new()
-                };
+                let name = cursor;
                 while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
                     cursor = unsafe { cursor.add(1) };
                 }
                 if (cursor as usize) >= (structure_end as usize) {
                     return None;
                 }
-                cursor = unsafe { cursor.add(1) };
-                cursor = align4(cursor);
+                cursor = align4_checked(unsafe { cursor.add(1) })?;
                 if (cursor as usize) > (structure_end as usize) {
                     return None;
+                }
+                if !visit(StructureEvent::BeginNode {
+                    depth,
+                    name,
+                    name_end: structure_end,
+                }) {
+                    return Some(());
                 }
             }
             FDT_END_NODE => {
                 if depth == 0 {
                     return None;
                 }
-                if states[depth].enabled && states[depth].compatible {
-                    if let Some(region) =
-                        states[depth].regions.get(index).and_then(|region| *region)
-                    {
-                        return Some(region);
-                    }
+                if !visit(StructureEvent::EndNode { depth }) {
+                    return Some(());
                 }
                 depth = depth.saturating_sub(1);
             }
@@ -148,22 +230,21 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
                     return None;
                 }
                 let name = unsafe { strings.add(name_offset as usize) };
-                let state = &mut states[depth];
-                if c_string_eq(name, strings_end, b"#address-cells") && length >= 4 {
-                    state.child_address_cells = read_be32(value, 0)? as u8;
-                } else if c_string_eq(name, strings_end, b"#size-cells") && length >= 4 {
-                    state.child_size_cells = read_be32(value, 0)? as u8;
-                } else if c_string_eq(name, strings_end, b"compatible") {
-                    state.compatible = compatible_list_contains(value, length, target);
-                } else if c_string_eq(name, strings_end, b"status") {
-                    state.enabled = !c_string_eq(value, value_end, b"disabled");
-                } else if c_string_eq(name, strings_end, b"reg") {
-                    state.regions =
-                        read_regions(value, length, state.address_cells, state.size_cells);
-                }
-                cursor = align4(value_end);
+                cursor = align4_checked(value_end)?;
                 if (cursor as usize) > (structure_end as usize) {
                     return None;
+                }
+                if !visit(StructureEvent::Property {
+                    depth,
+                    property: StructureProperty {
+                        name,
+                        name_end: strings_end,
+                        value,
+                        value_end,
+                        length,
+                    },
+                }) {
+                    return Some(());
                 }
             }
             FDT_NOP => {}
@@ -200,102 +281,54 @@ pub fn find_compatible_nth_property_u32(
     index: usize,
     node_index: usize,
 ) -> Option<u32> {
-    let header = inspect(address)?;
-    let base = address as *const u8;
-    let structure = unsafe { base.add(header.structure_offset as usize) };
-    let strings = unsafe { base.add(header.strings_offset as usize) };
-    let structure_end = unsafe { structure.add(header.structure_size as usize) };
-    let strings_end = unsafe { strings.add(header.strings_size as usize) };
-    let mut cursor = structure;
-    let mut depth = 0usize;
     let mut states = [PropertyNodeState::new(); 16];
     let mut matching_nodes = 0usize;
-
-    while (cursor as usize) < (structure_end as usize) {
-        if (structure_end as usize) - (cursor as usize) < 4 {
-            return None;
-        }
-        let token = read_be32(cursor, 0)?;
-        cursor = unsafe { cursor.add(4) };
-        match token {
-            FDT_BEGIN_NODE => {
-                if depth + 1 >= states.len() {
-                    return None;
-                }
-                depth += 1;
-                states[depth] = PropertyNodeState::new();
-                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
-                    cursor = unsafe { cursor.add(1) };
-                }
-                if (cursor as usize) >= (structure_end as usize) {
-                    return None;
-                }
-                cursor = align4(unsafe { cursor.add(1) });
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => states[depth] = PropertyNodeState::new(),
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
+                {
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"compatible") {
+                    state.compatible = compatible_list_contains(item.value, item.length, target);
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, property) {
+                    if item.length == 0 {
+                        state.property_value = Some(0);
+                    } else if let Some(offset) = index.checked_mul(4) {
+                        if offset.checked_add(4).is_some_and(|end| end <= item.length) {
+                            state.property_value = read_be32(item.value, offset as u32);
+                        }
+                    }
                 }
             }
-            FDT_END_NODE => {
-                if depth == 0 {
-                    return None;
-                }
+            StructureEvent::EndNode { depth } => {
                 let state = states[depth];
                 if state.enabled && state.compatible {
                     let selected = matching_nodes == node_index;
                     matching_nodes = matching_nodes.saturating_add(1);
                     if selected {
-                        return state.property_value;
-                    }
-                }
-                depth = depth.saturating_sub(1);
-            }
-            FDT_PROP => {
-                if (structure_end as usize) - (cursor as usize) < 8 {
-                    return None;
-                }
-                let length = read_be32(cursor, 0)? as usize;
-                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
-                let value = unsafe { cursor.add(8) };
-                let value_end = (value as usize).checked_add(length)? as *const u8;
-                if (value_end as usize) > (structure_end as usize)
-                    || name_offset >= header.strings_size
-                {
-                    return None;
-                }
-                let name = unsafe { strings.add(name_offset as usize) };
-                let state = &mut states[depth];
-                if c_string_eq(name, strings_end, b"phandle")
-                    || c_string_eq(name, strings_end, b"linux,phandle")
-                {
-                    if length >= 4 {
-                        state.phandle = read_be32(value, 0);
-                    }
-                } else if c_string_eq(name, strings_end, b"compatible") {
-                    state.compatible = compatible_list_contains(value, length, target);
-                } else if c_string_eq(name, strings_end, b"status") {
-                    state.enabled = !c_string_eq(value, value_end, b"disabled");
-                } else if c_string_eq(name, strings_end, property) {
-                    state.property_seen = true;
-                    if length == 0 {
-                        state.property_value = Some(0);
-                    } else {
-                        let offset = index.checked_mul(4)?;
-                        if offset.checked_add(4)? <= length {
-                            state.property_value = read_be32(value, offset as u32);
+                        result = state.property_value;
+                        if result.is_some() {
+                            return false;
                         }
                     }
                 }
-                cursor = align4(value_end);
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
-                }
             }
-            FDT_NOP => {}
-            FDT_END => return None,
-            _ => return None,
         }
-    }
-    None
+        true
+    })?;
+    result
 }
 
 /// Read one 32-bit property from the enabled node identified by a phandle.
@@ -308,95 +341,47 @@ pub fn find_phandle_property_u32(
     property: &[u8],
     index: usize,
 ) -> Option<u32> {
-    let header = inspect(address)?;
-    let base = address as *const u8;
-    let structure = unsafe { base.add(header.structure_offset as usize) };
-    let strings = unsafe { base.add(header.strings_offset as usize) };
-    let structure_end = unsafe { structure.add(header.structure_size as usize) };
-    let strings_end = unsafe { strings.add(header.strings_size as usize) };
-    let mut cursor = structure;
-    let mut depth = 0usize;
     let mut states = [PropertyNodeState::new(); 16];
-
-    while (cursor as usize) < (structure_end as usize) {
-        if (structure_end as usize) - (cursor as usize) < 4 {
-            return None;
-        }
-        let token = read_be32(cursor, 0)?;
-        cursor = unsafe { cursor.add(4) };
-        match token {
-            FDT_BEGIN_NODE => {
-                if depth + 1 >= states.len() {
-                    return None;
-                }
-                depth += 1;
-                states[depth] = PropertyNodeState::new();
-                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
-                    cursor = unsafe { cursor.add(1) };
-                }
-                if (cursor as usize) >= (structure_end as usize) {
-                    return None;
-                }
-                cursor = align4(unsafe { cursor.add(1) });
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
-                }
-            }
-            FDT_END_NODE => {
-                if depth == 0 {
-                    return None;
-                }
-                let state = states[depth];
-                if state.enabled && state.phandle == Some(target) {
-                    return state.property_value;
-                }
-                depth = depth.saturating_sub(1);
-            }
-            FDT_PROP => {
-                if (structure_end as usize) - (cursor as usize) < 8 {
-                    return None;
-                }
-                let length = read_be32(cursor, 0)? as usize;
-                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
-                let value = unsafe { cursor.add(8) };
-                let value_end = (value as usize).checked_add(length)? as *const u8;
-                if (value_end as usize) > (structure_end as usize)
-                    || name_offset >= header.strings_size
-                {
-                    return None;
-                }
-                let name = unsafe { strings.add(name_offset as usize) };
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => states[depth] = PropertyNodeState::new(),
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
                 let state = &mut states[depth];
-                if c_string_eq(name, strings_end, b"phandle")
-                    || c_string_eq(name, strings_end, b"linux,phandle")
+                if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
                 {
-                    if length >= 4 {
-                        state.phandle = read_be32(value, 0);
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
                     }
-                } else if c_string_eq(name, strings_end, b"status") {
-                    state.enabled = !c_string_eq(value, value_end, b"disabled");
-                } else if c_string_eq(name, strings_end, property) {
-                    state.property_seen = true;
-                    if length == 0 {
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, property) {
+                    if item.length == 0 {
                         state.property_value = Some(0);
-                    } else {
-                        let offset = index.checked_mul(4)?;
-                        if offset.checked_add(4)? <= length {
-                            state.property_value = read_be32(value, offset as u32);
+                    } else if let Some(offset) = index.checked_mul(4) {
+                        if offset.checked_add(4).is_some_and(|end| end <= item.length) {
+                            state.property_value = read_be32(item.value, offset as u32);
                         }
                     }
                 }
-                cursor = align4(value_end);
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.phandle == Some(target) {
+                    result = state.property_value;
+                    if result.is_some() {
+                        return false;
+                    }
                 }
             }
-            FDT_NOP => {}
-            FDT_END => return None,
-            _ => return None,
         }
-    }
-    None
+        true
+    })?;
+    result
 }
 
 /// Read a 32-bit property from an enabled node identified by its full DT
@@ -409,93 +394,50 @@ pub fn find_named_property_u32(
     property: &[u8],
     index: usize,
 ) -> Option<u32> {
-    let header = inspect(address)?;
-    let base = address as *const u8;
-    let structure = unsafe { base.add(header.structure_offset as usize) };
-    let strings = unsafe { base.add(header.strings_offset as usize) };
-    let structure_end = unsafe { structure.add(header.structure_size as usize) };
-    let strings_end = unsafe { strings.add(header.strings_size as usize) };
-    let mut cursor = structure;
-    let mut depth = 0usize;
     let mut states = [PropertyNodeState::new(); 16];
-
-    while (cursor as usize) < (structure_end as usize) {
-        if (structure_end as usize) - (cursor as usize) < 4 {
-            return None;
-        }
-        let token = read_be32(cursor, 0)?;
-        cursor = unsafe { cursor.add(4) };
-        match token {
-            FDT_BEGIN_NODE => {
-                if depth + 1 >= states.len() {
-                    return None;
-                }
-                depth += 1;
-                let node_start = cursor;
-                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
-                    cursor = unsafe { cursor.add(1) };
-                }
-                if (cursor as usize) >= (structure_end as usize) {
-                    return None;
-                }
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode {
+                depth,
+                name,
+                name_end,
+            } => {
                 states[depth] = PropertyNodeState {
-                    name_matches: c_string_eq(node_start, structure_end, node_name),
+                    name_matches: c_string_eq(name, name_end, node_name),
                     ..PropertyNodeState::new()
                 };
-                cursor = align4(unsafe { cursor.add(1) });
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
-                }
             }
-            FDT_END_NODE => {
-                if depth == 0 {
-                    return None;
-                }
-                let state = states[depth];
-                if state.enabled && state.name_matches && state.property_value.is_some() {
-                    return state.property_value;
-                }
-                depth = depth.saturating_sub(1);
-            }
-            FDT_PROP => {
-                if (structure_end as usize) - (cursor as usize) < 8 {
-                    return None;
-                }
-                let length = read_be32(cursor, 0)? as usize;
-                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
-                let value = unsafe { cursor.add(8) };
-                let value_end = (value as usize).checked_add(length)? as *const u8;
-                if (value_end as usize) > (structure_end as usize)
-                    || name_offset >= header.strings_size
-                {
-                    return None;
-                }
-                let name = unsafe { strings.add(name_offset as usize) };
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
                 let state = &mut states[depth];
-                if c_string_eq(name, strings_end, b"status") {
-                    state.enabled = !c_string_eq(value, value_end, b"disabled");
-                } else if c_string_eq(name, strings_end, property) {
-                    state.property_seen = true;
-                    if length == 0 {
+                if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, property) {
+                    if item.length == 0 {
                         state.property_value = Some(0);
-                    } else {
-                        let offset = index.checked_mul(4)?;
-                        if offset.checked_add(4)? <= length {
-                            state.property_value = read_be32(value, offset as u32);
+                    } else if let Some(offset) = index.checked_mul(4) {
+                        if offset.checked_add(4).is_some_and(|end| end <= item.length) {
+                            state.property_value = read_be32(item.value, offset as u32);
                         }
                     }
                 }
-                cursor = align4(value_end);
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.name_matches {
+                    result = state.property_value;
+                    if result.is_some() {
+                        return false;
+                    }
                 }
             }
-            FDT_NOP => {}
-            FDT_END => return None,
-            _ => return None,
         }
-    }
-    None
+        true
+    })?;
+    result
 }
 
 /// A small, allocation-free copy of a DT string.  This is used for supply
@@ -521,98 +463,52 @@ pub fn find_phandle_property_string(
     target_property: &[u8],
 ) -> Option<StringValue> {
     let target = find_compatible_property_u32(address, source_node, property, index)?;
-    let header = inspect(address)?;
-    let base = address as *const u8;
-    let structure = unsafe { base.add(header.structure_offset as usize) };
-    let strings = unsafe { base.add(header.strings_offset as usize) };
-    let structure_end = unsafe { structure.add(header.structure_size as usize) };
-    let strings_end = unsafe { strings.add(header.strings_size as usize) };
-    let mut cursor = structure;
-    let mut depth = 0usize;
     let mut states = [PhandleNodeState::new(); 16];
-
-    while (cursor as usize) < (structure_end as usize) {
-        if (structure_end as usize) - (cursor as usize) < 4 {
-            return None;
-        }
-        let token = read_be32(cursor, 0)?;
-        cursor = unsafe { cursor.add(4) };
-        match token {
-            FDT_BEGIN_NODE => {
-                if depth + 1 >= states.len() {
-                    return None;
-                }
-                depth += 1;
-                states[depth] = PhandleNodeState::new();
-                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
-                    cursor = unsafe { cursor.add(1) };
-                }
-                if (cursor as usize) >= (structure_end as usize) {
-                    return None;
-                }
-                cursor = align4(unsafe { cursor.add(1) });
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
-                }
-            }
-            FDT_END_NODE => {
-                if depth == 0 {
-                    return None;
-                }
-                let state = states[depth];
-                if state.enabled && state.phandle == Some(target) && state.value.is_some() {
-                    return state.value;
-                }
-                depth = depth.saturating_sub(1);
-            }
-            FDT_PROP => {
-                if (structure_end as usize) - (cursor as usize) < 8 {
-                    return None;
-                }
-                let length = read_be32(cursor, 0)? as usize;
-                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
-                let value = unsafe { cursor.add(8) };
-                let value_end = (value as usize).checked_add(length)? as *const u8;
-                if (value_end as usize) > (structure_end as usize)
-                    || name_offset >= header.strings_size
-                {
-                    return None;
-                }
-                let name = unsafe { strings.add(name_offset as usize) };
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => states[depth] = PhandleNodeState::new(),
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
                 let state = &mut states[depth];
-                if c_string_eq(name, strings_end, b"status") {
-                    state.enabled = !c_string_eq(value, value_end, b"disabled");
-                } else if c_string_eq(name, strings_end, b"phandle")
-                    || c_string_eq(name, strings_end, b"linux,phandle")
+                if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
                 {
-                    if length >= 4 {
-                        state.phandle = read_be32(value, 0);
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
                     }
-                } else if c_string_eq(name, strings_end, target_property) {
-                    if length == 0 || length > 48 {
-                        return None;
+                } else if c_string_eq(item.name, item.name_end, target_property) {
+                    if item.length == 0 || item.length > 48 {
+                        state.value = None;
+                    } else {
+                        let mut string = StringValue {
+                            bytes: [0; 48],
+                            len: item.length.saturating_sub(1),
+                        };
+                        for offset in 0..item.length {
+                            string.bytes[offset] = unsafe { *item.value.add(offset) };
+                        }
+                        state.value = Some(string);
                     }
-                    let mut string = StringValue {
-                        bytes: [0; 48],
-                        len: length,
-                    };
-                    for offset in 0..length {
-                        string.bytes[offset] = unsafe { *value.add(offset) };
-                    }
-                    string.len = length.saturating_sub(1);
-                    state.value = Some(string);
-                }
-                cursor = align4(value_end);
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
                 }
             }
-            FDT_NOP => {}
-            FDT_END => return None,
-            _ => return None,
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.phandle == Some(target) {
+                    result = state.value;
+                    if result.is_some() {
+                        return false;
+                    }
+                }
+            }
         }
-    }
-    None
+        true
+    })?;
+    result
 }
 
 /// Resolve one phandle-valued property on the first compatible node and
@@ -633,28 +529,11 @@ pub fn find_phandle_property_region(
 /// compatible-string lookup: Qualcomm DTs contain multiple instances of
 /// providers such as `qcom,qsmmu-v500`.
 pub fn find_phandle_region(address: u64, target: u32) -> Option<Region> {
-    let header = inspect(address)?;
-    let base = address as *const u8;
-    let structure = unsafe { base.add(header.structure_offset as usize) };
-    let strings = unsafe { base.add(header.strings_offset as usize) };
-    let structure_end = unsafe { structure.add(header.structure_size as usize) };
-    let strings_end = unsafe { strings.add(header.strings_size as usize) };
-    let mut cursor = structure;
-    let mut depth = 0usize;
     let mut states = [PhandleRegionNodeState::new(); 16];
-
-    while (cursor as usize) < (structure_end as usize) {
-        if (structure_end as usize) - (cursor as usize) < 4 {
-            return None;
-        }
-        let token = read_be32(cursor, 0)?;
-        cursor = unsafe { cursor.add(4) };
-        match token {
-            FDT_BEGIN_NODE => {
-                if depth + 1 >= states.len() {
-                    return None;
-                }
-                depth += 1;
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => {
                 let parent = states[depth - 1];
                 states[depth] = PhandleRegionNodeState {
                     address_cells: parent.child_address_cells,
@@ -663,74 +542,54 @@ pub fn find_phandle_region(address: u64, target: u32) -> Option<Region> {
                     child_size_cells: parent.child_size_cells,
                     ..PhandleRegionNodeState::new()
                 };
-                while (cursor as usize) < (structure_end as usize) && unsafe { *cursor } != 0 {
-                    cursor = unsafe { cursor.add(1) };
-                }
-                if (cursor as usize) >= (structure_end as usize) {
-                    return None;
-                }
-                cursor = align4(unsafe { cursor.add(1) });
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
-                }
             }
-            FDT_END_NODE => {
-                if depth == 0 {
-                    return None;
-                }
-                let state = states[depth];
-                // A regulator provider may be marked `status = "disabled"`
-                // in a shared SoC include and enabled by a board overlay or
-                // consumed through a proxy. The phandle is the authoritative
-                // resource identity here; unlike a discover-by-compatible
-                // lookup, this explicit supply reference is not ambiguous.
-                if state.phandle == Some(target) {
-                    return state.regions[0];
-                }
-                depth = depth.saturating_sub(1);
-            }
-            FDT_PROP => {
-                if (structure_end as usize) - (cursor as usize) < 8 {
-                    return None;
-                }
-                let length = read_be32(cursor, 0)? as usize;
-                let name_offset = read_be32(unsafe { cursor.add(4) }, 0)?;
-                let value = unsafe { cursor.add(8) };
-                let value_end = (value as usize).checked_add(length)? as *const u8;
-                if (value_end as usize) > (structure_end as usize)
-                    || name_offset >= header.strings_size
-                {
-                    return None;
-                }
-                let name = unsafe { strings.add(name_offset as usize) };
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
                 let state = &mut states[depth];
-                if c_string_eq(name, strings_end, b"status") {
-                    state.enabled = !c_string_eq(value, value_end, b"disabled");
-                } else if c_string_eq(name, strings_end, b"phandle")
-                    || c_string_eq(name, strings_end, b"linux,phandle")
+                if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
                 {
-                    if length >= 4 {
-                        state.phandle = read_be32(value, 0);
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
                     }
-                } else if c_string_eq(name, strings_end, b"#address-cells") && length >= 4 {
-                    state.child_address_cells = read_be32(value, 0)? as u8;
-                } else if c_string_eq(name, strings_end, b"#size-cells") && length >= 4 {
-                    state.child_size_cells = read_be32(value, 0)? as u8;
-                } else if c_string_eq(name, strings_end, b"reg") {
-                    state.regions =
-                        read_regions(value, length, state.address_cells, state.size_cells);
-                }
-                cursor = align4(value_end);
-                if (cursor as usize) > (structure_end as usize) {
-                    return None;
+                } else if c_string_eq(item.name, item.name_end, b"#address-cells")
+                    && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_address_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells") && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_size_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"reg") {
+                    state.regions = read_regions(
+                        item.value,
+                        item.length,
+                        state.address_cells,
+                        state.size_cells,
+                    );
                 }
             }
-            FDT_NOP => {}
-            FDT_END => return None,
-            _ => return None,
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                // A phandle explicitly referenced by a consumer is the
+                // authoritative resource identity, even when a shared SoC
+                // include marks the provider disabled.
+                if state.phandle == Some(target) {
+                    result = state.regions[0];
+                    if result.is_some() {
+                        return false;
+                    }
+                }
+            }
         }
-    }
-    None
+        true
+    })?;
+    result
 }
 
 fn read_be32(base: *const u8, offset: u32) -> Option<u32> {
@@ -754,7 +613,6 @@ struct PropertyNodeState {
     compatible: bool,
     name_matches: bool,
     enabled: bool,
-    property_seen: bool,
     property_value: Option<u32>,
     phandle: Option<u32>,
 }
@@ -772,7 +630,6 @@ struct PhandleRegionNodeState {
     size_cells: u8,
     child_address_cells: u8,
     child_size_cells: u8,
-    enabled: bool,
     phandle: Option<u32>,
     regions: [Option<Region>; 2],
 }
@@ -784,7 +641,6 @@ impl PhandleRegionNodeState {
             size_cells: 1,
             child_address_cells: 2,
             child_size_cells: 1,
-            enabled: true,
             phandle: None,
             regions: [None; 2],
         }
@@ -807,7 +663,6 @@ impl PropertyNodeState {
             compatible: false,
             name_matches: false,
             enabled: true,
-            property_seen: false,
             property_value: None,
             phandle: None,
         }
@@ -828,8 +683,8 @@ impl NodeState {
     }
 }
 
-fn align4(pointer: *const u8) -> *const u8 {
-    (((pointer as usize) + 3) & !3) as *const u8
+fn align4_checked(pointer: *const u8) -> Option<*const u8> {
+    Some(((pointer as usize).checked_add(3)? & !3) as *const u8)
 }
 
 fn c_string_eq(pointer: *const u8, end: *const u8, target: &[u8]) -> bool {

@@ -9,7 +9,7 @@ pub const GICR_BASE: usize = 0x080a_0000;
 
 /// Bring up QEMU virt's GICv3 path for the EL1 physical timer PPI.
 pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usize>) {
-    super::gicv3::init(
+    let _ = super::gicv3::init(
         gicd_base.unwrap_or(GICD_BASE),
         gicr_base.unwrap_or(GICR_BASE),
         None,

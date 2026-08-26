@@ -123,6 +123,7 @@ pub unsafe extern "efiapi" fn efi_main(
         kernel_entry_phys,
         payloads.0,
         payloads.1,
+        efi_image_size as u64,
         entry,
     ) {
         Ok(_) => unreachable!(),

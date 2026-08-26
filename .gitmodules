@@ -16,4 +16,4 @@
 	url = https://github.com/rust-lang/cargo.git
 [submodule "toluene/busybox"]
 	path = toluene/busybox
-	url = https://git.busybox.net/busybox
+	url = https://github.com/mirror/busybox.git

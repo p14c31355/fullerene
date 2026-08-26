@@ -389,6 +389,7 @@ pub fn exit_boot_services_and_jump(
     kernel_entry_phys: u64,
     bootloader_payload: (usize, usize),
     kernel_payload: (usize, usize),
+    loaded_kernel_size: u64,
     _entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
     // Immediate debug prints on entry to pinpoint exact hang location
@@ -717,7 +718,7 @@ pub fn exit_boot_services_and_jump(
         .ok_or(BellowsError::AllocationFailed("BootInfo address overflow."))?;
     let boot_info = super::arch::x86_64::make_boot_info(
         kernel_phys_start.as_u64(),
-        kernel_payload.1 as u64,
+        loaded_kernel_size,
         kernel_entry_virt,
         map_phys_addr as u64,
         final_map_size as u64,

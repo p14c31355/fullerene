@@ -8,6 +8,7 @@ use core::{
 
 #[path = "../../platform/mod.rs"]
 mod platform;
+mod timer;
 mod uart;
 mod usb;
 mod usb_protocol;
@@ -374,7 +375,7 @@ extern "C" fn usb_probe_entry() -> ! {
             // The bare probe intentionally never reads the event/DMA path;
             // keep only the physical pull-up state alive while testing the
             // controller MMIO sequence itself.
-            unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
+            core::hint::spin_loop();
         }
         #[cfg(not(any(
             fullerene_aarch64_usb_bare_pullup_probe,

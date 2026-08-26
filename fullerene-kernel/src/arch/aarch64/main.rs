@@ -640,7 +640,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     allocator::smoke();
     uart::puts("allocator: bump heap ready\n");
 
-    timer::init();
+    if !timer::init() {
+        uart::puts("timer: CNTFRQ_EL0 is zero; refusing to use the timer\n");
+        loop {
+            unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
+        }
+    }
     let before = timer::counter();
     timer::delay_ms(10);
     let elapsed = timer::counter().wrapping_sub(before);
@@ -755,10 +760,9 @@ fn qemu_semihost_exit(passed: bool) -> ! {
     };
     unsafe {
         asm!(
-            "mov x0, #0x18", // SYS_EXIT
-            "mov x1, {block}",
             "hlt #0xf000",
-            block = in(reg) &block as *const ExitBlock,
+            in("x0") 0x18usize, // SYS_EXIT
+            in("x1") &block as *const ExitBlock,
             options(noreturn),
         );
     }

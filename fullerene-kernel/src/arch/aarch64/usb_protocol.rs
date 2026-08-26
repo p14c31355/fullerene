@@ -535,7 +535,9 @@ impl Ep0Simulator {
 
         if request_type == 0x82 && request == 0 && requested_length == 2 {
             let endpoint = index as u8;
-            if endpoint == 0 || endpoint == 0x80 || endpoint == 0x02 || endpoint == 0x83 {
+            if response.len() >= 2
+                && (endpoint == 0 || endpoint == 0x80 || endpoint == 0x02 || endpoint == 0x83)
+            {
                 response[..2].fill(0);
                 if self.halted_endpoints & (1 << (endpoint & 0x0f)) != 0 {
                     response[0] = 1;
@@ -575,6 +577,7 @@ impl Ep0Simulator {
             && value == 0
             && index == 0
             && requested_length == 1
+            && !response.is_empty()
         {
             response[0] = self.interface_alt;
             self.state = Ep0State::Data;

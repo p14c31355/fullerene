@@ -18,7 +18,9 @@ pub fn make_boot_info(
     info.memory_map_address = memory_map_address;
     info.memory_map_size = memory_map_size;
     info.memory_map_descriptor_size = memory_map_descriptor_size;
-    info.flags |= boot::flags::MEMORY_MAP;
+    if memory_map_address != 0 && memory_map_size != 0 && memory_map_descriptor_size != 0 {
+        info.flags |= boot::flags::MEMORY_MAP;
+    }
 
     if let Some((address, width, height, stride, bpp)) = framebuffer {
         info.framebuffer_address = address;

@@ -2294,7 +2294,7 @@ unsafe fn configure_endpoint_kind_with_interrupter(
     let param0 = action | endpoint_type | (max_packet << DEPCFG_MAX_PACKET_SHIFT);
     let param1 = DEPCFG_XFER_COMPLETE_EN
         | DEPCFG_XFER_NOT_READY_EN
-        | ((interrupter & 0x7f) << DEPCFG_INT_NUM_SHIFT)
+        | ((interrupter & 0x1f) << DEPCFG_INT_NUM_SHIFT)
         | ((endpoint as u32) << DEPCFG_EP_NUMBER_SHIFT);
     if !unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, 0) } {
         return false;

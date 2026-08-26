@@ -44,12 +44,16 @@ pub struct BootInfo {
     pub magic: u64,
     pub version: u32,
     pub size: u32,
-    pub architecture: BootArchitecture,
-    pub platform: BootPlatform,
+    /// Wire representation of [`BootArchitecture`].
+    pub architecture: u32,
+    /// Wire representation of [`BootPlatform`].
+    pub platform: u32,
     pub flags: u64,
 
+    /// Physical address where the loaded kernel image begins.
     pub kernel_base: u64,
     pub kernel_size: u64,
+    /// Higher-half virtual address of the kernel entry point.
     pub kernel_entry: u64,
 
     pub fdt_address: u64,
@@ -80,8 +84,8 @@ impl BootInfo {
             magic: BOOT_INFO_MAGIC,
             version: BOOT_INFO_VERSION,
             size: Self::BYTE_SIZE as u32,
-            architecture,
-            platform,
+            architecture: architecture as u32,
+            platform: platform as u32,
             flags: 0,
             kernel_base: 0,
             kernel_size: 0,
@@ -103,10 +107,31 @@ impl BootInfo {
         }
     }
 
+    pub const fn architecture(&self) -> Option<BootArchitecture> {
+        match self.architecture {
+            0 => Some(BootArchitecture::Unknown),
+            1 => Some(BootArchitecture::X86_64),
+            2 => Some(BootArchitecture::Aarch64),
+            _ => None,
+        }
+    }
+
+    pub const fn platform(&self) -> Option<BootPlatform> {
+        match self.platform {
+            0 => Some(BootPlatform::Unknown),
+            1 => Some(BootPlatform::PcUefi),
+            2 => Some(BootPlatform::QemuVirt),
+            3 => Some(BootPlatform::Bramble),
+            _ => None,
+        }
+    }
+
     pub const fn is_valid(&self) -> bool {
         self.magic == BOOT_INFO_MAGIC
             && self.version == BOOT_INFO_VERSION
             && self.size as usize >= Self::BYTE_SIZE
+            && self.architecture().is_some()
+            && self.platform().is_some()
     }
 }
 
@@ -133,5 +158,15 @@ mod tests {
         info.flags = flags::MEMORY_MAP | flags::FRAMEBUFFER;
         assert_ne!(info.flags & flags::MEMORY_MAP, 0);
         assert_eq!(info.flags & flags::FDT, 0);
+    }
+
+    #[test]
+    fn invalid_wire_discriminants_are_rejected() {
+        let mut info = BootInfo::new(BootArchitecture::X86_64, BootPlatform::PcUefi);
+        info.architecture = 99;
+        assert!(!info.is_valid());
+        info.architecture = BootArchitecture::X86_64 as u32;
+        info.platform = 99;
+        assert!(!info.is_valid());
     }
 }

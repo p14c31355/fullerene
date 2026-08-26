@@ -105,8 +105,11 @@ fn read_boot_info(kernel_args: *const petroleum::assembly::KernelArgs) -> Option
     if args.boot_info_address == 0 {
         return None;
     }
-    let info = unsafe { (args.boot_info_address as *const BootInfo).as_ref()? };
-    info.is_valid().then_some(*info)
+    if args.boot_info_address % core::mem::align_of::<BootInfo>() as u64 != 0 {
+        return None;
+    }
+    let info = unsafe { core::ptr::read_volatile(args.boot_info_address as *const BootInfo) };
+    info.is_valid().then_some(info)
 }
 
 impl BootContext {

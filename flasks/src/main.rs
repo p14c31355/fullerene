@@ -3,7 +3,7 @@ use clap::{Parser, ValueEnum};
 use isobemak::{BootInfo, IsoImage, UefiBootInfo, build_iso};
 use std::{
     env, fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -932,7 +932,10 @@ fn audit_aarch64_image_bytes(image: &[u8], raw: &[u8]) -> io::Result<()> {
 fn audit_lz4_frame(frame: &Path, image: &Path) -> io::Result<()> {
     let frame_bytes = fs::read(frame)?;
     let image_bytes = fs::read(image)?;
-    let decoded = decode_literal_lz4_frame(&frame_bytes)?;
+    validate_bramble_lz4_frame(&frame_bytes)?;
+    let mut decoder = lz4_flex::frame::FrameDecoder::new(fs::File::open(frame)?);
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded)?;
     if decoded != image_bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -946,6 +949,86 @@ fn audit_lz4_frame(frame: &Path, image: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Check the restrictions imposed by the Bramble boot path independently of
+/// the standard LZ4 decoder used by `audit_lz4_frame`.
+fn validate_bramble_lz4_frame(frame: &[u8]) -> io::Result<()> {
+    const LZ4_FRAME_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
+    const FLG: u8 = 0x64;
+    const BD: u8 = 0x70;
+    const BLOCK_MAX: usize = 4 * 1024 * 1024;
+
+    if frame.len() < 11 || frame[..4] != LZ4_FRAME_MAGIC || frame[4] != FLG || frame[5] != BD {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Bramble requires an independent, checksummed 4 MiB LZ4 frame",
+        ));
+    }
+    if frame[6] != (xxhash32(&frame[4..6], 0) >> 8) as u8 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "LZ4 frame descriptor checksum mismatch",
+        ));
+    }
+
+    let mut cursor = 7;
+    loop {
+        let block_size = read_u32(frame, cursor)? as usize;
+        cursor = cursor
+            .checked_add(4)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "LZ4 cursor overflow"))?;
+        if block_size == 0 {
+            break;
+        }
+        if block_size > BLOCK_MAX || block_size > frame.len().saturating_sub(cursor) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LZ4 block exceeds the frame",
+            ));
+        }
+        let block = &frame[cursor..cursor + block_size];
+        cursor += block_size;
+        let token = *block
+            .first()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty LZ4 block"))?;
+        if token & 0x0f != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Bramble only accepts literal-only LZ4 blocks",
+            ));
+        }
+        let mut block_cursor = 1;
+        let mut literal_len = (token >> 4) as usize;
+        if literal_len == 15 {
+            loop {
+                let extension = *block.get(block_cursor).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "truncated LZ4 literal length")
+                })?;
+                block_cursor += 1;
+                literal_len = literal_len.checked_add(extension as usize).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "LZ4 literal length overflow")
+                })?;
+                if extension != 255 {
+                    break;
+                }
+            }
+        }
+        if literal_len != block.len().saturating_sub(block_cursor) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LZ4 literal block has an inconsistent length",
+            ));
+        }
+    }
+    if cursor.checked_add(4) != Some(frame.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing bytes after LZ4 content checksum",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn decode_literal_lz4_frame(frame: &[u8]) -> io::Result<Vec<u8>> {
     const LZ4_FRAME_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
     const FLG: u8 = 0x64;
