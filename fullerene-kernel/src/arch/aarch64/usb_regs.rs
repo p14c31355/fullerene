@@ -49,6 +49,7 @@ pub const DEPCFG_XFER_COMPLETE_EN: u32 = 1 << 8;
 pub const DEPCFG_XFER_NOT_READY_EN: u32 = 1 << 10;
 pub const DEPCFG_EP_NUMBER_SHIFT: u32 = 25;
 pub const DEPCFG_EP_TYPE_CONTROL: u32 = 0;
+pub const DEPCFG_EP_TYPE_BULK: u32 = 2;
 pub const DEPCFG_MAX_PACKET_SHIFT: u32 = 3;
 
 pub const TRB_HWO: u32 = 1 << 0;
@@ -56,6 +57,7 @@ pub const TRB_LST: u32 = 1 << 1;
 pub const TRB_ISP_IMI: u32 = 1 << 10;
 pub const TRB_IOC: u32 = 1 << 11;
 pub const TRB_CONTROL_SETUP: u32 = 2 << 4;
+pub const TRB_NORMAL: u32 = 1 << 4;
 pub const TRB_CONTROL_STATUS2: u32 = 3 << 4;
 pub const TRB_CONTROL_STATUS3: u32 = 4 << 4;
 pub const TRB_CONTROL_DATA: u32 = 5 << 4;

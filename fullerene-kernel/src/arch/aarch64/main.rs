@@ -230,21 +230,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     // to use a different trampoline, however, so accept x2 as a guarded
     // fallback for bring-up.  Never prefer x2 over a valid x0: otherwise a
     // normal Android handoff can be mistaken for a missing DTB.
-    let dtb_address = if compiled_bramble {
-        // The Pixel fastboot trampoline is not required to expose the
-        // vendor_boot DTB to an arbitrary replacement kernel.  All early
-        // Bramble addresses below are compiled from the vendor DT and do not
-        // need a speculative read through x0/x2.  Once the fixed platform
-        // path is stable, the handoff DTB can be adopted as an optional
-        // source of overlays rather than a prerequisite for entering Rust.
-        None
-    } else {
-        [fdt_address, fdt_arg2]
-            .into_iter()
-            .filter(|address| *address != 0 && *address % 8 == 0)
-            .find(|address| fdt::inspect(*address).is_some())
-            .or(Some(platform::qemu_virt::DTB_BASE))
-    };
+    // Use a valid boot-provided DTB on both QEMU and Bramble.  The compiled
+    // Lito contract remains the fallback for a vendor fastboot trampoline
+    // that does not pass x0/x2, but a supplied DTB must be allowed to override
+    // physical resources before the USB driver touches them.
+    let dtb_address = [fdt_address, fdt_arg2]
+        .into_iter()
+        .filter(|address| *address != 0 && *address % 8 == 0)
+        .find(|address| fdt::inspect(*address).is_some())
+        .or_else(|| (!compiled_bramble).then_some(platform::qemu_virt::DTB_BASE));
     let qcom_uart = dtb_address.and_then(|address| {
         fdt::find_compatible(address, b"qcom,geni-debug-uart")
             .or_else(|| fdt::find_compatible(address, b"qcom,geni-uart"))
@@ -254,6 +248,93 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     let gicr_region =
         dtb_address.and_then(|address| fdt::find_compatible_nth(address, b"arm,gic-v3", 1));
     let bramble = cfg!(fullerene_aarch64_bramble) || qcom_uart.is_some();
+    if bramble {
+        if let Some(address) = dtb_address {
+            // Prefer the nested DWC3 core node: the parent Qualcomm glue
+            // advertises a 1 MiB wrapper window while the core's DT resource
+            // is the 0xcd00-byte register block consumed by this driver.
+            let dwc3 = fdt::find_compatible(address, b"snps,dwc3")
+                .or_else(|| fdt::find_compatible(address, b"qcom,dwc-usb3-msm"));
+            let hs_phy = fdt::find_compatible(address, b"qcom,usb-hsphy-snps-femto");
+            let qmp_phy = fdt::find_compatible(address, b"qcom,usb-ssphy-qmp-dp-combo");
+            let apps_smmu = fdt::find_compatible_nth(address, b"qcom,qsmmu-v500", 1)
+                .or_else(|| fdt::find_compatible(address, b"qcom,qsmmu-v500"));
+            let pdc = fdt::find_compatible(address, b"qcom,lito-pdc");
+            let usb_node = b"qcom,dwc-usb3-msm";
+            let mut contract = platform::bramble::UsbDtContract::empty();
+            contract.dma_pool = match (
+                fdt::find_compatible_property_u32(
+                    address,
+                    usb_node,
+                    b"qcom,iommu-dma-addr-pool",
+                    0,
+                ),
+                fdt::find_compatible_property_u32(
+                    address,
+                    usb_node,
+                    b"qcom,iommu-dma-addr-pool",
+                    1,
+                ),
+            ) {
+                (Some(base), Some(size)) => Some((base as u64, size as u64)),
+                _ => None,
+            };
+            // `iommus = <&apps_smmu SID 0>`: cell 0 is the phandle, cell 1
+            // is the stream ID consumed by the SMMU context-bank setup.
+            contract.stream_id = fdt::find_compatible_property_u32(address, usb_node, b"iommus", 1);
+            contract.core_clk_rate_hz =
+                fdt::find_compatible_property_u32(address, usb_node, b"qcom,core-clk-rate", 0);
+            contract.core_clk_rate_hs_hz =
+                fdt::find_compatible_property_u32(address, usb_node, b"qcom,core-clk-rate-hs", 0);
+            contract.gsi_event_buffer_count =
+                fdt::find_compatible_property_u32(address, usb_node, b"qcom,num-gsi-evt-buffs", 0);
+            for index in 0..6 {
+                contract.gsi_reg_offsets[index] = fdt::find_compatible_property_u32(
+                    address,
+                    usb_node,
+                    b"qcom,gsi-reg-offset",
+                    index,
+                );
+            }
+            contract.gsi_disable_io_coherency = fdt::find_compatible_property_u32(
+                address,
+                usb_node,
+                b"qcom,gsi-disable-io-coherency",
+                0,
+            )
+            .is_some();
+            contract.pm_qos_latency_us =
+                fdt::find_compatible_property_u32(address, usb_node, b"qcom,pm-qos-latency", 0);
+            contract.bus_mode_count =
+                fdt::find_compatible_property_u32(address, usb_node, b"qcom,msm-bus,num-cases", 0);
+            contract.bus_path_count =
+                fdt::find_compatible_property_u32(address, usb_node, b"qcom,msm-bus,num-paths", 0);
+            for flat in 0..12 {
+                for field in 0..4 {
+                    contract.bus_vectors[flat][field] = fdt::find_compatible_property_u32(
+                        address,
+                        usb_node,
+                        b"qcom,msm-bus,vectors-KBps",
+                        flat * 4 + field,
+                    );
+                }
+            }
+            if platform::bramble::install_usb_resource_contract(
+                dwc3.map(|r| (r.base, r.size)),
+                hs_phy.map(|r| (r.base, r.size)),
+                qmp_phy.map(|r| (r.base, r.size)),
+                apps_smmu.map(|r| (r.base, r.size)),
+                pdc.map(|r| (r.base, r.size)),
+                contract,
+            ) {
+                uart::puts("platform: Bramble USB resources sourced from DTB\n");
+            } else {
+                uart::puts("platform: Bramble DTB has no usable USB resource overrides\n");
+            }
+        } else {
+            uart::puts("platform: Bramble DTB unavailable; using compiled Lito resources\n");
+        }
+    }
     let boot_info = make_boot_info(
         if bramble {
             BootPlatform::Bramble
@@ -385,6 +466,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             "platform: Type-C attach-settled=",
             typec.attach_settled as u64,
         );
+        uart::put_hex("platform: Type-C phase=", typec.phase as u64);
         if typec.sink_mode_written {
             uart::puts("platform: Type-C sink-only selected\n");
         }

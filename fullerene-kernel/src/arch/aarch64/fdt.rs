@@ -177,7 +177,9 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
 /// Read one 32-bit big-endian property from the first enabled node matching
 /// `target`. This is deliberately allocation-free and is used for the small
 /// Qualcomm USB contract fields that are not encoded in `reg` (DMA pool,
-/// clock rates, GSI count, and PM QoS latency).
+/// clock rates, GSI count, and PM QoS latency). A zero-length property is
+/// returned as `Some(0)` so the same primitive can also detect DT boolean
+/// properties such as `qcom,gsi-disable-io-coherency`.
 pub fn find_compatible_property_u32(
     address: u64,
     target: &[u8],
@@ -248,9 +250,14 @@ pub fn find_compatible_property_u32(
                 } else if c_string_eq(name, strings_end, b"status") {
                     state.enabled = !c_string_eq(value, value_end, b"disabled");
                 } else if c_string_eq(name, strings_end, property) {
-                    let offset = index.checked_mul(4)?;
-                    if offset.checked_add(4)? <= length {
-                        state.property_value = read_be32(value, offset as u32);
+                    state.property_seen = true;
+                    if length == 0 {
+                        state.property_value = Some(0);
+                    } else {
+                        let offset = index.checked_mul(4)?;
+                        if offset.checked_add(4)? <= length {
+                            state.property_value = read_be32(value, offset as u32);
+                        }
                     }
                 }
                 cursor = align4(value_end);
@@ -286,6 +293,7 @@ struct NodeState {
 struct PropertyNodeState {
     compatible: bool,
     enabled: bool,
+    property_seen: bool,
     property_value: Option<u32>,
 }
 
@@ -294,6 +302,7 @@ impl PropertyNodeState {
         Self {
             compatible: false,
             enabled: true,
+            property_seen: false,
             property_value: None,
         }
     }

@@ -15,6 +15,18 @@ pub enum ControlAction {
     Stall,
 }
 
+/// The small interface shared by the hardware UDC and the no-hardware
+/// simulator.  This is the early-boot equivalent of the Linux gadget core:
+/// the controller owns TRBs and endpoint commands, while the gadget owns USB
+/// requests, deferred address/configuration changes, and descriptors.
+pub trait GadgetDriver {
+    fn reset(&mut self);
+    fn on_setup(&mut self, packet: [u8; 8], response: &mut [u8]) -> ControlAction;
+    fn on_transfer_complete(&mut self) -> ControlAction;
+    fn address(&self) -> u8;
+    fn configured(&self) -> bool;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ep0State {
     Setup,
@@ -175,6 +187,28 @@ impl Ep0Simulator {
             }
             Ep0State::Setup => ControlAction::Setup,
         }
+    }
+}
+
+impl GadgetDriver for Ep0Simulator {
+    fn reset(&mut self) {
+        Self::reset(self);
+    }
+
+    fn on_setup(&mut self, packet: [u8; 8], response: &mut [u8]) -> ControlAction {
+        Self::on_setup(self, packet, response)
+    }
+
+    fn on_transfer_complete(&mut self) -> ControlAction {
+        Self::on_transfer_complete(self)
+    }
+
+    fn address(&self) -> u8 {
+        Self::address(self)
+    }
+
+    fn configured(&self) -> bool {
+        Self::configured(self)
     }
 }
 
