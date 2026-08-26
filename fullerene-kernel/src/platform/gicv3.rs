@@ -63,6 +63,33 @@ pub unsafe fn enable_spis(gicd_base: usize, interrupts: &[u32]) {
     }
 }
 
+/// Apply the part of a Qualcomm USB PM QoS policy that this early kernel can
+/// enforce in hardware: keep the USB SPI on the boot processing element and
+/// raise its GIC priority while the latency request is active. CPU scheduler
+/// latency accounting is not available during the early handoff, so the
+/// platform must not pretend that a GIC write is a Linux PM QoS request.
+pub unsafe fn set_spi_usb_latency_policy(
+    gicd_base: usize,
+    interrupt_id: u32,
+    active: bool,
+) -> bool {
+    if !(32..1020).contains(&interrupt_id) {
+        return false;
+    }
+    unsafe {
+        let priority = gicd_base + GICD_IPRIORITYR + interrupt_id as usize;
+        let router = gicd_base + GICD_IROUTER + interrupt_id as usize * 8;
+        // 0x80 is the active USB priority used by this early path; 0xa0 is
+        // the normal platform SPI priority restored when USB is suspended.
+        write8(priority, if active { 0x80 } else { 0xa0 });
+        // Affinity remains the boot CPU (Affinity 0) in both states. Keeping
+        // the route stable prevents a wakeup from being lost during the
+        // suspend transition; the priority is the actual QoS gate here.
+        write64(router, 0);
+        true
+    }
+}
+
 unsafe fn write64(address: usize, value: u64) {
     unsafe { core::ptr::write_volatile(address as *mut u64, value) };
 }

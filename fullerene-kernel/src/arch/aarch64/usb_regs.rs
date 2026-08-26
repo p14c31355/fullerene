@@ -48,6 +48,9 @@ pub const DEPCMD_ACTION_MODIFY: u32 = 2 << 30;
 
 pub const DEPCFG_XFER_COMPLETE_EN: u32 = 1 << 8;
 pub const DEPCFG_XFER_NOT_READY_EN: u32 = 1 << 10;
+/// Interrupter number in DEPCMD_SETEPCONFIG.P1. GSI endpoints use event
+/// buffers 1..3; ordinary gadget endpoints keep the default interrupter.
+pub const DEPCFG_INT_NUM_SHIFT: u32 = 16;
 pub const DEPCFG_EP_NUMBER_SHIFT: u32 = 25;
 pub const DEPCFG_EP_TYPE_CONTROL: u32 = 0;
 pub const DEPCFG_EP_TYPE_BULK: u32 = 2;

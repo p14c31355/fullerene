@@ -18,9 +18,21 @@ pub struct GsiRingShape {
     pub data_trbs: usize,
 }
 
-/// Match Android's `gsi_prepare_trbs()` layout: IN has `n + 1` zero-length
-/// normal TRBs followed by `n` buffer TRBs and one link TRB; OUT has `n`
-/// data TRBs and one link TRB.
+/// Configuration supplied by a gadget function that has a Qualcomm GSI
+/// consumer. The doorbell is deliberately supplied by that consumer: it is
+/// an IPA-owned MMIO address and there is no safe controller-local default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GsiEndpointConfig {
+    pub endpoint: usize,
+    pub event_buffer: u32,
+    pub max_packet: u32,
+    pub doorbell: u64,
+    pub buffer_length: usize,
+}
+
+/// Match the Bramble Android `gsi_prepare_trbs()` layout: IN has `n + 1`
+/// zero-length normal TRBs followed by `n` buffer TRBs and one link TRB; OUT
+/// has a leading link TRB, `n` data TRBs, and a closing link TRB.
 pub const fn gsi_ring_shape(in_direction: bool, num_buffers: usize) -> Option<GsiRingShape> {
     if num_buffers == 0 {
         return None;
@@ -33,8 +45,8 @@ pub const fn gsi_ring_shape(in_direction: bool, num_buffers: usize) -> Option<Gs
         })
     } else {
         Some(GsiRingShape {
-            num_trbs: num_buffers + 1,
-            first_buffer_trb: 0,
+            num_trbs: num_buffers + 2,
+            first_buffer_trb: 1,
             data_trbs: num_buffers,
         })
     }
@@ -61,6 +73,47 @@ pub trait GadgetDriver {
     fn on_transfer_complete(&mut self) -> ControlAction;
     fn address(&self) -> u8;
     fn configured(&self) -> bool;
+
+    /// Bind/unbind the function after SET_CONFIGURATION has committed. The
+    /// default hooks keep simple control-only test gadgets source-compatible,
+    /// while the hardware UDC can enforce the same lifetime boundary as
+    /// Linux's gadget_driver::bind()/unbind().
+    fn on_function_bind(&mut self) {}
+    fn on_function_unbind(&mut self) {}
+
+    /// Deliver a completed data request to the function layer. A no-alloc
+    /// early gadget may use the default hook; a real function can consume the
+    /// bounded request before the controller requeues an OUT buffer.
+    fn on_data_complete(&mut self, _endpoint: u8, _actual: u32, _error: bool) {}
+
+    /// Return a GSI binding only for functions backed by a real IPA/GSI
+    /// consumer. `None` selects the ordinary DWC3 event-buffer-zero path.
+    fn gsi_endpoint(&self) -> Option<GsiEndpointConfig> {
+        None
+    }
+
+    /// Publish the DMA request pool after the controller has committed the
+    /// GSI binding. A function may then fill/consume the pool and call the
+    /// hardware queue operation through its platform adapter.
+    fn on_gsi_channel_ready(
+        &mut self,
+        _config: GsiEndpointConfig,
+        _ring: *mut u8,
+        _buffers: *mut u8,
+    ) {
+    }
+
+    /// Completion callback for a GSI request, kept separate from normal UDC
+    /// completion because the event buffer is the ownership boundary.
+    fn on_gsi_data_complete(&mut self, _endpoint: u8, _actual: u32, _error: bool) {}
+
+    /// Notify a GSI-backed function that runtime PM revoked its outstanding
+    /// request. The channel binding itself remains installed for resume.
+    fn on_gsi_channel_suspend(&mut self) {}
+
+    /// Notify a GSI-backed function that its channel may be queued again
+    /// after the platform clocks, power, and DWC3 Run/Stop have resumed.
+    fn on_gsi_channel_resume(&mut self) {}
 }
 
 /// Fixed-capacity request bookkeeping used by the early UDC. Linux's gadget
@@ -814,8 +867,8 @@ mod tests {
         assert_eq!(
             gsi_ring_shape(false, GSI_DEFAULT_NUM_BUFFERS),
             Some(GsiRingShape {
-                num_trbs: 5,
-                first_buffer_trb: 0,
+                num_trbs: 6,
+                first_buffer_trb: 1,
                 data_trbs: 4,
             })
         );

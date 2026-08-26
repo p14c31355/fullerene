@@ -411,6 +411,11 @@ pub struct UsbPmQosPolicy {
     pub irq_affine: bool,
 }
 
+/// Distributor base captured when the platform interrupt controller becomes
+/// the owner of the USB SPI. Zero means that early boot is still polling and
+/// PM QoS is represented only in `UsbResourceState`.
+static mut USB_GICD_BASE: usize = 0;
+
 /// Resolve the Android glue's performance state without performing an
 /// interconnect transaction. The transport for RPMh/msm-bus is a separate
 /// firmware interface; the values are read from the active DT-derived
@@ -445,9 +450,9 @@ pub fn usb_pm_qos_policy(vote: UsbBusVote) -> UsbPmQosPolicy {
 }
 
 /// Apply the lifetime of the Linux `pm_qos_add_request()` equivalent used by
-/// the Qualcomm USB glue. Fullerene has no Linux scheduler request object, so
-/// the request is represented in the platform resource state and consumed by
-/// runtime transitions instead of being returned only as a diagnostic value.
+/// the Qualcomm USB glue. The resource state records the CPU-latency policy;
+/// once GIC ownership is live, its enforceable portion is also applied to the
+/// USB SPI priority and boot-CPU route.
 pub fn apply_usb_pm_qos(vote: UsbBusVote) -> UsbPmQosPolicy {
     let policy = usb_pm_qos_policy(vote);
     set_usb_resource_state(|state| {
@@ -455,6 +460,16 @@ pub fn apply_usb_pm_qos(vote: UsbBusVote) -> UsbPmQosPolicy {
         state.pm_qos_latency_us = policy.latency_us;
         state.pm_qos_irq_affine = policy.irq_affine;
     });
+    let gicd = unsafe { USB_GICD_BASE };
+    if gicd != 0 {
+        unsafe {
+            let _ = super::gicv3::set_spi_usb_latency_policy(
+                gicd,
+                usb_controller_irq(),
+                policy.irq_affine,
+            );
+        }
+    }
     policy
 }
 
@@ -1261,9 +1276,10 @@ const BRAMBLE_BUS_VECTORS: [[BusVoteVector; 3]; 4] = [
     ],
 ];
 
-/// Compiled fallback for the Android Lito/Bramble DT. A future DT parser can
-/// replace this value at boot, but all platform users must consume this
-/// resource contract rather than growing another hard-coded MMIO list.
+/// Compiled fallback for a boot without an FDT. When an Android DTB is
+/// supplied, `install_usb_resource_contract` applies validated resource
+/// overrides to this contract before the USB client consumes it; platform
+/// users must not grow another hard-coded MMIO list.
 pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
     dwc3_base: 0x0a60_0000,
     dwc3_size: 0xcd00,
@@ -1853,6 +1869,7 @@ pub enum TypecPhase {
     SinkOnlyRequested,
     WaitingAttach,
     Attached,
+    Host,
     Detached,
 }
 
@@ -1861,6 +1878,7 @@ pub enum TypecEvent {
     Disable,
     SinkOnlySelected,
     AttachDetected,
+    HostDetected,
     DetachDetected,
 }
 
@@ -1897,10 +1915,10 @@ pub unsafe fn refresh_usb_device_role(state: &mut TypecState) -> Option<TypecEve
     if state.attached == was_attached && state.role == was_role {
         return None;
     }
-    let event = if state.role == UsbRole::Device {
-        TypecEvent::AttachDetected
-    } else {
-        TypecEvent::DetachDetected
+    let event = match state.role {
+        UsbRole::Device => TypecEvent::AttachDetected,
+        UsbRole::Host => TypecEvent::HostDetected,
+        UsbRole::None => TypecEvent::DetachDetected,
     };
     state.phase = typec_transition(state.phase, event);
     state.attach_settled = state.attached;
@@ -2041,7 +2059,9 @@ pub const fn typec_transition(phase: TypecPhase, event: TypecEvent) -> TypecPhas
         (TypecPhase::SinkOnlyRequested, TypecEvent::AttachDetected)
         | (TypecPhase::WaitingAttach, TypecEvent::AttachDetected) => TypecPhase::Attached,
         (TypecPhase::SinkOnlyRequested, TypecEvent::DetachDetected) => TypecPhase::WaitingAttach,
+        (_, TypecEvent::HostDetected) => TypecPhase::Host,
         (TypecPhase::Attached, TypecEvent::DetachDetected) => TypecPhase::Detached,
+        (TypecPhase::Host, TypecEvent::DetachDetected) => TypecPhase::Detached,
         (current, _) => current,
     }
 }
@@ -2213,9 +2233,10 @@ pub unsafe fn set_typec_vbus(state: &TypecState, enabled: bool) -> bool {
 }
 
 /// Read PM8150B Type-C state and select sink-only mode for a host-connected
-/// phone.  This is intentionally a small, synchronous handoff operation: it
-/// does not install the PMIC interrupt controller or pretend to replace the
-/// full Linux Type-C state machine.
+/// phone. This is the synchronous entry point for the role-switch state
+/// machine; the PMIC interrupt controller is installed separately once the
+/// GIC is live, and refresh_usb_device_role() advances the same state on each
+/// child interrupt or bounded poll.
 pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
     if version == 0 || version == u32::MAX {
@@ -2300,6 +2321,11 @@ pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     let mut attached = role == UsbRole::Device;
     if attached {
         phase = typec_transition(phase, TypecEvent::AttachDetected);
+    } else if role == UsbRole::Host {
+        // A host/source attach is a valid Type-C role, but it is not a
+        // device-mode USB session. Keep it explicit so the role-switch
+        // consumer can tear down a previously advertised gadget.
+        phase = typec_transition(phase, TypecEvent::HostDetected);
     } else if sink_mode_written {
         phase = typec_transition(phase, TypecEvent::DetachDetected);
     }
@@ -2567,7 +2593,15 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
         super::gicv3::enable_spis(gicd, &spis[..count]);
     }
     if gic_ready {
+        unsafe {
+            USB_GICD_BASE = gicd;
+        }
         set_usb_resource_state(|state| state.irq_routes_enabled = true);
+        // Re-apply the already selected nominal policy now that the
+        // distributor is owned by the kernel. Before this point the same
+        // policy was intentionally state-only because GIC MMIO was not safe.
+        let vote = usb_resource_state().bus_vote.unwrap_or(UsbBusVote::Nominal);
+        let _ = apply_usb_pm_qos(vote);
     }
 }
 
@@ -3291,6 +3325,13 @@ mod tests {
         assert_eq!(phase, TypecPhase::WaitingAttach);
         let phase = typec_transition(phase, TypecEvent::AttachDetected);
         assert_eq!(phase, TypecPhase::Attached);
+        assert_eq!(
+            typec_transition(phase, TypecEvent::DetachDetected),
+            TypecPhase::Detached
+        );
+
+        let phase = typec_transition(TypecPhase::SinkOnlyRequested, TypecEvent::HostDetected);
+        assert_eq!(phase, TypecPhase::Host);
         assert_eq!(
             typec_transition(phase, TypecEvent::DetachDetected),
             TypecPhase::Detached

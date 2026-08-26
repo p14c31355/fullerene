@@ -1,9 +1,10 @@
 //! DWC3 device-mode support for the Bramble USB-C port.
 //!
-//! The gadget is still descriptor-only, but its controller lifecycle follows
-//! the Qualcomm platform contract: Type-C attach, PHY/session state, the
-//! Android event-buffer layout, SMMU DMA, GIC/PDC interrupts, and EP0
-//! disconnect/reset/error handling are kept separate from protocol data.
+//! The early gadget has one bounded vendor function, while its controller
+//! lifecycle follows the Qualcomm platform contract: Type-C attach,
+//! PHY/session state, the Android event-buffer layout, SMMU DMA, GIC/PDC
+//! interrupts, EP0 disconnect/reset/error handling, and ordinary UDC data
+//! requests are kept separate from protocol data.
 //! Early boot polls as a recovery path when firmware retains GIC ownership;
 //! the same event ring is drained from the IRQ handler once the GIC is live.
 
@@ -532,6 +533,11 @@ static mut DATA_TRBS: [Trb; 2] = [
         ctrl: 0,
     },
 ];
+#[repr(C, align(64))]
+struct DataBuffer([u8; MAX_PACKET_SIZE as usize]);
+
+#[unsafe(link_section = ".usb_dma")]
+static mut DATA_OUT_BUFFER: DataBuffer = DataBuffer([0; MAX_PACKET_SIZE as usize]);
 #[unsafe(link_section = ".usb_dma")]
 static mut RESPONSE: ResponseBuffer = ResponseBuffer([0; 512]);
 static mut EVENT_OFFSET: usize = 0;
@@ -547,6 +553,7 @@ static mut GSI_RING_BASES: [u64; 3] = [0; 3];
 static mut GSI_RING_TRB_COUNTS: [usize; 3] = [0; 3];
 static mut GSI_BUFFER_BASES: [u64; 3] = [0; 3];
 static mut GSI_BUFFER_LENGTHS: [usize; 3] = [0; 3];
+static mut GSI_DOORBELL_BASES: [u64; 3] = [0; 3];
 static mut GSI_RESOURCE_INDEX: [u8; 3] = [0; 3];
 static mut GSI_RING_ACTIVE: [bool; 3] = [false; 3];
 static mut DMA_ALLOCATOR: Option<super::platform::bramble::DmaPoolAllocator> = None;
@@ -557,6 +564,16 @@ static mut CONFIGURED: bool = false;
 static mut ENDPOINTS_READY: bool = false;
 static mut DATA_ENDPOINTS_READY: bool = false;
 static mut DATA_REQUEST_SLOTS: [usize; 2] = [usize::MAX; 2];
+/// DWC3 returns a resource index for every STARTTRANSFER, including normal
+/// bulk endpoints. Keep it per endpoint so ENDTRANSFER remains valid after
+/// a second queue/rearm cycle instead of relying on the first index.
+static mut DATA_RESOURCE_INDEX: [u8; 2] = [0; 2];
+/// True when the currently bound gadget function owns a GSI channel instead
+/// of the ordinary DWC3 bulk pair. Keep this separate from
+/// `DATA_ENDPOINTS_READY`: both paths share the gadget bind lifetime, but
+/// their completion and teardown rules differ.
+static mut GSI_GADGET_BOUND: bool = false;
+static mut FUNCTION_BOUND: bool = false;
 /// DWC3 returns a transfer-resource index from STARTTRANSFER.  Linux retains
 /// it per endpoint and supplies it to ENDTRANSFER; using a fixed value works
 /// only accidentally on the first controller generation.
@@ -613,6 +630,17 @@ unsafe fn gadget_ref() -> &'static Ep0Simulator {
 #[inline]
 unsafe fn udc_mut() -> &'static mut UsbUdc {
     unsafe { &mut *addr_of_mut!(UDC) }
+}
+
+/// End the gadget-function lifetime exactly once before requests, endpoint
+/// commands, or DMA channels are torn down.
+unsafe fn unbind_function() {
+    unsafe {
+        if FUNCTION_BOUND {
+            GadgetDriver::on_function_unbind(gadget_mut());
+            FUNCTION_BOUND = false;
+        }
+    }
 }
 
 const USB_TRACE_CAPACITY: usize = 256;
@@ -1619,7 +1647,7 @@ unsafe fn configure_gsi_event_buffers() -> bool {
 
 /// Enable the GSI wrapper at the point Android starts a GSI endpoint. Keeping
 /// this separate from event-buffer allocation avoids asserting GSI_EN for a
-/// descriptor-only gadget that has no IPA/GSI channel.
+/// normal gadget that has no IPA/GSI channel.
 unsafe fn enable_gsi_wrapper() -> bool {
     let offset = super::platform::bramble::usb_resources()
         .gsi
@@ -1689,9 +1717,17 @@ unsafe fn prepare_gsi_ring(
                     trb.bph = (address >> 32) as u32;
                 }
                 trb.ctrl = TRB_NORMAL | TRB_IOC;
+            } else if index == 0 {
+                // The Bramble Android OUT ring starts with a link to the
+                // second TRB, then closes with another link TRB.
+                let next = ring_base + core::mem::size_of::<Trb>() as u64;
+                trb.bpl = next as u32;
+                trb.bph = (next >> 32) as u32;
+                trb.ctrl = TRB_LINK;
             } else {
+                let buffer_index = index - 1;
                 let address =
-                    buffer_base.saturating_add(index.saturating_mul(buffer_length)) as u64;
+                    buffer_base.saturating_add(buffer_index.saturating_mul(buffer_length)) as u64;
                 trb.bpl = address as u32;
                 trb.bph = (address >> 32) as u32;
                 trb.size = buffer_length as u32;
@@ -1711,16 +1747,15 @@ unsafe fn prepare_gsi_ring(
 
 /// Publish the ring and doorbell addresses consumed by the IPA/GSI channel
 /// setup, and prepare the complete circular TRB layout. Android does this
-/// after endpoint configuration and before starting the channel; a
-/// descriptor-only endpoint therefore never writes to an unowned doorbell by
-/// accident.
+/// after endpoint configuration and before starting the channel; a normal
+/// UDC endpoint therefore never writes to an unowned doorbell by accident.
 pub unsafe fn configure_gsi_channel(
     endpoint: usize,
     event_buffer: u32,
     ring_base: u64,
     doorbell: u64,
 ) -> bool {
-    // Do not retain the old descriptor-only ABI as a fake successful setup.
+    // Do not retain the old incomplete ABI as a fake successful setup.
     // A GSI channel is meaningful only when the caller supplies the actual
     // contiguous request pool consumed by gsi_prepare_trbs().
     let _ = (endpoint, event_buffer, ring_base, doorbell);
@@ -1789,6 +1824,7 @@ pub unsafe fn configure_gsi_channel_with_buffers(
             .unwrap_or(0);
         GSI_BUFFER_BASES[index] = buffer_base;
         GSI_BUFFER_LENGTHS[index] = buffer_length;
+        GSI_DOORBELL_BASES[index] = doorbell;
         GSI_RESOURCE_INDEX[index] = 0;
         GSI_RING_ACTIVE[index] = false;
     }
@@ -1822,6 +1858,46 @@ pub unsafe fn allocate_gsi_channel(
         return None;
     }
     Some((ring, buffers))
+}
+
+/// Ring the physical doorbell supplied by the IPA/GSI client. The Android
+/// glue writes the address of the ring's final link TRB as two 32-bit MMIO
+/// stores; it does not ring the DWC3 QSCRATCH register itself.
+unsafe fn ring_gsi_doorbell(index: usize) -> bool {
+    if index >= 3 {
+        return false;
+    }
+    let doorbell = unsafe { GSI_DOORBELL_BASES[index] };
+    let ring = unsafe { GSI_RING_BASES[index] };
+    let count = unsafe { GSI_RING_TRB_COUNTS[index] };
+    if doorbell == 0 || ring == 0 || count == 0 {
+        return false;
+    }
+    let Some(link_offset) = (count - 1).checked_mul(core::mem::size_of::<Trb>()) else {
+        return false;
+    };
+    let Some(link) = ring.checked_add(link_offset as u64) else {
+        return false;
+    };
+    if !super::platform::bramble::dma_region_valid(
+        super::platform::bramble::usb_resources().dma_pool,
+        link,
+        core::mem::size_of::<Trb>() as u64,
+        64,
+    ) {
+        return false;
+    }
+    unsafe {
+        // DWC3's GSI link TRB carries the interrupter/address-extension bits,
+        // but the IPA doorbell receives the plain DMA address of that TRB.
+        let db = doorbell as usize as *mut u32;
+        let db_hi = doorbell.saturating_add(4) as usize as *mut u32;
+        core::ptr::write_volatile(db, link as u32);
+        let _ = core::ptr::read_volatile(db);
+        core::ptr::write_volatile(db_hi, (link >> 32) as u32);
+        let _ = core::ptr::read_volatile(db_hi);
+    }
+    true
 }
 
 /// Block or release the GSI write doorbell. Qualcomm runtime suspend blocks
@@ -1997,10 +2073,23 @@ unsafe fn configure_endpoint_kind(
     endpoint_type: u32,
     modify: bool,
 ) -> bool {
+    unsafe {
+        configure_endpoint_kind_with_interrupter(endpoint, max_packet, endpoint_type, modify, 0)
+    }
+}
+
+unsafe fn configure_endpoint_kind_with_interrupter(
+    endpoint: usize,
+    max_packet: u32,
+    endpoint_type: u32,
+    modify: bool,
+    interrupter: u32,
+) -> bool {
     let action = if modify { DEPCMD_ACTION_MODIFY } else { 0 };
     let param0 = action | endpoint_type | (max_packet << DEPCFG_MAX_PACKET_SHIFT);
     let param1 = DEPCFG_XFER_COMPLETE_EN
         | DEPCFG_XFER_NOT_READY_EN
+        | ((interrupter & 0x7f) << DEPCFG_INT_NUM_SHIFT)
         | ((endpoint as u32) << DEPCFG_EP_NUMBER_SHIFT);
     if !unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, 0) } {
         return false;
@@ -2032,6 +2121,8 @@ unsafe fn start_transfer(endpoint: usize, trb: *const Trb) -> bool {
         };
         if endpoint < 2 {
             EP0_RESOURCE_INDEX[endpoint] = resource_index;
+        } else if endpoint < 4 {
+            DATA_RESOURCE_INDEX[endpoint - 2] = resource_index;
         }
         true
     }
@@ -2040,6 +2131,9 @@ unsafe fn start_transfer(endpoint: usize, trb: *const Trb) -> bool {
 unsafe fn end_transfer(endpoint: usize) -> bool {
     let resource_index = if endpoint < 2 {
         let index = unsafe { EP0_RESOURCE_INDEX[endpoint] };
+        if index == 0 { 1 } else { index }
+    } else if endpoint < 4 {
+        let index = unsafe { DATA_RESOURCE_INDEX[endpoint - 2] };
         if index == 0 { 1 } else { index }
     } else {
         1
@@ -2054,6 +2148,89 @@ unsafe fn end_transfer(endpoint: usize) -> bool {
             0,
             0,
         )
+    }
+}
+
+/// Revoke every ordinary UDC data transfer before endpoint state or request
+/// ownership is reset. EP0 is handled by the control-reset path separately.
+unsafe fn teardown_data_endpoints() {
+    unsafe {
+        if !DATA_ENDPOINTS_READY {
+            return;
+        }
+        for endpoint in 2..=3 {
+            if DATA_RESOURCE_INDEX[endpoint - 2] != 0 {
+                let _ = end_transfer(endpoint);
+            }
+        }
+        write(DALEPENA, read(DALEPENA) & !((1 << 2) | (1 << 3)));
+        let _ = udc_mut().disable_endpoint(0x02);
+        let _ = udc_mut().disable_endpoint(0x83);
+        DATA_ENDPOINTS_READY = false;
+        DATA_RESOURCE_INDEX = [0; 2];
+        DATA_REQUEST_SLOTS = [usize::MAX; 2];
+    }
+}
+
+/// Cancel outstanding ordinary requests at the runtime-PM boundary while
+/// retaining endpoint configuration for resume. DWC3 must no longer own a
+/// TRB when the UDC is marked suspended.
+unsafe fn suspend_data_transfers() {
+    unsafe {
+        if !DATA_ENDPOINTS_READY {
+            return;
+        }
+        for endpoint in 2..=3 {
+            let index = endpoint - 2;
+            if DATA_RESOURCE_INDEX[index] != 0 {
+                let _ = end_transfer(endpoint);
+            }
+            let address = if endpoint == 3 { 0x83 } else { 0x02 };
+            let slot = DATA_REQUEST_SLOTS[index];
+            if slot != usize::MAX {
+                let length = udc_mut()
+                    .request(address, slot)
+                    .map(|request| request.length)
+                    .unwrap_or(0);
+                let _ = udc_mut().complete(address, slot, 0, true);
+                GadgetDriver::on_data_complete(gadget_mut(), address, 0, true);
+                let _ = udc_mut().release(address, slot);
+                trace_event(TRACE_TRANSFER_COMPLETE, endpoint as u32, 0, 0, length, 1);
+            }
+            DATA_RESOURCE_INDEX[index] = 0;
+            DATA_REQUEST_SLOTS[index] = usize::MAX;
+        }
+    }
+}
+
+/// Cancel live GSI requests without discarding their registered rings or
+/// client doorbells. The function receives an explicit suspend callback and
+/// can requeue after resume; no request is silently left owned by DWC3.
+unsafe fn suspend_gsi_transfers() {
+    unsafe {
+        for index in 0..3 {
+            if !GSI_CHANNEL_READY[index] {
+                continue;
+            }
+            let endpoint = GSI_CHANNEL_ENDPOINT[index];
+            let event_buffer = (index + 1) as u32;
+            if GSI_RING_ACTIVE[index] {
+                let _ = end_gsi_transfer(endpoint, event_buffer);
+            }
+            let address = endpoint as u8 | if endpoint & 1 != 0 { 0x80 } else { 0 };
+            let slot = GSI_REQUEST_SLOTS[index];
+            if slot != usize::MAX {
+                GadgetDriver::on_gsi_data_complete(gadget_mut(), address, 0, true);
+                let _ = udc_mut().release(address, slot);
+            }
+            GSI_PENDING[index] = false;
+            GSI_REQUEST_SLOTS[index] = usize::MAX;
+            GSI_RING_ACTIVE[index] = false;
+            GSI_RESOURCE_INDEX[index] = 0;
+        }
+        if GSI_GADGET_BOUND {
+            GadgetDriver::on_gsi_channel_suspend(gadget_mut());
+        }
     }
 }
 
@@ -2097,7 +2274,7 @@ pub unsafe fn update_gsi_transfer(endpoint: usize, event_buffer: u32) -> bool {
             return false;
         };
         let ring = GSI_RING_BASES[index] as usize as *mut Trb;
-        for trb_index in 0..shape.data_trbs {
+        for trb_index in shape.first_buffer_trb..shape.first_buffer_trb + shape.data_trbs {
             let mut ctrl = read_volatile(addr_of!((*ring.add(trb_index)).ctrl));
             ctrl |= TRB_HWO;
             write_volatile(addr_of_mut!((*ring.add(trb_index)).ctrl), ctrl);
@@ -2157,9 +2334,9 @@ pub unsafe fn end_gsi_transfer(endpoint: usize, event_buffer: u32) -> bool {
 }
 
 /// Configure a non-control bulk endpoint for the Qualcomm GSI event path.
-/// This is intentionally opt-in: the descriptor-only gadget uses EP0 and
-/// must not assert the global GSI enable bit merely because event buffers are
-/// available.
+/// This is intentionally opt-in: the normal UDC data path uses event buffer
+/// zero and must not assert the global GSI enable bit merely because event
+/// buffers are available.
 pub unsafe fn enable_gsi_data_endpoint(
     endpoint: usize,
     event_buffer: u32,
@@ -2178,7 +2355,13 @@ pub unsafe fn enable_gsi_data_endpoint(
     }
     let endpoint_address = endpoint as u8 | if endpoint & 1 != 0 { 0x80 } else { 0 };
     unsafe {
-        if !configure_endpoint_kind(endpoint, max_packet, DEPCFG_EP_TYPE_BULK, false) {
+        if !configure_endpoint_kind_with_interrupter(
+            endpoint,
+            max_packet,
+            DEPCFG_EP_TYPE_BULK,
+            false,
+            event_buffer,
+        ) {
             return false;
         }
         if !udc_mut().configure_endpoint(endpoint_address, max_packet as u16, true) {
@@ -2335,7 +2518,8 @@ pub unsafe fn queue_gsi_transfer(
             return false;
         };
         GSI_RESOURCE_INDEX[trb_index] = resource_index;
-        if endpoint & 1 != 0 || update_gsi_transfer(endpoint, event_buffer) {
+        let transfer_updated = endpoint & 1 != 0 || update_gsi_transfer(endpoint, event_buffer);
+        if transfer_updated && ring_gsi_doorbell(trb_index) {
             GSI_RING_ACTIVE[trb_index] = true;
             true
         } else {
@@ -2361,6 +2545,15 @@ pub unsafe fn queue_bulk_transfer(endpoint: usize, buffer: *const u8, length: us
             return false;
         }
         let address = if endpoint == 3 { 0x83 } else { 0x02 };
+        let pool = super::platform::bramble::usb_resources().dma_pool;
+        if !super::platform::bramble::dma_region_valid(
+            pool,
+            buffer as usize as u64,
+            length as u64,
+            64,
+        ) {
+            return false;
+        }
         let Some(slot) = udc_mut().queue(address, length as u32) else {
             return false;
         };
@@ -2375,6 +2568,7 @@ pub unsafe fn queue_bulk_transfer(endpoint: usize, buffer: *const u8, length: us
             true
         } else {
             DATA_REQUEST_SLOTS[index] = usize::MAX;
+            DATA_RESOURCE_INDEX[index] = 0;
             let _ = udc_mut().release(address, slot);
             false
         }
@@ -2445,11 +2639,17 @@ unsafe fn reset_gsi_channels() {
             let event_buffer = (index + 1) as u32;
             let endpoint_address = endpoint as u8 | if endpoint & 1 != 0 { 0x80 } else { 0 };
             let request_slot = GSI_REQUEST_SLOTS[index];
-            if request_slot != usize::MAX {
-                let _ = udc_mut().release(endpoint_address, request_slot);
-            }
             if GSI_RING_ACTIVE[index] && endpoint >= 2 && GSI_RESOURCE_INDEX[index] != 0 {
                 let _ = end_gsi_transfer(endpoint, event_buffer);
+            }
+            if request_slot != usize::MAX {
+                // ENDTRANSFER must revoke DWC3 ownership before the gadget
+                // request slot is returned to the function layer.
+                let _ = udc_mut().release(endpoint_address, request_slot);
+            }
+            if GSI_CHANNEL_READY[index] && endpoint >= 2 {
+                let _ = udc_mut().disable_endpoint(endpoint_address);
+                write(DALEPENA, read(DALEPENA) & !(1 << endpoint));
             }
             GSI_PENDING[index] = false;
             GSI_REQUEST_SLOTS[index] = usize::MAX;
@@ -2459,9 +2659,11 @@ unsafe fn reset_gsi_channels() {
             GSI_RING_TRB_COUNTS[index] = 0;
             GSI_BUFFER_BASES[index] = 0;
             GSI_BUFFER_LENGTHS[index] = 0;
+            GSI_DOORBELL_BASES[index] = 0;
             GSI_CHANNEL_READY[index] = false;
             GSI_CHANNEL_ENDPOINT[index] = 0;
         }
+        GSI_GADGET_BOUND = false;
     }
 }
 
@@ -2474,12 +2676,17 @@ unsafe fn reset_gsi_channels() {
 /// which is indistinguishable from a dead gadget to the host.
 unsafe fn restart_control_after_reset() {
     unsafe {
+        unbind_function();
+        teardown_data_endpoints();
         reset_gsi_channels();
         GadgetDriver::reset(gadget_mut());
         udc_mut().reset();
         CONFIGURED = false;
         DATA_ENDPOINTS_READY = false;
         DATA_REQUEST_SLOTS = [usize::MAX; 2];
+        DATA_RESOURCE_INDEX = [0; 2];
+        GSI_GADGET_BOUND = false;
+        FUNCTION_BOUND = false;
         EP0_STATE = Ep0State::Setup;
         CONTROL_IN = false;
         CONTROL_HAS_DATA = false;
@@ -2523,25 +2730,54 @@ unsafe fn sync_gadget_state() {
         udc_mut().address = gadget_ref().address();
         udc_mut().configured = CONFIGURED;
         if CONFIGURED && !DATA_ENDPOINTS_READY {
-            // The protocol layer exposes one vendor function with a bulk
-            // pair. Configure it only after the control status stage has
-            // committed SET_CONFIGURATION, matching gadget-core ordering.
-            let data_ready = configure_endpoint_kind(2, 512, DEPCFG_EP_TYPE_BULK, false)
-                && configure_endpoint_kind(3, 512, DEPCFG_EP_TYPE_BULK, false);
-            if data_ready
-                && udc_mut().configure_endpoint(0x02, 512, true)
-                && udc_mut().configure_endpoint(0x83, 512, true)
-            {
-                write(DALEPENA, read(DALEPENA) | (1 << 2) | (1 << 3));
-                DATA_ENDPOINTS_READY = true;
+            // The protocol layer exposes one vendor function with either an
+            // ordinary bulk pair or an explicitly supplied IPA/GSI binding.
+            // Configure it only after SET_CONFIGURATION has committed,
+            // matching gadget-core ordering.
+            let gsi_config = gadget_ref().gsi_endpoint();
+            if let Some(config) = gsi_config {
+                if let Some((ring, buffers)) = configure_gsi_data_endpoint(
+                    config.endpoint,
+                    config.event_buffer,
+                    config.max_packet,
+                    config.doorbell,
+                    config.buffer_length,
+                ) {
+                    GSI_GADGET_BOUND = true;
+                    gadget_mut().on_gsi_channel_ready(config, ring, buffers);
+                }
             }
-        } else if !CONFIGURED && DATA_ENDPOINTS_READY {
-            let _ = end_transfer(2);
-            let _ = end_transfer(3);
-            write(DALEPENA, read(DALEPENA) & !((1 << 2) | (1 << 3)));
-            let _ = udc_mut().disable_endpoint(0x02);
-            let _ = udc_mut().disable_endpoint(0x83);
-            DATA_ENDPOINTS_READY = false;
+
+            if !GSI_GADGET_BOUND {
+                let data_ready = configure_endpoint_kind(2, 512, DEPCFG_EP_TYPE_BULK, false)
+                    && configure_endpoint_kind(3, 512, DEPCFG_EP_TYPE_BULK, false);
+                if data_ready
+                    && udc_mut().configure_endpoint(0x02, 512, true)
+                    && udc_mut().configure_endpoint(0x83, 512, true)
+                {
+                    write(DALEPENA, read(DALEPENA) | (1 << 2) | (1 << 3));
+                    DATA_ENDPOINTS_READY = true;
+                    // Bind the function only after SET_CONFIGURATION has
+                    // committed. Queueing the OUT request here makes the
+                    // ordinary UDC data path live before the first packet.
+                    FUNCTION_BOUND = true;
+                    GadgetDriver::on_function_bind(gadget_mut());
+                    let _ = queue_bulk_transfer(
+                        2,
+                        addr_of_mut!(DATA_OUT_BUFFER.0).cast::<u8>(),
+                        MAX_PACKET_SIZE as usize,
+                    );
+                }
+            } else {
+                FUNCTION_BOUND = true;
+                GadgetDriver::on_function_bind(gadget_mut());
+            }
+        } else if !CONFIGURED && (DATA_ENDPOINTS_READY || GSI_GADGET_BOUND) {
+            teardown_data_endpoints();
+            if GSI_GADGET_BOUND {
+                reset_gsi_channels();
+            }
+            unbind_function();
         }
     }
 }
@@ -2660,11 +2896,14 @@ unsafe fn process_event(raw: u32) {
                 // device address. Do not rearm until Connect Done establishes
                 // a fresh link, exactly as the Linux gadget lifecycle does.
                 unsafe {
+                    unbind_function();
+                    teardown_data_endpoints();
                     GadgetDriver::reset(gadget_mut());
                     udc_mut().reset();
                     CONFIGURED = false;
                     DATA_ENDPOINTS_READY = false;
                     DATA_REQUEST_SLOTS = [usize::MAX; 2];
+                    DATA_RESOURCE_INDEX = [0; 2];
                     EP0_STATE = Ep0State::Setup;
                     CONTROL_IN = false;
                     CONTROL_HAS_DATA = false;
@@ -2728,7 +2967,6 @@ unsafe fn process_event(raw: u32) {
                 // is configured. Linux deliberately ignores that event.
                 let configured = unsafe { CONFIGURED };
                 if configured {
-                    unsafe { udc_mut().suspend() };
                     trace_event(TRACE_USB_SUSPEND, 0, 0, 0, 0, raw);
                     let _ = runtime_suspend();
                 }
@@ -2851,6 +3089,7 @@ unsafe fn complete_bulk_transfer(endpoint: usize, status: u32, raw: u32) {
             .unwrap_or(0);
         let error = status != 0;
         let _ = udc_mut().complete(address, slot, actual, error);
+        GadgetDriver::on_data_complete(gadget_mut(), address, actual, error);
         trace_event(
             TRACE_TRANSFER_COMPLETE,
             endpoint as u32,
@@ -2861,6 +3100,17 @@ unsafe fn complete_bulk_transfer(endpoint: usize, status: u32, raw: u32) {
         );
         let _ = udc_mut().release(address, slot);
         DATA_REQUEST_SLOTS[index] = usize::MAX;
+        DATA_RESOURCE_INDEX[index] = 0;
+        // Keep an OUT request posted after completion. This is the bounded
+        // early-boot equivalent of a gadget function's request callback
+        // requeue; the release above returns the UDC slot before reuse.
+        if endpoint == 2 && CONFIGURED && DATA_ENDPOINTS_READY {
+            let _ = queue_bulk_transfer(
+                2,
+                addr_of_mut!(DATA_OUT_BUFFER.0).cast::<u8>(),
+                MAX_PACKET_SIZE as usize,
+            );
+        }
     }
 }
 
@@ -2929,15 +3179,38 @@ unsafe fn apply_typec_event(event: super::platform::bramble::TypecEvent) {
             // Linux's role-switch callback stops advertising before it tears
             // down the UDC queues. Do not issue endpoint commands after the
             // PMIC has removed the cable.
-            reset_gsi_channels();
+            unbind_function();
             let mut dctl = read(DCTL);
             dctl &= !DCTL_RUN_STOP;
             write(DCTL, dctl);
+            teardown_data_endpoints();
+            reset_gsi_channels();
             write(DALEPENA, 0);
             ENDPOINTS_READY = false;
             CONFIGURED = false;
             DATA_ENDPOINTS_READY = false;
             DATA_REQUEST_SLOTS = [usize::MAX; 2];
+            DATA_RESOURCE_INDEX = [0; 2];
+            GadgetDriver::reset(gadget_mut());
+            udc_mut().reset();
+            note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Disconnect);
+        }
+        super::platform::bramble::TypecEvent::HostDetected => {
+            // The PMIC role-switch may move directly from device to source
+            // when another Type-C partner is attached. A source/host role
+            // must never leave the old gadget pull-up or DMA request live.
+            unbind_function();
+            let mut dctl = read(DCTL);
+            dctl &= !DCTL_RUN_STOP;
+            write(DCTL, dctl);
+            teardown_data_endpoints();
+            reset_gsi_channels();
+            write(DALEPENA, 0);
+            ENDPOINTS_READY = false;
+            CONFIGURED = false;
+            DATA_ENDPOINTS_READY = false;
+            DATA_REQUEST_SLOTS = [usize::MAX; 2];
+            DATA_RESOURCE_INDEX = [0; 2];
             GadgetDriver::reset(gadget_mut());
             udc_mut().reset();
             note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Disconnect);
@@ -3144,6 +3417,8 @@ pub fn runtime_suspend() -> bool {
         write(DCTL, dctl);
         for _ in 0..100_000 {
             if read(DSTS) & DSTS_DEVCTRLHLT != 0 {
+                suspend_data_transfers();
+                suspend_gsi_transfers();
                 udc_mut().suspend();
                 note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Suspend);
                 if !super::platform::bramble::apply_usb_performance(
@@ -3205,6 +3480,16 @@ pub fn runtime_resume() -> bool {
         for _ in 0..100_000 {
             if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
                 udc_mut().resume();
+                if DATA_ENDPOINTS_READY {
+                    let _ = queue_bulk_transfer(
+                        2,
+                        addr_of_mut!(DATA_OUT_BUFFER.0).cast::<u8>(),
+                        MAX_PACKET_SIZE as usize,
+                    );
+                }
+                if GSI_GADGET_BOUND {
+                    GadgetDriver::on_gsi_channel_resume(gadget_mut());
+                }
                 note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Resume);
                 if ENDPOINTS_READY && !rearm_setup() {
                     return false;
@@ -3464,6 +3749,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         GSI_RING_TRB_COUNTS = [0; 3];
         GSI_BUFFER_BASES = [0; 3];
         GSI_BUFFER_LENGTHS = [0; 3];
+        GSI_DOORBELL_BASES = [0; 3];
         GSI_RESOURCE_INDEX = [0; 3];
         GSI_RING_ACTIVE = [false; 3];
         RESUME_PENDING = false;
@@ -3474,6 +3760,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         CONFIGURED = false;
         DATA_ENDPOINTS_READY = false;
         DATA_REQUEST_SLOTS = [usize::MAX; 2];
+        DATA_RESOURCE_INDEX = [0; 2];
+        GSI_GADGET_BOUND = false;
+        FUNCTION_BOUND = false;
         // Fastboot leaves the control endpoints configured.  Do not issue
         // DEPSTARTCFG/SETEPCONFIG while Run/Stop is still active; that command
         // sequence requires a halted controller and was sending the probe to
@@ -3658,6 +3947,7 @@ pub fn init_usb2_gadget_handoff() -> bool {
         GSI_RING_TRB_COUNTS = [0; 3];
         GSI_BUFFER_BASES = [0; 3];
         GSI_BUFFER_LENGTHS = [0; 3];
+        GSI_DOORBELL_BASES = [0; 3];
         GSI_RESOURCE_INDEX = [0; 3];
         GSI_RING_ACTIVE = [false; 3];
         RESUME_PENDING = false;
@@ -3668,6 +3958,9 @@ pub fn init_usb2_gadget_handoff() -> bool {
         CONFIGURED = false;
         DATA_ENDPOINTS_READY = false;
         DATA_REQUEST_SLOTS = [usize::MAX; 2];
+        DATA_RESOURCE_INDEX = [0; 2];
+        GSI_GADGET_BOUND = false;
+        FUNCTION_BOUND = false;
         ENDPOINTS_READY = false;
 
         write(DCFG, DCFG_HIGHSPEED);
@@ -3934,6 +4227,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         GSI_RING_TRB_COUNTS = [0; 3];
         GSI_BUFFER_BASES = [0; 3];
         GSI_BUFFER_LENGTHS = [0; 3];
+        GSI_DOORBELL_BASES = [0; 3];
         GSI_RESOURCE_INDEX = [0; 3];
         GSI_RING_ACTIVE = [false; 3];
         RESUME_PENDING = false;
@@ -3944,6 +4238,9 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         CONFIGURED = false;
         DATA_ENDPOINTS_READY = false;
         DATA_REQUEST_SLOTS = [usize::MAX; 2];
+        DATA_RESOURCE_INDEX = [0; 2];
+        GSI_GADGET_BOUND = false;
+        FUNCTION_BOUND = false;
 
         // The bootloader may leave DCFG in the speed/address state of its
         // Fastboot session. Reset both fields explicitly before enabling the
@@ -4101,6 +4398,12 @@ unsafe fn drain_gsi_event_buffers() {
                         let _ = udc_mut().complete(
                             address,
                             request_slot,
+                            actual,
+                            completion_status != 0,
+                        );
+                        GadgetDriver::on_gsi_data_complete(
+                            gadget_mut(),
+                            address,
                             actual,
                             completion_status != 0,
                         );
