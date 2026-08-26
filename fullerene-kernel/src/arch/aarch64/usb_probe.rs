@@ -10,6 +10,8 @@ use core::{
 mod platform;
 mod uart;
 mod usb;
+mod usb_protocol;
+mod usb_regs;
 
 const STACK_SIZE: usize = 16 * 1024;
 

@@ -95,6 +95,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_probe: bool,
 
+    /// Run the shared USB EP0 protocol self-test on QEMU virt and exit via
+    /// semihosting when it completes.
+    #[arg(long)]
+    qemu_usb_sim: bool,
+
     /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
     #[arg(long, default_value = "virtio-gpu")]
     vga: String,
@@ -444,6 +449,16 @@ fn main() -> io::Result<()> {
             "Bramble run/debug requires --boot-template pointing to a stock Android boot.img",
         ));
     }
+    if args.qemu_usb_sim
+        && (target.arch != Arch::Aarch64
+            || target.platform != Platform::QemuVirt
+            || !matches!(args.command, Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--qemu-usb-sim requires AArch64 QEMU virt run/debug",
+        ));
+    }
     let selected_probe = selected_aarch64_probe(&args, target)?;
 
     if target.arch == Arch::Aarch64 {
@@ -473,6 +488,7 @@ fn main() -> io::Result<()> {
             target.platform,
             kernel_artifact,
             selected_probe.and_then(|probe| probe.env),
+            args.qemu_usb_sim,
         )?;
         if target.platform == Platform::Bramble
             && matches!(args.command, Action::Run | Action::Debug)
@@ -552,7 +568,8 @@ fn main() -> io::Result<()> {
             &qemu_artifact,
             target.platform,
             args.command == Action::Debug,
-            args.timeout,
+            args.timeout.or_else(|| args.qemu_usb_sim.then_some(10)),
+            args.qemu_usb_sim,
         )?;
         return Ok(());
     }
@@ -581,6 +598,7 @@ fn build_aarch64_kernel(
     platform: Platform,
     kernel_artifact: &str,
     probe_env: Option<&str>,
+    qemu_usb_sim: bool,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
     let mut cargo = Command::new("cargo");
@@ -614,6 +632,9 @@ fn build_aarch64_kernel(
         );
     if let Some(probe_env) = probe_env {
         cargo.env(probe_env, "1");
+    }
+    if qemu_usb_sim {
+        cargo.env("FULLERENE_AARCH64_QEMU_USB_SIM", "1");
     }
 
     // Android's Bramble bootloader may relocate an arm64 Image. Build the
@@ -1083,7 +1104,12 @@ fn append_padded(output: &mut Vec<u8>, payload: &[u8], alignment: usize) -> io::
     Ok(())
 }
 
-fn aarch64_qemu_args(artifact: &Path, platform: Platform, debug: bool) -> io::Result<Vec<String>> {
+fn aarch64_qemu_args(
+    artifact: &Path,
+    platform: Platform,
+    debug: bool,
+    qemu_usb_sim: bool,
+) -> io::Result<Vec<String>> {
     if platform != Platform::QemuVirt {
         platform.validate(Arch::Aarch64, Action::Run)?;
     }
@@ -1106,6 +1132,12 @@ fn aarch64_qemu_args(artifact: &Path, platform: Platform, debug: bool) -> io::Re
     if debug {
         args.extend(["-S".to_string(), "-s".to_string()]);
     }
+    if qemu_usb_sim {
+        args.extend([
+            "-semihosting-config".to_string(),
+            "enable=on,target=native".to_string(),
+        ]);
+    }
     Ok(args)
 }
 
@@ -1114,6 +1146,7 @@ fn run_aarch64_qemu(
     platform: Platform,
     debug: bool,
     timeout: Option<u64>,
+    qemu_usb_sim: bool,
 ) -> io::Result<()> {
     let qemu_dtb = if platform == Platform::QemuVirt {
         Some(TemporaryQemuDtb::create()?)
@@ -1121,7 +1154,7 @@ fn run_aarch64_qemu(
         None
     };
     let mut qemu = Command::new(platform.qemu_binary());
-    let mut qemu_args = aarch64_qemu_args(artifact, platform, debug)?;
+    let mut qemu_args = aarch64_qemu_args(artifact, platform, debug, qemu_usb_sim)?;
     if let Some(dtb) = qemu_dtb.as_ref() {
         qemu_args.extend(["-dtb".to_string(), dtb.path.display().to_string()]);
     }
@@ -1765,6 +1798,7 @@ mod tests {
         let args = aarch64_qemu_args(
             Path::new("target/aarch64-unknown-none/release/fullerene-kernel-aarch64"),
             Platform::QemuVirt,
+            false,
             false,
         )
         .unwrap();

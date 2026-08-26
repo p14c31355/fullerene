@@ -5,6 +5,16 @@
 #![allow(unused_features)]
 extern crate alloc;
 
+#[cfg(test)]
+#[path = "arch/aarch64/usb_dwc3_sim.rs"]
+mod usb_dwc3_sim;
+#[cfg(test)]
+#[path = "arch/aarch64/usb_protocol.rs"]
+mod usb_protocol;
+#[cfg(test)]
+#[path = "arch/aarch64/usb_regs.rs"]
+mod usb_regs;
+
 // ── Panic-screen framebuffer drawing (no alloc, no locks) ─────────────
 //
 // Snapshot the stored FB params once, then draw directly to the

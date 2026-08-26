@@ -297,6 +297,26 @@ prints:
 [usb-xhci-smoke] PASS: usb_rescan registered /dev/usb0
 ```
 
+### QEMU USB EP0 protocol self-test
+
+The AArch64 self-test runs the shared Fullerene control-endpoint protocol on
+QEMU's `virt` machine. It uses QEMU's PL011 serial console for diagnostics
+and ARM semihosting to terminate the emulator automatically:
+
+```bash
+cargo run -q -p flasks -- run \
+  --arch aarch64 \
+  --platform qemu-virt \
+  --qemu-usb-sim
+```
+
+The test covers DWC3 endpoint configuration, SETUP/DATA/STATUS TRBs,
+device and endpoint event encoding, EP0 re-arming, device/configuration
+descriptors, and the status completion of `SET_ADDRESS` and
+`SET_CONFIGURATION`. It models the DWC3 device-mode register protocol but
+does not emulate the SM7250 PHY, Qualcomm Type-C glue, or SMMU; those remain
+hardware-only.
+
 Nozzle exposes the Linux and WASI launchers through this single command:
 
 ```text

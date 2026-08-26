@@ -8,7 +8,7 @@
 
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
-use super::uart;
+use super::{uart, usb_protocol::descriptor, usb_regs::*};
 
 #[inline]
 fn log_puts(message: &str) {
@@ -368,64 +368,11 @@ const QMP_INIT: [(usize, u32); 146] = [
     (0x1f38, 0x07), // USB3_DP_PCS_USB3_RXEQTRAINING_DFE_TIME_S2
 ];
 
-const DCTL_RUN_STOP: u32 = 1 << 31;
-const DCFG_SPEED_MASK: u32 = 7;
-const DCFG_DEVADDR_MASK: u32 = 0x7f << 3;
-const DCFG_HIGHSPEED: u32 = 0;
-const DCFG_SUPERSPEED: u32 = 4;
-const DSTS_CONNECTSPD_MASK: u32 = 7;
-const DSTS_DEVCTRLHLT: u32 = 1 << 22;
-const DSTS_DCNRD: u32 = 1 << 23;
-const DSTS_SUPERSPEED: u32 = 4;
-
-const DEVTEN_DISCONNECT: u32 = 1 << 0;
-const DEVTEN_USB_RESET: u32 = 1 << 1;
-const DEVTEN_CONNECT_DONE: u32 = 1 << 2;
-// DWC3 event words use bit 0 to distinguish endpoint events from
-// device-specific events.  For a device event, bits 1..7 are zero and the
-// Reset/Connect Done kind is stored in the four-bit type field at bits 8..11.
-const DEVICE_EVENT_KIND_SHIFT: u32 = 8;
-const DEVICE_EVENT_KIND_MASK: u32 = 0x0f;
-
-const DEPCMD_CMDACT: u32 = 1 << 10;
-const DEPCMD_HIPRI_FORCERM: u32 = 1 << 11;
-const DEPCMD_PARAM_SHIFT: u32 = 16;
-const DEPCMD_DEPSTARTCFG: u32 = 0x09;
-const DEPCMD_ENDTRANSFER: u32 = 0x08;
-const DEPCMD_STARTTRANSFER: u32 = 0x06;
-const DEPCMD_SETTRANSFRESOURCE: u32 = 0x02;
-const DEPCMD_SETEPCONFIG: u32 = 0x01;
-const DEPCMD_ACTION_MODIFY: u32 = 2 << 30;
-
-const DEPCFG_XFER_COMPLETE_EN: u32 = 1 << 8;
-const DEPCFG_XFER_NOT_READY_EN: u32 = 1 << 10;
-const DEPCFG_EP_NUMBER_SHIFT: u32 = 25;
-const DEPCFG_EP_TYPE_CONTROL: u32 = 0;
-const DEPCFG_MAX_PACKET_SHIFT: u32 = 3;
-
-const TRB_HWO: u32 = 1 << 0;
-const TRB_LST: u32 = 1 << 1;
-const TRB_ISP_IMI: u32 = 1 << 10;
-const TRB_IOC: u32 = 1 << 11;
-const TRB_CONTROL_SETUP: u32 = 2 << 4;
-const TRB_CONTROL_STATUS2: u32 = 3 << 4;
-const TRB_CONTROL_STATUS3: u32 = 4 << 4;
-const TRB_CONTROL_DATA: u32 = 5 << 4;
-
 const EVENT_BUFFER_SIZE: usize = 4096;
 const MAX_PACKET_SIZE: u32 = 512;
 
 #[repr(C, align(4096))]
 struct EventBuffer([u8; EVENT_BUFFER_SIZE]);
-
-#[repr(C, align(16))]
-#[derive(Clone, Copy)]
-struct Trb {
-    bpl: u32,
-    bph: u32,
-    size: u32,
-    ctrl: u32,
-}
 
 #[repr(C, align(64))]
 struct ResponseBuffer([u8; 512]);
@@ -655,26 +602,6 @@ pub fn dump_trace() {
         uart::puts("usb trace end\n");
     }
 }
-
-// USB 2.0 device descriptor: vendor/product IDs are intentionally Fullerene
-// development IDs and must not be treated as a released USB allocation.
-static DEVICE_DESCRIPTOR: [u8; 18] = [
-    18, 1, 0x00, 0x02, 0, 0, 0, 64, 0x34, 0x12, 0x01, 0x00, 0, 1, 1, 2, 0, 1,
-];
-
-// One vendor-class interface with no data endpoints.  EP0 is sufficient for
-// host-side identification and avoids pretending that ADB is implemented.
-static CONFIG_DESCRIPTOR: [u8; 18] = [9, 2, 18, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 0, 0xff, 0, 0, 0];
-
-static LANGID_DESCRIPTOR: [u8; 4] = [4, 3, 0x09, 0x04];
-static MANUFACTURER_DESCRIPTOR: [u8; 20] = [
-    20, 3, b'F', 0, b'u', 0, b'l', 0, b'l', 0, b'e', 0, b'r', 0, b'e', 0, b'n', 0,
-    b'e', 0,
-];
-static PRODUCT_DESCRIPTOR: [u8; 36] = [
-    36, 3, b'F', 0, b'u', 0, b'l', 0, b'l', 0, b'e', 0, b'r', 0, b'e', 0, b'n', 0, b'e', 0, b' ',
-    0, b'A', 0, b'A', 0, b'r', 0, b'c', 0, b'h', 0, b'6', 0, b'4', 0,
-];
 
 #[inline]
 fn reg(offset: usize) -> *mut u32 {
@@ -1424,17 +1351,6 @@ unsafe fn start_status(endpoint: usize) {
     }
 }
 
-fn descriptor(kind: u8, index: u8) -> Option<&'static [u8]> {
-    match (kind, index) {
-        (1, 0) => Some(&DEVICE_DESCRIPTOR),
-        (2, 0) => Some(&CONFIG_DESCRIPTOR),
-        (3, 0) => Some(&LANGID_DESCRIPTOR),
-        (3, 1) => Some(&MANUFACTURER_DESCRIPTOR),
-        (3, 2) => Some(&PRODUCT_DESCRIPTOR),
-        _ => None,
-    }
-}
-
 unsafe fn setup_request() -> [u8; 8] {
     let mut packet = [0; 8];
     unsafe {
@@ -1882,9 +1798,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // the Qualcomm session alive.  Resource index 1 is the EP0 resource
         // used by the DWC3 gadget path; an already-idle endpoint simply
         // reports a command error, which is harmless here.
-        let endtransfer = DEPCMD_ENDTRANSFER
-            | DEPCMD_HIPRI_FORCERM
-            | (1 << DEPCMD_PARAM_SHIFT);
+        let endtransfer = DEPCMD_ENDTRANSFER | DEPCMD_HIPRI_FORCERM | (1 << DEPCMD_PARAM_SHIFT);
         let _ = send_ep_command(0, endtransfer, 0, 0, 0);
         let _ = send_ep_command(1, endtransfer, 0, 0, 0);
         // Fastboot may have configured these control endpoints for the
@@ -1908,10 +1822,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
 
         let dctl = run_stop_value(read(DCTL), read(GSNPSID));
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
-        qscratch_set(
-            QSCRATCH_HS_PHY_CTRL,
-            (1 << 20) | (1 << 28),
-        );
+        qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
         write(DCTL, dctl);
         for _ in 0..1_000_000u32 {
             if read(DSTS) & DSTS_DEVCTRLHLT == 0 {

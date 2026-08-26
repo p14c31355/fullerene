@@ -22,6 +22,7 @@ fn main() {
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_cold_halt_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_qemu_usb_sim)");
         if platform == "bramble" {
             println!("cargo:rustc-cfg=fullerene_aarch64_bramble");
         }
@@ -43,6 +44,9 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_probe");
         }
+        if env::var_os("FULLERENE_AARCH64_QEMU_USB_SIM").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_qemu_usb_sim");
+        }
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_PLATFORM");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_ENTRY_HALT_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PULLUP_PROBE");
@@ -50,6 +54,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_COLD_HALT_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_QEMU_USB_SIM");
         println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64=-T{}",
             linker_script.display()

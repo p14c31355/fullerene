@@ -17,6 +17,14 @@ mod timer;
 mod uart;
 #[cfg(fullerene_aarch64_bramble)]
 mod usb;
+#[cfg(fullerene_aarch64_qemu_usb_sim)]
+mod usb_dwc3_sim;
+#[cfg(any(fullerene_aarch64_bramble, fullerene_aarch64_qemu_usb_sim))]
+mod usb_protocol;
+#[cfg(fullerene_aarch64_qemu_usb_sim)]
+mod usb_qemu_sim;
+#[cfg(any(fullerene_aarch64_bramble, fullerene_aarch64_qemu_usb_sim))]
+mod usb_regs;
 
 const BOOT_STACK_SIZE: usize = 64 * 1024;
 
@@ -322,6 +330,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     uart::puts("arch: aarch64, exception vectors: ready\n");
     uart::put_hex("currentel: ", exceptions::current_el() as u64);
 
+    #[cfg(fullerene_aarch64_qemu_usb_sim)]
+    {
+        let passed = usb_qemu_sim::run();
+        qemu_semihost_exit(passed);
+    }
+
     mmu::init();
     uart::puts("mmu: identity map and caches ready\n");
 
@@ -400,6 +414,29 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
         #[cfg(fullerene_aarch64_bramble)]
         usb::poll();
         unsafe { core::arch::asm!("wfe", options(nomem, nostack, preserves_flags)) };
+    }
+}
+
+#[cfg(fullerene_aarch64_qemu_usb_sim)]
+fn qemu_semihost_exit(passed: bool) -> ! {
+    #[repr(C)]
+    struct ExitBlock {
+        reason: u64,
+        status: u64,
+    }
+
+    let block = ExitBlock {
+        reason: 0x20026, // ADP_Stopped_ApplicationExit
+        status: if passed { 0 } else { 1 },
+    };
+    unsafe {
+        asm!(
+            "mov x0, #0x18", // SYS_EXIT
+            "mov x1, {block}",
+            "hlt #0xf000",
+            block = in(reg) &block as *const ExitBlock,
+            options(noreturn),
+        );
     }
 }
 
