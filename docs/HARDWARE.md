@@ -1075,6 +1075,92 @@ identity.
     remain a lower priority than SETUP TRB DMA, event-ring ownership, and
     SMMU/IOVA visibility.
 
+60. The shell-free Rust harness gained `--reuse-fastboot-dma` as a focused
+    ownership differential. It captures the DWC3 event page still selected by
+    Fastboot and places the event ring, SETUP buffer, EP0 TRB, and response
+    buffer inside that page. A complete run
+    (`/tmp/fullerene-bramble-loop.933221.0`, artifact
+    `3a8e664777ee1c558ee1bce9b9b70f9827c80810fe45a7c25587829156e6aede`)
+    still produced no Fullerene USB2 identity and returned to stock Android.
+    The stage-5 differential
+    (`/tmp/fullerene-bramble-loop.935532.0`) did preserve the physical USB2
+    attach before the expected descriptor timeout, showing that reusing the
+    firmware-selected page is viable through endpoint configuration/resource
+    setup. The stage-6 run
+    (`/tmp/fullerene-bramble-loop.940511.0`) produced no USB2 attach after
+    the first EP0 `STARTTRANSFER` boundary. Stage-probe failure handling was
+    then corrected so stages 6 and later no longer re-run the bare pull-up
+    initializer; they repeat only the Run/Stop boundary. This keeps the next
+    result attributable to EP0 STARTTRANSFER/DMA/event ownership rather than
+    to a second reset-like probe path. The latest attempted rerun did not
+    reach `fastboot boot` because the handset was no longer visible as
+    Fastboot, so it yielded no additional hardware evidence.
+
+61. The handoff boundary was split further in Rust. Stage 11 stops after the
+    SETUP buffer/TRB has been written and cache-cleaned but before issuing
+    `STARTTRANSFER`; `/tmp/fullerene-bramble-loop.959826.0` produced USB2
+    attach followed by the expected descriptor timeout. Stage 12 stops after
+    `STARTTRANSFER` returns and before the final Run/Stop transition;
+    `/tmp/fullerene-bramble-loop.968987.0` produced no Fullerene USB2 attach
+    and returned to stock Android `18d1:4ee7`. Both runs passed the QEMU
+    preflight, Image/LZ4 and boot-image audits, and used only `fastboot boot`.
+    This is the strongest current hardware localization: publishing the TRB
+    is survivable, while arming it through DWC3 `STARTTRANSFER` either fails
+    its command/DMA acceptance or leaves the controller unable to advertise
+    the USB2 pull-up. The next implementation work should expose and correct
+    that command/DMA contract before changing descriptors or higher-level
+    gadget callbacks.
+
+62. The official Linux ordering was applied one step further in the Rust
+    handoff. Linux begins consuming the DWC3 event ring immediately after
+    `dwc3_ep0_out_start()` and before restoring USB2 low-power handling and
+    asserting Run/Stop. Fullerene now performs the equivalent bounded EP0-only
+    event-ring drain after the initial SETUP `STARTTRANSFER`, without invoking
+    Type-C, power, or SMMU service from that diagnostic boundary. The build and
+    QEMU protocol self-test remained passing.
+
+    The corresponding stage-12 run
+    (`/tmp/fullerene-bramble-loop.1010949.0`) still did not expose the
+    Fullerene `1234:0001` identity. The host saw Fastboot `18d1:4ee0`
+    disconnect and then the automatic stock Android fallback
+    `18d1:4ee7`; no custom descriptor was readable. Therefore the one-shot
+    event drain is not sufficient to resolve the real-device failure. The
+    surviving evidence remains: stage 11 reaches the physical USB2 attach
+    and times out at EP0, while the stage-12 boundary after arming the first
+    SETUP transfer still needs a more direct command/DMA/event result.
+
+63. The official register comparison found and corrected a concrete DWC3
+    platform-register mistake: Fullerene had treated `0xc360` as `GUCTL1`,
+    while the DWC3 global register map places `GUCTL1` at `0xc11c`. The former
+    address is in the FIFO-register area. The same comparison corrected EP0
+    event-buffer initialization to acknowledge the current `GEVNTCOUNT` value
+    by writing it back, matching Linux's `dwc3_event_buffers_setup()`;
+    writing zero does not consume stale events. Both changes are Rust-only and
+    pass the local test suite.
+
+    The first hardware run after the `GUCTL1` correction
+    (`/tmp/fullerene-bramble-loop.1034451.0`) still exposed no Fullerene
+    identity. The next run with event-count write-back
+    (`/tmp/fullerene-bramble-loop.1038246.0`) had the same result. Finally,
+    the probe-only post-`STARTTRANSFER` `SUSPHY` restore was removed to match
+    the Android downstream Bramble path rather than mainline's later
+    `dwc3_enable_susphy(true)` boundary; `/tmp/fullerene-bramble-loop.1041875.0`
+    also showed no Fullerene attach and recovered to Android `18d1:4ee7`.
+    These three official-order differences are therefore implemented or
+    experimentally rejected as the immediate cause. The reproducible boundary
+    remains the first DWC3 `STARTTRANSFER`/TRB-DMA transition, before a usable
+    USB2 identity appears.
+
+64. Linux's `dwc3_gadget_dctl_write_safe()` comparison found one more missing
+    handoff detail. Fullerene now clears the DCTL link-state request field for
+    both the Fastboot-to-Fullerene `CSFTRST` write and the Run/Stop write,
+    preventing a stale bootloader link-state command from being carried into
+    the new device session. The resulting stage-12 artifact
+    (`/tmp/fullerene-bramble-loop.1047509.0`) still produced no Fullerene
+    attach and recovered to Android `18d1:4ee7`. This closes the DCTL safety
+    difference without changing the current hardware localization: the
+    surviving USB2 attach is still before the first `STARTTRANSFER`/TRB fetch.
+
 The relevant official references are:
 
 - [Android Lito USB device tree](https://android.googlesource.com/kernel/msm-extra/devicetree/+/refs/tags/android-11.0.0_r0.56/qcom/lito-usb.dtsi), including the DWC3 IRQ order, DMA pool, clocks, GSI offsets, and bus resources.

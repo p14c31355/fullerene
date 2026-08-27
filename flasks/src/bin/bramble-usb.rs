@@ -86,11 +86,15 @@ struct LoopArgs {
     #[arg(long)]
     bare_pullup: bool,
     /// Publish only the physical pull-up after one gadget handoff boundary
-    /// (1..=10), then use the normal automatic recovery path.
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10))]
+    /// (1..=12), then use the normal automatic recovery path.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=12))]
     stop_after_stage: Option<u32>,
     #[arg(long)]
     no_smmu: bool,
+    /// Reuse Fastboot's event-ring DMA page instead of the linker-reserved
+    /// EP0 DMA objects. This is a Rust-only firmware-mapping differential.
+    #[arg(long)]
+    reuse_fastboot_dma: bool,
     #[arg(long)]
     no_transfer_resource: bool,
     #[arg(long)]
@@ -425,6 +429,7 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         normal: false,
         pullup_only: false,
         no_smmu: args.no_smmu,
+        reuse_fastboot_dma: false,
         no_transfer_resource: false,
         android_resource_order: false,
         no_core_reset: args.no_core_reset,
@@ -463,6 +468,20 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--bare-pullup cannot be combined with another USB differential",
+        ));
+    }
+    if args.reuse_fastboot_dma
+        && (args.normal
+            || args.super_speed
+            || args.pullup_only
+            || args.bare_pullup
+            || args.no_core_reset
+            || args.irq_route.is_some()
+            || !args.no_smmu)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--reuse-fastboot-dma requires the USB2 gadget handoff with --no-smmu and cannot be combined with another differential",
         ));
     }
     if args.stop_after_stage.is_some()
@@ -691,6 +710,8 @@ fn mode_name(args: &LoopArgs) -> &'static str {
         "normal"
     } else if args.bare_pullup {
         "usb-bare-pullup-probe"
+    } else if args.reuse_fastboot_dma {
+        "usb-gadget-handoff-reuse-fastboot-dma"
     } else if args.stop_after_stage.is_some() {
         "usb-gadget-handoff-stage-probe"
     } else if args.pullup_only {
@@ -738,6 +759,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.no_smmu {
         arguments.push("--usb-gadget-handoff-no-smmu".to_owned());
+    }
+    if args.reuse_fastboot_dma {
+        arguments.push("--usb-gadget-handoff-reuse-fastboot-dma".to_owned());
     }
     if args.no_transfer_resource {
         arguments.push("--usb-gadget-handoff-no-transfer-resource".to_owned());
@@ -847,9 +871,23 @@ fn restore_fastboot(serial: &str, timeout_secs: u64) -> io::Result<()> {
         .args(["-s", serial, "reboot", "bootloader"])
         .output()?;
     if !output.status.success() {
+        // Android can disappear from ADB in the same instant that it is
+        // already transitioning to the bootloader. Treat the transient
+        // "device not found" result as a race and give Fastboot the rest of
+        // the bounded recovery window to appear. This keeps the Rust loop
+        // unattended without retrying a reboot command against a changing
+        // USB identity.
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if !stderr.contains("not found") && !stderr.contains("no devices") {
+            return Err(io::Error::other(format!(
+                "adb reboot bootloader failed: {stderr}"
+            )));
+        }
+        if wait_for_fastboot(serial, timeout_secs).is_ok() {
+            return Ok(());
+        }
         return Err(io::Error::other(format!(
-            "adb reboot bootloader failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "adb reboot bootloader raced with USB disappearance: {stderr}"
         )));
     }
     wait_for_fastboot(serial, timeout_secs)

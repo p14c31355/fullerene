@@ -739,7 +739,7 @@ extern "C" fn usb_probe_entry() -> ! {
         // Encode the first failing handoff boundary as reset latency. This
         // keeps the diagnostic observable without reintroducing the broken
         // EP0-less pull-up that previously produced misleading -110 errors.
-        let stage = usb::gadget_handoff_failure_stage().clamp(1, 7);
+        let stage = usb::gadget_handoff_failure_stage().clamp(1, 12);
         let frequency = probe_counter_frequency();
         let delay = frequency.saturating_mul((stage as u64) * 3);
         let deadline = probe_counter().saturating_add(delay);

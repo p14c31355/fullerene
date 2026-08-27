@@ -198,8 +198,11 @@ cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 4
 cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 9
 cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 10
 cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 6
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 11
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 12
 cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --no-transfer-resource
 cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --android-resource-order
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --reuse-fastboot-dma
 cargo run -q -p flasks --bin bramble-usb -- matrix
 ```
 
@@ -214,6 +217,12 @@ enumeration timeout the harness waits up to 75 seconds for the probe watchdog
 to return to Fastboot. A probe image built before the watchdog fix can still
 leave the phone with no USB device and require manual recovery.
 
+`--reuse-fastboot-dma` is restricted to `--no-smmu` and reuses the event-ring
+page that Fastboot had already exposed to DWC3 for the EP0 event ring, setup
+packet, TRB, and response buffer. It is a diagnostic only; a successful
+enumeration would show that the linker-reserved `.usb_dma` address was not
+visible through the firmware-owned SMMU context.
+
 If the temporary boot falls back to Android, the harness recognizes the
 `18d1:4ee7` charging/debug identity immediately and saves its USB descriptor,
 ADB state, slot, build fingerprint, and kernel version. This is recorded as a
@@ -225,9 +234,11 @@ transfer operation as `fastboot boot`.
 The `--stop-after-stage` probes publish the known physical USB2 pull-up after
 one handoff boundary and then let the watchdog recover. Stages 1--4 cover
 pre-EP0 setup, stage 5 covers both EP0 directions, stage 6 covers the first
-SETUP `STARTTRANSFER`, and stage 7 covers Run/Stop. Stage 8 splits the two
-EP0 directions; stage 9 stops after EP0 OUT `SETEPCONFIG`, and stage 10 stops
-after its `SETTRANSFRESOURCE`. `--no-transfer-resource` removes resource
+SETUP `STARTTRANSFER`, and stage 7 covers Run/Stop. Stage 11 isolates SETUP
+TRB publication before `STARTTRANSFER`, while stage 12 stops immediately
+after that command. Stage 8 splits the two EP0 directions; stage 9 stops
+after EP0 OUT `SETEPCONFIG`, and stage 10 stops after its
+`SETTRANSFRESOURCE`. `--no-transfer-resource` removes resource
 commands, while `--android-resource-order` tests the older Android msm order
 that allocates resources before `SETEPCONFIG`.
 

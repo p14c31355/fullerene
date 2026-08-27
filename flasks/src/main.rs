@@ -104,6 +104,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_no_smmu: bool,
 
+    /// Reuse the Fastboot DWC3 event-ring DMA page for the EP0 probe. This is
+    /// a hardware differential for firmware-owned SMMU/DMA visibility.
+    #[arg(long)]
+    usb_gadget_handoff_reuse_fastboot_dma: bool,
+
     /// Build the gadget handoff probe without SETTRANSFRESOURCE. This is a
     /// hardware differential for the DWC3 endpoint-resource command.
     #[arg(long)]
@@ -115,7 +120,7 @@ struct Args {
 
     /// Stop the USB2 gadget handoff after a numbered boundary and publish a
     /// temporary physical pull-up for host-side stage diagnostics.
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10))]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=12))]
     stop_after_stage: Option<u32>,
 
     /// Run the shared USB EP0 protocol self-test on QEMU virt and exit via
@@ -516,6 +521,18 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-no-smmu requires a Bramble gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_reuse_fastboot_dma
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_no_smmu
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-reuse-fastboot-dma requires the Bramble USB2 gadget handoff probe with --usb-gadget-handoff-no-smmu on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_no_transfer_resource
         && (!args.usb_gadget_handoff_probe
             || target.arch != Arch::Aarch64
@@ -585,6 +602,7 @@ fn main() -> io::Result<()> {
             kernel_artifact,
             selected_probe.and_then(|probe| probe.env),
             args.usb_gadget_handoff_no_smmu,
+            args.usb_gadget_handoff_reuse_fastboot_dma,
             args.usb_gadget_handoff_no_transfer_resource,
             args.usb_gadget_handoff_android_resource_order,
             args.stop_after_stage,
@@ -701,6 +719,7 @@ fn build_aarch64_kernel(
     kernel_artifact: &str,
     probe_env: Option<&str>,
     gadget_handoff_no_smmu: bool,
+    gadget_handoff_reuse_fastboot_dma: bool,
     gadget_handoff_no_transfer_resource: bool,
     gadget_handoff_android_resource_order: bool,
     gadget_handoff_stop_after_stage: Option<u32>,
@@ -741,6 +760,12 @@ fn build_aarch64_kernel(
     }
     if gadget_handoff_no_smmu {
         cargo.env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU", "1");
+    }
+    if gadget_handoff_reuse_fastboot_dma {
+        cargo.env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_REUSE_FASTBOOT_DMA",
+            "1",
+        );
     }
     if gadget_handoff_no_transfer_resource {
         cargo.env(
@@ -809,6 +834,7 @@ fn run_aarch64_qemu_preflight(
         Platform::QemuVirt,
         Arch::Aarch64.kernel_artifact(),
         None,
+        false,
         false,
         false,
         false,
