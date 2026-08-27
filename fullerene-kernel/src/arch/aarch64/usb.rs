@@ -636,6 +636,10 @@ static mut TYPEC_STATE: super::platform::bramble::TypecState =
         phase: super::platform::bramble::TypecPhase::Disabled,
     };
 static mut TYPEC_POLL_TICKS: u32 = 0;
+/// A Type-C parent SPI is a hard-IRQ notification; the SPMI child/arbiter
+/// transaction belongs to the deferred role-switch context. Keep this bit
+/// separate so a slow PMIC access cannot run inside DWC3 IRQ handling.
+static mut TYPEC_IRQ_PENDING: bool = false;
 /// A Qualcomm power-event IRQ is handled synchronously by the early exception
 /// path, while Linux runs the corresponding handler in a threaded IRQ/work
 /// context.  Defer the potentially long clock/PHY/controller resume until
@@ -3499,6 +3503,39 @@ pub fn note_typec_attached(attached: bool) {
     }
 }
 
+/// Complete a deferred Type-C parent interrupt outside the hard IRQ entry.
+/// This mirrors Linux's threaded qpnpint/role-switch boundary.
+pub fn service_deferred_platform() {
+    unsafe {
+        if !TYPEC_IRQ_PENDING {
+            return;
+        }
+        if !TYPEC_STATE_VALID {
+            // The standalone gadget probe intentionally skips SPMI role
+            // discovery. Leave the diagnostic parent SPI masked rather than
+            // issuing an acknowledge against an uninitialized PMIC state.
+            TYPEC_IRQ_PENDING = false;
+            return;
+        }
+        let state = &*addr_of!(TYPEC_STATE);
+        if !super::platform::bramble::acknowledge_typec_irq(state) {
+            trace_event(
+                TRACE_USB_DEVICE_ERROR,
+                super::platform::bramble::usb_typec_parent_irq(),
+                0,
+                0,
+                0,
+                0,
+            );
+        }
+        TYPEC_IRQ_PENDING = false;
+        super::platform::gicv3::enable_spis(
+            super::platform::bramble::GICD_BASE,
+            &[super::platform::bramble::usb_typec_parent_irq()],
+        );
+    }
+}
+
 fn note_runtime_event(event: super::platform::bramble::UsbRuntimeEvent) {
     unsafe {
         USB_RUNTIME_STATE =
@@ -3731,13 +3768,11 @@ pub fn handle_platform_irq(interrupt_id: u32) {
             // fastboot handoff.  The PMIC parent can deliver a stale
             // transition while Fastboot tears down its gadget; re-reading
             // MISC_STATUS here would turn that transient into a false
-            // detach and remove the live Fullerene pull-up.  Keep the IRQ
-            // acknowledged, but defer role changes until a complete
-            // role-switch state machine is available.
-            let state = &*addr_of!(TYPEC_STATE);
-            if !super::platform::bramble::acknowledge_typec_irq(state) {
-                trace_event(TRACE_USB_DEVICE_ERROR, interrupt_id, 0, 0, 0, 0);
-            }
+            // detach and remove the live Fullerene pull-up. Mark the parent
+            // pending here; the SPMI child clear runs in the normal
+            // processing context, like Linux's threaded qpnpint/role-switch
+            // path.
+            TYPEC_IRQ_PENDING = true;
         }
     }
 }

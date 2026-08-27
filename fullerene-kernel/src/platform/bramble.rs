@@ -2308,11 +2308,49 @@ pub unsafe fn set_typec_vbus(state: &TypecState, enabled: bool) -> bool {
     }
 }
 
-/// Read PM8150B Type-C state and select sink-only mode for a host-connected
-/// phone. This is the synchronous entry point for the role-switch state
-/// machine; the PMIC interrupt controller is installed separately once the
-/// GIC is live, and refresh_usb_device_role() advances the same state on each
-/// child interrupt or bounded poll.
+/// Observe PM8150B Type-C state without changing the controller. This is the
+/// safe entry point for a `fastboot boot` handoff: Fastboot already owns the
+/// live cable/PHY session, so Fullerene must not repeat the cold-boot role
+/// writes while the old gadget is being torn down.
+pub unsafe fn observe_usb_device_role() -> Option<TypecState> {
+    let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
+    if version == 0 || version == u32::MAX {
+        return None;
+    }
+    let (apid, writable) = find_typec_apid(version)?;
+    let mut misc_status = 0u8;
+    if !unsafe { spmi_transfer(version, apid, TYPEC_MISC_STATUS, &mut misc_status, false) } {
+        return None;
+    }
+    let mut mode = 0u8;
+    if !unsafe { spmi_transfer(version, apid, TYPEC_MODE_CFG, &mut mode, false) } {
+        return None;
+    }
+    let role = typec_role(misc_status);
+    let attached = role == UsbRole::Device;
+    let phase = match role {
+        UsbRole::Device => TypecPhase::Attached,
+        UsbRole::Host => TypecPhase::Host,
+        UsbRole::None => TypecPhase::Detached,
+    };
+    Some(TypecState {
+        arbiter_version: version,
+        apid,
+        writable,
+        misc_status,
+        mode,
+        orientation_reverse: misc_status & TYPEC_CC_ORIENTATION != 0,
+        role,
+        sink_mode_written: false,
+        attached,
+        attach_settled: attached,
+        phase,
+    })
+}
+
+/// Read PM8150B Type-C state and select sink-only mode for a cold host
+/// connection. The synchronous entry point is retained for a future cold
+/// boot path; the Fastboot handoff uses observe_usb_device_role() above.
 pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
     if version == 0 || version == u32::MAX {

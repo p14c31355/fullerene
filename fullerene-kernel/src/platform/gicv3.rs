@@ -6,6 +6,7 @@ const TIMER_PPI: u32 = 30;
 const GICD_CTLR: usize = 0x0000;
 const GICD_IGROUPR: usize = 0x0080;
 const GICD_ISENABLER: usize = 0x0100;
+const GICD_ICENABLER: usize = 0x0180;
 const GICD_ICFGR: usize = 0x0c00;
 const GICD_IPRIORITYR: usize = 0x0400;
 const GICD_IROUTER: usize = 0x6000;
@@ -60,6 +61,20 @@ unsafe fn enable_spi(gicd_base: usize, interrupt_id: u32) {
 pub unsafe fn enable_spis(gicd_base: usize, interrupts: &[u32]) {
     for &interrupt_id in interrupts {
         unsafe { enable_spi(gicd_base, interrupt_id) };
+    }
+}
+
+/// Mask level-sensitive platform SPIs while their threaded/deferred handler
+/// clears the originating child interrupt. This is the top-half boundary used
+/// by the Qualcomm Type-C parent path.
+pub unsafe fn disable_spis(gicd_base: usize, interrupts: &[u32]) {
+    for &interrupt_id in interrupts {
+        if !(32..1020).contains(&interrupt_id) {
+            continue;
+        }
+        let word = (interrupt_id / 32) as usize;
+        let bit = 1u32 << (interrupt_id % 32);
+        unsafe { write32(gicd_base + GICD_ICENABLER + word * 4, bit) };
     }
 }
 

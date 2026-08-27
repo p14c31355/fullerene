@@ -245,6 +245,45 @@ global_asm!(
          .endif\n\
          .space 124\n\
      .endr\n\
+     .type usb_probe_irq_entry, %function\n\
+     usb_probe_irq_entry:\n\
+         sub sp, sp, #256\n\
+         stp x0, x1, [sp, #0]\n\
+         stp x2, x3, [sp, #16]\n\
+         stp x4, x5, [sp, #32]\n\
+         stp x6, x7, [sp, #48]\n\
+         stp x8, x9, [sp, #64]\n\
+         stp x10, x11, [sp, #80]\n\
+         stp x12, x13, [sp, #96]\n\
+         stp x14, x15, [sp, #112]\n\
+         stp x16, x17, [sp, #128]\n\
+         stp x18, x19, [sp, #144]\n\
+         stp x20, x21, [sp, #160]\n\
+         stp x22, x23, [sp, #176]\n\
+         stp x24, x25, [sp, #192]\n\
+         stp x26, x27, [sp, #208]\n\
+         stp x28, x29, [sp, #224]\n\
+         str x30, [sp, #240]\n\
+         bl usb_probe_irq\n\
+         ldr x30, [sp, #240]\n\
+         ldp x28, x29, [sp, #224]\n\
+         ldp x26, x27, [sp, #208]\n\
+         ldp x24, x25, [sp, #192]\n\
+         ldp x22, x23, [sp, #176]\n\
+         ldp x20, x21, [sp, #160]\n\
+         ldp x18, x19, [sp, #144]\n\
+         ldp x16, x17, [sp, #128]\n\
+         ldp x14, x15, [sp, #112]\n\
+         ldp x12, x13, [sp, #96]\n\
+         ldp x10, x11, [sp, #80]\n\
+         ldp x8, x9, [sp, #64]\n\
+         ldp x6, x7, [sp, #48]\n\
+         ldp x4, x5, [sp, #32]\n\
+         ldp x2, x3, [sp, #16]\n\
+         ldp x0, x1, [sp, #0]\n\
+         add sp, sp, #256\n\
+         eret\n\
+     .size usb_probe_irq_entry, . - usb_probe_irq_entry\n\
      .type usb_probe_exception_reset, %function\n\
      usb_probe_exception_reset:\n\
          movz x7, #0x4000\n\
@@ -276,7 +315,7 @@ global_asm!(
 
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 #[unsafe(no_mangle)]
-extern "C" fn usb_probe_irq_entry() {
+extern "C" fn usb_probe_irq() {
     let interrupt_id: u64;
     unsafe {
         asm!(
@@ -287,10 +326,20 @@ extern "C" fn usb_probe_irq_entry() {
     }
     let interrupt = interrupt_id as u32;
     if platform::bramble::is_usb_irq(interrupt) {
-        if interrupt != platform::bramble::usb_controller_irq() {
+        let controller_irq = interrupt == platform::bramble::usb_controller_irq();
+        if !controller_irq {
             usb::handle_platform_irq(interrupt);
+            if interrupt == platform::bramble::usb_typec_parent_irq() {
+                unsafe {
+                    platform::gicv3::disable_spis(platform::bramble::GICD_BASE, &[interrupt]);
+                }
+            }
+        } else {
+            // Auxiliary Qualcomm IRQs only notify the platform layer. Keep
+            // DWC3 event-ring consumption on the controller IRQ; the WFE
+            // loop services deferred Type-C work after eret.
+            usb::poll();
         }
-        usb::poll();
         unsafe { asm!("dsb sy", options(nostack)) };
     }
     unsafe {
@@ -393,6 +442,27 @@ extern "C" fn usb_probe_entry() -> ! {
         fullerene_aarch64_usb_halt_probe
     )))]
     uart::puts("fullerene usb probe: DMA region cleared\n");
+    #[cfg(all(
+        fullerene_aarch64_bramble,
+        fullerene_aarch64_usb_gadget_handoff_probe,
+        any(
+            fullerene_aarch64_usb_probe_irq_typec,
+            fullerene_aarch64_usb_probe_irq_typec_role
+        )
+    ))]
+    {
+        // The Type-C IRQ variant is a platform comparison, so initialize the
+        // PMIC role/child interrupt contract before exposing the parent SPI.
+        // Other standalone probes intentionally skip SPMI discovery.
+        usb::note_platform_powered();
+        if let Some(typec) = unsafe { platform::bramble::prepare_usb_device_role() } {
+            usb::install_typec_state(typec);
+            usb::set_typec_orientation(typec.orientation_reverse);
+            usb::note_typec_attached(typec.attached);
+            #[cfg(fullerene_aarch64_usb_probe_irq_typec)]
+            let _ = unsafe { platform::bramble::configure_typec_irq(&typec) };
+        }
+    }
     let gadget_ready = if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
         usb::init_usb2_gadget_handoff()
     } else if cfg!(fullerene_aarch64_usb_bare_pullup_probe) {
@@ -419,7 +489,51 @@ extern "C" fn usb_probe_entry() -> ! {
             // the normal Bramble entry. The standalone probe otherwise
             // exercises only polling, so it cannot distinguish a controller
             // problem from an IRQ-path teardown.
-            platform::bramble::init_interrupt_controller(None, None);
+            let _ = platform::gicv3::init(
+                platform::bramble::GICD_BASE,
+                platform::bramble::GICR_BASE,
+                Some(platform::bramble::USB_DWC3_IRQ),
+            );
+            #[cfg(fullerene_aarch64_usb_probe_irq_power)]
+            unsafe {
+                platform::gicv3::enable_spis(
+                    platform::bramble::GICD_BASE,
+                    &[platform::bramble::USB_PWR_EVENT_IRQ],
+                );
+            }
+            #[cfg(any(
+                fullerene_aarch64_usb_probe_irq_typec,
+                fullerene_aarch64_usb_probe_irq_typec_role
+            ))]
+            unsafe {
+                platform::gicv3::enable_spis(
+                    platform::bramble::GICD_BASE,
+                    &[platform::bramble::usb_typec_parent_irq()],
+                );
+            }
+            #[cfg(fullerene_aarch64_usb_probe_irq_pdc)]
+            unsafe {
+                platform::gicv3::enable_spis(
+                    platform::bramble::GICD_BASE,
+                    &[
+                        platform::bramble::USB_PDC_DP_HS_PARENT_IRQ,
+                        platform::bramble::USB_PDC_SS_PARENT_IRQ,
+                        platform::bramble::USB_PDC_DM_HS_PARENT_IRQ,
+                    ],
+                );
+            }
+            #[cfg(fullerene_aarch64_usb_probe_irq_smmu)]
+            unsafe {
+                let resources = platform::bramble::usb_resources();
+                platform::gicv3::enable_spis(
+                    platform::bramble::GICD_BASE,
+                    &resources.smmu_context_irqs[..resources.smmu_context_irq_count],
+                );
+                platform::gicv3::enable_spis(
+                    platform::bramble::GICD_BASE,
+                    &[resources.smmu_global_irq],
+                );
+            }
             unsafe {
                 asm!("msr DAIFClr, #2", "isb", options(nostack));
             }
@@ -452,7 +566,12 @@ extern "C" fn usb_probe_entry() -> ! {
             // The IRQ-enabled probe may legitimately go quiet after the
             // initial enumeration. Give that path enough time to separate a
             // real IRQ/controller failure from the diagnostic recovery reset.
-            let mut deadline = probe_counter().saturating_add(frequency.saturating_mul(120));
+            let timeout_secs = option_env!("FULLERENE_USB_PROBE_TIMEOUT_SECS")
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(120);
+            let mut deadline =
+                probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
             let mut last_head = usb::trace_head();
             loop {
                 // The IRQ-enabled probe drains the DWC3 ring from
@@ -460,10 +579,12 @@ extern "C" fn usb_probe_entry() -> ! {
                 // interrupt to re-enter the same ring consumer and corrupt
                 // EVENT_OFFSET/GEVNTCOUNT ordering.
                 unsafe { asm!("wfe", options(nomem, nostack)) };
+                usb::service_deferred_platform();
                 let head = usb::trace_head();
                 if head != last_head {
                     last_head = head;
-                    deadline = probe_counter().saturating_add(frequency.saturating_mul(120));
+                    deadline =
+                        probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
                 } else if frequency != 0 && probe_counter() >= deadline {
                     usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
                     reset_after_probe_failure();

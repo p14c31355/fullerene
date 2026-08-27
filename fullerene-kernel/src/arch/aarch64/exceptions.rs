@@ -121,13 +121,23 @@ extern "C" fn aarch64_exception_irq() {
     }
     #[cfg(fullerene_aarch64_bramble)]
     if usb_irq {
-        if interrupt_id as u32 != super::platform::bramble::usb_controller_irq() {
+        let controller_irq = interrupt_id as u32 == super::platform::bramble::usb_controller_irq();
+        if !controller_irq {
             super::usb::handle_platform_irq(interrupt_id as u32);
+            if interrupt_id as u32 == super::platform::bramble::usb_typec_parent_irq() {
+                unsafe {
+                    super::platform::gicv3::disable_spis(
+                        super::platform::bramble::GICD_BASE,
+                        &[interrupt_id as u32],
+                    );
+                }
+            }
+        } else {
+            // Auxiliary Qualcomm IRQs are platform notifications. Drain the
+            // DWC3 event ring only for the controller SPI; deferred Type-C
+            // work runs from the normal polling context after eret.
+            super::usb::poll();
         }
-        // DWC3's event buffer is the source of truth. The IRQ handler only
-        // drains it; transfer state transitions remain shared with the early
-        // polling path so a pending event cannot be processed twice.
-        super::usb::poll();
     }
     if interrupt_id as u32 == super::timer::TIMER_PPI {
         super::timer::arm_ms(100);

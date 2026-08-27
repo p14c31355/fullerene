@@ -678,15 +678,13 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     #[cfg(fullerene_aarch64_bramble)]
     usb::note_platform_powered();
     #[cfg(fullerene_aarch64_bramble)]
-    if let Some(typec) = unsafe { platform::bramble::prepare_usb_device_role() } {
+    if let Some(typec) = unsafe { platform::bramble::observe_usb_device_role() } {
         usb::install_typec_state(typec);
         usb::set_typec_orientation(typec.orientation_reverse);
         usb::note_typec_attached(typec.attached);
-        if unsafe { platform::bramble::configure_typec_irq(&typec) } {
-            uart::puts("platform: Type-C SPMI IRQ unmasked\n");
-        } else {
-            uart::puts("platform: Type-C SPMI IRQ unavailable; polling retained\n");
-        }
+        // The PMIC child IRQ remains owned by the Fastboot handoff. Reusing
+        // its live parent/child session here would retrigger role teardown.
+        uart::puts("platform: Type-C state observed; handoff writes skipped\n");
         usb::trace_marker(
             usb::TRACE_TYPEC_DONE,
             (typec.sink_mode_written as u32)

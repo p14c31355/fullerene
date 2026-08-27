@@ -10,6 +10,11 @@ fn main() {
     // This cfg is also referenced by the host-built USB protocol tests, so
     // declare it before the AArch64-only build branch below.
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_power)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_typec)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_typec_role)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_pdc)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_smmu)");
     // The AArch64 bootstrap binary is intentionally dependency-free. Avoid
     // the x86_64 kernel's generated userland/assets while building it; those
     // steps require host tools and x86-only target support.
@@ -25,6 +30,11 @@ fn main() {
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_cold_halt_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_power)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_typec)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_typec_role)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_pdc)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_smmu)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_qemu_usb_sim)");
         if platform == "bramble" {
             println!("cargo:rustc-cfg=fullerene_aarch64_bramble");
@@ -47,6 +57,25 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_probe");
         }
+        match env::var("FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES").as_deref() {
+            Ok("power") => println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_power"),
+            Ok("typec") => println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_typec"),
+            Ok("typec-role") => {
+                println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_typec_role")
+            }
+            Ok("pdc") => println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_pdc"),
+            Ok("smmu") => println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_smmu"),
+            Ok("") | Err(_) => {}
+            Ok(other) => panic!(
+                "FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES must be one of power,typec,typec-role,pdc,smmu (got {other:?})"
+            ),
+        }
+        let probe_timeout = env::var("FULLERENE_AARCH64_USB_PROBE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(120);
+        println!("cargo:rustc-env=FULLERENE_USB_PROBE_TIMEOUT_SECS={probe_timeout}");
         if env::var_os("FULLERENE_AARCH64_QEMU_USB_SIM").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_qemu_usb_sim");
         }
@@ -57,6 +86,8 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_COLD_HALT_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_TIMEOUT_SECS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_QEMU_USB_SIM");
         println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64=-T{}",
