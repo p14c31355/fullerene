@@ -459,6 +459,16 @@ extern "C" fn usb_probe_entry() -> ! {
         fullerene_aarch64_usb_gadget_handoff_probe
     )))]
     uart::puts("fullerene usb probe: entry\n");
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_direct)]
+    {
+        // The direct handoff shares the normal Fullerene USB routine, which
+        // emits UART diagnostics before touching DWC3. The fallback probe
+        // deliberately avoids UART so it can isolate the electrical path,
+        // but direct mode must initialize Bramble's GENI console first;
+        // otherwise uart::put_hex would use the PL011 default address.
+        uart::init_qcom_geni(0x0098_8000);
+        uart::puts("fullerene usb probe: direct handoff entry\n");
+    }
 
     #[cfg(not(any(
         fullerene_aarch64_usb_bare_pullup_probe,
@@ -525,7 +535,16 @@ extern "C" fn usb_probe_entry() -> ! {
             }
             usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5254_0000 | attempt); // "RT"
             let result = if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
-                usb::init_usb2_gadget_handoff()
+                if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+                    // Exercise the same non-destructive handoff used by the
+                    // normal Fullerene entry, but keep the probe watchdog and
+                    // automatic recovery around it. If the direct path
+                    // fails, init_usb2_handoff() performs the established
+                    // diagnostic fallback in the same boot attempt.
+                    usb::init_usb2_handoff()
+                } else {
+                    usb::init_usb2_gadget_handoff()
+                }
             } else {
                 usb::init_usb2_pullup_handoff()
             };

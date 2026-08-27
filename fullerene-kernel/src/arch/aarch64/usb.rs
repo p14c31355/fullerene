@@ -5308,6 +5308,14 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             }
         }
         configure_dwc3_global_control();
+        // The device reset above is the ownership boundary for the previous
+        // Fastboot transfer epoch. The direct probe normally enters before
+        // usb_probe_entry's fallback allocator setup, so initialize the
+        // linker-owned event/TRB objects here, after reset and before any
+        // address is published to DWC3.
+        if reset_core {
+            clear_dma_memory();
+        }
 
         // Fastboot already owns the USB clocks and rails, but its QMP state
         // belongs to the old controller session. Reinitialize the combo PHY
@@ -5366,7 +5374,18 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // performed for both cold and Fastboot paths; preserving a live
         // firmware mapping while using a different DMA pool is not a valid
         // non-destructive handoff.
-        let smmu_ready = configure_dwc3_smmu();
+        let smmu_ready = if cfg!(all(
+            fullerene_aarch64_usb_gadget_handoff_probe,
+            fullerene_aarch64_usb_gadget_handoff_no_smmu
+        )) {
+            // Keep the direct probe's no-SMMU differential meaningful: it
+            // must not partially rewrite the Apps-SMMU before testing the
+            // firmware-owned physical=IOVA bypass.
+            trace_event(TRACE_SMMU_PRESERVED, 0, 0, 0, 0, 0);
+            true
+        } else {
+            configure_dwc3_smmu()
+        };
         trace_event(
             TRACE_SMMU_HANDOFF,
             smmu_ready as u32,

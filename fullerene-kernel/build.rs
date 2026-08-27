@@ -10,6 +10,7 @@ fn main() {
     // This cfg is also referenced by the host-built USB protocol tests, so
     // declare it before the AArch64-only build branch below.
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_direct)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_no_smmu)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)");
@@ -45,6 +46,7 @@ fn main() {
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_cold_halt_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_direct)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)");
         println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_no_smmu)");
         println!(
@@ -81,6 +83,9 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_SUPER_SPEED").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_probe");
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_super_speed");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_DIRECT").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_direct");
         }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_no_smmu");
@@ -135,6 +140,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SUPER_SPEED");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_DIRECT");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU");
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_REUSE_FASTBOOT_DMA"

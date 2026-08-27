@@ -95,6 +95,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_probe: bool,
 
+    /// Run the normal non-destructive USB2 handoff first inside the gadget
+    /// probe, retaining the probe's automatic recovery if it fails.
+    #[arg(long)]
+    usb_gadget_handoff_direct: bool,
+
     /// Build the Bramble SuperSpeed gadget handoff probe with EP0 descriptors.
     #[arg(long)]
     usb_gadget_handoff_super_speed_probe: bool,
@@ -521,6 +526,17 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-no-smmu requires a Bramble gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_direct
+        && (!args.usb_gadget_handoff_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-direct requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_reuse_fastboot_dma
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_no_smmu
@@ -607,6 +623,7 @@ fn main() -> io::Result<()> {
             args.usb_gadget_handoff_android_resource_order,
             args.stop_after_stage,
             args.qemu_usb_sim,
+            args.usb_gadget_handoff_direct,
         )?;
         if target.platform == Platform::Bramble
             && matches!(args.command, Action::Run | Action::Debug)
@@ -724,6 +741,7 @@ fn build_aarch64_kernel(
     gadget_handoff_android_resource_order: bool,
     gadget_handoff_stop_after_stage: Option<u32>,
     qemu_usb_sim: bool,
+    gadget_handoff_direct: bool,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
     let mut cargo = Command::new("cargo");
@@ -788,6 +806,9 @@ fn build_aarch64_kernel(
     if qemu_usb_sim {
         cargo.env("FULLERENE_AARCH64_QEMU_USB_SIM", "1");
     }
+    if gadget_handoff_direct {
+        cargo.env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_DIRECT", "1");
+    }
 
     // Android's Bramble bootloader may relocate an arm64 Image. Build the
     // freestanding binary as a static PIE and let the Rust bootstrap apply
@@ -840,6 +861,7 @@ fn run_aarch64_qemu_preflight(
         false,
         None,
         true,
+        false,
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;
     let image = build_aarch64_image(&raw)?;

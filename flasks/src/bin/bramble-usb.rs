@@ -80,6 +80,10 @@ struct LoopArgs {
     super_speed: bool,
     #[arg(long)]
     normal: bool,
+    /// Run the normal non-destructive handoff first, with the probe's
+    /// retained-trace watchdog and automatic recovery still enabled.
+    #[arg(long)]
+    direct_handoff: bool,
     #[arg(long)]
     pullup_only: bool,
     /// Run the minimal USB2 pull-up sequence without DWC3 reset, DMA, or EP0.
@@ -427,6 +431,7 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         irq_route: Some(route),
         super_speed: args.super_speed,
         normal: false,
+        direct_handoff: false,
         pullup_only: false,
         no_smmu: args.no_smmu,
         reuse_fastboot_dma: false,
@@ -445,11 +450,23 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         && (args.super_speed
             || args.pullup_only
             || args.bare_pullup
-            || args.stop_after_stage.is_some())
+            || args.stop_after_stage.is_some()
+            || args.direct_handoff)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--normal cannot be combined with --super-speed or --pullup-only",
+        ));
+    }
+    if args.direct_handoff
+        && (args.super_speed
+            || args.pullup_only
+            || args.bare_pullup
+            || args.stop_after_stage.is_some())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--direct-handoff is only available for the USB2 gadget handoff probe",
         ));
     }
     if args.pullup_only && (args.no_smmu || args.no_core_reset || args.irq_route.is_some()) {
@@ -712,6 +729,8 @@ fn mode_name(args: &LoopArgs) -> &'static str {
         "usb-bare-pullup-probe"
     } else if args.reuse_fastboot_dma {
         "usb-gadget-handoff-reuse-fastboot-dma"
+    } else if args.direct_handoff {
+        "usb-gadget-handoff-direct-probe"
     } else if args.stop_after_stage.is_some() {
         "usb-gadget-handoff-stage-probe"
     } else if args.pullup_only {
@@ -746,6 +765,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         } else {
             "--usb-gadget-handoff-probe".to_owned()
         });
+        if args.direct_handoff {
+            arguments.push("--usb-gadget-handoff-direct".to_owned());
+        }
     }
     arguments.extend([
         "--boot-template".to_owned(),
