@@ -593,6 +593,11 @@ static mut EP0_STATE: Ep0State = Ep0State::Setup;
 static mut CONTROL_IN: bool = false;
 static mut CONTROL_HAS_DATA: bool = false;
 static mut CONFIGURED: bool = false;
+// The standalone handoff probe has a recovery deadline for the no-host case,
+// but an idle, successfully-serviced EP0 is a valid steady state. Keep this
+// separate from CONFIGURED: a descriptor-only host may never issue
+// SET_CONFIGURATION while EP0 is nevertheless healthy.
+static mut PROBE_EP0_PROGRESS: bool = false;
 static mut ENDPOINTS_READY: bool = false;
 static mut DATA_ENDPOINTS_READY: bool = false;
 static mut DATA_REQUEST_SLOTS: [usize; 2] = [usize::MAX; 2];
@@ -890,6 +895,20 @@ pub fn trace_marker(event: u32, status: u32) {
 /// event advances the cursor, while a completely absent USB session does not.
 pub fn trace_head() -> u32 {
     unsafe { read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2)) }
+}
+
+/// Return whether the handoff probe has successfully started at least one
+/// EP0 DATA or STATUS transfer. This is intentionally weaker than
+/// SET_CONFIGURATION: a host may fetch descriptors without configuring the
+/// diagnostic gadget, and that must not look like a hung probe.
+pub fn probe_ep0_progress() -> bool {
+    unsafe { PROBE_EP0_PROGRESS }
+}
+
+fn note_probe_ep0_progress() {
+    unsafe {
+        PROBE_EP0_PROGRESS = true;
+    }
 }
 
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
@@ -3150,7 +3169,9 @@ unsafe fn handle_setup() {
                 read(DSTS),
             );
             EP0_STATE = Ep0State::Data;
-            if !start_transfer(1, addr_of!(EP0_TRBS).cast::<Trb>()) {
+            if start_transfer(1, addr_of!(EP0_TRBS).cast::<Trb>()) {
+                note_probe_ep0_progress();
+            } else {
                 // A failed DATA-IN command must not leave EP0 in the Data
                 // state: the next host request would otherwise be consumed
                 // by a stale state machine with no active TRB.
@@ -3161,7 +3182,9 @@ unsafe fn handle_setup() {
             EP0_STATE = Ep0State::Status;
             // SET_ADDRESS/SET_CONFIGURATION become visible only after this
             // status IN transfer completes, matching gadget-core semantics.
-            if !start_status(1) {
+            if start_status(1) {
+                note_probe_ep0_progress();
+            } else {
                 stall_control(if direction_in { 1 } else { 0 });
             }
         },

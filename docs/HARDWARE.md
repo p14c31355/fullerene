@@ -454,6 +454,42 @@ identity.
    strongly implicates the runtime PDC IRQ ownership mismatch as a major
    cause of the earlier failure.
 
+9. The probe watchdog was then changed to distinguish “no host ever reached
+   EP0” from a valid idle descriptor-only gadget. Once an EP0 DATA or STATUS
+   transfer is successfully started, the probe records progress and enters a
+   stable WFE loop instead of resetting merely because the host becomes
+   quiet. The dedicated probe was rebuilt and booted with:
+
+   ```bash
+   cargo run -q -p flasks -- build --arch aarch64 --platform bramble \
+     --usb-gadget-handoff-probe \
+     --boot-template /tmp/fullerene-stock-template.Uvg3m2/boot.img \
+     --boot-output /tmp/fullerene-bramble-stable-probe.img
+   fastboot -s 26191JECB00076 boot /tmp/fullerene-bramble-stable-probe.img
+   ```
+
+   The host observed SuperSpeed enumeration at approximately 10:09:13 and
+   completed device identification at 10:09:15. The device remained present
+   until approximately 10:20:16, or about eleven minutes. This exceeds the
+   previous watchdog-boundary failure by a wide margin and confirms that the
+   EP0 progress-to-stable transition works on the real Bramble. The eventual
+   disconnect was not issued by the probe's no-progress recovery branch, so
+   the remaining issue is now the post-enumeration idle/link or device-side
+   reset behavior rather than the initial EP0 descriptor exchange.
+
+10. The retry-enabled probe was then booted again with `fastboot boot` (artifact
+    `/tmp/fullerene-bramble-stable-probe-retry.img`, SHA-256
+    `8b49f46dfd40686d696008832fd1fd368ea1ed51248bcfa700c3ed4ad5d3584f`).
+    This run enumerated as SuperSpeed at approximately 10:36:28--10:36:30,
+    and `lsusb -v` completed the full Device, Configuration, Interface,
+    endpoint, and BOS descriptor reads. The host then kept the device present
+    for at least 50 seconds without a new `-110` error. The same session also
+    answered the actual Fastboot protocol: `fastboot devices -l` identified
+    serial `26191JECB00076`, `fastboot getvar product` returned `bramble`, and
+    `fastboot getvar all` completed successfully. This is the first complete
+    real-device boundary from physical attach through descriptor enumeration
+    and Fastboot control transfers.
+
 The relevant official references are:
 
 - [Android Lito USB device tree](https://android.googlesource.com/kernel/msm-extra/devicetree/+/refs/tags/android-11.0.0_r0.56/qcom/lito-usb.dtsi), including the DWC3 IRQ order, DMA pool, clocks, GSI offsets, and bus resources.
@@ -464,11 +500,12 @@ The relevant official references are:
 
 ### Current status and next boundary
 
-The current result is not yet an indefinitely stable USB gadget: the latest
-no-PDC run still ended at the recovery/watchdog boundary. It is, however, no
-longer failing at the original short descriptor-transfer interval. The next
-hardware evidence should come from the retained RAM trace around these
-boundaries:
+The current result is not yet an indefinitely stable USB gadget across every
+independent handoff attempt, but one retry-enabled run survived at least
+eleven minutes and a later run survived at least 50 seconds while also
+answering Fastboot commands. It is no longer failing at the original short
+descriptor-transfer interval. The next hardware evidence should come from the
+retained RAM trace around these boundaries:
 
 ```text
 SETUP received
@@ -479,12 +516,13 @@ EP0 rearm
 ```
 
 The next implementation boundary is to preserve the official distinction
-between runtime device operation and suspend/wakeup ownership while completing
-the remaining Qualcomm platform behavior: QMP/Type-C runtime state, clock and
-reset sequencing, GSI/event handling, DMA/SMMU fault visibility, and the
-Linux-equivalent EP0 command/error/re-arm paths. All further Bramble tests
-continue to use the audited stock template and `fastboot boot`; partition
-flashing is not part of this workflow.
+between runtime device operation and suspend/wakeup ownership while identifying
+the cause of the post-idle disconnect. Priority is retained-trace correlation
+with DWC3 link-status/suspend/hibernation events, followed by QMP/Type-C
+runtime state, clock and reset sequencing, GSI/event handling, DMA/SMMU fault
+visibility, and the Linux-equivalent EP0 command/error/re-arm paths. All
+further Bramble tests continue to use the audited stock template and
+`fastboot boot`; partition flashing is not part of this workflow.
 
 ## Future Platforms
 

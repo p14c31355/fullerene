@@ -313,9 +313,12 @@ global_asm!(
     },
 );
 
-#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 #[unsafe(no_mangle)]
 extern "C" fn usb_probe_irq() {
+    // The assembly vector contains this common entry point even for probe
+    // variants that route every exception to the reset stub. Keep the symbol
+    // linkable for those variants; only the gadget-handoff vector actually
+    // dispatches here.
     let interrupt_id: u64;
     unsafe {
         asm!(
@@ -463,16 +466,40 @@ extern "C" fn usb_probe_entry() -> ! {
             let _ = unsafe { platform::bramble::configure_typec_irq(&typec) };
         }
     }
-    let gadget_ready = if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
-        usb::init_usb2_gadget_handoff()
+    let gadget_ready = if cfg!(any(
+        fullerene_aarch64_usb_gadget_handoff_probe,
+        fullerene_aarch64_usb_pullup_probe
+    )) {
+        // Fastboot may still be completing its controller teardown when the
+        // temporary Image starts. Retry only this handoff boundary: a single
+        // early DWC3/PHY ownership race should not turn into a false negative,
+        // while the bounded count still makes a real failure recoverable.
+        let mut ready = false;
+        for attempt in 0..3u32 {
+            if attempt != 0 {
+                for _ in 0..250_000u32 {
+                    unsafe {
+                        core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+                    }
+                }
+            }
+            usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5254_0000 | attempt); // "RT"
+            let result = if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
+                usb::init_usb2_gadget_handoff()
+            } else {
+                usb::init_usb2_pullup_handoff()
+            };
+            if result {
+                ready = true;
+                break;
+            }
+        }
+        ready
     } else if cfg!(fullerene_aarch64_usb_bare_pullup_probe) {
         usb::init_usb2_bare_pullup_handoff()
     } else if cfg!(fullerene_aarch64_usb_cold_halt_probe) {
         usb::init()
-    } else if cfg!(any(
-        fullerene_aarch64_usb_pullup_probe,
-        fullerene_aarch64_usb_halt_probe
-    )) {
+    } else if cfg!(fullerene_aarch64_usb_halt_probe) {
         usb::init_usb2_pullup_handoff()
     } else {
         usb::init_usb2_handoff()
@@ -581,6 +608,18 @@ extern "C" fn usb_probe_entry() -> ! {
                 // EVENT_OFFSET/GEVNTCOUNT ordering.
                 unsafe { asm!("wfe", options(nomem, nostack)) };
                 usb::service_deferred_platform();
+                if usb::probe_ep0_progress() {
+                    // An idle descriptor-only gadget is healthy after one
+                    // EP0 transfer has been accepted. Do not mistake the
+                    // absence of further host traffic for a failed handoff;
+                    // retain the no-host watchdog only until EP0 makes this
+                    // first progress boundary.
+                    usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5354_4142); // "STAB"
+                    loop {
+                        unsafe { asm!("wfe", options(nomem, nostack)) };
+                        usb::service_deferred_platform();
+                    }
+                }
                 let head = usb::trace_head();
                 if head != last_head {
                     last_head = head;
