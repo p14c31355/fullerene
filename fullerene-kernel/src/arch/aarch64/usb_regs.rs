@@ -13,6 +13,11 @@ pub const DSTS_DEVCTRLHLT: u32 = 1 << 22;
 pub const DSTS_DCNRD: u32 = 1 << 29;
 pub const DSTS_SUPERSPEED: u32 = 4;
 
+pub const GEVNTCOUNT_MASK: u32 = 0xfffc;
+pub const GEVNTCOUNT_EHB: u32 = 1 << 31;
+pub const GEVNTSIZ_INTMASK: u32 = 1 << 31;
+pub const GEVNTSIZ_SIZE_MASK: u32 = 0xffff;
+
 pub const DEVTEN_DISCONNECT: u32 = 1 << 0;
 pub const DEVTEN_USB_RESET: u32 = 1 << 1;
 pub const DEVTEN_CONNECT_DONE: u32 = 1 << 2;
@@ -20,6 +25,12 @@ pub const DEVTEN_LINK_STATUS_CHANGE: u32 = 1 << 3;
 pub const DEVTEN_WAKEUP: u32 = 1 << 4;
 pub const DEVTEN_HIBERNATION_REQUEST: u32 = 1 << 5;
 pub const DEVTEN_SUSPEND: u32 = 1 << 6;
+// Linux enables these diagnostic/controller events in
+// dwc3_gadget_enable_irq(); they are useful even when the early path polls
+// the event ring because the records remain available to the retained trace.
+pub const DEVTEN_ERRATIC_ERROR: u32 = 1 << 9;
+pub const DEVTEN_CMD_COMPLETE: u32 = 1 << 10;
+pub const DEVTEN_OVERFLOW: u32 = 1 << 11;
 
 pub const DEVICE_EVENT_KIND_SHIFT: u32 = 8;
 pub const DEVICE_EVENT_KIND_MASK: u32 = 0x0f;
@@ -115,6 +126,21 @@ mod tests {
         assert_eq!(DSTS_DEVCTRLHLT, 1 << 22);
         assert_eq!(DSTS_DCNRD, 1 << 29);
         assert_ne!(DSTS_DCNRD, 1 << 23); // COREIDLE, not DCNRD
+    }
+
+    #[test]
+    fn gadget_controller_event_enable_bits_match_upstream_layout() {
+        assert_eq!(DEVTEN_ERRATIC_ERROR, 1 << 9);
+        assert_eq!(DEVTEN_CMD_COMPLETE, 1 << 10);
+        assert_eq!(DEVTEN_OVERFLOW, 1 << 11);
+    }
+
+    #[test]
+    fn event_buffer_mask_and_count_bits_match_upstream_layout() {
+        assert_eq!(GEVNTCOUNT_MASK, 0xfffc);
+        assert_eq!(GEVNTCOUNT_EHB, 1 << 31);
+        assert_eq!(GEVNTSIZ_INTMASK, 1 << 31);
+        assert_eq!(GEVNTSIZ_SIZE_MASK, 0xffff);
     }
 
     #[test]

@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+default-run = "flasks"
 
 [lib]
 name = "flasks"
@@ -15,6 +16,10 @@ crate-type = ["lib"]
 [[bin]]
 name = "flasks"
 path = "src/main.rs"
+
+[[bin]]
+name = "bramble-usb"
+path = "src/bin/bramble-usb.rs"
 
 [dependencies]
 isobemak = "0.4.1"

@@ -418,11 +418,15 @@ identity.
    PDC pin ranges, and GIC SPI routes. The code now keeps platform IRQs
    separate from DWC3 event-ring consumption.
 
-4. An IRQ-only DWC3 probe successfully enumerated as `18d1:4ee0` and stayed
-   present until the intentional roughly 120-second recovery watchdog. This
-   established that the DWC3 controller IRQ path and the basic gadget
-   handoff could work on the device. Adding the power-event IRQ did not cause
-   an early failure either.
+4. An IRQ-only DWC3 probe left a host-visible `18d1:4ee0` device present until
+   the intentional roughly 120-second recovery watchdog. At the time this was
+   treated as evidence of a working gadget handoff. A later identity check
+   corrected that interpretation: `18d1:4ee0` is the bootloader Fastboot
+   identity, while the Rust `Ep0Simulator` descriptor is `1234:0001`.
+   Therefore these observations establish only that the bootloader USB
+   session/controller boundary can remain visible; they do not prove that
+   Fullerene reached its own EP0 descriptor path. Adding the power-event IRQ
+   did not cause an early failure either.
 
 5. Enabling the Type-C parent IRQ, even with deferred PMIC handling, caused
    early disconnects in roughly 8--19 seconds. Writing the PMIC role/sink-only
@@ -447,12 +451,14 @@ identity.
    available for isolated comparison, but is no longer the normal gadget
    route.
 
-8. The resulting no-PDC runtime image enumerated successfully at SuperSpeed
-   as `18d1:4ee0`, remained present for about 95 seconds, and then reset at
-   the expected watchdog boundary. No `-110` appeared in that run. This is a
-   substantial improvement over the 35--38 second PDC-enabled disconnect and
-   strongly implicates the runtime PDC IRQ ownership mismatch as a major
-   cause of the earlier failure.
+8. The resulting no-PDC runtime image still left `18d1:4ee0` visible at
+   SuperSpeed for about 95 seconds and then reset at the expected watchdog
+   boundary. No `-110` appeared in that run. The duration is useful evidence
+   about the handoff/reset boundary and is a substantial improvement over the
+   35--38 second PDC-enabled disconnect, but the later descriptor identity
+   check means it cannot be called Fullerene gadget enumeration. The PDC
+   ownership mismatch remains a plausible cause of the earlier disconnect,
+   but this experiment did not yet prove kernel-side EP0 progress.
 
 9. The probe watchdog was then changed to distinguish “no host ever reached
    EP0” from a valid idle descriptor-only gadget. Once an EP0 DATA or STATUS
@@ -468,44 +474,517 @@ identity.
    fastboot -s 26191JECB00076 boot /tmp/fullerene-bramble-stable-probe.img
    ```
 
-   The host observed SuperSpeed enumeration at approximately 10:09:13 and
-   completed device identification at 10:09:15. The device remained present
-   until approximately 10:20:16, or about eleven minutes. This exceeds the
-   previous watchdog-boundary failure by a wide margin and confirms that the
-   EP0 progress-to-stable transition works on the real Bramble. The eventual
-   disconnect was not issued by the probe's no-progress recovery branch, so
-   the remaining issue is now the post-enumeration idle/link or device-side
-   reset behavior rather than the initial EP0 descriptor exchange.
+   The host observed an `18d1:4ee0` SuperSpeed device at approximately
+   10:09:13 and completed bootloader-style device identification at 10:09:15.
+   The device remained present until approximately 10:20:16, or about eleven
+   minutes. Because the identity was the bootloader Fastboot identity rather
+   than the Rust `1234:0001` identity, this run does not confirm the
+   EP0-progress-to-stable transition. It remains useful as a long-lived
+   handoff/reset observation, but the post-boot kernel gadget boundary was
+   not reached or was not made visible.
 
 10. The retry-enabled probe was then booted again with `fastboot boot` (artifact
     `/tmp/fullerene-bramble-stable-probe-retry.img`, SHA-256
     `8b49f46dfd40686d696008832fd1fd368ea1ed51248bcfa700c3ed4ad5d3584f`).
-    This run enumerated as SuperSpeed at approximately 10:36:28--10:36:30,
-    and `lsusb -v` completed the full Device, Configuration, Interface,
-    endpoint, and BOS descriptor reads. The host then kept the device present
-    for at least 50 seconds without a new `-110` error. The same session also
-    answered the actual Fastboot protocol: `fastboot devices -l` identified
-    serial `26191JECB00076`, `fastboot getvar product` returned `bramble`, and
-    `fastboot getvar all` completed successfully. This is the first complete
-    real-device boundary from physical attach through descriptor enumeration
-    and Fastboot control transfers.
+    The host again observed `18d1:4ee0`; a full `lsusb -v` read was possible
+    in one interval and the device remained present for at least 50 seconds.
+    However, `18d1:4ee0`, `Google`, `Pixel 4a (5G)`, and the Fastboot string
+    identify the bootloader, not the Rust gadget descriptor (`1234:0001`).
+    The later automated run made the boundary explicit: the old
+    `18d1:4ee0` device was still present immediately after the boot command,
+    then disconnected at approximately 10:49:03, and no `1234:0001` device
+    appeared. The earlier post-boot `fastboot getvar` success therefore
+    measured the bootloader, not Fullerene's gadget.
+
+11. The host verification harness was corrected to require this identity
+    transition. It now checks Fastboot `product=bramble` before the handoff,
+    waits for `18d1:4ee0` to disappear after `fastboot boot`, and accepts
+    post-boot enumeration only as `1234:0001`, followed by descriptor capture
+    and a hold interval. A missing transition is recorded as a failure with
+    kernel/build/boot logs rather than being reported as USB success. The
+    harness is `cargo run -q -p flasks --bin bramble-usb -- loop`; it never
+    invokes `flash`, `erase`, or reboot.
+
+12. A linker-layout audit found that the probe's 2 KiB-aligned exception
+    vector table was in the same `.text.boot` section as `_start`. That moved
+    the first boot instruction to `0x80080800`, while the generated Image and
+    relocation bootstrap use `0x80080040` as the Bramble payload base. The
+    vectors are now emitted into the dedicated `.text.exception_vectors`
+    section. The rebuilt probe reports entry point `0x80080040`, keeps the
+    vectors separately aligned at `0x80084800`, and passes the Bramble boot
+    audit. This is the next candidate fix for the missing `1234:0001`
+    post-boot identity; it still requires a fresh physical Fastboot run.
+
+13. The new harness also ran the same section-fixed probe with
+    `--boot-uncompressed`. The build and boot-image audit passed, but Bramble
+    rejected the temporary image with `FAILError verifying the received
+    boot.img: Unsupported`. This isolates the current device path to the
+    generated `Image.lz4` form; the uncompressed variant is not accepted by
+    this bootloader and is not a viable hardware comparison on its own.
+
+14. A compile-time SMMU differential was added as
+    `--usb-gadget-handoff-no-smmu`, with the host harness exposed as
+    `cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu`. This path does not read or modify
+    the Apps-SMMU registers and relies on the Fastboot-owned physical=IOVA
+    bypass while keeping Fullerene's DMA objects inside the declared Bramble
+    pool. The build and Android boot-image audit passed (`kernel=56221` bytes).
+    The physical run still produced neither `1234:0001` nor a replacement
+    bootloader device within 30 seconds; the host saw only the expected
+    Fastboot USB disconnect. Because the then-current probe disabled its
+    recovery timer immediately after init, that run left the phone in a
+    no-USB state and required manual recovery.
+
+15. The probe recovery boundary was corrected after that run. INTID 30 is the
+    EL1 physical-timer PPI, not a Qualcomm USB resource, so the IRQ handler now
+    handles it explicitly and resets through the existing PS_HOLD/PSCI path.
+    The timer remains armed until the first EP0 DATA or STATUS transfer and is
+    disabled only after that progress point. The harness correspondingly waits
+    for watchdog recovery after an enumeration timeout. This improves
+    unattended iteration safety but does not yet prove USB enumeration on
+    hardware; a fresh compressed-image run is still required after the phone
+    is returned to Fastboot.
+
+16. The handoff harness now captures Fastboot `getvar all` before the handoff,
+    records boot-to-enumeration timing and the host's USB topology, and can
+    require an actual SuperSpeed link with
+    `cargo run -q -p flasks --bin bramble-usb -- loop --super-speed`. The corresponding
+    `--usb-gadget-handoff-super-speed-probe` build variant preserves the
+    Fastboot-owned clock/rail domain, resets only the DWC3 device state, then
+    reinitializes the QMP combo PHY before publishing the event ring and
+    512-byte EP0 configuration. Its compressed Bramble artifact passed the
+    QEMU preflight and Android v3 boot-image audit. No physical SuperSpeed
+    Fullerene identity has been claimed yet because the host has not observed
+    `1234:0001` after the bootloader disconnect.
+
+17. The same harness now exposes the existing Qualcomm IRQ comparison routes
+    (`power`, `typec`, `typec-role`, `pdc`, and `smmu`) through `--irq-route`.
+    The selected route is passed only to the AArch64 probe build, so each
+    comparison still uses the audited stock template and `fastboot boot`.
+    This makes the Linux-style split between DWC3 event-ring IRQs, Type-C
+    threaded work, power events, PDC parents, and SMMU faults reproducible
+    from the host without editing build environment variables by hand.
+
+18. The IRQ route matrix was rebuilt locally before another hardware attempt.
+    `power`, `typec`, `typec-role`, `pdc`, and `smmu` all passed the QEMU
+    preflight, AArch64 probe build, Image.lz4 generation, and Bramble boot
+    audit. The `typec` and `typec-role` variants are larger because they carry
+    the PMIC role/parent-IRQ path; none of these compile results is evidence
+    of real-device enumeration until the host observes `1234:0001`.
+
+19. The SuperSpeed assertion was tightened to resolve the Linux USB Bus/Device
+    number for `1234:0001` and match that device's `lsusb -t` node, rather than
+    accepting a `5000M` root hub elsewhere on the host. This prevents a false
+    SuperSpeed PASS when Fullerene is actually attached at USB2 or absent.
+
+20. A static address audit found that the standalone probe's assembly GIC
+    redistributor address was `0x017a6000`, while the Bramble platform contract
+    is `0x17a60000`. The missing hexadecimal digit could prevent both the
+    physical-timer recovery PPI and USB SPI path from being initialized. The
+    probe now derives and loads the full platform `GICR_BASE` value; a new
+    compressed-image hardware run is required before attributing any remaining
+    failure to PHY, SMMU, or EP0.
+
+21. The gadget-probe handoff now establishes an explicit DMA ownership
+    boundary. After the DWC3 device reset has stopped the Fastboot-owned
+    controller, it clears and reseeds the Fullerene USB DMA allocator before
+    publishing the new event ring, endpoint tables, and TRBs. This prevents
+    stale Fastboot DMA contents or allocator state from being reused by the
+    probe. The handoff also reapplies the active USB2 Femto-PHY settings after
+    that reset, matching the ordering used by the normal platform path. The
+    change passed the Fullerene kernel tests, Flasks tests, formatting and
+    diff checks, QEMU preflight, AArch64 Image.lz4 generation, and Bramble
+    boot-image audit. It has not yet been exercised on a physical Bramble;
+    no `1234:0001` enumeration is claimed.
+
+22. The Fastboot gadget probe now connects the existing read-only PM8150B
+    Type-C observer to its real entry path. Before DWC3 endpoint setup it
+    records the platform-powered state, discovers the Type-C APID, reads the
+    current device/host role and cable orientation, and retains that state for
+    deferred role polling. It does not rewrite PMIC mode or VBUS registers;
+    the optional Type-C IRQ variants continue to use the separate explicit
+    role-programming path. A successful observation supplies the
+    `Powered -> Attached -> Running` runtime transition used by the normal
+    Qualcomm gadget path; a later attach event now performs the same
+    `Powered -> Attached` transition during deferred polling. An SPMI read
+    failure remains non-fatal for the DWC3 diagnostic. The change passed the
+    Fullerene kernel tests, Flasks
+    tests, formatting and diff checks, QEMU preflight, AArch64 Image.lz4
+    generation, and Bramble boot-image audit. It still has no physical
+    `1234:0001` enumeration result.
+
+23. Three post-change physical runs were completed from the same audited
+    stock template. The standard USB2 gadget probe (artifact SHA-256
+    `ef28c1ee7a356657178c24ed102b2dfe336ed0b5cba31fdc6b37d12fac00b476`)
+    passed `fastboot boot`, but produced no `1234:0001`: the host saw a
+    temporary `18d1:4ee7` SuperSpeed ADB/charging identity and then the
+    bootloader's `18d1:4ee0` again. The no-SMMU differential (artifact SHA-256
+    `e974076614e886837ac603eec8d7a989d5045858c1689d3da6d29b577c96a43f`)
+    showed the same missing Fullerene identity; after that run ADB confirmed
+    stock Android on slot `_b` (`google/bramble/bramble:14/...`) with the
+    vendor 4.19 kernel. The SuperSpeed/QMP probe (artifact SHA-256
+    `5a04f0a57a1a7da5face8b6ba5a9bd4b233095360485e44a94759055ec5864e1`)
+    disconnected the bootloader but produced neither `1234:0001` nor a
+    Fastboot/ADB replacement during the recovery window. These runs show that
+    SMMU bypass and QMP reinitialization alone do not yet reach the Fullerene
+    descriptor path. The harness now records the `18d1:4ee7` fallback
+    immediately, including its USB descriptor and read-only ADB state, instead
+    of misclassifying it as an unexplained timeout. The later Type-C IRQ
+    comparison exposed a timing gap in that detector, which is now closed for
+    both the initial enumeration window and watchdog-recovery window.
+
+24. The Type-C IRQ comparison was then run from a manually restored Fastboot
+    screen with `--irq-route typec`, using the same no-flash `fastboot boot`
+    path. Its audited artifact SHA-256 was
+    `75a8d7d85bd212da8cea6f0c94d47ab57ef86dcd8f7d00be74cf992dd2b77f2d`.
+    The image was accepted and the bootloader disappeared, but the Fullerene
+    identity never appeared. Host USB logs showed the same sequence as the
+    standard probe: `18d1:4ee7` at SuperSpeed after about 40 seconds, followed
+    by `18d1:4ee0` after the recovery/reset path. Thus adding the explicit
+    PMIC Type-C role programming and Type-C parent IRQ did not yet move the
+    failure into the Fullerene descriptor/EP0 path. The harness was updated
+    to classify a late `18d1:4ee7` as stock Android fallback even when it
+    appears during the 75-second recovery window.
+
+25. The PDC IRQ comparison was run next from Fastboot, enabling the Android
+    DT's DP-HS, SuperSpeed, and DM-HS PDC parent routes (`--irq-route pdc`).
+    Its audited artifact SHA-256 was
+    `d8a7392963666fa9ab08a1c8b1dd92af710fe76f11c4956031261ec41e2204d9`.
+    The image was accepted and the bootloader disconnected, but no
+    `1234:0001` device appeared. The host observed `18d1:4ee7` as a SuperSpeed
+    ADB-capable stock fallback, and read-only ADB reported slot `_b`, the
+    Google Android 14 fingerprint, and the vendor 4.19 kernel. This places
+    the PDC route below the current missing boundary: adding the documented
+    auxiliary PHY IRQs still does not make the Fullerene EP0 device visible.
+
+26. A valid `--no-core-reset` A/B was then repeated after registering its
+    Cargo environment variable with `rerun-if-env-changed` (the earlier run
+    before that registration is discarded as an invalid comparison). The
+    rebuilt artifact SHA-256 was
+    `62235fedcdd82bdcc3cd0c1f6d3352ecfb1ed23e4b54c2c15b5deba6328adda1`.
+    Omitting DWC3 CSFTRST while retaining the halted-controller boundary did
+    not produce `1234:0001`; the host again saw `18d1:4ee7` and ADB confirmed
+    the same stock Android 14/vendor-4.19 fallback. This rules out the core
+    reset alone as the sufficient cause of the current missing attach and
+    shifts the next probe toward the pre-EP0 DWC3/PHY state, with retained
+    trace retrieval still required to identify the exact failing stage.
+
+27. The next comparison implemented the Android/Linux DWC3 core-global setup
+    at the post-reset boundary. The probe now clears inherited `SCALEDOWN` and
+    `DISSCRAMBLE` state, preserves the Lito DT's `disable-clk-gating` setting,
+    and sets `U2RSTECN` only when the runtime `GSNPSID` identifies a DWC3
+    revision older than 1.90a. The revision-dependent write is recorded in
+    the retained USB trace and is not applied to an unrecognised core. The
+    change passed formatting, diff, shell syntax, 91 Fullerene kernel tests,
+    QEMU preflight, Image.lz4 generation, and Bramble boot-image audit. Two
+    physical `fastboot boot` runs from Fastboot accepted the audited image but
+    still produced no `1234:0001`; both fell back to stock Android
+    (`bootreason=watchdog`, `18d1:4ee7`) after the bootloader disconnect. This
+    does not advance the observed boundary into EP0 and leaves retained-trace
+    retrieval as the next diagnostic requirement.
+
+28. The same revision was exercised with the separate `--usb-pullup-probe`,
+    which intentionally omits EP0/DMA setup and tests only the physical
+    reconnect path. Its compressed Bramble artifact passed QEMU preflight and
+    the boot-image audit, and `fastboot boot` was accepted, but the host saw
+    no new USB attach at all during the 70-second observation window. The
+    handset did not return as either Fastboot or ADB afterward, so this probe
+    required manual recovery to the red-triangle Fastboot screen. This is a
+    stronger pre-EP0 failure signal than the gadget probe's stock Android
+    fallback; it does not indicate a descriptor failure.
+
+29. That pullup-only run also exposed a harness bug: successful pullup
+    initialization stopped the assembly recovery timer before entering its
+    intentionally indefinite polling loop. If the physical handoff then
+    produced no attach, the temporary image could strand the handset instead
+    of returning it to Fastboot. The timer is now kept armed for
+    `--usb-pullup-probe`; the gadget-handoff probe retains its existing EP0
+    progress gate, while unrelated modes keep their prior behavior. The
+    harness now exposes this exact diagnostic as `--pullup-only`, so its
+    build/audit/boot/log path is reproducible without a hand-written command.
+    The rebuilt local artifact is
+    `/tmp/fullerene-bramble-pullup-watchdog.img` (SHA-256
+    `7d936adf8459545e26ff981f0c19464ee484b4b1dac643f79997525fa87497eb`).
+    Formatting, diff checks, Flasks tests, and all 91 Fullerene kernel tests
+    pass after this change; the physical rerun is pending a host-visible
+    Fastboot device.
+
+30. The corrected `--pullup-only` path was then exercised from a host-visible
+    Fastboot session. The audited compressed image was accepted by `fastboot
+    boot` (artifact SHA-256 `7d936adf8459545e26ff981f0c19464ee484b4b1dac643f79997525fa87497eb`),
+    and the host recorded the expected `18d1:4ee0` disconnect at 12:35:53,
+    but no `1234:0001`, Android fallback, or Fastboot device returned during
+    the 75-second recovery window. Thus the newly retained IRQ watchdog was
+    not observable on this hardware run. A second recovery layer now checks
+    `CNTPCT_EL0` from the pullup polling loop and invokes the same reset path
+    after 60 seconds; its rebuilt artifact is
+    `/tmp/fullerene-bramble-pullup-pollwatchdog.img` (SHA-256
+    `27cae9838b41340c8f6f59a0feed62bc31680b3186f5366ac103cd55dc4d9413`).
+    The latter has passed QEMU preflight, the Bramble boot audit, formatting,
+    diff checks, Flasks tests, and all 91 Fullerene kernel tests, but still
+    needs a fresh physical run after manual Fastboot recovery.
+
+31. The retained trace now has a host-visible path when EP0 does enumerate.
+    The device descriptor advertises serial-string index 3; the hardware EP0
+    path fills that UTF-16 string as `FUTR-<trace-head>-<last-event>`, and the
+    harness records the value alongside `lsusb -v`. This does not replace the
+    raw 256-entry trace or solve a pre-attach failure, but it makes the first
+    committed EP0 boundary observable without UART and keeps the diagnostic
+    in the same automated enumeration loop. The retained-record reader now
+    validates the `FUTR` magic and trace version before exposing a cursor, so
+    stale or uninitialised RAM cannot masquerade as evidence. The protocol
+    regression test passes with 92 Fullerene kernel tests total; the rebuilt
+    pullup/trace artifact passed QEMU preflight and the Bramble boot audit
+    (`kernel=56341`, SHA-256
+    `a19d6e3d8ae00cce850e215236737d376dcd990505d3eb2b034d9e0cc2783637`).
+    The host-side trace string still needs a physical gadget-enumeration run;
+    the current host session is not exposing the handset as Fastboot.
+
+32. The pullup-only recovery loop was corrected to remain strictly a physical
+    probe. It no longer calls `usb::poll()`, because that would read and
+    potentially consume stale Fastboot event-ring state even though this mode
+    intentionally never owns DWC3 events, TRBs, DMA, or SMMU state. Recovery
+    now uses only the architectural counter and the existing reset deadline.
+    The rebuilt artifact passed QEMU preflight and the Bramble boot audit
+    (`kernel=56341`, SHA-256
+    `511e25847cf9c59677106aae8111a0c6ce1c82715ee5c6dbfadecbe317f2b67d`).
+    The first physical run of this corrected version is pending a host-visible
+    Fastboot USB device.
+
+33. The USB2-only Qualcomm UTMI/PIPE clock handoff was tightened to match the
+    upstream glue's timing contract. The three register stages remain in the
+    same order, but each transition now uses the architectural timer for a
+    100-us minimum delay; the previous 100,000-NOP approximation could become
+    shorter than Linux's `usleep_range(100, 1000)` on a fast boot CPU. The
+    rebuilt pullup-only image passed QEMU preflight and the Bramble boot audit
+    (`kernel=60454`, SHA-256
+    `2afbd10454892e1c566fbfab3153d9b943c6ff087420b79c63a4c517d90a5d0c`).
+    The normal `--usb-gadget-handoff-probe` variant was rebuilt with the same
+    change and also passed QEMU preflight and the Bramble boot audit (`kernel=64566`,
+    SHA-256 `2e7262410c4cb8e398f0f5d0aae8d3bbe1fd54f664e2b52c2db63d98667dd350`).
+    Kernel/Flasks tests, formatting, and diff checks pass. A physical run is
+    still pending because the manually selected Fastboot screen is currently
+    not visible to the host as `18d1:4ee0`.
+
+34. The DWC3 reset timing was also made frequency-independent. The 50-ms
+    post-`CSFTRST` handoff delay and the 100-ms PHY-reset release delay (plus
+    the 1-ms settling delay) now use the architectural counter instead of
+    fixed NOP counts. This keeps the Android/Linux reset timing contract
+    stable across CPU frequencies. The rebuilt pullup-only artifact passed
+    QEMU preflight and the Bramble boot audit (`kernel=60454`, SHA-256
+    `38de47eef40282f7fee68ff99af5f32e4ff00ca45f69da1978ae60026bfa9da5`).
+    Kernel/Flasks tests, formatting, and diff checks pass. No physical boot
+    was issued because the host still cannot see the manually selected
+    Fastboot device.
+
+35. The DWC3 Run/Stop handoff wait was aligned with the upstream gadget path.
+    Instead of CPU-dependent NOP counts, both the halt-before-configuration
+    and running-after-connect checks now poll `DSTS.DEVCTRLHLT` every 1 ms for
+    up to 2 seconds, matching Linux's 2,000-iteration timeout. This prevents
+    a fast CPU from issuing `DEPSTARTCFG` or EP0 traffic while the controller
+    is still draining the Fastboot session. Pullup-only and normal
+    gadget-handoff images both passed QEMU preflight and the Bramble boot
+    audit: pullup SHA-256
+    `a071eef2a404cad4f97c0fab44bd5914b13f006aa8d3a45661783d9c1758ee48`,
+    normal gadget SHA-256
+    `0565b8571ec24a62769928f4676daae7f0bae85cd48c5dc2a8e4dbeb7d3f2e4f`.
+    Kernel/Flasks tests, formatting, and diff checks pass. Physical execution
+    remains pending host-visible Fastboot USB.
+
+36. The explicit SuperSpeed handoff variant was rebuilt after the timing
+    changes. It uses the QMP combo-PHY path, the same DWC3 Run/Stop wait, the
+    Apps-SMMU/GSI setup, and the retained EP0 trace, and passed QEMU preflight
+    plus the Bramble boot audit (`kernel=64566`, SHA-256
+    `b4133e9012c4718783531d3b60a38805bb666a362cf0e02e7c0f6e24d1a0f2ae`).
+    It is ready for the next host-visible Fastboot run; no physical boot has
+    been issued in this state because `fastboot devices` remains empty.
+
+37. The non-endpoint portion of Linux's `__dwc3_gadget_start()` was added to
+    the normal Fullerene gadget paths. After the DCFG speed/address fields are
+    selected, the handoff now clears the correct `GRXTHRCFG.PKTCNTSEL` bit for
+    the detected DWC3 IP, derives `DCFG.NUMP` from `GHWPARAMS0.MDWIDTH` and
+    `GHWPARAMS7.RAM2_DEPTH`, caps it at 16, and sets `DCFG.IGNSTRMPP`.
+    Bramble's `0x5533...` controller therefore uses the legacy DWC3 threshold
+    bit; DWC_usb31/32 IDs use their separate threshold bit. The calculation is
+    saturating so invalid or unexpectedly small hardware parameters cannot
+    wrap into a large NUMP value. Pullup-only mode remains unchanged and does
+    not read or modify these gadget-controller registers. The pure calculation
+    regression is covered by the 92 Fullerene kernel tests. Both updated
+    artifacts passed QEMU preflight and the Bramble boot audit:
+    USB2 gadget SHA-256
+    `0b4619e7cc08a9f8d5102d5ebb1f089cbbf121a4848ab7c75a6c2b4e57bb19e7`,
+    SuperSpeed gadget SHA-256
+    `0c9ce4f2c8422ab5b75dbaaca104de6941b34e62ba477645892f7c50b73881fa`.
+    The host-side check still found no Fastboot USB device, so neither image
+    was sent to the phone.
+
+38. The DWC3 device-event mask was brought closer to Linux's gadget start
+    path. The three gadget paths now also enable erratic-error, command-
+    complete, and event-overflow notifications (DEVTEN bits 9--11), while the
+    existing event consumer records them in the retained trace as controller
+    errors. This makes an event-ring/controller failure distinguishable from
+    an EP0 descriptor failure when the host sees the device. USB2 gadget,
+    SuperSpeed gadget, and normal Bramble images all passed QEMU preflight and
+    the Bramble boot audit: `kernel=64566` for both probe variants and
+    `kernel=93438` for the normal image. Their SHA-256 values are respectively
+    `1a4bcb29afe4eb9f113fc150803a93f1505c799d4ca2cef4ba8ec5be6e52513f`,
+    `8b8a2d518af83de2319f243a9921214e260325e263e91f2f24fadbd640f3f4fb`, and
+    `4e6a70c43a751e461d273e7afd036280525765517736f880eb771d6d1b5d3b30`.
+    Kernel tests (93), Flasks tests (17+3), formatting, and diff checks pass.
+    No physical boot was issued because the host still exposes no Fastboot
+    device.
+
+39. The event-ring IRQ boundary was aligned with Linux's event-buffer handler.
+    When `GEVNTCOUNT` reports entries, Fullerene now sets
+    `GEVNTSIZ.INTMASK` before consuming them, acknowledges the consumed count,
+    and only then clears the mask. This prevents an IRQ re-entry from racing
+    the retained-ring cursor and event acknowledgement while preserving the
+    existing polling fallback. The corresponding DWC3 mask/count constants
+    have regression tests. USB2 gadget, SuperSpeed gadget, and normal Bramble
+    images passed QEMU preflight and the Bramble boot audit; their SHA-256
+    values are `c94cc35dc1e09fa96ee4bab4a3201f851f1408ae134c29ca837611dd50c34162`,
+    `541d87897c764b40d179cb4366ef44440bc2d3562cabee3b639688371f73bf2f`, and
+    `91bac411aeb2f04f0994cccf8882759ec5cb0c39a18e7576cde88d3534250e19`.
+    Kernel tests (94), Flasks tests (17+3), formatting, and diff checks pass.
+    No physical boot was issued because the host still exposes no Fastboot
+    device.
+
+40. DWC3 reset and runtime-PM waits were made frequency-independent and
+    generation-aware. `CSFTRST` now follows Linux's 1-us polling for the
+    legacy DWC3 IP used by Bramble, while DWC_usb31 1.90a+ and DWC_usb32 use
+    the 20-ms cadence; the legacy 50-ms post-reset delay is applied only to
+    DWC_usb31 1.80a and earlier. Runtime suspend/resume now reuses the same
+    2-second `DSTS.DEVCTRLHLT` Run/Stop wait and releases the GSI doorbell on
+    a failed suspend transition. This removes the remaining CPU-speed-
+    dependent reset/runtime loops without changing the Type-C or PHY reset
+    ordering. USB2 gadget, SuperSpeed gadget, and normal Bramble images all
+    passed QEMU preflight and the Bramble boot audit; their SHA-256 values are
+    `e4e3c75742c5135dee0073529174b53821a1cb4f1ca000468b3671bd185d0f1a`,
+    `ebc47a9543398db9c47f2f2e78fb3f944d791e45d80e40c97f32ba25a8de29ac`, and
+    `7f8f69e9bd853c5f8864a7a435c6f59f2a02b9ee70a5187806443488beae03db`.
+    Kernel tests (94), Flasks tests (17+3), formatting, and diff checks pass.
+    No physical boot was issued because the host still exposes no Fastboot
+    device.
+
+41. The reset/runtime implementation was then tightened against the exact
+    Linux generation split, and endpoint-command polling was bounded in the
+    same units as Linux. Legacy DWC3 keeps the 1-us CSFTRST cadence; DWC_usb31
+    1.90a+ and DWC_usb32 use the 20-ms cadence; only DWC_usb31 <=1.80a gets
+    the additional 50-ms settling delay. Run/Stop transitions use the
+    existing device-halted/running wait helpers, and a failed suspend releases
+    the GSI doorbell before returning. `send_ep_command_result()` now uses a
+    constant 5000-iteration command-completion bound instead of a
+    CPU-frequency-dependent delay. USB2 gadget, SuperSpeed gadget, and normal
+    Bramble images all passed QEMU preflight and the Bramble boot audit; their
+    SHA-256 values are `a4106670763f16f146032bde99bf96a4cbab1d4d0d66a453f5740e9e195c3e17`,
+    `9b2d13b0c6dbb92fbe8918d2d1a9fa8a09fe83954968ec36edd00ce6f83363ba`, and
+    `95d9fa46e84f2faa204845e87aeb4458e50fe1218b234ca6e3dabdb9c20f2c65`.
+    Kernel tests (94), Flasks tests (17+3), formatting, and diff checks pass.
+    No physical boot was issued because the host still exposes no Fastboot
+    device.
+
+42. The remaining Run/Stop boundary was aligned with Linux's
+    `dwc3_gadget_run_stop()`: USB2 `SUSPHY` and `ENBLSLPM` are saved and
+    cleared before every controller start/stop, `DSTS.DEVCTRLHLT` is polled,
+    and the saved PHY low-power state is restored afterward. The common helper
+    now covers the USB2 pull-up probe, EP0 handoff, normal gadget start, and
+    runtime suspend/resume paths. This closes a platform-level race that was
+    previously handled only inside endpoint-command submission. The new
+    artifacts passed QEMU preflight and the Bramble boot audit; their SHA-256
+    values are `d88ca31c3c6235201275d9699593a367beb24a25b56809f085c5553bd520b221`,
+    `590c9633dd6aafa3813a36f0d1403b02534be8bb85cd041b24ca95243313aebf`, and
+    `75d9c7744d3e859244f62a650aa5bcdf3f80cae5b725b2b57f36dcaa6b0612db`.
+    Kernel tests (94), Flasks tests (17+3), formatting, diff checks, and the
+    USB loop script syntax check pass. No physical boot was issued because
+    the host still exposes no Fastboot device.
+
+43. The Type-C parent-IRQ path was corrected to match the Linux threaded
+    role-switch boundary. Deferred handling now rereads PM8150B role and
+    orientation, applies attach/detach/host transitions to the DWC3 session,
+    and only then acknowledges the SPMI child and parent summary. Type-C
+    detach/host transitions also revoke data transfers before clearing
+    Run/Stop. The new USB2 gadget, SuperSpeed gadget, and normal Bramble
+    artifacts passed QEMU preflight and the Bramble boot audit; their SHA-256
+    values are `bc9b46ecb733056f0412c650fe9cebb4429432d2451dfbf8bc38da6f7390d25b`,
+    `f9757f421628e6109dd7fb256d0ee5698a47daff60927ada20aa4ac040d35bd9`, and
+    `1426bb3600a12248d1ad8eaed39d1077427dff72f6008833a1c1251bc4a37d61`.
+    Kernel tests (94), Flasks tests (17+3), formatting, diff checks, and the
+    USB loop script syntax check pass. No physical boot was issued because
+    the host still exposes no Fastboot device.
+
+44. A five-way IRQ-route differential was built from the Type-C and Run/Stop
+    changes so the next physical attempt can compare platform delivery without
+    changing the kernel implementation. The `power`, `typec`, `typec-role`,
+    `pdc`, and `smmu` variants all passed QEMU preflight, AArch64 `Image.lz4`
+    audit, and the Bramble boot-image audit. Their SHA-256 values are
+    respectively `bd3bcd03417c43ec483ad43def3bc724f9ec9bb301492b0644732e09b4197b5b`,
+    `db5a53803d6994cebecf08cc1dc161687a2633bbd1527bc11d5dcb42daf4e82d`,
+    `bf5fa3db9b5a499367eba5d13f7336e8de8b0df19870548d1e5617ffc7f22583`,
+    `e4596c46e6232ca0d9c7af940798883e92c1fe1e46a7baaa0cbd8241edffc92c`, and
+    `855962042777106e37dd67236e29487dcfb63fe217587682aa21729e35bd99f2`.
+    The host-side check after manually returning the phone to Fastboot still
+    found no `18d1:4ee0` bootloader device and no `1234:0001` Fullerene device;
+    consequently no physical boot, flash, or erase operation was performed.
+
+45. The Rust `bramble-usb matrix` command now wraps the single-attempt loop and tries
+    the bounded `power`, `typec`, `typec-role`, `pdc`, and `smmu` routes in
+    sequence. It advances only after the probe's own watchdog has returned the
+    handset to host-visible Fastboot, stops on the first successful gadget, and
+    performs no reboot, flash, or erase. `--dry-run` was verified for route
+    selection and both scripts pass `bash -n`; the matrix remains pending a
+    host-visible Fastboot device.
+
+46. USB descriptors are now speed-profiled instead of being enabled for every
+    gadget probe. USB2 handoff builds advertise USB 2.0 with a 64-byte EP0 and
+    a USB 2.0-only BOS; the SuperSpeed handoff build advertises USB 3.0 with a
+    512-byte EP0, SS endpoint companions, and the SuperSpeed BOS capability.
+    This matches the Linux gadget split between USB2 and SuperSpeed descriptor
+    tables and prevents a USB2-only diagnostic from falsely claiming SS. The
+    USB2 and SuperSpeed artifacts both passed QEMU preflight and the Bramble
+    boot audit; their SHA-256 values are
+    `a5f1511ecb787e6c6db6188fb79a2dab8d94cb94237c2b4815eb7f8fbc51c9f4` and
+    `b8906dd76fec64ade01019c2f1fd29cd9244ef4487f6776b60aa5732c03f201d`.
+    Kernel tests (94), Flasks tests (17+3), formatting, and diff checks pass.
+    Physical execution remains pending host-visible Fastboot.
+
+47. The retained USB trace is now available through a vendor IN control
+    request (`bmRequestType=0xc0`, `bRequest=0x5a`) in addition to the short
+    descriptor status string. Each 512-byte page contains a 16-byte little-
+    endian header followed by up to fifteen 32-byte records, allowing the
+    host to recover the post-mortem EP0 sequence without UART or a physical
+    RAM reader. The USB2 and SuperSpeed trace-enabled artifacts passed QEMU
+    preflight and the Bramble boot audit; their SHA-256 values are
+    `fdb9aff5737dadb9cbccd659fffbf3ab0c026e01ab4b0950c82fc72806abd77a` and
+    `013df6d82546e5ba0935cee9cf81a299ab1ac3e79d10fb039e4285e052a94140`.
+    Kernel tests (94), Flasks tests (17+3), formatting, and diff checks pass.
+    The USB2 physical run was accepted by Fastboot but fell back to Android
+    (`18d1:4ee7`); the SuperSpeed run reset back through Fastboot without
+    producing `1234:0001`. No flash or erase operation was performed.
+
+48. The host experiment harness was moved from untracked shell files into the
+    tracked Rust binary `flasks/src/bin/bramble-usb.rs`. `loop` preserves the
+    build/audit/`fastboot boot`/identity-transition/hold workflow, while
+    `matrix` preserves the bounded `power`, `typec`, `typec-role`, `pdc`, and
+    `smmu` route sequence. The removed shell wrappers are no longer required;
+    dry-run loop and matrix selection both pass, and `cargo check -p flasks
+    --bin bramble-usb` passes. The current hardware evidence remains the
+    failed USB2 and SuperSpeed transitions recorded above.
 
 The relevant official references are:
 
 - [Android Lito USB device tree](https://android.googlesource.com/kernel/msm-extra/devicetree/+/refs/tags/android-11.0.0_r0.56/qcom/lito-usb.dtsi), including the DWC3 IRQ order, DMA pool, clocks, GSI offsets, and bus resources.
 - [Qualcomm PDC irqchip](https://android.googlesource.com/kernel/common/+/ff0000fe82f45/drivers/irqchip/qcom-pdc.c), including `IRQ_ENABLE_BANK`, PDC trigger conversion, parent SPI configuration, and pending-state clearing.
 - [Linux Qualcomm DWC3 glue](https://github.com/torvalds/linux/blob/master/drivers/usb/dwc3/dwc3-qcom.c), including the wakeup-only PHY IRQ setup and `IRQF_NO_AUTOEN` behavior.
+- [Linux DWC3 gadget path](https://github.com/torvalds/linux/blob/master/drivers/usb/dwc3/gadget.c), including the Run/Stop wait and `__dwc3_gadget_start()` receive-FIFO/NUMP defaults.
 - [Android Qualcomm PMIC Type-C driver](https://android.googlesource.com/kernel/common/+/c13159a588818/drivers/usb/typec/qcom-pmic-typec.c), which performs PMIC initialization at probe and handles the child interrupt through a threaded path.
 - [postmarketOS installation targets](https://postmarketos.org/install/); Bramble was not listed as an official device-specific target in this comparison.
 
 ### Current status and next boundary
 
-The current result is not yet an indefinitely stable USB gadget across every
-independent handoff attempt, but one retry-enabled run survived at least
-eleven minutes and a later run survived at least 50 seconds while also
-answering Fastboot commands. It is no longer failing at the original short
-descriptor-transfer interval. The next hardware evidence should come from the
-retained RAM trace around these boundaries:
+The current result is not yet a proven Fullerene USB gadget on the real
+Bramble. Several runs observed the bootloader's `18d1:4ee0` device, but no
+run has yet produced the kernel's expected `1234:0001` identity after the
+bootloader disappears. The next hardware evidence should distinguish these
+boundaries explicitly and come from the retained RAM trace around:
 
 ```text
 SETUP received
@@ -515,14 +994,18 @@ STATUS OUT
 EP0 rearm
 ```
 
-The next implementation boundary is to preserve the official distinction
-between runtime device operation and suspend/wakeup ownership while identifying
-the cause of the post-idle disconnect. Priority is retained-trace correlation
-with DWC3 link-status/suspend/hibernation events, followed by QMP/Type-C
-runtime state, clock and reset sequencing, GSI/event handling, DMA/SMMU fault
-visibility, and the Linux-equivalent EP0 command/error/re-arm paths. All
-further Bramble tests continue to use the audited stock template and
-`fastboot boot`; partition flashing is not part of this workflow.
+The immediate implementation boundary is now the corrected Image
+entry/section layout, the DWC3-reset DMA ownership boundary, USB2 PHY
+reapplication, the non-destructive Type-C observer, the
+SMMU-preserving differential, the post-reset DWC3 global setup, and the
+Linux-equivalent gadget-start receive-FIFO defaults, followed by retained-
+trace correlation if the kernel now reaches the USB identity transition. If it does,
+continue with DWC3 link-status,
+suspend/hibernation, QMP/Type-C runtime state, clock and reset sequencing,
+GSI/event handling, DMA/SMMU fault visibility, and the Linux-equivalent EP0
+command/error/re-arm paths. All further Bramble tests continue to use the
+audited stock template and `fastboot boot`; partition flashing is not part of
+this workflow.
 
 ## Future Platforms
 

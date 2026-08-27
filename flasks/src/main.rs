@@ -95,6 +95,15 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_probe: bool,
 
+    /// Build the Bramble SuperSpeed gadget handoff probe with EP0 descriptors.
+    #[arg(long)]
+    usb_gadget_handoff_super_speed_probe: bool,
+
+    /// Build the gadget handoff probe without reading or changing the Apps
+    /// SMMU. This is a hardware differential for a Fastboot-owned bypass.
+    #[arg(long)]
+    usb_gadget_handoff_no_smmu: bool,
+
     /// Run the shared USB EP0 protocol self-test on QEMU virt and exit via
     /// semihosting when it completes.
     #[arg(long)]
@@ -261,7 +270,7 @@ struct Aarch64Probe {
     bramble_only: bool,
 }
 
-fn aarch64_probe_specs(args: &Args) -> [Aarch64Probe; 8] {
+fn aarch64_probe_specs(args: &Args) -> [Aarch64Probe; 9] {
     [
         Aarch64Probe {
             selected: args.entry_probe,
@@ -317,6 +326,13 @@ fn aarch64_probe_specs(args: &Args) -> [Aarch64Probe; 8] {
             flag: "--usb-gadget-handoff-probe",
             artifact: "fullerene-kernel-aarch64-usb-probe",
             env: Some("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE"),
+            bramble_only: true,
+        },
+        Aarch64Probe {
+            selected: args.usb_gadget_handoff_super_speed_probe,
+            flag: "--usb-gadget-handoff-super-speed-probe",
+            artifact: "fullerene-kernel-aarch64-usb-probe",
+            env: Some("FULLERENE_AARCH64_USB_GADGET_HANDOFF_SUPER_SPEED"),
             bramble_only: true,
         },
     ]
@@ -475,6 +491,17 @@ fn main() -> io::Result<()> {
             "--qemu-preflight requires AArch64 Bramble build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_no_smmu
+        && (!args.usb_gadget_handoff_probe && !args.usb_gadget_handoff_super_speed_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-no-smmu requires a Bramble gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     let selected_probe = selected_aarch64_probe(&args, target)?;
 
     if target.arch == Arch::Aarch64 {
@@ -510,6 +537,7 @@ fn main() -> io::Result<()> {
             target.platform,
             kernel_artifact,
             selected_probe.and_then(|probe| probe.env),
+            args.usb_gadget_handoff_no_smmu,
             args.qemu_usb_sim,
         )?;
         if target.platform == Platform::Bramble
@@ -622,6 +650,7 @@ fn build_aarch64_kernel(
     platform: Platform,
     kernel_artifact: &str,
     probe_env: Option<&str>,
+    gadget_handoff_no_smmu: bool,
     qemu_usb_sim: bool,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
@@ -656,6 +685,9 @@ fn build_aarch64_kernel(
         );
     if let Some(probe_env) = probe_env {
         cargo.env(probe_env, "1");
+    }
+    if gadget_handoff_no_smmu {
+        cargo.env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU", "1");
     }
     if qemu_usb_sim {
         cargo.env("FULLERENE_AARCH64_QEMU_USB_SIM", "1");
@@ -706,6 +738,7 @@ fn run_aarch64_qemu_preflight(
         Platform::QemuVirt,
         Arch::Aarch64.kernel_artifact(),
         None,
+        false,
         true,
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;

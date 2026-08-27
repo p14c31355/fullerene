@@ -3205,6 +3205,29 @@ mod tests {
     }
 
     #[test]
+    fn runtime_state_requires_typec_before_controller_running() {
+        assert_eq!(
+            usb_runtime_transition(UsbRuntimeState::Off, UsbRuntimeEvent::PlatformPowered),
+            UsbRuntimeState::Powered
+        );
+        assert_eq!(
+            usb_runtime_transition(UsbRuntimeState::Powered, UsbRuntimeEvent::ControllerStarted),
+            UsbRuntimeState::Powered
+        );
+        assert_eq!(
+            usb_runtime_transition(UsbRuntimeState::Powered, UsbRuntimeEvent::TypecAttached),
+            UsbRuntimeState::Attached
+        );
+        assert_eq!(
+            usb_runtime_transition(
+                UsbRuntimeState::Attached,
+                UsbRuntimeEvent::ControllerStarted
+            ),
+            UsbRuntimeState::Running
+        );
+    }
+
+    #[test]
     fn dt_regulator_names_map_to_strict_rpmh_resources() {
         assert_eq!(
             rpmh_resource_id_from_regulator_name(b"pm8150_l5", 9),

@@ -13,7 +13,9 @@ use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use super::{
     uart,
     usb_protocol::{
-        ControlAction, Ep0Simulator, GSI_DEFAULT_NUM_BUFFERS, GadgetDriver, UsbUdc, gsi_ring_shape,
+        ControlAction, Ep0Simulator, GSI_DEFAULT_NUM_BUFFERS, GadgetDriver,
+        TRACE_CONTROL_ENTRY_BYTES, TRACE_CONTROL_HEADER_BYTES, TRACE_CONTROL_PAGE_ENTRIES,
+        TRACE_CONTROL_REQUEST, TRACE_CONTROL_REQUEST_TYPE, UsbUdc, gsi_ring_shape,
     },
     usb_regs::*,
 };
@@ -192,6 +194,10 @@ const GCTL: usize = 0xc110;
 const GUCTL: usize = 0xc12c;
 const GUCTL1: usize = 0xc360;
 const GSNPSID: usize = 0xc120;
+const GRXTHRCFG: usize = 0xc10c;
+const GHWPARAMS0: usize = 0xc140;
+const GHWPARAMS7: usize = 0xc15c;
+const VER_NUMBER: usize = 0xc1a0;
 const GFLADJ: usize = 0xc630;
 const GUSB2PHYCFG0: usize = 0xc200;
 const GUSB3PIPECTL0: usize = 0xc2c0;
@@ -209,6 +215,9 @@ const DEP_BASE: usize = 0xc800;
 
 const GCTL_PRTCAPDIR_MASK: u32 = 3 << 12;
 const GCTL_PRTCAP_DEVICE: u32 = 2 << 12;
+const GCTL_U2RSTECN: u32 = 1 << 16;
+const GCTL_SCALEDOWN_MASK: u32 = 3 << 4;
+const GCTL_DISSCRAMBLE: u32 = 1 << 3;
 const GCTL_CORESOFTRESET: u32 = 1 << 11;
 const GCTL_DSBLCLKGTNG: u32 = 1;
 const GUCTL_REFCLKPER_MASK: u32 = 0xffc0_0000;
@@ -226,11 +235,30 @@ const GUSB3PIPECTL_SUSPHY: u32 = 1 << 17;
 const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 
 const DCTL_CSFTRST: u32 = 1 << 30;
+const DCTL_HIRD_THRES_MASK: u32 = 0x1f << 24;
+const DCTL_HIRD_THRES_LITO: u32 = 0x10 << 24;
+const DCTL_KEEP_CONNECT: u32 = 1 << 19;
 const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
 const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
+const DCFG_NUMP_SHIFT: u32 = 17;
+const DCFG_NUMP_MASK: u32 = 0x1f << DCFG_NUMP_SHIFT;
+const DCFG_IGNSTRMPP: u32 = 1 << 23;
+const DWC3_GRXTHRCFG_PKTCNTSEL: u32 = 1 << 29;
+const DWC31_GRXTHRCFG_PKTCNTSEL: u32 = 1 << 26;
+const GHWPARAMS0_MDWIDTH_SHIFT: u32 = 8;
+const GHWPARAMS0_MDWIDTH_MASK: u32 = 0xff;
+const GHWPARAMS7_RAM2_DEPTH_SHIFT: u32 = 16;
+const GHWPARAMS7_RAM2_DEPTH_MASK: u32 = 0xffff;
+const DWC3_IP: u32 = 0x5533;
+const DWC31_IP: u32 = 0x3331;
+const DWC32_IP: u32 = 0x3332;
+const DWC31_REVISION_180A: u32 = 0x3138_302a;
+const DWC31_REVISION_190A: u32 = 0x3139_302a;
 // Linux applies the RxDetect reconnect workaround only through DWC3 1.87a.
 // GSNPSID carries the same full revision value used by the upstream driver.
 const DWC3_REVISION_187A: u32 = 0x5533_187a;
+const DWC3_REVISION_190A: u32 = 0x5533_190a;
+const DWC3_REVISION_194A: u32 = 0x5533_194a;
 const DWC3_REVISION_250A: u32 = 0x5533_250a;
 
 const HSPHY_UTMI_CTRL0: usize = 0x3c;
@@ -731,6 +759,7 @@ const TRACE_UTMI_CLOCK: u32 = 29;
 const TRACE_EVENT_RING_READY: u32 = 30;
 const TRACE_DWC3_HALTED: u32 = 31;
 const TRACE_DWC3_HALT_TIMEOUT: u32 = 32;
+const TRACE_DWC3_REVISION_QUIRK: u32 = 38;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -788,7 +817,8 @@ enum Ep0State {
 ///
 /// The USB probe enters with caches/MMU disabled, so this is intentionally a
 /// volatile byte/word clear rather than a normal Rust slice operation. The
-/// normal Fullerene path also calls it after installing its identity map.
+/// caller must invoke it only after the previous controller owner has stopped
+/// issuing DMA; it also seeds the allocator for later GSI/UDC allocations.
 pub fn clear_dma_memory() {
     let mut current = addr_of!(__usb_dma_start) as usize;
     let end = addr_of!(__usb_dma_end) as usize;
@@ -895,6 +925,100 @@ pub fn trace_marker(event: u32, status: u32) {
 /// event advances the cursor, while a completely absent USB session does not.
 pub fn trace_head() -> u32 {
     unsafe { read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2)) }
+}
+
+/// Read the last committed event from the retained trace without advancing
+/// it. The serial-string transport uses this pair as a compact host-visible
+/// snapshot when the gadget has enumerated but UART is unavailable.
+pub fn trace_last_event() -> u32 {
+    unsafe {
+        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
+        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
+        let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2));
+        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION || head == 0 {
+            return 0;
+        }
+        let slot = (head.wrapping_sub(1) as usize) % USB_TRACE_CAPACITY;
+        read_volatile(
+            addr_of!(USB_TRACE.entries)
+                .cast::<UsbTraceEntry>()
+                .add(slot),
+        )
+        .event
+    }
+}
+
+/// Fill one page of the retained trace for the vendor control request. The
+/// page order is oldest-to-newest within the valid window, so a host can read
+/// a consistent bounded snapshot without knowing the physical RAM address.
+/// A request for page zero returns the header even when the trace is empty;
+/// malformed or out-of-range pages are rejected by returning `None`.
+unsafe fn fill_trace_control_response(
+    response: &mut [u8],
+    requested_length: usize,
+    page: u16,
+) -> Option<usize> {
+    let requested_length = requested_length.min(response.len());
+    if requested_length == 0 {
+        return None;
+    }
+    unsafe {
+        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
+        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
+        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION {
+            return None;
+        }
+        let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2));
+        let valid = (head as usize).min(USB_TRACE_CAPACITY);
+        let page_start = (page as usize).checked_mul(TRACE_CONTROL_PAGE_ENTRIES)?;
+        if page_start > valid {
+            return None;
+        }
+
+        response[..requested_length].fill(0);
+        let mut write_u32 = |offset: usize, value: u32| {
+            if offset + 4 <= requested_length {
+                response[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        };
+        write_u32(0, magic);
+        write_u32(4, version);
+        write_u32(8, head);
+        write_u32(12, valid as u32);
+        if requested_length <= TRACE_CONTROL_HEADER_BYTES {
+            return Some(requested_length);
+        }
+
+        let available = valid.saturating_sub(page_start);
+        let records = available
+            .min(TRACE_CONTROL_PAGE_ENTRIES)
+            .min((requested_length - TRACE_CONTROL_HEADER_BYTES) / TRACE_CONTROL_ENTRY_BYTES);
+        let oldest = (head as usize).saturating_sub(valid);
+        for index in 0..records {
+            let slot = (oldest + page_start + index) % USB_TRACE_CAPACITY;
+            let entry = read_volatile(
+                addr_of!(USB_TRACE.entries)
+                    .cast::<UsbTraceEntry>()
+                    .add(slot),
+            );
+            let values = [
+                entry.sequence,
+                entry.event,
+                entry.request,
+                entry.value,
+                entry.index,
+                entry.length,
+                entry.ep0_state,
+                entry.status,
+            ];
+            let base = TRACE_CONTROL_HEADER_BYTES + index * TRACE_CONTROL_ENTRY_BYTES;
+            for (word, value) in values.into_iter().enumerate() {
+                response[base + word * 4..base + word * 4 + 4]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        Some(TRACE_CONTROL_HEADER_BYTES + records * TRACE_CONTROL_ENTRY_BYTES)
+    }
 }
 
 /// Return whether the handoff probe has successfully started at least one
@@ -1684,13 +1808,13 @@ unsafe fn select_utmi_pipe_clock() {
     trace_event(TRACE_UTMI_CLOCK, 0, 0, 0, 0, 0);
     unsafe {
         qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_DIS);
-        for _ in 0..100_000 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
+        // dwc3_qcom_select_utmi_clk() uses usleep_range(100, 1000) between
+        // each clock-source transition.  A fixed architectural delay keeps
+        // the lower bound independent of the boot CPU frequency; a NOP loop
+        // could be shorter than 100 us on a fast handset.
+        super::timer::delay_us(100);
         qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
-        for _ in 0..100_000 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
+        super::timer::delay_us(100);
         let value = read_qscratch(QSCRATCH_GENERAL_CFG) & !PIPE_UTMI_CLK_DIS;
         write_qscratch(QSCRATCH_GENERAL_CFG, value);
     }
@@ -1746,28 +1870,40 @@ unsafe fn device_soft_reset() -> bool {
         dctl |= DCTL_CSFTRST;
         dctl &= !DCTL_RUN_STOP;
         write(DCTL, dctl);
+        let snpsid = read(GSNPSID);
+        let ip = snpsid >> 16;
+        // DWC_usb31 1.90a+ and DWC_usb32 synchronize CSFTRST through all
+        // clocks and need the slower 20-ms polling cadence used by Linux.
+        // Bramble's 0x5533 controller follows the ordinary 1-us path.
+        let version = if ip == DWC31_IP || ip == DWC32_IP {
+            read(VER_NUMBER)
+        } else {
+            0
+        };
+        let slow_reset = ip == DWC32_IP || (ip == DWC31_IP && version >= DWC31_REVISION_190A);
+        let retries = if slow_reset { 10 } else { 1_000 };
         let mut device_reset_complete = false;
-        for _ in 0..1_000_000u32 {
+        for _ in 0..retries {
             if read(DCTL) & DCTL_CSFTRST == 0 {
                 device_reset_complete = true;
                 break;
             }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+            if slow_reset {
+                super::timer::delay_ms(20);
+            } else {
+                super::timer::delay_us(1);
+            }
         }
         if !device_reset_complete {
             log_puts("usb: DWC3 device reset timeout\n");
             return false;
         }
 
-        // Upstream Linux does not use DSTS.DCNRD as a reset-complete
-        // condition.  For DWC_usb31 revisions up to 1.80a it waits at least
-        // 50 ms after CSFTRST clears before touching the PHY domain.  The
-        // Bramble handoff is deliberately conservative here: the boot
-        // image has no calibrated timer yet, so use the same bounded busy
-        // delay as the cold reset path and then let the normal endpoint
-        // command completion checks report any real controller failure.
-        for _ in 0..50_000_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        // Upstream Linux waits an additional 50 ms only for DWC_usb31 1.80a
+        // and earlier before accessing its PHY domain. DWC3/1.90a+ do not
+        // require that legacy synchronization delay.
+        if ip == DWC31_IP && version <= DWC31_REVISION_180A {
+            super::timer::delay_ms(50);
         }
         true
     }
@@ -1797,11 +1933,9 @@ unsafe fn core_soft_reset(super_speed: bool) -> bool {
         }
 
         // The upstream DWC3 core reset uses a 100 ms delay after releasing
-        // both PHY resets. Keep a busy-wait because this early probe has not
-        // initialized the generic timer yet.
-        for _ in 0..100_000_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
+        // both PHY resets. The architectural counter is firmware-provided
+        // before this early probe, so use it instead of a CPU-dependent loop.
+        super::timer::delay_ms(100);
 
         usb2 = read(GUSB2PHYCFG0) & !GUSB2PHYCFG_PHYSOFTRST;
         write(GUSB2PHYCFG0, usb2);
@@ -1810,9 +1944,7 @@ unsafe fn core_soft_reset(super_speed: bool) -> bool {
             usb3 &= !GUSB3PIPECTL_PHYSOFTRST;
             write(GUSB3PIPECTL0, usb3);
         }
-        for _ in 0..1_000_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
+        super::timer::delay_ms(1);
 
         gctl = read(GCTL) & !GCTL_CORESOFTRESET;
         write(GCTL, gctl);
@@ -1825,45 +1957,166 @@ unsafe fn core_soft_reset(super_speed: bool) -> bool {
 /// DEPSTARTCFG/SETEPCONFIG are issued; a handoff cannot assume that the
 /// bootloader performed the normal gadget-stop sequence.
 unsafe fn stop_running_device() -> bool {
+    unsafe { run_stop_device(false) }
+}
+
+const DWC3_RUN_STOP_POLL_MS: u64 = 1;
+const DWC3_RUN_STOP_TIMEOUT_MS: u64 = 2_000;
+const DWC3_EP_COMMAND_TIMEOUT: u32 = 5_000;
+
+/// Wait for DWC3's device controller to reach the requested halt state after
+/// a Run/Stop write. Linux polls DSTS at 1--2 ms intervals for up to 2,000
+/// iterations; a fixed NOP count is too short on a fast boot CPU and can let
+/// endpoint commands race the controller's previous Fastboot session.
+unsafe fn wait_device_state(want_halted: bool) -> bool {
     unsafe {
-        let dctl = read(DCTL);
-        if dctl & DCTL_RUN_STOP != 0 {
-            write(DCTL, dctl & !DCTL_RUN_STOP);
+        for _ in 0..DWC3_RUN_STOP_TIMEOUT_MS {
+            let dsts = read(DSTS);
+            let halted = dsts & DSTS_DEVCTRLHLT != 0;
+            if halted == want_halted {
+                if want_halted {
+                    trace_event(TRACE_DWC3_HALTED, 0, 0, 0, 0, dsts);
+                }
+                return true;
+            }
+            super::timer::delay_ms(DWC3_RUN_STOP_POLL_MS);
         }
-        wait_device_halted()
+        let dsts = read(DSTS);
+        trace_event(TRACE_DWC3_HALT_TIMEOUT, want_halted as u32, 0, 0, 0, dsts);
+        log_hex(
+            if want_halted {
+                "usb: DWC3 stop timeout during handoff, DSTS="
+            } else {
+                "usb: DWC3 start timeout during handoff, DSTS="
+            },
+            dsts as u64,
+        );
+        false
     }
 }
 
-/// Wait for DWC3's device controller halt state after clearing Run/Stop.
+/// Apply Linux's USB2 PHY guard around a DWC3 Run/Stop transition.
 ///
-/// This is a separate synchronization point from the Run/Stop write. Linux
-/// does not issue endpoint configuration/resource commands until the core is
-/// halted; on a Fastboot handoff the bit can already be clear while the
-/// controller is still draining its previous event/transfer state.
-unsafe fn wait_device_halted() -> bool {
+/// `dwc3_gadget_run_stop()` clears SUSPHY and ENBLSLPM before writing DCTL,
+/// waits for DEVCTRLHLT, and restores the saved bits afterwards. Keeping that
+/// sequence in one helper prevents the Fastboot handoff and runtime-PM paths
+/// from diverging at exactly the transition where DWC3 is most sensitive to
+/// a stale USB2 low-power state.
+unsafe fn run_stop_device(is_on: bool) -> bool {
     unsafe {
-        for _ in 0..1_000_000u32 {
-            let dsts = read(DSTS);
-            if dsts & DSTS_DEVCTRLHLT != 0 {
-                trace_event(TRACE_DWC3_HALTED, 0, 0, 0, 0, dsts);
-                return true;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        let mut usb2 = read(GUSB2PHYCFG0);
+        let saved_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        if saved_config != 0 {
+            usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+            write(GUSB2PHYCFG0, usb2);
         }
-        let dsts = read(DSTS);
-        trace_event(TRACE_DWC3_HALT_TIMEOUT, 0, 0, 0, 0, dsts);
-        log_hex("usb: DWC3 stop timeout during handoff, DSTS=", dsts as u64);
-        false
+
+        let mut dctl = read(DCTL);
+        if is_on {
+            dctl = run_stop_value(dctl, read(GSNPSID));
+        } else {
+            dctl &= !DCTL_RUN_STOP;
+        }
+        write(DCTL, dctl);
+        let complete = wait_device_state(!is_on);
+
+        if saved_config != 0 {
+            let current = read(GUSB2PHYCFG0);
+            write(GUSB2PHYCFG0, current | saved_config);
+        }
+        complete
     }
 }
 
 #[inline]
 fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
+    // Lito's DWC3 node supplies snps,hird-threshold = 0x10.  A Fastboot
+    // handoff can inherit a different value, so restore the platform value
+    // at every device Run/Stop transition.
+    dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_LITO;
     dctl &= !DCTL_TRGTULST_MASK;
-    if (snpsid & 0xffff_0000) == 0x5533_0000 && snpsid <= DWC3_REVISION_187A {
-        dctl |= DCTL_TRGTULST_RX_DET;
+    if (snpsid & 0xffff_0000) == 0x5533_0000 {
+        if snpsid <= DWC3_REVISION_187A {
+            dctl |= DCTL_TRGTULST_RX_DET;
+        } else if snpsid >= DWC3_REVISION_194A {
+            // Linux clears KEEP_CONNECT for revisions that implement it;
+            // leaving a bootloader-owned bit set suppresses the fresh
+            // disconnect/reconnect boundary needed by a gadget handoff.
+            dctl &= !DCTL_KEEP_CONNECT;
+        }
     }
     dctl | DCTL_RUN_STOP
+}
+
+/// Apply the Android/Linux DWC3 global setup after a device/core reset.
+///
+/// DWC3 revisions before 1.90a can fail to connect at SuperSpeed, fall back to
+/// High-Speed, and then enter a connect/disconnect loop.  The upstream driver
+/// sets GCTL.U2RSTECN during core setup.  Keep the check runtime-based: a
+/// `fastboot boot` handoff must not assume a particular DWC3 revision, and an
+/// unrecognised GSNPSID must not cause us to overwrite an unknown GCTL bit.
+#[inline]
+unsafe fn configure_dwc3_global_control() {
+    unsafe {
+        let snpsid = read(GSNPSID);
+        if (snpsid & 0xffff_0000) != 0x5533_0000 {
+            return;
+        }
+        let mut gctl = read(GCTL);
+        gctl &= !(GCTL_SCALEDOWN_MASK | GCTL_DISSCRAMBLE);
+        gctl |= GCTL_DSBLCLKGTNG;
+        let mut applied = GCTL_DSBLCLKGTNG;
+        if snpsid < DWC3_REVISION_190A {
+            gctl |= GCTL_U2RSTECN;
+            applied |= GCTL_U2RSTECN;
+        }
+        write(GCTL, gctl);
+        trace_event(TRACE_DWC3_REVISION_QUIRK, snpsid, applied, gctl, 0, 0);
+    }
+}
+
+/// Calculate DWC3.DCFG.NUMP from the receive FIFO capacity.
+///
+/// Linux derives this from the RAM2 depth and internal memory-bus width. Use
+/// saturating arithmetic here because an uninitialised or cut-down hardware
+/// parameter must not wrap the subtraction and accidentally request NUMP=16.
+#[inline]
+fn gadget_nump(ram2_depth: u32, mdwidth_bits: u32) -> u32 {
+    let fifo_bytes = (ram2_depth as u64).saturating_mul(mdwidth_bits as u64) / 8;
+    (fifo_bytes.saturating_sub(24 + 16) / 1024).min(16) as u32
+}
+
+/// Apply the non-endpoint defaults from Linux's `__dwc3_gadget_start()`.
+///
+/// This is deliberately separate from EP0 setup: it only programs controller
+/// receive-packet policy and DCFG.NUMP, and is called after DCFG's speed/address
+/// fields have been established but before any endpoint command is issued.
+#[inline]
+unsafe fn configure_gadget_start_defaults() {
+    unsafe {
+        let snpsid = read(GSNPSID);
+        let ip = snpsid >> 16;
+        let pktcntsel = match ip {
+            DWC3_IP => DWC3_GRXTHRCFG_PKTCNTSEL,
+            DWC31_IP | DWC32_IP => DWC31_GRXTHRCFG_PKTCNTSEL,
+            _ => return,
+        };
+
+        // Select DCFG.NUMP as the ACK-TP packet count source. This is the
+        // same policy Linux uses to avoid letting the core choose a smaller
+        // burst count than the receive FIFO can sustain.
+        let rx_threshold = read(GRXTHRCFG) & !pktcntsel;
+        write(GRXTHRCFG, rx_threshold);
+
+        let mdwidth = (read(GHWPARAMS0) >> GHWPARAMS0_MDWIDTH_SHIFT) & GHWPARAMS0_MDWIDTH_MASK;
+        let ram2_depth =
+            (read(GHWPARAMS7) >> GHWPARAMS7_RAM2_DEPTH_SHIFT) & GHWPARAMS7_RAM2_DEPTH_MASK;
+        let nump = gadget_nump(ram2_depth, mdwidth);
+        let mut dcfg = read(DCFG) & !DCFG_NUMP_MASK;
+        dcfg |= nump << DCFG_NUMP_SHIFT;
+        dcfg |= DCFG_IGNSTRMPP;
+        write(DCFG, dcfg);
+    }
 }
 
 #[inline]
@@ -2309,7 +2562,11 @@ unsafe fn send_ep_command_result(
         write(dep_reg(endpoint, 0x08), param0);
         write(dep_reg(endpoint, 0x0c), command | DEPCMD_CMDACT);
     }
-    for _ in 0..100_000 {
+    // Linux's dwc3_send_gadget_ep_cmd() uses a bounded 5,000-read polling
+    // window. Keep this tight: a command that never retires must not leave
+    // the early handoff spending an architecture-dependent amount of time in
+    // a NOP loop while the host waits for EP0.
+    for _ in 0..DWC3_EP_COMMAND_TIMEOUT {
         let status = unsafe { read(dep_reg(endpoint, 0x0c)) };
         if status & DEPCMD_CMDACT == 0 {
             trace_event(
@@ -3149,7 +3406,20 @@ unsafe fn handle_setup() {
 
     let action = unsafe {
         let response = core::slice::from_raw_parts_mut(addr_of_mut!(RESPONSE.0).cast::<u8>(), 512);
-        GadgetDriver::on_setup(gadget_mut(), packet, response)
+        if request_type == TRACE_CONTROL_REQUEST_TYPE && request == TRACE_CONTROL_REQUEST {
+            // Keep trace reads outside the gadget function callback: this is
+            // a diagnostic transport over the same EP0 path and must not
+            // alter address/configuration state.
+            fill_trace_control_response(response, requested_length, value)
+                .map(ControlAction::DataIn)
+                .unwrap_or(ControlAction::Stall)
+        } else {
+            // Keep the trace transport in the ordinary EP0 path: a host request
+            // for string descriptor 3 can observe the retained cursor even when
+            // no UART cable is attached.
+            gadget_mut().set_trace_status(trace_head(), trace_last_event());
+            GadgetDriver::on_setup(gadget_mut(), packet, response)
+        }
     };
     match action {
         ControlAction::DataIn(length) => unsafe {
@@ -3526,6 +3796,39 @@ pub fn note_typec_attached(attached: bool) {
     }
 }
 
+/// Observe the Type-C state at the Fastboot handoff boundary without
+/// changing PMIC registers.  Android obtains this state through the
+/// Qualcomm role-switch/PMIC driver before it starts the UDC; the temporary
+/// image has no role-switch framework, so perform the same read-only bridge
+/// explicitly.  A failed observation is non-fatal: Fastboot has already
+/// established a device-mode transport, and the later DWC3/EP0 probe must
+/// remain useful for separating an SPMI aperture problem from a USB problem.
+pub fn observe_typec_handoff() -> bool {
+    note_runtime_event(super::platform::bramble::UsbRuntimeEvent::PlatformPowered);
+    trace_marker(TRACE_TYPEC_BEGIN, 0x4f4253); // "OBS"
+    let Some(state) = (unsafe { super::platform::bramble::observe_usb_device_role() }) else {
+        trace_marker(TRACE_TYPEC_DONE, 0xffff_ffff);
+        return false;
+    };
+
+    set_typec_orientation(state.orientation_reverse);
+    note_typec_attached(state.attached);
+    trace_event(
+        TRACE_TYPEC_DONE,
+        state.role as u32,
+        state.attached as u32,
+        state.orientation_reverse as u32,
+        state.mode as u32,
+        state.misc_status as u32,
+    );
+    unsafe {
+        TYPEC_STATE = state;
+        TYPEC_STATE_VALID = true;
+        TYPEC_POLL_TICKS = 0;
+    }
+    true
+}
+
 /// Complete a deferred Type-C parent interrupt outside the hard IRQ entry.
 /// This mirrors Linux's threaded qpnpint/role-switch boundary.
 pub fn service_deferred_platform() {
@@ -3539,6 +3842,21 @@ pub fn service_deferred_platform() {
             // issuing an acknowledge against an uninitialized PMIC state.
             TYPEC_IRQ_PENDING = false;
             return;
+        }
+        // Linux's PMIC Type-C handler samples the child state in its threaded
+        // context before clearing the parent summary. Do the same here: an
+        // acknowledge-only path loses a real attach/detach edge and leaves
+        // the DWC3 session in the previous role.
+        let event = {
+            let state = &mut *addr_of_mut!(TYPEC_STATE);
+            let event = super::platform::bramble::refresh_usb_device_role(state);
+            if event.is_some() {
+                TYPEC_LANE_B = state.orientation_reverse;
+            }
+            event
+        };
+        if let Some(event) = event {
+            apply_typec_event(event);
         }
         let state = &*addr_of!(TYPEC_STATE);
         if !super::platform::bramble::acknowledge_typec_irq(state) {
@@ -3574,12 +3892,10 @@ unsafe fn apply_typec_event(event: super::platform::bramble::TypecEvent) {
             // down the UDC queues. Do not issue endpoint commands after the
             // PMIC has removed the cable.
             unbind_function();
-            let mut dctl = read(DCTL);
-            dctl &= !DCTL_RUN_STOP;
-            write(DCTL, dctl);
             teardown_data_endpoints();
             reset_gsi_channels();
             write(DALEPENA, 0);
+            let _ = run_stop_device(false);
             ENDPOINTS_READY = false;
             CONFIGURED = false;
             DATA_ENDPOINTS_READY = false;
@@ -3594,12 +3910,10 @@ unsafe fn apply_typec_event(event: super::platform::bramble::TypecEvent) {
             // when another Type-C partner is attached. A source/host role
             // must never leave the old gadget pull-up or DMA request live.
             unbind_function();
-            let mut dctl = read(DCTL);
-            dctl &= !DCTL_RUN_STOP;
-            write(DCTL, dctl);
             teardown_data_endpoints();
             reset_gsi_channels();
             write(DALEPENA, 0);
+            let _ = run_stop_device(false);
             ENDPOINTS_READY = false;
             CONFIGURED = false;
             DATA_ENDPOINTS_READY = false;
@@ -3613,6 +3927,7 @@ unsafe fn apply_typec_event(event: super::platform::bramble::TypecEvent) {
             // Attach is the prerequisite for the Qualcomm VBUS/session
             // override. Connect Done will reconfigure EP0 and rearm SETUP
             // when the host starts the new USB session.
+            note_runtime_event(super::platform::bramble::UsbRuntimeEvent::TypecAttached);
             qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
             qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
         }
@@ -3821,35 +4136,31 @@ pub fn runtime_suspend() -> bool {
             // clocks are gated. This is separate from the USB2 L2 request.
             qmp_set_autonomous_mode(true);
         }
-        let mut dctl = read(DCTL);
-        dctl &= !DCTL_RUN_STOP;
-        write(DCTL, dctl);
-        for _ in 0..100_000 {
-            if read(DSTS) & DSTS_DEVCTRLHLT != 0 {
-                suspend_data_transfers();
-                suspend_gsi_transfers();
-                udc_mut().suspend();
-                note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Suspend);
-                if !super::platform::bramble::apply_usb_performance(
-                    super::platform::bramble::UsbBusVote::Suspend,
-                ) {
-                    log_puts("usb: RPMh suspend vote unavailable\n");
-                }
-                if QMP_PHY_READY {
-                    if !super::platform::bramble::disable_usb30_gdsc() {
-                        log_puts("usb: USB3 GDSC collapse not observable\n");
-                    }
-                }
-                if !super::platform::bramble::disable_usb_clock_branches() {
-                    log_puts("usb: USB clock gate readback unavailable\n");
-                }
-                if !super::platform::bramble::apply_usb_power(false, QMP_PHY_READY) {
-                    log_puts("usb: RPMh regulator disable unavailable\n");
-                }
-                return true;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        if !run_stop_device(false) {
+            let _ = set_gsi_doorbell_blocked(false);
+            return false;
         }
+        suspend_data_transfers();
+        suspend_gsi_transfers();
+        udc_mut().suspend();
+        note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Suspend);
+        if !super::platform::bramble::apply_usb_performance(
+            super::platform::bramble::UsbBusVote::Suspend,
+        ) {
+            log_puts("usb: RPMh suspend vote unavailable\n");
+        }
+        if QMP_PHY_READY {
+            if !super::platform::bramble::disable_usb30_gdsc() {
+                log_puts("usb: USB3 GDSC collapse not observable\n");
+            }
+        }
+        if !super::platform::bramble::disable_usb_clock_branches() {
+            log_puts("usb: USB clock gate readback unavailable\n");
+        }
+        if !super::platform::bramble::apply_usb_power(false, QMP_PHY_READY) {
+            log_puts("usb: RPMh regulator disable unavailable\n");
+        }
+        return true;
     }
     false
 }
@@ -3884,29 +4195,25 @@ pub fn runtime_resume() -> bool {
         write(GUSB2PHYCFG0, usb2);
         let _ = read(GUSB2PHYCFG0);
         let _ = set_gsi_doorbell_blocked(false);
-        let dctl = run_stop_value(read(DCTL), read(GSNPSID));
-        write(DCTL, dctl);
-        for _ in 0..100_000 {
-            if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
-                udc_mut().resume();
-                if DATA_ENDPOINTS_READY {
-                    let _ = queue_bulk_transfer(
-                        2,
-                        addr_of_mut!(DATA_OUT_BUFFER.0).cast::<u8>(),
-                        MAX_PACKET_SIZE as usize,
-                    );
-                }
-                if GSI_GADGET_BOUND {
-                    GadgetDriver::on_gsi_channel_resume(gadget_mut());
-                }
-                note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Resume);
-                if ENDPOINTS_READY && !rearm_setup() {
-                    return false;
-                }
-                return true;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        if !run_stop_device(true) {
+            return false;
         }
+        udc_mut().resume();
+        if DATA_ENDPOINTS_READY {
+            let _ = queue_bulk_transfer(
+                2,
+                addr_of_mut!(DATA_OUT_BUFFER.0).cast::<u8>(),
+                MAX_PACKET_SIZE as usize,
+            );
+        }
+        if GSI_GADGET_BOUND {
+            GadgetDriver::on_gsi_channel_resume(gadget_mut());
+        }
+        note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Resume);
+        if ENDPOINTS_READY && !rearm_setup() {
+            return false;
+        }
+        return true;
     }
     false
 }
@@ -3960,6 +4267,7 @@ pub fn init_usb2_pullup_handoff() -> bool {
             log_puts("usb pullup: DWC3 device reset failed\n");
             return false;
         }
+        configure_dwc3_global_control();
 
         // This probe also resets the controller, so mirror the Qualcomm
         // post-reset callback before asking Run/Stop to reconnect.
@@ -3993,7 +4301,6 @@ pub fn init_usb2_pullup_handoff() -> bool {
         // Fastboot leaves the USB2 link in its old negotiated state. Apply
         // the upstream RxDetect workaround only when GSNPSID identifies a
         // DWC3 revision for which that workaround is specified.
-        let dctl = run_stop_value(read(DCTL), read(GSNPSID));
         // Keep the Qualcomm glue's VBUS/session override adjacent to the
         // connect transition, matching dwc3_qcom_run_stop_notifier().
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
@@ -4001,13 +4308,9 @@ pub fn init_usb2_pullup_handoff() -> bool {
             QSCRATCH_HS_PHY_CTRL,
             (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
         );
-        write(DCTL, dctl);
-        for _ in 0..1_000_000u32 {
-            if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
-                log_puts("usb pullup: DWC3 RUN/STOP active\n");
-                return true;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        if unsafe { run_stop_device(true) } {
+            log_puts("usb pullup: DWC3 RUN/STOP active\n");
+            return true;
         }
         log_hex("usb pullup: DWC3 remained halted, DSTS=", read(DSTS) as u64);
         false
@@ -4063,13 +4366,13 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
             reg(GCTL),
             (gctl & !GCTL_PRTCAPDIR_MASK) | GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG,
         );
+        configure_dwc3_global_control();
         write_volatile(reg(DCFG), DCFG_HIGHSPEED);
         // Linux disables endpoint advertising before stopping the device
         // controller.  In a Fastboot reuse this also prevents a stale EP0
         // resource from receiving a transaction while Run/Stop is draining.
         write_volatile(reg(DALEPENA), if connect { 0b11 } else { 0 });
 
-        let dctl = run_stop_value(read_volatile(reg(DCTL)), read_volatile(reg(GSNPSID)));
         // Qualcomm's glue reasserts the VBUS override immediately before
         // enabling RUN_STOP so a stale Fastboot session cannot suppress the
         // connect-done transition.
@@ -4081,21 +4384,13 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
         // A gadget handoff uses the same proven PHY/session preparation but
         // keeps Run/Stop clear until its event ring and EP0 commands are
         // ready. The standalone bare probe requests the pull-up immediately.
-        let dctl = if connect {
-            dctl & !DCTL_CSFTRST
+        if connect {
+            // The bare probe intentionally omits endpoint setup, but it still
+            // uses the same PHY-safe Run/Stop boundary as Linux.
+            run_stop_device(true)
         } else {
-            dctl & !(DCTL_RUN_STOP | DCTL_CSFTRST)
-        };
-        write_volatile(reg(DCTL), dctl);
-    }
-    if !connect {
-        // The endpoint command sequence below is only legal once the device
-        // controller has reported DEVCTRLHLT.  Fastboot can leave Run/Stop
-        // clear already, so this wait must not be conditional on the old
-        // DCTL value.
-        unsafe { wait_device_halted() }
-    } else {
-        true
+            run_stop_device(false)
+        }
     }
 }
 
@@ -4115,21 +4410,37 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     }
 
     // Fastboot may have stopped Run/Stop, but that is not the same ownership
-    // boundary as Linux's DWC3 probe.  Do not reuse its endpoint resource
-    // epoch: terminate it with the device core soft reset before publishing
-    // our event ring or issuing DEPSTARTCFG.
-    if !unsafe { device_soft_reset() } {
-        log_puts("usb gadget handoff: DWC3 device reset failed\n");
-        return gadget_handoff_fail(2); // core reset
+    // boundary as Linux's DWC3 probe.  The default path terminates its
+    // endpoint-resource epoch with a device core soft reset.  The explicit
+    // preserve-core differential keeps that reset out of the experiment while
+    // retaining the preceding halted-controller boundary; this tests whether
+    // the reset itself destroys the live Qualcomm PHY/session handoff.
+    if !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core) {
+        if !unsafe { device_soft_reset() } {
+            log_puts("usb gadget handoff: DWC3 device reset failed\n");
+            return gadget_handoff_fail(2); // core reset
+        }
+    } else {
+        trace_marker(TRACE_DWC3_RESET_BEGIN, 0x50524553); // "PRES"
+        log_puts("usb gadget handoff: preserving DWC3 core state\n");
     }
+    unsafe { configure_dwc3_global_control() };
+    // The halted-controller boundary above transfers DMA ownership from the
+    // old Fastboot session.  Clear every linker-owned TRB/event/table object
+    // only after that boundary, then seed the allocator used by a later
+    // GSI/UDC bind; clearing it before the stop could race a final bootloader
+    // DMA write.
+    clear_dma_memory();
     unsafe {
         let mut gctl = read(GCTL);
         gctl &= !GCTL_PRTCAPDIR_MASK;
         gctl |= GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG;
         write(GCTL, gctl);
         // CSFTRST restores the controller-side PHY mux/timing state on
-        // DWC3 revisions used by Bramble. Reapply the Qualcomm post-reset
-        // programming before any endpoint command, as dwc3-msm does.
+        // DWC3 revisions used by Bramble. Reapply the Qualcomm controller
+        // programming before any endpoint command. In the preserve-core
+        // differential these writes are deliberately retained as the common
+        // post-halt handoff sequence; only CSFTRST itself is omitted.
         select_utmi_pipe_clock();
         update_dwc3_ref_clock();
         let mut usb2 = read(GUSB2PHYCFG0);
@@ -4139,13 +4450,29 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         usb3 |= GUSB3PIPECTL_SUSPHY;
         write(GUSB3PIPECTL0, usb3);
     }
+    // DWC3's device reset does not reset the external Femto PHY.  Reapply the
+    // Linux USB2 PHY programming at the same post-reset boundary as the normal
+    // Qualcomm glue path, without asserting the GCC/Type-C power-domain reset.
+    if !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core) {
+        unsafe { init_hsphy() };
+    }
 
     // The Fastboot session may have left the DWC3 stream behind an SMMU
     // mapping that only covers its own buffers.  Our TRBs/event ring are
     // intentionally identity-addressed in the 0x9b800000 DMA section.  Keep
     // the proven PHY/pull-up transition first, then install the identity map
     // before handing any new DMA object to DWC3.
-    if !configure_dwc3_smmu() {
+    let smmu_ready = if cfg!(fullerene_aarch64_usb_gadget_handoff_no_smmu) {
+        // Differential mode for a Fastboot-owned bypass: do not even read
+        // the Apps-SMMU registers. The DMA section remains fixed inside the
+        // declared Bramble pool, so this mode is valid only when firmware
+        // leaves the DWC3 stream in physical=IOVA bypass.
+        log_puts("usb gadget handoff: Apps SMMU untouched\n");
+        true
+    } else {
+        configure_dwc3_smmu()
+    };
+    if !smmu_ready {
         log_puts("usb gadget handoff: DWC3 SMMU pool map unavailable\n");
         return gadget_handoff_fail(3); // SMMU
     }
@@ -4203,6 +4530,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // INIT state; this is the same ownership boundary used by Linux.
         ENDPOINTS_READY = false;
         write(DCFG, DCFG_HIGHSPEED);
+        configure_gadget_start_defaults();
         write(DALEPENA, 0b11);
         write(
             DEVTEN,
@@ -4212,7 +4540,10 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 | DEVTEN_LINK_STATUS_CHANGE
                 | DEVTEN_WAKEUP
                 | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND,
+                | DEVTEN_SUSPEND
+                | DEVTEN_ERRATIC_ERROR
+                | DEVTEN_CMD_COMPLETE
+                | DEVTEN_OVERFLOW,
         );
         // DEPSTARTCFG(0) opens a new endpoint-resource allocation window.
         // SETEPCONFIG(INIT) then allocates one resource per EP0 direction.
@@ -4232,15 +4563,16 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             return gadget_handoff_fail(6); // SETUP TRB
         }
 
-        let dctl = run_stop_value(read(DCTL), read(GSNPSID));
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
-        write(DCTL, dctl);
-        for _ in 0..1_000_000u32 {
-            if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
-                return true;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        if unsafe { run_stop_device(true) } {
+            // The probe's Type-C observer establishes Powered/Attached
+            // before this point, so record the same UDC-start boundary
+            // that the normal Qualcomm gadget path records. If PMIC
+            // observation was unavailable this is intentionally a no-op
+            // in the state machine, but it must not block EP0 testing.
+            note_runtime_event(super::platform::bramble::UsbRuntimeEvent::ControllerStarted);
+            return true;
         }
         log_puts("usb gadget handoff: DWC3 RUN/STOP timeout\n");
     }
@@ -4253,7 +4585,13 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
 /// usable as a standalone probe.
 pub fn init_usb2_gadget_handoff() -> bool {
     unsafe {
-        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)]
+        return init_with_super_speed(true, true, false);
+
+        #[cfg(all(
+            fullerene_aarch64_usb_gadget_handoff_probe,
+            not(fullerene_aarch64_usb_gadget_handoff_super_speed)
+        ))]
         return init_usb2_gadget_reuse_fastboot_ep0();
 
         // The bare probe is the proven physical baseline on Bramble. Start
@@ -4297,11 +4635,13 @@ pub fn init_usb2_gadget_handoff() -> bool {
             log_puts("usb gadget handoff: DWC3 device reset failed\n");
             return false;
         }
+        configure_dwc3_global_control();
         #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
         if !stop_running_device() || !device_soft_reset() {
             log_puts("usb gadget handoff: DWC3 reset failed\n");
             return false;
         }
+        configure_dwc3_global_control();
 
         // The fallback also performs a DWC3 reset, so it must receive the
         // same post-reset UTMI/ref-clock programming as the normal handoff
@@ -4379,6 +4719,7 @@ pub fn init_usb2_gadget_handoff() -> bool {
         ENDPOINTS_READY = false;
 
         write(DCFG, DCFG_HIGHSPEED);
+        configure_gadget_start_defaults();
         write(DALEPENA, 0);
         write(
             DEVTEN,
@@ -4388,7 +4729,10 @@ pub fn init_usb2_gadget_handoff() -> bool {
                 | DEVTEN_LINK_STATUS_CHANGE
                 | DEVTEN_WAKEUP
                 | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND,
+                | DEVTEN_SUSPEND
+                | DEVTEN_ERRATIC_ERROR
+                | DEVTEN_CMD_COMPLETE
+                | DEVTEN_OVERFLOW,
         );
 
         // DWC3's device-start contract is: reserve the endpoint resources,
@@ -4414,7 +4758,6 @@ pub fn init_usb2_gadget_handoff() -> bool {
         // Connect only after the event ring, transfer resources, EP0
         // descriptors, and first SETUP TRB are ready. This produces a fresh
         // USB2 attach without exposing an EP0-less device to the host.
-        let dctl = run_stop_value(read(DCTL), read(GSNPSID));
         // Reassert the Qualcomm VBUS/session vote immediately before the
         // final Run/Stop write; this is the glue driver's pre_run_stop hook.
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
@@ -4422,15 +4765,7 @@ pub fn init_usb2_gadget_handoff() -> bool {
             QSCRATCH_HS_PHY_CTRL,
             (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
         );
-        write(DCTL, dctl);
-        for _ in 0..1_000_000u32 {
-            if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
-                log_puts("usb gadget handoff: DWC3 RUN/STOP active\n");
-                break;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
-        if read(DSTS) & DSTS_DEVCTRLHLT != 0 {
+        if !run_stop_device(true) {
             log_puts("usb gadget handoff: DWC3 RUN/STOP timeout\n");
             #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
             return gadget_handoff_fail(7); // Run/Stop
@@ -4489,7 +4824,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // The Linux lito-usb device tree supplies these clocks and resets to
         // the Qualcomm glue.  A RAM-booted Fullerene image has no clock
         // framework yet, so perform the small branch/reset part directly.
-        let qmp_ready = if reset_platform {
+        let mut qmp_ready = if reset_platform {
             let _ = super::platform::bramble::enable_usb_clock_branches();
             let _ = super::platform::bramble::reset_usb_blocks(super_speed);
 
@@ -4536,6 +4871,21 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             };
             if !reset_ok {
                 uart::puts("usb: DWC3 reset failed\n");
+                return false;
+            }
+        }
+        configure_dwc3_global_control();
+
+        // Fastboot already owns the USB clocks and rails, but its QMP state
+        // belongs to the old controller session. Reinitialize the combo PHY
+        // after the DWC3 device reset and before publishing new DMA state.
+        // This is the non-destructive handoff equivalent of the cold
+        // Linux/Android QMP initialization sequence.
+        if super_speed && !reset_platform {
+            qmp_ready = init_qmp_phy();
+            QMP_PHY_READY = qmp_ready;
+            if !qmp_ready {
+                uart::puts("usb: Fastboot QMP SuperSpeed handoff unavailable\n");
                 return false;
             }
         }
@@ -4681,6 +5031,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             DCFG_HIGHSPEED
         };
         write(DCFG, dcfg);
+        configure_gadget_start_defaults();
 
         if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
             uart::puts("usb: DEPSTARTCFG failed\n");
@@ -4707,25 +5058,20 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 | DEVTEN_LINK_STATUS_CHANGE
                 | DEVTEN_WAKEUP
                 | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND,
+                | DEVTEN_SUSPEND
+                | DEVTEN_ERRATIC_ERROR
+                | DEVTEN_CMD_COMPLETE
+                | DEVTEN_OVERFLOW,
         );
         if !start_setup() {
             uart::puts("usb: SETUP STARTTRANSFER failed\n");
             return false;
         }
 
-        let mut dctl = read(DCTL);
-        dctl |= DCTL_RUN_STOP;
-        write(DCTL, dctl);
-        let mut halted = true;
-        for _ in 0..100_000 {
-            if read(DSTS) & DSTS_DEVCTRLHLT == 0 {
-                halted = false;
-                break;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
-        if halted {
+        // Use the same Linux-compatible Run/Stop preparation as the probe
+        // path. In particular, do not inherit KEEP_CONNECT or the Fastboot
+        // HIRD threshold across the temporary-image handoff.
+        if !run_stop_device(true) {
             uart::put_hex("usb: DWC3 remained halted, DSTS=", read(DSTS) as u64);
             return false;
         }
@@ -4757,11 +5103,19 @@ pub fn poll() {
             }
         }
         poll_typec_state(false);
-        let count = read(GEVNTCOUNT0) & 0xfffc;
+        let count = read(GEVNTCOUNT0) & GEVNTCOUNT_MASK;
         if count == 0 {
             drain_gsi_event_buffers();
             return;
         }
+        // Linux masks the event interrupt while the current ring contents are
+        // consumed. This matters for the early IRQ path as well as polling:
+        // an event posted during process_event() must not re-enter the same
+        // consumer before its cursor and acknowledgement are updated.
+        write(
+            GEVNTSIZ0,
+            GEVNTSIZ_INTMASK | (EVENT_BUFFER_SIZE as u32 & GEVNTSIZ_SIZE_MASK),
+        );
         let mut remaining = count as usize;
         while remaining >= 4 {
             let offset = EVENT_OFFSET;
@@ -4777,6 +5131,9 @@ pub fn poll() {
             remaining -= 4;
         }
         write(GEVNTCOUNT0, count);
+        // Publish the acknowledgement before unmasking, matching the Linux
+        // event-buffer handler's ordering.
+        write(GEVNTSIZ0, EVENT_BUFFER_SIZE as u32 & GEVNTSIZ_SIZE_MASK);
         drain_gsi_event_buffers();
     }
 }
@@ -4868,5 +5225,37 @@ unsafe fn drain_gsi_event_buffers() {
             remaining -= 4;
         }
         unsafe { write(count_reg, count as u32) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DCTL_HIRD_THRES_LITO, DCTL_HIRD_THRES_MASK, DCTL_KEEP_CONNECT, DCTL_RUN_STOP,
+        DCTL_TRGTULST_MASK, DCTL_TRGTULST_RX_DET, DWC3_REVISION_187A, DWC3_REVISION_194A,
+        gadget_nump, run_stop_value,
+    };
+
+    #[test]
+    fn gadget_nump_uses_linux_fifo_formula_and_cap() {
+        assert_eq!(gadget_nump(0, 0), 0);
+        assert_eq!(gadget_nump(1, 8), 0);
+        assert_eq!(gadget_nump(512, 32), 1);
+        assert_eq!(gadget_nump(4096, 64), 16);
+    }
+
+    #[test]
+    fn run_stop_value_applies_linux_reconnect_quirks() {
+        let old = DCTL_KEEP_CONNECT | (3 << 24) | DCTL_TRGTULST_MASK;
+        let legacy = run_stop_value(old, DWC3_REVISION_187A);
+        assert_eq!(legacy & DCTL_HIRD_THRES_MASK, DCTL_HIRD_THRES_LITO);
+        assert_eq!(legacy & DCTL_TRGTULST_MASK, DCTL_TRGTULST_RX_DET);
+        assert_ne!(legacy & DCTL_RUN_STOP, 0);
+
+        let modern = run_stop_value(old, DWC3_REVISION_194A);
+        assert_eq!(modern & DCTL_HIRD_THRES_MASK, DCTL_HIRD_THRES_LITO);
+        assert_eq!(modern & DCTL_TRGTULST_MASK, 0);
+        assert_eq!(modern & DCTL_KEEP_CONNECT, 0);
+        assert_ne!(modern & DCTL_RUN_STOP, 0);
     }
 }

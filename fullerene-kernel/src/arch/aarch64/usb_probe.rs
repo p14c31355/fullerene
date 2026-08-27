@@ -126,7 +126,9 @@ global_asm!(
          .endif\n\
          // Keep a failed MMIO handoff from leaving the phone permanently\n\
          // disconnected. The vector table above turns this timer IRQ into a\n\
-         // PS_HOLD reset; the watchdog is disabled once gadget setup returns.\n\
+         // PS_HOLD reset; the normal gadget path disables it after EP0\n\
+         // progress, while pullup-only diagnostics leave it armed so a\n\
+         // failed physical handoff cannot strand the handset.\n\
          mrs x5, CNTFRQ_EL0\n\
          // Leave enough time for Qualcomm MMIO synchronization, GENI UART\n\
          // diagnostics, and the DWC3 reset handshake before the recovery\n\
@@ -141,8 +143,13 @@ global_asm!(
          // This standalone probe does not run the normal Rust GIC init, so
          // bring up the Bramble redistributor and CPU interface before
          // unmasking IRQs. Bound the firmware-owned redistributor wait.
-         movz x8, #0x6000\n\
-         movk x8, #0x17a, lsl #16\n\
+         // Bramble GICR_BASE is 0x17a60000. Keep the full 32-bit address\n\
+         // here; 0x017a6000 targets an unrelated unmapped window and leaves\n\
+         // the recovery timer and USB SPI interrupts unserviced.\n\
+         movz x8, #{gicr_0}\n\
+         movk x8, #{gicr_1}, lsl #16\n\
+         movk x8, #{gicr_2}, lsl #32\n\
+         movk x8, #{gicr_3}, lsl #48\n\
          ldr w9, [x8, #0x14]\n\
          bic w9, w9, #2\n\
          str w9, [x8, #0x14]\n\
@@ -214,6 +221,12 @@ global_asm!(
      2:\n\
          ret\n\
      .size aarch64_usb_probe_apply_relocations, . - aarch64_usb_probe_apply_relocations\n\
+     // Keep the exception table in the linker script's dedicated aligned\n\
+     // section. If it stays in .text.boot, its 2 KiB alignment raises the\n\
+     // whole boot section's address and shifts _start away from the Image\n\
+     // payload/linker base used by the Android loader and PIE relocation\n\
+     // bootstrap.\n\
+     .section .text.exception_vectors,\"ax\"\n\
      .balign 2048\n\
      // A probe has no normal exception subsystem yet. Catch synchronous\n\
      // aborts from secure-owned Qualcomm MMIO apertures and reboot instead\n\
@@ -301,6 +314,10 @@ global_asm!(
     entry_1 = const ((LINK_ENTRY >> 16) & 0xffff),
     entry_2 = const ((LINK_ENTRY >> 32) & 0xffff),
     entry_3 = const ((LINK_ENTRY >> 48) & 0xffff),
+    gicr_0 = const (platform::bramble::GICR_BASE & 0xffff),
+    gicr_1 = const ((platform::bramble::GICR_BASE >> 16) & 0xffff),
+    gicr_2 = const ((platform::bramble::GICR_BASE >> 32) & 0xffff),
+    gicr_3 = const ((platform::bramble::GICR_BASE >> 48) & 0xffff),
     gadget_exception = const if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
         1
     } else {
@@ -328,6 +345,13 @@ extern "C" fn usb_probe_irq() {
         );
     }
     let interrupt = interrupt_id as u32;
+    // INTID 30 is the EL1 physical-timer PPI armed by the standalone probe.
+    // It is not part of the Qualcomm USB IRQ resource table, so handle it
+    // before the platform IRQ filter; otherwise a no-host probe can remain
+    // forever in WFE after the handoff fails.
+    if interrupt == timer::TIMER_PPI {
+        reset_after_probe_failure();
+    }
     if platform::bramble::is_usb_irq(interrupt) {
         let controller_irq = interrupt == platform::bramble::usb_controller_irq();
         if !controller_irq {
@@ -372,9 +396,10 @@ extern "C" fn usb_probe_entry() -> ! {
 
     // The bare pull-up probe deliberately stays below the DMA/trace boundary:
     // an invalid retained DRAM aperture must not mask a controller-only
-    // handoff result. Keep the gadget probe below the bulk clear as well for
-    // now: its first purpose is to distinguish EP0 setup from a standalone
-    // probe's access to the linker-reserved DMA aperture.
+    // handoff result. The gadget probe clears its DMA objects only after the
+    // DWC3 handoff stop boundary, where the USB module owns the old Fastboot
+    // DMA lifetime. The preserve-core differential uses the halted controller
+    // boundary without asserting CSFTRST.
     #[cfg(not(any(
         fullerene_aarch64_usb_bare_pullup_probe,
         fullerene_aarch64_usb_gadget_handoff_probe
@@ -466,6 +491,21 @@ extern "C" fn usb_probe_entry() -> ! {
             let _ = unsafe { platform::bramble::configure_typec_irq(&typec) };
         }
     }
+    #[cfg(all(
+        fullerene_aarch64_bramble,
+        fullerene_aarch64_usb_gadget_handoff_probe,
+        not(any(
+            fullerene_aarch64_usb_probe_irq_typec,
+            fullerene_aarch64_usb_probe_irq_typec_role
+        ))
+    ))]
+    {
+        // The default probe uses the non-destructive observer rather than
+        // rewriting PMIC role bits. This supplies the orientation and the
+        // initial runtime state that Android's role-switch path would have
+        // installed before binding the UDC.
+        let _ = usb::observe_typec_handoff();
+    }
     let gadget_ready = if cfg!(any(
         fullerene_aarch64_usb_gadget_handoff_probe,
         fullerene_aarch64_usb_pullup_probe
@@ -505,8 +545,14 @@ extern "C" fn usb_probe_entry() -> ! {
         usb::init_usb2_handoff()
     };
     if gadget_ready {
-        // The assembly entry armed the recovery timer before initialization;
-        // stop it before enabling the normal USB interrupt routes.
+        // Keep the assembly recovery timer armed until the first EP0 DATA or
+        // STATUS transfer. If the controller reports init success but never
+        // becomes host-visible, the timer IRQ returns the handset to
+        // Fastboot instead of leaving it stuck with no USB device.
+        #[cfg(not(any(
+            fullerene_aarch64_usb_gadget_handoff_probe,
+            fullerene_aarch64_usb_pullup_probe
+        )))]
         unsafe {
             asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
         }
@@ -609,6 +655,9 @@ extern "C" fn usb_probe_entry() -> ! {
                 unsafe { asm!("wfe", options(nomem, nostack)) };
                 usb::service_deferred_platform();
                 if usb::probe_ep0_progress() {
+                    unsafe {
+                        asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+                    }
                     // An idle descriptor-only gadget is healthy after one
                     // EP0 transfer has been accepted. Do not mistake the
                     // absence of further host traffic for a failed handoff;
@@ -631,6 +680,31 @@ extern "C" fn usb_probe_entry() -> ! {
                 }
             }
         }
+        #[cfg(fullerene_aarch64_usb_pullup_probe)]
+        {
+            // Do not rely solely on the EL1 physical-timer PPI for recovery.
+            // The pullup-only mode deliberately avoids the normal IRQ path,
+            // and a firmware-owned GIC can leave that PPI masked even though
+            // the generic counter itself is running. Keep a polling deadline
+            // as a second recovery path so a failed physical handoff cannot
+            // strand the handset after the bootloader disconnects.
+            let frequency = probe_counter_frequency();
+            let deadline = probe_counter().saturating_add(frequency.saturating_mul(60));
+            loop {
+                // Pullup-only deliberately never owns the DWC3 event ring.
+                // Calling usb::poll() here would consume Fastboot's stale
+                // GEVNTCOUNT/EVENTS state and turn this physical-only probe
+                // into an accidental DMA/event-ring probe. The recovery
+                // deadline needs only the architectural counter; leave all
+                // controller event handling out of this mode.
+                core::hint::spin_loop();
+                if frequency != 0 && probe_counter() >= deadline {
+                    usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x50554c4c); // "PULL"
+                    reset_after_probe_failure();
+                }
+            }
+        }
+        #[cfg(not(fullerene_aarch64_usb_pullup_probe))]
         loop {
             usb::poll();
         }
