@@ -389,6 +389,110 @@ extern "C" fn usb_probe_exception_fallback() -> ! {
     reset_after_probe_failure();
 }
 
+/// Run the EP0 signal-probe channel. This is deliberately independent of the
+/// gadget handoff result: a handoff that fails after Run/Stop still leaves a
+/// physical attach whose re-attach cycles carry the diagnostic code. The
+/// retained trace is unreachable while EP0 never enumerates, and the flooded
+/// host journal drops disconnect lines, so the code is published by toggling
+/// the pull-up: after a bounded observation window the probe performs
+/// code+1 drop/re-attach cycles, and each re-attach produces a reliable
+/// "new high-speed USB device" line with a timestamp in the host log.
+#[cfg(all(
+    fullerene_aarch64_usb_ep0_signal_probe,
+    fullerene_aarch64_usb_gadget_handoff_probe
+))]
+fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
+    // Disarm the assembly recovery timer; the trace-quiet watchdog below
+    // owns recovery in this mode.
+    unsafe {
+        asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+    }
+    usb::trace_marker(
+        usb::TRACE_PROBE_WATCHDOG,
+        0x5349_4700 | (signal_smmu_code & 0xff),
+    );
+    if option_env!("FULLERENE_USB_SIGNAL_EARLY_DROP")
+        .filter(|value| *value != "0")
+        .is_some()
+    {
+        // The early-drop check inside the handoff already owns the signal;
+        // keep the pull-up down and recover immediately.
+        usb::ep0_signal_drop_pullup();
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
+        reset_after_probe_failure();
+    }
+    let include_raw_link = option_env!("FULLERENE_USB_SIGNAL_RAW_LINK")
+        .filter(|value| *value != "0")
+        .is_some();
+    let frequency = probe_counter_frequency();
+    let timeout_secs = option_env!("FULLERENE_USB_PROBE_TIMEOUT_SECS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(120);
+    let mut deadline = probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
+    let mut last_head = usb::trace_head();
+    let observe_until = probe_counter().saturating_add(frequency.saturating_mul(10));
+    let mut signal_code = signal_smmu_code;
+    loop {
+        usb::poll();
+        if usb::probe_ep0_progress() {
+            // Enumeration actually succeeded: stop signaling and continue as
+            // the normal direct probe would.
+            unsafe {
+                asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+            }
+            usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5354_4142); // "STAB"
+            loop {
+                usb::poll();
+            }
+        }
+        if signal_code == 0 {
+            signal_code = if include_raw_link {
+                usb::ep0_raw_link_signal_code()
+            } else if signal_link_state {
+                usb::ep0_link_signal_code()
+            } else {
+                usb::ep0_signal_code()
+            };
+        }
+        if signal_code != 0 || probe_counter() >= observe_until {
+            break;
+        }
+        let head = usb::trace_head();
+        if head != last_head {
+            last_head = head;
+            deadline = probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
+        } else if frequency != 0 && probe_counter() >= deadline {
+            usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
+            reset_after_probe_failure();
+        }
+    }
+    if signal_code != 0 {
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x5349_4744 | (signal_code & 0xff),
+        );
+    }
+    // code+1 visible re-attach cycles encode the diagnostic value in the
+    // reliable attach-line count. The QSCRATCH session overrides control the
+    // pull-up even when the core ignores DCTL, so each cycle stays short.
+    let cycles = (signal_code as u64 + 1).min(16);
+    for _ in 0..cycles {
+        usb::ep0_signal_drop_pullup();
+        let dropped = probe_counter().saturating_add(frequency.saturating_mul(3) / 2);
+        while frequency == 0 || probe_counter() < dropped {
+            usb::poll();
+        }
+        usb::ep0_signal_restore_pullup();
+        let attached = probe_counter().saturating_add(frequency.saturating_mul(3) / 2);
+        while frequency == 0 || probe_counter() < attached {
+            usb::poll();
+        }
+    }
+    usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
+    reset_after_probe_failure();
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn usb_probe_entry() -> ! {
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
@@ -505,6 +609,23 @@ extern "C" fn usb_probe_entry() -> ! {
         // installed before binding the UDC.
         let _ = usb::observe_typec_handoff();
     }
+    // The signal probe reads the Apps-SMMU stream state BEFORE the gadget
+    // handoff publishes the pull-up: if the aperture is secure-owned or
+    // clock-gated, the abort reboots pre-attach and the host sees no device
+    // at all, which is a distinct diagnostic outcome from any timed drop.
+    let signal_smmu_code = if cfg!(fullerene_aarch64_usb_ep0_signal_probe)
+        && option_env!("FULLERENE_USB_SIGNAL_SMMU_STATE")
+            .filter(|value| *value != "0")
+            .is_some()
+    {
+        usb::probe_smmu_stream_state()
+    } else {
+        0
+    };
+    let signal_link_state = cfg!(fullerene_aarch64_usb_ep0_signal_probe)
+        && option_env!("FULLERENE_USB_SIGNAL_LINK_STATE")
+            .filter(|value| *value != "0")
+            .is_some();
     let gadget_ready = if cfg!(any(
         fullerene_aarch64_usb_gadget_handoff_probe,
         fullerene_aarch64_usb_pullup_probe
@@ -552,6 +673,14 @@ extern "C" fn usb_probe_entry() -> ! {
     } else {
         usb::init_usb2_handoff()
     };
+    // The signal channel owns the whole post-init timeline in signal mode:
+    // it must observe and signal even when the handoff reported failure,
+    // because a failing attempt may still have published the pull-up.
+    #[cfg(all(
+        fullerene_aarch64_usb_ep0_signal_probe,
+        fullerene_aarch64_usb_gadget_handoff_probe
+    ))]
+    run_ep0_signal_probe(signal_smmu_code, signal_link_state);
     if gadget_ready {
         #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
         if usb::gadget_handoff_stage_probe_enabled() {

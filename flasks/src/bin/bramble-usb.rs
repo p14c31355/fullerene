@@ -112,6 +112,36 @@ struct LoopArgs {
     /// Arm the initial EP0 SETUP from the DWC3 Connect Done event.
     #[arg(long)]
     start_at_connect_done: bool,
+    /// Publish EP0/event/TRB diagnostics by dropping the pull-up at a coded
+    /// delay after attach; the host dmesg delta is the readout.
+    #[arg(long)]
+    signal_probe: bool,
+    /// Include the read-only Apps-SMMU SMR/S2CR stream state in the signal
+    /// probe (priority over the runtime signal codes).
+    #[arg(long)]
+    signal_smmu_state: bool,
+    /// Switch the signal probe to the USB2 link-state ladder.
+    #[arg(long)]
+    signal_link_state: bool,
+    /// Encode the raw DSTS.USBLNKST nibble at 2-second resolution.
+    #[arg(long)]
+    signal_raw_link: bool,
+    /// Drop the pull-up permanently in the handoff when the selected early
+    /// condition (1/2/3/5, or 9=unconditional control) is observed.
+    #[arg(long = "signal-early-drop", value_name = "CODE")]
+    signal_early_drop: Option<u32>,
+    /// Drop the session overrides before the first Run/Stop (control).
+    #[arg(long)]
+    signal_pre_drop: bool,
+    /// Toggle DCTL Run/Stop at one-second intervals after the connect.
+    #[arg(long)]
+    signal_heartbeat: bool,
+    /// Adopt the bootloader's mapped SMMU page for the EP0 DMA objects.
+    #[arg(long)]
+    dma_adopt_smmu: bool,
+    /// Publish the pull-up only when the SMMU stream's S2CR type matches.
+    #[arg(long = "smmu-gate", value_name = "TYPE")]
+    smmu_gate: Option<u32>,
     #[arg(long)]
     no_core_reset: bool,
     #[arg(long)]
@@ -449,6 +479,15 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         start_after_connect: false,
         start_after_reset: false,
         start_at_connect_done: false,
+        signal_probe: false,
+        signal_smmu_state: false,
+        signal_link_state: false,
+        signal_raw_link: false,
+        signal_early_drop: None,
+        signal_pre_drop: false,
+        signal_heartbeat: false,
+        dma_adopt_smmu: false,
+        smmu_gate: None,
         no_core_reset: args.no_core_reset,
         uncompressed: false,
         dry_run: false,
@@ -492,6 +531,60 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--start-at-connect-done requires --direct-handoff",
+        ));
+    }
+    if args.signal_probe && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-probe requires --direct-handoff",
+        ));
+    }
+    if args.signal_smmu_state && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-smmu-state requires --signal-probe",
+        ));
+    }
+    if args.signal_link_state && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-link-state requires --signal-probe",
+        ));
+    }
+    if args.signal_raw_link && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-raw-link requires --signal-probe",
+        ));
+    }
+    if args.signal_early_drop.is_some() && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-early-drop requires --signal-probe",
+        ));
+    }
+    if args.signal_pre_drop && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-pre-drop requires --signal-probe",
+        ));
+    }
+    if args.signal_heartbeat && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-heartbeat requires --signal-probe",
+        ));
+    }
+    if args.dma_adopt_smmu && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--dma-adopt-smmu requires --direct-handoff",
+        ));
+    }
+    if args.smmu_gate.is_some() && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--smmu-gate requires --direct-handoff",
         ));
     }
     if (args.start_after_connect as u8
@@ -828,6 +921,35 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.start_after_connect {
         arguments.push("--usb-gadget-handoff-start-after-connect".to_owned());
+    }
+    if args.signal_probe {
+        arguments.push("--usb-ep0-signal-probe".to_owned());
+    }
+    if args.signal_smmu_state {
+        arguments.push("--usb-ep0-signal-smmu-state".to_owned());
+    }
+    if args.signal_link_state {
+        arguments.push("--usb-ep0-signal-link-state".to_owned());
+    }
+    if args.signal_raw_link {
+        arguments.push("--usb-ep0-signal-raw-link".to_owned());
+    }
+    if let Some(code) = args.signal_early_drop {
+        arguments.push("--usb-ep0-signal-early-drop".to_owned());
+        arguments.push(code.to_string());
+    }
+    if args.signal_pre_drop {
+        arguments.push("--usb-ep0-signal-pre-drop".to_owned());
+    }
+    if args.signal_heartbeat {
+        arguments.push("--usb-ep0-signal-heartbeat".to_owned());
+    }
+    if args.dma_adopt_smmu {
+        arguments.push("--usb-ep0-dma-adopt".to_owned());
+    }
+    if let Some(value) = args.smmu_gate {
+        arguments.push("--usb-ep0-smmu-gate".to_owned());
+        arguments.push(value.to_string());
     }
     if args.start_after_reset {
         arguments.push("--usb-gadget-handoff-start-after-reset".to_owned());

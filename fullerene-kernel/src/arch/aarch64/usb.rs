@@ -654,66 +654,363 @@ static mut GSI_RESOURCE_INDEX: [u8; 3] = [0; 3];
 static mut GSI_RING_ACTIVE: [bool; 3] = [false; 3];
 static mut DMA_ALLOCATOR: Option<super::platform::bramble::DmaPoolAllocator> = None;
 
+/// Latched signal-probe observables. The early Bramble handoff has no UART
+/// and cannot enumerate, so these states are published to the host by
+/// dropping the physical pull-up at a diagnostic delay (see
+/// `ep0_signal_code()`); the host dmesg timestamps become the readout.
+static mut SIGNAL_EVENT_DELIVERED: bool = false;
+static mut SIGNAL_SETUP_TRB_RETIRED: bool = false;
+static mut SIGNAL_SETUP_PACKET_RECEIVED: bool = false;
+static mut SIGNAL_LAST_SOFFN: u16 = 0;
+static mut SIGNAL_SOF_SEEN: bool = false;
+/// Link-state ladder latches (see `ep0_link_signal_code()`).
+static mut SIGNAL_LNKST_U0: bool = false;
+static mut SIGNAL_LNKST_RESET: bool = false;
+static mut SIGNAL_LNKST_POLLING: bool = false;
+static mut SIGNAL_LNKST_RXDET: bool = false;
+static mut SIGNAL_CORE_HALTED: bool = false;
+/// Adopted SMMU mapping (see `adopt_smmu_dma_mapping()`). When the Apps-SMMU
+/// stream is owned by a live TRANSLATE context that software cannot rewrite,
+/// the EP0 DMA objects are relocated into a page that context already maps:
+/// the CPU addresses the page at `DMA_ADOPTED_CPU` while DWC3 is published
+/// the corresponding IOVA in `DMA_ADOPTED_IOVA`.
+static mut DMA_ADOPTED: bool = false;
+static mut DMA_ADOPTED_CPU: usize = 0;
+static mut DMA_ADOPTED_IOVA: u64 = 0;
+
+#[inline]
+fn dma_mapping_adopted() -> bool {
+    unsafe { DMA_ADOPTED }
+}
+
+/// Translate a CPU-side pointer inside the adopted page into the IOVA that
+/// DWC3 must use. Outside adopted mode the CPU address IS the DMA address.
+#[inline]
+unsafe fn dma_iova_for(cpu: usize) -> u64 {
+    unsafe {
+        if DMA_ADOPTED {
+            DMA_ADOPTED_IOVA + (cpu - DMA_ADOPTED_CPU) as u64
+        } else {
+            cpu as u64
+        }
+    }
+}
+
+/// Read-only Apps-SMMU stage-1 walk. Returns the physical output address for
+/// `iova` when the stream's context bank translation maps it with a valid
+/// 4 KiB page (or 2 MiB block whose base contains the whole 4 KiB window).
+unsafe fn smmu_walk_iova(ttbr0: u64, three_level: bool, iova: u64) -> Option<u64> {
+    const DESC_VALID: u64 = 1;
+    const DESC_TABLE: u64 = 2;
+    unsafe {
+        let mut table = (ttbr0 & !0xfff) as usize;
+        // 39-bit IOVA (T0SZ=25, 4 KiB granule): L1 root. 32-bit IOVA
+        // (T0SZ=32): the walk starts at level 2 with 2 MiB blocks.
+        let (l1_index, l2_index, l3_index) = if three_level {
+            (
+                ((iova >> 30) & 0x1ff) as usize,
+                ((iova >> 21) & 0x1ff) as usize,
+                ((iova >> 12) & 0x1ff) as usize,
+            )
+        } else {
+            (
+                0,
+                ((iova >> 21) & 0x1ff) as usize,
+                ((iova >> 12) & 0x1ff) as usize,
+            )
+        };
+        if three_level {
+            let descriptor = read_volatile((table + l1_index * 8) as *const u64);
+            if descriptor & DESC_VALID == 0 || descriptor & DESC_TABLE == 0 {
+                return None;
+            }
+            table = (descriptor & !0xfff) as usize;
+        }
+        let l2_descriptor = read_volatile((table + l2_index * 8) as *const u64);
+        if l2_descriptor & DESC_VALID == 0 {
+            return None;
+        }
+        if l2_descriptor & DESC_TABLE == 0 {
+            // 2 MiB block: the whole 4 KiB window must fit inside it. The
+            // block base is 2 MiB aligned, so the low attribute bits do not
+            // overlap the output address.
+            let block = (l2_descriptor & 0x000f_ffff_ffff_f000) as usize;
+            let offset = (iova as usize) & 0x1f_ffff;
+            if offset + 0x1000 > 0x20_0000 {
+                return None;
+            }
+            return Some((block | offset) as u64);
+        }
+        let l3_table = (l2_descriptor & !0xfff) as usize;
+        let l3_descriptor = read_volatile((l3_table + l3_index * 8) as *const u64);
+        if l3_descriptor & DESC_VALID == 0 || l3_descriptor & DESC_TABLE != 0 {
+            return None;
+        }
+        Some(l3_descriptor & 0x000f_ffff_ffff_f000)
+    }
+}
+
+/// Read-only Apps-SMMU stream/context discovery. Returns the context-bank
+/// page index when the DWC3 stream matches a valid SMR whose S2CR selects an
+/// active TRANSLATE context. Never writes the SMMU.
+unsafe fn smmu_find_translate_context() -> Option<(usize, usize, usize)> {
+    unsafe {
+        let id0 = read_volatile(smmu_reg(SMMU_ID0));
+        let id1 = read_volatile(smmu_reg(SMMU_ID1));
+        if id0 == 0 || id0 == u32::MAX || id1 == 0 || id1 == u32::MAX {
+            return None;
+        }
+        let num_smrs = ((id0 & SMMU_ID0_NUMSMRG_MASK) as usize).min(128);
+        let num_pages =
+            1usize << (((id1 >> SMMU_ID1_NUMPAGENDXB_SHIFT) & SMMU_ID1_NUMPAGENDXB_MASK) + 1);
+        let num_context_banks = (id1 & SMMU_ID1_NUMCB_MASK) as usize;
+        if num_pages == 0 || num_context_banks == 0 {
+            return None;
+        }
+        let stream_id = super::platform::bramble::usb_resources().dma_pool.stream_id;
+        for index in 0..num_smrs {
+            let smr = read_volatile(smmu_reg(SMMU_SMR_BASE + index * 4));
+            if smr & SMMU_SMR_VALID == 0 {
+                continue;
+            }
+            let id = smr & 0xffff;
+            let mask = (smr >> SMMU_SMR_MASK_SHIFT) & 0x7fff;
+            if (stream_id ^ id) & !mask != 0 {
+                continue;
+            }
+            let s2cr = read_volatile(smmu_reg(SMMU_S2CR_BASE + index * 4));
+            if s2cr & SMMU_S2CR_TYPE_MASK != SMMU_S2CR_TYPE_TRANS {
+                // BYPASS or FAULT: the CPU address is already the DMA
+                // address and the normal linker section works.
+                return None;
+            }
+            let cbndx = (s2cr & SMMU_S2CR_CBNDX_MASK) as usize;
+            if cbndx >= num_context_banks {
+                return None;
+            }
+            return Some((cbndx, num_pages, num_context_banks));
+        }
+        None
+    }
+}
+
+/// Find ANY valid 4 KiB page mapping inside the live context's stage-1 tables
+/// and return (iova, physical). The bootloader context is no longer active
+/// once `fastboot boot` jumped away, so any page it mapped is a fair DMA
+/// window for Fullerene's EP0 objects.
+unsafe fn smmu_find_any_mapping(ttbr0: u64, three_level: bool) -> Option<(u64, u64)> {
+    const DESC_VALID: u64 = 1;
+    const DESC_TABLE: u64 = 2;
+    unsafe {
+        let l1_table = (ttbr0 & !0xfff) as usize;
+        let l1_range = if three_level { 512usize } else { 1 };
+        for l1_index in 0..l1_range {
+            let mut l2_table = l1_table;
+            if three_level {
+                let l1_descriptor = read_volatile((l1_table + l1_index * 8) as *const u64);
+                if l1_descriptor & DESC_VALID == 0 || l1_descriptor & DESC_TABLE == 0 {
+                    continue;
+                }
+                l2_table = (l1_descriptor & !0xfff) as usize;
+            }
+            for l2_index in 0..512usize {
+                let l2_descriptor = read_volatile((l2_table + l2_index * 8) as *const u64);
+                if l2_descriptor & DESC_VALID == 0 {
+                    continue;
+                }
+                let iova_base = ((l1_index as u64) << 30) | ((l2_index as u64) << 21);
+                if l2_descriptor & DESC_TABLE == 0 {
+                    // A 2 MiB block: use its first 4 KiB window.
+                    let block = l2_descriptor & 0x000f_ffff_ffff_f000;
+                    return Some((iova_base, block));
+                }
+                let l3_table = (l2_descriptor & !0xfff) as usize;
+                for l3_index in 0..512usize {
+                    let l3_descriptor = read_volatile((l3_table + l3_index * 8) as *const u64);
+                    if l3_descriptor & DESC_VALID == 0 || l3_descriptor & DESC_TABLE != 0 {
+                        continue;
+                    }
+                    let physical = l3_descriptor & 0x000f_ffff_ffff_f000;
+                    if physical == 0 {
+                        continue;
+                    }
+                    return Some((iova_base | ((l3_index as u64) << 12), physical));
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Read-only Apps-SMMU S2CR type for the DWC3 stream.
+///   0 = FAULT, 1 = BYPASS, 2 = TRANSLATE, 255 = no SMR match / unreadable
+unsafe fn smmu_stream_s2cr_type() -> u32 {
+    unsafe {
+        let id0 = read_volatile(smmu_reg(SMMU_ID0));
+        let id1 = read_volatile(smmu_reg(SMMU_ID1));
+        if id0 == 0 || id0 == u32::MAX || id1 == 0 || id1 == u32::MAX {
+            return 255;
+        }
+        let num_smrs = ((id0 & SMMU_ID0_NUMSMRG_MASK) as usize).min(128);
+        let stream_id = super::platform::bramble::usb_resources().dma_pool.stream_id;
+        for index in 0..num_smrs {
+            let smr = read_volatile(smmu_reg(SMMU_SMR_BASE + index * 4));
+            if smr & SMMU_SMR_VALID == 0 {
+                continue;
+            }
+            let id = smr & 0xffff;
+            let mask = (smr >> SMMU_SMR_MASK_SHIFT) & 0x7fff;
+            if (stream_id ^ id) & !mask != 0 {
+                continue;
+            }
+            let s2cr = read_volatile(smmu_reg(SMMU_S2CR_BASE + index * 4));
+            return (s2cr & SMMU_S2CR_TYPE_MASK) >> 16;
+        }
+        255
+    }
+}
+
+/// Relocate the EP0 DMA objects into a page that the live Apps-SMMU context
+/// already maps. The stream's S2CR is TRANSLATE and software cannot rewrite
+/// it from non-secure state, so the only working DMA window is one the
+/// bootloader context maps: capture the bootloader's event-ring IOVA, walk
+/// its page tables read-only, and adopt that page (CPU side = physical,
+/// DWC3 side = IOVA). Returns the IOVA of the adopted page.
+unsafe fn adopt_smmu_dma_mapping() -> Option<u64> {
+    unsafe {
+        let (cbndx, num_pages, _) = smmu_find_translate_context()?;
+        let page_size = 0x1000usize;
+        let cb_page = num_pages + cbndx;
+        let sctlr = smmu_page_read(page_size, cb_page, SMMU_CB_SCTLR);
+        if sctlr & SMMU_SCTLR_M == 0 {
+            // Translation disabled: the CPU address is the DMA address.
+            return None;
+        }
+        let ttbr0 = smmu_page_read64(page_size, cb_page, SMMU_CB_TTBR0);
+        if ttbr0 == 0 || ttbr0 == u64::MAX {
+            return None;
+        }
+        let three_level = super::platform::bramble::usb_resources().smmu_use_3_level_tables;
+        let iova =
+            (read_volatile(reg(GEVNTADRHI0)) as u64) << 32 | read_volatile(reg(GEVNTADRLO0)) as u64;
+        if iova == 0
+            || iova == u64::MAX
+            || iova & 0xfff != 0
+            || iova > usize::MAX as u64
+            || iova >= 1 << (if three_level { 39 } else { 32 })
+        {
+            return None;
+        }
+        let (iova, physical) = match smmu_walk_iova(ttbr0, three_level, iova) {
+            Some(physical) if physical != 0 => (iova, physical as u64),
+            // The bootloader's own event-ring IOVA is no longer resolvable
+            // (its teardown may have cleared GEVNTADR or the page). Adopt
+            // ANY page the live context still maps instead: the bootloader
+            // is gone and no other master owns the stream.
+            _ => smmu_find_any_mapping(ttbr0, three_level)?,
+        };
+        if physical == 0 || iova & 0xfff != 0 {
+            return None;
+        }
+        DMA_ADOPTED_CPU = physical as usize;
+        DMA_ADOPTED_IOVA = iova;
+        DMA_ADOPTED = true;
+        log_hex("usb: adopted SMMU page physical=", physical);
+        log_hex("usb: adopted SMMU page iova=", iova);
+        Some(iova)
+    }
+}
+
 #[inline]
 unsafe fn ep0_event_dma_base() -> usize {
-    let captured = unsafe { FASTBOOT_EVENT_DMA_BASE };
-    if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma) && captured != 0 {
-        captured as usize
-    } else {
-        addr_of_mut!(EVENTS) as usize
+    unsafe {
+        if DMA_ADOPTED {
+            return DMA_ADOPTED_CPU;
+        }
+        let captured = FASTBOOT_EVENT_DMA_BASE;
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma) && captured != 0 {
+            captured as usize
+        } else {
+            addr_of_mut!(EVENTS) as usize
+        }
     }
 }
 
 #[inline]
 unsafe fn ep0_event_address() -> u64 {
-    unsafe { ep0_event_dma_base() as u64 }
+    unsafe {
+        if DMA_ADOPTED {
+            return DMA_ADOPTED_IOVA;
+        }
+        ep0_event_dma_base() as u64
+    }
 }
 
 #[inline]
 unsafe fn ep0_event_size() -> usize {
-    if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
-        && unsafe { FASTBOOT_EVENT_DMA_BASE } != 0
-    {
-        FASTBOOT_EP0_EVENT_SIZE
-    } else {
-        EVENT_BUFFER_SIZE
+    unsafe {
+        if DMA_ADOPTED {
+            return FASTBOOT_EP0_EVENT_SIZE;
+        }
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
+            && FASTBOOT_EVENT_DMA_BASE != 0
+        {
+            FASTBOOT_EP0_EVENT_SIZE
+        } else {
+            EVENT_BUFFER_SIZE
+        }
     }
 }
 
 #[inline]
 unsafe fn ep0_setup_ptr() -> *mut u8 {
-    if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
-        && unsafe { FASTBOOT_EVENT_DMA_BASE } != 0
-    {
-        unsafe { (ep0_event_dma_base() as *mut u8).add(FASTBOOT_EP0_SETUP_OFFSET) }
-    } else {
-        addr_of_mut!(SETUP_PACKET).cast::<u8>()
+    unsafe {
+        if DMA_ADOPTED {
+            return (DMA_ADOPTED_CPU as *mut u8).add(FASTBOOT_EP0_SETUP_OFFSET);
+        }
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
+            && FASTBOOT_EVENT_DMA_BASE != 0
+        {
+            (ep0_event_dma_base() as *mut u8).add(FASTBOOT_EP0_SETUP_OFFSET)
+        } else {
+            addr_of_mut!(SETUP_PACKET).cast::<u8>()
+        }
     }
 }
 
 #[inline]
 unsafe fn ep0_trb_ptr(index: usize) -> *mut Trb {
-    if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
-        && unsafe { FASTBOOT_EVENT_DMA_BASE } != 0
-    {
-        unsafe {
+    unsafe {
+        if DMA_ADOPTED {
+            return (DMA_ADOPTED_CPU as *mut u8)
+                .add(FASTBOOT_EP0_TRB_OFFSET + index * core::mem::size_of::<Trb>())
+                .cast::<Trb>();
+        }
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
+            && FASTBOOT_EVENT_DMA_BASE != 0
+        {
             (ep0_event_dma_base() as *mut u8)
                 .add(FASTBOOT_EP0_TRB_OFFSET + index * core::mem::size_of::<Trb>())
                 .cast::<Trb>()
+        } else {
+            addr_of_mut!(EP0_TRBS).cast::<Trb>().add(index)
         }
-    } else {
-        unsafe { addr_of_mut!(EP0_TRBS).cast::<Trb>().add(index) }
     }
 }
 
 #[inline]
 unsafe fn ep0_response_ptr() -> *mut u8 {
-    if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
-        && unsafe { FASTBOOT_EVENT_DMA_BASE } != 0
-    {
-        unsafe { (ep0_event_dma_base() as *mut u8).add(FASTBOOT_EP0_RESPONSE_OFFSET) }
-    } else {
-        addr_of_mut!(RESPONSE.0).cast::<u8>()
+    unsafe {
+        if DMA_ADOPTED {
+            return (DMA_ADOPTED_CPU as *mut u8).add(FASTBOOT_EP0_RESPONSE_OFFSET);
+        }
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
+            && FASTBOOT_EVENT_DMA_BASE != 0
+        {
+            (ep0_event_dma_base() as *mut u8).add(FASTBOOT_EP0_RESPONSE_OFFSET)
+        } else {
+            addr_of_mut!(RESPONSE.0).cast::<u8>()
+        }
     }
 }
 
@@ -1741,17 +2038,10 @@ pub fn configure_dwc3_smmu() -> bool {
                 | (irptndx as u32 & SMMU_CBAR_IRPTNDX_MASK),
         );
 
-        // Enable the global and context-fault interrupt responses before the
-        // context bank is made live.  The Android DT supplies a global SPI
-        // and one SPI per context bank; the exception path now services both
-        // using the same retained fault record as the polling fallback.
-        let scr0 = read_volatile(smmu_reg(SMMU_GR0_SCR0));
-        if scr0 != u32::MAX {
-            write_volatile(
-                smmu_reg(SMMU_GR0_SCR0),
-                scr0 | SMMU_SCR0_GFRE | SMMU_SCR0_GFIE | SMMU_SCR0_GCFGFRE | SMMU_SCR0_GCFGFIE,
-            );
-        }
+        // SCR0 interrupt enables are deliberately NOT written here. The
+        // global/CFG fault lines are polled (service_smmu_fault) and the
+        // secure-side SCR0 bits can reject non-secure writes on Qualcomm
+        // firmware, which aborts the whole handoff before the pull-up.
 
         let cb_page = cb_base_page + cbndx;
         // 4 KiB granule, 32-bit IOVA, inner-shareable WBWA walks, and a
@@ -3015,7 +3305,7 @@ unsafe fn configure_endpoint_config(
 }
 
 unsafe fn start_transfer(endpoint: usize, trb: *const Trb) -> bool {
-    let address = trb as usize as u64;
+    let address = unsafe { dma_iova_for(trb as usize) };
     unsafe {
         // DWC3's STARTTRANSFER parameters are PAR0=address[63:32] and
         // PAR1=address[31:0]. The endpoint command helper writes the named
@@ -3486,7 +3776,7 @@ pub unsafe fn queue_bulk_transfer(endpoint: usize, buffer: *const u8, length: us
 }
 
 unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32) {
-    let address = buffer as usize as u64;
+    let address = unsafe { dma_iova_for(buffer as usize) };
     let trb = unsafe { ep0_trb_ptr(index) };
     unsafe {
         write_volatile(addr_of_mut!((*trb).bpl), address as u32);
@@ -3501,7 +3791,7 @@ unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32)
 }
 
 unsafe fn prepare_trb_at(trb: *mut Trb, buffer: *const u8, length: usize, kind: u32) {
-    let address = buffer as usize as u64;
+    let address = unsafe { dma_iova_for(buffer as usize) };
     unsafe {
         write_volatile(addr_of_mut!((*trb).bpl), address as u32);
         write_volatile(addr_of_mut!((*trb).bph), (address >> 32) as u32);
@@ -5355,6 +5645,27 @@ pub fn init_usb2_gadget_handoff() -> bool {
 fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bool) -> bool {
     unsafe {
         QMP_PHY_READY = false;
+        // Reset the adopted-mapping state on every handoff attempt: a failed
+        // attempt must not leave the next attempt publishing stale objects.
+        DMA_ADOPTED = false;
+        DMA_ADOPTED_CPU = 0;
+        DMA_ADOPTED_IOVA = 0;
+        // Read the bootloader's Apps-SMMU state and event-ring IOVA while
+        // Fastboot still owns the controller. When the stream sits in a live
+        // TRANSLATE context that software cannot rewrite, the EP0 DMA
+        // objects are relocated into a page that context already maps.
+        #[cfg(fullerene_aarch64_usb_ep0_dma_adopt)]
+        {
+            let adopted = adopt_smmu_dma_mapping();
+            trace_event(
+                TRACE_SMMU_HANDOFF,
+                adopted.is_some() as u32,
+                0,
+                0,
+                0,
+                read(DSTS),
+            );
+        }
         if !super::platform::bramble::usb_power_contract_valid(super_speed) {
             log_puts("usb: DT power contract invalid\n");
             return false;
@@ -5757,10 +6068,50 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // HIRD threshold across the temporary-image handoff.
         configure_gadget_speed(qmp_ready);
         enable_gadget_susphy();
+        #[cfg(fullerene_aarch64_usb_ep0_smmu_gate)]
+        {
+            // One-bit SMMU readout: publish the pull-up only when the
+            // stream's S2CR type matches the requested value, so the
+            // host-visible attach itself names the Apps-SMMU stream state.
+            let want = match option_env!("FULLERENE_USB_SMMU_GATE_TYPE") {
+                Some("0") => 0u32,
+                Some("1") => 1,
+                Some("2") => 2,
+                _ => 99,
+            };
+            let actual = smmu_stream_s2cr_type();
+            trace_event(TRACE_SMMU_HANDOFF, actual, want, 0, 0, read(DSTS));
+            if actual != want {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x534d_4d55 | (actual & 0xff));
+                log_puts("usb: SMMU gate mismatch; suppressing pull-up\n");
+                return false;
+            }
+        }
+
+        #[cfg(fullerene_aarch64_usb_ep0_dma_adopt)]
+        if !dma_mapping_adopted() {
+            // The stream was not in a rewritable TRANSLATE context or the
+            // page-table walk could not adopt a mapped page. Without a known
+            // DMA window the EP0 path cannot work, so leave the pull-up
+            // down: the host-visible ABSENCE of the attach is the one-bit
+            // readout naming this branch.
+            trace_marker(TRACE_PROBE_WATCHDOG, 0x534e_4f44); // "SNOD"
+            log_puts("usb: no adopted SMMU window; suppressing pull-up\n");
+            return false;
+        }
         if !run_stop_device(true) {
             log_hex("usb: DWC3 remained halted, DSTS=", read(DSTS) as u64);
             return false;
         }
+
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        ep0_signal_early_drop_check();
+
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        ep0_signal_pre_runstop_drop_check();
+
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        ep0_signal_heartbeat_check();
 
         #[cfg(fullerene_aarch64_usb_gadget_handoff_start_after_connect)]
         {
@@ -5844,6 +6195,7 @@ unsafe fn poll_ep0_event_ring() -> bool {
         copied += 4;
     }
     unsafe {
+        SIGNAL_EVENT_DELIVERED = true;
         EVENT_OFFSET = (start_offset + count as usize) % event_size;
         // Runtime event consumption acknowledges only the byte count. Linux
         // reserves the full-register write (including EHB) for event-buffer
@@ -5870,6 +6222,271 @@ unsafe fn poll_ep0_event_ring() -> bool {
         remaining -= 4;
     }
     true
+}
+
+/// Update the signal-probe latches. Called from `ep0_signal_code()` so a
+/// polling-only consumer does not need an extra tracing channel.
+unsafe fn update_signal_latches() {
+    unsafe {
+        // The core retires a TRB by clearing HWO over DMA. Invalidate the
+        // cached line first so the CPU observes the controller's write.
+        let trb = addr_of!(EP0_TRBS[0]);
+        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+        if read_volatile(addr_of!((*trb).ctrl)) & TRB_HWO == 0 {
+            SIGNAL_SETUP_TRB_RETIRED = true;
+        }
+        let setup = addr_of!(SETUP_PACKET) as *const u8;
+        cache_invalidate(setup as usize, 8);
+        for offset in 0..8 {
+            if read_volatile(setup.add(offset)) != 0 {
+                SIGNAL_SETUP_PACKET_RECEIVED = true;
+                break;
+            }
+        }
+        // DSTS_HIGHSPEED is zero, so the link state cannot be read from
+        // ConnectSpd. A changing SOF frame number instead proves the core is
+        // receiving packets from the host at the transaction level.
+        let sofn = ((read(DSTS) & (0x3fff << 3)) >> 3) as u16;
+        if sofn != SIGNAL_LAST_SOFFN {
+            SIGNAL_LAST_SOFFN = sofn;
+            SIGNAL_SOF_SEEN = true;
+        }
+        // Latch the core's view of the USB2 link for the link-state ladder.
+        let dsts = read(DSTS);
+        match (dsts >> 18) & 0xf {
+            0 => SIGNAL_LNKST_U0 = true,      // ON: link up at the detected speed
+            5 => SIGNAL_LNKST_RXDET = true,   // RX.DETECT: core still waiting
+            7 => SIGNAL_LNKST_POLLING = true, // POLLING: chirp phase observed
+            13 => SIGNAL_LNKST_RESET = true,  // RESET: bus reset observed
+            _ => {}
+        }
+        if dsts & DSTS_DEVCTRLHLT != 0 || read(DCTL) & DCTL_RUN_STOP == 0 {
+            // A halted core or a cleared Run/Stop after a verified start makes
+            // the physical attach a QSCRATCH session-override phantom.
+            SIGNAL_CORE_HALTED = true;
+        }
+    }
+}
+
+/// Encode the polled EP0/DMA observables as one host-visible code. The probe
+/// drops the physical pull-up `3 * code` seconds after attach, so the host
+/// dmesg delta between "new high-speed USB device" and "USB disconnect" names
+/// the first stage that provably worked:
+///   1 = event ring delivered a record to GEVNTCOUNT
+///   2 = DWC3 retired the armed EP0 SETUP TRB (HWO cleared over DMA)
+///   3 = the SETUP packet payload was DMAed into the setup buffer
+///   5 = SOF frames are arriving (transaction-level RX alive)
+///   0 = none of the above (no drop; the host only sees its own -110)
+/// SMMU read-only probe codes are handled by `probe_smmu_stream_state()`.
+pub fn ep0_signal_code() -> u32 {
+    unsafe {
+        update_signal_latches();
+        if SIGNAL_EVENT_DELIVERED {
+            return 1;
+        }
+        if SIGNAL_SETUP_TRB_RETIRED {
+            return 2;
+        }
+        if SIGNAL_SETUP_PACKET_RECEIVED {
+            return 3;
+        }
+        if SIGNAL_SOF_SEEN {
+            return 5;
+        }
+        0
+    }
+}
+
+/// Link-state variant of the signal ladder. Priority reflects the deepest
+/// USB2 link state the core ever reported after a verified Run/Stop start:
+///   1 = ON (U0): the core believes the link is up at the detected speed
+///   2 = core halted itself or Run/Stop read back cleared (phantom attach)
+///   3 = RESET: bus reset observed but never ON
+///   4 = POLLING: chirp phase observed but never ON
+///   5 = RX.DETECT only: the core never saw the host session
+///   0 = none of the above
+pub fn ep0_link_signal_code() -> u32 {
+    unsafe {
+        update_signal_latches();
+        if SIGNAL_LNKST_U0 {
+            return 1;
+        }
+        if SIGNAL_CORE_HALTED {
+            return 2;
+        }
+        if SIGNAL_LNKST_RESET {
+            return 3;
+        }
+        if SIGNAL_LNKST_POLLING {
+            return 4;
+        }
+        if SIGNAL_LNKST_RXDET {
+            return 5;
+        }
+        0
+    }
+}
+
+/// Raw DSTS.USBLNKST nibble at poll time. The dedicated raw run drops the
+/// pull-up at `3 + 2 * value` seconds, so the host-visible delta names the
+/// exact link-state encoding the core reports after its verified start.
+pub fn ep0_raw_link_signal_code() -> u32 {
+    unsafe {
+        update_signal_latches();
+        (read(DSTS) >> 18) & 0xf
+    }
+}
+
+/// Read-only Apps-SMMU state for the DWC3 stream. This never writes the
+/// SMMU; if the aperture is clock-gated or secure-owned the access aborts and
+/// the handset reboots before the pull-up is published, which is itself a
+/// distinct host-visible outcome.
+///   6 = SMR matched the stream and S2CR selects TRANSLATE
+///   7 = SMR matched the stream and S2CR selects BYPASS
+///   8 = SMMU readable but no SMR matches the DWC3 stream
+///   9 = SMMU identification registers are unreadable
+pub fn probe_smmu_stream_state() -> u32 {
+    unsafe {
+        let id0 = read_volatile(smmu_reg(SMMU_ID0));
+        let id1 = read_volatile(smmu_reg(SMMU_ID1));
+        if id0 == 0 || id0 == u32::MAX || id1 == 0 || id1 == u32::MAX {
+            return 9;
+        }
+        let num_smrs = ((id0 & SMMU_ID0_NUMSMRG_MASK) as usize).min(128);
+        let stream_id = super::platform::bramble::usb_resources().dma_pool.stream_id;
+        for index in 0..num_smrs {
+            let smr = read_volatile(smmu_reg(SMMU_SMR_BASE + index * 4));
+            if smr & SMMU_SMR_VALID == 0 {
+                continue;
+            }
+            let id = smr & 0xffff;
+            let mask = (smr >> SMMU_SMR_MASK_SHIFT) & 0x7fff;
+            if (stream_id ^ id) & !mask == 0 {
+                let s2cr = read_volatile(smmu_reg(SMMU_S2CR_BASE + index * 4));
+                return if s2cr & SMMU_S2CR_TYPE_MASK == SMMU_S2CR_TYPE_BYPASS {
+                    7
+                } else {
+                    6
+                };
+            }
+        }
+        8
+    }
+}
+
+/// Heartbeat control: toggle DCTL Run/Stop in one-second intervals starting
+/// immediately after the verified connect. If the host still records a full
+/// 5-second descriptor timeout against a continuously attached port, the
+/// post-attach core ignores DCTL Run/Stop clears and the pull-up cannot be
+/// dropped by software at all.
+#[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+fn ep0_signal_heartbeat_check() {
+    if option_env!("FULLERENE_USB_SIGNAL_HEARTBEAT") != Some("1") {
+        return;
+    }
+    unsafe {
+        for _ in 0..3 {
+            let _ = run_stop_device(false);
+            super::timer::delay_ms(1000);
+            let _ = run_stop_device(true);
+            super::timer::delay_ms(1000);
+        }
+    }
+}
+
+/// Control variant of the early drop: run immediately BEFORE the first
+/// Run/Stop. If the pull-up still appears with this unconditional drop, the
+/// Qualcomm session overrides do not gate the attach at all and the pull-up
+/// is purely core-driven (DCTL.TermSelect).
+#[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+fn ep0_signal_pre_runstop_drop_check() {
+    if option_env!("FULLERENE_USB_SIGNAL_PRE_DROP") != Some("1") {
+        return;
+    }
+    unsafe {
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x5349_5052);
+        ep0_signal_drop_pullup();
+    }
+}
+
+/// One-bit host-visible signal: sample the condition latches for a bounded
+/// window right after the first post-connect event poll and permanently drop
+/// the pull-up when the requested condition is met. The host then never sees
+/// the descriptor timeout (-110), so the ABSENCE of that line is the readout.
+///   9 = unconditional (control run: proves the drop mechanism itself)
+///   1 = event ring delivered a record (GEVNTCOUNT > 0)
+///   2 = the armed EP0 SETUP TRB was retired (HWO cleared over DMA)
+///   3 = the SETUP packet payload was DMAed into the setup buffer
+///   5 = SOF frame numbers are changing (transaction-level RX alive)
+#[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+fn ep0_signal_early_drop_check() {
+    let condition = match option_env!("FULLERENE_USB_SIGNAL_EARLY_DROP") {
+        Some("1") => 1,
+        Some("2") => 2,
+        Some("3") => 3,
+        Some("5") => 5,
+        Some("9") => 9,
+        _ => 0,
+    };
+    if condition == 0 {
+        return;
+    }
+    unsafe {
+        let mut observed = 0;
+        let mut ms = 0u32;
+        while ms < 1500 {
+            ms += 1;
+            if condition != 9 {
+                // Consume any pending events first: the delivery latch is
+                // only set by a real event-ring poll.
+                poll_ep0_event_ring();
+                update_signal_latches();
+                observed = if SIGNAL_EVENT_DELIVERED {
+                    1
+                } else if SIGNAL_SETUP_TRB_RETIRED {
+                    2
+                } else if SIGNAL_SETUP_PACKET_RECEIVED {
+                    3
+                } else if SIGNAL_SOF_SEEN {
+                    5
+                } else {
+                    0
+                };
+                if observed == condition {
+                    break;
+                }
+            }
+            super::timer::delay_ms(1);
+        }
+        if condition == 9 || observed == condition {
+            trace_marker(TRACE_PROBE_WATCHDOG, 0x5349_4544 | (condition << 8));
+            ep0_signal_drop_pullup();
+        }
+    }
+}
+
+/// Deassert the pull-up so the host sees a physical disconnect.
+///
+/// The Qualcomm session overrides are cleared INSTEAD of toggling
+/// DCTL.Run/Stop: a wedged core ignores DCTL, but the QSCRATCH session votes
+/// reach the PHY directly and still control the physical pull-up.
+pub fn ep0_signal_drop_pullup() {
+    unsafe {
+        let ss = read_qscratch(QSCRATCH_SS_PHY_CTRL);
+        write_qscratch(QSCRATCH_SS_PHY_CTRL, ss & !(1 << 24));
+        let hs = read_qscratch(QSCRATCH_HS_PHY_CTRL);
+        write_qscratch(QSCRATCH_HS_PHY_CTRL, hs & !((1 << 20) | (1 << 28)));
+        let _ = read_qscratch(QSCRATCH_HS_PHY_CTRL);
+    }
+}
+
+/// Reassert the pull-up after a signal drop by restoring the same Qualcomm
+/// session overrides the handoff applies.
+pub fn ep0_signal_restore_pullup() {
+    unsafe {
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
+        qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
+    }
 }
 
 /// Linux enables the DWC3 controller SPI immediately after arming the first

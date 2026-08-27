@@ -1202,6 +1202,69 @@ command/error/re-arm paths. All further Bramble tests continue to use the
 audited stock template and `fastboot boot`; partition flashing is not part of
 this workflow.
 
+### Signal-probe diagnostics and the Apps-SMMU stream state (this session)
+
+Because the retained RAM trace can only be read back through an enumerated
+Fullerene gadget, and the host journal drops disconnect lines of
+never-enumerated devices, this session added a Rust-only host-visible
+diagnostic channel to the direct gadget handoff. The kernel can now publish
+one-bit readouts through the physical pull-up itself
+(`--signal-probe` and its variants, all Rust, no scripts):
+
+- `--signal-early-drop CODE` drops the pull-up permanently inside the
+  handoff when a polled condition (1 = GEVNTCOUNT delivered a record,
+  2 = the armed EP0 SETUP TRB was retired over DMA, 3 = the SETUP payload
+  was DMAed, 5 = SOF frame numbers advance, 9 = unconditional control) is
+  observed; the host's `-110` line disappearing is the readout.
+- `--smmu-gate TYPE` publishes the pull-up only when the Apps-SMMU stream's
+  S2CR type equals TYPE (0 = fault, 1 = bypass, 2 = translate), so the
+  attach itself names the stream state.
+- `--dma-adopt-smmu` walks the bootloader's stage-1 page tables read-only
+  and relocates the EP0 DMA objects (event ring, SETUP buffer, TRBs,
+  response) into a page the live context already maps: the CPU addresses
+  the page physically, DWC3 is published the corresponding IOVA
+  (`dma_iova_for()` splits the CPU/DMA views). The walk never writes the
+  SMMU.
+
+Device A/B results with these probes (all `fastboot boot` only, all runs
+recovered automatically, no flash/erase):
+
+1. The unconditional post-connect pull-up drop (`--signal-early-drop 9`)
+   did not remove the host `-110`: the Qualcomm session overrides
+   (QSCRATCH `LANE0_PWR_PRESENT`, `UTMI_OTG_VBUS_VALID`,
+   `SW_SESSVLD_SEL`) do not gate the physical attach, and a post-attach
+   software drop did not become host-visible.
+2. A plain Android `adb reboot` produces no `usb 1-9` line at all, so the
+   observed `usb 1-9: new high-speed USB device` + `device descriptor
+   read/64, error -110` is genuinely the Fullerene handoff's attach, not a
+   bootloader transient.
+3. The SMMU-enabled route (`configure_dwc3_smmu()` without `--no-smmu`)
+   still produces no attach; with the global-fault SCR0 interrupt-enable
+   write removed (secure-side bits can reject non-secure writes), the
+   route still fails, which points at the rejected S2CR/context-bank
+   writes rather than the SCR0.
+4. `--smmu-gate 0`, `--smmu-gate 1`, and `--smmu-gate 2` all suppress the
+   attach: from non-secure state the DWC3 stream's S2CR matches no SMR
+   (`smmu_stream_s2cr_type()` = 255). Either the Apps SMMU leaves the
+   stream unmatched (global bypass at ABL or a secure-owned/RAZ register
+   view), or TZ owns the stream configuration.
+5. `--dma-adopt-smmu` (with the any-mapping fallback) also suppressed the
+   attach, confirming adoption could not find a usable TRANSLATE context.
+
+Consequences for the next step: if the stream is globally bypassed
+(SMMUEN=0) the CPU-address-as-IOVA assumption holds and the DMA failure
+must instead live in the controller/link domain; if the stream is
+secure-owned FAULT/TRANSLATE, no non-secure software can currently make
+DWC3 DMA work and the only paths are (a) a register group the scan has
+not read yet (secure-page aliases), or (b) leaving the SMMU question to a
+bootloader-side change, which is out of scope for `fastboot boot` images.
+The immediate next experiments are therefore: (i) encode the raw ID0/ID1
+SMR count and the first valid SMR word through additional gate values so
+the scan's blindness is separated from a genuine no-match, and (ii) if
+the SMMU is genuinely bypassed, re-run the event-ring/EP0 A/B with
+usbmon on the host to observe whether the device ACKs the SETUP
+transaction at all (packet-level liveness beyond the descriptor timeout).
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:
