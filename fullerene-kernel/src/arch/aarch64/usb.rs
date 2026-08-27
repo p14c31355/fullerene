@@ -71,10 +71,12 @@ const SMMU_SMR_VALID: u32 = 1 << 31;
 const SMMU_SMR_MASK_SHIFT: u32 = 16;
 const SMMU_S2CR_TYPE_MASK: u32 = 0x3 << 16;
 const SMMU_S2CR_TYPE_TRANS: u32 = 0;
+const SMMU_S2CR_TYPE_BYPASS: u32 = 1 << 16;
 const SMMU_S2CR_CBNDX_MASK: u32 = 0xff;
 const SMMU_GR1_CBAR_BASE: usize = 0x00;
 const SMMU_GR1_CBA2R_BASE: usize = 0x800;
 const SMMU_CBA2R_VA64: u32 = 1;
+const SMMU_CBAR_IRPTNDX_MASK: u32 = 0xff;
 const SMMU_CBAR_S1_TRANS_S2_BYPASS: u32 = 1 << 16;
 const SMMU_CBAR_S1_MEMATTR_WB: u32 = 0xf << 12;
 const SMMU_CBAR_S1_BPSHCFG_NSH: u32 = 3 << 8;
@@ -111,6 +113,11 @@ const SMMU_SCTLR_CFRE: u32 = 1 << 5;
 const SMMU_SCTLR_AFE: u32 = 1 << 2;
 const SMMU_SCTLR_TRE: u32 = 1 << 1;
 const SMMU_SCTLR_M: u32 = 1;
+const SMMU_GR0_SCR0: usize = 0x00;
+const SMMU_SCR0_GFRE: u32 = 1 << 1;
+const SMMU_SCR0_GFIE: u32 = 1 << 2;
+const SMMU_SCR0_GCFGFRE: u32 = 1 << 4;
+const SMMU_SCR0_GCFGFIE: u32 = 1 << 5;
 const SMMU_TCR_EPD1: u32 = 1 << 23;
 const SMMU_TCR_SH0_INNER: u32 = 3 << 12;
 const SMMU_TCR_ORGN0_WBWA: u32 = 1 << 10;
@@ -603,6 +610,11 @@ static mut FUNCTION_BOUND: bool = false;
 /// it per endpoint and supplies it to ENDTRANSFER; using a fixed value works
 /// only accidentally on the first controller generation.
 static mut EP0_RESOURCE_INDEX: [u8; 2] = [0; 2];
+/// Failure stage for the standalone gadget handoff probe. The probe uses
+/// this to make a retained failure host-observable without publishing a
+/// broken USB pull-up.
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+static mut GADGET_HANDOFF_FAILURE_STAGE: u32 = 0;
 static mut TYPEC_LANE_B: bool = false;
 /// True only after the combo QMP PHY has completed its cold initialization.
 /// USB2 handoff deliberately keeps this false: the USB2 path must not touch
@@ -876,6 +888,20 @@ pub fn trace_head() -> u32 {
     unsafe { read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2)) }
 }
 
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+pub fn gadget_handoff_failure_stage() -> u32 {
+    unsafe { GADGET_HANDOFF_FAILURE_STAGE }
+}
+
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+fn gadget_handoff_fail(stage: u32) -> bool {
+    unsafe {
+        GADGET_HANDOFF_FAILURE_STAGE = stage;
+    }
+    trace_marker(TRACE_PROBE_WATCHDOG, 0x4641_0000 | (stage & 0xff)); // "FA" + stage
+    false
+}
+
 /// Dump the post-mortem USB trace after the controller has reached a safe
 /// UART-visible stage. The hot path above never calls this or formats text.
 pub fn dump_trace() {
@@ -1069,7 +1095,9 @@ unsafe fn smmu_tlb_sync() {
 /// Consume an Apps-SMMU context fault using the same ordering as Linux's
 /// arm_smmu_context_fault(): sample FSR/FAR/FSYNR0, retain the evidence, then
 /// clear FSR and terminate a stalled transaction. This is polled because the
-/// early Fullerene image does not yet own the SMMU context-fault IRQ domain.
+/// The normal entry is now the Apps-SMMU global/context IRQ path; polling
+/// remains as a recovery path for the short interval before the GIC owner is
+/// installed or when firmware leaves a latched fault asserted.
 unsafe fn service_smmu_fault() {
     let global_fsr = unsafe { read_volatile(smmu_reg(SMMU_GR0_FSR)) };
     if global_fsr != 0 && global_fsr != u32::MAX && global_fsr & SMMU_GLOBAL_FSR_FAULT != 0 {
@@ -1260,6 +1288,24 @@ pub fn configure_dwc3_smmu() -> bool {
 
         let old_type = old_s2cr & SMMU_S2CR_TYPE_MASK;
         let old_cb = (old_s2cr & SMMU_S2CR_CBNDX_MASK) as usize;
+        // Fastboot commonly keeps the DWC3 stream in S2CR.BYPASS while its
+        // USB buffers are identity-addressed. This is already a valid
+        // physical=IOVA mapping for the linker DMA pool. Replacing it with a
+        // freshly selected context bank during `fastboot boot` changes an
+        // ownership boundary that Linux would preserve until its IOMMU
+        // domain is fully attached, and can make the first EP0 TRB fault.
+        if old_type == SMMU_S2CR_TYPE_BYPASS {
+            trace_event(
+                TRACE_SMMU_PRESERVED,
+                smr_index as u32,
+                old_cb as u32,
+                old_s2cr,
+                dma_start as u32,
+                dma_end as u32,
+            );
+            log_puts("usb: preserving Fastboot Apps SMMU bypass\n");
+            return true;
+        }
         let cbndx = if old_type == SMMU_S2CR_TYPE_TRANS {
             if old_cb >= num_context_banks || old_cb < num_s2_context_banks {
                 log_puts("usb: DWC3 SMMU context bank is out of range\n");
@@ -1274,6 +1320,15 @@ pub fn configure_dwc3_smmu() -> bool {
         };
         log_hex("usb: DWC3 SMMU SMR=", smr_index as u64);
         log_hex("usb: DWC3 SMMU CB=", cbndx as u64);
+        // CBAR.IRPTNDX is an index into the dense context-bank IRQ list in
+        // the provider DT, not a GIC SPI number.  Linux's irq-domain setup
+        // programs the same association before enabling context faults.
+        let context_irq_count = super::platform::bramble::usb_resources().smmu_context_irq_count;
+        let irptndx = if context_irq_count != 0 {
+            cbndx % context_irq_count
+        } else {
+            cbndx
+        };
         SMMU_CONTEXT_PAGE = cb_base_page + cbndx;
         SMMU_CONTEXT_PAGE_SIZE = page_size;
 
@@ -1324,8 +1379,23 @@ pub fn configure_dwc3_smmu() -> bool {
             page_size,
             gr1_page,
             SMMU_GR1_CBAR_BASE + cbndx * 4,
-            SMMU_CBAR_S1_TRANS_S2_BYPASS | SMMU_CBAR_S1_MEMATTR_WB | SMMU_CBAR_S1_BPSHCFG_NSH,
+            SMMU_CBAR_S1_TRANS_S2_BYPASS
+                | SMMU_CBAR_S1_MEMATTR_WB
+                | SMMU_CBAR_S1_BPSHCFG_NSH
+                | (irptndx as u32 & SMMU_CBAR_IRPTNDX_MASK),
         );
+
+        // Enable the global and context-fault interrupt responses before the
+        // context bank is made live.  The Android DT supplies a global SPI
+        // and one SPI per context bank; the exception path now services both
+        // using the same retained fault record as the polling fallback.
+        let scr0 = read_volatile(smmu_reg(SMMU_GR0_SCR0));
+        if scr0 != u32::MAX {
+            write_volatile(
+                smmu_reg(SMMU_GR0_SCR0),
+                scr0 | SMMU_SCR0_GFRE | SMMU_SCR0_GFIE | SMMU_SCR0_GCFGFRE | SMMU_SCR0_GCFGFIE,
+            );
+        }
 
         let cb_page = cb_base_page + cbndx;
         // 4 KiB granule, 32-bit IOVA, inner-shareable WBWA walks, and a
@@ -2890,6 +2960,11 @@ unsafe fn restart_control_after_reset() {
         DATA_ENDPOINTS_READY = false;
         DATA_REQUEST_SLOTS = [usize::MAX; 2];
         DATA_RESOURCE_INDEX = [0; 2];
+        // A USB bus reset terminates the active DWC3 EP0 transfer. Linux
+        // drops the cached resource index at this boundary; retaining it
+        // can make the next STARTTRANSFER look like a continuation of the
+        // old Fastboot/control session on some DWC3 revisions.
+        EP0_RESOURCE_INDEX = [0; 2];
         GSI_GADGET_BOUND = false;
         FUNCTION_BOUND = false;
         EP0_STATE = Ep0State::Setup;
@@ -2954,8 +3029,15 @@ unsafe fn sync_gadget_state() {
             }
 
             if !GSI_GADGET_BOUND {
-                let data_ready = configure_endpoint_kind(2, 512, DEPCFG_EP_TYPE_BULK, false)
-                    && configure_endpoint_kind(3, 512, DEPCFG_EP_TYPE_BULK, false);
+                // Linux calls dwc3_gadget_start_config(2) when
+                // SET_CONFIGURATION commits. DEPSTARTCFG(2) resets only
+                // non-control endpoint resource allocation; omitting this
+                // boundary leaves EP2/EP3 in Fastboot's allocation epoch and
+                // can tear down the link immediately after enumeration.
+                let data_ready =
+                    send_ep_command(0, DEPCMD_DEPSTARTCFG | (2 << DEPCMD_PARAM_SHIFT), 0, 0, 0)
+                        && configure_endpoint_kind(2, 512, DEPCFG_EP_TYPE_BULK, false)
+                        && configure_endpoint_kind(3, 512, DEPCFG_EP_TYPE_BULK, false);
                 if data_ready
                     && udc_mut().configure_endpoint(0x02, 512, true)
                     && udc_mut().configure_endpoint(0x83, 512, true)
@@ -3114,6 +3196,7 @@ unsafe fn process_event(raw: u32) {
                     DATA_ENDPOINTS_READY = false;
                     DATA_REQUEST_SLOTS = [usize::MAX; 2];
                     DATA_RESOURCE_INDEX = [0; 2];
+                    EP0_RESOURCE_INDEX = [0; 2];
                     EP0_STATE = Ep0State::Setup;
                     CONTROL_IN = false;
                     CONTROL_HAS_DATA = false;
@@ -3175,17 +3258,24 @@ unsafe fn process_event(raw: u32) {
                 // DWC3 emits a suspend event during initial attach on some
                 // revisions, before RESET/CONNECT_DONE and before the gadget
                 // is configured. Linux deliberately ignores that event.
+                // Once configured, this is still the USB bus entering L1/L2,
+                // not a system runtime-PM request. Do not power-gate the
+                // Qualcomm USB clock/rails here: doing so tears down a live
+                // gadget and makes a successful enumeration disappear.
                 let configured = unsafe { CONFIGURED };
                 if configured {
                     trace_event(TRACE_USB_SUSPEND, 0, 0, 0, 0, raw);
-                    let _ = runtime_suspend();
                 }
             }
             DEVICE_EVENT_HIBERNATION_REQUEST => {
                 trace_event(TRACE_USB_DEVICE_ERROR, device_event, 0, 0, 0, raw);
-                if unsafe { CONFIGURED } {
-                    let _ = runtime_suspend();
-                }
+                // A DWC3 hibernation notification is not by itself a system
+                // suspend request. Keep the Qualcomm session powered while
+                // the host keeps the SuperSpeed gadget idle; powering down
+                // here makes a successfully configured bulk gadget disappear.
+                // Explicit runtime suspend/resume remains available to the
+                // platform policy, but this hardware event alone must not
+                // invoke it.
             }
             DEVICE_EVENT_ERRATIC_ERROR | DEVICE_EVENT_CMD_COMPLETE | DEVICE_EVENT_OVERFLOW => {
                 trace_event(TRACE_USB_DEVICE_ERROR, device_event, 0, 0, 0, raw);
@@ -3606,6 +3696,14 @@ unsafe fn poll_typec_state(force: bool) {
     if !TYPEC_STATE_VALID {
         return;
     }
+    // Before the GIC/PMIC child IRQ route is live, bounded polling bridges
+    // the handoff gap. Once Linux's normal role-change interrupt boundary is
+    // installed, keep the PMIC read on that IRQ path only; polling every USB
+    // event can sample a transient CC state and falsely apply detach to a
+    // live gadget.
+    if super::platform::bramble::usb_resource_state().irq_routes_enabled {
+        return;
+    }
     TYPEC_POLL_TICKS = TYPEC_POLL_TICKS.wrapping_add(1);
     if !force && TYPEC_POLL_TICKS & 0x3fff != 0 {
         return;
@@ -3622,11 +3720,20 @@ unsafe fn poll_typec_state(force: bool) {
 pub fn handle_platform_irq(interrupt_id: u32) {
     unsafe {
         trace_event(TRACE_PLATFORM_IRQ, interrupt_id, 0, 0, 0, 0);
+        if super::platform::bramble::is_usb_smmu_irq(interrupt_id) {
+            service_smmu_fault();
+        }
         if interrupt_id == super::platform::bramble::usb_power_event_irq() {
             service_power_event();
         }
-        poll_typec_state(true);
         if interrupt_id == super::platform::bramble::usb_typec_parent_irq() {
+            // The initial role request above is authoritative for a
+            // fastboot handoff.  The PMIC parent can deliver a stale
+            // transition while Fastboot tears down its gadget; re-reading
+            // MISC_STATUS here would turn that transient into a false
+            // detach and remove the live Fullerene pull-up.  Keep the IRQ
+            // acknowledged, but defer role changes until a complete
+            // role-switch state machine is available.
             let state = &*addr_of!(TYPEC_STATE);
             if !super::platform::bramble::acknowledge_typec_irq(state) {
                 trace_event(TRACE_USB_DEVICE_ERROR, interrupt_id, 0, 0, 0, 0);
@@ -3946,7 +4053,33 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // the device; otherwise the host can issue the first descriptor request
     // while the handoff is still rebuilding DWC3 state.
     if !unsafe { init_usb2_bare_pullup_handoff_inner(false) } {
-        return false;
+        return gadget_handoff_fail(1); // halt handoff
+    }
+
+    // Fastboot may have stopped Run/Stop, but that is not the same ownership
+    // boundary as Linux's DWC3 probe.  Do not reuse its endpoint resource
+    // epoch: terminate it with the device core soft reset before publishing
+    // our event ring or issuing DEPSTARTCFG.
+    if !unsafe { device_soft_reset() } {
+        log_puts("usb gadget handoff: DWC3 device reset failed\n");
+        return gadget_handoff_fail(2); // core reset
+    }
+    unsafe {
+        let mut gctl = read(GCTL);
+        gctl &= !GCTL_PRTCAPDIR_MASK;
+        gctl |= GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG;
+        write(GCTL, gctl);
+        // CSFTRST restores the controller-side PHY mux/timing state on
+        // DWC3 revisions used by Bramble. Reapply the Qualcomm post-reset
+        // programming before any endpoint command, as dwc3-msm does.
+        select_utmi_pipe_clock();
+        update_dwc3_ref_clock();
+        let mut usb2 = read(GUSB2PHYCFG0);
+        usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        write(GUSB2PHYCFG0, usb2);
+        let mut usb3 = read(GUSB3PIPECTL0);
+        usb3 |= GUSB3PIPECTL_SUSPHY;
+        write(GUSB3PIPECTL0, usb3);
     }
 
     // The Fastboot session may have left the DWC3 stream behind an SMMU
@@ -3956,7 +4089,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // before handing any new DMA object to DWC3.
     if !configure_dwc3_smmu() {
         log_puts("usb gadget handoff: DWC3 SMMU pool map unavailable\n");
-        return false;
+        return gadget_handoff_fail(3); // SMMU
     }
 
     let event_address = addr_of!(EVENTS) as usize as u64;
@@ -4007,13 +4140,10 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         DATA_RESOURCE_INDEX = [0; 2];
         GSI_GADGET_BOUND = false;
         FUNCTION_BOUND = false;
-        // Fastboot leaves the control endpoints configured.  Do not issue
-        // DEPSTARTCFG/SETEPCONFIG while Run/Stop is still active; that command
-        // sequence requires a halted controller and was sending the probe to
-        // its bare-pullup fallback.
-        ENDPOINTS_READY = true;
-        let _ = udc_mut().configure_endpoint(0, 64, false);
-        let _ = udc_mut().configure_endpoint(1, 64, false);
+        // The core reset above invalidates Fastboot's endpoint configuration
+        // and transfer resources. Rebuild both control directions from the
+        // INIT state; this is the same ownership boundary used by Linux.
+        ENDPOINTS_READY = false;
         write(DCFG, DCFG_HIGHSPEED);
         write(DALEPENA, 0b11);
         write(
@@ -4026,39 +4156,22 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 | DEVTEN_HIBERNATION_REQUEST
                 | DEVTEN_SUSPEND,
         );
-        // Fastboot can leave a control transfer active on either EP0
-        // direction.  End that transfer in-place while keeping RUN/STOP and
-        // the Qualcomm session alive.  Resource index 1 is the EP0 resource
-        // used by the DWC3 gadget path; an already-idle endpoint simply
-        // reports a command error, which is harmless here.
-        let _ = end_transfer(0);
-        let _ = end_transfer(1);
-        // Reopen DWC3's transfer-resource allocation window after taking
-        // ownership from Fastboot.  Reusing the old endpoint configuration
-        // without DEPSTARTCFG can leave SETEPCONFIG/SETTRANSFRESOURCE tied to
-        // the bootloader's allocation epoch even though the controller is
-        // halted and the stale transfers have been ended.
+        // DEPSTARTCFG(0) opens a new endpoint-resource allocation window.
+        // SETEPCONFIG(INIT) then allocates one resource per EP0 direction.
         if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
             log_puts("usb gadget handoff: DEPSTARTCFG failed\n");
-            return false;
+            return gadget_handoff_fail(4); // resource window
         }
-        // Fastboot may have configured these control endpoints for the
-        // SuperSpeed session it just ended.  Linux modifies both directions
-        // to the USB2 EP0 maximum packet size after Connect Done; retaining
-        // 512 bytes while DCFG advertises High-Speed can leave the first
-        // 8-byte SETUP transfer unserviceable.
-        if !configure_endpoint(0, 64, true) || !configure_endpoint(1, 64, true) {
-            log_puts("usb gadget handoff: USB2 EP0 modify failed\n");
-            return false;
+        if !configure_endpoint(0, 64, false) || !configure_endpoint(1, 64, false) {
+            log_puts("usb gadget handoff: USB2 EP0 configure failed\n");
+            return gadget_handoff_fail(5); // EP0 config
         }
-        // The endpoint configuration may survive the bootloader handoff
-        // while its resource allocation does not.  Re-establish one resource
-        // for each physical EP0 direction before queueing SETUP.
-        let _ = send_ep_command(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
-        let _ = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+        ENDPOINTS_READY = true;
+        let _ = udc_mut().configure_endpoint(0, 64, false);
+        let _ = udc_mut().configure_endpoint(1, 64, false);
         if !start_setup() {
             log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
-            return false;
+            return gadget_handoff_fail(6); // SETUP TRB
         }
 
         let dctl = run_stop_value(read(DCTL), read(GSNPSID));
@@ -4261,6 +4374,9 @@ pub fn init_usb2_gadget_handoff() -> bool {
         }
         if read(DSTS) & DSTS_DEVCTRLHLT != 0 {
             log_puts("usb gadget handoff: DWC3 RUN/STOP timeout\n");
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+            return gadget_handoff_fail(7); // Run/Stop
+            #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
             return false;
         }
 

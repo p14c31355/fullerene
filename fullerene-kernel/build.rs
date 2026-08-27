@@ -7,6 +7,9 @@ use std::process::Command;
 use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_glibc_x86_64_elf};
 
 fn main() {
+    // This cfg is also referenced by the host-built USB protocol tests, so
+    // declare it before the AArch64-only build branch below.
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
     // The AArch64 bootstrap binary is intentionally dependency-free. Avoid
     // the x86_64 kernel's generated userland/assets while building it; those
     // steps require host tools and x86-only target support.

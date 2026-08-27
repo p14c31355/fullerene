@@ -732,6 +732,12 @@ pub unsafe fn reset_usb_blocks(super_speed: bool) -> bool {
     ok
 }
 
+/// Number of Apps-SMMU context-bank interrupt specifiers in the Bramble/Lito
+/// DT.  The global fault SPI is stored separately; the DT lists 80 context
+/// SPIs after it (97..118, 181..192, 183.. etc. in the provider's hardware
+/// ordering).
+pub const SMMU_CONTEXT_IRQ_COUNT: usize = 80;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UsbPlatformResources {
     pub dwc3_base: usize,
@@ -748,6 +754,13 @@ pub struct UsbPlatformResources {
     /// 39-bit AArch64 IOVA aperture used when a fresh context is installed;
     /// it does not require every mapping to terminate at an L3 page entry.
     pub smmu_use_3_level_tables: bool,
+    /// Apps-SMMU interrupt 0 is the global fault line; the remaining DT
+    /// entries are context-bank fault lines.  Keep the context array bounded
+    /// to the Lito DT contract so the early image can own the same IRQ route
+    /// without allocating an irq-domain.
+    pub smmu_global_irq: u32,
+    pub smmu_context_irqs: [u32; SMMU_CONTEXT_IRQ_COUNT],
+    pub smmu_context_irq_count: usize,
     pub pdc_base: usize,
     pub gdsc: usize,
     pub controller_clocks: &'static [ClockResource; 6],
@@ -779,6 +792,8 @@ pub struct UsbDtContract {
     pub dma_pool: Option<(u64, u64)>,
     pub stream_id: Option<u32>,
     pub smmu_use_3_level_tables: Option<bool>,
+    pub smmu_global_irq: Option<u32>,
+    pub smmu_context_irqs: [Option<u32>; SMMU_CONTEXT_IRQ_COUNT],
     pub qmp_reg_offsets: [Option<u32>; 18],
     pub core_clk_rate_hz: Option<u32>,
     pub core_clk_rate_hs_hz: Option<u32>,
@@ -834,6 +849,8 @@ impl UsbDtContract {
             dma_pool: None,
             stream_id: None,
             smmu_use_3_level_tables: None,
+            smmu_global_irq: None,
+            smmu_context_irqs: [None; SMMU_CONTEXT_IRQ_COUNT],
             qmp_reg_offsets: [None; 18],
             core_clk_rate_hz: None,
             core_clk_rate_hs_hz: None,
@@ -1124,6 +1141,17 @@ const BRAMBLE_USB_POWER: UsbPowerResources = UsbPowerResources {
     qmp_vbus_valid_override: true,
 };
 
+/// Apps-SMMU DT interrupt order after the single global fault SPI.  The
+/// context-bank list is sparse in SPI number space but dense in the SMMU
+/// provider's `IRPTNDX` order.
+const BRAMBLE_SMMU_CONTEXT_IRQS: [u32; SMMU_CONTEXT_IRQ_COUNT] = [
+    97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115,
+    116, 117, 118, 181, 182, 183, 184, 179, 186, 187, 188, 189, 190, 191, 192, 315, 316, 317, 318,
+    319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337,
+    338, 339, 340, 341, 342, 343, 344, 345, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405,
+    406, 407, 408, 409,
+];
+
 const BRAMBLE_USB_IRQS: [IrqResource; 5] = [
     IrqResource {
         name: "dp_hs_phy_irq",
@@ -1298,6 +1326,9 @@ pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
     // 0x0c600000 belongs to the SPMI arbiter channel window.
     apps_smmu_base: 0x1500_0000,
     smmu_use_3_level_tables: true,
+    smmu_global_irq: 65,
+    smmu_context_irqs: BRAMBLE_SMMU_CONTEXT_IRQS,
+    smmu_context_irq_count: SMMU_CONTEXT_IRQ_COUNT,
     pdc_base: USB_PDC_BASE,
     gdsc: USB30_PRIM_GDSC,
     controller_clocks: &BRAMBLE_CONTROLLER_CLOCKS,
@@ -1480,6 +1511,28 @@ pub fn install_usb_resource_contract(
         }
         if let Some(use_3_level_tables) = contract.smmu_use_3_level_tables {
             resources.smmu_use_3_level_tables = use_3_level_tables;
+            installed = true;
+        }
+        if let Some(irq) = contract.smmu_global_irq {
+            if (32..1020).contains(&irq) {
+                resources.smmu_global_irq = irq;
+                installed = true;
+            }
+        }
+        let mut smmu_context_irq_count = 0usize;
+        for (slot, irq) in contract.smmu_context_irqs.iter().enumerate() {
+            let Some(irq) = irq else {
+                break;
+            };
+            if !(32..1020).contains(irq) {
+                smmu_context_irq_count = 0;
+                break;
+            }
+            resources.smmu_context_irqs[slot] = *irq;
+            smmu_context_irq_count += 1;
+        }
+        if smmu_context_irq_count != 0 {
+            resources.smmu_context_irq_count = smmu_context_irq_count;
             installed = true;
         }
         if contract.qmp_reg_offsets.iter().all(Option::is_some) {
@@ -1815,10 +1868,22 @@ pub fn pdc_parent_irq(pin: u32) -> Option<u32> {
 pub fn is_usb_irq(interrupt_id: u32) -> bool {
     let resources = usb_resources();
     interrupt_id == resources.spmi_parent_irq
+        || interrupt_id == resources.smmu_global_irq
+        || resources.smmu_context_irqs[..resources.smmu_context_irq_count]
+            .iter()
+            .any(|irq| *irq == interrupt_id)
         || resources.irqs.iter().any(|irq| {
             irq.number == interrupt_id
                 || (irq.kind == UsbIrqKind::Pdc && pdc_parent_irq(irq.number) == Some(interrupt_id))
         })
+}
+
+pub fn is_usb_smmu_irq(interrupt_id: u32) -> bool {
+    let resources = usb_resources();
+    interrupt_id == resources.smmu_global_irq
+        || resources.smmu_context_irqs[..resources.smmu_context_irq_count]
+            .iter()
+            .any(|irq| *irq == interrupt_id)
 }
 
 pub fn usb_controller_irq() -> u32 {
@@ -2577,9 +2642,14 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
     }
     let gic_ready = super::gicv3::init(gicd, gicr, Some(usb_controller_irq()));
     unsafe {
-        let mut spis = [0u32; 6];
+        // DWC3 has five platform sources plus the Apps-SMMU global and up to
+        // 80 context-bank fault lines.  Keep all of them in the same GIC
+        // setup pass; truncating this list would make a DMA fault look like
+        // an unexplained EP0 timeout.
+        let mut spis = [0u32; 128];
         let mut count = 0usize;
-        for irq in usb_resources().irqs {
+        let resources = usb_resources();
+        for irq in resources.irqs {
             let parent = match irq.kind {
                 UsbIrqKind::GicSpi => Some(irq.number),
                 UsbIrqKind::Pdc => pdc_parent_irq(irq.number),
@@ -2594,9 +2664,23 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
                 }
             }
         }
+        for irq in core::iter::once(resources.smmu_global_irq).chain(
+            resources.smmu_context_irqs[..resources.smmu_context_irq_count]
+                .iter()
+                .copied(),
+        ) {
+            if irq != usb_controller_irq()
+                && !spis[..count].iter().any(|candidate| *candidate == irq)
+                && count < spis.len()
+            {
+                spis[count] = irq;
+                count += 1;
+            }
+        }
         let spmi_parent = usb_typec_parent_irq();
         if spmi_parent != usb_controller_irq()
             && !spis[..count].iter().any(|irq| *irq == spmi_parent)
+            && count < spis.len()
         {
             spis[count] = spmi_parent;
             count += 1;
@@ -3003,6 +3087,10 @@ mod tests {
         assert_eq!(resources.qmp_reg_offsets[15], 0x1c18);
         assert_eq!(resources.apps_smmu_base, 0x1500_0000);
         assert!(resources.smmu_use_3_level_tables);
+        assert_eq!(resources.smmu_global_irq, 65);
+        assert_eq!(resources.smmu_context_irq_count, SMMU_CONTEXT_IRQ_COUNT);
+        assert_eq!(resources.smmu_context_irqs[0], 97);
+        assert_eq!(resources.smmu_context_irqs[79], 409);
         assert_eq!(resources.pdc_base, 0x0b22_0000);
         assert_eq!(pdc_parent_irq(14), Some(494));
         assert_eq!(pdc_parent_irq(9), Some(489));
@@ -3044,6 +3132,16 @@ mod tests {
         assert_eq!(resources.power.qmp_core.max_load_ua, 30_000);
         assert_eq!(resources.power.qmp_core.rpmh_resource_id, *b"ldoa9\0\0\0");
         assert!(resources.power.qmp_vbus_valid_override);
+    }
+
+    #[test]
+    fn apps_smmu_fault_spis_are_usb_irq_sources() {
+        assert!(is_usb_irq(65));
+        assert!(is_usb_irq(97));
+        assert!(is_usb_irq(409));
+        assert!(is_usb_smmu_irq(65));
+        assert!(is_usb_smmu_irq(97));
+        assert!(!is_usb_smmu_irq(240));
     }
 
     #[test]

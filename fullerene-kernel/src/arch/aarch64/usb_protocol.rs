@@ -421,11 +421,32 @@ pub const DEVICE_DESCRIPTOR: [u8; 18] = [
 /// One vendor function with a bulk IN/OUT pair. The function is deliberately
 /// protocol-neutral; higher layers can bind their own payload format without
 /// changing the UDC/EP0 lifecycle.
+#[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
 pub const CONFIG_DESCRIPTOR: [u8; 32] = [
     9, 2, 32, 0, 1, 1, 0, 0x80, 50, // configuration
     9, 4, 0, 0, 2, 0xff, 0, 0, 0, // interface
     7, 5, 0x83, 2, 0, 2, 0, // bulk IN, EP3
     7, 5, 0x02, 2, 0, 2, 0, // bulk OUT, EP2
+];
+
+// The Bramble handoff reaches the host as SuperSpeed when Fastboot leaves the
+// combo PHY active. A SuperSpeed configuration needs an SS companion for each
+// bulk endpoint; advertising USB2-only endpoint descriptors makes the host
+// reject the configuration after EP0 enumeration.
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+pub const CONFIG_DESCRIPTOR: [u8; 44] = [
+    9, 2, 44, 0, 1, 1, 0, 0x80, 50, // configuration
+    9, 4, 0, 0, 2, 0xff, 0, 0, 0, // interface
+    7, 5, 0x83, 2, 0, 2, 0, // bulk IN, EP3
+    6, 0x30, 0, 0, 0, 0, // SS endpoint companion
+    7, 5, 0x02, 2, 0, 2, 0, // bulk OUT, EP2
+    6, 0x30, 0, 0, 0, 0, // SS endpoint companion
+];
+
+pub const BOS_DESCRIPTOR: [u8; 22] = [
+    5, 15, 22, 0, 2, // BOS header, two device capabilities
+    7, 16, 2, 0, 0, 0, 0, // USB 2.0 extension
+    10, 16, 3, 0, 0x0e, 0, 1, 0, 0, 0, // SuperSpeed capability
 ];
 
 pub const LANGID_DESCRIPTOR: [u8; 4] = [4, 3, 0x09, 0x04];
@@ -443,6 +464,7 @@ pub fn descriptor(kind: u8, index: u8) -> Option<&'static [u8]> {
     match (kind, index) {
         (1, 0) => Some(&DEVICE_DESCRIPTOR),
         (2, 0) => Some(&CONFIG_DESCRIPTOR),
+        (15, 0) => Some(&BOS_DESCRIPTOR),
         (3, 0) => Some(&LANGID_DESCRIPTOR),
         (3, 1) => Some(&MANUFACTURER_DESCRIPTOR),
         (3, 2) => Some(&PRODUCT_DESCRIPTOR),

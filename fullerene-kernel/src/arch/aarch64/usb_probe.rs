@@ -219,7 +219,25 @@ global_asm!(
      // aborts from secure-owned Qualcomm MMIO apertures and reboot instead\n\
      // of parking forever with the phone disconnected from USB.\n\
      usb_probe_vectors:\n\
-     .rept 16\n\
+     .rept 4\n\
+         .if {gadget_exception}\n\
+             b usb_probe_exception_fallback\n\
+         .else\n\
+             b usb_probe_exception_reset\n\
+         .endif\n\
+         .space 124\n\
+         .if {gadget_exception}\n\
+             b usb_probe_irq_entry\n\
+         .else\n\
+             b usb_probe_exception_reset\n\
+         .endif\n\
+         .space 124\n\
+         .if {gadget_exception}\n\
+             b usb_probe_exception_fallback\n\
+         .else\n\
+             b usb_probe_exception_reset\n\
+         .endif\n\
+         .space 124\n\
          .if {gadget_exception}\n\
              b usb_probe_exception_fallback\n\
          .else\n\
@@ -249,10 +267,7 @@ global_asm!(
     } else {
         0
     },
-    minimal = const if cfg!(any(
-        fullerene_aarch64_usb_bare_pullup_probe,
-        fullerene_aarch64_usb_gadget_handoff_probe
-    )) {
+    minimal = const if cfg!(fullerene_aarch64_usb_bare_pullup_probe) {
         1
     } else {
         0
@@ -261,14 +276,40 @@ global_asm!(
 
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 #[unsafe(no_mangle)]
+extern "C" fn usb_probe_irq_entry() {
+    let interrupt_id: u64;
+    unsafe {
+        asm!(
+            "mrs {interrupt_id}, ICC_IAR1_EL1",
+            interrupt_id = out(reg) interrupt_id,
+            options(nomem, nostack)
+        );
+    }
+    let interrupt = interrupt_id as u32;
+    if platform::bramble::is_usb_irq(interrupt) {
+        if interrupt != platform::bramble::usb_controller_irq() {
+            usb::handle_platform_irq(interrupt);
+        }
+        usb::poll();
+        unsafe { asm!("dsb sy", options(nostack)) };
+    }
+    unsafe {
+        asm!(
+            "msr ICC_EOIR1_EL1, {interrupt_id}",
+            interrupt_id = in(reg) interrupt_id,
+            options(nomem, nostack)
+        );
+    }
+}
+
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+#[unsafe(no_mangle)]
 extern "C" fn usb_probe_exception_fallback() -> ! {
-    // Keep a synchronous abort during the experimental EP0 path observable.
-    // The known-good bare sequence avoids DMA/event-ring accesses and leaves
-    // the host with a physical attach instead of immediately rebooting to
-    // Android, which distinguishes an exception from an ordinary DWC3
-    // command failure.
+    // Keep a synchronous abort during the experimental EP0 path observable,
+    // but do not publish an EP0-less pull-up. The host must see an attach only
+    // after the complete gadget handoff has succeeded; otherwise an abort is
+    // indistinguishable from a broken descriptor/EP0 path.
     usb::trace_marker(usb::TRACE_EXCEPTION_SYNC, 0);
-    let _ = usb::init_usb2_bare_pullup_handoff();
     reset_after_probe_failure();
 }
 
@@ -367,8 +408,21 @@ extern "C" fn usb_probe_entry() -> ! {
         usb::init_usb2_handoff()
     };
     if gadget_ready {
+        // The assembly entry armed the recovery timer before initialization;
+        // stop it before enabling the normal USB interrupt routes.
         unsafe {
             asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        {
+            // Run the same post-controller GIC/USB-SPI ownership boundary as
+            // the normal Bramble entry. The standalone probe otherwise
+            // exercises only polling, so it cannot distinguish a controller
+            // problem from an IRQ-path teardown.
+            platform::bramble::init_interrupt_controller(None, None);
+            unsafe {
+                asm!("msr DAIFClr, #2", "isb", options(nostack));
+            }
         }
         #[cfg(fullerene_aarch64_usb_bare_pullup_probe)]
         loop {
@@ -395,14 +449,21 @@ extern "C" fn usb_probe_entry() -> ! {
             // event. Activity extends the deadline, so a real enumeration is
             // not interrupted by this recovery path.
             let frequency = probe_counter_frequency();
-            let mut deadline = probe_counter().saturating_add(frequency.saturating_mul(30));
+            // The IRQ-enabled probe may legitimately go quiet after the
+            // initial enumeration. Give that path enough time to separate a
+            // real IRQ/controller failure from the diagnostic recovery reset.
+            let mut deadline = probe_counter().saturating_add(frequency.saturating_mul(120));
             let mut last_head = usb::trace_head();
             loop {
-                usb::poll();
+                // The IRQ-enabled probe drains the DWC3 ring from
+                // usb_probe_irq_entry(). Polling here as well would allow an
+                // interrupt to re-enter the same ring consumer and corrupt
+                // EVENT_OFFSET/GEVNTCOUNT ordering.
+                unsafe { asm!("wfe", options(nomem, nostack)) };
                 let head = usb::trace_head();
                 if head != last_head {
                     last_head = head;
-                    deadline = probe_counter().saturating_add(frequency.saturating_mul(30));
+                    deadline = probe_counter().saturating_add(frequency.saturating_mul(120));
                 } else if frequency != 0 && probe_counter() >= deadline {
                     usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
                     reset_after_probe_failure();
@@ -421,18 +482,23 @@ extern "C" fn usb_probe_entry() -> ! {
     uart::puts("fullerene usb probe: gadget init failed\n");
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     {
-        // Keep a physical USB2 attach visible after an EP0/DMA failure, but
-        // do not enter the event-ring poller: that path is precisely what
-        // this fallback is isolating.
-        let _ = usb::init_usb2_bare_pullup_handoff();
+        // Do not publish a pull-up after gadget initialization failed. The
+        // old fallback exposed an EP0-less device, making the host's
+        // descriptor timeout indistinguishable from an EP0/DMA failure after
+        // a successful init. Only the success path is allowed to advertise
+        // the device.
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x4641_494c); // "FAIL"
+        // Encode the first failing handoff boundary as reset latency. This
+        // keeps the diagnostic observable without reintroducing the broken
+        // EP0-less pull-up that previously produced misleading -110 errors.
+        let stage = usb::gadget_handoff_failure_stage().clamp(1, 7);
         let frequency = probe_counter_frequency();
-        let deadline = probe_counter().saturating_add(frequency.saturating_mul(30));
-        loop {
-            if frequency != 0 && probe_counter() >= deadline {
-                reset_after_probe_failure();
-            }
-            unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
+        let delay = frequency.saturating_mul((stage as u64) * 3);
+        let deadline = probe_counter().saturating_add(delay);
+        while frequency != 0 && probe_counter() < deadline {
+            core::hint::spin_loop();
         }
+        reset_after_probe_failure();
     }
     #[cfg(fullerene_aarch64_usb_halt_probe)]
     loop {
