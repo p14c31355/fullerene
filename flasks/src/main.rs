@@ -104,6 +104,20 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_no_smmu: bool,
 
+    /// Build the gadget handoff probe without SETTRANSFRESOURCE. This is a
+    /// hardware differential for the DWC3 endpoint-resource command.
+    #[arg(long)]
+    usb_gadget_handoff_no_transfer_resource: bool,
+
+    /// Use Android msm's resource-before-SETEPCONFIG DWC3 ordering.
+    #[arg(long)]
+    usb_gadget_handoff_android_resource_order: bool,
+
+    /// Stop the USB2 gadget handoff after a numbered boundary and publish a
+    /// temporary physical pull-up for host-side stage diagnostics.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10))]
+    stop_after_stage: Option<u32>,
+
     /// Run the shared USB EP0 protocol self-test on QEMU virt and exit via
     /// semihosting when it completes.
     #[arg(long)]
@@ -502,6 +516,39 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-no-smmu requires a Bramble gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_no_transfer_resource
+        && (!args.usb_gadget_handoff_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-no-transfer-resource requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_android_resource_order
+        && (!args.usb_gadget_handoff_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-android-resource-order requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.stop_after_stage.is_some()
+        && (!args.usb_gadget_handoff_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--stop-after-stage requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     let selected_probe = selected_aarch64_probe(&args, target)?;
 
     if target.arch == Arch::Aarch64 {
@@ -538,6 +585,9 @@ fn main() -> io::Result<()> {
             kernel_artifact,
             selected_probe.and_then(|probe| probe.env),
             args.usb_gadget_handoff_no_smmu,
+            args.usb_gadget_handoff_no_transfer_resource,
+            args.usb_gadget_handoff_android_resource_order,
+            args.stop_after_stage,
             args.qemu_usb_sim,
         )?;
         if target.platform == Platform::Bramble
@@ -651,6 +701,9 @@ fn build_aarch64_kernel(
     kernel_artifact: &str,
     probe_env: Option<&str>,
     gadget_handoff_no_smmu: bool,
+    gadget_handoff_no_transfer_resource: bool,
+    gadget_handoff_android_resource_order: bool,
+    gadget_handoff_stop_after_stage: Option<u32>,
     qemu_usb_sim: bool,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
@@ -688,6 +741,24 @@ fn build_aarch64_kernel(
     }
     if gadget_handoff_no_smmu {
         cargo.env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU", "1");
+    }
+    if gadget_handoff_no_transfer_resource {
+        cargo.env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_TRANSFER_RESOURCE",
+            "1",
+        );
+    }
+    if gadget_handoff_android_resource_order {
+        cargo.env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_RESOURCE_ORDER",
+            "1",
+        );
+    }
+    if let Some(stage) = gadget_handoff_stop_after_stage {
+        cargo.env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_STOP_STAGE",
+            stage.to_string(),
+        );
     }
     if qemu_usb_sim {
         cargo.env("FULLERENE_AARCH64_QEMU_USB_SIM", "1");
@@ -739,6 +810,9 @@ fn run_aarch64_qemu_preflight(
         Arch::Aarch64.kernel_artifact(),
         None,
         false,
+        false,
+        false,
+        None,
         true,
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;

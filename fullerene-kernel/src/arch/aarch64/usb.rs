@@ -196,11 +196,16 @@ const GUCTL1: usize = 0xc360;
 const GSNPSID: usize = 0xc120;
 const GRXTHRCFG: usize = 0xc10c;
 const GHWPARAMS0: usize = 0xc140;
+const GHWPARAMS3: usize = 0xc14c;
 const GHWPARAMS7: usize = 0xc15c;
 const VER_NUMBER: usize = 0xc1a0;
 const GFLADJ: usize = 0xc630;
 const GUSB2PHYCFG0: usize = 0xc200;
 const GUSB3PIPECTL0: usize = 0xc2c0;
+const GUSB2PHYCFG_ULPI_UTMI: u32 = 1 << 4;
+const GUSB2PHYCFG_PHYIF_MASK: u32 = 1 << 3;
+const GUSB2PHYCFG_USBTRDTIM_MASK: u32 = 0xf << 10;
+const GUSB2PHYCFG_USBTRDTIM_UTMI_8_BIT: u32 = 9 << 10;
 const GEVNTADRLO0: usize = 0xc400;
 const GEVNTADRHI0: usize = 0xc404;
 const GEVNTSIZ0: usize = 0xc408;
@@ -1041,12 +1046,71 @@ pub fn gadget_handoff_failure_stage() -> u32 {
 }
 
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+pub fn gadget_handoff_stage_probe_enabled() -> bool {
+    cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_1)
+        || cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_2)
+        || cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_3)
+        || cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_4)
+        || cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_5)
+        || cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_6)
+        || cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_7)
+        || cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_8)
+        || cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_9)
+        || cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_10)
+}
+
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 fn gadget_handoff_fail(stage: u32) -> bool {
     unsafe {
         GADGET_HANDOFF_FAILURE_STAGE = stage;
     }
     trace_marker(TRACE_PROBE_WATCHDOG, 0x4641_0000 | (stage & 0xff)); // "FA" + stage
+    // A selected stage probe must distinguish "the operation reached its
+    // boundary" from "the operation failed before the boundary".  Publish
+    // only the already-proven physical pull-up in that diagnostic build;
+    // the normal handoff path still fails closed without an EP0-less device.
+    if gadget_handoff_stop_selected(stage) {
+        unsafe {
+            let _ = init_usb2_bare_pullup_handoff_inner(true);
+        }
+    }
     false
+}
+
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+#[inline]
+fn gadget_handoff_stop_selected(stage: u32) -> bool {
+    match stage {
+        1 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_1),
+        2 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_2),
+        3 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_3),
+        4 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_4),
+        5 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_5),
+        6 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_6),
+        7 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_7),
+        8 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_8),
+        9 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_9),
+        10 => cfg!(fullerene_aarch64_usb_gadget_handoff_stop_after_10),
+        _ => false,
+    }
+}
+
+/// Publish the physical pull-up at one handoff boundary, then return through
+/// the normal failure/recovery path. This is a host-observable stage probe:
+/// it deliberately does not pretend that an EP0-less pull-up is a working
+/// gadget, but it tells us whether the preceding DWC3 operation still leaves
+/// the USB2 electrical path able to attach before the handset recovers.
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+unsafe fn stop_after_gadget_handoff_stage(stage: u32) -> bool {
+    if !gadget_handoff_stop_selected(stage) {
+        return false;
+    }
+    trace_marker(TRACE_PROBE_WATCHDOG, 0x5354_0000 | (stage & 0xff)); // "ST" + stage
+    // Reuse the exact bare path already proven to create a physical attach.
+    // This keeps the stage experiment about the preceding handoff boundary,
+    // rather than introducing a second, subtly different Run/Stop sequence.
+    let _ = unsafe { init_usb2_bare_pullup_handoff_inner(true) };
+    true
 }
 
 /// Dump the post-mortem USB trace after the controller has reached a safe
@@ -2072,6 +2136,31 @@ unsafe fn configure_dwc3_global_control() {
         }
         write(GCTL, gctl);
         trace_event(TRACE_DWC3_REVISION_QUIRK, snpsid, applied, gctl, 0, 0);
+        configure_usb2_phy_interface();
+    }
+}
+
+/// Reapply the DWC3-side USB2 interface contract after a controller reset.
+///
+/// Linux's `dwc3_hs_phy_setup()` selects the UTMI interface and programs the
+/// 8-bit turnaround timing before gadget endpoint commands are issued. A
+/// Fastboot handoff cannot rely on the bootloader's pre-reset register value:
+/// CSFTRST restores the controller defaults while the external QUSB2 PHY and
+/// Type-C session remain powered. Leaving the defaults in place can prevent
+/// the device from reaching the first pull-up even though the PHY itself is
+/// still electrically attached.
+#[inline]
+unsafe fn configure_usb2_phy_interface() {
+    unsafe {
+        let mut usb2 = read(GUSB2PHYCFG0);
+        // Bramble's DWC3 node uses the default UTMI mode. Clear the ULPI
+        // selector and choose the Linux UTMI 8-bit timing values; preserve
+        // the power-management bits because their policy is handled by the
+        // surrounding run/stop guard.
+        usb2 &= !(GUSB2PHYCFG_ULPI_UTMI | GUSB2PHYCFG_PHYIF_MASK | GUSB2PHYCFG_USBTRDTIM_MASK);
+        usb2 |= GUSB2PHYCFG_USBTRDTIM_UTMI_8_BIT;
+        write(GUSB2PHYCFG0, usb2);
+        let _ = read(GUSB2PHYCFG0);
     }
 }
 
@@ -2557,9 +2646,17 @@ unsafe fn send_ep_command_result(
                 let _ = read(GUSB2PHYCFG0);
             }
         }
-        write(dep_reg(endpoint, 0x00), param2);
-        write(dep_reg(endpoint, 0x04), param1);
+        // The DWC3 register names are counter-intuitive: PAR2 is at +0x00,
+        // PAR1 at +0x04, and PAR0 at +0x08. Keep both the software argument
+        // order and the MMIO write order identical to Linux's
+        // dwc3_send_gadget_ep_cmd().
         write(dep_reg(endpoint, 0x08), param0);
+        write(dep_reg(endpoint, 0x04), param1);
+        write(dep_reg(endpoint, 0x00), param2);
+        // Linux's writel() provides the MMIO ordering barrier that separates
+        // the parameter writes from the command latch. Preserve that ordering
+        // explicitly in this freestanding Rust path.
+        core::arch::asm!("dsb sy", options(nostack));
         write(dep_reg(endpoint, 0x0c), command | DEPCMD_CMDACT);
     }
     // Linux's dwc3_send_gadget_ep_cmd() uses a bounded 5,000-read polling
@@ -2640,23 +2737,38 @@ unsafe fn configure_endpoint_kind_with_interrupter(
     modify: bool,
     interrupter: u32,
 ) -> bool {
+    if !unsafe {
+        configure_endpoint_config(endpoint, max_packet, endpoint_type, modify, interrupter)
+    } {
+        return false;
+    }
+    // Linux allocates a transfer resource immediately after configuring each
+    // endpoint. DEPSTARTCFG only resets the allocation window; issuing
+    // SETTRANSFRESOURCE for every possible endpoint is not equivalent and can
+    // make the handoff fail before the first pull-up.
+    if !modify
+        && !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
+        && !cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
+    {
+        return unsafe { send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) };
+    }
+    true
+}
+
+unsafe fn configure_endpoint_config(
+    endpoint: usize,
+    max_packet: u32,
+    endpoint_type: u32,
+    modify: bool,
+    interrupter: u32,
+) -> bool {
     let action = if modify { DEPCMD_ACTION_MODIFY } else { 0 };
     let param0 = action | endpoint_type | (max_packet << DEPCFG_MAX_PACKET_SHIFT);
     let param1 = DEPCFG_XFER_COMPLETE_EN
         | DEPCFG_XFER_NOT_READY_EN
         | ((interrupter & 0x1f) << DEPCFG_INT_NUM_SHIFT)
         | ((endpoint as u32) << DEPCFG_EP_NUMBER_SHIFT);
-    if !unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, 0) } {
-        return false;
-    }
-    // Linux allocates a transfer resource immediately after configuring each
-    // endpoint.  DEPSTARTCFG only resets the allocation window; issuing
-    // SETTRANSFRESOURCE for every possible endpoint is not equivalent and can
-    // make the handoff fail before the first pull-up.
-    if !modify {
-        return unsafe { send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) };
-    }
-    true
+    unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, 0) }
 }
 
 unsafe fn start_transfer(endpoint: usize, trb: *const Trb) -> bool {
@@ -4405,10 +4517,23 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // and the first SETUP TRB armed before Run/Stop is allowed to advertise
     // the device; otherwise the host can issue the first descriptor request
     // while the handoff is still rebuilding DWC3 state.
-    if !unsafe { init_usb2_bare_pullup_handoff_inner(false) } {
-        return gadget_handoff_fail(1); // halt handoff
+    // Stage 1 is deliberately before even the initial stop/readback: it is
+    // the control experiment against the already-proven bare pull-up path.
+    if unsafe { stop_after_gadget_handoff_stage(1) } {
+        return true;
     }
-
+    if !unsafe { init_usb2_bare_pullup_handoff_inner(false) } {
+        // Fastboot can leave DSTS.DEVCTRLHLT stale while the device session
+        // is already quiescent. The DWC3 device soft reset below is the real
+        // endpoint-resource ownership boundary and clears that state before
+        // any Fullerene TRB is published. Keep the failed stop readback in
+        // the retained trace/log, but do not discard an otherwise recoverable
+        // handoff before reaching the reset that Linux performs next.
+        log_puts(
+            "usb gadget handoff: pre-reset halt readback timed out; continuing to device reset\n",
+        );
+        trace_event(TRACE_DWC3_HALT_TIMEOUT, 0, 0, 0, 0, read(DSTS));
+    }
     // Fastboot may have stopped Run/Stop, but that is not the same ownership
     // boundary as Linux's DWC3 probe.  The default path terminates its
     // endpoint-resource epoch with a device core soft reset.  The explicit
@@ -4423,6 +4548,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     } else {
         trace_marker(TRACE_DWC3_RESET_BEGIN, 0x50524553); // "PRES"
         log_puts("usb gadget handoff: preserving DWC3 core state\n");
+    }
+    if unsafe { stop_after_gadget_handoff_stage(2) } {
+        return false;
     }
     unsafe { configure_dwc3_global_control() };
     // The halted-controller boundary above transfers DMA ownership from the
@@ -4475,6 +4603,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     if !smmu_ready {
         log_puts("usb gadget handoff: DWC3 SMMU pool map unavailable\n");
         return gadget_handoff_fail(3); // SMMU
+    }
+    if unsafe { stop_after_gadget_handoff_stage(3) } {
+        return false;
     }
 
     let event_address = addr_of!(EVENTS) as usize as u64;
@@ -4531,7 +4662,10 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         ENDPOINTS_READY = false;
         write(DCFG, DCFG_HIGHSPEED);
         configure_gadget_start_defaults();
-        write(DALEPENA, 0b11);
+        // Linux enables each endpoint only after its SETEPCONFIG and
+        // SETTRANSFRESOURCE commands complete. Do not advertise EP0 before
+        // the controller has accepted the corresponding resource state.
+        write(DALEPENA, 0);
         write(
             DEVTEN,
             DEVTEN_DISCONNECT
@@ -4551,32 +4685,97 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             log_puts("usb gadget handoff: DEPSTARTCFG failed\n");
             return gadget_handoff_fail(4); // resource window
         }
-        if !configure_endpoint(0, 64, false) || !configure_endpoint(1, 64, false) {
+        if stop_after_gadget_handoff_stage(4) {
+            return false;
+        }
+        // Android's msm DWC3 glue allocates transfer resources for the
+        // available endpoints immediately after DEPSTARTCFG, before issuing
+        // SETEPCONFIG. Keep this ordering as an explicit Bramble differential;
+        // the upstream Linux ordering remains the default path elsewhere.
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
+            && !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
+        {
+            // Android's msm driver walks dwc->eps[] rather than only the
+            // endpoints that the current gadget will expose. Mirror the
+            // hardware endpoint count from GHWPARAMS3, bounded by the DWC3
+            // endpoint-command number space.
+            let endpoint_count = ((read(GHWPARAMS3) >> 12) & 0x3f).clamp(2, 32);
+            for endpoint in 0..endpoint_count {
+                if !send_ep_command(endpoint as usize, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) {
+                    log_puts("usb gadget handoff: Android resource preallocation failed\n");
+                    return gadget_handoff_fail(5); // resource allocation
+                }
+            }
+        }
+        if !unsafe { configure_endpoint_config(0, 64, DEPCFG_EP_TYPE_CONTROL, false, 0) } {
+            log_puts("usb gadget handoff: USB2 EP0 OUT configure failed\n");
+            return gadget_handoff_fail(5); // EP0 config
+        }
+        if stop_after_gadget_handoff_stage(9) {
+            return false;
+        }
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
+            && !cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
+            && !send_ep_command(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)
+        {
+            log_puts("usb gadget handoff: USB2 EP0 OUT resource failed\n");
+            return gadget_handoff_fail(5); // EP0 config
+        }
+        if stop_after_gadget_handoff_stage(10) {
+            return false;
+        }
+        write(DALEPENA, read(DALEPENA) | (1 << 0));
+        // Stage 8 isolates the first SETEPCONFIG/SETTRANSFRESOURCE pair from
+        // the corresponding EP0 IN pair. It is intentionally appended to the
+        // original 1..7 sequence so existing stage numbers remain stable.
+        if stop_after_gadget_handoff_stage(8) {
+            return false;
+        }
+        if !configure_endpoint(1, 64, false) {
             log_puts("usb gadget handoff: USB2 EP0 configure failed\n");
             return gadget_handoff_fail(5); // EP0 config
         }
+        write(DALEPENA, read(DALEPENA) | (1 << 1));
         ENDPOINTS_READY = true;
         let _ = udc_mut().configure_endpoint(0, 64, false);
         let _ = udc_mut().configure_endpoint(1, 64, false);
+        if stop_after_gadget_handoff_stage(5) {
+            return false;
+        }
         if !start_setup() {
             log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
             return gadget_handoff_fail(6); // SETUP TRB
         }
+        if stop_after_gadget_handoff_stage(6) {
+            return false;
+        }
 
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
-        if unsafe { run_stop_device(true) } {
-            // The probe's Type-C observer establishes Powered/Attached
-            // before this point, so record the same UDC-start boundary
-            // that the normal Qualcomm gadget path records. If PMIC
-            // observation was unavailable this is intentionally a no-op
-            // in the state machine, but it must not block EP0 testing.
-            note_runtime_event(super::platform::bramble::UsbRuntimeEvent::ControllerStarted);
-            return true;
+        let start_readback_ok = unsafe { run_stop_device(true) };
+        if !start_readback_ok {
+            // Some Fastboot/DWC3 handoffs keep DSTS.DEVCTRLHLT stale even
+            // after the Run/Stop write has reached the controller. The
+            // endpoint resources and first SETUP TRB are already published
+            // at this point, so discarding the handoff solely because the
+            // status poll did not observe the transition would hide the
+            // same physical pull-up/EP0 behaviour this probe is measuring.
+            // Keep the timeout in retained trace and let host traffic decide
+            // whether the controller is actually usable.
+            log_puts("usb gadget handoff: DWC3 RUN/STOP readback timed out; continuing\n");
+            trace_event(TRACE_DWC3_HALT_TIMEOUT, 0, 0, 0, 0, read(DSTS));
         }
-        log_puts("usb gadget handoff: DWC3 RUN/STOP timeout\n");
+        if stop_after_gadget_handoff_stage(7) {
+            return false;
+        }
+        // The probe's Type-C observer establishes Powered/Attached before
+        // this point, so record the same UDC-start boundary that the normal
+        // Qualcomm gadget path records. If PMIC observation was unavailable
+        // this is intentionally a no-op in the state machine, but it must
+        // not block EP0 testing.
+        note_runtime_event(super::platform::bramble::UsbRuntimeEvent::ControllerStarted);
+        return true;
     }
-    false
 }
 
 /// Reuse the physical USB2 handoff, then add the minimum DWC3 gadget state

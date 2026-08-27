@@ -545,6 +545,19 @@ extern "C" fn usb_probe_entry() -> ! {
         usb::init_usb2_handoff()
     };
     if gadget_ready {
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        if usb::gadget_handoff_stage_probe_enabled() {
+            // A stage probe intentionally publishes an EP0-less pull-up, so
+            // it cannot enter the normal EP0-progress watchdog. Keep the
+            // electrical attach up long enough for xHCI to log it, then use
+            // the same automatic reset/recovery path as a failed handoff.
+            let frequency = probe_counter_frequency();
+            let deadline = probe_counter().saturating_add(frequency.saturating_mul(10));
+            while frequency == 0 || probe_counter() < deadline {
+                core::hint::spin_loop();
+            }
+            reset_after_probe_failure();
+        }
         // Keep the assembly recovery timer armed until the first EP0 DATA or
         // STATUS transfer. If the controller reports init success but never
         // becomes host-visible, the timer IRQ returns the handset to

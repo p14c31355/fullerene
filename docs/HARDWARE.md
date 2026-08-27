@@ -951,7 +951,8 @@ identity.
     descriptor status string. Each 512-byte page contains a 16-byte little-
     endian header followed by up to fifteen 32-byte records, allowing the
     host to recover the post-mortem EP0 sequence without UART or a physical
-    RAM reader. The USB2 and SuperSpeed trace-enabled artifacts passed QEMU
+    RAM reader. The Rust `bramble-usb trace` command reads and decodes those
+    pages when `1234:0001` is visible. The USB2 and SuperSpeed trace-enabled artifacts passed QEMU
     preflight and the Bramble boot audit; their SHA-256 values are
     `fdb9aff5737dadb9cbccd659fffbf3ab0c026e01ab4b0950c82fc72806abd77a` and
     `013df6d82546e5ba0935cee9cf81a299ab1ac3e79d10fb039e4285e052a94140`.
@@ -968,6 +969,111 @@ identity.
     dry-run loop and matrix selection both pass, and `cargo check -p flasks
     --bin bramble-usb` passes. The current hardware evidence remains the
     failed USB2 and SuperSpeed transitions recorded above.
+
+49. The Rust harness was exercised on the host-visible Bramble Fastboot
+    device (`26191JECB00076`) after the migration. It captured `getvar all`,
+    built the compressed USB2 probe with QEMU preflight and the Bramble boot
+    audit, and sent it with `fastboot boot`; artifact SHA-256 was
+    `fdb9aff5737dadb9cbccd659fffbf3ab0c026e01ab4b0950c82fc72806abd77a`.
+    The bootloader disconnected, no `1234:0001` device appeared, and the
+    phone returned as ADB-capable stock Android `18d1:4ee7`. The complete
+    run directory is `/tmp/fullerene-bramble-loop.779353.0`; no flash or
+    erase operation was used.
+
+50. The handoff probe was changed so a stale pre-reset `DSTS.DEVCTRLHLT`
+    readback is retained in the USB trace but does not prevent the subsequent
+    DWC3 device reset. The new artifact passed QEMU preflight and the Bramble
+    boot audit, then was RAM-booted with SHA-256
+    `b1d808297f0cba4fa16a8e55027d865cf4ef1e5d168104abd576b6f779df735b`.
+    It still produced no `1234:0001` and returned to stock Android; logs are
+    under `/tmp/fullerene-bramble-loop.787803.0`.
+
+51. Two non-destructive differentials were run from the same Fastboot state:
+    `--no-core-reset` (artifact
+    `1bdca2d8f0404b6a2a5a5ef19ae04518dcda564052dc8e4e291abfea746454c4`,
+    `/tmp/fullerene-bramble-loop.791105.0`) and `--no-smmu` (artifact
+    `b6ea6dc678e4d24f0d92edbb0f576bb89a1fb8b00264f909c15c5f17ba555684`,
+    `/tmp/fullerene-bramble-loop.792840.0`). Both passed image audits and
+    returned to `18d1:4ee7` without producing the Fullerene identity. This
+    rules out either CSFTRST alone or the newly installed SMMU mapping as a
+    sufficient explanation.
+
+52. The final Run/Stop status readback was made non-fatal after EP0 resources
+    and the first SETUP TRB are queued, and the Rust harness gained a
+    `--bare-pullup` mode. The full probe artifact
+    `43ea6f57d4a54067f2d4d36c396d564514bda5f5ff0e7554f5adcae7d1ce4ebe`
+    (`/tmp/fullerene-bramble-loop.795888.0`) still did not enumerate. The
+    bare physical artifact
+    `43cd2104007e20c245bedfb7516cfe3dea6eb51818cb6f17aba0c5199f7793d7`
+    (`/tmp/fullerene-bramble-loop.799151.0`) produced the decisive host log:
+    USB2 attach followed by `device descriptor read/64, error -110`, then
+    stock Android. Thus the PHY/session/pull-up boundary is alive while the
+    full EP0 handoff fails before a host-visible device identity.
+
+53. Linux's `dwc3_hs_phy_setup()` comparison showed that the reset path was
+    missing the DWC3-side UTMI interface and turnaround timing programming.
+    Fullerene now reapplies UTMI 8-bit and `USBTRDTIM=9` after controller
+    setup. The resulting standard artifact
+    `0341b4b264f374d08bba9e67c3a4f233153b53b6cd1c27f8a0a1f600fbf82b11`
+    (`/tmp/fullerene-bramble-loop.805374.0`) passed all local gates but still
+    returned to `18d1:4ee7`; this difference is implemented but not yet
+    sufficient on Bramble.
+
+54. The Rust matrix runner now restores Fastboot between failed cases by
+    issuing only `adb reboot bootloader` when Android fallback is available.
+    No partition flash or erase is used. Current local validation remains
+    kernel tests 94, Flasks tests 17+3 plus the Rust USB binary tests 2,
+    formatting, and `git diff --check`.
+
+55. The Rust stage probes narrowed the physical handoff boundary without
+    requiring UART. With Apps-SMMU programming disabled, stage 4
+    (`DEPSTARTCFG`) and stage 9 (EP0 OUT `SETEPCONFIG`) both produced the
+    expected USB2 attach followed by host `device descriptor read/64,
+    error -110`; their artifacts were
+    `6ae41f3b757bc4be1eb72a2273889315975403cf66e469fa0f0018d5f7e640d1`
+    (`/tmp/fullerene-bramble-loop.846166.0`) and
+    `848f6b5bdbc8c6dcd1956aae77489f927ab916012ab9518f339bf75dad83b6d8`
+    (`/tmp/fullerene-bramble-loop.867662.0`). This confirms that physical
+    attach survives through `DEPSTARTCFG` and the first EP0 configuration;
+    it does not yet prove that an EP0 transfer completed.
+
+56. Stage 10, which stops immediately after EP0 OUT
+    `SETTRANSFRESOURCE`, also reached the physical pull-up path and produced
+    the same descriptor timeout. Its artifact was
+    `ffdb5048cdd6026934f77165f60bca6f22a4f5f0990a2f8df0990f8355a9ca78`
+    (`/tmp/fullerene-bramble-loop.869459.0`). Because the stage-10 marker is
+    after the command and the probe otherwise fails closed, this is evidence
+    that the command completed well enough for the stage probe; the remaining
+    failure is later than this resource command or in the normal SETUP/event
+    path.
+
+57. The SMMU-preserving normal probe was repeated after correcting the DWC3
+    `DEPCMDPAR0/1/2` offsets and adding the Linux-style ordering/barrier. The
+    artifact `6f95de2b1a57f37c50b3f9094dde87b0bcd5d458943a0ea3e63914c3215280c5`
+    (`/tmp/fullerene-bramble-loop.880872.0`) still produced USB2 attach and
+    `device descriptor read/64, error -110`, then stock Android
+    `18d1:4ee7`. The corrected endpoint-command path therefore did not by
+    itself resolve EP0 enumeration.
+
+58. Two resource-order differentials were tested against the Android msm
+    implementation: skipping `SETTRANSFRESOURCE` entirely produced no
+    Fullerene USB2 attach (`2c3b43671d08da75aa700885cf2063361eb486bb0b96d98613cad33e157f99f2`,
+    `/tmp/fullerene-bramble-loop.875845.0`), and allocating resources for all
+    hardware endpoints before `SETEPCONFIG` also produced no Fullerene attach
+    (`0100af2d104d884032a3062ca895faeb73cdb59ebf104c889074bec08fecd0fa`,
+    `/tmp/fullerene-bramble-loop.891092.0`). Neither differential is a fix;
+    the latter also shows that copying Android's resource ordering alone is
+    insufficient.
+
+59. The current evidence separates the surviving boundary from the missing
+    one: Fastboot-to-USB2 PHY/session pull-up, DWC3 reset, `DEPSTARTCFG`, EP0
+    OUT configuration, and EP0 OUT transfer-resource allocation can each be
+    reached in a controlled probe. A complete Fullerene identity has still
+    not appeared. The next Rust-only probe is therefore the boundary after
+    `start_setup()` and before/after Run/Stop, followed by retained-trace
+    correlation if the custom identity becomes readable; descriptor contents
+    remain a lower priority than SETUP TRB DMA, event-ring ownership, and
+    SMMU/IOVA visibility.
 
 The relevant official references are:
 
@@ -998,8 +1104,11 @@ The immediate implementation boundary is now the corrected Image
 entry/section layout, the DWC3-reset DMA ownership boundary, USB2 PHY
 reapplication, the non-destructive Type-C observer, the
 SMMU-preserving differential, the post-reset DWC3 global setup, and the
-Linux-equivalent gadget-start receive-FIFO defaults, followed by retained-
-trace correlation if the kernel now reaches the USB identity transition. If it does,
+Linux-equivalent gadget-start receive-FIFO defaults. The latest bare-pullup
+comparison places the remaining failure after physical attach and before a
+usable Fullerene EP0 identity; the next diagnostic is retained-trace
+correlation at each EP command boundary if the kernel now reaches the USB
+identity transition. If it does,
 continue with DWC3 link-status,
 suspend/hibernation, QMP/Type-C runtime state, clock and reset sequencing,
 GSI/event handling, DMA/SMMU fault visibility, and the Linux-equivalent EP0

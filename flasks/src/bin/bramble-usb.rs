@@ -5,6 +5,7 @@
 //! the only device-side image operation is `fastboot boot`.
 
 use clap::{Parser, Subcommand, ValueEnum};
+use nusb::transfer::{ControlIn, ControlType, Recipient};
 use std::{
     fs::{self, File},
     io::{self, Write},
@@ -13,6 +14,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use tokio::runtime::Builder;
 
 const DEFAULT_SERIAL: &str = "26191JECB00076";
 const DEFAULT_TEMPLATE: &str = "/tmp/fullerene-stock-template.Uvg3m2/boot.img";
@@ -34,6 +36,8 @@ enum CommandKind {
     Loop(LoopArgs),
     /// Try bounded platform-route variants in sequence.
     Matrix(MatrixArgs),
+    /// Read the retained post-mortem USB trace from an enumerated Fullerene gadget.
+    Trace(TraceArgs),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -78,8 +82,19 @@ struct LoopArgs {
     normal: bool,
     #[arg(long)]
     pullup_only: bool,
+    /// Run the minimal USB2 pull-up sequence without DWC3 reset, DMA, or EP0.
+    #[arg(long)]
+    bare_pullup: bool,
+    /// Publish only the physical pull-up after one gadget handoff boundary
+    /// (1..=10), then use the normal automatic recovery path.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10))]
+    stop_after_stage: Option<u32>,
     #[arg(long)]
     no_smmu: bool,
+    #[arg(long)]
+    no_transfer_resource: bool,
+    #[arg(long)]
+    android_resource_order: bool,
     #[arg(long)]
     no_core_reset: bool,
     #[arg(long)]
@@ -111,6 +126,16 @@ struct MatrixArgs {
     no_core_reset: bool,
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(Parser, Debug)]
+struct TraceArgs {
+    /// Require a specific Fullerene device serial from the USB descriptor.
+    #[arg(long)]
+    serial: Option<String>,
+    /// Maximum time for each vendor control transfer.
+    #[arg(long, default_value_t = 2)]
+    timeout: u64,
 }
 
 struct JournalGuard {
@@ -165,7 +190,170 @@ fn main() -> io::Result<()> {
     match args.command {
         CommandKind::Loop(args) => run_loop(&workspace, args),
         CommandKind::Matrix(args) => run_matrix(&workspace, args),
+        CommandKind::Trace(args) => run_trace(args),
     }
+}
+
+fn run_trace(args: TraceArgs) -> io::Result<()> {
+    if args.timeout == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--timeout must be greater than zero",
+        ));
+    }
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| io::Error::other(error.to_string()))?
+        .block_on(read_trace(args))
+}
+
+async fn read_trace(args: TraceArgs) -> io::Result<()> {
+    let devices = nusb::list_devices()
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let devices: Vec<_> = devices
+        .filter(|device| device.vendor_id() == 0x1234 && device.product_id() == 0x0001)
+        .filter(|device| {
+            args.serial
+                .as_deref()
+                .is_none_or(|serial| device.serial_number().as_deref() == Some(serial))
+        })
+        .collect();
+    let info = match devices.as_slice() {
+        [] => {
+            return Err(io::Error::other(
+                "no Fullerene USB gadget (1234:0001) found",
+            ));
+        }
+        [info] => info,
+        many => {
+            return Err(io::Error::other(format!(
+                "refusing to choose between {} Fullerene USB gadgets",
+                many.len()
+            )));
+        }
+    };
+    println!(
+        "trace device: bus={} address={} serial={}",
+        info.bus_id(),
+        info.device_address(),
+        info.serial_number().unwrap_or_default()
+    );
+    let device = info
+        .open()
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let transfer_timeout = Duration::from_secs(args.timeout);
+    let first = trace_page(&device, 0, transfer_timeout).await?;
+    let header = parse_trace_header(&first)?;
+    println!(
+        "trace header: magic=FUTR version={} head={} valid={}",
+        header.version, header.head, header.valid
+    );
+    let pages = (header.valid as usize).div_ceil(TRACE_PAGE_ENTRIES);
+    for page in 0..pages.max(1) {
+        let response = if page == 0 {
+            first.as_slice()
+        } else {
+            // Keep the buffer alive until all records on this page have been
+            // printed; the request is deliberately a bounded 512-byte read.
+            let response = trace_page(&device, page as u16, transfer_timeout).await?;
+            print_trace_page(page, &response, header.valid as usize)?;
+            continue;
+        };
+        print_trace_page(page, response, header.valid as usize)?;
+    }
+    Ok(())
+}
+
+const TRACE_REQUEST: u8 = 0x5a;
+const TRACE_PAGE_BYTES: usize = 512;
+const TRACE_HEADER_BYTES: usize = 16;
+const TRACE_ENTRY_BYTES: usize = 32;
+const TRACE_PAGE_ENTRIES: usize = 15;
+const TRACE_MAGIC: u32 = 0x4655_5452;
+const TRACE_VERSION: u32 = 1;
+
+struct TraceHeader {
+    version: u32,
+    head: u32,
+    valid: u32,
+}
+
+async fn trace_page(device: &nusb::Device, page: u16, timeout: Duration) -> io::Result<Vec<u8>> {
+    device
+        .control_in(
+            ControlIn {
+                control_type: ControlType::Vendor,
+                recipient: Recipient::Device,
+                request: TRACE_REQUEST,
+                value: page,
+                index: 0,
+                length: TRACE_PAGE_BYTES as u16,
+            },
+            timeout,
+        )
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))
+}
+
+fn parse_trace_header(response: &[u8]) -> io::Result<TraceHeader> {
+    if response.len() < TRACE_HEADER_BYTES {
+        return Err(io::Error::other(
+            "trace response is shorter than its header",
+        ));
+    }
+    let magic = trace_word(response, 0);
+    let version = trace_word(response, 4);
+    let head = trace_word(response, 8);
+    let valid = trace_word(response, 12);
+    if magic != TRACE_MAGIC || version != TRACE_VERSION || valid > 256 {
+        return Err(io::Error::other("invalid retained trace header"));
+    }
+    Ok(TraceHeader {
+        version,
+        head,
+        valid,
+    })
+}
+
+fn print_trace_page(page: usize, response: &[u8], valid: usize) -> io::Result<()> {
+    let header = parse_trace_header(response)?;
+    let page_start = page
+        .checked_mul(TRACE_PAGE_ENTRIES)
+        .ok_or_else(|| io::Error::other("trace page index overflow"))?;
+    let records = response.len().saturating_sub(TRACE_HEADER_BYTES) / TRACE_ENTRY_BYTES;
+    let records = records
+        .min(TRACE_PAGE_ENTRIES)
+        .min(valid.saturating_sub(page_start));
+    for index in 0..records {
+        let base = TRACE_HEADER_BYTES + index * TRACE_ENTRY_BYTES;
+        let values: Vec<_> = (0..8)
+            .map(|word| trace_word(&response[base..base + TRACE_ENTRY_BYTES], word * 4))
+            .collect();
+        println!(
+            "trace page={} index={} sequence={} event=0x{:08x} request=0x{:08x} value=0x{:08x} index=0x{:08x} length={} ep0_state={} status=0x{:08x}",
+            page,
+            index,
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+            values[4],
+            values[5],
+            values[6],
+            values[7]
+        );
+    }
+    if header.valid as usize != valid {
+        return Err(io::Error::other("trace header changed during read"));
+    }
+    Ok(())
+}
+
+fn trace_word(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
 fn run_matrix(workspace: &Path, args: MatrixArgs) -> io::Result<()> {
@@ -208,7 +396,14 @@ fn run_matrix(workspace: &Path, args: MatrixArgs) -> io::Result<()> {
             }
             Err(error) => {
                 eprintln!("route {} failed: {error}", route.as_str());
-                eprintln!("trying the next route only if Fastboot recovered");
+                if let Err(recovery) = restore_fastboot(&args.serial, args.fastboot_wait) {
+                    return Err(io::Error::other(format!(
+                        "route {} failed and Rust recovery to Fastboot failed: {recovery}; logs are under {}",
+                        route.as_str(),
+                        run_dir.display()
+                    )));
+                }
+                eprintln!("recovered to Fastboot; trying the next route");
             }
         }
     }
@@ -230,14 +425,23 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         normal: false,
         pullup_only: false,
         no_smmu: args.no_smmu,
+        no_transfer_resource: false,
+        android_resource_order: false,
         no_core_reset: args.no_core_reset,
         uncompressed: false,
         dry_run: false,
+        bare_pullup: false,
+        stop_after_stage: None,
     }
 }
 
 fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
-    if args.normal && (args.super_speed || args.pullup_only) {
+    if args.normal
+        && (args.super_speed
+            || args.pullup_only
+            || args.bare_pullup
+            || args.stop_after_stage.is_some())
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--normal cannot be combined with --super-speed or --pullup-only",
@@ -249,10 +453,34 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--pullup-only cannot be combined with IRQ, SMMU, or core-reset differentials",
         ));
     }
-    if args.no_smmu && args.normal {
+    if args.bare_pullup
+        && (args.pullup_only
+            || args.super_speed
+            || args.no_smmu
+            || args.no_core_reset
+            || args.irq_route.is_some())
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--no-smmu requires the gadget handoff probe",
+            "--bare-pullup cannot be combined with another USB differential",
+        ));
+    }
+    if args.stop_after_stage.is_some()
+        && (args.super_speed
+            || args.pullup_only
+            || args.bare_pullup
+            || args.no_core_reset
+            || args.irq_route.is_some())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--stop-after-stage cannot be combined with another USB differential",
+        ));
+    }
+    if (args.no_smmu || args.no_transfer_resource) && args.normal {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SMMU/resource differentials require the gadget handoff probe",
         ));
     }
     if args.no_core_reset && args.normal {
@@ -291,7 +519,11 @@ fn run_loop_with_dir(
     println!("Boot artifact: {}", output.display());
     println!("Logs: {}", run_dir.display());
 
-    wait_for_fastboot(&args.serial, args.fastboot_wait)?;
+    // A previous probe normally recovers through Android before the next
+    // iteration. Make a standalone Rust loop just as self-contained as the
+    // matrix: if Fastboot is not already visible, request the bootloader via
+    // ADB. This is a reboot-only operation; it never flashes or erases.
+    restore_fastboot(&args.serial, args.fastboot_wait)?;
     let product = fastboot_getvar(&args.serial, "product")?;
     if !product
         .lines()
@@ -457,6 +689,10 @@ fn print_loop_command(args: &LoopArgs) {
 fn mode_name(args: &LoopArgs) -> &'static str {
     if args.normal {
         "normal"
+    } else if args.bare_pullup {
+        "usb-bare-pullup-probe"
+    } else if args.stop_after_stage.is_some() {
+        "usb-gadget-handoff-stage-probe"
     } else if args.pullup_only {
         "usb-pullup-probe"
     } else if args.super_speed {
@@ -480,7 +716,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         "bramble".to_owned(),
     ];
     if !args.normal {
-        arguments.push(if args.pullup_only {
+        arguments.push(if args.bare_pullup {
+            "--usb-bare-pullup-probe".to_owned()
+        } else if args.pullup_only {
             "--usb-pullup-probe".to_owned()
         } else if args.super_speed {
             "--usb-gadget-handoff-super-speed-probe".to_owned()
@@ -500,6 +738,16 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.no_smmu {
         arguments.push("--usb-gadget-handoff-no-smmu".to_owned());
+    }
+    if args.no_transfer_resource {
+        arguments.push("--usb-gadget-handoff-no-transfer-resource".to_owned());
+    }
+    if args.android_resource_order {
+        arguments.push("--usb-gadget-handoff-android-resource-order".to_owned());
+    }
+    if let Some(stage) = args.stop_after_stage {
+        arguments.push("--stop-after-stage".to_owned());
+        arguments.push(stage.to_string());
     }
     let mut envs = Vec::new();
     if let Some(route) = args.irq_route {
@@ -585,6 +833,26 @@ fn wait_for_fastboot(serial: &str, timeout_secs: u64) -> io::Result<()> {
     Err(io::Error::other(format!(
         "device {serial} is not available in Fastboot"
     )))
+}
+
+/// Return the phone to the only state from which the next matrix child may
+/// run. This is deliberately an ADB reboot request, never a flash/erase
+/// operation; it covers the normal probe failure path where the kernel's
+/// watchdog has already handed control to stock Android.
+fn restore_fastboot(serial: &str, timeout_secs: u64) -> io::Result<()> {
+    if wait_for_fastboot(serial, timeout_secs.min(3)).is_ok() {
+        return Ok(());
+    }
+    let output = Command::new("adb")
+        .args(["-s", serial, "reboot", "bootloader"])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "adb reboot bootloader failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    wait_for_fastboot(serial, timeout_secs)
 }
 
 fn fastboot_getvar(serial: &str, variable: &str) -> io::Result<String> {
@@ -683,4 +951,30 @@ fn create_child_run_dir(parent: &Path, name: &str) -> io::Result<PathBuf> {
     let path = parent.join(name);
     fs::create_dir(&path)?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TRACE_HEADER_BYTES, TRACE_MAGIC, TRACE_VERSION, parse_trace_header};
+
+    #[test]
+    fn trace_header_is_little_endian_and_bounded() {
+        let mut response = vec![0; TRACE_HEADER_BYTES];
+        response[0..4].copy_from_slice(&TRACE_MAGIC.to_le_bytes());
+        response[4..8].copy_from_slice(&TRACE_VERSION.to_le_bytes());
+        response[8..12].copy_from_slice(&37u32.to_le_bytes());
+        response[12..16].copy_from_slice(&37u32.to_le_bytes());
+        let header = parse_trace_header(&response).unwrap();
+        assert_eq!(header.head, 37);
+        assert_eq!(header.valid, 37);
+    }
+
+    #[test]
+    fn trace_header_rejects_invalid_magic_and_count() {
+        let mut response = vec![0; TRACE_HEADER_BYTES];
+        response[0..4].copy_from_slice(&0u32.to_le_bytes());
+        response[4..8].copy_from_slice(&TRACE_VERSION.to_le_bytes());
+        response[12..16].copy_from_slice(&257u32.to_le_bytes());
+        assert!(parse_trace_header(&response).is_err());
+    }
 }

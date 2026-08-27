@@ -193,6 +193,13 @@ cargo run -q -p flasks --bin bramble-usb -- loop --uncompressed
 cargo run -q -p flasks --bin bramble-usb -- loop --normal
 cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu
 cargo run -q -p flasks --bin bramble-usb -- loop --no-core-reset
+cargo run -q -p flasks --bin bramble-usb -- loop --bare-pullup
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 4
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 9
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 10
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 6
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --no-transfer-resource
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --android-resource-order
 cargo run -q -p flasks --bin bramble-usb -- matrix
 ```
 
@@ -210,14 +217,31 @@ leave the phone with no USB device and require manual recovery.
 If the temporary boot falls back to Android, the harness recognizes the
 `18d1:4ee7` charging/debug identity immediately and saves its USB descriptor,
 ADB state, slot, build fingerprint, and kernel version. This is recorded as a
-stock fallback, not as Fullerene enumeration. The harness does not reboot that
-ADB session automatically; it leaves recovery policy to the caller and keeps
-the only image-transfer operation as `fastboot boot`.
+stock fallback, not as Fullerene enumeration. The Rust harness automatically
+uses only `adb reboot bootloader` to restore host-visible Fastboot before a
+subsequent probe; it leaves partitions untouched and keeps the only image-
+transfer operation as `fastboot boot`.
+
+The `--stop-after-stage` probes publish the known physical USB2 pull-up after
+one handoff boundary and then let the watchdog recover. Stages 1--4 cover
+pre-EP0 setup, stage 5 covers both EP0 directions, stage 6 covers the first
+SETUP `STARTTRANSFER`, and stage 7 covers Run/Stop. Stage 8 splits the two
+EP0 directions; stage 9 stops after EP0 OUT `SETEPCONFIG`, and stage 10 stops
+after its `SETTRANSFRESOURCE`. `--no-transfer-resource` removes resource
+commands, while `--android-resource-order` tests the older Android msm order
+that allocates resources before `SETEPCONFIG`.
 
 The Rust `bramble-usb matrix` command runs the five bounded IRQ-route variants in sequence
 and proceeds to the next one only after the probe watchdog has restored
 host-visible Fastboot. It stops at the first successful Fullerene gadget, so
-no manual phone interaction is needed between failed probe attempts.
+no manual phone interaction is needed between failed probe attempts. When a
+case has already fallen back to Android, matrix uses only `adb reboot
+bootloader` to restore Fastboot before the next case; it never flashes or
+erases a partition.
+
+`--bare-pullup` is the minimal physical comparison: it omits DWC3 reset,
+SMMU, DMA, and EP0 setup, so a host-side descriptor timeout is expected and
+does not count as Fullerene enumeration.
 
 This command:
 1. Builds optimized `fullerene-kernel` and `bellows` artifacts with the `release` profile for the UEFI target `x86_64-unknown-uefi`.
@@ -420,6 +444,17 @@ cargo run -q -p flasks --bin bramble-usb -- loop --irq-route smmu
 ```
 
 The accepted routes are `power`, `typec`, `typec-role`, `pdc`, and `smmu`.
+
+When the Fullerene gadget is visible, the retained trace can be read without
+UART:
+
+```bash
+cargo run -q -p flasks --bin bramble-usb -- trace
+```
+
+This sends the bounded vendor control request page by page and prints the
+decoded `FUTR` records. Use `--serial` to select a specific gadget or
+`--timeout` to change the per-page transfer timeout.
 
 Nozzle exposes the Linux and WASI launchers through this single command:
 
