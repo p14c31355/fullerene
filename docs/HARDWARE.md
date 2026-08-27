@@ -1265,6 +1265,68 @@ the SMMU is genuinely bypassed, re-run the event-ring/EP0 A/B with
 usbmon on the host to observe whether the device ACKs the SETUP
 transaction at all (packet-level liveness beyond the descriptor timeout).
 
+### Root cause 1 found and fixed: the .usb_dma window was not RAM (follow-up session)
+
+The SMMU ladder gates were later corrected (the hex gate parser accepted
+every ladder value) and run to completion; the decisive new instrument,
+however, was a CPU readback gate over the DMA objects themselves:
+
+- `--signal-ram-gate` writes a pattern to every object the controller will
+  DMA (event ring, EP0 TRBs, SETUP buffer, response), evicts it from the
+  CPU cache, and reads it back. With the stock 0x9b800000 .usb_dma origin
+  the readback FAILED: the region is not backed by usable RAM on this
+  handset. Every DMA object written there - the event ring, the SETUP TRBs,
+  the setup packet buffer, and the retained trace - silently vanished. This
+  explains the entire dead-era symptom set: a dead event ring, a dead EP0,
+  an unreadable trace, and a controller that looked wedged.
+- Relocating .usb_dma to 0x90000000 (the vendor DT's USB DMA pool start,
+  `iova_base`) passed the readback gate, and a new pre-connect event-DMA
+  probe (`--signal-dma-probe`: arm a real SETUP transfer, ENDTRANSFER it
+  with CMDIOC - the Linux stop-active-transfer pattern) then showed
+  GEVNTCOUNT incrementing AND the event word physically landing in DRAM
+  (`--signal-evt-data-gate 1`). The linker default for Bramble is now
+  0x90000000 (FULLERENE_AARCH64_USB_DMA_ORIGIN still overrides per run).
+  The retained trace is now written to working RAM and survives warm
+  resets, which re-enables post-mortem analysis.
+
+With DMA writes proven working, the remaining failure was localized
+precisely with a new trace-harvest gate: the harvest reads the previous
+attempt's retained-trace records at the start of the next attempt (the
+trace survives the in-boot DMA clear; Android cannot destroy it inside one
+boot), and gates the attach on the raw DEPCMD register values:
+
+- DEPSTARTCFG returns status 0, XferRscIdx 0 (textbook).
+- SETTRANSFRESOURCE for both EP0 directions returns status 0 with
+  resource index 1 (textbook allocation).
+- STARTTRANSFER completes (not a timeout) with DEPCMD status 1, which
+  Linux maps to DEPEVT_TRANSFER_NO_RESOURCE - "No resource" - in BOTH the
+  Linux and the Android msm resource-allocation orders, with a fresh
+  re-allocation immediately before the command, with the SMMU disabled
+  (readback-verified sCR0.SMMUEN=0/WACFG=00), with a catch-all bypass SMR
+  (readback-verified), with CSFTRST skipped (--no-core-reset), with the
+  extended command timeout, and with GCTL.RAMCLKSEL captured as 0 (the
+  same value Fastboot ran with; the capture/reapply paths remain in the
+  code as they are required after USB resets per the Linux comment).
+- A Linux-exact power-option fix was also applied: DSBLCLKGTNG is no
+  longer set unconditionally; for GHWPARAMS1.EN_PWROPT_CLK cores Linux
+  keeps clock gating ENABLED in device mode. This did not change the
+  STARTTRANSFER outcome either.
+
+Current state: attach, chirp, and DMA writes all work; the sole remaining
+blocker is STARTTRANSFER reporting "No resource" against an endpoint whose
+resource allocation command returned index 1. The next hypotheses, in
+order: (a) obtain the Synopsys databook DEPCMD status table to confirm the
+exact meaning of status 1 for Start Transfer on this core revision, (b)
+read XBL/ABL's working DWC3 device init (the edk2 UsbDeviceDwc3 sources)
+for a setup step the Linux-derived flow lacks - in particular anything
+that touches the endpoint-context/transfer-resource RAM clock domain, and
+(c) probe whether the internal endpoint RAM is the dead element by
+finding a command whose success is observable without DMA (e.g. comparing
+event content for a resource-related error across allocations). All
+diagnostics remain non-destructive Rust gates under
+`cargo run -q -p flasks --bin bramble-usb -- loop --direct-handoff ...
+--dma-origin 0x90000000 ...`; flash/erase are still never used.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:

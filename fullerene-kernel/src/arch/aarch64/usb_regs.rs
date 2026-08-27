@@ -45,6 +45,7 @@ pub const DEVICE_EVENT_CMD_COMPLETE: u32 = 10;
 pub const DEVICE_EVENT_OVERFLOW: u32 = 11;
 
 pub const DEPCMD_CMDACT: u32 = 1 << 10;
+pub const DEPCMD_CMDIOC: u32 = 1 << 8;
 pub const DEPCMD_HIPRI_FORCERM: u32 = 1 << 11;
 pub const DEPCMD_PARAM_SHIFT: u32 = 16;
 pub const DEPCMD_DEPSTARTCFG: u32 = 0x09;

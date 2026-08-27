@@ -199,6 +199,7 @@ const GUCTL1: usize = 0xc11c;
 const GSNPSID: usize = 0xc120;
 const GRXTHRCFG: usize = 0xc10c;
 const GHWPARAMS0: usize = 0xc140;
+const GHWPARAMS1: usize = 0xc144;
 const GHWPARAMS3: usize = 0xc14c;
 const GHWPARAMS7: usize = 0xc15c;
 const VER_NUMBER: usize = 0xc1a0;
@@ -669,6 +670,10 @@ static mut SIGNAL_LNKST_RESET: bool = false;
 static mut SIGNAL_LNKST_POLLING: bool = false;
 static mut SIGNAL_LNKST_RXDET: bool = false;
 static mut SIGNAL_CORE_HALTED: bool = false;
+/// Connect-delay one-shot latch (see the delay block in
+/// `init_with_super_speed`). Only the first handoff attempt pays the delay
+/// so the retry loop stays inside the EL1 recovery-timer budget.
+static mut SIGNAL_CONNECT_DELAYED: bool = false;
 /// Adopted SMMU mapping (see `adopt_smmu_dma_mapping()`). When the Apps-SMMU
 /// stream is owned by a live TRANSLATE context that software cannot rewrite,
 /// the EP0 DMA objects are relocated into a page that context already maps:
@@ -842,22 +847,33 @@ unsafe fn smmu_find_any_mapping(ttbr0: u64, three_level: bool) -> Option<(u64, u
     }
 }
 
-/// Read-only Apps-SMMU S2CR type for the DWC3 stream.
-///   0 = FAULT, 1 = BYPASS, 2 = TRANSLATE, 255 = no SMR match / unreadable
+/// Read-only Apps-SMMU stream-state ladder. Returns the deepest condition
+/// that provably holds, so a host-visible attach gate can name the state one
+/// run at a time:
+///   0..=3 = an SMR matched the stream and its S2CR type is that value
+///   251   = SMRs are implemented but none is valid
+///   252   = at least one valid SMR exists but none matches the stream
+///   253   = no SMRs are implemented (ID0.NUMSMRG == 0)
+///   254   = the SMMU identification registers are unreadable (RAZ/all-ones)
 unsafe fn smmu_stream_s2cr_type() -> u32 {
     unsafe {
         let id0 = read_volatile(smmu_reg(SMMU_ID0));
         let id1 = read_volatile(smmu_reg(SMMU_ID1));
         if id0 == 0 || id0 == u32::MAX || id1 == 0 || id1 == u32::MAX {
-            return 255;
+            return 254;
         }
         let num_smrs = ((id0 & SMMU_ID0_NUMSMRG_MASK) as usize).min(128);
+        if num_smrs == 0 {
+            return 253;
+        }
         let stream_id = super::platform::bramble::usb_resources().dma_pool.stream_id;
+        let mut any_valid = false;
         for index in 0..num_smrs {
             let smr = read_volatile(smmu_reg(SMMU_SMR_BASE + index * 4));
             if smr & SMMU_SMR_VALID == 0 {
                 continue;
             }
+            any_valid = true;
             let id = smr & 0xffff;
             let mask = (smr >> SMMU_SMR_MASK_SHIFT) & 0x7fff;
             if (stream_id ^ id) & !mask != 0 {
@@ -866,10 +882,102 @@ unsafe fn smmu_stream_s2cr_type() -> u32 {
             let s2cr = read_volatile(smmu_reg(SMMU_S2CR_BASE + index * 4));
             return (s2cr & SMMU_S2CR_TYPE_MASK) >> 16;
         }
-        255
+        if any_valid {
+            // Stream unmatched. Distinguish an active SMMU (252) from a
+            // globally bypassed one (250): with SMMUEN=0 or CLIENTPD=1 the
+            // unmatched SMR is irrelevant and transactions already pass
+            // untranslated.
+            let scr0 = read_volatile(smmu_reg(SMMU_GR0_SCR0));
+            let active = scr0 != u32::MAX && (scr0 & 1) != 0 && (scr0 & 2) == 0;
+            return if active { 252 } else { 250 };
+        }
+        251
     }
 }
 
+/// Claim a free Apps-SMMU SMR slot for the DWC3 stream and point its S2CR at
+/// BYPASS so the stream's transactions pass untranslated (CPU address ==
+/// DMA address). Only slots whose VALID bit is clear are claimed, both
+/// writes are verified by readback, and a rejected (secure-owned) write is
+/// reported as failure instead of being assumed. The stream is known to be
+/// unmatched (ladder 252) when this runs, so no live mapping is displaced.
+unsafe fn smmu_install_stream_bypass() -> bool {
+    unsafe {
+        let id0 = read_volatile(smmu_reg(SMMU_ID0));
+        let id1 = read_volatile(smmu_reg(SMMU_ID1));
+        if id0 == 0 || id0 == u32::MAX || id1 == 0 || id1 == u32::MAX {
+            return false;
+        }
+        let num_smrs = ((id0 & SMMU_ID0_NUMSMRG_MASK) as usize).min(128);
+        if num_smrs == 0 {
+            return false;
+        }
+        let stream_id = super::platform::bramble::usb_resources().dma_pool.stream_id & 0xffff;
+        // An existing match means the stream already has an owner: leave the
+        // configuration alone and report success (nothing to install).
+        for index in 0..num_smrs {
+            let smr = read_volatile(smmu_reg(SMMU_SMR_BASE + index * 4));
+            if smr & SMMU_SMR_VALID == 0 {
+                continue;
+            }
+            let id = smr & 0xffff;
+            let mask = (smr >> SMMU_SMR_MASK_SHIFT) & 0x7fff;
+            if (stream_id ^ id) & !mask == 0 {
+                trace_event(TRACE_SMMU_HANDOFF, 0x494E, index as u32, 0, 1, 0);
+                return true;
+            }
+        }
+        for index in 0..num_smrs {
+            let smr = read_volatile(smmu_reg(SMMU_SMR_BASE + index * 4));
+            if smr & SMMU_SMR_VALID != 0 {
+                continue;
+            }
+            // Claim this slot. Write the inert S2CR first (it only applies
+            // once SMR.VALID is set), then publish the SMR, then verify both
+            // by readback before declaring the stream owned. The catch-all
+            // mode matches every stream ID so a misreported DWC3 stream ID
+            // cannot keep the stream faulting.
+            let catch_all = option_env!("FULLERENE_USB_SMMU_INSTALL_ALL") == Some("1");
+            let smr_value = if catch_all {
+                SMMU_SMR_VALID | (0x7fff << SMMU_SMR_MASK_SHIFT)
+            } else {
+                SMMU_SMR_VALID | stream_id
+            };
+            let s2cr_address = SMMU_S2CR_BASE + index * 4;
+            let old_s2cr = read_volatile(smmu_reg(s2cr_address));
+            let new_s2cr = (old_s2cr & !SMMU_S2CR_TYPE_MASK) | SMMU_S2CR_TYPE_BYPASS;
+            write_volatile(smmu_reg(s2cr_address), new_s2cr);
+            core::arch::asm!("dsb sy", options(nostack));
+            write_volatile(smmu_reg(SMMU_SMR_BASE + index * 4), smr_value);
+            core::arch::asm!("dsb sy", options(nostack));
+            let smr_readback = read_volatile(smmu_reg(SMMU_SMR_BASE + index * 4));
+            let s2cr_readback = read_volatile(smmu_reg(s2cr_address));
+            let smr_ok = smr_readback & SMMU_SMR_VALID != 0 && smr_readback == smr_value;
+            let s2cr_ok = s2cr_readback & SMMU_S2CR_TYPE_MASK == SMMU_S2CR_TYPE_BYPASS;
+            trace_event(
+                TRACE_SMMU_HANDOFF,
+                0x534D_5200 | index as u32,
+                smr_readback,
+                s2cr_readback,
+                smr_ok as u32,
+                s2cr_ok as u32,
+            );
+            if smr_ok && s2cr_ok {
+                smmu_tlb_sync();
+                log_hex("usb: installed SMMU bypass SMR index=", index as u64);
+                return true;
+            }
+            // The secure side rejected at least one write. Restore the slot
+            // to its inert state as far as non-secure writes reach and
+            // report the failure.
+            write_volatile(smmu_reg(SMMU_SMR_BASE + index * 4), smr);
+            write_volatile(smmu_reg(s2cr_address), old_s2cr);
+            core::arch::asm!("dsb sy", options(nostack));
+            return false;
+        }
+        false
+    }
+}
 /// Relocate the EP0 DMA objects into a page that the live Apps-SMMU context
 /// already maps. The stream's S2CR is TRANSLATE and software cannot rewrite
 /// it from non-secure state, so the only working DMA window is one the
@@ -1184,6 +1292,106 @@ const EMPTY_USB_TRACE: UsbTraceEntry = UsbTraceEntry {
 
 const USB_TRACE_MAGIC: u32 = 0x4655_5452; // "FUTR"
 const USB_TRACE_VERSION: u32 = 1;
+
+/// Outcome of the previous attempt's last STARTTRANSFER command, harvested
+/// from the retained trace at the start of the next handoff attempt (see
+/// `harvest_trace_outcome()`). Encoding: 0xFFFF = no record found,
+/// 0x1_0000 | raw DEPCMD register = the command timed out, otherwise the raw
+/// DEPCMD register at completion (status bits 15:12, resource index 22:16).
+static mut TRACE_HARVEST: u32 = 0xFFFF_FFFF;
+/// Raw DEPCMD register of the previous attempt's last SETTRANSFRESOURCE
+/// (resource index bits 22:16, status bits 15:12) or 0xFFFF_FFFF.
+static mut TRACE_HARVEST_RSC: u32 = 0xFFFF_FFFF;
+/// Raw DEPCMD register of the previous attempt's last DEPSTARTCFG.
+static mut TRACE_HARVEST_CFG: u32 = 0xFFFF_FFFF;
+static mut INIT_CALLS: u32 = 0;
+/// GCTL.RAMCLKSEL observed while the previous owner (Fastboot) still had a
+/// working gadget. CSFTRST and the host's bus USB reset both clear this
+/// field, and with the wrong select the DWC3 internal RAM misroutes
+/// endpoint-context writes, which shows up as STARTTRANSFER failing with
+/// "No resource" even though SETTRANSFRESOURCE reported success. Capture
+/// the working value and re-apply it at every reset boundary.
+static mut RAMCLK_CAPTURE: u32 = 0;
+
+#[inline]
+fn gctl_ramclksel(gctl: u32) -> u32 {
+    (gctl >> 6) & 3
+}
+
+/// Restore the captured GCTL.RAMCLKSEL. Called after CSFTRST and after the
+/// host's bus USB reset, both of which clear the field.
+unsafe fn reapply_ramclksel() {
+    unsafe {
+        let captured = RAMCLK_CAPTURE;
+        if captured == 0 {
+            return;
+        }
+        let gctl = read(GCTL);
+        let updated = (gctl & !(3 << 6)) | (captured << 6);
+        if updated != gctl {
+            write(GCTL, updated);
+            let _ = read(GCTL);
+            trace_event(TRACE_DWC3_REVISION_QUIRK, 0x524D_434B, gctl, updated, 0, 0);
+        }
+    }
+}
+
+/// Scan the retained trace backwards for the last STARTTRANSFER command
+/// outcome. Called at the start of every handoff attempt except the first:
+/// attempt N therefore reads attempt N-1's records, which are still intact
+/// because the trace survives the in-boot DMA-region clear.
+unsafe fn harvest_trace_outcome() {
+    unsafe {
+        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
+        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
+        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION {
+            return;
+        }
+        let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2)) as usize;
+        if head == 0 {
+            return;
+        }
+        let count = head.min(USB_TRACE_CAPACITY);
+        for offset in 0..count {
+            let slot = (head.wrapping_sub(1 + offset)) % USB_TRACE_CAPACITY;
+            let entry = addr_of!(USB_TRACE.entries)
+                .cast::<UsbTraceEntry>()
+                .add(slot);
+            let event = read_volatile(addr_of!((*entry).event));
+            if event != TRACE_EP_COMMAND_DONE && event != TRACE_EP_COMMAND_TIMEOUT {
+                continue;
+            }
+            let command = read_volatile(addr_of!((*entry).request)) & 0x0f;
+            let raw = read_volatile(addr_of!((*entry).index));
+            // The backward scan ends on the chronologically FIRST record of
+            // each command type, which is attempt 1's ep0-out command.
+            match command {
+                DEPCMD_STARTTRANSFER => {
+                    TRACE_HARVEST = if event == TRACE_EP_COMMAND_TIMEOUT {
+                        0x1_0000 | raw
+                    } else {
+                        raw & 0x7f_ffff
+                    };
+                }
+                DEPCMD_SETTRANSFRESOURCE => {
+                    TRACE_HARVEST_RSC = if event == TRACE_EP_COMMAND_TIMEOUT {
+                        0x1_0000 | raw
+                    } else {
+                        raw & 0x7f_ffff
+                    };
+                }
+                DEPCMD_DEPSTARTCFG => {
+                    TRACE_HARVEST_CFG = if event == TRACE_EP_COMMAND_TIMEOUT {
+                        0x1_0000 | raw
+                    } else {
+                        raw & 0x7f_ffff
+                    };
+                }
+                _ => {}
+            }
+        }
+    }
+}
 
 #[repr(C, align(4096))]
 struct UsbTraceBuffer {
@@ -2470,7 +2678,14 @@ unsafe fn stop_running_device() -> bool {
 
 const DWC3_RUN_STOP_POLL_MS: u64 = 1;
 const DWC3_RUN_STOP_TIMEOUT_MS: u64 = 2_000;
-const DWC3_EP_COMMAND_TIMEOUT: u32 = 5_000;
+// STARTTRANSFER must DMA-fetch the TRB before the command can retire, and on
+// this platform that first fetch is far slower than the other endpoint
+// commands (which complete from the register path alone). The probe-era
+// 5,000-read window expired before the fetch finished, so give the command a
+// time-based budget instead: 5000 reads is roughly 0.5-1 ms of MMIO polling;
+// 2,000,000 reads bounds the wait at a comfortable fraction of a second
+// without ever spinning forever.
+const DWC3_EP_COMMAND_TIMEOUT: u32 = 2_000_000;
 
 /// Wait for DWC3's device controller to reach the requested halt state after
 /// a Run/Stop write. Linux polls DSTS at 1--2 ms intervals for up to 2,000
@@ -2645,13 +2860,29 @@ unsafe fn configure_dwc3_global_control() {
         }
         let mut gctl = read(GCTL);
         gctl &= !(GCTL_SCALEDOWN_MASK | GCTL_DISSCRAMBLE);
-        gctl |= GCTL_DSBLCLKGTNG;
-        let mut applied = GCTL_DSBLCLKGTNG;
+        let mut applied = 0;
         if snpsid < DWC3_REVISION_190A {
             gctl |= GCTL_U2RSTECN;
             applied |= GCTL_U2RSTECN;
         }
-        write(GCTL, gctl);
+        // Follow dwc3_core_setup_global_control(): the clock-gating disable
+        // bit is NOT set unconditionally. For EN_PWROPT_CLK cores (the common
+        // configuration) Linux KEEPS clock gating enabled in device mode, and
+        // on this platform forcing the disable bit stops the gating FSM that
+        // also gates the internal endpoint RAM - every SETEPCONFIG or
+        // SETTRANSFRESOURCE then completes without persisting, and
+        // STARTTRANSFER fails with "No resource".
+        let power_opt = (read(GHWPARAMS1) & (3 << 24)) >> 24;
+        applied |= power_opt << 8;
+        if power_opt == 1 {
+            gctl &= !GCTL_DSBLCLKGTNG;
+        } else {
+            gctl |= GCTL_DSBLCLKGTNG;
+        }
+        // CSFTRST cleared GCTL.RAMCLKSEL; restore the previous owner's
+        // select so the internal endpoint RAM keeps its working clock.
+        reapply_ramclksel();
+        let gctl = read(GCTL);
         trace_event(TRACE_DWC3_REVISION_QUIRK, snpsid, applied, gctl, 0, 0);
         // Linux enables the asynchronous ENDTRANSFER activation-bit
         // handling on DWC3 3.10a and later. The reset/rearm path uses
@@ -3876,6 +4107,10 @@ unsafe fn reset_gsi_channels() {
 /// which is indistinguishable from a dead gadget to the host.
 unsafe fn restart_control_after_reset() {
     unsafe {
+        // The host's bus USB reset clears GCTL.RAMCLKSEL (the Linux comment
+        // about reprogramming it on Connect Done documents exactly this);
+        // restore the captured working select before the EP0 rebuild.
+        reapply_ramclksel();
         // USB RESET terminates the wire transaction, but DWC3 may still own
         // the pre-reset EP0 resource until software explicitly revokes it.
         // Linux's reset path stops active transfers before rebuilding the
@@ -5316,11 +5551,12 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             && !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
         {
             // Android's msm driver walks dwc->eps[] rather than only the
-            // endpoints that the current gadget will expose. Mirror the
-            // hardware endpoint count from GHWPARAMS3, bounded by the DWC3
-            // endpoint-command number space.
-            let endpoint_count = ((read(GHWPARAMS3) >> 12) & 0x3f).clamp(2, 32);
-            for endpoint in 0..endpoint_count {
+            // endpoints that the current gadget will expose. The msm-4.19
+            // implementation loops over ALL DWC3_ENDPOINTS_NUM (32) hardware
+            // endpoints right after DEPSTARTCFG and before any SETEPCONFIG,
+            // so mirror that exactly instead of trusting a GHWPARAMS3 field
+            // encoding that may not match this core.
+            for endpoint in 0..32u32 {
                 if !send_ep_command(endpoint as usize, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) {
                     log_puts("usb gadget handoff: Android resource preallocation failed\n");
                     return gadget_handoff_fail(5); // resource allocation
@@ -5645,6 +5881,51 @@ pub fn init_usb2_gadget_handoff() -> bool {
 fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bool) -> bool {
     unsafe {
         QMP_PHY_READY = false;
+        // The DWC3 stream is unattributed at the Apps-SMMU (ladder 252), and
+        // Qualcomm firmware commonly leaves sCR0.WACFG set to stall+queue:
+        // every DWC3 DMA then hangs in the SMMU while GEVNTCOUNT keeps
+        // counting the core-internal event FIFO, which masquerades as a
+        // working event ring. Rewriting SMR/S2CR from non-secure state did
+        // not lift the stall, so clear the whole warning configuration and
+        // take the SMMU out of the path entirely. This must happen before
+        // any DWC3 DMA is armed. A rejected (secure-owned) write fails the
+        // attempt so the host-visible attach names the outcome.
+        #[cfg(fullerene_aarch64_usb_smmu_disable)]
+        {
+            let scr0 = read_volatile(smmu_reg(SMMU_GR0_SCR0));
+            if scr0 == u32::MAX {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x5344_5242); // "SDRB"
+                log_puts("usb: SMMU SCR0 unreadable; cannot disable\n");
+                return false;
+            }
+            // sCR0.SMMUEN (bit 0) off, sCR0.CLIENTPD (bit 1) set, and
+            // sCR0.WACFG (bits 7:6) = 00 (unattributed transactions pass).
+            let new_scr0 = (scr0 & !0x1 & !(0b11 << 6)) | 0x2;
+            write_volatile(smmu_reg(SMMU_GR0_SCR0), new_scr0);
+            core::arch::asm!("dsb sy", options(nostack));
+            let readback = read_volatile(smmu_reg(SMMU_GR0_SCR0));
+            let ok = readback == new_scr0;
+            trace_event(
+                TRACE_SMMU_HANDOFF,
+                0x5344_4953,
+                scr0,
+                new_scr0,
+                readback,
+                ok as u32,
+            );
+            if !ok {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x5344_524A); // "SDRJ"
+                log_puts("usb: SMMU disable rejected; suppressing pull-up\n");
+                return false;
+            }
+        }
+        // Harvest the previous attempt's STARTTRANSFER outcome before this
+        // attempt's DMA-region clear wipes the trace. Attempt 1 skips the
+        // harvest (the previous boot's trace was destroyed by Android).
+        INIT_CALLS = INIT_CALLS.wrapping_add(1);
+        if INIT_CALLS > 1 {
+            harvest_trace_outcome();
+        }
         // Reset the adopted-mapping state on every handoff attempt: a failed
         // attempt must not leave the next attempt publishing stale objects.
         DMA_ADOPTED = false;
@@ -5743,6 +6024,30 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         gctl &= !GCTL_PRTCAPDIR_MASK;
         gctl |= GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG;
         write(GCTL, gctl);
+        // Capture the previous owner's RAM clock select BEFORE any reset:
+        // CSFTRST and the host's bus USB reset both clear GCTL.RAMCLKSEL,
+        // and with the wrong select the internal endpoint RAM misroutes
+        // writes, which is exactly the "No resource" STARTTRANSFER failure.
+        RAMCLK_CAPTURE = gctl_ramclksel(read(GCTL));
+        trace_event(
+            TRACE_DWC3_REVISION_QUIRK,
+            0x5243_4150,
+            RAMCLK_CAPTURE,
+            0,
+            0,
+            0,
+        );
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if let Some(want) = option_env!("FULLERENE_USB_SIGNAL_RAMCLK_GATE") {
+            // One-bit readout of the previous owner's GCTL.RAMCLKSEL value.
+            if let Ok(value) = want.parse::<u32>() {
+                if RAMCLK_CAPTURE != value {
+                    trace_marker(TRACE_PROBE_WATCHDOG, 0x5243_4700 | (RAMCLK_CAPTURE & 0xff));
+                    log_puts("usb: ramclk gate mismatch; suppressing pull-up\n");
+                    return false;
+                }
+            }
+        }
 
         // Use the same pre-reset ownership boundary as the proven Bramble
         // gadget probe.  The helper wakes UTMI, selects the USB2 clock path,
@@ -6029,6 +6334,167 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             return true;
         }
 
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if option_env!("FULLERENE_USB_SIGNAL_DMA_PROBE") == Some("1") {
+            // Event-DMA liveness probe. The endpoint is fully configured here
+            // (DEPSTARTCFG, SETEPCONFIG, SETTRANSFRESOURCE done, TRB armed):
+            // arm a real SETUP transfer on ep0 OUT and then ENDTRANSFER it
+            // with CMDIOC — the exact Linux stop-active-transfer pattern, so
+            // the core must post the completion event. GEVNTCOUNT > 0 proves
+            // the core's event DMA reaches DRAM; gate the pull-up off when it
+            // never arrives so the host-visible attach names a working DMA
+            // path.
+            //
+            // Clear any latched Apps-SMMU faults first so the post-probe FSR
+            // names only this attempt's DMA attempts.
+            let fsr_before = read_volatile(smmu_reg(SMMU_GR0_FSR));
+            if fsr_before != 0 && fsr_before != u32::MAX {
+                write_volatile(smmu_reg(SMMU_GR0_FSR), fsr_before);
+                core::arch::asm!("dsb sy", options(nostack));
+            }
+            // RAM readback gate: if the linker-reserved .usb_dma window is
+            // not backed by real DRAM, every DMA write (event ring, TRB
+            // fetch, setup buffer) vanishes and the CPU cannot detect it.
+            // Write a pattern, evict it from the cache, and read it back;
+            // gate the attach on the pattern surviving.
+            if option_env!("FULLERENE_USB_SIGNAL_RAM_GATE") == Some("1") {
+                // Verify EVERY object the controller will DMA, not just the
+                // event ring: a partially backed region can pass the first
+                // page while the TRB/SETUP pages hang the core's fetch.
+                let mut ram_ok = true;
+                let targets: [(usize, usize); 4] = [
+                    (ep0_event_dma_base(), 16),
+                    (ep0_trb_ptr(0) as usize, 64),
+                    (ep0_setup_ptr() as usize, 8),
+                    (ep0_response_ptr() as usize, 512),
+                ];
+                for (address, span) in targets {
+                    let pattern = [0xA55A_5AA5u32, 0x1234_5678, 0xDEAD_BEEF, 0x0BAD_C0DE];
+                    let words = span / 4;
+                    for offset in 0..words {
+                        unsafe {
+                            write_volatile(
+                                (address + offset * 4) as *mut u32,
+                                pattern[offset % pattern.len()],
+                            );
+                        }
+                    }
+                    cache_clean(address, span);
+                    cache_invalidate(address, span);
+                    for offset in 0..words {
+                        unsafe {
+                            if read_volatile((address + offset * 4) as *const u32)
+                                != pattern[offset % pattern.len()]
+                            {
+                                ram_ok = false;
+                            }
+                        }
+                    }
+                    for offset in 0..words {
+                        unsafe { write_volatile((address + offset * 4) as *mut u32, 0) };
+                    }
+                    cache_clean(address, span);
+                }
+                trace_event(
+                    TRACE_EVENT_RING_READY,
+                    0x5241_4D00 | ram_ok as u32,
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+                if !ram_ok {
+                    trace_marker(TRACE_PROBE_WATCHDOG, 0x5241_4D46); // "RAMF"
+                    log_puts("usb: .usb_dma readback failed; region is not usable RAM\n");
+                    return false;
+                }
+            }
+            let started = start_transfer(0, ep0_trb_ptr(0));
+            let resource = if started {
+                EP0_RESOURCE_INDEX[0].max(1)
+            } else {
+                1
+            };
+            let _ = send_ep_command(
+                0,
+                DEPCMD_ENDTRANSFER
+                    | DEPCMD_CMDIOC
+                    | DEPCMD_HIPRI_FORCERM
+                    | ((resource as u32) << DEPCMD_PARAM_SHIFT),
+                0,
+                0,
+                0,
+            );
+            EP0_RESOURCE_INDEX[0] = 0;
+            let mut delivered = false;
+            let mut event_word = 0u32;
+            for _ in 0..100 {
+                super::timer::delay_ms(1);
+                if read(GEVNTCOUNT0) & GEVNTCOUNT_MASK != 0 {
+                    delivered = true;
+                    break;
+                }
+            }
+            if delivered {
+                // GEVNTCOUNT counts the core-internal event FIFO, not the
+                // DMA completion. Read the ring slot the event should have
+                // landed in: a zero word means the DMA write never reached
+                // DRAM (stalled/blocked), which no amount of register setup
+                // can mask.
+                let slot = (unsafe { EVENT_OFFSET } % unsafe { ep0_event_size() }) & !0x3;
+                let word = unsafe { read_volatile((ep0_event_dma_base() + slot) as *const u32) };
+                event_word = word;
+            }
+            let fsr_after = read_volatile(smmu_reg(SMMU_GR0_FSR));
+            trace_event(
+                TRACE_EVENT_RING_READY,
+                delivered as u32,
+                event_word,
+                fsr_after,
+                0,
+                0,
+            );
+            // Event-data gate: 1 = attach only when the event word actually
+            // landed in DRAM, 2 = attach only when the ring slot stayed zero.
+            match option_env!("FULLERENE_USB_SIGNAL_EVT_DATA_GATE") {
+                Some("1") if event_word == 0 => {
+                    trace_marker(TRACE_PROBE_WATCHDOG, 0x4556_4430); // "EVD0"
+                    log_puts("usb: event word never landed in DRAM\n");
+                    return false;
+                }
+                Some("2") if event_word != 0 => {
+                    trace_marker(TRACE_PROBE_WATCHDOG, 0x4556_4431); // "EVD1"
+                    log_puts("usb: event word landed but gate wanted zero\n");
+                    return false;
+                }
+                _ => {}
+            }
+            // FSR gate (one bit per run): 1 = attach only when the SMMU
+            // recorded a fault during the probe, 2 = attach only when it did
+            // not. This separates "SMMU kills the DMA" from "the core's DMA
+            // engine is dead".
+            let fsr_gate = option_env!("FULLERENE_USB_SIGNAL_FSR_GATE");
+            if fsr_gate == Some("1") || fsr_gate == Some("2") {
+                let faulted = fsr_after != u32::MAX && fsr_after != 0;
+                let wanted = fsr_gate == Some("1");
+                if faulted != wanted {
+                    trace_marker(TRACE_PROBE_WATCHDOG, 0x4653_5200 | (fsr_after & 0xff));
+                    log_puts("usb: FSR gate mismatch; suppressing pull-up\n");
+                    return false;
+                }
+            }
+            if !delivered {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x444D_4146); // "DMAF"
+                log_puts("usb: event DMA probe found no delivered event\n");
+                return false;
+            }
+            // Drain the probe events and re-arm a clean SETUP TRB so the
+            // normal flow starts from the same state as a non-probe run.
+            poll_ep0_event_ring();
+            EVENT_OFFSET = 0;
+            prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+        }
+
         // Linux arms the initial EP0 OUT SETUP transfer before Run/Stop. Keep
         // that as the default, but retain a Bramble-only hardware differential
         // for controllers whose firmware handoff cannot tolerate DMA ownership
@@ -6041,6 +6507,11 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             fullerene_aarch64_usb_gadget_handoff_start_at_connect_done
         )))]
         {
+            // Micro-test for the "No resource" STARTTRANSFER failure: re-run
+            // the transfer-resource allocation immediately before the
+            // command, so anything that wiped the resource between the init
+            // allocation and here cannot matter.
+            let _ = send_ep_command(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
             if !start_transfer(0, ep0_trb_ptr(0)) {
                 log_puts("usb: SETUP STARTTRANSFER failed\n");
                 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
@@ -6068,22 +6539,130 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // HIRD threshold across the temporary-image handoff.
         configure_gadget_speed(qmp_ready);
         enable_gadget_susphy();
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if let Some(want) = option_env!("FULLERENE_USB_SIGNAL_RSC_GATE") {
+            // One-bit readout of the previous attempt's SETTRANSFRESOURCE
+            // raw DEPCMD register (resource index 22:16, status 15:12). A
+            // healthy allocation returns 0x10000 (index 1, status 0).
+            let ok = u32::from_str_radix(want.trim_start_matches("0x"), 16)
+                .map(|value| TRACE_HARVEST_RSC == value)
+                .unwrap_or(false);
+            trace_event(
+                TRACE_SMMU_HANDOFF,
+                0x5253_4300,
+                TRACE_HARVEST_RSC,
+                ok as u32,
+                0,
+                0,
+            );
+            if !ok {
+                trace_marker(
+                    TRACE_PROBE_WATCHDOG,
+                    0x5253_4300 | (TRACE_HARVEST_RSC & 0xff),
+                );
+                log_puts("usb: resource gate mismatch; suppressing pull-up\n");
+                return false;
+            }
+        }
+
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if let Some(want) = option_env!("FULLERENE_USB_SIGNAL_CFG_GATE") {
+            // One-bit readout of the previous attempt's DEPSTARTCFG raw
+            // DEPCMD register (returned XferRscIdx 22:16, status 15:12).
+            let ok = u32::from_str_radix(want.trim_start_matches("0x"), 16)
+                .map(|value| TRACE_HARVEST_CFG == value)
+                .unwrap_or(false);
+            trace_event(
+                TRACE_SMMU_HANDOFF,
+                0x5243_4647,
+                TRACE_HARVEST_CFG,
+                ok as u32,
+                0,
+                0,
+            );
+            if !ok {
+                trace_marker(
+                    TRACE_PROBE_WATCHDOG,
+                    0x5243_4647 | (TRACE_HARVEST_CFG & 0xff),
+                );
+                log_puts("usb: cfg gate mismatch; suppressing pull-up\n");
+                return false;
+            }
+        }
+
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if let Some(want) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") {
+            // One-bit readout of the previous attempt's STARTTRANSFER
+            // outcome. The retained trace harvest carries the raw DEPCMD
+            // register at completion (or the timeout mark), and the
+            // host-visible attach names it:
+            //   "timeout" -> the command never retired (CMDACT stuck)
+            //   "done"    -> the command retired with any status
+            //   "none"    -> no STARTTRANSFER record was found
+            //   hex value -> the raw register equals exactly this value
+            let ok = match want {
+                "timeout" => TRACE_HARVEST & 0x1_0000 != 0,
+                "done" => TRACE_HARVEST != 0xFFFF_FFFF && TRACE_HARVEST & 0x1_0000 == 0,
+                "none" => TRACE_HARVEST == 0xFFFF_FFFF,
+                other => u32::from_str_radix(other.trim_start_matches("0x"), 16)
+                    .map(|value| TRACE_HARVEST == value)
+                    .unwrap_or(false),
+            };
+            trace_event(
+                TRACE_SMMU_HANDOFF,
+                0x434D_4400,
+                TRACE_HARVEST,
+                ok as u32,
+                0,
+                0,
+            );
+            if !ok {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x434D_4400 | (TRACE_HARVEST & 0xff));
+                log_puts("usb: command gate mismatch; suppressing pull-up\n");
+                return false;
+            }
+        }
+
         #[cfg(fullerene_aarch64_usb_ep0_smmu_gate)]
         {
             // One-bit SMMU readout: publish the pull-up only when the
             // stream's S2CR type matches the requested value, so the
             // host-visible attach itself names the Apps-SMMU stream state.
-            let want = match option_env!("FULLERENE_USB_SMMU_GATE_TYPE") {
-                Some("0") => 0u32,
-                Some("1") => 1,
-                Some("2") => 2,
-                _ => 99,
-            };
+            // Parse the full value: the ladder codes 3 and 251..=254 are
+            // equally valid gate targets as the raw S2CR types 0..=2.
+            let want = option_env!("FULLERENE_USB_SMMU_GATE_TYPE")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(99);
             let actual = smmu_stream_s2cr_type();
             trace_event(TRACE_SMMU_HANDOFF, actual, want, 0, 0, read(DSTS));
             if actual != want {
                 trace_marker(TRACE_PROBE_WATCHDOG, 0x534d_4d55 | (actual & 0xff));
                 log_puts("usb: SMMU gate mismatch; suppressing pull-up\n");
+                return false;
+            }
+        }
+
+        #[cfg(fullerene_aarch64_usb_ep0_smmu_install)]
+        {
+            // The stream is unmatched (ladder 252): with an active SMMU every
+            // DWC3 DMA faults, which is exactly the dead-event-ring / dead-EP0
+            // symptom. Claim a free SMR and point it at BYPASS so DMA passes
+            // untranslated. The gate is STRICT: only a verified install on an
+            // active-and-unmatched stream publishes the pull-up, so the
+            // host-visible attach names exactly this state.
+            let before = smmu_stream_s2cr_type();
+            let installed = before == 252 && smmu_install_stream_bypass();
+            trace_event(
+                TRACE_SMMU_HANDOFF,
+                0x494E_5354,
+                installed as u32,
+                before,
+                0,
+                0,
+            );
+            if !installed {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x5349_4E46); // "SINF"
+                log_puts("usb: SMMU stream install rejected; suppressing pull-up\n");
                 return false;
             }
         }
@@ -6098,6 +6677,25 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             trace_marker(TRACE_PROBE_WATCHDOG, 0x534e_4f44); // "SNOD"
             log_puts("usb: no adopted SMMU window; suppressing pull-up\n");
             return false;
+        }
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        {
+            // Timing channel: delay ONLY the first attempt's connect by a
+            // fixed number of seconds. The host's attach timestamp relative
+            // to the Fastboot-device disconnect in the same journal then
+            // shows whether Run/Stop owns the physical pull-up or an earlier
+            // init stage (e.g. init_hsphy's VBUSVLDEXT0) asserts it.
+            let first_attempt = !SIGNAL_CONNECT_DELAYED;
+            SIGNAL_CONNECT_DELAYED = true;
+            if first_attempt {
+                if let Some(secs) = option_env!("FULLERENE_USB_CONNECT_DELAY_SECS")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                {
+                    trace_marker(TRACE_PROBE_WATCHDOG, 0x4344_4C59); // "CDLY"
+                    super::timer::delay_ms(secs.saturating_mul(1000));
+                }
+            }
         }
         if !run_stop_device(true) {
             log_hex("usb: DWC3 remained halted, DSTS=", read(DSTS) as u64);
@@ -6477,6 +7075,14 @@ pub fn ep0_signal_drop_pullup() {
         let hs = read_qscratch(QSCRATCH_HS_PHY_CTRL);
         write_qscratch(QSCRATCH_HS_PHY_CTRL, hs & !((1 << 20) | (1 << 28)));
         let _ = read_qscratch(QSCRATCH_HS_PHY_CTRL);
+        if option_env!("FULLERENE_USB_SIGNAL_DROP_VBUS") == Some("1") {
+            // The QUSB2 PHY's VBUSVLDEXT0 forces session-valid at the PHY, so
+            // it can own the pull-up independently of DCTL and the QSCRATCH
+            // session bits. Clear it (and its select latch) to test that
+            // ownership with a host-visible disconnect/re-attach pair.
+            hsphy_update(HSPHY_CTRL1, HSPHY_CTRL1_VBUSVLDEXT0, 0);
+            hsphy_update(HSPHY_COMMON1, HSPHY_COMMON1_VBUSVLDEXTSEL0, 0);
+        }
     }
 }
 
@@ -6486,6 +7092,18 @@ pub fn ep0_signal_restore_pullup() {
     unsafe {
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
+        if option_env!("FULLERENE_USB_SIGNAL_DROP_VBUS") == Some("1") {
+            hsphy_update(
+                HSPHY_COMMON1,
+                HSPHY_COMMON1_VBUSVLDEXTSEL0,
+                HSPHY_COMMON1_VBUSVLDEXTSEL0,
+            );
+            hsphy_update(
+                HSPHY_CTRL1,
+                HSPHY_CTRL1_VBUSVLDEXT0,
+                HSPHY_CTRL1_VBUSVLDEXT0,
+            );
+        }
     }
 }
 
@@ -6530,7 +7148,13 @@ pub fn poll() {
                 RESUME_PENDING = true;
             }
         }
-        poll_typec_state(false);
+        // Signal builds must keep exactly one actuator (the diagnostic
+        // pull-up toggle): a Type-C poll that samples a transient CC state
+        // would otherwise apply an uncontrolled detach and pollute the
+        // attach/disconnect readouts.
+        if !cfg!(fullerene_aarch64_usb_ep0_signal_probe) {
+            poll_typec_state(false);
+        }
         if !poll_ep0_event_ring() {
             drain_gsi_event_buffers();
             return;

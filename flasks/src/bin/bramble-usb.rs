@@ -142,6 +142,49 @@ struct LoopArgs {
     /// Publish the pull-up only when the SMMU stream's S2CR type matches.
     #[arg(long = "smmu-gate", value_name = "TYPE")]
     smmu_gate: Option<u32>,
+    /// Drop the pull-up via the QUSB2 VBUSVLDEXT0 session bits too.
+    #[arg(long)]
+    signal_drop_vbusvld: bool,
+    /// Delay only the first attempt's Run/Stop by this many seconds.
+    #[arg(long = "connect-delay", value_name = "SECS")]
+    connect_delay: Option<u64>,
+    /// Claim a free SMMU SMR (S2CR BYPASS, readback-verified) for the DWC3
+    /// stream before Run/Stop; the attach gates on the install.
+    #[arg(long)]
+    smmu_install_bypass: bool,
+    /// Gate the attach on a pre-connect CMDIOC event reaching GEVNTCOUNT.
+    #[arg(long)]
+    signal_dma_probe: bool,
+    /// Install the SMR as a catch-all (mask all IDs) instead of exact 0xe0.
+    #[arg(long)]
+    smmu_install_all: bool,
+    /// FSR gate: 1 = attach only when the SMMU faulted during the probe.
+    #[arg(long = "signal-fsr-gate", value_name = "MODE")]
+    signal_fsr_gate: Option<u32>,
+    /// Gate the attach on a CPU readback of the .usb_dma region succeeding.
+    #[arg(long)]
+    signal_ram_gate: bool,
+    /// Relocate the .usb_dma section to this hex address for the run.
+    #[arg(long = "dma-origin", value_name = "ADDR")]
+    dma_origin: Option<String>,
+    /// Gate the attach on the previous attempt's STARTTRANSFER outcome.
+    #[arg(long = "signal-cmd-gate", value_name = "WHEN")]
+    signal_cmd_gate: Option<String>,
+    /// Gate on the previous SETTRANSFRESOURCE raw DEPCMD register.
+    #[arg(long = "signal-rsc-gate", value_name = "RAW")]
+    signal_rsc_gate: Option<String>,
+    /// Gate on the previous DEPSTARTCFG raw DEPCMD register.
+    #[arg(long = "signal-cfg-gate", value_name = "RAW")]
+    signal_cfg_gate: Option<String>,
+    /// Gate on the captured GCTL.RAMCLKSEL value (0..=3).
+    #[arg(long = "signal-ramclk-gate", value_name = "VALUE")]
+    signal_ramclk_gate: Option<u32>,
+    /// Clear sCR0.SMMUEN/WACFG (readback-verified) before any DWC3 DMA.
+    #[arg(long)]
+    smmu_disable: bool,
+    /// Gate on the probe event word landing in DRAM (1 = landed).
+    #[arg(long = "signal-evt-data-gate", value_name = "MODE")]
+    signal_evt_data_gate: Option<u32>,
     #[arg(long)]
     no_core_reset: bool,
     #[arg(long)]
@@ -488,6 +531,20 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         signal_heartbeat: false,
         dma_adopt_smmu: false,
         smmu_gate: None,
+        signal_drop_vbusvld: false,
+        connect_delay: None,
+        smmu_install_bypass: false,
+        signal_dma_probe: false,
+        smmu_install_all: false,
+        signal_fsr_gate: None,
+        signal_ram_gate: false,
+        dma_origin: None,
+        signal_cmd_gate: None,
+        signal_rsc_gate: None,
+        signal_cfg_gate: None,
+        signal_ramclk_gate: None,
+        smmu_disable: false,
+        signal_evt_data_gate: None,
         no_core_reset: args.no_core_reset,
         uncompressed: false,
         dry_run: false,
@@ -585,6 +642,90 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--smmu-gate requires --direct-handoff",
+        ));
+    }
+    if args.signal_drop_vbusvld && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-drop-vbusvld requires --signal-probe",
+        ));
+    }
+    if args.connect_delay.is_some() && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--connect-delay requires --signal-probe",
+        ));
+    }
+    if args.smmu_install_bypass && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--smmu-install-bypass requires --direct-handoff",
+        ));
+    }
+    if args.smmu_install_all && !args.smmu_install_bypass {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--smmu-install-all requires --smmu-install-bypass",
+        ));
+    }
+    if args.signal_fsr_gate.is_some() && !args.signal_dma_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-fsr-gate requires --signal-dma-probe",
+        ));
+    }
+    if args.signal_ram_gate && !args.signal_dma_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-ram-gate requires --signal-dma-probe",
+        ));
+    }
+    if args.dma_origin.is_some() && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--dma-origin requires --direct-handoff",
+        ));
+    }
+    if args.signal_cmd_gate.is_some() && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-cmd-gate requires --direct-handoff",
+        ));
+    }
+    if args.signal_rsc_gate.is_some() && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-rsc-gate requires --direct-handoff",
+        ));
+    }
+    if args.signal_cfg_gate.is_some() && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-cfg-gate requires --direct-handoff",
+        ));
+    }
+    if args.signal_ramclk_gate.is_some() && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-ramclk-gate requires --direct-handoff",
+        ));
+    }
+    if args.smmu_disable && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--smmu-disable requires --direct-handoff",
+        ));
+    }
+    if args.signal_evt_data_gate.is_some() && !args.signal_dma_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-evt-data-gate requires --signal-dma-probe",
+        ));
+    }
+    if args.signal_dma_probe && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-dma-probe requires --direct-handoff",
         ));
     }
     if (args.start_after_connect as u8
@@ -950,6 +1091,56 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if let Some(value) = args.smmu_gate {
         arguments.push("--usb-ep0-smmu-gate".to_owned());
         arguments.push(value.to_string());
+    }
+    if args.signal_drop_vbusvld {
+        arguments.push("--usb-ep0-signal-drop-vbus".to_owned());
+    }
+    if let Some(secs) = args.connect_delay {
+        arguments.push("--usb-connect-delay".to_owned());
+        arguments.push(secs.to_string());
+    }
+    if args.smmu_install_bypass {
+        arguments.push("--usb-ep0-smmu-install".to_owned());
+    }
+    if args.signal_dma_probe {
+        arguments.push("--usb-signal-dma-probe".to_owned());
+    }
+    if args.smmu_install_all {
+        arguments.push("--usb-smmu-install-all".to_owned());
+    }
+    if let Some(mode) = args.signal_fsr_gate {
+        arguments.push("--usb-signal-fsr-gate".to_owned());
+        arguments.push(mode.to_string());
+    }
+    if args.signal_ram_gate {
+        arguments.push("--usb-signal-ram-gate".to_owned());
+    }
+    if let Some(origin) = &args.dma_origin {
+        arguments.push("--usb-dma-origin".to_owned());
+        arguments.push(origin.clone());
+    }
+    if let Some(value) = &args.signal_cmd_gate {
+        arguments.push("--usb-signal-cmd-gate".to_owned());
+        arguments.push(value.clone());
+    }
+    if let Some(value) = &args.signal_rsc_gate {
+        arguments.push("--usb-signal-rsc-gate".to_owned());
+        arguments.push(value.clone());
+    }
+    if let Some(value) = &args.signal_cfg_gate {
+        arguments.push("--usb-signal-cfg-gate".to_owned());
+        arguments.push(value.clone());
+    }
+    if let Some(value) = args.signal_ramclk_gate {
+        arguments.push("--usb-signal-ramclk-gate".to_owned());
+        arguments.push(value.to_string());
+    }
+    if args.smmu_disable {
+        arguments.push("--usb-smmu-disable".to_owned());
+    }
+    if let Some(mode) = args.signal_evt_data_gate {
+        arguments.push("--usb-signal-evt-data-gate".to_owned());
+        arguments.push(mode.to_string());
     }
     if args.start_after_reset {
         arguments.push("--usb-gadget-handoff-start-after-reset".to_owned());

@@ -141,10 +141,79 @@ struct Args {
     usb_ep0_dma_adopt: bool,
 
     /// Publish the pull-up only when the Apps-SMMU stream's S2CR type equals
-    /// this value (0=fault, 1=bypass, 2=translate). The attach itself is the
-    /// one-bit readout of the stream state.
+    /// this value (0=fault, 1=bypass, 2=translate; 251..=254 select the
+    /// no-match ladder: none-valid, valid-but-unmatched, zero SMRs,
+    /// unreadable IDs). The attach itself is the one-bit readout.
     #[arg(long = "usb-ep0-smmu-gate", value_name = "TYPE")]
     usb_ep0_smmu_gate: Option<u32>,
+
+    /// In the EP0 signal probe, drop the pull-up by clearing the QUSB2
+    /// VBUSVLDEXT0 session bits as well as the QSCRATCH overrides.
+    #[arg(long)]
+    usb_ep0_signal_drop_vbus: bool,
+
+    /// Claim a free Apps-SMMU SMR for the DWC3 stream with an S2CR BYPASS
+    /// type (readback-verified) before Run/Stop. The pull-up is gated on the
+    /// install being accepted.
+    #[arg(long)]
+    usb_ep0_smmu_install: bool,
+
+    /// Probe event-DMA liveness pre-connect with a CMDIOC command and gate
+    /// the pull-up on GEVNTCOUNT actually incrementing.
+    #[arg(long)]
+    usb_signal_dma_probe: bool,
+
+    /// Make the installed SMR a catch-all (mask all IDs) instead of exact
+    /// 0xe0, so a misreported stream ID cannot keep transactions faulting.
+    #[arg(long)]
+    usb_smmu_install_all: bool,
+
+    /// FSR gate for the DMA probe: 1 = attach only when the Apps-SMMU
+    /// recorded a fault during the probe, 2 = attach only when it did not.
+    #[arg(long = "usb-signal-fsr-gate", value_name = "MODE")]
+    usb_signal_fsr_gate: Option<u32>,
+
+    /// Gate the attach on a CPU readback of the .usb_dma region succeeding.
+    #[arg(long)]
+    usb_signal_ram_gate: bool,
+
+    /// Relocate the linker .usb_dma section to this hex address for the run.
+    #[arg(long = "usb-dma-origin", value_name = "ADDR")]
+    usb_dma_origin: Option<String>,
+
+    /// Gate the attach on the previous attempt's STARTTRANSFER outcome
+    /// (timeout | done | none | hex raw DEPCMD value).
+    #[arg(long = "usb-signal-cmd-gate", value_name = "WHEN")]
+    usb_signal_cmd_gate: Option<String>,
+
+    /// Gate the attach on the previous attempt's SETTRANSFRESOURCE raw
+    /// DEPCMD register (hex; healthy allocation returns 0x10000).
+    #[arg(long = "usb-signal-rsc-gate", value_name = "RAW")]
+    usb_signal_rsc_gate: Option<String>,
+
+    /// Gate the attach on the previous attempt's DEPSTARTCFG raw DEPCMD
+    /// register (hex).
+    #[arg(long = "usb-signal-cfg-gate", value_name = "RAW")]
+    usb_signal_cfg_gate: Option<String>,
+
+    /// Gate the attach on the captured GCTL.RAMCLKSEL value (0..=3).
+    #[arg(long = "usb-signal-ramclk-gate", value_name = "VALUE")]
+    usb_signal_ramclk_gate: Option<u32>,
+
+    /// Clear sCR0.SMMUEN/WACFG (readback-verified) before any DWC3 DMA so
+    /// unattributed transactions stop stalling in the Apps-SMMU.
+    #[arg(long)]
+    usb_smmu_disable: bool,
+
+    /// Gate the attach on the DMA-probe event word actually landing in DRAM
+    /// (1 = landed, 2 = stayed zero).
+    #[arg(long = "usb-signal-evt-data-gate", value_name = "MODE")]
+    usb_signal_evt_data_gate: Option<u32>,
+
+    /// Delay only the first handoff attempt's Run/Stop by this many seconds;
+    /// the host attach timestamp then identifies the pull-up owner.
+    #[arg(long = "usb-connect-delay", value_name = "SECS")]
+    usb_connect_delay: Option<u64>,
 
     /// Build the Bramble SuperSpeed gadget handoff probe with EP0 descriptors.
     #[arg(long)]
@@ -772,6 +841,20 @@ fn main() -> io::Result<()> {
             args.usb_ep0_signal_heartbeat,
             args.usb_ep0_dma_adopt,
             args.usb_ep0_smmu_gate,
+            args.usb_ep0_signal_drop_vbus,
+            args.usb_connect_delay,
+            args.usb_ep0_smmu_install,
+            args.usb_signal_dma_probe,
+            args.usb_smmu_install_all,
+            args.usb_signal_fsr_gate,
+            args.usb_signal_ram_gate,
+            args.usb_dma_origin,
+            args.usb_signal_cmd_gate,
+            args.usb_signal_rsc_gate,
+            args.usb_signal_cfg_gate,
+            args.usb_signal_ramclk_gate,
+            args.usb_smmu_disable,
+            args.usb_signal_evt_data_gate,
         )?;
         if target.platform == Platform::Bramble
             && matches!(args.command, Action::Run | Action::Debug)
@@ -902,6 +985,20 @@ fn build_aarch64_kernel(
     ep0_signal_heartbeat: bool,
     ep0_dma_adopt: bool,
     ep0_smmu_gate: Option<u32>,
+    ep0_signal_drop_vbus: bool,
+    connect_delay: Option<u64>,
+    ep0_smmu_install: bool,
+    signal_dma_probe: bool,
+    smmu_install_all: bool,
+    signal_fsr_gate: Option<u32>,
+    signal_ram_gate: bool,
+    dma_origin: Option<String>,
+    signal_cmd_gate: Option<String>,
+    signal_rsc_gate: Option<String>,
+    signal_cfg_gate: Option<String>,
+    signal_ramclk_gate: Option<u32>,
+    smmu_disable: bool,
+    signal_evt_data_gate: Option<u32>,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
     let mut cargo = Command::new("cargo");
@@ -1017,6 +1114,54 @@ fn build_aarch64_kernel(
     if let Some(value) = ep0_smmu_gate {
         cargo.env("FULLERENE_AARCH64_USB_EP0_SMMU_GATE", value.to_string());
     }
+    if ep0_signal_drop_vbus {
+        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS", "1");
+    }
+    if let Some(secs) = connect_delay {
+        cargo.env("FULLERENE_AARCH64_USB_CONNECT_DELAY", secs.to_string());
+    }
+    if ep0_smmu_install {
+        cargo.env("FULLERENE_AARCH64_USB_EP0_SMMU_INSTALL", "1");
+    }
+    if signal_dma_probe {
+        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE", "1");
+    }
+    if smmu_install_all {
+        cargo.env("FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL", "1");
+    }
+    if let Some(mode) = signal_fsr_gate {
+        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE", mode.to_string());
+    }
+    if signal_ram_gate {
+        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE", "1");
+    }
+    if let Some(origin) = dma_origin {
+        cargo.env("FULLERENE_AARCH64_USB_DMA_ORIGIN", origin);
+    }
+    if let Some(value) = signal_cmd_gate {
+        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_CMD_GATE", value);
+    }
+    if let Some(value) = signal_rsc_gate {
+        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE", value);
+    }
+    if let Some(value) = signal_cfg_gate {
+        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_CFG_GATE", value);
+    }
+    if let Some(value) = signal_ramclk_gate {
+        cargo.env(
+            "FULLERENE_AARCH64_USB_SIGNAL_RAMCLK_GATE",
+            value.to_string(),
+        );
+    }
+    if smmu_disable {
+        cargo.env("FULLERENE_AARCH64_USB_SMMU_DISABLE", "1");
+    }
+    if let Some(mode) = signal_evt_data_gate {
+        cargo.env(
+            "FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE",
+            mode.to_string(),
+        );
+    }
 
     // Android's Bramble bootloader may relocate an arm64 Image. Build the
     // freestanding binary as a static PIE and let the Rust bootstrap apply
@@ -1058,30 +1203,44 @@ fn run_aarch64_qemu_preflight(
 ) -> io::Result<()> {
     println!("QEMU Bramble preflight: building the qemu-virt self-test artifact");
     let kernel = build_aarch64_kernel(
-        workspace_root,
-        profile,
-        Platform::QemuVirt,
-        Arch::Aarch64.kernel_artifact(),
-        None,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        true,
-        false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        false,
-        false,
-        false,
-        None,
+        workspace_root,                  // 1
+        profile,                         // 2
+        Platform::QemuVirt,              // 3
+        Arch::Aarch64.kernel_artifact(), // 4
+        None,                            // 5  probe_env
+        false,                           // 6  no_smmu
+        false,                           // 7  reuse_fastboot_dma
+        false,                           // 8  no_transfer_resource
+        false,                           // 9  android_resource_order
+        false,                           // 10 start_after_connect
+        false,                           // 11 start_after_reset
+        false,                           // 12 start_at_connect_done
+        None,                            // 13 stop_after_stage
+        true,                            // 14 qemu_usb_sim
+        false,                           // 15 gadget_handoff_direct
+        false,                           // 16 ep0_signal_probe
+        false,                           // 17 ep0_signal_smmu_state
+        false,                           // 18 ep0_signal_link_state
+        false,                           // 19 ep0_signal_raw_link
+        None,                            // 20 ep0_signal_early_drop
+        false,                           // 21 ep0_signal_pre_drop
+        false,                           // 22 ep0_signal_heartbeat
+        false,                           // 23 ep0_dma_adopt
+        None,                            // 24 ep0_smmu_gate
+        false,                           // 25 ep0_signal_drop_vbus
+        None,                            // 26 connect_delay
+        false,                           // 27 ep0_smmu_install
+        false,                           // 28 signal_dma_probe
+        false,                           // 29 smmu_install_all
+        None,                            // 30 signal_fsr_gate
+        false,                           // 31 signal_ram_gate
+        None,                            // 32 dma_origin
+        None,                            // 33 signal_cmd_gate
+        None,                            // 34 signal_rsc_gate
+        None,                            // 35 signal_cfg_gate
+        None,                            // 36 signal_ramclk_gate
+        false,                           // 36 smmu_disable
+        None,                            // 36 signal_evt_data_gate
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;
     let image = build_aarch64_image(&raw)?;
