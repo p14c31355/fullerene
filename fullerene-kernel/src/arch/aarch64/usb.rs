@@ -192,6 +192,7 @@ const PWR_EVENT_LPM_OUT_L1: u32 = 1 << 13;
 
 const GCTL: usize = 0xc110;
 const GUCTL: usize = 0xc12c;
+const GUCTL2: usize = 0xc19c;
 // DWC3_GUCTL1 is part of the global register block immediately after GCTL;
 // 0xc360 is in the FIFO-register area and is not a user-control register.
 const GUCTL1: usize = 0xc11c;
@@ -212,6 +213,7 @@ const GEVNTADRLO0: usize = 0xc400;
 const GEVNTADRHI0: usize = 0xc404;
 const GEVNTSIZ0: usize = 0xc408;
 const GEVNTCOUNT0: usize = 0xc40c;
+const DEV_IMOD0: usize = 0xca00;
 const GEVNT_BUFFER_STRIDE: usize = 0x10;
 const DCFG: usize = 0xc700;
 const DCTL: usize = 0xc704;
@@ -268,6 +270,8 @@ const DWC3_REVISION_190A: u32 = 0x5533_190a;
 const DWC3_REVISION_194A: u32 = 0x5533_194a;
 const DWC3_REVISION_220A: u32 = 0x5533_220a;
 const DWC3_REVISION_250A: u32 = 0x5533_250a;
+const DWC3_REVISION_310A: u32 = 0x5533_310a;
+const GUCTL2_RST_ACTBITLATER: u32 = 1 << 14;
 
 const HSPHY_UTMI_CTRL0: usize = 0x3c;
 const HSPHY_UTMI_CTRL5: usize = 0x50;
@@ -574,6 +578,15 @@ struct ResponseBuffer([u8; 512]);
 
 #[unsafe(link_section = ".usb_dma")]
 static mut EVENTS: EventBuffer = EventBuffer([0; EVENT_BUFFER_SIZE]);
+// Linux copies the producer-owned event ring into a CPU-owned cache before
+// acknowledging GEVNTCOUNT.  Keep the same ownership boundary in the
+// polling path; otherwise process_event() can issue a new endpoint command
+// while it is still reading a ring slot that DWC3 may reuse after an ACK.
+#[repr(C, align(4096))]
+struct EventCache([u8; EVENT_BUFFER_SIZE]);
+
+static mut EVENT_CACHE: EventCache = EventCache([0; EVENT_BUFFER_SIZE]);
+
 #[unsafe(link_section = ".usb_dma")]
 static mut GSI_EVENTS: [EventBuffer; 3] = [
     EventBuffer([0; EVENT_BUFFER_SIZE]),
@@ -1198,6 +1211,34 @@ unsafe fn stop_after_gadget_handoff_stage(stage: u32) -> bool {
         return false;
     }
     trace_marker(TRACE_PROBE_WATCHDOG, 0x5354_0000 | (stage & 0xff)); // "ST" + stage
+    if stage == 7 {
+        // Stage 7 is immediately after STARTTRANSFER.  Keep this probe on
+        // the exact production boundary: only reassert the Qualcomm session
+        // votes, select the USB2 speed, and perform Run/Stop.  Re-running the
+        // bare initializer would reset/reconfigure the controller and make
+        // a successful STARTTRANSFER indistinguishable from a failed one.
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
+        qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
+        configure_gadget_speed(false);
+        if !unsafe { run_stop_device(true) } {
+            // If STARTTRANSFER completed but the production Run/Stop
+            // boundary did not, reset the controller and expose the known
+            // electrical probe.  No attach in this stage then points to the
+            // STARTTRANSFER boundary itself; an attach points to Run/Stop.
+            let _ = unsafe { device_soft_reset() };
+            let _ = unsafe { init_usb2_bare_pullup_handoff_inner(true) };
+        }
+        return true;
+    }
+    if stage == 8 {
+        // STARTTRANSFER may leave the endpoint command engine busy on a
+        // failed handoff.  Reset only the DWC3 device state before falling
+        // back to the known-good electrical probe, so this failure boundary
+        // remains observable even when the command itself wedged the core.
+        let _ = unsafe { device_soft_reset() };
+        let _ = unsafe { init_usb2_bare_pullup_handoff_inner(true) };
+        return true;
+    }
     if stage >= 6 {
         // At this point the real handoff path has already performed the
         // controller-side PHY/clock setup and, for stage 6, queued the first
@@ -2148,6 +2189,14 @@ const DWC3_EP_COMMAND_TIMEOUT: u32 = 5_000;
 unsafe fn wait_device_state(want_halted: bool) -> bool {
     unsafe {
         for _ in 0..DWC3_RUN_STOP_TIMEOUT_MS {
+            // The DWC3 databook requires software to acknowledge device
+            // events while waiting for DEVCTRLHLT during a gadget stop.
+            // Linux's soft-disconnect path does this in parallel with the
+            // halt poll; a Fastboot-owned stale disconnect/reset event can
+            // otherwise keep the controller from completing Run/Stop.
+            if want_halted {
+                acknowledge_events_while_halting();
+            }
             let dsts = read(DSTS);
             let halted = dsts & DSTS_DEVCTRLHLT != 0;
             if halted == want_halted {
@@ -2169,6 +2218,23 @@ unsafe fn wait_device_state(want_halted: bool) -> bool {
             dsts as u64,
         );
         false
+    }
+}
+
+/// Acknowledge events generated while DWC3 is draining a device stop.
+///
+/// This is intentionally separate from `acknowledge_ep0_event_count()`: event
+/// buffer setup preserves the complete GEVNTCOUNT register (including EHB),
+/// while the Run/Stop halt contract consumes only the byte count and advances
+/// the software cursor just as Linux advances `ev_buf->lpos`.
+unsafe fn acknowledge_events_while_halting() {
+    unsafe {
+        let count = read(GEVNTCOUNT0) & GEVNTCOUNT_MASK;
+        if count != 0 {
+            write(GEVNTCOUNT0, count);
+            EVENT_OFFSET = (EVENT_OFFSET + count as usize) % ep0_event_size();
+            core::arch::asm!("dsb sy", options(nostack));
+        }
     }
 }
 
@@ -2234,6 +2300,25 @@ unsafe fn configure_gadget_speed(super_speed: bool) {
     }
 }
 
+/// Match the PHY low-power boundary in Linux's `__dwc3_gadget_start()`.
+///
+/// `dwc3_gadget_run_stop()` temporarily clears these bits around the actual
+/// DCTL transition and restores the values it observed.  Therefore they must
+/// be enabled before the first Run/Stop command, otherwise the handoff leaves
+/// USB2 SUSPHY disabled even though the controller has entered gadget mode.
+#[inline]
+unsafe fn enable_gadget_susphy() {
+    unsafe {
+        let mut usb2 = read(GUSB2PHYCFG0);
+        usb2 |= GUSB2PHYCFG_SUSPHY;
+        write(GUSB2PHYCFG0, usb2);
+
+        let mut usb3 = read(GUSB3PIPECTL0);
+        usb3 |= GUSB3PIPECTL_SUSPHY;
+        write(GUSB3PIPECTL0, usb3);
+    }
+}
+
 #[inline]
 fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
     // Lito's DWC3 node supplies snps,hird-threshold = 0x10.  A Fastboot
@@ -2278,6 +2363,16 @@ unsafe fn configure_dwc3_global_control() {
         }
         write(GCTL, gctl);
         trace_event(TRACE_DWC3_REVISION_QUIRK, snpsid, applied, gctl, 0, 0);
+        // Linux enables the asynchronous ENDTRANSFER activation-bit
+        // handling on DWC3 3.10a and later. The reset/rearm path uses
+        // ENDTRANSFER to revoke the pre-reset EP0 resource before issuing a
+        // fresh SETUP STARTTRANSFER; without this bit that command can remain
+        // pending after a host USB reset.
+        if snpsid >= DWC3_REVISION_310A {
+            let mut guctl2 = read(GUCTL2);
+            guctl2 |= GUCTL2_RST_ACTBITLATER;
+            write(GUCTL2, guctl2);
+        }
         configure_usb2_phy_interface();
     }
 }
@@ -2325,6 +2420,12 @@ fn gadget_nump(ram2_depth: u32, mdwidth_bits: u32) -> u32 {
 #[inline]
 unsafe fn configure_gadget_start_defaults() {
     unsafe {
+        // Linux disables event-interrupt moderation when no IMOD interval is
+        // requested. Fastboot may leave DEV_IMOD(0) non-zero; clear it before
+        // handing the event ring to the direct polling consumer so a pending
+        // EP0 event is not held behind the previous owner's moderation state.
+        write(DEV_IMOD0, 0);
+
         let snpsid = read(GSNPSID);
         let ip = snpsid >> 16;
         let pktcntsel = match ip {
@@ -3485,6 +3586,18 @@ unsafe fn reset_gsi_channels() {
 /// which is indistinguishable from a dead gadget to the host.
 unsafe fn restart_control_after_reset() {
     unsafe {
+        // USB RESET terminates the wire transaction, but DWC3 may still own
+        // the pre-reset EP0 resource until software explicitly revokes it.
+        // Linux's reset path stops active transfers before rebuilding the
+        // control state. Clearing only our cached index and issuing a new
+        // STARTTRANSFER can otherwise leave the hardware on the old SETUP
+        // TRB and make the first descriptor request time out.
+        for endpoint in 0..2 {
+            if EP0_RESOURCE_INDEX[endpoint] != 0 {
+                let _ = end_transfer(endpoint);
+                EP0_RESOURCE_INDEX[endpoint] = 0;
+            }
+        }
         unbind_function();
         teardown_data_endpoints();
         reset_gsi_channels();
@@ -3736,6 +3849,12 @@ unsafe fn process_event(raw: u32) {
                 // device address. Do not rearm until Connect Done establishes
                 // a fresh link, exactly as the Linux gadget lifecycle does.
                 unsafe {
+                    for endpoint in 0..2 {
+                        if EP0_RESOURCE_INDEX[endpoint] != 0 {
+                            let _ = end_transfer(endpoint);
+                            EP0_RESOURCE_INDEX[endpoint] = 0;
+                        }
+                    }
                     unbind_function();
                     teardown_data_endpoints();
                     GadgetDriver::reset(gadget_mut());
@@ -3780,7 +3899,17 @@ unsafe fn process_event(raw: u32) {
                         let _ = udc_mut().configure_endpoint(0, max_packet as u16, false);
                         let _ = udc_mut().configure_endpoint(1, max_packet as u16, false);
                         write(DALEPENA, 0b11);
-                        rearm_setup();
+                        // The two Bramble timing differentials own the first
+                        // EP0 STARTTRANSFER at a different boundary. Do not
+                        // issue a second STARTTRANSFER at Connect Done: the
+                        // host's USB RESET path will revoke the old resource
+                        // and arm the fresh SETUP transfer exactly once.
+                        if !cfg!(any(
+                            fullerene_aarch64_usb_gadget_handoff_start_after_connect,
+                            fullerene_aarch64_usb_gadget_handoff_start_after_reset
+                        )) {
+                            rearm_setup();
+                        }
                         note_runtime_event(
                             super::platform::bramble::UsbRuntimeEvent::ControllerStarted,
                         );
@@ -3844,6 +3973,14 @@ unsafe fn process_event(raw: u32) {
         if status != 0 {
             unsafe { recover_control_transfer(endpoint, status, raw) };
             return;
+        }
+        // Linux clears dep->resource_index in dwc3_ep0_xfer_complete()
+        // before dispatching the SETUP/DATA/STATUS state machine. A completed
+        // resource is no longer valid for ENDTRANSFER or for the next EP0
+        // STARTTRANSFER; retaining it makes a later reset/rearm look like a
+        // continuation of the previous control transaction.
+        unsafe {
+            EP0_RESOURCE_INDEX[endpoint] = 0;
         }
         trace_event(
             TRACE_TRANSFER_COMPLETE,
@@ -4816,8 +4953,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             0,
             0,
         );
-        if !configure_gsi_event_buffers() {
-            uart::puts("usb: Qualcomm GSI event buffers unavailable\n");
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && !configure_gsi_event_buffers() {
+            log_puts("usb: Qualcomm GSI event buffers unavailable\n");
         }
         EVENT_OFFSET = 0;
         GSI_EVENT_OFFSETS = [0; 3];
@@ -4956,7 +5093,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
             return gadget_handoff_fail(12); // STARTTRANSFER
         }
-        enable_gadget_controller_irq();
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+            enable_gadget_controller_irq();
+        }
         // Linux enables the DWC3 event interrupt immediately after arming the
         // EP0 OUT SETUP TRB. The probe owns no asynchronous IRQ path yet, so
         // drain the ring once synchronously at the same boundary. This keeps
@@ -5116,8 +5255,8 @@ pub fn init_usb2_gadget_handoff() -> bool {
             0,
             0,
         );
-        if !configure_gsi_event_buffers() {
-            uart::puts("usb: Qualcomm GSI event buffers unavailable\n");
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && !configure_gsi_event_buffers() {
+            log_puts("usb: Qualcomm GSI event buffers unavailable\n");
         }
         EVENT_OFFSET = 0;
         GSI_EVENT_OFFSETS = [0; 3];
@@ -5181,7 +5320,9 @@ pub fn init_usb2_gadget_handoff() -> bool {
             log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
             return false;
         }
-        enable_gadget_controller_irq();
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+            enable_gadget_controller_irq();
+        }
         // Mirror Linux's post-ep0_out_start IRQ window before connecting the
         // device. In this early probe the equivalent is a bounded synchronous
         // event-ring drain; platform service remains outside this boundary.
@@ -5215,44 +5356,44 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
     unsafe {
         QMP_PHY_READY = false;
         if !super::platform::bramble::usb_power_contract_valid(super_speed) {
-            uart::puts("usb: DT power contract invalid\n");
+            log_puts("usb: DT power contract invalid\n");
             return false;
         }
         let performance = super::platform::bramble::usb_performance_state(
             super::platform::bramble::UsbBusVote::Nominal,
         );
         let bus_vectors = super::platform::bramble::usb_bus_vectors(performance.vote);
-        uart::put_hex("usb: nominal core clock=", performance.core_rate_hz as u64);
-        uart::put_hex(
+        log_hex("usb: nominal core clock=", performance.core_rate_hz as u64);
+        log_hex(
             "usb: PM QoS latency us=",
             performance.pm_qos_latency_us as u64,
         );
-        uart::put_hex("usb: interconnect paths=", bus_vectors.len() as u64);
+        log_hex("usb: interconnect paths=", bus_vectors.len() as u64);
         // Select the RCG source before enabling its branch clocks and before
         // publishing the corresponding interconnect vote.  Handoff mode
         // intentionally skips this write because Fastboot owns a live clock
         // domain that must not be retuned underneath the controller.
         if reset_platform {
             if !super::platform::bramble::apply_usb_power(true, super_speed) {
-                uart::puts("usb: RPMh USB PHY regulator contract unavailable\n");
+                log_puts("usb: RPMh USB PHY regulator contract unavailable\n");
                 return false;
             }
             if !super::platform::bramble::enable_usb30_gdsc() {
                 // Some Pixel bootloaders keep the GDSC under secure/RPMh
                 // ownership. Treat this as a non-fatal ownership warning.
-                uart::puts("usb: USB3 GDSC PWR_ON not observable; preserving vote\n");
+                log_puts("usb: USB3 GDSC PWR_ON not observable; preserving vote\n");
             }
             if !super::platform::bramble::apply_usb_performance(performance.vote) {
                 // A cold platform start may not have an idle Apps-RSC TCS or
                 // may reject a GCC update. Preserve the firmware vote/rate
                 // rather than issuing a partial secure-owned transaction.
-                uart::puts(
+                log_puts(
                     "usb: nominal clock/interconnect transition unavailable; preserving firmware state\n",
                 );
             }
         }
         let snpsid = read(GSNPSID);
-        uart::put_hex("usb: DWC3 GSNPSID=", snpsid as u64);
+        log_hex("usb: DWC3 GSNPSID=", snpsid as u64);
 
         // The Linux lito-usb device tree supplies these clocks and resets to
         // the Qualcomm glue.  A RAM-booted Fullerene image has no clock
@@ -5292,6 +5433,21 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         gctl |= GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG;
         write(GCTL, gctl);
 
+        // Use the same pre-reset ownership boundary as the proven Bramble
+        // gadget probe.  The helper wakes UTMI, selects the USB2 clock path,
+        // clears stale endpoint advertising, and stops the old Fastboot
+        // session before CSFTRST.  Repeating those writes inline here had
+        // drifted from the working handoff sequence and could leave the
+        // controller reset while its PHY/session state was still suspended.
+        if !reset_platform && !super_speed {
+            let _ = init_usb2_bare_pullup_handoff_inner(false);
+        }
+
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && stop_after_gadget_handoff_stage(1) {
+            return true;
+        }
+
         if !reset_core && !stop_running_device() {
             return false;
         }
@@ -5299,11 +5455,20 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         if reset_core {
             let reset_ok = if reset_platform {
                 core_soft_reset(qmp_ready)
+            } else if !super_speed {
+                // Linux's reconnect path uses dwc3_core_soft_reset() before
+                // rebuilding the event ring and EP0, even when the
+                // Qualcomm PHY/clock ownership is retained by firmware.
+                // For the USB2 direct handoff this resets only the DWC3
+                // device core and USB2 PHY-facing state; the external QUSB2
+                // rail, Type-C session, and USB3 PHY remain untouched and
+                // are re-applied below.
+                core_soft_reset(false)
             } else {
                 device_soft_reset()
             };
             if !reset_ok {
-                uart::puts("usb: DWC3 reset failed\n");
+                log_puts("usb: DWC3 reset failed\n");
                 return false;
             }
         }
@@ -5317,6 +5482,11 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             clear_dma_memory();
         }
 
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && stop_after_gadget_handoff_stage(2) {
+            return true;
+        }
+
         // Fastboot already owns the USB clocks and rails, but its QMP state
         // belongs to the old controller session. Reinitialize the combo PHY
         // after the DWC3 device reset and before publishing new DMA state.
@@ -5326,7 +5496,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             qmp_ready = init_qmp_phy();
             QMP_PHY_READY = qmp_ready;
             if !qmp_ready {
-                uart::puts("usb: Fastboot QMP SuperSpeed handoff unavailable\n");
+                log_puts("usb: Fastboot QMP SuperSpeed handoff unavailable\n");
                 return false;
             }
         }
@@ -5395,17 +5565,22 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             super::platform::bramble::usb_resources().dma_pool.size as u32,
         );
         if smmu_ready {
-            uart::puts("usb: DWC3 SMMU DMA-pool map ready\n");
+            log_puts("usb: DWC3 SMMU DMA-pool map ready\n");
         } else {
             // Proceeding with an unverified IOVA map would turn the first
             // SETUP TRB into an opaque DMA fault, so let the caller choose its
             // explicit recovery/fallback path.
-            uart::puts(if reset_platform {
+            log_puts(if reset_platform {
                 "usb: DWC3 SMMU DMA-pool map unavailable\n"
             } else {
                 "usb: Fastboot SMMU handoff map unavailable\n"
             });
             return false;
+        }
+
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && stop_after_gadget_handoff_stage(3) {
+            return true;
         }
 
         let mut usb2 = read(GUSB2PHYCFG0);
@@ -5444,8 +5619,8 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             0,
             0,
         );
-        if !configure_gsi_event_buffers() {
-            uart::puts("usb: Qualcomm GSI event buffers unavailable\n");
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && !configure_gsi_event_buffers() {
+            log_puts("usb: Qualcomm GSI event buffers unavailable\n");
         }
         EVENT_OFFSET = 0;
         GSI_EVENT_OFFSETS = [0; 3];
@@ -5477,16 +5652,23 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // pull-up; Linux's gadget path selects the maximum PHY-backed speed
         // at the same point in its start sequence.
         let mut dcfg = read(DCFG) & !(DCFG_SPEED_MASK | DCFG_DEVADDR_MASK);
-        dcfg |= if qmp_ready {
-            DCFG_SUPERSPEED
-        } else {
-            DCFG_HIGHSPEED
-        };
+        // Linux's __dwc3_gadget_start begins with the SuperSpeed Default
+        // state even when the eventual link is expected to fall back to
+        // USB2.  EP0 is configured with its 512-byte initial max packet at
+        // this point; selecting High-Speed before STARTTRANSFER makes the
+        // controller reject that otherwise valid setup sequence.  The final
+        // Run/Stop boundary selects the negotiated USB2 speed.
+        dcfg |= DCFG_SUPERSPEED;
         write(DCFG, dcfg);
         configure_gadget_start_defaults();
 
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && stop_after_gadget_handoff_stage(4) {
+            return true;
+        }
+
         if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
-            uart::puts("usb: DEPSTARTCFG failed\n");
+            log_puts("usb: DEPSTARTCFG failed\n");
             return false;
         }
         // Linux starts both physical EP0 directions with the SuperSpeed
@@ -5499,8 +5681,13 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         if !configure_endpoint(0, ep0_packet_size, false)
             || !configure_endpoint(1, ep0_packet_size, false)
         {
-            uart::puts("usb: EP0 configuration failed\n");
+            log_puts("usb: EP0 configuration failed\n");
             return false;
+        }
+
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && stop_after_gadget_handoff_stage(5) {
+            return true;
         }
         ENDPOINTS_READY = true;
         let _ = udc_mut().configure_endpoint(0, ep0_packet_size as u16, false);
@@ -5519,11 +5706,47 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 | DEVTEN_CMD_COMPLETE
                 | DEVTEN_OVERFLOW,
         );
-        if !start_setup() {
-            uart::puts("usb: SETUP STARTTRANSFER failed\n");
-            return false;
+        trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, read(DSTS));
+        prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+
+        // Split the direct probe at the exact DMA publication boundary:
+        // stage 6 has only written/cleaned the setup TRB, while stage 7 is
+        // after the DWC3 STARTTRANSFER command has retired. This makes a
+        // cache/SMMU/TRB fault distinguishable from a command-state failure.
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && stop_after_gadget_handoff_stage(6) {
+            return true;
         }
-        enable_gadget_controller_irq();
+
+        // Linux arms the initial EP0 OUT SETUP transfer before Run/Stop. Keep
+        // that as the default, but retain a Bramble-only hardware differential
+        // for controllers whose firmware handoff cannot tolerate DMA ownership
+        // changing while the device is still halted. In that mode the same
+        // prepared TRB is armed immediately after Run/Stop, before the host's
+        // first descriptor request can be serviced.
+        #[cfg(not(any(
+            fullerene_aarch64_usb_gadget_handoff_start_after_connect,
+            fullerene_aarch64_usb_gadget_handoff_start_after_reset,
+            fullerene_aarch64_usb_gadget_handoff_start_at_connect_done
+        )))]
+        {
+            if !start_transfer(0, ep0_trb_ptr(0)) {
+                log_puts("usb: SETUP STARTTRANSFER failed\n");
+                #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+                let _ = gadget_handoff_fail(8);
+                return false;
+            }
+
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
+                && stop_after_gadget_handoff_stage(7)
+            {
+                return true;
+            }
+        }
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+            enable_gadget_controller_irq();
+        }
         // Linux starts consuming DWC3 events as soon as the initial EP0 OUT
         // SETUP transfer is armed. Do the same once before Run/Stop while the
         // early boot path is still polling rather than handling IRQs.
@@ -5533,11 +5756,21 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // path. In particular, do not inherit KEEP_CONNECT or the Fastboot
         // HIRD threshold across the temporary-image handoff.
         configure_gadget_speed(qmp_ready);
+        enable_gadget_susphy();
         if !run_stop_device(true) {
-            uart::put_hex("usb: DWC3 remained halted, DSTS=", read(DSTS) as u64);
+            log_hex("usb: DWC3 remained halted, DSTS=", read(DSTS) as u64);
             return false;
         }
-        uart::puts("usb: Fullerene DWC3 gadget connected\n");
+
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_start_after_connect)]
+        {
+            if !start_transfer(0, ep0_trb_ptr(0)) {
+                log_puts("usb: post-connect SETUP STARTTRANSFER failed\n");
+                return false;
+            }
+            poll_ep0_event_ring();
+        }
+        log_puts("usb: Fullerene DWC3 gadget connected\n");
         note_runtime_event(super::platform::bramble::UsbRuntimeEvent::ControllerStarted);
     }
     true
@@ -5552,8 +5785,12 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 /// an event left by the previous Fastboot owner; Linux reads the masked count
 /// and writes that same byte count back during event-buffer setup.
 unsafe fn acknowledge_ep0_event_count() {
-    let count = unsafe { read(GEVNTCOUNT0) & GEVNTCOUNT_MASK };
-    if count != 0 {
+    // Linux's event_buffers_setup() writes back the complete register value,
+    // including GEVNTCOUNT.EHB.  Preserve that bit: reducing the value to
+    // the byte count alone can leave a Fastboot-owned event buffer blocked
+    // behind its pending-interrupt state even when the count is zero.
+    let count = unsafe { read(GEVNTCOUNT0) };
+    if count & (GEVNTCOUNT_MASK | GEVNTCOUNT_EHB) != 0 {
         unsafe {
             write(GEVNTCOUNT0, count);
             core::arch::asm!("dsb sy", options(nostack));
@@ -5562,7 +5799,8 @@ unsafe fn acknowledge_ep0_event_count() {
 }
 
 unsafe fn poll_ep0_event_ring() -> bool {
-    let count = unsafe { read(GEVNTCOUNT0) & GEVNTCOUNT_MASK };
+    let count_register = unsafe { read(GEVNTCOUNT0) };
+    let count = count_register & GEVNTCOUNT_MASK;
     if count == 0 {
         return false;
     }
@@ -5578,9 +5816,13 @@ unsafe fn poll_ep0_event_ring() -> bool {
             GEVNTSIZ_INTMASK | (event_size as u32 & GEVNTSIZ_SIZE_MASK),
         );
     }
-    let mut remaining = count as usize;
-    while remaining >= 4 {
-        let offset = unsafe { EVENT_OFFSET };
+    // Snapshot the producer-owned ring before acknowledging it. This is the
+    // same ownership transition as Linux's evt->cache copy in
+    // dwc3_check_event_buf(); process_event() must consume this stable copy.
+    let start_offset = unsafe { EVENT_OFFSET };
+    let mut copied = 0usize;
+    while copied < count as usize {
+        let offset = (start_offset + copied) % event_size;
         unsafe { cache_invalidate(event_base + offset, 4) };
         let event = (event_base as *const u8).wrapping_add(offset);
         let raw = unsafe {
@@ -5591,15 +5833,41 @@ unsafe fn poll_ep0_event_ring() -> bool {
                 read_volatile(event.add(3)),
             ])
         };
-        unsafe { process_event(raw) };
-        unsafe { EVENT_OFFSET = (offset + 4) % event_size };
-        remaining -= 4;
+        unsafe {
+            write_volatile(
+                addr_of_mut!(EVENT_CACHE.0)
+                    .cast::<u32>()
+                    .add(copied / core::mem::size_of::<u32>()),
+                raw,
+            );
+        }
+        copied += 4;
     }
     unsafe {
+        EVENT_OFFSET = (start_offset + count as usize) % event_size;
+        // Runtime event consumption acknowledges only the byte count. Linux
+        // reserves the full-register write (including EHB) for event-buffer
+        // setup/cleanup; its interrupt path writes the masked count here and
+        // handles EHB separately only when IMOD is enabled.
         write(GEVNTCOUNT0, count);
+        core::arch::asm!("dsb sy", options(nostack));
         // Publish the acknowledgement before unmasking, matching the Linux
         // event-buffer handler's ordering.
         write(GEVNTSIZ0, event_size as u32 & GEVNTSIZ_SIZE_MASK);
+    }
+    let mut remaining = count as usize;
+    let mut cached_offset = 0usize;
+    while remaining >= 4 {
+        let raw = unsafe {
+            read_volatile(
+                addr_of!(EVENT_CACHE.0)
+                    .cast::<u32>()
+                    .add(cached_offset / core::mem::size_of::<u32>()),
+            )
+        };
+        unsafe { process_event(raw) };
+        cached_offset += 4;
+        remaining -= 4;
     }
     true
 }

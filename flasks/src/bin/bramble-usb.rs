@@ -103,6 +103,15 @@ struct LoopArgs {
     no_transfer_resource: bool,
     #[arg(long)]
     android_resource_order: bool,
+    /// Arm EP0 STARTTRANSFER immediately after Run/Stop (Bramble A/B).
+    #[arg(long)]
+    start_after_connect: bool,
+    /// Arm the initial EP0 SETUP only after the host USB Reset event.
+    #[arg(long)]
+    start_after_reset: bool,
+    /// Arm the initial EP0 SETUP from the DWC3 Connect Done event.
+    #[arg(long)]
+    start_at_connect_done: bool,
     #[arg(long)]
     no_core_reset: bool,
     #[arg(long)]
@@ -437,6 +446,9 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         reuse_fastboot_dma: false,
         no_transfer_resource: false,
         android_resource_order: false,
+        start_after_connect: false,
+        start_after_reset: false,
+        start_at_connect_done: false,
         no_core_reset: args.no_core_reset,
         uncompressed: false,
         dry_run: false,
@@ -458,15 +470,38 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--normal cannot be combined with --super-speed or --pullup-only",
         ));
     }
-    if args.direct_handoff
-        && (args.super_speed
-            || args.pullup_only
-            || args.bare_pullup
-            || args.stop_after_stage.is_some())
-    {
+    if args.direct_handoff && (args.super_speed || args.pullup_only || args.bare_pullup) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--direct-handoff is only available for the USB2 gadget handoff probe",
+        ));
+    }
+    if args.start_after_connect && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--start-after-connect requires --direct-handoff",
+        ));
+    }
+    if args.start_after_reset && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--start-after-reset requires --direct-handoff",
+        ));
+    }
+    if args.start_at_connect_done && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--start-at-connect-done requires --direct-handoff",
+        ));
+    }
+    if (args.start_after_connect as u8
+        + args.start_after_reset as u8
+        + args.start_at_connect_done as u8)
+        > 1
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the EP0 timing differentials are mutually exclusive",
         ));
     }
     if args.pullup_only && (args.no_smmu || args.no_core_reset || args.irq_route.is_some()) {
@@ -790,6 +825,15 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.android_resource_order {
         arguments.push("--usb-gadget-handoff-android-resource-order".to_owned());
+    }
+    if args.start_after_connect {
+        arguments.push("--usb-gadget-handoff-start-after-connect".to_owned());
+    }
+    if args.start_after_reset {
+        arguments.push("--usb-gadget-handoff-start-after-reset".to_owned());
+    }
+    if args.start_at_connect_done {
+        arguments.push("--usb-gadget-handoff-start-at-connect-done".to_owned());
     }
     if let Some(stage) = args.stop_after_stage {
         arguments.push("--stop-after-stage".to_owned());

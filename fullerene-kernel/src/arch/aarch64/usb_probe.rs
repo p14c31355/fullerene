@@ -459,17 +459,6 @@ extern "C" fn usb_probe_entry() -> ! {
         fullerene_aarch64_usb_gadget_handoff_probe
     )))]
     uart::puts("fullerene usb probe: entry\n");
-    #[cfg(fullerene_aarch64_usb_gadget_handoff_direct)]
-    {
-        // The direct handoff shares the normal Fullerene USB routine, which
-        // emits UART diagnostics before touching DWC3. The fallback probe
-        // deliberately avoids UART so it can isolate the electrical path,
-        // but direct mode must initialize Bramble's GENI console first;
-        // otherwise uart::put_hex would use the PL011 default address.
-        uart::init_qcom_geni(0x0098_8000);
-        uart::puts("fullerene usb probe: direct handoff entry\n");
-    }
-
     #[cfg(not(any(
         fullerene_aarch64_usb_bare_pullup_probe,
         fullerene_aarch64_usb_halt_probe
@@ -597,7 +586,13 @@ extern "C" fn usb_probe_entry() -> ! {
             let _ = platform::gicv3::init(
                 platform::bramble::GICD_BASE,
                 platform::bramble::GICR_BASE,
-                Some(platform::bramble::USB_DWC3_IRQ),
+                // Direct handoff owns the event ring from the polling loop;
+                // enabling the DWC3 SPI here would race that consumer.
+                if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+                    None
+                } else {
+                    Some(platform::bramble::USB_DWC3_IRQ)
+                },
             );
             #[cfg(fullerene_aarch64_usb_probe_irq_power)]
             unsafe {
@@ -679,6 +674,32 @@ extern "C" fn usb_probe_entry() -> ! {
             let mut deadline =
                 probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
             let mut last_head = usb::trace_head();
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+                // The direct handoff intentionally uses polling rather than
+                // the IRQ-backed path. This keeps USB RESET and the first
+                // SETUP on one serialized event-ring consumer.
+                loop {
+                    usb::poll();
+                    if usb::probe_ep0_progress() {
+                        unsafe {
+                            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+                        }
+                        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5354_4142); // "STAB"
+                        loop {
+                            usb::poll();
+                        }
+                    }
+                    let head = usb::trace_head();
+                    if head != last_head {
+                        last_head = head;
+                        deadline =
+                            probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
+                    } else if frequency != 0 && probe_counter() >= deadline {
+                        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
+                        reset_after_probe_failure();
+                    }
+                }
+            }
             loop {
                 // The IRQ-enabled probe drains the DWC3 ring from
                 // usb_probe_irq_entry(). Polling here as well would allow an
