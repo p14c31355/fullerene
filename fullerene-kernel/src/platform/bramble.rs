@@ -16,6 +16,11 @@ pub const USB_PDC_DP_HS_PHY_IRQ: u32 = 14;
 pub const USB_PDC_SS_PHY_IRQ: u32 = 9;
 pub const USB_PDC_DM_HS_PHY_IRQ: u32 = 15;
 pub const USB_PDC_BASE: usize = 0x0b22_0000;
+/// Second `reg` resource of the Android Lito PDC node. Linux uses this
+/// firmware/SPI configuration window to mirror each PDC child's trigger type
+/// onto its GIC parent.
+pub const USB_PDC_SPI_CFG_BASE: usize = 0x17c0_00f0;
+pub const USB_PDC_SPI_CFG_SIZE: usize = 0x60;
 pub const USB_PDC_DP_HS_PARENT_IRQ: u32 = 494;
 pub const USB_PDC_SS_PARENT_IRQ: u32 = 489;
 pub const USB_PDC_DM_HS_PARENT_IRQ: u32 = 495;
@@ -762,6 +767,8 @@ pub struct UsbPlatformResources {
     pub smmu_context_irqs: [u32; SMMU_CONTEXT_IRQ_COUNT],
     pub smmu_context_irq_count: usize,
     pub pdc_base: usize,
+    pub pdc_spi_cfg_base: usize,
+    pub pdc_spi_cfg_size: usize,
     pub gdsc: usize,
     pub controller_clocks: &'static [ClockResource; 6],
     pub hs_phy_clock: ClockResource,
@@ -1330,6 +1337,8 @@ pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
     smmu_context_irqs: BRAMBLE_SMMU_CONTEXT_IRQS,
     smmu_context_irq_count: SMMU_CONTEXT_IRQ_COUNT,
     pdc_base: USB_PDC_BASE,
+    pdc_spi_cfg_base: USB_PDC_SPI_CFG_BASE,
+    pdc_spi_cfg_size: USB_PDC_SPI_CFG_SIZE,
     gdsc: USB30_PRIM_GDSC,
     controller_clocks: &BRAMBLE_CONTROLLER_CLOCKS,
     hs_phy_clock: BRAMBLE_HS_PHY_CLOCK,
@@ -1797,25 +1806,14 @@ struct PdcRegisterLayout {
 }
 
 fn pdc_register_layout(version: u32) -> PdcRegisterLayout {
-    if version >= PDC_VERSION_3_2 {
-        // PDC v3.2 removed IRQ_ENABLE_BANK. Direct-PDC lines are enabled in
-        // IRQ_CFG itself, while GPIO status/mask moved to bits 5/4.
-        PdcRegisterLayout {
-            enable_bank: None,
-            irq_enable_bit: Some(3),
-        }
-    } else if version >= 0x0300_00 {
-        // v3.0 keeps the enable bank and adds GPIO status/mask at 4/3.
-        PdcRegisterLayout {
-            enable_bank: Some(PDC_IRQ_ENABLE_BANK),
-            irq_enable_bit: None,
-        }
-    } else {
-        // v2.7 has only the enable bank and the three type bits.
-        PdcRegisterLayout {
-            enable_bank: Some(PDC_IRQ_ENABLE_BANK),
-            irq_enable_bit: None,
-        }
+    let _ = version;
+    // Match qcom-pdc.c used by the Android/Linux Lito platform: every
+    // supported revision enables a pin through IRQ_ENABLE_BANK at 0x10.
+    // IRQ_CFG contains trigger/polarity fields, but is not the enable
+    // mechanism for the direct USB PDC outputs.
+    PdcRegisterLayout {
+        enable_bank: Some(PDC_IRQ_ENABLE_BANK),
+        irq_enable_bit: None,
     }
 }
 
@@ -2501,7 +2499,7 @@ unsafe fn configure_pdc_irq(irq: IrqResource) -> bool {
     unsafe { core::ptr::write_volatile(config_address, value) };
     let _ = unsafe { core::ptr::read_volatile(config_address) };
 
-    if let Some(enable_bank) = layout.enable_bank {
+    let pdc_enabled = if let Some(enable_bank) = layout.enable_bank {
         let bank_address = (base + enable_bank + (irq.number as usize / 32) * 4) as *mut u32;
         let mut bank = unsafe { core::ptr::read_volatile(bank_address) };
         bank |= 1 << (irq.number % 32);
@@ -2509,7 +2507,34 @@ unsafe fn configure_pdc_irq(irq: IrqResource) -> bool {
         unsafe { core::ptr::read_volatile(bank_address) & (1 << (irq.number % 32)) != 0 }
     } else {
         unsafe { core::ptr::read_volatile(config_address) & (1 << 3) != 0 }
+    };
+
+    let Some(parent) = pdc_parent_irq(irq.number) else {
+        return false;
+    };
+    let spi = parent.checked_sub(32).unwrap_or(u32::MAX) as usize;
+    let pin = spi / 32;
+    if pin * 4 >= usb_resources().pdc_spi_cfg_size {
+        return false;
     }
+    let parent_config = (usb_resources().pdc_spi_cfg_base + pin * 4) as *mut u32;
+    let parent_mask = 1u32 << (spi % 32);
+    let mut parent_value = unsafe { core::ptr::read_volatile(parent_config) };
+    if matches!(irq.trigger, IrqTrigger::LevelHigh) {
+        parent_value |= parent_mask;
+    } else {
+        parent_value &= !parent_mask;
+    }
+    unsafe { core::ptr::write_volatile(parent_config, parent_value) };
+    pdc_enabled
+        && unsafe {
+            core::ptr::read_volatile(parent_config) & parent_mask
+                == if matches!(irq.trigger, IrqTrigger::LevelHigh) {
+                    parent_mask
+                } else {
+                    0
+                }
+        }
 }
 
 /// Program the three USB PDC pins exactly as the Qualcomm PDC irqchip does:
@@ -2675,23 +2700,23 @@ pub unsafe fn apply_usb_performance(vote: UsbBusVote) -> bool {
 pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usize>) {
     let gicd = gicd_base.unwrap_or(GICD_BASE);
     let gicr = gicr_base.unwrap_or(GICR_BASE);
-    unsafe {
-        let _ = configure_usb_pdc_irqs();
-    }
     let gic_ready = super::gicv3::init(gicd, gicr, Some(usb_controller_irq()));
     unsafe {
         // DWC3 has five platform sources plus the Apps-SMMU global and up to
-        // 80 context-bank fault lines.  Keep all of them in the same GIC
-        // setup pass; truncating this list would make a DMA fault look like
-        // an unexplained EP0 timeout.
+        // 80 context-bank fault lines.  Keep the controller, power-event,
+        // and SMMU fault routes in the GIC setup pass; truncating the latter
+        // would make a DMA fault look like an unexplained EP0 timeout.
+        //
+        // The three PDC PHY lines are deliberately absent here. Android's
+        // dwc3-qcom registers them with IRQF_NO_AUTOEN and enables them only
+        // for host suspend/wakeup. Enabling those wakeup-only lines during a
+        // live device-mode fastboot handoff can consume a PHY transition as
+        // an active runtime event and is not equivalent to the Linux path.
         let mut spis = [0u32; 128];
         let mut count = 0usize;
         let resources = usb_resources();
         for irq in resources.irqs {
-            let parent = match irq.kind {
-                UsbIrqKind::GicSpi => Some(irq.number),
-                UsbIrqKind::Pdc => pdc_parent_irq(irq.number),
-            };
+            let parent = (irq.kind == UsbIrqKind::GicSpi).then_some(irq.number);
             if let Some(parent) = parent {
                 if parent != usb_controller_irq()
                     && !spis[..count].iter().any(|irq| *irq == parent)
@@ -2715,14 +2740,11 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
                 count += 1;
             }
         }
-        let spmi_parent = usb_typec_parent_irq();
-        if spmi_parent != usb_controller_irq()
-            && !spis[..count].iter().any(|irq| *irq == spmi_parent)
-            && count < spis.len()
-        {
-            spis[count] = spmi_parent;
-            count += 1;
-        }
+        // `fastboot boot` hands over a live Type-C session. The early
+        // handoff observes the PMIC state but does not own the role-switch
+        // child IRQ, so do not route its parent summary into the new GIC
+        // owner. A role-changing cold-boot path must explicitly install the
+        // child IRQ before adding this parent route.
         super::gicv3::enable_spis(gicd, &spis[..count]);
     }
     if gic_ready {
@@ -3321,8 +3343,8 @@ mod tests {
         assert_eq!(v30.irq_enable_bit, None);
 
         let v32 = pdc_register_layout(PDC_VERSION_3_2);
-        assert_eq!(v32.enable_bank, None);
-        assert_eq!(v32.irq_enable_bit, Some(3));
+        assert_eq!(v32.enable_bank, Some(PDC_IRQ_ENABLE_BANK));
+        assert_eq!(v32.irq_enable_bit, None);
     }
 
     #[test]

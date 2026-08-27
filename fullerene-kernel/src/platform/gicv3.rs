@@ -28,7 +28,7 @@ unsafe fn write8(address: usize, value: u8) {
     unsafe { write_volatile(address as *mut u8, value) };
 }
 
-unsafe fn enable_spi(gicd_base: usize, interrupt_id: u32) {
+unsafe fn enable_spi_with_trigger(gicd_base: usize, interrupt_id: u32, edge: bool) {
     unsafe {
         if !(32..1020).contains(&interrupt_id) {
             return;
@@ -43,15 +43,24 @@ unsafe fn enable_spi(gicd_base: usize, interrupt_id: u32) {
         let router = gicd_base + GICD_IROUTER + interrupt_id as usize * 8;
 
         // The Android DT describes the DWC3 interrupt as Group 1, level-high,
-        // routed to the boot CPU (SPI 240 on Lito). Clear the trigger bit pair
-        // to retain the GICv3 level-sensitive encoding.
+        // routed to the boot CPU (SPI 240 on Lito). PDC DP/DM parent lines
+        // are rising-edge, so preserve the DT trigger instead of applying
+        // the DWC3 default to every Qualcomm USB SPI.
         write32(group, read32(group) | bit);
         let trigger_shift = (interrupt_id % 16) * 2 + 1;
-        write32(config, read32(config) & !(1u32 << trigger_shift));
+        let mut config_value = read32(config) & !(1u32 << trigger_shift);
+        if edge {
+            config_value |= 1u32 << trigger_shift;
+        }
+        write32(config, config_value);
         write8(priority, 0xa0);
         write64(router, 0);
         write32(enable, bit);
     }
+}
+
+unsafe fn enable_spi(gicd_base: usize, interrupt_id: u32) {
+    unsafe { enable_spi_with_trigger(gicd_base, interrupt_id, false) };
 }
 
 /// Enable additional parent SPIs after platform-specific interrupt
@@ -61,6 +70,13 @@ unsafe fn enable_spi(gicd_base: usize, interrupt_id: u32) {
 pub unsafe fn enable_spis(gicd_base: usize, interrupts: &[u32]) {
     for &interrupt_id in interrupts {
         unsafe { enable_spi(gicd_base, interrupt_id) };
+    }
+}
+
+/// Enable platform SPIs while preserving their DT edge/level trigger type.
+pub unsafe fn enable_spis_with_triggers(gicd_base: usize, interrupts: &[(u32, bool)]) {
+    for &(interrupt_id, edge) in interrupts {
+        unsafe { enable_spi_with_trigger(gicd_base, interrupt_id, edge) };
     }
 }
 

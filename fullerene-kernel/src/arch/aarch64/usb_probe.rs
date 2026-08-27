@@ -513,12 +513,13 @@ extern "C" fn usb_probe_entry() -> ! {
             }
             #[cfg(fullerene_aarch64_usb_probe_irq_pdc)]
             unsafe {
-                platform::gicv3::enable_spis(
+                let _ = platform::bramble::configure_usb_pdc_irqs();
+                platform::gicv3::enable_spis_with_triggers(
                     platform::bramble::GICD_BASE,
                     &[
-                        platform::bramble::USB_PDC_DP_HS_PARENT_IRQ,
-                        platform::bramble::USB_PDC_SS_PARENT_IRQ,
-                        platform::bramble::USB_PDC_DM_HS_PARENT_IRQ,
+                        (platform::bramble::USB_PDC_DP_HS_PARENT_IRQ, true),
+                        (platform::bramble::USB_PDC_SS_PARENT_IRQ, false),
+                        (platform::bramble::USB_PDC_DM_HS_PARENT_IRQ, true),
                     ],
                 );
             }
