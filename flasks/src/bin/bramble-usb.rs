@@ -164,6 +164,10 @@ struct LoopArgs {
     /// Gate the attach on a CPU readback of the .usb_dma region succeeding.
     #[arg(long)]
     signal_ram_gate: bool,
+    /// Publish the pull-up even when the handoff failed (read pre-Run/Stop
+    /// gates via the attach presence).
+    #[arg(long)]
+    signal_diag_publish: bool,
     /// Relocate the .usb_dma section to this hex address for the run.
     #[arg(long = "dma-origin", value_name = "ADDR")]
     dma_origin: Option<String>,
@@ -538,6 +542,7 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         smmu_install_all: false,
         signal_fsr_gate: None,
         signal_ram_gate: false,
+        signal_diag_publish: false,
         dma_origin: None,
         signal_cmd_gate: None,
         signal_rsc_gate: None,
@@ -678,6 +683,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--signal-ram-gate requires --signal-dma-probe",
+        ));
+    }
+    if args.signal_diag_publish && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-diag-publish requires --signal-probe",
         ));
     }
     if args.dma_origin.is_some() && !args.direct_handoff {
@@ -871,7 +882,20 @@ fn run_loop_with_dir(
     wait_until_absent(BOOTLOADER_USB, 15);
     let deadline = Instant::now() + Duration::from_secs(args.enum_timeout);
     let mut android_fallback = false;
+    let mut timeline = File::create(run_dir.join("lsusb-timeline.txt"))?;
     while Instant::now() < deadline {
+        // Record the full lsusb picture every second: an addressed-but-
+        // unconfigured Fullerene device would still appear here with its
+        // VID:PID, which distinguishes "enumeration broke after the device
+        // descriptor read" from "the host never registered the device".
+        let stamp =
+            Instant::now().duration_since(deadline - Duration::from_secs(args.enum_timeout));
+        let listing = Command::new("lsusb").output();
+        if let Ok(output) = listing {
+            let _ = writeln!(timeline, "[{:?}]", stamp);
+            let _ = timeline.write_all(&output.stdout);
+            let _ = timeline.flush();
+        }
         if usb_present(FULLERENE_USB) {
             println!("Fullerene USB enumeration: PASS");
             let descriptor =
@@ -1114,6 +1138,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.signal_ram_gate {
         arguments.push("--usb-signal-ram-gate".to_owned());
+    }
+    if args.signal_diag_publish {
+        arguments.push("--usb-signal-diag-publish".to_owned());
     }
     if let Some(origin) = &args.dma_origin {
         arguments.push("--usb-dma-origin".to_owned());

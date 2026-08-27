@@ -1327,6 +1327,78 @@ diagnostics remain non-destructive Rust gates under
 `cargo run -q -p flasks --bin bramble-usb -- loop --direct-handoff ...
 --dma-origin 0x90000000 ...`; flash/erase are still never used.
 
+### Continuation: host-visible EP0 progress, probe-kill bugs, and the SET_ADDRESS milestone (third session)
+
+Fixes and instruments added since the previous section (all Rust, no
+scripts, `fastboot boot` only):
+
+- `ep0` XferComplete dispatch now matches Linux exactly
+  (`dwc3_ep0_xfer_complete` ignores the event status and dispatches purely
+  by ep0state; our SETUP TRB sets LST, so healthy completions report
+  status 0x8, which the old `status != 0` recovery path was eating).
+- The retained trace cursor is reset once per boot
+  (`trace_reset_head_for_boot()`): between two `fastboot boot` runs
+  Android scribbles the trace page, and a surviving header made the
+  in-boot harvest gates count the PREVIOUS run's records (this
+  invalidated several earlier gate readings).
+- The Apps-SMMU stream ladder was corrected and re-run: the DWC3 stream
+  (0xe0) matches NO SMR and the SMMU is INACTIVE (ladder 250: unmatched +
+  SMMUEN=0/CLIENTPD=1), i.e. the platform is in global bypass and the
+  "no resource" failure is NOT SMMU translation. Non-secure SMR/S2CR
+  installs read back verified but do not change behavior; sCR0
+  SMMUEN/WACFG writes read back verified but also do not change
+  behavior.
+- The poll loop now keeps an armed EP0 SETUP TRB
+  (`try_arm_setup()` with a bounded retry cooldown), because the core
+  rejects Start Transfer while the link is not ON — including during the
+  host's bus reset — and because the first SETUP token lands ~1 ms after
+  that reset ends.
+- Two probe-kill bugs were found and fixed: (1) the signal probe ran its
+  diagnostic pull-up toggles and recovery reboot even when the handoff
+  had succeeded, silently killing a live enumeration (the host sees
+  -ENODEV, which it does not log); it now only runs when the handoff
+  failed. (2) in `--no-smmu` mode `poll()` no longer reads the (inactive,
+  clock-gated) SMMU fault registers, whose later-in-session reads can
+  fault the CPU with an asynchronous external abort.
+- The RPMh/interconnect votes are re-asserted at handoff entry:
+  Fastboot's votes die with its exit and the USB clock branch collapses
+  ~25 s later, which manifests as the handset rebooting mid-enumeration.
+- The direct path now programs DCFG.SPEED to a value the transfer engine
+  can actually use (HighSpeed for a USB2-only handoff); the proven
+  fallback path always did this.
+
+Device evidence (clean per-boot trace):
+
+1. The host ACCEPTS the Fullerene device descriptor: the trace contains a
+   SET_ADDRESS (bRequest 5) SETUP after the descriptor read, and then the
+   ADDRESSED read/all GET_DESCRIPTOR — the endpoint pipeline
+   demonstrably reaches the third control transfer.
+2. Despite that, the host's FIRST descriptor read still times out
+   (`device descriptor read/64, error -110`) and the device is never
+   registered in lsusb: the first SETUP is lost while no SETUP TRB is
+   armed (during/between the bus reset and the arm), the host's retry
+   then succeeds, and the enumeration breaks at a later, silent stage
+   (-ENODEV is suppressed by hub.c).
+3. STARTTRANSFER outcomes remain split: some complete with DEPCMD
+   status 1 ("No resource"), some time out with CMDACT stuck (which also
+   wedges Run/Stop). The proven-working fallback sequence
+   (`init_usb2_gadget_reuse_fastboot_ep0`) programs DCFG_HIGHSPEED and
+   arms its SETUP TRB while the core is halted, and ITS Start Transfer
+   has repeatedly succeeded — the direct path's equivalents have not.
+4. The handset still reboots ~26 s after attach in current runs; the
+   RPMh re-vote did not remove it, so another reset source (assembly
+   60 s recovery timer vs the fail-path stage delay vs a remaining
+   abort) is still in play and is the next thing to bisect.
+
+Next steps: (i) run the fallback sequence as the PRIMARY handoff for the
+probe build (it is the only sequence whose Start Transfer has worked on
+this handset) and re-test enumeration end to end; (ii) if the first-read
+timeout persists, keep the armed SETUP TRB across the bus reset (skip
+ENDXFER/rearm for EP0 when a reset arrives while the SETUP transfer is
+idle-armed) and re-test; (iii) bisect the ~26 s reboot by arming the
+assembly recovery timer with a distinctive delay. flash/erase are still
+never used; every run recovers automatically.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:

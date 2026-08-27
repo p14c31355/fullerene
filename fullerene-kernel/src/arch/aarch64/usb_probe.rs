@@ -421,6 +421,14 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
         reset_after_probe_failure();
     }
+    if option_env!("FULLERENE_USB_SIGNAL_DIAG_PUBLISH") == Some("1") {
+        // Diagnostic publish: the handoff may have failed BEFORE its own
+        // Run/Stop (e.g. the pre-connect STARTTRANSFER differential), which
+        // leaves no attach and makes every gate unreadable. Publish the
+        // pull-up from here so the gate logic below still decides whether
+        // the host sees a device.
+        usb::ep0_signal_publish_pullup();
+    }
     let include_raw_link = option_env!("FULLERENE_USB_SIGNAL_RAW_LINK")
         .filter(|value| *value != "0")
         .is_some();
@@ -454,6 +462,21 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             } else {
                 usb::ep0_signal_code()
             };
+        }
+        if signal_code == 0 {
+            // Nothing live was observable; publish the previous attempts'
+            // newest STARTTRANSFER outcome instead: the host counts
+            // (status-nibble + 1) re-attach cycles, with 13 cycles naming a
+            // wedged (timed-out) command and 1 cycle naming a clean
+            // status-0 Start Transfer.
+            let harvest = usb::harvest_last_str_code();
+            if harvest != 0xFFFF_FFFF {
+                signal_code = if harvest & 0x1_0000 != 0 {
+                    13
+                } else {
+                    (harvest & 0xf) + 1
+                };
+            }
         }
         if signal_code != 0 || probe_counter() >= observe_until {
             break;
@@ -497,6 +520,11 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
 extern "C" fn usb_probe_entry() -> ! {
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     usb::trace_probe_begin();
+    // The trace region survives warm resets; between two `fastboot boot`
+    // runs Android scribbles the page unpredictably, and a surviving header
+    // would make the in-boot harvest gates count the PREVIOUS run's records.
+    // Start every boot's cursor at zero (once, before the first attempt).
+    usb::trace_reset_head_for_boot();
 
     // The bare pull-up probe deliberately stays below the DMA/trace boundary:
     // an invalid retained DRAM aperture must not mask a controller-only
@@ -673,14 +701,19 @@ extern "C" fn usb_probe_entry() -> ! {
     } else {
         usb::init_usb2_handoff()
     };
-    // The signal channel owns the whole post-init timeline in signal mode:
-    // it must observe and signal even when the handoff reported failure,
-    // because a failing attempt may still have published the pull-up.
+    // The signal channel owns the post-init timeline ONLY when the handoff
+    // failed: a successful handoff publishes a live pull-up that may be in
+    // the middle of host enumeration, and the probe's diagnostic toggles or
+    // recovery reboot would silently kill it (the host sees -ENODEV, which
+    // it does not even log). Failed handoffs keep the full diagnostic
+    // behavior: gate readouts, pull-up toggles, bounded recovery.
     #[cfg(all(
         fullerene_aarch64_usb_ep0_signal_probe,
         fullerene_aarch64_usb_gadget_handoff_probe
     ))]
-    run_ep0_signal_probe(signal_smmu_code, signal_link_state);
+    if !gadget_ready {
+        run_ep0_signal_probe(signal_smmu_code, signal_link_state);
+    }
     if gadget_ready {
         #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
         if usb::gadget_handoff_stage_probe_enabled() {

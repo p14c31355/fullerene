@@ -3,6 +3,13 @@ use core::arch::asm;
 const TABLE_ENTRIES: usize = 512;
 const BLOCK_SIZE: u64 = 0x20_0000;
 
+// Linker symbols from the platform linker script. mmu::init() runs after the
+// PIE relocation bootstrap, so these addresses are resolved by then.
+unsafe extern "C" {
+    static __usb_dma_start: u8;
+    static __usb_dma_end: u8;
+}
+
 const DESC_VALID: u64 = 1 << 0;
 const DESC_TABLE: u64 = 1 << 1;
 const DESC_ATTR_DEVICE: u64 = 1 << 2;
@@ -108,7 +115,27 @@ fn is_mmio(physical: u64) -> bool {
         (0x0c40_0000, 0x0e7f_ffff),
     ];
     let block_end = physical.saturating_add(BLOCK_SIZE - 1);
-    MMIO_RANGES
+    if MMIO_RANGES
         .iter()
         .any(|(start, end)| physical <= *end && block_end >= *start)
+    {
+        return true;
+    }
+    // The DWC3 DMA objects (event ring, TRBs, setup/response buffers) and the
+    // retained trace live in the .usb_dma/.usb_trace sections. The USB master
+    // is NOT hardware-coherent with the CPU on this SoC, and a stale cache
+    // line here makes the controller read pre-prepare garbage (or the CPU
+    // miss controller writes), so map the whole containing 2 MiB block as
+    // Device memory: every CPU access goes straight to DRAM and all explicit
+    // cache maintenance for these objects becomes a no-op by construction.
+    let dma_start = unsafe { core::ptr::addr_of!(__usb_dma_start) } as u64;
+    let dma_end = unsafe { core::ptr::addr_of!(__usb_dma_end) } as u64;
+    if dma_start != 0 && dma_end > dma_start {
+        let block_base = dma_start & !(BLOCK_SIZE - 1);
+        let block_top = block_base + BLOCK_SIZE;
+        if physical >= block_base && block_end <= block_top {
+            return true;
+        }
+    }
+    false
 }
