@@ -299,6 +299,193 @@ context menu; the second is `MouseUp(Right)`. A report ID 6 mouse packet with
 button bit `0x02` is used for the GemiBook's physical right button, while
 digitizer contact remains the left-button/tap path.
 
+## Google Pixel 4a 5G (Bramble) USB handoff
+
+### Current hardware state and test boundary
+
+The target is a Google Pixel 4a 5G (Bramble, Qualcomm SM7250/Lito platform).
+The confirmed device identity is:
+
+```text
+product: bramble
+serialno: 26191JECB00076
+```
+
+The device is unlocked and is normally left in Fastboot before a hardware
+test. The current test boundary is deliberately narrow: generated images are
+sent with `fastboot boot` only. No Fullerene USB experiment in this section
+writes a boot, vendor_boot, DTBO, or other partition.
+
+The stock Android `boot.img` used as the temporary template was retained under
+`/tmp` and is audited before a generated image is handed to Fastboot. The
+audit verifies the Android v3 header, kernel payload and page padding, while
+preserving the stock ramdisk and trailing data. Image, Image.lz4, and the
+QEMU DWC3/EP0 protocol model are also checked before the handoff.
+
+### Starting symptom
+
+At the beginning of this investigation, the host saw the USB2 attach and
+pull-up, but the first control transfer did not complete:
+
+```text
+usb 1-1: new high-speed USB device
+usb 1-1: device descriptor read/64, error -110
+```
+
+This placed the failure after physical attach and before a usable EP0
+descriptor exchange. The shared QEMU DWC3/EP0 self-test passed, so descriptor
+format alone was not treated as the primary suspect. The investigation was
+then moved toward the Bramble platform layer: USB2/QMP PHY state, Type-C role
+ownership, PDC/DWC3 IRQ routing, DMA/SMMU access, GSI/event handling, and only
+then endpoint descriptors.
+
+### Factory image recovery and Fastboot metadata comparison
+
+During the investigation, a Factory image was used once to clean up the A-slot
+state. This was a recovery/baseline operation, separate from the subsequent
+Fullerene tests. The captured `fastboot getvar all` output before and after
+that operation shows the following.
+
+The main device and bootloader identity did not change:
+
+| Field | Before | After |
+| --- | --- | --- |
+| product / serial | `bramble` / `26191JECB00076` | unchanged |
+| bootloader | `b5-0.6-10489838` | unchanged |
+| baseband | `g7250-00264-230619-B-10346159` | unchanged |
+| secure boot / secure | `PRODUCTION` / `yes` | unchanged |
+| hardware revision | `MP1.0` | unchanged |
+| current slot | `b` | `b` |
+| unlocked | `yes` | `yes` |
+| storage | Micron `MT128GASAO4U21`, rev `0302` | unchanged |
+| Citadel firmware | `0.0.5/chunk_ab9914055-b41f6e4` | unchanged |
+
+The changes were concentrated in slot metadata and A/B logical partition
+metadata:
+
+| Field | Before | After |
+| --- | --- | --- |
+| `slot-retry-count:a` | `2` | `0` |
+| `slot-unbootable:a` | `yes` | `no` |
+| `slot-successful:a` | `yes` | `no` |
+| `slot-retry-count:b` | `0` | `2` |
+| `slot-unbootable:b` | `no` | `no` |
+| `slot-successful:b` | `yes` | `yes` |
+| `battery-voltage` | `4442` | `4449` |
+| `partition-size:product_b` | `0xA3732000` | `0xA3735000` |
+| `partition-size:vendor_b` | `0x2D0B8000` | `0x2D0BA000` |
+
+The post-recovery output additionally exposed the following A-side entries,
+with zero sizes for three of them:
+
+```text
+partition-type:system_a:raw       partition-size:system_a:0x135F000
+partition-type:product_a:raw      partition-size:product_a:0x0
+partition-type:system_ext_a:raw   partition-size:system_ext_a:0x0
+partition-type:vendor_a:raw       partition-size:vendor_a:0x0
+```
+
+Conversely, the pre-recovery output contained these B-side COW metadata
+entries, which were absent afterward:
+
+```text
+system_b-cow, product_b-cow, system_ext_b-cow, vendor_b-cow
+```
+
+These values establish that the Factory image changed slot bookkeeping and
+dynamic-partition metadata. They do not, by themselves, prove which complete
+system image is bootable or explain the EP0 timeout. The important USB
+baseline facts remained the same: the device stayed on slot `b`, remained
+unlocked, and retained the same bootloader, baseband, storage, and hardware
+identity.
+
+### Implementation and experiment timeline
+
+1. The initial implementation added structural audits for AArch64 `Image`,
+   Rust LZ4 decoding/checksum validation for `Image.lz4`, and Android v3
+   `boot.img` kernel, padding, ramdisk, and tail validation. A direct stock
+   boot path was audited separately from generated images.
+
+2. The QEMU path gained a shared DWC3/EP0 self-test covering endpoint
+   configuration, SETUP/DATA/STATUS TRBs, event encoding, EP0 re-arm,
+   descriptors, `SET_ADDRESS`, and `SET_CONFIGURATION`. It passed, but QEMU
+   does not model the SM7250 PHY, Qualcomm Type-C glue, PDC, or Apps SMMU.
+
+3. The Bramble platform contract was expanded toward the official Android
+   device tree: DWC3 at the Bramble base, USB2/QMP PHY resources, clocks,
+   resets, GDSC, Type-C/PMIC state, Apps-SMMU stream ID `0xe0`, the
+   `0x90000000..0xF0000000` DMA pool, GSI offsets, bus/performance resources,
+   PDC pin ranges, and GIC SPI routes. The code now keeps platform IRQs
+   separate from DWC3 event-ring consumption.
+
+4. An IRQ-only DWC3 probe successfully enumerated as `18d1:4ee0` and stayed
+   present until the intentional roughly 120-second recovery watchdog. This
+   established that the DWC3 controller IRQ path and the basic gadget
+   handoff could work on the device. Adding the power-event IRQ did not cause
+   an early failure either.
+
+5. Enabling the Type-C parent IRQ, even with deferred PMIC handling, caused
+   early disconnects in roughly 8--19 seconds. Writing the PMIC role/sink-only
+   state during a live Fastboot handoff also caused disconnects in roughly
+   15--24 seconds. The handoff path was therefore changed to observe Type-C
+   state without taking ownership of the live role-switch state or issuing
+   unsafe PMIC writes.
+
+6. The official comparison then exposed a second ownership mistake. The
+   Android/Linux Qualcomm glue registers the DP/DM/SS PHY interrupts as
+   wakeup interrupts with `IRQF_NO_AUTOEN`; they are enabled for the relevant
+   suspend/wakeup path, not as continuously active runtime interrupts for a
+   device-mode gadget. The Linux Qualcomm PDC irqchip also always uses
+   `IRQ_ENABLE_BANK` at offset `0x10`; a speculative PDC-version branch that
+   used an `IRQ_CFG` enable bit was removed.
+
+7. A PDC-enabled comparison image, including the PDC-to-parent-SPI mapping,
+   parent trigger types, and the official enable-bank correction, still
+   disconnected after about 35--38 seconds. The normal Bramble device-mode
+   path was then changed to leave PDC pins and their parent SPIs disabled,
+   matching the official `NO_AUTOEN` behavior. The dedicated PDC probe remains
+   available for isolated comparison, but is no longer the normal gadget
+   route.
+
+8. The resulting no-PDC runtime image enumerated successfully at SuperSpeed
+   as `18d1:4ee0`, remained present for about 95 seconds, and then reset at
+   the expected watchdog boundary. No `-110` appeared in that run. This is a
+   substantial improvement over the 35--38 second PDC-enabled disconnect and
+   strongly implicates the runtime PDC IRQ ownership mismatch as a major
+   cause of the earlier failure.
+
+The relevant official references are:
+
+- [Android Lito USB device tree](https://android.googlesource.com/kernel/msm-extra/devicetree/+/refs/tags/android-11.0.0_r0.56/qcom/lito-usb.dtsi), including the DWC3 IRQ order, DMA pool, clocks, GSI offsets, and bus resources.
+- [Qualcomm PDC irqchip](https://android.googlesource.com/kernel/common/+/ff0000fe82f45/drivers/irqchip/qcom-pdc.c), including `IRQ_ENABLE_BANK`, PDC trigger conversion, parent SPI configuration, and pending-state clearing.
+- [Linux Qualcomm DWC3 glue](https://github.com/torvalds/linux/blob/master/drivers/usb/dwc3/dwc3-qcom.c), including the wakeup-only PHY IRQ setup and `IRQF_NO_AUTOEN` behavior.
+- [Android Qualcomm PMIC Type-C driver](https://android.googlesource.com/kernel/common/+/c13159a588818/drivers/usb/typec/qcom-pmic-typec.c), which performs PMIC initialization at probe and handles the child interrupt through a threaded path.
+- [postmarketOS installation targets](https://postmarketos.org/install/); Bramble was not listed as an official device-specific target in this comparison.
+
+### Current status and next boundary
+
+The current result is not yet an indefinitely stable USB gadget: the latest
+no-PDC run still ended at the recovery/watchdog boundary. It is, however, no
+longer failing at the original short descriptor-transfer interval. The next
+hardware evidence should come from the retained RAM trace around these
+boundaries:
+
+```text
+SETUP received
+descriptor queued
+IN complete
+STATUS OUT
+EP0 rearm
+```
+
+The next implementation boundary is to preserve the official distinction
+between runtime device operation and suspend/wakeup ownership while completing
+the remaining Qualcomm platform behavior: QMP/Type-C runtime state, clock and
+reset sequencing, GSI/event handling, DMA/SMMU fault visibility, and the
+Linux-equivalent EP0 command/error/re-arm paths. All further Bramble tests
+continue to use the audited stock template and `fastboot boot`; partition
+flashing is not part of this workflow.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:
