@@ -58,6 +58,15 @@ const APSS_WDT_STS: usize = 0xc;
 const APSS_WDT_BARK: usize = 0x10;
 const APSS_WDT_BITE: usize = 0x14;
 static mut WDT_TRACED: bool = false;
+/// SCM result of the secure watchdog disable (0 = success; the sentinel
+/// means the call has not run yet or ran out of retries).
+static mut SWDD_RESULT: u64 = 0xFFFF_FFFF;
+/// SCM IS_CALL_AVAIL result for (SVC_BOOT, SEC_WDOG_DIS): 1 = the TZ
+/// implements the function, 0 = it answers but does not implement it,
+/// 0xFFFF_FFFF = it returned ARM_SMCCC_UNK_FUNC on every convention
+/// (the SMC path itself is dead, or the encoding is wrong). High word =
+/// convention attempt index (1 = SMC_64, 2 = SMC_32).
+static mut SWDD_AVAIL: u64 = 0xFFFF_FFFF;
 /// WDT enable word captured at the first pet (probe entry).
 /// 0xFFFF_FFFF = not captured yet.
 static mut WDT_KPSS_EN_AT_ENTRY: u32 = 0xFFFF_FFFF;
@@ -68,37 +77,192 @@ unsafe fn wdt_reg(offset: usize) -> *mut u32 {
 }
 
 /// Deactivate the SECURE watchdog through SCM (the same call the downstream
-/// watchdog_v2 driver exposes via its disable sysfs):
-///   SMC id = 0x02000000 | (SCM_SVC_BOOT << 10) | SCM_SVC_SEC_WDOG_DIS
-///          = 0x02000407, arginfo = 1, args[0] = 1.
-/// XBL/ABL arm this watchdog for the `fastboot boot` path; an unpetted bite
-/// reboots the handset ~17 s into every probe (bootreason=watchdog) no
-/// matter what happens to the APSS WDT registers.
-pub fn secure_wdt_disable() {
-    unsafe {
-        let result: u64;
+/// watchdog_v2 driver exposes via its disable sysfs).
+///
+/// The bramble-generation TZ (msm-5.4 class) speaks the ARM SMCCC vendor
+/// interface (driver `qcom_scm-64.c` + `watchdog_v2.c`):
+///   x0 = ARM_SMCCC_CALL_VAL(ARM_SMCCC_STD_CALL, <convention>,
+///                           ARM_SMCCC_OWNER_SIP,
+///                           QCOM_SCM_FNID(QCOM_SCM_SVC_BOOT,
+///                                         QCOM_SCM_BOOT_SEC_WDOG_DIS))
+///      = 0x00 | {0x20 (SMC_64) | 0x00 (SMC_32)} | 0x40 | ((0x1 << 8) | 0x7)
+///   x1 = arginfo = 1, x2 = args[0] = 1, x3..x7 = 0.
+/// The vendor driver PROBES the TZ's convention at runtime, so try SMC_64
+/// (0x0167) first and fall back to SMC_32 (0x0147). XBL/ABL arm this
+/// watchdog for the `fastboot boot` path; an unpetted bite reboots the
+/// handset ~17 s into every probe (bootreason=watchdog) no matter what
+/// happens to the APSS WDT registers. If TZ is servicing another client it
+/// answers QCOM_SCM_INTERRUPTED (1) and expects the call to be reissued
+/// with x0 = 1 and the x6 continuation value it returned. The trace/`SWDD`
+/// record keeps the attempt index (1 = SMC_64, 2 = SMC_32) in the upper
+/// word of `SWDD_RESULT`.
+/// SMCCC_VERSION (ARM_SMCCC_VERSION = 0x80000000) result captured at
+/// probe entry: a nonzero (major<<16|minor) value proves the EL3 SMCCC
+/// dispatch answers at all; 0xFFFF_FFFF means every SMC is faked or
+/// trapped (the answer never came from a SMCCC handler).
+static mut SWDD_STD: u64 = 0xFFFF_FFFF;
+/// MDCR_EL2 (Memory Debug Control, EL2) captured at probe entry. Bit 14
+/// (SMC) traps SMC instructions issued from EL0/EL1 into EL2: if the
+/// bootloader left it set, every "SMC" we issue lands in the bootloader's
+/// EL2 vector, never in TZ, and whatever that vector does (often a
+/// default -1 return) is all we ever see.
+static mut MDCR_EL2_AT_ENTRY: u64 = u64::MAX;
+/// CurrentEL at probe entry: 0b0101 = EL1h (expected), 0b1000 = EL2h.
+static mut CURRENT_EL_AT_ENTRY: u64 = u64::MAX;
+
+/// One QCOM SCM SMC call with the QCOM_SCM_INTERRUPTED retry loop: on a
+/// return of 1 the call is reissued with x0 = 1 and x6 = the continuation
+/// value the firmware stored in a6 (the ARM_SMCCC_QUIRK_QCOM_A6 pattern).
+/// Returns (a0, a6) of the final answer.
+unsafe fn scm_smc_call_once(fnid: u64, arginfo: u64, a0: u64, a1: u64, a2: u64) -> (u64, u64) {
+    let mut fnid = fnid;
+    let mut a6: u64 = 0;
+    let mut result: u64 = 0xFFFF_FFFF;
+    for _ in 0..100 {
+        let mut a6_out: u64 = 0;
         core::arch::asm!(
-            "mov x0, #0x0407",
-            "movk x0, #0x0200, lsl #16",
-            "mov x1, #1",
-            "mov x2, #1",
+            "mov x0, {fnid}",
+            "mov x1, {arginfo}",
+            "mov x2, {a0v}",
+            "mov x3, {a1v}",
+            "mov x4, {a2v}",
+            "mov x5, xzr",
+            "mov x6, {a6in}",
+            "mov x7, xzr",
             "smc #0",
             "mov {result}, x0",
+            "mov {a6out}, x6",
+            fnid = in(reg) fnid,
+            arginfo = in(reg) arginfo,
+            a0v = in(reg) a0,
+            a1v = in(reg) a1,
+            a2v = in(reg) a2,
+            a6in = in(reg) a6,
             result = out(reg) result,
+            a6out = out(reg) a6_out,
             out("x1") _,
             out("x2") _,
             out("x3") _,
+            out("x4") _,
+            out("x5") _,
+            out("x7") _,
             options(nostack)
         );
+        if result != 1 {
+            break;
+        }
+        // QCOM_SCM_INTERRUPTED: reissue with the continuation value.
+        fnid = 1;
+        a6 = a6_out;
+    }
+    (result, a6)
+}
+
+/// ARM_SMCCC_CALL_VAL(ARM_SMCCC_STD_CALL, conv, OWNER_SIP=2, fn) per the
+/// 5.4 qcom_scm driver: TYPE(31)=0, CONV(30), OWNER(24..29)=2, FN(0..15).
+#[inline]
+fn scm_oen(conv: u64, fnid: u32) -> u64 {
+    (conv << 30) | (2u64 << 24) | (fnid as u64)
+}
+
+pub fn secure_wdt_disable() -> bool {
+    // One legacy-encoding QCOM SMC at probe entry: SMC id = 0x02000000 |
+    // (SCM_SVC_BOOT << 10) | SCM_SVC_SEC_WDOG_DIS = 0x02000407, arginfo = 1,
+    // args[0] = 1. This is the minimal entry that the fastboot handoff has
+    // been proven to tolerate on this target: the extended multi-SMC
+    // diagnostic sequence issued at entry (SMCCC VERSION, IS_CALL_AVAIL,
+    // both-convention SEC_WDOG_DIS) deterministically wedges the handoff in
+    // the standalone probe, so those probes live in secure_wdt_probes() and
+    // run only in the signal-probe build, where the gate consumes them.
+    let result = unsafe { scm_smc_call_once(0x0200_0407, 1, 1, 0, 0) }.0;
+    unsafe {
+        SWDD_RESULT = result;
+    }
+    trace_event(
+        TRACE_PROBE_WATCHDOG,
+        0x5357_4444, // "SWDD"
+        result as u32,
+        0,
+        0,
+        0,
+    );
+    result == 0
+}
+
+/// Extended SMCCC diagnostics consumed by the `swdd-*` / `scm-*` / `std-*` /
+/// `mdcr-*` / `el1` / `el2` signal gates. Issued at probe entry, BEFORE any
+/// SMC that the standalone build performs at entry is multiplied out, and
+/// never in the standalone build (its multi-SMC entry sequence wedges the
+/// fastboot handoff; see secure_wdt_disable).
+pub fn secure_wdt_probes() {
+    // Capture the exception-level context BEFORE issuing any SMC: if the
+    // bootloader left MDCR_EL2.SMC (bit 14) set, SMC from EL1 traps to EL2
+    // and never reaches TZ, which would fake every one of these probes.
+    unsafe {
+        let mdcr: u64;
+        let cur_el: u64;
+        core::arch::asm!(
+            "mrs {m}, MDCR_EL2",
+            "mrs {c}, CurrentEL",
+            m = out(reg) mdcr,
+            c = out(reg) cur_el,
+            options(nostack)
+        );
+        MDCR_EL2_AT_ENTRY = mdcr;
+        CURRENT_EL_AT_ENTRY = cur_el;
         trace_event(
             TRACE_PROBE_WATCHDOG,
-            0x5357_4444, // "SWDD"
-            result as u32,
-            (result >> 32) as u32,
-            0,
+            0x4D44_4352, // "MDCR"
+            mdcr as u32,
+            (mdcr >> 32) as u32,
+            cur_el as u32,
             0,
         );
     }
+
+    // Baseline probe: ARM SMCCC VERSION (OEN 0x80000000, no args). Per the
+    // SMCCC spec every compliant EL3 handler must answer this, so it
+    // separates "the SMC never reaches a SMCCC handler" from "the handler
+    // works but does not carry the QCOM SIP service table".
+    let std_result = unsafe { scm_smc_call_once(0x8000_0000, 0, 0, 0, 0) }.0;
+    unsafe {
+        SWDD_STD = std_result;
+    }
+    trace_event(
+        TRACE_PROBE_WATCHDOG,
+        0x5343_4D53, // "SCMS"
+        std_result as u32,
+        0,
+        0,
+        0,
+    );
+
+    // Diagnostic probe: QCOM_SCM_IS_CALL_AVAIL(SVC_INFO=0x06, CMD=0x01) with
+    // args (SVC_BOOT, SEC_WDOG_DIS). The vendor driver itself calls this to
+    // probe the convention, so the function is guaranteed present in a
+    // working TZ. Its answer separates "SMC path dead / encoding wrong"
+    // (UNK_FUNC = -1) from "the SMC works but the SEC_WDOG_DIS function is
+    // absent" (0). fnid = (0x06<<8)|0x01 = 0x0601; args = (SVC_BOOT, 0x07).
+    let mut avail_attempt: u32 = 0;
+    let mut avail: u64 = 0xFFFF_FFFF;
+    for conv in [scm_oen(1, 0x0601), scm_oen(0, 0x0601)] {
+        avail_attempt += 1;
+        avail = unsafe { scm_smc_call_once(conv, 2, 0x01, 0x07, 0) }.0;
+        if avail != 0xFFFF_FFFF {
+            break;
+        }
+    }
+    unsafe {
+        SWDD_AVAIL = ((avail_attempt as u64) << 32) | avail;
+    }
+    trace_event(
+        TRACE_PROBE_WATCHDOG,
+        0x5343_4D41, // "SCMA"
+        avail as u32,
+        avail_attempt,
+        0,
+        0,
+    );
 }
 
 /// Restart the apps watchdog countdown and, once, record its configuration
@@ -1288,6 +1452,18 @@ static mut EP0_RESOURCE_INDEX: [u8; 2] = [0; 2];
 /// broken USB pull-up.
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 static mut GADGET_HANDOFF_FAILURE_STAGE: u32 = 0;
+// Direct-path (init_with_super_speed) EP command diagnostic snapshot. The
+// direct path uses plain `return false` (no GADGET_HANDOFF_FAILURE_STAGE), so
+// capture how far it gets, the raw DEPCTL after each command (CMDACT bit 10
+// still set == the core never retired the command), and the core-state DSTS
+// at the first endpoint command. 0xFFFF_FFFF = not reached.
+static mut INIT_STAGE: u32 = 0;
+static mut INIT_DEPSTART_RAW: u32 = 0xFFFF_FFFF;
+static mut INIT_DEPSTART_DSTS: u32 = 0xFFFF_FFFF;
+static mut INIT_EPCFG0_OK: bool = false;
+static mut INIT_EPCFG0_RAW: u32 = 0xFFFF_FFFF;
+static mut INIT_EPCFG0_DSTS: u32 = 0xFFFF_FFFF;
+static mut INIT_EPCFG1_OK: bool = false;
 static mut TYPEC_LANE_B: bool = false;
 /// True only after the combo QMP PHY has completed its cold initialization.
 /// USB2 handoff deliberately keeps this false: the USB2 path must not touch
@@ -1400,6 +1576,7 @@ const TRACE_EVENT_RING_READY: u32 = 30;
 const TRACE_DWC3_HALTED: u32 = 31;
 const TRACE_DWC3_HALT_TIMEOUT: u32 = 32;
 const TRACE_DWC3_REVISION_QUIRK: u32 = 38;
+const TRACE_XFER_NOT_READY: u32 = 40;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1452,6 +1629,15 @@ static mut TRACE_HARVEST_DESC: u32 = 0;
 /// Raw DEPCMD register of the previous attempt's NEWEST STARTTRANSFER on
 /// physical endpoint 1 (the data/status IN direction of EP0).
 static mut TRACE_HARVEST_EP1: u32 = 0xFFFF_FFFF;
+/// TRB status of the previous attempt's NEWEST XferComplete on physical
+/// endpoint 1 (the control data-phase IN), or 0xFFFF_FFFF when the core
+/// never completed the data TRB: 0x8 is the healthy LST|IOC completion, any
+/// other value names the in-core transfer error.
+static mut TRACE_HARVEST_EP1_XFER: u32 = 0xFFFF_FFFF;
+/// Number of XferNotReady(CONTROL_DATA) events on physical endpoint 1: the
+/// core reports it after fetching the data TRB, before any IN token is
+/// answered with data.
+static mut TRACE_HARVEST_EP1_NRDY: u32 = 0;
 /// Number of STATUS-phase transfers the previous attempt queued (trace count
 /// of TRACE_STATUS_QUEUED): proves the DATA phase completed on the wire and
 /// the control state machine advanced.
@@ -1481,6 +1667,9 @@ static mut TRACE_HARVEST_ADDR: u32 = 0;
 /// the address and sent the ADDRESSED read/all request, so the address
 /// application worked and the failure is in the addressed response.
 static mut TRACE_HARVEST_ADDR2: u32 = 0;
+/// Newest "DARM" data-phase arm outcome (bit 16 = a record exists, bit 0 =
+/// the Start Transfer ultimately queued after retries) or 0xFFFF_FFFF.
+static mut TRACE_HARVEST_DARM: u32 = 0xFFFF_FFFF;
 static mut INIT_CALLS: u32 = 0;
 /// GCTL.RAMCLKSEL observed while the previous owner (Fastboot) still had a
 /// working gadget. CSFTRST and the host's bus USB reset both clear this
@@ -1567,6 +1756,9 @@ unsafe fn harvest_trace_outcome() {
         TRACE_HARVEST_CONNECT = 0;
         TRACE_HARVEST_ADDR = 0;
         TRACE_HARVEST_ADDR2 = 0;
+        TRACE_HARVEST_DARM = 0xFFFF_FFFF;
+        TRACE_HARVEST_EP1_XFER = 0xFFFF_FFFF;
+        TRACE_HARVEST_EP1_NRDY = 0;
         for offset in 0..count {
             let slot = (head.wrapping_sub(1 + offset)) % USB_TRACE_CAPACITY;
             let entry = addr_of!(USB_TRACE.entries)
@@ -1594,9 +1786,37 @@ unsafe fn harvest_trace_outcome() {
             }
             if event == TRACE_DESCRIPTOR_QUEUED {
                 TRACE_HARVEST_DESC = TRACE_HARVEST_DESC.wrapping_add(1);
+                // The "DARM" record carries the final data-phase arm outcome
+                // (bit 0 = queued after retries); the backward scan makes the
+                // first hit the newest arm.
+                if TRACE_HARVEST_DARM == 0xFFFF_FFFF
+                    && read_volatile(addr_of!((*entry).request)) == 0x4441_524D
+                {
+                    TRACE_HARVEST_DARM = 0x1_0000 | (read_volatile(addr_of!((*entry).value)) & 1);
+                }
             }
             if event == TRACE_STATUS_QUEUED {
                 TRACE_HARVEST_STATUSQ = TRACE_HARVEST_STATUSQ.wrapping_add(1);
+            }
+            if event == TRACE_TRANSFER_COMPLETE {
+                // The dispatch writes request=event kind (1), value=endpoint,
+                // index=TRB status. The backward scan makes the first EP1 hit
+                // the newest data-phase completion.
+                if read_volatile(addr_of!((*entry).request)) == 1
+                    && read_volatile(addr_of!((*entry).value)) == 1
+                    && TRACE_HARVEST_EP1_XFER == 0xFFFF_FFFF
+                {
+                    TRACE_HARVEST_EP1_XFER = read_volatile(addr_of!((*entry).index));
+                }
+            }
+            if event == TRACE_XFER_NOT_READY {
+                // Recorded as request=endpoint, value=status (1 = CONTROL_DATA,
+                // 2 = CONTROL_STATUS).
+                if read_volatile(addr_of!((*entry).request)) == 1
+                    && read_volatile(addr_of!((*entry).value)) == 1
+                {
+                    TRACE_HARVEST_EP1_NRDY = TRACE_HARVEST_EP1_NRDY.wrapping_add(1);
+                }
             }
             if event == TRACE_SETUP_QUEUED {
                 let marker = read_volatile(addr_of!((*entry).request));
@@ -4444,6 +4664,43 @@ unsafe fn restart_control_after_reset() {
         // about reprogramming it on Connect Done documents exactly this);
         // restore the captured working select before the EP0 rebuild.
         reapply_ramclksel();
+        // Linux's dwc3_ep0_reset_state() is a NO-OP while EP0 sits in the
+        // SETUP phase: the armed SETUP TRB stays valid across a USB reset,
+        // and the reset handler must not tear it down or re-arm. Rewriting
+        // DALEPENA, reprogramming DCFG.speed, or issuing a second Start
+        // Transfer all race the host's first SETUP token (which lands ~1 ms
+        // after the reset ends) and are the source of the first descriptor
+        // read/64 error -110. When the TRB is armed, only clear the device
+        // address (the hardware already did; Linux rewrites it) and reset the
+        // software state that does not touch the armed transfer.
+        if EP0_STATE == Ep0State::Setup && EP0_SETUP_ARMED && ENDPOINTS_READY {
+            let dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
+            write(DCFG, dcfg);
+            unbind_function();
+            teardown_data_endpoints();
+            reset_gsi_channels();
+            GadgetDriver::reset(gadget_mut());
+            udc_mut().reset();
+            CONFIGURED = false;
+            DATA_ENDPOINTS_READY = false;
+            DATA_REQUEST_SLOTS = [usize::MAX; 2];
+            DATA_RESOURCE_INDEX = [0; 2];
+            GSI_GADGET_BOUND = false;
+            FUNCTION_BOUND = false;
+            CONTROL_IN = false;
+            CONTROL_HAS_DATA = false;
+            // EP0_STATE, EP0_SETUP_ARMED, EP0_RESOURCE_INDEX, ENDPOINTS_READY,
+            // DALEPENA, DCFG.speed, and the armed SETUP TRB are preserved.
+            trace_event(
+                TRACE_USB_RESET,
+                0x4B45_504B, // "KEEP"
+                0,
+                0,
+                0,
+                read(DSTS),
+            );
+            return;
+        }
         // A bus reset already flushed every in-flight EP0 transfer at the
         // wire level. Issuing ENDXFER here and then re-arming races the
         // resource release against the new Start Transfer: the core answers
@@ -4588,7 +4845,20 @@ unsafe fn start_status(endpoint: usize) -> bool {
     });
     unsafe {
         prepare_trb(0, ep0_trb_ptr(0).cast::<u8>(), 0, kind);
-        start_transfer(endpoint, ep0_trb_ptr(0))
+        // Same flaky Start Transfer window as the data phase: retry the
+        // command instead of failing the status stage (SET_ADDRESS and
+        // SET_CONFIGURATION become visible only after this ZLP completes).
+        let mut queued = start_transfer(endpoint, ep0_trb_ptr(0));
+        if !queued {
+            for _ in 0..50 {
+                super::timer::delay_us(200);
+                if start_transfer(endpoint, ep0_trb_ptr(0)) {
+                    queued = true;
+                    break;
+                }
+            }
+        }
+        queued
     }
 }
 
@@ -4683,7 +4953,38 @@ unsafe fn handle_setup() {
                 read(DSTS),
             );
             EP0_STATE = Ep0State::Data;
-            if start_transfer(1, ep0_trb_ptr(0)) {
+            // This core's endpoint command engine flakily rejects Start
+            // Transfer right after the bus reset ("No resource" or a stuck
+            // CMDACT) even though the identical command succeeds seconds
+            // later - the host's first descriptor read and its retry straddle
+            // exactly that window. The host keeps polling EP0 IN with IN
+            // tokens while the data phase is pending and tolerates the NAKs,
+            // so a bounded command retry answers the first read instead of
+            // stalling the whole control transfer.
+            let mut queued = start_transfer(1, ep0_trb_ptr(0));
+            if !queued {
+                // A USB bus reset can invalidate the endpoint 1 transfer
+                // resource allocated at init, so the control data-phase Start
+                // Transfer is answered "No resource". Re-allocate the resource
+                // once, then retry the command.
+                let _ = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+                for _ in 0..50 {
+                    super::timer::delay_us(200);
+                    if start_transfer(1, ep0_trb_ptr(0)) {
+                        queued = true;
+                        break;
+                    }
+                }
+            }
+            trace_event(
+                TRACE_DESCRIPTOR_QUEUED,
+                0x4441_524D, // "DARM" data-phase arm outcome
+                queued as u32,
+                0,
+                length as u32,
+                read(DSTS),
+            );
+            if queued {
                 note_probe_ep0_progress();
             } else {
                 // A failed DATA-IN command must not leave EP0 in the Data
@@ -4772,6 +5073,18 @@ unsafe fn process_event(raw: u32) {
                 let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
                 unsafe {
                     let first_connect = !ENDPOINTS_READY;
+                    // A post-reset Connect Done (first_connect false) must not
+                    // reconfigure the endpoints or rewrite DALEPENA while EP0
+                    // holds an armed SETUP TRB. Linux's conndone only issues a
+                    // DEPCFG MODIFY and never re-arms; our reconfigure plus the
+                    // DALEPENA rewrite would race the host's first post-reset
+                    // SETUP token and reproduce the descriptor read/64 -110.
+                    if !first_connect && EP0_STATE == Ep0State::Setup && EP0_SETUP_ARMED {
+                        note_runtime_event(
+                            super::platform::bramble::UsbRuntimeEvent::ControllerStarted,
+                        );
+                        return;
+                    }
                     let endpoints_ready = if first_connect {
                         configure_endpoint(0, max_packet, false)
                             && configure_endpoint(1, max_packet, false)
@@ -4950,12 +5263,18 @@ unsafe fn process_event(raw: u32) {
                 _ => {}
             }
         }
-    } else if event == 3 && status == 2 {
-        unsafe {
-            if EP0_STATE == Ep0State::Status {
-                let endpoint = if CONTROL_HAS_DATA && CONTROL_IN { 0 } else { 1 };
-                if !start_status(endpoint) {
-                    stall_control(endpoint);
+    } else if event == 3 {
+        // XferNotReady: the core asks for the next phase's TRB. Record every
+        // event for the harvest gates (request=endpoint, value=status); act
+        // only on the STATUS ask while the state machine waits for it.
+        trace_event(TRACE_XFER_NOT_READY, endpoint as u32, status, 0, 0, raw);
+        if status == 2 {
+            unsafe {
+                if EP0_STATE == Ep0State::Status {
+                    let endpoint = if CONTROL_HAS_DATA && CONTROL_IN { 0 } else { 1 };
+                    if !start_status(endpoint) {
+                        stall_control(endpoint);
+                    }
                 }
             }
         }
@@ -6019,6 +6338,10 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
             return gadget_handoff_fail(12); // STARTTRANSFER
         }
+        // Record the armed SETUP TRB so the USB-reset handler takes the
+        // Linux-equivalent keep-the-TRB path instead of tearing it down and
+        // racing the host's first post-reset SETUP token.
+        EP0_SETUP_ARMED = true;
         if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
             enable_gadget_controller_irq();
         }
@@ -6357,9 +6680,20 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             );
         }
         if !super::platform::bramble::usb_power_contract_valid(super_speed) {
-            log_puts("usb: DT power contract invalid\n");
-            return false;
+            if reset_platform {
+                // A cold platform start actually re-applies the contract below,
+                // so an invalid contract is fatal there.
+                log_puts("usb: DT power contract invalid\n");
+                return false;
+            }
+            // The non-destructive handoff preserves the bootloader's live
+            // rails/clocks and never re-applies the contract (apply_usb_power
+            // below is gated on reset_platform). The rails are empirically
+            // powered (the device attaches), so a contract the fastboot DT
+            // does not fully expose is not fatal for the handoff.
+            log_puts("usb: DT power contract incomplete; preserving firmware state\n");
         }
+        INIT_STAGE = 1;
         let performance = super::platform::bramble::usb_performance_state(
             super::platform::bramble::UsbBusVote::Nominal,
         );
@@ -6498,6 +6832,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             }
         }
         configure_dwc3_global_control();
+        INIT_STAGE = 2;
         // The device reset above is the ownership boundary for the previous
         // Fastboot transfer epoch. The direct probe normally enters before
         // usb_probe_entry's fallback allocator setup, so initialize the
@@ -6603,6 +6938,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             return false;
         }
 
+        INIT_STAGE = 3;
         #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
         if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && stop_after_gadget_handoff_stage(3) {
             return true;
@@ -6697,7 +7033,11 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             return true;
         }
 
-        if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
+        let depstart_ok = send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0);
+        INIT_STAGE = 4;
+        INIT_DEPSTART_RAW = read(dep_reg(0, 0x0c));
+        INIT_DEPSTART_DSTS = read(DSTS);
+        if !depstart_ok {
             log_puts("usb: DEPSTARTCFG failed\n");
             return false;
         }
@@ -6708,9 +7048,21 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // the direct handoff path diverge from the fallback probe precisely
         // at the first STARTTRANSFER boundary.
         let ep0_packet_size = INITIAL_EP0_MAX_PACKET_SIZE;
-        if !configure_endpoint(0, ep0_packet_size, false)
-            || !configure_endpoint(1, ep0_packet_size, false)
-        {
+        let epcfg0 = configure_endpoint(0, ep0_packet_size, false);
+        INIT_STAGE = 5;
+        INIT_EPCFG0_OK = epcfg0;
+        INIT_EPCFG0_RAW = read(dep_reg(0, 0x0c));
+        INIT_EPCFG0_DSTS = read(DSTS);
+        let epcfg1 = if epcfg0 {
+            configure_endpoint(1, ep0_packet_size, false)
+        } else {
+            false
+        };
+        INIT_EPCFG1_OK = epcfg1;
+        if epcfg0 {
+            INIT_STAGE = 6;
+        }
+        if !epcfg0 || !epcfg1 {
             log_puts("usb: EP0 configuration failed\n");
             return false;
         }
@@ -7058,6 +7410,16 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 }
                 "wdt-armed" => WDT_KPSS_EN_AT_ENTRY & 1 != 0,
                 "wdt-off" => WDT_KPSS_EN_AT_ENTRY != 0xFFFF_FFFF && WDT_KPSS_EN_AT_ENTRY & 1 == 0,
+                "scm-answ" => (SWDD_AVAIL & 0xFFFF_FFFF) != 0xFFFF_FFFF,
+                "scm-avail" => (SWDD_AVAIL & 0xFFFF_FFFF) == 1,
+                "scm-noimpl" => (SWDD_AVAIL & 0xFFFF_FFFF) == 0,
+                "scm-dead" => (SWDD_AVAIL & 0xFFFF_FFFF) == 0xFFFF_FFFF,
+                "std-ok" => SWDD_STD != 0xFFFF_FFFF && (SWDD_STD & 0xFFFF_FFFF) > 0xFFFF,
+                "std-dead" => SWDD_STD == 0xFFFF_FFFF,
+                "mdcr-trap" => MDCR_EL2_AT_ENTRY & (1 << 14) != 0,
+                "mdcr-clean" => MDCR_EL2_AT_ENTRY != u64::MAX && MDCR_EL2_AT_ENTRY & (1 << 14) == 0,
+                "el1" => CURRENT_EL_AT_ENTRY & 0xF == 0b0100,
+                "el2" => CURRENT_EL_AT_ENTRY & 0xF == 0b1000,
                 "addr" => TRACE_HARVEST_ADDR > 0,
                 "readall" => TRACE_HARVEST_ADDR2 > 0,
                 "second-setup" => TRACE_HARVEST_SETUP >= 2,
@@ -7590,7 +7952,15 @@ pub fn mmio_quiet_active() -> bool {
 pub fn cmd_gate_condition_met() -> Option<bool> {
     let want = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")?;
     unsafe {
+        // Re-harvest against this run's live trace: the gate must evaluate
+        // the attempt that just flowed through the observation window, not
+        // the init-time harvest of a previous attempt.
+        harvest_trace_outcome();
         let ok = match want {
+            // Mechanism self-test: unconditionally true. A clean (non-watchdog)
+            // readout with this gate proves the gate path and our edits are
+            // live in the running image.
+            "always" => true,
             "timeout" => TRACE_HARVEST & 0x1_0000 != 0,
             "done" => TRACE_HARVEST != 0xFFFF_FFFF && TRACE_HARVEST & 0x1_0000 == 0,
             "last-timeout" => TRACE_HARVEST_LAST & 0x1_0000 != 0,
@@ -7612,8 +7982,99 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             "connect" => TRACE_HARVEST_CONNECT > 0,
             "addr" => TRACE_HARVEST_ADDR > 0,
             "readall" => TRACE_HARVEST_ADDR2 > 0,
+            // Data-phase (EP1 IN) arm outcome gates: TRACE_HARVEST_EP1 holds
+            // the newest EP1 STARTTRANSFER raw DEPCMD register (status bits
+            // 15:12), or 0xFFFF_FFFF when no EP1 command was ever issued.
+            "ep1-none" => TRACE_HARVEST_EP1 == 0xFFFF_FFFF,
+            "ep1-done" => TRACE_HARVEST_EP1 != 0xFFFF_FFFF && (TRACE_HARVEST_EP1 & 0x1_1000) == 0,
+            "ep1-nores" => TRACE_HARVEST_EP1 == 0x1000,
+            // Final data-phase arm outcome after the bounded retry ("DARM").
+            "darm" => TRACE_HARVEST_DARM == 0x1_0001,
+            "darm-fail" => TRACE_HARVEST_DARM == 0x1_0000,
+            // Data-phase TRB outcome: did the core COMPLETE the armed data
+            // transfer (0x8 = healthy LST|IOC), and did it report the data
+            // phase ready (XferNotReady) before any IN token was answered?
+            "ep1-xfer" => TRACE_HARVEST_EP1_XFER != 0xFFFF_FFFF,
+            "ep1-xfer-ok" => TRACE_HARVEST_EP1_XFER == 0x8,
+            "ep1-xfer-err" => {
+                TRACE_HARVEST_EP1_XFER != 0xFFFF_FFFF && TRACE_HARVEST_EP1_XFER != 0x8
+            }
+            "ep1-nrdy" => TRACE_HARVEST_EP1_NRDY > 0,
             "wdt-armed" => WDT_KPSS_EN_AT_ENTRY & 1 != 0,
             "wdt-off" => WDT_KPSS_EN_AT_ENTRY != 0xFFFF_FFFF && WDT_KPSS_EN_AT_ENTRY & 1 == 0,
+            // Secure-watchdog SMC result readout (set at probe entry, before
+            // the observation window): low word 0 = TZ accepted the disable
+            // (high word = attempt index 1 = SMC_64, 2 = SMC_32).
+            "swdd-ok" => (SWDD_RESULT & 0xFFFF_FFFF) == 0,
+            "swdd-fail" => (SWDD_RESULT & 0xFFFF_FFFF) != 0,
+            // SCM path diagnostics from the IS_CALL_AVAIL probe (probe
+            // entry): did the SMC interface answer at all, and does the TZ
+            // implement (SVC_BOOT, SEC_WDOG_DIS)?
+            "scm-answ" => (SWDD_AVAIL & 0xFFFF_FFFF) != 0xFFFF_FFFF,
+            "scm-avail" => (SWDD_AVAIL & 0xFFFF_FFFF) == 1,
+            "scm-noimpl" => (SWDD_AVAIL & 0xFFFF_FFFF) == 0,
+            "scm-dead" => (SWDD_AVAIL & 0xFFFF_FFFF) == 0xFFFF_FFFF,
+            // EL3 SMCCC liveness (SMCCC_VERSION answer): major<<16|minor
+            // with major >= 1, i.e. a value above 0xFFFF.
+            "std-ok" => SWDD_STD != 0xFFFF_FFFF && (SWDD_STD & 0xFFFF_FFFF) > 0xFFFF,
+            "std-dead" => SWDD_STD == 0xFFFF_FFFF,
+            // Exception-level context at probe entry: is SMC from EL1
+            // trapped to EL2 (MDCR_EL2.SMC, bit 14), and at which EL are
+            // we actually running (0b0101 = EL1h, 0b1000 = EL2h)?
+            "mdcr-trap" => MDCR_EL2_AT_ENTRY & (1 << 14) != 0,
+            "mdcr-clean" => MDCR_EL2_AT_ENTRY != u64::MAX && MDCR_EL2_AT_ENTRY & (1 << 14) == 0,
+            "el1" => CURRENT_EL_AT_ENTRY & 0xF == 0b0100,
+            "el2" => CURRENT_EL_AT_ENTRY & 0xF == 0b1000,
+            // Live controller-state probes at gate-eval time (readout for the
+            // "SETUP TRB never armed / no events processed" diagnosis): is the
+            // device link ON (USBLNKST==0), is the core halted, are the
+            // endpoints ready, is the SETUP TRB armed, and is EP0 in the
+            // Setup state?
+            "lnk-on" => (read(DSTS) >> 18) & 0xf == 0,
+            "lnk-reset" => (read(DSTS) >> 18) & 0xf == 1,
+            "lnk-suspend" => {
+                let lnkst = (read(DSTS) >> 18) & 0xf;
+                lnkst >= 5 && lnkst != 0xf
+            }
+            "halt" => read(DSTS) & DSTS_DEVCTRLHLT != 0,
+            "epready" => ENDPOINTS_READY,
+            "ep0armed" => EP0_SETUP_ARMED,
+            "ep0setup" => EP0_STATE == Ep0State::Setup,
+            // Direct-path (init_with_super_speed) EP command sequence: how far
+            // did the init get (is4=DEPSTARTCFG issued, is5=DEPCFG ep0,
+            // is6=DEPCFG ep1), did the DEPSTARTCFG/DEPCFG command retire
+            // (CMDACT bit 10 clear == done, set == the core never processed
+            // it), and was the core ready (DCNRD bit 29) / halted (bit 22) /
+            // link U0 at the first endpoint command?
+            "is4" => INIT_STAGE >= 4,
+            "is5" => INIT_STAGE >= 5,
+            "is6" => INIT_STAGE >= 6,
+            "ds-stuck" => {
+                INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_RAW & DEPCMD_CMDACT != 0
+            }
+            "ds-done" => {
+                INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_RAW & DEPCMD_CMDACT == 0
+            }
+            "ep0-stuck" => {
+                INIT_EPCFG0_RAW != 0xFFFF_FFFF && INIT_EPCFG0_RAW & DEPCMD_CMDACT != 0
+            }
+            "ep0-ok" => INIT_EPCFG0_OK,
+            "ep1-ok" => INIT_EPCFG1_OK,
+            "ds-dcnrd" => {
+                INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_DSTS & DSTS_DCNRD != 0
+            }
+            "ep0-dcnrd" => {
+                INIT_EPCFG0_RAW != 0xFFFF_FFFF && INIT_EPCFG0_DSTS & DSTS_DCNRD != 0
+            }
+            "ds-halt" => {
+                INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_DSTS & DSTS_DEVCTRLHLT != 0
+            }
+            "ds-lnk0" => {
+                INIT_DEPSTART_RAW != 0xFFFF_FFFF && (INIT_DEPSTART_DSTS >> 18) & 0xf == 0
+            }
+            "ep0-lnk0" => {
+                INIT_EPCFG0_RAW != 0xFFFF_FFFF && (INIT_EPCFG0_DSTS >> 18) & 0xf == 0
+            }
             other => u32::from_str_radix(other.trim_start_matches("0x"), 16)
                 .map(|value| TRACE_HARVEST == value)
                 .unwrap_or(false),
@@ -7622,22 +8083,23 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
     }
 }
 
-/// Park the probe after a gate readout failed: no pull-up, no fallback
-/// path, no secondary attempt, so one-bit gate readouts stay uncontaminated
-/// by later handoff attempts that might publish a pull-up of their own.
-/// Bounded: after 90 s the probe resets through the normal recovery path
-/// (fastboot) even if the assembly timer is late.
-pub fn park_after_gate_failure() -> ! {
+/// Park for `seconds` (no pull-up toggling, no fallback path, no secondary
+/// attempt, so gate readouts stay uncontaminated), then reset through the
+/// normal recovery path (PS_HOLD release + PSCI SYSTEM_RESET, inlined here
+/// because usb_probe is a separate binary). The trace marker carries the
+/// park duration so a later retained-trace read can name the exact branch.
+pub fn park_for_seconds(seconds: u64) -> ! {
     unsafe {
-        trace_marker(TRACE_PROBE_WATCHDOG, 0x5041_524B); // "PARK"
+        trace_marker(
+            TRACE_PROBE_WATCHDOG,
+            0x5041_524B | ((seconds & 0xff) as u32) << 8,
+        ); // "PARK"+secs
         let frequency = arch_counter_frequency();
-        let deadline = arch_counter().saturating_add(frequency.saturating_mul(90));
+        let deadline = arch_counter().saturating_add(frequency.saturating_mul(seconds));
         while frequency == 0 || arch_counter() < deadline {
             wdt_pet();
             core::hint::spin_loop();
         }
-        // Same recovery as the probe's reset path: PS_HOLD + PSCI
-        // SYSTEM_RESET (usb_probe is a separate binary, so inline it here).
         unsafe {
             core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
             core::arch::asm!(
@@ -7655,6 +8117,13 @@ pub fn park_after_gate_failure() -> ! {
             core::hint::spin_loop();
         }
     }
+}
+
+/// Park the probe after a gate readout failed. Bounded: after 90 s the probe
+/// resets through the normal recovery path even if the assembly timer is
+/// late.
+pub fn park_after_gate_failure() -> ! {
+    park_for_seconds(90)
 }
 
 /// Deassert the pull-up so the host sees a physical disconnect.

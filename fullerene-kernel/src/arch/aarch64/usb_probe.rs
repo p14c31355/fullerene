@@ -407,6 +407,18 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
     unsafe {
         asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
     }
+    // The normal GIC sweep (disable every SPI/PPI ABL left armed) runs only
+    // on the successful-handoff path, and this probe branches before it, so
+    // ABL's fastboot IRQs (DWC3/PMIC/PDC) stay enabled while EL1 interrupts
+    // are unmasked. Any stray interrupt (the host's post-timeout port reset
+    // included) would enter the exception vectors and reboot the handset
+    // mid-observation. Repeat the sweep here: the probe is pure polling and
+    // owns its own bounded recovery, so no IRQ must remain armed.
+    let _ = platform::gicv3::init(
+        platform::bramble::GICD_BASE,
+        platform::bramble::GICR_BASE,
+        None,
+    );
     usb::trace_marker(
         usb::TRACE_PROBE_WATCHDOG,
         0x5349_4700 | (signal_smmu_code & 0xff),
@@ -439,12 +451,26 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         .unwrap_or(120);
     let mut deadline = probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
     let mut last_head = usb::trace_head();
-    let observe_until = probe_counter().saturating_add(frequency.saturating_mul(10));
+    // The unknown ~17 s watchdog reboots the handset before a 10 s window
+    // finishes when the attach lands ~9 s after probe entry; gate runs
+    // shorten the window so the one-bit readout beats the bite.
+    let observe_secs = option_env!("FULLERENE_USB_PROBE_OBSERVE_SECS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(10);
+    let observe_until = probe_counter().saturating_add(frequency.saturating_mul(observe_secs));
     let mut signal_code = signal_smmu_code;
+    // A gate run needs the gate's own timing readout, so the arm-progress
+    // latch must not short-circuit the observation window into the STAB
+    // poll loop (the arm succeeds on -110 runs too, which is exactly when
+    // the gate bit is most informative).
+    let gate_active = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+        .filter(|value| *value != "0")
+        .is_some();
     loop {
         usb::wdt_pet();
         usb::poll();
-        if usb::probe_ep0_progress() {
+        if usb::probe_ep0_progress() && !gate_active {
             // Enumeration actually succeeded: stop signaling and continue as
             // the normal direct probe would.
             unsafe {
@@ -480,7 +506,13 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
                 };
             }
         }
-        if signal_code != 0 || probe_counter() >= observe_until {
+        // A gate run must observe the WHOLE window: the link comes up (SOF /
+        // first event / retired SETUP TRB) at attach, long before the SETUP
+        // and data phase it is trying to diagnose. Breaking on a non-zero
+        // signal_code here would evaluate the gate at attach (~T+10) instead
+        // of at observe_until, turning a healthy SETUP into a false "not
+        // processed". Only a non-gate run short-circuits on the signal.
+        if (!gate_active && signal_code != 0) || probe_counter() >= observe_until {
             break;
         }
         let head = usb::trace_head();
@@ -498,20 +530,32 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             0x5349_4744 | (signal_code & 0xff),
         );
     }
-    // Gate evaluation against THIS run's trace data: true (or no gate)
-    // continues into the normal poll loop - the enumeration keeps flowing
-    // and the attach stays up. False parks with the pull-up dropped, so the
-    // host-side attach presence names the gate condition one bit at a time.
+    // Gate evaluation against THIS run's trace data. The pull-up drop is not
+    // host-visible, so the reset TIMING is the one-bit readout. The gate
+    // fires at the end of the observation window; Android boot after the
+    // reset adds ~20 s. Distinguishable return buckets:
+    //   ~25 s:      swdd-ok TRUE (immediate reset, must beat the ~17 s
+    //               watchdog bite that would mask it at ~37 s);
+    //   ~35-45 s:   no gate ran, or the armed watchdog bit first;
+    //   ~85-95 s:   gate TRUE (60 s park, then reset);
+    //   ~115-125 s: gate FALSE (90 s park, then reset).
     if let Some(met) = usb::cmd_gate_condition_met() {
         usb::trace_marker(
             usb::TRACE_PROBE_WATCHDOG,
             0x4741_5445 | (met as u32 & 0xff), // "GADE"
         );
-        if !met {
-            usb::ep0_signal_drop_pullup();
-            usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
-            reset_after_probe_failure();
+        if met {
+            // TRUE always resets IMMEDIATELY (park 0). A longer TRUE park
+            // would be cut by the ~17 s secure-WDT bite (park only pets the
+            // APSS WDT, not the TZ secure one), collapsing TRUE onto the
+            // FALSE bucket. Immediate reset (~25 s return) vs the WDT bite
+            // (~37 s return) is the reliable 1-bit split while the secure
+            // watchdog is still armed; if it is ever stopped, FALSE parks
+            // 90 s (~115 s return), still far from 25 s.
+            usb::park_for_seconds(0);
         }
+        usb::ep0_signal_drop_pullup();
+        usb::park_after_gate_failure();
     }
     // code+1 visible re-attach cycles encode the diagnostic value in the
     // reliable attach-line count. The QSCRATCH session overrides control the
@@ -541,6 +585,33 @@ extern "C" fn usb_probe_entry() -> ! {
     // `fastboot boot` path and its bite reboots the handset ~17 s into every
     // probe (bootreason=watchdog), killing host enumeration mid-flight.
     usb::secure_wdt_disable();
+    // The extended SMCCC diagnostics issue several SMCs at entry; that
+    // multi-SMC sequence wedges the fastboot handoff (no attach). They are
+    // only consumed by the scm-*/std-*/mdcr-*/el* gates, which evaluate at
+    // probe entry and do NOT need the device to attach. USB gates (setup,
+    // darm, ep1-*, addr, ...) need the device to attach and enumerate, so
+    // they must run on the single attaching SMC alone. Run the probes only
+    // for the SMC gates; keep every other run on the minimal entry SMC.
+    #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+    {
+        let gate = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE").unwrap_or("");
+        let needs_smc_probes = matches!(
+            gate,
+            "scm-answ"
+                | "scm-avail"
+                | "scm-noimpl"
+                | "scm-dead"
+                | "std-ok"
+                | "std-dead"
+                | "mdcr-trap"
+                | "mdcr-clean"
+                | "el1"
+                | "el2"
+        );
+        if needs_smc_probes {
+            usb::secure_wdt_probes();
+        }
+    }
     // Pet the apps watchdog next: it may also have been left counting.
     usb::wdt_pet();
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
@@ -660,7 +731,15 @@ extern "C" fn usb_probe_entry() -> ! {
         // rewriting PMIC role bits. This supplies the orientation and the
         // initial runtime state that Android's role-switch path would have
         // installed before binding the UDC.
-        let _ = usb::observe_typec_handoff();
+        //
+        // The USB2 handoff never consumes the orientation (only the SS QMP
+        // PHY path does), so the flag-gated skip is an A/B test for the
+        // ~11 s pre-attach delay: the 512-APID SPMI flat-table scan costs
+        // one MMIO read per APID and each read can stall on a slow or
+        // clock-gated SPMI arbiter.
+        if option_env!("FULLERENE_USB_SKIP_TYPEC_SPMI") != Some("1") {
+            let _ = usb::observe_typec_handoff();
+        }
     }
     // The signal probe reads the Apps-SMMU stream state BEFORE the gadget
     // handoff publishes the pull-up: if the aperture is secure-owned or

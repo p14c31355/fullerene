@@ -21,7 +21,10 @@ const DEFAULT_TEMPLATE: &str = "/tmp/fullerene-stock-template.Uvg3m2/boot.img";
 const BOOTLOADER_USB: &str = "18d1:4ee0";
 const ANDROID_FALLBACK_USB: &str = "18d1:4ee7";
 const FULLERENE_USB: &str = "1234:0001";
-const RECOVERY_TIMEOUT_SECS: u64 = 75;
+// Gate runs read the gate bit from the handset's return timing: a false gate
+// parks for 90 s before resetting, so the recovery wait must cover the park
+// plus the Android boot (well beyond 75 s).
+const RECOVERY_TIMEOUT_SECS: u64 = 150;
 
 #[derive(Parser, Debug)]
 #[command(about = "Run non-destructive Bramble USB handoff experiments")]
@@ -164,6 +167,9 @@ struct LoopArgs {
     /// Gate the attach on a CPU readback of the .usb_dma region succeeding.
     #[arg(long)]
     signal_ram_gate: bool,
+    /// Skip the SPMI Type-C handoff observation at probe entry (timing A/B).
+    #[arg(long)]
+    skip_typec_spmi: bool,
     /// Publish the pull-up even when the handoff failed (read pre-Run/Stop
     /// gates via the attach presence).
     #[arg(long)]
@@ -171,6 +177,10 @@ struct LoopArgs {
     /// Stop all controller MMIO access N seconds after the first Run/Stop.
     #[arg(long = "quiet-after", value_name = "SECS")]
     quiet_after: Option<u64>,
+    /// Signal-probe observation window (seconds) before the gate is
+    /// evaluated; keep it short enough to beat the ~17 s watchdog.
+    #[arg(long = "observe-secs", value_name = "SECS")]
+    observe_secs: Option<u64>,
     /// Relocate the .usb_dma section to this hex address for the run.
     #[arg(long = "dma-origin", value_name = "ADDR")]
     dma_origin: Option<String>,
@@ -481,7 +491,7 @@ fn run_matrix(workspace: &Path, args: MatrixArgs) -> io::Result<()> {
         return Ok(());
     }
 
-    let run_dir = create_run_dir("fullerene-bramble-matrix")?;
+    let run_dir = create_run_dir(workspace, "fullerene-bramble-matrix")?;
     println!("Matrix logs: {}", run_dir.display());
     for route in routes {
         println!("=== route: {} ===", route.as_str());
@@ -545,8 +555,10 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         smmu_install_all: false,
         signal_fsr_gate: None,
         signal_ram_gate: false,
+        skip_typec_spmi: false,
         signal_diag_publish: false,
         quiet_after: None,
+        observe_secs: None,
         dma_origin: None,
         signal_cmd_gate: None,
         signal_rsc_gate: None,
@@ -837,7 +849,7 @@ fn run_loop_with_dir(
         Some(matrix_dir) => {
             create_child_run_dir(matrix_dir, args.irq_route.map_or("loop", Route::as_str))?
         }
-        None => create_run_dir("fullerene-bramble-loop")?,
+        None => create_run_dir(workspace, "fullerene-bramble-loop")?,
     };
     let output = run_dir.join("fullerene-bramble-boot.img");
     println!("Bramble serial: {}", args.serial);
@@ -883,6 +895,7 @@ fn run_loop_with_dir(
     )?;
 
     let boot = boot_command(workspace, &output);
+    let boot_started = Instant::now();
     let boot_output = run_capture(&run_dir.join("boot.log"), &mut build_command_owned(boot))?;
     if !boot_output.status.success() {
         journal.save_final();
@@ -964,6 +977,14 @@ fn run_loop_with_dir(
         let recovery_deadline = Instant::now() + Duration::from_secs(RECOVERY_TIMEOUT_SECS);
         while Instant::now() < recovery_deadline {
             if usb_present(ANDROID_FALLBACK_USB) {
+                // Gate readout: the seconds since `fastboot boot` separate the
+                // buckets (gate fires ~10 s in; Android boot adds ~20 s):
+                // ~35-45 s no gate ran / early reset, ~85-95 s gate TRUE
+                // (60 s park), ~115-125 s gate FALSE (90 s park).
+                println!(
+                    "handset returned via Android after {} s",
+                    boot_started.elapsed().as_secs()
+                );
                 android_fallback = true;
                 let _ = capture_simple(
                     &run_dir,
@@ -998,6 +1019,32 @@ fn run_loop_with_dir(
                 )));
             }
             thread::sleep(Duration::from_secs(1));
+        }
+    }
+    if android_fallback {
+        // The bootreason property is written by the bootloader from the PON
+        // reset reason: it names what rebooted the handset mid-probe
+        // (watchdog bite vs PS_HOLD release vs PSCI reboot) before the
+        // restore step's own reboot overwrites it. ADB is not always
+        // authenticated yet when Android first appears on the bus, so retry.
+        for _ in 0..10 {
+            let captured = capture_simple(
+                &run_dir,
+                "boot-reason",
+                "adb",
+                &["-s", &args.serial, "shell", "getprop", "ro.boot.bootreason"],
+            );
+            if let Ok(output) = captured {
+                let text = String::from_utf8_lossy(&output.stdout);
+                if output.status.success()
+                    && !text.trim().is_empty()
+                    && !text.contains("not found")
+                    && !text.contains("error")
+                {
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_secs(2));
         }
     }
     let message = if android_fallback {
@@ -1149,11 +1196,18 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.signal_ram_gate {
         arguments.push("--usb-signal-ram-gate".to_owned());
     }
+    if args.skip_typec_spmi {
+        arguments.push("--usb-skip-typec-spmi".to_owned());
+    }
     if args.signal_diag_publish {
         arguments.push("--usb-signal-diag-publish".to_owned());
     }
     if let Some(secs) = args.quiet_after {
         arguments.push("--usb-quiet-after".to_owned());
+        arguments.push(secs.to_string());
+    }
+    if let Some(secs) = args.observe_secs {
+        arguments.push("--usb-observe-secs".to_owned());
         arguments.push(secs.to_string());
     }
     if let Some(origin) = &args.dma_origin {
@@ -1391,9 +1445,11 @@ fn sha256(path: &Path) -> io::Result<String> {
         .to_owned())
 }
 
-fn create_run_dir(prefix: &str) -> io::Result<PathBuf> {
+fn create_run_dir(workspace: &Path, prefix: &str) -> io::Result<PathBuf> {
+    let base = workspace.join("tmp");
+    fs::create_dir_all(&base)?;
     for suffix in 0..1000u32 {
-        let path = std::env::temp_dir().join(format!("{prefix}.{}.{}", std::process::id(), suffix));
+        let path = base.join(format!("{prefix}.{}.{}", std::process::id(), suffix));
         match fs::create_dir(&path) {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,

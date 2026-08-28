@@ -177,6 +177,11 @@ struct Args {
     #[arg(long)]
     usb_signal_ram_gate: bool,
 
+    /// Skip the SPMI Type-C handoff observation at probe entry (timing A/B:
+    /// the 512-APID SPMI scan is suspect for the ~11 s pre-attach delay).
+    #[arg(long)]
+    usb_skip_typec_spmi: bool,
+
     /// In signal mode, publish the pull-up even when the handoff failed, so
     /// the command gates stay readable for pre-Run/Stop failures.
     #[arg(long)]
@@ -186,6 +191,12 @@ struct Args {
     /// (reboot-cause bisect: external clock collapse vs our own polling).
     #[arg(long = "usb-quiet-after", value_name = "SECS")]
     usb_quiet_after: Option<u64>,
+
+    /// Signal-probe observation window in seconds before the gate is
+    /// evaluated; it must stay short enough to beat the unknown ~17 s
+    /// watchdog when a gate readout is the goal.
+    #[arg(long = "usb-observe-secs", value_name = "SECS")]
+    usb_observe_secs: Option<u64>,
 
     /// Relocate the linker .usb_dma section to this hex address for the run.
     #[arg(long = "usb-dma-origin", value_name = "ADDR")]
@@ -867,6 +878,8 @@ fn main() -> io::Result<()> {
             args.usb_signal_ramclk_gate,
             args.usb_smmu_disable,
             args.usb_signal_evt_data_gate,
+            args.usb_observe_secs,
+            args.usb_skip_typec_spmi,
         )?;
         if target.platform == Platform::Bramble
             && matches!(args.command, Action::Run | Action::Debug)
@@ -972,6 +985,15 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+fn fnv1a64(data: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in data.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 fn build_aarch64_kernel(
     workspace_root: &Path,
     profile: BuildProfile,
@@ -1013,8 +1035,201 @@ fn build_aarch64_kernel(
     signal_ramclk_gate: Option<u32>,
     smmu_disable: bool,
     signal_evt_data_gate: Option<u32>,
+    observe_secs: Option<u64>,
+    skip_typec_spmi: bool,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
+    // Collect every build-script environment variable first so the
+    // combination can be hashed into an isolated CARGO_TARGET_DIR: this
+    // nightly's cargo otherwise reuses stale lib/bin artifacts when only
+    // build-script env changes between invocations of the same package
+    // (for example after the QEMU preflight switches back to Bramble).
+    let mut cargo_envs: Vec<(String, String)> = Vec::new();
+    let mut push_env = |name: &str, value: String| cargo_envs.push((name.to_owned(), value));
+    push_env(
+        "FULLERENE_AARCH64_PLATFORM",
+        match platform {
+            Platform::Bramble => "bramble",
+            Platform::QemuVirt => "qemu-virt",
+            Platform::PcUefi => "pc-uefi",
+        }
+        .to_owned(),
+    );
+    if let Some(probe_env) = probe_env {
+        push_env(probe_env, "1".to_owned());
+    }
+    if gadget_handoff_no_smmu {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_reuse_fastboot_dma {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_REUSE_FASTBOOT_DMA",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_no_transfer_resource {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_TRANSFER_RESOURCE",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_android_resource_order {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_RESOURCE_ORDER",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_start_after_connect {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_start_after_reset {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_RESET",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_start_at_connect_done {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AT_CONNECT_DONE",
+            "1".to_owned(),
+        );
+    }
+    if let Some(stage) = gadget_handoff_stop_after_stage {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_STOP_STAGE",
+            stage.to_string(),
+        );
+    }
+    if qemu_usb_sim {
+        push_env("FULLERENE_AARCH64_QEMU_USB_SIM", "1".to_owned());
+    }
+    if gadget_handoff_direct {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_DIRECT",
+            "1".to_owned(),
+        );
+    }
+    if ep0_signal_probe {
+        push_env("FULLERENE_AARCH64_USB_EP0_SIGNAL_PROBE", "1".to_owned());
+    }
+    if ep0_signal_smmu_state {
+        push_env(
+            "FULLERENE_AARCH64_USB_EP0_SIGNAL_SMMU_STATE",
+            "1".to_owned(),
+        );
+    }
+    if ep0_signal_link_state {
+        push_env(
+            "FULLERENE_AARCH64_USB_EP0_SIGNAL_LINK_STATE",
+            "1".to_owned(),
+        );
+    }
+    if ep0_signal_raw_link {
+        push_env("FULLERENE_AARCH64_USB_EP0_SIGNAL_RAW_LINK", "1".to_owned());
+    }
+    if let Some(code) = ep0_signal_early_drop {
+        push_env(
+            "FULLERENE_AARCH64_USB_EP0_SIGNAL_EARLY_DROP",
+            code.to_string(),
+        );
+    }
+    if ep0_signal_pre_drop {
+        push_env("FULLERENE_AARCH64_USB_EP0_SIGNAL_PRE_DROP", "1".to_owned());
+    }
+    if ep0_signal_heartbeat {
+        push_env("FULLERENE_AARCH64_USB_EP0_SIGNAL_HEARTBEAT", "1".to_owned());
+    }
+    if ep0_dma_adopt {
+        push_env("FULLERENE_AARCH64_USB_EP0_DMA_ADOPT", "1".to_owned());
+    }
+    if let Some(value) = ep0_smmu_gate {
+        push_env("FULLERENE_AARCH64_USB_EP0_SMMU_GATE", value.to_string());
+    }
+    if ep0_signal_drop_vbus {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS", "1".to_owned());
+    }
+    if let Some(secs) = connect_delay {
+        push_env("FULLERENE_AARCH64_USB_CONNECT_DELAY", secs.to_string());
+    }
+    if ep0_smmu_install {
+        push_env("FULLERENE_AARCH64_USB_EP0_SMMU_INSTALL", "1".to_owned());
+    }
+    if signal_dma_probe {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE", "1".to_owned());
+    }
+    if smmu_install_all {
+        push_env("FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL", "1".to_owned());
+    }
+    if let Some(mode) = signal_fsr_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE", mode.to_string());
+    }
+    if signal_ram_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE", "1".to_owned());
+    }
+    if skip_typec_spmi {
+        push_env("FULLERENE_AARCH64_USB_SKIP_TYPEC_SPMI", "1".to_owned());
+    }
+    if signal_diag_publish {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH", "1".to_owned());
+    }
+    if let Some(secs) = quiet_after {
+        push_env("FULLERENE_AARCH64_USB_QUIET_AFTER", secs.to_string());
+    }
+    if let Some(origin) = dma_origin {
+        push_env("FULLERENE_AARCH64_USB_DMA_ORIGIN", origin);
+    }
+    if let Some(value) = signal_cmd_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_CMD_GATE", value);
+    }
+    if let Some(value) = signal_rsc_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE", value);
+    }
+    if let Some(value) = signal_cfg_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_CFG_GATE", value);
+    }
+    if let Some(value) = signal_ramclk_gate {
+        push_env(
+            "FULLERENE_AARCH64_USB_SIGNAL_RAMCLK_GATE",
+            value.to_string(),
+        );
+    }
+    if smmu_disable {
+        push_env("FULLERENE_AARCH64_USB_SMMU_DISABLE", "1".to_owned());
+    }
+    if let Some(mode) = signal_evt_data_gate {
+        push_env(
+            "FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE",
+            mode.to_string(),
+        );
+    }
+    if let Some(secs) = observe_secs {
+        push_env("FULLERENE_AARCH64_USB_PROBE_OBSERVE_SECS", secs.to_string());
+    }
+
+    // Android's Bramble bootloader may relocate an arm64 Image. Build the
+    // freestanding binary as a static PIE and let the Rust bootstrap apply
+    // its R_AARCH64_RELATIVE entries before normal Rust code runs.
+    let mut rustflags = env::var("RUSTFLAGS").unwrap_or_default();
+    rustflags.push_str(" -C relocation-model=pic -C link-arg=-pie");
+    rustflags.push_str(" -C link-arg=-z -C link-arg=notext");
+
+    let mut combo = String::new();
+    for (name, value) in &cargo_envs {
+        combo.push_str(name);
+        combo.push_str("=");
+        combo.push_str(value);
+        combo.push('\n');
+    }
+    combo.push_str(&rustflags);
+    let digest = fnv1a64(&combo);
+    let cargo_target_dir = workspace_root.join(format!("target/ak{digest:016x}"));
+
     let mut cargo = Command::new("cargo");
     cargo
         .current_dir(workspace_root)
@@ -1036,160 +1251,11 @@ fn build_aarch64_kernel(
         // bare-metal target is shipped with Rust's lld linker, so this does not
         // require a host C cross-toolchain.
         .env("CARGO_TARGET_AARCH64_UNKNOWN_NONE_LINKER", "rust-lld")
-        .env(
-            "FULLERENE_AARCH64_PLATFORM",
-            match platform {
-                Platform::Bramble => "bramble",
-                Platform::QemuVirt => "qemu-virt",
-                Platform::PcUefi => "pc-uefi",
-            },
-        );
-    if let Some(probe_env) = probe_env {
-        cargo.env(probe_env, "1");
+        .env("CARGO_TARGET_DIR", cargo_target_dir.display().to_string());
+    for (name, value) in &cargo_envs {
+        cargo.env(name, value);
     }
-    if gadget_handoff_no_smmu {
-        cargo.env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU", "1");
-    }
-    if gadget_handoff_reuse_fastboot_dma {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_REUSE_FASTBOOT_DMA",
-            "1",
-        );
-    }
-    if gadget_handoff_no_transfer_resource {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_TRANSFER_RESOURCE",
-            "1",
-        );
-    }
-    if gadget_handoff_android_resource_order {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_RESOURCE_ORDER",
-            "1",
-        );
-    }
-    if gadget_handoff_start_after_connect {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT",
-            "1",
-        );
-    }
-    if gadget_handoff_start_after_reset {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_RESET",
-            "1",
-        );
-    }
-    if gadget_handoff_start_at_connect_done {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AT_CONNECT_DONE",
-            "1",
-        );
-    }
-    if let Some(stage) = gadget_handoff_stop_after_stage {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_STOP_STAGE",
-            stage.to_string(),
-        );
-    }
-    if qemu_usb_sim {
-        cargo.env("FULLERENE_AARCH64_QEMU_USB_SIM", "1");
-    }
-    if gadget_handoff_direct {
-        cargo.env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_DIRECT", "1");
-    }
-    if ep0_signal_probe {
-        cargo.env("FULLERENE_AARCH64_USB_EP0_SIGNAL_PROBE", "1");
-    }
-    if ep0_signal_smmu_state {
-        cargo.env("FULLERENE_AARCH64_USB_EP0_SIGNAL_SMMU_STATE", "1");
-    }
-    if ep0_signal_link_state {
-        cargo.env("FULLERENE_AARCH64_USB_EP0_SIGNAL_LINK_STATE", "1");
-    }
-    if ep0_signal_raw_link {
-        cargo.env("FULLERENE_AARCH64_USB_EP0_SIGNAL_RAW_LINK", "1");
-    }
-    if let Some(code) = ep0_signal_early_drop {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_EP0_SIGNAL_EARLY_DROP",
-            code.to_string(),
-        );
-    }
-    if ep0_signal_pre_drop {
-        cargo.env("FULLERENE_AARCH64_USB_EP0_SIGNAL_PRE_DROP", "1");
-    }
-    if ep0_signal_heartbeat {
-        cargo.env("FULLERENE_AARCH64_USB_EP0_SIGNAL_HEARTBEAT", "1");
-    }
-    if ep0_dma_adopt {
-        cargo.env("FULLERENE_AARCH64_USB_EP0_DMA_ADOPT", "1");
-    }
-    if let Some(value) = ep0_smmu_gate {
-        cargo.env("FULLERENE_AARCH64_USB_EP0_SMMU_GATE", value.to_string());
-    }
-    if ep0_signal_drop_vbus {
-        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS", "1");
-    }
-    if let Some(secs) = connect_delay {
-        cargo.env("FULLERENE_AARCH64_USB_CONNECT_DELAY", secs.to_string());
-    }
-    if ep0_smmu_install {
-        cargo.env("FULLERENE_AARCH64_USB_EP0_SMMU_INSTALL", "1");
-    }
-    if signal_dma_probe {
-        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE", "1");
-    }
-    if smmu_install_all {
-        cargo.env("FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL", "1");
-    }
-    if let Some(mode) = signal_fsr_gate {
-        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE", mode.to_string());
-    }
-    if signal_ram_gate {
-        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE", "1");
-    }
-    if signal_diag_publish {
-        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH", "1");
-    }
-    if let Some(secs) = quiet_after {
-        cargo.env("FULLERENE_AARCH64_USB_QUIET_AFTER", secs.to_string());
-    }
-    if let Some(origin) = dma_origin {
-        cargo.env("FULLERENE_AARCH64_USB_DMA_ORIGIN", origin);
-    }
-    if let Some(value) = signal_cmd_gate {
-        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_CMD_GATE", value);
-    }
-    if let Some(value) = signal_rsc_gate {
-        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE", value);
-    }
-    if let Some(value) = signal_cfg_gate {
-        cargo.env("FULLERENE_AARCH64_USB_SIGNAL_CFG_GATE", value);
-    }
-    if let Some(value) = signal_ramclk_gate {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_SIGNAL_RAMCLK_GATE",
-            value.to_string(),
-        );
-    }
-    if smmu_disable {
-        cargo.env("FULLERENE_AARCH64_USB_SMMU_DISABLE", "1");
-    }
-    if let Some(mode) = signal_evt_data_gate {
-        cargo.env(
-            "FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE",
-            mode.to_string(),
-        );
-    }
-
-    // Android's Bramble bootloader may relocate an arm64 Image. Build the
-    // freestanding binary as a static PIE and let the Rust bootstrap apply
-    // its R_AARCH64_RELATIVE entries before normal Rust code runs.
-    let mut rustflags = env::var("RUSTFLAGS").unwrap_or_default();
-    rustflags.push_str(" -C relocation-model=pic -C link-arg=-pie");
-    rustflags.push_str(" -C link-arg=-z -C link-arg=notext");
-    cargo.env("RUSTFLAGS", rustflags);
+    cargo.env("RUSTFLAGS", &rustflags);
 
     let status = cargo.status()?;
     if !status.success() {
@@ -1199,8 +1265,7 @@ fn build_aarch64_kernel(
         )));
     }
 
-    let artifact = workspace_root
-        .join("target")
+    let artifact = cargo_target_dir
         .join(target.rust_target())
         .join(profile.artifact_directory())
         .join(kernel_artifact);
@@ -1263,6 +1328,8 @@ fn run_aarch64_qemu_preflight(
         None,                            // 38 signal_ramclk_gate
         false,                           // 39 smmu_disable
         None,                            // 40 signal_evt_data_gate
+        None,                            // 41 observe_secs
+        false,                           // 42 skip_typec_spmi
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;
     let image = build_aarch64_image(&raw)?;
