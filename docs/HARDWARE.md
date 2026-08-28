@@ -1399,6 +1399,94 @@ idle-armed) and re-test; (iii) bisect the ~26 s reboot by arming the
 assembly recovery timer with a distinctive delay. flash/erase are still
 never used; every run recovers automatically.
 
+### Fourth session: gate infrastructure rework, watchdog elimination, and the template recovery
+
+The stock boot template was restored after a host reboot wiped /tmp: the
+factory image from the February session was still under
+`~/ダウンロード/bramble-up1a.231105.001.b2-factory-46a218d9/`, and its
+`boot.img` (valid `ANDROID!` header, same build the handset runs) was copied
+back to `/tmp/fullerene-stock-template.Uvg3m2/boot.img`. Neither
+`fastboot fetch` (unsupported by this bootloader and fastbootd) nor web
+searches were needed. The device was never touched for the recovery.
+
+The diagnostic gate infrastructure was reworked after a structural flaw
+surfaced: gates evaluated inside the handoff read attempt 1's still-empty
+trace and parked before any data existed. The gates now run in the signal
+probe AFTER a 10 s observation window during which the enumeration flows
+normally; `cmd_gate_condition_met()` evaluates this run's harvest, true
+continues into the normal poll loop (the attach stays up), false drops the
+pull-up and resets through the bounded 90 s park (`park_after_gate_failure`,
+which replaces the earlier unbounded park that once stranded the handset for
+~5 minutes - it recovers to fastboot by itself, but the bound makes the
+timing predictable).
+
+Watchdog elimination work (bootreason=watchdog on every probe reboot,
+~17 s after probe entry, independent of USB attach, MMIO quiet windows, and
+GIC state):
+
+- The APSS watchdog at 0x17c10000 was read at probe entry through BOTH
+  register layouts (kpss RST=0x04/EN=0x08 and apcs-timer
+  RST=0x38/EN=0x40): the kpss EN reads 0, and the `wdt-armed`/`wdt-off`
+  gates confirmed the APSS WDT is NOT armed at probe entry.
+- Re-arming the APSS WDT with a 100 s bark/bite did not move the ~17 s
+  reboot, and petting both layouts (RST write of 1, the downstream
+  watchdog_v2 convention) did not prevent it.
+- The secure-watchdog deactivate SCM call
+  (0x02000407 = SIP | SVC_BOOT<<10 | SEC_WDOG_DIS, arginfo=1, args[0]=1)
+  was added at probe entry and did not change the reboot either.
+- The reuse of `SCM_SVC_SEC_WDOG_DIS` and both register layouts is kept in
+  the code as diagnostics; the biting watchdog remains unidentified (PON /
+  PMIC watchdog or an XBL-armed instance are the remaining candidates).
+
+EP0 fixes applied this session (all verified against the Linux sources):
+
+1. `rearm_setup()` is no longer punitive: a failed Start Transfer on this
+   core means the link is not ON yet, never a broken endpoint; the old
+   DALEPENA-clear path killed EP0 exactly when the host's post-reset
+   descriptor read arrived.
+2. The default mode no longer issues the pre-Run/Stop Start Transfer at
+   all: on this core it wedges the endpoint command engine and the later
+   Run/Stop never publishes the pull-up (default mode produced no attach
+   until this change).
+3. A freshly DMAed SETUP packet now overrides any in-flight EP0 phase
+   (the Linux `setup_packet_pending` equivalent): the setup buffer is
+   zeroed after latching, and an EP0 completion with a non-zero setup
+   buffer forces the Setup phase, so hosts that abort stalled control
+   transfers with a new SETUP no longer lose the request.
+4. The USB-reset handler no longer issues ENDXFER for the in-flight EP0
+   transfers (the bus reset already flushed them; the ENDXFER-then-rearm
+   race answered "No Resource" to every post-reset re-arm).
+5. A tight SETUP-arm window (200 us retries, 100 ms bound) runs right
+   after Run/Stop, and the poll-loop guard keeps retrying afterwards.
+6. `gicv3::init` now disables EVERY SPI and PPI the bootloader left
+   enabled (GICD_TYPER-driven ICENABLER sweep plus the redistributor
+   words) before enabling only the recovery timer; ABL's own DWC3/PMIC/PDC
+   SPIs were still live and fired into the probe's vectors on the host's
+   first bus reset.
+7. The `.usb_dma`/`.usb_trace` 2 MiB window is mapped Device memory in the
+   early MMU (no cache maintenance needed or allowed there), and the
+   APSS watchdog page (0x17c10000) is covered by the Device MMIO range.
+
+Gate results with the reworked infrastructure: `armed` = TRUE (the
+poll-guard's deferred Start Transfer succeeds while live), `arm-first` and
+`setup-first` both passed in the same run (the harvest spans multiple
+attempts, so those two race gates are ambiguous and need newest-pair
+semantics next session).
+
+Remaining blockers, unchanged: the host's FIRST descriptor read still
+times out (-110) even though the arm provably precedes the first captured
+SETUP, and the ~17 s watchdog reboot still kills every run. The
+enumeration pipeline itself is proven through SET_ADDRESS and the
+addressed read-all. Next session's highest-value steps: (i) newest-pair
+arm/setup race gates plus a per-arm DSTS.USBLNKST capture to see the link
+state at the moment the arm succeeds; (ii) try arming the SETUP TRB
+without any link-state gating (raw Start Transfer the moment Run/Stop
+returns and after every reset event, tolerating "No Resource" failures);
+(iii) identify the biting watchdog via the PON reset-reason register
+(PM8150 SPMI read at probe entry) - the APSS WDT and the secure watchdog
+are already ruled out. flash/erase are still never used; every run
+recovers automatically.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:

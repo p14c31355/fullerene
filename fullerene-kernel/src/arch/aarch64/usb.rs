@@ -43,6 +43,112 @@ unsafe extern "C" {
     static __usb_dma_end: u8;
 }
 
+// Qualcomm APSS watchdog (kpss register layout). XBL/ABL arm it with a
+// pet-time of ~27 s; nothing in the early handoff pets it, so the handset
+// reboots (bark -> bite) ~8 s after the probe enters - exactly when host
+// enumeration is in flight. Pet it at entry and from every poll loop.
+const APSS_WDT_BASE: usize = 0x17c1_0000;
+// The SM7250 "qcom,wdt" (watchdog_v2) uses the kpss register layout at this
+// base (WDT0_RST=0x04, EN=0x08, STS=0x0C, BARK=0x10, BITE=0x14). The
+// apcs-timer offsets belong to other SoC families; writing them here would
+// hit reserved registers in the timer page.
+const APSS_WDT_RST: usize = 0x4;
+const APSS_WDT_EN: usize = 0x8;
+const APSS_WDT_STS: usize = 0xc;
+const APSS_WDT_BARK: usize = 0x10;
+const APSS_WDT_BITE: usize = 0x14;
+static mut WDT_TRACED: bool = false;
+/// WDT enable word captured at the first pet (probe entry).
+/// 0xFFFF_FFFF = not captured yet.
+static mut WDT_KPSS_EN_AT_ENTRY: u32 = 0xFFFF_FFFF;
+
+#[inline]
+unsafe fn wdt_reg(offset: usize) -> *mut u32 {
+    (APSS_WDT_BASE + offset) as *mut u32
+}
+
+/// Deactivate the SECURE watchdog through SCM (the same call the downstream
+/// watchdog_v2 driver exposes via its disable sysfs):
+///   SMC id = 0x02000000 | (SCM_SVC_BOOT << 10) | SCM_SVC_SEC_WDOG_DIS
+///          = 0x02000407, arginfo = 1, args[0] = 1.
+/// XBL/ABL arm this watchdog for the `fastboot boot` path; an unpetted bite
+/// reboots the handset ~17 s into every probe (bootreason=watchdog) no
+/// matter what happens to the APSS WDT registers.
+pub fn secure_wdt_disable() {
+    unsafe {
+        let result: u64;
+        core::arch::asm!(
+            "mov x0, #0x0407",
+            "movk x0, #0x0200, lsl #16",
+            "mov x1, #1",
+            "mov x2, #1",
+            "smc #0",
+            "mov {result}, x0",
+            result = out(reg) result,
+            out("x1") _,
+            out("x2") _,
+            out("x3") _,
+            options(nostack)
+        );
+        trace_event(
+            TRACE_PROBE_WATCHDOG,
+            0x5357_4444, // "SWDD"
+            result as u32,
+            (result >> 32) as u32,
+            0,
+            0,
+        );
+    }
+}
+
+/// Restart the apps watchdog countdown and, once, record its configuration
+/// in the retained trace, disabling it if it is armed.
+pub fn wdt_pet() {
+    unsafe {
+        if !WDT_TRACED {
+            WDT_TRACED = true;
+            let en = read_volatile(wdt_reg(APSS_WDT_EN));
+            WDT_KPSS_EN_AT_ENTRY = en;
+            let bark = read_volatile(wdt_reg(APSS_WDT_BARK));
+            let bite = read_volatile(wdt_reg(APSS_WDT_BITE));
+            let sts = read_volatile(wdt_reg(APSS_WDT_STS));
+            trace_event(
+                TRACE_PROBE_WATCHDOG,
+                0x5744_5430, // "WDT0"
+                en,
+                bark,
+                bite,
+                sts,
+            );
+            // Re-arm the countdown with OUR timeout: the downstream
+            // watchdog_v2 configures bark = qcom,bark-time (+console offset)
+            // and bite = bark + 3 s at a 32765 Hz watchdog clock. Writing a
+            // 100 s bark / 110 s bite here moves an APSS-WDT-driven reboot
+            // out of the enumeration window entirely; if the ~17 s reboot
+            // still happens, the source is a different watchdog.
+            let bark_100s: u32 = 100 * 32765;
+            let bite_110s: u32 = 110 * 32765;
+            write_volatile(wdt_reg(APSS_WDT_BARK), bark_100s);
+            write_volatile(wdt_reg(APSS_WDT_BITE), bite_110s);
+            write_volatile(wdt_reg(APSS_WDT_RST), 1);
+            write_volatile(wdt_reg(APSS_WDT_EN), 1);
+            core::arch::asm!("dsb sy", options(nostack));
+            let en_after = read_volatile(wdt_reg(APSS_WDT_EN));
+            trace_event(
+                TRACE_PROBE_WATCHDOG,
+                0x5744_5441, // "WDTA" armed by probe
+                en,
+                en_after,
+                bark_100s >> 16,
+                bite_110s >> 16,
+            );
+        }
+        // The downstream watchdog_v2 pets by writing 1 (not 0) to RST.
+        write_volatile(wdt_reg(APSS_WDT_RST), 1);
+        core::arch::asm!("dsb sy", options(nostack));
+    }
+}
+
 #[inline]
 fn dwc3_base() -> usize {
     super::platform::bramble::usb_resources().dwc3_base
@@ -689,6 +795,9 @@ static mut PENDING_SETUP_ARM: bool = false;
 /// command engine at poll rate during that window can wedge it, so the
 /// guard backs off between attempts.
 static mut ARM_COOLDOWN: u32 = 0;
+/// CNTPCT tick of the first successful post-connect Run/Stop (quiet-window
+/// reference; 0 = no start recorded yet).
+static mut RUN_STOP_TICK: u64 = 0;
 /// Connect-delay one-shot latch (see the delay block in
 /// `init_with_super_speed`). Only the first handoff attempt pays the delay
 /// so the retry loop stays inside the EL1 recovery-timer budget.
@@ -1351,6 +1460,11 @@ static mut TRACE_HARVEST_STATUSQ: u32 = 0;
 /// marker) in the previous attempts: proves the guard's deferred Start
 /// Transfer ever succeeded while live.
 static mut TRACE_HARVEST_ARMED: u32 = 0;
+/// Sequence numbers of the OLDEST guard-arm (ARME) and OLDEST SETUP
+/// reception: if the arm's sequence is lower, the SETUP TRB was armed before
+/// the host's first SETUP token arrived (the arm won the race).
+static mut TRACE_HARVEST_ARM_SEQ: u32 = 0xFFFF_FFFF;
+static mut TRACE_HARVEST_SETUP_SEQ: u32 = 0xFFFF_FFFF;
 /// Seconds between the previous attempt's Connect Done and its first SETUP
 /// reception (0xFFFF = no such pair observed).
 static mut TRACE_HARVEST_SETUP_DELAY: u32 = 0xFFFF;
@@ -1448,6 +1562,8 @@ unsafe fn harvest_trace_outcome() {
         TRACE_HARVEST_DESC = 0;
         TRACE_HARVEST_STATUSQ = 0;
         TRACE_HARVEST_ARMED = 0;
+        TRACE_HARVEST_ARM_SEQ = 0xFFFF_FFFF;
+        TRACE_HARVEST_SETUP_SEQ = 0xFFFF_FFFF;
         TRACE_HARVEST_CONNECT = 0;
         TRACE_HARVEST_ADDR = 0;
         TRACE_HARVEST_ADDR2 = 0;
@@ -1486,6 +1602,16 @@ unsafe fn harvest_trace_outcome() {
                 let marker = read_volatile(addr_of!((*entry).request));
                 if marker == 0x4152_4D45 {
                     TRACE_HARVEST_ARMED = TRACE_HARVEST_ARMED.wrapping_add(1);
+                    let sequence = read_volatile(addr_of!((*entry).sequence));
+                    if sequence < TRACE_HARVEST_ARM_SEQ {
+                        TRACE_HARVEST_ARM_SEQ = sequence;
+                    }
+                }
+            }
+            if event == TRACE_SETUP_RECEIVED {
+                let sequence = read_volatile(addr_of!((*entry).sequence));
+                if sequence < TRACE_HARVEST_SETUP_SEQ {
+                    TRACE_HARVEST_SETUP_SEQ = sequence;
                 }
             }
             if event != TRACE_EP_COMMAND_DONE && event != TRACE_EP_COMMAND_TIMEOUT {
@@ -4251,13 +4377,17 @@ unsafe fn try_arm_setup() -> bool {
 /// packets into a stale resource; the next Connect Done/USB reset can rebuild
 /// the endpoint allocation.
 unsafe fn rearm_setup() -> bool {
+    // A failed Start Transfer on this core means the device link is not ON
+    // yet (the host's bus reset is in flight) - never a broken endpoint. The
+    // old punitive path (DALEPENA clear + ENDPOINTS_READY=false) killed EP0
+    // exactly when the host's post-reset descriptor read arrived, which is
+    // the source of the first-read -110. Leave the endpoint alive: the
+    // poll-loop guard retries the arm the moment the link reaches ON.
     if unsafe { start_setup() } {
         return true;
     }
     unsafe {
         trace_event(TRACE_USB_DEVICE_ERROR, 0, 0, 0, 0, read(DSTS));
-        write(DALEPENA, read(DALEPENA) & !0b11);
-        ENDPOINTS_READY = false;
     }
     false
 }
@@ -4314,18 +4444,14 @@ unsafe fn restart_control_after_reset() {
         // about reprogramming it on Connect Done documents exactly this);
         // restore the captured working select before the EP0 rebuild.
         reapply_ramclksel();
-        // USB RESET terminates the wire transaction, but DWC3 may still own
-        // the pre-reset EP0 resource until software explicitly revokes it.
-        // Linux's reset path stops active transfers before rebuilding the
-        // control state. Clearing only our cached index and issuing a new
-        // STARTTRANSFER can otherwise leave the hardware on the old SETUP
-        // TRB and make the first descriptor request time out.
-        for endpoint in 0..2 {
-            if EP0_RESOURCE_INDEX[endpoint] != 0 {
-                let _ = end_transfer(endpoint);
-                EP0_RESOURCE_INDEX[endpoint] = 0;
-            }
-        }
+        // A bus reset already flushed every in-flight EP0 transfer at the
+        // wire level. Issuing ENDXFER here and then re-arming races the
+        // resource release against the new Start Transfer: the core answers
+        // the re-arm with "No Resource" until the ENDXFER completes, the
+        // re-arm lands after the host's post-reset SETUP token, and the
+        // first descriptor read times out (-110). Clear only the software
+        // index; the hardware transfer state is reset by the bus reset.
+        EP0_RESOURCE_INDEX = [0; 2];
         unbind_function();
         teardown_data_endpoints();
         reset_gsi_channels();
@@ -4488,6 +4614,15 @@ unsafe fn setup_request() -> [u8; 8] {
 
 unsafe fn handle_setup() {
     let packet = unsafe { setup_request() };
+    // Zero the DMA buffer after latching the packet: a later non-zero
+    // buffer then proves the core delivered a NEW SETUP packet, even while
+    // the software state machine was still in the Data/Status phase (the
+    // host aborts in-flight control transfers with a new SETUP - Linux
+    // handles this via its setup_packet_pending logic).
+    unsafe {
+        core::ptr::write_bytes(ep0_setup_ptr(), 0, 8);
+        cache_clean(ep0_setup_ptr() as usize, 8);
+    }
     let request_type = packet[0];
     let request = packet[1];
     let value = u16::from_le_bytes([packet[2], packet[3]]);
@@ -4731,6 +4866,26 @@ unsafe fn process_event(raw: u32) {
             // the poll-loop guard re-arms the SETUP TRB once EP0 returns to
             // the Setup state.
             EP0_SETUP_ARMED = false;
+            // A freshly DMAed SETUP packet overrides any in-flight phase:
+            // hosts abort stalled control transfers by sending a new SETUP,
+            // and the completion event for the OLD transfer carries it.
+            // Linux recovers via setup_packet_pending; without this the new
+            // SETUP is dispatched into the stale Data/Status handler and the
+            // request is silently lost (the mid-enumeration death).
+            let setup = ep0_setup_ptr();
+            cache_invalidate(setup as usize, 8);
+            let mut fresh_setup = false;
+            for offset in 0..8 {
+                if read_volatile(setup.add(offset)) != 0 {
+                    fresh_setup = true;
+                    break;
+                }
+            }
+            if fresh_setup {
+                EP0_STATE = Ep0State::Setup;
+                handle_setup();
+                return;
+            }
         }
         trace_event(
             TRACE_TRANSFER_COMPLETE,
@@ -6766,16 +6921,13 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             fullerene_aarch64_usb_gadget_handoff_start_at_connect_done
         )))]
         {
-            // A failed Start Transfer wedges the endpoint command engine on
-            // this platform and the poll guard cannot recover it; fail the
-            // attempt so the proven fallback sequence (whose halted-core
-            // Start Transfer demonstrably succeeds) takes over.
-            if !start_transfer(0, ep0_trb_ptr(0)) {
-                log_puts("usb: SETUP STARTTRANSFER failed\n");
-                #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
-                let _ = gadget_handoff_fail(8);
-                return false;
-            }
+            // On this core a Start Transfer issued before the link reaches
+            // ON not only fails with "No resource" but WEDGES the endpoint
+            // command engine - the later Run/Stop then never publishes the
+            // pull-up at all. Do not issue it here: the Connect Done handler
+            // arms the SETUP TRB the moment the link comes up (which is
+            // still before the host's first SETUP token), and the poll-loop
+            // guard re-arms on any later reset.
 
             #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
             if cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
@@ -6850,6 +7002,22 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if let Some(want) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") {
+            // The gate is evaluated by the signal probe AFTER this run's
+            // observation window (see run_ep0_signal_probe): evaluating it
+            // here would read attempt 1's still-empty trace and park before
+            // any data existed. Keep this marker for the retained trace.
+            trace_event(
+                TRACE_SMMU_HANDOFF,
+                0x434D_4741, // "CMGA"
+                0,
+                0,
+                0,
+                0,
+            );
+            let _ = want;
+        }
+        #[cfg(not(fullerene_aarch64_usb_ep0_signal_probe))]
+        if let Some(want) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") {
             // One-bit readouts of the previous attempt's command outcomes and
             // SETUP reception. The retained-trace harvest carries the raw
             // DEPCMD register values; the host-visible attach names them:
@@ -6872,6 +7040,24 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 "statusq" => TRACE_HARVEST_STATUSQ > 0,
                 "armed" => TRACE_HARVEST_ARMED > 0,
                 "connect" => TRACE_HARVEST_CONNECT > 0,
+                // Watchdog-state readouts: the host-visible attach names
+                // whether the apps watchdog was ARMED at probe entry.
+                // Attach only when the guard's arm preceded the host's first
+                // SETUP token: the arm won the race.
+                "arm-first" => {
+                    TRACE_HARVEST_ARM_SEQ != 0xFFFF_FFFF
+                        && TRACE_HARVEST_SETUP_SEQ != 0xFFFF_FFFF
+                        && TRACE_HARVEST_ARM_SEQ < TRACE_HARVEST_SETUP_SEQ
+                }
+                // Attach only when the first SETUP arrived while no TRB was
+                // armed: the arm lost the race (the -110 root cause).
+                "setup-first" => {
+                    TRACE_HARVEST_SETUP_SEQ != 0xFFFF_FFFF
+                        && (TRACE_HARVEST_ARM_SEQ == 0xFFFF_FFFF
+                            || TRACE_HARVEST_ARM_SEQ > TRACE_HARVEST_SETUP_SEQ)
+                }
+                "wdt-armed" => WDT_KPSS_EN_AT_ENTRY & 1 != 0,
+                "wdt-off" => WDT_KPSS_EN_AT_ENTRY != 0xFFFF_FFFF && WDT_KPSS_EN_AT_ENTRY & 1 == 0,
                 "addr" => TRACE_HARVEST_ADDR > 0,
                 "readall" => TRACE_HARVEST_ADDR2 > 0,
                 "second-setup" => TRACE_HARVEST_SETUP >= 2,
@@ -6900,7 +7086,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             if !ok {
                 trace_marker(TRACE_PROBE_WATCHDOG, 0x434D_4400 | (TRACE_HARVEST & 0xff));
                 log_puts("usb: command gate mismatch; suppressing pull-up\n");
-                return false;
+                park_after_gate_failure();
             }
         }
 
@@ -6982,6 +7168,38 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             log_hex("usb: DWC3 remained halted, DSTS=", read(DSTS) as u64);
             return false;
         }
+        RUN_STOP_TICK = arch_counter();
+        // Tight SETUP-arm window: retry the ep0 OUT Start Transfer every
+        // 200 us for up to 100 ms after Run/Stop. The link reaches ON within
+        // a few ms (the HS chirp handshake), and the host's first SETUP
+        // token arrives only after its own attach debounce plus port reset -
+        // arming in this window guarantees the first descriptor read is
+        // answered instead of timing out (-110) while the poll-loop guard
+        // was still waiting for the link state.
+        {
+            let arm_deadline =
+                arch_counter().saturating_add(arch_counter_frequency().saturating_mul(100) / 1000);
+            let mut armed = false;
+            while arch_counter() < arm_deadline {
+                if EP0_SETUP_ARMED {
+                    armed = true;
+                    break;
+                }
+                if try_arm_setup() {
+                    armed = true;
+                    break;
+                }
+                super::timer::delay_us(200);
+            }
+            trace_event(
+                TRACE_SETUP_QUEUED,
+                0x5441_524D, // "TARM" tight-arm outcome
+                armed as u32,
+                0,
+                0,
+                read(DSTS),
+            );
+        }
 
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         ep0_signal_early_drop_check();
@@ -6994,11 +7212,11 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 
         #[cfg(fullerene_aarch64_usb_gadget_handoff_start_after_connect)]
         {
-            // Same wedge behavior as the default arm: fail the attempt so
-            // the proven fallback sequence takes over.
+            // Same link-state constraint as the default arm: defer the
+            // failure to the poll-loop guard, which arms once the link is
+            // ON (the proven path that reached the host's SET_ADDRESS).
             if !start_transfer(0, ep0_trb_ptr(0)) {
-                log_puts("usb: post-connect SETUP STARTTRANSFER failed\n");
-                return false;
+                log_puts("usb: post-connect SETUP STARTTRANSFER deferred\n");
             }
             poll_ep0_event_ring();
         }
@@ -7346,6 +7564,99 @@ fn ep0_signal_early_drop_check() {
     }
 }
 
+/// True when the diagnostic quiet window (FULLERENE_USB_QUIET_AFTER_SECS)
+/// has passed: the probe must stop ALL MMIO access, including the watchdog
+/// pet, so a surviving reboot is provably external.
+pub fn mmio_quiet_active() -> bool {
+    unsafe {
+        if let Some(secs) = option_env!("FULLERENE_USB_QUIET_AFTER_SECS")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+        {
+            if RUN_STOP_TICK != 0 {
+                let frequency = arch_counter_frequency();
+                if frequency != 0 {
+                    return arch_counter().saturating_sub(RUN_STOP_TICK)
+                        >= frequency.saturating_mul(secs);
+                }
+            }
+        }
+        false
+    }
+}
+
+/// Evaluate the FULLERENE_USB_SIGNAL_CMD_GATE condition against the
+/// retained-trace harvest. None = no gate configured (or unparseable).
+pub fn cmd_gate_condition_met() -> Option<bool> {
+    let want = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")?;
+    unsafe {
+        let ok = match want {
+            "timeout" => TRACE_HARVEST & 0x1_0000 != 0,
+            "done" => TRACE_HARVEST != 0xFFFF_FFFF && TRACE_HARVEST & 0x1_0000 == 0,
+            "last-timeout" => TRACE_HARVEST_LAST & 0x1_0000 != 0,
+            "last-done" => TRACE_HARVEST_LAST != 0xFFFF_FFFF && TRACE_HARVEST_LAST & 0x1_0000 == 0,
+            "setup" => TRACE_HARVEST_SETUP > 0,
+            "desc" => TRACE_HARVEST_DESC > 0,
+            "statusq" => TRACE_HARVEST_STATUSQ > 0,
+            "armed" => TRACE_HARVEST_ARMED > 0,
+            "arm-first" => {
+                TRACE_HARVEST_ARM_SEQ != 0xFFFF_FFFF
+                    && TRACE_HARVEST_SETUP_SEQ != 0xFFFF_FFFF
+                    && TRACE_HARVEST_ARM_SEQ < TRACE_HARVEST_SETUP_SEQ
+            }
+            "setup-first" => {
+                TRACE_HARVEST_SETUP_SEQ != 0xFFFF_FFFF
+                    && (TRACE_HARVEST_ARM_SEQ == 0xFFFF_FFFF
+                        || TRACE_HARVEST_ARM_SEQ > TRACE_HARVEST_SETUP_SEQ)
+            }
+            "connect" => TRACE_HARVEST_CONNECT > 0,
+            "addr" => TRACE_HARVEST_ADDR > 0,
+            "readall" => TRACE_HARVEST_ADDR2 > 0,
+            "wdt-armed" => WDT_KPSS_EN_AT_ENTRY & 1 != 0,
+            "wdt-off" => WDT_KPSS_EN_AT_ENTRY != 0xFFFF_FFFF && WDT_KPSS_EN_AT_ENTRY & 1 == 0,
+            other => u32::from_str_radix(other.trim_start_matches("0x"), 16)
+                .map(|value| TRACE_HARVEST == value)
+                .unwrap_or(false),
+        };
+        Some(ok)
+    }
+}
+
+/// Park the probe after a gate readout failed: no pull-up, no fallback
+/// path, no secondary attempt, so one-bit gate readouts stay uncontaminated
+/// by later handoff attempts that might publish a pull-up of their own.
+/// Bounded: after 90 s the probe resets through the normal recovery path
+/// (fastboot) even if the assembly timer is late.
+pub fn park_after_gate_failure() -> ! {
+    unsafe {
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x5041_524B); // "PARK"
+        let frequency = arch_counter_frequency();
+        let deadline = arch_counter().saturating_add(frequency.saturating_mul(90));
+        while frequency == 0 || arch_counter() < deadline {
+            wdt_pet();
+            core::hint::spin_loop();
+        }
+        // Same recovery as the probe's reset path: PS_HOLD + PSCI
+        // SYSTEM_RESET (usb_probe is a separate binary, so inline it here).
+        unsafe {
+            core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
+            core::arch::asm!(
+                "mov w0, #9",
+                "movk w0, #0x8400, lsl #16",
+                "smc #0",
+                out("x0") _,
+                out("x1") _,
+                out("x2") _,
+                out("x3") _,
+                options(nostack)
+            );
+        }
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 /// Deassert the pull-up so the host sees a physical disconnect.
 ///
 /// The Qualcomm session overrides are cleared INSTEAD of toggling
@@ -7426,6 +7737,11 @@ unsafe fn enable_gadget_controller_irq() {}
 /// the early boot loop until the normal interrupt controller owns the device.
 pub fn poll() {
     unsafe {
+        // Diagnostic quiet window (see mmio_quiet_active): after this many
+        // seconds past the first Run/Stop, stop ALL controller MMIO access.
+        if mmio_quiet_active() {
+            return;
+        }
         let runtime = USB_RUNTIME_STATE;
         // In the no-SMMU differential the whole point is to never touch the
         // Apps-SMMU: the stream is unmatched there and the (inactive, often

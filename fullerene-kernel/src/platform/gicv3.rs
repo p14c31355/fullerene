@@ -4,6 +4,7 @@ use core::ptr::{read_volatile, write_volatile};
 const TIMER_PPI: u32 = 30;
 
 const GICD_CTLR: usize = 0x0000;
+const GICD_TYPER: usize = 0x0004;
 const GICD_IGROUPR: usize = 0x0080;
 const GICD_ISENABLER: usize = 0x0100;
 const GICD_ICENABLER: usize = 0x0180;
@@ -14,6 +15,7 @@ const GICR_WAKER: usize = 0x0014;
 const GICR_SGI_BASE: usize = 0x1_0000;
 const GICR_IGROUPR0: usize = 0x80;
 const GICR_ISENABLER0: usize = 0x100;
+const GICR_ICENABLER0: usize = 0x180;
 const GICR_IPRIORITYR0: usize = 0x400;
 
 unsafe fn read32(address: usize) -> u32 {
@@ -147,6 +149,23 @@ pub fn init(gicd_base: usize, gicr_base: usize, usb_irq: Option<u32>) -> bool {
             // Leave the caller's polling path alive, but do not spin forever.
             return false;
         }
+
+        // Disable EVERY SPI and PPI the bootloader left enabled. ABL armed
+        // the DWC3/PMIC/PDC SPIs for its own fastboot gadget, and those stay
+        // enabled in the distributor after it jumps away: the host's first
+        // bus reset then fires a DWC3 interrupt into the probe's exception
+        // vectors (direct mode never enables that SPI), which reboots the
+        // handset ~2 s into host enumeration. Read the distributor's
+        // interrupt-count from TYPER and clear every enable word.
+        let typer = read32(gicd_base + GICD_TYPER);
+        let it_lines = typer & 0x1f;
+        for word in 0..=it_lines as usize {
+            write32(gicd_base + GICD_ICENABLER + word * 4, 0xffff_ffff);
+        }
+        // Redistributor side: clear the PPI/SGI enables, then re-arm only
+        // the recovery timer PPI below.
+        write32(sgi_base + GICR_ICENABLER0, 0xffff_ffff);
+        core::arch::asm!("dsb sy", options(nostack));
 
         write32(
             sgi_base + GICR_IGROUPR0,

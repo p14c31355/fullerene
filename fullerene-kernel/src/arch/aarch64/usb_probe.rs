@@ -442,6 +442,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
     let observe_until = probe_counter().saturating_add(frequency.saturating_mul(10));
     let mut signal_code = signal_smmu_code;
     loop {
+        usb::wdt_pet();
         usb::poll();
         if usb::probe_ep0_progress() {
             // Enumeration actually succeeded: stop signaling and continue as
@@ -451,6 +452,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             }
             usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5354_4142); // "STAB"
             loop {
+                usb::wdt_pet();
                 usb::poll();
             }
         }
@@ -496,6 +498,21 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             0x5349_4744 | (signal_code & 0xff),
         );
     }
+    // Gate evaluation against THIS run's trace data: true (or no gate)
+    // continues into the normal poll loop - the enumeration keeps flowing
+    // and the attach stays up. False parks with the pull-up dropped, so the
+    // host-side attach presence names the gate condition one bit at a time.
+    if let Some(met) = usb::cmd_gate_condition_met() {
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4741_5445 | (met as u32 & 0xff), // "GADE"
+        );
+        if !met {
+            usb::ep0_signal_drop_pullup();
+            usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
+            reset_after_probe_failure();
+        }
+    }
     // code+1 visible re-attach cycles encode the diagnostic value in the
     // reliable attach-line count. The QSCRATCH session overrides control the
     // pull-up even when the core ignores DCTL, so each cycle stays short.
@@ -504,11 +521,13 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         usb::ep0_signal_drop_pullup();
         let dropped = probe_counter().saturating_add(frequency.saturating_mul(3) / 2);
         while frequency == 0 || probe_counter() < dropped {
+            usb::wdt_pet();
             usb::poll();
         }
         usb::ep0_signal_restore_pullup();
         let attached = probe_counter().saturating_add(frequency.saturating_mul(3) / 2);
         while frequency == 0 || probe_counter() < attached {
+            usb::wdt_pet();
             usb::poll();
         }
     }
@@ -518,6 +537,12 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
 
 #[unsafe(no_mangle)]
 extern "C" fn usb_probe_entry() -> ! {
+    // Deactivate the SECURE watchdog first: XBL/ABL arm it for the
+    // `fastboot boot` path and its bite reboots the handset ~17 s into every
+    // probe (bootreason=watchdog), killing host enumeration mid-flight.
+    usb::secure_wdt_disable();
+    // Pet the apps watchdog next: it may also have been left counting.
+    usb::wdt_pet();
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     usb::trace_probe_begin();
     // The trace region survives warm resets; between two `fastboot boot`
@@ -711,8 +736,18 @@ extern "C" fn usb_probe_entry() -> ! {
         fullerene_aarch64_usb_ep0_signal_probe,
         fullerene_aarch64_usb_gadget_handoff_probe
     ))]
-    if !gadget_ready {
-        run_ep0_signal_probe(signal_smmu_code, signal_link_state);
+    {
+        // The signal channel owns the post-init timeline when the handoff
+        // failed OR when a diagnostic gate needs this run's real trace data:
+        // it observes for a bounded window (the enumeration flows normally
+        // during it), then evaluates the gate and either continues into the
+        // normal poll loop (gate true / no gate) or parks (gate false).
+        let gate_active = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+            .filter(|value| *value != "0")
+            .is_some();
+        if !gadget_ready || gate_active {
+            run_ep0_signal_probe(signal_smmu_code, signal_link_state);
+        }
     }
     if gadget_ready {
         #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
@@ -724,6 +759,7 @@ extern "C" fn usb_probe_entry() -> ! {
             let frequency = probe_counter_frequency();
             let deadline = probe_counter().saturating_add(frequency.saturating_mul(10));
             while frequency == 0 || probe_counter() < deadline {
+                usb::wdt_pet();
                 core::hint::spin_loop();
             }
             reset_after_probe_failure();
@@ -806,6 +842,7 @@ extern "C" fn usb_probe_entry() -> ! {
             // The bare probe intentionally never reads the event/DMA path;
             // keep only the physical pull-up state alive while testing the
             // controller MMIO sequence itself.
+            usb::wdt_pet();
             core::hint::spin_loop();
         }
         #[cfg(not(any(
@@ -841,6 +878,15 @@ extern "C" fn usb_probe_entry() -> ! {
                 // the IRQ-backed path. This keeps USB RESET and the first
                 // SETUP on one serialized event-ring consumer.
                 loop {
+                    if usb::mmio_quiet_active() {
+                        // Full zero-MMIO park: the reboot-cause bisect needs
+                        // a window with NO controller OR watchdog access at
+                        // all. The 60 s assembly recovery timer still owns
+                        // the exit.
+                        core::hint::spin_loop();
+                        continue;
+                    }
+                    usb::wdt_pet();
                     usb::poll();
                     if usb::probe_ep0_progress() {
                         unsafe {
@@ -848,6 +894,7 @@ extern "C" fn usb_probe_entry() -> ! {
                         }
                         usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5354_4142); // "STAB"
                         loop {
+                            usb::wdt_pet();
                             usb::poll();
                         }
                     }
@@ -867,6 +914,7 @@ extern "C" fn usb_probe_entry() -> ! {
                 // usb_probe_irq_entry(). Polling here as well would allow an
                 // interrupt to re-enter the same ring consumer and corrupt
                 // EVENT_OFFSET/GEVNTCOUNT ordering.
+                usb::wdt_pet();
                 unsafe { asm!("wfe", options(nomem, nostack)) };
                 usb::service_deferred_platform();
                 if usb::probe_ep0_progress() {
@@ -880,6 +928,7 @@ extern "C" fn usb_probe_entry() -> ! {
                     // first progress boundary.
                     usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5354_4142); // "STAB"
                     loop {
+                        usb::wdt_pet();
                         unsafe { asm!("wfe", options(nomem, nostack)) };
                         usb::service_deferred_platform();
                     }
@@ -912,6 +961,7 @@ extern "C" fn usb_probe_entry() -> ! {
                 // into an accidental DMA/event-ring probe. The recovery
                 // deadline needs only the architectural counter; leave all
                 // controller event handling out of this mode.
+                usb::wdt_pet();
                 core::hint::spin_loop();
                 if frequency != 0 && probe_counter() >= deadline {
                     usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x50554c4c); // "PULL"
@@ -969,7 +1019,7 @@ extern "C" fn usb_probe_entry() -> ! {
     reset_after_probe_failure();
 }
 
-fn reset_after_probe_failure() -> ! {
+pub fn reset_after_probe_failure() -> ! {
     // Make a failed USB handoff recoverable without another battery-cycle.
     // This is the same Qualcomm PS_HOLD path used by the entry probe, with
     // PSCI retained as the generic fallback.

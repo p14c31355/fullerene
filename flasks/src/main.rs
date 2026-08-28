@@ -182,6 +182,11 @@ struct Args {
     #[arg(long)]
     usb_signal_diag_publish: bool,
 
+    /// Stop all controller MMIO access N seconds after the first Run/Stop
+    /// (reboot-cause bisect: external clock collapse vs our own polling).
+    #[arg(long = "usb-quiet-after", value_name = "SECS")]
+    usb_quiet_after: Option<u64>,
+
     /// Relocate the linker .usb_dma section to this hex address for the run.
     #[arg(long = "usb-dma-origin", value_name = "ADDR")]
     usb_dma_origin: Option<String>,
@@ -854,6 +859,7 @@ fn main() -> io::Result<()> {
             args.usb_signal_fsr_gate,
             args.usb_signal_ram_gate,
             args.usb_signal_diag_publish,
+            args.usb_quiet_after,
             args.usb_dma_origin,
             args.usb_signal_cmd_gate,
             args.usb_signal_rsc_gate,
@@ -999,6 +1005,7 @@ fn build_aarch64_kernel(
     signal_fsr_gate: Option<u32>,
     signal_ram_gate: bool,
     signal_diag_publish: bool,
+    quiet_after: Option<u64>,
     dma_origin: Option<String>,
     signal_cmd_gate: Option<String>,
     signal_rsc_gate: Option<String>,
@@ -1145,6 +1152,9 @@ fn build_aarch64_kernel(
     if signal_diag_publish {
         cargo.env("FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH", "1");
     }
+    if let Some(secs) = quiet_after {
+        cargo.env("FULLERENE_AARCH64_USB_QUIET_AFTER", secs.to_string());
+    }
     if let Some(origin) = dma_origin {
         cargo.env("FULLERENE_AARCH64_USB_DMA_ORIGIN", origin);
     }
@@ -1245,13 +1255,14 @@ fn run_aarch64_qemu_preflight(
         None,                            // 30 signal_fsr_gate
         false,                           // 31 signal_ram_gate
         false,                           // 32 signal_diag_publish
-        None,                            // 33 dma_origin
-        None,                            // 34 signal_cmd_gate
-        None,                            // 35 signal_rsc_gate
-        None,                            // 36 signal_cfg_gate
-        None,                            // 37 signal_ramclk_gate
-        false,                           // 38 smmu_disable
-        None,                            // 39 signal_evt_data_gate
+        None,                            // 33 quiet_after
+        None,                            // 34 dma_origin
+        None,                            // 35 signal_cmd_gate
+        None,                            // 36 signal_rsc_gate
+        None,                            // 37 signal_cfg_gate
+        None,                            // 38 signal_ramclk_gate
+        false,                           // 39 smmu_disable
+        None,                            // 40 signal_evt_data_gate
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;
     let image = build_aarch64_image(&raw)?;

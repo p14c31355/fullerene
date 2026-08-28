@@ -168,6 +168,9 @@ struct LoopArgs {
     /// gates via the attach presence).
     #[arg(long)]
     signal_diag_publish: bool,
+    /// Stop all controller MMIO access N seconds after the first Run/Stop.
+    #[arg(long = "quiet-after", value_name = "SECS")]
+    quiet_after: Option<u64>,
     /// Relocate the .usb_dma section to this hex address for the run.
     #[arg(long = "dma-origin", value_name = "ADDR")]
     dma_origin: Option<String>,
@@ -543,6 +546,7 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         signal_fsr_gate: None,
         signal_ram_gate: false,
         signal_diag_publish: false,
+        quiet_after: None,
         dma_origin: None,
         signal_cmd_gate: None,
         signal_rsc_gate: None,
@@ -689,6 +693,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--signal-diag-publish requires --signal-probe",
+        ));
+    }
+    if args.quiet_after.is_some() && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--quiet-after requires --direct-handoff",
         ));
     }
     if args.dma_origin.is_some() && !args.direct_handoff {
@@ -1141,6 +1151,10 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.signal_diag_publish {
         arguments.push("--usb-signal-diag-publish".to_owned());
+    }
+    if let Some(secs) = args.quiet_after {
+        arguments.push("--usb-quiet-after".to_owned());
+        arguments.push(secs.to_string());
     }
     if let Some(origin) = &args.dma_origin {
         arguments.push("--usb-dma-origin".to_owned());

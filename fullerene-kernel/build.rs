@@ -219,6 +219,13 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_EP0_SIGNAL_HEARTBEAT").is_some() {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_HEARTBEAT=1");
         }
+        if let Some(secs) = env::var("FULLERENE_AARCH64_USB_QUIET_AFTER")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+        {
+            println!("cargo:rustc-env=FULLERENE_USB_QUIET_AFTER_SECS={secs}");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH").is_some() {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_DIAG_PUBLISH=1");
         }
@@ -276,6 +283,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_QUIET_AFTER");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_CONNECT_DELAY");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_STOP_STAGE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES");
