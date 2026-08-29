@@ -648,6 +648,58 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             0x5349_4744 | (signal_code & 0xff),
         );
     }
+    // "gdbstop" gate: host-visible GDBGLTSSM readout that does not depend
+    // on the APSS watchdog. After the one-second observation window, delay
+    // (state+1)*250 ms and stop the core. The host journal's attach-to-
+    // disconnect delta therefore names the raw physical link FSM state while
+    // keeping every value inside the host's 5 s descriptor window.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("gdbstop") {
+        let state = usb::gdb_ltssm_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4744_4253 | (state & 0x1f), // "GDBS"
+        );
+        let target = usb::arch_counter_ticks().saturating_add(
+            probe_counter_frequency()
+                .saturating_mul(state.saturating_add(1) as u64)
+                / 4,
+        );
+        while usb::arch_counter_ticks() < target {
+            usb::wdt_pet();
+            usb::poll();
+        }
+        let _ = usb::gate_true_stop_device();
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "armstat" gate: distinguish the two late u0_arm_recovery outcomes.
+    // Status 8 means the pre-Run/Stop EP0 OUT STARTTRANSFER timed out while
+    // waiting for DEPCMD_CMDACT to clear (the command channel is wedged);
+    // status 0 means that command retired, and the remaining suspect is the
+    // event-DMA/parse path. Encode the value in the bite delay: status 8
+    // bites at +1 s and status 0 at +16 s, so the Android return time is a
+    // direct readout. Must run before cmd_gate_condition_met.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("armstat") {
+        let status = usb::u0_arm_status_probe();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4152_4D53 | (status & 0xff), // "ARMS"
+        );
+        let delay = if status == 0 { 16 } else { 1 };
+        usb::u0_arm_wdt_bite(delay);
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
     // "armalive" gate: one-bit readout of L1 (does the EP0 SETUP Start
     // Transfer retire). By window end the host has driven SETUP tokens
     // for ~1 s (its descriptor URB retries until the 5 s mark), so the
@@ -887,6 +939,97 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             usb::poll();
         }
     }
+    // "lnk13" gate: the final split after {4,6,10,12} tested false. A
+    // disconnect line proves USBLNKST == 13; no line means the raw value is
+    // outside the tested set. Must run before cmd_gate_condition_met, like
+    // the other special gates.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk13") {
+        let state = usb::dsts_raw_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4E_5FD0 | (state & 0x1f), // "LN_D"
+        );
+        if state == 13 {
+            let _ = usb::gate_true_stop_device();
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnkraw" gate: time-encode the exact DSTS.USBLNKST value at eval.
+    // The per-state split gates {3,4,6,10,12,13} all returned FALSE, which
+    // contradicts the assumed else-bucket and suggests either run-to-run
+    // variation or an untested value. Bite delay = state + 1 (clamped 1-16
+    // by the APSS WDT), so the early return time directly names the raw
+    // state; a late secure-bucket return means the delay was masked or the
+    // field moved. Must run before cmd_gate_condition_met.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnkraw") {
+        let state = usb::dsts_raw_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4E_5257 | (state & 0x1f), // "LN_W"
+        );
+        usb::u0_arm_wdt_bite(state.saturating_add(1));
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnkstate" gate: sample DSTS.USBLNKST every poll and drive one bit:
+    // if any sample lands in a state NOT covered by the previously tested
+    // gates {0,1,2,3,8,9,11,14,15}, emit one SDIS disconnect at attach so
+    // the host journal proves the core entered that untested state. The
+    // latched value is additionally encoded into the APSS-WDT bite delay
+    // (state + 1, clamped 1-16) so the return time names the exact value.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnkstate") {
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        let deadline = usb::window_deadline_ticks(1);
+        let mut latched: u32 = 0xffff;
+        while usb::arch_counter_ticks() < deadline {
+            let state = usb::dsts_raw_link_state();
+            if state != latched {
+                latched = state;
+                usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x4C4E_5354 | state); // "LN_ST"
+            }
+            if state != 0
+                && state != 1
+                && state != 2
+                && state != 3
+                && state != 8
+                && state != 9
+                && state != 11
+                && state != 14
+                && state != 15
+            {
+                usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x4C4E_5355 | state); // "LN_SU"
+                usb::u0_arm_set_blips(1);
+                usb::u0_arm_wdt_bite(state.saturating_add(1));
+                loop {
+                    usb::wdt_pet();
+                    usb::poll();
+                }
+            }
+            usb::wdt_pet();
+            usb::poll();
+        }
+        // Only tested states observed: name the last state via a fixed
+        // 16 s bite (T+~28 return, distinct from the secure bucket).
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x4C4E_534E | (latched & 0x1f)); // "LN_SN"
+        usb::u0_arm_wdt_bite(16);
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
     // "gdb" gate: read the raw GDBGLTSSM LINKSTATE nibble at window end and
     // time-encode it with the APSS-WDT bite. Delay = state + 1, so the SS
     // return timestamp directly names the physical link FSM value; this also
@@ -905,6 +1048,139 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         unsafe {
             asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
         }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "voteflip" gate: drop the Qualcomm glue session votes (SS lane
+    // power-present + HS VBUS/session override) for ~1 s, then restore
+    // them. A host-visible disconnect/re-attach pair proves the glue votes
+    // physically own the USB2 pull-up on this unit; no line proves the
+    // votes are inert and the pull-up path must be sought elsewhere.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("voteflip") {
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x564F_5446); // "VOTF"
+        usb::flip_utmi_pipe_clock();
+        let deadline = usb::window_deadline_ticks(1);
+        while usb::arch_counter_ticks() < deadline {
+            usb::wdt_pet();
+            usb::poll();
+        }
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x564F_5452); // "VOTR"
+        usb::restore_usb2_session_votes();
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "voteflip2" gate: clock-mux variant with a bare-write restore. The
+    // voteflip gate passed the sequence through qscratch_set() (read-
+    // modify-write); this variant drives QSCRATCH_GENERAL_CFG with raw
+    // 32-bit writes, ending at a known-good value. Readout identical:
+    // disconnect line = core RX died during the mux sequence.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("voteflip2") {
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x564F_5447); // "VOT7"
+        usb::flip_utmi_pipe_clock_raw();
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x564F_5453); // "VOT8"
+        usb::restore_usb2_session_votes();
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "haltbit" gate: one-bit readout of DSTS.DEVCTRLHLT at eval. Early
+    // return (T+~13.3) = the core reports halted (bit 22 set) while the
+    // host still sees a pull-up attach; late return = not halted. This
+    // resolves whether the state-0 DSTS with LNK_EVER_ON=false is a
+    // halted-core artifact.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("haltbit") {
+        let halted = usb::dsts_device_ctrl_halted();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4841_4C54 | (halted as u32), // "HALT"
+        );
+        if halted {
+            usb::u0_arm_wdt_bite(1);
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "dctlbit" gate: one-bit readout of DCTL.RUN_STOP at eval. Early
+    // return = the Run/Stop bit is clear (the core stopped itself / never
+    // started); late return = the bit is set (host attach contradicts the
+    // state field, pointing at a stale/link-layer view).
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("dctlbit") {
+        let running = usb::dctl_run_stop_set();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4443_544C | (running as u32), // "DCTL"
+        );
+        if !running {
+            usb::u0_arm_wdt_bite(1);
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnkrawdb" gate: time-encode the raw DSTS word (upper 16 bits and
+    // the encoded link nibble) without re-reading. Bite delay = 1 +
+    // ((dsts >> 16) & 0xf). Companion to lnkrawlo; together they resolve
+    // whether the lnk gates' mask=0 result comes from a dead MMIO path or
+    // a different field encoding.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnkrawdb") {
+        let dsts = usb::dsts_word_snapshot();
+        let nibble = (dsts >> 16) & 0xf;
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x4C52_4144 | (dsts & 0xffff));
+        usb::u0_arm_wdt_bite(nibble.saturating_add(1));
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnkmask" gates: sample DSTS.USBLNKST for ~1 s and encode the exact
+    // 16-bit seen-state mask into the APSS-WDT bite delay. The per-state
+    // gates {3,4,6,10,12,13} all returned FALSE while lnk57's else-bucket
+    // claimed one of them must be true; the sampled mask resolves the
+    // contradiction in two runs. "lnkmasklo" returns at T_eval + 1 +
+    // (mask & 0xf), "lnkmaskhi" at T_eval + 1 + ((mask >> 4) & 0xf). A
+    // mask value of 0 also returns at +1 (distinguishable from 1 by the
+    // companion run).
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnkmasklo")
+        || option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnkmaskhi")
+    {
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        let deadline = usb::window_deadline_ticks(1);
+        let mut mask: u32 = 0;
+        while usb::arch_counter_ticks() < deadline {
+            let state = usb::dsts_raw_link_state();
+            mask |= 1 << (state & 0xf);
+            usb::wdt_pet();
+            usb::poll();
+        }
+        let nibble = if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnkmaskhi") {
+            (mask >> 4) & 0xf
+        } else {
+            mask & 0xf
+        };
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4D_534B | (mask & 0xffff), // "LMSK"
+        );
+        usb::u0_arm_wdt_bite(nibble.saturating_add(1));
         loop {
             usb::wdt_pet();
             usb::poll();

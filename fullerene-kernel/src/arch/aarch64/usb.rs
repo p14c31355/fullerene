@@ -557,6 +557,21 @@ fn gctl_ramclksel(gctl: u32) -> u32 {
 /// counter frequency on this platform; a zero read simply disables the
 /// SETUP-delay measurement.
 #[inline]
+pub fn arch_counter_ticks() -> u64 {
+    arch_counter()
+}
+
+/// Public one-second deadline helper for probe readout windows.
+#[inline]
+pub fn window_deadline_ticks(secs: u64) -> u64 {
+    let frequency = arch_counter_frequency();
+    if frequency == 0 {
+        return u64::MAX;
+    }
+    arch_counter().saturating_add(frequency.saturating_mul(secs))
+}
+
+#[inline]
 fn arch_counter() -> u64 {
     let value: u64;
     unsafe {
@@ -5778,8 +5793,30 @@ pub fn gdb_ltssm_link_state() -> u32 {
 /// proves the core is receiving packets from the host at the transaction
 /// level even when the link FSM never reports U0 or a mid-transaction
 /// state.
+/// DSTS.DEVCTRLHLT readout for the haltbit gate.
+pub fn dsts_device_ctrl_halted() -> bool {
+    unsafe { read(DSTS) & DSTS_DEVCTRLHLT != 0 }
+}
+
+/// DCTL.RUN_STOP readout for the dctlbit gate.
+pub fn dctl_run_stop_set() -> bool {
+    unsafe { read(DCTL) & DCTL_RUN_STOP != 0 }
+}
+
+/// One-shot DSTS word snapshot for raw readout gates.
+pub fn dsts_word_snapshot() -> u32 {
+    unsafe { read(DSTS) }
+}
+
 pub fn dsts_sof_frame_number() -> u32 {
     unsafe { (read(DSTS) >> 3) & 0x3fff }
+}
+
+/// U0_ARM_STATUS readout for the armstat gate: 0 = the pre-Run/Stop EP0
+/// OUT STARTTRANSFER retired cleanly, 8 = it did not retire in the command
+/// timeout, and the smaller values name the preceding setup step.
+pub fn u0_arm_status_probe() -> u32 {
+    unsafe { U0_ARM_STATUS }
 }
 
 pub fn armalive_probe() -> u32 {
@@ -6069,6 +6106,47 @@ pub fn ep0_signal_drop_pullup() {
     }
 }
 
+/// Diagnostic clock-source flip for the voteflip gate: repeat the
+/// Qualcomm UTMI-as-PIPE selection sequence while the host is driving the
+/// descriptor read. If the core's USB2 RX dies during this window, the
+/// host journal shows a disconnect; if the -110 window completes normally
+/// with -110 at attach+5 s, the clock mux is inert for enumeration.
+pub fn flip_utmi_pipe_clock() {
+    unsafe {
+        select_utmi_pipe_clock();
+        let _ = read_qscratch(QSCRATCH_GENERAL_CFG);
+    }
+}
+
+/// Raw-write variant of the diagnostic clock-source flip for the
+/// voteflip2 gate: drive QSCRATCH_GENERAL_CFG directly instead of through
+/// the read-modify-write helper, ending at the restored UTMI-as-PIPE
+/// value. Distinguishes a qscratch_set() path bug from a PHY-side clock
+/// event that kills the core's RX regardless of the write encoding.
+pub fn flip_utmi_pipe_clock_raw() {
+    unsafe {
+        write_qscratch(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_DIS);
+        crate::timer::delay_us(100);
+        write_qscratch(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
+        crate::timer::delay_us(100);
+        write_qscratch(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
+    }
+}
+
+/// Restore the Qualcomm glue session overrides after a signal-probe vote
+/// experiment. Mirrors the handoff's vbus_override sequence exactly; used
+/// by the voteflip gate so the attach survives the toggle.
+pub fn restore_usb2_session_votes() {
+    unsafe {
+        qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
+        qscratch_set(
+            QSCRATCH_HS_PHY_CTRL,
+            (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
+        );
+        let _ = read_qscratch(QSCRATCH_HS_PHY_CTRL);
+    }
+}
+
 /// Publish the physical pull-up from the signal probe after a failed
 /// handoff. Restores the Qualcomm session overrides and Run/Stop so the
 /// diagnostic gates remain host-visible even when init failed before its own
@@ -6205,12 +6283,19 @@ pub fn u0_arm_recovery() -> u32 {
                 | DEVTEN_CMD_COMPLETE
                 | DEVTEN_OVERFLOW,
         );
-        // Linux arms the EP0 OUT SETUP TRB (dwc3_ep0_out_start) inside
-        // __dwc3_gadget_start, i.e. BEFORE the Run/Stop transition. If the
-        // command does not retire here, the poll-loop's try_arm_setup
-        // retries it once the link reaches ON after Run/Stop.
+        // Prepare the EP0 OUT SETUP TRB now. The STARTTRANSFER decision is
+        // bramble-specific: see the start-after-connect note below.
         prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
-        if start_transfer(0, ep0_trb_ptr(0)) {
+        // Bramble's normal start-after-connect path deliberately does NOT
+        // issue STARTTRANSFER before Run/Stop: a pre-link-ON command can
+        // wedge this core's endpoint command engine even when Run/Stop still
+        // publishes the pull-up. Keep the recovery path consistent with the
+        // proven init path: defer the arm until after Run/Stop, then retry
+        // for 100 ms while the link trains to ON.
+        let defer_start = cfg!(fullerene_aarch64_usb_gadget_handoff_start_after_connect);
+        if defer_start {
+            U0_ARM_STATUS = 0;
+        } else if start_transfer(0, ep0_trb_ptr(0)) {
             EP0_SETUP_ARMED = true;
             PENDING_SETUP_ARM = false;
         } else {
@@ -6220,9 +6305,28 @@ pub fn u0_arm_recovery() -> u32 {
             U0_ARM_STATUS = 1;
             return 1;
         }
-        // U0_ARM_STATUS is 0 (the SETUP TRB is armed) or 8 (the pre-Run/Stop
-        // STARTTRANSFER did not retire; the poll loop's try_arm_setup
-        // retries it once the link reaches ON after Run/Stop).
+        if defer_start {
+            let deadline = arch_counter()
+                .saturating_add(arch_counter_frequency().saturating_mul(100) / 1000);
+            let mut armed = false;
+            while arch_counter() < deadline {
+                if EP0_SETUP_ARMED {
+                    armed = true;
+                    break;
+                }
+                if try_arm_setup() {
+                    armed = true;
+                    break;
+                }
+                super::timer::delay_us(200);
+            }
+            if !armed {
+                U0_ARM_STATUS = 8;
+            }
+        }
+        // U0_ARM_STATUS is 0 (the SETUP TRB is armed or deferred in the
+        // proven start-after-connect order) or 8 (STARTTRANSFER did not
+        // retire even after the link reached ON).
         U0_ARM_STATUS
     }
 }
