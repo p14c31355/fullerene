@@ -38,7 +38,7 @@ pub fn boot() -> ! {
         nozzle_commands::UPTIME = Some(time::uptime_millis);
         nozzle_commands::REBOOT = Some(|| true);
     }
-    scheduler.spawn("lattice", lattice_task as *const () as usize, 4 * 1024);
+    scheduler.spawn("lattice", lattice_task as *const () as usize, 8 * 1024);
     scheduler.spawn("nozzle", nozzle_task as *const () as usize, 4 * 1024);
     for (name, entry) in solvent::arch::xtensa::esp32::applications::application_tasks() {
         // Zero entries are explicit unlaunched registrations, not executable
@@ -51,14 +51,14 @@ pub fn boot() -> ! {
     scheduler.run();
 }
 
-fn lattice_task() -> ! {
+extern "C" fn lattice_task() -> ! {
+    nitrogen::arch::xtensa::esp32::uart::write_str("LATTICE START\n");
     let profile = BoardProfile::xh32s();
     let mut desktop = EmbeddedDesktop::new();
     let mut surface = Esp32Compositor::new(320, 240);
     if !surface.allocate() {
         crate::arch::xtensa::esp32::runtime::panic_message("display surface allocation failed");
     }
-    nitrogen::arch::xtensa::esp32::uart::write_str("SURFACE OK\n");
     let mut touch = Xpt2046Touch::new(profile);
     let mut previous_pressed = false;
     let mut redraw = true;
@@ -68,13 +68,11 @@ fn lattice_task() -> ! {
             let mut display = DISPLAY.lock();
             if let Some(lcd) = display.as_mut() {
                 desktop.render(&mut surface);
-                nitrogen::arch::xtensa::esp32::uart::write_str("DESKTOP DRAW\n");
                 lcd.mark_full_dirty();
                 if lcd.flush(surface.pixels()).is_err() {
                     drop(display);
                     crate::arch::xtensa::esp32::runtime::panic_message("LCD flush failed");
                 }
-                nitrogen::arch::xtensa::esp32::uart::write_str("DESKTOP FLUSH OK\n");
             }
             redraw = false;
         }
@@ -93,7 +91,7 @@ fn lattice_task() -> ! {
     }
 }
 
-fn nozzle_task() -> ! {
+extern "C" fn nozzle_task() -> ! {
     // Keep the reduced command table linked until serial I/O bring-up lands.
     let _commands = nozzle::default_commands();
     loop {

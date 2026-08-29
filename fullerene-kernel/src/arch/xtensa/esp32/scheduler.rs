@@ -30,6 +30,10 @@ global_asm!(
     "s32i a15, a1, 16",
     "rsr.sar a15",
     "s32i a15, a1, 20",
+    // Preserve the first argument register. On the initial transition it
+    // carries the trampoline's entry address; on later transitions restoring
+    // it keeps the call0 caller's argument scratch register observable.
+    "s32i a2, a1, 24",
     "s32i a1, a2, 0",
     "l32i a1, a3, 0",
     "l32i a15, a1, 20",
@@ -38,14 +42,18 @@ global_asm!(
     "l32i a13, a1, 8",
     "l32i a14, a1, 12",
     "l32i a15, a1, 16",
+    "l32i a2, a1, 24",
     "l32i a0, a1, 0",
     "addi a1, a1, 32",
-    "ret",
+    "jx a0",
     ".size xtensa_switch_to, . - xtensa_switch_to",
 );
 
 unsafe extern "C" {
-    fn xtensa_switch_to(previous_stack_pointer: *mut usize, next_stack_pointer: usize);
+    // Both arguments own a stack-pointer slot. This lets the switch primitive
+    // record the outgoing SP and load the incoming SP without a second return
+    // path or ABI-specific return-value convention.
+    fn xtensa_switch_to(previous_stack_pointer: *mut usize, next_stack_pointer: *mut usize);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,12 +87,18 @@ impl Scheduler {
             return None;
         }
         let stack = memory::allocate_stack(stack_size)?;
-        // A fresh task frame is exactly the frame xtensa_switch_to expects to
-        // restore: return address first, then the callee-saved/SAR values that
-        // it loads while switching. Zero is safe for all uninitialized words.
-        let frame = unsafe { stack.as_mut_ptr().add(stack.len() - 32) as *mut usize };
+        // A fresh task starts through the scheduler's trampoline. The saved
+        // context follows xtensa_switch_to's layout: PC, callee-saved
+        // registers, SAR, and the call0 A2 argument.
+        let frame = unsafe { stack.as_mut_ptr().add(stack.len() - 256) as *mut usize };
         unsafe {
             frame.write(entry);
+            frame.add(1).write(0);
+            frame.add(2).write(0);
+            frame.add(3).write(0);
+            frame.add(4).write(0);
+            frame.add(5).write(0); // SAR
+            frame.add(6).write(entry);
         }
         self.tasks.push(Task {
             id: crate::arch::xtensa::esp32::runtime::next_task_id(),
@@ -109,12 +123,6 @@ impl Scheduler {
         let first = &mut self.tasks[0];
         first.state = TaskState::Running;
         CURRENT_TASK.store(first as *mut Task as usize, Ordering::Release);
-        unsafe {
-            xtensa_switch_to(
-                core::ptr::addr_of_mut!(SCHEDULER_STACK_POINTER),
-                first.stack_pointer,
-            );
-        }
 
         let mut previous_index = 0usize;
         loop {
@@ -145,7 +153,7 @@ impl Scheduler {
             unsafe {
                 xtensa_switch_to(
                     core::ptr::addr_of_mut!(SCHEDULER_STACK_POINTER),
-                    task.stack_pointer,
+                    core::ptr::addr_of_mut!(task.stack_pointer),
                 );
             }
         }
@@ -155,7 +163,6 @@ impl Scheduler {
         self.tasks.iter().map(|task| task.name.clone()).collect()
     }
 }
-
 pub fn request_yield() {
     YIELD_REQUESTED.store(true, Ordering::Release);
 }
@@ -169,7 +176,7 @@ pub fn scheduler_yield() {
     unsafe {
         xtensa_switch_to(
             core::ptr::addr_of_mut!(task.stack_pointer),
-            SCHEDULER_STACK_POINTER,
+            core::ptr::addr_of_mut!(SCHEDULER_STACK_POINTER),
         );
     }
 }
