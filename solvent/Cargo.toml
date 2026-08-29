@@ -7,7 +7,10 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[features]
+esp32 = []
+
+[target.'cfg(not(target_arch = "xtensa"))'.dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",
 ] }
@@ -33,3 +36,12 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 petroleum = { path = "../petroleum", features = ["std"] }
+
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+lattice = { path = "../lattice" }
+nozzle = { path = "../nozzle" }
+nitrogen = { path = "../nitrogen" }
+genome = { path = "../genome" }
+resonance = { path = "../resonance" }
+spin = { workspace = true, features = ["once", "mutex", "spin_mutex"] }
+log = { workspace = true }

@@ -3,7 +3,9 @@
 //! Provides clipped drawing primitives (rect, rounded rect, text, shadow,
 //! surface blit) so upper layers never touch raw pixels directly.
 
-use crate::font::{self, render_text_bitmap, render_text_ttf};
+use crate::font::render_text_bitmap;
+#[cfg(not(target_arch = "xtensa"))]
+use crate::font::{get_ttf_font, render_text_ttf};
 use crate::surface::Surface;
 use crate::theme::ThemeColors;
 
@@ -460,9 +462,25 @@ impl<'a> Painter<'a> {
 
     // ── Text ─────────────────────────────────────────────────
 
+    /// Draw text using the bitmap profile on constrained targets.
+    #[cfg(target_arch = "xtensa")]
+    pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: u32, _size: f32) {
+        render_text_bitmap(
+            self.fb,
+            self.width,
+            self.height,
+            self.stride,
+            x,
+            y,
+            text,
+            color,
+        );
+    }
+
     /// Draw text using TTF-based antialiased rendering (falls back to bitmap).
+    #[cfg(not(target_arch = "xtensa"))]
     pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: u32, size: f32) {
-        let ttf = font::get_ttf_font();
+        let ttf = get_ttf_font();
         if let Some(font) = ttf {
             let _ = render_text_ttf(
                 self.fb,
@@ -488,20 +506,6 @@ impl<'a> Painter<'a> {
                 color,
             );
         }
-    }
-
-    /// Draw text using the legacy bitmap font (always works, no TTF needed).
-    pub fn draw_text_bitmap(&mut self, x: i32, y: i32, text: &str, color: u32) {
-        render_text_bitmap(
-            self.fb,
-            self.width,
-            self.height,
-            self.stride,
-            x,
-            y,
-            text,
-            color,
-        );
     }
 
     // ── Window border helpers ────────────────────────────────

@@ -339,6 +339,14 @@ struct Args {
     /// Android boot image for the non-destructive Fastboot `boot` action.
     #[arg(value_name = "IMAGE")]
     image: Option<PathBuf>,
+
+    /// Serial device used by ESP32 run/flash/monitor actions.
+    #[arg(long, value_name = "DEVICE")]
+    serial: Option<String>,
+
+    /// Baud rate for ESP32 ROM serial operations.
+    #[arg(long, default_value_t = 115_200, value_name = "BAUD")]
+    baud: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -348,6 +356,8 @@ enum Action {
     Debug,
     Device,
     Boot,
+    Flash,
+    Monitor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -356,6 +366,8 @@ enum Arch {
     X86_64,
     #[value(name = "aarch64", alias = "aa", alias = "arm64")]
     Aarch64,
+    #[value(name = "xtensa", alias = "esp32")]
+    Xtensa,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -364,7 +376,10 @@ enum Platform {
     PcUefi,
     #[value(name = "qemu-virt")]
     QemuVirt,
+    #[value(name = "bramble")]
     Bramble,
+    #[value(name = "esp32-xh32s")]
+    Esp32Xh32S,
 }
 
 impl Arch {
@@ -372,6 +387,7 @@ impl Arch {
         match self {
             Self::X86_64 => "x86_64-unknown-uefi",
             Self::Aarch64 => "aarch64-unknown-none",
+            Self::Xtensa => "xtensa-esp32-none-elf",
         }
     }
 
@@ -379,6 +395,7 @@ impl Arch {
         match self {
             Self::X86_64 => Platform::PcUefi,
             Self::Aarch64 => Platform::QemuVirt,
+            Self::Xtensa => Platform::Esp32Xh32S,
         }
     }
 
@@ -386,6 +403,7 @@ impl Arch {
         match self {
             Self::X86_64 => "fullerene-kernel.efi",
             Self::Aarch64 => "fullerene-kernel-aarch64",
+            Self::Xtensa => "fullerene-kernel-esp32",
         }
     }
 
@@ -393,6 +411,7 @@ impl Arch {
         match self {
             Self::X86_64 => "fullerene-kernel",
             Self::Aarch64 => "fullerene-kernel",
+            Self::Xtensa => "fullerene-kernel",
         }
     }
 }
@@ -402,6 +421,7 @@ impl Platform {
         match self {
             Self::PcUefi => "qemu-system-x86_64",
             Self::QemuVirt | Self::Bramble => "qemu-system-aarch64",
+            Self::Esp32Xh32S => "",
         }
     }
 
@@ -410,6 +430,7 @@ impl Platform {
             Self::PcUefi => "q35,usb=off,pcspk-audiodev=speaker",
             Self::QemuVirt => "virt,gic-version=3",
             Self::Bramble => "bramble",
+            Self::Esp32Xh32S => "esp32",
         }
     }
 
@@ -418,6 +439,7 @@ impl Platform {
             Self::PcUefi => "qemu64,+smap,+invtsc",
             Self::QemuVirt => "cortex-a72",
             Self::Bramble => "cortex-a72",
+            Self::Esp32Xh32S => "esp32",
         }
     }
 
@@ -427,6 +449,7 @@ impl Platform {
             (Arch::X86_64, Self::PcUefi)
                 | (Arch::Aarch64, Self::QemuVirt)
                 | (Arch::Aarch64, Self::Bramble)
+                | (Arch::Xtensa, Self::Esp32Xh32S)
         );
         if !valid_pair {
             return Err(io::Error::new(
@@ -843,6 +866,47 @@ fn main() -> io::Result<()> {
     }
     let selected_probe = selected_aarch64_probe(&args, target)?;
 
+    if target.arch == Arch::Xtensa {
+        if args.clone_ovmf || args.iso_only {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OVMF and ISO options are not available for ESP32",
+            ));
+        }
+        let kernel_path = build_esp32_kernel(&workspace_root, profile)?;
+        match args.command {
+            Action::Build => {
+                let image_path = build_esp32_image(&kernel_path)?;
+                println!("ESP32 ELF kernel built at {}", kernel_path.display());
+                println!("ESP32 image built at {}", image_path.display());
+            }
+            Action::Flash => {
+                let image_path = build_esp32_image(&kernel_path)?;
+                espflash_write(&image_path, args.serial.as_deref(), args.baud)?;
+            }
+            Action::Run => {
+                let image_path = build_esp32_image(&kernel_path)?;
+                espflash_run(&image_path, args.serial.as_deref(), args.baud)?;
+            }
+            Action::Monitor => {
+                let device = args.serial.as_deref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "ESP32 monitor requires --serial DEVICE",
+                    )
+                })?;
+                esp32_monitor(device, args.baud)?;
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "ESP32 supports build, flash, run, and monitor",
+                ));
+            }
+        }
+        return Ok(());
+    }
+
     if target.arch == Arch::Aarch64 {
         if args.clone_ovmf || args.iso_only {
             return Err(io::Error::new(
@@ -1150,6 +1214,7 @@ fn build_aarch64_kernel(
         match platform {
             Platform::Bramble => "bramble",
             Platform::QemuVirt => "qemu-virt",
+            Platform::Esp32Xh32S => "esp32-xh32s",
             Platform::PcUefi => "pc-uefi",
         }
         .to_owned(),
@@ -3002,7 +3067,8 @@ mod tests {
     use super::{
         Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args, audit_aarch64_image_bytes,
         audit_android_boot_image, audit_bramble_boot_image, decode_literal_lz4_frame,
-        make_aarch64_image, make_lz4_frame, patch_bramble_boot_image, strip_avb_metadata, xxhash32,
+        esp32_parse_elf, make_aarch64_image, make_lz4_frame, patch_bramble_boot_image,
+        strip_avb_metadata, xxhash32,
     };
     use clap::Parser;
     use std::{fs, path::Path};
@@ -3020,6 +3086,43 @@ mod tests {
         let profile = BuildProfile::from_debug(true);
         assert_eq!(profile.cargo_name(), "dev");
         assert_eq!(profile.artifact_directory(), "debug");
+    }
+
+    fn esp32_phdr(data: &mut Vec<u8>, offset: u32, address: u32, file_size: u32, memory_size: u32) {
+        let start = data.len();
+        data.extend_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+        data.extend_from_slice(&offset.to_le_bytes());
+        data.extend_from_slice(&address.to_le_bytes());
+        data.extend_from_slice(&address.to_le_bytes());
+        data.extend_from_slice(&file_size.to_le_bytes());
+        data.extend_from_slice(&memory_size.to_le_bytes());
+        data.extend_from_slice(&5u32.to_le_bytes()); // RX
+        data.extend_from_slice(&16u32.to_le_bytes());
+        debug_assert_eq!(data.len() - start, 32);
+    }
+
+    #[test]
+    fn esp32_elf_parser_preserves_zero_filled_bss() {
+        let mut elf = vec![0; 52];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 1; // ELFCLASS32
+        elf[5] = 1; // little endian
+        elf[18] = 94; // EM_XTENSA
+        elf[24..28].copy_from_slice(&0x4000_0100u32.to_le_bytes());
+        elf[28..32].copy_from_slice(&52u32.to_le_bytes());
+        elf[42..44].copy_from_slice(&32u16.to_le_bytes());
+        elf[44..46].copy_from_slice(&2u16.to_le_bytes());
+
+        esp32_phdr(&mut elf, 64, 0x4000_0000, 8, 8);
+        esp32_phdr(&mut elf, 64, 0x4020_0000, 0, 16);
+        elf.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+
+        let segments = esp32_parse_elf(&elf).unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].file_size, 8);
+        assert_eq!(segments[0].memory_size, 8);
+        assert_eq!(segments[1].file_size, 0);
+        assert_eq!(segments[1].memory_size, 16);
     }
 
     #[test]
@@ -3276,4 +3379,313 @@ mod tests {
         }
         assert!(blocks >= 2);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Esp32Segment {
+    load_address: u32,
+    file_offset: u32,
+    file_size: u32,
+    memory_size: u32,
+}
+
+fn esp32_parse_elf(data: &[u8]) -> io::Result<Vec<Esp32Segment>> {
+    if data.len() < 52 || &data[..4] != b"\x7fELF" || data[4] != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ESP32 firmware must be a 32-bit Xtensa ELF",
+        ));
+    }
+    let entry = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
+    let header_offset = u32::from_le_bytes([data[28], data[29], data[30], data[31]]) as usize;
+    let phentsize = u16::from_le_bytes([data[42], data[43]]) as usize;
+    let phnum = u16::from_le_bytes([data[44], data[45]]) as usize;
+    if entry == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ESP32 ELF has no entry point",
+        ));
+    }
+    let mut segments = Vec::new();
+    for index in 0..phnum {
+        let start = header_offset
+            .checked_add(index.checked_mul(phentsize).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid ELF program header")
+            })?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid ELF program header")
+            })?;
+        let end = start.checked_add(32).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid ELF program header")
+        })?;
+        if end > data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated ELF program header",
+            ));
+        }
+        let kind = u32::from_le_bytes([
+            data[start],
+            data[start + 1],
+            data[start + 2],
+            data[start + 3],
+        ]);
+        if kind != 1 {
+            continue;
+        }
+        let offset = u32::from_le_bytes([
+            data[start + 4],
+            data[start + 5],
+            data[start + 6],
+            data[start + 7],
+        ]);
+        let load_address = u32::from_le_bytes([
+            data[start + 12],
+            data[start + 13],
+            data[start + 14],
+            data[start + 15],
+        ]);
+        let file_size = u32::from_le_bytes([
+            data[start + 16],
+            data[start + 17],
+            data[start + 18],
+            data[start + 19],
+        ]);
+        let memory_size = u32::from_le_bytes([
+            data[start + 20],
+            data[start + 21],
+            data[start + 22],
+            data[start + 23],
+        ]);
+        if file_size > memory_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ELF filesz exceeds memsz",
+            ));
+        }
+        if memory_size > 0 {
+            if memory_size % 4 != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ELF segment memory size is not word aligned",
+                ));
+            }
+            segments.push(Esp32Segment {
+                load_address,
+                file_offset: offset,
+                file_size,
+                memory_size,
+            });
+        }
+    }
+    if segments.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ESP32 ELF has no loadable segments",
+        ));
+    }
+    Ok(segments)
+}
+
+fn build_esp32_image(kernel: &Path) -> io::Result<PathBuf> {
+    let data = fs::read(kernel)?;
+    let entry = esp32_elf_entry(&data)?;
+    let segments = esp32_parse_elf(&data)?;
+    if segments.len() > u8::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ESP32 firmware exceeds the image segment limit",
+        ));
+    }
+
+    let mut output = Vec::new();
+    // esp_image_header_t. The Xtensa ELF entry is the image entry; the flash
+    // settings are conservative defaults for the 4 MB ESP32 carrier profile.
+    output.push(0xe9);
+    output.push(segments.len() as u8);
+    output.push(0x02); // DIO
+    output.push(0x20); // 80/2 MHz SPI clock; 4 MB flash
+    output.extend_from_slice(&entry.to_le_bytes());
+    output.push(0xee); // WP disabled
+    output.extend_from_slice(&[0x22, 0x00, 0x00]);
+    output.extend_from_slice(&0u16.to_le_bytes()); // ESP32 chip ID
+    output.push(0); // legacy minimum chip revision
+    output.extend_from_slice(&0u16.to_le_bytes()); // minimum full revision
+    output.extend_from_slice(&0xffffu16.to_le_bytes()); // maximum full revision
+    output.extend_from_slice(&[0; 4]);
+    output.push(0); // no appended SHA-256
+    debug_assert_eq!(output.len(), 24);
+
+    let mut checksum = 0xef_u8;
+    for segment in &segments {
+        let start = segment.file_offset as usize;
+        let end = start
+            .checked_add(segment.file_size as usize)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "ELF segment size overflow")
+            })?;
+        if end > data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ELF segment extends beyond file",
+            ));
+        }
+        let file_contents = &data[start..end];
+        let zero_fill = (segment.memory_size - segment.file_size) as usize;
+        output.extend_from_slice(&segment.load_address.to_le_bytes());
+        output.extend_from_slice(&segment.memory_size.to_le_bytes());
+        output.extend_from_slice(file_contents);
+        output.extend(core::iter::repeat_n(0, zero_fill));
+        checksum = output[output.len() - segment.memory_size as usize..]
+            .iter()
+            .fold(checksum, |acc, byte| acc ^ byte);
+    }
+
+    // ESP image checksums are byte-aligned to the next 16-byte boundary.
+    let padded_length = (output.len() + 1).next_multiple_of(16);
+    output.extend(core::iter::repeat_n(0, padded_length - output.len() - 1));
+    output.push(checksum);
+
+    let image_path = kernel.with_extension("bin");
+    fs::write(&image_path, output)?;
+    Ok(image_path)
+}
+
+fn esp32_elf_entry(data: &[u8]) -> io::Result<u32> {
+    if data.len() < 28 || data[..4] != *b"\x7fELF" || data[4] != 1 || data[5] != 1 || data[18] != 94
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ESP32 firmware must be a 32-bit little-endian Xtensa ELF",
+        ));
+    }
+    Ok(u32::from_le_bytes([data[24], data[25], data[26], data[27]]))
+}
+
+fn espflash_environment() -> io::Result<(PathBuf, Vec<(String, String)>)> {
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
+    let toolchain = home.join(".rustup/toolchains/esp");
+    if !toolchain.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "ESP Rust toolchain not found; install it with: espup install",
+        ));
+    }
+    // espup places the GNU/Binutils tree below a versioned directory. Find it
+    // instead of embedding a private absolute path in the repository.
+    let flat_bin = toolchain.join("xtensa-esp-elf/bin");
+    let xtensa_bin = flat_bin.is_dir().then_some(flat_bin).or_else(|| {
+        fs::read_dir(toolchain.join("xtensa-esp-elf"))
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("xtensa-esp-elf/bin"))
+            .find(|path| path.is_dir())
+    });
+    let envs = vec![
+        (
+            "PATH".to_owned(),
+            match xtensa_bin {
+                Some(path) => format!(
+                    "{}:{}",
+                    path.display(),
+                    env::var("PATH").unwrap_or_default()
+                ),
+                None => env::var("PATH").unwrap_or_default(),
+            },
+        ),
+        ("RUSTUP_TOOLCHAIN".to_owned(), "esp".to_owned()),
+    ];
+    Ok((toolchain, envs))
+}
+
+fn build_esp32_kernel(workspace_root: &Path, profile: BuildProfile) -> io::Result<PathBuf> {
+    let (_, envs) = espflash_environment()?;
+    let mut cargo = Command::new("cargo");
+    cargo.current_dir(workspace_root);
+    cargo.envs(envs);
+    cargo.args([
+        "build",
+        "-p",
+        "fullerene-kernel",
+        "--bin",
+        "fullerene-kernel-esp32",
+        "--features",
+        "esp32",
+        "--target",
+        Arch::Xtensa.rust_target(),
+        "-Z",
+        "build-std=core,alloc,compiler_builtins",
+    ]);
+    if profile == BuildProfile::Release {
+        cargo.arg("--release");
+    }
+    let status = cargo.status()?;
+    if !status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "ESP32 Rust build failed",
+        ));
+    }
+    let target_dir = workspace_root
+        .join("target")
+        .join(Arch::Xtensa.rust_target())
+        .join(profile.artifact_directory());
+    Ok(target_dir.join(Arch::Xtensa.kernel_artifact()))
+}
+
+fn espflash_command(
+    action: &str,
+    image: &Path,
+    serial: Option<&str>,
+    baud: u32,
+) -> io::Result<Command> {
+    let mut command = Command::new("espflash");
+    command.arg(action).arg("--baud").arg(baud.to_string());
+    if let Some(device) = serial {
+        command.arg(device);
+    }
+    if action == "write-bin" {
+        command.arg("0x1000");
+    }
+    command.arg(image);
+    Ok(command)
+}
+
+fn espflash_run(image: &Path, serial: Option<&str>, baud: u32) -> io::Result<()> {
+    let mut command = espflash_command("run", image, serial, baud)?;
+    command.arg("--monitor");
+    let status = command.status()?;
+    if !status.success() {
+        return Err(io::Error::new(io::ErrorKind::Other, "espflash run failed"));
+    }
+    Ok(())
+}
+
+fn espflash_write(image: &Path, serial: Option<&str>, baud: u32) -> io::Result<()> {
+    let status = espflash_command("write-flash", image, serial, baud)?.status()?;
+    if !status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "espflash write-flash failed",
+        ));
+    }
+    Ok(())
+}
+
+fn esp32_monitor(device: &str, baud: u32) -> io::Result<()> {
+    let status = Command::new("espflash")
+        .arg("monitor")
+        .arg("--baud")
+        .arg(baud.to_string())
+        .arg(device)
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "espflash monitor failed",
+        ));
+    }
+    Ok(())
 }

@@ -137,16 +137,35 @@ pub fn render_cursor(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor, clip: Dir
 }
 
 // ── FPS overlay ─────────────────────────────────────────────
-use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_arch = "xtensa")]
+use core::sync::atomic::AtomicU32;
+use core::sync::atomic::Ordering;
 
-static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
-static LAST_FPS_TICK: AtomicU64 = AtomicU64::new(0);
-static CURRENT_FPS_X100: AtomicU64 = AtomicU64::new(0);
+// Xtensa currently provides 32-bit atomics; these bounded FPS counters fit
+// safely, while desktop targets keep their 64-bit representation.
+#[cfg(target_arch = "xtensa")]
+type AtomicCounter = AtomicU32;
+#[cfg(not(target_arch = "xtensa"))]
+type AtomicCounter = core::sync::atomic::AtomicU64;
+
+static FRAME_COUNT: AtomicCounter = AtomicCounter::new(0);
+static LAST_FPS_TICK: AtomicCounter = AtomicCounter::new(0);
+static CURRENT_FPS_X100: AtomicCounter = AtomicCounter::new(0);
 
 /// Total draw calls per frame (atomic for async access).
-static DRAW_CALLS: AtomicU64 = AtomicU64::new(0);
+static DRAW_CALLS: AtomicCounter = AtomicCounter::new(0);
 /// Estimated time spent in render (ticks).
-static RENDER_TICKS: AtomicU64 = AtomicU64::new(0);
+static RENDER_TICKS: AtomicCounter = AtomicCounter::new(0);
+
+#[cfg(target_arch = "xtensa")]
+fn counter_value(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+#[cfg(not(target_arch = "xtensa"))]
+fn counter_value(value: u64) -> u64 {
+    value
+}
 
 // ── Inline formatting helpers (no heap) ────────────────────
 
@@ -202,31 +221,32 @@ pub fn notify_frame_presented(now_tick: u64) {
     // time between updates so low-framerate environments don't show stale data.
     // `fetch_add` returns the pre-increment count, so use `fc + 1` so the
     // update lands on frames 30, 60, 90, … rather than 1, 31, 61, …
-    const FRAMES_PER_UPDATE: u64 = 30;
-    if now_tick > last && (fc + 1) % FRAMES_PER_UPDATE == 0 {
+    const FRAMES_PER_UPDATE: u32 = 30;
+    let last = u64::from(last);
+    if now_tick > last && u64::from(fc + 1) % u64::from(FRAMES_PER_UPDATE) == 0 {
         let ticks_since = now_tick.saturating_sub(last);
         if ticks_since > 0 {
             let fps = FRAMES_PER_UPDATE
                 .saturating_mul(100)
-                .saturating_div(ticks_since);
-            CURRENT_FPS_X100.store(fps, Ordering::Relaxed);
+                .saturating_div(u32::try_from(ticks_since).unwrap_or(u32::MAX));
+            CURRENT_FPS_X100.store(counter_value(u64::from(fps)), Ordering::Relaxed);
         }
-        LAST_FPS_TICK.store(now_tick, Ordering::Relaxed);
+        LAST_FPS_TICK.store(counter_value(now_tick), Ordering::Relaxed);
     }
 }
 
 pub fn current_fps_x100() -> u64 {
-    CURRENT_FPS_X100.load(Ordering::Relaxed)
+    u64::from(CURRENT_FPS_X100.load(Ordering::Relaxed))
 }
 
 /// Return the number of draw calls in the last rendered frame.
 pub fn draw_calls_last_frame() -> u64 {
-    DRAW_CALLS.load(Ordering::Relaxed)
+    u64::from(DRAW_CALLS.load(Ordering::Relaxed))
 }
 
 /// Return the estimated render time in ticks for the last frame.
 pub fn render_ticks_last_frame() -> u64 {
-    RENDER_TICKS.load(Ordering::Relaxed)
+    u64::from(RENDER_TICKS.load(Ordering::Relaxed))
 }
 
 fn inc_draw_calls() {

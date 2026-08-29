@@ -4,3 +4,17 @@
 # for this no_std target so a valid WASM module is not aborted in Module::new.
 [target.x86_64-unknown-uefi]
 rustflags = ["-Zub-checks=no"]
+
+[target.xtensa-esp32-none-elf]
+linker = "xtensa-esp32-elf-ld"
+rustflags = [
+    "-C", "panic=abort",
+    "-C", "link-arg=--gc-sections",
+    # Keep entry code in ESP32 IRAM and static zero storage in DRAM. These are
+    # linker placement options, not a Fullerene linker script.
+    "-C", "link-arg=-Ttext=0x40080000",
+    "-C", "link-arg=-Tbss=0x3FFB0000",
+]
+
+[target.'cfg(target_arch = "xtensa")']
+rustflags = ["-C", "target-cpu=esp32"]

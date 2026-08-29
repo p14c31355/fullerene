@@ -7,7 +7,10 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[features]
+esp32 = []
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",
 ] }
@@ -24,3 +27,7 @@ sealant = { path = "../sealant" }
 name = "nitrogen"
 path = "src/lib.rs"
 crate-type = ["lib"]
+
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+spin = { workspace = true, features = ["spin_mutex"] }
+log = { workspace = true }

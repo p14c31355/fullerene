@@ -508,80 +508,87 @@ pub fn render_text_bitmap(
     );
 }
 
-// ── TrueType font support (ab_glyph) ──────────────────────────
+#[cfg(not(target_arch = "xtensa"))]
+pub mod true_type {
+    // ── TrueType font support (ab_glyph) ──────────────────────────
 
-use ab_glyph::Font as _;
-use ab_glyph::ScaleFont as _;
-use ab_glyph::{FontArc, PxScale, point};
-use spin::once::Once;
+    use ab_glyph::Font as _;
+    use ab_glyph::ScaleFont as _;
+    use ab_glyph::{FontArc, PxScale, point};
+    use spin::once::Once;
 
-static TTF_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LiberationSans-Regular.ttf"));
+    static TTF_DATA: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/LiberationSans-Regular.ttf"));
 
-static TTF_FONT: Once<Option<FontArc>> = Once::new();
+    static TTF_FONT: Once<Option<FontArc>> = Once::new();
 
-/// Try to get the loaded TTF font, or `None` if unavailable.
-pub fn get_ttf_font() -> Option<&'static FontArc> {
-    TTF_FONT.call_once(|| FontArc::try_from_slice(TTF_DATA).ok());
-    TTF_FONT.get().unwrap().as_ref()
-}
-
-/// Render text using the TTF font with grayscale antialiasing.
-pub fn render_text_ttf(
-    fb: &mut [u32],
-    fb_width: u32,
-    fb_height: u32,
-    fb_stride: u32,
-    x: i32,
-    y: i32,
-    text: &str,
-    color: u32,
-    size: f32,
-    font: &FontArc,
-) -> Result<(), ()> {
-    let scale = PxScale { x: size, y: size };
-    let sf = font.as_scaled(scale);
-    let mut px = x as f32;
-    let base_y = y as f32 + size * 0.85;
-    for ch in text.chars() {
-        if ch == ' ' {
-            px += size * 0.35;
-            continue;
-        }
-        let gid = sf.glyph_id(ch);
-        let glyph = gid.with_scale_and_position(scale, point(px, base_y));
-        if let Some(outline) = sf.outline_glyph(glyph) {
-            let bounds = outline.px_bounds();
-            let ox = bounds.min.x as i32;
-            let oy = bounds.min.y as i32;
-            outline.draw(|dx, dy, coverage| {
-                let bx = ox + dx as i32;
-                let by = oy + dy as i32;
-                if bx < 0 || by < 0 || bx as u32 >= fb_width || by as u32 >= fb_height {
-                    return;
-                }
-                let ca = (coverage * 255.0) as u32;
-                if ca == 0 {
-                    return;
-                }
-                let idx = (by as usize) * (fb_stride as usize) + (bx as usize);
-                if ca >= 255 {
-                    fb[idx] = color;
-                    return;
-                }
-                let bg = fb[idx];
-                let ia = 255 - ca;
-                let r = (((color >> 16) & 0xFF) * ca + ((bg >> 16) & 0xFF) * ia) / 255;
-                let g = (((color >> 8) & 0xFF) * ca + ((bg >> 8) & 0xFF) * ia) / 255;
-                let b = ((color & 0xFF) * ca + (bg & 0xFF) * ia) / 255;
-                fb[idx] = (bg & 0xFF00_0000) | (r << 16) | (g << 8) | b;
-            });
-            px += sf.h_advance(gid);
-        } else {
-            px += size * 0.5;
-        }
+    /// Try to get the loaded TTF font, or `None` if unavailable.
+    pub fn get_ttf_font() -> Option<&'static FontArc> {
+        TTF_FONT.call_once(|| FontArc::try_from_slice(TTF_DATA).ok());
+        TTF_FONT.get().unwrap().as_ref()
     }
-    Ok(())
+
+    /// Render text using the TTF font with grayscale antialiasing.
+    pub fn render_text_ttf(
+        fb: &mut [u32],
+        fb_width: u32,
+        fb_height: u32,
+        fb_stride: u32,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: u32,
+        size: f32,
+        font: &FontArc,
+    ) -> Result<(), ()> {
+        let scale = PxScale { x: size, y: size };
+        let sf = font.as_scaled(scale);
+        let mut px = x as f32;
+        let base_y = y as f32 + size * 0.85;
+        for ch in text.chars() {
+            if ch == ' ' {
+                px += size * 0.35;
+                continue;
+            }
+            let gid = sf.glyph_id(ch);
+            let glyph = gid.with_scale_and_position(scale, point(px, base_y));
+            if let Some(outline) = sf.outline_glyph(glyph) {
+                let bounds = outline.px_bounds();
+                let ox = bounds.min.x as i32;
+                let oy = bounds.min.y as i32;
+                outline.draw(|dx, dy, coverage| {
+                    let bx = ox + dx as i32;
+                    let by = oy + dy as i32;
+                    if bx < 0 || by < 0 || bx as u32 >= fb_width || by as u32 >= fb_height {
+                        return;
+                    }
+                    let ca = (coverage * 255.0) as u32;
+                    if ca == 0 {
+                        return;
+                    }
+                    let idx = (by as usize) * (fb_stride as usize) + (bx as usize);
+                    if ca >= 255 {
+                        fb[idx] = color;
+                        return;
+                    }
+                    let bg = fb[idx];
+                    let ia = 255 - ca;
+                    let r = (((color >> 16) & 0xFF) * ca + ((bg >> 16) & 0xFF) * ia) / 255;
+                    let g = (((color >> 8) & 0xFF) * ca + ((bg >> 8) & 0xFF) * ia) / 255;
+                    let b = ((color & 0xFF) * ca + (bg & 0xFF) * ia) / 255;
+                    fb[idx] = (bg & 0xFF00_0000) | (r << 16) | (g << 8) | b;
+                });
+                px += sf.h_advance(gid);
+            } else {
+                px += size * 0.5;
+            }
+        }
+        Ok(())
+    }
 }
+
+#[cfg(not(target_arch = "xtensa"))]
+pub use true_type::{get_ttf_font, render_text_ttf};
 
 #[cfg(test)]
 mod tests {

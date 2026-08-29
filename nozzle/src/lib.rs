@@ -1,6 +1,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod arch;
 pub mod builtins;
 pub mod fs_hooks;
 pub mod line_editor;

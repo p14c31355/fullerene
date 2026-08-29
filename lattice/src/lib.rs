@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod arch;
 pub mod basalt;
 pub mod common;
 pub mod compositor;

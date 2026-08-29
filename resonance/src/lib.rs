@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod arch;
+
 extern crate alloc;
 
 mod dispatcher;
