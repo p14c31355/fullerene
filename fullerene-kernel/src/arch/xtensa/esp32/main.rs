@@ -22,9 +22,6 @@ core::arch::global_asm!(
     ".global _start",
     "_start:",
     "l32r a1, ESP32_BOOT_STACK_LITERAL",
-    // Rust's `sym` arithmetic is not reflected in the literal by this
-    // target; add the 16 KiB stack size explicitly (0x4000 == 64 << 8).
-    "addi a1, a1, 16384",
     "call0 {entry}",
     ".size _start, . - _start",
     stack = sym ESP32_BOOT_STACK,

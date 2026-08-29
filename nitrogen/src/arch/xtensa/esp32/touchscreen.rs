@@ -30,19 +30,27 @@ impl Calibration {
     /// The mapping clamps before division, avoiding 16-bit overflow and making
     /// noisy edge samples stay within the panel.
     pub fn map_to_screen(&self, sample: TouchSample, width: u16, height: u16) -> (u16, u16) {
-        let clamped = TouchSample {
-            x: sample.x.clamp(self.min_x, self.max_x),
-            y: sample.y.clamp(self.min_y, self.max_y),
-            pressed: sample.pressed,
+        let min_x = self.min_x.min(self.max_x);
+        let max_x = self.min_x.max(self.max_x);
+        let min_y = self.min_y.min(self.max_y);
+        let max_y = self.min_y.max(self.max_y);
+        let (raw_x, raw_x_min, raw_x_max) = if self.swap_xy {
+            (sample.y, min_y, max_y)
+        } else {
+            (sample.x, min_x, max_x)
         };
-        let raw_x = if self.swap_xy { clamped.y } else { clamped.x };
-        let raw_y = if self.swap_xy { clamped.x } else { clamped.y };
-        let span_x = u32::from(self.max_x - self.min_x).max(1);
-        let span_y = u32::from(self.max_y - self.min_y).max(1);
-        let mapped_x = (u32::from(raw_x - self.min_x) * u32::from(width.saturating_sub(1))
-            / span_x)
+        let (raw_y, raw_y_min, raw_y_max) = if self.swap_xy {
+            (sample.x, min_x, max_x)
+        } else {
+            (sample.y, min_y, max_y)
+        };
+        let raw_x = raw_x.clamp(raw_x_min, raw_x_max);
+        let raw_y = raw_y.clamp(raw_y_min, raw_y_max);
+        let span_x = u32::from(raw_x_max - raw_x_min).max(1);
+        let span_y = u32::from(raw_y_max - raw_y_min).max(1);
+        let mapped_x = (u32::from(raw_x - raw_x_min) * u32::from(width.saturating_sub(1)) / span_x)
             .min(u32::from(width.saturating_sub(1)));
-        let mapped_y = (u32::from(raw_y - self.min_y) * u32::from(height.saturating_sub(1))
+        let mapped_y = (u32::from(raw_y - raw_y_min) * u32::from(height.saturating_sub(1))
             / span_y)
             .min(u32::from(height.saturating_sub(1)));
         let screen_x = if self.mirror_x {

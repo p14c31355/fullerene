@@ -42,6 +42,8 @@ impl SpiLcd {
     pub fn init(&mut self) -> Result<(), LcdError> {
         let profile = BoardProfile::xh32s();
         self.controller.configure(&profile)?;
+        gpio::enable_output(profile.lcd.backlight);
+        gpio::set_output_low(profile.lcd.backlight);
         gpio::set_output_low(profile.lcd.rst);
         delay_ms(20);
         gpio::set_output_high(profile.lcd.rst);
@@ -75,12 +77,18 @@ impl SpiLcd {
         let x2 = x.saturating_add(width);
         let y2 = y.saturating_add(height);
         self.dirty = Some(match self.dirty {
-            Some((dx, dy, _, _)) => (
-                dx.min(x),
-                dy.min(y),
-                dx.max(x2).saturating_sub(dx),
-                dy.max(y2).saturating_sub(dy),
-            ),
+            Some((dx, dy, dirty_width, dirty_height)) => {
+                let left = dx.min(x);
+                let top = dy.min(y);
+                let right = dx.saturating_add(dirty_width).max(x2);
+                let bottom = dy.saturating_add(dirty_height).max(y2);
+                (
+                    left,
+                    top,
+                    right.saturating_sub(left),
+                    bottom.saturating_sub(top),
+                )
+            }
             None => (x, y, width, height),
         });
     }

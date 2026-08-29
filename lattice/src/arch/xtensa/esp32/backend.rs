@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(desktop.active(), EmbeddedApp::SystemInfo);
         assert_eq!(desktop.hit_taskbar(0, 100), None);
         assert_eq!(desktop.hit_taskbar(0, 240), None);
-        assert_eq!(desktop.hit_taskbar(0, 226), Some(EmbeddedApp::SystemInfo));
+        assert_eq!(desktop.hit_taskbar(8, 226), Some(EmbeddedApp::SystemInfo));
         assert_eq!(desktop.hit_taskbar(250, 226), Some(EmbeddedApp::Settings));
         assert!(desktop.set_active(EmbeddedApp::Settings));
         assert!(!desktop.set_active(EmbeddedApp::Settings));

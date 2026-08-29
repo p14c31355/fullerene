@@ -36,10 +36,20 @@ pub fn boot() -> ! {
         nozzle_commands::MEMINFO = Some(|| (memory::used(), memory::capacity()));
         nozzle_commands::TASK_NAMES = Some(|| fixed_task_names());
         nozzle_commands::UPTIME = Some(time::uptime_millis);
-        nozzle_commands::REBOOT = Some(|| true);
+        nozzle_commands::REBOOT = Some(reboot);
     }
-    scheduler.spawn("lattice", lattice_task as *const () as usize, 8 * 1024);
-    scheduler.spawn("nozzle", nozzle_task as *const () as usize, 4 * 1024);
+    if scheduler
+        .spawn("lattice", lattice_task as *const () as usize, 8 * 1024)
+        .is_none()
+    {
+        panic_message("lattice task spawn failed");
+    }
+    if scheduler
+        .spawn("nozzle", nozzle_task as *const () as usize, 4 * 1024)
+        .is_none()
+    {
+        panic_message("nozzle task spawn failed");
+    }
     for (name, entry) in solvent::arch::xtensa::esp32::applications::application_tasks() {
         // Zero entries are explicit unlaunched registrations, not executable
         // tasks. Do not send them into the unfinished context switch.
@@ -49,6 +59,10 @@ pub fn boot() -> ! {
     }
     nitrogen::arch::xtensa::esp32::uart::write_str("SCHED RUN\n");
     scheduler.run();
+}
+
+fn reboot() -> bool {
+    crate::arch::xtensa::esp32::platform::software_reset()
 }
 
 extern "C" fn lattice_task() -> ! {
@@ -173,12 +187,7 @@ pub fn panic_message(message: &str) -> ! {
     }
 }
 
-pub fn alloc_error_report(layout: core::alloc::Layout) -> ! {
-    let mut text = alloc::string::String::new();
-    core::fmt::Write::write_fmt(
-        &mut text,
-        format_args!("allocation failed: {} bytes\n", layout.size()),
-    )
-    .ok();
-    panic_message(&text)
+pub fn alloc_error_report(_layout: core::alloc::Layout) -> ! {
+    // Formatting here would allocate from the allocator that just failed.
+    panic_message("allocation failed")
 }

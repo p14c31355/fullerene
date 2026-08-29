@@ -7,6 +7,7 @@
 pub enum SdMmcError {
     NotPresent,
     NotInitialized,
+    Unsupported,
     CommandFailed,
     BufferTooSmall { required: usize, provided: usize },
 }
@@ -24,12 +25,12 @@ impl SdMmcHost {
         }
     }
 
-    /// Probe the physical card. Return an explicit error until the ESP32
-    /// SDMMC host is implemented; never report a card that was not detected.
+    /// The ESP32 host command path is not implemented yet. Keep the adapter
+    /// unavailable rather than exposing a card with fabricated geometry.
     pub fn detect(&mut self) -> Result<(), SdMmcError> {
         self.initialized = false;
         self.sectors = 0;
-        Err(SdMmcError::NotPresent)
+        Err(SdMmcError::Unsupported)
     }
 
     pub fn is_initialized(&self) -> bool {

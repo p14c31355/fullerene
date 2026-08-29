@@ -55,8 +55,7 @@ pub fn enable_input(pin: u8) {
     unsafe {
         // MCU_SEL=GPIO (2), input enabled. Input-only pads have no output
         // enable; writing the clear register is harmless for them.
-        ((IO_MUX_BASE + offset as usize) as *mut u32)
-            .write_volatile(1 << 9 | 2 << 12 | 2 << 10);
+        ((IO_MUX_BASE + offset as usize) as *mut u32).write_volatile(1 << 9 | 2 << 12 | 2 << 10);
         if pin < 32 {
             (GPIO_ENABLE_W1TC as *mut u32).write_volatile(1 << u32::from(pin));
         } else if pin < 40 {
@@ -72,6 +71,12 @@ pub fn enable_input_pullup(pin: u8) {
     let Some(offset) = io_mux_offset(pin) else {
         return;
     };
+    if (34..=39).contains(&pin) {
+        // GPIO34..39 are input-only pads without an internal pull-up. The
+        // board must provide the pull-up externally for active-low signals.
+        enable_input(pin);
+        return;
+    }
     unsafe {
         ((IO_MUX_BASE + offset as usize) as *mut u32)
             .write_volatile(1 << 9 | 1 << 8 | 2 << 12 | 2 << 10);
@@ -108,6 +113,7 @@ pub fn set_output_low(pin: u8) {
 /// Read a GPIO input. Returns `None` for pins without a configured IO_MUX
 /// mapping rather than silently returning an arbitrary value.
 pub fn input(pin: u8) -> Option<bool> {
+    io_mux_offset(pin)?;
     if pin >= 32 {
         let value = unsafe { (GPIO_IN_HIGH as *const u32).read_volatile() };
         Some(value & (1 << (u32::from(pin) - 32)) != 0)

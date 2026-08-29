@@ -24,7 +24,7 @@ Board pin defaults currently used by the profile are unverified against traces:
 | Device | Pins |
 | --- | --- |
 | LCD SPI | SCLK 14, MOSI 13, DC 2, CS 15, RST 12, backlight 21 |
-| Touch I2C | SDA 33, SCL 32 |
+| Touch SPI | CLK 25, MOSI 32, MISO 39, CS 33, PENIRQ 36 (external pull-up required) |
 | SDMMC | CLK 18, CMD 23, DATA0 19 |
 
 Do not treat these values as hardware confirmation. Probe traces, chip IDs, and

@@ -19,7 +19,9 @@ rustflags = [
     "-C", "link-arg=--defsym=__bss_start=ADDR(.bss)",
     "-C", "link-arg=--defsym=__bss_end=ADDR(.bss)+SIZEOF(.bss)",
     "-C", "target-feature=-windowed",
-    "-C", "link-arg=-Map=target/xtensa-esp32-none-elf/release/fullerene-kernel-esp32.map",
+    # Keep the map beside the profile directories so debug and release builds
+    # use the same valid output directory.
+    "-C", "link-arg=-Map=target/xtensa-esp32-none-elf/fullerene-kernel-esp32.map",
 ]
 
 [target.'cfg(target_arch = "xtensa")']

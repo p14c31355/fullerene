@@ -83,7 +83,7 @@ impl Scheduler {
     }
 
     pub fn spawn(&mut self, name: &str, entry: usize, stack_size: usize) -> Option<&Task> {
-        if self.tasks.len() >= 12 || stack_size < 32 {
+        if self.tasks.len() >= 12 || stack_size < 256 {
             return None;
         }
         let stack = memory::allocate_stack(stack_size)?;

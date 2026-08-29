@@ -462,6 +462,17 @@ impl Platform {
 
     fn validate(self, arch: Arch, action: Action) -> io::Result<()> {
         self.validate_pair(arch)?;
+        if matches!(action, Action::Flash | Action::Monitor)
+            && !matches!((arch, self), (Arch::Xtensa, Self::Esp32Xh32S))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "action {:?} is not available for {:?}/{:?}",
+                    action, arch, self
+                ),
+            ));
+        }
         if action == Action::Boot && (arch != Arch::Aarch64 || self != Self::Bramble) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -873,18 +884,20 @@ fn main() -> io::Result<()> {
                 "OVMF and ISO options are not available for ESP32",
             ));
         }
-        let kernel_path = build_esp32_kernel(&workspace_root, profile)?;
         match args.command {
             Action::Build => {
+                let kernel_path = build_esp32_kernel(&workspace_root, profile)?;
                 let image_path = build_esp32_image(&kernel_path)?;
                 println!("ESP32 ELF kernel built at {}", kernel_path.display());
                 println!("ESP32 image built at {}", image_path.display());
             }
             Action::Flash => {
+                let kernel_path = build_esp32_kernel(&workspace_root, profile)?;
                 let image_path = build_esp32_image(&kernel_path)?;
                 espflash_write(&image_path, args.serial.as_deref(), args.baud)?;
             }
             Action::Run => {
+                let kernel_path = build_esp32_kernel(&workspace_root, profile)?;
                 let image_path = build_esp32_image(&kernel_path)?;
                 espflash_run(&image_path, args.serial.as_deref(), args.baud)?;
             }
@@ -895,7 +908,7 @@ fn main() -> io::Result<()> {
                         "ESP32 monitor requires --serial DEVICE",
                     )
                 })?;
-                esp32_monitor(device, args.baud)?;
+                esp32_monitor(Some(device), args.baud)?;
             }
             _ => {
                 return Err(io::Error::new(
@@ -3088,6 +3101,17 @@ mod tests {
         assert_eq!(profile.artifact_directory(), "debug");
     }
 
+    #[test]
+    fn flash_and_monitor_require_esp32() {
+        for action in ["flash", "monitor"] {
+            let args = Args::try_parse_from(["flasks", action, "--arch", "x86_64"]).unwrap();
+            assert!(super::Target::from_args(&args).is_err());
+        }
+
+        let args = Args::try_parse_from(["flasks", "monitor", "--arch", "xtensa"]).unwrap();
+        assert!(super::Target::from_args(&args).is_ok());
+    }
+
     fn esp32_phdr(data: &mut Vec<u8>, offset: u32, address: u32, file_size: u32, memory_size: u32) {
         let start = data.len();
         data.extend_from_slice(&1u32.to_le_bytes()); // PT_LOAD
@@ -3651,13 +3675,8 @@ fn espflash_command(
 }
 
 fn espflash_run(image: &Path, serial: Option<&str>, baud: u32) -> io::Result<()> {
-    let mut command = espflash_command("run", image, serial, baud)?;
-    command.arg("--monitor");
-    let status = command.status()?;
-    if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "espflash run failed"));
-    }
-    Ok(())
+    espflash_write(image, serial, baud)?;
+    esp32_monitor(serial, baud)
 }
 
 fn espflash_write(image: &Path, serial: Option<&str>, baud: u32) -> io::Result<()> {
@@ -3671,14 +3690,13 @@ fn espflash_write(image: &Path, serial: Option<&str>, baud: u32) -> io::Result<(
     Ok(())
 }
 
-fn esp32_monitor(device: &str, baud: u32) -> io::Result<()> {
-    let status = Command::new("espflash")
-        .arg("monitor")
-        .arg("--baud")
-        .arg(baud.to_string())
-        .arg("--port")
-        .arg(device)
-        .status()?;
+fn esp32_monitor(device: Option<&str>, baud: u32) -> io::Result<()> {
+    let mut command = Command::new("espflash");
+    command.arg("monitor").arg("--baud").arg(baud.to_string());
+    if let Some(device) = device {
+        command.arg("--port").arg(device);
+    }
+    let status = command.status()?;
     if !status.success() {
         return Err(io::Error::new(
             io::ErrorKind::Other,

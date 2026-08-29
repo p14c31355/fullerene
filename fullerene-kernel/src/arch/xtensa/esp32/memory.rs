@@ -6,6 +6,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 pub const BOOT_HEAP_SIZE: usize = 168 * 1024;
 pub const BOOT_STACK_SIZE: usize = 16 * 1024;
 const TASK_STACK_REGION_SIZE: usize = 32 * 1024;
+const HEAP_ALIGNMENT: usize = 16;
 
 #[repr(C, align(16))]
 struct HeapStorage([u8; BOOT_HEAP_SIZE]);
@@ -17,10 +18,29 @@ struct BumpAllocator;
 
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if layout.align() > HEAP_ALIGNMENT {
+            return core::ptr::null_mut();
+        }
         let align = layout.align().max(4);
+        let base = core::ptr::addr_of_mut!(HEAP_STORAGE).cast::<u8>();
+        let base_address = base as usize;
         let mut current = HEAP_CURSOR.load(Ordering::Acquire);
         loop {
-            let aligned = current.div_ceil(align) * align;
+            // Align the absolute address, not just the cursor offset. The
+            // storage is aligned to the largest alignment this allocator
+            // accepts, but keeping the base in this calculation preserves the
+            // contract if the storage placement changes later.
+            let aligned_address = match base_address
+                .checked_add(current)
+                .and_then(|address| address.checked_add(align - 1))
+            {
+                Some(address) => address & !(align - 1),
+                None => return core::ptr::null_mut(),
+            };
+            let aligned = match aligned_address.checked_sub(base_address) {
+                Some(offset) => offset,
+                None => return core::ptr::null_mut(),
+            };
             let next = match aligned.checked_add(layout.size()) {
                 Some(value) => value,
                 None => return core::ptr::null_mut(),
@@ -35,7 +55,6 @@ unsafe impl GlobalAlloc for BumpAllocator {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    let base = core::ptr::addr_of_mut!(HEAP_STORAGE).cast::<u8>();
                     return unsafe { base.add(aligned) };
                 }
                 Err(observed) => current = observed,

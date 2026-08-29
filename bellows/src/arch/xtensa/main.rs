@@ -8,25 +8,33 @@
 #![no_std]
 #![no_main]
 
+use core::arch::global_asm;
+
 #[unsafe(no_mangle)]
 static mut ESP32_BOOT_STACK: [u8; 16 * 1024] = [0; 16 * 1024];
 
+// This entry stub changes A1 and then transfers control without returning to
+// Rust. A returning asm! block is not allowed to leave the stack pointer
+// changed, even when it is marked `nostack`.
+global_asm!(
+    ".section .text._start, \"ax\"",
+    ".p2align 4",
+    ".global _start",
+    "_start:",
+    "l32r a1, 1f",
+    "j {entry}",
+    ".align 4",
+    "1: .word {stack} + {stack_size}",
+    ".size _start, . - _start",
+    stack = sym ESP32_BOOT_STACK,
+    stack_size = const core::mem::size_of::<[u8; 16 * 1024]>(),
+    entry = sym bellows_entry,
+);
+
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    unsafe {
-        core::arch::asm!(
-            "l32r a1, 1f",
-            "j 2f",
-            ".align 4",
-            "1: .word {stack} + {stack_size}",
-            "2:",
-            stack = sym ESP32_BOOT_STACK,
-            stack_size = const core::mem::size_of::<[u8; 16 * 1024]>(),
-            options(nomem, nostack)
-        );
-        // The Rust target owns startup; the ESP image tooling emits the
-        // ELF segment's full memsz so ROM loads zero-filled BSS.
-    }
+extern "C" fn bellows_entry() -> ! {
+    // The Rust target owns startup; the ESP image tooling emits the ELF
+    // segment's full memsz so ROM loads zero-filled BSS.
     fullerene_kernel::arch::xtensa::esp32::rust_entry()
 }
 

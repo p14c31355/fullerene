@@ -11,7 +11,7 @@ pub const RTC_WDT_WKEY: u32 = 0x50d8_3aa1;
 pub const TIMG0_BASE: usize = 0x3ff5_f000;
 pub const TIMG1_BASE: usize = 0x3ff6_0000;
 pub const TIMG_WDT_CONFIG0: usize = 0x48;
-pub const TIMG_WDT_WPROTECT: usize = 0x5c;
+pub const TIMG_WDT_WPROTECT: usize = 0x64;
 pub const TIMG_WDT_WKEY: u32 = 0x50d8_3aa1;
 
 #[inline]

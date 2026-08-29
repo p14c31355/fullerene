@@ -216,22 +216,26 @@ fn write_u64_fixed(buf: &mut [u8; 32], pos: &mut usize, mut v: u64, min_digits: 
 
 pub fn notify_frame_presented(now_tick: u64) {
     let fc = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-    let last = LAST_FPS_TICK.load(Ordering::Relaxed);
     // Update FPS every FRAMES_PER_UPDATE frames, but also enforce a minimum
     // time between updates so low-framerate environments don't show stale data.
     // `fetch_add` returns the pre-increment count, so use `fc + 1` so the
     // update lands on frames 30, 60, 90, … rather than 1, 31, 61, …
     const FRAMES_PER_UPDATE: u32 = 30;
-    let last = u64::from(last);
-    if now_tick > last && u64::from(fc + 1) % u64::from(FRAMES_PER_UPDATE) == 0 {
-        let ticks_since = now_tick.saturating_sub(last);
-        if ticks_since > 0 {
-            let fps = FRAMES_PER_UPDATE
-                .saturating_mul(100)
-                .saturating_div(u32::try_from(ticks_since).unwrap_or(u32::MAX));
-            CURRENT_FPS_X100.store(counter_value(u64::from(fps)), Ordering::Relaxed);
-        }
-        LAST_FPS_TICK.store(counter_value(now_tick), Ordering::Relaxed);
+    #[cfg(target_arch = "xtensa")]
+    let now_tick = now_tick as u32;
+    #[cfg(not(target_arch = "xtensa"))]
+    let now_tick = now_tick;
+    let last = LAST_FPS_TICK.load(Ordering::Relaxed);
+    #[cfg(target_arch = "xtensa")]
+    let ticks_since = u64::from(now_tick.wrapping_sub(last));
+    #[cfg(not(target_arch = "xtensa"))]
+    let ticks_since = now_tick.saturating_sub(last);
+    if ticks_since > 0 && u64::from(fc + 1) % u64::from(FRAMES_PER_UPDATE) == 0 {
+        let fps = FRAMES_PER_UPDATE
+            .saturating_mul(100)
+            .saturating_div(u32::try_from(ticks_since).unwrap_or(u32::MAX));
+        CURRENT_FPS_X100.store(counter_value(u64::from(fps)), Ordering::Relaxed);
+        LAST_FPS_TICK.store(counter_value(now_tick as u64), Ordering::Relaxed);
     }
 }
 
