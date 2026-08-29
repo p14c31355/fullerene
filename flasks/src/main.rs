@@ -214,6 +214,12 @@ struct Args {
     #[arg(long = "usb-swdd-fnid", value_name = "HEX")]
     usb_swdd_fnid: Option<String>,
 
+    /// Omit the secure-watchdog-disable SMC itself (timing experiment:
+    /// isolates the SMC instruction cost from the rest of the prelude; the
+    /// secure WDT stays armed and bites at ~17 s).
+    #[arg(long = "usb-swdd-skip")]
+    usb_swdd_skip: bool,
+
     /// Emit one host-visible DCTL.SDIS blip after the post-Run/Stop arm
     /// window when the SETUP arm succeeded (link U0 reached per the core).
     #[arg(long = "usb-arm-blip")]
@@ -912,6 +918,7 @@ fn main() -> io::Result<()> {
             args.usb_swdd_fnid,
             args.usb_arm_blip,
             args.usb_abs_reset_secs,
+            args.usb_swdd_skip,
         )?;
         if target.platform == Platform::Bramble
             && matches!(args.command, Action::Run | Action::Debug)
@@ -1074,6 +1081,7 @@ fn build_aarch64_kernel(
     swdd_fnid: Option<String>,
     arm_blip: bool,
     abs_reset_secs: Option<u64>,
+    swdd_skip: bool,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
     // Collect every build-script environment variable first so the
@@ -1220,6 +1228,9 @@ fn build_aarch64_kernel(
     }
     if let Some(value) = swdd_fnid {
         push_env("FULLERENE_AARCH64_USB_SWDD_FNID", value);
+    }
+    if swdd_skip {
+        push_env("FULLERENE_AARCH64_USB_SWDD_SKIP", "1".to_owned());
     }
     if arm_blip {
         push_env("FULLERENE_AARCH64_USB_ARM_BLIP", "1".to_owned());
@@ -1392,6 +1403,7 @@ fn run_aarch64_qemu_preflight(
         None,                            // 45 swdd_fnid
         false,                           // 46 arm_blip
         None,                            // 47 abs_reset_secs
+        false,                           // 48 swdd_skip
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;
     let image = build_aarch64_image(&raw)?;

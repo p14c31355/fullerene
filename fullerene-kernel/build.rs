@@ -248,6 +248,27 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE").is_some() {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_DMA_PROBE=1");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_RAM_GATE=1");
+        }
+        if let Some(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE").ok() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_FSR_GATE={value}");
+        }
+        if let Some(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE").ok() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_EVT_DATA_GATE={value}");
+        }
+        if let Some(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE").ok() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_RSC_GATE={value}");
+        }
+        if let Some(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_CFG_GATE").ok() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_CFG_GATE={value}");
+        }
+        if let Some(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_RAMCLK_GATE").ok() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_RAMCLK_GATE={value}");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SMMU_INSTALL_ALL=1");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS").is_some() {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_DROP_VBUS=1");
         }
@@ -273,6 +294,15 @@ fn main() {
         if let Some(value) = env::var("FULLERENE_AARCH64_USB_SWDD_FNID").ok() {
             println!("cargo:rustc-env=FULLERENE_USB_SWDD_FNID={value}");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_SWDD_SKIP").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SWDD_SKIP=1");
+        }
+        if let Some(value) = env::var("FULLERENE_AARCH64_USB_BARE_PULLUP_STOP_AFTER")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+        {
+            println!("cargo:rustc-env=FULLERENE_USB_BARE_PULLUP_STOP_AFTER={value}");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_ARM_BLIP").is_some() {
             println!("cargo:rustc-env=FULLERENE_USB_ARM_BLIP=1");
         }
@@ -281,6 +311,16 @@ fn main() {
             .and_then(|value| value.parse::<u32>().ok())
         {
             println!("cargo:rustc-env=FULLERENE_USB_ABS_RESET_SECS={secs}");
+        }
+        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hyper_bare)");
+        // Hyper-bare bisection fires the bare pull-up at the very first
+        // instruction after EL1 entry. Gate it to bramble: the QEMU
+        // preflight inherits the harness environment but builds for
+        // qemu-virt, where this cfg must stay off.
+        if env::var_os("FULLERENE_AARCH64_USB_HYPER_BARE").is_some()
+            && env::var("FULLERENE_AARCH64_PLATFORM").is_ok_and(|p| p == "bramble")
+        {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_hyper_bare");
         }
         if env::var_os("FULLERENE_AARCH64_QEMU_USB_SIM").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_qemu_usb_sim");
@@ -313,12 +353,22 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_U0_ARM_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_WDT_BITE_CONTROL");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SWDD_FNID");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SWDD_SKIP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_STOP_AFTER");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HYPER_BARE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ARM_BLIP");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABS_RESET_SECS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SMMU_INSTALL");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SMMU_DISABLE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_CFG_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_RAMCLK_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SKIP_TYPEC_SPMI");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_QUIET_AFTER");

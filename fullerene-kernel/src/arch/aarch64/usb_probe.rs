@@ -111,6 +111,13 @@ global_asm!(
          add x5, x5, :lo12:usb_probe_vectors\n\
          msr VBAR_EL1, x5\n\
          isb\n\
+         // Hyper-bare bisection: jump straight to the bare pull-up\n\
+         // sequence before the relocator and before any prelude. The\n\
+         // gap it isolates is ABL/XBL-to-kernel-entry latency versus\n\
+         // entry-to-Run/Stop controller cost (see usb_probe_hyper_bare).\n\
+         .if {hyper_bare}\n\
+             bl usb_probe_hyper_bare\n\
+         .endif\n\
          // The bare pull-up probe must isolate USB MMIO from the optional\n\
          // GIC/timer setup below. Some firmware-owned redistributors reject\n\
          // these accesses before Rust has a chance to test the controller.\n\
@@ -355,6 +362,11 @@ global_asm!(
         0
     },
     minimal = const if cfg!(fullerene_aarch64_usb_bare_pullup_probe) {
+        1
+    } else {
+        0
+    },
+    hyper_bare = const if cfg!(fullerene_aarch64_usb_hyper_bare) {
         1
     } else {
         0
@@ -630,6 +642,96 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             0x5349_4744 | (signal_code & 0xff),
         );
     }
+    // "armalive" gate: one-bit readout of L1 (does the EP0 SETUP Start
+    // Transfer retire). By window end the host has driven SETUP tokens
+    // for ~1 s (its descriptor URB retries until the 5 s mark), so the
+    // state collapses: a retired arm leaves either a pending TRB (the
+    // armed flag) or a host DMA'd SETUP in the buffer (consumed); no
+    // retired arm leaves neither. Bite early on either fact so the loop's
+    // return time names L1 (return < T+35 = an arm retired; T+36-37 =
+    // none = persistent command wedge). Both outcomes park in the STAB
+    // loop; the pet path is inert once the bite is pending. Must run
+    // before cmd_gate_condition_met, which does not know this value.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("armalive") {
+        let state = usb::armalive_probe();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x414C_4C56 | (state & 0xff), // "ALLV"
+        );
+        if state != 0 {
+            // N=1: the bite is scheduled at window end (~T+12.3), so the
+            // 1 s delay lands it at ~T+13.3 and the loop returns ~T+32-34,
+            // clear of the secure-WDT bucket (T+36-37, calibrated on the
+            // last 11 runs).
+            usb::u0_arm_wdt_bite(1);
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnkalive" gate (third pass): one-bit readout splitting the
+    // non-U0, non-sleep link states at window end (DSTs.USBLNKST bits
+    // 21:18; this core encodes U0 = 0). Pass one showed the state is
+    // never 0, pass two (bite on U1/U2/U3) returned in the secure
+    // bucket, so the core does not see U0 and is not in LPM sleep while
+    // the host drives SETUP. The remaining question: is the FSM stuck
+    // mid-transaction in the reset/resume handshake (RECOV = 8,
+    // HRESET = 9, LPBK = 11, RESET = 0xe, RESUME = 0xf - the reset
+    // de-assertion never finished, so the core ignores the host's
+    // SETUP tokens) or parked in a link-down state (SS_DIS = 4,
+    // RX_DET = 5, SS_INACT = 6, POLL = 7, CMPLY = 10 - the QSCRATCH
+    // phantom, in which only the PHY answers the host's reset and
+    // chirps while the core's link never comes up). Bite early on the
+    // mid-transaction set; both outcomes park in the STAB loop. Same
+    // timing contract as armalive (bite ~T+13.3, return ~T+32-34 =
+    // stuck mid-transaction vs the secure bucket T+36-37 = link-down
+    // phantom, threshold T+35).
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnkalive") {
+        let lnkst = usb::dsts_raw_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4E_4B53 | (lnkst & 0xff), // "LNKS"
+        );
+        if lnkst == 8 || lnkst == 9 || lnkst == 11 || lnkst == 14
+            || lnkst == 15
+        {
+            usb::u0_arm_wdt_bite(1);
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "rescue2" gate: mid-window full re-arm. Unlike "diag" (which
+    // re-drives only the trace-named stuck stage) this forces the whole
+    // endpoint tail after a device soft reset, whatever the trace says:
+    // the host's read/64 URB retries its SETUP token until the 5 s
+    // descriptor timeout, so a fresh SETUP arm landing inside the window
+    // completes the enumeration. Readout = the journal outcome
+    // (1234:0001 vs -110), the same contract as "diag". Must run before
+    // cmd_gate_condition_met, which does not know this value.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("rescue2") {
+        usb::u0_arm_set_blips(0);
+        let status = usb::u0_arm_window_recovery();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x5232_0000 | (status & 0xff), // "R2"
+        );
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
     // "diag" gate: publish the composite readout code (see
     // usb::diag_readout_code) as SDIS blip pairs - pair count == code -
     // then park. The pairs land at ~T+15.3-16.8, before the ~T+17-18
@@ -652,33 +754,34 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             usb::poll();
         }
     }
-    // Gate evaluation against THIS run's trace data. The pull-up drop is not
-    // host-visible, so the reset TIMING is the one-bit readout. The gate
-    // fires at the end of the observation window; Android boot after the
-    // reset adds ~20 s. Distinguishable return buckets:
-    //   ~25 s:      swdd-ok TRUE (immediate reset, must beat the ~17 s
-    //               watchdog bite that would mask it at ~37 s);
-    //   ~35-45 s:   no gate ran, or the armed watchdog bit first;
-    //   ~85-95 s:   gate TRUE (60 s park, then reset);
-    //   ~115-125 s: gate FALSE (90 s park, then reset).
+    // Gate evaluation against THIS run's trace data. The gate fires at the
+    // end of the observation window. The one-bit readout is the HOST
+    // JOURNAL: TRUE stops the core while the host still tracks the device
+    // (eval lands inside the host's 5 s descriptor window with
+    // --connect-delay 0), which publishes a "usb 1-9: USB disconnect" line;
+    // FALSE only clears the dead QSCRATCH votes and parks 90 s, so no line
+    // appears. Both branches return in the WDT-bite bucket (~T+36-42,
+    // boot-reason=watchdog) - the reset timing no longer distinguishes
+    // them (calibrated in runs 2104483.0/2107000.0).
     if let Some(met) = usb::cmd_gate_condition_met() {
         usb::trace_marker(
             usb::TRACE_PROBE_WATCHDOG,
             0x4741_5445 | (met as u32 & 0xff), // "GADE"
         );
         if met {
-            // TRUE always resets IMMEDIATELY (park 0). A longer TRUE park
-            // would be cut by the ~17 s secure-WDT bite (park only pets the
-            // APSS WDT, not the TZ secure one), collapsing TRUE onto the
-            // FALSE bucket. Immediate reset (~25 s return) vs the WDT bite
-            // (~37 s return) is the reliable 1-bit split while the secure
-            // watchdog is still armed; if it is ever stopped, FALSE parks
-            // 90 s (~115 s return), still far from 25 s.
-            // Host-log backup readout: when the link is ON, two SDIS
-            // disconnect/re-attach pairs land in the host kernel log just
-            // before the reset, so TRUE stays identifiable in the log even
-            // when the return timing sits close to the bite bucket.
-            usb::sdisc_blips_link_on(2);
+            // One-bit readout: STOP THE CORE. Run/Stop owns the physical
+            // pull-up (CDLY=4 shifted the attach by exactly +4 s; the
+            // stop-after-K runs never attach), and with --connect-delay 0
+            // the eval lands ~1-2 s after attach - inside the host's 5 s
+            // descriptor window, while the host still tracks the device -
+            // so the stop publishes a real "usb 1-9: USB disconnect" line
+            // in the host journal. The old timing split (immediate reset
+            // ~25 s vs the WDT bite ~37 s) is dead: the PSCI/PS_HOLD reset
+            // never lands on this board and both branches return in the
+            // WDT bucket (calibrated in runs 2104483.0/2107000.0, both
+            // ~T+41); the SDIS blips are dead too (84+ runs, zero lines).
+            // Journal line present = TRUE, absent = FALSE.
+            let _ = usb::gate_true_stop_device();
             usb::park_for_seconds(0);
         }
         usb::ep0_signal_drop_pullup();
@@ -706,12 +809,41 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
     reset_after_probe_failure();
 }
 
+/// Hyper-bare bisection probe: fire the bare pull-up sequence as the very
+/// first instruction after EL1 entry, before the dynamic relocator runs and
+/// before any prelude (secure-WDT SMC, APSS pet, recovery timer, park
+/// watchdog). The host-visible attach time measured here is therefore the
+/// ABL/XBL-to-kernel-entry latency plus the bare sequence cost alone; an
+/// attach still at T+10-11 with this variant means the gap is on the
+/// bootloader side and cannot be shortened from the kernel.
+///
+/// Safe before relocations: the whole chain touches only MMIO at const
+/// physical addresses (BRAMBLE_USB_RESOURCES is const-initialized static
+/// data, accessed PC-relative), BSS that _start already zeroed (also
+/// accessed PC-relative), and the architectural counter for delays. No
+/// absolute data pointers are read or written. The secure WDT is left
+/// armed, so a hung chain self-recovers at the ~17 s secure bite.
+#[cfg(fullerene_aarch64_usb_hyper_bare)]
+#[unsafe(no_mangle)]
+extern "C" fn usb_probe_hyper_bare() -> ! {
+    unsafe { usb::init_usb2_bare_pullup_handoff() };
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn usb_probe_entry() -> ! {
     // Deactivate the SECURE watchdog first: XBL/ABL arm it for the
     // `fastboot boot` path and its bite reboots the handset ~17 s into every
     // probe (bootreason=watchdog), killing host enumeration mid-flight.
-    usb::secure_wdt_disable();
+    // FULLERENE_USB_SWDD_SKIP=1 omits this SMC itself: a timing experiment
+    // that isolates the SMC instruction cost (trap routing) from the rest
+    // of the prelude. In that variant the secure WDT stays armed and bites
+    // at ~17 s, which is harmless to the attach/-110 readouts.
+    if option_env!("FULLERENE_USB_SWDD_SKIP").is_none() {
+        usb::secure_wdt_disable();
+    }
     // The extended SMCCC diagnostics issue several SMCs at entry; that
     // multi-SMC sequence wedges the fastboot handoff (no attach). They are
     // only consumed by the scm-*/std-*/mdcr-*/el* gates, which evaluate at
@@ -1121,6 +1253,19 @@ extern "C" fn usb_probe_entry() -> ! {
             unsafe {
                 asm!("msr DAIFClr, #2", "isb", options(nostack));
             }
+        }
+        #[cfg(fullerene_aarch64_usb_bare_pullup_probe)]
+        {
+            // Self-recovery net: the secure watchdog is NOT a guaranteed
+            // recovery channel - the disable SMC at entry can succeed on an
+            // individual run, which leaves the bare probe parked forever
+            // with both USB ports down (the handset then needs a physical
+            // power cycle). A scheduled 16 s APSS-WDT bite makes every bare
+            // run end on its own; when the secure watchdog bites first
+            // (the normal case) this bite never lands and the readouts are
+            // unchanged. wdt_pet() below cannot cancel it (the pending bite
+            // owns recovery).
+            usb::u0_arm_wdt_bite(16);
         }
         #[cfg(fullerene_aarch64_usb_bare_pullup_probe)]
         loop {

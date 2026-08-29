@@ -92,6 +92,20 @@ struct LoopArgs {
     /// Run the minimal USB2 pull-up sequence without DWC3 reset, DMA, or EP0.
     #[arg(long)]
     bare_pullup: bool,
+    /// Bare-pullup bisection: stop the bare handoff after checkpoint K
+    /// (1 = PHY/session votes + USB2 PHY wake, 2 = +UTMI clock mux,
+    /// 3 = +GCTL/DCFG/DALEPENA, 4 = full through Run/Stop start) and park.
+    /// The host attach time then measures the cumulative cost of the
+    /// executed prefix, separating ABL-to-MMIO latency from per-step cost.
+    #[arg(long = "bare-pullup-stop-after", value_name = "K")]
+    bare_pullup_stop_after: Option<u32>,
+    /// Bare-pullup bisection: fire the pull-up sequence at the very
+    /// first instruction after EL1 entry (before relocation and the
+    /// prelude), then spin. Attach time measures the ABL/XBL-to-
+    /// kernel-entry latency alone; an unchanged T+10-11 attach means
+    /// the pre-attach gap is on the bootloader side.
+    #[arg(long)]
+    hyper_bare: bool,
     /// Publish only the physical pull-up after one gadget handoff boundary
     /// (1..=12), then use the normal automatic recovery path.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=12))]
@@ -183,6 +197,11 @@ struct LoopArgs {
     /// secure-WDT bucket means the bite was actually disabled.
     #[arg(long = "swdd-fnid", value_name = "HEX")]
     swdd_fnid: Option<String>,
+    /// Omit the secure-watchdog-disable SMC itself (timing experiment; the
+    /// secure WDT stays armed and bites at ~17 s, harmless to the
+    /// attach/-110 readouts).
+    #[arg(long)]
+    swdd_skip: bool,
     /// Emit one host-visible DCTL.SDIS blip after the post-Run/Stop arm
     /// window when the SETUP arm succeeded (a disconnect/re-attach pair at
     /// attach proves the core's link FSM reached U0).
@@ -581,6 +600,7 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         u0_arm_probe: false,
         wdt_bite_control: false,
         swdd_fnid: None,
+        swdd_skip: false,
         arm_blip: false,
         abs_reset_secs: None,
         signal_diag_publish: false,
@@ -597,6 +617,8 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         uncompressed: false,
         dry_run: false,
         bare_pullup: false,
+        bare_pullup_stop_after: None,
+        hyper_bare: false,
         stop_after_stage: None,
     }
 }
@@ -841,6 +863,26 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--bare-pullup cannot be combined with another USB differential",
+        ));
+    }
+    if let Some(stage) = args.bare_pullup_stop_after {
+        if !args.bare_pullup {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--bare-pullup-stop-after requires --bare-pullup",
+            ));
+        }
+        if !(1..=4).contains(&stage) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("--bare-pullup-stop-after must be 1..=4, got {stage}"),
+            ));
+        }
+    }
+    if args.hyper_bare && !args.bare_pullup {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hyper-bare requires --bare-pullup",
         ));
     }
     if args.reuse_fastboot_dma
@@ -1263,6 +1305,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         arguments.push("--usb-swdd-fnid".to_owned());
         arguments.push(value.clone());
     }
+    if args.swdd_skip {
+        arguments.push("--usb-swdd-skip".to_owned());
+    }
     if args.arm_blip {
         arguments.push("--usb-arm-blip".to_owned());
     }
@@ -1323,6 +1368,20 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         envs.push((
             "FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES".to_owned(),
             route.as_str().to_owned(),
+        ));
+    }
+    if let Some(stage) = args.bare_pullup_stop_after {
+        if stage < 4 {
+            envs.push((
+                "FULLERENE_AARCH64_USB_BARE_PULLUP_STOP_AFTER".to_owned(),
+                stage.to_string(),
+            ));
+        }
+    }
+    if args.hyper_bare {
+        envs.push((
+            "FULLERENE_AARCH64_USB_HYPER_BARE".to_owned(),
+            "1".to_owned(),
         ));
     }
     if args.no_core_reset {

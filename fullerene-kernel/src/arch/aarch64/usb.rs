@@ -513,13 +513,18 @@ const GUCTL2: usize = 0xc19c;
 // DWC3_GUCTL1 is part of the global register block immediately after GCTL;
 // 0xc360 is in the FIFO-register area and is not a user-control register.
 const GUCTL1: usize = 0xc11c;
+// msm-4.19 core.h: GUCTL3 sits in the 0xc600 block, not next to
+// GUCTL1; the 4.19 offset is 0xc60c.
+const GUCTL3: usize = 0xc60c;
 const GSNPSID: usize = 0xc120;
 const GRXTHRCFG: usize = 0xc10c;
+const GSBUSCFG1: usize = 0xc104;
 const GHWPARAMS0: usize = 0xc140;
 const GHWPARAMS1: usize = 0xc144;
 const GHWPARAMS3: usize = 0xc14c;
 const GHWPARAMS7: usize = 0xc15c;
 const VER_NUMBER: usize = 0xc1a0;
+const VER_TYPE: usize = 0xc1a4;
 const GFLADJ: usize = 0xc630;
 const GUSB2PHYCFG0: usize = 0xc200;
 const GUSB3PIPECTL0: usize = 0xc2c0;
@@ -546,6 +551,9 @@ const GCTL_U2RSTECN: u32 = 1 << 16;
 const GCTL_SCALEDOWN_MASK: u32 = 3 << 4;
 const GCTL_DISSCRAMBLE: u32 = 1 << 3;
 const GCTL_CORESOFTRESET: u32 = 1 << 11;
+const GCTL_GBLHIBERNATIONEN: u32 = 1 << 1;
+const GHWPARAMS1_EN_PWROPT_MASK: u32 = 3 << 24;
+const GHWPARAMS1_EN_PWROPT_HIB: u32 = 2 << 24;
 const GCTL_DSBLCLKGTNG: u32 = 1;
 const GUCTL_REFCLKPER_MASK: u32 = 0xffc0_0000;
 const GUCTL_REFCLKPER_19_2MHZ: u32 = 52 << 22;
@@ -558,6 +566,11 @@ const GUSB2PHYCFG_SUSPHY: u32 = 1 << 6;
 const GUSB2PHYCFG_ENBLSLPM: u32 = 1 << 8;
 const GUSB2PHYCFG_PHYSOFTRST: u32 = 1 << 31;
 const GUCTL1_L1_SUSP_THRLD_EN_FOR_HOST: u32 = 1 << 8;
+const GUCTL1_DEV_L1_EXIT_BY_HW: u32 = 1 << 24;
+const GUCTL1_IP_GAP_ADD_ON: u32 = 1 << 21;
+const GUCTL3_USB20_RETRY_DISABLE: u32 = 1 << 16;
+const GSBUSCFG1_PIPETRANSLIMIT_MASK: u32 = 0x0f << 8;
+const GSBUSCFG1_PIPETRANSLIMIT_E: u32 = 0xe << 8;
 const GUSB3PIPECTL_SUSPHY: u32 = 1 << 17;
 const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 
@@ -590,6 +603,14 @@ const DWC3_REVISION_194A: u32 = 0x5533_194a;
 const DWC3_REVISION_220A: u32 = 0x5533_220a;
 const DWC3_REVISION_250A: u32 = 0x5533_250a;
 const DWC3_REVISION_310A: u32 = 0x5533_310a;
+const DWC3_REVISION_270A: u32 = 0x5533_270a;
+const DWC3_REVISION_290A: u32 = 0x5533_290a;
+// msm-4.19 core.c dwc3_core_is_valid(): a DWC_usb31 core reports its
+// revision as VER_NUMBER with the high bit set (1.70a = 0x3137302a).
+const DWC3_REVISION_IS_DWC31: u32 = 0x8000_0000;
+const DWC3_USB31_REVISION_170A: u32 = 0x3137_302a | DWC3_REVISION_IS_DWC31;
+// VER_TYPE "ga**" marks the general-availability usb31 silicon.
+const DWC3_USB31_VER_TYPE_GA: u32 = 0x6761_2a2a;
 const GUCTL2_RST_ACTBITLATER: u32 = 1 << 14;
 
 const HSPHY_UTMI_CTRL0: usize = 0x3c;
@@ -1643,6 +1664,8 @@ const TRACE_DWC3_HALTED: u32 = 31;
 const TRACE_DWC3_HALT_TIMEOUT: u32 = 32;
 const TRACE_DWC3_REVISION_QUIRK: u32 = 38;
 const TRACE_XFER_NOT_READY: u32 = 40;
+const TRACE_GCC_UTMI_CLOCK: u32 = 41;
+const TRACE_USB2_PHY_RESET: u32 = 42;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -3612,6 +3635,60 @@ unsafe fn configure_usb2_phy_interface() {
     }
 }
 
+/// Apply the msm-4.19 DWC3 usb31 reference deltas that the generic
+/// `configure_dwc3_global_control()` path skips.
+///
+/// `configure_dwc3_global_control()` early-returns when GSNPSID is not a
+/// 0x5533xxxx DWC_usb3 core, but lito's DWC_usb31 core (0x3331xxxx) receives
+/// extra programming in the vendor tree: 4.19 derives `revision` from
+/// VER_NUMBER with the high bit set, which makes the unsigned 2.x/3.x
+/// revision comparisons in `dwc3_core_setup_global_control()` evaluate
+/// differently than on the generic path. Reproduce those guards verbatim
+/// (msm-4.19 core.c:1003-1095, gadget.c:2732-2736) so the controller
+/// reaches the reference bit state before the first endpoint command.
+/// Non-usb31 cores are already covered by the generic path.
+#[inline]
+unsafe fn apply_usb31_gadget_reference_deltas() {
+    unsafe {
+        let snpsid = read(GSNPSID);
+        if (snpsid & 0x3331_0000) != 0x3331_0000 {
+            return;
+        }
+        // 4.19 core.c dwc3_core_is_valid(): usb31 revision = VER_NUMBER |
+        // 0x80000000, e.g. 1.70a GA reports VER_NUMBER 0x3137302a.
+        let revision = read(VER_NUMBER) | DWC3_REVISION_IS_DWC31;
+        // core.c ~1003: the rev >= 2.50a GUCTL1 block. A usb31 core only
+        // receives DEV_L1_EXIT_BY_HW from it; PARKMODE_DISABLE is gated on
+        // !usb31 and the TX_IPGAP linecheck quirk is not set in the lito DT.
+        if revision >= DWC3_REVISION_250A {
+            let mut reg = read(GUCTL1);
+            if revision >= DWC3_REVISION_290A {
+                reg |= GUCTL1_DEV_L1_EXIT_BY_HW;
+            }
+            write(GUCTL1, reg);
+        }
+        // core.c ~1060: usb31 1.70a GA only, STAR 9001346572.
+        if revision == DWC3_USB31_REVISION_170A && read(VER_TYPE) == DWC3_USB31_VER_TYPE_GA {
+            let mut reg = read(GUCTL3);
+            reg |= GUCTL3_USB20_RETRY_DISABLE;
+            write(GUCTL3, reg);
+        }
+        // core.c ~1085: rev >= 1.70a, widen the inter-packet gap for EL_23.
+        if revision >= DWC3_USB31_REVISION_170A {
+            let mut reg = read(GUCTL1);
+            reg |= GUCTL1_IP_GAP_ADD_ON;
+            write(GUCTL1, reg);
+        }
+        // gadget.c __dwc3_gadget_start: rev >= 2.70a NRDY pipeline limit.
+        if revision >= DWC3_REVISION_270A {
+            let mut reg = read(GSBUSCFG1);
+            reg &= !GSBUSCFG1_PIPETRANSLIMIT_MASK;
+            reg |= GSBUSCFG1_PIPETRANSLIMIT_E;
+            write(GSBUSCFG1, reg);
+        }
+    }
+}
+
 /// Calculate DWC3.DCFG.NUMP from the receive FIFO capacity.
 ///
 /// Linux derives this from the RAM2 depth and internal memory-bus width. Use
@@ -3657,7 +3734,9 @@ unsafe fn configure_gadget_start_defaults() {
         let nump = gadget_nump(ram2_depth, mdwidth);
         let mut dcfg = read(DCFG) & !DCFG_NUMP_MASK;
         dcfg |= nump << DCFG_NUMP_SHIFT;
-        dcfg |= DCFG_IGNSTRMPP;
+        // msm-4.19 does not program DCFG.IGNSTRMPP; keep the
+        // post-reset 0 instead of forcing the bit.
+        dcfg &= !DCFG_IGNSTRMPP;
         write(DCFG, dcfg);
     }
 }
@@ -6165,6 +6244,17 @@ pub fn init_usb2_pullup_handoff() -> bool {
 /// make the phone visible on the host, the failure is below the normal gadget
 /// path: entry/exception handling, the Qualcomm USB glue, the PHY/session
 /// state, or the bootloader's USB handoff itself.
+/// Bare-pullup bisection checkpoint selector: 1 = PHY/session votes +
+/// USB2 PHY wake only, 2 = +UTMI-as-PIPE clock mux, 3 = +GCTL/DCFG/DALEPENA,
+/// absent = the full sequence through the Run/Stop start. The bare probe
+/// parks after the checkpoint, so the host-visible attach time is the
+/// cumulative cost of the executed prefix: it separates the
+/// ABL-to-kernel-entry latency from the per-step controller cost.
+fn bare_pullup_stop_after() -> Option<u32> {
+    option_env!("FULLERENE_USB_BARE_PULLUP_STOP_AFTER")
+        .and_then(|value| value.parse::<u32>().ok())
+}
+
 unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
     unsafe {
         // Match dwc3_qcom_vbus_override_enable(): the Qualcomm glue asserts
@@ -6195,10 +6285,27 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
             qscratch_reg(QSCRATCH_GENERAL_CFG),
             general | QSCRATCH_GENERAL_CFG_XHCI_REV,
         );
+        // Bisection checkpoint 1: everything above is the PHY/session side
+        // (Qualcomm glue votes + USB2 PHY wake). Stopping here tests whether
+        // the Fastboot-inherited controller state already advertises the
+        // pull-up once the PHY votes land; an early attach then measures the
+        // ABL-to-first-MMIO latency alone.
+        if let Some(stop) = bare_pullup_stop_after() {
+            if stop == 1 {
+                return true;
+            }
+        }
         // The bare path intentionally skips DWC3 reset, but it still needs
         // the Qualcomm glue's UTMI-as-PIPE clock selection when the Fastboot
         // session did not leave that mux configured for the temporary image.
         select_utmi_pipe_clock();
+        // Bisection checkpoint 2: + the UTMI-as-PIPE clock mux (the 2x100 us
+        // clock-source transitions are the largest fixed cost so far).
+        if let Some(stop) = bare_pullup_stop_after() {
+            if stop == 2 {
+                return true;
+            }
+        }
 
         let gctl = read_volatile(reg(GCTL));
         write_volatile(
@@ -6211,6 +6318,15 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
         // controller.  In a Fastboot reuse this also prevents a stale EP0
         // resource from receiving a transaction while Run/Stop is draining.
         write_volatile(reg(DALEPENA), if connect { 0b11 } else { 0 });
+        // Bisection checkpoint 3: + GCTL/DCFG/DALEPENA, before the VBUS
+        // re-assert and the Run/Stop start. Stopping here isolates the
+        // DCTL.Run/Stop wait as the only remaining cost between the last
+        // plain MMIO and the host-visible attach.
+        if let Some(stop) = bare_pullup_stop_after() {
+            if stop == 3 {
+                return true;
+            }
+        }
 
         // Qualcomm's glue reasserts the VBUS override immediately before
         // enabling RUN_STOP so a stale Fastboot session cannot suppress the
@@ -6316,6 +6432,14 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     if unsafe { stop_after_gadget_handoff_stage(2) } {
         return false;
     }
+    // 4.19 resume order: utmi_clk is enabled after core_clk and before any
+    // controller start.  The SS-only fastboot session never raised the mock
+    // UTMI branch, so bring it up at this post-reset boundary; the core
+    // branch is already running under firmware.
+    if !unsafe { super::platform::bramble::enable_usb2_utmi_clock() } {
+        log_puts("usb gadget handoff: GCC mock UTMI clock enable failed\n");
+        trace_event(TRACE_GCC_UTMI_CLOCK, 0, 0, 0, 0, read(DSTS));
+    }
     unsafe { configure_dwc3_global_control() };
     // The halted-controller boundary above transfers DMA ownership from the
     // old Fastboot session.  Clear every linker-owned TRB/event/table object
@@ -6324,27 +6448,54 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // DMA write.
     clear_dma_memory();
     unsafe {
+        // msm-4.19 dwc3_core_setup_global_control() end state for this
+        // core: device port, SCALEDOWN off, clock gating disabled (lito DT
+        // snps,disable-clk-gating), hibernation only on HIB power-option
+        // cores. The previous code preserved whatever SCALEDOWN state the
+        // bootloader left behind.
         let mut gctl = read(GCTL);
-        gctl &= !GCTL_PRTCAPDIR_MASK;
+        gctl &= !(GCTL_PRTCAPDIR_MASK | GCTL_SCALEDOWN_MASK);
         gctl |= GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG;
+        if (read(GHWPARAMS1) & GHWPARAMS1_EN_PWROPT_MASK) == GHWPARAMS1_EN_PWROPT_HIB {
+            gctl |= GCTL_GBLHIBERNATIONEN;
+        }
         write(GCTL, gctl);
         // CSFTRST restores the controller-side PHY mux/timing state on
         // DWC3 revisions used by Bramble. Reapply the Qualcomm controller
         // programming before any endpoint command. In the preserve-core
         // differential these writes are deliberately retained as the common
         // post-halt handoff sequence; only CSFTRST itself is omitted.
+        // GUCTL is deliberately left at the post-reset value: msm-4.19
+        // never programs GUCTL.REFCLKPER on this platform.
         select_utmi_pipe_clock();
-        update_dwc3_ref_clock();
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
         write(GUSB2PHYCFG0, usb2);
         let mut usb3 = read(GUSB3PIPECTL0);
         usb3 |= GUSB3PIPECTL_SUSPHY;
         write(GUSB3PIPECTL0, usb3);
+        // The generic GCTL path above early-returns on this DWC_usb31 core,
+        // so the 4.19 usb31 reference state is applied at this post-reset
+        // boundary instead: GUSB2PHYCFG UTMI timing (dwc3_hs_phy_setup
+        // steady state) plus the GUCTL1/GUCTL3/GSBUSCFG1 bits from
+        // setup_global_control and __dwc3_gadget_start.
+        configure_usb2_phy_interface();
+        apply_usb31_gadget_reference_deltas();
+    }
+    // An SS-only fastboot session never deasserted the femto PHY block
+    // reset (GCC_QUSB2PHY_PRIM_BCR), which can leave the PHY core logic held
+    // in reset while the D+/D- IO state machine still answers the host reset
+    // autonomously.  The 4.19 phy-core deasserts `phy_reset` before
+    // `snps_hsphy_init`; pulse the USB2-only line here, before the pull-up
+    // is asserted, so the host port stays unattached throughout.
+    if !unsafe { super::platform::bramble::pulse_usb2_phy_reset() } {
+        log_puts("usb gadget handoff: USB2 PHY BCR reset failed\n");
+        trace_event(TRACE_USB2_PHY_RESET, 0, 0, 0, 0, read(DSTS));
     }
     // DWC3's device reset does not reset the external Femto PHY.  Reapply the
     // Linux USB2 PHY programming at the same post-reset boundary as the normal
-    // Qualcomm glue path, without asserting the GCC/Type-C power-domain reset.
+    // Qualcomm glue path; the GCC/Type-C power-domain (core) reset stays
+    // untouched, only the USB2 PHY BCR line above is pulsed.
     if !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core) {
         unsafe { init_hsphy() };
     }
@@ -7900,12 +8051,14 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 
         #[cfg(fullerene_aarch64_usb_gadget_handoff_start_after_connect)]
         {
-            // Same link-state constraint as the default arm: defer the
-            // failure to the poll-loop guard, which arms once the link is
-            // ON (the proven path that reached the host's SET_ADDRESS).
-            if !start_transfer(0, ep0_trb_ptr(0)) {
-                log_puts("usb: post-connect SETUP STARTTRANSFER deferred\n");
-            }
+            // Do NOT issue the pre-link-ON STARTTRANSFER here: on this core a
+            // Start Transfer issued before the link reaches ON wedges the
+            // endpoint command engine, so the host's first SETUP is never
+            // serviced (descriptor read/64 -110) even though Run/Stop has
+            // already published the pull-up. The SETUP TRB is prepared at
+            // stage 6; the poll loop's U0-guarded try_arm_setup arms it the
+            // moment the link comes ON - the same proven path the default
+            // mode relies on. Consume any early event to keep the ring clean.
             poll_ep0_event_ring();
         }
         log_puts("usb: Fullerene DWC3 gadget connected\n");
@@ -8312,6 +8465,52 @@ pub fn link_on_sample() {
     }
 }
 
+/// Window-end "arm alive" probe for the armalive gate: has ANY EP0 SETUP
+/// Start Transfer retired since probe entry, and has the host DMA'd a
+/// SETUP into the buffer? Bit 0 = an armed TRB is still pending (a
+/// retired arm whose SETUP the core never latched), bit 1 = a host DMA'd
+/// SETUP sits in the buffer (a retired arm the core consumed). Both zero
+/// = no Start Transfer ever retired in the window (persistent command
+/// wedge). The buffer read mirrors the XferComplete path's
+/// invalidate+read; the content is never zeroed after consumption, so the
+/// read also covers an arm consumed inside the window.
+/// Raw core link-FSM state (DSTS.USBLNKST, bits 21:18). This core is a
+/// DWC_usb31 (>= 1.94a): upstream v5.10 core.h defines
+/// DWC3_DSTS_USBLNKST_MASK as (0x0f << 18) and encodes the link states as
+/// U0 = 0x00 (in HS, "ON"), U1 = 0x01, U2 = 0x02 (HS "SLEEP"),
+/// U3 = 0x03 (HS "SUSPEND"), SS_DIS = 0x04, RX_DET = 0x05,
+/// SS_INACT = 0x06, POLL = 0x07, RECOV = 0x08, HRESET = 0x09,
+/// CMPLY = 0x0a, LPBK = 0x0b, RESET = 0x0e, RESUME = 0x0f - the same
+/// table the AOSP dwc3 driver on this SoC uses. The legacy shift-18
+/// guard reads exactly this field, so it is the correct reference.
+/// (The older DWC_usb30 layout, USBLNKST at bits 23:20 with U0 = 1, does
+/// NOT apply here.) The lnkalive gate (third pass) bites on the
+/// mid-transaction states 8/9/11/14/15, so an early return names a core
+/// stuck in the reset/resume handshake at the sample instant; a
+/// non-early return names a link-down state (RX_DET/SS_INACT/SS_DIS/
+/// POLL/CMPLY).
+pub fn dsts_raw_link_state() -> u32 {
+    unsafe { (read(DSTS) >> 18) & 0xf }
+}
+
+pub fn armalive_probe() -> u32 {
+    unsafe {
+        let mut state = 0u32;
+        if EP0_SETUP_ARMED {
+            state |= 0x1;
+        }
+        let setup = ep0_setup_ptr();
+        cache_invalidate(setup as usize, 8);
+        for offset in 0..8 {
+            if read_volatile(setup.add(offset)) != 0 {
+                state |= 0x2;
+                break;
+            }
+        }
+        state
+    }
+}
+
 pub fn cmd_gate_condition_met() -> Option<bool> {
     let want = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")?;
     unsafe {
@@ -8585,6 +8784,18 @@ pub fn ep0_signal_drop_pullup() {
 /// handoff. Restores the Qualcomm session overrides and Run/Stop so the
 /// diagnostic gates remain host-visible even when init failed before its own
 /// Run/Stop boundary (e.g. the pre-connect STARTTRANSFER differential).
+/// Stop the core through DCTL Run/Stop (the inverse of the handoff's
+/// soft-connect). Unlike ep0_signal_drop_pullup - which clears the QSCRATCH
+/// session votes and is host-invisible on this board - the DWC3 Run/Stop bit
+/// owns the physical pull-up: stopping the core while the host still tracks
+/// the device publishes a real "USB disconnect" line in the host kernel
+/// log. This is the one-bit gate-TRUE readout; the SDIS blips and the
+/// QSCRATCH drop are both dead channels here. The wait acknowledges device
+/// events while halting per the databook stop contract.
+pub fn gate_true_stop_device() -> bool {
+    unsafe { run_stop_device(false) }
+}
+
 pub fn ep0_signal_publish_pullup() {
     unsafe {
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
@@ -8711,6 +8922,32 @@ pub fn u0_arm_recovery() -> u32 {
         // STARTTRANSFER did not retire; the poll loop's try_arm_setup
         // retries it once the link reaches ON after Run/Stop).
         U0_ARM_STATUS
+    }
+}
+
+/// Mid-window rescue for the read/64 -110: the host's descriptor URB keeps
+/// retrying its SETUP token until the 5 s `initial_descriptor_timeout`, so
+/// a full endpoint re-arm while the host is still polling can complete the
+/// stuck enumeration. Device soft reset first: the post-init
+/// u0_arm_recovery runs at probe entry with the link down, where Start
+/// Transfer is rejected, and any stuck core control state left by the
+/// original arm attempt is only cleared by CSFTRST. The host port stays
+/// connected while the core is stopped (calibrated: the gate-TRUE
+/// Run/Stop stop is host-invisible), so the reset plus the re-arm are
+/// invisible and the host simply sees its retries answered. The readout is
+/// the enumeration outcome in the host journal (1234:0001 = the re-arm
+/// landed; -110 again = it did not). Returns the u0_arm_recovery status.
+pub fn u0_arm_window_recovery() -> u32 {
+    unsafe {
+        if !device_soft_reset() {
+            return 9;
+        }
+        // Force the full tail: the armed flags may be stale (set by a
+        // rejected arm) or accurate; the re-issue is idempotent on a
+        // freshly soft-reset core.
+        EP0_SETUP_ARMED = false;
+        ENDPOINTS_READY = false;
+        u0_arm_recovery()
     }
 }
 

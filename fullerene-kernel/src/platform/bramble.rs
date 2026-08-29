@@ -2682,6 +2682,65 @@ pub unsafe fn configure_usb_clocks(vote: UsbBusVote) -> bool {
     }
 }
 
+
+/// Bring up only the mock UTMI branch feeding the USB2 datapath.
+///
+/// The 4.19 msm driver pins `utmi_clk` to 19.2 MHz (BI_TCXO) at probe time
+/// and its resume path enables it after `core_clk`.  An SS-only fastboot
+/// session never raises `gcc_usb30_prim_mock_utmi_clk`, the `utmi_clk` spec
+/// of the dwc3 node, which leaves the core's USB2 link domain unable to
+/// reach U0.  This programs the RCG source and raises that one branch only;
+/// the core/iface/QMP branches are left exactly as firmware left them.
+pub unsafe fn enable_usb2_utmi_clock() -> bool {
+    unsafe {
+        let resources = usb_resources();
+        let utmi = resources.controller_clocks[3];
+        if utmi.name != "utmi" || utmi.provider != ClockProvider::Gcc {
+            return false;
+        }
+        // 19.2 MHz from BI_TCXO: parent 0 in the mock UTMI RCG parent map,
+        // divider 1, matching `clk_set_rate(utmi_clk, 19200000)` in
+        // dwc3_msm_probe().
+        if utmi.source_offset != 0 && !configure_rcg(utmi.source_offset, 0, 1) {
+            return false;
+        }
+        let address = (resources.gcc_base + utmi.branch_offset) as *mut u32;
+        let value = core::ptr::read_volatile(address) | 1;
+        core::ptr::write_volatile(address, value);
+        core::ptr::read_volatile(address) & 1 != 0
+    }
+}
+
+/// Pulse the USB2 (femto) PHY block reset and return it to its running state.
+///
+/// The lito femto PHY's `phy_reset` is the `GCC_QUSB2PHY_PRIM_BCR` line.  An
+/// SS-only fastboot session never deasserts it, so the PHY core logic (PLL,
+/// UTMI interface, register file) can stay held in reset while the D+/D- IO
+/// state machine still answers the host reset autonomously.  The 4.19
+/// phy-core deasserts the reset before `snps_hsphy_init`; the handoff
+/// reproduces that boundary here.  Only the USB2 PHY line is pulsed; the
+/// shared SSUSB core and QMP reset lines are left as firmware left them.
+pub unsafe fn pulse_usb2_phy_reset() -> bool {
+    unsafe {
+        let resources = usb_resources();
+        let reset = resources.resets[1];
+        if reset.name != "qusb2phy_reset" {
+            return false;
+        }
+        let address = (resources.gcc_base + reset.offset) as *mut u32;
+        let asserted = core::ptr::read_volatile(address) | 1;
+        core::ptr::write_volatile(address, asserted);
+        for _ in 0..250_000u32 {
+            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        }
+        core::ptr::write_volatile(address, asserted & !1);
+        for _ in 0..250_000u32 {
+            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        }
+        core::ptr::read_volatile(address) & 1 == 0
+    }
+}
+
 /// Apply one complete Android-style performance transition.  The bus vote is
 /// issued only after the clock source has been selected, matching the order
 /// in which the Qualcomm glue raises the core clock and interconnect vote.
