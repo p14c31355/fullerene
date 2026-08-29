@@ -523,6 +523,7 @@ const GHWPARAMS0: usize = 0xc140;
 const GHWPARAMS1: usize = 0xc144;
 const GHWPARAMS3: usize = 0xc14c;
 const GHWPARAMS7: usize = 0xc15c;
+const GDBGLTSSM: usize = 0xc164;
 const VER_NUMBER: usize = 0xc1a0;
 const VER_TYPE: usize = 0xc1a4;
 const GFLADJ: usize = 0xc630;
@@ -1541,6 +1542,12 @@ static mut U0_BLIP_PENDING: u32 = 0;
 // "lnk-ever-on" gate: distinguishes a persistent link-FSM desync from a
 // U0 that was reached and then dropped.
 static mut LNK_EVER_ON: bool = false;
+// Set by link_on_sample (called from poll) once the core's own link FSM
+// reads a mid-transaction state (USBLNKST in {RECOV=8, HRESET=9, LPBK=11,
+// RESET=14, RESUME=15}), for the "lnk3" gate: distinguishes a core whose
+// UTMI RX never saw the host's reset (FSM never woke, latch stays false)
+// from one stuck in the reset handshake (RX alive, latch true).
+static mut LNK_MID_SEEN: bool = false;
 static mut INIT_PRE_RESET_DSTS: u32 = 0xFFFF_FFFF;
 static mut INIT_DEPSTART_PRE_DSTS: u32 = 0xFFFF_FFFF;
 static mut INIT_DEPSTART_RAW: u32 = 0xFFFF_FFFF;
@@ -8455,14 +8462,26 @@ pub fn mmio_quiet_active() -> bool {
 /// controller.
 pub fn link_on_sample() {
     unsafe {
-        if LNK_EVER_ON {
-            return;
-        }
         let dsts = read(DSTS);
-        if dsts & DSTS_DEVCTRLHLT == 0 && (dsts >> 18) & 0xf == 0 {
+        if !LNK_EVER_ON && dsts & DSTS_DEVCTRLHLT == 0 && (dsts >> 18) & 0xf == 0 {
             LNK_EVER_ON = true;
         }
+        if !LNK_MID_SEEN {
+            let state = (dsts >> 18) & 0xf;
+            if state == 8 || state == 9 || state == 11 || state == 14
+                || state == 15
+            {
+                LNK_MID_SEEN = true;
+            }
+        }
     }
+}
+
+/// "lnk3" gate readout: did any poll sample since probe entry observe the
+/// core's link FSM in a mid-transaction state (RECOV=8, HRESET=9, LPBK=11,
+/// RESET=14, RESUME=15)? Latched in link_on_sample.
+pub fn lnk_mid_transaction_seen() -> bool {
+    unsafe { LNK_MID_SEEN }
 }
 
 /// Window-end "arm alive" probe for the armalive gate: has ANY EP0 SETUP
@@ -8491,6 +8510,23 @@ pub fn link_on_sample() {
 /// POLL/CMPLY).
 pub fn dsts_raw_link_state() -> u32 {
     unsafe { (read(DSTS) >> 18) & 0xf }
+}
+
+/// Raw link-transaction debug state from GDBGLTSSM. The Qualcomm DWC3
+/// glue treats bits 25:22 as LINKSTATE (the same 4-bit selector used by
+/// DSTS.USBLNKST, but read directly from the link-layer TX/RX FSM); this
+/// distinguishes a reserved/legacy DSTS encoding such as 13 from the
+/// physical LTSSM state and its real sub-state bits.
+pub fn gdb_ltssm_link_state() -> u32 {
+    unsafe { (read(GDBGLTSSM) >> 22) & 0xf }
+}
+
+/// DSTS SOF frame number (bits 16:3). A value that changes across samples
+/// proves the core is receiving packets from the host at the transaction
+/// level even when the link FSM never reports U0 or a mid-transaction
+/// state.
+pub fn dsts_sof_frame_number() -> u32 {
+    unsafe { (read(DSTS) >> 3) & 0x3fff }
 }
 
 pub fn armalive_probe() -> u32 {
@@ -8856,9 +8892,22 @@ pub fn u0_arm_recovery() -> u32 {
         write(GEVNTSIZ0, ep0_event_size() as u32);
         acknowledge_ep0_event_count();
         EVENT_OFFSET = 0;
-        let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
+        // The recovery path runs after the Fastboot handoff boundary. DSTS
+        // still reports the previous SS Fastboot session there, so trusting
+        // ConnectSpd can restore DCFG.SuperSpeed on a USB2-only handoff. The
+        // "forcehs" experiment proves or refutes exactly that stale-speed
+        // failure mode by pinning recovery to High-Speed/64-byte EP0.
+        // "gdbforce" repeats that experiment while sampling GDBGLTSSM at the
+        // normal gate window, separating a stale DCFG speed setting from the
+        // observed GDBGLTSSM link state.
+        let stale_speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
+        let force_hs = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("forcehs")
+            || option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("gdbforce");
+        let speed = if force_hs { 0 } else { stale_speed };
         let mut dcfg = read(DCFG) & !(DCFG_SPEED_MASK | DCFG_DEVADDR_MASK);
-        dcfg |= if speed == DSTS_SUPERSPEED {
+        dcfg |= if force_hs {
+            DCFG_HIGHSPEED
+        } else if speed == DSTS_SUPERSPEED {
             DCFG_SUPERSPEED
         } else {
             DCFG_HIGHSPEED
@@ -8875,7 +8924,7 @@ pub fn u0_arm_recovery() -> u32 {
             U0_ARM_STATUS = 4;
             return 4;
         }
-        let max_packet = if speed == DSTS_SUPERSPEED {
+        let max_packet = if !force_hs && speed == DSTS_SUPERSPEED {
             INITIAL_EP0_MAX_PACKET_SIZE
         } else {
             64

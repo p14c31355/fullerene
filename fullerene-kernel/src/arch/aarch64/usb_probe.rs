@@ -511,7 +511,13 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
     // blip at link ON (~T+11.3) would drop the link mid-enumeration and
     // the re-attach would repeat the host's SETUP sequence, contaminating
     // the trace the diag code decodes.
-    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("diag") {
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("diag")
+        || option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk3")
+        || option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("sof")
+        // The forcehs run is an enumeration attempt: let the host perform the
+        // fresh descriptor transaction without the link-ON blip resetting it.
+        || option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("forcehs")
+    {
         usb::u0_arm_set_blips(0);
     }
     // Control: an unconditional bite tests the APSS-WDT bite path itself
@@ -701,6 +707,201 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         {
             usb::u0_arm_wdt_bite(1);
         }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnk3" gate: one-bit readout - did the core's link FSM ever enter a
+    // mid-transaction state (RECOV=8, HRESET=9, LPBK=11, RESET=14,
+    // RESUME=15) during the window, i.e., did it see the host's reset on
+    // the UTMI RX path? YES = stop the core at eval (disconnect line in
+    // the host journal while the port is still tracked) + APSS-WDT bite
+    // ~T+13.5 (return ~T+33-34); NO = no line + the secure-WDT bucket
+    // (T+36-42). Splits a UTMI-RX-dead core (FSM never woke) from a core
+    // stuck in the reset handshake (RX alive). Must run before
+    // cmd_gate_condition_met, like the other special gates.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk3") {
+        let saw_mid = usb::lnk_mid_transaction_seen();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4E_4B33 | (saw_mid as u32 & 0xff), // "LNK3"
+        );
+        if saw_mid {
+            let _ = usb::gate_true_stop_device();
+            usb::u0_arm_wdt_bite(1);
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "sof" gate: two-bit readout at window end. Bit A (early APSS-WDT
+    // bite, return ~T+33-34 vs the secure bucket T+36-42): the core
+    // currently reads halted (DSTS.DEVCTRLHLT) or Run/Stop reads back
+    // cleared (ep0_raw_link_nibble 16/17) - the stale-halt-readback family
+    // that would void every DSTS-based latch. Bit B (usb 1-9 disconnect
+    // line while the host still tracks the port): the DSTS SOF frame
+    // number changed across a 100 ms sub-window at eval, i.e. the core
+    // receives packets from the host at the transaction level even though
+    // the link FSM never reported U0 or a mid-transaction state (lnk3).
+    // Four outcomes: line+early, early only, line+late, none. Must run
+    // before cmd_gate_condition_met, like the other special gates.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("sof") {
+        let raw = usb::ep0_raw_link_nibble();
+        let frequency = probe_counter_frequency();
+        let subwindow = probe_counter();
+        let sof_first = usb::dsts_sof_frame_number();
+        while frequency == 0 || probe_counter().wrapping_sub(subwindow) < frequency / 10 {
+            usb::poll();
+        }
+        let saw_sof = usb::dsts_sof_frame_number() != sof_first;
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x534F_4600 | (((raw & 0x1f) << 1) | (saw_sof as u32 & 1)), // "SOF?"
+        );
+        if saw_sof {
+            let _ = usb::gate_true_stop_device();
+        }
+        if raw == 16 || raw == 17 {
+            usb::u0_arm_wdt_bite(1);
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnk57" gate: three outcomes from the DSTS.USBLNKST nibble at window
+    // end. Early APSS-WDT bite (return ~T+33-34 vs the secure bucket
+    // T+36-42) = state 7 (POLLING: the core's chirp phase is running - TX
+    // and the link FSM woke - but it never hears the host, RX deaf below
+    // the FSM). usb 1-9 disconnect line while the host still tracks the
+    // port = state 5 (RX.DETECT: the FSM never started training - the
+    // session/VbusValid stimulus is not reaching the core). Late
+    // secure-bucket return with no line = any other state {4,6,10,12,13}.
+    // Must run before cmd_gate_condition_met, like the other special gates.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk57") {
+        let state = usb::dsts_raw_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4E_3537 | (state & 0x1f), // "LN57"
+        );
+        if state == 5 {
+            let _ = usb::gate_true_stop_device();
+        }
+        if state == 7 {
+            usb::u0_arm_wdt_bite(1);
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnk4" gate: state-4 decision point after the broad lnk57 result. A
+    // usb 1-9 disconnect line at eval proves USBLNKST == 4 (likely
+    // SS.Disabled); no line means the broad else-bucket is one of {6,10,12,13}.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk4") {
+        let state = usb::dsts_raw_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4E_5F34 | (state & 0x1f), // "LN_4"
+        );
+        if state == 4 {
+            let _ = usb::gate_true_stop_device();
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnk6" gate: split the remaining lnk57 else-bucket. A disconnect line
+    // proves USBLNKST == 6; no line leaves {10,12,13}.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk6") {
+        let state = usb::dsts_raw_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4E_5F36 | (state & 0x1f), // "LN_6"
+        );
+        if state == 6 {
+            let _ = usb::gate_true_stop_device();
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnk10" gate: continue splitting the lnk57 else-bucket after states
+    // 4 and 6 tested false. A disconnect line proves USBLNKST == 10; no line
+    // leaves {12,13}.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk10") {
+        let state = usb::dsts_raw_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4E_5FA0 | (state & 0x1f), // "LN_A"
+        );
+        if state == 10 {
+            let _ = usb::gate_true_stop_device();
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "lnk12" gate: the final split after {4,6,10} tested false. A
+    // disconnect line proves USBLNKST == 12; no line leaves 13.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk12") {
+        let state = usb::dsts_raw_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4C4E_5FC0 | (state & 0x1f), // "LN_C"
+        );
+        if state == 12 {
+            let _ = usb::gate_true_stop_device();
+        }
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
+    // "gdb" gate: read the raw GDBGLTSSM LINKSTATE nibble at window end and
+    // time-encode it with the APSS-WDT bite. Delay = state + 1, so the SS
+    // return timestamp directly names the physical link FSM value; this also
+    // interprets the DSTS=13 observation without first guessing whether 13 is
+    // a reserved core-state name or a legacy field offset. Must run before
+    // cmd_gate_condition_met, like the other special gates.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("gdb")
+        || option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("gdbforce")
+    {
+        let state = usb::gdb_ltssm_link_state();
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x4744_4253 | (state & 0x1f), // "GDBS"
+        );
+        usb::u0_arm_wdt_bite(state.saturating_add(1));
         unsafe {
             asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
         }

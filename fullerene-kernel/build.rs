@@ -294,6 +294,9 @@ fn main() {
         if let Some(value) = env::var("FULLERENE_AARCH64_USB_SWDD_FNID").ok() {
             println!("cargo:rustc-env=FULLERENE_USB_SWDD_FNID={value}");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_UTMI_60MHZ").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_UTMI_60MHZ=1");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_SWDD_SKIP").is_some() {
             println!("cargo:rustc-env=FULLERENE_USB_SWDD_SKIP=1");
         }
@@ -354,6 +357,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_WDT_BITE_CONTROL");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SWDD_FNID");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SWDD_SKIP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_UTMI_60MHZ");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_STOP_AFTER");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HYPER_BARE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ARM_BLIP");

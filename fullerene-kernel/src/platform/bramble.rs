@@ -1,4 +1,12 @@
 /// Qualcomm SM7250 / Pixel 4a 5G (bramble) early-boot addresses.
+pub mod usb_clock;
+pub mod usb_reset;
+
+pub use usb_clock::{
+    configure_usb_clocks, disable_usb_clock_branches, enable_usb_clock_branches,
+    enable_usb2_utmi_clock,
+};
+pub use usb_reset::{pulse_usb2_phy_reset, reset_usb_blocks};
 ///
 /// The DTB remains authoritative at boot. These constants document the
 /// addresses used by the SM7250 device tree for the first bring-up.
@@ -647,94 +655,6 @@ pub const fn usb_runtime_transition(
         (_, UsbRuntimeEvent::Disconnect) => UsbRuntimeState::Off,
         (current, _) => current,
     }
-}
-
-/// Switch the GCC branch resources required by the Qualcomm glue. This is
-/// intentionally platform-owned: DWC3 should not need to know GCC offsets or
-/// which of the six controller clocks are present in the DT.
-pub unsafe fn enable_usb_clock_branches() -> bool {
-    let resources = usb_resources();
-    let mut ok = true;
-    for clock in resources.controller_clocks {
-        if clock.provider != ClockProvider::Gcc {
-            continue;
-        }
-        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
-        let value = unsafe { core::ptr::read_volatile(address) } | 1;
-        unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
-    }
-    for clock in resources.qmp_clocks {
-        if clock.provider != ClockProvider::Gcc {
-            continue;
-        }
-        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
-        let value = unsafe { core::ptr::read_volatile(address) } | 1;
-        unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
-    }
-    if ok {
-        set_usb_resource_state(|state| state.clock_branches_enabled = true);
-    }
-    ok
-}
-
-/// Gate the USB-specific GCC branches after the controller has stopped and
-/// the interconnect vote has been dropped.  XO is shared with the rest of the
-/// SoC and is intentionally left enabled; Linux's clock framework applies the
-/// same ownership distinction to the USB clock handles.
-pub unsafe fn disable_usb_clock_branches() -> bool {
-    let resources = usb_resources();
-    let mut ok = true;
-    for clock in resources.controller_clocks {
-        if clock.provider != ClockProvider::Gcc || clock.name == "xo" {
-            continue;
-        }
-        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
-        let value = unsafe { core::ptr::read_volatile(address) } & !1;
-        unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
-    }
-    for clock in resources.qmp_clocks {
-        if clock.provider != ClockProvider::Gcc {
-            continue;
-        }
-        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
-        let value = unsafe { core::ptr::read_volatile(address) } & !1;
-        unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
-    }
-    if ok {
-        set_usb_resource_state(|state| state.clock_branches_enabled = false);
-    }
-    ok
-}
-
-/// Assert and release every reset exposed by the Lito USB node. The caller
-/// controls the surrounding power-domain/clock ordering; this function only
-/// performs the DT-described reset resources and reports readback failures.
-pub unsafe fn reset_usb_blocks(super_speed: bool) -> bool {
-    let resources = usb_resources();
-    let mut ok = true;
-    for (index, reset) in resources.resets.iter().enumerate() {
-        if !super_speed && index >= 2 {
-            continue;
-        }
-        let address = (resources.gcc_base + reset.offset) as *mut u32;
-        let asserted = unsafe { core::ptr::read_volatile(address) } | 1;
-        unsafe { core::ptr::write_volatile(address, asserted) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
-        for _ in 0..250_000 {
-            unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
-        }
-        unsafe { core::ptr::write_volatile(address, asserted & !1) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
-    }
-    if ok {
-        let mask = if super_speed { 0x0f } else { 0x03 };
-        set_usb_resource_state(|state| state.reset_released_mask |= mask);
-    }
-    ok
 }
 
 /// Number of Apps-SMMU context-bank interrupt specifiers in the Bramble/Lito
@@ -2599,146 +2519,6 @@ pub unsafe fn disable_usb30_gdsc() -> bool {
         unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
     }
     false
-}
-
-const GCC_CMD_UPDATE: u32 = 1 << 0;
-const GCC_CFG_SRC_DIV_MASK: u32 = 0xff;
-const GCC_CFG_SRC_SEL_MASK: u32 = 0x7 << 8;
-
-#[inline]
-unsafe fn gcc_reg(offset: usize) -> *mut u32 {
-    (usb_resources().gcc_base + offset) as *mut u32
-}
-
-/// Program one Qualcomm RCG2 clock source and commit the change.
-///
-/// The Lito GCC driver describes the USB master clock as parent 1 divided by
-/// 8 and the mock UTMI clock as parent 6 divided by 5. Keeping this in the
-/// platform layer prevents the DWC3 driver from depending on GCC register
-/// layout.
-unsafe fn configure_rcg(cmd_offset: usize, parent: u32, divider: u32) -> bool {
-    unsafe {
-        let cfg = gcc_reg(cmd_offset + 0x4);
-        let mut value = core::ptr::read_volatile(cfg);
-        value &= !(GCC_CFG_SRC_DIV_MASK | GCC_CFG_SRC_SEL_MASK);
-        value |= divider & GCC_CFG_SRC_DIV_MASK;
-        value |= (parent << 8) & GCC_CFG_SRC_SEL_MASK;
-        core::ptr::write_volatile(cfg, value);
-        let _ = core::ptr::read_volatile(cfg);
-
-        let cmd = gcc_reg(cmd_offset);
-        let value = core::ptr::read_volatile(cmd) | GCC_CMD_UPDATE;
-        core::ptr::write_volatile(cmd, value);
-        let _ = core::ptr::read_volatile(cmd);
-
-        for _ in 0..500_000u32 {
-            if core::ptr::read_volatile(cmd) & GCC_CMD_UPDATE == 0 {
-                return true;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
-    }
-    false
-}
-
-/// Select the rates required by the Lito USB glue before its branch clocks
-/// are enabled. The values mirror `qcom,core-clk-rate = 133333333` and
-/// `qcom,core-clk-rate-hs = 66666667`'s source tables.
-pub unsafe fn configure_usb_clocks(vote: UsbBusVote) -> bool {
-    let plan = usb_clock_plan(vote);
-    if !plan.branches_enabled {
-        return true;
-    }
-    unsafe {
-        let resources = usb_resources();
-        let core = resources.controller_clocks[0];
-        let utmi = resources.controller_clocks[3];
-        // gcc_usb30_prim_master_clk_src.
-        if core.source_offset == 0
-            || !configure_rcg(core.source_offset, plan.core_parent, plan.core_divider)
-        {
-            return false;
-        }
-        // gcc_usb30_prim_mock_utmi_clk_src.
-        if utmi.source_offset == 0
-            || !configure_rcg(utmi.source_offset, plan.utmi_parent, plan.utmi_divider)
-        {
-            return false;
-        }
-        // The QMP AUX and COM_AUX branches share the 19.2 MHz
-        // gcc_usb3_prim_phy_aux_clk_src.  It is a separate RCG from the
-        // DWC3 core/UTMI sources and must be selected before the PHY reset is
-        // released on a cold platform start.
-        if let Some(aux) = resources
-            .qmp_clocks
-            .iter()
-            .find(|clock| clock.name == "aux")
-        {
-            if aux.source_offset == 0 || !configure_rcg(aux.source_offset, 0, 0) {
-                return false;
-            }
-        }
-        true
-    }
-}
-
-
-/// Bring up only the mock UTMI branch feeding the USB2 datapath.
-///
-/// The 4.19 msm driver pins `utmi_clk` to 19.2 MHz (BI_TCXO) at probe time
-/// and its resume path enables it after `core_clk`.  An SS-only fastboot
-/// session never raises `gcc_usb30_prim_mock_utmi_clk`, the `utmi_clk` spec
-/// of the dwc3 node, which leaves the core's USB2 link domain unable to
-/// reach U0.  This programs the RCG source and raises that one branch only;
-/// the core/iface/QMP branches are left exactly as firmware left them.
-pub unsafe fn enable_usb2_utmi_clock() -> bool {
-    unsafe {
-        let resources = usb_resources();
-        let utmi = resources.controller_clocks[3];
-        if utmi.name != "utmi" || utmi.provider != ClockProvider::Gcc {
-            return false;
-        }
-        // 19.2 MHz from BI_TCXO: parent 0 in the mock UTMI RCG parent map,
-        // divider 1, matching `clk_set_rate(utmi_clk, 19200000)` in
-        // dwc3_msm_probe().
-        if utmi.source_offset != 0 && !configure_rcg(utmi.source_offset, 0, 1) {
-            return false;
-        }
-        let address = (resources.gcc_base + utmi.branch_offset) as *mut u32;
-        let value = core::ptr::read_volatile(address) | 1;
-        core::ptr::write_volatile(address, value);
-        core::ptr::read_volatile(address) & 1 != 0
-    }
-}
-
-/// Pulse the USB2 (femto) PHY block reset and return it to its running state.
-///
-/// The lito femto PHY's `phy_reset` is the `GCC_QUSB2PHY_PRIM_BCR` line.  An
-/// SS-only fastboot session never deasserts it, so the PHY core logic (PLL,
-/// UTMI interface, register file) can stay held in reset while the D+/D- IO
-/// state machine still answers the host reset autonomously.  The 4.19
-/// phy-core deasserts the reset before `snps_hsphy_init`; the handoff
-/// reproduces that boundary here.  Only the USB2 PHY line is pulsed; the
-/// shared SSUSB core and QMP reset lines are left as firmware left them.
-pub unsafe fn pulse_usb2_phy_reset() -> bool {
-    unsafe {
-        let resources = usb_resources();
-        let reset = resources.resets[1];
-        if reset.name != "qusb2phy_reset" {
-            return false;
-        }
-        let address = (resources.gcc_base + reset.offset) as *mut u32;
-        let asserted = core::ptr::read_volatile(address) | 1;
-        core::ptr::write_volatile(address, asserted);
-        for _ in 0..250_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
-        core::ptr::write_volatile(address, asserted & !1);
-        for _ in 0..250_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
-        core::ptr::read_volatile(address) & 1 == 0
-    }
 }
 
 /// Apply one complete Android-style performance transition.  The bus vote is
