@@ -7,7 +7,7 @@ use alloc::string::String;
 use core::sync::atomic::{AtomicU32, Ordering};
 use lattice::arch::xtensa::esp32::{EmbeddedDesktop, Esp32Compositor};
 use nitrogen::arch::xtensa::esp32::{
-    board::BoardProfile, display::SpiLcd, touchscreen::Xpt2046Touch,
+    board::BoardProfile, display::SpiLcd, touchscreen::Xpt2046Touch, uart,
 };
 use spin::Mutex;
 
@@ -80,9 +80,23 @@ extern "C" fn lattice_task() -> ! {
         if let Some(sample) = touch.read() {
             if sample.pressed && !previous_pressed {
                 let (x, y) = touch.map_to_screen(sample, 320, 240);
+                uart::write_str("TOUCH DOWN raw=");
+                uart::write_u32(u32::from(sample.x));
+                uart::write_str(",");
+                uart::write_u32(u32::from(sample.y));
+                uart::write_str(" screen=");
+                uart::write_u32(u32::from(x));
+                uart::write_str(",");
+                uart::write_u32(u32::from(y));
+                uart::write_str("\n");
                 if let Some(app) = desktop.hit_taskbar(x, y) {
-                    redraw = desktop.set_active(app);
+                    if desktop.set_active(app) {
+                        nitrogen::arch::xtensa::esp32::uart::write_str("LATTICE APP SWITCH\n");
+                        redraw = true;
+                    }
                 }
+            } else if !sample.pressed && previous_pressed {
+                nitrogen::arch::xtensa::esp32::uart::write_str("TOUCH UP\n");
             }
             previous_pressed = sample.pressed;
         }
@@ -92,8 +106,34 @@ extern "C" fn lattice_task() -> ! {
 }
 
 extern "C" fn nozzle_task() -> ! {
-    // Keep the reduced command table linked until serial I/O bring-up lands.
-    let _commands = nozzle::default_commands();
+    use nozzle::Terminal;
+
+    struct UartTerminal;
+
+    impl Terminal for UartTerminal {
+        fn write_str(&mut self, value: &str) {
+            nitrogen::arch::xtensa::esp32::uart::write_str(value);
+        }
+
+        fn read_byte(&mut self) -> Option<u8> {
+            loop {
+                if let Some(byte) = nitrogen::arch::xtensa::esp32::uart::receive_byte() {
+                    return Some(byte);
+                }
+                // A blocking shell must remain cooperative with Lattice.
+                crate::arch::xtensa::esp32::scheduler::scheduler_yield();
+            }
+        }
+    }
+
+    nitrogen::arch::xtensa::esp32::uart::write_str("NOZZLE START\n");
+    let mut terminal = UartTerminal;
+    let mut shell = nozzle::Shell::new(
+        &mut terminal,
+        nozzle_commands::ESP32_COMMANDS,
+        nozzle::ShellServices::none(),
+    );
+    shell.run();
     loop {
         crate::arch::xtensa::esp32::scheduler::scheduler_yield();
     }

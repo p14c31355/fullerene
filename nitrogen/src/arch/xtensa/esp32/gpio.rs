@@ -55,6 +55,22 @@ pub fn enable_input(pin: u8) {
     }
 }
 
+/// Select GPIO input with an internal pull-up.  XPT2046's IRQ is an
+/// active-low open-drain signal, so it needs a defined idle-high level when
+/// the carrier does not provide a sufficiently strong external pull-up.
+pub fn enable_input_pullup(pin: u8) {
+    let Some(offset) = io_mux_offset(pin) else {
+        return;
+    };
+    unsafe {
+        ((IO_MUX_BASE + offset as usize) as *mut u32)
+            .write_volatile(1 << 9 | 1 << 8 | 2 << 12 | 2 << 10);
+        if pin < 34 {
+            (GPIO_ENABLE_W1TC as *mut u32).write_volatile(1 << u32::from(pin));
+        }
+    }
+}
+
 #[inline]
 pub fn set_output_high(pin: u8) {
     unsafe { (GPIO_OUT_W1TS as *mut u32).write_volatile(1 << u32::from(pin)) }

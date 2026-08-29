@@ -52,9 +52,9 @@ impl BoardProfile {
             touch: TouchPinout {
                 clk: 25,
                 mosi: 32,
-                miso: 36,
+                miso: 39,
                 cs: 33,
-                irq: 39,
+                irq: 36,
             },
             sd: SdPinout {
                 clk: 18,

@@ -34,6 +34,23 @@ pub fn write_str(value: &str) {
     write_bytes(value.as_bytes())
 }
 
+/// Write a small unsigned diagnostic value without pulling formatting code
+/// into the early UART path.
+pub fn write_u32(mut value: u32) {
+    let mut digits = [0u8; 10];
+    let mut cursor = digits.len();
+    if value == 0 {
+        putbyte(b'0');
+        return;
+    }
+    while value != 0 {
+        cursor -= 1;
+        digits[cursor] = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+    write_bytes(&digits[cursor..]);
+}
+
 #[inline]
 fn read(offset: usize) -> u32 {
     unsafe { (BASE as *const u32).add(offset).read_volatile() }

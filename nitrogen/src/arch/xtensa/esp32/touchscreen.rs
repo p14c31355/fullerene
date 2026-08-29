@@ -19,6 +19,8 @@ pub struct Calibration {
     pub max_x: u16,
     pub min_y: u16,
     pub max_y: u16,
+    pub mirror_x: bool,
+    pub mirror_y: bool,
     pub swap_xy: bool,
 }
 
@@ -37,12 +39,22 @@ impl Calibration {
         let raw_y = if self.swap_xy { clamped.x } else { clamped.y };
         let span_x = u32::from(self.max_x - self.min_x).max(1);
         let span_y = u32::from(self.max_y - self.min_y).max(1);
-        let screen_x = (u32::from(raw_x - self.min_x) * u32::from(width.saturating_sub(1))
+        let mapped_x = (u32::from(raw_x - self.min_x) * u32::from(width.saturating_sub(1))
             / span_x)
             .min(u32::from(width.saturating_sub(1)));
-        let screen_y = (u32::from(raw_y - self.min_y) * u32::from(height.saturating_sub(1))
+        let mapped_y = (u32::from(raw_y - self.min_y) * u32::from(height.saturating_sub(1))
             / span_y)
             .min(u32::from(height.saturating_sub(1)));
+        let screen_x = if self.mirror_x {
+            u32::from(width.saturating_sub(1)).saturating_sub(mapped_x)
+        } else {
+            mapped_x
+        };
+        let screen_y = if self.mirror_y {
+            u32::from(height.saturating_sub(1)).saturating_sub(mapped_y)
+        } else {
+            mapped_y
+        };
         (screen_x as u16, screen_y as u16)
     }
 }
@@ -63,8 +75,10 @@ impl Xpt2046Touch {
         gpio::enable_output(pins.mosi);
         gpio::enable_output(pins.cs);
         gpio::enable_input(pins.miso);
-        gpio::enable_input(pins.irq);
-        gpio::set_output_high(pins.clk);
+        gpio::enable_input_pullup(pins.irq);
+        // XPT2046 uses SPI mode 0, so the first command bit must begin with
+        // a real low-to-high clock edge.
+        gpio::set_output_low(pins.clk);
         gpio::set_output_high(pins.cs);
         gpio::set_output_high(pins.mosi);
         Self {
@@ -74,10 +88,12 @@ impl Xpt2046Touch {
             cs: pins.cs,
             irq: pins.irq,
             calibration: Calibration {
-                min_x: 300,
-                max_x: 3_800,
-                min_y: 300,
-                max_y: 3_800,
+                min_x: 280,
+                max_x: 3_860,
+                min_y: 340,
+                max_y: 3_860,
+                mirror_x: true,
+                mirror_y: false,
                 swap_xy: false,
             },
         }
@@ -87,18 +103,10 @@ impl Xpt2046Touch {
         self.calibration = calibration;
     }
 
-    /// Read the touch controller once. `None` means no press/IRQ unavailable.
+    /// Read the touch controller once. The controller is polled even when IRQ
+    /// is high: this keeps bring-up usable on board variants with a missing or
+    /// incorrectly pulled IRQ trace. Pressure remains the authoritative gate.
     pub fn read(&mut self) -> Option<TouchSample> {
-        // XPT2046 IRQ is active low. Reading the IRQ first avoids touching the
-        // SPI bus when nothing is pressed, reducing electrical and CPU noise.
-        if gpio::input(self.irq) != Some(false) {
-            return Some(TouchSample {
-                x: 0,
-                y: 0,
-                pressed: false,
-            });
-        }
-
         let pressure = self.read_channel(0xb0);
         if pressure < 40 {
             return Some(TouchSample {
@@ -107,8 +115,8 @@ impl Xpt2046Touch {
                 pressed: false,
             });
         }
-        let x = self.read_channel(0x90);
-        let y = self.read_channel(0xd0);
+        let x = self.read_channel(0xd0);
+        let y = self.read_channel(0x90);
         Some(TouchSample {
             x,
             y,
