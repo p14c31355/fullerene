@@ -103,20 +103,41 @@ impl Xpt2046Touch {
         self.calibration = calibration;
     }
 
-    /// Read the touch controller once. The controller is polled even when IRQ
-    /// is high: this keeps bring-up usable on board variants with a missing or
-    /// incorrectly pulled IRQ trace. Pressure remains the authoritative gate.
+    /// Read the touch controller once. The XPT2046 PENIRQ line is active low;
+    /// use it as the cheap idle filter before starting the SPI conversion.
     pub fn read(&mut self) -> Option<TouchSample> {
-        let pressure = self.read_channel(0xb0);
-        if pressure < 40 {
+        if gpio::input(self.irq) != Some(false) {
             return Some(TouchSample {
                 x: 0,
                 y: 0,
                 pressed: false,
             });
         }
-        let x = self.read_channel(0xd0);
-        let y = self.read_channel(0x90);
+        self.select();
+        let z1 = self.read_adc(0xb1);
+        let z2 = self.read_adc(0xc1);
+        let pressure = z1.saturating_add(4_095).saturating_sub(z2);
+        if pressure < 300 {
+            self.deselect();
+            return Some(TouchSample {
+                x: 0,
+                y: 0,
+                pressed: false,
+            });
+        }
+
+        // The first X conversion after the pressure sequence is noisy.
+        let _ = self.read_adc(0x91);
+        let x_first = self.read_adc(0xd1);
+        let y_first = self.read_adc(0x91);
+        let x_second = self.read_adc(0xd1);
+        let y_second = self.read_adc(0x91);
+        let _ = self.read_adc(0xd0); // final Y conversion and power down
+        let _ = self.read_adc(0x00);
+        self.deselect();
+
+        let x = ((u32::from(x_first) + u32::from(x_second)) / 2) as u16;
+        let y = ((u32::from(y_first) + u32::from(y_second)) / 2) as u16;
         Some(TouchSample {
             x,
             y,
@@ -128,13 +149,19 @@ impl Xpt2046Touch {
         self.calibration.map_to_screen(sample, width, height)
     }
 
-    fn read_channel(&mut self, command: u8) -> u16 {
-        self.select();
+    fn read_adc(&mut self, command: u8) -> u16 {
         self.shift_byte(command);
-        let high = self.shift_byte(0);
-        let low = self.shift_byte(0);
-        self.deselect();
-        ((u16::from(high) << 8) | u16::from(low)) >> 4
+        let mut value = 0u16;
+        for bit in (0..12).rev() {
+            gpio::set_output_high(self.clk);
+            clock_delay();
+            if gpio::input(self.miso) == Some(true) {
+                value |= 1 << bit;
+            }
+            gpio::set_output_low(self.clk);
+            clock_delay();
+        }
+        value
     }
 
     fn select(&mut self) {
@@ -153,13 +180,26 @@ impl Xpt2046Touch {
             } else {
                 gpio::set_output_low(self.mosi);
             }
+            clock_delay();
             gpio::set_output_high(self.clk);
+            clock_delay();
             value <<= 1;
             if gpio::input(self.miso) == Some(true) {
                 value |= 1;
             }
             gpio::set_output_low(self.clk);
+            clock_delay();
         }
         value
+    }
+}
+
+/// Keep the software SPI clock within the XPT2046's conservative timing
+/// budget.  The LCD tolerates the much faster display bit-bang path, but the
+/// touch controller is specified for a roughly 2.5 MHz clock.
+#[inline(never)]
+fn clock_delay() {
+    for _ in 0..16 {
+        core::hint::spin_loop();
     }
 }

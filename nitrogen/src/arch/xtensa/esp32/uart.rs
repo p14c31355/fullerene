@@ -1,7 +1,6 @@
 //! Early UART transport.
 
 const DATA: usize = 0x00;
-const INT_RAW: usize = 0x08;
 const STATUS: usize = 0x1c;
 const CONF0: usize = 0x20;
 const CONF1: usize = 0x24;
@@ -17,7 +16,11 @@ pub fn init(base: usize) {
 }
 
 pub fn putbyte(byte: u8) {
-    while read(STATUS) & 0x3ff0_0000 != 0 {}
+    // STATUS.TXFIFO_CNT is bits [23:16].  The ESP32 UART FIFO is 128
+    // bytes deep; leave a little headroom so the write never overruns it.
+    while (read(STATUS) >> 16) & 0xff >= 126 {
+        core::hint::spin_loop();
+    }
     unsafe { (BASE as *mut u32).add(DATA).write_volatile(u32::from(byte)) }
 }
 
@@ -53,9 +56,12 @@ pub fn write_u32(mut value: u32) {
 
 #[inline]
 fn read(offset: usize) -> u32 {
-    unsafe { (BASE as *const u32).add(offset).read_volatile() }
+    // Register constants above are byte offsets, not u32 indices.
+    unsafe { ((BASE + offset) as *const u32).read_volatile() }
 }
 
 pub fn receive_byte() -> Option<u8> {
-    (read(INT_RAW) & 1 != 0).then(|| (read(DATA) & 0xff) as u8)
+    // INT_RAW bit 0 means "RX FIFO full", not "a byte is available".
+    // STATUS.RXFIFO_CNT (bits [7:0]) is the reliable polling primitive.
+    (read(STATUS) & 0xff != 0).then(|| (read(DATA) & 0xff) as u8)
 }
