@@ -2,7 +2,7 @@
 
 use core::ptr::{read_volatile, write_volatile};
 
-use super::super::usb_regs::*;
+use super::config::qscratch_set;
 use super::log::log_puts;
 use super::mmio::*;
 use super::phy_tables::{ACTIVE_HSPHY_PARAM_OVERRIDE, ACTIVE_QMP_INIT, ACTIVE_QMP_INIT_DELAY_US};
@@ -183,13 +183,13 @@ pub(super) unsafe fn select_utmi_pipe_clock() {
     // core in reset while the USB2 UTMI clock is already running.
     trace_event(TRACE_UTMI_CLOCK, 0, 0, 0, 0, 0);
     unsafe {
-        super::qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_DIS);
+        qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_DIS);
         // dwc3_qcom_select_utmi_clk() uses usleep_range(100, 1000) between
         // each clock-source transition.  A fixed architectural delay keeps
         // the lower bound independent of the boot CPU frequency; a NOP loop
         // could be shorter than 100 us on a fast handset.
         crate::timer::delay_us(100);
-        super::qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
+        qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
         crate::timer::delay_us(100);
         let value = read_qscratch(QSCRATCH_GENERAL_CFG) & !PIPE_UTMI_CLK_DIS;
         write_qscratch(QSCRATCH_GENERAL_CFG, value);

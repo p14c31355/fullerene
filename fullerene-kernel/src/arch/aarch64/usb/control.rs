@@ -1,6 +1,7 @@
 //! DWC3 device reset, Run/Stop, and controller halt-state handling.
 
 use super::super::usb_regs::*;
+use super::config::run_stop_value;
 use super::log::{log_hex, log_puts};
 use super::mmio::*;
 use super::trace::{
@@ -209,7 +210,7 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
 
         let mut dctl = read(DCTL);
         if is_on {
-            dctl = super::run_stop_value(dctl, read(GSNPSID));
+            dctl = run_stop_value(dctl, read(GSNPSID));
         } else {
             dctl &= !DCTL_RUN_STOP;
         }
