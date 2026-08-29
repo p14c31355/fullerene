@@ -33,7 +33,12 @@ impl SpiController {
             gpio::enable_output(pin);
             gpio::set_output_high(pin);
         }
-        gpio::set_output_high(self.sclk);
+        // The LCD uses SPI mode 0: data is prepared while SCLK is low and
+        // sampled on the rising edge.  Leaving the clock high here would
+        // make the first `set_output_high` in `shift_byte` a no-op, dropping
+        // the first bit of every command/data byte and desynchronizing the
+        // controller's RAM-write stream.
+        gpio::set_output_low(self.sclk);
         Ok(())
     }
 

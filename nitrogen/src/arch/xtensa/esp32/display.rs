@@ -52,7 +52,9 @@ impl SpiLcd {
         self.command(0x3A)?;
         self.data(&[0x55])?;
         self.command(0x36)?;
-        self.data(&[0x48])?;
+        // ILI9341 native memory is 240x320.  MV selects the 320x240
+        // landscape address order; BGR matches the panel wiring.
+        self.data(&[0x28])?;
         self.command(0x11)?; // sleep out
         delay_ms(120);
         self.command(0x29)?; // display on

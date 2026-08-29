@@ -13,9 +13,9 @@ fn io_mux_offset(pin: u8) -> Option<usize> {
         2 => 0x40,
         12 => 0x34,
         13 => 0x38,
-        14 => 0x3c,
-        15 => 0x30,
-        21 => 0x14,
+        14 => 0x30,
+        15 => 0x3c,
+        21 => 0x7c,
         25 => 0x24,
         32 => 0x1c,
         33 => 0x20,
@@ -47,7 +47,8 @@ pub fn enable_input(pin: u8) {
     unsafe {
         // MCU_SEL=GPIO (2), input enabled. Input-only pads have no output
         // enable; writing the clear register is harmless for them.
-        ((IO_MUX_BASE + offset as usize) as *mut u32).write_volatile(2 << 12 | 2 << 10);
+        ((IO_MUX_BASE + offset as usize) as *mut u32)
+            .write_volatile(1 << 9 | 2 << 12 | 2 << 10);
         if pin < 34 {
             (GPIO_ENABLE_W1TC as *mut u32).write_volatile(1 << u32::from(pin));
         }
