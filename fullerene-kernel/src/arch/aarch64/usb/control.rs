@@ -211,10 +211,15 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
         let mut dctl = read(DCTL);
         if is_on {
             dctl = run_stop_value(dctl, read(GSNPSID));
+            // `run_stop_value` deliberately preserves RX_DET for older DWC3
+            // revisions. `write_dctl_safe` is used by reset/stop paths and
+            // clears that target bit, so the Run/Stop transition must write
+            // this value directly.
+            write(DCTL, dctl);
         } else {
             dctl &= !DCTL_RUN_STOP;
+            write_dctl_safe(dctl);
         }
-        write_dctl_safe(dctl);
         let complete = wait_device_state(!is_on);
 
         if saved_config != 0 {

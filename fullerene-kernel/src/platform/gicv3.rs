@@ -14,9 +14,7 @@ const GICD_IROUTER: usize = 0x6000;
 const GICR_WAKER: usize = 0x0014;
 const GICR_SGI_BASE: usize = 0x1_0000;
 const GICR_IGROUPR0: usize = 0x80;
-const GICR_IGROUPR1: usize = 0x84;
 const GICR_ISENABLER0: usize = 0x100;
-const GICR_ISENABLER1: usize = 0x104;
 const GICR_ICENABLER0: usize = 0x180;
 const GICR_ICENABLER1: usize = 0x184;
 const GICR_IPRIORITYR0: usize = 0x400;
@@ -39,16 +37,16 @@ unsafe fn enable_spi_with_trigger(gicd_base: usize, interrupt_id: u32, edge: boo
             return;
         }
 
-        // GICv3 distributor register blocks are indexed by INTID-32: word n
-        // of IGROUPR/ISENABLER/ICENABLER covers INTIDs 32+32n..32+32n+31,
-        // IPRIORITYR and IROUTER give each INTID its own 32/64-bit register,
-        // and ICFGR packs two INTIDs per 32-bit word.
-        let n = (interrupt_id - 32) as usize;
+        // GICv3 distributor register blocks use the raw INTID for register
+        // offsets: word n of IGROUPR/ISENABLER/ICENABLER covers INTIDs
+        // 32n..32n+31, IPRIORITYR has one byte per INTID, and ICFGR packs two
+        // INTIDs per 32-bit word.
+        let n = interrupt_id as usize;
         let word = n / 32;
         let bit = 1u32 << (n % 32);
         let group = gicd_base + GICD_IGROUPR + word * 4;
         let enable = gicd_base + GICD_ISENABLER + word * 4;
-        let priority = gicd_base + GICD_IPRIORITYR + n * 4;
+        let priority = gicd_base + GICD_IPRIORITYR + n;
         let config = gicd_base + GICD_ICFGR + (n / 16) * 4;
         let router = gicd_base + GICD_IROUTER + n * 8;
 
@@ -118,8 +116,8 @@ pub unsafe fn set_spi_usb_latency_policy(
         return false;
     }
     unsafe {
-        let n = (interrupt_id - 32) as usize;
-        let priority = gicd_base + GICD_IPRIORITYR + n * 4;
+        let n = interrupt_id as usize;
+        let priority = gicd_base + GICD_IPRIORITYR + n;
         let router = gicd_base + GICD_IROUTER + n * 8;
         // 0x80 is the active USB priority used by this early path; 0xa0 is
         // the normal platform SPI priority restored when USB is suspended.
@@ -172,21 +170,19 @@ pub fn init(gicd_base: usize, gicr_base: usize, usb_irq: Option<u32>) -> bool {
             write32(gicd_base + GICD_ICENABLER + word * 4, 0xffff_ffff);
         }
         // Redistributor side: clear the PPI/SGI enables, then re-arm only
-        // the recovery timer PPI below. GICv3 GICR words hold 16 INTIDs
-        // each: IGROUPR0/ISENABLER0 cover PPI 0-15, IGROUPR1/ISENABLER1
-        // cover PPI 16-31, and every INTID has a dedicated 32-bit priority
-        // register (PPI 30 = GICR_IPRIORITYR0 + 4*30).
+        // the recovery timer PPI below. GICv3 SGI-frame register 0 covers
+        // INTIDs 0-31, and priorities are one byte per INTID.
         write32(sgi_base + GICR_ICENABLER0, 0xffff_ffff);
         write32(sgi_base + GICR_ICENABLER1, 0xffff_ffff);
         core::arch::asm!("dsb sy", options(nostack));
 
-        let ppi_timer_lo = 1u32 << (TIMER_PPI - 16);
+        let ppi_timer_bit = 1u32 << TIMER_PPI;
         write32(
-            sgi_base + GICR_IGROUPR1,
-            read32(sgi_base + GICR_IGROUPR1) | ppi_timer_lo,
+            sgi_base + GICR_IGROUPR0,
+            read32(sgi_base + GICR_IGROUPR0) | ppi_timer_bit,
         );
-        write8(sgi_base + GICR_IPRIORITYR0 + 4 * TIMER_PPI as usize, 0xa0);
-        write32(sgi_base + GICR_ISENABLER1, ppi_timer_lo);
+        write8(sgi_base + GICR_IPRIORITYR0 + TIMER_PPI as usize, 0xa0);
+        write32(sgi_base + GICR_ISENABLER0, ppi_timer_bit);
 
         write32(
             gicd_base + GICD_CTLR,

@@ -156,7 +156,7 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
 pub(super) unsafe fn apply_usb31_gadget_reference_deltas() {
     unsafe {
         let snpsid = read(GSNPSID);
-        if (snpsid & 0x3331_0000) != 0x3331_0000 {
+        if snpsid >> 16 != DWC31_IP {
             return;
         }
         // 4.19 core.c dwc3_core_is_valid(): usb31 revision = VER_NUMBER |

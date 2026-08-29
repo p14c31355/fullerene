@@ -309,8 +309,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
                 contract.smmu_global_irq =
                     fdt::find_phandle_property_u32(address, phandle, b"interrupts", 0);
                 for index in 0..platform::bramble::SMMU_CONTEXT_IRQ_COUNT {
-                    contract.smmu_context_irqs[index] =
-                        fdt::find_phandle_property_u32(address, phandle, b"interrupts", index + 1);
+                    contract.smmu_context_irqs[index] = fdt::find_phandle_property_u32(
+                        address,
+                        phandle,
+                        b"interrupts",
+                        3 * (index + 1) + 1,
+                    );
                 }
             }
             // Lito's `interrupts-extended` tuples are

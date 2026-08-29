@@ -35,10 +35,8 @@ static mut SMMU_CONTEXT_PAGE_SIZE: usize = 0;
 /// `iova` when the stream's context bank translation maps it with a valid
 /// 4 KiB page (or 2 MiB block whose base contains the whole 4 KiB window).
 unsafe fn smmu_walk_iova(ttbr0: u64, three_level: bool, iova: u64) -> Option<u64> {
-    const DESC_VALID: u64 = 1;
-    const DESC_TABLE: u64 = 2;
     unsafe {
-        let mut table = (ttbr0 & !0xfff) as usize;
+        let mut table = (ttbr0 & SMMU_DESC_ADDRESS_MASK) as usize;
         // 39-bit IOVA (T0SZ=25, 4 KiB granule): L1 root. 32-bit IOVA
         // (T0SZ=32): the walk starts at level 2 with 2 MiB blocks.
         let (l1_index, l2_index, l3_index) = if three_level {
@@ -56,32 +54,39 @@ unsafe fn smmu_walk_iova(ttbr0: u64, three_level: bool, iova: u64) -> Option<u64
         };
         if three_level {
             let descriptor = read_volatile((table + l1_index * 8) as *const u64);
-            if descriptor & DESC_VALID == 0 || descriptor & DESC_TABLE == 0 {
+            if descriptor & SMMU_DESC_VALID == 0
+                || descriptor & SMMU_DESC_TYPE_MASK != SMMU_DESC_TABLE
+            {
                 return None;
             }
-            table = (descriptor & !0xfff) as usize;
+            table = (descriptor & SMMU_DESC_ADDRESS_MASK) as usize;
         }
         let l2_descriptor = read_volatile((table + l2_index * 8) as *const u64);
-        if l2_descriptor & DESC_VALID == 0 {
+        if l2_descriptor & SMMU_DESC_VALID == 0 {
             return None;
         }
-        if l2_descriptor & DESC_TABLE == 0 {
+        if l2_descriptor & SMMU_DESC_TYPE_MASK == SMMU_DESC_BLOCK {
             // 2 MiB block: the whole 4 KiB window must fit inside it. The
             // block base is 2 MiB aligned, so the low attribute bits do not
             // overlap the output address.
-            let block = (l2_descriptor & 0x000f_ffff_ffff_f000) as usize;
+            let block = (l2_descriptor & SMMU_DESC_ADDRESS_MASK) as usize;
             let offset = (iova as usize) & 0x1f_ffff;
             if offset + 0x1000 > 0x20_0000 {
                 return None;
             }
             return Some((block | offset) as u64);
         }
-        let l3_table = (l2_descriptor & !0xfff) as usize;
-        let l3_descriptor = read_volatile((l3_table + l3_index * 8) as *const u64);
-        if l3_descriptor & DESC_VALID == 0 || l3_descriptor & DESC_TABLE != 0 {
+        if l2_descriptor & SMMU_DESC_TYPE_MASK != SMMU_DESC_TABLE {
             return None;
         }
-        Some(l3_descriptor & 0x000f_ffff_ffff_f000)
+        let l3_table = (l2_descriptor & SMMU_DESC_ADDRESS_MASK) as usize;
+        let l3_descriptor = read_volatile((l3_table + l3_index * 8) as *const u64);
+        if l3_descriptor & SMMU_DESC_VALID == 0
+            || l3_descriptor & SMMU_DESC_TYPE_MASK != SMMU_DESC_TABLE
+        {
+            return None;
+        }
+        Some(l3_descriptor & SMMU_DESC_ADDRESS_MASK)
     }
 }
 
@@ -136,38 +141,43 @@ unsafe fn smmu_find_translate_context() -> Option<(usize, usize, usize)> {
 /// once `fastboot boot` jumped away, so any page it mapped is a fair DMA
 /// window for Fullerene's EP0 objects.
 unsafe fn smmu_find_any_mapping(ttbr0: u64, three_level: bool) -> Option<(u64, u64)> {
-    const DESC_VALID: u64 = 1;
-    const DESC_TABLE: u64 = 2;
     unsafe {
-        let l1_table = (ttbr0 & !0xfff) as usize;
+        let l1_table = (ttbr0 & SMMU_DESC_ADDRESS_MASK) as usize;
         let l1_range = if three_level { 512usize } else { 1 };
         for l1_index in 0..l1_range {
             let mut l2_table = l1_table;
             if three_level {
                 let l1_descriptor = read_volatile((l1_table + l1_index * 8) as *const u64);
-                if l1_descriptor & DESC_VALID == 0 || l1_descriptor & DESC_TABLE == 0 {
+                if l1_descriptor & SMMU_DESC_VALID == 0
+                    || l1_descriptor & SMMU_DESC_TYPE_MASK != SMMU_DESC_TABLE
+                {
                     continue;
                 }
-                l2_table = (l1_descriptor & !0xfff) as usize;
+                l2_table = (l1_descriptor & SMMU_DESC_ADDRESS_MASK) as usize;
             }
             for l2_index in 0..512usize {
                 let l2_descriptor = read_volatile((l2_table + l2_index * 8) as *const u64);
-                if l2_descriptor & DESC_VALID == 0 {
+                if l2_descriptor & SMMU_DESC_VALID == 0 {
                     continue;
                 }
                 let iova_base = ((l1_index as u64) << 30) | ((l2_index as u64) << 21);
-                if l2_descriptor & DESC_TABLE == 0 {
+                if l2_descriptor & SMMU_DESC_TYPE_MASK == SMMU_DESC_BLOCK {
                     // A 2 MiB block: use its first 4 KiB window.
-                    let block = l2_descriptor & 0x000f_ffff_ffff_f000;
+                    let block = l2_descriptor & SMMU_DESC_ADDRESS_MASK;
                     return Some((iova_base, block));
                 }
-                let l3_table = (l2_descriptor & !0xfff) as usize;
+                if l2_descriptor & SMMU_DESC_TYPE_MASK != SMMU_DESC_TABLE {
+                    continue;
+                }
+                let l3_table = (l2_descriptor & SMMU_DESC_ADDRESS_MASK) as usize;
                 for l3_index in 0..512usize {
                     let l3_descriptor = read_volatile((l3_table + l3_index * 8) as *const u64);
-                    if l3_descriptor & DESC_VALID == 0 || l3_descriptor & DESC_TABLE != 0 {
+                    if l3_descriptor & SMMU_DESC_VALID == 0
+                        || l3_descriptor & SMMU_DESC_TYPE_MASK != SMMU_DESC_TABLE
+                    {
                         continue;
                     }
-                    let physical = l3_descriptor & 0x000f_ffff_ffff_f000;
+                    let physical = l3_descriptor & SMMU_DESC_ADDRESS_MASK;
                     if physical == 0 {
                         continue;
                     }
@@ -396,7 +406,7 @@ unsafe fn smmu_context_maps_identity(ttbr0: u64, tcr: u32, start: usize, end: us
     // physical page-table address and must be removed before the CPU-side
     // identity walk below; otherwise a live Android context can appear
     // unmapped solely because its ASID is non-zero.
-    let table_root = ttbr0 & 0x0000_ffff_ffff_f000;
+    let table_root = ttbr0 & SMMU_DESC_ADDRESS_MASK;
     let read_entry = |base: u64, index: u64| -> Option<u64> {
         let offset = index.checked_mul(8)?;
         let address = base.checked_add(offset)?;
@@ -434,7 +444,8 @@ unsafe fn smmu_context_maps_identity(ttbr0: u64, tcr: u32, start: usize, end: us
                             return false;
                         };
                         l3 & SMMU_DESC_TYPE_MASK == SMMU_DESC_TABLE
-                            && l3 & SMMU_DESC_ADDRESS_MASK == address & !0xfff
+                            && l3 & SMMU_DESC_ADDRESS_MASK
+                                == address & SMMU_DESC_ADDRESS_MASK & !0xfff
                             && l3 & SMMU_DESC_VALID != 0
                     }
                     _ => false,

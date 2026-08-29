@@ -28,6 +28,7 @@ mod config;
 mod control;
 mod phy;
 mod phy_tables;
+pub use phy_tables::install_dt_phy_sequences;
 use trace::{fill_trace_control_response, trace_begin, trace_event};
 pub mod trace;
 use trace::*;
@@ -64,6 +65,8 @@ use super::{
 unsafe extern "C" {
     static __usb_dma_start: u8;
     static __usb_dma_end: u8;
+    static __usb_trace_start: u8;
+    static __usb_trace_end: u8;
 }
 
 const EVENT_BUFFER_SIZE: usize = 4096;
@@ -1428,8 +1431,22 @@ unsafe fn gsi_ready_to_suspend() -> bool {
 /// memory) — skip it.
 #[inline]
 fn in_uncached_dma_window(address: usize) -> bool {
-    let block_base = (addr_of!(__usb_dma_start) as usize) & !0x1_fFFF;
-    let block_top = block_base + 0x20_0000;
+    let dma_start = addr_of!(__usb_dma_start) as usize;
+    let dma_end = addr_of!(__usb_dma_end) as usize;
+    let trace_start = addr_of!(__usb_trace_start) as usize;
+    let trace_end = addr_of!(__usb_trace_end) as usize;
+    let dma_valid = dma_start != 0 && dma_end > dma_start;
+    let trace_valid = trace_start != 0 && trace_end > trace_start;
+    let Some((section_start, section_end)) = (match (dma_valid, trace_valid) {
+        (true, true) => Some((dma_start.min(trace_start), dma_end.max(trace_end))),
+        (true, false) => Some((dma_start, dma_end)),
+        (false, true) => Some((trace_start, trace_end)),
+        (false, false) => None,
+    }) else {
+        return false;
+    };
+    let block_base = section_start & !0x1_fFFF;
+    let block_top = (section_end.saturating_sub(1) & !0x1_fFFF) + 0x20_0000;
     address >= block_base && address < block_top
 }
 
@@ -6040,23 +6057,21 @@ pub fn park_for_seconds(seconds: u64) -> ! {
         ); // "PARK"+secs
         let frequency = arch_counter_frequency();
         let deadline = arch_counter().saturating_add(frequency.saturating_mul(seconds));
-        while frequency == 0 || arch_counter() < deadline {
+        while frequency != 0 && arch_counter() < deadline {
             wdt_pet();
             core::hint::spin_loop();
         }
         unsafe {
-            // PSCI SYSTEM_RESET (function 7) FIRST. The PS_HOLD release
+            // PSCI SYSTEM_RESET (function 9) FIRST. The PS_HOLD release
             // lives in the PMIC/SPMI aperture, which the probe path never
             // clocks up; on this board that write can stall the CPU, handing
             // recovery to the secure watchdog (~37 s return) instead of the
             // PSCI reset. If the SMC returns (firmware rejected it), release
             // PS_HOLD behind it and let the watchdog finish recovery.
-            // (The previous encoding, 0x84000009, was PSCI MIGRATE - it
-            // returned without resetting, which is why every software reset
-            // attempt in this project's history fell through to the secure
-            // watchdog.)
+            // The old #7 encoding was MIGRATE_INFO_UP_CPU and could return
+            // without resetting; SYSTEM_RESET is function 9 (0x84000009).
             core::arch::asm!(
-                "mov w0, #7",
+                "mov w0, #9",
                 "movk w0, #0x8400, lsl #16",
                 "mov x1, xzr",
                 "mov x2, xzr",
@@ -6306,8 +6321,8 @@ pub fn u0_arm_recovery() -> u32 {
             return 1;
         }
         if defer_start {
-            let deadline = arch_counter()
-                .saturating_add(arch_counter_frequency().saturating_mul(100) / 1000);
+            let deadline =
+                arch_counter().saturating_add(arch_counter_frequency().saturating_mul(100) / 1000);
             let mut armed = false;
             while arch_counter() < deadline {
                 if EP0_SETUP_ARMED {

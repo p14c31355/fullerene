@@ -771,7 +771,7 @@ fn main() -> io::Result<()> {
             || !args.usb_gadget_handoff_direct
             || target.arch != Arch::Aarch64
             || target.platform != Platform::Bramble
-            || matches!(args.command, Action::Build | Action::Run | Action::Debug) == false)
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -875,50 +875,53 @@ fn main() -> io::Result<()> {
             profile,
             target.platform,
             kernel_artifact,
-            selected_probe.and_then(|probe| probe.env),
-            args.usb_gadget_handoff_no_smmu,
-            args.usb_gadget_handoff_reuse_fastboot_dma,
-            args.usb_gadget_handoff_no_transfer_resource,
-            args.usb_gadget_handoff_android_resource_order,
-            args.usb_gadget_handoff_start_after_connect,
-            args.usb_gadget_handoff_start_after_reset,
-            args.usb_gadget_handoff_start_at_connect_done,
-            args.stop_after_stage,
-            args.qemu_usb_sim,
-            args.usb_gadget_handoff_direct,
-            args.usb_ep0_signal_probe,
-            args.usb_ep0_signal_smmu_state,
-            args.usb_ep0_signal_link_state,
-            args.usb_ep0_signal_raw_link,
-            args.usb_ep0_signal_early_drop,
-            args.usb_ep0_signal_pre_drop,
-            args.usb_ep0_signal_heartbeat,
-            args.usb_ep0_dma_adopt,
-            args.usb_ep0_smmu_gate,
-            args.usb_ep0_signal_drop_vbus,
-            args.usb_connect_delay,
-            args.usb_ep0_smmu_install,
-            args.usb_signal_dma_probe,
-            args.usb_smmu_install_all,
-            args.usb_signal_fsr_gate,
-            args.usb_signal_ram_gate,
-            args.usb_signal_diag_publish,
-            args.usb_quiet_after,
-            args.usb_dma_origin,
-            args.usb_signal_cmd_gate,
-            args.usb_signal_rsc_gate,
-            args.usb_signal_cfg_gate,
-            args.usb_signal_ramclk_gate,
-            args.usb_smmu_disable,
-            args.usb_signal_evt_data_gate,
-            args.usb_observe_secs,
-            args.usb_skip_typec_spmi,
-            args.usb_u0_arm_probe,
-            args.usb_wdt_bite_control,
-            args.usb_swdd_fnid,
-            args.usb_arm_blip,
-            args.usb_abs_reset_secs,
-            args.usb_swdd_skip,
+            Aarch64BuildConfig {
+                probe_env: selected_probe.and_then(|probe| probe.env),
+                gadget_handoff_no_smmu: args.usb_gadget_handoff_no_smmu,
+                gadget_handoff_reuse_fastboot_dma: args.usb_gadget_handoff_reuse_fastboot_dma,
+                gadget_handoff_no_transfer_resource: args.usb_gadget_handoff_no_transfer_resource,
+                gadget_handoff_android_resource_order: args
+                    .usb_gadget_handoff_android_resource_order,
+                gadget_handoff_start_after_connect: args.usb_gadget_handoff_start_after_connect,
+                gadget_handoff_start_after_reset: args.usb_gadget_handoff_start_after_reset,
+                gadget_handoff_start_at_connect_done: args.usb_gadget_handoff_start_at_connect_done,
+                gadget_handoff_stop_after_stage: args.stop_after_stage,
+                qemu_usb_sim: args.qemu_usb_sim,
+                gadget_handoff_direct: args.usb_gadget_handoff_direct,
+                ep0_signal_probe: args.usb_ep0_signal_probe,
+                ep0_signal_smmu_state: args.usb_ep0_signal_smmu_state,
+                ep0_signal_link_state: args.usb_ep0_signal_link_state,
+                ep0_signal_raw_link: args.usb_ep0_signal_raw_link,
+                ep0_signal_early_drop: args.usb_ep0_signal_early_drop,
+                ep0_signal_pre_drop: args.usb_ep0_signal_pre_drop,
+                ep0_signal_heartbeat: args.usb_ep0_signal_heartbeat,
+                ep0_dma_adopt: args.usb_ep0_dma_adopt,
+                ep0_smmu_gate: args.usb_ep0_smmu_gate,
+                ep0_signal_drop_vbus: args.usb_ep0_signal_drop_vbus,
+                connect_delay: args.usb_connect_delay,
+                ep0_smmu_install: args.usb_ep0_smmu_install,
+                signal_dma_probe: args.usb_signal_dma_probe,
+                smmu_install_all: args.usb_smmu_install_all,
+                signal_fsr_gate: args.usb_signal_fsr_gate,
+                signal_ram_gate: args.usb_signal_ram_gate,
+                signal_diag_publish: args.usb_signal_diag_publish,
+                quiet_after: args.usb_quiet_after,
+                dma_origin: args.usb_dma_origin.clone(),
+                signal_cmd_gate: args.usb_signal_cmd_gate.clone(),
+                signal_rsc_gate: args.usb_signal_rsc_gate.clone(),
+                signal_cfg_gate: args.usb_signal_cfg_gate.clone(),
+                signal_ramclk_gate: args.usb_signal_ramclk_gate,
+                smmu_disable: args.usb_smmu_disable,
+                signal_evt_data_gate: args.usb_signal_evt_data_gate,
+                observe_secs: args.usb_observe_secs,
+                skip_typec_spmi: args.usb_skip_typec_spmi,
+                u0_arm_probe: args.usb_u0_arm_probe,
+                wdt_bite_control: args.usb_wdt_bite_control,
+                swdd_fnid: args.usb_swdd_fnid.clone(),
+                arm_blip: args.usb_arm_blip,
+                abs_reset_secs: args.usb_abs_reset_secs,
+                swdd_skip: args.usb_swdd_skip,
+            },
         )?;
         if target.platform == Platform::Bramble
             && matches!(args.command, Action::Run | Action::Debug)
@@ -1033,12 +1036,9 @@ fn fnv1a64(data: &str) -> u64 {
     hash
 }
 
-fn build_aarch64_kernel(
-    workspace_root: &Path,
-    profile: BuildProfile,
-    platform: Platform,
-    kernel_artifact: &str,
-    probe_env: Option<&str>,
+#[derive(Default)]
+struct Aarch64BuildConfig {
+    probe_env: Option<&'static str>,
     gadget_handoff_no_smmu: bool,
     gadget_handoff_reuse_fastboot_dma: bool,
     gadget_handoff_no_transfer_resource: bool,
@@ -1082,8 +1082,62 @@ fn build_aarch64_kernel(
     arm_blip: bool,
     abs_reset_secs: Option<u64>,
     swdd_skip: bool,
+}
+
+fn build_aarch64_kernel(
+    workspace_root: &Path,
+    profile: BuildProfile,
+    platform: Platform,
+    kernel_artifact: &str,
+    config: Aarch64BuildConfig,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
+    let Aarch64BuildConfig {
+        probe_env,
+        gadget_handoff_no_smmu,
+        gadget_handoff_reuse_fastboot_dma,
+        gadget_handoff_no_transfer_resource,
+        gadget_handoff_android_resource_order,
+        gadget_handoff_start_after_connect,
+        gadget_handoff_start_after_reset,
+        gadget_handoff_start_at_connect_done,
+        gadget_handoff_stop_after_stage,
+        qemu_usb_sim,
+        gadget_handoff_direct,
+        ep0_signal_probe,
+        ep0_signal_smmu_state,
+        ep0_signal_link_state,
+        ep0_signal_raw_link,
+        ep0_signal_early_drop,
+        ep0_signal_pre_drop,
+        ep0_signal_heartbeat,
+        ep0_dma_adopt,
+        ep0_smmu_gate,
+        ep0_signal_drop_vbus,
+        connect_delay,
+        ep0_smmu_install,
+        signal_dma_probe,
+        smmu_install_all,
+        signal_fsr_gate,
+        signal_ram_gate,
+        signal_diag_publish,
+        quiet_after,
+        dma_origin,
+        signal_cmd_gate,
+        signal_rsc_gate,
+        signal_cfg_gate,
+        signal_ramclk_gate,
+        smmu_disable,
+        signal_evt_data_gate,
+        observe_secs,
+        skip_typec_spmi,
+        u0_arm_probe,
+        wdt_bite_control,
+        swdd_fnid,
+        arm_blip,
+        abs_reset_secs,
+        swdd_skip,
+    } = config;
     // Collect every build-script environment variable first so the
     // combination can be hashed into an isolated CARGO_TARGET_DIR: this
     // nightly's cargo otherwise reuses stale lib/bin artifacts when only
@@ -1356,54 +1410,14 @@ fn run_aarch64_qemu_preflight(
 ) -> io::Result<()> {
     println!("QEMU Bramble preflight: building the qemu-virt self-test artifact");
     let kernel = build_aarch64_kernel(
-        workspace_root,                  // 1
-        profile,                         // 2
-        Platform::QemuVirt,              // 3
-        Arch::Aarch64.kernel_artifact(), // 4
-        None,                            // 5  probe_env
-        false,                           // 6  no_smmu
-        false,                           // 7  reuse_fastboot_dma
-        false,                           // 8  no_transfer_resource
-        false,                           // 9  android_resource_order
-        false,                           // 10 start_after_connect
-        false,                           // 11 start_after_reset
-        false,                           // 12 start_at_connect_done
-        None,                            // 13 stop_after_stage
-        true,                            // 14 qemu_usb_sim
-        false,                           // 15 gadget_handoff_direct
-        false,                           // 16 ep0_signal_probe
-        false,                           // 17 ep0_signal_smmu_state
-        false,                           // 18 ep0_signal_link_state
-        false,                           // 19 ep0_signal_raw_link
-        None,                            // 20 ep0_signal_early_drop
-        false,                           // 21 ep0_signal_pre_drop
-        false,                           // 22 ep0_signal_heartbeat
-        false,                           // 23 ep0_dma_adopt
-        None,                            // 24 ep0_smmu_gate
-        false,                           // 25 ep0_signal_drop_vbus
-        None,                            // 26 connect_delay
-        false,                           // 27 ep0_smmu_install
-        false,                           // 28 signal_dma_probe
-        false,                           // 29 smmu_install_all
-        None,                            // 30 signal_fsr_gate
-        false,                           // 31 signal_ram_gate
-        false,                           // 32 signal_diag_publish
-        None,                            // 33 quiet_after
-        None,                            // 34 dma_origin
-        None,                            // 35 signal_cmd_gate
-        None,                            // 36 signal_rsc_gate
-        None,                            // 37 signal_cfg_gate
-        None,                            // 38 signal_ramclk_gate
-        false,                           // 39 smmu_disable
-        None,                            // 40 signal_evt_data_gate
-        None,                            // 41 observe_secs
-        false,                           // 42 skip_typec_spmi
-        false,                           // 43 u0_arm_probe
-        false,                           // 44 wdt_bite_control
-        None,                            // 45 swdd_fnid
-        false,                           // 46 arm_blip
-        None,                            // 47 abs_reset_secs
-        false,                           // 48 swdd_skip
+        workspace_root,
+        profile,
+        Platform::QemuVirt,
+        Arch::Aarch64.kernel_artifact(),
+        Aarch64BuildConfig {
+            qemu_usb_sim: true,
+            ..Default::default()
+        },
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;
     let image = build_aarch64_image(&raw)?;

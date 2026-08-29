@@ -1448,20 +1448,22 @@ pub fn install_usb_resource_contract(
                 installed = true;
             }
         }
-        let mut smmu_context_irq_count = 0usize;
+        let mut smmu_context_irqs = [0u32; SMMU_CONTEXT_IRQ_COUNT];
+        let mut smmu_context_irqs_valid = true;
         for (slot, irq) in contract.smmu_context_irqs.iter().enumerate() {
             let Some(irq) = irq else {
+                smmu_context_irqs_valid = false;
                 break;
             };
             if !(32..1020).contains(irq) {
-                smmu_context_irq_count = 0;
+                smmu_context_irqs_valid = false;
                 break;
             }
-            resources.smmu_context_irqs[slot] = *irq;
-            smmu_context_irq_count += 1;
+            smmu_context_irqs[slot] = *irq;
         }
-        if smmu_context_irq_count != 0 {
-            resources.smmu_context_irq_count = smmu_context_irq_count;
+        if smmu_context_irqs_valid {
+            resources.smmu_context_irqs = smmu_context_irqs;
+            resources.smmu_context_irq_count = SMMU_CONTEXT_IRQ_COUNT;
             installed = true;
         }
         if contract.qmp_reg_offsets.iter().all(Option::is_some) {

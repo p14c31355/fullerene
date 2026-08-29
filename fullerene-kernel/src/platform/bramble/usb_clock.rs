@@ -1,5 +1,22 @@
 use super::{ClockProvider, UsbBusVote, set_usb_resource_state, usb_clock_plan, usb_resources};
 
+const GCC_BRANCH_CLK_OFF: u32 = 1 << 31;
+
+unsafe fn wait_for_branch_state(address: *mut u32, enabled: bool) -> bool {
+    unsafe {
+        for _ in 0..500_000u32 {
+            let value = core::ptr::read_volatile(address);
+            let on = value & 1 != 0;
+            let off = value & GCC_BRANCH_CLK_OFF != 0;
+            if on == enabled && off == !enabled {
+                return true;
+            }
+            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        }
+    }
+    false
+}
+
 /// Switch the GCC branch resources required by the Qualcomm glue. This is
 /// intentionally platform-owned: DWC3 should not need to know GCC offsets or
 /// which of the six controller clocks are present in the DT.
@@ -13,7 +30,7 @@ pub unsafe fn enable_usb_clock_branches() -> bool {
         let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
         let value = unsafe { core::ptr::read_volatile(address) } | 1;
         unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
+        ok &= unsafe { wait_for_branch_state(address, true) };
     }
     for clock in resources.qmp_clocks {
         if clock.provider != ClockProvider::Gcc {
@@ -22,7 +39,7 @@ pub unsafe fn enable_usb_clock_branches() -> bool {
         let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
         let value = unsafe { core::ptr::read_volatile(address) } | 1;
         unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
+        ok &= unsafe { wait_for_branch_state(address, true) };
     }
     if ok {
         set_usb_resource_state(|state| state.clock_branches_enabled = true);
@@ -44,7 +61,7 @@ pub unsafe fn disable_usb_clock_branches() -> bool {
         let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
         let value = unsafe { core::ptr::read_volatile(address) } & !1;
         unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
+        ok &= unsafe { wait_for_branch_state(address, false) };
     }
     for clock in resources.qmp_clocks {
         if clock.provider != ClockProvider::Gcc {
@@ -53,7 +70,7 @@ pub unsafe fn disable_usb_clock_branches() -> bool {
         let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
         let value = unsafe { core::ptr::read_volatile(address) } & !1;
         unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
+        ok &= unsafe { wait_for_branch_state(address, false) };
     }
     if ok {
         set_usb_resource_state(|state| state.clock_branches_enabled = false);
@@ -173,6 +190,6 @@ pub unsafe fn enable_usb2_utmi_clock() -> bool {
         let address = (resources.gcc_base + utmi.branch_offset) as *mut u32;
         let value = core::ptr::read_volatile(address) | 1;
         core::ptr::write_volatile(address, value);
-        core::ptr::read_volatile(address) & 1 != 0
+        wait_for_branch_state(address, true)
     }
 }

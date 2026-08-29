@@ -136,14 +136,6 @@ global_asm!(
       // PS_HOLD reset; the normal gadget path disables it after EP0\n\
       // progress, while pullup-only diagnostics leave it armed so a\n\
       // failed physical handoff cannot strand the handset.\n\
-      // Target the EL1 physical timer at EL1 (CNTKCTL_EL1.T0EL1 = bit 10):\n\
-      // with T0EL1 = 0 (the reset default) the timer is not delivered to\n\
-      // EL1 as PPI 30 at all, regardless of the GICR programming below.\n\
-      // Linux does the same in arch_timer_early_init.\n\
-      mrs x5, CNTKCTL_EL1\n\
-      orr x5, x5, #0x400\n\
-      msr CNTKCTL_EL1, x5\n\
-      isb\n\
       mrs x5, CNTFRQ_EL0\n\
          // Leave enough time for Qualcomm MMIO synchronization, GENI UART\n\
          // diagnostics, and the DWC3 reset handshake before the recovery\n\
@@ -179,20 +171,17 @@ global_asm!(
          b usb_probe_exception_reset\n\
       5:\n\
           add x8, x8, #0x10000\n\
-          // GICv3 GICR CPU interface: IGROUPR0/ISENABLER0 cover PPI 0-15\n\
-          // only (16 INTIDs per 32-bit register), so PPI 30 lives in\n\
-          // IGROUPR1 (0x84) / ISENABLER1 (0x104) bit 14, and its priority\n\
-          // in the dedicated GICR_IPRIORITYR30 word (0x400 + 4*30 = 0x478;\n\
-          // GICv3 gives every INTID a full 32-bit priority register, unlike\n\
-          // the GICv2 four-per-word packing the older offsets assumed).\n\
-          ldr w9, [x8, #0x84]\n\
-          orr w9, w9, #0x4000\n\
-          str w9, [x8, #0x84]\n\
+          // GICv3 GICR SGI frame registers cover SGI/PPI INTIDs 0-31, so\n\
+          // PPI 30 uses bit 30 in IGROUPR0/ISENABLER0. Priorities are one\n\
+          // byte per INTID, making PPI 30's priority byte 0x400 + 30.\n\
+          ldr w9, [x8, #0x80]\n\
+          orr w9, w9, #0x40000000\n\
+          str w9, [x8, #0x80]\n\
           mov w10, #0xa0\n\
-          strb w10, [x8, #0x478]\n\
-          ldr w9, [x8, #0x104]\n\
-          orr w9, w9, #0x4000\n\
-          str w9, [x8, #0x104]\n\
+          strb w10, [x8, #0x41e]\n\
+          ldr w9, [x8, #0x100]\n\
+          orr w9, w9, #0x40000000\n\
+          str w9, [x8, #0x100]\n\
           // The standalone probe never runs the Rust GIC init, so force the\n\
           // distributor on: ABL may leave GICD_CTLR without Enable or without\n\
           // Group1Enable, in which case no PPI is delivered to this CPU\n\
@@ -331,10 +320,10 @@ global_asm!(
      .size usb_probe_irq_entry, . - usb_probe_irq_entry\n\
       .type usb_probe_exception_reset, %function\n\
       usb_probe_exception_reset:\n\
-          // PSCI SYSTEM_RESET (function 7) first: the PS_HOLD release below\n\
+         // PSCI SYSTEM_RESET (function 9) first: the PS_HOLD release below\n\
           // sits in the PMIC/SPMI aperture the probe never clocks up; on this\n\
           // board that write can stall the CPU and mask a working SMC reset.\n\
-          mov w0, #7\n\
+         mov w0, #9\n\
           movk w0, #0x8400, lsl #16\n\
           mov x1, xzr\n\
           mov x2, xzr\n\
@@ -660,9 +649,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             0x4744_4253 | (state & 0x1f), // "GDBS"
         );
         let target = usb::arch_counter_ticks().saturating_add(
-            probe_counter_frequency()
-                .saturating_mul(state.saturating_add(1) as u64)
-                / 4,
+            probe_counter_frequency().saturating_mul(state.saturating_add(1) as u64) / 4,
         );
         while usb::arch_counter_ticks() < target {
             usb::wdt_pet();
@@ -754,9 +741,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             usb::TRACE_PROBE_WATCHDOG,
             0x4C4E_4B53 | (lnkst & 0xff), // "LNKS"
         );
-        if lnkst == 8 || lnkst == 9 || lnkst == 11 || lnkst == 14
-            || lnkst == 15
-        {
+        if lnkst == 8 || lnkst == 9 || lnkst == 11 || lnkst == 14 || lnkst == 15 {
             usb::u0_arm_wdt_bite(1);
         }
         unsafe {
@@ -810,7 +795,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         let frequency = probe_counter_frequency();
         let subwindow = probe_counter();
         let sof_first = usb::dsts_sof_frame_number();
-        while frequency == 0 || probe_counter().wrapping_sub(subwindow) < frequency / 10 {
+        while frequency != 0 && probe_counter().wrapping_sub(subwindow) < frequency / 10 {
             usb::poll();
         }
         let saw_sof = usb::dsts_sof_frame_number() != sof_first;
@@ -1271,13 +1256,13 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
     for _ in 0..cycles {
         usb::ep0_signal_drop_pullup();
         let dropped = probe_counter().saturating_add(frequency.saturating_mul(3) / 2);
-        while frequency == 0 || probe_counter() < dropped {
+        while frequency != 0 && probe_counter() < dropped {
             usb::wdt_pet();
             usb::poll();
         }
         usb::ep0_signal_restore_pullup();
         let attached = probe_counter().saturating_add(frequency.saturating_mul(3) / 2);
-        while frequency == 0 || probe_counter() < attached {
+        while frequency != 0 && probe_counter() < attached {
             usb::wdt_pet();
             usb::poll();
         }
@@ -1611,7 +1596,7 @@ extern "C" fn usb_probe_entry() -> ! {
         if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk-nib") {
             let frequency = probe_counter_frequency();
             let settle = probe_counter().saturating_add(frequency.saturating_mul(1));
-            while frequency == 0 || probe_counter() < settle {
+            while frequency != 0 && probe_counter() < settle {
                 usb::wdt_pet();
                 core::hint::spin_loop();
             }
@@ -1633,7 +1618,7 @@ extern "C" fn usb_probe_entry() -> ! {
             );
             let reset_at = probe_counter()
                 .saturating_add(frequency.saturating_mul(1u64.saturating_add(u64::from(bucket))));
-            while frequency == 0 || probe_counter() < reset_at {
+            while frequency != 0 && probe_counter() < reset_at {
                 usb::wdt_pet();
                 core::hint::spin_loop();
             }
@@ -1652,7 +1637,7 @@ extern "C" fn usb_probe_entry() -> ! {
             // the same automatic reset/recovery path as a failed handoff.
             let frequency = probe_counter_frequency();
             let deadline = probe_counter().saturating_add(frequency.saturating_mul(10));
-            while frequency == 0 || probe_counter() < deadline {
+            while frequency != 0 && probe_counter() < deadline {
                 usb::wdt_pet();
                 core::hint::spin_loop();
             }
@@ -1958,7 +1943,7 @@ pub fn reset_after_probe_failure() -> ! {
     // remains as the rejected-SMC fallback.
     unsafe {
         core::arch::asm!(
-            "mov w0, #7",
+            "mov w0, #9",
             "movk w0, #0x8400, lsl #16",
             "mov x1, xzr",
             "mov x2, xzr",

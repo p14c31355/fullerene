@@ -251,6 +251,70 @@ struct LoopArgs {
     dry_run: bool,
 }
 
+impl Default for LoopArgs {
+    fn default() -> Self {
+        Self {
+            serial: DEFAULT_SERIAL.to_owned(),
+            template: PathBuf::from(DEFAULT_TEMPLATE),
+            enum_timeout: 30,
+            hold: 30,
+            fastboot_wait: 30,
+            irq_route: None,
+            super_speed: false,
+            normal: false,
+            direct_handoff: false,
+            pullup_only: false,
+            bare_pullup: false,
+            bare_pullup_stop_after: None,
+            hyper_bare: false,
+            stop_after_stage: None,
+            no_smmu: false,
+            reuse_fastboot_dma: false,
+            no_transfer_resource: false,
+            android_resource_order: false,
+            start_after_connect: false,
+            start_after_reset: false,
+            start_at_connect_done: false,
+            signal_probe: false,
+            signal_smmu_state: false,
+            signal_link_state: false,
+            signal_raw_link: false,
+            signal_early_drop: None,
+            signal_pre_drop: false,
+            signal_heartbeat: false,
+            dma_adopt_smmu: false,
+            smmu_gate: None,
+            signal_drop_vbusvld: false,
+            connect_delay: None,
+            smmu_install_bypass: false,
+            signal_dma_probe: false,
+            smmu_install_all: false,
+            signal_fsr_gate: None,
+            signal_ram_gate: false,
+            skip_typec_spmi: false,
+            u0_arm_probe: false,
+            wdt_bite_control: false,
+            swdd_fnid: None,
+            swdd_skip: false,
+            arm_blip: false,
+            abs_reset_secs: None,
+            signal_diag_publish: false,
+            quiet_after: None,
+            observe_secs: None,
+            dma_origin: None,
+            signal_cmd_gate: None,
+            signal_rsc_gate: None,
+            signal_cfg_gate: None,
+            signal_ramclk_gate: None,
+            smmu_disable: false,
+            signal_evt_data_gate: None,
+            no_core_reset: false,
+            uncompressed: false,
+            dry_run: false,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 struct MatrixArgs {
     /// Restrict the matrix; repeat this option to choose several routes.
@@ -570,56 +634,9 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         fastboot_wait: args.fastboot_wait,
         irq_route: Some(route),
         super_speed: args.super_speed,
-        normal: false,
-        direct_handoff: false,
-        pullup_only: false,
         no_smmu: args.no_smmu,
-        reuse_fastboot_dma: false,
-        no_transfer_resource: false,
-        android_resource_order: false,
-        start_after_connect: false,
-        start_after_reset: false,
-        start_at_connect_done: false,
-        signal_probe: false,
-        signal_smmu_state: false,
-        signal_link_state: false,
-        signal_raw_link: false,
-        signal_early_drop: None,
-        signal_pre_drop: false,
-        signal_heartbeat: false,
-        dma_adopt_smmu: false,
-        smmu_gate: None,
-        signal_drop_vbusvld: false,
-        connect_delay: None,
-        smmu_install_bypass: false,
-        signal_dma_probe: false,
-        smmu_install_all: false,
-        signal_fsr_gate: None,
-        signal_ram_gate: false,
-        skip_typec_spmi: false,
-        u0_arm_probe: false,
-        wdt_bite_control: false,
-        swdd_fnid: None,
-        swdd_skip: false,
-        arm_blip: false,
-        abs_reset_secs: None,
-        signal_diag_publish: false,
-        quiet_after: None,
-        observe_secs: None,
-        dma_origin: None,
-        signal_cmd_gate: None,
-        signal_rsc_gate: None,
-        signal_cfg_gate: None,
-        signal_ramclk_gate: None,
-        smmu_disable: false,
-        signal_evt_data_gate: None,
         no_core_reset: args.no_core_reset,
-        uncompressed: false,
-        dry_run: false,
-        bare_pullup: false,
-        bare_pullup_stop_after: None,
-        hyper_bare: false,
-        stop_after_stage: None,
+        ..LoopArgs::default()
     }
 }
 
@@ -633,7 +650,7 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--normal cannot be combined with --super-speed or --pullup-only",
+            "--normal cannot be combined with --super-speed, --pullup-only, --bare-pullup, --stop-after-stage, or --direct-handoff",
         ));
     }
     if args.direct_handoff && (args.super_speed || args.pullup_only || args.bare_pullup) {
@@ -1556,11 +1573,44 @@ fn wait_until_absent(identity: &str, timeout_secs: u64) {
     }
 }
 
+fn usb_field(line: &str, field: &str) -> Option<u32> {
+    let marker = format!("{field} ");
+    let start = line.find(&marker)? + marker.len();
+    let digits = line[start..]
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .collect::<Vec<_>>();
+    (!digits.is_empty()).then(|| {
+        String::from_utf8_lossy(&digits)
+            .parse()
+            .expect("USB numeric field must fit in u32")
+    })
+}
+
+fn tree_has_superspeed_link(tree: &str, bus: u32, device: u32) -> bool {
+    let mut current_bus = None;
+    tree.lines().any(|line| {
+        if let Some(found_bus) = usb_field(line, "Bus") {
+            current_bus = Some(found_bus);
+        }
+        current_bus == Some(bus)
+            && usb_field(line, "Dev") == Some(device)
+            && (line.contains("5000M") || line.contains("10000M"))
+    })
+}
+
 fn has_superspeed_link(run_dir: &Path) -> io::Result<bool> {
+    let listing = command_text("lsusb", &["-d", FULLERENE_USB])?;
+    let bus = usb_field(&listing, "Bus").ok_or_else(|| {
+        io::Error::other(format!("could not resolve the bus for {FULLERENE_USB}"))
+    })?;
+    let device = usb_field(&listing, "Device").ok_or_else(|| {
+        io::Error::other(format!(
+            "could not resolve the device address for {FULLERENE_USB}"
+        ))
+    })?;
     let tree = fs::read_to_string(run_dir.join("lsusb-tree.txt"))?;
-    Ok(tree
-        .lines()
-        .any(|line| line.contains("5000M") || line.contains("10000M")))
+    Ok(tree_has_superspeed_link(&tree, bus, device))
 }
 
 fn sha256(path: &Path) -> io::Result<String> {
@@ -1599,7 +1649,10 @@ fn create_child_run_dir(parent: &Path, name: &str) -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TRACE_HEADER_BYTES, TRACE_MAGIC, TRACE_VERSION, parse_trace_header};
+    use super::{
+        TRACE_HEADER_BYTES, TRACE_MAGIC, TRACE_VERSION, parse_trace_header,
+        tree_has_superspeed_link,
+    };
 
     #[test]
     fn trace_header_is_little_endian_and_bounded() {
@@ -1620,5 +1673,15 @@ mod tests {
         response[4..8].copy_from_slice(&TRACE_VERSION.to_le_bytes());
         response[12..16].copy_from_slice(&257u32.to_le_bytes());
         assert!(parse_trace_header(&response).is_err());
+    }
+
+    #[test]
+    fn superspeed_check_is_scoped_to_the_requested_device() {
+        let tree = "/: Bus 001.Port 1: Dev 1, Class=root_hub, 5000M\n\
+                    |__ Port 1: Dev 7, If 0, Class=Vendor, 480M\n\
+                    /: Bus 002.Port 1: Dev 1, Class=root_hub, 5000M\n\
+                    |__ Port 1: Dev 7, If 0, Class=Vendor, 10000M\n";
+        assert!(!tree_has_superspeed_link(tree, 1, 7));
+        assert!(tree_has_superspeed_link(tree, 2, 7));
     }
 }

@@ -32,10 +32,11 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
         let _ = read_volatile(qmp_reg(phy_mode));
         write_volatile(qmp_reg(reset_override), 0x00);
 
-        for index in 0..146 {
-            let (offset, value) = ACTIVE_QMP_INIT[index];
+        let qmp_init = core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_QMP_INIT));
+        let qmp_init_delays =
+            core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_QMP_INIT_DELAY_US));
+        for (&(offset, value), &delay_us) in qmp_init.iter().zip(qmp_init_delays.iter()) {
             write_volatile(qmp_reg(offset), value);
-            let delay_us = ACTIVE_QMP_INIT_DELAY_US[index];
             if delay_us != 0 {
                 crate::timer::delay_us(delay_us as u64);
             }
@@ -141,8 +142,9 @@ pub(super) unsafe fn init_hsphy() {
         );
 
         // qcom,param-override-seq is encoded as (value, register offset).
-        for index in 0..3 {
-            let (offset, value) = ACTIVE_HSPHY_PARAM_OVERRIDE[index];
+        let hsphy_param_override =
+            core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_HSPHY_PARAM_OVERRIDE));
+        for &(offset, value) in hsphy_param_override.iter() {
             write_volatile(hsphy_reg(offset), value);
         }
 

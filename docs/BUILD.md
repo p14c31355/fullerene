@@ -213,7 +213,7 @@ and relies on Fastboot's existing physical=IOVA bypass as a hardware
 differential. `--no-core-reset` keeps the halted-controller handoff but omits
 the DWC3 device soft reset, isolating whether CSFTRST destroys the inherited
 PHY/session state. Neither mode flashes, erases, or reboots a partition. After an
-enumeration timeout the harness waits up to 75 seconds for the probe watchdog
+enumeration timeout the harness waits up to 150 seconds for the probe watchdog
 to return to Fastboot. A probe image built before the watchdog fix can still
 leave the phone with no USB device and require manual recovery.
 

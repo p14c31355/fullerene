@@ -8,6 +8,8 @@ const BLOCK_SIZE: u64 = 0x20_0000;
 unsafe extern "C" {
     static __usb_dma_start: u8;
     static __usb_dma_end: u8;
+    static __usb_trace_start: u8;
+    static __usb_trace_end: u8;
 }
 
 const DESC_VALID: u64 = 1 << 0;
@@ -130,10 +132,23 @@ fn is_mmio(physical: u64) -> bool {
     // cache maintenance for these objects becomes a no-op by construction.
     let dma_start = unsafe { core::ptr::addr_of!(__usb_dma_start) } as u64;
     let dma_end = unsafe { core::ptr::addr_of!(__usb_dma_end) } as u64;
-    if dma_start != 0 && dma_end > dma_start {
-        let block_base = dma_start & !(BLOCK_SIZE - 1);
-        let block_top = block_base + BLOCK_SIZE;
-        if physical >= block_base && block_end <= block_top {
+    let trace_start = unsafe { core::ptr::addr_of!(__usb_trace_start) } as u64;
+    let trace_end = unsafe { core::ptr::addr_of!(__usb_trace_end) } as u64;
+    let section_bounds = match (
+        (dma_start != 0).then_some((dma_start, dma_end > dma_start)),
+        (trace_start != 0).then_some((trace_start, trace_end > trace_start)),
+    ) {
+        (Some((_, true)), Some((_, true))) => {
+            Some((dma_start.min(trace_start), dma_end.max(trace_end)))
+        }
+        (Some((_, true)), _) => Some((dma_start, dma_end)),
+        (_, Some((_, true))) => Some((trace_start, trace_end)),
+        _ => None,
+    };
+    if let Some((section_start, section_end)) = section_bounds {
+        let first_block = section_start & !(BLOCK_SIZE - 1);
+        let last_block = section_end.saturating_sub(1) & !(BLOCK_SIZE - 1);
+        if physical >= first_block && physical <= last_block {
             return true;
         }
     }

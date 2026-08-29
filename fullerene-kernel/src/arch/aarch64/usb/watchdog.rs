@@ -92,25 +92,19 @@ unsafe fn scm_smc_call_once(fnid: u64, arginfo: u64, a0: u64, a1: u64, a2: u64) 
     for _ in 0..100 {
         let mut a6_out: u64 = 0;
         asm!(
-            "mov x0, {fnid}",
             "mov x1, {arginfo}",
             "mov x2, {a0v}",
             "mov x3, {a1v}",
             "mov x4, {a2v}",
             "mov x5, xzr",
-            "mov x6, {a6in}",
             "mov x7, xzr",
             "smc #0",
-            "mov {result}, x0",
-            "mov {a6out}, x6",
-            fnid = in(reg) fnid,
+            inout("x0") fnid => result,
             arginfo = in(reg) arginfo,
             a0v = in(reg) a0,
             a1v = in(reg) a1,
             a2v = in(reg) a2,
-            a6in = in(reg) a6,
-            result = out(reg) result,
-            a6out = out(reg) a6_out,
+            inout("x6") a6 => a6_out,
             out("x1") _,
             out("x2") _,
             out("x3") _,
@@ -181,15 +175,12 @@ pub fn secure_wdt_probes() {
     // bootloader left MDCR_EL2.SMC (bit 14) set, SMC from EL1 traps to EL2
     // and never reaches TZ, which would fake every one of these probes.
     unsafe {
-        let mdcr: u64;
+        let mut mdcr = u64::MAX;
         let cur_el: u64;
-        asm!(
-            "mrs {m}, MDCR_EL2",
-            "mrs {c}, CurrentEL",
-            m = out(reg) mdcr,
-            c = out(reg) cur_el,
-            options(nostack)
-        );
+        asm!("mrs {c}, CurrentEL", c = out(reg) cur_el, options(nomem, nostack));
+        if cur_el & 0x8 != 0 {
+            asm!("mrs {m}, MDCR_EL2", m = out(reg) mdcr, options(nomem, nostack));
+        }
         MDCR_EL2_AT_ENTRY = mdcr;
         CURRENT_EL_AT_ENTRY = cur_el;
         trace_event(
@@ -247,8 +238,9 @@ pub fn secure_wdt_probes() {
     );
 }
 
-/// Restart the apps watchdog countdown and, once, record its configuration
-/// in the retained trace, disabling it if it is armed.
+/// Restart the apps watchdog countdown. On the first call, record the existing
+/// configuration in the retained trace, then re-arm bark/bite with the probe's
+/// own 100 s / 110 s timeouts and enable the watchdog.
 pub fn wdt_pet() {
     unsafe {
         if WDT_BITE_PENDING != 0 {
