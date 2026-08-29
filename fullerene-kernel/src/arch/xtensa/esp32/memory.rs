@@ -3,9 +3,9 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-pub const BOOT_HEAP_SIZE: usize = 96 * 1024;
+pub const BOOT_HEAP_SIZE: usize = 168 * 1024;
 pub const BOOT_STACK_SIZE: usize = 16 * 1024;
-const TASK_STACK_REGION_SIZE: usize = 64 * 1024;
+const TASK_STACK_REGION_SIZE: usize = 32 * 1024;
 
 #[repr(C, align(16))]
 struct HeapStorage([u8; BOOT_HEAP_SIZE]);

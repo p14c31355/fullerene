@@ -12,6 +12,8 @@ fn delay_ms(milliseconds: u32) {
     }
 }
 
+const LCD_ROW_BYTES: usize = DISPLAY_WIDTH as usize * 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LcdError {
     Spi(SpiError),
@@ -54,8 +56,8 @@ impl SpiLcd {
         self.command(0x11)?; // sleep out
         delay_ms(120);
         self.command(0x29)?; // display on
-        self.draw_test_pattern()?;
-        self.mark_full_dirty();
+        // Leave initialization black. Lattice composes and presents the first
+        // desktop frame as soon as the RGB565 surface is allocated.
         Ok(())
     }
 
@@ -71,7 +73,7 @@ impl SpiLcd {
         let x2 = x.saturating_add(width);
         let y2 = y.saturating_add(height);
         self.dirty = Some(match self.dirty {
-            Some((dx, dy, dw, dh)) => (
+            Some((dx, dy, _, _)) => (
                 dx.min(x),
                 dy.min(y),
                 dx.max(x2).saturating_sub(dx),
@@ -91,46 +93,41 @@ impl SpiLcd {
         Ok(())
     }
 
-    /// Fill the visible panel with four bands so the SPI wiring can be
-    /// verified without allocating the full Lattice surface.
-    fn draw_test_pattern(&self) -> Result<(), LcdError> {
+    fn set_window(&self, x: u16, y: u16, width: u16, height: u16) -> Result<(), LcdError> {
+        let x_end = x + width - 1;
+        let y_end = y + height - 1;
         self.command(0x2A)?;
-        self.data(&[
-            0,
-            0,
-            (DISPLAY_WIDTH - 1 >> 8) as u8,
-            DISPLAY_WIDTH as u8 - 1,
-        ])?;
+        self.data(&[(x >> 8) as u8, x as u8, (x_end >> 8) as u8, x_end as u8])?;
         self.command(0x2B)?;
-        self.data(&[
-            0,
-            0,
-            (DISPLAY_HEIGHT - 1 >> 8) as u8,
-            DISPLAY_HEIGHT as u8 - 1,
-        ])?;
-        self.command(0x2C)?;
-
-        let mut row = [0u8; DISPLAY_WIDTH as usize * 2];
-        for y in 0..DISPLAY_HEIGHT {
-            let color = if y < 80 {
-                0xf8_00
-            } else if y < 160 {
-                0x07_e0
-            } else {
-                0x00_1f
-            };
-            for (index, bytes) in row.chunks_exact_mut(2).enumerate() {
-                let shade: u16 = if (index / 40) & 1 == 0 { color } else { 0xffff };
-                bytes.copy_from_slice(&shade.to_be_bytes());
-            }
-            self.controller.transfer(&row)?;
-        }
-        Ok(())
+        self.data(&[(y >> 8) as u8, y as u8, (y_end >> 8) as u8, y_end as u8])?;
+        self.command(0x2C)
     }
 
+    /// Present the clipped rows from the Lattice RGB565 surface. Pixels are
+    /// sent big-endian, as required by the controller's RAM-write protocol.
     pub fn flush(&mut self, pixels: &[u16]) -> Result<(), LcdError> {
-        let _ = pixels;
+        let Some((x, y, width, height)) = self.dirty else {
+            return Ok(());
+        };
         self.dirty = None;
+        if width == 0 || height == 0 || x >= DISPLAY_WIDTH || y >= DISPLAY_HEIGHT {
+            return Ok(());
+        }
+        let width = width.min(DISPLAY_WIDTH - x);
+        let height = height.min(DISPLAY_HEIGHT - y);
+        self.set_window(x, y, width, height)?;
+        let mut row = [0u8; LCD_ROW_BYTES];
+        for row_index in 0..u32::from(height) {
+            let surface_y = u32::from(y) + row_index;
+            let start = surface_y * u32::from(DISPLAY_WIDTH) + u32::from(x);
+            let source = pixels
+                .get(start as usize..start as usize + usize::from(width))
+                .ok_or(LcdError::OutOfRange)?;
+            for (destination, pixel) in row.chunks_exact_mut(2).zip(source) {
+                destination.copy_from_slice(&pixel.to_be_bytes());
+            }
+            self.controller.write_data(&row[..usize::from(width) * 2])?;
+        }
         Ok(())
     }
 

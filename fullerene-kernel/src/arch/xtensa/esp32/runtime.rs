@@ -5,19 +5,25 @@ use nozzle::arch::xtensa::esp32::commands as nozzle_commands;
 
 use alloc::string::String;
 use core::sync::atomic::{AtomicU32, Ordering};
-use nitrogen::arch::xtensa::esp32::{board::BoardProfile, display::SpiLcd};
+use lattice::arch::xtensa::esp32::{EmbeddedDesktop, Esp32Compositor};
+use nitrogen::arch::xtensa::esp32::{
+    board::BoardProfile, display::SpiLcd, touchscreen::Xpt2046Touch,
+};
+use spin::Mutex;
 
 static NEXT_TASK_ID: AtomicU32 = AtomicU32::new(0);
+static DISPLAY: Mutex<Option<SpiLcd>> = Mutex::new(None);
 
 pub fn boot() -> ! {
     nitrogen::arch::xtensa::esp32::uart::write_str("FULLERENE BOOT\n");
 
     let _profile = BoardProfile::xh32s();
     nitrogen::arch::xtensa::esp32::uart::write_str("LCD INIT\n");
-    if SpiLcd::new().init().is_err() {
+    let mut lcd = SpiLcd::new();
+    if lcd.init().is_err() {
         crate::arch::xtensa::esp32::runtime::panic_message("LCD initialization failed");
     }
-    // let _touch = ResistiveTouch::new(profile);
+    *DISPLAY.lock() = Some(lcd);
     // Pin 21 is tied to the display backlight on the profile board.
     nitrogen::arch::xtensa::esp32::gpio::enable_output(board::LCD_BACKLIGHT);
     nitrogen::arch::xtensa::esp32::gpio::set_output_high(board::LCD_BACKLIGHT);
@@ -46,7 +52,43 @@ pub fn boot() -> ! {
 }
 
 fn lattice_task() -> ! {
+    let profile = BoardProfile::xh32s();
+    let mut desktop = EmbeddedDesktop::new();
+    let mut surface = Esp32Compositor::new(320, 240);
+    if !surface.allocate() {
+        crate::arch::xtensa::esp32::runtime::panic_message("display surface allocation failed");
+    }
+    nitrogen::arch::xtensa::esp32::uart::write_str("SURFACE OK\n");
+    let mut touch = Xpt2046Touch::new(profile);
+    let mut previous_pressed = false;
+    let mut redraw = true;
+
     loop {
+        if redraw {
+            let mut display = DISPLAY.lock();
+            if let Some(lcd) = display.as_mut() {
+                desktop.render(&mut surface);
+                nitrogen::arch::xtensa::esp32::uart::write_str("DESKTOP DRAW\n");
+                lcd.mark_full_dirty();
+                if lcd.flush(surface.pixels()).is_err() {
+                    drop(display);
+                    crate::arch::xtensa::esp32::runtime::panic_message("LCD flush failed");
+                }
+                nitrogen::arch::xtensa::esp32::uart::write_str("DESKTOP FLUSH OK\n");
+            }
+            redraw = false;
+        }
+
+        if let Some(sample) = touch.read() {
+            if sample.pressed && !previous_pressed {
+                let (x, y) = touch.map_to_screen(sample, 320, 240);
+                if let Some(app) = desktop.hit_taskbar(x, y) {
+                    redraw = desktop.set_active(app);
+                }
+            }
+            previous_pressed = sample.pressed;
+        }
+
         crate::arch::xtensa::esp32::scheduler::scheduler_yield();
     }
 }

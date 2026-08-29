@@ -16,8 +16,11 @@ pub struct LcdPinout {
 
 #[derive(Clone, Copy, Debug)]
 pub struct TouchPinout {
-    pub i2c_sda: u8,
-    pub i2c_scl: u8,
+    pub clk: u8,
+    pub mosi: u8,
+    pub miso: u8,
+    pub cs: u8,
+    pub irq: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -47,8 +50,11 @@ impl BoardProfile {
                 backlight: 21,
             },
             touch: TouchPinout {
-                i2c_sda: 33,
-                i2c_scl: 32,
+                clk: 25,
+                mosi: 32,
+                miso: 36,
+                cs: 33,
+                irq: 39,
             },
             sd: SdPinout {
                 clk: 18,
