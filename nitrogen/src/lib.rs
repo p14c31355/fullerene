@@ -20,53 +20,64 @@
 
 extern crate alloc;
 
-// Module declarations.
-// Drivers listed in `.driverignore` are excluded at compile time via
-// `nitrogen_no_*` cfg flags emitted by build.rs.
-// Infrastructure modules are always included (no cfg gate).
-
+// Infrastructure modules shared by every architecture.
+#[cfg(not(target_arch = "xtensa"))]
 pub mod acpi;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod apic;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod apic_controller;
+pub mod arch;
 pub mod debug;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod driver_api;
 pub mod driver_context;
 pub mod error;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod hbd;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod hid;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod i2c_hid;
 pub mod metrics;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod mmio;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod pci;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod pci_error;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod pci_health;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod port;
 
-// ── Excludable drivers (gated by .driverignore) ──────────────
-#[cfg(not(nitrogen_no_audio))]
+// Desktop drivers remain available on x86_64/AArch64 while the Xtensa
+// architecture uses the bounded drivers under src/arch.
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_audio)))]
 pub mod audio;
-#[cfg(not(nitrogen_no_framebuffer))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_framebuffer)))]
 pub mod framebuffer;
-#[cfg(not(nitrogen_no_hda))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_hda)))]
 pub mod hda;
-#[cfg(not(nitrogen_no_ioapic))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_ioapic)))]
 pub mod ioapic;
-#[cfg(not(nitrogen_no_iommu))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_iommu)))]
 pub mod iommu;
-#[cfg(not(nitrogen_no_iwlwifi))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_iwlwifi)))]
 pub mod iwlwifi;
-#[cfg(not(nitrogen_no_pic))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_pic)))]
 pub mod pic;
-#[cfg(not(nitrogen_no_ps2))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_ps2)))]
 pub mod ps2;
-#[cfg(not(nitrogen_no_storage))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_storage)))]
 pub mod storage;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod timing;
-#[cfg(not(nitrogen_no_usb))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_usb)))]
 pub mod usb;
-#[cfg(not(nitrogen_no_virtio))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_virtio)))]
 pub mod virtio;
-#[cfg(not(nitrogen_no_wifi))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_wifi)))]
 pub mod wifi;
 
 pub use driver_context::{DmaAllocation, DriverContext, DriverContextError, PageFlags};

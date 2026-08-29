@@ -56,60 +56,99 @@ pub(crate) fn yield_scheduler() {
     }
 }
 
+pub mod arch;
+
+#[cfg(not(target_arch = "xtensa"))]
 mod callbacks;
+#[cfg(not(target_arch = "xtensa"))]
 mod clock;
+#[cfg(not(target_arch = "xtensa"))]
 mod editor_bridge;
+#[cfg(not(target_arch = "xtensa"))]
 mod event_loop;
+#[cfg(not(target_arch = "xtensa"))]
 mod explorer;
+#[cfg(not(target_arch = "xtensa"))]
 mod file;
+#[cfg(not(target_arch = "xtensa"))]
 mod handlers;
+#[cfg(not(target_arch = "xtensa"))]
 mod input_loop;
+#[cfg(not(target_arch = "xtensa"))]
 mod installer;
+#[cfg(not(target_arch = "xtensa"))]
 mod menu_actions;
+#[cfg(not(target_arch = "xtensa"))]
 mod network_manager;
+#[cfg(not(target_arch = "xtensa"))]
 mod render;
+#[cfg(not(target_arch = "xtensa"))]
 mod runtime_context;
+#[cfg(not(target_arch = "xtensa"))]
 mod services;
+#[cfg(not(target_arch = "xtensa"))]
 mod settings_bridge;
+#[cfg(not(target_arch = "xtensa"))]
 mod terminal;
+#[cfg(not(target_arch = "xtensa"))]
 pub mod viewer;
+#[cfg(not(target_arch = "xtensa"))]
 mod window_api;
 
+#[cfg(not(target_arch = "xtensa"))]
 pub use callbacks::{
     DeviceEntry, InstallerDevice, InstallerProgress, PowerAction, ProcessEntry, ProcessStateKind,
     SolventCallbacks, VfsEntry, VfsHandle, exec_shell_command, get_mounted_drives, launch_shell,
     notify_process_terminal_closed,
 };
+#[cfg(not(target_arch = "xtensa"))]
 pub use editor_bridge::editor_handle_key;
+#[cfg(not(target_arch = "xtensa"))]
 pub use event_loop::{
     GLOBAL_TICK, chrono_tick, clear_tick_progress_fn, consume_frame_due, cursor_update_due,
     flush_frame_no_fb, process_events, pump_hid_cursor, push_key_event, runtime_tick,
     runtime_tick_no_fb, set_cursor_render_fn, set_render_fn, set_tick_progress_fn, tick_core,
 };
+#[cfg(not(target_arch = "xtensa"))]
 pub use file::RuntimeFile;
+#[cfg(not(target_arch = "xtensa"))]
 pub use input_loop::{
     MOUSE_STATE, MouseState, clear_video_stop_request, pointer_latency_metrics, poll_keyboard,
     poll_mouse_state, take_video_stop_request,
 };
+pub use lattice::theme::{
+    ThemeStyle, ThemeVariant, current_style, current_theme_variant, set_style, set_theme,
+    toggle_style, toggle_theme,
+};
+pub use lattice::wallpaper::{
+    WallpaperMode, WallpaperPreset, find_preset, get_wallpaper, set_wallpaper, wallpaper_presets,
+};
+#[cfg(not(target_arch = "xtensa"))]
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
+#[cfg(not(target_arch = "xtensa"))]
 pub use runtime_context::{
     DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, MOUSE_SENSITIVITY, ProcessTerminal,
     RUNTIME_CONTEXT, RuntimeContext, RuntimeState, apply_settings, get_tsc_per_ms, init,
     is_initialized, request_klog_live_refresh, set_tsc_per_ms, settings_snapshot,
 };
-#[cfg(not(nitrogen_no_iwlwifi))]
+#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_iwlwifi)))]
 pub use services::register_wifi_service;
+#[cfg(not(target_arch = "xtensa"))]
 pub use services::{
     NETWORK_SNAPSHOT, NetworkSnapshot, Service, WIFI_ACTION_QUEUE, WifiAction, register_service,
 };
+#[cfg(not(target_arch = "xtensa"))]
 pub use settings_bridge::settings_handle_key;
+#[cfg(not(target_arch = "xtensa"))]
 pub use terminal::{
     LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, close_process_terminal, create_process_terminal,
     process_terminal_exists, process_terminal_has_input, push_process_terminal_input,
     read_process_terminal, render_process_terminals, render_terminal, write_process_terminal,
     write_process_terminal_bytes,
 };
+#[cfg(not(target_arch = "xtensa"))]
 pub use viewer::show_text_window;
+#[cfg(not(target_arch = "xtensa"))]
 pub use window_api::{
     capture_screen, capture_screen_chunk, capture_screen_scaled, close_window, create_window,
     ensure_editor_window, ensure_terminal_window, force_desktop_redraw, framebuffer_dims,
@@ -118,28 +157,28 @@ pub use window_api::{
     scaled_framebuffer_dims, suspend_rendering, with_window_surface, write_terminal,
 };
 
-pub use lattice::theme::{
-    ThemeStyle, ThemeVariant, current_style, current_theme_variant, set_style, set_theme,
-    toggle_style, toggle_theme,
-};
-pub use lattice::wallpaper::{
-    WallpaperMode, WallpaperPreset, find_preset, get_wallpaper, set_wallpaper, wallpaper_presets,
-};
-
+#[cfg(not(target_arch = "xtensa"))]
 pub(crate) use input_loop::{scancode_to_ascii, scancode_to_resonance_keycode};
+#[cfg(not(target_arch = "xtensa"))]
 pub(crate) use runtime_context::{
     BACK_BUFFER, CURSOR_TIMER_ID, DEFAULT_COLS, DEFAULT_ROWS, FB_DIMS, FRAME_INTERVAL_MS,
     FRAME_TIMER_ID, GLYPH_H, GLYPH_W, PREV_MOUSE_BUTTONS, TERM_WIN_H, TERM_WIN_W, TSC_PER_MS,
 };
+#[cfg(not(target_arch = "xtensa"))]
 pub(crate) use services::SERVICES;
+#[cfg(not(target_arch = "xtensa"))]
 pub(crate) use window_api::{RENDERING_SUSPENDED, render_explorer};
 
+#[cfg(not(target_arch = "xtensa"))]
+#[cfg(not(target_arch = "xtensa"))]
 use alloc::string::String;
 
+#[cfg(not(target_arch = "xtensa"))]
 pub(crate) fn truncate_to_chars(text: &str, length: usize) -> String {
     text.chars().take(length).collect()
 }
 
+#[cfg(not(target_arch = "xtensa"))]
 pub fn run_shell_on(
     terminal: &mut dyn carrier::terminal::Terminal,
     prompt: &str,
@@ -148,6 +187,7 @@ pub fn run_shell_on(
     run_shell_on_with_command(terminal, prompt, services, None);
 }
 
+#[cfg(not(target_arch = "xtensa"))]
 pub fn run_shell_on_with_command(
     terminal: &mut dyn carrier::terminal::Terminal,
     prompt: &str,

@@ -37,6 +37,12 @@ workspaces and copied into the kernel build output. Viewer MP4 access is
 seek-based and Emulsion screen capture is chunked, so neither path requires a
 full media or framebuffer-sized temporary buffer in the host runtime.
 
+The ESP32/Xtensa profile follows the same subsystem boundaries at a smaller
+scale. Xtensa/ESP32 code is layered under each owning crate's
+`src/arch/xtensa/esp32/` tree rather than duplicated in a separate OS directory.
+Flasks owns the ESP32 build/image/flash/monitor workflow, and the runtime has
+no Fullerene linker script.
+
 The workspace currently contains 21 Cargo members. The latest host validation
 passes `cargo check --workspace --all-targets`; the optional BusyBox build
 status is intentionally silent when its cache/toolchain is unavailable, so an

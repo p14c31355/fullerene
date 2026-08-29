@@ -13,6 +13,13 @@ name = "fullerene-kernel"
 path = "src/main.rs"
 
 [[bin]]
+name = "fullerene-kernel-esp32"
+path = "src/arch/xtensa/esp32/main.rs"
+required-features = ["esp32"]
+test = false
+bench = false
+
+[[bin]]
 name = "fullerene-kernel-aarch64"
 path = "src/arch/aarch64/main.rs"
 required-features = ["aarch64"]
@@ -70,7 +77,7 @@ test = false
 bench = false
 required-features = ["native-payload"]
 
-[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+[target.'cfg(all(not(target_arch = "aarch64"), not(target_arch = "xtensa")))'.dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",
   "abi_x86_interrupt",
@@ -113,12 +120,30 @@ wasi_runtime = { path = "../solvent/wasi" }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 fullerene-abi = { path = "abi" }
 
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+fullerene-abi = { path = "abi" }
+spin = { workspace = true, features = ["once", "mutex", "spin_mutex"] }
+nitrogen = { path = "../nitrogen" }
+genome = { path = "../genome" }
+lattice = { path = "../lattice" }
+solvent = { path = "../solvent" }
+resonance = { path = "../resonance" }
+nozzle = { path = "../nozzle" }
+
 [build-dependencies]
 busybox-build = { path = "../toluene/busybox-build" }
 
 [features]
 default = []
 aarch64 = []
+esp32 = [
+  "nitrogen/esp32",
+  "genome/esp32",
+  "lattice/esp32",
+  "solvent/esp32",
+  "resonance/esp32",
+  "nozzle/esp32",
+]
 user_space = []
 native-payload = []
 

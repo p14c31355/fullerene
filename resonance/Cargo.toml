@@ -7,8 +7,14 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[features]
+esp32 = []
+
+[target.'cfg(not(target_arch = "xtensa"))'.dependencies]
 spin = { workspace = true, features = ["spin_mutex"] }
 x86_64 = { workspace = true, features = [
   "instructions",
 ] }
+
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+spin = { workspace = true, features = ["spin_mutex"] }

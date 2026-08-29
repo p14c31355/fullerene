@@ -7,7 +7,10 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[features]
+esp32 = []
+
+[target.'cfg(not(target_arch = "xtensa"))'.dependencies]
 ab_glyph = { version = "0.2.32", default-features = false, features = ["libm"] }
 embedded-graphics = { workspace = true }
 spin = { workspace = true, features = ["spin_mutex", "once"] }
@@ -17,3 +20,7 @@ usvg = "0.47"
 tiny-skia = "0.12"
 resvg = "0.47"
 ttf-noto-sans = "0.1"
+
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+embedded-graphics = { workspace = true }
+spin = { workspace = true, features = ["spin_mutex", "once"] }

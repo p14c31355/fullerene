@@ -1,7 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["bellows", "bonder", "carrier", "chronoline", "flasks", "flasks/tools", "fullerene-kernel", "fullerene-kernel/abi", "fullerene-kernel/vdso", "genome", "lattice", "ligand", "nitrogen", "nozzle", "petroleum", "resonance", "sealant", "solvent", "solvent/wasi", "toluene", "toluene/busybox-build"]
-default-members = ["bonder", "chronoline", "flasks", "fullerene-kernel", "fullerene-kernel/abi", "lattice", "ligand", "nitrogen", "nozzle", "petroleum", "resonance", "sealant", "solvent", "toluene", "toluene/busybox-build"]
+members = [
+  "bellows", "bonder", "carrier", "chronoline", "flasks", "flasks/tools", "fullerene-kernel", "fullerene-kernel/abi", "fullerene-kernel/vdso", "genome", "lattice", "ligand", "nitrogen", "nozzle", "petroleum", "resonance", "sealant", "solvent", "solvent/wasi", "toluene", "toluene/busybox-build"]
+default-members = [
+  "bonder", "chronoline", "flasks", "fullerene-kernel", "fullerene-kernel/abi", "lattice", "ligand", "nitrogen", "nozzle", "petroleum", "resonance", "sealant", "solvent", "toluene", "toluene/busybox-build"]
 
 [profile.dev]
 panic = "abort"

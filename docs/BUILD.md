@@ -124,6 +124,46 @@ LZ4-frame `Image.lz4` compatible with the Android kernel loader:
 cargo run -q -p flasks -- build --arch aarch64 --platform bramble
 ```
 
+### ESP32/Xtensa bring-up artifacts
+
+The ESP32 path uses the Rust ESP toolchain and Flasks for build, image, flash,
+and monitor orchestration. Install `espup`, run `espup install`, then build:
+
+```bash
+cargo run -q -p flasks -- build --arch xtensa --platform esp32-xh32s
+```
+
+Flash (default device discovery) or explicitly select a serial device:
+
+```bash
+cargo run -q -p flasks -- flash --arch xtensa --platform esp32-xh32s
+cargo run -q -p flasks -- flash --arch xtensa --platform esp32-xh32s   --serial /dev/ttyUSB0
+```
+
+`run` flashes and then attaches the serial monitor. `monitor` attaches without
+flashing and requires `--serial`:
+
+```bash
+cargo run -q -p flasks -- run --arch xtensa --platform esp32-xh32s   --serial /dev/ttyUSB0
+cargo run -q -p flasks -- monitor --arch xtensa --platform esp32-xh32s   --serial /dev/ttyUSB0
+```
+
+Flasks invokes Cargo with `xtensa-esp32-none-elf`, builds
+`fullerene-kernel-esp32`, and converts the ELF into a native ESP32 flash image.
+The image includes only file-backed `PT_LOAD` data; startup clears BSS using the
+`__bss_start`/`__bss_end` symbols supplied by linker placement options. There is
+no Fullerene linker script. The Xtensa target also compiles without the windowed
+register ABI so the first scheduler has an explicit call0 context-switch
+protocol. Optional independent audit:
+
+```bash
+esptool image-info target/xtensa-esp32-none-elf/release/fullerene-kernel-esp32.bin
+```
+
+The ESP32 build succeeds when ELF and image generation succeed. It does not
+imply LCD, touch, SDMMC, scheduler, timer interrupt, or desktop hardware
+bring-up is complete.
+
 An Android v3 boot template can be patched with the generated `Image.lz4`:
 
 ```bash

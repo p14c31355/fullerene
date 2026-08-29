@@ -13,13 +13,24 @@ path = "src/main.rs"
 test = false
 bench = false
 
-[features]
-debug_loader = []
+[[bin]]
+name = "bellows-esp32"
+path = "src/arch/xtensa/main.rs"
+required-features = ["esp32"]
+test = false
+bench = false
 
-[dependencies]
+[target.'cfg(not(target_arch = "xtensa"))'.dependencies]
 linked_list_allocator = "0.10.6"
 spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 petroleum = { path = "../petroleum" }
 fullerene-abi = { path = "../fullerene-kernel/abi" }
 x86_64 = { workspace = true, features = ["instructions"] }
 log = { workspace = true }
+
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+fullerene-kernel = { path = "../fullerene-kernel", features = ["esp32"] }
+
+[features]
+debug_loader = []
+esp32 = []

@@ -365,6 +365,13 @@ fn main() {
         return;
     }
 
+    // The ESP32 embedded profile intentionally builds no generated desktop
+    // userland, BusyBox ports, musl smokes, or WASI examples. Fullerene's
+    // Xtensa kernel owns its bounded native application set.
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("xtensa") {
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 

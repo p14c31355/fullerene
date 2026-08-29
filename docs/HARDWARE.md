@@ -1,5 +1,36 @@
 # Real Hardware Compatibility
 
+## ESP32-2432S028 / Sparkle IoT XH-32S (bring-up)
+
+This ESP32-class board is a new Xtensa platform profile, not an ESP-IDF
+application. The Xtensa port is split into each Fullerene crate's
+`src/arch/xtensa/esp32/` tree; there is no separate `fullerene-esp32` crate.
+Flasks is the build/flash/monitor task runner.
+
+The current port initializes UART, disables both watchdog mechanisms during
+early boot, and reaches a stable cooperative scheduler. The ESP32 ELF and image
+generation path builds, and `esptool image-info` accepts the image. This is not
+evidence of a working desktop. The following remain bring-up items and may fail
+explicitly rather than pretending success:
+
+- timer preemption and exception-frame context switching
+- physical confirmation of SPI LCD protocol/backlight behaviour
+- I2C resistive-touch controller and calibration
+- SDMMC host and FAT mounting
+- persistent settings and interactive shell integration
+
+Board pin defaults currently used by the profile are unverified against traces:
+
+| Device | Pins |
+| --- | --- |
+| LCD SPI | SCLK 14, MOSI 13, DC 2, CS 15, RST 12, backlight 21 |
+| Touch SPI | CLK 25, MOSI 32, MISO 39, CS 33, PENIRQ 36 (external pull-up required) |
+| SDMMC | CLK 18, CMD 23, DATA0 19 |
+
+Do not treat these values as hardware confirmation. Probe traces, chip IDs, and
+runtime responses before relying on them; update this table only with verified
+evidence.
+
 ## InsydeH2O Firmware (June 2026)
 
 Running on real hardware with InsydeH2O UEFI firmware required three fixes:

@@ -7,7 +7,10 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[features]
+esp32 = []
+
+[target.'cfg(not(target_arch = "xtensa"))'.dependencies]
 carrier = { path = "../carrier" }
 spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 
@@ -15,3 +18,7 @@ spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 name = "nozzle"
 path = "src/lib.rs"
 crate-type = ["lib"]
+
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+carrier = { path = "../carrier" }
+spin = { workspace = true, features = ["mutex", "spin_mutex"] }

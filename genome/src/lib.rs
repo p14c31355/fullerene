@@ -1,6 +1,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod arch;
 pub mod block;
 pub mod fat;
 pub mod fs;
