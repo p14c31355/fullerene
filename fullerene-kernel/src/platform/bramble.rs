@@ -1,4 +1,12 @@
 /// Qualcomm SM7250 / Pixel 4a 5G (bramble) early-boot addresses.
+pub mod usb_clock;
+pub mod usb_reset;
+
+pub use usb_clock::{
+    configure_usb_clocks, disable_usb_clock_branches, enable_usb_clock_branches,
+    enable_usb2_utmi_clock,
+};
+pub use usb_reset::{pulse_usb2_phy_reset, reset_usb_blocks};
 ///
 /// The DTB remains authoritative at boot. These constants document the
 /// addresses used by the SM7250 device tree for the first bring-up.
@@ -16,6 +24,11 @@ pub const USB_PDC_DP_HS_PHY_IRQ: u32 = 14;
 pub const USB_PDC_SS_PHY_IRQ: u32 = 9;
 pub const USB_PDC_DM_HS_PHY_IRQ: u32 = 15;
 pub const USB_PDC_BASE: usize = 0x0b22_0000;
+/// Second `reg` resource of the Android Lito PDC node. Linux uses this
+/// firmware/SPI configuration window to mirror each PDC child's trigger type
+/// onto its GIC parent.
+pub const USB_PDC_SPI_CFG_BASE: usize = 0x17c0_00f0;
+pub const USB_PDC_SPI_CFG_SIZE: usize = 0x60;
 pub const USB_PDC_DP_HS_PARENT_IRQ: u32 = 494;
 pub const USB_PDC_SS_PARENT_IRQ: u32 = 489;
 pub const USB_PDC_DM_HS_PARENT_IRQ: u32 = 495;
@@ -644,93 +657,11 @@ pub const fn usb_runtime_transition(
     }
 }
 
-/// Switch the GCC branch resources required by the Qualcomm glue. This is
-/// intentionally platform-owned: DWC3 should not need to know GCC offsets or
-/// which of the six controller clocks are present in the DT.
-pub unsafe fn enable_usb_clock_branches() -> bool {
-    let resources = usb_resources();
-    let mut ok = true;
-    for clock in resources.controller_clocks {
-        if clock.provider != ClockProvider::Gcc {
-            continue;
-        }
-        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
-        let value = unsafe { core::ptr::read_volatile(address) } | 1;
-        unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
-    }
-    for clock in resources.qmp_clocks {
-        if clock.provider != ClockProvider::Gcc {
-            continue;
-        }
-        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
-        let value = unsafe { core::ptr::read_volatile(address) } | 1;
-        unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
-    }
-    if ok {
-        set_usb_resource_state(|state| state.clock_branches_enabled = true);
-    }
-    ok
-}
-
-/// Gate the USB-specific GCC branches after the controller has stopped and
-/// the interconnect vote has been dropped.  XO is shared with the rest of the
-/// SoC and is intentionally left enabled; Linux's clock framework applies the
-/// same ownership distinction to the USB clock handles.
-pub unsafe fn disable_usb_clock_branches() -> bool {
-    let resources = usb_resources();
-    let mut ok = true;
-    for clock in resources.controller_clocks {
-        if clock.provider != ClockProvider::Gcc || clock.name == "xo" {
-            continue;
-        }
-        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
-        let value = unsafe { core::ptr::read_volatile(address) } & !1;
-        unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
-    }
-    for clock in resources.qmp_clocks {
-        if clock.provider != ClockProvider::Gcc {
-            continue;
-        }
-        let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
-        let value = unsafe { core::ptr::read_volatile(address) } & !1;
-        unsafe { core::ptr::write_volatile(address, value) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
-    }
-    if ok {
-        set_usb_resource_state(|state| state.clock_branches_enabled = false);
-    }
-    ok
-}
-
-/// Assert and release every reset exposed by the Lito USB node. The caller
-/// controls the surrounding power-domain/clock ordering; this function only
-/// performs the DT-described reset resources and reports readback failures.
-pub unsafe fn reset_usb_blocks(super_speed: bool) -> bool {
-    let resources = usb_resources();
-    let mut ok = true;
-    for (index, reset) in resources.resets.iter().enumerate() {
-        if !super_speed && index >= 2 {
-            continue;
-        }
-        let address = (resources.gcc_base + reset.offset) as *mut u32;
-        let asserted = unsafe { core::ptr::read_volatile(address) } | 1;
-        unsafe { core::ptr::write_volatile(address, asserted) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 != 0 };
-        for _ in 0..250_000 {
-            unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
-        }
-        unsafe { core::ptr::write_volatile(address, asserted & !1) };
-        ok &= unsafe { core::ptr::read_volatile(address) & 1 == 0 };
-    }
-    if ok {
-        let mask = if super_speed { 0x0f } else { 0x03 };
-        set_usb_resource_state(|state| state.reset_released_mask |= mask);
-    }
-    ok
-}
+/// Number of Apps-SMMU context-bank interrupt specifiers in the Bramble/Lito
+/// DT.  The global fault SPI is stored separately; the DT lists 80 context
+/// SPIs after it (97..118, 181..192, 183.. etc. in the provider's hardware
+/// ordering).
+pub const SMMU_CONTEXT_IRQ_COUNT: usize = 80;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UsbPlatformResources {
@@ -748,7 +679,16 @@ pub struct UsbPlatformResources {
     /// 39-bit AArch64 IOVA aperture used when a fresh context is installed;
     /// it does not require every mapping to terminate at an L3 page entry.
     pub smmu_use_3_level_tables: bool,
+    /// Apps-SMMU interrupt 0 is the global fault line; the remaining DT
+    /// entries are context-bank fault lines.  Keep the context array bounded
+    /// to the Lito DT contract so the early image can own the same IRQ route
+    /// without allocating an irq-domain.
+    pub smmu_global_irq: u32,
+    pub smmu_context_irqs: [u32; SMMU_CONTEXT_IRQ_COUNT],
+    pub smmu_context_irq_count: usize,
     pub pdc_base: usize,
+    pub pdc_spi_cfg_base: usize,
+    pub pdc_spi_cfg_size: usize,
     pub gdsc: usize,
     pub controller_clocks: &'static [ClockResource; 6],
     pub hs_phy_clock: ClockResource,
@@ -779,6 +719,8 @@ pub struct UsbDtContract {
     pub dma_pool: Option<(u64, u64)>,
     pub stream_id: Option<u32>,
     pub smmu_use_3_level_tables: Option<bool>,
+    pub smmu_global_irq: Option<u32>,
+    pub smmu_context_irqs: [Option<u32>; SMMU_CONTEXT_IRQ_COUNT],
     pub qmp_reg_offsets: [Option<u32>; 18],
     pub core_clk_rate_hz: Option<u32>,
     pub core_clk_rate_hs_hz: Option<u32>,
@@ -834,6 +776,8 @@ impl UsbDtContract {
             dma_pool: None,
             stream_id: None,
             smmu_use_3_level_tables: None,
+            smmu_global_irq: None,
+            smmu_context_irqs: [None; SMMU_CONTEXT_IRQ_COUNT],
             qmp_reg_offsets: [None; 18],
             core_clk_rate_hz: None,
             core_clk_rate_hs_hz: None,
@@ -1124,6 +1068,17 @@ const BRAMBLE_USB_POWER: UsbPowerResources = UsbPowerResources {
     qmp_vbus_valid_override: true,
 };
 
+/// Apps-SMMU DT interrupt order after the single global fault SPI.  The
+/// context-bank list is sparse in SPI number space but dense in the SMMU
+/// provider's `IRPTNDX` order.
+const BRAMBLE_SMMU_CONTEXT_IRQS: [u32; SMMU_CONTEXT_IRQ_COUNT] = [
+    97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115,
+    116, 117, 118, 181, 182, 183, 184, 179, 186, 187, 188, 189, 190, 191, 192, 315, 316, 317, 318,
+    319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337,
+    338, 339, 340, 341, 342, 343, 344, 345, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405,
+    406, 407, 408, 409,
+];
+
 const BRAMBLE_USB_IRQS: [IrqResource; 5] = [
     IrqResource {
         name: "dp_hs_phy_irq",
@@ -1298,7 +1253,12 @@ pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
     // 0x0c600000 belongs to the SPMI arbiter channel window.
     apps_smmu_base: 0x1500_0000,
     smmu_use_3_level_tables: true,
+    smmu_global_irq: 65,
+    smmu_context_irqs: BRAMBLE_SMMU_CONTEXT_IRQS,
+    smmu_context_irq_count: SMMU_CONTEXT_IRQ_COUNT,
     pdc_base: USB_PDC_BASE,
+    pdc_spi_cfg_base: USB_PDC_SPI_CFG_BASE,
+    pdc_spi_cfg_size: USB_PDC_SPI_CFG_SIZE,
     gdsc: USB30_PRIM_GDSC,
     controller_clocks: &BRAMBLE_CONTROLLER_CLOCKS,
     hs_phy_clock: BRAMBLE_HS_PHY_CLOCK,
@@ -1480,6 +1440,30 @@ pub fn install_usb_resource_contract(
         }
         if let Some(use_3_level_tables) = contract.smmu_use_3_level_tables {
             resources.smmu_use_3_level_tables = use_3_level_tables;
+            installed = true;
+        }
+        if let Some(irq) = contract.smmu_global_irq {
+            if (32..1020).contains(&irq) {
+                resources.smmu_global_irq = irq;
+                installed = true;
+            }
+        }
+        let mut smmu_context_irqs = [0u32; SMMU_CONTEXT_IRQ_COUNT];
+        let mut smmu_context_irqs_valid = true;
+        for (slot, irq) in contract.smmu_context_irqs.iter().enumerate() {
+            let Some(irq) = irq else {
+                smmu_context_irqs_valid = false;
+                break;
+            };
+            if !(32..1020).contains(irq) {
+                smmu_context_irqs_valid = false;
+                break;
+            }
+            smmu_context_irqs[slot] = *irq;
+        }
+        if smmu_context_irqs_valid {
+            resources.smmu_context_irqs = smmu_context_irqs;
+            resources.smmu_context_irq_count = SMMU_CONTEXT_IRQ_COUNT;
             installed = true;
         }
         if contract.qmp_reg_offsets.iter().all(Option::is_some) {
@@ -1744,25 +1728,14 @@ struct PdcRegisterLayout {
 }
 
 fn pdc_register_layout(version: u32) -> PdcRegisterLayout {
-    if version >= PDC_VERSION_3_2 {
-        // PDC v3.2 removed IRQ_ENABLE_BANK. Direct-PDC lines are enabled in
-        // IRQ_CFG itself, while GPIO status/mask moved to bits 5/4.
-        PdcRegisterLayout {
-            enable_bank: None,
-            irq_enable_bit: Some(3),
-        }
-    } else if version >= 0x0300_00 {
-        // v3.0 keeps the enable bank and adds GPIO status/mask at 4/3.
-        PdcRegisterLayout {
-            enable_bank: Some(PDC_IRQ_ENABLE_BANK),
-            irq_enable_bit: None,
-        }
-    } else {
-        // v2.7 has only the enable bank and the three type bits.
-        PdcRegisterLayout {
-            enable_bank: Some(PDC_IRQ_ENABLE_BANK),
-            irq_enable_bit: None,
-        }
+    let _ = version;
+    // Match qcom-pdc.c used by the Android/Linux Lito platform: every
+    // supported revision enables a pin through IRQ_ENABLE_BANK at 0x10.
+    // IRQ_CFG contains trigger/polarity fields, but is not the enable
+    // mechanism for the direct USB PDC outputs.
+    PdcRegisterLayout {
+        enable_bank: Some(PDC_IRQ_ENABLE_BANK),
+        irq_enable_bit: None,
     }
 }
 
@@ -1815,10 +1788,22 @@ pub fn pdc_parent_irq(pin: u32) -> Option<u32> {
 pub fn is_usb_irq(interrupt_id: u32) -> bool {
     let resources = usb_resources();
     interrupt_id == resources.spmi_parent_irq
+        || interrupt_id == resources.smmu_global_irq
+        || resources.smmu_context_irqs[..resources.smmu_context_irq_count]
+            .iter()
+            .any(|irq| *irq == interrupt_id)
         || resources.irqs.iter().any(|irq| {
             irq.number == interrupt_id
                 || (irq.kind == UsbIrqKind::Pdc && pdc_parent_irq(irq.number) == Some(interrupt_id))
         })
+}
+
+pub fn is_usb_smmu_irq(interrupt_id: u32) -> bool {
+    let resources = usb_resources();
+    interrupt_id == resources.smmu_global_irq
+        || resources.smmu_context_irqs[..resources.smmu_context_irq_count]
+            .iter()
+            .any(|irq| *irq == interrupt_id)
 }
 
 pub fn usb_controller_irq() -> u32 {
@@ -2243,11 +2228,49 @@ pub unsafe fn set_typec_vbus(state: &TypecState, enabled: bool) -> bool {
     }
 }
 
-/// Read PM8150B Type-C state and select sink-only mode for a host-connected
-/// phone. This is the synchronous entry point for the role-switch state
-/// machine; the PMIC interrupt controller is installed separately once the
-/// GIC is live, and refresh_usb_device_role() advances the same state on each
-/// child interrupt or bounded poll.
+/// Observe PM8150B Type-C state without changing the controller. This is the
+/// safe entry point for a `fastboot boot` handoff: Fastboot already owns the
+/// live cable/PHY session, so Fullerene must not repeat the cold-boot role
+/// writes while the old gadget is being torn down.
+pub unsafe fn observe_usb_device_role() -> Option<TypecState> {
+    let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
+    if version == 0 || version == u32::MAX {
+        return None;
+    }
+    let (apid, writable) = find_typec_apid(version)?;
+    let mut misc_status = 0u8;
+    if !unsafe { spmi_transfer(version, apid, TYPEC_MISC_STATUS, &mut misc_status, false) } {
+        return None;
+    }
+    let mut mode = 0u8;
+    if !unsafe { spmi_transfer(version, apid, TYPEC_MODE_CFG, &mut mode, false) } {
+        return None;
+    }
+    let role = typec_role(misc_status);
+    let attached = role == UsbRole::Device;
+    let phase = match role {
+        UsbRole::Device => TypecPhase::Attached,
+        UsbRole::Host => TypecPhase::Host,
+        UsbRole::None => TypecPhase::Detached,
+    };
+    Some(TypecState {
+        arbiter_version: version,
+        apid,
+        writable,
+        misc_status,
+        mode,
+        orientation_reverse: misc_status & TYPEC_CC_ORIENTATION != 0,
+        role,
+        sink_mode_written: false,
+        attached,
+        attach_settled: attached,
+        phase,
+    })
+}
+
+/// Read PM8150B Type-C state and select sink-only mode for a cold host
+/// connection. The synchronous entry point is retained for a future cold
+/// boot path; the Fastboot handoff uses observe_usb_device_role() above.
 pub unsafe fn prepare_usb_device_role() -> Option<TypecState> {
     let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
     if version == 0 || version == u32::MAX {
@@ -2398,7 +2421,7 @@ unsafe fn configure_pdc_irq(irq: IrqResource) -> bool {
     unsafe { core::ptr::write_volatile(config_address, value) };
     let _ = unsafe { core::ptr::read_volatile(config_address) };
 
-    if let Some(enable_bank) = layout.enable_bank {
+    let pdc_enabled = if let Some(enable_bank) = layout.enable_bank {
         let bank_address = (base + enable_bank + (irq.number as usize / 32) * 4) as *mut u32;
         let mut bank = unsafe { core::ptr::read_volatile(bank_address) };
         bank |= 1 << (irq.number % 32);
@@ -2406,7 +2429,34 @@ unsafe fn configure_pdc_irq(irq: IrqResource) -> bool {
         unsafe { core::ptr::read_volatile(bank_address) & (1 << (irq.number % 32)) != 0 }
     } else {
         unsafe { core::ptr::read_volatile(config_address) & (1 << 3) != 0 }
+    };
+
+    let Some(parent) = pdc_parent_irq(irq.number) else {
+        return false;
+    };
+    let spi = parent.checked_sub(32).unwrap_or(u32::MAX) as usize;
+    let pin = spi / 32;
+    if pin * 4 >= usb_resources().pdc_spi_cfg_size {
+        return false;
     }
+    let parent_config = (usb_resources().pdc_spi_cfg_base + pin * 4) as *mut u32;
+    let parent_mask = 1u32 << (spi % 32);
+    let mut parent_value = unsafe { core::ptr::read_volatile(parent_config) };
+    if matches!(irq.trigger, IrqTrigger::LevelHigh) {
+        parent_value |= parent_mask;
+    } else {
+        parent_value &= !parent_mask;
+    }
+    unsafe { core::ptr::write_volatile(parent_config, parent_value) };
+    pdc_enabled
+        && unsafe {
+            core::ptr::read_volatile(parent_config) & parent_mask
+                == if matches!(irq.trigger, IrqTrigger::LevelHigh) {
+                    parent_mask
+                } else {
+                    0
+                }
+        }
 }
 
 /// Program the three USB PDC pins exactly as the Qualcomm PDC irqchip does:
@@ -2473,87 +2523,6 @@ pub unsafe fn disable_usb30_gdsc() -> bool {
     false
 }
 
-const GCC_CMD_UPDATE: u32 = 1 << 0;
-const GCC_CFG_SRC_DIV_MASK: u32 = 0xff;
-const GCC_CFG_SRC_SEL_MASK: u32 = 0x7 << 8;
-
-#[inline]
-unsafe fn gcc_reg(offset: usize) -> *mut u32 {
-    (usb_resources().gcc_base + offset) as *mut u32
-}
-
-/// Program one Qualcomm RCG2 clock source and commit the change.
-///
-/// The Lito GCC driver describes the USB master clock as parent 1 divided by
-/// 8 and the mock UTMI clock as parent 6 divided by 5. Keeping this in the
-/// platform layer prevents the DWC3 driver from depending on GCC register
-/// layout.
-unsafe fn configure_rcg(cmd_offset: usize, parent: u32, divider: u32) -> bool {
-    unsafe {
-        let cfg = gcc_reg(cmd_offset + 0x4);
-        let mut value = core::ptr::read_volatile(cfg);
-        value &= !(GCC_CFG_SRC_DIV_MASK | GCC_CFG_SRC_SEL_MASK);
-        value |= divider & GCC_CFG_SRC_DIV_MASK;
-        value |= (parent << 8) & GCC_CFG_SRC_SEL_MASK;
-        core::ptr::write_volatile(cfg, value);
-        let _ = core::ptr::read_volatile(cfg);
-
-        let cmd = gcc_reg(cmd_offset);
-        let value = core::ptr::read_volatile(cmd) | GCC_CMD_UPDATE;
-        core::ptr::write_volatile(cmd, value);
-        let _ = core::ptr::read_volatile(cmd);
-
-        for _ in 0..500_000u32 {
-            if core::ptr::read_volatile(cmd) & GCC_CMD_UPDATE == 0 {
-                return true;
-            }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
-    }
-    false
-}
-
-/// Select the rates required by the Lito USB glue before its branch clocks
-/// are enabled. The values mirror `qcom,core-clk-rate = 133333333` and
-/// `qcom,core-clk-rate-hs = 66666667`'s source tables.
-pub unsafe fn configure_usb_clocks(vote: UsbBusVote) -> bool {
-    let plan = usb_clock_plan(vote);
-    if !plan.branches_enabled {
-        return true;
-    }
-    unsafe {
-        let resources = usb_resources();
-        let core = resources.controller_clocks[0];
-        let utmi = resources.controller_clocks[3];
-        // gcc_usb30_prim_master_clk_src.
-        if core.source_offset == 0
-            || !configure_rcg(core.source_offset, plan.core_parent, plan.core_divider)
-        {
-            return false;
-        }
-        // gcc_usb30_prim_mock_utmi_clk_src.
-        if utmi.source_offset == 0
-            || !configure_rcg(utmi.source_offset, plan.utmi_parent, plan.utmi_divider)
-        {
-            return false;
-        }
-        // The QMP AUX and COM_AUX branches share the 19.2 MHz
-        // gcc_usb3_prim_phy_aux_clk_src.  It is a separate RCG from the
-        // DWC3 core/UTMI sources and must be selected before the PHY reset is
-        // released on a cold platform start.
-        if let Some(aux) = resources
-            .qmp_clocks
-            .iter()
-            .find(|clock| clock.name == "aux")
-        {
-            if aux.source_offset == 0 || !configure_rcg(aux.source_offset, 0, 0) {
-                return false;
-            }
-        }
-        true
-    }
-}
-
 /// Apply one complete Android-style performance transition.  The bus vote is
 /// issued only after the clock source has been selected, matching the order
 /// in which the Qualcomm glue raises the core clock and interconnect vote.
@@ -2572,18 +2541,23 @@ pub unsafe fn apply_usb_performance(vote: UsbBusVote) -> bool {
 pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usize>) {
     let gicd = gicd_base.unwrap_or(GICD_BASE);
     let gicr = gicr_base.unwrap_or(GICR_BASE);
-    unsafe {
-        let _ = configure_usb_pdc_irqs();
-    }
     let gic_ready = super::gicv3::init(gicd, gicr, Some(usb_controller_irq()));
     unsafe {
-        let mut spis = [0u32; 6];
+        // DWC3 has five platform sources plus the Apps-SMMU global and up to
+        // 80 context-bank fault lines.  Keep the controller, power-event,
+        // and SMMU fault routes in the GIC setup pass; truncating the latter
+        // would make a DMA fault look like an unexplained EP0 timeout.
+        //
+        // The three PDC PHY lines are deliberately absent here. Android's
+        // dwc3-qcom registers them with IRQF_NO_AUTOEN and enables them only
+        // for host suspend/wakeup. Enabling those wakeup-only lines during a
+        // live device-mode fastboot handoff can consume a PHY transition as
+        // an active runtime event and is not equivalent to the Linux path.
+        let mut spis = [0u32; 128];
         let mut count = 0usize;
-        for irq in usb_resources().irqs {
-            let parent = match irq.kind {
-                UsbIrqKind::GicSpi => Some(irq.number),
-                UsbIrqKind::Pdc => pdc_parent_irq(irq.number),
-            };
+        let resources = usb_resources();
+        for irq in resources.irqs {
+            let parent = (irq.kind == UsbIrqKind::GicSpi).then_some(irq.number);
             if let Some(parent) = parent {
                 if parent != usb_controller_irq()
                     && !spis[..count].iter().any(|irq| *irq == parent)
@@ -2594,13 +2568,24 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
                 }
             }
         }
-        let spmi_parent = usb_typec_parent_irq();
-        if spmi_parent != usb_controller_irq()
-            && !spis[..count].iter().any(|irq| *irq == spmi_parent)
-        {
-            spis[count] = spmi_parent;
-            count += 1;
+        for irq in core::iter::once(resources.smmu_global_irq).chain(
+            resources.smmu_context_irqs[..resources.smmu_context_irq_count]
+                .iter()
+                .copied(),
+        ) {
+            if irq != usb_controller_irq()
+                && !spis[..count].iter().any(|candidate| *candidate == irq)
+                && count < spis.len()
+            {
+                spis[count] = irq;
+                count += 1;
+            }
         }
+        // `fastboot boot` hands over a live Type-C session. The early
+        // handoff observes the PMIC state but does not own the role-switch
+        // child IRQ, so do not route its parent summary into the new GIC
+        // owner. A role-changing cold-boot path must explicitly install the
+        // child IRQ before adding this parent route.
         super::gicv3::enable_spis(gicd, &spis[..count]);
     }
     if gic_ready {
@@ -3003,6 +2988,10 @@ mod tests {
         assert_eq!(resources.qmp_reg_offsets[15], 0x1c18);
         assert_eq!(resources.apps_smmu_base, 0x1500_0000);
         assert!(resources.smmu_use_3_level_tables);
+        assert_eq!(resources.smmu_global_irq, 65);
+        assert_eq!(resources.smmu_context_irq_count, SMMU_CONTEXT_IRQ_COUNT);
+        assert_eq!(resources.smmu_context_irqs[0], 97);
+        assert_eq!(resources.smmu_context_irqs[79], 409);
         assert_eq!(resources.pdc_base, 0x0b22_0000);
         assert_eq!(pdc_parent_irq(14), Some(494));
         assert_eq!(pdc_parent_irq(9), Some(489));
@@ -3044,6 +3033,39 @@ mod tests {
         assert_eq!(resources.power.qmp_core.max_load_ua, 30_000);
         assert_eq!(resources.power.qmp_core.rpmh_resource_id, *b"ldoa9\0\0\0");
         assert!(resources.power.qmp_vbus_valid_override);
+    }
+
+    #[test]
+    fn apps_smmu_fault_spis_are_usb_irq_sources() {
+        assert!(is_usb_irq(65));
+        assert!(is_usb_irq(97));
+        assert!(is_usb_irq(409));
+        assert!(is_usb_smmu_irq(65));
+        assert!(is_usb_smmu_irq(97));
+        assert!(!is_usb_smmu_irq(240));
+    }
+
+    #[test]
+    fn runtime_state_requires_typec_before_controller_running() {
+        assert_eq!(
+            usb_runtime_transition(UsbRuntimeState::Off, UsbRuntimeEvent::PlatformPowered),
+            UsbRuntimeState::Powered
+        );
+        assert_eq!(
+            usb_runtime_transition(UsbRuntimeState::Powered, UsbRuntimeEvent::ControllerStarted),
+            UsbRuntimeState::Powered
+        );
+        assert_eq!(
+            usb_runtime_transition(UsbRuntimeState::Powered, UsbRuntimeEvent::TypecAttached),
+            UsbRuntimeState::Attached
+        );
+        assert_eq!(
+            usb_runtime_transition(
+                UsbRuntimeState::Attached,
+                UsbRuntimeEvent::ControllerStarted
+            ),
+            UsbRuntimeState::Running
+        );
     }
 
     #[test]
@@ -3185,8 +3207,8 @@ mod tests {
         assert_eq!(v30.irq_enable_bit, None);
 
         let v32 = pdc_register_layout(PDC_VERSION_3_2);
-        assert_eq!(v32.enable_bank, None);
-        assert_eq!(v32.irq_enable_bit, Some(3));
+        assert_eq!(v32.enable_bank, Some(PDC_IRQ_ENABLE_BANK));
+        assert_eq!(v32.irq_enable_bit, None);
     }
 
     #[test]

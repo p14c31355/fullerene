@@ -301,6 +301,22 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
                     fdt::find_phandle_property_u32(address, phandle, b"qcom,use-3-lvl-tables", 0)
                 })
                 .map(|_| true);
+            // Apps-SMMU lists one global fault SPI followed by the context
+            // bank fault SPIs.  Preserve that provider ordering: the SMMU's
+            // CBAR.IRPTNDX selects the dense context index, while the GIC
+            // numbers themselves are intentionally sparse.
+            if let Some(phandle) = usb_smmu_phandle {
+                contract.smmu_global_irq =
+                    fdt::find_phandle_property_u32(address, phandle, b"interrupts", 0);
+                for index in 0..platform::bramble::SMMU_CONTEXT_IRQ_COUNT {
+                    contract.smmu_context_irqs[index] = fdt::find_phandle_property_u32(
+                        address,
+                        phandle,
+                        b"interrupts",
+                        3 * (index + 1) + 1,
+                    );
+                }
+            }
             // Lito's `interrupts-extended` tuples are
             // (PDC phandle, pin, trigger), (GIC phandle, type, SPI,
             // trigger), then two more PDC tuples.  The child DWC3 node has
@@ -666,15 +682,13 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     #[cfg(fullerene_aarch64_bramble)]
     usb::note_platform_powered();
     #[cfg(fullerene_aarch64_bramble)]
-    if let Some(typec) = unsafe { platform::bramble::prepare_usb_device_role() } {
+    if let Some(typec) = unsafe { platform::bramble::observe_usb_device_role() } {
         usb::install_typec_state(typec);
         usb::set_typec_orientation(typec.orientation_reverse);
         usb::note_typec_attached(typec.attached);
-        if unsafe { platform::bramble::configure_typec_irq(&typec) } {
-            uart::puts("platform: Type-C SPMI IRQ unmasked\n");
-        } else {
-            uart::puts("platform: Type-C SPMI IRQ unavailable; polling retained\n");
-        }
+        // The PMIC child IRQ remains owned by the Fastboot handoff. Reusing
+        // its live parent/child session here would retrigger role teardown.
+        uart::puts("platform: Type-C state observed; handoff writes skipped\n");
         usb::trace_marker(
             usb::TRACE_TYPEC_DONE,
             (typec.sink_mode_written as u32)

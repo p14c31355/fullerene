@@ -7,6 +7,48 @@ use std::process::Command;
 use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_glibc_x86_64_elf};
 
 fn main() {
+    // This cfg is also referenced by the host-built USB protocol tests, so
+    // declare it before the AArch64-only build branch below.
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_direct)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_no_smmu)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)");
+    println!(
+        "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)"
+    );
+    println!(
+        "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_android_resource_order)"
+    );
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_start_after_connect)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_start_after_reset)");
+    println!(
+        "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_start_at_connect_done)"
+    );
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_preserve_core)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_signal_probe)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_dma_adopt)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_smmu_gate)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_smmu_install)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_smmu_disable)");
+    for stage in 1..=12 {
+        println!(
+            "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_stop_after_{stage})"
+        );
+    }
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_power)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_typec)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_typec_role)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_pdc)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_smmu)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_bramble)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_entry_halt_probe)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_pullup_probe)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_halt_probe)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_cold_halt_probe)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_qemu_usb_sim)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hyper_bare)");
     // The AArch64 bootstrap binary is intentionally dependency-free. Avoid
     // the x86_64 kernel's generated userland/assets while building it; those
     // steps require host tools and x86-only target support.
@@ -15,14 +57,6 @@ fn main() {
         let platform = env::var("FULLERENE_AARCH64_PLATFORM").unwrap_or_default();
         let linker_script = out_dir.join("aarch64-linker.ld");
         fs::write(&linker_script, aarch64_linker_script(&platform)).unwrap();
-        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_bramble)");
-        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_entry_halt_probe)");
-        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_pullup_probe)");
-        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_halt_probe)");
-        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_cold_halt_probe)");
-        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
-        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
-        println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_qemu_usb_sim)");
         if platform == "bramble" {
             println!("cargo:rustc-cfg=fullerene_aarch64_bramble");
         }
@@ -44,6 +78,200 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_probe");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_SUPER_SPEED").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_probe");
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_super_speed");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_DIRECT").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_direct");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_no_smmu");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_REUSE_FASTBOOT_DMA").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_TRANSFER_RESOURCE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_no_transfer_resource");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_RESOURCE_ORDER").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_android_resource_order");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_start_after_connect");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_RESET").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_start_after_reset");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AT_CONNECT_DONE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_start_at_connect_done");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PRESERVE_CORE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_preserve_core");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_EP0_SIGNAL_PROBE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_signal_probe");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_EP0_DMA_ADOPT").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_dma_adopt");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_SMMU_DISABLE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_smmu_disable");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_EP0_SMMU_INSTALL").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_smmu_install");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_CMD_GATE") {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_CMD_GATE={value}");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_PROBE_SINGLE_ATTEMPT").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_PROBE_SINGLE_ATTEMPT=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_U0_ARM_PROBE").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_U0_ARM_PROBE=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_WDT_BITE_CONTROL").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_WDT_BITE_CONTROL=1");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_EP0_SMMU_GATE") {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_smmu_gate");
+            println!("cargo:rustc-env=FULLERENE_USB_SMMU_GATE_TYPE={value}");
+        }
+        if let Some(stage) = env::var("FULLERENE_AARCH64_USB_GADGET_HANDOFF_STOP_STAGE")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+        {
+            if (1..=12).contains(&stage) {
+                println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_stop_after_{stage}");
+            }
+        }
+        match env::var("FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES").as_deref() {
+            Ok("power") => println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_power"),
+            Ok("typec") => println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_typec"),
+            Ok("typec-role") => {
+                println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_typec_role")
+            }
+            Ok("pdc") => println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_pdc"),
+            Ok("smmu") => println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_irq_smmu"),
+            Ok("") | Err(_) => {}
+            Ok(other) => panic!(
+                "FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES must be one of power,typec,typec-role,pdc,smmu (got {other:?})"
+            ),
+        }
+        let probe_timeout = env::var("FULLERENE_AARCH64_USB_PROBE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(120);
+        println!("cargo:rustc-env=FULLERENE_USB_PROBE_TIMEOUT_SECS={probe_timeout}");
+        if env::var_os("FULLERENE_AARCH64_USB_EP0_SIGNAL_SMMU_STATE").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_SMMU_STATE=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_EP0_SIGNAL_LINK_STATE").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_LINK_STATE=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_EP0_SIGNAL_RAW_LINK").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_RAW_LINK=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_EP0_SIGNAL_HEARTBEAT").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_HEARTBEAT=1");
+        }
+        if let Some(secs) = env::var("FULLERENE_AARCH64_USB_QUIET_AFTER")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+        {
+            println!("cargo:rustc-env=FULLERENE_USB_QUIET_AFTER_SECS={secs}");
+        }
+        if let Some(secs) = env::var("FULLERENE_AARCH64_USB_PROBE_OBSERVE_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+        {
+            println!("cargo:rustc-env=FULLERENE_USB_PROBE_OBSERVE_SECS={secs}");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_DIAG_PUBLISH=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_DMA_PROBE=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_RAM_GATE=1");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE") {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_FSR_GATE={value}");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE") {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_EVT_DATA_GATE={value}");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE") {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_RSC_GATE={value}");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_CFG_GATE") {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_CFG_GATE={value}");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_RAMCLK_GATE") {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_RAMCLK_GATE={value}");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SMMU_INSTALL_ALL=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_DROP_VBUS=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_SKIP_TYPEC_SPMI").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SKIP_TYPEC_SPMI=1");
+        }
+        if let Some(secs) = env::var("FULLERENE_AARCH64_USB_CONNECT_DELAY")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+        {
+            println!("cargo:rustc-env=FULLERENE_USB_CONNECT_DELAY_SECS={secs}");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_EP0_SIGNAL_PRE_DROP").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_PRE_DROP=1");
+        }
+        if let Some(code) = env::var("FULLERENE_AARCH64_USB_EP0_SIGNAL_EARLY_DROP")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+        {
+            println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_EARLY_DROP={code}");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SWDD_FNID") {
+            println!("cargo:rustc-env=FULLERENE_USB_SWDD_FNID={value}");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_UTMI_60MHZ").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_UTMI_60MHZ=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_SWDD_SKIP").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_SWDD_SKIP=1");
+        }
+        if let Some(value) = env::var("FULLERENE_AARCH64_USB_BARE_PULLUP_STOP_AFTER")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+        {
+            println!("cargo:rustc-env=FULLERENE_USB_BARE_PULLUP_STOP_AFTER={value}");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_ARM_BLIP").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_ARM_BLIP=1");
+        }
+        if let Some(secs) = env::var("FULLERENE_AARCH64_USB_ABS_RESET_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+        {
+            println!("cargo:rustc-env=FULLERENE_USB_ABS_RESET_SECS={secs}");
+        }
+        // Hyper-bare bisection fires the bare pull-up at the very first
+        // instruction after EL1 entry. Gate it to bramble: the QEMU
+        // preflight inherits the harness environment but builds for
+        // qemu-virt, where this cfg must stay off.
+        if env::var_os("FULLERENE_AARCH64_USB_HYPER_BARE").is_some()
+            && env::var("FULLERENE_AARCH64_PLATFORM").is_ok_and(|p| p == "bramble")
+        {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_hyper_bare");
+        }
         if env::var_os("FULLERENE_AARCH64_QEMU_USB_SIM").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_qemu_usb_sim");
         }
@@ -54,6 +282,67 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_COLD_HALT_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_PROBE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SUPER_SPEED");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_DIRECT");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU");
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_REUSE_FASTBOOT_DMA"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_TRANSFER_RESOURCE"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_RESOURCE_ORDER"
+        );
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PRESERVE_CORE");
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_RESET"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AT_CONNECT_DONE"
+        );
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SIGNAL_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SIGNAL_SMMU_STATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SIGNAL_LINK_STATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SIGNAL_RAW_LINK");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SIGNAL_EARLY_DROP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SIGNAL_PRE_DROP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SIGNAL_HEARTBEAT");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_DMA_ADOPT");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SMMU_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_CMD_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_SINGLE_ATTEMPT");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_U0_ARM_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_WDT_BITE_CONTROL");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SWDD_FNID");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SWDD_SKIP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_UTMI_60MHZ");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_BARE_PULLUP_STOP_AFTER");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HYPER_BARE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ARM_BLIP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABS_RESET_SECS");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SMMU_INSTALL");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SMMU_DISABLE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_CFG_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_RAMCLK_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SKIP_TYPEC_SPMI");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_QUIET_AFTER");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_OBSERVE_SECS");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_CONNECT_DELAY");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_STOP_STAGE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_TIMEOUT_SECS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_QEMU_USB_SIM");
         println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64=-T{}",
@@ -72,6 +361,7 @@ fn main() {
             linker_script.display()
         );
         println!("cargo:rerun-if-changed=src/arch/aarch64");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_DMA_ORIGIN");
         return;
     }
 
@@ -489,17 +779,46 @@ fn aarch64_linker_script(platform: &str) -> String {
         "0x42000040"
     };
 
-    let usb_dma_origin = if platform == "bramble" {
-        // The Bramble vendor DT reserves 0x80000000..0x80600000 for the
-        // hypervisor and marks it no-map.  The kernel image itself is linked
-        // near that address, so placing DMA objects immediately after .bss
-        // puts DWC3's event ring/TRBs in a region that is not valid for the
-        // USB client.  0x9b800000 is the first byte after the fixed
-        // modem_wlan carveout (0x8c000000..0x9b800000) and leaves the small
-        // DMA section below the next fixed carveout at 0x9f400000.
-        ". = 0x9b800000;"
+    let requested_dma_origin = match env::var("FULLERENE_AARCH64_USB_DMA_ORIGIN") {
+        Ok(value) => {
+            let value = value.trim();
+            let digits = value
+                .strip_prefix("0x")
+                .or_else(|| value.strip_prefix("0X"))
+                .unwrap_or(value);
+            let address = u64::from_str_radix(digits, 16).unwrap_or_else(|_| {
+                panic!(
+                    "FULLERENE_AARCH64_USB_DMA_ORIGIN must be a hexadecimal address, got {value:?}"
+                )
+            });
+            assert!(
+                address != 0 && address & 0xfff == 0,
+                "FULLERENE_AARCH64_USB_DMA_ORIGIN must be nonzero and 4K-aligned, got {value:?}"
+            );
+            Some(address)
+        }
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => {
+            panic!("FULLERENE_AARCH64_USB_DMA_ORIGIN must be valid UTF-8")
+        }
+    };
+    let usb_dma_origin = if let Some(origin) = requested_dma_origin {
+        // Empirical override: the stock 0x9b800000 window failed a CPU
+        // readback gate on real hardware, so the Bramble A/B harness can
+        // relocate the DMA section to a candidate DRAM region per run.
+        format!(". = {origin:#x};")
+    } else if platform == "bramble" {
+        // Empirically verified on the Bramble handset: the previously used
+        // 0x9b800000 window (after the modem_wlan carveout) FAILED a CPU
+        // readback gate, so every DMA object written there - event ring,
+        // TRBs, SETUP buffer, and the retained trace - silently vanished.
+        // 0x90000000 is the start of the vendor DT's USB DMA pool
+        // (iova_base), passed the readback gate, and the controller's event
+        // DMA writes land there. The FULLERENE_AARCH64_USB_DMA_ORIGIN
+        // override still wins for one-run A/B experiments.
+        ". = 0x90000000;".to_string()
     } else {
-        ""
+        String::new()
     };
 
     format!(
@@ -574,8 +893,10 @@ SECTIONS
     */
     .usb_trace (NOLOAD) : ALIGN(4K)
     {{
+        __usb_trace_start = .;
         KEEP(*(.usb_trace .usb_trace.*))
         . = ALIGN(4K);
+        __usb_trace_end = .;
     }}
 
     /DISCARD/ :

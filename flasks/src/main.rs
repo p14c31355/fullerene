@@ -95,6 +95,222 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_probe: bool,
 
+    /// Run the normal non-destructive USB2 handoff first inside the gadget
+    /// probe, retaining the probe's automatic recovery if it fails.
+    #[arg(long)]
+    usb_gadget_handoff_direct: bool,
+
+    /// Encode EP0/event/TRB observables by dropping the pull-up at a delay
+    /// after attach. The host dmesg delta is the diagnostic readout.
+    #[arg(long)]
+    usb_ep0_signal_probe: bool,
+
+    /// Include a read-only Apps-SMMU SMR/S2CR stream probe in the EP0 signal
+    /// probe. The SMMU state takes priority over the runtime signal codes.
+    #[arg(long)]
+    usb_ep0_signal_smmu_state: bool,
+
+    /// Switch the EP0 signal probe to the USB2 link-state ladder
+    /// (DSTS.USBLNKST/RunStop observables) instead of the EP0 event ladder.
+    #[arg(long)]
+    usb_ep0_signal_link_state: bool,
+
+    /// Encode the raw DSTS.USBLNKST nibble at 2-second resolution instead of
+    /// the interpreted link-state ladder.
+    #[arg(long)]
+    usb_ep0_signal_raw_link: bool,
+
+    /// Drop the pull-up permanently inside the handoff when the selected
+    /// condition (1/2/3/5, or 9=unconditional) is observed; the host never
+    /// sees the descriptor timeout, so its absence is the readout.
+    #[arg(long = "usb-ep0-signal-early-drop", value_name = "CODE")]
+    usb_ep0_signal_early_drop: Option<u32>,
+
+    /// Drop the session overrides immediately before the first Run/Stop
+    /// (unconditional control for the pull-up ownership question).
+    #[arg(long)]
+    usb_ep0_signal_pre_drop: bool,
+
+    /// Toggle DCTL Run/Stop in one-second intervals right after the connect.
+    #[arg(long)]
+    usb_ep0_signal_heartbeat: bool,
+
+    /// Walk the bootloader's Apps-SMMU page tables read-only and relocate the
+    /// EP0 DMA objects into the page its live TRANSLATE context already maps.
+    #[arg(long)]
+    usb_ep0_dma_adopt: bool,
+
+    /// Publish the pull-up only when the Apps-SMMU stream's S2CR type equals
+    /// this value (0=fault, 1=bypass, 2=translate; 251..=254 select the
+    /// no-match ladder: none-valid, valid-but-unmatched, zero SMRs,
+    /// unreadable IDs). The attach itself is the one-bit readout.
+    #[arg(long = "usb-ep0-smmu-gate", value_name = "TYPE")]
+    usb_ep0_smmu_gate: Option<u32>,
+
+    /// In the EP0 signal probe, drop the pull-up by clearing the QUSB2
+    /// VBUSVLDEXT0 session bits as well as the QSCRATCH overrides.
+    #[arg(long)]
+    usb_ep0_signal_drop_vbus: bool,
+
+    /// Claim a free Apps-SMMU SMR for the DWC3 stream with an S2CR BYPASS
+    /// type (readback-verified) before Run/Stop. The pull-up is gated on the
+    /// install being accepted.
+    #[arg(long)]
+    usb_ep0_smmu_install: bool,
+
+    /// Probe event-DMA liveness pre-connect with a CMDIOC command and gate
+    /// the pull-up on GEVNTCOUNT actually incrementing.
+    #[arg(long)]
+    usb_signal_dma_probe: bool,
+
+    /// Make the installed SMR a catch-all (mask all IDs) instead of exact
+    /// 0xe0, so a misreported stream ID cannot keep transactions faulting.
+    #[arg(long)]
+    usb_smmu_install_all: bool,
+
+    /// FSR gate for the DMA probe: 1 = attach only when the Apps-SMMU
+    /// recorded a fault during the probe, 2 = attach only when it did not.
+    #[arg(long = "usb-signal-fsr-gate", value_name = "MODE")]
+    usb_signal_fsr_gate: Option<u32>,
+
+    /// Gate the attach on a CPU readback of the .usb_dma region succeeding.
+    #[arg(long)]
+    usb_signal_ram_gate: bool,
+
+    /// Skip the SPMI Type-C handoff observation at probe entry (timing A/B:
+    /// the 512-APID SPMI scan is suspect for the ~11 s pre-attach delay).
+    #[arg(long)]
+    usb_skip_typec_spmi: bool,
+
+    /// In signal mode, publish the pull-up even when the handoff failed, so
+    /// the command gates stay readable for pre-Run/Stop failures.
+    #[arg(long)]
+    usb_signal_diag_publish: bool,
+
+    /// Stop all controller MMIO access N seconds after the first Run/Stop
+    /// (reboot-cause bisect: external clock collapse vs our own polling).
+    #[arg(long = "usb-quiet-after", value_name = "SECS")]
+    usb_quiet_after: Option<u64>,
+
+    /// Signal-probe observation window in seconds before the gate is
+    /// evaluated; it must stay short enough to beat the unknown ~17 s
+    /// watchdog when a gate readout is the goal.
+    #[arg(long = "usb-observe-secs", value_name = "SECS")]
+    usb_observe_secs: Option<u64>,
+
+    /// After a failed handoff, re-issue the missing init tail (Run/Stop,
+    /// U0 poll, DEPSTARTCFG, SETEPCONFIG, SETUP arm) from the signal probe.
+    #[arg(long = "usb-u0-arm-probe")]
+    usb_u0_arm_probe: bool,
+
+    /// Signal-probe control: schedule an unconditional APSS-WDT bite 3 s
+    /// after probe entry to test whether the APSS watchdog bite is writable
+    /// and lands (an early loop return means yes).
+    #[arg(long = "usb-wdt-bite-control")]
+    usb_wdt_bite_control: bool,
+
+    /// Override the secure-watchdog-disable SMC fnid (hex, e.g.
+    /// 0x82000107 = STD/SMC64 BOOT/0x07). Default is the legacy 0x02000407.
+    #[arg(long = "usb-swdd-fnid", value_name = "HEX")]
+    usb_swdd_fnid: Option<String>,
+
+    /// Omit the secure-watchdog-disable SMC itself (timing experiment:
+    /// isolates the SMC instruction cost from the rest of the prelude; the
+    /// secure WDT stays armed and bites at ~17 s).
+    #[arg(long = "usb-swdd-skip")]
+    usb_swdd_skip: bool,
+
+    /// Emit one host-visible DCTL.SDIS blip after the post-Run/Stop arm
+    /// window when the SETUP arm succeeded (link U0 reached per the core).
+    #[arg(long = "usb-arm-blip")]
+    usb_arm_blip: bool,
+
+    /// Absolute ceiling (seconds from the direct probe's poll loop entry) on
+    /// the trace-activity deadline, guaranteeing a recovery reset even when
+    /// both watchdogs are dead.
+    #[arg(long = "usb-abs-reset-secs", value_name = "SECS")]
+    usb_abs_reset_secs: Option<u64>,
+
+    /// Relocate the linker .usb_dma section to this hex address for the run.
+    #[arg(long = "usb-dma-origin", value_name = "ADDR")]
+    usb_dma_origin: Option<String>,
+
+    /// Gate the attach on the previous attempt's STARTTRANSFER outcome
+    /// (timeout | done | none | hex raw DEPCMD value).
+    #[arg(long = "usb-signal-cmd-gate", value_name = "WHEN")]
+    usb_signal_cmd_gate: Option<String>,
+
+    /// Gate the attach on the previous attempt's SETTRANSFRESOURCE raw
+    /// DEPCMD register (hex; healthy allocation returns 0x10000).
+    #[arg(long = "usb-signal-rsc-gate", value_name = "RAW")]
+    usb_signal_rsc_gate: Option<String>,
+
+    /// Gate the attach on the previous attempt's DEPSTARTCFG raw DEPCMD
+    /// register (hex).
+    #[arg(long = "usb-signal-cfg-gate", value_name = "RAW")]
+    usb_signal_cfg_gate: Option<String>,
+
+    /// Gate the attach on the captured GCTL.RAMCLKSEL value (0..=3).
+    #[arg(long = "usb-signal-ramclk-gate", value_name = "VALUE")]
+    usb_signal_ramclk_gate: Option<u32>,
+
+    /// Clear sCR0.SMMUEN/WACFG (readback-verified) before any DWC3 DMA so
+    /// unattributed transactions stop stalling in the Apps-SMMU.
+    #[arg(long)]
+    usb_smmu_disable: bool,
+
+    /// Gate the attach on the DMA-probe event word actually landing in DRAM
+    /// (1 = landed, 2 = stayed zero).
+    #[arg(long = "usb-signal-evt-data-gate", value_name = "MODE")]
+    usb_signal_evt_data_gate: Option<u32>,
+
+    /// Delay only the first handoff attempt's Run/Stop by this many seconds;
+    /// the host attach timestamp then identifies the pull-up owner.
+    #[arg(long = "usb-connect-delay", value_name = "SECS")]
+    usb_connect_delay: Option<u64>,
+
+    /// Build the Bramble SuperSpeed gadget handoff probe with EP0 descriptors.
+    #[arg(long)]
+    usb_gadget_handoff_super_speed_probe: bool,
+
+    /// Build the gadget handoff probe without reading or changing the Apps
+    /// SMMU. This is a hardware differential for a Fastboot-owned bypass.
+    #[arg(long)]
+    usb_gadget_handoff_no_smmu: bool,
+
+    /// Reuse the Fastboot DWC3 event-ring DMA page for the EP0 probe. This is
+    /// a hardware differential for firmware-owned SMMU/DMA visibility.
+    #[arg(long)]
+    usb_gadget_handoff_reuse_fastboot_dma: bool,
+
+    /// Build the gadget handoff probe without SETTRANSFRESOURCE. This is a
+    /// hardware differential for the DWC3 endpoint-resource command.
+    #[arg(long)]
+    usb_gadget_handoff_no_transfer_resource: bool,
+
+    /// Use Android msm's resource-before-SETEPCONFIG DWC3 ordering.
+    #[arg(long)]
+    usb_gadget_handoff_android_resource_order: bool,
+
+    /// Bramble differential: connect the DWC3 device before arming EP0
+    /// STARTTRANSFER, then arm the SETUP TRB immediately after Run/Stop.
+    #[arg(long)]
+    usb_gadget_handoff_start_after_connect: bool,
+
+    /// Bramble differential: wait for the host USB Reset event before
+    /// arming the initial EP0 SETUP transfer.
+    #[arg(long)]
+    usb_gadget_handoff_start_after_reset: bool,
+
+    /// Bramble differential: arm the initial EP0 SETUP from Connect Done.
+    #[arg(long)]
+    usb_gadget_handoff_start_at_connect_done: bool,
+
+    /// Stop the USB2 gadget handoff after a numbered boundary and publish a
+    /// temporary physical pull-up for host-side stage diagnostics.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=12))]
+    stop_after_stage: Option<u32>,
+
     /// Run the shared USB EP0 protocol self-test on QEMU virt and exit via
     /// semihosting when it completes.
     #[arg(long)]
@@ -261,7 +477,7 @@ struct Aarch64Probe {
     bramble_only: bool,
 }
 
-fn aarch64_probe_specs(args: &Args) -> [Aarch64Probe; 8] {
+fn aarch64_probe_specs(args: &Args) -> [Aarch64Probe; 9] {
     [
         Aarch64Probe {
             selected: args.entry_probe,
@@ -317,6 +533,13 @@ fn aarch64_probe_specs(args: &Args) -> [Aarch64Probe; 8] {
             flag: "--usb-gadget-handoff-probe",
             artifact: "fullerene-kernel-aarch64-usb-probe",
             env: Some("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE"),
+            bramble_only: true,
+        },
+        Aarch64Probe {
+            selected: args.usb_gadget_handoff_super_speed_probe,
+            flag: "--usb-gadget-handoff-super-speed-probe",
+            artifact: "fullerene-kernel-aarch64-usb-probe",
+            env: Some("FULLERENE_AARCH64_USB_GADGET_HANDOFF_SUPER_SPEED"),
             bramble_only: true,
         },
     ]
@@ -475,6 +698,149 @@ fn main() -> io::Result<()> {
             "--qemu-preflight requires AArch64 Bramble build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_no_smmu
+        && (!args.usb_gadget_handoff_probe && !args.usb_gadget_handoff_super_speed_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-no-smmu requires a Bramble gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_direct
+        && (!args.usb_gadget_handoff_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-direct requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_reuse_fastboot_dma
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_no_smmu
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-reuse-fastboot-dma requires the Bramble USB2 gadget handoff probe with --usb-gadget-handoff-no-smmu on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_no_transfer_resource
+        && (!args.usb_gadget_handoff_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-no-transfer-resource requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_android_resource_order
+        && (!args.usb_gadget_handoff_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-android-resource-order requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_start_after_connect
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-start-after-connect requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_start_after_reset
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-start-after-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_start_at_connect_done
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-start-at-connect-done requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if (args.usb_gadget_handoff_start_after_connect as u8
+        + args.usb_gadget_handoff_start_after_reset as u8
+        + args.usb_gadget_handoff_start_at_connect_done as u8)
+        > 1
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the Bramble EP0 timing differentials are mutually exclusive",
+        ));
+    }
+    if args.usb_ep0_signal_probe
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-ep0-signal-probe requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_ep0_signal_smmu_state && !args.usb_ep0_signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-ep0-signal-smmu-state requires --usb-ep0-signal-probe",
+        ));
+    }
+    if args.usb_ep0_signal_link_state && !args.usb_ep0_signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-ep0-signal-link-state requires --usb-ep0-signal-probe",
+        ));
+    }
+    if args.usb_ep0_signal_raw_link && !args.usb_ep0_signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-ep0-signal-raw-link requires --usb-ep0-signal-probe",
+        ));
+    }
+    if args.stop_after_stage.is_some()
+        && (!args.usb_gadget_handoff_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--stop-after-stage requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     let selected_probe = selected_aarch64_probe(&args, target)?;
 
     if target.arch == Arch::Aarch64 {
@@ -509,8 +875,53 @@ fn main() -> io::Result<()> {
             profile,
             target.platform,
             kernel_artifact,
-            selected_probe.and_then(|probe| probe.env),
-            args.qemu_usb_sim,
+            Aarch64BuildConfig {
+                probe_env: selected_probe.and_then(|probe| probe.env),
+                gadget_handoff_no_smmu: args.usb_gadget_handoff_no_smmu,
+                gadget_handoff_reuse_fastboot_dma: args.usb_gadget_handoff_reuse_fastboot_dma,
+                gadget_handoff_no_transfer_resource: args.usb_gadget_handoff_no_transfer_resource,
+                gadget_handoff_android_resource_order: args
+                    .usb_gadget_handoff_android_resource_order,
+                gadget_handoff_start_after_connect: args.usb_gadget_handoff_start_after_connect,
+                gadget_handoff_start_after_reset: args.usb_gadget_handoff_start_after_reset,
+                gadget_handoff_start_at_connect_done: args.usb_gadget_handoff_start_at_connect_done,
+                gadget_handoff_stop_after_stage: args.stop_after_stage,
+                qemu_usb_sim: args.qemu_usb_sim,
+                gadget_handoff_direct: args.usb_gadget_handoff_direct,
+                ep0_signal_probe: args.usb_ep0_signal_probe,
+                ep0_signal_smmu_state: args.usb_ep0_signal_smmu_state,
+                ep0_signal_link_state: args.usb_ep0_signal_link_state,
+                ep0_signal_raw_link: args.usb_ep0_signal_raw_link,
+                ep0_signal_early_drop: args.usb_ep0_signal_early_drop,
+                ep0_signal_pre_drop: args.usb_ep0_signal_pre_drop,
+                ep0_signal_heartbeat: args.usb_ep0_signal_heartbeat,
+                ep0_dma_adopt: args.usb_ep0_dma_adopt,
+                ep0_smmu_gate: args.usb_ep0_smmu_gate,
+                ep0_signal_drop_vbus: args.usb_ep0_signal_drop_vbus,
+                connect_delay: args.usb_connect_delay,
+                ep0_smmu_install: args.usb_ep0_smmu_install,
+                signal_dma_probe: args.usb_signal_dma_probe,
+                smmu_install_all: args.usb_smmu_install_all,
+                signal_fsr_gate: args.usb_signal_fsr_gate,
+                signal_ram_gate: args.usb_signal_ram_gate,
+                signal_diag_publish: args.usb_signal_diag_publish,
+                quiet_after: args.usb_quiet_after,
+                dma_origin: args.usb_dma_origin.clone(),
+                signal_cmd_gate: args.usb_signal_cmd_gate.clone(),
+                signal_rsc_gate: args.usb_signal_rsc_gate.clone(),
+                signal_cfg_gate: args.usb_signal_cfg_gate.clone(),
+                signal_ramclk_gate: args.usb_signal_ramclk_gate,
+                smmu_disable: args.usb_smmu_disable,
+                signal_evt_data_gate: args.usb_signal_evt_data_gate,
+                observe_secs: args.usb_observe_secs,
+                skip_typec_spmi: args.usb_skip_typec_spmi,
+                u0_arm_probe: args.usb_u0_arm_probe,
+                wdt_bite_control: args.usb_wdt_bite_control,
+                swdd_fnid: args.usb_swdd_fnid.clone(),
+                arm_blip: args.usb_arm_blip,
+                abs_reset_secs: args.usb_abs_reset_secs,
+                swdd_skip: args.usb_swdd_skip,
+            },
         )?;
         if target.platform == Platform::Bramble
             && matches!(args.command, Action::Run | Action::Debug)
@@ -616,15 +1027,331 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+fn fnv1a64(data: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in data.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+#[derive(Default)]
+struct Aarch64BuildConfig {
+    probe_env: Option<&'static str>,
+    gadget_handoff_no_smmu: bool,
+    gadget_handoff_reuse_fastboot_dma: bool,
+    gadget_handoff_no_transfer_resource: bool,
+    gadget_handoff_android_resource_order: bool,
+    gadget_handoff_start_after_connect: bool,
+    gadget_handoff_start_after_reset: bool,
+    gadget_handoff_start_at_connect_done: bool,
+    gadget_handoff_stop_after_stage: Option<u32>,
+    qemu_usb_sim: bool,
+    gadget_handoff_direct: bool,
+    ep0_signal_probe: bool,
+    ep0_signal_smmu_state: bool,
+    ep0_signal_link_state: bool,
+    ep0_signal_raw_link: bool,
+    ep0_signal_early_drop: Option<u32>,
+    ep0_signal_pre_drop: bool,
+    ep0_signal_heartbeat: bool,
+    ep0_dma_adopt: bool,
+    ep0_smmu_gate: Option<u32>,
+    ep0_signal_drop_vbus: bool,
+    connect_delay: Option<u64>,
+    ep0_smmu_install: bool,
+    signal_dma_probe: bool,
+    smmu_install_all: bool,
+    signal_fsr_gate: Option<u32>,
+    signal_ram_gate: bool,
+    signal_diag_publish: bool,
+    quiet_after: Option<u64>,
+    dma_origin: Option<String>,
+    signal_cmd_gate: Option<String>,
+    signal_rsc_gate: Option<String>,
+    signal_cfg_gate: Option<String>,
+    signal_ramclk_gate: Option<u32>,
+    smmu_disable: bool,
+    signal_evt_data_gate: Option<u32>,
+    observe_secs: Option<u64>,
+    skip_typec_spmi: bool,
+    u0_arm_probe: bool,
+    wdt_bite_control: bool,
+    swdd_fnid: Option<String>,
+    arm_blip: bool,
+    abs_reset_secs: Option<u64>,
+    swdd_skip: bool,
+}
+
 fn build_aarch64_kernel(
     workspace_root: &Path,
     profile: BuildProfile,
     platform: Platform,
     kernel_artifact: &str,
-    probe_env: Option<&str>,
-    qemu_usb_sim: bool,
+    config: Aarch64BuildConfig,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
+    let Aarch64BuildConfig {
+        probe_env,
+        gadget_handoff_no_smmu,
+        gadget_handoff_reuse_fastboot_dma,
+        gadget_handoff_no_transfer_resource,
+        gadget_handoff_android_resource_order,
+        gadget_handoff_start_after_connect,
+        gadget_handoff_start_after_reset,
+        gadget_handoff_start_at_connect_done,
+        gadget_handoff_stop_after_stage,
+        qemu_usb_sim,
+        gadget_handoff_direct,
+        ep0_signal_probe,
+        ep0_signal_smmu_state,
+        ep0_signal_link_state,
+        ep0_signal_raw_link,
+        ep0_signal_early_drop,
+        ep0_signal_pre_drop,
+        ep0_signal_heartbeat,
+        ep0_dma_adopt,
+        ep0_smmu_gate,
+        ep0_signal_drop_vbus,
+        connect_delay,
+        ep0_smmu_install,
+        signal_dma_probe,
+        smmu_install_all,
+        signal_fsr_gate,
+        signal_ram_gate,
+        signal_diag_publish,
+        quiet_after,
+        dma_origin,
+        signal_cmd_gate,
+        signal_rsc_gate,
+        signal_cfg_gate,
+        signal_ramclk_gate,
+        smmu_disable,
+        signal_evt_data_gate,
+        observe_secs,
+        skip_typec_spmi,
+        u0_arm_probe,
+        wdt_bite_control,
+        swdd_fnid,
+        arm_blip,
+        abs_reset_secs,
+        swdd_skip,
+    } = config;
+    // Collect every build-script environment variable first so the
+    // combination can be hashed into an isolated CARGO_TARGET_DIR: this
+    // nightly's cargo otherwise reuses stale lib/bin artifacts when only
+    // build-script env changes between invocations of the same package
+    // (for example after the QEMU preflight switches back to Bramble).
+    let mut cargo_envs: Vec<(String, String)> = Vec::new();
+    let mut push_env = |name: &str, value: String| cargo_envs.push((name.to_owned(), value));
+    push_env(
+        "FULLERENE_AARCH64_PLATFORM",
+        match platform {
+            Platform::Bramble => "bramble",
+            Platform::QemuVirt => "qemu-virt",
+            Platform::PcUefi => "pc-uefi",
+        }
+        .to_owned(),
+    );
+    if let Some(probe_env) = probe_env {
+        push_env(probe_env, "1".to_owned());
+    }
+    if gadget_handoff_no_smmu {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_reuse_fastboot_dma {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_REUSE_FASTBOOT_DMA",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_no_transfer_resource {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_TRANSFER_RESOURCE",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_android_resource_order {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_RESOURCE_ORDER",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_start_after_connect {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_start_after_reset {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_RESET",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_start_at_connect_done {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AT_CONNECT_DONE",
+            "1".to_owned(),
+        );
+    }
+    if let Some(stage) = gadget_handoff_stop_after_stage {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_STOP_STAGE",
+            stage.to_string(),
+        );
+    }
+    if qemu_usb_sim {
+        push_env("FULLERENE_AARCH64_QEMU_USB_SIM", "1".to_owned());
+    }
+    if gadget_handoff_direct {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_DIRECT",
+            "1".to_owned(),
+        );
+    }
+    if ep0_signal_probe {
+        push_env("FULLERENE_AARCH64_USB_EP0_SIGNAL_PROBE", "1".to_owned());
+    }
+    if ep0_signal_smmu_state {
+        push_env(
+            "FULLERENE_AARCH64_USB_EP0_SIGNAL_SMMU_STATE",
+            "1".to_owned(),
+        );
+    }
+    if ep0_signal_link_state {
+        push_env(
+            "FULLERENE_AARCH64_USB_EP0_SIGNAL_LINK_STATE",
+            "1".to_owned(),
+        );
+    }
+    if ep0_signal_raw_link {
+        push_env("FULLERENE_AARCH64_USB_EP0_SIGNAL_RAW_LINK", "1".to_owned());
+    }
+    if let Some(code) = ep0_signal_early_drop {
+        push_env(
+            "FULLERENE_AARCH64_USB_EP0_SIGNAL_EARLY_DROP",
+            code.to_string(),
+        );
+    }
+    if ep0_signal_pre_drop {
+        push_env("FULLERENE_AARCH64_USB_EP0_SIGNAL_PRE_DROP", "1".to_owned());
+    }
+    if ep0_signal_heartbeat {
+        push_env("FULLERENE_AARCH64_USB_EP0_SIGNAL_HEARTBEAT", "1".to_owned());
+    }
+    if ep0_dma_adopt {
+        push_env("FULLERENE_AARCH64_USB_EP0_DMA_ADOPT", "1".to_owned());
+    }
+    if let Some(value) = ep0_smmu_gate {
+        push_env("FULLERENE_AARCH64_USB_EP0_SMMU_GATE", value.to_string());
+    }
+    if ep0_signal_drop_vbus {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS", "1".to_owned());
+    }
+    if let Some(secs) = connect_delay {
+        push_env("FULLERENE_AARCH64_USB_CONNECT_DELAY", secs.to_string());
+    }
+    if ep0_smmu_install {
+        push_env("FULLERENE_AARCH64_USB_EP0_SMMU_INSTALL", "1".to_owned());
+    }
+    if signal_dma_probe {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE", "1".to_owned());
+    }
+    if smmu_install_all {
+        push_env("FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL", "1".to_owned());
+    }
+    if let Some(mode) = signal_fsr_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE", mode.to_string());
+    }
+    if signal_ram_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE", "1".to_owned());
+    }
+    if skip_typec_spmi {
+        push_env("FULLERENE_AARCH64_USB_SKIP_TYPEC_SPMI", "1".to_owned());
+    }
+    if u0_arm_probe {
+        push_env("FULLERENE_AARCH64_USB_U0_ARM_PROBE", "1".to_owned());
+    }
+    if wdt_bite_control {
+        push_env("FULLERENE_AARCH64_USB_WDT_BITE_CONTROL", "1".to_owned());
+    }
+    if let Some(value) = swdd_fnid {
+        push_env("FULLERENE_AARCH64_USB_SWDD_FNID", value);
+    }
+    if swdd_skip {
+        push_env("FULLERENE_AARCH64_USB_SWDD_SKIP", "1".to_owned());
+    }
+    if arm_blip {
+        push_env("FULLERENE_AARCH64_USB_ARM_BLIP", "1".to_owned());
+    }
+    if let Some(value) = abs_reset_secs {
+        push_env("FULLERENE_AARCH64_USB_ABS_RESET_SECS", value.to_string());
+    }
+    if signal_diag_publish {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH", "1".to_owned());
+    }
+    if let Some(secs) = quiet_after {
+        push_env("FULLERENE_AARCH64_USB_QUIET_AFTER", secs.to_string());
+    }
+    if let Some(origin) = dma_origin {
+        push_env("FULLERENE_AARCH64_USB_DMA_ORIGIN", origin);
+    }
+    if let Some(value) = signal_cmd_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_CMD_GATE", value);
+        // A gate readout must complete before the ~17 s watchdog bite: a
+        // gate run performs a single direct attempt (no fallback, no
+        // retry) so its observation window closes while the WDT is still
+        // silent and the reset timing/bootreason stays a clean readout.
+        push_env("FULLERENE_AARCH64_USB_PROBE_SINGLE_ATTEMPT", "1".to_owned());
+    }
+    if let Some(value) = signal_rsc_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE", value);
+    }
+    if let Some(value) = signal_cfg_gate {
+        push_env("FULLERENE_AARCH64_USB_SIGNAL_CFG_GATE", value);
+    }
+    if let Some(value) = signal_ramclk_gate {
+        push_env(
+            "FULLERENE_AARCH64_USB_SIGNAL_RAMCLK_GATE",
+            value.to_string(),
+        );
+    }
+    if smmu_disable {
+        push_env("FULLERENE_AARCH64_USB_SMMU_DISABLE", "1".to_owned());
+    }
+    if let Some(mode) = signal_evt_data_gate {
+        push_env(
+            "FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE",
+            mode.to_string(),
+        );
+    }
+    if let Some(secs) = observe_secs {
+        push_env("FULLERENE_AARCH64_USB_PROBE_OBSERVE_SECS", secs.to_string());
+    }
+
+    // Android's Bramble bootloader may relocate an arm64 Image. Build the
+    // freestanding binary as a static PIE and let the Rust bootstrap apply
+    // its R_AARCH64_RELATIVE entries before normal Rust code runs.
+    let mut rustflags = env::var("RUSTFLAGS").unwrap_or_default();
+    rustflags.push_str(" -C relocation-model=pic -C link-arg=-pie");
+    rustflags.push_str(" -C link-arg=-z -C link-arg=notext");
+
+    let mut combo = String::new();
+    for (name, value) in &cargo_envs {
+        combo.push_str(name);
+        combo.push_str("=");
+        combo.push_str(value);
+        combo.push('\n');
+    }
+    combo.push_str(&rustflags);
+    let digest = fnv1a64(&combo);
+    let cargo_target_dir = workspace_root.join(format!("target/ak{digest:016x}"));
+
     let mut cargo = Command::new("cargo");
     cargo
         .current_dir(workspace_root)
@@ -646,28 +1373,11 @@ fn build_aarch64_kernel(
         // bare-metal target is shipped with Rust's lld linker, so this does not
         // require a host C cross-toolchain.
         .env("CARGO_TARGET_AARCH64_UNKNOWN_NONE_LINKER", "rust-lld")
-        .env(
-            "FULLERENE_AARCH64_PLATFORM",
-            match platform {
-                Platform::Bramble => "bramble",
-                Platform::QemuVirt => "qemu-virt",
-                Platform::PcUefi => "pc-uefi",
-            },
-        );
-    if let Some(probe_env) = probe_env {
-        cargo.env(probe_env, "1");
+        .env("CARGO_TARGET_DIR", cargo_target_dir.display().to_string());
+    for (name, value) in &cargo_envs {
+        cargo.env(name, value);
     }
-    if qemu_usb_sim {
-        cargo.env("FULLERENE_AARCH64_QEMU_USB_SIM", "1");
-    }
-
-    // Android's Bramble bootloader may relocate an arm64 Image. Build the
-    // freestanding binary as a static PIE and let the Rust bootstrap apply
-    // its R_AARCH64_RELATIVE entries before normal Rust code runs.
-    let mut rustflags = env::var("RUSTFLAGS").unwrap_or_default();
-    rustflags.push_str(" -C relocation-model=pic -C link-arg=-pie");
-    rustflags.push_str(" -C link-arg=-z -C link-arg=notext");
-    cargo.env("RUSTFLAGS", rustflags);
+    cargo.env("RUSTFLAGS", &rustflags);
 
     let status = cargo.status()?;
     if !status.success() {
@@ -677,8 +1387,7 @@ fn build_aarch64_kernel(
         )));
     }
 
-    let artifact = workspace_root
-        .join("target")
+    let artifact = cargo_target_dir
         .join(target.rust_target())
         .join(profile.artifact_directory())
         .join(kernel_artifact);
@@ -705,8 +1414,10 @@ fn run_aarch64_qemu_preflight(
         profile,
         Platform::QemuVirt,
         Arch::Aarch64.kernel_artifact(),
-        None,
-        true,
+        Aarch64BuildConfig {
+            qemu_usb_sim: true,
+            ..Default::default()
+        },
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;
     let image = build_aarch64_image(&raw)?;

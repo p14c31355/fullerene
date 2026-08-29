@@ -414,18 +414,69 @@ enum Ep0State {
     Status,
 }
 
+#[cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)]
 pub const DEVICE_DESCRIPTOR: [u8; 18] = [
-    18, 1, 0x00, 0x02, 0, 0, 0, 64, 0x34, 0x12, 0x01, 0x00, 0, 1, 1, 2, 0, 1,
+    18, 1, 0x00, 0x03, 0, 0, 0, 9, 0x34, 0x12, 0x01, 0x00, 0, 1, 1, 2, 3, 1,
 ];
+
+#[cfg(not(fullerene_aarch64_usb_gadget_handoff_super_speed))]
+pub const DEVICE_DESCRIPTOR: [u8; 18] = [
+    18, 1, 0x00, 0x02, 0, 0, 0, 64, 0x34, 0x12, 0x01, 0x00, 0, 1, 1, 2, 3, 1,
+];
+
+/// The serial string is a compact post-mortem cursor. The hardware wrapper
+/// refreshes it immediately before each GET_DESCRIPTOR request, so a host
+/// that can enumerate the gadget can retrieve the last trace head/event
+/// without UART or a second debug transport.
+pub const TRACE_DESCRIPTOR: [u8; 10] = [10, 3, b'F', 0, b'U', 0, b'T', 0, b'R', 0];
+const TRACE_STATUS_CHARS: usize = 22;
+const TRACE_STATUS_DESCRIPTOR_BYTES: usize = 2 + TRACE_STATUS_CHARS * 2;
+
+/// Vendor control request used by the host-side trace reader. The response
+/// starts with a 16-byte little-endian header followed by up to 15 packed
+/// 32-byte `UsbTraceEntry` records, fitting in one 512-byte EP0 transfer.
+pub const TRACE_CONTROL_REQUEST_TYPE: u8 = 0xc0;
+pub const TRACE_CONTROL_REQUEST: u8 = 0x5a;
+pub const TRACE_CONTROL_HEADER_BYTES: usize = 16;
+pub const TRACE_CONTROL_ENTRY_BYTES: usize = 32;
+pub const TRACE_CONTROL_PAGE_ENTRIES: usize = 15;
 
 /// One vendor function with a bulk IN/OUT pair. The function is deliberately
 /// protocol-neutral; higher layers can bind their own payload format without
 /// changing the UDC/EP0 lifecycle.
+#[cfg(not(fullerene_aarch64_usb_gadget_handoff_super_speed))]
 pub const CONFIG_DESCRIPTOR: [u8; 32] = [
     9, 2, 32, 0, 1, 1, 0, 0x80, 50, // configuration
     9, 4, 0, 0, 2, 0xff, 0, 0, 0, // interface
     7, 5, 0x83, 2, 0, 2, 0, // bulk IN, EP3
     7, 5, 0x02, 2, 0, 2, 0, // bulk OUT, EP2
+];
+
+// The Bramble handoff reaches the host as SuperSpeed when Fastboot leaves the
+// combo PHY active. A SuperSpeed configuration needs an SS companion for each
+// bulk endpoint; advertising USB2-only endpoint descriptors makes the host
+// reject the configuration after EP0 enumeration.
+#[cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)]
+pub const CONFIG_DESCRIPTOR: [u8; 44] = [
+    9, 2, 44, 0, 1, 1, 0, 0x80, 50, // configuration
+    9, 4, 0, 0, 2, 0xff, 0, 0, 0, // interface
+    7, 5, 0x83, 2, 0, 2, 0, // bulk IN, EP3
+    6, 0x30, 0, 0, 0, 0, // SS endpoint companion
+    7, 5, 0x02, 2, 0, 2, 0, // bulk OUT, EP2
+    6, 0x30, 0, 0, 0, 0, // SS endpoint companion
+];
+
+#[cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)]
+pub const BOS_DESCRIPTOR: [u8; 22] = [
+    5, 15, 22, 0, 2, // BOS header, two device capabilities
+    7, 16, 2, 0, 0, 0, 0, // USB 2.0 extension
+    10, 16, 3, 0, 0x0e, 0, 1, 0, 0, 0, // SuperSpeed capability
+];
+
+#[cfg(not(fullerene_aarch64_usb_gadget_handoff_super_speed))]
+pub const BOS_DESCRIPTOR: [u8; 12] = [
+    5, 15, 12, 0, 1, // BOS header, USB 2.0 extension only
+    7, 16, 2, 0, 0, 0, 0,
 ];
 
 pub const LANGID_DESCRIPTOR: [u8; 4] = [4, 3, 0x09, 0x04];
@@ -443,10 +494,30 @@ pub fn descriptor(kind: u8, index: u8) -> Option<&'static [u8]> {
     match (kind, index) {
         (1, 0) => Some(&DEVICE_DESCRIPTOR),
         (2, 0) => Some(&CONFIG_DESCRIPTOR),
+        (15, 0) => Some(&BOS_DESCRIPTOR),
         (3, 0) => Some(&LANGID_DESCRIPTOR),
         (3, 1) => Some(&MANUFACTURER_DESCRIPTOR),
         (3, 2) => Some(&PRODUCT_DESCRIPTOR),
+        (3, 3) => Some(&TRACE_DESCRIPTOR),
         _ => None,
+    }
+}
+
+const fn trace_status_default() -> [u8; TRACE_STATUS_DESCRIPTOR_BYTES] {
+    let mut descriptor = [0; TRACE_STATUS_DESCRIPTOR_BYTES];
+    let mut index = 0;
+    while index < TRACE_DESCRIPTOR.len() {
+        descriptor[index] = TRACE_DESCRIPTOR[index];
+        index += 1;
+    }
+    descriptor
+}
+
+#[inline]
+fn hex_digit(value: u32) -> u8 {
+    match value & 0xf {
+        0..=9 => b'0' + (value & 0xf) as u8,
+        digit => b'a' + (digit - 10) as u8,
     }
 }
 
@@ -461,6 +532,8 @@ pub struct Ep0Simulator {
     halted_endpoints: u16,
     control_in: bool,
     control_has_data: bool,
+    trace_status: [u8; TRACE_STATUS_DESCRIPTOR_BYTES],
+    trace_status_len: usize,
 }
 
 impl Ep0Simulator {
@@ -476,6 +549,8 @@ impl Ep0Simulator {
             halted_endpoints: 0,
             control_in: false,
             control_has_data: false,
+            trace_status: trace_status_default(),
+            trace_status_len: TRACE_DESCRIPTOR.len(),
         }
     }
 
@@ -490,6 +565,35 @@ impl Ep0Simulator {
         self.halted_endpoints = 0;
         self.control_in = false;
         self.control_has_data = false;
+        self.trace_status = trace_status_default();
+        self.trace_status_len = TRACE_DESCRIPTOR.len();
+    }
+
+    /// Refresh the serial-string payload with the current retained-trace
+    /// cursor. This remains a normal gadget state operation: it does not
+    /// change EP0 state until the host actually requests string descriptor 3.
+    pub fn set_trace_status(&mut self, head: u32, event: u32) {
+        let mut ascii = [0u8; TRACE_STATUS_CHARS];
+        ascii[..5].copy_from_slice(b"FUTR-");
+        let mut index = 0;
+        while index < 8 {
+            let shift = 28 - index * 4;
+            ascii[5 + index] = hex_digit((head >> shift) & 0xf);
+            ascii[14 + index] = hex_digit((event >> shift) & 0xf);
+            index += 1;
+        }
+        ascii[13] = b'-';
+
+        let mut descriptor = [0; TRACE_STATUS_DESCRIPTOR_BYTES];
+        descriptor[0] = TRACE_STATUS_DESCRIPTOR_BYTES as u8;
+        descriptor[1] = 3;
+        index = 0;
+        while index < TRACE_STATUS_CHARS {
+            descriptor[2 + index * 2] = ascii[index];
+            index += 1;
+        }
+        self.trace_status = descriptor;
+        self.trace_status_len = TRACE_STATUS_DESCRIPTOR_BYTES;
     }
 
     pub fn address(&self) -> u8 {
@@ -516,6 +620,14 @@ impl Ep0Simulator {
         if request_type == 0x80 && request == 6 && requested_length != 0 {
             let kind = (value >> 8) as u8;
             let index = value as u8;
+            if kind == 3 && index == 3 {
+                let length = requested_length
+                    .min(self.trace_status_len)
+                    .min(response.len());
+                response[..length].copy_from_slice(&self.trace_status[..length]);
+                self.state = Ep0State::Data;
+                return ControlAction::DataIn(length);
+            }
             if let Some(bytes) = descriptor(kind, index) {
                 let length = requested_length.min(bytes.len()).min(response.len());
                 response[..length].copy_from_slice(&bytes[..length]);
@@ -679,7 +791,8 @@ impl GadgetDriver for Ep0Simulator {
 mod tests {
     use super::{
         CONFIG_DESCRIPTOR, ControlAction, DEVICE_DESCRIPTOR, Ep0Simulator, GSI_DEFAULT_NUM_BUFFERS,
-        GsiRingShape, MANUFACTURER_DESCRIPTOR, PRODUCT_DESCRIPTOR, gsi_ring_shape,
+        GsiRingShape, MANUFACTURER_DESCRIPTOR, PRODUCT_DESCRIPTOR, TRACE_DESCRIPTOR,
+        gsi_ring_shape,
     };
 
     #[test]
@@ -688,6 +801,7 @@ mod tests {
             &DEVICE_DESCRIPTOR[..],
             &MANUFACTURER_DESCRIPTOR[..],
             &PRODUCT_DESCRIPTOR[..],
+            &TRACE_DESCRIPTOR[..],
         ] {
             assert_eq!(descriptor[0] as usize, descriptor.len());
         }
@@ -704,6 +818,36 @@ mod tests {
         assert_eq!(CONFIG_DESCRIPTOR[25], 7);
         assert_eq!(CONFIG_DESCRIPTOR[26], 5);
         assert_eq!(CONFIG_DESCRIPTOR[27], 0x02);
+    }
+
+    #[test]
+    fn trace_status_string_is_host_readable() {
+        let mut ep0 = Ep0Simulator::new();
+        ep0.set_trace_status(0x12ab_34cd, 0x0000_0026);
+        let mut response = [0u8; 64];
+        let action = ep0.on_setup(
+            [0x80, 6, 3, 3, 0, 0, response.len() as u8, 0],
+            &mut response,
+        );
+        assert_eq!(action, ControlAction::DataIn(46));
+        assert_eq!(&response[..2], &[46, 3]);
+        assert_eq!(
+            &response[2..12],
+            &[b'F', 0, b'U', 0, b'T', 0, b'R', 0, b'-', 0]
+        );
+        assert_eq!(
+            &response[12..28],
+            &[
+                b'1', 0, b'2', 0, b'a', 0, b'b', 0, b'3', 0, b'4', 0, b'c', 0, b'd', 0,
+            ]
+        );
+        assert_eq!(&response[28..30], &[b'-', 0]);
+        assert_eq!(
+            &response[30..46],
+            &[
+                b'0', 0, b'0', 0, b'0', 0, b'0', 0, b'0', 0, b'0', 0, b'2', 0, b'6', 0,
+            ]
+        );
     }
 
     #[test]

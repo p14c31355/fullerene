@@ -169,6 +169,91 @@ cargo run -q -p flasks -- boot --arch aarch64 --platform bramble \
 The `boot` action does not write a partition. `flash` and `erase` are not
 exposed by Flasks yet.
 
+For a repeatable, non-destructive Bramble USB experiment, use the Rust
+host-side harness below while the phone is on the red-triangle Fastboot
+screen:
+
+```bash
+cargo run -q -p flasks --bin bramble-usb -- loop
+```
+
+The harness checks `product=bramble`, builds with the QEMU protocol preflight,
+audits the Android v3 boot image, and invokes only `fastboot boot`. After the
+handoff it waits for the bootloader's `18d1:4ee0` device to disappear and
+accepts a result only when the Fullerene gadget's `1234:0001` identity appears.
+It then captures `lsusb -v`, holds the gadget for a bounded interval, and
+saves build, boot, and kernel logs under a temporary run directory. A failed
+handoff is reported as a failure rather than being confused with a still-live
+bootloader session.
+
+Useful comparisons are:
+
+```bash
+cargo run -q -p flasks --bin bramble-usb -- loop --uncompressed
+cargo run -q -p flasks --bin bramble-usb -- loop --normal
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu
+cargo run -q -p flasks --bin bramble-usb -- loop --no-core-reset
+cargo run -q -p flasks --bin bramble-usb -- loop --bare-pullup
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 4
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 9
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 10
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 6
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 11
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --stop-after-stage 12
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --no-transfer-resource
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --android-resource-order
+cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --reuse-fastboot-dma
+cargo run -q -p flasks --bin bramble-usb -- matrix
+```
+
+The first bypasses generated `Image.lz4`; the second exercises the normal
+Bramble AArch64 kernel instead of the dedicated probe. `--no-smmu` must be
+combined with `--usb-gadget-handoff-probe`; it leaves the Apps SMMU untouched
+and relies on Fastboot's existing physical=IOVA bypass as a hardware
+differential. `--no-core-reset` keeps the halted-controller handoff but omits
+the DWC3 device soft reset, isolating whether CSFTRST destroys the inherited
+PHY/session state. Neither mode flashes, erases, or reboots a partition. After an
+enumeration timeout the harness waits up to 150 seconds for the probe watchdog
+to return to Fastboot. A probe image built before the watchdog fix can still
+leave the phone with no USB device and require manual recovery.
+
+`--reuse-fastboot-dma` is restricted to `--no-smmu` and reuses the event-ring
+page that Fastboot had already exposed to DWC3 for the EP0 event ring, setup
+packet, TRB, and response buffer. It is a diagnostic only; a successful
+enumeration would show that the linker-reserved `.usb_dma` address was not
+visible through the firmware-owned SMMU context.
+
+If the temporary boot falls back to Android, the harness recognizes the
+`18d1:4ee7` charging/debug identity immediately and saves its USB descriptor,
+ADB state, slot, build fingerprint, and kernel version. This is recorded as a
+stock fallback, not as Fullerene enumeration. The Rust harness automatically
+uses only `adb reboot bootloader` to restore host-visible Fastboot before a
+subsequent probe; it leaves partitions untouched and keeps the only image-
+transfer operation as `fastboot boot`.
+
+The `--stop-after-stage` probes publish the known physical USB2 pull-up after
+one handoff boundary and then let the watchdog recover. Stages 1--4 cover
+pre-EP0 setup, stage 5 covers both EP0 directions, stage 6 covers the first
+SETUP `STARTTRANSFER`, and stage 7 covers Run/Stop. Stage 11 isolates SETUP
+TRB publication before `STARTTRANSFER`, while stage 12 stops immediately
+after that command. Stage 8 splits the two EP0 directions; stage 9 stops
+after EP0 OUT `SETEPCONFIG`, and stage 10 stops after its
+`SETTRANSFRESOURCE`. `--no-transfer-resource` removes resource
+commands, while `--android-resource-order` tests the older Android msm order
+that allocates resources before `SETEPCONFIG`.
+
+The Rust `bramble-usb matrix` command runs the five bounded IRQ-route variants in sequence
+and proceeds to the next one only after the probe watchdog has restored
+host-visible Fastboot. It stops at the first successful Fullerene gadget, so
+no manual phone interaction is needed between failed probe attempts. When a
+case has already fallen back to Android, matrix uses only `adb reboot
+bootloader` to restore Fastboot before the next case; it never flashes or
+erases a partition.
+
+`--bare-pullup` is the minimal physical comparison: it omits DWC3 reset,
+SMMU, DMA, and EP0 setup, so a host-side descriptor timeout is expected and
+does not count as Fullerene enumeration.
+
 This command:
 1. Builds optimized `fullerene-kernel` and `bellows` artifacts with the `release` profile for the UEFI target `x86_64-unknown-uefi`.
 2. Creates a FAT image and ISO (`fullerene.iso`) with the bootloader and kernel.
@@ -333,6 +418,54 @@ descriptors, and the status completion of `SET_ADDRESS` and
 `SET_CONFIGURATION`. It models the DWC3 device-mode register protocol but
 does not emulate the SM7250 PHY, Qualcomm Type-C glue, or SMMU; those remain
 hardware-only.
+
+### Bramble USB handoff loop
+
+With the phone already in the red-triangle Fastboot screen and visible to the
+host, the non-destructive hardware loop is:
+
+```bash
+cargo run -q -p flasks --bin bramble-usb -- loop
+```
+
+It builds the AArch64 probe, runs the QEMU preflight and Android boot-image
+audit, sends the image with `fastboot boot`, then requires the bootloader
+identity (`18d1:4ee0`) to disappear and the Fullerene identity (`1234:0001`)
+to appear and remain present. It saves the build, boot, kernel, descriptor,
+USB-tree, and timing records in a temporary run directory, and waits briefly
+for the Fastboot USB node to appear before starting the build. The optional
+SuperSpeed comparison is:
+
+```bash
+cargo run -q -p flasks --bin bramble-usb -- loop --super-speed
+```
+
+That variant selects the QMP/SuperSpeed handoff probe and additionally
+requires a `5000M` or `10000M` link in `lsusb -t`. Neither mode invokes
+`fastboot flash`, `erase`, or reboot; if the probe watchdog must recover the
+phone, it waits for the bootloader USB device to return.
+
+The Qualcomm platform IRQ boundaries can be compared without changing the
+image workflow, for example:
+
+```bash
+cargo run -q -p flasks --bin bramble-usb -- loop --irq-route power
+cargo run -q -p flasks --bin bramble-usb -- loop --irq-route typec-role
+cargo run -q -p flasks --bin bramble-usb -- loop --irq-route smmu
+```
+
+The accepted routes are `power`, `typec`, `typec-role`, `pdc`, and `smmu`.
+
+When the Fullerene gadget is visible, the retained trace can be read without
+UART:
+
+```bash
+cargo run -q -p flasks --bin bramble-usb -- trace
+```
+
+This sends the bounded vendor control request page by page and prints the
+decoded `FUTR` records. Use `--serial` to select a specific gadget or
+`--timeout` to change the per-page transfer timeout.
 
 Nozzle exposes the Linux and WASI launchers through this single command:
 

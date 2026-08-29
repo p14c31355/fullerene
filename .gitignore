@@ -22,3 +22,5 @@ bellows/src/kernel.bin
 
 # Port application binaries — built from toluene/<port> submodules
 toluene/*/app.bin
+
+tmp/

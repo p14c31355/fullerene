@@ -3,6 +3,15 @@ use core::arch::asm;
 const TABLE_ENTRIES: usize = 512;
 const BLOCK_SIZE: u64 = 0x20_0000;
 
+// Linker symbols from the platform linker script. mmu::init() runs after the
+// PIE relocation bootstrap, so these addresses are resolved by then.
+unsafe extern "C" {
+    static __usb_dma_start: u8;
+    static __usb_dma_end: u8;
+    static __usb_trace_start: u8;
+    static __usb_trace_end: u8;
+}
+
 const DESC_VALID: u64 = 1 << 0;
 const DESC_TABLE: u64 = 1 << 1;
 const DESC_ATTR_DEVICE: u64 = 1 << 2;
@@ -102,13 +111,46 @@ fn is_mmio(physical: u64) -> bool {
         (0x0800_0000, 0x09ff_ffff),
         (0x0010_0000, 0x001f_ffff),
         (0x0080_0000, 0x009f_ffff),
-        (0x17a0_0000, 0x17bf_ffff),
+        (0x17a0_0000, 0x17c1_ffff),
         (0x0a60_0000, 0x0a6f_ffff),
         (0x1500_0000, 0x153f_ffff),
         (0x0c40_0000, 0x0e7f_ffff),
     ];
     let block_end = physical.saturating_add(BLOCK_SIZE - 1);
-    MMIO_RANGES
+    if MMIO_RANGES
         .iter()
         .any(|(start, end)| physical <= *end && block_end >= *start)
+    {
+        return true;
+    }
+    // The DWC3 DMA objects (event ring, TRBs, setup/response buffers) and the
+    // retained trace live in the .usb_dma/.usb_trace sections. The USB master
+    // is NOT hardware-coherent with the CPU on this SoC, and a stale cache
+    // line here makes the controller read pre-prepare garbage (or the CPU
+    // miss controller writes), so map the whole containing 2 MiB block as
+    // Device memory: every CPU access goes straight to DRAM and all explicit
+    // cache maintenance for these objects becomes a no-op by construction.
+    let dma_start = unsafe { core::ptr::addr_of!(__usb_dma_start) } as u64;
+    let dma_end = unsafe { core::ptr::addr_of!(__usb_dma_end) } as u64;
+    let trace_start = unsafe { core::ptr::addr_of!(__usb_trace_start) } as u64;
+    let trace_end = unsafe { core::ptr::addr_of!(__usb_trace_end) } as u64;
+    let section_bounds = match (
+        (dma_start != 0).then_some((dma_start, dma_end > dma_start)),
+        (trace_start != 0).then_some((trace_start, trace_end > trace_start)),
+    ) {
+        (Some((_, true)), Some((_, true))) => {
+            Some((dma_start.min(trace_start), dma_end.max(trace_end)))
+        }
+        (Some((_, true)), _) => Some((dma_start, dma_end)),
+        (_, Some((_, true))) => Some((trace_start, trace_end)),
+        _ => None,
+    };
+    if let Some((section_start, section_end)) = section_bounds {
+        let first_block = section_start & !(BLOCK_SIZE - 1);
+        let last_block = section_end.saturating_sub(1) & !(BLOCK_SIZE - 1);
+        if physical >= first_block && physical <= last_block {
+            return true;
+        }
+    }
+    false
 }
