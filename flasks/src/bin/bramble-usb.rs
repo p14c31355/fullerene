@@ -170,6 +170,28 @@ struct LoopArgs {
     /// Skip the SPMI Type-C handoff observation at probe entry (timing A/B).
     #[arg(long)]
     skip_typec_spmi: bool,
+    /// After a failed handoff, re-issue the missing init tail (Run/Stop, U0
+    /// poll, DEPSTARTCFG, SETEPCONFIG, SETUP arm) from the signal probe.
+    #[arg(long)]
+    u0_arm_probe: bool,
+    /// Control: unconditional APSS-WDT bite 3 s after probe entry; an early
+    /// loop return proves the APSS watchdog bite is writable and lands.
+    #[arg(long)]
+    wdt_bite_control: bool,
+    /// Override the secure-watchdog-disable SMC fnid (hex, e.g.
+    /// 0x82000107 = STD/SMC64 BOOT/0x07). A return far past the ~37 s
+    /// secure-WDT bucket means the bite was actually disabled.
+    #[arg(long = "swdd-fnid", value_name = "HEX")]
+    swdd_fnid: Option<String>,
+    /// Emit one host-visible DCTL.SDIS blip after the post-Run/Stop arm
+    /// window when the SETUP arm succeeded (a disconnect/re-attach pair at
+    /// attach proves the core's link FSM reached U0).
+    #[arg(long)]
+    arm_blip: bool,
+    /// Absolute reset ceiling (seconds) for the direct probe's poll loop:
+    /// guarantees a recovery reset even if both watchdogs are dead.
+    #[arg(long = "abs-reset-secs", value_name = "SECS")]
+    abs_reset_secs: Option<u64>,
     /// Publish the pull-up even when the handoff failed (read pre-Run/Stop
     /// gates via the attach presence).
     #[arg(long)]
@@ -556,6 +578,11 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         signal_fsr_gate: None,
         signal_ram_gate: false,
         skip_typec_spmi: false,
+        u0_arm_probe: false,
+        wdt_bite_control: false,
+        swdd_fnid: None,
+        arm_blip: false,
+        abs_reset_secs: None,
         signal_diag_publish: false,
         quiet_after: None,
         observe_secs: None,
@@ -699,6 +726,33 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--signal-ram-gate requires --signal-dma-probe",
+        ));
+    }
+    if args.u0_arm_probe && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--u0-arm-probe requires --signal-probe",
+        ));
+    }
+    if args.wdt_bite_control && !args.signal_probe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--wdt-bite-control requires --signal-probe",
+        ));
+    }
+    if let Some(value) = &args.swdd_fnid {
+        let hex = value.trim_start_matches("0x");
+        if u32::from_str_radix(hex, 16).is_err() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("--swdd-fnid must be a 32-bit hex value, got {value}"),
+            ));
+        }
+    }
+    if args.arm_blip && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--arm-blip requires --direct-handoff",
         ));
     }
     if args.signal_diag_publish && !args.signal_probe {
@@ -1198,6 +1252,23 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.skip_typec_spmi {
         arguments.push("--usb-skip-typec-spmi".to_owned());
+    }
+    if args.u0_arm_probe {
+        arguments.push("--usb-u0-arm-probe".to_owned());
+    }
+    if args.wdt_bite_control {
+        arguments.push("--usb-wdt-bite-control".to_owned());
+    }
+    if let Some(value) = &args.swdd_fnid {
+        arguments.push("--usb-swdd-fnid".to_owned());
+        arguments.push(value.clone());
+    }
+    if args.arm_blip {
+        arguments.push("--usb-arm-blip".to_owned());
+    }
+    if let Some(secs) = args.abs_reset_secs {
+        arguments.push("--usb-abs-reset-secs".to_owned());
+        arguments.push(secs.to_string());
     }
     if args.signal_diag_publish {
         arguments.push("--usb-signal-diag-publish".to_owned());

@@ -176,6 +176,15 @@ fn main() {
         if let Some(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_CMD_GATE").ok() {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_CMD_GATE={value}");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_PROBE_SINGLE_ATTEMPT").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_PROBE_SINGLE_ATTEMPT=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_U0_ARM_PROBE").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_U0_ARM_PROBE=1");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_WDT_BITE_CONTROL").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_WDT_BITE_CONTROL=1");
+        }
         if let Some(value) = env::var("FULLERENE_AARCH64_USB_EP0_SMMU_GATE").ok() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_smmu_gate");
             println!("cargo:rustc-env=FULLERENE_USB_SMMU_GATE_TYPE={value}");
@@ -261,6 +270,18 @@ fn main() {
         {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_EARLY_DROP={code}");
         }
+        if let Some(value) = env::var("FULLERENE_AARCH64_USB_SWDD_FNID").ok() {
+            println!("cargo:rustc-env=FULLERENE_USB_SWDD_FNID={value}");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_ARM_BLIP").is_some() {
+            println!("cargo:rustc-env=FULLERENE_USB_ARM_BLIP=1");
+        }
+        if let Some(secs) = env::var("FULLERENE_AARCH64_USB_ABS_RESET_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+        {
+            println!("cargo:rustc-env=FULLERENE_USB_ABS_RESET_SECS={secs}");
+        }
         if env::var_os("FULLERENE_AARCH64_QEMU_USB_SIM").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_qemu_usb_sim");
         }
@@ -288,6 +309,12 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_DMA_ADOPT");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SMMU_GATE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_CMD_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_SINGLE_ATTEMPT");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_U0_ARM_PROBE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_WDT_BITE_CONTROL");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SWDD_FNID");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ARM_BLIP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABS_RESET_SECS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SMMU_INSTALL");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SMMU_DISABLE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DROP_VBUS");

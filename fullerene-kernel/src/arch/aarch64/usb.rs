@@ -58,6 +58,12 @@ const APSS_WDT_STS: usize = 0xc;
 const APSS_WDT_BARK: usize = 0x10;
 const APSS_WDT_BITE: usize = 0x14;
 static mut WDT_TRACED: bool = false;
+// Non-zero while a scheduled APSS-WDT bite owns recovery: wdt_pet() must
+// stop petting (and must not re-arm the 100 s timeout) so the countdown
+// runs to the bite. The bite reboots the handset at a controlled time,
+// making the loop's return time a host-observable readout (the timing
+// readout the broken SMC software reset never delivered).
+static mut WDT_BITE_PENDING: u32 = 0;
 /// SCM result of the secure watchdog disable (0 = success; the sentinel
 /// means the call has not run yet or ran out of retries).
 static mut SWDD_RESULT: u64 = 0xFFFF_FFFF;
@@ -174,16 +180,27 @@ pub fn secure_wdt_disable() -> bool {
     // both-convention SEC_WDOG_DIS) deterministically wedges the handoff in
     // the standalone probe, so those probes live in secure_wdt_probes() and
     // run only in the signal-probe build, where the gate consumes them.
-    let result = unsafe { scm_smc_call_once(0x0200_0407, 1, 1, 0, 0) }.0;
+    // The fnid is build-selectable so the A/B run can swap encodings without
+    // a source change: the default is the proven-to-be-tolerated legacy call
+    // (0x02000407); the modern SMCCC OEN encodings of the same function
+    // (BOOT/0x07, funcnum 0x0107, owner SIP) are selected by
+    // FULLERENE_USB_SWDD_FNID, e.g. 0x82000107 = STD/SMC64, 0x02000107 =
+    // FAST/SMC64, 0xA2000107 = STD/SMC32, 0x22000107 = FAST/SMC32. The upper
+    // word of SWDD_RESULT records the fnid actually issued (the lower word
+    // is the result, so the swdd-ok gate keeps its meaning).
+    let fnid = option_env!("FULLERENE_USB_SWDD_FNID")
+        .and_then(|value| u64::from_str_radix(value.trim_start_matches("0x"), 16).ok())
+        .unwrap_or(0x0200_0407);
+    let result = unsafe { scm_smc_call_once(fnid, 1, 1, 0, 0) }.0;
     unsafe {
-        SWDD_RESULT = result;
+        SWDD_RESULT = (fnid << 32) | (result & 0xFFFF_FFFF);
     }
     trace_event(
         TRACE_PROBE_WATCHDOG,
         0x5357_4444, // "SWDD"
         result as u32,
-        0,
-        0,
+        (fnid >> 16) as u32,
+        fnid as u32,
         0,
     );
     result == 0
@@ -269,6 +286,11 @@ pub fn secure_wdt_probes() {
 /// in the retained trace, disabling it if it is armed.
 pub fn wdt_pet() {
     unsafe {
+        if WDT_BITE_PENDING != 0 {
+            // A scheduled bite owns recovery now: any pet (including the
+            // one-shot 100 s re-arm below) would cancel it.
+            return;
+        }
         if !WDT_TRACED {
             WDT_TRACED = true;
             let en = read_volatile(wdt_reg(APSS_WDT_EN));
@@ -310,6 +332,31 @@ pub fn wdt_pet() {
         // The downstream watchdog_v2 pets by writing 1 (not 0) to RST.
         write_volatile(wdt_reg(APSS_WDT_RST), 1);
         core::arch::asm!("dsb sy", options(nostack));
+    }
+}
+
+/// Schedule the APSS watchdog bite `delay` seconds from now: re-arm
+/// bark/bite at the 32765 Hz watchdog clock, restart the countdown, and
+/// mark the pet path so nothing cancels it. The bite reboots the handset
+/// on its own (no SMC software reset needed), so the loop's return time
+/// — bite time plus the ~20 s Android boot — becomes a host-observable
+/// readout of which u0_arm_recovery step failed. If the APSS WDT is not
+/// writable from here (secure-owned), the bite never lands and the secure
+/// watchdog's ~17 s bite (the ~37 s return) stands in for every bucket.
+/// The callers own the gating (the u0-arm status match is unreachable
+/// without the u0-arm env; the control bite has its own env).
+pub fn u0_arm_wdt_bite(delay_secs: u32) {
+    unsafe {
+        let delay = delay_secs.clamp(1, 16);
+        let bark = (delay.saturating_sub(1).max(1) * 32765) as u32;
+        let bite = (delay * 32765) as u32;
+        write_volatile(wdt_reg(APSS_WDT_BARK), bark);
+        write_volatile(wdt_reg(APSS_WDT_BITE), bite);
+        write_volatile(wdt_reg(APSS_WDT_RST), 1);
+        write_volatile(wdt_reg(APSS_WDT_EN), 1);
+        core::arch::asm!("dsb sy", options(nostack));
+        WDT_BITE_PENDING = delay;
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x5744_5442 | (delay & 0xff)); // "WDTB"
     }
 }
 
@@ -515,6 +562,7 @@ const GUSB3PIPECTL_SUSPHY: u32 = 1 << 17;
 const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 
 const DCTL_CSFTRST: u32 = 1 << 30;
+const DCTL_SDIS: u32 = 1 << 0;
 const DCTL_HIRD_THRES_MASK: u32 = 0x1f << 24;
 const DCTL_HIRD_THRES_LITO: u32 = 0x10 << 24;
 const DCTL_KEEP_CONNECT: u32 = 1 << 19;
@@ -1458,12 +1506,30 @@ static mut GADGET_HANDOFF_FAILURE_STAGE: u32 = 0;
 // still set == the core never retired the command), and the core-state DSTS
 // at the first endpoint command. 0xFFFF_FFFF = not reached.
 static mut INIT_STAGE: u32 = 0;
+// Post-init-failure self-heal outcome (u0_arm_recovery): 0xFFFF_FFFF = not
+// run, 0 = EP0 armed, 1 = run/stop failed, 4 = DEPSTARTCFG failed,
+// 5 = EP0-OUT config failed, 6 = EP0-IN config failed, 8 = SETUP TRB arm
+// failed (pre-Run/Stop; the poll loop retries it after the link is ON).
+static mut U0_ARM_STATUS: u32 = 0xFFFF_FFFF;
+// Host-visible blip count to emit once the link reaches ON (see
+// try_u0_blip). Set by the signal probe from the u0_arm_recovery status;
+// the poll loop clears it after the blips are emitted.
+static mut U0_BLIP_PENDING: u32 = 0;
+// Set by link_on_sample (called from poll) once the core's own link FSM
+// reads U0 (USBLNKST == 0 on a running, unhalted core), for the
+// "lnk-ever-on" gate: distinguishes a persistent link-FSM desync from a
+// U0 that was reached and then dropped.
+static mut LNK_EVER_ON: bool = false;
+static mut INIT_PRE_RESET_DSTS: u32 = 0xFFFF_FFFF;
+static mut INIT_DEPSTART_PRE_DSTS: u32 = 0xFFFF_FFFF;
 static mut INIT_DEPSTART_RAW: u32 = 0xFFFF_FFFF;
 static mut INIT_DEPSTART_DSTS: u32 = 0xFFFF_FFFF;
 static mut INIT_EPCFG0_OK: bool = false;
 static mut INIT_EPCFG0_RAW: u32 = 0xFFFF_FFFF;
 static mut INIT_EPCFG0_DSTS: u32 = 0xFFFF_FFFF;
 static mut INIT_EPCFG1_OK: bool = false;
+static mut INIT_EPCFG1_RAW: u32 = 0xFFFF_FFFF;
+static mut INIT_EPCFG1_DSTS: u32 = 0xFFFF_FFFF;
 static mut TYPEC_LANE_B: bool = false;
 /// True only after the combo QMP PHY has completed its cold initialization.
 /// USB2 handoff deliberately keeps this false: the USB2 path must not touch
@@ -1670,6 +1736,9 @@ static mut TRACE_HARVEST_ADDR2: u32 = 0;
 /// Newest "DARM" data-phase arm outcome (bit 16 = a record exists, bit 0 =
 /// the Start Transfer ultimately queued after retries) or 0xFFFF_FFFF.
 static mut TRACE_HARVEST_DARM: u32 = 0xFFFF_FFFF;
+/// Newest SETUP packet: (bRequest << 16) | wLength, or 0xFFFF_FFFF when no
+/// SETUP was ever received this boot.
+static mut TRACE_HARVEST_LAST_SETUP: u32 = 0xFFFF_FFFF;
 static mut INIT_CALLS: u32 = 0;
 /// GCTL.RAMCLKSEL observed while the previous owner (Fastboot) still had a
 /// working gadget. CSFTRST and the host's bus USB reset both clear this
@@ -1753,10 +1822,11 @@ unsafe fn harvest_trace_outcome() {
         TRACE_HARVEST_ARMED = 0;
         TRACE_HARVEST_ARM_SEQ = 0xFFFF_FFFF;
         TRACE_HARVEST_SETUP_SEQ = 0xFFFF_FFFF;
-        TRACE_HARVEST_CONNECT = 0;
-        TRACE_HARVEST_ADDR = 0;
-        TRACE_HARVEST_ADDR2 = 0;
-        TRACE_HARVEST_DARM = 0xFFFF_FFFF;
+            TRACE_HARVEST_CONNECT = 0;
+            TRACE_HARVEST_ADDR = 0;
+            TRACE_HARVEST_ADDR2 = 0;
+            TRACE_HARVEST_DARM = 0xFFFF_FFFF;
+            TRACE_HARVEST_LAST_SETUP = 0xFFFF_FFFF;
         TRACE_HARVEST_EP1_XFER = 0xFFFF_FFFF;
         TRACE_HARVEST_EP1_NRDY = 0;
         for offset in 0..count {
@@ -1782,6 +1852,11 @@ unsafe fn harvest_trace_outcome() {
                     // SET_ADDRESS record is NEWER than every SET_ADDRESS,
                     // i.e. the host's post-address read/all request.
                     TRACE_HARVEST_ADDR2 = 1;
+                }
+                // First hit of the backward scan is the newest SETUP.
+                if TRACE_HARVEST_LAST_SETUP == 0xFFFF_FFFF {
+                    TRACE_HARVEST_LAST_SETUP =
+                        (request << 16) | (read_volatile(addr_of!((*entry).length)) & 0xffff);
                 }
             }
             if event == TRACE_DESCRIPTOR_QUEUED {
@@ -1876,6 +1951,125 @@ unsafe fn harvest_trace_outcome() {
         // probe, not the post-address read/all).
         if TRACE_HARVEST_ADDR == 0 {
             TRACE_HARVEST_ADDR2 = 0;
+        }
+    }
+}
+
+/// Composite "diag" gate readout: re-harvest THIS run's live trace and fold
+/// the enumeration progress into a 1..6 code. Each level is the farthest
+/// point reached by the host's descriptor-read sequence (read/8, then the
+/// read/64 that currently times out with -110):
+///   1 = no SETUP ever reached EP0 (event ring / OUT path / CPU hung)
+///   2 = only the first SETUP (read/8); the read/64 SETUP was never
+///       delivered (SETUP TRB re-arm lost, event missed, or CPU hung after)
+///   3 = the read/64 SETUP was dispatched but queued no DataIn (on_setup
+///       stalled or answered with a non-data action)
+///   4 = the read/64 data phase was queued but its Start Transfer failed
+///   5 = the read/64 data phase armed cleanly but the core never fetched
+///       the data TRB
+///   6 = the core fetched the read/64 data TRB; the IN token went
+///       unanswered (link / core DMA / host side)
+/// DESC counts every TRACE_DESCRIPTOR_QUEUED entry, and each DataIn arm
+/// writes TWO (the descriptor record plus the "DARM" marker), so two arms
+/// (read/8 + read/64) give DESC >= 4. DARM holds the NEWEST arm outcome,
+/// which is the read/64 arm once DESC >= 4. EP1_NRDY counts the
+/// XferNotReady(CONTROL_DATA) events on the data endpoint: one per fetched
+/// data TRB, so >= 2 proves the read/64 data TRB was fetched.
+pub fn diag_readout_code() -> u32 {
+    unsafe {
+        harvest_trace_outcome();
+        let mut code = 1u32;
+        if TRACE_HARVEST_SETUP > 0 {
+            code = 2;
+            if TRACE_HARVEST_SETUP >= 2 {
+                code = 3;
+                if TRACE_HARVEST_DESC >= 4 {
+                    code = 4;
+                    if TRACE_HARVEST_DARM == 0x1_0001 {
+                        code = 5;
+                        if TRACE_HARVEST_EP1_NRDY >= 2 {
+                            code = 6;
+                        }
+                    }
+                }
+            }
+        }
+        code
+    }
+}
+
+/// Eval-time rescue for the read/64 -110. No blip readout has ever been
+/// host-visible on this board (zero SDIS pairs across every run), so the
+/// diag gate ACTS instead of reporting: it re-drives whichever stage of the
+/// host's pending 64-byte GET_DESCRIPTOR is stuck, using the live trace
+/// plus the live core state. The host's read/64 URB stays pending until its
+/// 5 s timeout and keeps polling IN tokens, so a successful re-arm lands
+/// the data and the host journal's enumeration progress is the readout
+/// (1234:0001 = success, -110 again = this stage's rescue did not land).
+/// Returns the branch taken (0 = no rescue):
+///   0 = last SETUP was not a 64-byte GET_DESCRIPTOR, or the core is not
+///       running with the link U0 (nothing pending to rescue)
+///   1 = latched SETUP undelivered (the setup buffer still holds the
+///       packet): re-dispatched through handle_setup
+///   2 = nothing latched, state Setup: the SETUP TRB was never (re)armed,
+///       so the host's SETUP is latched in the core - rearm it
+///   3 = state Data: the 64-byte DataIn was dispatched but the data phase
+///       never completed - ENDTRANSFER + resource re-issue + re-arm of the
+///       same data TRB (the response buffer still holds the data)
+///   4 = state Status: the status ZLP was lost - re-arm the status
+pub fn rescue_read64() -> u32 {
+    unsafe {
+        harvest_trace_outcome();
+        let last = TRACE_HARVEST_LAST_SETUP;
+        if last == 0xFFFF_FFFF || (last >> 16) != 6 || (last & 0xffff) != 64 {
+            return 0;
+        }
+        let dsts = read(DSTS);
+        if dsts & DSTS_DEVCTRLHLT != 0 || (dsts >> 18) & 0xf != 0 {
+            return 0;
+        }
+        let setup = ep0_setup_ptr();
+        cache_invalidate(setup as usize, 8);
+        let mut latched = false;
+        for offset in 0..8 {
+            if read_volatile(setup.add(offset)) != 0 {
+                latched = true;
+                break;
+            }
+        }
+        if latched {
+            // Mirror the fresh_setup path: the latched SETUP overrides any
+            // stale phase.
+            EP0_STATE = Ep0State::Setup;
+            handle_setup();
+            return 1;
+        }
+        match EP0_STATE {
+            Ep0State::Setup => {
+                let _ = rearm_setup();
+                2
+            }
+            Ep0State::Data => {
+                let _ = end_transfer(1);
+                let _ = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+                let mut queued = start_transfer(1, ep0_trb_ptr(0));
+                if !queued {
+                    for _ in 0..50 {
+                        super::timer::delay_us(200);
+                        if start_transfer(1, ep0_trb_ptr(0)) {
+                            queued = true;
+                            break;
+                        }
+                    }
+                }
+                let _ = queued;
+                3
+            }
+            Ep0State::Status => {
+                let endpoint = if CONTROL_HAS_DATA && CONTROL_IN { 0 } else { 1 };
+                let _ = start_status(endpoint);
+                4
+            }
         }
     }
 }
@@ -3134,6 +3328,11 @@ unsafe fn core_soft_reset(super_speed: bool) -> bool {
         if !device_soft_reset() {
             return false;
         }
+
+        // B3a: the CSFTRST handshake completed (DCTL.CSFTRST cleared) but
+        // the GCTL.CORESOFTRESET / PHY_PHYSOFTRST section has not started.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
 
         let mut gctl = read(GCTL);
         gctl |= GCTL_CORESOFTRESET;
@@ -5861,6 +6060,15 @@ pub fn init_usb2_handoff() -> bool {
         return true;
     }
 
+    // A gate readout run must inspect the direct path's OWN failure state
+    // while the ~17 s watchdog is still silent; the fallback's resets would
+    // both consume the remaining window and overwrite the core state under
+    // test. The caller's single-attempt limit then keeps the observation
+    // window short enough to beat the bite.
+    if option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1") {
+        return false;
+    }
+
     // Only after the non-destructive handoff fails do we attempt the complete
     // Qualcomm platform sequence. The caller may then use the cold USB2 path
     // as an explicit diagnostic of missing platform ownership.
@@ -6610,6 +6818,51 @@ pub fn init_usb2_gadget_handoff() -> bool {
     }
 }
 
+/// Host-visible progress beacon for the direct path's reset section: toggle
+/// the QSCRATCH session pull-up for 500 ms at each boundary. Every
+/// drop/restore pair shows up as one host-side disconnect/re-attach pair in
+/// the kernel log, so the LAST beacon visible in the log names exactly how
+/// far the code got - including when the code then hangs on a faulting MMIO
+/// access, where the watchdog return timing alone cannot localize the stop.
+/// Only active in single-attempt (gate readout) runs.
+#[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+unsafe fn init_beacon() {
+    unsafe {
+        if option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") != Some("1") {
+            return;
+        }
+        let gate = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE");
+        if gate == Some("stall-map") {
+            stall_map_beacon();
+            return;
+        }
+        // Cmd-gate runs read their one bit from the return timing and must
+        // evaluate inside the pre-bite window; the beacons add ~1 s each to
+        // init and pushed the evaluation into the ~17 s watchdog bite.
+        if gate.is_some() {
+            return;
+        }
+        ep0_signal_drop_pullup();
+        super::timer::delay_ms(500);
+        ep0_signal_restore_pullup();
+    }
+}
+
+/// stall-map beacon: one host-visible DCTL.SDIS disconnect/re-attach pair
+/// (see `sdisc_blips`: the QSCRATCH/VBUS session overrides are
+/// host-invisible on this board, and the SDIS soft disconnect is the proven
+/// visible lever). The soft disconnect is honored only while the core is
+/// running with the link ON, so beacons before Run/Stop are silent by
+/// design; the last visible pair in the host journal names how far the init
+/// tail got, and the ~31 s PSCI return from the cfg-block park names that
+/// the tail completed at all.
+#[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+unsafe fn stall_map_beacon() {
+    unsafe {
+        sdisc_blips_link_on(1);
+    }
+}
+
 fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bool) -> bool {
     unsafe {
         QMP_PHY_READY = false;
@@ -6780,6 +7033,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             0,
             0,
         );
+        // E0: session bits + GCTL device mode + RAMCLK captured, before the
+        // bare-pullup inner (the host attach point is at or before this).
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if let Some(want) = option_env!("FULLERENE_USB_SIGNAL_RAMCLK_GATE") {
             // One-bit readout of the previous owner's GCTL.RAMCLKSEL value.
@@ -6792,6 +7049,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             }
         }
 
+        // B1: GCTL device-mode + RAMCLK capture done, before the bare inner.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
+
         // Use the same pre-reset ownership boundary as the proven Bramble
         // gadget probe.  The helper wakes UTMI, selects the USB2 clock path,
         // clears stale endpoint advertising, and stops the old Fastboot
@@ -6801,6 +7062,11 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         if !reset_platform && !super_speed {
             let _ = init_usb2_bare_pullup_handoff_inner(false);
         }
+
+        // B2: bare inner done (UTMI awake, GCTL device mode, old Fastboot
+        // session stopped and the core halted) - just before core_soft_reset.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
 
         #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
         if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) && stop_after_gadget_handoff_stage(1) {
@@ -6812,6 +7078,16 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         }
 
         if reset_core {
+            // B3: about to assert CSFTRST (device_soft_reset inside
+            // core_soft_reset). If the log stops after B3, the failure is
+            // inside the soft-reset handshake or the core/PHY reset section.
+            #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+            init_beacon();
+            // Core state at the moment the soft reset is about to start:
+            // a CSFTRST issued while the core is suspended/halted vs reset
+            // vs running has different completion behavior, and the gate
+            // readout names which state the handoff actually inherited.
+            INIT_PRE_RESET_DSTS = read(DSTS);
             let reset_ok = if reset_platform {
                 core_soft_reset(qmp_ready)
             } else if !super_speed {
@@ -6831,7 +7107,18 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 return false;
             }
         }
+
+        // B4: core_soft_reset (CSFTRST + GCTL core reset + USB2 PHY
+        // soft reset + release delays) fully returned.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
+
         configure_dwc3_global_control();
+
+        // B5: post-reset global control programmed.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
+
         INIT_STAGE = 2;
         // The device reset above is the ownership boundary for the previous
         // Fastboot transfer epoch. The direct probe normally enters before
@@ -6882,6 +7169,11 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // advertises the XHCI 1.0 register layout through this QSCRATCH bit
         // during its reset callback.
         qscratch_set(QSCRATCH_GENERAL_CFG, QSCRATCH_GENERAL_CFG_XHCI_REV);
+
+        // C1: post-reset QSCRATCH session re-asserted (the host attach point
+        // when the QSCRATCH session bits own the pull-up).
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
 
         // USB2-only starts need the same post-reset UTMI clock selection as
         // the Qualcomm glue. The DWC3 reset above invalidates the controller's
@@ -6972,6 +7264,9 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         write(GEVNTADRHI0, (event_address >> 32) as u32);
         write(GEVNTSIZ0, ep0_event_size() as u32);
         acknowledge_ep0_event_count();
+        // C2: event ring published and the Fastboot event count acknowledged.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
         trace_event(
             TRACE_EVENT_RING_READY,
             event_address as u32,
@@ -7033,6 +7328,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             return true;
         }
 
+        // Capture the core state BEFORE the first endpoint command: the
+        // post-command DSTS (below) only reflects the state after the
+        // command retired or its 2M-read timeout expired.
+        INIT_DEPSTART_PRE_DSTS = read(DSTS);
         let depstart_ok = send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0);
         INIT_STAGE = 4;
         INIT_DEPSTART_RAW = read(dep_reg(0, 0x0c));
@@ -7059,6 +7358,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             false
         };
         INIT_EPCFG1_OK = epcfg1;
+        if epcfg0 {
+            INIT_EPCFG1_RAW = read(dep_reg(1, 0x0c));
+            INIT_EPCFG1_DSTS = read(DSTS);
+        }
         if epcfg0 {
             INIT_STAGE = 6;
         }
@@ -7090,6 +7393,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         );
         trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, read(DSTS));
         prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+        // C3: DEPSTARTCFG + both EP0 SETEPCONFIG/SETTRANSFRESOURCE commands
+        // done (or failed fast), DALEPENA/DEVTEN set, setup TRB prepared.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
 
         // Split the direct probe at the exact DMA publication boundary:
         // stage 6 has only written/cleaned the setup TRB, while stage 7 is
@@ -7301,6 +7608,9 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // HIRD threshold across the temporary-image handoff.
         configure_gadget_speed(qmp_ready);
         enable_gadget_susphy();
+        // C4: speed/SUSPHY configured; the next boundary is Run/Stop.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if let Some(want) = option_env!("FULLERENE_USB_SIGNAL_RSC_GATE") {
             // One-bit readout of the previous attempt's SETTRANSFRESOURCE
@@ -7561,7 +7871,23 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 0,
                 read(DSTS),
             );
+            // Host-visible arm readout: a single DCTL.SDIS toggle right after
+            // the window is one disconnect/re-attach pair in the host log.
+            // It fires ONLY when the arm succeeded, which requires the core's
+            // own link state to read ON (USBLNKST == 0) while the core is
+            // running - so a pair at attach proves the core sees the HS link
+            // in U0 and the -110 is in the EP0 data path (event ring / IN
+            // DMA), while zero pairs means the core's link FSM never reached
+            // U0 (PHY-level training the host saw, the core did not). SDIS on
+            // a non-U0 link is host-invisible, so the absence is safe.
+            if armed && option_env!("FULLERENE_USB_ARM_BLIP") == Some("1") {
+                sdisc_blips(1);
+            }
         }
+
+        // C5: Run/Stop active and the tight SETUP-arm window is done.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
 
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         ep0_signal_early_drop_check();
@@ -7583,6 +7909,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             poll_ep0_event_ring();
         }
         log_puts("usb: Fullerene DWC3 gadget connected\n");
+        // C6: init tail done (start_after_connect arm + event poll); about to
+        // return to the probe entry and cross the cfg-block boundary.
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        init_beacon();
         note_runtime_event(super::platform::bramble::UsbRuntimeEvent::ControllerStarted);
     }
     true
@@ -7798,6 +8128,24 @@ pub fn ep0_raw_link_signal_code() -> u32 {
     }
 }
 
+/// One-shot raw link-state readout for the lnk-nib gate: the 4-bit
+/// USBLNKST nibble, or 16 when the core reads halted, or 17 when Run/Stop
+/// reads back cleared (a QSCRATCH/VBUSVLDEXT0 phantom attach - the PHY can
+/// still answer the host's port reset and chirps while the core is out of
+/// the loop, which would masquerade as a link-FSM desync).
+pub fn ep0_raw_link_nibble() -> u32 {
+    unsafe {
+        let dsts = read(DSTS);
+        if dsts & DSTS_DEVCTRLHLT != 0 {
+            return 16;
+        }
+        if read(DCTL) & DCTL_RUN_STOP == 0 {
+            return 17;
+        }
+        (dsts >> 18) & 0xf
+    }
+}
+
 /// Read-only Apps-SMMU state for the DWC3 stream. This never writes the
 /// SMMU; if the aperture is clock-gated or secure-owned the access aborts and
 /// the handset reboots before the pull-up is published, which is itself a
@@ -7949,6 +8297,21 @@ pub fn mmio_quiet_active() -> bool {
 
 /// Evaluate the FULLERENE_USB_SIGNAL_CMD_GATE condition against the
 /// retained-trace harvest. None = no gate configured (or unparseable).
+/// Latch the "core link FSM read U0" fact for the lnk-ever-on gate. Called
+/// from poll, so it samples every loop iteration of whichever loop owns the
+/// controller.
+pub fn link_on_sample() {
+    unsafe {
+        if LNK_EVER_ON {
+            return;
+        }
+        let dsts = read(DSTS);
+        if dsts & DSTS_DEVCTRLHLT == 0 && (dsts >> 18) & 0xf == 0 {
+            LNK_EVER_ON = true;
+        }
+    }
+}
+
 pub fn cmd_gate_condition_met() -> Option<bool> {
     let want = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")?;
     unsafe {
@@ -8031,6 +8394,10 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             // endpoints ready, is the SETUP TRB armed, and is EP0 in the
             // Setup state?
             "lnk-on" => (read(DSTS) >> 18) & 0xf == 0,
+            // Did the core's link FSM read U0 at ANY poll sample since boot
+            // (latched in link_on_sample), even if it dropped again before
+            // this gate's evaluation?
+            "lnk-ever-on" => LNK_EVER_ON,
             "lnk-reset" => (read(DSTS) >> 18) & 0xf == 1,
             "lnk-suspend" => {
                 let lnkst = (read(DSTS) >> 18) & 0xf;
@@ -8046,35 +8413,86 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             // (CMDACT bit 10 clear == done, set == the core never processed
             // it), and was the core ready (DCNRD bit 29) / halted (bit 22) /
             // link U0 at the first endpoint command?
+            // Pre-DEPSTARTCFG progress: is2 = core reset + global control
+            // done (a FALSE here names a core_soft_reset/CSFTRST failure),
+            // is3 = post-reset setup + SMMU boundary done.
+            "is2" => INIT_STAGE >= 2,
+            "is3" => INIT_STAGE >= 3,
             "is4" => INIT_STAGE >= 4,
             "is5" => INIT_STAGE >= 5,
             "is6" => INIT_STAGE >= 6,
+            // Core device-state at the moment the FIRST endpoint command was
+            // ISSUED (DSTS.DEVCTRL field, bits 13:11): 0 = Reset, 1 =
+            // Run/Stop, 5 = Suspend. The post-command DSTS captures are
+            // post-timeout and cannot distinguish "never processed" from
+            // "processed late".
+            "ds-pre-rst" => {
+                INIT_DEPSTART_PRE_DSTS != 0xFFFF_FFFF && (INIT_DEPSTART_PRE_DSTS >> 11) & 0x7 == 0
+            }
+            "ds-pre-rs" => {
+                INIT_DEPSTART_PRE_DSTS != 0xFFFF_FFFF && (INIT_DEPSTART_PRE_DSTS >> 11) & 0x7 == 1
+            }
+            "ds-pre-susp" => {
+                INIT_DEPSTART_PRE_DSTS != 0xFFFF_FFFF && (INIT_DEPSTART_PRE_DSTS >> 11) & 0x7 == 5
+            }
+            "ds-pre-halt" => {
+                INIT_DEPSTART_PRE_DSTS != 0xFFFF_FFFF
+                    && INIT_DEPSTART_PRE_DSTS & DSTS_DEVCTRLHLT != 0
+            }
+            // Live core state at gate-eval time (after init + fallback +
+            // observation window): which device state does the core sit in,
+            // and what is software asking for in DCTL?
+            "dsts-rs" => (read(DSTS) >> 11) & 0x7 == 1,
+            "dsts-rst" => (read(DSTS) >> 11) & 0x7 == 0,
+            "dctl-run" => read(DCTL) & DCTL_RUN_STOP != 0,
+            "dctl-csf" => read(DCTL) & DCTL_CSFTRST != 0,
+            // Register-file liveness at gate eval: an all-ones readback
+            // means the DWC3 aperture is unreachable (core clock/power down)
+            // - a different failure class from a stuck reset handshake.
+            "dctl-ok" => read(DCTL) != 0xFFFF_FFFF,
+            "dsts-ok" => read(DSTS) != 0xFFFF_FFFF,
+            // Core state at the moment the soft reset started (the
+            // inheritance from the Fastboot teardown, before CSFTRST).
+            "pre-res-rst" => {
+                INIT_PRE_RESET_DSTS != 0xFFFF_FFFF && (INIT_PRE_RESET_DSTS >> 11) & 0x7 == 0
+            }
+            "pre-res-rs" => {
+                INIT_PRE_RESET_DSTS != 0xFFFF_FFFF && (INIT_PRE_RESET_DSTS >> 11) & 0x7 == 1
+            }
+            "pre-res-susp" => {
+                INIT_PRE_RESET_DSTS != 0xFFFF_FFFF && (INIT_PRE_RESET_DSTS >> 11) & 0x7 == 5
+            }
+            "pre-res-halt" => {
+                INIT_PRE_RESET_DSTS != 0xFFFF_FFFF && INIT_PRE_RESET_DSTS & DSTS_DEVCTRLHLT != 0
+            }
+            // EP0 IN (physical endpoint 1) command outcome, mirroring the
+            // DEPSTARTCFG/EP0-OUT gates.
+            "ep1-stuck" => INIT_EPCFG1_RAW != 0xFFFF_FFFF && INIT_EPCFG1_RAW & DEPCMD_CMDACT != 0,
+            "ep1-lnk0" => INIT_EPCFG1_RAW != 0xFFFF_FFFF && (INIT_EPCFG1_DSTS >> 18) & 0xf == 0,
+            // Retained-trace harvest of the DEPSTARTCFG / SETTRANSFRESOURCE
+            // commands (bit 12 = the command timed out with CMDACT stuck):
+            // the harvest re-reads this run's live trace at gate eval, so
+            // these cross-check the INIT_* snapshot gates above.
+            "cfg-hv" => TRACE_HARVEST_CFG != 0xFFFF_FFFF,
+            "cfg-hv-done" => TRACE_HARVEST_CFG != 0xFFFF_FFFF && TRACE_HARVEST_CFG & 0x1_0000 == 0,
+            "cfg-hv-stuck" => TRACE_HARVEST_CFG & 0x1_0000 != 0,
+            "rsc-hv" => TRACE_HARVEST_RSC != 0xFFFF_FFFF,
+            "rsc-hv-done" => TRACE_HARVEST_RSC != 0xFFFF_FFFF && TRACE_HARVEST_RSC & 0x1_0000 == 0,
+            "rsc-hv-stuck" => TRACE_HARVEST_RSC & 0x1_0000 != 0,
             "ds-stuck" => {
                 INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_RAW & DEPCMD_CMDACT != 0
             }
-            "ds-done" => {
-                INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_RAW & DEPCMD_CMDACT == 0
-            }
-            "ep0-stuck" => {
-                INIT_EPCFG0_RAW != 0xFFFF_FFFF && INIT_EPCFG0_RAW & DEPCMD_CMDACT != 0
-            }
+            "ds-done" => INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_RAW & DEPCMD_CMDACT == 0,
+            "ep0-stuck" => INIT_EPCFG0_RAW != 0xFFFF_FFFF && INIT_EPCFG0_RAW & DEPCMD_CMDACT != 0,
             "ep0-ok" => INIT_EPCFG0_OK,
             "ep1-ok" => INIT_EPCFG1_OK,
-            "ds-dcnrd" => {
-                INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_DSTS & DSTS_DCNRD != 0
-            }
-            "ep0-dcnrd" => {
-                INIT_EPCFG0_RAW != 0xFFFF_FFFF && INIT_EPCFG0_DSTS & DSTS_DCNRD != 0
-            }
+            "ds-dcnrd" => INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_DSTS & DSTS_DCNRD != 0,
+            "ep0-dcnrd" => INIT_EPCFG0_RAW != 0xFFFF_FFFF && INIT_EPCFG0_DSTS & DSTS_DCNRD != 0,
             "ds-halt" => {
                 INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_DSTS & DSTS_DEVCTRLHLT != 0
             }
-            "ds-lnk0" => {
-                INIT_DEPSTART_RAW != 0xFFFF_FFFF && (INIT_DEPSTART_DSTS >> 18) & 0xf == 0
-            }
-            "ep0-lnk0" => {
-                INIT_EPCFG0_RAW != 0xFFFF_FFFF && (INIT_EPCFG0_DSTS >> 18) & 0xf == 0
-            }
+            "ds-lnk0" => INIT_DEPSTART_RAW != 0xFFFF_FFFF && (INIT_DEPSTART_DSTS >> 18) & 0xf == 0,
+            "ep0-lnk0" => INIT_EPCFG0_RAW != 0xFFFF_FFFF && (INIT_EPCFG0_DSTS >> 18) & 0xf == 0,
             other => u32::from_str_radix(other.trim_start_matches("0x"), 16)
                 .map(|value| TRACE_HARVEST == value)
                 .unwrap_or(false),
@@ -8084,10 +8502,11 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
 }
 
 /// Park for `seconds` (no pull-up toggling, no fallback path, no secondary
-/// attempt, so gate readouts stay uncontaminated), then reset through the
-/// normal recovery path (PS_HOLD release + PSCI SYSTEM_RESET, inlined here
-/// because usb_probe is a separate binary). The trace marker carries the
-/// park duration so a later retained-trace read can name the exact branch.
+/// attempt, so gate readouts stay uncontaminated), then reset through PSCI
+/// SYSTEM_RESET with the Qualcomm PS_HOLD release as the rejected-SMC
+/// fallback (inlined here because usb_probe is a separate binary). The trace
+/// marker carries the park duration so a later retained-trace read can name
+/// the exact branch.
 pub fn park_for_seconds(seconds: u64) -> ! {
     unsafe {
         trace_marker(
@@ -8101,10 +8520,22 @@ pub fn park_for_seconds(seconds: u64) -> ! {
             core::hint::spin_loop();
         }
         unsafe {
-            core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
+            // PSCI SYSTEM_RESET (function 7) FIRST. The PS_HOLD release
+            // lives in the PMIC/SPMI aperture, which the probe path never
+            // clocks up; on this board that write can stall the CPU, handing
+            // recovery to the secure watchdog (~37 s return) instead of the
+            // PSCI reset. If the SMC returns (firmware rejected it), release
+            // PS_HOLD behind it and let the watchdog finish recovery.
+            // (The previous encoding, 0x84000009, was PSCI MIGRATE - it
+            // returned without resetting, which is why every software reset
+            // attempt in this project's history fell through to the secure
+            // watchdog.)
             core::arch::asm!(
-                "mov w0, #9",
+                "mov w0, #7",
                 "movk w0, #0x8400, lsl #16",
+                "mov x1, xzr",
+                "mov x2, xzr",
+                "mov x3, xzr",
                 "smc #0",
                 out("x0") _,
                 out("x1") _,
@@ -8112,6 +8543,7 @@ pub fn park_for_seconds(seconds: u64) -> ! {
                 out("x3") _,
                 options(nostack)
             );
+            core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
         }
         loop {
             core::hint::spin_loop();
@@ -8182,6 +8614,220 @@ pub fn ep0_signal_restore_pullup() {
     }
 }
 
+/// Post-init-failure self-heal, run from the signal probe's polling context
+/// after a failed handoff. The host is already attached to the session
+/// pull-up (see the -110 runs), so whatever init stage gave up, the missing
+/// tail can still be issued here. The order mirrors Linux's
+/// `dwc3_gadget_soft_connect`: event buffers, then DEPSTARTCFG /
+/// SETEPCONFIG / the EP0 OUT STARTTRANSFER while the core is still in its
+/// post-reset state, and ONLY THEN Run/Stop. The DCFG device address is
+/// cleared because the bootloader's fastboot address must not survive into
+/// the new enumeration (a stale non-zero DEVADDR makes the core ignore the
+/// host's default-address SETUP tokens). Gated by a build-time env var; the
+/// status code is kept for the retained trace and the DCTL.SDIS blip
+/// readout.
+pub fn u0_arm_recovery() -> u32 {
+    if option_env!("FULLERENE_USB_U0_ARM_PROBE")
+        .filter(|value| *value != "0")
+        .is_none()
+    {
+        return 0xFFFF_FFFF;
+    }
+    unsafe {
+        if EP0_SETUP_ARMED && ENDPOINTS_READY {
+            U0_ARM_STATUS = 0;
+            return 0;
+        }
+        let event_address = ep0_event_address();
+        cache_clean(ep0_event_dma_base(), ep0_event_size());
+        write(GEVNTADRLO0, event_address as u32);
+        write(GEVNTADRHI0, (event_address >> 32) as u32);
+        write(GEVNTSIZ0, ep0_event_size() as u32);
+        acknowledge_ep0_event_count();
+        EVENT_OFFSET = 0;
+        let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
+        let mut dcfg = read(DCFG) & !(DCFG_SPEED_MASK | DCFG_DEVADDR_MASK);
+        dcfg |= if speed == DSTS_SUPERSPEED {
+            DCFG_SUPERSPEED
+        } else {
+            DCFG_HIGHSPEED
+        };
+        write(DCFG, dcfg);
+        GadgetDriver::reset(gadget_mut());
+        udc_mut().reset();
+        EP0_STATE = Ep0State::Setup;
+        CONFIGURED = false;
+        DATA_ENDPOINTS_READY = false;
+        DATA_REQUEST_SLOTS = [usize::MAX; 2];
+        DATA_RESOURCE_INDEX = [0; 2];
+        if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
+            U0_ARM_STATUS = 4;
+            return 4;
+        }
+        let max_packet = if speed == DSTS_SUPERSPEED {
+            INITIAL_EP0_MAX_PACKET_SIZE
+        } else {
+            64
+        };
+        if !configure_endpoint(0, max_packet, false) {
+            U0_ARM_STATUS = 5;
+            return 5;
+        }
+        if !configure_endpoint(1, max_packet, false) {
+            U0_ARM_STATUS = 6;
+            return 6;
+        }
+        ENDPOINTS_READY = true;
+        write(DALEPENA, 0b11);
+        write(
+            DEVTEN,
+            DEVTEN_DISCONNECT
+                | DEVTEN_USB_RESET
+                | DEVTEN_CONNECT_DONE
+                | DEVTEN_LINK_STATUS_CHANGE
+                | DEVTEN_WAKEUP
+                | DEVTEN_HIBERNATION_REQUEST
+                | DEVTEN_SUSPEND
+                | DEVTEN_ERRATIC_ERROR
+                | DEVTEN_CMD_COMPLETE
+                | DEVTEN_OVERFLOW,
+        );
+        // Linux arms the EP0 OUT SETUP TRB (dwc3_ep0_out_start) inside
+        // __dwc3_gadget_start, i.e. BEFORE the Run/Stop transition. If the
+        // command does not retire here, the poll-loop's try_arm_setup
+        // retries it once the link reaches ON after Run/Stop.
+        prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+        if start_transfer(0, ep0_trb_ptr(0)) {
+            EP0_SETUP_ARMED = true;
+            PENDING_SETUP_ARM = false;
+        } else {
+            U0_ARM_STATUS = 8;
+        }
+        if !run_stop_device(true) {
+            U0_ARM_STATUS = 1;
+            return 1;
+        }
+        // U0_ARM_STATUS is 0 (the SETUP TRB is armed) or 8 (the pre-Run/Stop
+        // STARTTRANSFER did not retire; the poll loop's try_arm_setup
+        // retries it once the link reaches ON after Run/Stop).
+        U0_ARM_STATUS
+    }
+}
+
+/// Queue a host-visible blip readout to be emitted once the link reaches
+/// ON. The host only attaches ~10 s after boot, so a blip issued right
+/// after the failed handoff would be invisible; the poll loop emits it via
+/// `try_u0_blip` when the core reports the link ON.
+pub fn u0_arm_set_blips(count: u32) {
+    if option_env!("FULLERENE_USB_U0_ARM_PROBE")
+        .filter(|value| *value != "0")
+        .is_none()
+    {
+        return;
+    }
+    unsafe {
+        U0_BLIP_PENDING = count.min(6);
+    }
+}
+
+/// Queue the link-ON blip for the direct handoff success path. The
+/// init-window blip only fires when the arm lands inside 100 ms of
+/// Run/Stop, but the host's U0 arrives right at that window's edge, so a
+/// zero there is not a discriminator. The poll loop's try_u0_blip is the
+/// reliable readout: one SDIS disconnect/re-attach pair when the core
+/// first reads the link ON, on whichever branch owns the poll loop.
+pub fn arm_blip_queue() {
+    if option_env!("FULLERENE_USB_ARM_BLIP")
+        .filter(|value| *value != "0")
+        .is_none()
+    {
+        return;
+    }
+    unsafe {
+        U0_BLIP_PENDING = U0_BLIP_PENDING.max(1);
+    }
+}
+
+/// Emit the queued blips once, when the link is ON. Same link test as
+/// `try_arm_setup` (it is also issued after the arm attempt, so the SETUP
+/// TRB is in place before the blip's re-attach re-runs enumeration).
+unsafe fn try_u0_blip() {
+    unsafe {
+        if U0_BLIP_PENDING == 0 {
+            return;
+        }
+        let dsts = read(DSTS);
+        if dsts & DSTS_DEVCTRLHLT != 0 || (dsts >> 18) & 0xf != 0 {
+            return;
+        }
+        let count = U0_BLIP_PENDING;
+        U0_BLIP_PENDING = 0;
+        sdisc_blips(count);
+    }
+}
+
+/// Emit up to `count` SDIS blips only when the core reports the link ON
+/// (running, unhalted, USBLNKST == 0). On a non-U0 link the soft
+/// disconnect is host-invisible, so this is a silent no-op before attach.
+pub fn sdisc_blips_link_on(count: u32) {
+    unsafe {
+        let dsts = read(DSTS);
+        if dsts & DSTS_DEVCTRLHLT != 0 || (dsts >> 18) & 0xf != 0 {
+            return;
+        }
+        sdisc_blips(count);
+    }
+}
+
+/// Host-visible failure readout: toggle the core's own soft disconnect
+/// (`DCTL.SDIS`) `count` times. Each toggle is one disconnect/re-attach
+/// pair in the host kernel log, so the LAST run's pair count names which
+/// recovery step failed without any other channel (timing readouts are
+/// masked by the secure watchdog, and the QSCRATCH session overrides are
+/// host-invisible on this board). A core that never reached Run/Stop
+/// ignores DCTL, so ZERO blips is itself the "core not running" signal.
+pub fn sdisc_blips(count: u32) {
+    unsafe {
+        for _ in 0..count.min(6) {
+            let mut dctl = read(DCTL);
+            dctl |= DCTL_SDIS;
+            write_dctl_safe(dctl);
+            super::timer::delay_ms(300);
+            dctl = read(DCTL);
+            dctl &= !DCTL_SDIS;
+            write_dctl_safe(dctl);
+            super::timer::delay_ms(200);
+        }
+    }
+}
+
+/// Fast SDIS blip variant for the "diag" gate readout: 100 ms disconnect +
+/// 70 ms reconnect per pair (170 ms total), so the control pair plus all
+/// six code pairs finish in ~1.2 s. The gate evaluates at ~T+15.3 (4 s
+/// observation window after the ~T+11.3 post-init probe entry) and the last
+/// re-attach must land before the ~T+17-18 secure-WDT bite. Same link-ON
+/// guard as `sdisc_blips_link_on`: a core that is not running (or whose
+/// link is down) ignores DCTL, so ZERO pairs in the host journal is itself
+/// the "no live core at eval" readout.
+pub fn sdisc_blips_fast(count: u32) {
+    unsafe {
+        let dsts = read(DSTS);
+        if dsts & DSTS_DEVCTRLHLT != 0 || (dsts >> 18) & 0xf != 0 {
+            return;
+        }
+        for _ in 0..count.min(6) {
+            let mut dctl = read(DCTL);
+            dctl |= DCTL_SDIS;
+            write_dctl_safe(dctl);
+            super::timer::delay_ms(100);
+            dctl = read(DCTL);
+            dctl &= !DCTL_SDIS;
+            write_dctl_safe(dctl);
+            super::timer::delay_ms(70);
+        }
+    }
+}
+
 /// Linux enables the DWC3 controller SPI immediately after arming the first
 /// EP0 OUT SETUP TRB. The standalone probe's assembly entry prepares the
 /// exception vector and CPU interface, but the Distributor still needs the
@@ -8206,6 +8852,7 @@ unsafe fn enable_gadget_controller_irq() {}
 /// the early boot loop until the normal interrupt controller owns the device.
 pub fn poll() {
     unsafe {
+        link_on_sample();
         // Diagnostic quiet window (see mmio_quiet_active): after this many
         // seconds past the first Run/Stop, stop ALL controller MMIO access.
         if mmio_quiet_active() {
@@ -8250,10 +8897,12 @@ pub fn poll() {
             // up, arm here: the core then immediately delivers any SETUP
             // packet it latched while no TRB was armed.
             let _ = try_arm_setup();
+            try_u0_blip();
             return;
         }
         drain_gsi_event_buffers();
         let _ = try_arm_setup();
+        try_u0_blip();
     }
 }
 

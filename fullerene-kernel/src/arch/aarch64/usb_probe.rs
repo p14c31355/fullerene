@@ -124,12 +124,20 @@ global_asm!(
              add sp, sp, #16\n\
              b usb_probe_entry\n\
          .endif\n\
-         // Keep a failed MMIO handoff from leaving the phone permanently\n\
-         // disconnected. The vector table above turns this timer IRQ into a\n\
-         // PS_HOLD reset; the normal gadget path disables it after EP0\n\
-         // progress, while pullup-only diagnostics leave it armed so a\n\
-         // failed physical handoff cannot strand the handset.\n\
-         mrs x5, CNTFRQ_EL0\n\
+      // Keep a failed MMIO handoff from leaving the phone permanently\n\
+      // disconnected. The vector table above turns this timer IRQ into a\n\
+      // PS_HOLD reset; the normal gadget path disables it after EP0\n\
+      // progress, while pullup-only diagnostics leave it armed so a\n\
+      // failed physical handoff cannot strand the handset.\n\
+      // Target the EL1 physical timer at EL1 (CNTKCTL_EL1.T0EL1 = bit 10):\n\
+      // with T0EL1 = 0 (the reset default) the timer is not delivered to\n\
+      // EL1 as PPI 30 at all, regardless of the GICR programming below.\n\
+      // Linux does the same in arch_timer_early_init.\n\
+      mrs x5, CNTKCTL_EL1\n\
+      orr x5, x5, #0x400\n\
+      msr CNTKCTL_EL1, x5\n\
+      isb\n\
+      mrs x5, CNTFRQ_EL0\n\
          // Leave enough time for Qualcomm MMIO synchronization, GENI UART\n\
          // diagnostics, and the DWC3 reset handshake before the recovery\n\
          // timer can reboot the handset.\n\
@@ -162,19 +170,36 @@ global_asm!(
          subs w10, w10, #1\n\
          b.ne 4b\n\
          b usb_probe_exception_reset\n\
-     5:\n\
-         add x8, x8, #0x10000\n\
-         ldr w9, [x8, #0x80]\n\
-         mov w10, #0x40000000\n\
-         orr w9, w9, w10\n\
-         str w9, [x8, #0x80]\n\
-         mov w10, #0xa0\n\
-         strb w10, [x8, #0x41e]\n\
-         mov w10, #0x40000000\n\
-         str w10, [x8, #0x100]\n\
-         mov x10, #1\n\
-         msr ICC_SRE_EL1, x10\n\
-         isb\n\
+      5:\n\
+          add x8, x8, #0x10000\n\
+          // GICv3 GICR CPU interface: IGROUPR0/ISENABLER0 cover PPI 0-15\n\
+          // only (16 INTIDs per 32-bit register), so PPI 30 lives in\n\
+          // IGROUPR1 (0x84) / ISENABLER1 (0x104) bit 14, and its priority\n\
+          // in the dedicated GICR_IPRIORITYR30 word (0x400 + 4*30 = 0x478;\n\
+          // GICv3 gives every INTID a full 32-bit priority register, unlike\n\
+          // the GICv2 four-per-word packing the older offsets assumed).\n\
+          ldr w9, [x8, #0x84]\n\
+          orr w9, w9, #0x4000\n\
+          str w9, [x8, #0x84]\n\
+          mov w10, #0xa0\n\
+          strb w10, [x8, #0x478]\n\
+          ldr w9, [x8, #0x104]\n\
+          orr w9, w9, #0x4000\n\
+          str w9, [x8, #0x104]\n\
+          // The standalone probe never runs the Rust GIC init, so force the\n\
+          // distributor on: ABL may leave GICD_CTLR without Enable or without\n\
+          // Group1Enable, in which case no PPI is delivered to this CPU\n\
+          // interface at all. GICD_CTLR (Enable|Group1Enable = 0x3) sits at\n\
+          // GICD_BASE + 0.\n\
+          movz x9, #0x0000\n\
+          movk x9, #0x17a0, lsl #16\n\
+          ldr w10, [x9, #0x0]\n\
+          orr w10, w10, #0x3\n\
+          str w10, [x9, #0x0]\n\
+          isb\n\
+          mov x10, #1\n\
+          msr ICC_SRE_EL1, x10\n\
+          isb\n\
          mov x10, #0xff\n\
          msr ICC_PMR_EL1, x10\n\
          mov x10, #1\n\
@@ -297,17 +322,23 @@ global_asm!(
          add sp, sp, #256\n\
          eret\n\
      .size usb_probe_irq_entry, . - usb_probe_irq_entry\n\
-     .type usb_probe_exception_reset, %function\n\
-     usb_probe_exception_reset:\n\
-         movz x7, #0x4000\n\
-         movk x7, #0x0c26, lsl #16\n\
-         str wzr, [x7]\n\
-         mov w0, #9\n\
-         movk w0, #0x8400, lsl #16\n\
-         smc #0\n\
-     5:\n\
-         wfe\n\
-         b 5b\n\
+      .type usb_probe_exception_reset, %function\n\
+      usb_probe_exception_reset:\n\
+          // PSCI SYSTEM_RESET (function 7) first: the PS_HOLD release below\n\
+          // sits in the PMIC/SPMI aperture the probe never clocks up; on this\n\
+          // board that write can stall the CPU and mask a working SMC reset.\n\
+          mov w0, #7\n\
+          movk w0, #0x8400, lsl #16\n\
+          mov x1, xzr\n\
+          mov x2, xzr\n\
+          mov x3, xzr\n\
+          smc #0\n\
+          movz x7, #0x4000\n\
+          movk x7, #0x0c26, lsl #16\n\
+          str wzr, [x7]\n\
+      5:\n\
+          wfe\n\
+          b 5b\n\
      .size usb_probe_exception_reset, . - usb_probe_exception_reset\n\
      ",
     entry_0 = const (LINK_ENTRY & 0xffff),
@@ -350,6 +381,11 @@ extern "C" fn usb_probe_irq() {
     // before the platform IRQ filter; otherwise a no-host probe can remain
     // forever in WFE after the handoff fails.
     if interrupt == timer::TIMER_PPI {
+        // Host-visible proof that the timer PPI was delivered and this
+        // handler runs: one SDIS blip before the reset. It is only visible
+        // with the link ON (silent no-op before attach), so a stall-map run
+        // shows the blip at ~T+15.5 in the host journal.
+        usb::sdisc_blips_link_on(1);
         reset_after_probe_failure();
     }
     if platform::bramble::is_usb_irq(interrupt) {
@@ -402,6 +438,13 @@ extern "C" fn usb_probe_exception_fallback() -> ! {
     fullerene_aarch64_usb_gadget_handoff_probe
 ))]
 fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
+    // lnk-nib PROBE-ENTRY probe: reset at the very first line, before the GIC
+    // sweep and u0_arm_recovery. An early return (well under the ~T+37-39
+    // watchdog-bite bucket) proves the probe IS entered; a ~T+37-39 return
+    // proves it is NOT (the gate env / cfg is not reaching this branch).
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk-nib") {
+        usb::park_for_seconds(0);
+    }
     // Disarm the assembly recovery timer; the trace-quiet watchdog below
     // owns recovery in this mode.
     unsafe {
@@ -419,6 +462,60 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         platform::bramble::GICR_BASE,
         None,
     );
+    // Self-heal the failed handoff before any diagnostic toggling: the
+    // missing init tail (event ring, DCFG, DEPSTARTCFG, SETEPCONFIG, the
+    // EP0 OUT SETUP arm, Run/Stop) is re-issued here in Linux's
+    // soft_connect order. A success enters the normal enumeration flow
+    // below; a failure schedules the APSS-WDT bite readout: the handset
+    // reboots at a step-specific delay (probe entry is ~T+1-3 after
+    // fastboot boot, Android returns ~20 s after the bite), so the loop's
+    // RETURN TIME names the failed step:
+    //   ~T+23-26: 1 = run/stop failed (bite at entry+2)
+    //   ~T+27-30: 4 = DEPSTARTCFG failed (bite at entry+6)
+    //   ~T+31-34: 5/6 = DEPCFG EP0-OUT/IN failed (bite at entry+10)
+    //   ~T+37-39: core reached Run/Stop (0 = armed, 8 = arm pending);
+    //             1234:0001 in the host log = success, -110 = core running
+    //             but EP0 dead. Status 8 also emits one DCTL.SDIS blip at
+    //             attach (a visible disconnect/re-attach pair) if DCTL is
+    //             host-visible on this board. A ~37-39 return with -110
+    //             can additionally mean the APSS WDT is not writable here
+    //             (secure-owned) with the core stopped; an early bucket in
+    //             any run calibrates the two apart.
+    let arm_status = usb::u0_arm_recovery();
+    match arm_status {
+        1 => usb::u0_arm_wdt_bite(2),
+        4 => usb::u0_arm_wdt_bite(6),
+        5 => usb::u0_arm_wdt_bite(10),
+        6 => usb::u0_arm_wdt_bite(10),
+        // A visible blip at attach also proves the core is running AND the
+        // HS link reached U0 (SDIS only acts on a running core, and the
+        // blip is issued only at link ON): 37-39 s return + blips + -110 =
+        // link up, EP0 data path dead; 37-39 s return + NO blips + -110 =
+        // link never U0 (HS PHY never trained) or the core never ran.
+        0 | 8 => usb::u0_arm_set_blips(1),
+        _ => {}
+    }
+    // The diag readout must own every SDIS pair in the run: the u0-arm
+    // blip at link ON (~T+11.3) would drop the link mid-enumeration and
+    // the re-attach would repeat the host's SETUP sequence, contaminating
+    // the trace the diag code decodes.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("diag") {
+        usb::u0_arm_set_blips(0);
+    }
+    // Control: an unconditional bite tests the APSS-WDT bite path itself
+    // (writable from here? does it land?) independent of the u0-arm status.
+    if option_env!("FULLERENE_USB_WDT_BITE_CONTROL")
+        .filter(|value| *value != "0")
+        .is_some()
+    {
+        usb::u0_arm_wdt_bite(3);
+    }
+    // The self-heal put the core back in Run/Stop with the endpoint tail
+    // (re)issued: the signal probe's diagnostic flow must not then break on
+    // the SOF signal code and reset the handset before the host's
+    // enumeration completes. Stay in the pet+poll survival loop (the same
+    // one the real success path uses) and let poll() arm/serve EP0.
+    let u0_armed = matches!(arm_status, 0 | 8);
     usb::trace_marker(
         usb::TRACE_PROBE_WATCHDOG,
         0x5349_4700 | (signal_smmu_code & 0xff),
@@ -467,10 +564,13 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
     let gate_active = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
         .filter(|value| *value != "0")
         .is_some();
+    // lnk-nib readout now runs at probe entry (before u0_arm_recovery), so
+    // it samples the natural failed-handoff link state and cannot be skipped
+    // by the re-reset below.
     loop {
         usb::wdt_pet();
         usb::poll();
-        if usb::probe_ep0_progress() && !gate_active {
+        if (usb::probe_ep0_progress() || u0_armed) && !gate_active {
             // Enumeration actually succeeded: stop signaling and continue as
             // the normal direct probe would.
             unsafe {
@@ -530,6 +630,28 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             0x5349_4744 | (signal_code & 0xff),
         );
     }
+    // "diag" gate: publish the composite readout code (see
+    // usb::diag_readout_code) as SDIS blip pairs - pair count == code -
+    // then park. The pairs land at ~T+15.3-16.8, before the ~T+17-18
+    // secure-WDT bite; zero pairs means the core/link is not live at eval
+    // time. Must run before cmd_gate_condition_met, which would parse
+    // "diag" as a hex harvest value and fall through silently.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("diag") {
+        // Rescue, don't report: re-drive the stuck stage of the host's
+        // pending read/64 (see usb::rescue_read64) and then keep servicing
+        // EP0 in the STAB loop - no park. The host journal is the readout:
+        // enumeration progress = the rescue landed, -110 at the 5 s mark =
+        // it did not (or the CPU died in the window before eval).
+        let rescue = usb::rescue_read64();
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5245_5343 | rescue); // "RESC"
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        }
+        loop {
+            usb::wdt_pet();
+            usb::poll();
+        }
+    }
     // Gate evaluation against THIS run's trace data. The pull-up drop is not
     // host-visible, so the reset TIMING is the one-bit readout. The gate
     // fires at the end of the observation window; Android boot after the
@@ -552,6 +674,11 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             // (~37 s return) is the reliable 1-bit split while the secure
             // watchdog is still armed; if it is ever stopped, FALSE parks
             // 90 s (~115 s return), still far from 25 s.
+            // Host-log backup readout: when the link is ON, two SDIS
+            // disconnect/re-attach pairs land in the host kernel log just
+            // before the reset, so TRUE stays identifiable in the log even
+            // when the return timing sits close to the bite bucket.
+            usb::sdisc_blips_link_on(2);
             usb::park_for_seconds(0);
         }
         usb::ep0_signal_drop_pullup();
@@ -614,6 +741,17 @@ extern "C" fn usb_probe_entry() -> ! {
     }
     // Pet the apps watchdog next: it may also have been left counting.
     usb::wdt_pet();
+    // stall-map: shorten the 60 s assembly recovery timer so it fires at
+    // entry+15 s, AFTER the T+10-11 HS attach, where the core is running
+    // and the link is ON. The handler's SDIS blip is then host-visible
+    // (a disconnect/re-attach pair in the journal at ~T+15.5), proving the
+    // timer PPI is delivered and the handler runs regardless of what the
+    // subsequent PSCI SMC does: a ~T+36 return proves the SMC reset works,
+    // a ~T+38 return means the SMC is dead and the PS_HOLD write in the
+    // PMIC/SPMI aperture stalled the CPU (secure WDT ends the boot).
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("stall-map") {
+        timer::arm_ms(15_000);
+    }
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     usb::trace_probe_begin();
     // The trace region survives warm resets; between two `fastboot boot`
@@ -766,8 +904,16 @@ extern "C" fn usb_probe_entry() -> ! {
         // temporary Image starts. Retry only this handoff boundary: a single
         // early DWC3/PHY ownership race should not turn into a false negative,
         // while the bounded count still makes a real failure recoverable.
+        // A gate readout run limits itself to ONE attempt: the ~17 s
+        // watchdog bite lands before the 3-attempt + fallback sequence
+        // finishes, and the gate must evaluate inside the silence window.
+        let attempt_limit = if option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1") {
+            1u32
+        } else {
+            3u32
+        };
         let mut ready = false;
-        for attempt in 0..3u32 {
+        for attempt in 0..attempt_limit {
             if attempt != 0 {
                 for _ in 0..250_000u32 {
                     unsafe {
@@ -824,11 +970,71 @@ extern "C" fn usb_probe_entry() -> ! {
         let gate_active = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
             .filter(|value| *value != "0")
             .is_some();
+        // PROBE-CHECK: reset HERE (inside the cfg block, before the call) to
+        // determine whether this block is compiled in AND reached. An early
+        // return proves both; a ~T+37-39 return proves the block is absent
+        // (cfg not set) or the code path is not reached. stall-map reuses
+        // this as its "init completed" signature: a ~31 s return means the
+        // kernel crossed the cfg-block boundary.
+        if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk-nib")
+            || option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("stall-map")
+        {
+            usb::park_for_seconds(0);
+        }
         if !gadget_ready || gate_active {
             run_ep0_signal_probe(signal_smmu_code, signal_link_state);
         }
     }
     if gadget_ready {
+        // lnk-nib readout on the SUCCESS path (the signal probe is never
+        // entered, so this is the only reliable place to sample the core's
+        // link state in the post-attach failed-handoff condition). Settle 1 s
+        // (let the host finish its HS attach + port reset), read the raw
+        // USBLNKST / halted / runstop state, BUCKET it, then reset 1 s per
+        // bucket so EVERY code resets before the ~T+17 secure-WDT bite:
+        //   bucket 0 = code 0-3   (U0=0, U3=3)        return ~T+33
+        //   bucket 1 = code 4-7   (Rx.Detect=5, Polling=7)  ~T+34
+        //   bucket 2 = code 8-11  (uncommon)           ~T+35
+        //   bucket 3 = code 12-15 (Reset=13)           ~T+36
+        //   bucket 4 = code 16-17 (halted / RUN_STOP cleared = phantom attach) ~T+37
+        // A ~T+38-39 return means the readout never ran (handoff failed or
+        // the gate value is not lnk-nib).
+        if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("lnk-nib") {
+            let frequency = probe_counter_frequency();
+            let settle = probe_counter().saturating_add(frequency.saturating_mul(1));
+            while frequency == 0 || probe_counter() < settle {
+                usb::wdt_pet();
+                core::hint::spin_loop();
+            }
+            let code = usb::ep0_raw_link_nibble();
+            let bucket = if code <= 3 {
+                0u32
+            } else if code <= 7 {
+                1
+            } else if code <= 11 {
+                2
+            } else if code <= 15 {
+                3
+            } else {
+                4
+            };
+            usb::trace_marker(
+                usb::TRACE_PROBE_WATCHDOG,
+                0x4C4E_4942 | (code & 0xff) | (bucket << 16), // "LNIB"
+            );
+            let reset_at = probe_counter()
+                .saturating_add(frequency.saturating_mul(1u64.saturating_add(u64::from(bucket))));
+            while frequency == 0 || probe_counter() < reset_at {
+                usb::wdt_pet();
+                core::hint::spin_loop();
+            }
+            usb::park_for_seconds(0);
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        // Host-visible link-ON readout for the success path: the signal
+        // probe queues its own blip only when the handoff failed, so without
+        // this the direct branch could never show the SDIS pair.
+        usb::arm_blip_queue();
         #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
         if usb::gadget_handoff_stage_probe_enabled() {
             // A stage probe intentionally publishes an EP0-less pull-up, so
@@ -956,6 +1162,24 @@ extern "C" fn usb_probe_entry() -> ! {
                 // The direct handoff intentionally uses polling rather than
                 // the IRQ-backed path. This keeps USB RESET and the first
                 // SETUP on one serialized event-ring consumer.
+                // Absolute reset bound: trace activity (e.g. a live SOF
+                // stream) keeps moving the trace head, which re-extends the
+                // activity deadline forever. If BOTH watchdogs are dead
+                // (secure WDT disabled by the new SMC, APSS WDT not
+                // functional) nothing would otherwise ever reboot the probe
+                // and the handset would stay stuck outside Fastboot. Cap the
+                // activity deadline at an absolute ceiling from loop entry so
+                // recovery to Fastboot is guaranteed. A real enumeration
+                // enters the STAB loop above and never sees this bound.
+                let loop_start = probe_counter();
+                let abs_deadline = option_env!("FULLERENE_USB_ABS_RESET_SECS")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .map(|secs| loop_start.saturating_add(frequency.saturating_mul(secs)))
+                    .unwrap_or(u64::MAX);
+                if deadline > abs_deadline {
+                    deadline = abs_deadline;
+                }
                 loop {
                     if usb::mmio_quiet_active() {
                         // Full zero-MMIO park: the reboot-cause bisect needs
@@ -980,8 +1204,13 @@ extern "C" fn usb_probe_entry() -> ! {
                     let head = usb::trace_head();
                     if head != last_head {
                         last_head = head;
-                        deadline =
+                        let extended =
                             probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
+                        deadline = if extended < abs_deadline {
+                            extended
+                        } else {
+                            abs_deadline
+                        };
                     } else if frequency != 0 && probe_counter() >= deadline {
                         usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x574454); // "WDT"
                         reset_after_probe_failure();
@@ -1100,13 +1329,18 @@ extern "C" fn usb_probe_entry() -> ! {
 
 pub fn reset_after_probe_failure() -> ! {
     // Make a failed USB handoff recoverable without another battery-cycle.
-    // This is the same Qualcomm PS_HOLD path used by the entry probe, with
-    // PSCI retained as the generic fallback.
+    // PSCI SYSTEM_RESET first: the PS_HOLD release sits in the PMIC/SPMI
+    // aperture that the probe path never clocks up, and on this board that
+    // write can stall the CPU (every pre-fix run returned ~37-39 s from the
+    // secure watchdog instead of the ~31 s PSCI reset). The PS_HOLD release
+    // remains as the rejected-SMC fallback.
     unsafe {
-        core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
         core::arch::asm!(
-            "mov w0, #9",
+            "mov w0, #7",
             "movk w0, #0x8400, lsl #16",
+            "mov x1, xzr",
+            "mov x2, xzr",
+            "mov x3, xzr",
             "smc #0",
             out("x0") _,
             out("x1") _,
@@ -1114,6 +1348,7 @@ pub fn reset_after_probe_failure() -> ! {
             out("x3") _,
             options(nostack)
         );
+        core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
     }
     loop {
         core::hint::spin_loop();

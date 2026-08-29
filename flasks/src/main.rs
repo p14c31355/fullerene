@@ -198,6 +198,33 @@ struct Args {
     #[arg(long = "usb-observe-secs", value_name = "SECS")]
     usb_observe_secs: Option<u64>,
 
+    /// After a failed handoff, re-issue the missing init tail (Run/Stop,
+    /// U0 poll, DEPSTARTCFG, SETEPCONFIG, SETUP arm) from the signal probe.
+    #[arg(long = "usb-u0-arm-probe")]
+    usb_u0_arm_probe: bool,
+
+    /// Signal-probe control: schedule an unconditional APSS-WDT bite 3 s
+    /// after probe entry to test whether the APSS watchdog bite is writable
+    /// and lands (an early loop return means yes).
+    #[arg(long = "usb-wdt-bite-control")]
+    usb_wdt_bite_control: bool,
+
+    /// Override the secure-watchdog-disable SMC fnid (hex, e.g.
+    /// 0x82000107 = STD/SMC64 BOOT/0x07). Default is the legacy 0x02000407.
+    #[arg(long = "usb-swdd-fnid", value_name = "HEX")]
+    usb_swdd_fnid: Option<String>,
+
+    /// Emit one host-visible DCTL.SDIS blip after the post-Run/Stop arm
+    /// window when the SETUP arm succeeded (link U0 reached per the core).
+    #[arg(long = "usb-arm-blip")]
+    usb_arm_blip: bool,
+
+    /// Absolute ceiling (seconds from the direct probe's poll loop entry) on
+    /// the trace-activity deadline, guaranteeing a recovery reset even when
+    /// both watchdogs are dead.
+    #[arg(long = "usb-abs-reset-secs", value_name = "SECS")]
+    usb_abs_reset_secs: Option<u64>,
+
     /// Relocate the linker .usb_dma section to this hex address for the run.
     #[arg(long = "usb-dma-origin", value_name = "ADDR")]
     usb_dma_origin: Option<String>,
@@ -880,6 +907,11 @@ fn main() -> io::Result<()> {
             args.usb_signal_evt_data_gate,
             args.usb_observe_secs,
             args.usb_skip_typec_spmi,
+            args.usb_u0_arm_probe,
+            args.usb_wdt_bite_control,
+            args.usb_swdd_fnid,
+            args.usb_arm_blip,
+            args.usb_abs_reset_secs,
         )?;
         if target.platform == Platform::Bramble
             && matches!(args.command, Action::Run | Action::Debug)
@@ -1037,6 +1069,11 @@ fn build_aarch64_kernel(
     signal_evt_data_gate: Option<u32>,
     observe_secs: Option<u64>,
     skip_typec_spmi: bool,
+    u0_arm_probe: bool,
+    wdt_bite_control: bool,
+    swdd_fnid: Option<String>,
+    arm_blip: bool,
+    abs_reset_secs: Option<u64>,
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
     // Collect every build-script environment variable first so the
@@ -1175,6 +1212,21 @@ fn build_aarch64_kernel(
     if skip_typec_spmi {
         push_env("FULLERENE_AARCH64_USB_SKIP_TYPEC_SPMI", "1".to_owned());
     }
+    if u0_arm_probe {
+        push_env("FULLERENE_AARCH64_USB_U0_ARM_PROBE", "1".to_owned());
+    }
+    if wdt_bite_control {
+        push_env("FULLERENE_AARCH64_USB_WDT_BITE_CONTROL", "1".to_owned());
+    }
+    if let Some(value) = swdd_fnid {
+        push_env("FULLERENE_AARCH64_USB_SWDD_FNID", value);
+    }
+    if arm_blip {
+        push_env("FULLERENE_AARCH64_USB_ARM_BLIP", "1".to_owned());
+    }
+    if let Some(value) = abs_reset_secs {
+        push_env("FULLERENE_AARCH64_USB_ABS_RESET_SECS", value.to_string());
+    }
     if signal_diag_publish {
         push_env("FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH", "1".to_owned());
     }
@@ -1186,6 +1238,11 @@ fn build_aarch64_kernel(
     }
     if let Some(value) = signal_cmd_gate {
         push_env("FULLERENE_AARCH64_USB_SIGNAL_CMD_GATE", value);
+        // A gate readout must complete before the ~17 s watchdog bite: a
+        // gate run performs a single direct attempt (no fallback, no
+        // retry) so its observation window closes while the WDT is still
+        // silent and the reset timing/bootreason stays a clean readout.
+        push_env("FULLERENE_AARCH64_USB_PROBE_SINGLE_ATTEMPT", "1".to_owned());
     }
     if let Some(value) = signal_rsc_gate {
         push_env("FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE", value);
@@ -1330,6 +1387,11 @@ fn run_aarch64_qemu_preflight(
         None,                            // 40 signal_evt_data_gate
         None,                            // 41 observe_secs
         false,                           // 42 skip_typec_spmi
+        false,                           // 43 u0_arm_probe
+        false,                           // 44 wdt_bite_control
+        None,                            // 45 swdd_fnid
+        false,                           // 46 arm_blip
+        None,                            // 47 abs_reset_secs
     )?;
     let raw = build_aarch64_raw_kernel(&kernel)?;
     let image = build_aarch64_image(&raw)?;
