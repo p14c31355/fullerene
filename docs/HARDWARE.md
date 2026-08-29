@@ -7,13 +7,14 @@ application. The Xtensa port is split into each Fullerene crate's
 `src/arch/xtensa/esp32/` tree; there is no separate `fullerene-esp32` crate.
 Flasks is the build/flash/monitor task runner.
 
-The current port initializes UART and has explicit bring-up boundaries. The
-ESP32 ELF and image generation path builds, and `esptool image-info` accepts the
-image, but this is not evidence of a working desktop. The following remain
-bring-up items and may fail explicitly rather than pretending success:
+The current port initializes UART, disables both watchdog mechanisms during
+early boot, and reaches a stable cooperative scheduler. The ESP32 ELF and image
+generation path builds, and `esptool image-info` accepts the image. This is not
+evidence of a working desktop. The following remain bring-up items and may fail
+explicitly rather than pretending success:
 
-- scheduler context switching and timer preemption
-- SPI LCD protocol/backlight behaviour
+- timer preemption and exception-frame context switching
+- physical confirmation of SPI LCD protocol/backlight behaviour
 - I2C resistive-touch controller and calibration
 - SDMMC host and FAT mounting
 - persistent settings and interactive shell integration

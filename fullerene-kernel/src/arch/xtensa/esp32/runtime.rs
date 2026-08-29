@@ -1,27 +1,30 @@
 //! Kernel startup and the fixed ESP32 application set.
 
-use crate::arch::xtensa::esp32::{board, interrupts, memory, scheduler::Scheduler, time};
+use crate::arch::xtensa::esp32::{board, memory, scheduler::Scheduler, time};
 use nozzle::arch::xtensa::esp32::commands as nozzle_commands;
 
 use alloc::string::String;
 use core::sync::atomic::{AtomicU32, Ordering};
-use nitrogen::arch::xtensa::esp32::{
-    board::BoardProfile, display::SpiLcd, touchscreen::ResistiveTouch,
-};
+use nitrogen::arch::xtensa::esp32::{board::BoardProfile, display::SpiLcd};
 
 static NEXT_TASK_ID: AtomicU32 = AtomicU32::new(0);
 
 pub fn boot() -> ! {
-    let profile = BoardProfile::xh32s();
+    nitrogen::arch::xtensa::esp32::uart::write_str("FULLERENE BOOT\n");
+
+    let _profile = BoardProfile::xh32s();
+    nitrogen::arch::xtensa::esp32::uart::write_str("LCD INIT\n");
     if SpiLcd::new().init().is_err() {
         crate::arch::xtensa::esp32::runtime::panic_message("LCD initialization failed");
     }
-    let _touch = ResistiveTouch::new(profile);
+    // let _touch = ResistiveTouch::new(profile);
     // Pin 21 is tied to the display backlight on the profile board.
+    nitrogen::arch::xtensa::esp32::gpio::enable_output(board::LCD_BACKLIGHT);
     nitrogen::arch::xtensa::esp32::gpio::set_output_high(board::LCD_BACKLIGHT);
 
+    nitrogen::arch::xtensa::esp32::uart::write_str("LCD OK\n");
     time::init();
-    interrupts::enable_timer_interrupt();
+    nitrogen::arch::xtensa::esp32::uart::write_str("TIME OK\n");
     let mut scheduler = Scheduler::new();
     unsafe {
         nozzle_commands::MEMINFO = Some(|| (memory::used(), memory::capacity()));
@@ -38,14 +41,13 @@ pub fn boot() -> ! {
             scheduler.spawn(name, entry, 3 * 1024);
         }
     }
+    nitrogen::arch::xtensa::esp32::uart::write_str("SCHED RUN\n");
     scheduler.run();
 }
 
 fn lattice_task() -> ! {
     loop {
-        time::sleep_ticks(1);
-        // The GUI's drawing path is intentionally cooperative in this profile.
-        crate::arch::xtensa::esp32::scheduler::request_yield();
+        crate::arch::xtensa::esp32::scheduler::scheduler_yield();
     }
 }
 
@@ -53,8 +55,7 @@ fn nozzle_task() -> ! {
     // Keep the reduced command table linked until serial I/O bring-up lands.
     let _commands = nozzle::default_commands();
     loop {
-        time::sleep_ticks(2);
-        crate::arch::xtensa::esp32::scheduler::request_yield();
+        crate::arch::xtensa::esp32::scheduler::scheduler_yield();
     }
 }
 

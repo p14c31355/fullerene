@@ -13,7 +13,13 @@ rustflags = [
     # Keep entry code in ESP32 IRAM and static zero storage in DRAM. These are
     # linker placement options, not a Fullerene linker script.
     "-C", "link-arg=-Ttext=0x40080000",
-    "-C", "link-arg=-Tbss=0x3FFB0000",
+    "-C", "link-arg=--section-start=.rodata=0x3FFB0000",
+    "-C", "link-arg=-Tdata=0x3FFB4000",
+    "-C", "link-arg=-Tbss=0x3FFB8000",
+    "-C", "link-arg=--defsym=__bss_start=ADDR(.bss)",
+    "-C", "link-arg=--defsym=__bss_end=ADDR(.bss)+SIZEOF(.bss)",
+    "-C", "target-feature=-windowed",
+    "-C", "link-arg=-Map=target/xtensa-esp32-none-elf/release/fullerene-kernel-esp32.map",
 ]
 
 [target.'cfg(target_arch = "xtensa")']

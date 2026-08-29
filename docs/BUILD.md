@@ -149,11 +149,12 @@ cargo run -q -p flasks -- monitor --arch xtensa --platform esp32-xh32s   --seria
 ```
 
 Flasks invokes Cargo with `xtensa-esp32-none-elf`, builds
-`fullerene-kernel-esp32`, converts the ELF into a native ESP32 flash image, and
-emits the full `p_memsz` payload so BSS is zeroed by the image rather than by a
-linker-script-generated startup loop. There is no Fullerene linker script for
-this target; `.cargo/config.toml` only supplies IRAM/DRAM placement options to
-the Xtensa linker. Optional independent audit:
+`fullerene-kernel-esp32`, and converts the ELF into a native ESP32 flash image.
+The image includes only file-backed `PT_LOAD` data; startup clears BSS using the
+`__bss_start`/`__bss_end` symbols supplied by linker placement options. There is
+no Fullerene linker script. The Xtensa target also compiles without the windowed
+register ABI so the first scheduler has an explicit call0 context-switch
+protocol. Optional independent audit:
 
 ```bash
 esptool image-info target/xtensa-esp32-none-elf/release/fullerene-kernel-esp32.bin

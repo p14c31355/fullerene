@@ -3102,7 +3102,7 @@ mod tests {
     }
 
     #[test]
-    fn esp32_elf_parser_preserves_zero_filled_bss() {
+    fn esp32_elf_parser_excludes_uninitialized_bss() {
         let mut elf = vec![0; 52];
         elf[..4].copy_from_slice(b"\x7fELF");
         elf[4] = 1; // ELFCLASS32
@@ -3118,11 +3118,9 @@ mod tests {
         elf.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
 
         let segments = esp32_parse_elf(&elf).unwrap();
-        assert_eq!(segments.len(), 2);
+        assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].file_size, 8);
         assert_eq!(segments[0].memory_size, 8);
-        assert_eq!(segments[1].file_size, 0);
-        assert_eq!(segments[1].memory_size, 16);
     }
 
     #[test]
@@ -3463,18 +3461,17 @@ fn esp32_parse_elf(data: &[u8]) -> io::Result<Vec<Esp32Segment>> {
                 "ELF filesz exceeds memsz",
             ));
         }
-        if memory_size > 0 {
-            if memory_size % 4 != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "ELF segment memory size is not word aligned",
-                ));
-            }
+        if file_size > 0 {
+            // Rust may end the IRAM text segment on a non-word boundary.
+            // ESP image segment lengths must be word aligned, so extend the
+            // resident segment with harmless zero padding rather than needing
+            // a Fullerene linker script.
+            let aligned_memory_size = memory_size.next_multiple_of(4);
             segments.push(Esp32Segment {
                 load_address,
                 file_offset: offset,
                 file_size,
-                memory_size,
+                memory_size: aligned_memory_size,
             });
         }
     }
@@ -3644,9 +3641,9 @@ fn espflash_command(
     let mut command = Command::new("espflash");
     command.arg(action).arg("--baud").arg(baud.to_string());
     if let Some(device) = serial {
-        command.arg(device);
+        command.arg("--port").arg(device);
     }
-    if action == "write-bin" {
+    if matches!(action, "write-bin" | "write-flash") {
         command.arg("0x1000");
     }
     command.arg(image);
@@ -3664,11 +3661,11 @@ fn espflash_run(image: &Path, serial: Option<&str>, baud: u32) -> io::Result<()>
 }
 
 fn espflash_write(image: &Path, serial: Option<&str>, baud: u32) -> io::Result<()> {
-    let status = espflash_command("write-flash", image, serial, baud)?.status()?;
+    let status = espflash_command("write-bin", image, serial, baud)?.status()?;
     if !status.success() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "espflash write-flash failed",
+            "espflash write-bin failed",
         ));
     }
     Ok(())
@@ -3679,6 +3676,7 @@ fn esp32_monitor(device: &str, baud: u32) -> io::Result<()> {
         .arg("monitor")
         .arg("--baud")
         .arg(baud.to_string())
+        .arg("--port")
         .arg(device)
         .status()?;
     if !status.success() {

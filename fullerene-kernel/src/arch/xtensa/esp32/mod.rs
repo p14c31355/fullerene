@@ -16,6 +16,10 @@ pub mod time;
 /// Native Rust entry called after Bellows establishes the stack.
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_entry() -> ! {
+    // This runs before any code can depend on heap or driver timing. The ROM
+    // leaves the RTC watchdog armed, so early bring-up must own it explicitly.
+    platform::disable_rtc_wdt();
+    platform::disable_timer_group_watchdogs();
     memory::init_heap();
     runtime::boot()
 }
