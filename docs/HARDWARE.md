@@ -2524,6 +2524,67 @@ non-obvious probe semantics and calibration that used to live next to the code.
 - Halt/cold-halt probes park and preserve the selected failed handoff for
   host-side observation rather than immediately resetting.
 
+### USB probe development loop and handoff summary
+
+This summarizes the retired GLM5.3flash handoff note. The preceding sections
+remain the source of truth for detailed run logs and A/B results.
+
+#### Mission and safety boundary
+
+- Target: Google Pixel 4a 5G / Bramble / SM7250, serial
+  `26191JECB00076`. Use only non-destructive `fastboot boot`; no `fastboot
+  flash`, erase, partition write, manual device operation, destructive Git
+  reset/checkout, or unauthorized commit.
+- The USB task is not complete. The sole success criterion is the exact host
+  journal line `New USB device found, idVendor=1234`.
+- The harness normally runs `adb reboot bootloader` automatically. Most probe
+  runs return to Android in about 38 seconds, often with
+  `bootreason=watchdog`.
+- If a prior run was interrupted, first inspect the device and working tree
+  read-only, then return to the normal harness rather than inventing a manual
+  recovery path.
+
+#### Standard development flow
+
+1. Keep each hardware A/B to one explicit cfg, environment, or register
+   differential. Preserve unrelated working-tree changes.
+2. Validate before booting: run root `cargo fmt --all`, check the harness, and
+   `cargo check` the AArch64 USB probe with the representative handoff/signal
+   cfg set used by the run.
+3. Run the standard non-destructive loop:
+
+   ```bash
+   env -u FULLERENE_AARCH64_USB_SIGNAL_DMA_POST_RUNSTOP \
+   cargo run -q -p flasks --bin bramble-usb -- loop \
+     --direct-handoff --no-smmu --start-after-connect \
+     --signal-probe --u0-arm-probe --smmu-disable --skip-typec-spmi \
+     --observe-secs 1 --enum-timeout 20 --hold 1 --fastboot-wait 30
+   ```
+
+4. Preserve `kernel.log`, `kernel-final.log`, and `boot-reason.txt` from the
+   run directory. Record the differential, timestamps, failure signature, and
+   Android recovery behavior in this document.
+5. Judge success only by the exact `1234` identity line. A diagnostic gate,
+   disconnect, readout, attach, or changed error code is not USB success.
+
+#### Evidence and registration rules
+
+- Trust the host journal attach/descriptor/error/return timestamps,
+  `boot-reason.txt`, and a successful USB identity. The previously attempted
+  SDIS blip, QSCRATCH pull-up drop, PSCI/PS_HOLD, APSS-WDT readout, UART, and
+  GDBGLTSSM channels are no longer reliable success indicators on this
+  boundary.
+- The interrupted ENBLSLPM run `204105` was later completed/replaced by
+  `211728`; it retained the original failure boundary rather than reaching
+  `1234`.
+- 16-bit UTMI (`PHYIF=1`, `USBTRDTIM=5`) moved the host failure from repeated
+  `-110` descriptor timeouts to repeated `-71` protocol/address failures. This
+  is an important boundary shift, but not enumeration.
+- Register naming rule for this DWC3 core: `GUSB2PHYCFG.PHYIF` is bit 3; bit 8
+  is `ENBLSLPM`. Do not call an ENBLSLPM experiment a PHYIF experiment.
+- Before acting on a stale objective, re-read the fifth and sixth sessions
+  above. Several event-DMA and SWDD differentials were already completed.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:
