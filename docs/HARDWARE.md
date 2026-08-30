@@ -3964,6 +3964,195 @@ path. The next change targets the first EP1 `STARTTRANSFER` call and will be
 documented before any physical run. `1234` remains unobserved. No flash,
 erase, or partition write was performed.
 
+### Public dwc3 source audit and gate-encoding correction before next run (2026-08-30)
+
+A source-level audit of the public dwc3 references was completed before
+another physical run: Linux mainline `drivers/usb/dwc3` and the
+Qualcomm downstream `clo/la/kernel/msm-5.4` (`LA.UM.9.14.1.c30`) gadget and
+ep0 drivers. Findings that change the local diagnosis:
+
+1. The DEPCMD `CmdStatus` nibble is only ever 0 (success), 1 (No free
+   transfer resource), or 2 (Bus Expiry, isochronous only) in both
+   references. No public source defines statuses 3-15 for STARTTRANSFER.
+2. The completed DEPCMD register returns the transfer-resource index in
+   bits 22:16 (`DWC3_DEPCMD_GET_RSC_IDX`). Linux reads it after every
+   STARTTRANSFER and passes it back to ENDTRANSFER/UPDATETRANSFER via
+   `DEPCMD_PARAM(resource_index)`. EP1's healthy resource index is 1, so a
+   completed EP1 STARTTRANSFER legitimately sets bit 16.
+3. `DEPSTARTCFG` XferRscIdx=0 resets all endpoint resources (power-on/soft
+   reset); 2 resets only non-control endpoints. Each endpoint then receives
+   one `SETTRANSFRESOURCE` with `NUM_XFER_RES(1)`.
+4. On a USB bus reset Linux never re-allocates resources: it issues
+   ENDXFER for active transfers (Databook 3.30a Table 4-2), forces EP0 back
+   to the setup phase (stall and restart), and clears the device address.
+5. `GCTL.RAMCLKSEL` is reset to 0 by USB reset and must be reprogrammed per
+   Connect Done (Linux comment); the local capture/reapply already covers
+   this.
+
+The public Qualcomm XBL USB device-mode driver source remains absent:
+`qualcomm/edk2` is an upstream Tianocore mirror, `qualcomm/fastboot.efi` is
+a Rust UEFI fastboot that only consumes XBL's `EFI_USB_DEVICE_PROTOCOL`,
+`edk2-porting/edk2-msm` has no device-mode driver, and the CodeLinaro
+`abl/tianocore/edk2` tree carries `QcomModulePkg` only.
+
+The audit exposed a local encoding defect: the retained-trace harvest used
+bit 16 as its timeout flag, which collides with EP1's healthy returned
+XferRscIdx=1. Every completed EP1 STARTTRANSFER therefore looked like a
+timeout wedge, `ep1-done` could never be true for EP1, and the newest-START
+harvest decoded a healthy start as `13` (wedge). The timeout flag moved to
+bit 31 (`0x8000_0000`), and the gate predicates were corrected:
+
+- `ep1-wedge` (new): the timeout flag is set (CMDACT never retired).
+- `ep1-clean` (new): the command retired with status 0 and returned
+  XferRscIdx 1 - the healthy data-phase start.
+- `ep1-done` now means retired with a zero status nibble regardless of the
+  resource index; `ep1-nores` means retired with status nibble 1.
+- `timeout`/`done`/`last-timeout`/`last-done`/`cfg-hv-*`/`rsc-hv-*` moved to
+  bit 31, and the probe's newest-START decode matches.
+- `end_transfer` no longer rewrites EP0 OUT's legitimate resource index 0
+  to 1 (Linux passes the captured index unchanged).
+
+Separately, the four preceding status-gate runs all returned through
+Android in the ~37 s early-reset bucket instead of the 60/90 s park
+buckets, which means the gate evaluation block was never reached: the
+trace-quiet watchdog reset the probe first. Gate runs now fall through to
+gate evaluation (trace marker `QUIE`) when the trace goes quiet instead of
+resetting. The next runs re-establish the readout baseline before any
+behavioral change: `always` (mechanism self-test), `ep1-xfer` (did the core
+complete the data TRB), `ep1-wedge`, and `ep1-clean`. Only `fastboot boot`
+will be used; no flash, erase, or partition write is involved.
+
+### Recovery-timer identification correction and short-observe gate plan (2026-08-30)
+
+The working hypothesis that the ~17 s early-reset biter is the bootstrap
+assembly recovery timer is corrected: the probe bootstrap arms `CNTP` with
+`TVAL = CNTFRQ * 60` (a 60 s window, `usb_probe.rs` `usb_probe_el1_entry`),
+so it cannot be the +17-18 s biter. The journal's earlier elimination work
+already ruled out the APSS watchdog (not armed at entry; re-arm and pet
+ineffective) and the secure-watchdog SCM disable; the biter therefore remains
+unidentified (PON/PMIC watchdog or an XBL-armed instance are still the
+candidates). Two consequences follow:
+
+1. The bisect park experiments (60 s park at probe start, 45 s park before
+   the entry block) were confounded: an unpetted ~17 s biter overrides any
+   park, so the observed ~37-38 s Android returns cannot prove whether
+   `run_ep0_signal_probe` was reached. Timing-only bisects are invalid while
+   the biter window is shorter than the park.
+2. Disarming `CNTP` before the handoff would not move the 38 s bucket and
+   would remove the only recovery net for a handoff that hangs past 60 s,
+   so that change is dropped. Recovery ownership stays where it is: the
+   signal probe disarms `CNTP` at its start, and head-stall/park recovery
+   is probe-internal.
+
+The gate runs that matter must instead land evaluation and the host-visible
+publish BEFORE the biter, inside its window. The handoff on the fixed SMMU
+path attaches at ~+10 s and returns at ~+13-14 s; with
+`FULLERENE_USB_PROBE_OBSERVE_SECS` (harness `--usb-observe-secs`) set to 1,
+`cmd_gate_condition_met()` evaluates at ~+15 s and the TRUE branch stops the
+device immediately (host-visible disconnect line), well before the
+~+17-18 s bite. The next two runs re-establish the readout baseline on a
+live gadget: `always` with `--usb-observe-secs 1` (TRUE self-test: expect a
+Fullerene USB disconnect line plus an Android return at roughly +65 s from
+the 30 s post-eval park) and `never` with `--usb-observe-secs 1` (FALSE
+baseline: expect the pull-up drop plus the 90 s park return at roughly
++125 s). A ~37-38 s return for both would instead prove the handoff does
+not return before the bite, and the next differential moves evaluation into
+the handoff tail. Only `fastboot boot` will be used; no flash, erase, or
+partition write is involved.
+
+### USB30 core-domain collapse identified as the wedge and the ~17 s biter (2026-08-30)
+
+The attach-delay readout was added to the signal probe: the gate-run entry
+block shifts the physical attach by an encoded delay, and the host kernel
+log's attach timestamp publishes the value (the attach time is clockwork at
++10-11 s with ±0.5 s noise, so 300 ms steps resolve). Combined with the
+timing buckets that work again once the core domain is powered, this
+identified the root cause that five sessions of command- and watchdog
+elimination had been circling:
+
+1. **The USB30 core domain arrives SW_COLLAPSED.** The snapshot encoded
+   GDSCR bit 0 set (SW_COLLAPSE) with a dead GSNPSID: every DWC3 core
+   register read is dead. The physical attach is carried entirely by the
+   QSCRATCH/PHY session overrides, which is why the host sees a high-speed
+   attach while every endpoint command "wedged" (CMDACT never retired on an
+   unpowered core) and every post-attach publish was electrically or
+   journal-invisible.
+2. **The ~17 s biter is the collapsed domain's teardown**, not an APSS,
+   secure, CNTP, or GIC watchdog. After the power recovery below, 30 s and
+   90 s parks complete (Android at +64 s instead of +38 s), the attach is
+   published with the encoded delay, and the earlier biter disappeared. The
+   QSCRATCH session drop (the FALSE-gate action) re-triggers it; the
+   core-side Run/Stop stop does not.
+3. **The recovery sequence restores the core**: RPMh rail votes
+   (apply_usb_power, the TCS ACKs succeed), the forced GDSC enable
+   (force_enable_usb30_gdsc, bypassing the secure-rail contract gate),
+   configure_usb_clocks(Nominal) + enable_usb_clock_branches, and
+   reset_usb_blocks(false). After it, GSNPSID answers and the endpoint
+   commands retire; the in-handoff 400 ms SETUP arm window was added for
+   the host's first SETUP token (~100-200 ms after the pull-up).
+4. **The handoff now completes** (the failure-stage park readout showed
+   gadget_ready on the gate runs) and the host saw the first non-timeout
+   control response: one run logged `device descriptor read/64, error -71`
+   (EPROTO) instead of -110, meaning the EP0 answered and the data phase
+   glitched. Most runs still log -110, so the SETUP-serving path is
+   intermittent.
+
+The readout channels are restored with the core alive: TRUE-gate park
+buckets resolve (always -> ~+65 s), the failure-stage park readout
+(stage*15 s) works on failed handoffs, and the attach-delay encoding
+remains available. The FALSE-gate drop (QSCRATCH clear) must be reworked
+before FALSE gates are readable again, because it re-triggers the domain
+collapse. Only `fastboot boot` is used; no flash, erase, or partition
+write is involved.
+
+### Post-recovery enumeration boundary: first device responses, remaining data-phase and collapse work (2026-08-30)
+
+With the power recovery in the probe entry block, the campaign crossed
+several boundaries that had been unreachable for weeks, then stopped one
+step short of `1234:0001`:
+
+1. **The handoff now completes on the powered core.** The failure-stage
+   park readout showed `gadget_ready` on the gate runs; the reuse path's
+   DEPSTARTCFG (previously the suspected stage-4 failure) passes after the
+   3 s settle window that follows the power sequence. Without the settle
+   the immediate handoff fell to the super-speed fallback.
+2. **The host saw the first non-timeout device responses in the campaign.**
+   Repeated runs now log `device descriptor read/64, error -71` (EPROTO)
+   within the same second as the attach, meaning the SETUP was served and
+   the control data phase answered immediately but the host rejected the
+   transaction. The -71/-110 split is run-to-run nondeterministic and
+   tracks the in-handoff arm window versus the host's first SETUP token.
+3. **The composite enumeration-progress readout is wired** (`pub` gate:
+   park 10 s + 12 s per `diag_readout_code()` step, readable through the
+   restored park buckets) but is currently cut by the remaining collapse
+   before the park completes.
+4. **The remaining collapse** fires ~5-8 s after the attach,
+   nondeterministically, even with the full rail set voted
+   (super_speed=true adds pm8150_l9), the MMIO keepalive in
+   `park_for_seconds`, and the 3 s settle. It kills parks and readouts in
+   most runs. The 90 s parks survived before the attach existed (the
+   is-runs) and one run survived it with the attach plus the 4 s attach
+   delay, so the trigger is USB-activity-correlated. The journal's
+   proposed PON reset-reason SPMI read remains the identification path.
+5. **The data-phase hypothesis ladder for the -71**: the EP1 (EP0 IN)
+   STARTTRANSFER is rejected "right after the bus reset" (the code's own
+   documented flaky window), the host's IN tokens go unanswered (no
+   handshake on an unstarted endpoint), the xHCI reports the transaction
+   error, and usbcore's retry starts a NEW port reset that re-enters the
+   same flaky window until the collapse ends the run. The XBL
+   XferNotReady-driven arm (`--xbl-deferred-setup`) was retested on the
+   powered core and was pre-empted by the collapse in its one run.
+
+Next session's highest-value steps: (i) read the PON reset-reason
+registers over SPMI at probe entry and publish them through the working
+attach-delay/park channels to name the collapse; (ii) capture the packet
+level from the host side (usbmon needs root, or a USB analyzer) to decode
+the -71 transaction error's exact failure (no handshake vs babble); (iii)
+make the first EP1 data-phase STARTTRANSFER succeed inside the host's
+transaction-error window (fast retry cadence, or the XferNotReady-driven
+arm with the collapse neutralized). Only `fastboot boot` is used; no
+flash, erase, or partition write is involved.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:

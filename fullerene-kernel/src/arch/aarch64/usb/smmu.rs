@@ -668,8 +668,40 @@ pub fn configure_dwc3_smmu() -> bool {
             }
         }
         let Some((smr_index, old_s2cr)) = matched else {
-            log_puts("usb: DWC3 stream 0xe0 has no SMMU match\n");
-            return false;
+            // The stream has no SMR entry. With SMMUEN=0 or CLIENTPD=1 the
+            // global config already passes every transaction untranslated,
+            // which is a valid physical=IOVA mapping for the linker DMA pool
+            // (ladder 250). An ACTIVE unmatched stream faults every DWC3 DMA
+            // access, so claim a free SMR and point it at BYPASS instead;
+            // both paths are readback-verified before reporting success.
+            let scr0 = read_volatile(smmu_reg(SMMU_GR0_SCR0));
+            let active = scr0 != u32::MAX && (scr0 & 1) != 0 && (scr0 & 2) == 0;
+            if scr0 != u32::MAX && !active {
+                trace_event(
+                    TRACE_SMMU_PRESERVED,
+                    0xFF,
+                    0,
+                    scr0,
+                    dma_start as u32,
+                    dma_end as u32,
+                );
+                log_puts("usb: preserving global Apps SMMU bypass (unmatched stream)\n");
+                return true;
+            }
+            if !smmu_install_stream_bypass() {
+                log_puts("usb: DWC3 stream 0xe0 has no SMMU match and bypass install failed\n");
+                return false;
+            }
+            trace_event(
+                TRACE_SMMU_PRESERVED,
+                0xFE,
+                0,
+                scr0,
+                dma_start as u32,
+                dma_end as u32,
+            );
+            log_puts("usb: installed Apps SMMU stream bypass for unmatched stream\n");
+            return true;
         };
 
         let old_type = old_s2cr & SMMU_S2CR_TYPE_MASK;

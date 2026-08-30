@@ -2502,6 +2502,36 @@ pub unsafe fn enable_usb30_gdsc() -> bool {
     false
 }
 
+/// Force the USB3 GDSC on WITHOUT the secure-rail contract gate. The
+/// attach-delay readout measured the core domain SW_COLLAPSED with a dead
+/// GSNPSID at probe entry in the fastboot handoff state: the physical attach
+/// is carried by the QSCRATCH/PHY domain while every DWC3 core register
+/// reads dead, which is the long-standing "endpoint command wedge". Gate-run
+/// flows call this before the handoff so the core answers MMIO again; the
+/// parent RPMh supplies are left to the boot chain exactly as in
+/// `enable_usb30_gdsc`.
+pub unsafe fn force_enable_usb30_gdsc() -> bool {
+    let address = usb_resources().gdsc as *mut u32;
+    let mut value = unsafe { core::ptr::read_volatile(address) };
+    value &= !(GDSC_HW_CONTROL | GDSC_SW_OVERRIDE | GDSC_WAIT_MASK);
+    value |= GDSC_WAIT_VALUE;
+    unsafe { core::ptr::write_volatile(address, value) };
+    let _ = unsafe { core::ptr::read_volatile(address) };
+
+    value &= !GDSC_SW_COLLAPSE;
+    unsafe { core::ptr::write_volatile(address, value) };
+    let _ = unsafe { core::ptr::read_volatile(address) };
+
+    for _ in 0..1_000_000u32 {
+        if unsafe { core::ptr::read_volatile(address) } & GDSC_PWR_ON != 0 {
+            set_usb_resource_state(|state| state.gdsc_enabled = true);
+            return true;
+        }
+        unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
+    }
+    false
+}
+
 /// Collapse the USB3 GDSC after the controller and GSI write path are idle.
 /// This is the inverse of `enable_usb30_gdsc`; secure-owned regulator rails
 /// remain untouched and the caller controls the ordering relative to clocks.

@@ -465,14 +465,21 @@ fn env_seconds(value: Option<&'static str>, default: u64) -> u64 {
     fullerene_aarch64_usb_ep0_signal_probe,
     fullerene_aarch64_usb_gadget_handoff_probe
 ))]
-fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
+fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_ready: bool) -> ! {
     // lnk-nib entry check: early return proves entry; T+37-39 means gate/cfg missed.
     if cmd_gate_is("lnk-nib") {
         usb::park_for_seconds(0);
     }
     // Disarm assembly recovery; trace-quiet watchdog owns recovery here.
     unsafe {
-        asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nostack));
+        asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nomem, nostack));
+    }
+    // Failure-stage readout: the parks survive now that the core domain is
+    // powered, so park stage*15 s and let the Android return time publish
+    // which handoff stage failed (1->~35 s, 4->~80 s, 7->~125 s).
+    if !gadget_ready {
+        let stage = usb::gadget_handoff_failure_stage().clamp(1, 12) as u64;
+        usb::park_for_seconds(stage * 15);
     }
     // Re-run the GIC sweep: this polling branch bypasses the success-path sweep, and stray ABL IRQs
     // would reboot mid-observation.
@@ -484,7 +491,16 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
     // Re-issue the Linux soft_connect tail after a failed handoff. Success enumerates; failure schedules
     // a status-coded APSS bite: 1=+2s, 4=+6s, 5/6=+10s, 0/8=Run/Stop reached with a host-visible blip if
     // available. T+37-39/-110 can also mean a secure/unwritable WDT.
-    let arm_status = usb::u0_arm_recovery();
+    // A SUCCESSFUL handoff must NOT be rescued: re-running the tail on a
+    // live gadget wedges endpoint commands (CMDACT races on re-Run/Stop)
+    // and the un-petted rescue time crosses the ~17 s unknown watchdog,
+    // which resets before the gates can evaluate. Gate runs on a live
+    // gadget only need the observation loop.
+    let arm_status = if gadget_ready {
+        0
+    } else {
+        usb::u0_arm_recovery()
+    };
     match arm_status {
         1 => usb::u0_arm_wdt_bite(2),
         4 => usb::u0_arm_wdt_bite(6),
@@ -523,6 +539,16 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         // Publish the pull-up when handoff failed before Run/Stop so gates remain readable.
         usb::ep0_signal_publish_pullup();
     }
+    if cmd_gate_is("always") {
+        // Immediate TRUE publish before the observation window: the ~17 s
+        // unidentified biter overrides every park, so a post-observe eval can
+        // lose the race and masquerade as "probe not reached". The self-test
+        // only needs the host-visible stop, and earlier is strictly safer.
+        trace_gate(0x4741_5445 | 1);
+        let _ = usb::gate_true_stop_device();
+        usb::park_for_seconds(30);
+        usb::park_for_seconds(0);
+    }
     let include_raw_link = env_flag(option_env!("FULLERENE_USB_SIGNAL_RAW_LINK"));
     let frequency = probe_counter_frequency();
     let timeout_secs = env_seconds(option_env!("FULLERENE_USB_PROBE_TIMEOUT_SECS"), 120);
@@ -553,9 +579,11 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         }
         if signal_code == 0 {
             // Harvest newest STARTTRANSFER when no live signal exists: 13=timeout wedge, status-nibble+1=clean.
+            // The timeout flag lives in bit 31; bit 16 is a healthy
+            // XferRscIdx=1 completion on physical EP1, not a wedge.
             let harvest = usb::harvest_last_str_code();
             if harvest != 0xFFFF_FFFF {
-                signal_code = if harvest & 0x1_0000 != 0 {
+                signal_code = if harvest & 0x8000_0000 != 0 {
                     13
                 } else {
                     (harvest & 0xf) + 1
@@ -571,6 +599,15 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             last_head = head;
             deadline = probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
         } else if frequency != 0 && probe_counter() >= deadline {
+            // A gate run must reach its gate evaluation even when the trace
+            // goes quiet (the read/64 failure stops all trace traffic). A
+            // quiet-trace reset here would land every gate in the ~37 s
+            // early-reset bucket and make the 60/90 s park buckets
+            // unobservable; fall through to the gates instead.
+            if gate_active {
+                trace_gate(0x5155_4945); // "QUIE"
+                break;
+            }
             trace_gate(TRACE_WDT);
             reset_after_probe_failure();
         }
@@ -836,19 +873,46 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
     }
     // diag rescues the stuck read/64 stage; journal enumeration, not a park, is the readout.
     if cmd_gate_is("diag") {
-        // Rescue, don't report: keep servicing EP0 after driving the stuck stage.
-        let rescue = usb::rescue_read64();
+        // The full mid-window rescue: device soft reset + complete endpoint
+        // re-arm clears a stale DSTS.DEVCTRLHLT (which rescue_read64 bails
+        // on) while the host's descriptor URB is still retrying its SETUP
+        // token inside the 5 s timeout. Then keep servicing the re-armed
+        // endpoint for the rest of the URB window so the retries land.
+        let rescue = usb::u0_arm_window_recovery();
         usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5245_5343 | rescue); // "RESC"
+        let frequency = probe_counter_frequency();
+        let service_until = probe_counter().saturating_add(frequency.saturating_mul(4));
+        while probe_counter() < service_until {
+            usb::wdt_pet();
+            usb::poll();
+        }
         park_without_recovery_timer();
     }
     // Generic gate reads THIS run's trace. TRUE stops the core while the host tracks the device (journal
     // disconnect line); FALSE drops the pull-up and parks without one. Both return in the WDT bucket.
+    // TRUE additionally parks 30 s so the Android-return time separates a
+    // TRUE readout (~65-75 s) from an early probe reset (~40 s) even when
+    // the device never attached and no disconnect line can be published.
+    if cmd_gate_is("pub") {
+        // Composite enumeration-progress readout: the parks survive now that
+        // the core domain is powered, so park 10 s + 12 s per diag code and
+        // let the Android return time publish the code (1 = no SETUP ever
+        // reached EP0 ... 6 = the read/64 data TRB was fetched). Stop the
+        // core first: a live gadget attached to the host keeps the domain's
+        // collapse timer armed, and the park would be cut ~7 s into the
+        // wait (the always-TRUE stop-then-park flow is the proven-surviving
+        // sequence).
+        let code = usb::diag_readout_code().clamp(1, 6) as u64;
+        let _ = usb::gate_true_stop_device();
+        usb::park_for_seconds(10 + code * 12);
+    }
     if let Some(met) = usb::cmd_gate_condition_met() {
         trace_gate(0x4741_5445 | (met as u32 & 0xff));
         if met {
             // Run/Stop owns the physical pull-up, so stopping at eval with --connect-delay 0 publishes the TRUE
             // line. The old reset/SDIS timing splits are dead; journal presence is the one-bit readout.
             let _ = usb::gate_true_stop_device();
+            usb::park_for_seconds(30);
             usb::park_for_seconds(0);
         }
         usb::ep0_signal_drop_pullup();
@@ -1012,6 +1076,52 @@ extern "C" fn usb_probe_entry() -> ! {
         && option_env!("FULLERENE_USB_SIGNAL_LINK_STATE")
             .filter(|value| *value != "0")
             .is_some();
+    // Gate runs must survive the ~17 s unidentified biter (bootreason=watchdog)
+    // that resets the handset while the handoff is still inside its bounded
+    // waits. The signal-probe prologue (CNTP disarm + GIC sweep) provably
+    // neutralizes it - the failed-handoff is-runs park 90 s past the bite -
+    // but that prologue only runs AFTER the handoff returns, which loses the
+    // race on a successful handoff. Move both to BEFORE the handoff for gate
+    // runs: recovery then belongs to the probe-internal head-stall and park
+    // paths, and the handoff can take its bounded time safely.
+    #[cfg(all(
+        fullerene_aarch64_usb_ep0_signal_probe,
+        fullerene_aarch64_usb_gadget_handoff_probe
+    ))]
+    {
+        // The fastboot handoff leaves the USB30 core domain collapsed: the
+        // physical attach is carried by the QSCRATCH/PHY session alone while
+        // every DWC3 core register reads dead (the long-standing "endpoint
+        // command wedge" and the ~17 s post-attach reset are both symptoms).
+        // Restore the rails, GDSC, clock sources/branches and reset lines
+        // BEFORE the handoff so the core answers MMIO, the endpoint commands
+        // retire, and the first host SETUP can be armed and served.
+        unsafe {
+            // Vote the FULL rail set (super_speed=true includes the QMP
+            // core rail pm8150_l9): the USB30 GDSC's parent supply is not
+            // otherwise held, and RPMh collapses it ~7 s after the attach
+            // wakes the domain, killing the core mid-park. The QMP PHY
+            // itself stays unused; only the rail keeps the GDSC powered.
+            let _ = platform::bramble::apply_usb_power(true, true);
+            let _ = platform::bramble::force_enable_usb30_gdsc();
+            let _ = platform::bramble::usb_clock::configure_usb_clocks(
+                platform::bramble::UsbBusVote::Nominal,
+            );
+            let _ = platform::bramble::enable_usb_clock_branches();
+            let _ = platform::bramble::usb_reset::reset_usb_blocks(false);
+        }
+        // Settle: the one surviving 30 s park (the run that attached at
+        // +14 s) had a 4 s quiet gap between this power sequence and the
+        // handoff; every immediate handoff since failed DEPSTARTCFG in the
+        // reuse path and fell to the flaky fallback. The GDSC ramp, the RCG
+        // switch and the post-reset PLL need the quiet window before the
+        // first endpoint command. Pure spin, no MMIO.
+        let settle_frequency = probe_counter_frequency();
+        let settle_until = probe_counter().saturating_add(settle_frequency.saturating_mul(3));
+        while probe_counter() < settle_until {
+            core::hint::spin_loop();
+        }
+    }
     let gadget_ready = if cfg!(any(
         fullerene_aarch64_usb_gadget_handoff_probe,
         fullerene_aarch64_usb_pullup_probe
@@ -1075,7 +1185,7 @@ extern "C" fn usb_probe_entry() -> ! {
             usb::park_for_seconds(0);
         }
         if !gadget_ready || gate_active {
-            run_ep0_signal_probe(_signal_smmu_code, _signal_link_state);
+            run_ep0_signal_probe(_signal_smmu_code, _signal_link_state, gadget_ready);
         }
     }
     if gadget_ready {

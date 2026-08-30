@@ -252,3 +252,35 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
         complete
     }
 }
+
+/// The Run/Stop write without the DEVCTRLHLT readback wait. Gate runs must
+/// return to the probe before the attach-triggered ~17 s biter window
+/// closes, and the stale-halt readback timeout (up to 2 s, the common
+/// "RUN/STOP readback timed out; continuing" case) is the handoff's slowest
+/// bounded wait. The physical pull-up transition is identical to
+/// `run_stop_device(true)`; only the status wait is skipped.
+pub(super) unsafe fn run_stop_device_no_readback(is_on: bool) -> bool {
+    unsafe {
+        let mut usb2 = read(GUSB2PHYCFG0);
+        let saved_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        if saved_config != 0 {
+            usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+            write(GUSB2PHYCFG0, usb2);
+        }
+
+        let mut dctl = read(DCTL);
+        if is_on {
+            dctl = run_stop_value(dctl, read(GSNPSID));
+            write(DCTL, dctl);
+        } else {
+            dctl &= !DCTL_RUN_STOP;
+            write_dctl_safe(dctl);
+        }
+
+        if saved_config != 0 {
+            let current = read(GUSB2PHYCFG0);
+            write(GUSB2PHYCFG0, current | saved_config);
+        }
+        true
+    }
+}

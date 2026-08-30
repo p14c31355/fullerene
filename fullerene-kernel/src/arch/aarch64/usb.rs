@@ -11,10 +11,11 @@
 use config::{
     apply_usb31_gadget_reference_deltas, configure_dwc3_global_control, configure_gadget_speed,
     configure_gadget_start_defaults, configure_usb2_phy_interface, enable_gadget_susphy,
-    enable_usb2_gadget_susphy, qscratch_set,
+    enable_usb2_gadget_susphy, qscratch_set, run_stop_value,
 };
 use control::{
-    core_soft_reset, device_soft_reset, run_stop_device, stop_running_device, write_dctl_safe,
+    core_soft_reset, device_soft_reset, run_stop_device, run_stop_device_no_readback,
+    stop_running_device, write_dctl_safe,
 };
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
@@ -257,7 +258,7 @@ unsafe fn dma_iova_for(cpu: usize) -> u64 {
 }
 
 /// Newest STARTTRANSFER outcome harvested from the retained trace of the
-/// previous attempts (0xFFFF_FFFF = none; bit 16 set = the command timed out;
+/// previous attempts (0xFFFF_FFFF = none; bit 31 set = the command timed out;
 /// otherwise the raw DEPCMD register: status in bits 15:12).
 pub fn harvest_last_str_code() -> u32 {
     unsafe { TRACE_HARVEST_LAST }
@@ -519,8 +520,9 @@ unsafe fn unbind_function() {
 /// Outcome of the previous attempt's last STARTTRANSFER command, harvested
 /// from the retained trace at the start of the next handoff attempt (see
 /// `harvest_trace_outcome()`). Encoding: 0xFFFF = no record found,
-/// 0x1_0000 | raw DEPCMD register = the command timed out, otherwise the raw
-/// DEPCMD register at completion (status bits 15:12, resource index 22:16).
+/// 0x8000_0000 | raw DEPCMD register = the command timed out, otherwise the
+/// raw DEPCMD register at completion (status bits 15:12, resource index
+/// 22:16).
 static mut TRACE_HARVEST: u32 = 0xFFFF_FFFF;
 /// Raw DEPCMD register of the previous attempt's last SETTRANSFRESOURCE
 /// (resource index bits 22:16, status bits 15:12) or 0xFFFF_FFFF.
@@ -538,7 +540,9 @@ static mut TRACE_HARVEST_SETUP: u32 = 0;
 /// host request and the data phase was dispatched.
 static mut TRACE_HARVEST_DESC: u32 = 0;
 /// Raw DEPCMD register of the previous attempt's NEWEST STARTTRANSFER on
-/// physical endpoint 1 (the data/status IN direction of EP0).
+/// physical endpoint 1 (the data/status IN direction of EP0). A timed-out
+/// command carries the 0x8000_0000 flag; bit 16 alone is a healthy
+/// XferRscIdx=1 completion, not a timeout.
 static mut TRACE_HARVEST_EP1: u32 = 0xFFFF_FFFF;
 /// TRB status of the previous attempt's NEWEST XferComplete on physical
 /// endpoint 1 (the control data-phase IN), or 0xFFFF_FFFF when the core
@@ -796,7 +800,11 @@ unsafe fn harvest_trace_outcome() {
             let command_endpoint = read_volatile(addr_of!((*entry).value));
             let encode = |timeout: bool| -> u32 {
                 if timeout {
-                    0x1_0000 | raw
+                    // The timeout flag must not collide with the returned
+                    // XferRscIdx (DEPCMD bits 22:16): physical EP1's healthy
+                    // resource index is 1, so a completed EP1 STARTTRANSFER
+                    // sets bit 16 and a bit-16 flag misreads it as a wedge.
+                    0x8000_0000 | raw
                 } else {
                     raw & 0x7f_ffff
                 }
@@ -1144,7 +1152,7 @@ unsafe fn stop_after_gadget_handoff_stage(stage: u32) -> bool {
 // time-based budget instead: 5000 reads is roughly 0.5-1 ms of MMIO polling;
 // 2,000,000 reads bounds the wait at a comfortable fraction of a second
 // without ever spinning forever.
-const DWC3_EP_COMMAND_TIMEOUT: u32 = 2_000_000;
+const DWC3_EP_COMMAND_TIMEOUT: u32 = 50_000;
 
 #[inline]
 fn gsi_transfer_params(event_buffer: u32, trb: usize) -> Option<(u32, u32)> {
@@ -1816,6 +1824,10 @@ unsafe fn retry_start_transfer(endpoint: usize, trb: *const Trb, window_ms: u64)
 }
 
 unsafe fn end_transfer(endpoint: usize) -> bool {
+    // NOTE(bisect): the EP0-OUT index-0 rewrite is temporarily restored.
+    // Passing the legitimate resource index 0 wedged the rescue path on the
+    // handset (gate runs stopped reaching evaluation); re-derive the correct
+    // form from a passing baseline before reapplying.
     let resource_index = if endpoint < 2 {
         let index = unsafe { EP0_RESOURCE_INDEX[endpoint] };
         if index == 0 { 1 } else { index }
@@ -3770,9 +3782,6 @@ pub fn init_usb2_handoff() -> bool {
         let _ = super::platform::bramble::usb_bus_vectors(performance.vote);
     }
 
-    // The reuse/fallback handoff is the only path whose EP0 STARTTRANSFER
-    // boundary has succeeded on physical Bramble. Try it first for the probe
-    // build; retain the direct path as a fallback if ownership setup fails.
     #[cfg(all(
         fullerene_aarch64_usb_gadget_handoff_probe,
         not(fullerene_aarch64_usb_gadget_handoff_super_speed)
@@ -4000,6 +4009,34 @@ pub fn init_usb2_bare_pullup_handoff() -> bool {
     unsafe { init_usb2_bare_pullup_handoff_inner(true) }
 }
 
+/// TEMP(flow-map): host-visible code-point blip for the `always` self-test.
+/// Toggles the physical pull-up for a short window so the host kernel log
+/// timestamps the exact code point that executed. Parks and reset channels
+/// are unusable while the unidentified ~17 s biter overrides them; the blip
+/// completes in ~0.2 s and restores the previous Run/Stop state.
+#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+unsafe fn gate_flow_blip() {
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") != Some("always") {
+        return;
+    }
+    unsafe {
+        let running = read(DCTL) & DCTL_RUN_STOP != 0;
+        if running {
+            write_dctl_safe(read(DCTL) & !DCTL_RUN_STOP);
+        } else {
+            let dctl = run_stop_value(read(DCTL), read(GSNPSID));
+            write(DCTL, dctl | DCTL_RUN_STOP);
+        }
+        crate::timer::delay_ms(200);
+        if running {
+            let dctl = run_stop_value(read(DCTL), read(GSNPSID));
+            write(DCTL, dctl | DCTL_RUN_STOP);
+        } else {
+            write_dctl_safe(read(DCTL) & !DCTL_RUN_STOP);
+        }
+    }
+}
+
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // Re-establish the Qualcomm PHY/session state without asserting the
@@ -4012,6 +4049,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     if unsafe { stop_after_gadget_handoff_stage(1) } {
         return true;
     }
+    unsafe { gate_flow_blip() }; // flow-map B1: reuse entry
     if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma) {
         // Capture the address while Fastboot still owns the controller. The
         // no-SMMU differential deliberately preserves that firmware stream
@@ -4080,6 +4118,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         trace_marker(TRACE_DWC3_RESET_BEGIN, 0x50524553); // "PRES"
         log_puts("usb gadget handoff: preserving DWC3 core state\n");
     }
+    unsafe { gate_flow_blip() }; // flow-map B2: core reset done
     if unsafe { stop_after_gadget_handoff_stage(2) } {
         return false;
     }
@@ -4172,6 +4211,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         log_puts("usb gadget handoff: DWC3 SMMU pool map unavailable\n");
         return gadget_handoff_fail(3); // SMMU
     }
+    unsafe { gate_flow_blip() }; // flow-map B3: SMMU ready
     if unsafe { stop_after_gadget_handoff_stage(3) } {
         return false;
     }
@@ -4466,7 +4506,15 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
         configure_gadget_speed(false);
-        let start_readback_ok = unsafe { run_stop_device(true) };
+        // Gate runs skip the DEVCTRLHLT readback wait (up to 2 s on a stale
+        // halt) so the handoff returns to the probe inside the biter window;
+        // the stale-halt case is exactly what the diag rescue re-arm fixes.
+        let gate_run = option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1");
+        let start_readback_ok = if gate_run {
+            unsafe { run_stop_device_no_readback(true) }
+        } else {
+            unsafe { run_stop_device(true) }
+        };
         if !start_readback_ok {
             // Some Fastboot/DWC3 handoffs keep DSTS.DEVCTRLHLT stale even
             // after the Run/Stop write has reached the controller. The
@@ -4479,6 +4527,23 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             log_puts("usb gadget handoff: DWC3 RUN/STOP readback timed out; continuing\n");
             trace_event(TRACE_DWC3_HALT_TIMEOUT, 0, 0, 0, 0, read(DSTS));
         }
+        // Arm the first SETUP TRB inside the handoff: the host issues its
+        // first SETUP token ~100-200 ms after the pull-up rises, and an EP0
+        // with no armed TRB cannot answer it (the read/64 -110 boundary).
+        // Deferring the arm to the probe's poll loop was always too late;
+        // retry here while the link trains to ON. On a powered, clocked core
+        // a rejected Start Transfer (link not ON yet) is retryable, not a
+        // wedge.
+        {
+            let arm_deadline =
+                arch_counter().saturating_add(arch_counter_frequency().saturating_mul(400) / 1_000);
+            while arch_counter() < arm_deadline && !EP0_SETUP_ARMED {
+                let _ = try_arm_setup();
+                poll_ep0_event_ring();
+                super::timer::delay_us(200);
+            }
+        }
+        unsafe { gate_flow_blip() }; // flow-map B4: final Run/Stop readback done
         if stop_after_gadget_handoff_stage(7) {
             return false;
         }
@@ -5688,11 +5753,11 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             //   hex value   -> the OLDEST raw DEPCMD register equals exactly
             //                  this value
             let ok = match want {
-                "timeout" => TRACE_HARVEST & 0x1_0000 != 0,
-                "done" => TRACE_HARVEST != 0xFFFF_FFFF && TRACE_HARVEST & 0x1_0000 == 0,
-                "last-timeout" => TRACE_HARVEST_LAST & 0x1_0000 != 0,
+                "timeout" => TRACE_HARVEST & 0x8000_0000 != 0,
+                "done" => TRACE_HARVEST != 0xFFFF_FFFF && TRACE_HARVEST & 0x8000_0000 == 0,
+                "last-timeout" => TRACE_HARVEST_LAST & 0x8000_0000 != 0,
                 "last-done" => {
-                    TRACE_HARVEST_LAST != 0xFFFF_FFFF && TRACE_HARVEST_LAST & 0x1_0000 == 0
+                    TRACE_HARVEST_LAST != 0xFFFF_FFFF && TRACE_HARVEST_LAST & 0x8000_0000 == 0
                 }
                 "setup" => TRACE_HARVEST_SETUP > 0,
                 "desc" => TRACE_HARVEST_DESC > 0,
@@ -5737,7 +5802,13 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 // after Connect Done): the pipeline ran after the host gave
                 // up, which is a pure timing failure.
                 "setup-slow" => TRACE_HARVEST_SETUP > 0 && TRACE_HARVEST_SETUP_DELAY > 2,
-                "ep1-done" => TRACE_HARVEST_EP1 != 0xFFFF_FFFF && TRACE_HARVEST_EP1 & 0x1_0000 == 0,
+                // The timeout flag is bit 31; bit 16 alone is a healthy
+                // XferRscIdx=1 completion on physical EP1.
+                "ep1-done" => {
+                    TRACE_HARVEST_EP1 != 0xFFFF_FFFF
+                        && TRACE_HARVEST_EP1 & 0x8000_0000 == 0
+                        && TRACE_HARVEST_EP1 & 0xf000 == 0
+                }
                 "ep1-1000" => TRACE_HARVEST_EP1 == 0x1000,
                 "none" => TRACE_HARVEST == 0xFFFF_FFFF,
                 other => u32::from_str_radix(other.trim_start_matches("0x"), 16)
@@ -6580,7 +6651,8 @@ pub fn u0_arm_status_probe() -> u32 {
 }
 
 /// Return the newest retained EP1 STARTTRANSFER command word. The value is
-/// the completed DEPCMD register with the controller's status nibble intact;
+/// the completed DEPCMD register with the controller's status nibble intact
+/// (bit 31 set = the command timed out; bit 16 alone = healthy XferRscIdx 1);
 /// `0xFFFF_FFFF` means that no EP1 command was captured in this boot's trace.
 pub fn ep1_start_status_probe() -> u32 {
     unsafe {
@@ -6619,10 +6691,12 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             // readout with this gate proves the gate path and our edits are
             // live in the running image.
             "always" => true,
-            "timeout" => TRACE_HARVEST & 0x1_0000 != 0,
-            "done" => TRACE_HARVEST != 0xFFFF_FFFF && TRACE_HARVEST & 0x1_0000 == 0,
-            "last-timeout" => TRACE_HARVEST_LAST & 0x1_0000 != 0,
-            "last-done" => TRACE_HARVEST_LAST != 0xFFFF_FFFF && TRACE_HARVEST_LAST & 0x1_0000 == 0,
+            "timeout" => TRACE_HARVEST & 0x8000_0000 != 0,
+            "done" => TRACE_HARVEST != 0xFFFF_FFFF && TRACE_HARVEST & 0x8000_0000 == 0,
+            "last-timeout" => TRACE_HARVEST_LAST & 0x8000_0000 != 0,
+            "last-done" => {
+                TRACE_HARVEST_LAST != 0xFFFF_FFFF && TRACE_HARVEST_LAST & 0x8000_0000 == 0
+            }
             "setup" => TRACE_HARVEST_SETUP > 0,
             "desc" => TRACE_HARVEST_DESC > 0,
             "statusq" => TRACE_HARVEST_STATUSQ > 0,
@@ -6644,8 +6718,28 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             // the newest EP1 STARTTRANSFER raw DEPCMD register (status bits
             // 15:12), or 0xFFFF_FFFF when no EP1 command was ever issued.
             "ep1-none" => TRACE_HARVEST_EP1 == 0xFFFF_FFFF,
-            "ep1-done" => TRACE_HARVEST_EP1 != 0xFFFF_FFFF && (TRACE_HARVEST_EP1 & 0x1_1000) == 0,
-            "ep1-nores" => TRACE_HARVEST_EP1 == 0x1000,
+            // A timed-out command carries the 0x8000_0000 flag; bit 16 alone
+            // is a healthy XferRscIdx=1 completion on physical EP1.
+            "ep1-wedge" => {
+                TRACE_HARVEST_EP1 != 0xFFFF_FFFF && (TRACE_HARVEST_EP1 & 0x8000_0000) != 0
+            }
+            // A clean data-phase start: the command retired with status 0
+            // and the returned XferRscIdx equals EP1's allocated resource 1.
+            "ep1-clean" => {
+                TRACE_HARVEST_EP1 != 0xFFFF_FFFF
+                    && (TRACE_HARVEST_EP1 & 0x8000_0000) == 0
+                    && (TRACE_HARVEST_EP1 & 0x7f_ffff) == 0x1_0000
+            }
+            "ep1-done" => {
+                TRACE_HARVEST_EP1 != 0xFFFF_FFFF
+                    && (TRACE_HARVEST_EP1 & 0x8000_0000) == 0
+                    && (TRACE_HARVEST_EP1 & 0xf000) == 0
+            }
+            "ep1-nores" => {
+                TRACE_HARVEST_EP1 != 0xFFFF_FFFF
+                    && (TRACE_HARVEST_EP1 & 0x8000_0000) == 0
+                    && (TRACE_HARVEST_EP1 & 0xf000) == 0x1000
+            }
             // The DEPCMD status is bits 15:12. Ignore CMDIOC and any other
             // non-status completion bits: a zero status nibble is a command
             // success even when the raw register is not exactly zero.
@@ -6805,11 +6899,15 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             // the harvest re-reads this run's live trace at gate eval, so
             // these cross-check the INIT_* snapshot gates above.
             "cfg-hv" => TRACE_HARVEST_CFG != 0xFFFF_FFFF,
-            "cfg-hv-done" => TRACE_HARVEST_CFG != 0xFFFF_FFFF && TRACE_HARVEST_CFG & 0x1_0000 == 0,
-            "cfg-hv-stuck" => TRACE_HARVEST_CFG & 0x1_0000 != 0,
+            "cfg-hv-done" => {
+                TRACE_HARVEST_CFG != 0xFFFF_FFFF && TRACE_HARVEST_CFG & 0x8000_0000 == 0
+            }
+            "cfg-hv-stuck" => TRACE_HARVEST_CFG & 0x8000_0000 != 0,
             "rsc-hv" => TRACE_HARVEST_RSC != 0xFFFF_FFFF,
-            "rsc-hv-done" => TRACE_HARVEST_RSC != 0xFFFF_FFFF && TRACE_HARVEST_RSC & 0x1_0000 == 0,
-            "rsc-hv-stuck" => TRACE_HARVEST_RSC & 0x1_0000 != 0,
+            "rsc-hv-done" => {
+                TRACE_HARVEST_RSC != 0xFFFF_FFFF && TRACE_HARVEST_RSC & 0x8000_0000 == 0
+            }
+            "rsc-hv-stuck" => TRACE_HARVEST_RSC & 0x8000_0000 != 0,
             "ds-stuck" => {
                 INIT_DEPSTART_RAW != 0xFFFF_FFFF && INIT_DEPSTART_RAW & DEPCMD_CMDACT != 0
             }
@@ -6846,8 +6944,20 @@ pub fn park_for_seconds(seconds: u64) -> ! {
         ); // "PARK"+secs
         let frequency = arch_counter_frequency();
         let deadline = arch_counter().saturating_add(frequency.saturating_mul(seconds));
+        // Power keepalive: the restored USB domain is still collapsed by
+        // RPMh ~5-8 s after the attach wakes it, even with the initial vote
+        // set. Re-assert the rail votes and the GDSC enable periodically
+        // (never the reset lines: those would kill a live controller) so
+        // parks run to their own deadline. Pure spin, no other MMIO.
+        let keepalive_period = frequency.saturating_div(2);
+        let mut next_keepalive = arch_counter().saturating_add(keepalive_period);
         while frequency != 0 && arch_counter() < deadline {
             wdt_pet();
+            if arch_counter() >= next_keepalive {
+                let _ = super::platform::bramble::apply_usb_power(true, true);
+                let _ = super::platform::bramble::force_enable_usb30_gdsc();
+                next_keepalive = arch_counter().saturating_add(keepalive_period);
+            }
             core::hint::spin_loop();
         }
         unsafe {
@@ -6965,6 +7075,72 @@ pub fn restore_usb2_session_votes() {
 /// events while halting per the databook stop contract.
 pub fn gate_true_stop_device() -> bool {
     unsafe { run_stop_device(false) }
+}
+
+/// One-shot core-domain snapshot for the attach-delay readout: the gate-run
+/// probe delays the physical attach by `code * 80 ms`, and the host kernel
+/// log's attach timestamp publishes the code (±0.1 s, far inside the ~17 s
+/// biter window that overrides every park and reset channel).
+///
+/// Encoding (6 bits, 0..63 -> 0..5.04 s):
+///   bits 5:3 = raw GDSCR bits 2:0 (SW_COLLAPSE | PWR_ON-ish state words)
+///   bit  2   = GSNPSID reads a DWC3 revision (the core answers MMIO)
+///   bit  1   = DSTS.DEVCTRLHLT set
+///   bit  0   = DSTS USBLNKST nibble nonzero
+pub fn core_attach_delay_code() -> u32 {
+    unsafe {
+        let gdscr = core::ptr::read_volatile(
+            &super::platform::bramble::usb_resources().gdsc as *const usize as *const u8
+                as *const u32,
+        );
+        let snpsid = read(GSNPSID);
+        let dsts = read(DSTS);
+        let gdscr_bits = (gdscr & 0x7) << 3;
+        let snpsid_ok = (snpsid >> 16 == 0x5533 || snpsid >> 16 == 0x5532) as u32;
+        let halt = (dsts & DSTS_DEVCTRLHLT != 0) as u32;
+        let link = ((dsts >> 18) & 0xf != 0) as u32;
+        gdscr_bits | (snpsid_ok << 2) | (halt << 1) | link
+    }
+}
+
+/// Power-recovery stage test for the attach-delay readout (4 bits):
+///   bit 0 = the RPMh rail votes ACKed through the normal USB2 power path
+///   bit 1 = the forced GDSC enable reached PWR_ON
+///   bit 2 = GDSCR reads back with SW_COLLAPSE cleared
+///   bit 3 = GSNPSID answers a DWC3 revision (the core answers MMIO)
+pub fn core_power_recovery_code() -> u32 {
+    unsafe {
+        let votes = super::platform::bramble::apply_usb_power(true, false);
+        let gdsc_on = super::platform::bramble::force_enable_usb30_gdsc();
+        let gdscr = core::ptr::read_volatile(
+            &super::platform::bramble::usb_resources().gdsc as *const usize as *const u8
+                as *const u32,
+        );
+        let collapse_cleared = (gdscr & 1 == 0) as u32;
+        let snpsid = read(GSNPSID);
+        let snpsid_ok = (snpsid >> 16 == 0x5533 || snpsid >> 16 == 0x5532) as u32;
+        votes as u32 | ((gdsc_on as u32) << 1) | (collapse_cleared << 2) | (snpsid_ok << 3)
+    }
+}
+
+/// Full core-recovery sequence (rails + GDSC + clocks + reset pulses) and a
+/// binary attach-delay readout: the attach lands ~0.5 s after entry when the
+/// DWC3 core still fails to answer GSNPSID, and ~4.0 s after entry when the
+/// core answers. The 3.5 s separation is far outside the ±0.5 s attach noise
+/// and stays inside the biter window.
+pub fn core_alive_attach_delay_secs() -> u64 {
+    unsafe {
+        let _ = super::platform::bramble::apply_usb_power(true, false);
+        let _ = super::platform::bramble::force_enable_usb30_gdsc();
+        let _ = super::platform::bramble::usb_clock::configure_usb_clocks(
+            super::platform::bramble::UsbBusVote::Nominal,
+        );
+        let _ = super::platform::bramble::enable_usb_clock_branches();
+        let _ = super::platform::bramble::usb_reset::reset_usb_blocks(false);
+        let snpsid = read(GSNPSID);
+        let snpsid_ok = snpsid >> 16 == 0x5533 || snpsid >> 16 == 0x5532;
+        if snpsid_ok { 4_000 } else { 500 }
+    }
 }
 
 pub fn ep0_signal_publish_pullup() {
