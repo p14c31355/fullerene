@@ -4162,3 +4162,323 @@ In the future, we plan to add compatibility notes for:
 - **Intel** reference platforms
 - **AMD** platforms
 - **QEMU** (already supported; detailed notes to be added)
+
+### EP0 TX FIFO repair A/B after USB30 power recovery (2026-08-31)
+
+The powered-core retest used `--direct-handoff --start-after-connect
+--signal-probe --ep0-txfifo-fix`; this is the previously inconclusive EP0/EP1
+TX FIFO repair path, retested with the USB30 GDSC/clock/reset recovery in
+place.
+
+- Harness output: `tmp/fullerene-bramble-loop.1551282.0`
+- Boot artifact SHA-256:
+  `a5ac8d976f23316bba94842908d0d912fd8138912d29b2d8f07c525786185854`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- `kernel.log`: Fastboot `usb 2-1` disconnected at `04:21:42`; Fullerene
+  `usb 1-9` high-speed attached at `04:21:55`; then
+  `device descriptor read/64, error -110` at `04:22:00`; stock Android
+  `usb 2-1` re-enumerated as `18d1:4ee7` at `04:22:21`. No
+  `idVendor=1234` line appeared.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: the EP0 TX FIFO repair does not change the post-recovery result;
+the run remained in the -110 (no EP0 data response) class. The next repair
+target is the first EP1 data-phase Start Transfer within the host's ~0.5 s
+transaction-error window, using a ~200 us retry cadence or XferNotReady-driven
+pre-arm. Only `fastboot boot` was used.
+
+### Composite diag readout gate after EP0 TX FIFO A/B (2026-08-31)
+
+The `pub` gate was run with `--direct-handoff --start-after-connect
+--signal-probe --signal-cmd-gate pub --observe-secs 1` to classify the
+remaining failure.
+
+- Harness output: `tmp/fullerene-bramble-loop.1554505.0`
+- Boot artifact SHA-256:
+  `65c3eab3e07460346ce94dcc2bd4bb0dd1ddea0817db2935cefaa772a60322d6`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- `kernel.log`: Fullerene attached at `04:23:21`; then
+  `device descriptor read/64, error -110` at `04:23:26`; stock Android
+  returned at `04:23:47`. No `idVendor=1234` line appeared.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: Android returned after 40 seconds, so the remaining
+USB-activity-correlated collapse cut the `pub` park before the code bucket
+could be published. The readout is invalid, not a valid code 1; this confirms
+the collapse still precedes park-based diagnostics. Only `fastboot boot` was
+used.
+
+### SETUP-arm link blip diagnostic (2026-08-31)
+
+The link-U0/tight-arm blip was run with `--direct-handoff
+--start-after-connect --signal-probe --arm-blip`.
+
+- Harness output: `tmp/fullerene-bramble-loop.1557406.0`
+- Boot artifact SHA-256:
+  `f9d097e9cfc131455570594998baf4187b6d0dfc9214429b5ccfd490414d2254`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- `kernel.log`: Fullerene attached at `04:24:44`; then
+  `device descriptor read/64, error -110` at `04:24:50`; stock Android
+  returned at `04:25:10`. No host-visible blip and no `idVendor=1234`
+  appeared.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: the arm-blip diagnostic did not publish a disconnect/re-attach
+pair. Under its documented semantics, the tight SETUP arm did not succeed
+with the core link reporting U0, so the remaining -110 is still the initial
+EP0 SETUP delivery path rather than the later EP1 data phase. Only
+`fastboot boot` was used.
+
+### SETUP-arm ungated diagnostic (2026-08-31)
+
+The DSTS link-state gate around the tight SETUP arm was bypassed with
+`--direct-handoff --start-after-connect --signal-probe --start-ungated
+--arm-blip`.
+
+- Harness output: `tmp/fullerene-bramble-loop.1560461.0`
+- Boot artifact SHA-256:
+  `33c98edfa9ece556da937eb8e59f9bcc13f969565832f24a899c5d17ca7c76d2`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- `kernel.log`: Fastboot `usb 2-1` disconnected at `04:25:49`; Fullerene
+  `usb 1-9` high-speed attached at `04:26:02`; then
+  `device descriptor read/64, error -110` at `04:26:08`; stock Android
+  returned as `18d1:4ee7` at `04:26:28`. No host-visible blip and no
+  `idVendor=1234` appeared.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: bypassing the link-state gate did not produce the arm-blip
+diagnostic or improve enumeration. The tight SETUP arm still misses the
+host's initial SETUP window, so the remaining -110 is not explained by the
+U0 gate alone. The next diagnostic should use the PM8150 PON reset-reason
+readout unless another bus-level capture becomes available. Only
+`fastboot boot` was used.
+
+### PON reset-reason attach delay A/B (2026-08-31)
+
+PM8150 SID 0/peripheral 8 PON reset-reason reads were published by delaying
+physical attach by `(code + 1) * 300 ms`. Two runs used the same artifact and
+`--direct-handoff --start-after-connect --signal-probe --skip-typec-spmi
+--observe-secs 1`; only `fastboot boot` was used. The prior non-instrumented
+attach delay was approximately 13 s, so the stable +15 s delay indicates PON
+reason code 6.
+
+- Harness output: `tmp/fullerene-bramble-loop.1568105.0`
+- Boot artifact SHA-256:
+  `23c0f5fb61440af3a078e05344659775a928f1a5edb95ff6a2dba7bb669f5544`
+- `kernel.log`: Fastboot `usb 2-1` disconnected at `04:30:08`; Fullerene
+  `usb 1-9` high-speed attached at `04:30:23` (+15 s); then
+  `device descriptor read/64, error -110` at `04:30:28`; stock Android
+  returned as `18d1:4ee7` at `04:30:48`.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+- Harness output: `tmp/fullerene-bramble-loop.1570065.0`
+- Boot artifact SHA-256:
+  `23c0f5fb61440af3a078e05344659775a928f1a5edb95ff6a2dba7bb669f5544`
+- `kernel.log`: Fastboot `usb 2-1` disconnected at `04:31:11`; Fullerene
+  `usb 1-9` high-speed attached at `04:31:26` (+15 s); then
+  `device descriptor read/64, error -110` at `04:31:31`; stock Android
+  returned as `18d1:4ee7` at `04:31:53`.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: the PON readout is repeatable and reports reason code 6. Upstream
+POFF decoding maps this toward RESIN_N/reset-line, but PON may only describe
+the planned recovery reset rather than the USB-domain collapse. USB enumeration
+still stopped at -110, with no `idVendor=1234` line.
+
+### Fast control-transfer retry A/B (2026-08-31)
+
+The failed-arm cooldown was reduced from 200 to 20 and EP0 status/DataIn Start
+Transfer retry windows from 2500 ms to 750 ms. The first run accidentally
+tested only the SETUP-arm and status portions before the DataIn replacement
+was compiled in; the second run tested the complete change. Both used
+`--direct-handoff --start-after-connect --signal-probe --skip-typec-spmi
+--observe-secs 1`. Only `fastboot boot` was used.
+
+- Harness output: `tmp/fullerene-bramble-loop.1579019.0`
+- Boot artifact SHA-256:
+  `47dde08b2bf209804e05b2bff38cdaa74704b09b312528e07478f075467a9150`
+- `kernel.log`: Fastboot `usb 2-1` disconnected at `04:36:24`; Fullerene
+  `usb 1-9` high-speed attached at `04:36:38` (+15 s); then
+  `device descriptor read/64, error -110` at `04:36:43`; stock Android
+  returned as `18d1:4ee7` at `04:37:04`.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+- Harness output: `tmp/fullerene-bramble-loop.1581994.0`
+- Boot artifact SHA-256:
+  `9e33b2d10ed5d1b5a9147240cf291e98181c40ca3f687dba5aecefef98003178`
+- `kernel.log`: Fastboot `usb 2-1` disconnected at `04:38:01`; Fullerene
+  `usb 1-9` high-speed attached at `04:38:15` (+15 s); then
+  `device descriptor read/64, error -110` at `04:38:21`; stock Android
+  returned as `18d1:4ee7` at `04:38:42`, briefly disconnected, and
+  re-enumerated at `04:38:43`.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: reducing the SETUP-arm cooldown and Start Transfer retries to
+750 ms did not change the result. Neither run reached the -71 data phase or
+`idVendor=1234`; the stable failure remains -110 before the first descriptor
+data response. The host-side usbmon path is not accessible without an
+interactive sudo password.
+
+### Start-after-reset SETUP-arm A/B (2026-08-31)
+
+The direct handoff was moved from `--start-after-connect` to
+`--start-after-reset`, with the standard signal-probe observation. Only
+`fastboot boot` was used.
+
+- Harness output: `tmp/fullerene-bramble-loop.1589000.0`
+- Boot artifact SHA-256:
+  `8017d582c663572b4b365c75d687081decadbd0339cb67208f0a64fb0ffcb79f`
+- `kernel.log`: Fastboot `usb 2-1` disconnected at `04:41:45`; Fullerene
+  `usb 1-9` high-speed attached at `04:41:59` (+15 s); then
+  `device descriptor read/64, error -110` at `04:42:04`; stock Android
+  returned as `18d1:4ee7` at `04:42:27`.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: deferring the initial EP0 SETUP arm until the USB reset event did
+not improve enumeration. The failure remained the pre-data -110 class.
+
+### Host-side usbmon capture of the -110/-71 failure (2026-08-31)
+
+The user granted usbmon access (`chmod o+x /sys/kernel/debug`,
+`chmod a+r /sys/kernel/debug/usb/usbmon/[0-9]u`), so `cat` of
+`usbmon/1u` (Fullerene enumerates on `usb 1-9`, bus 1) could be captured
+around each `bramble-usb loop` run. The capture is plain text; the host
+URB stream for the failing enumeration is:
+
+- `GET_DESCRIPTOR(Device, 64)` to address 0 submitted ~0.2 s after the
+  attach line; it completes `-2` (ENOENT = the 5 s software timeout,
+  printed as `-110`) with **no transaction error** - the device either
+  NAKs the SETUP tokens or ACKs SETUP and NAKs the IN tokens.
+- The hub then issues its second port reset and re-submits the read;
+  ~0.2-0.35 s later every URB completes `-71` (EPROTO) in the same
+  millisecond, and the hub's next port-status poll reads the port
+  unconnected (CSC, status 0x0100): **the handset reboots at that
+  moment** (`boot-reason.txt` was `watchdog`, Android returns ~20 s
+  later at ~42 s from `fastboot boot`).
+
+So the -71 is downstream of the reset, not an independent packet
+corruption: the real failure is still "no EP0 data within the host's
+first 5 s window", and the window is cut at ~5.5-5.9 s post-attach by
+the handset reboot.
+
+### Characterization of the ~5.6 s post-attach handset reset
+
+Five A/Bs pinned the reset down as software-flow-independent:
+
+- `--observe-secs 20` (observation window 20x longer): the reset time
+  did not move (still try1-timeout + ~0.6 s).
+- A pure-spin park gate (`spin`: wdt pet only, no `usb::poll`, no MMIO,
+  30 s, then PSCI reset): the handset still returned at ~42 s, so the
+  reset is not caused by our MMIO traffic into a collapsing domain.
+- `--swdd-fnid 0x82000107` and `0x02000107` (modern SMCCC encodings of
+  the secure-watchdog disable): unchanged ~42 s returns; the SMC path
+  does not disable whatever bites.
+- The rail refresh keepalive (see below) did not move it either.
+- `boot-reason.txt` stayed `watchdog` in every run.
+
+The reset is therefore a firmware/PON-level event roughly 5.5-5.9 s
+after the physical attach, independent of Fullerene's control flow. The
+leading suspect remains the RPMh/QMP-core-domain collapse documented in
+the recovery section above cascading into a PON reset; the rail
+re-vote keepalive did not prevent it.
+
+### Readout-channel findings (all one-bit gates this era are void)
+
+- `u0_arm_wdt_bite` never lands: the control gate `u0-status4` (which
+  must evaluate FALSE because `U0_ARM_STATUS` is 0xFFFF_FFFF when the
+  u0-arm probe env is absent) returned the same ~42 s bucket as the
+  TRUE gates. The APSS WDT registers are not writable from EL1 on this
+  unit, so **every bite-timed gate readout is void**.
+- Every park is cut by the ~5.6 s reset, so TRUE (`stop` + 30 s park)
+  and FALSE (90 s park) also collapse into the same return time.
+- The generic-gate FALSE path now schedules `u0_arm_wdt_bite(1)` +
+  `park_for_seconds(90)`; it is correct in intent but inert until the
+  bite channel works.
+- The only surviving readouts are: usbmon (host side), kernel.log
+  lines, the attach-suppression gates (`--signal-fsr-gate` proved an
+  Apps-SMMU fault latches during the pre-attach EP0 DMA probe), and
+  the reset time itself.
+
+### Disconnect primitives are all electrically inert
+
+`ep0_signal_drop_pullup` (QSCRATCH SS bit 24 + HS bits 20/28), the
+QUSB2 `VBUSVLDEXT0`/`VBUSVLDEXTSEL0` pair, and **DCTL Run/Stop clear**
+(`gate_true_stop_device`) all leave the bus unchanged: with a `dstat`
+gate run no root-hub interrupt event, no URB abort, and no attach line
+appeared. The D+ pull-up on this unit is owned by something outside
+these registers (most likely the QUSB2 session sensing the host's own
+VBUS). The `pubd` and `dstat` gates remain in the tree as records of
+these negative results.
+
+### Code changes (all uncommitted, in the working tree)
+
+- `refresh_usb_power(super_speed)` in bramble.rs: re-sends the rail
+  VRM votes unconditionally; `apply_usb_power` early-returns once its
+  state flag matches, which made the periodic park keepalive a no-op.
+  Wired into the park keepalive and a new 0.5 s keepalive in the
+  signal-probe observation loop (GDSC force-enable retained).
+- Data phase is now XferNotReady-driven (`DATA_PHASE_PENDING_START`):
+  the SETUP dispatch prepares the EP1 IN TRB and the
+  XferNotReady(CONTROL_DATA) handler issues
+  `retry_start_transfer(1, ..., 200 ms)`, matching the stock XBL flow
+  ("the core only consumes a data TRB armed from the NRDY boundary").
+  The dispatch-time proactive Start Transfer was removed.
+- The status phase no longer issues `start_status(1)` proactively at
+  StatusIn; the XferNotReady(CONTROL_STATUS) handler owns it.
+- The USB-reset KEEP path now clears the stale `EP0_SETUP_ARMED` and
+  re-arms (`try_arm_setup`): a bus reset terminates the armed EP0 OUT
+  transfer even though the software state survived, which NAKed every
+  post-reset SETUP token.
+- `try_arm_setup` no longer gates on the DSTS USBLNKST nibble (it read
+  non-U0 states 4/6/7/10/12/13 while the host was already issuing
+  tokens); only the DEVCTRLHLT halt check remains.
+- The tail reset now publishes the composite diag code as
+  `code*1 s` of extra poll-serviced wait (trace marker "MRAD"+code)
+  before `reset_after_probe_failure`, and stable-parks the moment
+  `probe_ep0_progress()` reports the data phase armed. In the current
+  regime the ~5.6 s reset still preempts it.
+- `ARM_COOLDOWN` reverted to 200 polls and the data/status Start
+  Transfer retry windows to 2500 ms (the values from the era that once
+  reached the -71 data phase).
+
+### A/B results this session (all `--direct-handoff
+--start-after-connect --signal-probe --skip-typec-spmi --observe-secs 1`
+unless noted; only `fastboot boot` was used)
+
+- default (usbmon run 1): -110 at +5 s; -71 burst + handset reboot at
+  +5.6 s. Unchanged by: `--swdd-skip`, the retry revert, the rail
+  keepalive, the NRDY-driven arm, the KEEP re-arm, the DSTS-gate
+  removal, `--start-ungated`, `--swdd-fnid` variants, `--xbl-deferred-setup`.
+- `--signal-fsr-gate 1 --signal-dma-probe`: the device ATTACHED, so an
+  Apps-SMMU fault latched during the probe's own EP0 DMA window while
+  the probe's event DMA still delivered. Cause unknown; the faulting
+  address is journalled in the retained trace (TRACE_SMMU_FAULT) but
+  the trace is only readable from an enumerated gadget.
+- `--signal-cmd-gate always|setup|armed|desc|darm|ep1-clean|ep1-nrdy|
+  ep1-xfer-ok|ep1-xfer-err|ep1-none|u0-status4|spin|dstat`: all returned
+  the same ~42 s bucket; none is decodable while both the bite channel
+  and the parks are cut by the ~5.6 s reset.
+
+### Next steps (priority order)
+
+1. Beat the ~5.6 s reset: read the PM8150 PON/S2 reset reason registers
+   at the NEXT probe entry (the existing `read_pm8150_pon_reset_code`
+   already reports code 6 = RESIN_N-ish) and correlate; consider voting
+   the rails through a different RSC set (sleep TCS) or re-arming the
+   GDSC with HW control cleared inside the first 5 s window.
+2. Complete the data phase inside the first 5 s: the XferNotReady-driven
+   arm is in place; what remains unverified is whether the SETUP event
+   is dispatched at all. The valid next readout is the attach-delay
+   channel (`core_attach_delay_code`-style): encode
+   `TRACE_HARVEST_SETUP > 0` into the attach delay of the *next* boot's
+   first attempt, since the PON runs proved ~300 ms attach steps are
+   readable in kernel.log.
+3. If the SMMU fault is real on the enumeration path, the faulting IOVA
+   (TRACE_SMMU_FAULT FAR) identifies which DMA object lacks a mapping;
+   reproduce it with a context-FAR value gate through the
+   attach-suppression mechanism instead of the dead bite channel.
+4. Only `fastboot boot` was used.

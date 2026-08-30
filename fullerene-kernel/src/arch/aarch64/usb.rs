@@ -223,6 +223,14 @@ static mut PENDING_SETUP_ARM: bool = false;
 /// command engine at poll rate during that window can wedge it, so the
 /// guard backs off between attempts.
 static mut ARM_COOLDOWN: u32 = 0;
+/// Deferred EP0 data-phase arm. The core fires XferNotReady(CONTROL_DATA)
+/// when the host's first IN token arrives and only consumes a data TRB
+/// armed from that event boundary (the stock XBL flow). A Start Transfer
+/// issued at SETUP-dispatch time retires cleanly but is ignored, and the
+/// host then NAK-loops the whole 5 s control window (-110). The dispatch
+/// prepares the TRB, sets this flag, and the XferNotReady handler arms.
+static mut DATA_PHASE_PENDING_START: bool = false;
+static mut DATA_PHASE_PENDING_LEN: usize = 0;
 /// CNTPCT tick of the first successful post-connect Run/Stop (quiet-window
 /// reference; 0 = no start recorded yet).
 static mut RUN_STOP_TICK: u64 = 0;
@@ -2419,15 +2427,14 @@ unsafe fn try_arm_setup() -> bool {
         }
         // The normal path waits for the controller's U0 report because the
         // DWC3 programming guide rejects Start Transfer in suspend/reset.
-        // The ungated A/B deliberately skips only the USBLNKST read: on this
-        // Bramble revision the host can already be issuing tokens while the
-        // DSTS encoding remains non-U0. Keep the halt check in both modes so
-        // a genuinely stopped controller is never poked.
+        // POST-RECOVERY CORRECTION: the gate stays closed forever on this
+        // revision (DSTS reads non-U0 link states 4/6/7/10/12/13 while the
+        // host is already issuing tokens), which blocked every SETUP re-arm
+        // and NAKed the whole first descriptor window (-110). The bus reset
+        // ends before the host's first SETUP token, so issuing the re-arm
+        // here is safe; only a genuinely halted controller is skipped.
         let dsts = read(DSTS);
-        if dsts & DSTS_DEVCTRLHLT != 0
-            || (!cfg!(fullerene_aarch64_usb_gadget_handoff_start_ungated)
-                && (dsts >> 18) & 0xf != 0)
-        {
+        if dsts & DSTS_DEVCTRLHLT != 0 {
             return false;
         }
         prepare_ep0_setup_trb();
@@ -2441,6 +2448,9 @@ unsafe fn try_arm_setup() -> bool {
             // first SETUP token lands ~1 ms after its bus reset ends, so the
             // retry rate must place an armed SETUP TRB inside that window
             // while still bounding the total failed-command count.
+            // BISECT: the 20-poll cooldown variant never reached the data
+            // phase (-110 in every run); the 200-poll cooldown is the value
+            // from the era when the device answered with a data-phase -71.
             ARM_COOLDOWN = 200;
             false
         }
@@ -2546,6 +2556,17 @@ unsafe fn restart_control_after_reset() {
             CONTROL_HAS_DATA = false;
             // EP0_STATE, EP0_SETUP_ARMED, EP0_RESOURCE_INDEX, ENDPOINTS_READY,
             // DALEPENA, DCFG.speed, and the armed SETUP TRB are preserved.
+            // POST-RECOVERY CORRECTION: a bus reset TERMINATES the armed EP0
+            // OUT transfer at the core level even though the software state
+            // survives. Preserving EP0_SETUP_ARMED here made the poll guard
+            // skip the re-arm forever, so every post-reset SETUP token was
+            // NAKed and the first descriptor read timed out (-110). Clear
+            // the stale flag and re-arm from this event; the host retries
+            // SETUP tokens throughout its 5 s control window, so an arm that
+            // lands even late still catches a retry.
+            EP0_SETUP_ARMED = false;
+            PENDING_SETUP_ARM = true;
+            try_arm_setup();
             trace_event(
                 TRACE_USB_RESET,
                 0x4B45_504B, // "KEEP"
@@ -2583,6 +2604,7 @@ unsafe fn restart_control_after_reset() {
         GSI_GADGET_BOUND = false;
         FUNCTION_BOUND = false;
         EP0_STATE = Ep0State::Setup;
+        DATA_PHASE_PENDING_START = false;
         CONTROL_IN = false;
         CONTROL_HAS_DATA = false;
 
@@ -2756,6 +2778,7 @@ unsafe fn stall_control(endpoint: usize) {
     let _ = unsafe { send_ep_command(endpoint, DEPCMD_SETSTALL, 0, 0, 0) };
     unsafe {
         EP0_STATE = Ep0State::Setup;
+        DATA_PHASE_PENDING_START = false;
     }
 }
 
@@ -2857,50 +2880,22 @@ unsafe fn handle_setup() {
                 read(DSTS),
             );
             EP0_STATE = Ep0State::Data;
-            // This core's endpoint command engine flakily rejects Start
-            // Transfer right after the bus reset ("No resource" or a stuck
-            // CMDACT) even though the identical command succeeds seconds
-            // later - the host's first descriptor read and its retry straddle
-            // exactly that window. The host keeps polling EP0 IN with IN
-            // tokens while the data phase is pending and tolerates the NAKs,
-            // so a bounded command retry answers the first read instead of
-            // stalling the whole control transfer.
-            let mut queued = start_transfer(1, ep0_trb_ptr(trb_index));
-            if !queued {
-                // A USB bus reset can invalidate the endpoint 1 transfer
-                // resource allocated at init, so the control data-phase Start
-                // Transfer is answered "No resource". Re-allocate the resource
-                // once, then retry the command inside the host's own 5 s
-                // control timeout instead of stalling the transfer early.
-                let _ = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
-                queued = retry_start_transfer(1, ep0_trb_ptr(trb_index), 2500);
-            }
-            trace_event(
-                TRACE_DESCRIPTOR_QUEUED,
-                0x4441_524D, // "DARM" data-phase arm outcome
-                queued as u32,
-                0,
-                length as u32,
-                read(DSTS),
-            );
-            if queued {
-                note_probe_ep0_progress();
-            } else {
-                // A failed DATA-IN command must not leave EP0 in the Data
-                // state: the next host request would otherwise be consumed
-                // by a stale state machine with no active TRB.
-                stall_control(1);
-            }
+            // XferNotReady-driven arm: a Start Transfer issued at dispatch
+            // time retires cleanly on this core but is then IGNORED - the
+            // core fires XferNotReady(CONTROL_DATA) at the host's first IN
+            // token and only consumes a data TRB armed from that event
+            // boundary (the stock XBL flow). Issuing it here leaves the
+            // endpoint NAKing the entire 5 s control window (-110). Prepare
+            // only; the XferNotReady handler arms.
+            DATA_PHASE_PENDING_START = true;
+            DATA_PHASE_PENDING_LEN = length;
         },
         ControlAction::StatusIn => unsafe {
             EP0_STATE = Ep0State::Status;
-            // SET_ADDRESS/SET_CONFIGURATION become visible only after this
-            // status IN transfer completes, matching gadget-core semantics.
-            if start_status(1) {
-                note_probe_ep0_progress();
-            } else {
-                stall_control(if direction_in { 1 } else { 0 });
-            }
+            // The status phase suffers the same XferNotReady boundary as the
+            // data phase: an immediate start_status(1) retires cleanly and is
+            // ignored. The XferNotReady(CONTROL_STATUS) handler below owns
+            // the arm, with the correct endpoint for the transfer direction.
         },
         ControlAction::Stall => {
             log_puts("usb: unsupported control request\n");
@@ -3192,6 +3187,44 @@ unsafe fn process_event(raw: u32) {
         // Run/Stop; a CONTROL_DATA NRDY is therefore not a second initial
         // STARTTRANSFER trigger.
         trace_event(TRACE_XFER_NOT_READY, endpoint as u32, status, 0, 0, raw);
+        if status == 1 && endpoint == 1 {
+            unsafe {
+                // CONTROL_DATA NRDY on EP1 IN: the host's first data-phase IN
+                // token arrived and the core has no active transfer. This is
+                // the ONLY boundary from which the core consumes a data TRB
+                // (the dispatch-time arm retires cleanly and is ignored), so
+                // arm the prepared TRB here. A failed attempt stays pending:
+                // the host keeps tokening the data phase, each burst fires
+                // another NRDY, and the next event retries the command.
+                if DATA_PHASE_PENDING_START && EP0_STATE == Ep0State::Data {
+                    let length = DATA_PHASE_PENDING_LEN;
+                    let trb_index = ep0_trb_index(1);
+                    prepare_trb(
+                        trb_index,
+                        ep0_response_ptr(),
+                        length,
+                        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_in_data) {
+                            TRB_NORMAL
+                        } else {
+                            TRB_CONTROL_DATA
+                        },
+                    );
+                    let queued = retry_start_transfer(1, ep0_trb_ptr(trb_index), 200);
+                    trace_event(
+                        TRACE_DESCRIPTOR_QUEUED,
+                        0x4441_524D, // "DARM" data-phase arm outcome
+                        queued as u32,
+                        0,
+                        length as u32,
+                        read(DSTS),
+                    );
+                    if queued {
+                        DATA_PHASE_PENDING_START = false;
+                        note_probe_ep0_progress();
+                    }
+                }
+            }
+        }
         if status == 2 {
             unsafe {
                 if EP0_STATE == Ep0State::Status {
@@ -6954,7 +6987,11 @@ pub fn park_for_seconds(seconds: u64) -> ! {
         while frequency != 0 && arch_counter() < deadline {
             wdt_pet();
             if arch_counter() >= next_keepalive {
-                let _ = super::platform::bramble::apply_usb_power(true, true);
+                // apply_usb_power early-returns once its state flag matches,
+                // so the periodic rail re-vote must go through the refresh
+                // path: the GDSC force-enable below cannot hold a domain
+                // whose parent supply RPMh has already dropped.
+                let _ = super::platform::bramble::refresh_usb_power(true);
                 let _ = super::platform::bramble::force_enable_usb30_gdsc();
                 next_keepalive = arch_counter().saturating_add(keepalive_period);
             }
@@ -7075,6 +7112,12 @@ pub fn restore_usb2_session_votes() {
 /// events while halting per the databook stop contract.
 pub fn gate_true_stop_device() -> bool {
     unsafe { run_stop_device(false) }
+}
+
+/// Public Run/Stop re-assert for the dstat readout: the host-visible side of
+/// the stop/run cycle (Run/Stop owns the physical pull-up).
+pub fn gate_true_run_device() -> bool {
+    unsafe { run_stop_device(true) }
 }
 
 /// One-shot core-domain snapshot for the attach-delay readout: the gate-run

@@ -1683,6 +1683,21 @@ const SPMI_EE: usize = 0;
 const PM8150B_SID: u8 = 2;
 const PM8150B_TYPEC_PPID: u16 = ((PM8150B_SID as u16) << 8) | 0x15;
 const PM8150B_TYPEC_BASE: u16 = 0x1500;
+// The primary PON peripheral is SID 0/peripheral 8. Its power-off reason
+// survives the automatic recovery reset and can be read before the USB
+// handoff to publish the previous reset's cause through attach delay.
+const PM8150_PON_PPID: u16 = 0x0008;
+const PON_SUBTYPE: u16 = 0x05;
+const PON_OFF_SEQ: u16 = 0xc7;
+const PON_REASON1: u16 = 0xc0;
+const PON_POFF_REASON1: u16 = 0xc5;
+const PON_POFF_REASON2: u16 = 0xc6;
+const PON_FAULT_REASON1: u16 = 0xc8;
+const PON_FAULT_REASON2: u16 = 0xc9;
+const PON_S3_RESET_REASON: u16 = 0xca;
+const PON_POFF_SEQ: u8 = 1 << 7;
+const PON_FAULT_SEQ: u8 = 1 << 6;
+const PON_S3_RESET_SEQ: u8 = 1 << 5;
 const TYPEC_MISC_STATUS: u16 = PM8150B_TYPEC_BASE + 0x0b;
 const TYPEC_MODE_CFG: u16 = PM8150B_TYPEC_BASE + 0x44;
 const TYPEC_CC_ATTACHED: u8 = 1 << 0;
@@ -2079,6 +2094,12 @@ unsafe fn spmi_write(base: usize, offset: usize, value: u32) {
 }
 
 fn find_typec_apid(version: u32) -> Option<(usize, bool)> {
+    unsafe { find_spmi_apid(version, PM8150B_TYPEC_PPID) }
+}
+
+/// Resolve the APID for one `<SID>:<peripheral>` PPID. This is the same
+/// owner-preferred arbiter walk used by Type-C discovery.
+fn find_spmi_apid(version: u32, ppid: u16) -> Option<(usize, bool)> {
     unsafe {
         if version >= 0x5000_0000 {
             // v5 has a flat APID -> PPID table.  Multiple APIDs can refer to
@@ -2087,7 +2108,7 @@ fn find_typec_apid(version: u32) -> Option<(usize, bool)> {
             let mut fallback = None;
             for apid in 0..512usize {
                 let entry = spmi_read(SPMI_CORE, SPMI_APID_MAP_V5 + apid * 4);
-                if ((entry >> 8) & 0x0fff) as u16 != PM8150B_TYPEC_PPID {
+                if ((entry >> 8) & 0x0fff) as u16 != ppid {
                     continue;
                 }
                 let owner = spmi_read(SPMI_CONFIG, SPMI_OWNERSHIP_TABLE + apid * 4) & 0x7;
@@ -2106,7 +2127,7 @@ fn find_typec_apid(version: u32) -> Option<(usize, bool)> {
         for _ in 0..16 {
             let entry = spmi_read(SPMI_CONFIG, SPMI_MAPPING_TABLE + index * 4);
             let bit = ((entry >> 18) & 0xf) as u16;
-            let one = (PM8150B_TYPEC_PPID & (1 << bit)) != 0;
+            let one = (ppid & (1 << bit)) != 0;
             let flag = if one {
                 (entry >> 8) & 1
             } else {
@@ -2125,6 +2146,68 @@ fn find_typec_apid(version: u32) -> Option<(usize, bool)> {
         }
     }
     None
+}
+
+/// Read the primary PM8150 PON reset reason as a small bucket code. The
+/// raw registers are a bitmask, so return the selected sequence's first set
+/// bit (1-based) and add 8 for the FAULT sequence or 16 for S3_RESET.
+pub unsafe fn read_pm8150_pon_reset_code() -> Option<u8> {
+    let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
+    if version == 0 || version == u32::MAX {
+        return None;
+    }
+    let (apid, _) = unsafe { find_spmi_apid(version, PM8150_PON_PPID)? };
+    let mut subtype = 0u8;
+    if !unsafe { spmi_transfer(version, apid, PON_SUBTYPE, &mut subtype, false) } {
+        return None;
+    }
+    // Only the primary/gen2 PON layouts have the 0xC0..0xCA reason block.
+    if !matches!(subtype, 1..=5) {
+        return None;
+    }
+    let mut reason1 = 0u8;
+    let mut poff1 = 0u8;
+    let mut poff2 = 0u8;
+    let mut off_seq = 0u8;
+    if !unsafe { spmi_transfer(version, apid, PON_REASON1, &mut reason1, false) }
+        || !unsafe { spmi_transfer(version, apid, PON_POFF_REASON1, &mut poff1, false) }
+        || !unsafe { spmi_transfer(version, apid, PON_POFF_REASON2, &mut poff2, false) }
+        || !unsafe { spmi_transfer(version, apid, PON_OFF_SEQ, &mut off_seq, false) }
+    {
+        return None;
+    }
+    let first_set = |value: u8| -> u8 {
+        if value == 0 {
+            0
+        } else {
+            (value.trailing_zeros() + 1) as u8
+        }
+    };
+    let poff_code = first_set(poff1).max(first_set(poff2));
+    let code = if off_seq & PON_POFF_SEQ != 0 {
+        poff_code
+    } else if off_seq & PON_FAULT_SEQ != 0 {
+        let mut fault1 = 0u8;
+        let mut fault2 = 0u8;
+        if !unsafe { spmi_transfer(version, apid, PON_FAULT_REASON1, &mut fault1, false) }
+            || !unsafe { spmi_transfer(version, apid, PON_FAULT_REASON2, &mut fault2, false) }
+        {
+            return None;
+        }
+        8 + first_set(fault1).max(first_set(fault2))
+    } else if off_seq & PON_S3_RESET_SEQ != 0 {
+        let mut s3 = 0u8;
+        if !unsafe { spmi_transfer(version, apid, PON_S3_RESET_REASON, &mut s3, false) } {
+            return None;
+        }
+        16 + first_set(s3)
+    } else {
+        poff_code
+    };
+    if code != 0 {
+        return Some(code);
+    }
+    Some(first_set(reason1))
 }
 
 fn spmi_channel_offset(version: u32, apid: usize, observer: bool) -> usize {
@@ -2996,6 +3079,45 @@ pub unsafe fn apply_usb_power(enabled: bool, super_speed: bool) -> bool {
         state.power_super_speed = actual_super_speed;
     });
     true
+}
+
+/// Re-send the USB rail enable requests unconditionally. `apply_usb_power`
+/// early-returns when its state flag already matches, which silently turns
+/// the periodic keepalive into a no-op: the initial vote is the only vote
+/// that ever leaves the APSS, and the ~5-8 s post-attach collapse then wins.
+/// The refresh re-arms the exact same VRM requests without touching GDSC,
+/// clock, or reset state, so it is safe to call from any park or poll loop.
+pub unsafe fn refresh_usb_power(super_speed: bool) -> bool {
+    let power = usb_resources().power;
+    let mut rails = [power.hs_phy_rails[0]; 5];
+    rails[1] = power.hs_phy_rails[1];
+    rails[2] = power.hs_phy_rails[2];
+    let mut count = 3;
+    if super_speed && power.qmp_vdd_present {
+        rails[count] = power.qmp_vdd;
+        count += 1;
+    }
+    if super_speed {
+        rails[count] = power.qmp_core;
+        count += 1;
+    }
+    let mut unique = [false; 5];
+    for index in 0..count {
+        unique[index] = true;
+        for previous in 0..index {
+            if rails[previous].rpmh_resource_id == rails[index].rpmh_resource_id {
+                unique[index] = false;
+                break;
+            }
+        }
+    }
+    let mut ok = true;
+    for index in 0..count {
+        if unique[index] && !unsafe { send_usb_regulator_request(rails[index], true) } {
+            ok = false;
+        }
+    }
+    ok
 }
 
 #[cfg(test)]

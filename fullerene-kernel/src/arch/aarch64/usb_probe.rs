@@ -560,10 +560,21 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     let mut signal_code = signal_smmu_code;
     // Keep gate runs in the full observation window; arm progress on -110 is still diagnostic.
     let gate_active = env_flag(option_env!("FULLERENE_USB_SIGNAL_CMD_GATE"));
+    // Keepalive: the restored core domain is collapsed by RPMh ~5-8 s after
+    // the attach wakes it even though the entry-time vote was accepted, and
+    // apply_usb_power's state flag makes the park keepalive a no-op. Re-arm
+    // the rails and the GDSC on a 0.5 s cadence so the SETUP window and the
+    // parks that follow it run inside a live core.
+    let mut next_keepalive = probe_counter().saturating_add(frequency / 2);
     // lnk-nib was sampled at entry, before the re-reset.
     loop {
         usb::wdt_pet();
         usb::poll();
+        if probe_counter() >= next_keepalive {
+            let _ = unsafe { platform::bramble::refresh_usb_power(true) };
+            let _ = unsafe { platform::bramble::force_enable_usb30_gdsc() };
+            next_keepalive = probe_counter().saturating_add(frequency / 2);
+        }
         if (usb::probe_ep0_progress() || u0_armed) && !gate_active {
             // Enumeration succeeded: stop signaling and enter the stable poll loop.
             stable_ep0_park();
@@ -906,6 +917,61 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         let _ = usb::gate_true_stop_device();
         usb::park_for_seconds(10 + code * 12);
     }
+    // pubd publishes the composite diag code as host-visible attach lines.
+    // The post-attach collapse resets the handset ~5.5-8 s after the attach,
+    // which cuts every park, but each pull-up drop/restore cycle that lands
+    // before the reset re-attaches and the host prints one "new high-speed
+    // USB device" line per connect. A/B result: the QSCRATCH, DCTL, and
+    // VBUSVLDEXT0 drop primitives are all electrically inert on this
+    // revision (no host-visible disconnect ever appears), so the cycle
+    // count cannot be read. The gate stays as a record of that negative
+    // result; the park-based `pub` readout plus the rail refresh keepalive
+    // is the surviving diag channel.
+    if cmd_gate_is("pubd") {
+        let frequency = probe_counter_frequency();
+        let sample_until = probe_counter().saturating_add(frequency / 2);
+        poll_until_probe_ticks(frequency, sample_until);
+        let code = usb::diag_readout_code().clamp(1, 6);
+        trace_gate(0x5055_4244 | (code & 0xff)); // "PUBD" + code
+        park_without_recovery_timer();
+    }
+    // spin: park in a PURE spin loop (wdt pet only, no usb::poll, no MMIO)
+    // for 30 s, then PSCI-reset. This isolates the ~5.6 s post-attach reset:
+    // a full 30 s survival (return ~55 s) proves the reset needs our MMIO
+    // traffic into a collapsing domain (NOC error), while the usual ~42 s
+    // return proves the collapse resets the handset by itself.
+    if cmd_gate_is("spin") {
+        let deadline = probe_counter().saturating_add(frequency.saturating_mul(30));
+        while probe_counter() < deadline {
+            usb::wdt_pet();
+            core::hint::spin_loop();
+        }
+        usb::park_for_seconds(0);
+    }
+    // dstat publishes the composite diag code as host-visible attach lines.
+    // DCTL Run/Stop is the one disconnect primitive the host actually sees
+    // (Run/Stop owns the physical pull-up; the QSCRATCH/VBUS bits proved
+    // inert). At eval the diag code names how far the first enumeration
+    // window got (1 = no SETUP reached DRAM ... 6 = XferNotReady on the
+    // data phase); `code` short stop/run cycles then re-attach that many
+    // times, and every re-attach both prints one "new high-speed USB
+    // device" line and starts a fresh enumeration attempt with EP0
+    // re-initialized by the bus reset. The cycles all land before the
+    // ~5.6 s post-attach reset, so the attach-line count minus the first
+    // attach IS the code.
+    if cmd_gate_is("dstat") {
+        let code = usb::diag_readout_code().clamp(1, 6) as u64;
+        trace_gate(0x4453_5441 | ((code & 0xff) as u32)); // "DSTA" + code
+        for _ in 0..code {
+            let _ = usb::gate_true_stop_device();
+            let dropped = probe_counter().saturating_add(frequency / 4);
+            poll_until_probe_ticks(frequency, dropped);
+            let _ = usb::gate_true_run_device();
+            let attached = probe_counter().saturating_add(frequency * 3 / 10);
+            poll_until_probe_ticks(frequency, attached);
+        }
+        park_without_recovery_timer();
+    }
     if let Some(met) = usb::cmd_gate_condition_met() {
         trace_gate(0x4741_5445 | (met as u32 & 0xff));
         if met {
@@ -915,8 +981,15 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             usb::park_for_seconds(30);
             usb::park_for_seconds(0);
         }
-        usb::ep0_signal_drop_pullup();
-        usb::park_after_gate_failure();
+        // FALSE: the QSCRATCH/DCTL/VBUS drop primitives are all electrically
+        // inert on this revision, and the ~5.5 s post-attach reset cuts both
+        // the TRUE (30 s) and FALSE (90 s) parks into the same ~42 s Android
+        // return, which made every one-bit gate unreadable. Schedule an
+        // explicit +1 s APSS bite instead: a FALSE readout returns at
+        // eval+1 s + Android boot (~24 s from fastboot boot), clearly
+        // separated from the TRUE/death bucket (~42 s).
+        usb::u0_arm_wdt_bite(1);
+        usb::park_for_seconds(90);
     }
     // code+1 attach cycles encode the diagnostic value; QSCRATCH overrides stay short.
     let cycles = (signal_code as u64 + 1).min(16);
@@ -927,6 +1000,24 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         usb::ep0_signal_restore_pullup();
         let attached = probe_counter().saturating_add(frequency.saturating_mul(3) / 2);
         poll_until_probe_ticks(frequency, attached);
+    }
+    // The tail reset is the one reliable PSCI readout left (the APSS bite is
+    // not writable from EL1 and every park is this reset's victim): encode
+    // the composite diag code as code*1 s of extra poll-serviced wait before
+    // the reset, so the reset time (the usbmon -71 burst / the Android return
+    // time) names the code. The wait also doubles as an enumeration second
+    // chance: keep servicing EP0, and the moment the data phase actually
+    // arms (progress), stable-park instead of resetting so enumeration can
+    // finish inside a live session.
+    let code = usb::diag_readout_code().clamp(1, 6) as u64;
+    trace_gate(0x5245_4144 | ((code & 0xff) as u32)); // "MRAD" + code
+    let wait_until = probe_counter().saturating_add(frequency.saturating_mul(code));
+    while probe_counter() < wait_until {
+        usb::wdt_pet();
+        usb::poll();
+        if usb::probe_ep0_progress() {
+            stable_ep0_park();
+        }
     }
     trace_gate(TRACE_WDT);
     reset_after_probe_failure();
@@ -1062,6 +1153,17 @@ extern "C" fn usb_probe_entry() -> ! {
             let _ = usb::observe_typec_handoff();
         }
     }
+    // Read the previous PON reset reason before USB activity can trigger another
+    // recovery. Delay the physical attach by (code + 1) * 300 ms so the host
+    // timestamp publishes both a successful read and its reason bucket.
+    let pon_delay_ms = if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
+        match unsafe { platform::bramble::read_pm8150_pon_reset_code() } {
+            Some(code) => (u64::from(code) + 1) * 300,
+            None => 0,
+        }
+    } else {
+        0
+    };
     // Read SMMU before pull-up publish so secure/clock-gated aperture gives a distinct pre-attach outcome.
     let _signal_smmu_code = if cfg!(fullerene_aarch64_usb_ep0_signal_probe)
         && option_env!("FULLERENE_USB_SIGNAL_SMMU_STATE")
@@ -1119,6 +1221,10 @@ extern "C" fn usb_probe_entry() -> ! {
         let settle_frequency = probe_counter_frequency();
         let settle_until = probe_counter().saturating_add(settle_frequency.saturating_mul(3));
         while probe_counter() < settle_until {
+            core::hint::spin_loop();
+        }
+        let pon_until = settle_until + settle_frequency * pon_delay_ms / 1000;
+        while probe_counter() < pon_until {
             core::hint::spin_loop();
         }
     }
