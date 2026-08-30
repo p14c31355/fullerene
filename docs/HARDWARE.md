@@ -2376,6 +2376,154 @@ returned to Android as `18d1:4ee7`, reported `bootreason=watchdog`, and
 contained no exact `1234` identity. This rules out an exact-revision condition
 around that GUCTL3 workaround as the cause of the 16-bit protocol failure.
 
+### USB probe comment archive for source-line reduction
+
+The AArch64 USB probe source was compressed by consolidating repeated
+diagnostics into helpers and removing long in-source comments. The earlier
+sections retain the actual run logs and A/B results; this section preserves the
+non-obvious probe semantics and calibration that used to live next to the code.
+
+#### Entry, relocation, and exception timing
+
+- `usb_probe_hyper_bare` starts the bare pull-up before relocations or any
+  prelude. Its attach time therefore measures ABL/XBL-to-entry latency plus the
+  bare sequence cost. It deliberately touches only const physical MMIO, BSS
+  already zeroed by `_start`, and the architectural counter; the secure WDT
+  remains armed as self-recovery.
+- The bare probe also skips GIC/timer setup: firmware-owned redistributor
+  accesses can fault before a controller-only result is measured.
+- The exception vectors remain in their dedicated 2 KiB-aligned section. If
+  they stay in `.text.boot`, the alignment shifts `_start` away from the Android
+  Image/PIE relocation base.
+- The recovery timer is the EL1 physical-timer PPI 30, not a Qualcomm USB IRQ.
+  It is handled before platform IRQ filtering; otherwise a failed no-host probe
+  can remain in WFE. The 60 s default gives time for Qualcomm MMIO
+  synchronization, GENI UART diagnostics, and the DWC3 reset handshake.
+- GICR_BASE must be the full 32-bit `0x17a60000`; the truncated value targets
+  an unrelated window and leaves the timer and USB SPIs unserviced. The
+  standalone probe also forces GICD Enable/Group1Enable because ABL may leave
+  the interface off.
+- `stall-map` shortens the recovery timer to entry+15 s, after HS attach and
+  link ON. One SDIS blip proves PPI delivery. A ~T+36 s return means the PSCI
+  SMC reset works; ~T+38 s means the SMC is dead or the PS_HOLD write in the
+  unclocked PMIC/SPMI aperture has stalled the CPU.
+- PSCI SYSTEM_RESET is attempted before PS_HOLD. PS_HOLD is only the fallback:
+  on this board the PMIC/SPMI aperture write can stall the CPU.
+
+#### Probe ownership, Type-C, and retained trace
+
+- The normal entry prepares the PMIC Type-C role. The gadget probe intentionally
+  skips that SPMI access so a PMIC aperture fault can be separated from a
+  controller fault. USB2 does not consume orientation; the non-destructive
+  Type-C observer plus the SPMI skip is also an A/B for the ~11 s pre-attach
+  scan delay.
+- The Type-C IRQ variants must install the PMIC role/child interrupt contract
+  before exposing the parent SPI. Other standalone probes intentionally do not
+  discover SPMI.
+- Apps-SMMU state is read before a pull-up is published. A secure-owned or
+  clock-gated aperture aborts before attach, which is a distinct outcome from
+  any timed post-attach drop.
+- The ownership handoff retries a few times for a normal run because Fastboot
+  teardown can race kernel entry. A gate readout uses one attempt so the gate is
+  evaluated before the watchdog recovery window.
+- Android scribbles the retained trace between warm resets, so each boot resets
+  the trace cursor once before harvesting; otherwise stale headers make gate
+  runs count the previous attempt.
+- The bare pull-up probe stays below the DMA/trace boundary. A bad retained DRAM
+  aperture must not mask a controller-only handoff result.
+
+#### Watchdog and stable-park contracts
+
+- XBL/ABL arms the secure watchdog on `fastboot boot`; disabling it first
+  prevents the ~17 s pre-attach reboot. `FULLERENE_USB_SWDD_SKIP=1` isolates the
+  cost of the disable SMC itself.
+- Extended SMC diagnostics can prevent attach. They are enabled only for the
+  dedicated SMC gate runs; USB gates stay on the minimal single attaching SMC.
+- The bare pull-up path schedules a 16 s APSS-WDT bite as a second self-recovery
+  net. Petting cannot cancel a pending bite; if the secure watchdog bites first,
+  the APSS bite is harmless.
+- `WDT` (`0x574454`) marks an actual timeout recovery and `STAB`
+  (`0x5354_4142`) marks the stable post-EP0-progress park. A direct polling
+  handoff serializes USB RESET and the first SETUP; an IRQ probe drains the ring
+  only from its IRQ consumer. Trace activity extends the quiet deadline, but the
+  direct path has an absolute reset ceiling in case both hardware watchdogs are
+  ineffective.
+- After the first EP0 DATA/STATUS progress, an idle descriptor-only gadget is
+  healthy and enters the stable park. Pullup-only mode never owns the DWC3 event
+  ring and does not call `usb::poll()`, because stale Fastboot event state must
+  remain untouched; its polling deadline also covers a firmware-masked PPI.
+
+#### EP0 signal-probe protocol
+
+- The signal probe runs only after a failed handoff or when a gate explicitly
+  needs this run's trace. On success it must not toggle the pull-up, reset, or
+  contaminate live enumeration.
+- Its readout channel is the host journal: after a bounded observation window,
+  code+1 short drop/re-attach cycles publish a diagnostic value. QSCRATCH
+  overrides are used because they can change the physical pull-up even when
+  DCTL is ignored.
+- Probe-entry `lnk-nib` parks immediately. An early return proves the signal
+  branch was entered; a ~T+37-39 s return means the cfg/gate did not reach it.
+- The failed-handoff branch re-runs the GIC sweep and reissues the Linux
+  soft-connect tail. `u0_arm_recovery` status maps to APSS bite delays:
+  1 -> +2 s, 4 -> +6 s, 5/6 -> +10 s, 0/8 -> Run/Stop reached. Status 0/8 may
+  emit one link-ON SDIS blip; its presence proves a running core/U0, while its
+  absence distinguishes dead EP0 from failed HS training. A T+37-39 s return
+  with -110 can also mean the APSS WDT is secure or unwritable.
+- Diagnostic gates own every SDIS pair except `forcehs`, which is a real
+  enumeration attempt. An unconditional bite tests APSS-WDT writability
+  independently of arm status.
+- Gate windows are shortened to beat the unknown ~17 s watchdog. A gate run must
+  observe the whole window; non-gate runs may short-circuit on the first live
+  signal. If no live signal exists, the newest harvested Start Transfer result
+  is encoded: 13 cycles means a wedged/timed-out command, and status-nibble+1
+  cycles means a clean status-0 start.
+
+#### Signal-gate meanings and state encoding
+
+| Gate | Interpretation / readout |
+| --- | --- |
+| `gdbstop` | Delay `(state+1)*250 ms`, then stop; the attach-to-disconnect delta names raw `GDBGLTSSM`. |
+| `u0stat` | QSCRATCH drop/restore cycles encode `u0_arm_recovery` status; status 0 is one cycle, failures use the sparse status value, and disabled/not-reached uses 16. |
+| `armstat` | Status 0 (+16 s bite) means the command retired; status 8 (+1 s) means `CMDACT` remains and the command channel is wedged. |
+| `armalive` | A retired EP0 Start Transfer leaves either a pending TRB or a DMA'd SETUP. Early bite proves L1 was alive; late return means a persistent command wedge. |
+| `lnkalive` | DSTS states `{8,9,11,14,15}` mean a reset/resume transaction is stuck; `{4,5,6,7,10}` mean the QSCRATCH link-down phantom. The former bites early. |
+| `lnk3` | TRUE when a mid-transaction state was seen, separating UTMI-RX-dead from a core stuck in the reset handshake. |
+| `sof` | Bit A is a stale halted/Run-Stop readback (raw 16/17); bit B is a SOF frame-number change in 100 ms. SOF stops the core while the host still tracks the port. |
+| `lnk57` | State 7 is POLLING/TX alive but RX deaf; state 5 is RX_DETECT/no training. Other states remain in the else bucket. |
+| `lnk4`, `lnk6`, `lnk10`, `lnk12`, `lnk13` | Per-state bisections. A matching DSTS state stops the core while the host tracks the device, publishing the journal line. |
+| `lnkraw` | Bite delay is `state+1`, naming the exact DSTS state or exposing a moved field. |
+| `lnkstate` | Samples every poll, blips/bites on any untested state, and encodes the exact state; a fixed 16 s bite names the last tested state. |
+| `gdb`, `gdbforce` | Bite delay is `state+1` for the raw `GDBGLTSSM` link state. |
+| `voteflip`, `voteflip2` | Flip session/clock votes for ~1 s, then restore. A disconnect/re-attach pair proves the glue votes own the pull-up; silence proves they are inert. Variant 2 uses raw QSCRATCH writes. |
+| `haltbit` | Early return means `DSTS.DEVCTRLHLT` is set despite the host-visible attach. |
+| `dctlbit` | Early return means `DCTL.RUN_STOP` is clear; a set bit contradicts the link-state view. |
+| `lnkrawdb` | Encodes the raw DSTS word and link nibble without re-reading. |
+| `lnkmasklo`, `lnkmaskhi` | Sample DSTS states for ~1 s and encode the low/high 16-bit seen-state mask nibbles in two companion runs. |
+| `rescue2` | Forces the full EP0 tail after a device soft reset. Journal enumeration, not a park, is the result. |
+| `diag` | Re-drives the trace-selected stuck read/64 stage and keeps servicing EP0. Journal progress is the result. |
+| generic gate | Reads this run's trace. TRUE stops the core while the host tracks the device and publishes a disconnect line; FALSE drops the pull-up and parks without a line. |
+
+- DSTS USBLNKST meanings used by these gates: U0=0, U3=3, SS.DISABLED=4,
+  RX.DETECT=5, SS.INACTIVE=6, POLLING=7, RECOVERY=8, HRESET=9, COMPLY=10,
+  LPBK=11, RESET=14, RESUME=15. Raw 16/17 encode halted or Run/Stop-cleared
+  phantom states.
+- Success-path `lnk-nib` buckets the raw code as 0-3, 4-7, 8-11, 12-15, and
+  16-17 (halted/Run-Stop-cleared), resetting one second later for each bucket.
+  A ~T+38-39 s return means the readout never ran.
+
+#### Failed-init and stage readouts
+
+- A failed gadget init does not publish an EP0-less pull-up. An old fallback
+  made the host descriptor timeout indistinguishable from a real EP0/DMA
+  failure after a complete init.
+- The first failing handoff stage is encoded as reset latency so the failed
+  boundary remains observable without a misleading device attach.
+- Stage probes intentionally publish an EP0-less pull-up only for electrical
+  attach; they hold it briefly for xHCI logging and then recover.
+- Halt/cold-halt probes park and preserve the selected failed handoff for
+  host-side observation rather than immediately resetting.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:
