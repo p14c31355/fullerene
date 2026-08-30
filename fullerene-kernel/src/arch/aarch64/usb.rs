@@ -2660,7 +2660,14 @@ unsafe fn handle_setup() {
         }
     };
     match action {
-        ControlAction::DataIn(length) => unsafe {
+        ControlAction::DataIn(mut length) => unsafe {
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_short_first_desc)]
+            if request == 0x06 && (value >> 8) == 0x01 && requested_length == 64 {
+                // The first device-descriptor read tolerates a short packet;
+                // cap the data phase at 8 bytes so a long-packet TX failure
+                // cannot hide behind the host's 5 s control timeout.
+                length = length.min(8);
+            }
             let response = ep0_response_ptr();
             cache_clean(response as usize, length);
             prepare_trb(0, response, length, TRB_CONTROL_DATA);
@@ -5088,6 +5095,31 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         }
         // C3: DEPSTARTCFG + both EP0 SETEPCONFIG/SETTRANSFRESOURCE commands
         // done (or failed fast), DALEPENA/DEVTEN set, setup TRB prepared.
+
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_txfifo_fix)]
+        {
+            // Handshakes are generated internally, but every EP0 IN data
+            // packet is pushed through the endpoint's TX FIFO. A Fastboot
+            // session that resized or emptied FIFO 0 leaves EP1 IN unable to
+            // send any data packet: the SETUP handshake still works and the
+            // host's descriptor read then NAKs forever (read/64 -110). Raise
+            // a degenerate depth while preserving the FIFO start address.
+            let fifo = read(GTXFIFOSIZ0);
+            let depth = fifo & 0x7fff;
+            if depth < 32 {
+                let raised = (fifo & 0xffff_0000) | 32;
+                write(GTXFIFOSIZ0, raised);
+                trace_event(
+                    TRACE_SETUP_QUEUED,
+                    0x5458_4631, // "TXF1" EP0 IN FIFO raised
+                    fifo,
+                    raised,
+                    0,
+                    read(DSTS),
+                );
+                let _ = read(GTXFIFOSIZ0);
+            }
+        }
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         init_beacon();
 

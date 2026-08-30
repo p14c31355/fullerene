@@ -338,6 +338,18 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_ep0_stall_flush: bool,
 
+    /// Bramble differential: cap the first GET_DESCRIPTOR(device) data-phase
+    /// response at 8 bytes so a long-packet TX failure cannot hide behind the
+    /// host's 5 s control timeout.
+    #[arg(long)]
+    usb_gadget_handoff_ep0_short_first_desc: bool,
+
+    /// Bramble differential: raise the EP0 IN TX FIFO (GTXFIFOSIZ(0)) to a
+    /// safe depth at the direct handoff when the Fastboot session left it
+    /// degenerate.
+    #[arg(long)]
+    usb_gadget_handoff_ep0_txfifo_fix: bool,
+
     /// Bramble differential: clear GUSB2PHYCFG.U2_FREECLK_EXISTS after
     /// controller reset.
     #[arg(long)]
@@ -952,6 +964,30 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-ep0-stall-flush requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_ep0_short_first_desc
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-ep0-short-first-desc requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_ep0_txfifo_fix
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-ep0-txfifo-fix requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_start_after_reset
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
@@ -1144,6 +1180,8 @@ fn main() -> io::Result<()> {
                 gadget_handoff_dcfg_ignstrmpp: args.usb_gadget_handoff_dcfg_ignstrmpp,
                 gadget_handoff_usb2_susphy: args.usb_gadget_handoff_usb2_susphy,
                 gadget_handoff_ep0_stall_flush: args.usb_gadget_handoff_ep0_stall_flush,
+                gadget_handoff_ep0_short_first_desc: args.usb_gadget_handoff_ep0_short_first_desc,
+                gadget_handoff_ep0_txfifo_fix: args.usb_gadget_handoff_ep0_txfifo_fix,
                 gadget_handoff_u2_freeclk_clear: args.usb_gadget_handoff_u2_freeclk_clear,
                 gadget_handoff_start_after_reset: args.usb_gadget_handoff_start_after_reset,
                 gadget_handoff_start_at_connect_done: args.usb_gadget_handoff_start_at_connect_done,
@@ -1316,6 +1354,8 @@ struct Aarch64BuildConfig {
     gadget_handoff_dcfg_ignstrmpp: bool,
     gadget_handoff_usb2_susphy: bool,
     gadget_handoff_ep0_stall_flush: bool,
+    gadget_handoff_ep0_short_first_desc: bool,
+    gadget_handoff_ep0_txfifo_fix: bool,
     gadget_handoff_u2_freeclk_clear: bool,
     gadget_handoff_start_after_reset: bool,
     gadget_handoff_start_at_connect_done: bool,
@@ -1382,6 +1422,8 @@ fn build_aarch64_kernel(
         gadget_handoff_dcfg_ignstrmpp,
         gadget_handoff_usb2_susphy,
         gadget_handoff_ep0_stall_flush,
+        gadget_handoff_ep0_short_first_desc,
+        gadget_handoff_ep0_txfifo_fix,
         gadget_handoff_u2_freeclk_clear,
         gadget_handoff_start_after_reset,
         gadget_handoff_start_at_connect_done,
@@ -1508,6 +1550,18 @@ fn build_aarch64_kernel(
     if gadget_handoff_ep0_stall_flush {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_STALL_FLUSH",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_ep0_short_first_desc {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_SHORT_FIRST_DESC",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_ep0_txfifo_fix {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_TXFIFO_FIX",
             "1".to_owned(),
         );
     }

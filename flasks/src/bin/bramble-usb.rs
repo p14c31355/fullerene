@@ -146,6 +146,16 @@ struct LoopArgs {
     /// arm the SETUP TRB at the halted pre-Run/Stop boundary (A/B).
     #[arg(long)]
     ep0_stall_flush: bool,
+
+    /// Cap the first GET_DESCRIPTOR(device) data-phase response at 8 bytes
+    /// (short-packet tolerance probe for the EP0 IN data path).
+    #[arg(long)]
+    ep0_short_first_desc: bool,
+
+    /// Raise the EP0 IN TX FIFO (GTXFIFOSIZ(0)) to a safe depth when the
+    /// handoff left it degenerate.
+    #[arg(long)]
+    ep0_txfifo_fix: bool,
     /// Clear GUSB2PHYCFG.U2_FREECLK_EXISTS after controller reset (A/B).
     #[arg(long)]
     u2_freeclk_clear: bool,
@@ -316,6 +326,8 @@ impl Default for LoopArgs {
             dcfg_ignstrmpp: false,
             usb2_susphy: false,
             ep0_stall_flush: false,
+            ep0_short_first_desc: false,
+            ep0_txfifo_fix: false,
             u2_freeclk_clear: false,
             start_after_reset: false,
             start_at_connect_done: false,
@@ -758,6 +770,18 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--ep0-stall-flush requires --direct-handoff",
+        ));
+    }
+    if args.ep0_short_first_desc && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ep0-short-first-desc requires --direct-handoff",
+        ));
+    }
+    if args.ep0_txfifo_fix && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ep0-txfifo-fix requires --direct-handoff",
         ));
     }
     if args.start_after_reset && !args.direct_handoff {
@@ -1384,6 +1408,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.ep0_stall_flush {
         arguments.push("--usb-gadget-handoff-ep0-stall-flush".to_owned());
+    }
+    if args.ep0_short_first_desc {
+        arguments.push("--usb-gadget-handoff-ep0-short-first-desc".to_owned());
+    }
+    if args.ep0_txfifo_fix {
+        arguments.push("--usb-gadget-handoff-ep0-txfifo-fix".to_owned());
     }
     if args.u2_freeclk_clear {
         arguments.push("--usb-gadget-handoff-u2-freeclk-clear".to_owned());
