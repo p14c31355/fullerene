@@ -58,10 +58,12 @@ pub(super) unsafe fn device_soft_reset() -> bool {
             return false;
         }
 
-        // Upstream Linux waits an additional 50 ms only for DWC_usb31 1.80a
-        // and earlier before accessing its PHY domain. DWC3/1.90a+ do not
-        // require that legacy synchronization delay.
-        if ip == DWC31_IP && version <= DWC31_REVISION_180A {
+        // DWC_usb31 requires a synchronization delay after CSFTRST clears
+        // before software accesses the PHY domain. The Bramble 4.19 driver
+        // applies this to every DWC_usb31 revision, not only the older
+        // 1.80a-and-earlier parts; the reset completion poll alone is not
+        // sufficient for the PHY clock-domain crossing to settle.
+        if ip == DWC31_IP {
             crate::timer::delay_ms(50);
         }
         true
@@ -85,6 +87,15 @@ pub(super) unsafe fn core_soft_reset(super_speed: bool) -> bool {
     unsafe {
         if !device_soft_reset() {
             return false;
+        }
+
+        // The DWC_usb31 reference reset sequence is DCTL.CSFTRST after the
+        // external PHY reset. A second GCTL.CORESOFTRESET is not part of
+        // that sequence and can invalidate the device-side state that was
+        // just synchronized. Keep this as a hardware A/B so DWC3 revisions
+        // retain the existing full-core reset path.
+        if cfg!(fullerene_aarch64_usb_dwc31_dctl_only_reset) && read(GSNPSID) >> 16 == DWC31_IP {
+            return true;
         }
 
         // B3a: the CSFTRST handshake completed (DCTL.CSFTRST cleared) but

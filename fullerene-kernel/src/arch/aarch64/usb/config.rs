@@ -51,6 +51,21 @@ pub(super) unsafe fn enable_gadget_susphy() {
     }
 }
 
+/// Restore only the USB2 PHY wake bit for the Bramble USB2 handoff A/B.
+///
+/// The direct path intentionally clears SUSPHY while rebuilding the DWC3
+/// endpoint state. Android's Run/Stop path preserves an enabled USB2 PHY
+/// across its transition, so keep this differential separate from the
+/// SuperSpeed helper and avoid changing the USB3 side of the experiment.
+#[inline]
+pub(super) unsafe fn enable_usb2_gadget_susphy() {
+    unsafe {
+        let mut usb2 = read(GUSB2PHYCFG0);
+        usb2 |= GUSB2PHYCFG_SUSPHY;
+        write(GUSB2PHYCFG0, usb2);
+    }
+}
+
 #[inline]
 pub(super) fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
     // Lito's DWC3 node supplies snps,hird-threshold = 0x10.  A Fastboot
@@ -67,6 +82,14 @@ pub(super) fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
             // disconnect/reconnect boundary needed by a gadget handoff.
             dctl &= !DCTL_KEEP_CONNECT;
         }
+    }
+    // Lito/Bramble uses the DWC_usb31 IP (0x3331xxxx), whose revision is
+    // reported separately through VER_NUMBER. The KEEP_CONNECT field is
+    // still part of the gadget reconnect contract on that IP; preserving a
+    // bootloader value can keep the old Fastboot session logically attached
+    // while the new device session is already advertising its pull-up.
+    if matches!(snpsid >> 16, DWC31_IP | DWC32_IP) {
+        dctl &= !DCTL_KEEP_CONNECT;
     }
     dctl | DCTL_RUN_STOP
 }
@@ -93,6 +116,8 @@ pub(super) unsafe fn configure_dwc3_global_control() {
             gctl |= GCTL_U2RSTECN;
             applied |= GCTL_U2RSTECN;
         }
+        write(GCTL, gctl);
+        let _ = read(GCTL);
         // The lito/bramble vendor DT sets snps,disable-clk-gating, which
         // overrides the generic pwropt-based logic in
         // dwc3_core_setup_global_control(): this platform ALWAYS runs with
@@ -239,9 +264,17 @@ pub(super) unsafe fn configure_gadget_start_defaults() {
         let nump = gadget_nump(ram2_depth, mdwidth);
         let mut dcfg = read(DCFG) & !DCFG_NUMP_MASK;
         dcfg |= nump << DCFG_NUMP_SHIFT;
-        // msm-4.19 does not program DCFG.IGNSTRMPP; keep the
-        // post-reset 0 instead of forcing the bit.
-        dcfg &= !DCFG_IGNSTRMPP;
+        // msm-4.19 does not program DCFG.IGNSTRMPP. Keep the post-reset 0
+        // by default, while allowing one direct-path A/B to match current
+        // mainline DWC3's gadget-start sequence exactly.
+        #[cfg(fullerene_aarch64_usb_dcfg_ignstrmpp)]
+        {
+            dcfg |= DCFG_IGNSTRMPP;
+        }
+        #[cfg(not(fullerene_aarch64_usb_dcfg_ignstrmpp))]
+        {
+            dcfg &= !DCFG_IGNSTRMPP;
+        }
         write(DCFG, dcfg);
     }
 }

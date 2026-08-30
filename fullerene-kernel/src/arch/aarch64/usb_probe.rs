@@ -664,6 +664,45 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
             usb::poll();
         }
     }
+    // "u0stat" gate: publish the u0_arm_recovery status as a count of
+    // QSCRATCH pull-up drop/restore cycles. SDIS and Run/Stop are not
+    // host-visible on the failing Bramble boundary, while the session-vote
+    // drop is. Keep one cycle for status 0 and use the sparse status values
+    // themselves for the failures; 0xFFFF (probe disabled/not reached) gets
+    // the maximum code. This readout is deliberately before the generic gate
+    // so every status can be observed even when its normal branch schedules a
+    // watchdog bite.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("u0stat") {
+        let status = usb::u0_arm_status_probe();
+        let cycles = match status {
+            0 => 1,
+            1 => 2,
+            4 => 4,
+            5 => 5,
+            6 => 6,
+            8 => 8,
+            _ => 16,
+        };
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x5530_5354 | (status & 0xff), // "U0ST"
+        );
+        for _ in 0..cycles {
+            usb::ep0_signal_drop_pullup();
+            let dropped = usb::window_deadline_ticks(1);
+            while usb::arch_counter_ticks() < dropped {
+                usb::wdt_pet();
+                usb::poll();
+            }
+            usb::ep0_signal_restore_pullup();
+            let restored = usb::window_deadline_ticks(1);
+            while usb::arch_counter_ticks() < restored {
+                usb::wdt_pet();
+                usb::poll();
+            }
+        }
+        usb::park_for_seconds(0);
+    }
     // "armstat" gate: distinguish the two late u0_arm_recovery outcomes.
     // Status 8 means the pre-Run/Stop EP0 OUT STARTTRANSFER timed out while
     // waiting for DEPCMD_CMDACT to clear (the command channel is wedged);

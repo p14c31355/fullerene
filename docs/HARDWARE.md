@@ -1518,6 +1518,406 @@ returns and after every reset event, tolerating "No Resource" failures);
 are already ruled out. flash/erase are still never used; every run
 recovers automatically.
 
+### Fifth session: upstream DWC3 comparison and post-Run/Stop DMA probe
+
+The remaining direct-handoff code was compared against the Android Bramble
+4.19 DWC3 sources. The upstream Qualcomm glue uses a 19.2 MHz USB2 reference
+clock (`REFCLKPER=52`, the matching GFLADJ value, and the USB2 UTMI/PIPE
+clock selection); Fullerene already matches that sequence. A 60 MHz UTMI
+clock differential was nevertheless built and tested with no change. The
+upstream EP0 TRB flags and transfer parameter layout also match the local
+implementation. Endpoint configuration was tightened to match Linux's
+control/data notification bits and DWC3 endpoint-type encoding, and an
+Android resource-order A/B was added. Neither change moved the hardware
+boundary.
+
+The following additional physical comparisons used the same unlocked Bramble
+and the non-destructive `fastboot boot` harness. Every image passed the QEMU
+protocol preflight and Bramble boot-image audit; none produced `1234:0001`:
+
+| Run log | Differential | Host result |
+| --- | --- | --- |
+| `fullerene-bramble-loop.4136212.0` | initialize HSPHY before the DWC3 reset | HS attach, `device descriptor read/64, error -110`, Android at about +38 s |
+| `fullerene-bramble-loop.4092377.0` | Linux-matching EP0 configuration | HS attach, `-110`, Android at about +38 s |
+| `fullerene-bramble-loop.4099412.0` | Android endpoint resource order | same `-110` result |
+| `fullerene-bramble-loop.4105056.0` | pre-arm/direct timing comparison | same `-110` result |
+| `fullerene-bramble-loop.4115347.0` | original event-DMA probe before Run/Stop | no Fullerene HS identity; the probe can suppress the pull-up, so this is not a conclusive DMA result |
+| `fullerene-bramble-loop.4120074.0` | alternate SWDD function ID | same HS attach, `-110`, Android fallback |
+| `fullerene-bramble-loop.4124450.0` | skip the SWDD disable SMC | same HS attach, `-110`, Android fallback |
+
+A post-Run/Stop event-DMA A/B was then added. It waits for an unhalted U0
+link, issues an EP0 SETUP `STARTTRANSFER`, ends it, and checks the event
+count/ring. Run `fullerene-bramble-loop.4148792.0` produced the same HS
+attach, `-110`, and stock Android `18d1:4ee7` fallback. Since the first
+version returned only a boolean, the probe was extended with a retained trace
+record and `post` / `post-record` host gates. Runs
+`fullerene-bramble-loop.4173931.0` and
+`fullerene-bramble-loop.4177785.0` still showed no Fullerene identity or
+gate-TRUE disconnect.
+
+The trace encoding was then corrected so event-ring delivery is recorded
+explicitly rather than inferred from a possibly-zero event word. The corrected
+run, `fullerene-bramble-loop.4183274.0`, recorded:
+
+```text
+usb 1-9: new high-speed USB device number 108 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 24 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The record-presence gate again did not publish a positive result. This leaves
+the current evidence at a host-visible HS attach followed by a dead or
+unreachable Fullerene EP0 path. It does not yet identify whether the direct
+tail returned before the post-probe block or which individual DMA command
+failed. The optional trace/gate instrumentation is diagnostic only and is
+not a USB success criterion.
+
+The verified stopping point remains unchanged: no exact
+`New USB device found, idVendor=1234` line has appeared in `kernel.log`.
+Recent runs returned to stock Android automatically; no partition write,
+erase, or manual phone operation was used.
+
+### Sixth session: Run/Stop event-ring boundary and latest direct/reuse A/Bs
+
+The next direct-path A/B re-published the EP0 event-buffer address, size,
+and consumed count immediately before the final DWC3 Run/Stop transition,
+matching the event-buffer part of Android msm-4.19's
+`dwc3_gadget_run_stop(true)`. It deliberately did not reset endpoints or
+alter the pull-up outside the existing Run/Stop transition. The result was
+unchanged:
+
+| Run log | Differential | Host result |
+| --- | --- | --- |
+| `fullerene-bramble-loop.12076.0` | skip the `DSTS.USBLNKST` gate when retrying EP0 `STARTTRANSFER` | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.21331.0` | reuse Fastboot's event-ring DMA page as the handoff baseline | no Fullerene HS attach in this attempt; Android `18d1:4ee7` fallback appeared on SuperSpeed |
+| `fullerene-bramble-loop.28952.0` | re-publish the EP0 event ring immediately before Run/Stop | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.37696.0` | Android msm-style EP0 gadget restart immediately before Run/Stop; an incomplete restart suppressed the final transition | no Fullerene HS attach in this attempt; Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.41752.0` | keep the final Run/Stop transition active even when the Android-style restart command sequence is incomplete | no Fullerene HS attach; Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.44815.0` | repeat the same Run/Stop-continuing full-restart A/B after rebuild | no Fullerene HS attach; Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.48966.0` | start direct-path EP0 with the Linux/Android 512-byte initial packet state | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.56892.0` | set `DCFG.IGNSTRMPP` in the direct gadget-start defaults | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.60992.0` | arm the initial EP0 SETUP only from the USB Reset path | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.64159.0` | `rescue2`: soft-reset and rebuild the EP0 tail during the host's descriptor retry window | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.67089.0` | `diag`: re-drive the trace-selected EP0 stage during the pending descriptor retry | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.72495.0` | `diag` with a 14 s observation window, so the rescue runs after HS attach and before the watchdog bucket | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.76482.0` | return to the non-direct fallback handoff with `--no-smmu` and no EP0 signal probe | no Fullerene HS attach; Android `18d1:4ee7` fallback on SuperSpeed |
+| `fullerene-bramble-loop.87784.0` | restore USB2 `GUSB2PHYCFG.SUSPHY` immediately before the direct Run/Stop boundary | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.94140.0` | honor `--start-after-connect` by deferring the initial EP0 `STARTTRANSFER` until after Run/Stop | HS attach, `device descriptor read/64, error -110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.99451.0` | reallocate both EP0 transfer resources after USB Reset while deferring the initial arm until reset | HS attach, `-110`, Android `18d1:4ee7` fallback; Android briefly re-enumerated twice |
+| `fullerene-bramble-loop.103092.0` | rebuild both EP0 endpoint contexts after USB Reset while deferring the initial arm until reset | HS attach, `-110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.108278.0` | repeat `--start-after-connect` with the corrected deferred initial arm and `--start-ungated` | HS attach, `-110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.114100.0` | arm the initial EP0 SETUP only from Connect Done after USB Reset | HS attach, `-110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.118036.0` | combine Connect Done-only SETUP arm with EP0 transfer-resource reallocation after USB Reset | HS attach, `-110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.125161.0` | apply Linux/Android EP0 `SETEPCONFIG(MODIFY)` for an already-armed SETUP at Connect Done | HS attach, `-110`, Android `18d1:4ee7` fallback |
+| `fullerene-bramble-loop.128470.0` | current timing path with Android-style all-endpoint transfer-resource allocation before EP0 configuration | HS attach, `-110`, Android `18d1:4ee7` fallback |
+
+The `28952` host journal was:
+
+```text
+usb 1-9: new high-speed USB device number 110 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 30 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The Run/Stop event-ring re-publication therefore does not cross the EP0
+boundary. The exact `New USB device found, idVendor=1234` line is still
+absent; all listed runs used only non-destructive `fastboot boot` and
+returned to Android automatically.
+
+The first full gadget-restart attempt did not reach the physical attach
+boundary because its diagnostic wrapper stopped when the repeated endpoint
+sequence was incomplete. Android's corresponding restart helper is void and
+the caller still proceeds to Run/Stop, so the next A/B keeps the final
+transition active even when the repeated command sequence reports failure.
+
+The two revised full-restart runs (`41752` and `44815`) still produced no
+Fullerene high-speed attach, so continuing Run/Stop did not rescue the
+restart sequence on this controller. The separate `ep0-initial-512` run
+(`48966`) restored the usual high-speed attach but retained the same first
+descriptor timeout and Android fallback. The exact
+`New USB device found, idVendor=1234` line remains absent. These runs used
+only non-destructive `fastboot boot`; no partition write, erase, or manual
+phone operation was used.
+
+The `dcfg-ignstrmpp` A/B (`56892`) likewise restored the usual high-speed
+attach but did not change the EP0 result:
+
+```text
+usb 1-9: new high-speed USB device number 112 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 40 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The phone reported `bootreason=watchdog` and returned to stock Android
+automatically; the exact `New USB device found, idVendor=1234` line remains
+absent. No partition write, erase, or manual phone operation was used.
+
+The `start-after-reset` timing A/B (`60992`) also left the host at the same
+first-descriptor timeout:
+
+```text
+usb 1-9: new high-speed USB device number 113 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 42 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+Deferring the first SETUP arm to USB Reset therefore does not cross the EP0
+boundary. The phone again reported `bootreason=watchdog` and recovered to
+stock Android automatically.
+
+The `rescue2` mid-window recovery (`64159`) also did not change the result:
+the host still timed out on the first descriptor read before Android
+recovered. This rules out a single late EP0 tail rebuild as a sufficient
+repair for the current direct handoff.
+
+The trace-selected `diag` rescue (`67089`) also retained the same host
+boundary. Re-driving the selected SETUP/DATA/STATUS stage during the pending
+descriptor retry did not produce `1234:0001`; the phone again recovered to
+stock Android with `bootreason=watchdog`.
+
+The corrected timing test (`72495`) waited 14 seconds before invoking the
+same rescue, placing it after the observed HS attach and before the usual
+watchdog recovery. The host result remained unchanged:
+
+```text
+usb 1-9: new high-speed USB device number 117 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 51 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The exact `New USB device found, idVendor=1234` line remains absent.
+
+As a control, `fullerene-bramble-loop.76482.0` repeated the ordinary
+non-direct fallback path (`--no-smmu`, without `--direct-handoff` or the EP0
+signal probe). It did not produce a Fullerene USB2 attach; the host instead
+saw stock Android SuperSpeed twice:
+
+```text
+usb 2-1: new SuperSpeed USB device number 53 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+usb 2-1: new SuperSpeed USB device number 54 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+This confirms that the latest fallback control does not cross the USB2 EP0
+boundary either. The phone again reported `bootreason=watchdog` and returned
+to Android automatically; no partition write, erase, or manual phone
+operation was used.
+
+The USB2-SUSPHY A/B (`87784`) restored the usual high-speed attach but did
+not change the first descriptor result:
+
+```text
+usb 1-9: new high-speed USB device number 118 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 56 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The phone reported `bootreason=watchdog` and recovered to stock Android
+automatically. The exact `New USB device found, idVendor=1234` line remains
+absent; no partition write, erase, or manual phone operation was used.
+
+The corrected `start-after-connect` run (`94140`) still reached the same
+host boundary:
+
+```text
+usb 1-9: new high-speed USB device number 119 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 58 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+Moving the initial EP0 arm across Run/Stop therefore did not change the
+descriptor timeout. The phone reported `bootreason=watchdog` and recovered
+to stock Android automatically; the exact `New USB device found,
+idVendor=1234` line remains absent.
+
+The `start-after-reset + reset-resource` A/B (`99451`) also did not cross
+the EP0 boundary. The host log contained the usual first timeout and then
+two short Android SuperSpeed enumerations:
+
+```text
+usb 1-9: new high-speed USB device number 120 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 60 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+usb 2-1: USB disconnect, device number 60
+usb 2-1: new SuperSpeed USB device number 61 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The phone again reported `bootreason=watchdog`; no partition write, erase,
+or manual phone operation was used.
+
+The `start-after-reset + reset-endpoints` A/B (`103092`) also retained the
+same first descriptor timeout:
+
+```text
+usb 1-9: new high-speed USB device number 121 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 63 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+Rebuilding the EP0 endpoint contexts after USB Reset was therefore
+insufficient. The phone reported `bootreason=watchdog` and recovered to
+Android automatically; the exact `New USB device found, idVendor=1234`
+line remains absent.
+
+The corrected timing plus `start-ungated` A/B (`108278`) also retained the
+same first descriptor timeout:
+
+```text
+usb 1-9: new high-speed USB device number 122 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 66 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+Allowing the initial EP0 arm to proceed without waiting for the link to
+reach U0 therefore did not cross the USB2 EP0 boundary. The phone reported
+`bootreason=watchdog` and recovered to Android automatically; no partition
+write, erase, or manual phone operation was used.
+
+The `start-at-connect-done` A/B (`114100`) also retained the same first
+descriptor timeout:
+
+```text
+usb 1-9: new high-speed USB device number 123 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 68 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+Arming SETUP only from Connect Done therefore did not cross the USB2 EP0
+boundary. The phone reported `bootreason=watchdog` and recovered to Android
+automatically; no partition write, erase, or manual phone operation was used.
+
+The combined `start-at-connect-done + reset-resource` A/B (`118036`) also
+retained the same first descriptor timeout:
+
+```text
+usb 1-9: new high-speed USB device number 124 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 70 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+Combining post-reset resource reallocation with the Connect Done arm did not
+cross the USB2 EP0 boundary. The phone reported `bootreason=watchdog` and
+recovered to Android automatically; no partition write, erase, or manual
+phone operation was used.
+
+The Connect Done EP0 MODIFY correction (`125161`) also retained the same
+first descriptor timeout:
+
+```text
+usb 1-9: new high-speed USB device number 125 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 72 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+Updating the armed EP0 contexts to the negotiated USB2 packet size at
+Connect Done was therefore insufficient. The phone reported
+`bootreason=watchdog` and recovered to Android automatically; no partition
+write, erase, or manual phone operation was used.
+
+The Android-style all-endpoint resource-order A/B (`128470`) also retained
+the same first descriptor timeout:
+
+```text
+usb 1-9: new high-speed USB device number 126 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 74 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The resource allocation order therefore remains insufficient on this
+controller. The phone reported `bootreason=watchdog` and recovered to
+Android automatically; no partition write, erase, or manual phone operation
+was used.
+
+The `setup` signal-gate observation (`131656`) was used to test whether the
+host's first control SETUP reached the Fullerene EP0 event/DMA path. The gate
+did not fire: there was no Fullerene-side disconnect readout during the 14
+second observation window, and the host retained the same boundary:
+
+```text
+usb 1-9: new high-speed USB device number 127 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 76 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The gate result therefore provides no evidence that `TRACE_SETUP_RECEIVED`
+was reached in this attempt; the failure remains before a successful EP0
+SETUP/data response. The phone reported `bootreason=watchdog` and recovered
+to Android automatically. This was a non-destructive `fastboot boot` run;
+no partition write, erase, or manual phone operation was used.
+
+The `armed` signal-gate observation (`136674`) likewise did not produce the
+arm-success marker. The host still saw the same USB2 descriptor timeout and
+then the stock Android SuperSpeed device:
+
+```text
+usb 1-9: new high-speed USB device number 5 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 78 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The `stop-first` A/B (`145115`) added a Run/Stop stop before rebuilding the
+post-handoff EP0 state. It did not change the boundary:
+
+```text
+usb 1-9: new high-speed USB device number 6 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 80 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The `last-done` gate observation (`147942`) did not report a completed
+post-handoff Start Transfer record, and retained the same host result:
+
+```text
+usb 1-9: new high-speed USB device number 7 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 82 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The `ep0armed` gate observation (`150598`) also did not report a positive
+software armed state at the end of the observation window:
+
+```text
+usb 1-9: new high-speed USB device number 8 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 84 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The `last-timeout` gate observation (`155676`) also remained negative, so
+the current trace does not show either a completed or a timed-out
+post-handoff Start Transfer command:
+
+```text
+usb 1-9: new high-speed USB device number 9 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 86 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+All four runs reported `bootreason=watchdog` and recovered to Android
+automatically. They used only non-destructive `fastboot boot`; no partition
+write, erase, or manual phone operation was used.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:

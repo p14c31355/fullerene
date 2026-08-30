@@ -123,12 +123,37 @@ struct LoopArgs {
     /// Arm EP0 STARTTRANSFER immediately after Run/Stop (Bramble A/B).
     #[arg(long)]
     start_after_connect: bool,
+    /// Retry EP0 STARTTRANSFER after Run/Stop without reading DSTS.USBLNKST.
+    #[arg(long)]
+    start_ungated: bool,
+    /// Re-publish the EP0 event buffer immediately before Run/Stop.
+    #[arg(long)]
+    event_ring_at_runstop: bool,
+    /// Re-run the Android msm gadget-start EP0 sequence immediately before
+    /// Run/Stop.
+    #[arg(long)]
+    gadget_restart_at_runstop: bool,
+    /// Start EP0 with the Linux/Android 512-byte descriptor state.
+    #[arg(long)]
+    ep0_initial_512: bool,
+    /// Set DCFG.IGNSTRMPP in the direct gadget-start sequence (A/B).
+    #[arg(long)]
+    dcfg_ignstrmpp: bool,
+    /// Restore USB2 SUSPHY immediately before the direct Run/Stop boundary.
+    #[arg(long)]
+    usb2_susphy: bool,
     /// Arm the initial EP0 SETUP only after the host USB Reset event.
     #[arg(long)]
     start_after_reset: bool,
     /// Arm the initial EP0 SETUP from the DWC3 Connect Done event.
     #[arg(long)]
     start_at_connect_done: bool,
+    /// Reallocate both EP0 transfer resources after the host USB Reset.
+    #[arg(long)]
+    reset_resource: bool,
+    /// Rebuild both EP0 endpoint contexts after the host USB Reset.
+    #[arg(long)]
+    reset_endpoints: bool,
     /// Publish EP0/event/TRB diagnostics by dropping the pull-up at a coded
     /// delay after attach; the host dmesg delta is the readout.
     #[arg(long)]
@@ -188,6 +213,10 @@ struct LoopArgs {
     /// poll, DEPSTARTCFG, SETEPCONFIG, SETUP arm) from the signal probe.
     #[arg(long)]
     u0_arm_probe: bool,
+    /// Stop a still-running controller before the U0 arm probe rebuilds the
+    /// DWC3 endpoint/resource state.
+    #[arg(long)]
+    u0_arm_stop_first: bool,
     /// Control: unconditional APSS-WDT bite 3 s after probe entry; an early
     /// loop return proves the APSS watchdog bite is writable and lands.
     #[arg(long)]
@@ -273,8 +302,16 @@ impl Default for LoopArgs {
             no_transfer_resource: false,
             android_resource_order: false,
             start_after_connect: false,
+            start_ungated: false,
+            event_ring_at_runstop: false,
+            gadget_restart_at_runstop: false,
+            ep0_initial_512: false,
+            dcfg_ignstrmpp: false,
+            usb2_susphy: false,
             start_after_reset: false,
             start_at_connect_done: false,
+            reset_resource: false,
+            reset_endpoints: false,
             signal_probe: false,
             signal_smmu_state: false,
             signal_link_state: false,
@@ -293,6 +330,7 @@ impl Default for LoopArgs {
             signal_ram_gate: false,
             skip_typec_spmi: false,
             u0_arm_probe: false,
+            u0_arm_stop_first: false,
             wdt_bite_control: false,
             swdd_fnid: None,
             swdd_skip: false,
@@ -665,6 +703,42 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--start-after-connect requires --direct-handoff",
         ));
     }
+    if args.start_ungated && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--start-ungated requires --direct-handoff",
+        ));
+    }
+    if args.event_ring_at_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--event-ring-at-runstop requires --direct-handoff",
+        ));
+    }
+    if args.gadget_restart_at_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--gadget-restart-at-runstop requires --direct-handoff",
+        ));
+    }
+    if args.ep0_initial_512 && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ep0-initial-512 requires --direct-handoff",
+        ));
+    }
+    if args.dcfg_ignstrmpp && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--dcfg-ignstrmpp requires --direct-handoff",
+        ));
+    }
+    if args.usb2_susphy && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-susphy requires --direct-handoff",
+        ));
+    }
     if args.start_after_reset && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -675,6 +749,18 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--start-at-connect-done requires --direct-handoff",
+        ));
+    }
+    if args.reset_resource && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--reset-resource requires --direct-handoff",
+        ));
+    }
+    if args.reset_endpoints && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--reset-endpoints requires --direct-handoff",
         ));
     }
     if args.signal_probe && !args.direct_handoff {
@@ -1257,6 +1343,30 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.start_after_connect {
         arguments.push("--usb-gadget-handoff-start-after-connect".to_owned());
     }
+    if args.start_ungated {
+        arguments.push("--usb-gadget-handoff-start-ungated".to_owned());
+    }
+    if args.event_ring_at_runstop {
+        arguments.push("--usb-gadget-handoff-event-ring-at-runstop".to_owned());
+    }
+    if args.gadget_restart_at_runstop {
+        arguments.push("--usb-gadget-handoff-gadget-restart-at-runstop".to_owned());
+    }
+    if args.ep0_initial_512 {
+        arguments.push("--usb-gadget-handoff-ep0-initial-512".to_owned());
+    }
+    if args.dcfg_ignstrmpp {
+        arguments.push("--usb-gadget-handoff-dcfg-ignstrmpp".to_owned());
+    }
+    if args.usb2_susphy {
+        arguments.push("--usb-gadget-handoff-usb2-susphy".to_owned());
+    }
+    if args.reset_resource {
+        arguments.push("--usb-gadget-handoff-reset-resource".to_owned());
+    }
+    if args.reset_endpoints {
+        arguments.push("--usb-gadget-handoff-reset-endpoints".to_owned());
+    }
     if args.signal_probe {
         arguments.push("--usb-ep0-signal-probe".to_owned());
     }
@@ -1314,6 +1424,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.u0_arm_probe {
         arguments.push("--usb-u0-arm-probe".to_owned());
+    }
+    if args.u0_arm_stop_first {
+        arguments.push("--usb-u0-arm-stop-first".to_owned());
     }
     if args.wdt_bite_control {
         arguments.push("--usb-wdt-bite-control".to_owned());
