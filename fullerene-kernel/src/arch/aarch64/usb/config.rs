@@ -159,7 +159,36 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
         // the power-management bits because their policy is handled by the
         // surrounding run/stop guard.
         usb2 &= !(GUSB2PHYCFG_ULPI_UTMI | GUSB2PHYCFG_PHYIF_MASK | GUSB2PHYCFG_USBTRDTIM_MASK);
-        usb2 |= GUSB2PHYCFG_USBTRDTIM_UTMI_8_BIT;
+        // USBTRDTIM is in PHY clock cycles. Preserve the Linux 8-bit default
+        // unless an explicit A/B overrides it. This allows the 16-bit PHYIF
+        // bit to be tested separately from the nominal 5-cycle timing.
+        let trdtim = match option_env!("FULLERENE_USB_USBTRDTIM") {
+            Some("5") => 5,
+            Some("6") => 6,
+            Some("7") => 7,
+            Some("8") => 8,
+            Some("10") => 10,
+            Some("11") => 11,
+            Some("12") => 12,
+            Some("13") => 13,
+            Some("14") => 14,
+            Some("15") => 15,
+            #[cfg(fullerene_aarch64_usb_phyif_16bit)]
+            _ => 5,
+            #[cfg(not(fullerene_aarch64_usb_phyif_16bit))]
+            _ => 9,
+        };
+        usb2 |= trdtim << 10;
+        #[cfg(fullerene_aarch64_usb_phyif_16bit)]
+        {
+            // DWC3's PHYIF field is bit 3; bit 8 is ENBLSLPM, not PHYIF.
+            usb2 |= GUSB2PHYCFG_PHYIF_MASK;
+        }
+        #[cfg(fullerene_aarch64_usb_enblslpm)]
+        {
+            // Bit 8 is ENBLSLPM. Keep this explicit A/B separate from PHYIF.
+            usb2 |= GUSB2PHYCFG_ENBLSLPM;
+        }
         write(GUSB2PHYCFG0, usb2);
         let _ = read(GUSB2PHYCFG0);
     }

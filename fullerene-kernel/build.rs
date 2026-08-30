@@ -33,6 +33,11 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_reset_endpoints)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dwc31_dctl_only_reset)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_before_reset)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_phyif_16bit)");
+    println!(
+        "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_usbtrdtim, values(\"5\", \"6\", \"7\", \"8\", \"9\", \"10\", \"11\", \"12\", \"13\", \"14\", \"15\"))"
+    );
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_enblslpm)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_initial_512)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_ignstrmpp)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_susphy)");
@@ -139,6 +144,19 @@ fn main() {
         }
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_BEFORE_RESET").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_before_reset");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_PHYIF_16BIT").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_phyif_16bit");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_ENBLSLPM").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_enblslpm");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_USBTRDTIM") {
+            if let Ok(timing) = value.parse::<u32>() {
+                if (5..=15).contains(&timing) {
+                    println!("cargo:rustc-env=FULLERENE_USB_USBTRDTIM={timing}");
+                }
+            }
         }
         if env::var_os("FULLERENE_AARCH64_USB_EP0_INITIAL_512").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_initial_512");
@@ -364,6 +382,9 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_RESET_ENDPOINTS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_DWC31_DCTL_ONLY_RESET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_BEFORE_RESET");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PHYIF_16BIT");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ENBLSLPM");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_USBTRDTIM");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_INITIAL_512");
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AT_CONNECT_DONE"

@@ -160,6 +160,7 @@ pub(crate) const GUSB2PHYCFG_ULPI_UTMI: u32 = 1 << 4;
 pub(crate) const GUSB2PHYCFG_PHYIF_MASK: u32 = 1 << 3;
 pub(crate) const GUSB2PHYCFG_USBTRDTIM_MASK: u32 = 0xf << 10;
 pub(crate) const GUSB2PHYCFG_USBTRDTIM_UTMI_8_BIT: u32 = 9 << 10;
+pub(crate) const GUSB2PHYCFG_USBTRDTIM_UTMI_16_BIT: u32 = 5 << 10;
 pub(crate) const GEVNTADRLO0: usize = 0xc400;
 pub(crate) const GEVNTADRHI0: usize = 0xc404;
 pub(crate) const GEVNTSIZ0: usize = 0xc408;

@@ -1918,6 +1918,232 @@ All four runs reported `bootreason=watchdog` and recovered to Android
 automatically. They used only non-destructive `fastboot boot`; no partition
 write, erase, or manual phone operation was used.
 
+The subsequent `u0-status*` gate A/Bs (`159403`, `162325`, `164782`,
+`166911`, `168899`, and `171036`) exercised the recorded U0-arm outcomes
+individually. Because the pull-up/drop and status channels are not host-visible
+when the first descriptor read times out, the gate truth value could not be
+independently distinguished from the host trace; all six retained the same
+boundary. Representative host output was:
+
+```text
+usb 1-9: new high-speed USB device number 10 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 88 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The `armstat` readout attempt (`173229`) likewise retained the same USB2
+descriptor timeout and Android fallback. Extending the observation window with
+the `always` gate (`176046`, 14 seconds) did not produce a host-visible
+disconnect or a different attach result:
+
+```text
+usb 1-9: new high-speed USB device number 17 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 102 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The temporary `u0stat` pull-up-cycle readout (`180978`) produced no additional
+host event, confirming that QSCRATCH pull-up manipulation is not a usable
+readout channel for this failure. A second `always` run (`184402`, 10 seconds)
+also retained the same result:
+
+```text
+usb 1-9: new high-speed USB device number 19 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 106 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+These runs all reported `bootreason=watchdog` and recovered to Android
+automatically. They used only non-destructive `fastboot boot`; no partition
+write, erase, or manual phone operation was used.
+
+The direct-path BCR-before-reset A/B (`192480`) retained the original boundary:
+
+```text
+usb 1-9: new high-speed USB device number 20 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 107 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The completed ENBLSLPM A/B (`211728`, replacing the interrupted `204105`) also
+retained the original boundary and recovered normally:
+
+```text
+usb 1-9: new high-speed USB device number 27 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 116 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The ENBLSLPM + 16-bit UTMI combination (`215550`) retained the `-71`
+protocol-error boundary:
+
+```text
+usb 1-9: new high-speed USB device number 28 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 31, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The 16-bit UTMI/PHYIF A/B (`196912`) did change the host error, but not to a
+successful device. The host repeatedly retried the HS attach and reported
+`-71` protocol errors before power-cycling the port:
+
+```text
+usb 1-9: new high-speed USB device number 21 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: new high-speed USB device number 22 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: usb 1-9: device not accepting address 24, error -71
+```
+
+This is evidence that the PHY interface setting changes the electrical/protocol
+failure boundary, but it did not produce `1234:0001`; the phone still returned
+to Android with `bootreason=watchdog`. The DWC3 `PHYIF` field is bit 3 in the
+register definition; bit 8 is `ENBLSLPM`, so the A/B uses the actual 16-bit
+setting (`PHYIF=1`, `USBTRDTIM=5`).
+
+Finally, the BCR-before-reset plus DCTL-only A/B (`199296`) omitted the DWC3
+`GCTL.CORESOFTRESET` and `GUSB2/3PIPECTL.PHYSOFTRST` stages for this DWC_usb31
+core, while retaining `DCTL.CSFTRST`. It returned to the original boundary:
+
+```text
+usb 1-9: new high-speed USB device number 25 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 111 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The exact `New USB device found, idVendor=1234` line remains absent. The next
+bounded area is the event-DMA and remaining secure-watchdog timing differential;
+all runs above were non-destructive and required no manual phone operation.
+
+The non-direct `--reuse-fastboot-dma --no-smmu` control (`218144`) produced no
+Fullerene HS attach at all before Android fallback:
+
+```text
+usb 2-1: new SuperSpeed USB device number 120 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+A no-signal direct control (`220321`) retained the standard boundary, so the
+observed `-110` is not specific to signal instrumentation:
+
+```text
+usb 1-9: new high-speed USB device number 32 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+Both runs reported `bootreason=watchdog` and returned to stock Android
+automatically.
+
+The no-signal 16-bit UTMI control (`223300`) remained at the `-71`
+protocol-error boundary rather than changing back to `-110`:
+
+```text
+usb 1-9: new high-speed USB device number 33 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 35, error -71
+usb 1-9: device not accepting address 36, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The no-signal 16-bit UTMI plus ENBLSLPM control (`224890`) also remained at
+that protocol-error boundary:
+
+```text
+usb 1-9: new high-speed USB device number 37 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 39, error -71
+usb 1-9: device not accepting address 40, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+Both new runs reported `bootreason=watchdog` and returned to stock Android
+automatically.
+
+The no-signal direct control with `--start-ungated` (`230808`) retained the
+baseline timing boundary rather than changing the result:
+
+```text
+usb 1-9: new high-speed USB device number 41 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The run reported `bootreason=watchdog` and returned to stock Android
+automatically after about 38 seconds. The exact
+`New USB device found, idVendor=1234` line remains absent.
+
+The `--signal-cmd-gate rescue2` full re-arm A/B (`233788`) also retained the
+standard direct-handoff boundary:
+
+```text
+usb 1-9: new high-speed USB device number 42 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The signal-heartbeat A/B (`237005`) was likewise host-visible only as the
+standard `-110` boundary:
+
+```text
+usb 1-9: new high-speed USB device number 43 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The first no-signal 16-bit `PHYIF` / `USBTRDTIM=9` A/B (`239748`) showed that
+the `-71` boundary follows `PHYIF`, independent of the nominal 16-bit turnaround
+value:
+
+```text
+usb 1-9: new high-speed USB device number 44 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: new high-speed USB device number 45 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: new high-speed USB device number 46 using xhci_hcd
+usb 1-9: new high-speed USB device number 47 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+All three runs completed without manual device operation and reported
+`bootreason=watchdog`.
+
+A 16-bit UTMI run with `USBTRDTIM=6` (`242720`) retained the `-71` boundary, so
+changing the nominal turnaround from 9 to 6 did not make the descriptor transfer
+host-valid:
+
+```text
+usb 1-9: new high-speed USB device number 48 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: new high-speed USB device number 49 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: new high-speed USB device number 50 using xhci_hcd
+usb 1-9: new high-speed USB device number 51 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+An 8-bit UTMI control with `USBTRDTIM=5` (`245215`) returned to the baseline
+`-110` timing boundary, reinforcing that the interface width, rather than this
+single timing value, dominates the current failure difference:
+
+```text
+usb 1-9: new high-speed USB device number 52 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+Both runs completed without manual device operation and reported
+`bootreason=watchdog`.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:
