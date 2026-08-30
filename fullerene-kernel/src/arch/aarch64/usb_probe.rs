@@ -1003,15 +1003,18 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     }
     // The tail reset is the one reliable PSCI readout left (the APSS bite is
     // not writable from EL1 and every park is this reset's victim): encode
-    // the composite diag code as code*1 s of extra poll-serviced wait before
-    // the reset, so the reset time (the usbmon -71 burst / the Android return
-    // time) names the code. The wait also doubles as an enumeration second
-    // chance: keep servicing EP0, and the moment the data phase actually
-    // arms (progress), stable-park instead of resetting so enumeration can
-    // finish inside a live session.
+    // the composite diag code as code*700 ms of extra poll-serviced wait
+    // before the reset, so the reset time (the Android return time) names
+    // the code. 700 ms keeps every code's PSCI reset ahead of the ~5.5 s
+    // post-attach death (eval ~+1 s + 6*0.7 = +5.2 s), so all six buckets
+    // land on the device-side reset instead of the death, 0.7 s apart. The
+    // wait also doubles as an enumeration second chance: keep servicing
+    // EP0, and the moment the data phase actually arms (progress),
+    // stable-park instead of resetting so enumeration can finish inside a
+    // live session.
     let code = usb::diag_readout_code().clamp(1, 6) as u64;
     trace_gate(0x5245_4144 | ((code & 0xff) as u32)); // "MRAD" + code
-    let wait_until = probe_counter().saturating_add(frequency.saturating_mul(code));
+    let wait_until = probe_counter().saturating_add(frequency.saturating_mul(code) * 7 / 10);
     while probe_counter() < wait_until {
         usb::wdt_pet();
         usb::poll();
@@ -1072,7 +1075,42 @@ extern "C" fn usb_probe_entry() -> ! {
         timer::arm_ms(15_000);
     }
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    // Read the previous boot's enumeration progress while its records are
+    // still intact (before the cursor reset below): the retained .usb_trace
+    // region is NOLOAD and survives the warm reset, so this code publishes
+    // how far the previous boot got. It rides the attach-delay channel with
+    // the PON code (+1 s per step) and is readable in the host journal's
+    // attach timestamp.
+    let prev_boot_code = usb::prev_boot_progress_code();
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     usb::trace_probe_begin();
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    // Reset trace cursor once per boot; Android may scribble retained warm-reset headers.
+    usb::trace_reset_head_for_boot();
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    // Previous-boot trace gate: 1 = attach only when the previous boot's
+    // trace reached a SETUP (code >= 2), 2 = attach only when it did not,
+    // 3 = attach only when the previous trace was verifiable but held no
+    // SETUP (code == 1) - which separates a surviving trace from a lost or
+    // scribbled one. The suppressed path resets before any pull-up publish,
+    // so the host journal's attach-line presence is the one-bit readout -
+    // immune to the bootloader jitter that swamps the attach-delay ladder.
+    if let Some(mode) = option_env!("FULLERENE_USB_PREV_TRACE_GATE") {
+        let attach_wanted = match mode {
+            "1" => prev_boot_code >= 2,
+            "2" => prev_boot_code < 2,
+            "3" => prev_boot_code == 1,
+            _ => true,
+        };
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x5056_5447 | (prev_boot_code & 0xff), // "PVTG" + previous code
+        );
+        if !attach_wanted {
+            reset_after_probe_failure();
+        }
+    }
+    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
     // Reset trace cursor once per boot; Android may scribble retained warm-reset headers.
     usb::trace_reset_head_for_boot();
 
@@ -1155,15 +1193,20 @@ extern "C" fn usb_probe_entry() -> ! {
     }
     // Read the previous PON reset reason before USB activity can trigger another
     // recovery. Delay the physical attach by (code + 1) * 300 ms so the host
-    // timestamp publishes both a successful read and its reason bucket.
-    let pon_delay_ms = if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
-        match unsafe { platform::bramble::read_pm8150_pon_reset_code() } {
+    // timestamp publishes both a successful read and its reason bucket. The
+    // previous boot's retained-trace progress code rides the same channel at
+    // +4 s per step - wide enough to survive the +-1-2 s bootloader attach
+    // jitter that swamps 1 s steps.
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    let pon_delay_ms = {
+        let pon_ms = match unsafe { platform::bramble::read_pm8150_pon_reset_code() } {
             Some(code) => (u64::from(code) + 1) * 300,
             None => 0,
-        }
-    } else {
-        0
+        };
+        pon_ms + u64::from(prev_boot_code) * 4000
     };
+    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
+    let pon_delay_ms = 0;
     // Read SMMU before pull-up publish so secure/clock-gated aperture gives a distinct pre-attach outcome.
     let _signal_smmu_code = if cfg!(fullerene_aarch64_usb_ep0_signal_probe)
         && option_env!("FULLERENE_USB_SIGNAL_SMMU_STATE")

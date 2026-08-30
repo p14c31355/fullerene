@@ -342,6 +342,9 @@ fn main() {
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE") {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_FSR_GATE={value}");
         }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_PREV_TRACE_GATE") {
+            println!("cargo:rustc-env=FULLERENE_USB_PREV_TRACE_GATE={value}");
+        }
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE") {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_EVT_DATA_GATE={value}");
         }

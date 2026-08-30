@@ -36,8 +36,8 @@ use trace::*;
 pub use trace::{
     TRACE_BOOT_USB_ENTRY, TRACE_EXCEPTION_SYNC, TRACE_PLATFORM_IRQ, TRACE_PROBE_WATCHDOG,
     TRACE_TYPEC_BEGIN, TRACE_TYPEC_DONE, TRACE_TYPEC_EVENT, TRACE_UDC_REARM,
-    TRACE_USB_HANDOFF_BEGIN, dump_trace, trace_head, trace_last_event, trace_marker,
-    trace_probe_begin, trace_reset_head_for_boot,
+    TRACE_USB_HANDOFF_BEGIN, dump_trace, prev_boot_progress_code, trace_head, trace_last_event,
+    trace_marker, trace_probe_begin, trace_reset_head_for_boot,
 };
 mod log;
 mod mmio;
@@ -6713,6 +6713,13 @@ pub fn armalive_probe() -> u32 {
 }
 
 pub fn cmd_gate_condition_met() -> Option<bool> {
+    // "mrad" skips every gate branch and the generic gate so the probe
+    // falls through to the tail readout: the composite diag code rides the
+    // tail wait (code*700 ms) ahead of the PSCI reset, and the Android
+    // return time names the code.
+    if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("mrad") {
+        return None;
+    }
     let want = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")?;
     unsafe {
         // Re-harvest against this run's live trace: the gate must evaluate

@@ -251,6 +251,13 @@ struct LoopArgs {
     /// FSR gate: 1 = attach only when the SMMU faulted during the probe.
     #[arg(long = "signal-fsr-gate", value_name = "MODE")]
     signal_fsr_gate: Option<u32>,
+    /// Previous-boot trace gate: 1 = attach only when the previous boot's
+    /// retained trace reached a SETUP (progress code >= 2), 2 = attach only
+    /// when it did not. A suppressed run resets before publishing the
+    /// pull-up, so the kernel.log attach-line presence is the one-bit
+    /// readout, immune to bootloader attach-time jitter.
+    #[arg(long = "signal-prev-trace-gate", value_name = "MODE")]
+    signal_prev_trace_gate: Option<u32>,
     /// Gate the attach on a CPU readback of the .usb_dma region succeeding.
     #[arg(long)]
     signal_ram_gate: bool,
@@ -389,6 +396,7 @@ impl Default for LoopArgs {
             signal_dma_probe: false,
             smmu_install_all: false,
             signal_fsr_gate: None,
+            signal_prev_trace_gate: None,
             signal_ram_gate: false,
             skip_typec_spmi: false,
             u0_arm_probe: false,
@@ -991,6 +999,14 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--signal-fsr-gate requires --signal-dma-probe",
+        ));
+    }
+    if args.signal_prev_trace_gate.is_some()
+        && !matches!(args.signal_prev_trace_gate, Some(1 | 2 | 3))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-prev-trace-gate must be 1, 2, or 3",
         ));
     }
     if args.signal_ram_gate && !args.signal_dma_probe {
@@ -1633,6 +1649,10 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if let Some(mode) = args.signal_fsr_gate {
         arguments.push("--usb-signal-fsr-gate".to_owned());
+        arguments.push(mode.to_string());
+    }
+    if let Some(mode) = args.signal_prev_trace_gate {
+        arguments.push("--usb-signal-prev-trace-gate".to_owned());
         arguments.push(mode.to_string());
     }
     if args.signal_ram_gate {

@@ -4482,3 +4482,98 @@ unless noted; only `fastboot boot` was used)
    reproduce it with a context-FAR value gate through the
    attach-suppression mechanism instead of the dead bite channel.
 4. Only `fastboot boot` was used.
+
+## 2026-08-31 (session 3): the mrad tail readout names the failure, cross-boot trace harvest is dead
+
+### New readout channel: the `mrad` gate falls through to the tail
+
+`--signal-cmd-gate mrad` (new) makes `cmd_gate_condition_met()` return
+`None`, so the signal probe skips every gate branch and reaches the tail:
+the composite `diag_readout_code()` rides a `code*700 ms` poll-serviced
+wait (tail changed from `code*1 s`) before the PSCI reset. The eval lands
+~1 s after the handoff return, so even code 6's reset (~+5.2 s post-eval)
+beats the ~5.5 s post-attach death, and the Android return time names the
+code bucket (`reset + ~21 s`; the death-reset bucket is attach+26.6 s).
+The previous `code*1 s` tail only separated codes 1-4; 5/6 were cut by
+the death, which made every standard run land in the death bucket (~41-42
+s) and look identical.
+
+### The composite diag code is 5-6 (best fit 6)
+
+The `mrad` run (`tmp/fullerene-bramble-loop.1828852.0`, standard flags
+plus the gate) attached at +15 s, failed read/64 at +5 s, and Android
+returned at attach+26.0 s - 0.6 s ahead of the death bucket (attach+26.6
+s measured across every standard run today), which fits the PSCI reset at
+eval+4.2 s = code 6. The standard runs' stable ~41 s returns rule out
+codes 1-4 (+37-40 s PSCI buckets never observed).
+
+The ladder semantics (re-derived; the earlier comments conflated DESC):
+code 2 = one SETUP reached DRAM; 3 = two SETUPs; 4 = a full
+dispatch+DARM cycle twice; 5 = the newest data-phase arm (DARM) queued
+cleanly; 6 = XferNotReady(CONTROL_DATA) on EP1 IN fired twice. So the
+handoff flow now provably receives SETUPs, dispatches them, and issues
+Start Transfers that retire cleanly - and the endpoint still never goes
+ready on the wire. The failure is inside the core's EP1-IN transfer
+start, not the arm machinery the last session repaired.
+
+### Cross-boot trace harvest: the retained region does not survive
+
+`prev_boot_progress_code()` (trace.rs) plus the entry-time harvest and
+the `--signal-prev-trace-gate 1|2|3` suppression gate (flasks
+`--usb-signal-prev-trace-gate`) were built to publish the previous boot's
+progress through the attach-delay/attach-presence channels. Findings:
+
+- The first version required the boot marker as entry[0]; it is orphaned
+  by `trace_reset_head_for_boot()` (written before the cursor reset), so
+  the check always failed. Fixed by dropping the marker requirement.
+- Suppression works and is jitter-immune: the mode-1/3 runs reset at
+  entry (return +29 s from boot, no attach line) exactly when the
+  harvested code failed the predicate.
+- The harvest ALWAYS reads 0 cross-boot: two marker-only traces written
+  by suppressed boots read back as code 0, and the 4 s/step attach-delay
+  ladder (second step of the channel) stayed at the code-0 delay
+  (`+14 s` attach, unchanged across four boots with identical artifacts
+  and a pinned 0x9000a000 `.usb_trace` address). XBL/ABL or the boot
+  image load scribbles the region between the PSCI reset and the next
+  kernel entry, despite the NOLOAD design. The in-boot harvest
+  (attempt N reads attempt N-1) remains the only working use of the
+  retained region.
+
+### Negative A/Bs this session (all standard flags + the option; -110 unchanged)
+
+- `--smmu-disable` (SCR0.SMMUEN=0/CLIENTPD=1/WACFG=00, readback-verified
+  by the attach): the SMMU is not the data-phase blocker.
+- `--reset-endpoints` (rebuild both EP0 contexts on the host USB reset):
+  the reset does not destroy the EP1-IN context in a way this rebuild
+  fixes.
+- The `pub`/`dstat` style attach-cycle readouts remain dead: DCTL
+  Run/Stop stop/run cycles are host-invisible in this regime (confirmed
+  again: zero 1-9 disconnect/re-attach lines in the dstat run).
+
+### Reference checkout (user-provided)
+
+`QRD-Development/android_device_qcom_lito` (the QRD device layer) points
+at `a600000.dwc3`; the sibling `android_kernel_qcom_sm7250` carries the
+stock lito USB DT (`lito-usb.dtsi`): core 133.33 MHz / HS 66.67 MHz
+(matched by `usb_clock_plan`), `snps,disable-clk-gating`, TX FIFO total
+27696 with `tx-fifo-resize`, QUSB2 param overrides `0x6c<-0x63`,
+`0x70<-0x85`, `0x74<-0x17`, and the Apps-SMMU stream 0xE0 with the
+0x90000000 DMA pool (matched by `.usb_dma`). The QRD device layer itself
+is HAL/init only and not useful for the core failure.
+
+### Next steps (priority order)
+
+1. EP1-IN never goes ready despite clean Start Transfers: dump the core
+   debug surface for the transfer state (GDBGEPINFO, DEPCMD2/DEPCMD3
+   parity reads for EP1) into the mrad code ladder so the
+   not-ready reason (resource vs context vs FIFO) names itself. The
+   ladder now has spare resolution: codes 1-4 are provably below the
+   current state, so new sub-states can extend the ladder past 6.
+2. Re-test the `--android-resource-order` differential (32-endpoint
+   SETTRANSFRESOURCE preallocation before SETEPCONFIG, the stock msm
+   ordering) against the code-5/6 state; it directly probes the
+   resource-allocation theory.
+3. The QUSB2 PHY param overrides from the stock DT (0x6c/0x70/0x74) are
+   not yet confirmed applied on our path; diff our hsphy init against
+   `qcom,param-override-seq` and A/B via the mrad ladder.
+4. Only `fastboot boot` was used; the working tree is uncommitted.

@@ -173,6 +173,13 @@ struct Args {
     #[arg(long = "usb-signal-fsr-gate", value_name = "MODE")]
     usb_signal_fsr_gate: Option<u32>,
 
+    /// Previous-boot trace gate: 1 = attach only when the previous boot's
+    /// retained trace reached a SETUP (progress code >= 2), 2 = attach only
+    /// when it did not. A suppressed run resets without publishing the
+    /// pull-up, so the host journal's attach-line presence is the readout.
+    #[arg(long = "usb-signal-prev-trace-gate", value_name = "MODE")]
+    usb_signal_prev_trace_gate: Option<u32>,
+
     /// Gate the attach on a CPU readback of the .usb_dma region succeeding.
     #[arg(long)]
     usb_signal_ram_gate: bool,
@@ -1289,6 +1296,7 @@ fn main() -> io::Result<()> {
                 signal_dma_probe: args.usb_signal_dma_probe,
                 smmu_install_all: args.usb_smmu_install_all,
                 signal_fsr_gate: args.usb_signal_fsr_gate,
+                signal_prev_trace_gate: args.usb_signal_prev_trace_gate,
                 signal_ram_gate: args.usb_signal_ram_gate,
                 signal_diag_publish: args.usb_signal_diag_publish,
                 quiet_after: args.usb_quiet_after,
@@ -1473,6 +1481,7 @@ struct Aarch64BuildConfig {
     signal_dma_probe: bool,
     smmu_install_all: bool,
     signal_fsr_gate: Option<u32>,
+    signal_prev_trace_gate: Option<u32>,
     signal_ram_gate: bool,
     signal_diag_publish: bool,
     quiet_after: Option<u64>,
@@ -1551,6 +1560,7 @@ fn build_aarch64_kernel(
         signal_dma_probe,
         smmu_install_all,
         signal_fsr_gate,
+        signal_prev_trace_gate,
         signal_ram_gate,
         signal_diag_publish,
         quiet_after,
@@ -1824,6 +1834,9 @@ fn build_aarch64_kernel(
     }
     if let Some(mode) = signal_fsr_gate {
         push_env("FULLERENE_AARCH64_USB_SIGNAL_FSR_GATE", mode.to_string());
+    }
+    if let Some(mode) = signal_prev_trace_gate {
+        push_env("FULLERENE_AARCH64_USB_PREV_TRACE_GATE", mode.to_string());
     }
     if signal_ram_gate {
         push_env("FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE", "1".to_owned());

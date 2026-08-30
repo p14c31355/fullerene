@@ -180,6 +180,95 @@ pub fn trace_reset_head_for_boot() {
     }
 }
 
+/// Classify the previous boot's retained enumeration progress into an
+/// attach-delay readout code. Must be called before the per-boot cursor
+/// reset, so every record belongs to the previous boot: the region is NOLOAD
+/// and warm-reset retained, and the cursor restarts at 1 each boot, so a
+/// valid trace has entry i carrying sequence i+1 (the boot marker written
+/// before the reset is orphaned at its slot and must not be required). The
+/// following boot delays its physical attach by `code` seconds (on top
+/// of the PON delay), so the host journal's attach timestamp publishes how
+/// far the previous enumeration progressed:
+///   0 = no verifiable retained trace (first boot, scribbled DRAM, or an
+///       empty cursor - a gate-suppressed boot writes nothing after the
+///       reset, so its trace reads back as 0)
+///   1 = records exist but no SETUP ever reached EP0
+///   2 = a SETUP was received by software
+///   3 = a descriptor data TRB was queued (the data phase armed)
+///   4 = XferNotReady(CONTROL_DATA) arrived on EP1 IN
+///   5 = an EP1 IN transfer completed on the wire
+///   6 = a SET_ADDRESS was received (the host accepted the descriptor)
+pub fn prev_boot_progress_code() -> u32 {
+    unsafe {
+        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
+        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
+        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION {
+            return 0;
+        }
+        let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2));
+        if head == 0 || head as usize > USB_TRACE_CAPACITY {
+            return 0;
+        }
+        let count = head as usize;
+        for index in 0..count {
+            let entry = addr_of!(USB_TRACE.entries)
+                .cast::<UsbTraceEntry>()
+                .add(index);
+            if read_volatile(addr_of!((*entry).sequence)) != (index + 1) as u32 {
+                return 0;
+            }
+        }
+        let mut setup = 0u32;
+        let mut descriptor = 0u32;
+        let mut ep1_nrdy = 0u32;
+        let mut ep1_complete = 0u32;
+        let mut set_address = 0u32;
+        for index in 0..count {
+            let entry = addr_of!(USB_TRACE.entries)
+                .cast::<UsbTraceEntry>()
+                .add(index);
+            let event = read_volatile(addr_of!((*entry).event));
+            match event {
+                TRACE_SETUP_RECEIVED => {
+                    setup += 1;
+                    if read_volatile(addr_of!((*entry).request)) == 5 {
+                        set_address += 1;
+                    }
+                }
+                TRACE_DESCRIPTOR_QUEUED => descriptor += 1,
+                TRACE_XFER_NOT_READY => {
+                    if read_volatile(addr_of!((*entry).request)) == 1
+                        && read_volatile(addr_of!((*entry).value)) == 1
+                    {
+                        ep1_nrdy += 1;
+                    }
+                }
+                TRACE_TRANSFER_COMPLETE => {
+                    if read_volatile(addr_of!((*entry).request)) == 1
+                        && read_volatile(addr_of!((*entry).value)) == 1
+                    {
+                        ep1_complete += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if set_address > 0 {
+            6
+        } else if ep1_complete > 0 {
+            5
+        } else if ep1_nrdy > 0 {
+            4
+        } else if descriptor > 0 {
+            3
+        } else if setup > 0 {
+            2
+        } else {
+            1
+        }
+    }
+}
+
 /// Add a marker without touching the controller. This is used around PMIC
 /// and platform transitions where the next MMIO access itself may abort.
 pub fn trace_marker(event: u32, status: u32) {
