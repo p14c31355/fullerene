@@ -332,6 +332,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_usb2_susphy: bool,
 
+    /// Bramble differential: clear GUSB2PHYCFG.U2_FREECLK_EXISTS after
+    /// controller reset.
+    #[arg(long)]
+    usb_gadget_handoff_u2_freeclk_clear: bool,
+
     /// Bramble differential: wait for the host USB Reset event before
     /// arming the initial EP0 SETUP transfer.
     #[arg(long)]
@@ -905,6 +910,18 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-dcfg-ignstrmpp requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_u2_freeclk_clear
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-u2-freeclk-clear requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_usb2_susphy
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
@@ -1108,6 +1125,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_ep0_initial_512: args.usb_gadget_handoff_ep0_initial_512,
                 gadget_handoff_dcfg_ignstrmpp: args.usb_gadget_handoff_dcfg_ignstrmpp,
                 gadget_handoff_usb2_susphy: args.usb_gadget_handoff_usb2_susphy,
+                gadget_handoff_u2_freeclk_clear: args.usb_gadget_handoff_u2_freeclk_clear,
                 gadget_handoff_start_after_reset: args.usb_gadget_handoff_start_after_reset,
                 gadget_handoff_start_at_connect_done: args.usb_gadget_handoff_start_at_connect_done,
                 gadget_handoff_reset_resource: args.usb_gadget_handoff_reset_resource,
@@ -1278,6 +1296,7 @@ struct Aarch64BuildConfig {
     gadget_handoff_ep0_initial_512: bool,
     gadget_handoff_dcfg_ignstrmpp: bool,
     gadget_handoff_usb2_susphy: bool,
+    gadget_handoff_u2_freeclk_clear: bool,
     gadget_handoff_start_after_reset: bool,
     gadget_handoff_start_at_connect_done: bool,
     gadget_handoff_reset_resource: bool,
@@ -1342,6 +1361,7 @@ fn build_aarch64_kernel(
         gadget_handoff_ep0_initial_512,
         gadget_handoff_dcfg_ignstrmpp,
         gadget_handoff_usb2_susphy,
+        gadget_handoff_u2_freeclk_clear,
         gadget_handoff_start_after_reset,
         gadget_handoff_start_at_connect_done,
         gadget_handoff_reset_resource,
@@ -1463,6 +1483,9 @@ fn build_aarch64_kernel(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SUSPHY",
             "1".to_owned(),
         );
+    }
+    if gadget_handoff_u2_freeclk_clear {
+        push_env("FULLERENE_AARCH64_USB_U2_FREECLK_CLEAR", "1".to_owned());
     }
     if gadget_handoff_start_after_reset {
         push_env(

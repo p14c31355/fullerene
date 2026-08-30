@@ -38,6 +38,9 @@ fn main() {
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_usbtrdtim, values(\"5\", \"6\", \"7\", \"8\", \"9\", \"10\", \"11\", \"12\", \"13\", \"14\", \"15\"))"
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_enblslpm)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_u2_freeclk_clear)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_clear)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_set)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_initial_512)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_ignstrmpp)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_susphy)");
@@ -150,6 +153,15 @@ fn main() {
         }
         if env::var_os("FULLERENE_AARCH64_USB_ENBLSLPM").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_enblslpm");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_U2_FREECLK_CLEAR").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_u2_freeclk_clear");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_guctl3_usb20_retry_clear");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_guctl3_usb20_retry_set");
         }
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_USBTRDTIM") {
             if let Ok(timing) = value.parse::<u32>() {
@@ -384,6 +396,9 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_BEFORE_RESET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PHYIF_16BIT");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ENBLSLPM");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_U2_FREECLK_CLEAR");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_USBTRDTIM");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_INITIAL_512");
         println!(

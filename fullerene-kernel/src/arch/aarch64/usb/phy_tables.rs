@@ -156,8 +156,13 @@ const QMP_INIT: [(usize, u32); 146] = [
 /// it.
 pub(super) static mut ACTIVE_QMP_INIT: [(usize, u32); 146] = QMP_INIT;
 pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
-pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] =
-    [(0x6c, 0x63), (0x70, 0x85), (0x74, 0x17)];
+pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] = [
+    (0x6c, 0x67),
+    (0x70, 0xc8),
+    // Sentinel: Bramble's QUSB2 override is only two entries. The PHY write
+    // loop skips this entry and therefore leaves the vendor register intact.
+    (usize::MAX, 0),
+];
 
 /// Install the complete PHY programming properties from the bootloader DTB.
 /// A partial or malformed property is rejected as a unit, leaving the known
@@ -166,10 +171,18 @@ pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] =
 pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>; 441]) -> bool {
     let mut installed = false;
 
-    if hs_raw.iter().all(Option::is_some) {
-        let mut entries = [(0usize, 0u32); 3];
+    // The base Lito node has three QUSB2 override entries, but Google's
+    // Bramble/Barbet override replaces the property with only two entries:
+    // TUNE1 (0x6c) and TUNE2 (0x70); TUNE3 (0x74) is intentionally omitted.
+    // Accept either form so the two-entry production DT is not silently
+    // discarded in favour of the broader SoC fallback.
+    let hs_three = hs_raw.iter().all(Option::is_some);
+    let hs_two = hs_raw[..4].iter().all(Option::is_some) && hs_raw[4..].iter().all(Option::is_none);
+    if hs_three || hs_two {
+        let count = if hs_two { 2 } else { 3 };
+        let mut entries = [(0usize, 0u32), (0usize, 0u32), (usize::MAX, 0u32)];
         let mut valid = true;
-        for index in 0..3 {
+        for index in 0..count {
             let value = hs_raw[index * 2].unwrap();
             let offset = hs_raw[index * 2 + 1].unwrap();
             valid &= value <= 0xff

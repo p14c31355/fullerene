@@ -189,6 +189,14 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
             // Bit 8 is ENBLSLPM. Keep this explicit A/B separate from PHYIF.
             usb2 |= GUSB2PHYCFG_ENBLSLPM;
         }
+        #[cfg(fullerene_aarch64_usb_u2_freeclk_clear)]
+        {
+            // Linux treats a missing USB2 free clock as a device-tree quirk,
+            // but the Fastboot handoff cannot rely on our DT interpretation.
+            // Keep bit 30 as an explicit post-reset A/B while preserving all
+            // other inherited bits.
+            usb2 &= !GUSB2PHYCFG_U2_FREECLK_EXISTS;
+        }
         write(GUSB2PHYCFG0, usb2);
         let _ = read(GUSB2PHYCFG0);
     }
@@ -228,6 +236,23 @@ pub(super) unsafe fn apply_usb31_gadget_reference_deltas() {
         }
         // core.c ~1060: usb31 1.70a GA only, STAR 9001346572.
         if revision == DWC3_USB31_REVISION_170A && read(VER_TYPE) == DWC3_USB31_VER_TYPE_GA {
+            let mut reg = read(GUCTL3);
+            reg |= GUCTL3_USB20_RETRY_DISABLE;
+            write(GUCTL3, reg);
+        }
+        #[cfg(fullerene_aarch64_usb_guctl3_usb20_retry_clear)]
+        {
+            // Separate the silicon-revision condition from the vendor
+            // workaround itself: force the retry engine to its reset default
+            // even when the reference path would set it.
+            let mut reg = read(GUCTL3);
+            reg &= !GUCTL3_USB20_RETRY_DISABLE;
+            write(GUCTL3, reg);
+        }
+        #[cfg(fullerene_aarch64_usb_guctl3_usb20_retry_set)]
+        {
+            // This is the explicit opposite A/B for the same STAR workaround,
+            // independent of the exact VER_NUMBER/VER_TYPE reading.
             let mut reg = read(GUCTL3);
             reg |= GUCTL3_USB20_RETRY_DISABLE;
             write(GUCTL3, reg);

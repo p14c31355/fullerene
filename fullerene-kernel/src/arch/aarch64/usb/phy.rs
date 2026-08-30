@@ -145,6 +145,12 @@ pub(super) unsafe fn init_hsphy() {
         let hsphy_param_override =
             core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_HSPHY_PARAM_OVERRIDE));
         for &(offset, value) in hsphy_param_override.iter() {
+            // The production Bramble/Barbet table has only two QUSB2
+            // overrides. A trailing sentinel preserves the fixed table shape
+            // and must be skipped exactly like the DT's absent third entry.
+            if offset == usize::MAX {
+                continue;
+            }
             write_volatile(hsphy_reg(offset), value);
         }
 

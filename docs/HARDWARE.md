@@ -2141,8 +2141,240 @@ usb 1-9: device descriptor read/64, error -110
 usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
 ```
 
-Both runs completed without manual device operation and reported
-`bootreason=watchdog`.
+Four follow-up turnaround A/Bs further bounded the 16-bit result. With
+16-bit UTMI and `USBTRDTIM=7` (`250329`), the host still saw repeated descriptor
+and address failures at the `-71` boundary:
+
+```text
+usb 1-9: new high-speed USB device number 53 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 55, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The 16-bit, `USBTRDTIM=8` run (`252469`) remained identical in kind:
+
+```text
+usb 1-9: new high-speed USB device number 57 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 59, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+Likewise, 16-bit `USBTRDTIM=10` (`255111`) did not produce a descriptor:
+
+```text
+usb 1-9: new high-speed USB device number 61 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 63, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+As a control, the 8-bit interface with `USBTRDTIM=10` (`257182`) returned to the
+baseline `-110` timing boundary:
+
+```text
+usb 1-9: new high-speed USB device number 65 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+All four runs reported `bootreason=watchdog` and returned to Android
+automatically. Together with the earlier `USBTRDTIM=5`, `6`, and `9` runs, this
+isolates `PHYIF` as the dominant host-visible boundary lever so far; the
+nominal turnaround value did not recover a complete enumeration.
+
+Five additional direct-handoff A/Bs bounded the remaining DWC3 convenience flags
+under the 16-bit `PHYIF=1` / `USBTRDTIM=5` setting. Each used the same
+non-destructive `fastboot boot` path and added exactly one run-specific flag.
+The EP0 initial-max-packet A/B (`261846`) with `--ep0-initial-512` stayed at the
+protocol-error boundary:
+
+```text
+usb 1-9: new high-speed USB device number 66 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+```
+
+The ignore-start-of-frame control (`264084`) with `--dcfg-ignstrmpp`, the
+USB2 suspend-PHY control (`266252`) with `--usb2-susphy`, the DWC3
+resource-reset control (`267929`) with `--reset-resource`, and the endpoint
+reset control (`269574`) with `--reset-endpoints` all retained the same kind of
+host log: repeated descriptor reads and address setup failures with error
+`-71`, then Android fallback as `18d1:4ee7`. None produced an endpoint 0
+descriptor, an address transition, or the exact `1234` identity. All five runs
+reported `bootreason=watchdog` and returned to Android automatically after
+about 38 seconds. This rules out those five direct flags as the missing 16-bit
+enumeration lever; the next useful lever remains a deeper UTMI protocol or
+event/EP0-path difference.
+
+The next 16-bit A/B (`277463`) cleared `GUSB2PHYCFG.U2_FREECLK_EXISTS` (bit 30)
+through a new `--u2-freeclk-clear` direct-handoff differential. This matched the
+upstream `dis_u2_freeclk_exists_quirk` boundary while retaining 16-bit `PHYIF=1`
+and `USBTRDTIM=5`; the host still stayed at the descriptor/address protocol-error
+boundary:
+
+```text
+usb 1-9: new high-speed USB device number 86 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 89, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The run reported `bootreason=watchdog` and returned to Android automatically.
+The exact `1234` line was absent from both `kernel.log` and `kernel-final.log`;
+all operation remained non-destructive `fastboot boot`, with no manual device
+operation.
+
+A 16-bit `USBTRDTIM=11` A/B (`281912`) remained at the same `-71` boundary as
+the tested 5-10 values:
+
+```text
+usb 1-9: new high-speed USB device number 90 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 93, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The run reported `bootreason=watchdog`; no exact `1234` identity appeared in
+either kernel log. It used the same non-destructive boot-only path and no manual
+device operation.
+
+The 16-bit `USBTRDTIM=12` A/B (`284038`) also stayed at the `-71` descriptor and
+address boundary:
+
+```text
+usb 1-9: new high-speed USB device number 94 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 97, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The run reported `bootreason=watchdog`; the exact `1234` line was absent from
+both logs. It remained a non-destructive `fastboot boot` experiment with no
+manual device operation.
+
+The 16-bit `USBTRDTIM=13` A/B (`286342`) retained the same kind of host log:
+
+```text
+usb 1-9: new high-speed USB device number 98 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 101, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+It reported `bootreason=watchdog` and produced no exact `1234` identity in
+either kernel log. The experiment again used only non-destructive
+`fastboot boot`; no manual device operation occurred.
+
+The 16-bit `USBTRDTIM=14` A/B (`288411`) likewise remained at `-71`:
+
+```text
+usb 1-9: new high-speed USB device number 102 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 105, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+It reported `bootreason=watchdog`; neither `kernel.log` nor `kernel-final.log`
+contained the exact `1234` line. The boot remained non-destructive and manual
+device operation was not used.
+
+The completed 16-bit `USBTRDTIM=15` A/B (`290640`) also remained at the
+same descriptor/address protocol-error boundary:
+
+```text
+usb 1-9: new high-speed USB device number 106 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 109, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+It reported `bootreason=watchdog`; neither `kernel.log` nor `kernel-final.log`
+contained the exact `1234` line. It remained a non-destructive `fastboot boot`
+experiment with no manual device operation.
+
+A 16-bit follow-up (`302233`) tested the web-sourced production Bramble/Barbet
+QUSB2 override, `(0x6c,0x67), (0x70,0xc8)`, with the default 16-bit
+`USBTRDTIM=5` and no additional special flag. It reached only the Android
+fallback `18d1:4ee7`, reported `bootreason=watchdog`, and contained no exact
+`1234` line in either kernel log. This run must be treated as invalid as a
+Bramble-tune A/B because the active table used a third `usize::MAX` sentinel and
+the PHY write loop had not yet been taught to skip it; the intended two-entry
+production override was therefore corrupted by an extra MMIO write. The sentinel
+skip was added after this run.
+
+After adding the sentinel skip, the corrected production-tune 16-bit run
+(`306533`) still remained at the `-71` descriptor/address boundary:
+
+```text
+usb 1-9: new high-speed USB device number 110 using xhci_hcd
+usb 1-9: device descriptor read/64, error -71
+usb 1-9: device not accepting address 113, error -71
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+It reported `bootreason=watchdog`; no exact `1234` identity appeared in either
+log. Thus, even with the production `(0x6c,0x67), (0x70,0xc8)` QUSB2 values
+applied correctly, 16-bit `PHYIF=1` and `USBTRDTIM=5` did not by itself cross
+the enumeration boundary.
+
+The corrected production QUSB2 tune was then repeated in 8-bit UTMI mode
+(`309384`), preserving the base timing configuration `USBTRDTIM=9` and
+`PHYIF=0`. It did not gain an endpoint descriptor; instead, the host saw HS
+attach followed by the original timeout boundary:
+
+```text
+usb 1-9: new high-speed USB device number 114 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+It returned to Android automatically with `bootreason=watchdog`. Neither kernel
+log contained an exact `1234` identity. This confirms that the corrected Bramble
+`(0x6c,0x67), (0x70,0xc8)` QUSB2 values do not remove the 8-bit timeout; they
+change the failure mode only in combination with 16-bit `PHYIF=1`.
+
+The 8-bit follow-up cleared `GUSB2PHYCFG.U2_FREECLK_EXISTS` while retaining
+`USBTRDTIM=9` and the corrected Bramble QUSB2 tune (`320194`). It remained at
+the timeout boundary:
+
+```text
+usb 1-9: new high-speed USB device number 115 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The run reported `bootreason=watchdog`; no exact `1234` identity appeared in
+either log. Thus, clearing the USB2 free-clock bit alone did not alter the
+8-bit result.
+
+Two explicit 8-bit `USBTRDTIM` probes also did not move the corrected
+production-tune boundary. `USBTRDTIM=5` (`322388`) and `USBTRDTIM=15`
+(`324527`) each showed HS attach followed by the original `-110` descriptor
+read timeout, with `bootreason=watchdog` and no exact `1234` identity:
+
+```text
+usb 1-9: new high-speed USB device number 116 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+```
+
+This bounds both ends of the supported timing field in 8-bit mode; timing alone
+is not the missing lever.
+
+A force-set A/B for the msm-4.19 DWC_usb31 1.70a GA workaround,
+`GUCTL3.USB20_RETRY_DISABLE`, was then added (`327928`). In 8-bit mode with the
+production QUSB2 tune it stayed at the standard `-110` boundary and reported
+`bootreason=watchdog`. A force-clear A/B (`330122`) also stayed at `-110`.
+Therefore the retry-disable bit does not change the 8-bit descriptor timeout
+and can no longer be treated as the missing bit.
+
+The same two register states were tested with 16-bit `PHYIF=1`, production
+QUSB2 tune, and default `USBTRDTIM=5`. Force-set (`332269`) and force-clear
+(`334220`) both stayed at the known `-71` descriptor/address boundary, with
+multiple attach retries and `Device not accepting address ... error -71`. Both
+returned to Android as `18d1:4ee7`, reported `bootreason=watchdog`, and
+contained no exact `1234` identity. This rules out an exact-revision condition
+around that GUCTL3 workaround as the cause of the 16-bit protocol failure.
 
 ## Future Platforms
 

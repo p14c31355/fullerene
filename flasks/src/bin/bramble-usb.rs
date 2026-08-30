@@ -142,6 +142,9 @@ struct LoopArgs {
     /// Restore USB2 SUSPHY immediately before the direct Run/Stop boundary.
     #[arg(long)]
     usb2_susphy: bool,
+    /// Clear GUSB2PHYCFG.U2_FREECLK_EXISTS after controller reset (A/B).
+    #[arg(long)]
+    u2_freeclk_clear: bool,
     /// Arm the initial EP0 SETUP only after the host USB Reset event.
     #[arg(long)]
     start_after_reset: bool,
@@ -308,6 +311,7 @@ impl Default for LoopArgs {
             ep0_initial_512: false,
             dcfg_ignstrmpp: false,
             usb2_susphy: false,
+            u2_freeclk_clear: false,
             start_after_reset: false,
             start_at_connect_done: false,
             reset_resource: false,
@@ -731,6 +735,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--dcfg-ignstrmpp requires --direct-handoff",
+        ));
+    }
+    if args.u2_freeclk_clear && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--u2-freeclk-clear requires --direct-handoff",
         ));
     }
     if args.usb2_susphy && !args.direct_handoff {
@@ -1360,6 +1370,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.usb2_susphy {
         arguments.push("--usb-gadget-handoff-usb2-susphy".to_owned());
+    }
+    if args.u2_freeclk_clear {
+        arguments.push("--usb-gadget-handoff-u2-freeclk-clear".to_owned());
     }
     if args.reset_resource {
         arguments.push("--usb-gadget-handoff-reset-resource".to_owned());
