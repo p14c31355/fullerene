@@ -220,7 +220,19 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
         }
 
         let mut dctl = read(DCTL);
-        if is_on {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop) {
+            // Stock XBL's DwcRunStop only changes DCTL.RUN_STOP. Its core-init
+            // sequence has already installed HIRD=7/APPL1RES, and it
+            // preserves KEEP_CONNECT/TRGTULST instead of applying Linux's
+            // generic reconnect policy here.
+            if is_on {
+                dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_XBL;
+                dctl |= DCTL_APPL1RES | DCTL_RUN_STOP;
+            } else {
+                dctl &= !DCTL_RUN_STOP;
+            }
+            write(DCTL, dctl);
+        } else if is_on {
             dctl = run_stop_value(dctl, read(GSNPSID));
             // `run_stop_value` deliberately preserves RX_DET for older DWC3
             // revisions. `write_dctl_safe` is used by reset/stop paths and

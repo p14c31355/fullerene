@@ -21,6 +21,18 @@ fn main() {
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_android_resource_order)"
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_start_after_connect)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_in_data)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_event_dma)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_config)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0)");
+    println!(
+        "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_post_endpoint_global)"
+    );
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_stock_ep0_dma)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_direction_trb)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_xbl_trb_chain)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_start_ungated)");
     println!(
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_event_ring_at_runstop)"
@@ -48,6 +60,7 @@ fn main() {
     println!(
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_ep0_short_first_desc)"
     );
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_ep0_txfifo_fix)");
     println!(
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_start_at_connect_done)"
     );
@@ -126,6 +139,38 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_start_after_connect");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_DEFERRED_SETUP").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_EP0_IN_DATA").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_ep0_in_data");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_EVENT_DMA").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_event_dma");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_EP0_CONFIG").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_ep0_config");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_BETWEEN_EP0").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_POST_ENDPOINT_GLOBAL").is_some() {
+            println!(
+                "cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_post_endpoint_global"
+            );
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_STOCK_EP0_DMA").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_stock_ep0_dma");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_RAW_RUNSTOP").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_DIRECTION_TRB").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_direction_trb");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_TRB_CHAIN").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_xbl_trb_chain");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_UNGATED").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_start_ungated");
         }
@@ -188,6 +233,9 @@ fn main() {
         }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_SHORT_FIRST_DESC").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_ep0_short_first_desc");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_TXFIFO_FIX").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_ep0_txfifo_fix");
         }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AT_CONNECT_DONE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_start_at_connect_done");
@@ -390,6 +438,10 @@ fn main() {
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT"
         );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_DIRECTION_TRB"
+        );
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_TRB_CHAIN");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_UNGATED");
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_EVENT_RING_AT_RUNSTOP"
@@ -438,6 +490,7 @@ fn main() {
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_SHORT_FIRST_DESC"
         );
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_TXFIFO_FIX");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABS_RESET_SECS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EP0_SMMU_INSTALL");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SMMU_DISABLE");

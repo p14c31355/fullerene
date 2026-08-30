@@ -81,6 +81,24 @@ const INITIAL_EP0_MAX_PACKET_SIZE: u32 = 512;
 // so this test does not assume a second firmware allocation is accessible
 // through the still-active SMMU context.
 const FASTBOOT_EP0_EVENT_SIZE: usize = 0x100;
+// Stock Bramble XBL's DwcCoreInit programs GEVNTSIZ0 with 0xf0 for the
+// control event ring. Keep the backing allocation larger, but expose the
+// exact hardware ring length in the gadget probe.
+const XBL_EP0_EVENT_SIZE: usize = 0xf0;
+// Stock Bramble XBL's DwcCoreInit publishes its event ring at this physical
+// address. The A/B below uses it for the event ring only; setup/TRB/response
+// objects stay in the known linker DMA pool.
+const XBL_EP0_EVENT_DMA_ADDRESS: usize = 0x0a6f_c010;
+// Stock XBL's initial EP0 request builder publishes these fixed DDR
+// addresses: the setup payload at 0x80798d70 and the first EP0 TRB at
+// 0x80798f70. The differential below uses them only for EP0 setup DMA.
+const XBL_EP0_SETUP_DMA_ADDRESS: usize = 0x8079_8d70;
+const XBL_EP0_TRB_DMA_ADDRESS: usize = 0x8079_8f70;
+// Stock Bramble XBL's initial EP0 request builder reaches TRBCTL=2
+// (CONTROL_SETUP). Keep the XBL-specific control word named here; the
+// hardware A/B uses an explicit setup buffer because the literal zero pointer
+// suppressed even the USB2 attach on this Fullerene handoff.
+const TRB_XBL_EP0_SETUP: u32 = TRB_CONTROL_SETUP;
 const FASTBOOT_EP0_SETUP_OFFSET: usize = 0x100;
 const FASTBOOT_EP0_TRB_OFFSET: usize = 0x140;
 const FASTBOOT_EP0_RESPONSE_OFFSET: usize = 0x180;
@@ -248,6 +266,9 @@ pub fn harvest_last_str_code() -> u32 {
 #[inline]
 unsafe fn ep0_event_dma_base() -> usize {
     unsafe {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_event_dma) {
+            return XBL_EP0_EVENT_DMA_ADDRESS;
+        }
         if DMA_ADOPTED {
             return DMA_ADOPTED_CPU;
         }
@@ -274,12 +295,14 @@ unsafe fn ep0_event_address() -> u64 {
 unsafe fn ep0_event_size() -> usize {
     unsafe {
         if DMA_ADOPTED {
-            return FASTBOOT_EP0_EVENT_SIZE;
+            return XBL_EP0_EVENT_SIZE;
         }
         if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
             && FASTBOOT_EVENT_DMA_BASE != 0
         {
-            FASTBOOT_EP0_EVENT_SIZE
+            XBL_EP0_EVENT_SIZE
+        } else if cfg!(fullerene_aarch64_usb_gadget_handoff_probe) {
+            XBL_EP0_EVENT_SIZE
         } else {
             EVENT_BUFFER_SIZE
         }
@@ -289,6 +312,9 @@ unsafe fn ep0_event_size() -> usize {
 #[inline]
 unsafe fn ep0_setup_ptr() -> *mut u8 {
     unsafe {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_stock_ep0_dma) {
+            return XBL_EP0_SETUP_DMA_ADDRESS as *mut u8;
+        }
         if DMA_ADOPTED {
             return (DMA_ADOPTED_CPU as *mut u8).add(FASTBOOT_EP0_SETUP_OFFSET);
         }
@@ -305,6 +331,9 @@ unsafe fn ep0_setup_ptr() -> *mut u8 {
 #[inline]
 unsafe fn ep0_trb_ptr(index: usize) -> *mut Trb {
     unsafe {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_stock_ep0_dma) {
+            return (XBL_EP0_TRB_DMA_ADDRESS + index * core::mem::size_of::<Trb>()) as *mut Trb;
+        }
         if DMA_ADOPTED {
             return (DMA_ADOPTED_CPU as *mut u8)
                 .add(FASTBOOT_EP0_TRB_OFFSET + index * core::mem::size_of::<Trb>())
@@ -319,6 +348,15 @@ unsafe fn ep0_trb_ptr(index: usize) -> *mut Trb {
         } else {
             addr_of_mut!(EP0_TRBS).cast::<Trb>().add(index)
         }
+    }
+}
+
+#[inline]
+fn ep0_trb_index(endpoint: usize) -> usize {
+    if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_direction_trb) && endpoint == 1 {
+        1
+    } else {
+        0
     }
 }
 
@@ -364,6 +402,10 @@ static mut FUNCTION_BOUND: bool = false;
 /// it per endpoint and supplies it to ENDTRANSFER; using a fixed value works
 /// only accidentally on the first controller generation.
 static mut EP0_RESOURCE_INDEX: [u8; 2] = [0; 2];
+/// Software ownership slot for the stock XBL-style initial EP0 OUT request.
+/// XBL queues this request before Run/Stop and turns it in-flight only when
+/// the first CONTROL_DATA XferNotReady event asks for STARTTRANSFER.
+static mut EP0_SETUP_REQUEST_SLOT: usize = usize::MAX;
 /// Failure stage for the standalone gadget handoff probe. The probe uses
 /// this to make a retained failure host-observable without publishing a
 /// broken USB pull-up.
@@ -889,11 +931,12 @@ pub fn rescue_read64() -> u32 {
             Ep0State::Data => {
                 let _ = end_transfer(1);
                 let _ = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
-                let mut queued = start_transfer(1, ep0_trb_ptr(0));
+                let trb_index = ep0_trb_index(1);
+                let mut queued = start_transfer(1, ep0_trb_ptr(trb_index));
                 if !queued {
                     for _ in 0..50 {
                         super::timer::delay_us(200);
-                        if start_transfer(1, ep0_trb_ptr(0)) {
+                        if start_transfer(1, ep0_trb_ptr(trb_index)) {
                             queued = true;
                             break;
                         }
@@ -1678,7 +1721,18 @@ unsafe fn configure_endpoint_config(
     } else {
         DEPCFG_XFER_IN_PROGRESS_EN
     };
-    if endpoint <= 1 {
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_config)]
+    if endpoint <= 1 && endpoint_type == DEPCFG_EP_TYPE_CONTROL {
+        // Stock Bramble XBL's fixed EP0 configuration emits P1=0x300:
+        // XFER_COMPLETE_EN | XFER_IN_PROGRESS_EN. This is a binary-derived
+        // A/B for the XBL function-driver contract; keep the Linux-default
+        // NRDY notification in the generic path.
+        param1 |= DEPCFG_XFER_IN_PROGRESS_EN;
+    }
+    if endpoint <= 1
+        && !(cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_config)
+            && endpoint_type == DEPCFG_EP_TYPE_CONTROL)
+    {
         param1 |= DEPCFG_XFER_NOT_READY_EN;
     }
     param1 |= (interrupter & 0x1f) << DEPCFG_INT_NUM_SHIFT;
@@ -2217,10 +2271,37 @@ unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32)
         write_volatile(addr_of_mut!((*trb).size), length as u32);
         write_volatile(
             addr_of_mut!((*trb).ctrl),
-            kind | TRB_HWO | TRB_LST | TRB_IOC | TRB_ISP_IMI,
+            kind | TRB_HWO
+                | TRB_LST
+                | TRB_IOC
+                | TRB_ISP_IMI
+                | if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_trb_chain) {
+                    TRB_CHN
+                } else {
+                    0
+                },
         );
         cache_clean(trb as usize, core::mem::size_of::<Trb>());
     }
+}
+
+/// Prepare the EP0 SETUP TRB. Stock Bramble XBL has a special initial setup
+/// branch: after allocating the ring entry it publishes that entry's own
+/// address as the TRB buffer address. Keep that quirk confined to the XBL
+/// differential; ordinary Fullerene control transfers use the explicit setup
+/// buffer.
+unsafe fn prepare_ep0_setup_trb() {
+    let buffer = if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
+        unsafe { ep0_trb_ptr(0).cast::<u8>() }
+    } else {
+        unsafe { ep0_setup_ptr() }
+    };
+    let kind = if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
+        TRB_XBL_EP0_SETUP
+    } else {
+        TRB_CONTROL_SETUP
+    };
+    unsafe { prepare_trb(0, buffer, 8, kind) };
 }
 
 unsafe fn prepare_trb_at(trb: *mut Trb, buffer: *const u8, length: usize, kind: u32) {
@@ -2240,10 +2321,74 @@ unsafe fn prepare_trb_at(trb: *mut Trb, buffer: *const u8, length: usize, kind: 
 unsafe fn start_setup() -> bool {
     trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, unsafe { read(DSTS) });
     unsafe {
-        prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+        if cfg!(any(
+            fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
+            fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
+        )) {
+            if !queue_xbl_setup_request() {
+                return false;
+            }
+        }
+        // Keep the source-derived TRBCTL=2 and pre-Run/Stop start order. The
+        // XBL setup branch also publishes the generated TRB address as its
+        // buffer field; `prepare_ep0_setup_trb()` carries that special case.
+        prepare_ep0_setup_trb();
         let armed = start_transfer(0, ep0_trb_ptr(0));
+        if armed && cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
+            let slot = EP0_SETUP_REQUEST_SLOT;
+            if slot == usize::MAX || !udc_mut().start(0, slot) {
+                return false;
+            }
+        }
         EP0_SETUP_ARMED = armed;
         armed
+    }
+}
+
+/// Mirror XBL's bounded software request queue for the deferred EP0 setup.
+/// The UDC queue is deliberately separate from the DMA TRB: the event-driven
+/// A/B must preserve the queued -> in-flight ownership transition even though
+/// the early boot path uses a fixed setup buffer.
+unsafe fn queue_xbl_setup_request() -> bool {
+    unsafe {
+        if !cfg!(any(
+            fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
+            fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
+        )) {
+            return true;
+        }
+        if EP0_SETUP_REQUEST_SLOT != usize::MAX
+            && udc_mut().request(0, EP0_SETUP_REQUEST_SLOT).is_some()
+        {
+            return true;
+        }
+        EP0_SETUP_REQUEST_SLOT = usize::MAX;
+        let Some(slot) = udc_mut().queue(0, 8) else {
+            trace_event(TRACE_USB_DEVICE_ERROR, 0x58425155, 0, 0, 8, read(DSTS)); // "XBQU"
+            return false;
+        };
+        EP0_SETUP_REQUEST_SLOT = slot;
+        true
+    }
+}
+
+/// Retire the XBL-style setup request after its setup TRB completes. A stale
+/// slot is harmless after a reset because `queue_xbl_setup_request()` checks
+/// the UDC object before reusing it.
+unsafe fn complete_xbl_setup_request(error: bool) {
+    unsafe {
+        if !cfg!(any(
+            fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
+            fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
+        )) {
+            return;
+        }
+        let slot = EP0_SETUP_REQUEST_SLOT;
+        if slot != usize::MAX {
+            let _ = udc_mut().complete(0, slot, if error { 0 } else { 8 }, error);
+            let _ = udc_mut().release(0, slot);
+            EP0_SETUP_REQUEST_SLOT = usize::MAX;
+        }
     }
 }
 
@@ -2273,7 +2418,7 @@ unsafe fn try_arm_setup() -> bool {
         {
             return false;
         }
-        prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+        prepare_ep0_setup_trb();
         if start_transfer(0, ep0_trb_ptr(0)) {
             EP0_SETUP_ARMED = true;
             PENDING_SETUP_ARM = false;
@@ -2483,6 +2628,15 @@ unsafe fn restart_control_after_reset() {
                 }
             }
             write(DALEPENA, 0b11);
+            if cfg!(any(
+                fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
+                fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
+            )) {
+                // USB reset cleared the software request object; XBL posts
+                // its 8-byte EP0 OUT request again before waiting for the
+                // next CONTROL_DATA XferNotReady event.
+                let _ = queue_xbl_setup_request();
+            }
             // The host's bus reset is still in progress when this event is
             // processed, and the core rejects Start Transfer until the link
             // returns to ON. Use the non-punitive arm: a failure here just
@@ -2574,11 +2728,12 @@ unsafe fn start_status(endpoint: usize) -> bool {
         read(DSTS)
     });
     unsafe {
-        prepare_trb(0, ep0_trb_ptr(0).cast::<u8>(), 0, kind);
+        let trb_index = ep0_trb_index(endpoint);
+        prepare_trb(trb_index, ep0_trb_ptr(trb_index).cast::<u8>(), 0, kind);
         // Same flaky Start Transfer window as the data phase: retry the
         // command instead of failing the status stage (SET_ADDRESS and
         // SET_CONFIGURATION become visible only after this ZLP completes).
-        retry_start_transfer(endpoint, ep0_trb_ptr(0), 2500)
+        retry_start_transfer(endpoint, ep0_trb_ptr(trb_index), 2500)
     }
 }
 
@@ -2670,7 +2825,17 @@ unsafe fn handle_setup() {
             }
             let response = ep0_response_ptr();
             cache_clean(response as usize, length);
-            prepare_trb(0, response, length, TRB_CONTROL_DATA);
+            let data_trb_kind = if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_in_data) {
+                // Stock XBL's EP0 IN request builder emits a NORMAL TRB
+                // (TRBCTL=1), even though this is the control-transfer data
+                // phase. Keep this as a narrow A/B; setup and status remain
+                // on the ordinary control TRB path.
+                TRB_NORMAL
+            } else {
+                TRB_CONTROL_DATA
+            };
+            let trb_index = ep0_trb_index(1);
+            prepare_trb(trb_index, response, length, data_trb_kind);
             trace_event(
                 TRACE_DESCRIPTOR_QUEUED,
                 request as u32,
@@ -2688,7 +2853,7 @@ unsafe fn handle_setup() {
             // tokens while the data phase is pending and tolerates the NAKs,
             // so a bounded command retry answers the first read instead of
             // stalling the whole control transfer.
-            let mut queued = start_transfer(1, ep0_trb_ptr(0));
+            let mut queued = start_transfer(1, ep0_trb_ptr(trb_index));
             if !queued {
                 // A USB bus reset can invalidate the endpoint 1 transfer
                 // resource allocated at init, so the control data-phase Start
@@ -2696,7 +2861,7 @@ unsafe fn handle_setup() {
                 // once, then retry the command inside the host's own 5 s
                 // control timeout instead of stalling the transfer early.
                 let _ = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
-                queued = retry_start_transfer(1, ep0_trb_ptr(0), 2500);
+                queued = retry_start_transfer(1, ep0_trb_ptr(trb_index), 2500);
             }
             trace_event(
                 TRACE_DESCRIPTOR_QUEUED,
@@ -2918,6 +3083,12 @@ unsafe fn process_event(raw: u32) {
             // the poll-loop guard re-arms the SETUP TRB once EP0 returns to
             // the Setup state.
             EP0_SETUP_ARMED = false;
+            if EP0_STATE == Ep0State::Setup {
+                // EP0 XferComplete status 0x8 is the normal LST indication,
+                // not an error. The request carries the same successful
+                // setup completion in the XBL path.
+                complete_xbl_setup_request(false);
+            }
             // A freshly DMAed SETUP packet overrides any in-flight phase:
             // hosts abort stalled control transfers by sending a new SETUP,
             // and the completion event for the OLD transfer carries it.
@@ -3004,8 +3175,10 @@ unsafe fn process_event(raw: u32) {
         }
     } else if event == 3 {
         // XferNotReady: the core asks for the next phase's TRB. Record every
-        // event for the harvest gates (request=endpoint, value=status); act
-        // only on the STATUS ask while the state machine waits for it.
+        // event for the harvest gates (request=endpoint, value=status).
+        // Stock XBL has already started its initial EP0 setup request before
+        // Run/Stop; a CONTROL_DATA NRDY is therefore not a second initial
+        // STARTTRANSFER trigger.
         trace_event(TRACE_XFER_NOT_READY, endpoint as u32, status, 0, 0, raw);
         if status == 2 {
             unsafe {
@@ -3596,6 +3769,20 @@ pub fn init_usb2_handoff() -> bool {
         let _ = super::platform::bramble::apply_usb_performance(performance.vote);
         let _ = super::platform::bramble::usb_bus_vectors(performance.vote);
     }
+
+    // The reuse/fallback handoff is the only path whose EP0 STARTTRANSFER
+    // boundary has succeeded on physical Bramble. Try it first for the probe
+    // build; retain the direct path as a fallback if ownership setup fails.
+    #[cfg(all(
+        fullerene_aarch64_usb_gadget_handoff_probe,
+        not(fullerene_aarch64_usb_gadget_handoff_super_speed)
+    ))]
+    {
+        if init_usb2_gadget_handoff() {
+            return true;
+        }
+    }
+
     if init_with_super_speed(false, true, false) {
         return true;
     }
@@ -3834,7 +4021,11 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             (read_volatile(reg(GEVNTADRHI0)) as u64) << 32 | read_volatile(reg(GEVNTADRLO0)) as u64;
         if event_address == 0
             || event_address == u64::MAX
-            || event_address & 0xfff != 0
+            // DWC3 event buffers require 16-byte alignment. Stock Bramble
+            // XBL programs an address ending in 0x10, so requiring a page
+            // boundary would reject the firmware-owned buffer and silently
+            // force the caller into the non-reuse fallback path.
+            || event_address & 0xf != 0
             || event_address > usize::MAX as u64
         {
             log_puts("usb gadget handoff: Fastboot event DMA address invalid\n");
@@ -3940,7 +4131,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // steady state) plus the GUCTL1/GUCTL3/GSBUSCFG1 bits from
         // setup_global_control and __dwc3_gadget_start.
         configure_usb2_phy_interface();
-        apply_usb31_gadget_reference_deltas();
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_post_endpoint_global) {
+            apply_usb31_gadget_reference_deltas();
+        }
     }
     // An SS-only fastboot session never deasserted the femto PHY block
     // reset (GCC_QUSB2PHY_PRIM_BCR), which can leave the PHY core logic held
@@ -4059,19 +4252,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // SETTRANSFRESOURCE commands complete. Do not advertise EP0 before
         // the controller has accepted the corresponding resource state.
         write(DALEPENA, 0);
-        write(
-            DEVTEN,
-            DEVTEN_DISCONNECT
-                | DEVTEN_USB_RESET
-                | DEVTEN_CONNECT_DONE
-                | DEVTEN_LINK_STATUS_CHANGE
-                | DEVTEN_WAKEUP
-                | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND
-                | DEVTEN_ERRATIC_ERROR
-                | DEVTEN_CMD_COMPLETE
-                | DEVTEN_OVERFLOW,
-        );
         // DEPSTARTCFG(0) opens a new endpoint-resource allocation window.
         // SETEPCONFIG(INIT) then allocates one resource per EP0 direction.
         if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
@@ -4116,17 +4296,46 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         if stop_after_gadget_handoff_stage(9) {
             return false;
         }
+        // This path intentionally uses the config-only helper above so the
+        // Qualcomm sequence remains a single SETEPCONFIG ->
+        // SETTRANSFRESOURCE pair for EP0 OUT. The outer allocation is
+        // required here; unlike configure_endpoint(), the config-only helper
+        // does not allocate the transfer resource itself.
         if !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
-            && !cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
             && !send_ep_command(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)
         {
             log_puts("usb gadget handoff: USB2 EP0 OUT resource failed\n");
-            return gadget_handoff_fail(5); // EP0 config
+            return gadget_handoff_fail(5); // EP0 resource
         }
         if stop_after_gadget_handoff_stage(10) {
             return false;
         }
+        // XBL's DwcConfigureEP publishes the corresponding DALEPENA bit
+        // after each SETEPCONFIG -> SETTRANSFRESOURCE pair.
         write(DALEPENA, read(DALEPENA) | (1 << 0));
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0)]
+        {
+            // Stock XBL inserts the initial EP0 OUT request immediately after
+            // the OUT pair and before configuring the EP0 IN direction. Keep
+            // this as a separate ordering A/B; the explicit setup payload is
+            // retained because the earlier XBL zero/self-buffer tests did not
+            // attach on this handoff path.
+            if !queue_xbl_setup_request() {
+                log_puts("usb gadget handoff: XBL inter-pair request queue failed\n");
+                return gadget_handoff_fail(5);
+            }
+            prepare_ep0_setup_trb();
+            if !start_transfer(0, ep0_trb_ptr(0)) {
+                log_puts("usb gadget handoff: XBL inter-pair SETUP STARTTRANSFER failed\n");
+                return gadget_handoff_fail(12);
+            }
+            let slot = EP0_SETUP_REQUEST_SLOT;
+            if slot == usize::MAX || !udc_mut().start(0, slot) {
+                log_puts("usb gadget handoff: XBL inter-pair request start failed\n");
+                return gadget_handoff_fail(5);
+            }
+            EP0_SETUP_ARMED = true;
+        }
         // Stage 8 isolates the first SETEPCONFIG/SETTRANSFRESOURCE pair from
         // the corresponding EP0 IN pair. It is intentionally appended to the
         // original 1..7 sequence so existing stage numbers remain stable.
@@ -4137,15 +4346,69 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             log_puts("usb gadget handoff: USB2 EP0 configure failed\n");
             return gadget_handoff_fail(5); // EP0 config
         }
+        // XBL's DwcConfigureEP publishes the corresponding DALEPENA bit
+        // after each SETEPCONFIG -> SETTRANSFRESOURCE pair. Keep the two
+        // physical EP0 directions on the same per-direction boundary.
         write(DALEPENA, read(DALEPENA) | (1 << 1));
+        // Stock XBL writes exactly 0x47 here: Disconnect, USB Reset, Connect
+        // Done, and Suspend. Keep the narrower mask limited to the
+        // event-driven XBL differential; the generic path retains its
+        // broader lifecycle notifications.
+        let devten = if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
+            DEVTEN_DISCONNECT | DEVTEN_USB_RESET | DEVTEN_CONNECT_DONE | DEVTEN_SUSPEND
+        } else {
+            DEVTEN_DISCONNECT
+                | DEVTEN_USB_RESET
+                | DEVTEN_CONNECT_DONE
+                | DEVTEN_LINK_STATUS_CHANGE
+                | DEVTEN_WAKEUP
+                | DEVTEN_HIBERNATION_REQUEST
+                | DEVTEN_SUSPEND
+        };
+        write(DEVTEN, devten);
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_post_endpoint_global)]
+        {
+            // Stock XBL applies the usb31 global deltas only after both EP0
+            // SETEPCONFIG -> SETTRANSFRESOURCE pairs and after DEVTEN /
+            // DALEPENA publication. Keep this register-order differential
+            // isolated from the endpoint/request A/Bs.
+            apply_usb31_gadget_reference_deltas();
+        }
         ENDPOINTS_READY = true;
         let _ = udc_mut().configure_endpoint(0, 64, false);
         let _ = udc_mut().configure_endpoint(1, 64, false);
+        if cfg!(any(
+            fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
+            fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
+        )) {
+            // Stock XBL queues this request before Run/Stop, after both EP0
+            // directions have their transfer resources.
+            if !queue_xbl_setup_request() {
+                log_puts("usb gadget handoff: XBL EP0 request queue failed\n");
+                return gadget_handoff_fail(5);
+            }
+        }
         if stop_after_gadget_handoff_stage(5) {
             return false;
         }
-        trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, read(DSTS));
-        prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
+            trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, read(DSTS));
+            prepare_ep0_setup_trb();
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_stall_flush)]
+        {
+            // Keep the stall-flush differential effective when the proven
+            // Fastboot-reuse handoff is selected as the primary path too.
+            let _ = send_ep_command(0, DEPCMD_SETSTALL, 0, 0, 0);
+            trace_event(
+                TRACE_SETUP_QUEUED,
+                0x5354_4C46, // "STLF"
+                0,
+                0,
+                0,
+                read(DSTS),
+            );
+        }
         // Stage 11 isolates the cache-cleaned SETUP buffer/TRB publication
         // from the DWC3 STARTTRANSFER command itself. The old stage 6
         // combined both operations, so a failure there could not tell us
@@ -4163,7 +4426,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             fullerene_aarch64_usb_gadget_handoff_start_after_reset,
             fullerene_aarch64_usb_gadget_handoff_start_at_connect_done
         ));
-        if defer_initial_setup {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
+            // The inter-pair XBL differential armed the setup TRB above.
+        } else if defer_initial_setup {
             PENDING_SETUP_ARM = true;
         } else if !start_transfer(0, ep0_trb_ptr(0)) {
             log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
@@ -4172,7 +4437,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // Record the armed SETUP TRB so the USB-reset handler takes the
         // Linux-equivalent keep-the-TRB path instead of tearing it down and
         // racing the host's first post-reset SETUP token.
-        EP0_SETUP_ARMED = !defer_initial_setup;
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
+            EP0_SETUP_ARMED = !defer_initial_setup;
+        }
         if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
             enable_gadget_controller_irq();
         }
@@ -5071,7 +5338,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 | DEVTEN_OVERFLOW,
         );
         trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, read(DSTS));
-        prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+        prepare_ep0_setup_trb();
 
         #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_stall_flush)]
         {
@@ -5290,7 +5557,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             // normal flow starts from the same state as a non-probe run.
             poll_ep0_event_ring();
             EVENT_OFFSET = 0;
-            prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+            prepare_ep0_setup_trb();
         }
 
         // Linux arms the initial EP0 OUT SETUP transfer before Run/Stop. Keep
@@ -5590,7 +5857,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // arming in this window guarantees the first descriptor read is
         // answered instead of timing out (-110) while the poll-loop guard
         // was still waiting for the link state.
-        {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
             let arm_deadline =
                 arch_counter().saturating_add(arch_counter_frequency().saturating_mul(100) / 1000);
             let mut armed = false;
@@ -5625,6 +5892,18 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             if armed && option_env!("FULLERENE_USB_ARM_BLIP") == Some("1") {
                 sdisc_blips(1);
             }
+        } else {
+            // XBL waits for XferNotReady(CONTROL_DATA) and starts EP0 from
+            // that event path; do not let this tight window turn the A/B back
+            // into an eager/poll-loop arm.
+            trace_event(
+                TRACE_SETUP_QUEUED,
+                0x58424C44, // "XBLD": deferred until XferNotReady
+                0,
+                0,
+                8,
+                read(DSTS),
+            );
         }
 
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
@@ -5645,7 +5924,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 super::timer::delay_ms(1);
             }
             let started = if link_ready {
-                prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+                prepare_ep0_setup_trb();
                 start_transfer(0, ep0_trb_ptr(0))
             } else {
                 false
@@ -5695,7 +5974,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             }
             EP0_SETUP_ARMED = false;
             EVENT_OFFSET = 0;
-            prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+            prepare_ep0_setup_trb();
         }
 
         // C5: Run/Stop active and the tight SETUP-arm window is done.
@@ -6300,6 +6579,16 @@ pub fn u0_arm_status_probe() -> u32 {
     unsafe { U0_ARM_STATUS }
 }
 
+/// Return the newest retained EP1 STARTTRANSFER command word. The value is
+/// the completed DEPCMD register with the controller's status nibble intact;
+/// `0xFFFF_FFFF` means that no EP1 command was captured in this boot's trace.
+pub fn ep1_start_status_probe() -> u32 {
+    unsafe {
+        harvest_trace_outcome();
+        TRACE_HARVEST_EP1
+    }
+}
+
 pub fn armalive_probe() -> u32 {
     unsafe {
         let mut state = 0u32;
@@ -6357,6 +6646,24 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             "ep1-none" => TRACE_HARVEST_EP1 == 0xFFFF_FFFF,
             "ep1-done" => TRACE_HARVEST_EP1 != 0xFFFF_FFFF && (TRACE_HARVEST_EP1 & 0x1_1000) == 0,
             "ep1-nores" => TRACE_HARVEST_EP1 == 0x1000,
+            // The DEPCMD status is bits 15:12. Ignore CMDIOC and any other
+            // non-status completion bits: a zero status nibble is a command
+            // success even when the raw register is not exactly zero.
+            "ep1-status-success" => {
+                TRACE_HARVEST_EP1 != 0xFFFF_FFFF && (TRACE_HARVEST_EP1 & 0xf000) == 0
+            }
+            "ep1-status-nores" => {
+                TRACE_HARVEST_EP1 != 0xFFFF_FFFF && (TRACE_HARVEST_EP1 & 0xf000) == 0x1000
+            }
+            "ep1-status-bus-expiry" => {
+                TRACE_HARVEST_EP1 != 0xFFFF_FFFF && (TRACE_HARVEST_EP1 & 0xf000) == 0x2000
+            }
+            "ep1-status-other" => {
+                TRACE_HARVEST_EP1 != 0xFFFF_FFFF
+                    && (TRACE_HARVEST_EP1 & 0xf000) != 0
+                    && (TRACE_HARVEST_EP1 & 0xf000) != 0x1000
+                    && (TRACE_HARVEST_EP1 & 0xf000) != 0x2000
+            }
             // Final data-phase arm outcome after the bounded retry ("DARM").
             "darm" => TRACE_HARVEST_DARM == 0x1_0001,
             "darm-fail" => TRACE_HARVEST_DARM == 0x1_0000,
@@ -6796,7 +7103,7 @@ pub fn u0_arm_recovery() -> u32 {
         );
         // Prepare the EP0 OUT SETUP TRB now. The STARTTRANSFER decision is
         // bramble-specific: see the start-after-connect note below.
-        prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+        prepare_ep0_setup_trb();
         // Bramble's normal start-after-connect path deliberately does NOT
         // issue STARTTRANSFER before Run/Stop: a pre-link-ON command can
         // wedge this core's endpoint command engine even when Run/Stop still

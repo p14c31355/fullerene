@@ -68,10 +68,22 @@ pub(super) unsafe fn enable_usb2_gadget_susphy() {
 
 #[inline]
 pub(super) fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
-    // Lito's DWC3 node supplies snps,hird-threshold = 0x10.  A Fastboot
-    // handoff can inherit a different value, so restore the platform value
-    // at every device Run/Stop transition.
-    dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_LITO;
+    // Stock Bramble XBL's DwcCoreInit writes APPL1RES and HIRD_THRES=7 after
+    // endpoint setup. Keep that exact device-mode state through the probe's
+    // Run/Stop transition; the generic Lito DT value remains the default for
+    // non-probe paths.
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    {
+        dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_XBL;
+        dctl |= DCTL_APPL1RES;
+    }
+    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
+    {
+        // Lito's DWC3 node supplies snps,hird-threshold = 0x10. A Fastboot
+        // handoff can inherit a different value, so restore the platform
+        // value at every device Run/Stop transition.
+        dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_LITO;
+    }
     dctl &= !DCTL_TRGTULST_MASK;
     if (snpsid & 0xffff_0000) == 0x5533_0000 {
         if snpsid <= DWC3_REVISION_187A {

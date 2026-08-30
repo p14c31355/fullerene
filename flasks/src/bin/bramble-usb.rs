@@ -123,6 +123,37 @@ struct LoopArgs {
     /// Arm EP0 STARTTRANSFER immediately after Run/Stop (Bramble A/B).
     #[arg(long)]
     start_after_connect: bool,
+    /// Mirror stock XBL: arm the initial EP0 SETUP transfer only after the
+    /// controller emits XferNotReady(CONTROL_DATA).
+    #[arg(long)]
+    xbl_deferred_setup: bool,
+    /// Use XBL's NORMAL TRBCTL=1 for EP0 IN data responses only.
+    #[arg(long)]
+    xbl_ep0_in_data: bool,
+    /// Place only the EP0 event ring at XBL's observed 0x0a6fc010 address.
+    #[arg(long)]
+    xbl_event_dma: bool,
+    /// Match stock XBL's EP0 SETEPCONFIG notification mask (P1=0x300).
+    #[arg(long)]
+    xbl_ep0_config: bool,
+    /// Mirror XBL's initial EP0 request insertion between OUT and IN setup.
+    #[arg(long)]
+    xbl_between_ep0: bool,
+    /// Apply XBL's usb31 global deltas after the EP0 endpoint pairs (A/B).
+    #[arg(long)]
+    xbl_post_endpoint_global: bool,
+    /// Use XBL's fixed initial EP0 setup buffer and TRB addresses (A/B).
+    #[arg(long)]
+    xbl_stock_ep0_dma: bool,
+    /// Change only DCTL.RUN_STOP at the final XBL handoff boundary (A/B).
+    #[arg(long)]
+    xbl_raw_runstop: bool,
+    /// Use XBL's separate EP0 OUT/IN TRB slots for direction-specific transfers (A/B).
+    #[arg(long)]
+    xbl_direction_trb: bool,
+    /// Add XBL's chained-transfer bit to EP0 TRBs (A/B).
+    #[arg(long)]
+    xbl_trb_chain: bool,
     /// Retry EP0 STARTTRANSFER after Run/Stop without reading DSTS.USBLNKST.
     #[arg(long)]
     start_ungated: bool,
@@ -319,6 +350,16 @@ impl Default for LoopArgs {
             no_transfer_resource: false,
             android_resource_order: false,
             start_after_connect: false,
+            xbl_deferred_setup: false,
+            xbl_ep0_in_data: false,
+            xbl_event_dma: false,
+            xbl_ep0_config: false,
+            xbl_between_ep0: false,
+            xbl_post_endpoint_global: false,
+            xbl_stock_ep0_dma: false,
+            xbl_raw_runstop: false,
+            xbl_direction_trb: false,
+            xbl_trb_chain: false,
             start_ungated: false,
             event_ring_at_runstop: false,
             gadget_restart_at_runstop: false,
@@ -724,6 +765,66 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--start-after-connect requires --direct-handoff",
         ));
     }
+    if args.xbl_deferred_setup && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-deferred-setup requires --direct-handoff",
+        ));
+    }
+    if args.xbl_ep0_in_data && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-ep0-in-data requires --direct-handoff",
+        ));
+    }
+    if args.xbl_event_dma && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-event-dma requires --direct-handoff",
+        ));
+    }
+    if args.xbl_ep0_config && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-ep0-config requires --direct-handoff",
+        ));
+    }
+    if args.xbl_between_ep0 && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-between-ep0 requires --direct-handoff",
+        ));
+    }
+    if args.xbl_post_endpoint_global && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-post-endpoint-global requires --direct-handoff",
+        ));
+    }
+    if args.xbl_stock_ep0_dma && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-stock-ep0-dma requires --direct-handoff",
+        ));
+    }
+    if args.xbl_raw_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-raw-runstop requires --direct-handoff",
+        ));
+    }
+    if args.xbl_direction_trb && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-direction-trb requires --direct-handoff",
+        ));
+    }
+    if args.xbl_trb_chain && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-trb-chain requires --direct-handoff",
+        ));
+    }
     if args.start_ungated && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -993,6 +1094,37 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "the EP0 timing differentials are mutually exclusive",
+        ));
+    }
+    if args.xbl_deferred_setup
+        && (args.start_after_connect || args.start_after_reset || args.start_at_connect_done)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-deferred-setup is mutually exclusive with the EP0 timing differentials",
+        ));
+    }
+    if args.xbl_ep0_in_data && args.xbl_deferred_setup {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-ep0-in-data is mutually exclusive with --xbl-deferred-setup",
+        ));
+    }
+    if args.xbl_between_ep0
+        && (args.xbl_deferred_setup
+            || args.start_after_connect
+            || args.start_after_reset
+            || args.start_at_connect_done)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-between-ep0 is mutually exclusive with deferred or post-link EP0 arming",
+        ));
+    }
+    if args.xbl_post_endpoint_global && args.xbl_deferred_setup {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-post-endpoint-global is mutually exclusive with --xbl-deferred-setup",
         ));
     }
     if args.pullup_only && (args.no_smmu || args.no_core_reset || args.irq_route.is_some()) {
@@ -1387,6 +1519,36 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.start_after_connect {
         arguments.push("--usb-gadget-handoff-start-after-connect".to_owned());
+    }
+    if args.xbl_deferred_setup {
+        arguments.push("--usb-gadget-handoff-xbl-deferred-setup".to_owned());
+    }
+    if args.xbl_ep0_in_data {
+        arguments.push("--usb-gadget-handoff-xbl-ep0-in-data".to_owned());
+    }
+    if args.xbl_event_dma {
+        arguments.push("--usb-gadget-handoff-xbl-event-dma".to_owned());
+    }
+    if args.xbl_ep0_config {
+        arguments.push("--usb-gadget-handoff-xbl-ep0-config".to_owned());
+    }
+    if args.xbl_between_ep0 {
+        arguments.push("--usb-gadget-handoff-xbl-between-ep0".to_owned());
+    }
+    if args.xbl_post_endpoint_global {
+        arguments.push("--usb-gadget-handoff-xbl-post-endpoint-global".to_owned());
+    }
+    if args.xbl_stock_ep0_dma {
+        arguments.push("--usb-gadget-handoff-xbl-stock-ep0-dma".to_owned());
+    }
+    if args.xbl_raw_runstop {
+        arguments.push("--usb-gadget-handoff-xbl-raw-runstop".to_owned());
+    }
+    if args.xbl_direction_trb {
+        arguments.push("--usb-gadget-handoff-xbl-direction-trb".to_owned());
+    }
+    if args.xbl_trb_chain {
+        arguments.push("--usb-gadget-handoff-xbl-trb-chain".to_owned());
     }
     if args.start_ungated {
         arguments.push("--usb-gadget-handoff-start-ungated".to_owned());

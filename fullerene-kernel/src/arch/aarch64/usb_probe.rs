@@ -630,6 +630,23 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool) -> ! {
         }
         park_without_recovery_timer();
     }
+    // ep1status publishes the retained EP1 STARTTRANSFER status nibble through
+    // the existing APSS-WDT timing readout. This is a readout only: it does
+    // not reissue or reconfigure the EP1 command, so it cannot turn a
+    // diagnostic result into enumeration. A secure-owned WDT falls back to
+    // the normal secure-watchdog return bucket, which is itself the negative
+    // result for this channel.
+    if cmd_gate_is("ep1status") {
+        let raw = usb::ep1_start_status_probe();
+        let delay = if raw == 0xFFFF_FFFF {
+            6
+        } else {
+            (((raw >> 12) & 0xf) + 1).min(6)
+        };
+        trace_gate(0x4550_3153 | ((raw & 0xf000) >> 4)); // "EP1S" + status nibble
+        usb::u0_arm_wdt_bite(delay);
+        park_without_recovery_timer();
+    }
     // lnkalive: states {8,9,11,14,15} mean reset/resume is stuck; states {4,5,6,7,10} mean the QSCRATCH
     // link-down phantom. Bite early for the former.
     if cmd_gate_is("lnkalive") {

@@ -2644,6 +2644,1326 @@ remain the source of truth for detailed run logs and A/B results.
 - Before acting on a stale objective, re-read the fifth and sixth sessions
   above. Several event-DMA and SWDD differentials were already completed.
 
+### Current session: standard direct-handoff baseline (2026-08-30)
+
+The documented standard loop was run against the connected Bramble serial
+`26191JECB00076` using only `adb reboot bootloader` for preparation and
+`fastboot boot` for the generated image:
+
+```bash
+env -u FULLERENE_AARCH64_USB_SIGNAL_DMA_POST_RUNSTOP \
+cargo run -q -p flasks --bin bramble-usb -- loop \
+  --direct-handoff --no-smmu --start-after-connect \
+  --signal-probe --u0-arm-probe --smmu-disable --skip-typec-spmi \
+  --observe-secs 1 --enum-timeout 20 --hold 1 --fastboot-wait 30
+```
+
+Preflight, AArch64 probe build, Android v3 boot-image audit, and
+`fastboot boot` all passed. Run directory:
+`tmp/fullerene-bramble-loop.482353.0`.
+
+The host observed the expected Fullerene USB2 attach, but no device identity:
+
+```text
+usb 1-9: new high-speed USB device number 14 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+`boot-reason.txt` was `watchdog`; the handset returned to stock Android after
+about 38 seconds. No `New USB device found, idVendor=1234` or `1234:0001`
+line appeared. This is a failed baseline, not Fullerene enumeration. The
+current working tree was clean before the run and no partition write or erase
+was used.
+
+The first follow-up A/B added `--ep0-txfifo-fix`, intended to raise a degenerate
+EP0 IN `GTXFIFOSIZ(0)` depth to 32 before Run/Stop. Run directory:
+`tmp/fullerene-bramble-loop.485760.0`. It produced the same HS attach,
+`device descriptor read/64, error -110`, and Android fallback after about 38
+seconds. Its artifact SHA-256 was identical to the baseline
+(`b3eec7bfde2563a289e452a25b325032f8c3755d9cbe52090a40bc89a042d524`), so
+source inspection found that the harness/Flasks option was not wired into
+`fullerene-kernel/build.rs`; this run is recorded as an invalid/inert A/B, not
+evidence that the FIFO change is ineffective.
+
+After correcting the inert-option finding, the first effective build attempt
+(`tmp/fullerene-bramble-loop.490228.0`) stopped before `fastboot boot` because
+the new kernel cfg path referenced `GTXFIFOSIZ0` without defining the DWC3
+global TX-FIFO register offset (`E0425`). No physical A/B result was produced
+by that attempt. The offset definition was added at `0xc300`; the next step is
+to rebuild and rerun the same single-differential FIFO test.
+
+With the cfg and register definition fixed, the effective FIFO A/B completed
+as `tmp/fullerene-bramble-loop.491547.0`. The artifact changed to SHA-256
+`c3f3f6ffc88d904584d628576f82f84cde319bd8658c6a3ed07dc087b659a74d`, and the
+boot image was accepted. The host still observed only:
+
+```text
+usb 1-9: new high-speed USB device number 16 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The handset returned to Android with `bootreason=watchdog` after about 38
+seconds. No `1234:0001` appeared, so raising the EP0 IN FIFO is not sufficient
+to cross the descriptor boundary. The next independent candidate from the
+latest commit is the 8-byte short-first-device-descriptor response.
+
+The short-packet A/B then ran as `tmp/fullerene-bramble-loop.494146.0` using
+`--ep0-short-first-desc` without the FIFO option. The artifact SHA-256 was
+`c33abc26161959eb2ae347da8107c649f91fc5843117e0a362be1f95e0c1d886`, and
+`fastboot boot` was accepted. The host still reported an HS attach followed by
+`device descriptor read/64, error -110`; it later saw only Android fallback
+`18d1:4ee7`, with `bootreason=watchdog` after about 39 seconds. The device
+never appeared as `1234:0001`. Capping the first descriptor at 8 bytes is
+therefore not sufficient; the missing response is earlier than packet length.
+
+The existing `diag` rescue path was then exercised with the same direct-handoff
+options and `--signal-cmd-gate diag` (`tmp/fullerene-bramble-loop.501829.0`).
+The build and `fastboot boot` were accepted, but the mid-window EP0 rebuild did
+not change the host result:
+
+```text
+usb 1-9: new high-speed USB device number 18 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7
+```
+
+The handset returned through Android with `bootreason=watchdog` after about
+38 seconds and no `1234:0001` identity. Re-running the full EP0 tail while the
+host was retrying the descriptor is therefore not sufficient; the next
+diagnostic must identify whether the first SETUP or the EP0 IN data transfer
+ever reaches the controller.
+
+The SETUP-gated variant was then exercised with the same direct-handoff options
+and `--signal-cmd-gate setup` (`tmp/fullerene-bramble-loop.504984.0`). The
+artifact SHA-256 was
+`481195ed8add509d88ceb286b6c075217827140d3cd14f2cf1933ec03785be86`, and
+`fastboot boot` was accepted. The host result remained:
+
+```text
+usb 1-9: new high-speed USB device number 19 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The handset returned to Android with `bootreason=watchdog` after about
+38 seconds. No host-visible gate result or `1234:0001` identity was produced,
+so this run does not distinguish an unreached SETUP gate from a false gate;
+it leaves the same descriptor-timeout boundary. The documented next step is
+to make the previously working fallback handoff the primary path and retest
+the complete enumeration flow.
+
+Before the next physical run, `init_usb2_handoff()` was changed so the probe
+build tries the existing Fastboot-reuse/gadget handoff first, then retains the
+direct handoff as a fallback if ownership setup fails. This is a single
+ordering change based on the earlier successful EP0 `STARTTRANSFER` boundary;
+no flash, erase, or partition write is involved.
+
+The fallback-primary run completed as
+`tmp/fullerene-bramble-loop.513912.0`. The artifact SHA-256 was
+`3fefc1465dd9d6fdb27bf121fb381f6f12ad44d07e3f60543ff6470b58663d5f`, and
+`fastboot boot` was accepted. The host observed the same incomplete Fullerene
+HS attach and descriptor timeout:
+
+```text
+usb 1-9: new high-speed USB device number 20 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 99 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The handset returned to Android with `bootreason=watchdog` after 38 seconds;
+the run never produced `New USB device found, idVendor=1234` or `1234:0001`.
+Making the fallback primary did not cross the descriptor boundary, so the
+next change must target the remaining EP0 IN response path rather than handoff
+ordering.
+
+The existing `--ep0-stall-flush` differential was then extended to the
+Fastboot-reuse primary path. Previously its `SETSTALL` command existed only in
+the direct initializer, so it was bypassed after the fallback-primary reorder;
+the change is limited to the optional pre-`STARTTRANSFER` flush and does not
+alter the default path.
+
+The fallback-primary `--ep0-stall-flush` A/B completed as
+`tmp/fullerene-bramble-loop.519930.0`. The artifact SHA-256 was
+`721dffbb816ac9a739e99044648a0f8d94dd20c4431f4546704b2d7a6a1d3cbc`, and
+`fastboot boot` was accepted. The host still reported:
+
+```text
+usb 1-9: new high-speed USB device number 21 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 101 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The handset returned with `bootreason=watchdog`; no `1234:0001` identity was
+observed. The optional EP0 stall flush is therefore insufficient at the
+current boundary.
+
+The next A/B is the existing `--reuse-fastboot-dma` differential: reuse the
+Fastboot event-ring DMA page for the Fullerene EP0 event ring, SETUP/TRB, and
+response objects. This changes only the DMA address/mapping source and is
+intended to test whether the linker DMA window is the remaining EP0 IN
+boundary.
+
+The reuse-DMA A/B completed as `tmp/fullerene-bramble-loop.525949.0`. The
+artifact SHA-256 was
+`05f05c697cce94dba08124e11cc0a6ca050c90733c052234d5d8a318435fe5a8`, and
+`fastboot boot` was accepted. The host still timed out on the Fullerene
+descriptor, then recovered to Android (with one Android reconnect retry):
+
+```text
+usb 1-9: new high-speed USB device number 22 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+usb 2-1: USB disconnect, device number 103
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+`bootreason.txt` was `watchdog`; no `1234:0001` identity appeared. Reusing
+the Fastboot DMA page is therefore not sufficient.
+
+The next A/B enables `--start-ungated`, removing only the `DSTS.USBLNKST ==
+U0` prerequisite from the deferred SETUP-arm retry. This tests whether the
+controller accepts the EP0 OUT transfer during the short host reset/U0 timing
+window; the halt check and all other handoff safeguards remain active.
+
+The start-ungated A/B completed as `tmp/fullerene-bramble-loop.528555.0`.
+The artifact SHA-256 was
+`d4bd3c443c956b232876dbfbf67889f3166429899103d52d8a58fe24e881d431`, and
+`fastboot boot` was accepted. The host again timed out on the Fullerene
+high-speed descriptor and then saw the normal Android SuperSpeed device:
+
+```text
+usb 1-9: new high-speed USB device number 23 using xhci_hcd
+usb 1-9: device descriptor read/64, error -110
+usb 2-1: new SuperSpeed USB device number 106 using xhci_hcd
+usb 2-1: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 4.40
+```
+
+The handset returned with `bootreason=watchdog`; no `1234:0001` identity or
+host-visible gate result appeared. Removing the link-state prerequisite did
+not move the boundary. Following the working ABL/EDK2 implementation is now
+the next diagnostic step, before another speculative EP0 A/B: inspect its
+DWC3 device-mode initialization, endpoint context/resource setup, TRB/event
+ring placement, PHY/clock programming, and Run/Stop ordering against the
+Fullerene handoff. This source audit does not authorize flashing or erasing
+the handset.
+
+### ABL/XBL and Qualcomm USB function-driver source audit (2026-08-30)
+
+The stock Bramble factory bootloader FBPK was read and unpacked locally without
+writing to the handset. Its `abl` entry is an ARM32 ELF image, but it contains
+no useful DWC3/USB diagnostic strings. The adjacent `xbl` entry is an AArch64
+ELF image and does contain the USB implementation boundary, including
+`usb_shared_hs_phy_init`, `usb_shared_ss_phy_init`, `endxfer EP0 OUT`,
+`endxfer EP0 IN`, `ep_cmd_write failed`, and `recover ctrl state machine`.
+The XBL memory map strings identify the primary USB controller region at
+`0x0A600000` (`USB30_PRIM`), consistent with the Bramble platform mapping used
+by Fullerene. The USB device-mode implementation is therefore in XBL and its
+linked driver path, not in the small ABL payload alone.
+
+Qualcomm's complete ABL/XBL USB source is not publicly present in the checked
+out repositories. As the closest source-level comparison, the public
+`edk2-msm-binary` repository was inspected for its Qualcomm
+`UsbfnDwc3Dxe.efi` driver; the SM7150 and SDM845 binaries retain the original
+source-file and function names. The SM7150 disassembly shows this concrete
+initialization sequence:
+
+1. `UsbfnDwcInitXferRsc` records the DWC3 core base and allocates/clears the
+   software transfer-resource tables.
+2. Core registers are initialized, including the global TX FIFO registers
+   beginning at `0xc300` and the endpoint-command/event configuration.
+3. `DEPSTARTCFG` is issued and its endpoint-command completion is polled.
+4. For each configured direction, `SETEPCONFIG` is issued and polled, then
+   `SETTRANSFRESOURCE` is issued and polled. In the driver diagnostics this
+   second operation is named `SetEPXferRscConfigCmd`; it is not a separate
+   undocumented command beyond the standard DWC3 endpoint command.
+5. Only after the command pair retires does the driver allocate the endpoint
+   transfer/TRB software state and continue toward the control state machine.
+
+This comparison narrows the current Fullerene issue: the required command
+pair already exists in Fullerene, but its exact Qualcomm parameter construction,
+all-endpoint initialization scope, and ordering against the reused Fastboot
+state still need to be made byte-for-byte comparable. The next code change will
+be based on that sequence and will be recorded with its build hash and host
+journal result before proceeding to another hardware run. No flash, erase, or
+partition write was performed.
+
+The initial source-derived hypothesis about a duplicate EP0 OUT
+`SETTRANSFRESOURCE` was corrected before any physical test. The Fastboot-reuse
+path calls `configure_endpoint_config` (config-only) for EP0 OUT, so its outer
+`SETTRANSFRESOURCE` is required; only `configure_endpoint` performs the paired
+allocation automatically. The mistaken deletion was reverted and no hardware
+run used it. The next physical run will use the restored Qualcomm-like pair,
+with the same non-destructive harness and the exact `idVendor=1234` journal
+criterion.
+
+### EP0 resource-pair correction run after ABL/XBL source audit (2026-08-30)
+
+Before this run, the source-audit hypothesis about a duplicate EP0 OUT
+`SETTRANSFRESOURCE` was corrected. The Fastboot-reuse path uses
+`configure_endpoint_config` (config-only), so the outer EP0 OUT resource
+command was restored; the mistaken deletion was not used on hardware.
+
+- Harness output: `tmp/fullerene-bramble-loop.564030.0`
+- Boot artifact SHA-256: `3fefc1465dd9d6fdb27bf121fb381f6f12ad44d07e3f60543ff6470b58663d5f`
+- `fastboot boot` was accepted (`OKAY`) for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `idVendor=18d1, idProduct=4ee0` appeared, then
+  disconnected; the USB2 attempt reached `device descriptor read/64, error
+  -110`; no `idVendor=1234` line appeared.
+- Recovery: the handset returned through Android at 37 s and enumerated as
+  `idVendor=18d1, idProduct=4ee7` (`Pixel 4a (5G)`, serial
+  `26191JECB00076`). `boot-reason.txt` was `watchdog`.
+
+Conclusion: restoring the Qualcomm-like EP0 OUT command pair did not change
+the physical outcome. This is another non-success result; `1234` remains the
+only success criterion. No flash, erase, or partition write was performed.
+
+### XBL endpoint-enable ordering differential (2026-08-30)
+
+The stock Bramble XBL was then disassembled far enough to inspect the actual
+EP0 initialization, rather than relying only on the public Linux/EDK2
+comparison. Its endpoint setup calls issue `DEPSTARTCFG`, then the EP0 OUT
+`SETEPCONFIG`/`SETTRANSFRESOURCE` pair, then the EP0 IN pair. The
+`DwcConfigureEP` helper writes the corresponding `DALEPENA` bit after each
+direction's command pair; the surrounding init code may also write the final
+combined state.
+
+At the time of this differential, Fullerene's Fastboot-reuse path was
+enabling EP0 OUT immediately after its resource command and EP0 IN after the
+second pair. The planned differential moved this to one
+`DALEPENA |= 0b11` after both pairs. The test used the same `fastboot boot`-only
+harness and the exact host-journal `idVendor=1234` criterion. No flash, erase,
+or partition write was authorized or required.
+
+### XBL endpoint-enable ordering run (2026-08-30)
+
+The XBL-derived endpoint-enable ordering differential was built and booted.
+Fullerene now leaves `DALEPENA` clear while the EP0 OUT and EP0 IN
+`SETEPCONFIG`/`SETTRANSFRESOURCE` pairs retire, then enables both directions
+with one `DALEPENA |= 0b11`.
+
+- Harness output: `tmp/fullerene-bramble-loop.573633.0`
+- Boot artifact SHA-256: `80757ec7248184dc919cb4d8994065369ab29ceed13ebf726481fa280311324e`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected; Fullerene reached the same
+  USB2 high-speed attach and `device descriptor read/64, error -110`; no
+  `New USB device found, idVendor=1234` line appeared.
+- Recovery: Android `18d1:4ee7` returned at 38 s; `boot-reason.txt` was
+  `watchdog`.
+
+Conclusion: the tested combined endpoint-enable ordering did not cross the
+descriptor boundary. `1234` remains unobserved, so this is another
+non-success result. No flash, erase, or partition write was performed.
+
+### XBL DALEPENA interpretation correction before next run (2026-08-30)
+
+On re-reading the XBL disassembly after the failed run, the prior differential
+description was corrected. At `DwcConfigureEP`'s ep-command completion path,
+XBL computes the physical endpoint as `(logical_ep << 1) + direction` and sets
+that single bit in `DALEPENA` immediately after the corresponding
+`SETEPCONFIG`/`SETTRANSFRESOURCE` pair. Therefore the source-derived behavior
+is the original per-direction Fullerene sequence, not only one final
+`DALEPENA |= 0b11` write. Fullerene was restored to that sequence before the
+next physical test; no hardware run uses the corrected code yet.
+
+This correction invalidates the endpoint-enable ordering hypothesis, but the
+`.573633.0` result remains a valid failed record of the combined-write test.
+The next candidate will be selected from the remaining XBL-vs-Fullerene
+initialization differences, with the same non-destructive harness and exact
+`idVendor=1234` success criterion.
+
+### XBL post-endpoint device-state differential before next run (2026-08-30)
+
+The next source-derived comparison is the post-endpoint device-state block in
+the stock Bramble XBL disassembly. Immediately after the two EP0
+`SETEPCONFIG`/`SETTRANSFRESOURCE` pairs, XBL writes `DEVTEN=0x47` (disconnect,
+reset, connect-done, link-state, wakeup, hibernation, and suspend events),
+then sets `DCTL.APPL1RES` and `DCTL.HIRD_THRES=7` before its later device
+Run/Stop transition. Fullerene had enabled the additional command/error event
+bits before `DEPSTARTCFG` and changed HIRD to the Lito DT value `0x10` at
+Run/Stop; that is not the XBL state observed in the stock image.
+
+The probe path was changed to match those XBL values and timing. This is a
+source-derived device-state differential, not a claim of success: the next
+physical run must still produce the host journal line
+`New USB device found, idVendor=1234` (implemented as `1234:0001`). The run
+will use only `fastboot boot`; no flash, erase, or partition write is involved.
+
+### XBL post-endpoint device-state differential run (2026-08-30)
+
+The XBL-derived `DEVTEN` timing and `DCTL` state differential was built and
+booted using the documented direct-handoff loop.
+
+- Harness output: `tmp/fullerene-bramble-loop.586935.0`
+- Boot artifact SHA-256: `7e69e38bd1b805ebce5ca527ba8c74e3a891ce5cf9f20bf60873ff75fdcf31c0`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected; Fullerene reached the same
+  USB2 high-speed attach and `device descriptor read/64, error -110`; no
+  `New USB device found, idVendor=1234` line appeared.
+- Recovery: Android `18d1:4ee7` returned after 38 s; `boot-reason.txt` was
+  `watchdog`.
+
+Conclusion: matching the XBL post-endpoint `DEVTEN=0x47` timing and
+`DCTL.APPL1RES`/`HIRD_THRES=7` state did not cross the descriptor boundary.
+`1234` remains unobserved. No flash, erase, or partition write was performed.
+
+### XBL event-ring size differential before next run (2026-08-30)
+
+The XBL disassembly also gives a concrete event-ring size: its core-init path
+writes `GEVNTSIZ0` with `0xf0` after publishing the event address, while the
+current Fullerene probe used a 4 KiB ring (and the earlier Fastboot-DMA A/B
+used `0x100`). The backing allocation remains larger for safety, but the
+probe's programmed ring length is now `0xf0`, matching XBL. The preceding XBL
+device-state match is retained as the common source-derived baseline.
+
+The next physical run will use the same non-destructive `fastboot boot` loop
+and requires the exact host-journal `idVendor=1234` criterion. No flash, erase,
+or partition write is involved.
+
+### XBL event-ring size differential run (2026-08-30)
+
+The probe was rebuilt with the XBL-observed `GEVNTSIZ0=0xf0` for its EP0
+event ring and booted through the standard direct-handoff loop.
+
+- Harness output: `tmp/fullerene-bramble-loop.591086.0`
+- Boot artifact SHA-256: `9bb15b881b113f4653a940d9e71ee987acb17a748c8c535d0f40fba4545b7a8f`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected; Fullerene again reached
+  USB2 high-speed attach and `device descriptor read/64, error -110`; no
+  `New USB device found, idVendor=1234` line appeared.
+- Recovery: Android `18d1:4ee7` returned after 38 s; `boot-reason.txt` was
+  `watchdog`.
+
+Conclusion: the XBL event-ring length did not cross the descriptor boundary.
+`1234` remains unobserved. No flash, erase, or partition write was performed.
+
+### XBL event-DMA alignment correction before next run (2026-08-30)
+
+The stock XBL disassembly shows `GEVNTADRLO0` receiving an address ending in
+`0x10` (the decoded value is `0x0a6fc010`), which is 16-byte aligned but not
+4 KiB aligned. DWC3's event-buffer alignment requirement is 16 bytes. The
+Fastboot-DMA reuse path incorrectly rejected every such address with a 4 KiB
+mask, so the earlier reuse-DMA run could fall back before testing the captured
+firmware buffer. The validation was corrected to require only 16-byte
+alignment. No physical run uses this correction yet.
+
+The next run will explicitly use `--reuse-fastboot-dma --no-smmu` so the
+captured Fastboot event-DMA address is exercised, with the XBL-derived event
+size and device-state settings retained. Success still requires the exact
+host journal `idVendor=1234` result; only `fastboot boot` is permitted.
+
+### XBL event-DMA alignment correction run (2026-08-30)
+
+The Fastboot-DMA reuse path was run after relaxing its address validation from
+4 KiB to the XBL-observed 16-byte requirement. This time the captured
+firmware-owned event page was eligible for the reuse path; the probe retained
+the XBL-derived `GEVNTSIZ0=0xf0` and device-state settings.
+
+- Harness output: `tmp/fullerene-bramble-loop.593971.0`
+- Boot artifact SHA-256: `34f267d0e15fd81a986aa1e6c5c2c3f1e93e7511ec5e3d07e6698f1fb155ed42`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected; Fullerene reached
+  USB2 high-speed attach and `device descriptor read/64, error -110`; no
+  `New USB device found, idVendor=1234` line appeared.
+- Recovery: Android `18d1:4ee7` returned after 38 s; `boot-reason.txt` was
+  `watchdog`.
+
+Conclusion: exercising the eligible firmware-owned event-DMA page did not
+cross the descriptor boundary. `1234` remains unobserved. No flash, erase,
+or partition write was performed.
+
+### XBL EP0 event-driven STARTTRANSFER differential before next run (2026-08-30)
+
+The Bramble stock XBL disassembly provides a more specific control-flow
+difference than the earlier register comparisons. `DwcCoreInit` queues the
+8-byte EP0 OUT request in the firmware endpoint object, but its initialization
+tail issues only `DEPSTARTCFG`, the two EP0 `SETEPCONFIG`/
+`SETTRANSFRESOURCE` pairs, `DEVTEN=0x47`, and the later Run/Stop write; it does
+not issue `STARTTRANSFER` there. The event dispatcher handles DWC3
+`XferNotReady` events, including `CONTROL_DATA` status 1, and then calls
+`DwcStartTransfer` with the queued EP0 request. Fullerene previously recorded
+status-1 `XferNotReady` but acted only on status 2 (control status), relying on
+an eager/poll-loop EP0 SETUP `STARTTRANSFER` instead.
+
+The next A/B adds an XBL-deferred EP0 mode: it leaves the SETUP TRB published
+but does not arm it after Run/Stop, and arms it only from an EP0
+`XferNotReady(CONTROL_DATA)` event. The normal mode is unchanged. This is a
+source-derived control-flow test, not a success claim; success still requires
+the host journal line `New USB device found, idVendor=1234` (implemented as
+`1234:0001`). It remains a non-destructive `fastboot boot` run.
+
+### XBL EP0 event-driven STARTTRANSFER differential run (2026-08-30)
+
+The new XBL-deferred mode was built and booted through the standard direct
+handoff loop. It left the initial EP0 SETUP transfer unarmed at gadget start
+and enabled the status-1 `XferNotReady(CONTROL_DATA)` handling described by
+the stock XBL control flow.
+
+- Harness output: `tmp/fullerene-bramble-loop.612369.0`
+- Boot artifact SHA-256: `7662567f8061920009c1020415ad169916aa02b69a974806c309689e59e60861`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected; Fullerene reached USB2
+  high-speed attach and `device descriptor read/64, error -110`; no
+  `New USB device found, idVendor=1234` line appeared.
+- Recovery: Android `18d1:4ee7` returned after 38 s; `boot-reason.txt` was
+  `watchdog`.
+
+Conclusion: deferring EP0 `STARTTRANSFER` to the XBL-style
+`XferNotReady(CONTROL_DATA)` event did not cross the descriptor boundary.
+`1234` remains unobserved. No flash, erase, or partition write was performed.
+
+### XBL DEVTEN exact-value correction before next run (2026-08-30)
+
+The preceding XBL event-driven run did not yet test the stock XBL device-event
+mask exactly. The Fullerene path still programmed `0x7f` (Disconnect, USB
+Reset, Connect Done, Link Status Change, Wakeup, Hibernation Request, and
+Suspend). The stock Bramble XBL `DwcCoreInit` disassembly writes `0x47`, which
+enables only Disconnect, USB Reset, Connect Done, and Suspend. The next A/B
+will select the exact `0x47` mask only with `--xbl-deferred-setup`; all other
+paths remain unchanged. Success still requires
+`New USB device found, idVendor=1234` (`1234:0001`).
+
+### XBL DEVTEN exact-value correction run (2026-08-30)
+
+The event-driven XBL differential was rebuilt with the stock XBL device-event
+mask `DEVTEN=0x47` and booted through the standard direct handoff loop.
+
+- Harness output: `tmp/fullerene-bramble-loop.618187.0`
+- Boot artifact SHA-256: `90db397e5cad36ec6880d1093cb79c050151c9ce539d276f489cd5370ec088ef`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected; Fullerene reached USB2
+  high-speed attach at 16:59:59 and `device descriptor read/64, error -110`
+  at 17:00:05; no `New USB device found, idVendor=1234` line appeared.
+- Recovery: Android `18d1:4ee7` returned at 17:00:26; `boot-reason.txt` was
+  `watchdog`.
+
+Conclusion: the exact XBL `DEVTEN` mask did not cross the descriptor boundary.
+`1234` remains unobserved. No flash, erase, or partition write was performed.
+
+### XBL queued EP0 OUT request differential before next run (2026-08-30)
+
+The stock XBL path has one remaining control-flow detail that the prior
+event-driven A/B did not mirror. After the two EP0 endpoint resources are
+created, XBL queues an 8-byte EP0 OUT request in its software request object
+before Run/Stop. Its `XferNotReady(CONTROL_DATA)` path then prepares that
+queued request and marks it in flight immediately before `STARTTRANSFER`.
+Fullerene had the corresponding setup TRB and event-driven command, but no
+EP0 request-ownership record. The next A/B adds a bounded EP0 OUT request
+slot: it is queued at the XBL initialization boundary, transitioned to
+in-flight only after the hardware command succeeds, completed/released with
+the setup event, and requeued for the next control cycle. Reset/disconnect
+paths invalidate the slot so it can be posted again. This is limited to
+`--xbl-deferred-setup`; normal handoff paths are unchanged. Success still
+requires `New USB device found, idVendor=1234` (`1234:0001`).
+
+### XBL queued EP0 OUT request differential run (2026-08-30)
+
+The XBL-style software ownership slot was added to the deferred EP0 setup
+path and the artifact was booted through the standard direct handoff loop.
+
+- Harness output: `tmp/fullerene-bramble-loop.629600.0`
+- Boot artifact SHA-256: `be624a8bc3fae1c1326a1ae0fcc78335b1e2d6c2d1749fff1b9401ad47ef5f45`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected; Fullerene reached USB2
+  high-speed attach, then `device descriptor read/64, error -110` at
+  `17:08:57`; no `New USB device found, idVendor=1234` line appeared.
+- Recovery: Android `18d1:4ee7` returned at `17:09:19`; `boot-reason.txt` was
+  `watchdog`.
+
+Conclusion: mirroring XBL's queued EP0 OUT request ownership did not cross the
+descriptor boundary. `1234` remains unobserved. No flash, erase, or partition
+write was performed.
+
+### XBL event-driven TRB control differential before next run (2026-08-30)
+
+The Bramble XBL request-builder disassembly adds one remaining hardware-visible
+difference. After the EP0 `XferNotReady(CONTROL_DATA)` transition, XBL builds the
+controller TRB with the endpoint state value `1` in the TRBCTL field, plus
+HWO/CHN/ISP and then LST/IOC. Fullerene's deferred path was still publishing the
+generic `TRB_CONTROL_SETUP` value (`TRBCTL=2`) at that boundary. The next A/B
+will use the XBL-derived `TRBCTL=1 | CHN` value only for the deferred event-driven
+EP0 arm; the buffer address, event ring, endpoint resources, and `DEVTEN=0x47`
+remain unchanged. This is a source-derived control-word differential, not a
+success claim. Success still requires `New USB device found, idVendor=1234`
+(`1234:0001`), and only `fastboot boot` will be used.
+
+### XBL event-driven TRB control differential run (2026-08-30)
+
+The XBL-derived `TRBCTL=1 | CHN` control word was built and booted through the
+standard direct-handoff loop. The event ring, EP0 buffer address, endpoint
+resources, and `DEVTEN=0x47` were unchanged from the preceding queued-request
+run.
+
+- Harness output: `tmp/fullerene-bramble-loop.645651.0`
+- Boot artifact SHA-256: `13a2580a3e2445390008ee6bdf41682a9d5635b1483a121985048e797a7b7072`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `17:20:58`; Fullerene
+  reached USB2 high-speed attach at `17:21:09`, then
+  `device descriptor read/64, error -110` at `17:21:14`; no
+  `New USB device found, idVendor=1234` line appeared.
+- Recovery: Android `18d1:4ee7` returned at `17:21:35`; `boot-reason.txt` was
+  `watchdog`.
+
+Conclusion: matching the XBL request-builder's observed TRB control word did
+not cross the descriptor boundary. `1234` remains unobserved. No flash, erase,
+or partition write was performed.
+
+### XBL initial EP0 request-order and zero-buffer differential before next run (2026-08-30)
+
+The preceding `TRBCTL=1|CHN` A/B was based on an incorrect control-flow
+reading. Re-reading the Bramble XBL disassembly shows that its initial EP0 OUT
+request is queued by `DwcQueueRequest` before Run/Stop, and the request builder
+immediately builds a `TRBCTL=2` setup TRB and calls `DwcStartTransfer`; the
+`CONTROL_DATA XferNotReady` event is not the initial arm trigger. The same
+builder publishes buffer address zero for this special setup request. The
+next A/B therefore removes the event-driven initial arm, restores the
+pre-Run/Stop STARTTRANSFER order, restores `TRBCTL=2`, and uses a zero TRB
+buffer address only in `--xbl-deferred-setup`. The software EP0 request slot
+and stock `DEVTEN=0x47` remain enabled. This is a source-derived correction,
+not a success claim; success still requires
+`New USB device found, idVendor=1234` (`1234:0001`). Only `fastboot boot` will
+be used.
+
+### XBL initial EP0 request-order and zero-buffer differential run (2026-08-30)
+
+The corrected XBL-order path was built and booted through the standard direct
+handoff loop. It queued the software EP0 OUT request, issued the initial
+`TRBCTL=2` STARTTRANSFER before Run/Stop, and published a zero TRB buffer
+address for the XBL differential.
+
+- Harness output: `tmp/fullerene-bramble-loop.672344.0`
+- Boot artifact SHA-256: `c22f5d80db37942e7e4151f404d3c5f80c9ece9c4ee980b03a37273931670af`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `17:39:35`; no
+  `New USB device found, idVendor=1234` line appeared before Android
+  `18d1:4ee7` returned at `17:40:12`.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: the source-derived XBL ordering plus zero-buffer request did not
+produce a host-visible Fullerene USB device or cross the descriptor boundary.
+`1234` remains unobserved. No flash, erase, or partition write was performed.
+
+### XBL initial-order explicit setup-buffer differential before next run (2026-08-30)
+
+The zero-buffer A/B suppressed even the Fullerene USB2 attach, so the literal
+XBL request buffer value cannot be copied into this handoff unchanged. The
+next A/B keeps the source-derived parts that are independently meaningful —
+EP0 request queued before Run/Stop, initial `TRBCTL=2`, `DEVTEN=0x47`, and the
+pre-Run/Stop STARTTRANSFER order — while restoring the explicit DMA setup
+buffer needed by Fullerene to receive the host SETUP packet. This isolates the
+zero-address effect from the ordering effect. Success still requires
+`New USB device found, idVendor=1234` (`1234:0001`); only `fastboot boot` will
+be used.
+
+### XBL initial-order explicit setup-buffer differential run (2026-08-30)
+
+The source-derived initial-order path was rebuilt with an explicit DMA setup
+buffer instead of the prior zero address. It queued the software EP0 OUT
+request, used initial `TRBCTL=2`, enabled stock `DEVTEN=0x47`, and issued
+STARTTRANSFER before Run/Stop.
+
+- Harness output: `tmp/fullerene-bramble-loop.675026.0`
+- Boot artifact SHA-256: `3fc45d1623ec02bc4543dd09ecad77b4ce8f722119ea2f6c2d8733abd2ccc8ba`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `17:41:32`; no
+  `New USB device found, idVendor=1234` line appeared. Android `18d1:4ee7`
+  returned at `17:42:08`.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: restoring the explicit setup buffer did not produce a host-visible
+Fullerene USB device in the pre-Run/Stop XBL-order path. `1234` remains
+unobserved. No flash, erase, or partition write was performed.
+
+### XBL initial SETUP self-buffer differential before next run (2026-08-30)
+
+The XBL request-builder disassembly was read one level deeper. For the
+initial EP0 OUT request (`TRBCTL=2`), the builder takes the special setup
+branch and writes the generated transfer-TRB address into the TRB buffer
+field; it does not publish the request object's literal buffer argument
+(`0`) there. The previous two A/Bs tested those two wrong alternatives for
+this Fullerene path: literal zero suppressed attach, and an explicit setup
+payload buffer did not attach in the XBL pre-Run/Stop ordering. The next
+single differential mirrors this XBL special-case TRB self-buffer while
+keeping the already source-derived request order, `TRBCTL=2`, and
+`DEVTEN=0x47`. Success still requires
+`New USB device found, idVendor=1234` (`1234:0001`); only `fastboot boot` will
+be used.
+
+### XBL initial SETUP self-buffer differential run (2026-08-30)
+
+The XBL-special-case setup TRB was built and booted with its buffer field set
+to the generated TRB address, while retaining the source-derived request
+order, `TRBCTL=2`, and `DEVTEN=0x47`.
+
+- Harness output: `tmp/fullerene-bramble-loop.689124.0`
+- Boot artifact SHA-256: `a18d669fe0877478996c679a136bbe744e1e676d9b4b8eb1121a973636d3568b`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `17:51:45`; no
+  `New USB device found, idVendor=1234` line appeared before Android
+  `18d1:4ee7` returned at `17:52:22`.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: the XBL setup self-buffer special case did not produce a
+host-visible Fullerene USB device in this handoff path. `1234` remains
+unobserved. No flash, erase, or partition write was performed.
+
+### XBL EP0 IN data-TRB control differential before next run (2026-08-30)
+
+The self-buffer result rules out the initial setup-buffer address as a
+standalone fix. The same XBL request-builder shows a second relevant split:
+for an EP0 IN request it selects the ordinary request path with
+`TRBCTL=1` (`NORMAL`), whereas Fullerene currently emits the Linux
+`TRB_CONTROL_DATA` value (`TRBCTL=5`) for the descriptor response. The next
+A/B keeps the already working Fullerene initial SETUP/link boundary and
+changes only the EP0 IN data-phase TRB control type to XBL's observed value.
+The initial SETUP buffer remains explicit; this isolates response-phase TRB
+semantics from the failed XBL initial-order/self-buffer experiment. Success
+still requires `New USB device found, idVendor=1234` (`1234:0001`); only
+`fastboot boot` will be used.
+
+### XBL EP0 IN data-TRB control differential run (2026-08-30)
+
+The known `--start-after-connect` initial SETUP/link boundary was kept, and
+only the EP0 IN descriptor-response TRB was changed from Linux
+`TRBCTL=5` (`CONTROL_DATA`) to the XBL-observed `TRBCTL=1` (`NORMAL`).
+
+- Harness output: `tmp/fullerene-bramble-loop.696011.0`
+- Boot artifact SHA-256: `ac5d51ac80f88b56f3c6045fa68d947838c3888c34a0fa74144be394e1ac55e`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `17:57:08`; no
+  `New USB device found, idVendor=1234` line appeared. Android USB2 then
+  timed out with `error -110` at `17:57:24`, and Android `18d1:4ee7`
+  returned at `17:57:45`.
+- Recovery: `boot-reason.txt` was `watchdog`.
+
+Conclusion: changing only the XBL-observed EP0 IN data TRB type did not
+produce a host-visible Fullerene USB device. `1234` remains unobserved. No
+flash, erase, or partition write was performed.
+
+### XBL event-ring physical address differential before next run (2026-08-30)
+
+The XBL core-init disassembly gives one remaining concrete DMA placement
+difference at the first descriptor boundary: it publishes `GEVNTADRLO0` as
+`0x0a6fc010`, while the probe's ordinary EP0 event ring remains in the
+linker-reserved `0x90000000` USB DMA pool. The next A/B changes only the EP0
+event-ring address to that XBL-observed value; the explicit setup buffer, TRB
+addresses, response buffer, endpoint commands, and `--start-after-connect`
+timing remain unchanged. This isolates event delivery/acknowledgement from
+the already-tested TRB control variations. Success still requires
+`New USB device found, idVendor=1234` (`1234:0001`); only `fastboot boot` will
+be used.
+
+### XBL event-ring physical address differential run (2026-08-30)
+
+The EP0 event ring was moved only to the XBL-observed `GEVNTADRLO0` value
+`0x0a6fc010`; the setup/TRB/response buffers and handoff timing were left
+unchanged.
+
+- Harness output: `tmp/fullerene-bramble-loop.707003.0`
+- Boot artifact SHA-256: `720f4fb20340a138d4767d9c57c66a1c4fc2d060718f33e29b5db8117c13c99d`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `18:04:16`; USB2
+  reattached at `18:04:27`, but `device descriptor read/64` timed out with
+  `-110` at `18:04:32`. No `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `18:04:53`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: changing only the event-ring DMA address did not produce a
+host-visible Fullerene USB device. `1234` remains unobserved. No flash,
+erase, or partition write was performed.
+
+### XBL EP0 SETEPCONFIG notification-mask differential before next run (2026-08-30)
+
+The Bramble XBL `DwcConfigureEP` path was re-read at the fixed EP0 setup
+sequence. Its configuration word contains `0x300` in the notification field
+(transfer-complete plus transfer-in-progress), while Fullerene's Linux-derived
+control-endpoint default is `0x500` (transfer-complete plus transfer-not-ready).
+The next A/B changes only EP0's `SETEPCONFIG.P1` to the XBL-observed `0x300`;
+the EP0 event ring returns to the ordinary `0x90000000` pool, and setup/TRB,
+response buffer, endpoint resources, `DEVTEN`, and `--start-after-connect`
+timing remain unchanged. Success still requires
+`New USB device found, idVendor=1234` (`1234:0001`); only `fastboot boot` will
+be used.
+
+### XBL EP0 SETEPCONFIG notification-mask differential run (2026-08-30)
+
+The EP0 `SETEPCONFIG.P1` notification field was changed only from the
+Fullerene/Linux default `0x500` to the XBL-derived `0x300`.
+
+- Harness output: `tmp/fullerene-bramble-loop.717719.0`
+- Boot artifact SHA-256: `1a6c0cb2939af1c263092bb4dfc95f06907b4b4b5a901b7d61f5da01d7626fb3`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `18:12:18`; USB2
+  reattached at `18:12:28`, but `device descriptor read/64` timed out with
+  `-110` at `18:12:34`. No `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `18:12:54`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: the XBL-derived EP0 notification mask did not produce a
+host-visible Fullerene USB device. `1234` remains unobserved. No flash,
+erase, or partition write was performed.
+
+### XBL inter-direction EP0 request-order differential before next run (2026-08-30)
+
+The stock XBL `DwcCoreInit` loop configures EP0 OUT, allocates its transfer
+resource, calls the initial request-queue helper, and only then configures EP0
+IN. The previous Fullerene XBL request-slot A/B queued the software request
+after both EP0 directions were configured. The next A/B mirrors this exact
+inter-direction boundary and arms the explicit EP0 SETUP TRB before the IN
+pair; the event ring, setup payload address, `SETEPCONFIG` notification mask,
+and other handoff state remain unchanged. This A/B intentionally uses XBL's
+pre-Run/Stop initial arm rather than `--start-after-connect`. Success still
+requires
+`New USB device found, idVendor=1234` (`1234:0001`); only `fastboot boot` will
+be used.
+
+### XBL inter-direction EP0 request-order differential run (2026-08-30)
+
+The initial EP0 request was inserted and its explicit SETUP TRB was armed
+after the EP0 OUT resource pair, before the EP0 IN configuration pair, as in
+the stock XBL initialization loop.
+
+- Harness output: `tmp/fullerene-bramble-loop.725985.0`
+- Boot artifact SHA-256: `2a16e2b9de051664f5f4517c56f5ca5fb337b4bfa76862b76919bb71db97f210`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `18:18:34`; USB2
+  reattached at `18:18:45`, but `device descriptor read/64` timed out with
+  `-110` at `18:18:50`. No `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `18:19:11`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: matching XBL's inter-direction request insertion and early EP0
+arm did not produce a host-visible Fullerene USB device. `1234` remains
+unobserved. No flash, erase, or partition write was performed.
+
+### XBL post-endpoint global-register-order differential before next run (2026-08-30)
+
+The stock XBL `DwcCoreInit` sequence was re-read in the Bramble bootloader
+image. After both EP0 `SETEPCONFIG -> SETTRANSFRESOURCE` pairs it writes
+`DEVTEN=0x47`, publishes `DALEPENA=3`, then applies the usb31 global state
+including `GSBUSCFG1.PIPETRANSLIMIT=0xe00` and the `GUCTL1` bits. Fullerene
+currently applies the same Linux-derived global deltas before the endpoint
+pairs. The next A/B moves only that call to after `DEVTEN` publication; EP0
+request/TRB contents, event DMA, and link timing remain unchanged. Success
+still requires `New USB device found, idVendor=1234` (`1234:0001`); only
+`fastboot boot` will be used.
+
+### XBL post-endpoint global-register-order differential run (2026-08-30)
+
+The usb31 global-delta call was moved from before the EP0 endpoint pairs to
+after `DEVTEN` publication, following the stock XBL order after both
+`SETEPCONFIG -> SETTRANSFRESOURCE` pairs. EP0 request/TRB contents, event DMA,
+and link timing were unchanged.
+
+- Harness output: `tmp/fullerene-bramble-loop.734404.0`
+- Boot artifact SHA-256: `4fc779767bd36d04eb890747a0eb6c0377158a992fe4a9c0650d49fd764752fe`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `18:24:55`; USB2
+  reattached at `18:25:05`, but `device descriptor read/64` timed out with
+  `-110` at `18:25:11`. No `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `18:25:31`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: matching XBL's post-endpoint global-register order did not
+produce a host-visible Fullerene USB device. `1234` remains unobserved. No
+flash, erase, or partition write was performed.
+
+### XBL fixed EP0 DMA-address differential before next run (2026-08-30)
+
+The XBL request builder was traced past the queue helper. For the initial EP0
+OUT request it stores the setup payload pointer `0x80798d70`, and its EP0
+transfer-ring entry is the fixed DDR address `0x80798f70`; these are separate
+from the event ring at `0x0a6fc010`. The next A/B uses all three XBL-derived
+addresses while keeping the current endpoint commands, explicit 8-byte setup
+payload, and `--start-after-connect` timing. Success still requires
+`New USB device found, idVendor=1234` (`1234:0001`); only `fastboot boot` will
+be used.
+
+### XBL fixed EP0 DMA-address differential run (2026-08-30)
+
+The EP0 setup buffer and first EP0 TRB were changed to the fixed XBL-derived
+DDR addresses `0x80798d70` and `0x80798f70`; the event ring remained at the
+XBL-derived `0x0a6fc010`, with the post-endpoint global-register ordering also
+enabled.
+
+- Harness output: `tmp/fullerene-bramble-loop.743222.0`
+- Boot artifact SHA-256: `e3744599b74a0b82603c386269349ab2d75f2272641b7c253b29964fbba09d15`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `18:31:03`; USB2
+  reattached at `18:31:14`, but `device descriptor read/64` timed out with
+  `-110` at `18:31:19`. No `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `18:31:40`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: using the three XBL-derived EP0/event DMA addresses did not
+produce a host-visible Fullerene USB device. `1234` remains unobserved. No
+flash, erase, or partition write was performed.
+
+### XBL raw DCTL.Run/Stop differential before next run (2026-08-30)
+
+The XBL `DwcRunStop` routine was checked directly: it reads DCTL and changes
+only bit31 (`RUN_STOP`). Fullerene's common helper additionally clears
+`TRGTULST`/`KEEP_CONNECT` and applies its reconnect policy at that write. The
+next A/B keeps the XBL HIRD/APPL1RES state but changes only the final DCTL
+Run/Stop write to the XBL bit-preserving form. EP0 DMA addresses, event ring,
+endpoint commands, and link timing remain as in the preceding source-derived
+run. Success still requires `New USB device found, idVendor=1234`
+(`1234:0001`); only `fastboot boot` will be used.
+
+### XBL raw DCTL.Run/Stop differential run (2026-08-30)
+
+The final DCTL Run/Stop write used the XBL bit-preserving form: it changed
+only `RUN_STOP` while retaining the existing DCTL state, including XBL's
+`HIRD_THRES=7` and `APPL1RES`. EP0 setup/TRB DMA, event DMA, endpoint command
+ordering, and link timing were otherwise unchanged.
+
+- Harness output: `tmp/fullerene-bramble-loop.750429.0`
+- Boot artifact SHA-256: `054b4314c7c93bba9708ce8117d185caffe11a755d8b925b6b054e9f1fba775e`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `18:36:05`; USB2
+  reattached at `18:36:16`, but `device descriptor read/64` timed out with
+  `-110` at `18:36:21`. No `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `18:36:41`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: preserving the XBL DCTL Run/Stop write semantics did not produce
+a host-visible Fullerene USB device. `1234` remains unobserved. No flash,
+erase, or partition write was performed.
+
+### XBL per-direction EP0 TRB differential before next run (2026-08-30)
+
+The stock XBL request builder was re-read at `0x80748c90`: its TRB base is
+`0x80798f70`, then it adds `endpoint << 6` and `direction << 5`. For EP0 this
+places OUT at `0x80798f70` and IN at `0x80798f90`. Fullerene currently uses
+`ep0_trb_ptr(0)` for both EP0 directions, so the next A/B gives EP0 IN data
+and status their direction-specific slot (`ep0_trb_ptr(1)`) while keeping the
+OUT setup in slot 0. The fixed XBL EP0 DMA, event DMA, post-endpoint global
+ordering, and raw Run/Stop differentials remain enabled. Success still
+requires `New USB device found, idVendor=1234` (`1234:0001`); only
+`fastboot boot` will be used.
+
+### XBL per-direction EP0 TRB differential run (2026-08-30)
+
+The EP0 IN data and status paths used TRB slot 1 while the EP0 OUT setup
+path remained on slot 0. With the fixed XBL DMA base, this corresponds to
+the source-derived OUT/IN addresses `0x80798f70` / `0x80798f90`.
+
+- Harness output: `tmp/fullerene-bramble-loop.769969.0`
+- Boot artifact SHA-256: `3bf104cf3d41bb1fcc52fe97946b70156680af2e3cd77e1915847f666eeaa403`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `18:49:51`; USB2
+  reattached at `18:50:15`, but `device descriptor read/64` timed out with
+  `-110` at `18:50:20`. No `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `18:50:42`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 39 seconds.
+
+Conclusion: separating the EP0 IN/status TRB slot according to XBL's
+direction-indexed address calculation did not produce a host-visible
+Fullerene USB device. `1234` remains unobserved. No flash, erase, or
+partition write was performed.
+
+### XBL complete EP0 TRB control-word differential before next run (2026-08-30)
+
+The XBL request builder at `0x80748d70` adds `HWO|CHN|ISP_IMI` to the TRB
+control qword, and its finalization at `0x80748e10` adds `LST|IOC`; this is
+separate from the earlier, incorrectly timed `TRBCTL=1|CHN` test. The next
+A/B enables the `CHN` bit on every Fullerene EP0 setup/data/status TRB while
+retaining the corrected pre-Run/Stop initial `TRBCTL=2` path and the
+direction-specific IN slot. Event DMA, fixed XBL EP0 addresses, endpoint
+ordering, and raw Run/Stop remain enabled. Success still requires
+`New USB device found, idVendor=1234` (`1234:0001`); only `fastboot boot`
+will be used.
+
+### XBL complete EP0 TRB control-word differential run (2026-08-30)
+
+The XBL-derived `CHN` bit was enabled on Fullerene's EP0 setup/data/status
+TRBs, while the corrected pre-Run/Stop setup path and direction-specific IN
+slot remained enabled.
+
+- Harness output: `tmp/fullerene-bramble-loop.780393.0`
+- Boot artifact SHA-256: `a25da4d464de591df078c7bc8ca9b0857de200eec7f680008c41b0846f62bc68`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `18:56:31`; USB2
+  reattached at `18:56:41`, but `device descriptor read/64` timed out with
+  `-110` at `18:56:47`. No `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `18:57:08`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: matching XBL's complete EP0 TRB control flags did not produce a
+host-visible Fullerene USB device. `1234` remains unobserved. No flash,
+erase, or partition write was performed.
+
+### XBL pre-Run/Stop ordering plus complete EP0 TRB control before next run (2026-08-30)
+
+The preceding complete-TRB-control run still included the generic
+`--start-after-connect` timing differential, so it did not exercise XBL's
+actual initial order end-to-end. The next A/B removes that option: initial
+EP0 `STARTTRANSFER` will be issued before the final Run/Stop write, with the
+XBL-derived `CHN` control bit and direction-specific IN slot retained. The
+XBL event/TRB addresses, post-endpoint global order, and raw Run/Stop write
+remain enabled. Success still requires `New USB device found, idVendor=1234`
+(`1234:0001`); only `fastboot boot` will be used.
+
+### XBL pre-Run/Stop ordering plus complete EP0 TRB control run (2026-08-30)
+
+The generic `--start-after-connect` timing differential was removed, so the
+initial EP0 `STARTTRANSFER` was issued before the final XBL-style Run/Stop
+write. The XBL-derived `CHN` control bit and direction-specific IN slot were
+also retained.
+
+- Harness output: `tmp/fullerene-bramble-loop.783969.0`
+- Boot artifact SHA-256: `dd1fe5beef2d42236a64e6e991e0044fab421db6778ad22bbb2298919a37a876`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `18:58:14`; no Fullerene
+  USB2 high-speed attach or `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `18:58:51`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: the exact pre-Run/Stop timing plus XBL EP0 control-word
+differential suppressed even the USB2 attach on this handoff path. `1234`
+remains unobserved. No flash, erase, or partition write was performed.
+
+### EP1 `STARTTRANSFER` no-resource gate before next run (2026-08-30)
+
+ABL/XBL source audit places the current descriptor boundary after EP0 SETUP
+handling, when the read/64 response is queued on physical endpoint 1 (EP0 IN).
+The existing retained trace can distinguish an EP1 `STARTTRANSFER` returning
+the DWC3 `No Resource` status from no EP1 command being issued. The next run
+keeps the known-attaching `--start-after-connect` baseline and enables only the
+`--signal-cmd-gate ep1-nores` readout; a true gate stops the running controller
+so the host journal records it, while a false gate drops the diagnostic pull-up
+without treating that as USB success. Success still requires
+`New USB device found, idVendor=1234` (`1234:0001`); only `fastboot boot` will
+be used.
+
+### EP1 `STARTTRANSFER` no-resource gate run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.796295.0`
+- Boot artifact SHA-256: `919e56450758b2ce66abb8f5d58f0c1fa93f36a0b60f5cee2300c4c497bd1bef`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `19:05:51`; Fullerene
+  USB2 high-speed attached at `19:06:01`, then
+  `device descriptor read/64, error -110` at `19:06:07`. The
+  `ep1-nores` gate produced no true-gate disconnect readout. No
+  `New USB device found, idVendor=1234` line appeared. Stock Android
+  `18d1:4ee7` returned at `19:06:28`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: the retained trace did not satisfy `EP1 STARTTRANSFER == No
+Resource` in this run. Because the false result also covers “no EP1 command,”
+the next A/B checks `ep1-none` before changing the handoff implementation.
+`1234` remains unobserved. No flash, erase, or partition write was performed.
+
+### EP1 `STARTTRANSFER` issuance gate before next run (2026-08-30)
+
+The preceding `ep1-nores` gate was false, but that alone cannot distinguish a
+clean EP1 command from a missing EP1 command. The next run keeps the same
+known-attaching baseline and changes only the gate to `ep1-none`; a true gate
+means no physical EP1 `STARTTRANSFER` was retained, while a false gate means
+the command was issued (regardless of its status). This remains a diagnostic
+readout, not USB success. Success still requires
+`New USB device found, idVendor=1234` (`1234:0001`); only `fastboot boot` will
+be used.
+
+### EP1 `STARTTRANSFER` issuance gate run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.799174.0`
+- Boot artifact SHA-256: `a746aec5326e583a0b915f27cb1aabee589671016821e80564c465adec155c9c`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot disconnected at `19:07:18`; Fullerene USB2
+  high-speed attached at `19:07:28`, then
+  `device descriptor read/64, error -110` at `19:07:33`. The `ep1-none`
+  gate produced no true-gate disconnect readout. No
+  `New USB device found, idVendor=1234` line appeared. Stock Android
+  `18d1:4ee7` returned at `19:07:54`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 37 seconds.
+
+Conclusion: an EP1 `STARTTRANSFER` record exists in the retained trace. In
+conjunction with the preceding false `ep1-nores` gate, the command was issued
+and did not report the exact `No Resource` raw value. Its completion status is
+still unknown; `1234` remains unobserved. No flash, erase, or partition write
+was performed.
+
+### EP1 `STARTTRANSFER` completion gate before next run (2026-08-30)
+
+The EP1 command is present and is not the exact `No Resource` value, so the
+next single-gate A/B selects `ep1-done`. A true result means the EP1 command
+completed with no command-status bits selected by the gate; a false result
+means the command either returned another error status or the retained raw
+word differs from the expected encoding. The host identity criterion remains
+strictly `New USB device found, idVendor=1234` (`1234:0001`). Only
+`fastboot boot` will be used.
+
+### EP1 `STARTTRANSFER` completion gate run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.802090.0`
+- Boot artifact SHA-256: `945abe33a594746ebe4024921e72f55910f30d6a0d269fd24b9c707d338f215b`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot disconnected at `19:08:53`; Fullerene USB2
+  high-speed attached at `19:09:03`, then
+  `device descriptor read/64, error -110` at `19:09:08`. The `ep1-done`
+  gate produced no true-gate disconnect readout. No
+  `New USB device found, idVendor=1234` line appeared. Stock Android
+  `18d1:4ee7` returned at `19:09:29`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: the retained EP1 `STARTTRANSFER` record is neither the exact
+`No Resource` value nor a clean command completion. The current gate does not
+expose which other command-status nibble was returned, so the next change is
+diagnostic-only: publish that raw status via bounded pull-up cycles. `1234`
+remains unobserved. No flash, erase, or partition write was performed.
+
+### EP1 raw `STARTTRANSFER` status readout before next run (2026-08-30)
+
+The preceding three gates establish that an EP1 command exists, is not
+`No Resource`, and is not encoded as a clean completion. The next A/B adds a
+single diagnostic gate, `ep1status`, which maps the retained status nibble to a
+bounded number of QSCRATCH pull-up drop/restore cycles. This changes no USB
+command or endpoint state; it only names the failing status from the host
+journal. The exact USB success criterion remains
+`New USB device found, idVendor=1234` (`1234:0001`), and only `fastboot boot`
+will be used.
+
+### EP1 raw `STARTTRANSFER` status readout run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.807454.0`
+- Boot artifact SHA-256: `188eb9ea47725a69ed03813606450a82507f9057cdfb3ad3b8cb70f28d9b4ebb`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `19:12:12`; Fullerene
+  USB2 high-speed attached at `19:12:22`, then
+  `device descriptor read/64, error -110` at `19:12:27`. The diagnostic
+  QSCRATCH pull-up cycles were host-invisible, so no status-count readout was
+  produced. No `New USB device found, idVendor=1234` line appeared. Stock
+  Android `18d1:4ee7` returned at `19:12:48`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: the status-readout code ran through the normal recovery timeline,
+but QSCRATCH session overrides do not create host-visible disconnects on this
+boundary. The next attempt keeps the same status encoding and changes only
+the readout actuator to DWC3 `DCTL.SDIS`, which is the existing host-visible
+mechanism. `1234` remains unobserved. No flash, erase, or partition write was
+performed.
+
+### EP1 raw status via DCTL.SDIS before next run (2026-08-30)
+
+The previous status gate could not be read because its QSCRATCH cycles were
+inert at the incomplete descriptor attach. The next diagnostic-only A/B uses
+the same retained EP1 status but emits the nibble as bounded DCTL.SDIS
+disconnect/re-attach pairs (maximum six), without reissuing or changing the
+EP1 command. The host journal should then expose the status count. USB success
+still requires `New USB device found, idVendor=1234` (`1234:0001`); only
+`fastboot boot` will be used.
+
+### EP1 raw status via DCTL.SDIS run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.811606.0`
+- Boot artifact SHA-256: `dffb7ab60a1ff404a95f9324141793285ca6e085187026365e4ef82a6904e5aa`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot disconnected at `19:14:50`; Fullerene USB2
+  high-speed attached at `19:15:01`, then
+  `device descriptor read/64, error -110` at `19:15:06`. No additional
+  DCTL.SDIS disconnect/re-attach pairs appeared, so the raw-status count was
+  not observable. No `New USB device found, idVendor=1234` line appeared.
+  Stock Android `18d1:4ee7` returned at `19:15:26`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 36 seconds.
+
+Conclusion: DCTL.SDIS is also inert after this incomplete attach; the
+controller is not exposing a host-visible soft disconnect at this boundary.
+The next readout uses the existing APSS-WDT timing path, with the status nibble
+encoded as a bounded bite delay. `1234` remains unobserved. No flash, erase, or
+partition write was performed.
+
+### EP1 raw status via APSS-WDT timing before next run (2026-08-30)
+
+The next diagnostic-only A/B keeps the same `ep1status` status capture but
+maps status nibble + 1 to an APSS watchdog delay (capped at six seconds), then
+parks without further USB writes. If APSS WDT is writable from the probe, the
+Pixel's Android return time identifies the nibble; if not, the unchanged
+secure-watchdog return confirms that timing channel is unavailable. USB
+success still requires `New USB device found, idVendor=1234` (`1234:0001`), and
+only `fastboot boot` will be used.
+
+### EP1 raw status via APSS-WDT timing run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.816112.0`
+- Boot artifact SHA-256: `7682d469ca62b07c70eddc3bb5d7d3d89a5f3cd109e96fb354f248da77cb9c9f`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `19:17:25`; Fullerene
+  USB2 high-speed attached at `19:17:35`, then
+  `device descriptor read/64, error -110` at `19:17:41`. The APSS-WDT
+  timing path did not change the host-visible attach or produce a status
+  readout. No `New USB device found, idVendor=1234` line appeared. Stock
+  Android `18d1:4ee7` returned at `19:18:01`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: the secure-owned watchdog path is not a usable status transport
+for this probe, so the raw EP1 status nibble remains unknown. The next
+diagnostic-only A/B changes the gate predicate itself: it tests whether the
+retained EP1 `STARTTRANSFER` status nibble is zero, while keeping the USB
+command path unchanged. `1234` remains unobserved. No flash, erase, or
+partition write was performed.
+
+### EP1 status-nibble success gate before next run (2026-08-30)
+
+The next run uses `--signal-cmd-gate ep1-status-success`. It is a read-only
+classification of the retained EP1 `STARTTRANSFER` result: TRUE means the
+DEPCMD status nibble is zero, including any non-status completion bits; FALSE
+means it is nonzero or no EP1 command was recorded. The existing generic gate
+will publish TRUE as the usual host-visible disconnect, so the journal can
+distinguish a successful command from the current `ep1-done` false-negative.
+No USB command, endpoint configuration, or transfer descriptor is changed.
+USB success still requires `New USB device found, idVendor=1234`
+(`1234:0001`), and only `fastboot boot` will be used.
+
+### EP1 status-nibble success gate run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.824061.0`
+- Boot artifact SHA-256: `913971a7505dfc529cc24e0b964d6dc8f55d4275ca67211b89375e7a1e046ddc`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `19:22:37`; Fullerene
+  USB2 high-speed attached at `19:22:48`, then
+  `device descriptor read/64, error -110` at `19:22:53`. No additional
+  host-visible disconnect occurred, so `ep1-status-success` was FALSE. No
+  `New USB device found, idVendor=1234` line appeared. Stock Android
+  `18d1:4ee7` returned at `19:23:14`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 38 seconds.
+
+Conclusion: the retained EP1 `STARTTRANSFER` command was recorded, but its
+status nibble is nonzero. The command is therefore failing before a usable
+EP1 IN transfer is exposed; the exact nonzero nibble is still unclassified.
+The next diagnostic-only A/B tests the DWC3 `BUS_EXPIRY` status value (`2`)
+using the same unchanged USB path. `1234` remains unobserved. No flash,
+erase, or partition write was performed.
+
+### EP1 status-nibble BUS_EXPIRY gate before next run (2026-08-30)
+
+The next run uses `--signal-cmd-gate ep1-status-bus-expiry`. It publishes a
+host-visible TRUE only when the retained EP1 `STARTTRANSFER` DEPCMD status
+nibble is exactly `2` (`BUS_EXPIRY`); all other outcomes are FALSE. This is
+diagnostic-only and changes no endpoint command, descriptor, or handoff state.
+USB success still requires `New USB device found, idVendor=1234`
+(`1234:0001`), and only `fastboot boot` will be used.
+
+### EP1 status-nibble BUS_EXPIRY gate run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.827607.0`
+- Boot artifact SHA-256: `8b215a91419213d1d11543ea12ac80581d0eebdb1e2da68eac5aeb104c1bc598`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fullerene again attached as USB2 high-speed and timed out
+  during `device descriptor read/64` with `error -110`; no additional
+  host-visible gate disconnect occurred, so `ep1-status-bus-expiry` was
+  FALSE. No `New USB device found, idVendor=1234` line appeared; stock
+  Android fallback was detected and restored.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after approximately 39 seconds.
+
+Conclusion: the retained EP1 status nibble is not `BUS_EXPIRY` (or the
+  current host-visible gate remains unavailable). The previous exact
+  `0x1000` check also cannot identify a status-1 result when completion bits
+  are present. The next diagnostic-only A/B normalizes the status field and
+  tests status nibble `1` (`No Resource`). `1234` remains unobserved. No
+  flash, erase, or partition write was performed.
+
+### EP1 status-nibble No Resource gate before next run (2026-08-30)
+
+The next run uses `--signal-cmd-gate ep1-status-nores`. It publishes a
+host-visible TRUE only when the retained EP1 `STARTTRANSFER` DEPCMD status
+nibble is `1` (`No Resource`), ignoring CMDIOC and other non-status bits. This
+is diagnostic-only and changes no endpoint command, descriptor, or handoff
+state. USB success still requires `New USB device found, idVendor=1234`
+(`1234:0001`), and only `fastboot boot` will be used.
+
+### EP1 status-nibble No Resource gate run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.830620.0`
+- Boot artifact SHA-256: `cbb8640c1286d23be888c7d61f9c8d792dcc31af6cf86d156c0b6951fb836cb7`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `19:25:59`; Fullerene
+  USB2 high-speed attached at `19:26:15`, then
+  `device descriptor read/64, error -110` at `19:26:20`. No additional
+  host-visible gate disconnect occurred, so normalized status-1 (`No
+  Resource`) was FALSE. No `New USB device found, idVendor=1234` line
+  appeared. Stock Android `18d1:4ee7` returned at `19:26:40`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after 37 seconds.
+
+Conclusion: the recorded EP1 `STARTTRANSFER` status nibble is neither 0
+  (success), 1 (`No Resource`), nor 2 (`BUS_EXPIRY`), subject to the
+  host-visible gate limitation. The next step reads the ABL/XBL-derived
+  command path for the remaining DWC3 status classes and adds a normalized
+  status-other gate. `1234` remains unobserved. No flash, erase, or partition
+  write was performed.
+
+### EP1 status-nibble other-status gate before next run (2026-08-30)
+
+The next run uses `--signal-cmd-gate ep1-status-other`. It publishes a
+host-visible TRUE when the retained EP1 `STARTTRANSFER` status nibble is
+nonzero and is neither `No Resource` (`1`) nor `BUS_EXPIRY` (`2`). This is a
+bounded diagnostic classification only; it does not retry or alter the USB
+command, endpoint configuration, TRB, or handoff state. USB success still
+requires `New USB device found, idVendor=1234` (`1234:0001`), and only
+`fastboot boot` will be used.
+
+### EP1 status-nibble other-status gate run (2026-08-30)
+
+- Harness output: `tmp/fullerene-bramble-loop.833373.0`
+- Boot artifact SHA-256: `3e1a61a3c70f36e3473d8ae49456b8503739b2140b47417f142d4137cdc3adb3`
+- `fastboot boot` was accepted for Pixel serial `26191JECB00076`; no
+  flash/write operation was used.
+- Host journal: Fastboot `18d1:4ee0` disconnected at `19:27:27`; Fullerene
+  USB2 high-speed attached at `19:27:37`, then
+  `device descriptor read/64, error -110` at `19:27:42`. No additional
+  host-visible gate disconnect occurred, so `ep1-status-other` did not
+  publish TRUE. No `New USB device found, idVendor=1234` line appeared.
+  Stock Android `18d1:4ee7` returned at `19:28:04`.
+- Recovery: `boot-reason.txt` was `watchdog`; the harness recovered Android
+  after approximately 38 seconds.
+
+Conclusion: the four host-visible status classifications are not a reliable
+raw-value transport on this handoff boundary; the absence of a gate
+disconnect cannot distinguish an unavailable retained trace from a status
+class. Stop adding readout actuators and return to the XBL-derived source
+path. The next change targets the first EP1 `STARTTRANSFER` call and will be
+documented before any physical run. `1234` remains unobserved. No flash,
+erase, or partition write was performed.
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:

@@ -302,6 +302,55 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_start_after_connect: bool,
 
+    /// Bramble differential: mirror stock XBL by arming the initial EP0
+    /// SETUP transfer only from XferNotReady(CONTROL_DATA).
+    #[arg(long)]
+    usb_gadget_handoff_xbl_deferred_setup: bool,
+
+    /// Bramble differential: use the XBL-observed NORMAL TRBCTL=1 for EP0
+    /// IN data responses only.
+    #[arg(long)]
+    usb_gadget_handoff_xbl_ep0_in_data: bool,
+
+    /// Bramble differential: place only the EP0 event ring at XBL's observed
+    /// physical address 0x0a6fc010.
+    #[arg(long)]
+    usb_gadget_handoff_xbl_event_dma: bool,
+
+    /// Bramble differential: match stock XBL's EP0 SETEPCONFIG P1=0x300
+    /// notification mask.
+    #[arg(long)]
+    usb_gadget_handoff_xbl_ep0_config: bool,
+
+    /// Bramble differential: insert the initial EP0 request between the
+    /// XBL-style OUT and IN endpoint setup pairs.
+    #[arg(long)]
+    usb_gadget_handoff_xbl_between_ep0: bool,
+
+    /// Bramble differential: apply the XBL usb31 global deltas after both
+    /// EP0 endpoint configuration/resource pairs.
+    #[arg(long)]
+    usb_gadget_handoff_xbl_post_endpoint_global: bool,
+
+    /// Bramble differential: use XBL's fixed initial EP0 setup buffer and
+    /// TRB addresses.
+    #[arg(long)]
+    usb_gadget_handoff_xbl_stock_ep0_dma: bool,
+
+    /// Bramble differential: change only DCTL.RUN_STOP at the final XBL
+    /// handoff boundary.
+    #[arg(long)]
+    usb_gadget_handoff_xbl_raw_runstop: bool,
+
+    /// Bramble differential: use XBL's separate EP0 OUT/IN TRB slots for
+    /// direction-specific transfers.
+    #[arg(long)]
+    usb_gadget_handoff_xbl_direction_trb: bool,
+
+    /// Bramble differential: add XBL's chained-transfer bit to EP0 TRBs.
+    #[arg(long)]
+    usb_gadget_handoff_xbl_trb_chain: bool,
+
     /// Bramble differential: retry EP0 STARTTRANSFER after Run/Stop without
     /// reading DSTS.USBLNKST.
     #[arg(long)]
@@ -868,6 +917,30 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-start-after-connect requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_xbl_deferred_setup
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-xbl-deferred-setup requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_xbl_trb_chain
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-xbl-trb-chain requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_start_ungated
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
@@ -1172,6 +1245,17 @@ fn main() -> io::Result<()> {
                 gadget_handoff_android_resource_order: args
                     .usb_gadget_handoff_android_resource_order,
                 gadget_handoff_start_after_connect: args.usb_gadget_handoff_start_after_connect,
+                gadget_handoff_xbl_deferred_setup: args.usb_gadget_handoff_xbl_deferred_setup,
+                gadget_handoff_xbl_ep0_in_data: args.usb_gadget_handoff_xbl_ep0_in_data,
+                gadget_handoff_xbl_event_dma: args.usb_gadget_handoff_xbl_event_dma,
+                gadget_handoff_xbl_ep0_config: args.usb_gadget_handoff_xbl_ep0_config,
+                gadget_handoff_xbl_between_ep0: args.usb_gadget_handoff_xbl_between_ep0,
+                gadget_handoff_xbl_post_endpoint_global: args
+                    .usb_gadget_handoff_xbl_post_endpoint_global,
+                gadget_handoff_xbl_stock_ep0_dma: args.usb_gadget_handoff_xbl_stock_ep0_dma,
+                gadget_handoff_xbl_raw_runstop: args.usb_gadget_handoff_xbl_raw_runstop,
+                gadget_handoff_xbl_direction_trb: args.usb_gadget_handoff_xbl_direction_trb,
+                gadget_handoff_xbl_trb_chain: args.usb_gadget_handoff_xbl_trb_chain,
                 gadget_handoff_start_ungated: args.usb_gadget_handoff_start_ungated,
                 gadget_handoff_event_ring_at_runstop: args.usb_gadget_handoff_event_ring_at_runstop,
                 gadget_handoff_gadget_restart_at_runstop: args
@@ -1347,6 +1431,16 @@ struct Aarch64BuildConfig {
     gadget_handoff_no_transfer_resource: bool,
     gadget_handoff_android_resource_order: bool,
     gadget_handoff_start_after_connect: bool,
+    gadget_handoff_xbl_deferred_setup: bool,
+    gadget_handoff_xbl_ep0_in_data: bool,
+    gadget_handoff_xbl_event_dma: bool,
+    gadget_handoff_xbl_ep0_config: bool,
+    gadget_handoff_xbl_between_ep0: bool,
+    gadget_handoff_xbl_post_endpoint_global: bool,
+    gadget_handoff_xbl_stock_ep0_dma: bool,
+    gadget_handoff_xbl_raw_runstop: bool,
+    gadget_handoff_xbl_direction_trb: bool,
+    gadget_handoff_xbl_trb_chain: bool,
     gadget_handoff_start_ungated: bool,
     gadget_handoff_event_ring_at_runstop: bool,
     gadget_handoff_gadget_restart_at_runstop: bool,
@@ -1415,6 +1509,16 @@ fn build_aarch64_kernel(
         gadget_handoff_no_transfer_resource,
         gadget_handoff_android_resource_order,
         gadget_handoff_start_after_connect,
+        gadget_handoff_xbl_deferred_setup,
+        gadget_handoff_xbl_ep0_in_data,
+        gadget_handoff_xbl_event_dma,
+        gadget_handoff_xbl_ep0_config,
+        gadget_handoff_xbl_between_ep0,
+        gadget_handoff_xbl_post_endpoint_global,
+        gadget_handoff_xbl_stock_ep0_dma,
+        gadget_handoff_xbl_raw_runstop,
+        gadget_handoff_xbl_direction_trb,
+        gadget_handoff_xbl_trb_chain,
         gadget_handoff_start_ungated,
         gadget_handoff_event_ring_at_runstop,
         gadget_handoff_gadget_restart_at_runstop,
@@ -1514,6 +1618,66 @@ fn build_aarch64_kernel(
     if gadget_handoff_start_after_connect {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_deferred_setup {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_DEFERRED_SETUP",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_ep0_in_data {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_EP0_IN_DATA",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_event_dma {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_EVENT_DMA",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_ep0_config {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_EP0_CONFIG",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_between_ep0 {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_BETWEEN_EP0",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_post_endpoint_global {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_POST_ENDPOINT_GLOBAL",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_stock_ep0_dma {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_STOCK_EP0_DMA",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_raw_runstop {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_RAW_RUNSTOP",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_direction_trb {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_DIRECTION_TRB",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_xbl_trb_chain {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_XBL_TRB_CHAIN",
             "1".to_owned(),
         );
     }

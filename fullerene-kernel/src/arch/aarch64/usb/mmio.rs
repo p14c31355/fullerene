@@ -137,6 +137,7 @@ pub(crate) const PWR_EVENT_LPM_OUT_L1: u32 = 1 << 13;
 pub(crate) const GCTL: usize = 0xc110;
 pub(crate) const GUCTL: usize = 0xc12c;
 pub(crate) const GUCTL2: usize = 0xc19c;
+pub(crate) const GTXFIFOSIZ0: usize = 0xc300;
 // DWC3_GUCTL1 is part of the global register block immediately after GCTL;
 // 0xc360 is in the FIFO-register area and is not a user-control register.
 pub(crate) const GUCTL1: usize = 0xc11c;
@@ -206,8 +207,10 @@ pub(crate) const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 
 pub(crate) const DCTL_CSFTRST: u32 = 1 << 30;
 pub(crate) const DCTL_SDIS: u32 = 1 << 0;
+pub(crate) const DCTL_APPL1RES: u32 = 1 << 23;
 pub(crate) const DCTL_HIRD_THRES_MASK: u32 = 0x1f << 24;
 pub(crate) const DCTL_HIRD_THRES_LITO: u32 = 0x10 << 24;
+pub(crate) const DCTL_HIRD_THRES_XBL: u32 = 0x07 << 24;
 pub(crate) const DCTL_KEEP_CONNECT: u32 = 1 << 19;
 pub(crate) const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
 pub(crate) const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
