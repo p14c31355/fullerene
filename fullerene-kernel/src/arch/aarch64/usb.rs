@@ -1710,6 +1710,57 @@ unsafe fn start_transfer(endpoint: usize, trb: *const Trb) -> bool {
     }
 }
 
+/// Retry an EP0 Start Transfer for up to `window_ms`.
+///
+/// The endpoint command engine rejects (or wedges) Start Transfer for a
+/// bounded window after the host's bus reset, while the identical command
+/// succeeds seconds later. The host keeps issuing IN tokens during the data
+/// phase and tolerates the NAKs until its 5 s control timeout, so a retry
+/// window measured in seconds still lands inside the host's first read
+/// instead of stalling the transfer and losing the whole enumeration.
+///
+/// A failed re-arm can also mean the previous owner's transfer is still
+/// active and its transfer resource is therefore consumed. msm-4.19 revokes
+/// every active transfer with End Transfer and waits 100 us on DWC_usb31
+/// before the resource is reusable; repeat that revocation between attempts
+/// instead of assuming the bus reset already flushed the transfer.
+unsafe fn retry_start_transfer(endpoint: usize, trb: *const Trb, window_ms: u64) -> bool {
+    let deadline = unsafe {
+        arch_counter().saturating_add(arch_counter_frequency().saturating_mul(window_ms) / 1000)
+    };
+    loop {
+        if unsafe { start_transfer(endpoint, trb) } {
+            return true;
+        }
+        if unsafe { arch_counter() } >= deadline {
+            return false;
+        }
+        unsafe {
+            let resource_index = if endpoint < 2 {
+                let index = EP0_RESOURCE_INDEX[endpoint];
+                if index == 0 { 1 } else { index }
+            } else {
+                1
+            };
+            send_ep_command(
+                endpoint,
+                DEPCMD_ENDTRANSFER
+                    | DEPCMD_CMDIOC
+                    | DEPCMD_HIPRI_FORCERM
+                    | ((resource_index as u32) << DEPCMD_PARAM_SHIFT),
+                0,
+                0,
+                0,
+            );
+        }
+        super::timer::delay_us(200);
+        unsafe {
+            send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+        }
+        super::timer::delay_us(300);
+    }
+}
+
 unsafe fn end_transfer(endpoint: usize) -> bool {
     let resource_index = if endpoint < 2 {
         let index = unsafe { EP0_RESOURCE_INDEX[endpoint] };
@@ -2527,17 +2578,7 @@ unsafe fn start_status(endpoint: usize) -> bool {
         // Same flaky Start Transfer window as the data phase: retry the
         // command instead of failing the status stage (SET_ADDRESS and
         // SET_CONFIGURATION become visible only after this ZLP completes).
-        let mut queued = start_transfer(endpoint, ep0_trb_ptr(0));
-        if !queued {
-            for _ in 0..50 {
-                super::timer::delay_us(200);
-                if start_transfer(endpoint, ep0_trb_ptr(0)) {
-                    queued = true;
-                    break;
-                }
-            }
-        }
-        queued
+        retry_start_transfer(endpoint, ep0_trb_ptr(0), 2500)
     }
 }
 
@@ -2645,15 +2686,10 @@ unsafe fn handle_setup() {
                 // A USB bus reset can invalidate the endpoint 1 transfer
                 // resource allocated at init, so the control data-phase Start
                 // Transfer is answered "No resource". Re-allocate the resource
-                // once, then retry the command.
+                // once, then retry the command inside the host's own 5 s
+                // control timeout instead of stalling the transfer early.
                 let _ = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
-                for _ in 0..50 {
-                    super::timer::delay_us(200);
-                    if start_transfer(1, ep0_trb_ptr(0)) {
-                        queued = true;
-                        break;
-                    }
-                }
+                queued = retry_start_transfer(1, ep0_trb_ptr(0), 2500);
             }
             trace_event(
                 TRACE_DESCRIPTOR_QUEUED,
@@ -5029,6 +5065,27 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         );
         trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, read(DSTS));
         prepare_trb(0, ep0_setup_ptr(), 8, TRB_CONTROL_SETUP);
+
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_stall_flush)]
+        {
+            // Fastboot's interrupted session can leave a SETUP packet pending
+            // in the EP0 FIFO, and this core rejects every endpoint command
+            // until the pending packet is flushed - the host's first SETUP
+            // token then goes unanswered until its own retry arrives seconds
+            // later. Linux's dwc3_ep0_stall_and_restart() clears exactly this
+            // state with an EP0 SETSTALL; the core auto-clears the stall when
+            // the next SETUP token arrives, so arm the fresh SETUP TRB at the
+            // same halted boundary Linux uses.
+            let _ = unsafe { send_ep_command(0, DEPCMD_SETSTALL, 0, 0, 0) };
+            trace_event(
+                TRACE_SETUP_QUEUED,
+                0x5354_4C46, // "STLF" stall-flush arm outcome
+                EP0_SETUP_ARMED as u32,
+                0,
+                0,
+                read(DSTS),
+            );
+        }
         // C3: DEPSTARTCFG + both EP0 SETEPCONFIG/SETTRANSFRESOURCE commands
         // done (or failed fast), DALEPENA/DEVTEN set, setup TRB prepared.
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]

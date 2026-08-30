@@ -1192,6 +1192,65 @@ identity.
     difference without changing the current hardware localization: the
     surviving USB2 attach is still before the first `STARTTRANSFER`/TRB fetch.
 
+65. The 2026-08-30 session first re-calibrated the host side. `adb reboot`
+    returns the handset to a host-visible Android device after 19 s and
+    reports `bootreason=reboot`; every probe run instead reported
+    `bootreason=watchdog`, so the reset that ends each attempt is a real
+    unpettable bite at roughly attach+7-8 s (kernel entry +10 s), matching the
+    previously unidentified biter. The bite-to-Android time (19 s) turns the
+    journal timestamps into a coarse clock: Android always re-appeared at
+    attach+26-29 s across all runs below. The signal-gate readout was
+    re-verified dead in the current build: `--signal-cmd-gate always`
+    (unconditionally true), `setup`, and the guaranteed-false hex gate all
+    returned at 37-39 s with identical journal shape, because the TRUE path's
+    `park_for_seconds(0)` PSCI reset and the FALSE path's 90 s park are both
+    cut by the same unpettable bite, and neither the DCTL Run/Stop stop nor
+    the QSCRATCH drop publishes a host-visible disconnect. The sixth-session
+    gate "negatives" therefore cannot distinguish not-evaluated from false.
+    All runs remained non-destructive `fastboot boot`; no flash or erase was
+    used.
+
+66. The EP0 data/status Start Transfer retry window was extended from
+    50x200 us (~35 ms) to a 2.5 s time-based window
+    (`retry_start_transfer`), on the documented observation that the host
+    keeps issuing IN tokens and tolerates the NAKs until its own 5 s control
+    timeout, so a late data-phase arm would still complete the first
+    descriptor read inside the window. The artifact (SHA-256 prefix
+    `bdcf882eb4ff2f9b`) still produced the standard HS attach, first
+    descriptor `error -110`, and the watchdog recovery to Android. The same
+    window with the msm-4.19 DWC_usb31 revocation contract repeated between
+    attempts - `ENDTRANSFER(CMDIOC|HIPRI_FORCERM)`, the 100 us settle, and a
+    fresh `SETTRANSFRESOURCE` - also produced no change (SHA-256 prefix
+    `b3eec7bfde2563a2`). This bounds the "zombie transfer owns the EP1
+    resource" explanation together with the pure command-wedge explanation.
+
+67. A new gated differential `--usb-gadget-handoff-ep0-stall-flush` added the
+    Linux `dwc3_ep0_stall_and_restart()` EP0 `SETSTALL` flush before the
+    direct Run/Stop boundary. With the flush bundled with a pre-Run/Stop
+    halted-boundary SETUP arm, the physical attach disappeared entirely
+    (SHA-256 prefix `5cda236be121ec2b`), reproducing the documented
+    pre-link-ON Start Transfer wedge even after the flush. With the flush
+    alone the attach returned and the first descriptor read still timed out
+    (SHA-256 prefix `d6c882c57142f3cc`). The flush-only form is kept as the
+    default of that cfg; the halted-boundary arm was removed from the cfg.
+    A no-`--u0-arm-probe` control (SHA-256 prefix `b8aa49222ed74446`) ruled
+    out the post-failure destructive endpoint rebuild as the cause of the
+    -110.
+
+68. Re-reading the sixteenth-session evidence with the direction split in
+    mind: the EP0 OUT (SETUP) Start Transfer provably succeeds - the arm
+    lands at U0 and the host's SETUP is ACKed - while only the EP0 IN
+    (data/status) direction fails. With 16-bit `PHYIF=1` the data phase
+    demonstrably reached the wire (the host reported `-71` protocol errors
+    instead of a timeout), so the data-phase arm itself is capable of
+    publishing a transfer; in 8-bit UTMI the payload never completes a
+    host-valid packet. `lito-usb.dtsi` does not set
+    `snps,phyif-utmi-16-bit`, so 8-bit remains the reference width and the
+    16-bit `-71` readings are wrong-width garbage rather than a better
+    baseline. The next lever is therefore EP1-specific state at the first
+    data-phase arm (its endpoint context, FIFO, or interrupter view versus
+    EP0 OUT), not further global retry timing.
+
 The relevant official references are:
 
 - [Android Lito USB device tree](https://android.googlesource.com/kernel/msm-extra/devicetree/+/refs/tags/android-11.0.0_r0.56/qcom/lito-usb.dtsi), including the DWC3 IRQ order, DMA pool, clocks, GSI offsets, and bus resources.
