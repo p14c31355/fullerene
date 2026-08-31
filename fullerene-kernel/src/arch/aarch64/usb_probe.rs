@@ -1007,6 +1007,25 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         let attached = probe_counter().saturating_add(frequency.saturating_mul(3) / 2);
         poll_until_probe_ticks(frequency, attached);
     }
+    // detach: after the post-arm sample, drop the pull-up for good (the
+    // QSCRATCH session overrides here plus the PHY's VBUSVLDEXT0 via the
+    // --signal-drop-vbusvld env; the PHY latch owns the pull-up past DCTL
+    // and the QSCRATCH bits) and then publish the diag code as code*1.5 s
+    // before the reset. The host aborts the enumeration on the disconnect
+    // and stops issuing the port resets whose bus reset kills the session
+    // at attach+5.5 s, so the whole ladder escapes the death window.
+    if cmd_gate_is("detach") {
+        let code = usb::diag_readout_code().clamp(1, 10);
+        trace_gate(0x4454_4143 | (code & 0xff)); // "DTAC" + code
+        usb::ep0_signal_drop_pullup();
+        let wait_until =
+            probe_counter().saturating_add(frequency.saturating_mul(u64::from(code)) * 3 / 2);
+        while probe_counter() < wait_until {
+            usb::wdt_pet();
+        }
+        trace_gate(TRACE_WDT);
+        reset_after_probe_failure();
+    }
     // sdis: stop the core (the host-visible disconnect the always gate uses)
     // right after the post-arm sample, then publish the diag code as
     // code*1.5 s of petted wait before the reset. The host aborts the
@@ -1015,7 +1034,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // attach+5.5 s, so the whole 1..9 ladder escapes the death window and
     // lands 1.5 s apart - far beyond the +-1 s Android boot jitter.
     if cmd_gate_is("sdis") {
-        let code = usb::diag_readout_code().clamp(1, 9);
+        let code = usb::diag_readout_code().clamp(1, 10);
         trace_gate(0x5344_4953 | (code & 0xff)); // "SDIS" + code
         let _ = usb::gate_true_stop_device();
         let wait_until =
@@ -1052,7 +1071,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     if usb::ep1_data_phase_complete() {
         stable_ep0_park();
     }
-    let code = usb::diag_readout_code().clamp(1, 9) as u64;
+    let code = usb::diag_readout_code().clamp(1, 10) as u64;
     trace_gate(0x5245_4144 | ((code & 0xff) as u32)); // "MRAD" + code
     let wait_until = probe_counter().saturating_add(frequency.saturating_mul(code) * 9 / 20);
     while probe_counter() < wait_until {

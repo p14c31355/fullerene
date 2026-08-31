@@ -154,25 +154,16 @@ pub(super) unsafe fn init_hsphy() {
             write_volatile(hsphy_reg(offset), value);
         }
 
-        // Bramble does not declare an external-calibration resistor, so the
-        // upstream driver enables the internal RTUNE path.
-        hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
+        // phy-msm-snps-hs.c stops here for the analog setup: VREGBYPASS,
+        // the suspend-N hold, SLEEPM, then the POR release. The earlier
+        // RTUNE_SEL write and the ATE/test-toggle commit belong to the older
+        // QUSB v1/v2 drivers, not this femto PHY, and the test-register
+        // toggles mux analog state the overrides above depend on.
         hsphy_update(
             HSPHY_COMMON2,
             HSPHY_COMMON2_VREGBYPASS,
             HSPHY_COMMON2_VREGBYPASS,
         );
-        // The SNPS Femto driver uses the ATE/test toggle sequence to commit
-        // the PHY's analog override values before releasing POR.
-        hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_ATE_RESET, HSPHY_UTMI_ATE_RESET);
-        hsphy_update(
-            HSPHY_TEST1,
-            HSPHY_TEST1_TESTDATAOUTSEL,
-            HSPHY_TEST1_TESTDATAOUTSEL,
-        );
-        hsphy_update(HSPHY_TEST1, HSPHY_TEST1_TOGGLE_2WR, HSPHY_TEST1_TOGGLE_2WR);
-        hsphy_update(HSPHY_COMMON0, HSPHY_COMMON0_VATESTENB_MASK, 0);
-        hsphy_update(HSPHY_TEST0, HSPHY_TEST0_DATA_MASK, 0);
         hsphy_update(
             HSPHY_CTRL2,
             HSPHY_CTRL2_SUSPEND_N_SEL | HSPHY_CTRL2_SUSPEND_N,

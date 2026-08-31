@@ -871,6 +871,9 @@ unsafe fn harvest_trace_outcome() {
 ///   9 = no completion and HWO still set: the core never consumed the
 ///       armed TRB (the doorbell/resource was lost after the command
 ///       retired)
+///  10 = a completion happened AND the control status was queued
+///       (TRACE_STATUS_QUEUED >= 1): the SET_ADDRESS status arm ran, so a
+///       failure past this point is wire-level, not arm-machinery
 /// DESC counts every TRACE_DESCRIPTOR_QUEUED entry, and each DataIn arm
 /// writes TWO (the descriptor record plus the "DARM" marker), so two arms
 /// (read/64 attempts 1 + 2) give DESC >= 4. DARM holds the NEWEST arm
@@ -893,6 +896,9 @@ pub fn diag_readout_code() -> u32 {
                             code = 6;
                             if TRACE_HARVEST_EP1_XFER != 0xFFFF_FFFF {
                                 code = 7;
+                                if TRACE_HARVEST_STATUSQ >= 1 {
+                                    code = 10;
+                                }
                             } else {
                                 // Post-mortem on the data TRB the arm
                                 // queued: the core clears HWO over DMA

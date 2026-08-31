@@ -157,11 +157,13 @@ const QMP_INIT: [(usize, u32); 146] = [
 pub(super) static mut ACTIVE_QMP_INIT: [(usize, u32); 146] = QMP_INIT;
 pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
 pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] = [
-    (0x6c, 0x67),
-    (0x70, 0xc8),
-    // Sentinel: Bramble's QUSB2 override is only two entries. The PHY write
-    // loop skips this entry and therefore leaves the vendor register intact.
-    (usize::MAX, 0),
+    // The stock lito-usb.dtsi (android-msm-bramble-4.19-android11-qpr1)
+    // qcom,param-override-seq: TUNE1 0x63, TUNE2 0x85, TUNE3 0x17. The
+    // earlier (0x67, 0xc8, no-TUNE3) web-sourced production table was never
+    // validated against this branch's own device tree.
+    (0x6c, 0x63),
+    (0x70, 0x85),
+    (0x74, 0x17),
 ];
 
 /// Install the complete PHY programming properties from the bootloader DTB.
