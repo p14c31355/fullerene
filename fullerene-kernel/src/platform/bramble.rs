@@ -1006,6 +1006,31 @@ const RPMH_LDOA12: [u8; 8] = rpmh_id(b"ldoa12");
 const RPMH_LDOA2: [u8; 8] = rpmh_id(b"ldoa2");
 const RPMH_LDOA9: [u8; 8] = rpmh_id(b"ldoa9");
 const RPMH_LDOA18: [u8; 8] = rpmh_id(b"ldoa18");
+/// The `rpmh-regulator-cxlvl` resource consumed by the GCC block
+/// (`vdd_cx-supply`/`vdd_cx_ao-supply` on the `qcom,gcc@100000` node).  Every
+/// USB clock branch and the USB30 GDSC live inside the CX corner domain, so
+/// the ARC vote is part of the USB gadget power contract even though no USB
+/// node references it directly.
+const RPMH_CXLVL: [u8; 8] = rpmh_id(b"cx.lvl");
+
+/// ARC levels from `dt-bindings/regulator/qcom,rpmh-regulator-levels.h` as
+/// mapped by the lito `vdd_corner` table (`vdd-level-lito.h`):
+/// VDD_LOWER = LOW_SVS and VDD_LOW = SVS.
+pub const RPMH_REGULATOR_LEVEL_LOW_SVS: u32 = 64;
+pub const RPMH_REGULATOR_LEVEL_SVS: u32 = 128;
+
+/// CX corner required for the USB clock plan of one bus vote. The lito GCC
+/// driver's rate tables are the binding between `qcom,core-clk-rate` and the
+/// CX corner: `gcc_usb30_prim_master_clk_src` allows 133333333 Hz only from
+/// VDD_LOW (SVS), and the UTMI/AUX 19.2 MHz sources require VDD_LOWER
+/// (LOW_SVS). The winning vote is therefore SVS for the nominal controller
+/// rate and LOW_SVS for the HS/gated states.
+pub const fn usb_cx_level(vote: UsbBusVote) -> u32 {
+    match vote {
+        UsbBusVote::Nominal => RPMH_REGULATOR_LEVEL_SVS,
+        UsbBusVote::Svs | UsbBusVote::Suspend | UsbBusVote::Minimum => RPMH_REGULATOR_LEVEL_LOW_SVS,
+    }
+}
 
 const BRAMBLE_HS_PHY_RAILS: [UsbRailResource; 3] = [
     UsbRailResource {
@@ -1013,7 +1038,11 @@ const BRAMBLE_HS_PHY_RAILS: [UsbRailResource; 3] = [
         rpmh_resource_id: RPMH_LDOA5,
         min_uv: 880_000,
         max_uv: 880_000,
-        max_load_ua: 0,
+        // lito-regulators.dtsi gives ldoa5 `qcom,mode-threshold-currents =
+        // <0 1>`: any nonzero consumer load requires HPM. The DT's
+        // `qcom,init-mode` is only the firmware boot state; the PHY's
+        // 0.88 V rail must run HPM while the UTMI interface is live.
+        max_load_ua: 19_000,
         program_voltage: true,
         owner: PowerOwner::SecureFirmware,
     },
@@ -2636,10 +2665,33 @@ pub unsafe fn disable_usb30_gdsc() -> bool {
     false
 }
 
+/// Submit the CX ARC vote demanded by the GCC USB clock tree. The `gcc`
+/// node's `vdd_cx-supply` is `VDD_CX_LEVEL` (`cx.lvl`, `S1A`), whose DT init
+/// level is RETENTION, so an unvoted CX corner drops the USB30 GDSC domain
+/// and the USB clock branches out of operating spec even while the GDSC
+/// reads PWR_ON. Linux issues this vote from the clock framework's
+/// `vdd_class` when the USB RCGs are prepared; the vote rides the same
+/// single-command VRM transport with the level as the data word.
+pub unsafe fn apply_usb_cx_vote(vote: UsbBusVote) -> bool {
+    let Some(address) = (unsafe { command_db_read_addr(&RPMH_CXLVL) }) else {
+        return false;
+    };
+    let command = RpmhBcmCommand {
+        address,
+        data: usb_cx_level(vote),
+    };
+    unsafe { send_rpmh_command_batch(core::slice::from_ref(&command)) }
+}
+
 /// Apply one complete Android-style performance transition.  The bus vote is
 /// issued only after the clock source has been selected, matching the order
 /// in which the Qualcomm glue raises the core clock and interconnect vote.
 pub unsafe fn apply_usb_performance(vote: UsbBusVote) -> bool {
+    // The GCC node's `vdd_cx-supply` must be raised before any USB clock is
+    // prepared; a collapsed CX corner leaves the branch enable stalled.
+    if unsafe { !apply_usb_cx_vote(vote) } {
+        return false;
+    }
     if unsafe { !configure_usb_clocks(vote) } {
         return false;
     }
@@ -2955,9 +3007,13 @@ pub unsafe fn apply_usb_bus_vote(vote: UsbBusVote) -> bool {
     unsafe { send_usb_rpmh_vote(vote) }
 }
 
-const RPMH_REGULATOR_VRM_VOLTAGE: u32 = 0;
-const RPMH_REGULATOR_ENABLE: u32 = 1;
-const RPMH_REGULATOR_MODE: u32 = 2;
+// VRM command sub-addresses from the msm-4.19 rpmh regulator driver
+// (`RPMH_REGULATOR_REG_VRM_VOLTAGE`, `_ENABLE`, `_MODE`): the enable and mode
+// requests are issued at resource+0x4 and resource+0x8, not at consecutive
+// byte addresses.
+const RPMH_REGULATOR_VRM_VOLTAGE: u32 = 0x0;
+const RPMH_REGULATOR_ENABLE: u32 = 0x4;
+const RPMH_REGULATOR_MODE: u32 = 0x8;
 const RPMH_REGULATOR_MODE_LPM: u32 = 5;
 const RPMH_REGULATOR_MODE_HPM: u32 = 7;
 
@@ -3081,6 +3137,20 @@ pub unsafe fn apply_usb_power(enabled: bool, super_speed: bool) -> bool {
     true
 }
 
+/// Re-assert every RPMh vote the USB gadget domain depends on: the CX ARC
+/// corner (`gcc` `vdd_cx-supply`), the interconnect BCM vectors
+/// (`qcom,msm-bus,vectors-KBps`), and the PHY rail enables. Fastboot's votes
+/// die with its exit and `apply_usb_power` early-returns once its state flag
+/// matches, so the keepalive paths use this refresh instead: a VRM enable
+/// request that never leaves the APSS cannot hold a domain whose CX corner
+/// has already been demoted to the DT init level (RETENTION).
+pub unsafe fn refresh_usb_domain_votes(vote: UsbBusVote, super_speed: bool) -> bool {
+    let mut ok = unsafe { apply_usb_cx_vote(vote) };
+    ok &= unsafe { send_usb_rpmh_vote(vote) };
+    ok &= unsafe { refresh_usb_power(super_speed) };
+    ok
+}
+
 /// Re-send the USB rail enable requests unconditionally. `apply_usb_power`
 /// early-returns when its state flag already matches, which silently turns
 /// the periodic keepalive into a no-op: the initial vote is the only vote
@@ -3173,6 +3243,9 @@ mod tests {
             *b"ldoa5\0\0\0"
         );
         assert_eq!(resources.power.hs_phy_rails[0].min_uv, 880_000);
+        // ldoa5 `qcom,mode-threshold-currents = <0 1>`: the 0.88 V rail must
+        // be requested in HPM for any nonzero PHY load.
+        assert_eq!(resources.power.hs_phy_rails[0].max_load_ua, 19_000);
         assert_eq!(resources.power.hs_phy_rails[1].min_uv, 1_704_000);
         assert_eq!(resources.power.hs_phy_rails[1].max_uv, 1_800_000);
         assert_eq!(resources.power.hs_phy_rails[1].max_load_ua, 19_000);
@@ -3338,6 +3411,26 @@ mod tests {
             BRAMBLE_USB_RESOURCES.typec_irq.trigger,
             IrqTrigger::RisingEdge
         );
+    }
+
+    #[test]
+    fn cx_arc_vote_tracks_the_lito_gcc_rate_tables() {
+        assert_eq!(RPMH_CXLVL, *b"cx.lvl\0\0");
+        assert_eq!(usb_cx_level(UsbBusVote::Nominal), RPMH_REGULATOR_LEVEL_SVS);
+        assert_eq!(usb_cx_level(UsbBusVote::Svs), RPMH_REGULATOR_LEVEL_LOW_SVS);
+        assert_eq!(
+            usb_cx_level(UsbBusVote::Suspend),
+            RPMH_REGULATOR_LEVEL_LOW_SVS
+        );
+    }
+
+    #[test]
+    fn vrm_requests_use_the_reference_sub_addresses() {
+        // drivers/regulator/qcom-rpmh-regulator.c:
+        // RPMH_REGULATOR_REG_VRM_VOLTAGE/ENABLE/MODE = 0x0/0x4/0x8.
+        assert_eq!(RPMH_REGULATOR_VRM_VOLTAGE, 0x0);
+        assert_eq!(RPMH_REGULATOR_ENABLE, 0x4);
+        assert_eq!(RPMH_REGULATOR_MODE, 0x8);
     }
 
     #[test]

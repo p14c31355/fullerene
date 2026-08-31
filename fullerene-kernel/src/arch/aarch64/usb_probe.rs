@@ -563,15 +563,21 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // Keepalive: the restored core domain is collapsed by RPMh ~5-8 s after
     // the attach wakes it even though the entry-time vote was accepted, and
     // apply_usb_power's state flag makes the park keepalive a no-op. Re-arm
-    // the rails and the GDSC on a 0.5 s cadence so the SETUP window and the
-    // parks that follow it run inside a live core.
+    // the CX corner, the interconnect vote, the rails, and the GDSC on a
+    // 0.5 s cadence so the SETUP window and the parks that follow it run
+    // inside a live core.
     let mut next_keepalive = probe_counter().saturating_add(frequency / 2);
     // lnk-nib was sampled at entry, before the re-reset.
     loop {
         usb::wdt_pet();
         usb::poll();
         if probe_counter() >= next_keepalive {
-            let _ = unsafe { platform::bramble::refresh_usb_power(true) };
+            let _ = unsafe {
+                platform::bramble::refresh_usb_domain_votes(
+                    platform::bramble::UsbBusVote::Nominal,
+                    true,
+                )
+            };
             let _ = unsafe { platform::bramble::force_enable_usb30_gdsc() };
             next_keepalive = probe_counter().saturating_add(frequency / 2);
         }

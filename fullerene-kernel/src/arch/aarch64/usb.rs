@@ -4945,6 +4945,16 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             performance.pm_qos_latency_us as u64,
         );
         log_hex("usb: interconnect paths=", bus_vectors.len() as u64);
+        // The lito DT wires the USB domain's two RPMh votes outside every USB
+        // node: the `gcc` block's `vdd_cx-supply` (cx.lvl, DT init RETENTION)
+        // and the glue node's `qcom,msm-bus,vectors-KBps`. Fastboot's votes
+        // die with its exit, so both are re-asserted here for the handoff as
+        // well — this is the missing vote behind the ~5-8 s post-attach
+        // collapse of the USB clock branch. Unlike the clock retune below,
+        // these requests do not disturb a live Fastboot clock domain: they
+        // only raise resources the DT already requires for this controller.
+        let _ = super::platform::bramble::apply_usb_cx_vote(performance.vote);
+        let _ = super::platform::bramble::apply_usb_bus_vote(performance.vote);
         // Select the RCG source before enabling its branch clocks and before
         // publishing the corresponding interconnect vote.  Handoff mode
         // intentionally skips this write because Fastboot owns a live clock
@@ -6997,8 +7007,12 @@ pub fn park_for_seconds(seconds: u64) -> ! {
                 // apply_usb_power early-returns once its state flag matches,
                 // so the periodic rail re-vote must go through the refresh
                 // path: the GDSC force-enable below cannot hold a domain
-                // whose parent supply RPMh has already dropped.
-                let _ = super::platform::bramble::refresh_usb_power(true);
+                // whose CX corner and interconnect vote RPMh has already
+                // dropped.
+                let _ = super::platform::bramble::refresh_usb_domain_votes(
+                    super::platform::bramble::UsbBusVote::Nominal,
+                    true,
+                );
                 let _ = super::platform::bramble::force_enable_usb30_gdsc();
                 next_keepalive = arch_counter().saturating_add(keepalive_period);
             }
