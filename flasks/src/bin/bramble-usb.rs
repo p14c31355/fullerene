@@ -312,6 +312,13 @@ struct LoopArgs {
     /// Gate the attach on the previous attempt's STARTTRANSFER outcome.
     #[arg(long = "signal-cmd-gate", value_name = "WHEN")]
     signal_cmd_gate: Option<String>,
+    /// Publish one PM8150 PON register through the attach-delay channel:
+    /// seq (previous reset-reason bucket, the default), or a raw byte from
+    /// wd2 (PMIC-watchdog enable/type), s1/s2 (watchdog timers), ctl, warm,
+    /// or soft (reset-reason registers). The byte rides as
+    /// (value + 1) * 300 ms capped at 9.6 s.
+    #[arg(long = "pon-readout", value_name = "REG")]
+    pon_readout: Option<String>,
     /// Gate on the previous SETTRANSFRESOURCE raw DEPCMD register.
     #[arg(long = "signal-rsc-gate", value_name = "RAW")]
     signal_rsc_gate: Option<String>,
@@ -411,6 +418,7 @@ impl Default for LoopArgs {
             observe_secs: None,
             dma_origin: None,
             signal_cmd_gate: None,
+            pon_readout: None,
             signal_rsc_gate: None,
             signal_cfg_gate: None,
             signal_ramclk_gate: None,
@@ -1701,6 +1709,10 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if let Some(value) = &args.signal_cmd_gate {
         arguments.push("--usb-signal-cmd-gate".to_owned());
+        arguments.push(value.clone());
+    }
+    if let Some(value) = &args.pon_readout {
+        arguments.push("--usb-pon-readout".to_owned());
         arguments.push(value.clone());
     }
     if let Some(value) = &args.signal_rsc_gate {

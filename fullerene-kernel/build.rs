@@ -348,6 +348,9 @@ fn main() {
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE") {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_EVT_DATA_GATE={value}");
         }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_PON_READOUT") {
+            println!("cargo:rustc-env=FULLERENE_USB_PON_READOUT={value}");
+        }
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE") {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_RSC_GATE={value}");
         }
@@ -506,6 +509,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_CFG_GATE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_RAMCLK_GATE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PON_READOUT");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SKIP_TYPEC_SPMI");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SIGNAL_DIAG_PUBLISH");

@@ -851,25 +851,32 @@ unsafe fn harvest_trace_outcome() {
 }
 
 /// Composite "diag" gate readout: re-harvest THIS run's live trace and fold
-/// the enumeration progress into a 1..6 code. Each level is the farthest
-/// point reached by the host's descriptor-read sequence (read/8, then the
-/// read/64 that currently times out with -110):
+/// the enumeration progress into a 1..9 code. The host is a 6.8 xHCI kernel
+/// using the "new scheme", so the FIRST control transfer is already the
+/// 64-byte device-descriptor read and every SETUP below is one of its two
+/// attempts (there is no 8-byte first read):
 ///   1 = no SETUP ever reached EP0 (event ring / OUT path / CPU hung)
-///   2 = only the first SETUP (read/8); the read/64 SETUP was never
-///       delivered (SETUP TRB re-arm lost, event missed, or CPU hung after)
-///   3 = the read/64 SETUP was dispatched but queued no DataIn (on_setup
+///   2 = only the first SETUP (read/64 attempt 1)
+///   3 = both attempts dispatched but the newest queued no DataIn (on_setup
 ///       stalled or answered with a non-data action)
 ///   4 = the read/64 data phase was queued but its Start Transfer failed
 ///   5 = the read/64 data phase armed cleanly but the core never fetched
 ///       the data TRB
 ///   6 = the core fetched the read/64 data TRB; the IN token went
 ///       unanswered (link / core DMA / host side)
+///   7 = an EP1 transfer-complete event arrived after the arm (the data
+///       phase left the core; status 0 = the host should have the bytes)
+///   8 = no completion, but the data TRB's HWO was cleared over DMA: the
+///       core consumed the TRB and the transfer silently died (FIFO/PHY)
+///   9 = no completion and HWO still set: the core never consumed the
+///       armed TRB (the doorbell/resource was lost after the command
+///       retired)
 /// DESC counts every TRACE_DESCRIPTOR_QUEUED entry, and each DataIn arm
 /// writes TWO (the descriptor record plus the "DARM" marker), so two arms
-/// (read/8 + read/64) give DESC >= 4. DARM holds the NEWEST arm outcome,
-/// which is the read/64 arm once DESC >= 4. EP1_NRDY counts the
-/// XferNotReady(CONTROL_DATA) events on the data endpoint: one per fetched
-/// data TRB, so >= 2 proves the read/64 data TRB was fetched.
+/// (read/64 attempts 1 + 2) give DESC >= 4. DARM holds the NEWEST arm
+/// outcome, which is the newest read/64 arm once DESC >= 4. EP1_NRDY counts
+/// the XferNotReady(CONTROL_DATA) events on the data endpoint, one per
+/// attempt.
 pub fn diag_readout_code() -> u32 {
     unsafe {
         harvest_trace_outcome();
@@ -884,12 +891,41 @@ pub fn diag_readout_code() -> u32 {
                         code = 5;
                         if TRACE_HARVEST_EP1_NRDY >= 2 {
                             code = 6;
+                            if TRACE_HARVEST_EP1_XFER != 0xFFFF_FFFF {
+                                code = 7;
+                            } else {
+                                // Post-mortem on the data TRB the arm
+                                // queued: the core clears HWO over DMA
+                                // when it consumes the TRB, so a still-set
+                                // HWO means the transfer never left the
+                                // doorbell. Invalidate first: the writeback
+                                // is the core's, not ours.
+                                let trb = ep0_trb_ptr(ep0_trb_index(1));
+                                cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                                let ctrl = read_volatile(addr_of!((*trb).ctrl));
+                                if ctrl & TRB_HWO == 0 {
+                                    code = 8;
+                                } else {
+                                    code = 9;
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         code
+    }
+}
+
+/// True when the newest EP1 transfer-complete event reports success (status
+/// 0): the read/64 data phase left the core and the host should hold the
+/// descriptor bytes. The mrad tail stable-parks on this instead of resetting,
+/// because a live data phase is worth keeping the session up for.
+pub fn ep1_data_phase_complete() -> bool {
+    unsafe {
+        harvest_trace_outcome();
+        TRACE_HARVEST_EP1_XFER == 0
     }
 }
 

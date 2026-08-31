@@ -252,6 +252,14 @@ struct Args {
     #[arg(long = "usb-signal-cmd-gate", value_name = "WHEN")]
     usb_signal_cmd_gate: Option<String>,
 
+    /// Publish one PM8150 PON register through the attach-delay channel:
+    /// seq (previous reset-reason bucket, the default), or a raw byte from
+    /// wd2 (PMIC-watchdog enable/type), s1/s2 (watchdog timers), ctl, warm,
+    /// or soft (reset-reason registers). The byte rides as
+    /// (value + 1) * 300 ms capped at 9.6 s.
+    #[arg(long = "usb-pon-readout", value_name = "REG")]
+    usb_pon_readout: Option<String>,
+
     /// Gate the attach on the previous attempt's SETTRANSFRESOURCE raw
     /// DEPCMD register (hex; healthy allocation returns 0x10000).
     #[arg(long = "usb-signal-rsc-gate", value_name = "RAW")]
@@ -1302,6 +1310,7 @@ fn main() -> io::Result<()> {
                 quiet_after: args.usb_quiet_after,
                 dma_origin: args.usb_dma_origin.clone(),
                 signal_cmd_gate: args.usb_signal_cmd_gate.clone(),
+                pon_readout: args.usb_pon_readout.clone(),
                 signal_rsc_gate: args.usb_signal_rsc_gate.clone(),
                 signal_cfg_gate: args.usb_signal_cfg_gate.clone(),
                 signal_ramclk_gate: args.usb_signal_ramclk_gate,
@@ -1487,6 +1496,7 @@ struct Aarch64BuildConfig {
     quiet_after: Option<u64>,
     dma_origin: Option<String>,
     signal_cmd_gate: Option<String>,
+    pon_readout: Option<String>,
     signal_rsc_gate: Option<String>,
     signal_cfg_gate: Option<String>,
     signal_ramclk_gate: Option<u32>,
@@ -1566,6 +1576,7 @@ fn build_aarch64_kernel(
         quiet_after,
         dma_origin,
         signal_cmd_gate,
+        pon_readout,
         signal_rsc_gate,
         signal_cfg_gate,
         signal_ramclk_gate,
@@ -1881,6 +1892,9 @@ fn build_aarch64_kernel(
         // retry) so its observation window closes while the WDT is still
         // silent and the reset timing/bootreason stays a clean readout.
         push_env("FULLERENE_AARCH64_USB_PROBE_SINGLE_ATTEMPT", "1".to_owned());
+    }
+    if let Some(value) = pon_readout {
+        push_env("FULLERENE_AARCH64_USB_PON_READOUT", value);
     }
     if let Some(value) = signal_rsc_gate {
         push_env("FULLERENE_AARCH64_USB_SIGNAL_RSC_GATE", value);

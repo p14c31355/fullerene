@@ -1007,26 +1007,57 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         let attached = probe_counter().saturating_add(frequency.saturating_mul(3) / 2);
         poll_until_probe_ticks(frequency, attached);
     }
+    // sdis: stop the core (the host-visible disconnect the always gate uses)
+    // right after the post-arm sample, then publish the diag code as
+    // code*1.5 s of petted wait before the reset. The host aborts the
+    // in-flight control transfer on the disconnect (-ENODEV) and never
+    // issues the port reset whose bus reset kills the session at
+    // attach+5.5 s, so the whole 1..9 ladder escapes the death window and
+    // lands 1.5 s apart - far beyond the +-1 s Android boot jitter.
+    if cmd_gate_is("sdis") {
+        let code = usb::diag_readout_code().clamp(1, 9);
+        trace_gate(0x5344_4953 | (code & 0xff)); // "SDIS" + code
+        let _ = usb::gate_true_stop_device();
+        let wait_until =
+            probe_counter().saturating_add(frequency.saturating_mul(u64::from(code)) * 3 / 2);
+        while probe_counter() < wait_until {
+            usb::wdt_pet();
+            usb::poll();
+        }
+        trace_gate(TRACE_WDT);
+        reset_after_probe_failure();
+    }
     // The tail reset is the one reliable PSCI readout left (the APSS bite is
-    // not writable from EL1 and every park is this reset's victim): encode
-    // the composite diag code as code*700 ms of extra poll-serviced wait
-    // before the reset, so the reset time (the Android return time) names
-    // the code. 700 ms keeps every code's PSCI reset ahead of the ~5.5 s
-    // post-attach death (eval ~+1 s + 6*0.7 = +5.2 s), so all six buckets
-    // land on the device-side reset instead of the death, 0.7 s apart. The
-    // wait also doubles as an enumeration second chance: keep servicing
-    // EP0, and the moment the data phase actually arms (progress),
-    // stable-park instead of resetting so enumeration can finish inside a
-    // live session.
-    let code = usb::diag_readout_code().clamp(1, 6) as u64;
+    // not writable from EL1 and every park is this reset's victim). Two
+    // stages:
+    //   1. A 0.4 s poll-serviced settle: the eval fires on the FIRST event
+    //      (the read/64 SETUP), so the data-phase arm and - in a working
+    //      system - its transfer completion both land inside the settle. The
+    //      EP1 state sampled afterwards is a post-mortem, not a race.
+    //   2. Publish the composite diag code as 450 ms of poll-serviced wait
+    //      per code before the reset, so the reset time (the Android return
+    //      time) names the code 1..9. The 450 ms step keeps code 9's reset
+    //      (eval + 0.4 + 9*0.45 = +4.45 s) inside the ~5 s post-attach death
+    //      window that cuts every park and the stable-park path.
+    // The old stable-park short-circuit is folded into the sample: the data
+    // phase in the current regime always arms before the eval, so
+    // probe_ep0_progress() was true in every tail iteration and the reset -
+    // the only working readout - never fired. Park here only when the data
+    // phase completed with success and the host actually holds the bytes.
+    let settle_until = probe_counter().saturating_add(frequency * 2 / 5);
+    while probe_counter() < settle_until {
+        usb::wdt_pet();
+        usb::poll();
+    }
+    if usb::ep1_data_phase_complete() {
+        stable_ep0_park();
+    }
+    let code = usb::diag_readout_code().clamp(1, 9) as u64;
     trace_gate(0x5245_4144 | ((code & 0xff) as u32)); // "MRAD" + code
-    let wait_until = probe_counter().saturating_add(frequency.saturating_mul(code) * 7 / 10);
+    let wait_until = probe_counter().saturating_add(frequency.saturating_mul(code) * 9 / 20);
     while probe_counter() < wait_until {
         usb::wdt_pet();
         usb::poll();
-        if usb::probe_ep0_progress() {
-            stable_ep0_park();
-        }
     }
     trace_gate(TRACE_WDT);
     reset_after_probe_failure();
@@ -1205,9 +1236,52 @@ extern "C" fn usb_probe_entry() -> ! {
     // jitter that swamps 1 s steps.
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     let pon_delay_ms = {
-        let pon_ms = match unsafe { platform::bramble::read_pm8150_pon_reset_code() } {
-            Some(code) => (u64::from(code) + 1) * 300,
-            None => 0,
+        // FULLERENE_USB_PON_READOUT selects what rides the attach-delay
+        // channel as (steps) * 300 ms:
+        //   seq (default)      the previous reset-reason bucket, +1 step
+        //   imem               the IMEM restart-reason cookie: 1 step for
+        //                      the recovery chain's 0x77665500, 2 steps for
+        //                      a zero cookie, else 2 + low 5 bits
+        //   forceN             N steps, a fixed attach shift for the
+        //                      entry-vs-attach reference experiments
+        //   s1|s2|ctl|wd2|     one raw PON register byte: (byte + 1) steps
+        //   warm|soft          capped at 32 steps (9.6 s)
+        // A failed read stays at 0 ms.
+        let pon_ms = match option_env!("FULLERENE_USB_PON_READOUT") {
+            None | Some("seq") => {
+                match unsafe { platform::bramble::read_pm8150_pon_reset_code() } {
+                    Some(code) => (u64::from(code) + 1) * 300,
+                    None => 0,
+                }
+            }
+            Some("imem") => {
+                let cookie = platform::bramble::read_imem_restart_reason();
+                let steps = if cookie == 0x7766_5500 {
+                    1
+                } else if cookie == 0 {
+                    2
+                } else {
+                    2 + u64::from(cookie & 0x1f)
+                };
+                steps * 300
+            }
+            Some(source) if source.starts_with("force") => source["force".len()..]
+                .parse::<u64>()
+                .map_or(0, |steps| steps * 300),
+            Some(register) => {
+                let register: u16 = match register {
+                    "s1" => platform::bramble::PON_WD_S1_TIMER,
+                    "s2" => platform::bramble::PON_WD_S2_TIMER,
+                    "ctl" => platform::bramble::PON_WD_S2_CTL,
+                    "warm" => platform::bramble::PON_WARM_RESET_REASON1,
+                    "soft" => platform::bramble::PON_SOFT_RESET_REASON1,
+                    _ => platform::bramble::PON_WD_S2_CTL2,
+                };
+                match unsafe { platform::bramble::read_pm8150_pon_register(register) } {
+                    Some(value) => (u64::from(value.min(31)) + 1) * 300,
+                    None => 0,
+                }
+            }
         };
         pon_ms + u64::from(prev_boot_code) * 4000
     };

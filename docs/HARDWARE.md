@@ -4577,3 +4577,133 @@ is HAL/init only and not useful for the core failure.
    not yet confirmed applied on our path; diff our hsphy init against
    `qcom,param-override-seq` and A/B via the mrad ladder.
 4. Only `fastboot boot` was used; the working tree is uncommitted.
+
+## 2026-08-31 (session 4): the "~5.6 s death" is the host's port reset, and the data phase is the only real blocker
+
+### The reset that cuts every park/tail is not a watchdog we own
+
+Every standard run since the GDSC repair returns to Android at ~T+41 s
+(attach+26-27 s). Re-deriving the device-side timeline from that return
+(Android boot ~= 21 s) shows the reset at attach+5-6 s in **every** run,
+and the new experiments pin its identity:
+
+- `--pon-readout force10` (+3 s attach shift): the attach moved to T+16 s
+  and the reset moved with it (Android at T+43 s) - the reset is
+  **attach-relative (attach+~5.5 s)**, not boot-absolute.
+- `--bare-pullup` (no DWC3 core, no EP0, DMA-free): attach T+10 s, the
+  host's read/64 timeout at attach+6 s, Android at T+37 s (attach+27 s) -
+  **the reset fires with the DWC3 core completely out of the picture**.
+- `--quiet-after 4` (all controller MMIO stopped from Run/Stop+4 s): the
+  reset still fires at attach+5 s - our CPU is idle and uninvolved.
+- `--swdd-skip`, and the `wd2` PMIC-watchdog readout (WD_RST_S2_CTL2
+  reads 0x00-0x02, WD_EN=0): the secure-watchdog-disable SMC changes
+  nothing and the PMIC PON watchdog is disarmed. The APSS watchdog is
+  re-armed to 100 s/110 s by the first `wdt_pet`, so none of the three
+  classic watchdogs is the actor.
+- The new `sdis` gate (DCTL stop after the post-arm sample): the host's
+  `-110` still printed at attach+5 s - **post-attach disconnects are
+  host-invisible** (the Qualcomm session override; consistent with the
+  old dstat finding), so the session cannot be detached to dodge the
+  reset.
+
+What happens at attach+5.2 s on the host is the first control transfer's
+5 s timeout, and hub.c's new-scheme loop calls `hub_port_reset()` after
+EVERY failed `get_bMaxPacketSize0` attempt. The reset's identity is
+therefore: **the host's port reset (a real bus reset) at attach+5.3 s
+kills the session/PMIC chain and reboots the handset ~0.2 s later**. The
+`bootreason=watchdog` every run is XBL's decode of that chain, and the
+handoff note "watchdog = 復帰リセットで毎回正常" was literally correct -
+there never was a second, independent biter.
+
+### Consequence: the death is a shadow of the data-phase failure
+
+The host only resets the port because the read/64 times out. If the data
+phase delivers inside the first 5 s, the host completes SET_ADDRESS and
+the read/all well before attach+5 s and never resets the port - the
+death never fires in a successful enumeration. Conversely the stable
+park (which the ladder preempts: `probe_ep0_progress()` is true in the
+current regime, so codes 5-6 never published a tail reset - every
+"code 6 bucket" reading this week was the death bucket) is only cut
+because of the same failure. **Fixing the data phase fixes the death,
+not the other way round.**
+
+### Host enumeration is 64-byte-first
+
+The host is a 6.8 xHCI kernel using `use_new_scheme()`: the FIRST control
+transfer is GET_DESCRIPTOR with wLength=64, retried once (GET_DESCRIPTOR_TRIES=2)
+with a port reset in between. There is no 8-byte first read; the ladder
+comment's "read/8 then read/64" story was wrong and is now corrected
+(`diag_readout_code()` docs). Both harvested SETUPs are read/64 attempts.
+
+### PON state is frozen at the recovery boot
+
+The seq readout (code 6 = KPDPWR_OR_RESIN, the recovery-key entry) has
+been constant across dozens of boots that each included warm resets -
+including the death and `adb reboot bootloader`. No PON sequence has run
+since the original recovery boot, so the PON reason block cannot name
+the death. The readout channel itself works (the `wd2` run attached
+~1 s earlier than the seq runs, exactly as the shorter delay predicts).
+
+### New tools this session
+
+- `--pon-readout <REG>` (kernel `FULLERENE_USB_PON_READOUT`): publishes
+  one value through the attach-delay channel: `seq` (default, previous
+  reset bucket), `imem` (IMEM restart-reason cookie 0x146ab65c: 1 step
+  for the recovery chain's 0x77665500, 2 for zero, else 2+low 5 bits),
+  `forceN` (N fixed 300 ms steps, the attach-shift knob used above), and
+  the raw PON bytes `wd2|s1|s2|ctl|warm|soft` as (byte+1)*300 ms capped
+  at 32 steps.
+- The mrad tail restructured: 0.4 s post-arm settle, then the composite
+  diag code published as 450 ms/code (1..9) before the reset; the
+  in-loop stable-park short-circuit was folded into a single park
+  decision (`ep1_data_phase_complete()` - the newest EP1 transfer-complete
+  status == 0) so codes >= 5 can actually publish.
+- The diag ladder extended to 9: 7 = an EP1 XferComplete event arrived
+  after the arm, 8 = no completion but the data TRB's HWO was cleared
+  (the core consumed the TRB, the transfer silently died), 9 = no
+  completion and HWO still set (the core never consumed the armed TRB).
+- The `sdis` gate (negative result, kept as a marker).
+
+### A/B negatives this session (standard flags unless noted)
+
+- `--xbl-ep0-in-data` (stock XBL's NORMAL TRB for the data phase; never
+  run before): -110 unchanged, death bucket.
+- `--smmu-disable` re-run WITH the mrad ladder (the earlier -110-only
+  runs could not distinguish "translation fine" from "event ring broke
+  under bypass"): still the death bucket - inconclusive again, because
+  codes 5-9 cannot publish inside the attach+5.5 s death window.
+- `--ep0-txfifo-fix` was already an effective A/B post-recovery
+  (session 3): unchanged.
+
+### Timing reality for readouts
+
+Probe entry lands at ~attach-0.5 s (the handoff returns right after the
+connect/U0 wait). The eval for gate runs is `entry+observe`; the
+first-signal eval for non-gate runs is ~attach+0.2-0.5 s. The death at
+attach+5.3-6 s caps every reset-timed publish: with the 450 ms ladder
+only codes 1-5 land clearly ahead of it, 6 races, 7-9 are swallowed.
+The Android boot adds +-0.5-1.5 s jitter, so sub-second ladder steps are
+unreadable. **Any readout that needs more than ~4.5 s of live session
+must ride the attach-delay channel of a later boot or wait for the data
+phase to work.**
+
+### Next steps (priority order)
+
+1. Deliver the read/64 data phase inside the first 5 s. The arm retires
+   cleanly and XferNotReady(CONTROL_DATA) fires on both attempts, so the
+   failure is between the doorbell and the wire. Cheapest discriminators
+   left: the 7/8/9 rungs via a stop-free publish (they are implemented
+   but unreadable until a run reaches them through a faster eval - e.g.
+   `--observe-secs 1` with the settle, where code 9 resets at
+   attach+~4.9 s, 0.4 s ahead of the port reset), the GDBGLTSSM state at
+   the sample (`gdbstop`-style), and the SMMU FAR journal for the EP0
+   buffer fetch (the session-2 fsr-gate fault is still unexplained).
+2. The -110/-71 alternation from earlier sessions means the arm
+   sometimes WINS the race and the host then rejects the wire response:
+   reproducing a -71 run with the 7/8/9 ladder would prove data left the
+   core and move the search to the PHY/electrical layer (QUSB2 param
+   overrides 0x6c/0x70/0x74 are still unverified).
+3. Once enumeration succeeds, verify the death never fires (no port
+   reset) and the stable park holds the session for the autonomous
+   loop.
+4. Only `fastboot boot` was used.

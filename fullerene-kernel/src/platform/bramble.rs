@@ -1719,11 +1719,22 @@ const PM8150_PON_PPID: u16 = 0x0008;
 const PON_SUBTYPE: u16 = 0x05;
 const PON_OFF_SEQ: u16 = 0xc7;
 const PON_REASON1: u16 = 0xc0;
+pub const PON_WARM_RESET_REASON1: u16 = 0xc2;
+pub const PON_SOFT_RESET_REASON1: u16 = 0xcb;
 const PON_POFF_REASON1: u16 = 0xc5;
 const PON_POFF_REASON2: u16 = 0xc6;
 const PON_FAULT_REASON1: u16 = 0xc8;
 const PON_FAULT_REASON2: u16 = 0xc9;
 const PON_S3_RESET_REASON: u16 = 0xca;
+/// PMIC-watchdog configuration (qpnp-power-on `PON_PMIC_WD_RESET_*`): the S1
+/// and S2 timers plus the S2 control pair whose CTL2 bit 7 (`WD_EN`) says
+/// whether the watchdog that survives APSS resets is armed at all. These are
+/// configuration registers, so they still describe XBL's arming at the next
+/// probe entry even after Android reboots in between.
+pub const PON_WD_S1_TIMER: u16 = 0x54;
+pub const PON_WD_S2_TIMER: u16 = 0x55;
+pub const PON_WD_S2_CTL: u16 = 0x56;
+pub const PON_WD_S2_CTL2: u16 = 0x57;
 const PON_POFF_SEQ: u8 = 1 << 7;
 const PON_FAULT_SEQ: u8 = 1 << 6;
 const PON_S3_RESET_SEQ: u8 = 1 << 5;
@@ -2237,6 +2248,46 @@ pub unsafe fn read_pm8150_pon_reset_code() -> Option<u8> {
         return Some(code);
     }
     Some(first_set(reason1))
+}
+
+/// IMEM restart-reason cookie (lito `qcom,msm-imem@146ab000`,
+/// `restart_reason@65c`): the 32-bit magic the last resetter wrote before
+/// rebooting. The kernel's restart path writes 0x77665500 (bootloader) and
+/// 0x77665502 (recovery); a watchdog bark handler writes its own magic, and
+/// XBL decodes the cookie into the bootreason it hands Android. Read at probe
+/// entry the cookie names what rebooted the handset mid-probe - unless the
+/// automatic recovery's `adb reboot bootloader` (0x77665500) overwrote it
+/// last.
+const IMEM_RESTART_REASON: usize = 0x146a_b65c;
+
+pub fn read_imem_restart_reason() -> u32 {
+    unsafe { core::ptr::read_volatile(IMEM_RESTART_REASON as *const u32) }
+}
+
+/// Read one raw PON register by page offset for the death-reason readout
+/// channel. Only the registers that name the ~5.6 s post-attach watchdog are
+/// whitelisted so a caller typo cannot turn into a stray SPMI transaction.
+pub unsafe fn read_pm8150_pon_register(register: u16) -> Option<u8> {    if !matches!(
+        register,
+        PON_WD_S1_TIMER
+            | PON_WD_S2_TIMER
+            | PON_WD_S2_CTL
+            | PON_WD_S2_CTL2
+            | PON_WARM_RESET_REASON1
+            | PON_SOFT_RESET_REASON1
+    ) {
+        return None;
+    }
+    let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
+    if version == 0 || version == u32::MAX {
+        return None;
+    }
+    let (apid, _) = unsafe { find_spmi_apid(version, PM8150_PON_PPID)? };
+    let mut value = 0u8;
+    if !unsafe { spmi_transfer(version, apid, register, &mut value, false) } {
+        return None;
+    }
+    Some(value)
 }
 
 fn spmi_channel_offset(version: u32, apid: usize, observer: bool) -> usize {
