@@ -4707,3 +4707,17 @@ phase to work.**
    reset) and the stable park holds the session for the autonomous
    loop.
 4. Only `fastboot boot` was used.
+
+### Session-4 addendum: two more differential negatives
+
+- `--xbl-direction-trb` (the data TRB at ring index 1 instead of
+  overwriting the SETUP TRB at index 0; never run before): attach T+14 s,
+  `-110` at attach+5 s, Android at attach+26 s (the death bucket). The
+  shared-slot theory is dead as a single fix.
+- `--smmu-disable` with the mrad ladder: still the death bucket; the
+  run cannot separate codes 6-9 from the death, so the SMMU remains
+  formally unexonerated until a run reads code 7-9 or the data phase
+  works.
+
+The single remaining blocker is unchanged: the read/64 data phase must
+deliver inside the first 5 s window (see the priority list above).
