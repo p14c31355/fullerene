@@ -120,6 +120,10 @@ struct LoopArgs {
     no_transfer_resource: bool,
     #[arg(long)]
     android_resource_order: bool,
+    /// Use Android msm's 4096-byte control event buffer instead of the
+    /// XBL-derived 0xf0-byte event ring (Bramble A/B).
+    #[arg(long)]
+    event_ring_size_4096: bool,
     /// Arm EP0 STARTTRANSFER immediately after Run/Stop (Bramble A/B).
     #[arg(long)]
     start_after_connect: bool,
@@ -148,6 +152,9 @@ struct LoopArgs {
     /// Change only DCTL.RUN_STOP at the final XBL handoff boundary (A/B).
     #[arg(long)]
     xbl_raw_runstop: bool,
+    /// Use Bramble's DT HIRD threshold (0x10) instead of XBL's observed 7.
+    #[arg(long)]
+    dt_hird_threshold: bool,
     /// Use XBL's separate EP0 OUT/IN TRB slots for direction-specific transfers (A/B).
     #[arg(long)]
     xbl_direction_trb: bool,
@@ -202,6 +209,22 @@ struct LoopArgs {
     /// Rebuild both EP0 endpoint contexts after the host USB Reset.
     #[arg(long)]
     reset_endpoints: bool,
+    /// Clear EP0 OUT/IN stall state after the host USB Reset while preserving
+    /// the armed SETUP transfer, matching Android msm's reset handler.
+    #[arg(long)]
+    ep0_reset_clear_stall: bool,
+    /// Clear DCTL.TSTCTRL after the host USB Reset, matching Android msm's
+    /// reset handler without changing the preserved EP0 transfer.
+    #[arg(long)]
+    ep0_reset_clear_test_mode: bool,
+    /// Invoke the gadget reset callback before controller cleanup after the
+    /// host USB Reset, matching Android msm's ordering.
+    #[arg(long)]
+    ep0_reset_callback_first: bool,
+    /// Apply Android msm's reset callback, test-mode clear, and EP0 stall
+    /// clear in source order while preserving the armed EP0 transfer.
+    #[arg(long)]
+    ep0_reset_android_state_order: bool,
     /// Publish EP0/event/TRB diagnostics by dropping the pull-up at a coded
     /// delay after attach; the host dmesg delta is the readout.
     #[arg(long)]
@@ -339,6 +362,11 @@ struct LoopArgs {
     signal_evt_data_gate: Option<u32>,
     #[arg(long)]
     no_core_reset: bool,
+    /// Preserve Fastboot's live DWC3 Run/Stop state while handing the device
+    /// to Fullerene, matching the public ABL Stop() path that only frees the
+    /// RX/TX buffers.
+    #[arg(long)]
+    preserve_fastboot_runstop: bool,
     #[arg(long)]
     uncompressed: bool,
     #[arg(long)]
@@ -366,6 +394,7 @@ impl Default for LoopArgs {
             reuse_fastboot_dma: false,
             no_transfer_resource: false,
             android_resource_order: false,
+            event_ring_size_4096: false,
             start_after_connect: false,
             xbl_deferred_setup: false,
             xbl_ep0_in_data: false,
@@ -375,6 +404,7 @@ impl Default for LoopArgs {
             xbl_post_endpoint_global: false,
             xbl_stock_ep0_dma: false,
             xbl_raw_runstop: false,
+            dt_hird_threshold: false,
             xbl_direction_trb: false,
             xbl_trb_chain: false,
             start_ungated: false,
@@ -391,6 +421,10 @@ impl Default for LoopArgs {
             start_at_connect_done: false,
             reset_resource: false,
             reset_endpoints: false,
+            ep0_reset_clear_stall: false,
+            ep0_reset_clear_test_mode: false,
+            ep0_reset_callback_first: false,
+            ep0_reset_android_state_order: false,
             signal_probe: false,
             signal_smmu_state: false,
             signal_link_state: false,
@@ -429,6 +463,7 @@ impl Default for LoopArgs {
             smmu_disable: false,
             signal_evt_data_gate: None,
             no_core_reset: false,
+            preserve_fastboot_runstop: false,
             uncompressed: false,
             dry_run: false,
         }
@@ -785,6 +820,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--start-after-connect requires --direct-handoff",
         ));
     }
+    if args.event_ring_size_4096 && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--event-ring-size-4096 requires --direct-handoff",
+        ));
+    }
     if args.xbl_deferred_setup && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -833,6 +874,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--xbl-raw-runstop requires --direct-handoff",
         ));
     }
+    if args.dt_hird_threshold && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--dt-hird-threshold requires --direct-handoff",
+        ));
+    }
     if args.xbl_direction_trb && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -843,6 +890,30 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--xbl-trb-chain requires --direct-handoff",
+        ));
+    }
+    if args.ep0_reset_clear_stall && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ep0-reset-clear-stall requires --direct-handoff",
+        ));
+    }
+    if args.ep0_reset_clear_test_mode && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ep0-reset-clear-test-mode requires --direct-handoff",
+        ));
+    }
+    if args.ep0_reset_callback_first && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ep0-reset-callback-first requires --direct-handoff",
+        ));
+    }
+    if args.ep0_reset_android_state_order && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ep0-reset-android-state-order requires --direct-handoff",
         ));
     }
     if args.start_ungated && !args.direct_handoff {
@@ -1237,6 +1308,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--no-core-reset requires the gadget handoff probe",
         ));
     }
+    if args.preserve_fastboot_runstop && (!args.direct_handoff || !args.no_core_reset) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--preserve-fastboot-runstop requires --direct-handoff and --no-core-reset",
+        ));
+    }
     if !args.template.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -1551,6 +1628,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.android_resource_order {
         arguments.push("--usb-gadget-handoff-android-resource-order".to_owned());
     }
+    if args.event_ring_size_4096 {
+        arguments.push("--usb-gadget-handoff-event-ring-size-4096".to_owned());
+    }
     if args.start_after_connect {
         arguments.push("--usb-gadget-handoff-start-after-connect".to_owned());
     }
@@ -1577,6 +1657,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.xbl_raw_runstop {
         arguments.push("--usb-gadget-handoff-xbl-raw-runstop".to_owned());
+    }
+    if args.dt_hird_threshold {
+        arguments.push("--usb-gadget-handoff-dt-hird-threshold".to_owned());
     }
     if args.xbl_direction_trb {
         arguments.push("--usb-gadget-handoff-xbl-direction-trb".to_owned());
@@ -1619,6 +1702,18 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.reset_endpoints {
         arguments.push("--usb-gadget-handoff-reset-endpoints".to_owned());
+    }
+    if args.ep0_reset_clear_stall {
+        arguments.push("--usb-gadget-handoff-ep0-reset-clear-stall".to_owned());
+    }
+    if args.ep0_reset_clear_test_mode {
+        arguments.push("--usb-gadget-handoff-ep0-reset-clear-test-mode".to_owned());
+    }
+    if args.ep0_reset_callback_first {
+        arguments.push("--usb-gadget-handoff-ep0-reset-callback-first".to_owned());
+    }
+    if args.ep0_reset_android_state_order {
+        arguments.push("--usb-gadget-handoff-ep0-reset-android-state-order".to_owned());
     }
     if args.signal_probe {
         arguments.push("--usb-ep0-signal-probe".to_owned());
@@ -1781,6 +1876,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.no_core_reset {
         envs.push((
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_PRESERVE_CORE".to_owned(),
+            "1".to_owned(),
+        ));
+    }
+    if args.preserve_fastboot_runstop {
+        envs.push((
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_PRESERVE_RUNSTOP".to_owned(),
             "1".to_owned(),
         ));
     }

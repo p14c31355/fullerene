@@ -775,11 +775,21 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         }
         park_without_recovery_timer();
     }
-    // lnkraw: bite at state+1 to name the exact DSTS state or expose a moved field.
+    // lnkraw: publish the exact DSTS state through a host-visible stop delay.
+    // The APSS watchdog return bucket is not readable on every Bramble boot,
+    // while DCTL Run/Stop is the one proven host-visible disconnect primitive.
     if cmd_gate_is("lnkraw") {
         let state = usb::dsts_raw_link_state();
         trace_gate(0x4C4E_5257 | (state & 0x1f));
-        usb::u0_arm_wdt_bite(state.saturating_add(1));
+        // 250 ms per raw state value keeps all valid DWC3 states inside the
+        // host's first descriptor window. The disconnect timestamp relative
+        // to HS attach identifies the captured nibble without depending on
+        // secure watchdog ownership.
+        let delay_ticks = probe_counter_frequency()
+            .saturating_mul(u64::from(state.saturating_add(1)))
+            / 4;
+        wait_arch_ticks(usb::arch_counter_ticks().saturating_add(delay_ticks));
+        let _ = usb::gate_true_stop_device();
         park_without_recovery_timer();
     }
     // lnkstate: publish/blip any state outside the tested set and encode the exact state in the bite delay.

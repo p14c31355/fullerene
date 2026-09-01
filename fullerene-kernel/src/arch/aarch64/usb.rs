@@ -197,6 +197,7 @@ static mut SIGNAL_EVENT_DELIVERED: bool = false;
 static mut SIGNAL_SETUP_TRB_RETIRED: bool = false;
 static mut SIGNAL_SETUP_PACKET_RECEIVED: bool = false;
 static mut SIGNAL_LAST_SOFFN: u16 = 0;
+static mut SIGNAL_SOF_BASELINED: bool = false;
 static mut SIGNAL_SOF_SEEN: bool = false;
 /// Link-state ladder latches (see `ep0_link_signal_code()`).
 static mut SIGNAL_LNKST_U0: bool = false;
@@ -211,6 +212,13 @@ static mut SIGNAL_CORE_HALTED: bool = false;
 /// guard uses this latch to re-arm exactly then, which also delivers any
 /// SETUP packet the core latched while no TRB was armed.
 static mut EP0_SETUP_ARMED: bool = false;
+/// Defer the post-Run/Stop event-DMA probe until the live host link reaches
+/// U0. Run/Stop returns before Bramble's host-side attach debounce completes,
+/// so an init-time U0 check can finish too early and test a disconnected
+/// controller rather than the event path used by enumeration.
+static mut POST_RUNSTOP_PROBE_PENDING: bool = false;
+static mut POST_RUNSTOP_PROBE_NOT_BEFORE: u64 = 0;
+const POST_RUNSTOP_PROBE_DELAY_SECS: u64 = 8;
 /// Set by the USB Reset / Connect Done handlers: the host is present and the
 /// link is coming up, so the guard should arm the SETUP TRB (retrying with a
 /// small cooldown until the link reaches ON). Arming is deliberately NOT
@@ -301,7 +309,9 @@ unsafe fn ep0_event_address() -> u64 {
 #[inline]
 unsafe fn ep0_event_size() -> usize {
     unsafe {
-        if DMA_ADOPTED {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_event_ring_size_4096) {
+            return EVENT_BUFFER_SIZE;
+        } else if DMA_ADOPTED {
             return XBL_EP0_EVENT_SIZE;
         }
         if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
@@ -988,7 +998,7 @@ pub fn rescue_read64() -> u32 {
             }
             Ep0State::Data => {
                 let _ = end_transfer(1);
-                let _ = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+                let _ = set_transfer_resource(1);
                 let trb_index = ep0_trb_index(1);
                 let mut queued = start_transfer(1, ep0_trb_ptr(trb_index));
                 if !queued {
@@ -1719,6 +1729,16 @@ unsafe fn send_ep_command(
     unsafe { send_ep_command_result(endpoint, command, param0, param1, param2).is_some() }
 }
 
+/// Allocate one DWC3 transfer resource for an endpoint.
+///
+/// The SETTRANSFRESOURCE completion does not provide the transfer index used
+/// by STARTTRANSFER. Linux obtains that index from the STARTTRANSFER
+/// completion (GETTRANSFERINDEX in the EP0 path) and retains it for
+/// UPDATETRANSFER/ENDTRANSFER.
+unsafe fn set_transfer_resource(endpoint: usize) -> bool {
+    unsafe { send_ep_command_result(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0).is_some() }
+}
+
 unsafe fn configure_endpoint(endpoint: usize, max_packet: u32, modify: bool) -> bool {
     unsafe { configure_endpoint_kind(endpoint, max_packet, DEPCFG_EP_TYPE_CONTROL, modify) }
 }
@@ -1754,7 +1774,7 @@ unsafe fn configure_endpoint_kind_with_interrupter(
         && !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
         && !cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
     {
-        return unsafe { send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) };
+        return unsafe { set_transfer_resource(endpoint) };
     }
     true
 }
@@ -1798,12 +1818,43 @@ unsafe fn configure_endpoint_config(
     unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, 0) }
 }
 
+#[inline]
+unsafe fn apply_ep0_txfifo_fix() {
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_txfifo_fix)]
+    {
+        // Handshakes are generated internally, but every EP0 IN data packet
+        // is pushed through the endpoint's TX FIFO. A Fastboot session that
+        // resized or emptied FIFO 0 leaves EP1 IN unable to send any data
+        // packet: the SETUP handshake still works and the host's descriptor
+        // read then NAKs forever (read/64 -110). Raise a degenerate depth
+        // while preserving the FIFO start address.
+        let fifo = read(GTXFIFOSIZ0);
+        let depth = fifo & 0x7fff;
+        if depth < 32 {
+            let raised = (fifo & 0xffff_0000) | 32;
+            write(GTXFIFOSIZ0, raised);
+            trace_event(
+                TRACE_SETUP_QUEUED,
+                0x5458_4631, // "TXF1" EP0 IN FIFO raised
+                fifo,
+                raised,
+                0,
+                read(DSTS),
+            );
+            let _ = read(GTXFIFOSIZ0);
+        }
+    }
+}
+
 unsafe fn start_transfer(endpoint: usize, trb: *const Trb) -> bool {
     let address = unsafe { dma_iova_for(trb as usize) };
     unsafe {
         // DWC3's STARTTRANSFER parameters are PAR0=address[63:32] and
         // PAR1=address[31:0]. The endpoint command helper writes the named
-        // param0/param1 fields to those registers respectively.
+        // param0/param1 fields to those registers respectively. Linux issues
+        // STARTTRANSFER with command parameter 0 for EP0 and ordinary
+        // non-isochronous endpoints; the controller returns the resource
+        // index in the command completion, which is retained below.
         let Some(resource_index) = send_ep_command_result(
             endpoint,
             DEPCMD_STARTTRANSFER,
@@ -1867,7 +1918,7 @@ unsafe fn retry_start_transfer(endpoint: usize, trb: *const Trb, window_ms: u64)
         }
         super::timer::delay_us(200);
         unsafe {
-            send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+            set_transfer_resource(endpoint);
         }
         super::timer::delay_us(300);
     }
@@ -2487,7 +2538,7 @@ unsafe fn post_runstop_event_dma_probe() -> bool {
         }
 
         let link_ready = read(DSTS) & DSTS_DEVCTRLHLT == 0
-            && (read(DSTS) >> 18) & 0xf == 0;
+            && read(DCTL) & DCTL_RUN_STOP != 0;
         let started = if link_ready {
             prepare_ep0_setup_trb();
             start_transfer(0, ep0_trb_ptr(0))
@@ -2677,11 +2728,113 @@ unsafe fn restart_control_after_reset() {
         // address (the hardware already did; Linux rewrites it) and reset the
         // software state that does not touch the armed transfer.
         if EP0_STATE == Ep0State::Setup && EP0_SETUP_ARMED && ENDPOINTS_READY {
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)]
+            {
+                // Android msm's dwc3_gadget_reset_interrupt() first notifies
+                // the gadget driver, then clears DCTL.TSTCTRL, and only then
+                // clears endpoint stalls. Keep the armed EP0 SETUP transfer
+                // and DMA addresses intact while reproducing that complete
+                // reset-time state order as one explicit hardware A/B.
+                GadgetDriver::reset(gadget_mut());
+                let dctl = read(DCTL);
+                write(DCTL, dctl & !DCTL_TSTCTRL_MASK);
+                let out_ok = send_ep_command(0, DEPCMD_CLEARSTALL, 0, 0, 0);
+                let in_ok = send_ep_command(1, DEPCMD_CLEARSTALL, 0, 0, 0);
+                trace_event(
+                    TRACE_USB_RESET,
+                    0x41525354, // "ARST"
+                    out_ok as u32,
+                    in_ok as u32,
+                    dctl & DCTL_TSTCTRL_MASK,
+                    read(DSTS),
+                );
+            }
+            #[cfg(all(
+                fullerene_aarch64_usb_gadget_handoff_ep0_reset_callback_first,
+                not(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)
+            ))]
+            {
+                // Android msm calls usb_gadget_udc_reset() before its
+                // controller-side stop/clear-stall cleanup. Move only the
+                // existing gadget callback in this A/B; EP0 ownership and
+                // all controller commands remain otherwise unchanged.
+                GadgetDriver::reset(gadget_mut());
+                trace_event(
+                    TRACE_USB_RESET,
+                    0x52434246, // "RCBF"
+                    1,
+                    0,
+                    0,
+                    read(DSTS),
+                );
+            }
+            #[cfg(all(
+                fullerene_aarch64_usb_gadget_handoff_ep0_reset_clear_stall,
+                not(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)
+            ))]
+            {
+                // Android msm's dwc3_clear_stall_all_ep() clears EP0 OUT and
+                // IN after USB Reset without stopping or re-arming the
+                // preserved SETUP transfer. Keep this as an isolated A/B:
+                // the normal preserve path must not issue extra commands.
+                let out_ok = send_ep_command(0, DEPCMD_CLEARSTALL, 0, 0, 0);
+                let in_ok = send_ep_command(1, DEPCMD_CLEARSTALL, 0, 0, 0);
+                trace_event(
+                    TRACE_USB_RESET,
+                    0x5253544C, // "RSTL"
+                    out_ok as u32,
+                    in_ok as u32,
+                    0,
+                    read(DSTS),
+                );
+            }
+            #[cfg(all(
+                fullerene_aarch64_usb_gadget_handoff_ep0_reset_clear_test_mode,
+                not(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)
+            ))]
+            {
+                // Android msm clears DCTL.TSTCTRL in its bus-reset handler
+                // before preserving the EP0 SETUP transfer. Apply only that
+                // register correction in this A/B; Run/Stop and the EP0
+                // ownership boundary remain unchanged.
+                let dctl = read(DCTL);
+                write(DCTL, dctl & !DCTL_TSTCTRL_MASK);
+                trace_event(
+                    TRACE_USB_RESET,
+                    0x54455354, // "TEST"
+                    dctl & DCTL_TSTCTRL_MASK,
+                    0,
+                    0,
+                    read(DSTS),
+                );
+            }
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_reset_resource) {
+                // This opt-in A/B deliberately tests the opposite hardware
+                // hypothesis from the Android-compatible preserve path: a
+                // bus reset may leave the EP0 contexts intact while losing
+                // their transfer-resource allocation. Re-issue only
+                // SETTRANSFRESOURCE and keep the armed SETUP TRB, endpoint
+                // ownership, and returned STARTTRANSFER indices unchanged.
+                let out_ok = set_transfer_resource(0);
+                let in_ok = set_transfer_resource(1);
+                trace_event(
+                    TRACE_USB_RESET,
+                    0x52535243, // "RSRC"
+                    out_ok as u32,
+                    in_ok as u32,
+                    1,
+                    read(DSTS),
+                );
+            }
             let dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
             write(DCFG, dcfg);
             unbind_function();
             teardown_data_endpoints();
             reset_gsi_channels();
+            #[cfg(not(any(
+                fullerene_aarch64_usb_gadget_handoff_ep0_reset_callback_first,
+                fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order
+            )))]
             GadgetDriver::reset(gadget_mut());
             udc_mut().reset();
             CONFIGURED = false;
@@ -2692,19 +2845,48 @@ unsafe fn restart_control_after_reset() {
             FUNCTION_BOUND = false;
             CONTROL_IN = false;
             CONTROL_HAS_DATA = false;
-            // EP0_STATE, EP0_SETUP_ARMED, EP0_RESOURCE_INDEX, ENDPOINTS_READY,
-            // DALEPENA, DCFG.speed, and the armed SETUP TRB are preserved.
-            // POST-RECOVERY CORRECTION: a bus reset TERMINATES the armed EP0
-            // OUT transfer at the core level even though the software state
-            // survives. Preserving EP0_SETUP_ARMED here made the poll guard
-            // skip the re-arm forever, so every post-reset SETUP token was
-            // NAKed and the first descriptor read timed out (-110). Clear
-            // the stale flag and re-arm from this event; the host retries
-            // SETUP tokens throughout its 5 s control window, so an arm that
-            // lands even late still catches a retry.
-            EP0_SETUP_ARMED = false;
-            PENDING_SETUP_ARM = true;
-            try_arm_setup();
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_reset_endpoints) {
+                // This broader opt-in A/B tests whether the endpoint context
+                // itself is lost across the bus reset. Unlike the normal
+                // Android-compatible preserve path, rebuild both EP0
+                // contexts, clear the old STARTTRANSFER resource indices,
+                // and let the ordinary post-reset arm retry at link ON.
+                let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
+                let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
+                write(DALEPENA, 0);
+                let rebuilt = send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0)
+                    && configure_endpoint(0, max_packet, false)
+                    && configure_endpoint(1, max_packet, false);
+                if rebuilt {
+                    let _ = udc_mut().configure_endpoint(0, max_packet as u16, false);
+                    let _ = udc_mut().configure_endpoint(1, max_packet as u16, false);
+                } else {
+                    log_puts("usb: EP0 reset endpoint rebuild failed\n");
+                }
+                ENDPOINTS_READY = rebuilt;
+                EP0_RESOURCE_INDEX = [0; 2];
+                EP0_SETUP_ARMED = false;
+                PENDING_SETUP_ARM = true;
+                write(DALEPENA, if rebuilt { 0b11 } else { 0 });
+                trace_event(
+                    TRACE_USB_RESET,
+                    0x52455043, // "REPC"
+                    rebuilt as u32,
+                    max_packet,
+                    0,
+                    read(DSTS),
+                );
+                let _ = try_arm_setup();
+            }
+            // In the default path EP0_STATE, EP0_SETUP_ARMED,
+            // EP0_RESOURCE_INDEX, ENDPOINTS_READY, DALEPENA, DCFG.speed, and
+            // the armed SETUP TRB are preserved. Android msm's
+            // dwc3_gadget_reset_interrupt() does not stop or re-arm EP0: the
+            // initial SETUP transfer remains owned by the core across USB
+            // reset, and Connect Done later MODIFYs the EP0 contexts for the
+            // negotiated speed. Issuing ENDTRANSFER or a second STARTTRANSFER
+            // here races the host's first post-reset SETUP token and loses
+            // the descriptor window.
             trace_event(
                 TRACE_USB_RESET,
                 0x4B45_504B, // "KEEP"
@@ -2785,8 +2967,8 @@ unsafe fn restart_control_after_reset() {
                 // A narrower resource-only A/B for revisions where the
                 // endpoint configuration survives but the allocation does
                 // not.
-                let out_ready = send_ep_command(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
-                let in_ready = send_ep_command(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+                let out_ready = set_transfer_resource(0);
+                let in_ready = set_transfer_resource(1);
                 if !out_ready || !in_ready {
                     log_puts("usb: EP0 reset resource reallocation failed\n");
                     trace_event(
@@ -4158,9 +4340,12 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
         configure_dwc3_global_control();
         write_volatile(reg(DCFG), DCFG_HIGHSPEED);
         // Linux disables endpoint advertising before stopping the device
-        // controller.  In a Fastboot reuse this also prevents a stale EP0
-        // resource from receiving a transaction while Run/Stop is draining.
-        write_volatile(reg(DALEPENA), if connect { 0b11 } else { 0 });
+        // controller. In the ABL Stop() differential, the controller remains
+        // live, so leave its endpoint advertisement untouched until the
+        // later handoff sequence explicitly clears it.
+        if connect || !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_runstop) {
+            write_volatile(reg(DALEPENA), if connect { 0b11 } else { 0 });
+        }
         // Bisection checkpoint 3: + GCTL/DCFG/DALEPENA, before the VBUS
         // re-assert and the Run/Stop start. Stopping here isolates the
         // DCTL.Run/Stop wait as the only remaining cost between the last
@@ -4186,6 +4371,9 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
             // The bare probe intentionally omits endpoint setup, but it still
             // uses the same PHY-safe Run/Stop boundary as Linux.
             run_stop_device(true)
+        } else if cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_runstop) {
+            log_puts("usb gadget handoff: preserving Fastboot Run/Stop state\n");
+            true
         } else {
             run_stop_device(false)
         }
@@ -4455,7 +4643,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             TRACE_EVENT_RING_READY,
             event_address as u32,
             (event_address >> 32) as u32,
-            EVENT_BUFFER_SIZE as u32,
+            event_size as u32,
             0,
             0,
         );
@@ -4526,16 +4714,26 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             // so mirror that exactly instead of trusting a GHWPARAMS3 field
             // encoding that may not match this core.
             for endpoint in 0..32u32 {
-                if !send_ep_command(endpoint as usize, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) {
+                if !set_transfer_resource(endpoint as usize) {
                     log_puts("usb gadget handoff: Android resource preallocation failed\n");
                     return gadget_handoff_fail(5); // resource allocation
                 }
             }
         }
+        // The direct reuse entry has already selected DCFG High-Speed. Keep
+        // EP0 at the USB2 maximum packet size unless the explicit
+        // Linux/Android initial-512 A/B is requested; using the SuperSpeed
+        // value unconditionally leaves a High-Speed core with a mismatched
+        // control context before Connect Done can modify it.
+        let ep0_packet_size = if cfg!(fullerene_aarch64_usb_ep0_initial_512) {
+            INITIAL_EP0_MAX_PACKET_SIZE
+        } else {
+            64
+        };
         if !unsafe {
             configure_endpoint_config(
                 0,
-                INITIAL_EP0_MAX_PACKET_SIZE,
+                ep0_packet_size,
                 DEPCFG_EP_TYPE_CONTROL,
                 false,
                 0,
@@ -4553,7 +4751,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // required here; unlike configure_endpoint(), the config-only helper
         // does not allocate the transfer resource itself.
         if !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
-            && !send_ep_command(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)
+            && !cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
+            && !set_transfer_resource(0)
         {
             log_puts("usb gadget handoff: USB2 EP0 OUT resource failed\n");
             return gadget_handoff_fail(5); // EP0 resource
@@ -4593,7 +4792,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         if stop_after_gadget_handoff_stage(8) {
             return false;
         }
-        if !configure_endpoint(1, INITIAL_EP0_MAX_PACKET_SIZE, false) {
+        if !configure_endpoint(1, ep0_packet_size, false) {
             log_puts("usb gadget handoff: USB2 EP0 configure failed\n");
             return gadget_handoff_fail(5); // EP0 config
         }
@@ -4660,6 +4859,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 read(DSTS),
             );
         }
+        apply_ep0_txfifo_fix();
         // Stage 11 isolates the cache-cleaned SETUP buffer/TRB publication
         // from the DWC3 STARTTRANSFER command itself. The old stage 6
         // combined both operations, so a failure there could not tell us
@@ -4717,6 +4917,22 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
         configure_gadget_speed(false);
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_event_ring_at_runstop)]
+        {
+            // Android msm republishes the event buffer in
+            // dwc3_gadget_run_stop(true), immediately before the gadget is
+            // restarted and Run/Stop is asserted. Move that publication
+            // boundary into the attach-reaching USB2 reuse path; the earlier
+            // timing A/B only exercised the non-attaching fallback path.
+            republish_ep0_event_ring_at_runstop();
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_gadget_restart_at_runstop)]
+        if !restart_gadget_at_runstop() {
+            // Android's restart helper is best-effort from the caller's
+            // perspective: Run/Stop is still attempted, and the host-visible
+            // attach distinguishes a restart failure from a PHY failure.
+            log_puts("usb gadget handoff: Android gadget restart incomplete\n");
+        }
         // Gate runs skip the DEVCTRLHLT readback wait (up to 2 s on a stale
         // halt) so the handoff returns to the probe inside the biter window;
         // the stale-halt case is exactly what the diag rescue re-arm fixes.
@@ -4756,18 +4972,24 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         }
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
-            // The USB2 reuse entry has its own Run/Stop tail, so it must run
-            // the post-link event-DMA check here rather than relying on the
-            // SuperSpeed fallback's equivalent block. End the already armed
-            // real SETUP request before starting the synthetic pair.
-            if !post_runstop_event_dma_probe() {
-                return false;
-            }
+            // Run/Stop returns before the host's attach debounce reaches U0.
+            // Let the polling owner run the test after a bounded delay that
+            // is still before Bramble's first descriptor request.
+            POST_RUNSTOP_PROBE_PENDING = true;
+            POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
+                arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
+            );
         }
         unsafe { gate_flow_blip() }; // flow-map B4: final Run/Stop readback done
         if stop_after_gadget_handoff_stage(7) {
             return false;
         }
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        // The reuse handoff is the primary direct Bramble path. Keep the
+        // host-visible EP0 signal channel on this path as well as on the
+        // full platform-init path; otherwise --signal-early-drop silently
+        // skips its observation window whenever reuse reaches Run/Stop.
+        ep0_signal_early_drop_check();
         // The probe's Type-C observer establishes Powered/Attached before
         // this point, so record the same UDC-start boundary that the normal
         // Qualcomm gadget path records. If PMIC observation was unavailable
@@ -4884,7 +5106,7 @@ pub fn init_usb2_gadget_handoff() -> bool {
             TRACE_EVENT_RING_READY,
             event_address as u32,
             (event_address >> 32) as u32,
-            EVENT_BUFFER_SIZE as u32,
+            ep0_event_size() as u32,
             0,
             0,
         );
@@ -5586,7 +5808,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             && !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
         {
             for endpoint in 0..32usize {
-                if !send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) {
+                if !set_transfer_resource(endpoint) {
                     log_puts("usb: Android direct resource preallocation failed\n");
                     return false;
                 }
@@ -5672,30 +5894,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // C3: DEPSTARTCFG + both EP0 SETEPCONFIG/SETTRANSFRESOURCE commands
         // done (or failed fast), DALEPENA/DEVTEN set, setup TRB prepared.
 
-        #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_txfifo_fix)]
-        {
-            // Handshakes are generated internally, but every EP0 IN data
-            // packet is pushed through the endpoint's TX FIFO. A Fastboot
-            // session that resized or emptied FIFO 0 leaves EP1 IN unable to
-            // send any data packet: the SETUP handshake still works and the
-            // host's descriptor read then NAKs forever (read/64 -110). Raise
-            // a degenerate depth while preserving the FIFO start address.
-            let fifo = read(GTXFIFOSIZ0);
-            let depth = fifo & 0x7fff;
-            if depth < 32 {
-                let raised = (fifo & 0xffff_0000) | 32;
-                write(GTXFIFOSIZ0, raised);
-                trace_event(
-                    TRACE_SETUP_QUEUED,
-                    0x5458_4631, // "TXF1" EP0 IN FIFO raised
-                    fifo,
-                    raised,
-                    0,
-                    read(DSTS),
-                );
-                let _ = read(GTXFIFOSIZ0);
-            }
-        }
+        apply_ep0_txfifo_fix();
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         init_beacon();
 
@@ -6223,12 +6422,12 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
-            // The USB2 reuse entry normally owns the live setup request by
-            // this point. The shared helper ends it before testing the event
-            // ring, then restores the host-facing SETUP transfer.
-            if !post_runstop_event_dma_probe() {
-                return false;
-            }
+            // Defer the probe to the polling owner so the U0 check observes
+            // the host-facing link rather than the pre-attach Run/Stop tail.
+            POST_RUNSTOP_PROBE_PENDING = true;
+            POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
+                arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
+            );
         }
 
         // C5: Run/Stop active and the tight SETUP-arm window is done.
@@ -6271,20 +6470,14 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 /// SETUP TRB; the early handoff uses this bounded synchronous equivalent before
 /// the normal polling path owns the controller.
 ///
-/// DWC3 GEVNTCOUNT is a write-to-consume register. Writing zero does not clear
-/// an event left by the previous Fastboot owner; Linux reads the masked count
-/// and writes that same byte count back during event-buffer setup.
+/// DWC3 GEVNTCOUNT is a write-to-consume register. Android msm's
+/// `dwc3_event_buffers_setup()` initializes the buffer by writing zero to the
+/// complete register, including when the previous Fastboot owner left a stale
+/// event-buffer state behind. Match that publication boundary exactly.
 unsafe fn acknowledge_ep0_event_count() {
-    // Linux's event_buffers_setup() writes back the complete register value,
-    // including GEVNTCOUNT.EHB.  Preserve that bit: reducing the value to
-    // the byte count alone can leave a Fastboot-owned event buffer blocked
-    // behind its pending-interrupt state even when the count is zero.
-    let count = unsafe { read(GEVNTCOUNT0) };
-    if count & (GEVNTCOUNT_MASK | GEVNTCOUNT_EHB) != 0 {
-        unsafe {
-            write(GEVNTCOUNT0, count);
-            core::arch::asm!("dsb sy", options(nostack));
-        }
+    unsafe {
+        write(GEVNTCOUNT0, 0);
+        core::arch::asm!("dsb sy", options(nostack));
     }
 }
 
@@ -6356,7 +6549,7 @@ unsafe fn restart_gadget_at_runstop() -> bool {
             // Android's start_config() assigns one resource to every
             // hardware endpoint before either EP0 SETEPCONFIG command.
             for endpoint in 0..32usize {
-                if !send_ep_command(endpoint, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) {
+                if !set_transfer_resource(endpoint) {
                     trace_event(
                         TRACE_SETUP_QUEUED,
                         0x5253_5253, // "RSRS"
@@ -6502,12 +6695,12 @@ unsafe fn update_signal_latches() {
     unsafe {
         // The core retires a TRB by clearing HWO over DMA. Invalidate the
         // cached line first so the CPU observes the controller's write.
-        let trb = addr_of!(EP0_TRBS[0]);
+        let trb = ep0_trb_ptr(0);
         cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
         if read_volatile(addr_of!((*trb).ctrl)) & TRB_HWO == 0 {
             SIGNAL_SETUP_TRB_RETIRED = true;
         }
-        let setup = addr_of!(SETUP_PACKET) as *const u8;
+        let setup = ep0_setup_ptr() as *const u8;
         cache_invalidate(setup as usize, 8);
         for offset in 0..8 {
             if read_volatile(setup.add(offset)) != 0 {
@@ -6519,7 +6712,10 @@ unsafe fn update_signal_latches() {
         // ConnectSpd. A changing SOF frame number instead proves the core is
         // receiving packets from the host at the transaction level.
         let sofn = ((read(DSTS) & (0x3fff << 3)) >> 3) as u16;
-        if sofn != SIGNAL_LAST_SOFFN {
+        if !SIGNAL_SOF_BASELINED {
+            SIGNAL_LAST_SOFFN = sofn;
+            SIGNAL_SOF_BASELINED = true;
+        } else if sofn != SIGNAL_LAST_SOFFN {
             SIGNAL_LAST_SOFFN = sofn;
             SIGNAL_SOF_SEEN = true;
         }
@@ -6698,16 +6894,16 @@ fn ep0_signal_early_drop_check() {
                 // only set by a real event-ring poll.
                 poll_ep0_event_ring();
                 update_signal_latches();
-                observed = if SIGNAL_EVENT_DELIVERED {
-                    1
-                } else if SIGNAL_SETUP_TRB_RETIRED {
-                    2
-                } else if SIGNAL_SETUP_PACKET_RECEIVED {
-                    3
-                } else if SIGNAL_SOF_SEEN {
-                    5
-                } else {
-                    0
+                // Select the requested latch directly. Event delivery is a
+                // prerequisite for the later observations, so a priority
+                // ladder here would make code 2/3/5 impossible whenever the
+                // reset or Connect Done event had already arrived.
+                observed = match condition {
+                    1 if SIGNAL_EVENT_DELIVERED => 1,
+                    2 if SIGNAL_SETUP_TRB_RETIRED => 2,
+                    3 if SIGNAL_SETUP_PACKET_RECEIVED => 3,
+                    5 if SIGNAL_SOF_SEEN => 5,
+                    _ => 0,
                 };
                 if observed == condition {
                     break;
@@ -7743,7 +7939,24 @@ pub fn poll() {
         if !cfg!(fullerene_aarch64_usb_ep0_signal_probe) {
             poll_typec_state(false);
         }
-        if !poll_ep0_event_ring() {
+        let event_seen = poll_ep0_event_ring();
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        update_signal_latches();
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1")
+            && POST_RUNSTOP_PROBE_PENDING
+            && arch_counter() >= POST_RUNSTOP_PROBE_NOT_BEFORE
+            && read(DSTS) & DSTS_DEVCTRLHLT == 0
+            && read(DCTL) & DCTL_RUN_STOP != 0
+        {
+            // Run/Stop returns before the host's attach debounce. Perform the
+            // probe only after the calibrated delay, after the normal event
+            // consumer has handled any reset/connect event, so its
+            // STARTTRANSFER/ENDTRANSFER test uses the live EP0 state.
+            POST_RUNSTOP_PROBE_PENDING = false;
+            let _ = post_runstop_event_dma_probe();
+        }
+        if !event_seen {
             drain_gsi_event_buffers();
             // The core rejects Start Transfer while the link is not ON (this
             // includes the window right after Run/Stop and the host's bus

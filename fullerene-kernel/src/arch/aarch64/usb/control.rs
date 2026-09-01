@@ -189,9 +189,9 @@ pub(super) unsafe fn wait_device_state(want_halted: bool) -> bool {
 /// Acknowledge events generated while DWC3 is draining a device stop.
 ///
 /// This is intentionally separate from `acknowledge_ep0_event_count()`: event
-/// buffer setup preserves the complete GEVNTCOUNT register (including EHB),
-/// while the Run/Stop halt contract consumes only the byte count and advances
-/// the software cursor just as Linux advances `ev_buf->lpos`.
+/// buffer setup initializes the complete GEVNTCOUNT register with zero, while
+/// the Run/Stop halt contract consumes only the byte count and advances the
+/// software cursor just as Linux advances `ev_buf->lpos`.
 pub(super) unsafe fn acknowledge_events_while_halting() {
     unsafe {
         let count = read(GEVNTCOUNT0) & GEVNTCOUNT_MASK;
@@ -269,7 +269,19 @@ pub(super) unsafe fn run_stop_device_no_readback(is_on: bool) -> bool {
         }
 
         let mut dctl = read(DCTL);
-        if is_on {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop) {
+            // Keep the gate-run helper identical to the ordinary XBL raw
+            // Run/Stop differential. Signal-gated runs use this no-readback
+            // path, so falling through to run_stop_value() would silently
+            // discard the requested XBL write semantics.
+            if is_on {
+                dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_XBL;
+                dctl |= DCTL_APPL1RES | DCTL_RUN_STOP;
+            } else {
+                dctl &= !DCTL_RUN_STOP;
+            }
+            write(DCTL, dctl);
+        } else if is_on {
             dctl = run_stop_value(dctl, read(GSNPSID));
             write(DCTL, dctl);
         } else {

@@ -341,8 +341,8 @@ results, host journal, and recovery state are maintained in
 | Target | Pixel 4a 5G / Bramble / `26191JECB00076` | Confirmed | Unlocked; `fastboot boot` only |
 | USB2 attach | Fullerene reaches HS attach | Partially successful | The physical pull-up boundary is crossed |
 | Enumeration | `device descriptor read/64, error -110` | Not reached | `idVendor=1234` has not appeared |
-| Latest A/B | Post-Run/Stop probe gate did not confirm all three synthetic event-DMA conditions | Investigating | Latest isolated run: `tmp/fullerene-bramble-loop.328652.0`; `-110` at `12:28:05`, Android fallback `18d1:4ee7` at `12:28:25` |
-| Next checks | Split the post-probe result into STARTTRANSFER, ENDTRANSFER, and event-delivery gates | Pending | `idVendor=1234` has not appeared; detailed history and append-only diagnostics are in [HARDWARE_aarch64.md](HARDWARE_aarch64.md) |
+| Latest A/B | Corrected EP0 SETUP-payload probe still showed no SETUP delivery | Negative / diagnostic | Run `tmp/fullerene-bramble-loop.792510.0` reached HS attach at `17:08:16`, timed out with descriptor `-110` at `17:08:21`, and recovered to Android `18d1:4ee7` at `17:08:42`; code 3 did not trigger and no `idVendor=1234` appeared |
+| Next checks | Investigate the pre-SETUP DWC3 endpoint/event ownership boundary | Pending | The 64-byte context and DT HIRD value did not change the boundary; the next source-guided A/B must target the controller's endpoint-command/event ownership before `handle_setup()` |
 
 ## Future Platforms
 

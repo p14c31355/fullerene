@@ -212,6 +212,7 @@ pub(crate) const DCTL_HIRD_THRES_MASK: u32 = 0x1f << 24;
 pub(crate) const DCTL_HIRD_THRES_LITO: u32 = 0x10 << 24;
 pub(crate) const DCTL_HIRD_THRES_XBL: u32 = 0x07 << 24;
 pub(crate) const DCTL_KEEP_CONNECT: u32 = 1 << 19;
+pub(crate) const DCTL_TSTCTRL_MASK: u32 = 0xf << 1;
 pub(crate) const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
 pub(crate) const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
 pub(crate) const DCFG_NUMP_SHIFT: u32 = 17;

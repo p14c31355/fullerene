@@ -72,12 +72,18 @@ pub(super) fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
     // endpoint setup. Keep that exact device-mode state through the probe's
     // Run/Stop transition; the generic Lito DT value remains the default for
     // non-probe paths.
-    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    #[cfg(all(
+        fullerene_aarch64_usb_gadget_handoff_probe,
+        not(fullerene_aarch64_usb_gadget_handoff_dt_hird_threshold)
+    ))]
     {
         dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_XBL;
         dctl |= DCTL_APPL1RES;
     }
-    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
+    #[cfg(any(
+        not(fullerene_aarch64_usb_gadget_handoff_probe),
+        fullerene_aarch64_usb_gadget_handoff_dt_hird_threshold
+    ))]
     {
         // Lito's DWC3 node supplies snps,hird-threshold = 0x10. A Fastboot
         // handoff can inherit a different value, so restore the platform
