@@ -140,6 +140,17 @@ static mut LIVE_DALEPENA_AFTER_RESET_VALID: bool = false;
 /// the current handoff attempt.
 static mut LIVE_DALEPENA_CONFIG: u32 = 0;
 static mut LIVE_DALEPENA_CONFIG_VALID: u8 = 0;
+/// First non-empty DWC3 EP0 event-buffer observation in this boot. Keep the
+/// producer-side count and the consumer-side slot word together: a non-zero
+/// GEVNTCOUNT with a zero slot is a DMA/cache/ownership failure, while a
+/// non-zero slot proves that the controller produced an event before the
+/// software consumer handled it.
+static mut LIVE_DWC3_FIRST_EVENT_COUNT: u32 = 0;
+static mut LIVE_DWC3_FIRST_EVENT_OFFSET: u32 = 0;
+static mut LIVE_DWC3_FIRST_EVENT_WORD: u32 = 0;
+static mut LIVE_DWC3_FIRST_EVENT_DSTS: u32 = 0;
+static mut LIVE_DWC3_FIRST_EVENT_DCTL: u32 = 0;
+static mut LIVE_DWC3_FIRST_EVENT_VALID: bool = false;
 
 /// Initialize the retained trace header and append a boot boundary marker.
 /// The entry array is intentionally not cleared, so a subsequent boot can
@@ -227,6 +238,12 @@ pub fn trace_reset_head_for_boot() {
         LIVE_DALEPENA_AFTER_RESET_VALID = false;
         LIVE_DALEPENA_CONFIG = 0;
         LIVE_DALEPENA_CONFIG_VALID = 0;
+        LIVE_DWC3_FIRST_EVENT_COUNT = 0;
+        LIVE_DWC3_FIRST_EVENT_OFFSET = 0;
+        LIVE_DWC3_FIRST_EVENT_WORD = 0;
+        LIVE_DWC3_FIRST_EVENT_DSTS = 0;
+        LIVE_DWC3_FIRST_EVENT_DCTL = 0;
+        LIVE_DWC3_FIRST_EVENT_VALID = false;
         core::arch::asm!("dsb sy", options(nostack));
     }
 }
@@ -287,6 +304,30 @@ pub(super) fn live_dalepena_config(direction: u32, readback: u32) {
                 (LIVE_DALEPENA_CONFIG & !(0x3 << shift)) | ((readback & 0x3) << shift);
             LIVE_DALEPENA_CONFIG_VALID |= 1 << direction;
         }
+    }
+}
+
+/// Save the first producer/consumer boundary without touching the event
+/// count. Returns true only for the first observation so the retained trace
+/// gets one stable record rather than a stream of polling duplicates.
+pub(super) fn live_dwc3_first_event(
+    count: u32,
+    offset: u32,
+    word: u32,
+    dsts: u32,
+    dctl: u32,
+) -> bool {
+    unsafe {
+        if LIVE_DWC3_FIRST_EVENT_VALID {
+            return false;
+        }
+        LIVE_DWC3_FIRST_EVENT_COUNT = count;
+        LIVE_DWC3_FIRST_EVENT_OFFSET = offset;
+        LIVE_DWC3_FIRST_EVENT_WORD = word;
+        LIVE_DWC3_FIRST_EVENT_DSTS = dsts;
+        LIVE_DWC3_FIRST_EVENT_DCTL = dctl;
+        LIVE_DWC3_FIRST_EVENT_VALID = true;
+        true
     }
 }
 
@@ -520,6 +561,12 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
             }
         }
         if selector.starts_with("dwc3-") {
+            if selector == "dwc3-first-event" && LIVE_DWC3_FIRST_EVENT_VALID {
+                // 1 = first raw word was a device event, 2 = endpoint event.
+                // This is a compact same-boot readout; the retained trace
+                // carries the full count/offset/raw/register values.
+                return 1 + (LIVE_DWC3_FIRST_EVENT_WORD & 1);
+            }
             let mut event_count = 0u32;
             let mut dsts = 0u32;
             let mut dctl = 0u32;

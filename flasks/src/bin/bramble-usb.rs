@@ -135,6 +135,10 @@ struct LoopArgs {
     /// Reproduce Android msm's controller block-reset clock boundary.
     #[arg(long)]
     android_block_reset: bool,
+    /// Re-assert Android msm's three QUSB2 HS-PHY regulator rails before
+    /// the direct handoff reset/init boundary (A/B).
+    #[arg(long)]
+    refresh_hsphy_power: bool,
     /// Skip the direct handoff's explicit QUSB2 PHY block-reset pulse (A/B).
     #[arg(long)]
     skip_usb2_phy_reset: bool,
@@ -182,9 +186,19 @@ struct LoopArgs {
     /// Use Factory ABL's observed narrow DWC3 device-event mask (0x47).
     #[arg(long)]
     abl_devten: bool,
-    /// Match Factory ABL's initial EP0 SETEPCONFIG P1/P2 pair (A/B).
+    /// Match Factory ABL/Qualcomm msm's EP0 SETEPCONFIG fields (A/B).
     #[arg(long)]
     abl_ep_config: bool,
+    /// Use Factory ABL's command-kind parameter-write mask (A/B).
+    #[arg(long)]
+    abl_command_params: bool,
+    /// Use Factory ABL's EP0 request TRB flags HWO|CHN|ISP_IMI (0x405) (A/B).
+    #[arg(long)]
+    abl_trb_flags: bool,
+    /// Consume each EP0 event after dispatching it, matching Factory ABL's
+    /// four-byte GEVNTCOUNT acknowledgement order (A/B).
+    #[arg(long)]
+    abl_event_consume: bool,
     /// Use XBL's separate EP0 OUT/IN TRB slots for direction-specific transfers (A/B).
     #[arg(long)]
     xbl_direction_trb: bool,
@@ -431,6 +445,7 @@ impl Default for LoopArgs {
             usb_core_hs_clock: false,
             clock_stable_delay_us: None,
             android_block_reset: false,
+            refresh_hsphy_power: false,
             skip_usb2_phy_reset: false,
             event_ring_size_4096: false,
             start_after_connect: false,
@@ -447,6 +462,9 @@ impl Default for LoopArgs {
             abl_shared_hs_phy: false,
             abl_devten: false,
             abl_ep_config: false,
+            abl_command_params: false,
+            abl_trb_flags: false,
+            abl_event_consume: false,
             xbl_direction_trb: false,
             xbl_trb_chain: false,
             start_ungated: false,
@@ -939,6 +957,24 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--abl-ep-config requires --direct-handoff",
+        ));
+    }
+    if args.abl_command_params && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--abl-command-params requires --direct-handoff",
+        ));
+    }
+    if args.abl_trb_flags && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--abl-trb-flags requires --direct-handoff",
+        ));
+    }
+    if args.abl_event_consume && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--abl-event-consume requires --direct-handoff",
         ));
     }
     if args.xbl_direction_trb && !args.direct_handoff {
@@ -1732,6 +1768,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.android_block_reset {
         arguments.push("--usb-gadget-handoff-android-block-reset".to_owned());
     }
+    if args.refresh_hsphy_power {
+        arguments.push("--usb-gadget-handoff-refresh-hsphy-power".to_owned());
+    }
     if args.skip_usb2_phy_reset {
         arguments.push("--usb-gadget-handoff-skip-usb2-phy-reset".to_owned());
     }
@@ -1779,6 +1818,15 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.abl_ep_config {
         arguments.push("--usb-gadget-handoff-abl-ep-config".to_owned());
+    }
+    if args.abl_command_params {
+        arguments.push("--usb-gadget-handoff-abl-command-params".to_owned());
+    }
+    if args.abl_trb_flags {
+        arguments.push("--usb-gadget-handoff-abl-trb-flags".to_owned());
+    }
+    if args.abl_event_consume {
+        arguments.push("--usb-gadget-handoff-abl-event-consume".to_owned());
     }
     if args.xbl_direction_trb {
         arguments.push("--usb-gadget-handoff-xbl-direction-trb".to_owned());

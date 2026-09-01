@@ -69,6 +69,8 @@ pub const DEPCFG_EP_TYPE_CONTROL: u32 = 0;
 // DWC3_DEPCFG_EP_TYPE(n) stores the USB endpoint type in bits 2:1.
 pub const DEPCFG_EP_TYPE_BULK: u32 = 2 << 1;
 pub const DEPCFG_MAX_PACKET_SHIFT: u32 = 3;
+pub const DEPCFG_FIFO_NUMBER_SHIFT: u32 = 17;
+pub const DEPCFG_BURST_SIZE_SHIFT: u32 = 22;
 
 pub const TRB_HWO: u32 = 1 << 0;
 pub const TRB_LST: u32 = 1 << 1;

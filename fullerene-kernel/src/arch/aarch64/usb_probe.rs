@@ -441,6 +441,8 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("dwc3-cmd0-act") => Some("dwc3-cmd0-act"),
         Some("dwc3-cmd1-act") => Some("dwc3-cmd1-act"),
         Some("dwc3-trb") => Some("dwc3-trb"),
+        Some("dwc3-first-event") => Some("dwc3-first-event"),
+        Some("dwc3-bite") => Some("dwc3-bite"),
         _ => None,
     }
 }
@@ -1122,6 +1124,18 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
                 let attached = probe_counter().saturating_add(frequency * 3 / 10);
                 poll_until_probe_ticks(frequency, attached);
             }
+            park_without_recovery_timer();
+        }
+        if selector == "dwc3-bite" {
+            // Publish the retained EP0 protocol boundary through the APSS
+            // watchdog timing channel. Unlike DCTL stop/run cycles, this
+            // does not depend on the already-proven inert pull-up toggle.
+            // The code is diagnostic only; no transfer, PHY, or response
+            // data is modified.
+            usb::trace_dwc3_boundary();
+            let code = usb::protocol_readout_code().min(5);
+            trace_gate(0x4457_4254 | code); // "DWBT" + code
+            usb::u0_arm_wdt_bite(code.saturating_add(1));
             park_without_recovery_timer();
         }
         if selector.starts_with("dwc3-") {

@@ -102,6 +102,10 @@ const XBL_EP0_TRB_DMA_ADDRESS: usize = 0x8079_8f70;
 // hardware A/B uses an explicit setup buffer because the literal zero pointer
 // suppressed even the USB2 attach on this Fullerene handoff.
 const TRB_XBL_EP0_SETUP: u32 = TRB_CONTROL_SETUP;
+// Factory ABL's request builder starts every submitted TRB with HWO|CHN|ISP_IMI
+// (0x405), leaving LST/IOC clear. This is intentionally an explicit A/B: it
+// is not equivalent to adding CHN to the Linux LST|IOC form.
+const TRB_ABL_REQUEST_FLAGS: u32 = TRB_HWO | TRB_CHN | TRB_ISP_IMI;
 const FASTBOOT_EP0_SETUP_OFFSET: usize = 0x100;
 const FASTBOOT_EP0_TRB_OFFSET: usize = 0x140;
 const FASTBOOT_EP0_RESPONSE_OFFSET: usize = 0x180;
@@ -1846,10 +1850,30 @@ unsafe fn send_ep_command_result(
         // The DWC3 register names are counter-intuitive: PAR2 is at +0x00,
         // PAR1 at +0x04, and PAR0 at +0x08. Keep both the software argument
         // order and the MMIO write order identical to Linux's
-        // dwc3_send_gadget_ep_cmd().
-        write(dep_reg(endpoint, 0x08), param0);
-        write(dep_reg(endpoint, 0x04), param1);
-        write(dep_reg(endpoint, 0x00), param2);
+        // dwc3_send_gadget_ep_cmd(). Factory ABL is a useful A/B here: its
+        // endpoint-command helper writes only the parameter registers used by
+        // the command kind (PAR1/PAR0 for SETEPCONFIG and STARTTRANSFER,
+        // PAR0 for SETTRANSFRESOURCE, and none for the other commands). It
+        // never unconditionally clears PAR2. Preserve the Linux form by
+        // default, but allow the binary-derived write mask to be tested
+        // without changing the normal handoff.
+        #[cfg(fullerene_aarch64_usb_abl_command_params)]
+        match command_kind {
+            DEPCMD_SETEPCONFIG | DEPCMD_STARTTRANSFER => {
+                write(dep_reg(endpoint, 0x04), param1);
+                write(dep_reg(endpoint, 0x08), param0);
+            }
+            DEPCMD_SETTRANSFRESOURCE => {
+                write(dep_reg(endpoint, 0x08), param0);
+            }
+            _ => {}
+        }
+        #[cfg(not(fullerene_aarch64_usb_abl_command_params))]
+        {
+            write(dep_reg(endpoint, 0x08), param0);
+            write(dep_reg(endpoint, 0x04), param1);
+            write(dep_reg(endpoint, 0x00), param2);
+        }
         // Linux's writel() provides the MMIO ordering barrier that separates
         // the parameter writes from the command latch. Preserve that ordering
         // explicitly in this freestanding Rust path.
@@ -1982,37 +2006,45 @@ unsafe fn configure_endpoint_config(
     } else {
         DEPCFG_XFER_IN_PROGRESS_EN
     };
-    #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_config)]
-    if endpoint <= 1 && endpoint_type == DEPCFG_EP_TYPE_CONTROL {
-        // Stock Bramble XBL's fixed EP0 configuration emits P1=0x300:
-        // XFER_COMPLETE_EN | XFER_IN_PROGRESS_EN. This is a binary-derived
-        // A/B for the XBL function-driver contract; keep the Linux-default
-        // NRDY notification in the generic path.
-        param1 |= DEPCFG_XFER_IN_PROGRESS_EN;
-    }
-    if endpoint <= 1
-        && !(cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_config)
-            && endpoint_type == DEPCFG_EP_TYPE_CONTROL)
-    {
-        param1 |= DEPCFG_XFER_NOT_READY_EN;
-    }
-    param1 |= (interrupter & 0x1f) << DEPCFG_INT_NUM_SHIFT;
-    param1 |= (endpoint as u32) << DEPCFG_EP_NUMBER_SHIFT;
-    let param2 = if cfg!(fullerene_aarch64_usb_abl_ep_config)
+    let abl_ep_config = cfg!(fullerene_aarch64_usb_abl_ep_config)
         && endpoint <= 1
-        && !modify
-    {
-        // Factory ABL's DwcConfigureEP starts each direction with the raw
-        // pair PAR0=0x1000 and PAR1=0x05001000/0x07001000. The latter adds
-        // 0x02000000 for the second direction. The nearby PAR0=1 write is
-        // for the following SETTRANSFRESOURCE command, not SETEPCONFIG.P2;
-        // keep that distinction exact so this A/B tests the binary sequence.
-        param0 = 0x1000;
-        param1 = 0x0500_1000 | ((endpoint as u32) * 0x0200_0000);
-        0
+        && !modify;
+    if abl_ep_config {
+        // Factory Bramble ABL's DwcConfigureEP follows the Qualcomm msm
+        // DEPCFG contract: burst size 3, FIFO number on IN endpoints, and
+        // endpoint address (not logical endpoint number) in P1. Its EP0
+        // notification mask is XFER_COMPLETE|XFER_IN_PROGRESS (0x300), with
+        // no XferNotReady bit. The previous A/B used a misread raw pair;
+        // keep this flag tied to the disassembled instruction sequence.
+        param0 = endpoint_type
+            | (max_packet << DEPCFG_MAX_PACKET_SHIFT)
+            | (3 << DEPCFG_BURST_SIZE_SHIFT);
+        if endpoint & 1 != 0 {
+            param0 |= ((endpoint / 2) as u32) << DEPCFG_FIFO_NUMBER_SHIFT;
+        }
+        param1 = DEPCFG_XFER_COMPLETE_EN
+            | DEPCFG_XFER_IN_PROGRESS_EN
+            | (interrupter & 0x1f) << DEPCFG_INT_NUM_SHIFT
+            | (endpoint as u32) << DEPCFG_EP_NUMBER_SHIFT;
     } else {
-        0
-    };
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_config)]
+        if endpoint <= 1 && endpoint_type == DEPCFG_EP_TYPE_CONTROL {
+            // Stock Bramble XBL's fixed EP0 configuration emits P1=0x300:
+            // XFER_COMPLETE_EN | XFER_IN_PROGRESS_EN. This is a binary-derived
+            // A/B for the XBL function-driver contract; keep the Linux-default
+            // NRDY notification in the generic path.
+            param1 |= DEPCFG_XFER_IN_PROGRESS_EN;
+        }
+        if endpoint <= 1
+            && !(cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_ep0_config)
+                && endpoint_type == DEPCFG_EP_TYPE_CONTROL)
+        {
+            param1 |= DEPCFG_XFER_NOT_READY_EN;
+        }
+        param1 |= (interrupter & 0x1f) << DEPCFG_INT_NUM_SHIFT;
+        param1 |= (endpoint as u32) << DEPCFG_EP_NUMBER_SHIFT;
+    }
+    let param2 = 0;
     unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, param2) }
 }
 
@@ -2576,21 +2608,26 @@ pub unsafe fn queue_bulk_transfer(endpoint: usize, buffer: *const u8, length: us
 unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32) {
     let address = unsafe { dma_iova_for(buffer as usize) };
     let trb = unsafe { ep0_trb_ptr(index) };
+    let flags = if cfg!(fullerene_aarch64_usb_abl_trb_flags) {
+        TRB_ABL_REQUEST_FLAGS
+    } else {
+        TRB_HWO
+            | TRB_LST
+            | TRB_IOC
+            | TRB_ISP_IMI
+            | if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_trb_chain) {
+                TRB_CHN
+            } else {
+                0
+            }
+    };
     unsafe {
         write_volatile(addr_of_mut!((*trb).bpl), address as u32);
         write_volatile(addr_of_mut!((*trb).bph), (address >> 32) as u32);
         write_volatile(addr_of_mut!((*trb).size), length as u32);
         write_volatile(
             addr_of_mut!((*trb).ctrl),
-            kind | TRB_HWO
-                | TRB_LST
-                | TRB_IOC
-                | TRB_ISP_IMI
-                | if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_trb_chain) {
-                    TRB_CHN
-                } else {
-                    0
-                },
+            kind | flags,
         );
         cache_clean(trb as usize, core::mem::size_of::<Trb>());
     }
@@ -4737,6 +4774,17 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             "usb gadget handoff: pre-reset halt readback timed out; continuing to device reset\n",
         );
         trace_event(TRACE_DWC3_HALT_TIMEOUT, 0, 0, 0, 0, read(DSTS));
+    }
+    // Android's msm_hsphy_init() always calls msm_hsphy_enable_power(true)
+    // before enabling the 19.2 MHz ref clock, asserting PHY reset, and
+    // programming the analog registers. The normal non-destructive path
+    // preserves Fastboot's rails; this opt-in A/B re-sends the exact three
+    // QUSB2 rail enable requests before the direct reset/init boundary
+    // without changing the DWC3 command or response path.
+    #[cfg(fullerene_aarch64_usb_refresh_hsphy_power)]
+    if !unsafe { super::platform::bramble::refresh_usb_power(false) } {
+        log_puts("usb gadget handoff: HS PHY rail refresh failed\n");
+        trace_event(TRACE_USB2_PHY_RESET, 0x5057_5246, 0, 0, 0, read(DSTS)); // "PWRF"
     }
     #[cfg(fullerene_aarch64_usb_android_block_reset)]
     if !unsafe { super::platform::bramble::android_controller_block_reset() } {
@@ -6980,6 +7028,9 @@ unsafe fn restart_gadget_at_runstop() -> bool {
 }
 
 unsafe fn poll_ep0_event_ring() -> bool {
+    if cfg!(fullerene_aarch64_usb_abl_event_consume) {
+        return poll_ep0_event_ring_abl_style();
+    }
     let count_register = unsafe { read(GEVNTCOUNT0) };
     let count = count_register & GEVNTCOUNT_MASK;
     if count == 0 {
@@ -7001,6 +7052,49 @@ unsafe fn poll_ep0_event_ring() -> bool {
     // same ownership transition as Linux's evt->cache copy in
     // dwc3_check_event_buf(); process_event() must consume this stable copy.
     let start_offset = unsafe { EVENT_OFFSET };
+    // Capture the producer/consumer boundary before the ACK below. This is
+    // intentionally independent of process_event(): a host-side -71 can be
+    // caused by the controller producing no event at all, by a DMA write that
+    // never reaches the ring, or by software consuming the event incorrectly.
+    // The first observation keeps those cases distinguishable in the retained
+    // trace without changing the live event handling.
+    let first_offset = start_offset % event_size;
+    unsafe { cache_invalidate(event_base + first_offset, 4) };
+    let first_event = (event_base as *const u8).wrapping_add(first_offset);
+    let first_word = unsafe {
+        u32::from_le_bytes([
+            read_volatile(first_event),
+            read_volatile(first_event.add(1)),
+            read_volatile(first_event.add(2)),
+            read_volatile(first_event.add(3)),
+        ])
+    };
+    let first_dsts = unsafe { read(DSTS) };
+    let first_dctl = unsafe { read(DCTL) };
+    if trace::live_dwc3_first_event(
+        count_register,
+        first_offset as u32,
+        first_word,
+        first_dsts,
+        first_dctl,
+    ) {
+        trace_event(
+            TRACE_EVENT_RING_READY,
+            0x4645_5630, // "FEV0": first event count/offset/word/DSTS
+            count_register,
+            first_offset as u32,
+            first_word,
+            first_dsts,
+        );
+        trace_event(
+            TRACE_EVENT_RING_READY,
+            0x4645_5631, // "FEV1": DCTL at the same producer boundary
+            first_dctl,
+            0,
+            0,
+            0,
+        );
+    }
     let mut copied = 0usize;
     while copied < count as usize {
         let offset = (start_offset + copied) % event_size;
@@ -7050,6 +7144,77 @@ unsafe fn poll_ep0_event_ring() -> bool {
         unsafe { process_event(raw) };
         cached_offset += 4;
         remaining -= 4;
+    }
+    true
+}
+
+/// Consume EP0 events in the same ownership order as Factory ABL.
+///
+/// The stock event loop reads one 32-bit event, dispatches it while the
+/// event is still owned by the software consumer, advances the ring cursor,
+/// and then writes exactly four consumed bytes back to GEVNTCOUNT while
+/// preserving EHB.  The normal Fullerene path snapshots a whole available
+/// batch before ACKing it; keep this source-derived sequence as a narrow A/B
+/// because EP0 event handling can issue the next endpoint command.
+unsafe fn poll_ep0_event_ring_abl_style() -> bool {
+    let count_register = unsafe { read(GEVNTCOUNT0) };
+    let count = count_register & GEVNTCOUNT_MASK;
+    if count == 0 {
+        return false;
+    }
+    let event_base = unsafe { ep0_event_dma_base() };
+    let event_size = unsafe { ep0_event_size() };
+    let mut consumed = 0usize;
+    while consumed < count as usize {
+        let offset = unsafe { EVENT_OFFSET } % event_size;
+        unsafe { cache_invalidate(event_base + offset, 4) };
+        let event = (event_base as *const u8).wrapping_add(offset);
+        let raw = unsafe {
+            u32::from_le_bytes([
+                read_volatile(event),
+                read_volatile(event.add(1)),
+                read_volatile(event.add(2)),
+                read_volatile(event.add(3)),
+            ])
+        };
+        unsafe {
+            SIGNAL_EVENT_DELIVERED = true;
+            let first_dsts = read(DSTS);
+            let first_dctl = read(DCTL);
+            if trace::live_dwc3_first_event(
+                count_register,
+                offset as u32,
+                raw,
+                first_dsts,
+                first_dctl,
+            ) {
+                trace_event(
+                    TRACE_EVENT_RING_READY,
+                    0x4645_5630, // "FEV0"
+                    count_register,
+                    offset as u32,
+                    raw,
+                    first_dsts,
+                );
+                trace_event(
+                    TRACE_EVENT_RING_READY,
+                    0x4645_5631, // "FEV1"
+                    first_dctl,
+                    0,
+                    0,
+                    0,
+                );
+            }
+            // ABL dispatches before releasing this event back to DWC3. This
+            // matters when a SETUP/XferNotReady handler submits the next
+            // endpoint command from inside process_event().
+            process_event(raw);
+            EVENT_OFFSET = (offset + 4) % event_size;
+            let current = read(GEVNTCOUNT0);
+            write(GEVNTCOUNT0, (current & GEVNTCOUNT_EHB) | 4);
+            core::arch::asm!("dsb sy", options(nostack));
+        }
+        consumed += 4;
     }
     true
 }

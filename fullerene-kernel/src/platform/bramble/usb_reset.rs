@@ -46,13 +46,13 @@ pub unsafe fn pulse_usb2_phy_reset() -> bool {
         let address = (resources.gcc_base + reset.offset) as *mut u32;
         let asserted = core::ptr::read_volatile(address) | 1;
         core::ptr::write_volatile(address, asserted);
-        for _ in 0..250_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
+        // Android's msm_hsphy_reset() uses usleep_range(100, 150) between
+        // reset_control_assert() and reset_control_deassert(). A fixed
+        // instruction-count loop is CPU-frequency dependent and can be much
+        // shorter or longer across boot stages, so use the architectural
+        // counter just as the source driver does.
+        crate::timer::delay_us(100);
         core::ptr::write_volatile(address, asserted & !1);
-        for _ in 0..250_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
         core::ptr::read_volatile(address) & 1 == 0
     }
 }
