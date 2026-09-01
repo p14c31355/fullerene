@@ -1,4 +1,6 @@
-use super::{ClockProvider, UsbBusVote, set_usb_resource_state, usb_clock_plan, usb_resources};
+use super::{
+    ClockProvider, ClockResource, UsbBusVote, set_usb_resource_state, usb_clock_plan, usb_resources,
+};
 
 const GCC_BRANCH_CLK_OFF: u32 = 1 << 31;
 
@@ -82,6 +84,19 @@ const GCC_CMD_UPDATE: u32 = 1 << 0;
 const GCC_CFG_SRC_DIV_MASK: u32 = 0xff;
 const GCC_CFG_SRC_SEL_MASK: u32 = 0x7 << 8;
 
+/// Raw GCC state used by the Bramble USB handoff diagnostics. Keeping this
+/// in the platform clock layer makes the register offsets DT/resource-owned,
+/// while the DWC3 driver can retain the values beside GUSB2PHYCFG snapshots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsbClockRegisterState {
+    /// RCG configuration words for the controller core and mock UTMI source.
+    pub core_source_config: u32,
+    pub utmi_source_config: u32,
+    /// Branch status words in the six-clock DT order:
+    /// core, iface, bus_aggr, utmi, sleep, xo.
+    pub controller_branches: [u32; 6],
+}
+
 #[inline]
 unsafe fn gcc_reg(offset: usize) -> *mut u32 {
     (usb_resources().gcc_base + offset) as *mut u32
@@ -159,6 +174,38 @@ pub unsafe fn configure_usb_clocks(vote: UsbBusVote) -> bool {
     }
 }
 
+/// Read the GCC source and branch state without changing ownership or clock
+/// programming. This is deliberately separate from `configure_usb_clocks`:
+/// a failed enumeration must be diagnosable even when another A/B should not
+/// retune a live Fastboot clock domain.
+pub unsafe fn read_usb_clock_register_state() -> UsbClockRegisterState {
+    unsafe {
+        let resources = usb_resources();
+        let core = resources.controller_clocks[0];
+        let utmi = resources.controller_clocks[3];
+        let source_config = |clock: ClockResource| {
+            if clock.source_offset == 0 {
+                0
+            } else {
+                core::ptr::read_volatile(
+                    (resources.gcc_base + clock.source_offset + 0x4) as *const u32,
+                )
+            }
+        };
+        let mut controller_branches = [0; 6];
+        for (index, clock) in resources.controller_clocks.iter().enumerate() {
+            controller_branches[index] = core::ptr::read_volatile(
+                (resources.gcc_base + clock.branch_offset) as *const u32,
+            );
+        }
+        UsbClockRegisterState {
+            core_source_config: source_config(core),
+            utmi_source_config: source_config(utmi),
+            controller_branches,
+        }
+    }
+}
+
 /// Bring up only the mock UTMI branch feeding the USB2 datapath.
 ///
 /// The 4.19 msm driver pins `utmi_clk` to 19.2 MHz (BI_TCXO) at probe time
@@ -191,5 +238,90 @@ pub unsafe fn enable_usb2_utmi_clock() -> bool {
         let value = core::ptr::read_volatile(address) | 1;
         core::ptr::write_volatile(address, value);
         wait_for_branch_state(address, true)
+    }
+}
+
+/// Re-enable the non-UTMI controller branches in the same order used by the
+/// Android msm resume path: iface, core, sleep, then utmi.  The UTMI source
+/// and branch are handled by `enable_usb2_utmi_clock()` so its rate A/B stays
+/// isolated; this helper tests only whether an SS-only Fastboot session left
+/// one of the other controller branches gated across the handoff.
+pub unsafe fn rearm_usb2_android_clock_branches() -> bool {
+    unsafe {
+        let resources = usb_resources();
+        let mut ok = true;
+        for name in ["iface", "core", "sleep"] {
+            let Some(clock) = resources
+                .controller_clocks
+                .iter()
+                .find(|clock| clock.name == name)
+            else {
+                return false;
+            };
+            if clock.provider != ClockProvider::Gcc {
+                return false;
+            }
+            let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
+            let value = core::ptr::read_volatile(address) | 1;
+            core::ptr::write_volatile(address, value);
+            ok &= wait_for_branch_state(address, true);
+        }
+        ok
+    }
+}
+
+/// Mirror the Android msm controller block-reset boundary for a handoff A/B.
+/// The downstream driver disables the four DWC3 link clocks, asserts the GCC
+/// core reset, waits for the reset to settle, then deasserts the reset and
+/// enables the clocks in iface/core/sleep/utmi order before a 10 ms settle
+/// window. This is intentionally separate from the DWC3 device CSFTRST and
+/// from the external QUSB2 PHY reset.
+pub unsafe fn android_controller_block_reset() -> bool {
+    unsafe {
+        let resources = usb_resources();
+        let mut ok = true;
+        for name in ["utmi", "sleep", "core", "iface"] {
+            let Some(clock) = resources
+                .controller_clocks
+                .iter()
+                .find(|clock| clock.name == name)
+            else {
+                return false;
+            };
+            if clock.provider != ClockProvider::Gcc {
+                return false;
+            }
+            let address = gcc_reg(clock.branch_offset);
+            let value = core::ptr::read_volatile(address) & !1;
+            core::ptr::write_volatile(address, value);
+            ok &= wait_for_branch_state(address, false);
+        }
+
+        let reset = resources.resets[0];
+        if reset.name != "core_reset" {
+            return false;
+        }
+        let reset_address = gcc_reg(reset.offset);
+        let asserted = core::ptr::read_volatile(reset_address) | 1;
+        core::ptr::write_volatile(reset_address, asserted);
+        ok &= core::ptr::read_volatile(reset_address) & 1 != 0;
+        crate::timer::delay_us(1_000);
+        core::ptr::write_volatile(reset_address, asserted & !1);
+        ok &= core::ptr::read_volatile(reset_address) & 1 == 0;
+        crate::timer::delay_us(1);
+
+        for name in ["iface", "core", "sleep", "utmi"] {
+            let clock = resources
+                .controller_clocks
+                .iter()
+                .find(|clock| clock.name == name)
+                .unwrap();
+            let address = gcc_reg(clock.branch_offset);
+            let value = core::ptr::read_volatile(address) | 1;
+            core::ptr::write_volatile(address, value);
+            ok &= wait_for_branch_state(address, true);
+        }
+        crate::timer::delay_us(10_000);
+        ok
     }
 }

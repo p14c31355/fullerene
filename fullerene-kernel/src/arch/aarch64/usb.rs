@@ -624,6 +624,56 @@ fn gctl_ramclksel(gctl: u32) -> u32 {
     (gctl >> 6) & 3
 }
 
+/// Retain the raw UTMI-facing state at a handoff boundary. The trace is
+/// intentionally split into compact records so it can be inspected later
+/// through the existing EP0 trace transport without adding a new control
+/// request. `stage` is caller-defined; the high byte on the request word
+/// identifies the record group.
+unsafe fn trace_utmi_state(stage: u32) {
+    unsafe {
+        let clocks = super::platform::bramble::usb_clock::read_usb_clock_register_state();
+        trace_event(
+            TRACE_UTMI_STATE,
+            stage,
+            read(GUSB2PHYCFG0),
+            read_qscratch(QSCRATCH_GENERAL_CFG),
+            clocks.utmi_source_config,
+            clocks.controller_branches[3],
+        );
+        trace_event(
+            TRACE_UTMI_STATE,
+            stage | 0x0100_0000,
+            clocks.core_source_config,
+            clocks.controller_branches[0],
+            clocks.controller_branches[1],
+            clocks.controller_branches[2],
+        );
+        trace_event(
+            TRACE_UTMI_STATE,
+            stage | 0x0200_0000,
+            clocks.controller_branches[4],
+            clocks.controller_branches[5],
+            read(GUSB3PIPECTL0),
+            read(DSTS),
+        );
+        trace_event(
+            TRACE_UTMI_STATE,
+            stage | 0x0300_0000,
+            read_volatile(hsphy_reg(HSPHY_UTMI_CTRL0)),
+            read_volatile(hsphy_reg(HSPHY_CTRL2)),
+            read_volatile(hsphy_reg(HSPHY_UTMI_CTRL5)),
+            read_qscratch(QSCRATCH_HS_PHY_CTRL),
+        );
+    }
+}
+
+#[inline]
+fn usb_clock_stable_delay_us() -> u32 {
+    option_env!("FULLERENE_USB_CLOCK_STABLE_DELAY_US")
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
 /// Architectural counter ticks (CNTPCT_EL0). Firmware always provides the
 /// counter frequency on this platform; a zero read simply disables the
 /// SETUP-delay measurement.
@@ -932,6 +982,13 @@ pub fn diag_readout_code() -> u32 {
         }
         code
     }
+}
+
+/// Return a host-readable nibble from the newest retained UTMI snapshot.
+/// The probe uses this only for a reset-delay diagnostic; it does not alter
+/// the USB controller or clock state.
+pub fn utmi_readout_code(selector: &str) -> u32 {
+    trace::utmi_readout_code(selector)
 }
 
 /// True when the newest EP1 transfer-complete event reports success (status
@@ -3288,9 +3345,11 @@ unsafe fn process_event(raw: u32) {
                 note_runtime_event(super::platform::bramble::UsbRuntimeEvent::Disconnect);
             }
             1 => {
+                trace_utmi_state(6);
                 trace_event(TRACE_USB_RESET, 0, 0, 0, 0, raw);
                 note_runtime_event(super::platform::bramble::UsbRuntimeEvent::BusReset);
                 unsafe { restart_control_after_reset() }
+                trace_utmi_state(7);
             }
             2 => {
                 trace_event(TRACE_DEVICE_CONNECT, 0, 0, 0, 0, raw);
@@ -4433,6 +4492,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     if !prepare_smmu_dma_bypass() {
         return false;
     }
+    // Snapshot the Fastboot-owned clock/PHY state before the handoff starts
+    // changing the controller-side USB2 session.
+    trace_utmi_state(1);
     // Stage 1 is deliberately before even the initial stop/readback: it is
     // the control experiment against the already-proven bare pull-up path.
     if unsafe { stop_after_gadget_handoff_stage(1) } {
@@ -4507,6 +4569,13 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         );
         trace_event(TRACE_DWC3_HALT_TIMEOUT, 0, 0, 0, 0, read(DSTS));
     }
+    #[cfg(fullerene_aarch64_usb_android_block_reset)]
+    if !unsafe { super::platform::bramble::android_controller_block_reset() } {
+        log_puts("usb gadget handoff: Android controller block reset failed\n");
+        return gadget_handoff_fail(2);
+    }
+    #[cfg(fullerene_aarch64_usb_android_block_reset)]
+    trace_event(TRACE_DWC3_RESET_BEGIN, 0x424C_4B52, 0, 0, 0, 0); // "BLKR"
     // Fastboot may have stopped Run/Stop, but that is not the same ownership
     // boundary as Linux's DWC3 probe.  The default path terminates its
     // endpoint-resource epoch with a device core soft reset.  The explicit
@@ -4530,9 +4599,24 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // controller start.  The SS-only fastboot session never raised the mock
     // UTMI branch, so bring it up at this post-reset boundary; the core
     // branch is already running under firmware.
+    if cfg!(fullerene_aarch64_usb_gadget_handoff_clock_branches_rearm)
+        && !unsafe { super::platform::bramble::rearm_usb2_android_clock_branches() }
+    {
+        log_puts("usb gadget handoff: Android controller clock branch rearm failed\n");
+    }
     if !unsafe { super::platform::bramble::enable_usb2_utmi_clock() } {
         log_puts("usb gadget handoff: GCC mock UTMI clock enable failed\n");
         trace_event(TRACE_GCC_UTMI_CLOCK, 0, 0, 0, 0, read(DSTS));
+    }
+    trace_utmi_state(2);
+    let clock_delay_us = usb_clock_stable_delay_us();
+    if clock_delay_us != 0 {
+        log_hex(
+            "usb gadget handoff: clock stabilization delay us=",
+            clock_delay_us as u64,
+        );
+        crate::timer::delay_us(clock_delay_us as u64);
+        trace_utmi_state(8);
     }
     unsafe { configure_dwc3_global_control() };
     // The halted-controller boundary above transfers DMA ownership from the
@@ -4562,9 +4646,12 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // programming before any endpoint command. In the preserve-core
         // differential these writes are deliberately retained as the common
         // post-halt handoff sequence; only CSFTRST itself is omitted.
-        // GUCTL is deliberately left at the post-reset value: msm-4.19
-        // never programs GUCTL.REFCLKPER on this platform.
+        // The Qualcomm msm glue selects UTMI-as-PIPE and then updates the
+        // DWC3 reference-clock period. The direct Fastboot reuse path must
+        // keep that callback too: an electrical attach can succeed while
+        // stale REFCLKPER/GFLADJ leaves UTMI packet timing unusable.
         select_utmi_pipe_clock();
+        update_dwc3_ref_clock();
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
         write(GUSB2PHYCFG0, usb2);
@@ -4598,6 +4685,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     if !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core) {
         unsafe { init_hsphy() };
     }
+    trace_utmi_state(3);
 
     // The Fastboot session may have left the DWC3 stream behind an SMMU
     // mapping that only covers its own buffers.  Our TRBs/event ring are
@@ -4950,11 +5038,13 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // halt) so the handoff returns to the probe inside the biter window;
         // the stale-halt case is exactly what the diag rescue re-arm fixes.
         let gate_run = option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1");
+        trace_utmi_state(4);
         let start_readback_ok = if gate_run {
             unsafe { run_stop_device_no_readback(true) }
         } else {
             unsafe { run_stop_device(true) }
         };
+        trace_utmi_state(5);
         if !start_readback_ok {
             // Some Fastboot/DWC3 handoffs keep DSTS.DEVCTRLHLT stale even
             // after the Run/Stop write has reached the controller. The

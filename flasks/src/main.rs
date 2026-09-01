@@ -316,6 +316,21 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_android_resource_order: bool,
 
+    /// Re-enable the Android msm USB controller clock branches at the direct
+    /// Bramble handoff boundary (iface, core, sleep, then UTMI).
+    #[arg(long)]
+    usb_gadget_handoff_clock_branches_rearm: bool,
+
+    /// Wait after the USB controller clock branches are enabled, before the
+    /// first DWC3 setup write. The default is unchanged (no extra delay).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=20_000))]
+    usb_gadget_handoff_clock_stable_delay_us: Option<u32>,
+
+    /// Reproduce Android msm's controller block-reset clock boundary before
+    /// rebuilding the direct Bramble USB2 gadget state.
+    #[arg(long)]
+    usb_gadget_handoff_android_block_reset: bool,
+
     /// Use Android msm's 4096-byte control event buffer instead of the
     /// XBL-derived 0xf0-byte event ring for the Bramble handoff A/B.
     #[arg(long)]
@@ -959,6 +974,42 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-android-resource-order requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_clock_branches_rearm
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-clock-branches-rearm requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_clock_stable_delay_us.is_some()
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-clock-stable-delay-us requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_android_block_reset
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-android-block-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_event_ring_size_4096
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
@@ -1382,6 +1433,10 @@ fn main() -> io::Result<()> {
                 gadget_handoff_no_transfer_resource: args.usb_gadget_handoff_no_transfer_resource,
                 gadget_handoff_android_resource_order: args
                     .usb_gadget_handoff_android_resource_order,
+                gadget_handoff_clock_branches_rearm: args
+                    .usb_gadget_handoff_clock_branches_rearm,
+                clock_stable_delay_us: args.usb_gadget_handoff_clock_stable_delay_us,
+                android_block_reset: args.usb_gadget_handoff_android_block_reset,
                 gadget_handoff_event_ring_size_4096: args
                     .usb_gadget_handoff_event_ring_size_4096,
                 gadget_handoff_start_after_connect: args.usb_gadget_handoff_start_after_connect,
@@ -1583,6 +1638,9 @@ struct Aarch64BuildConfig {
     gadget_handoff_reuse_fastboot_dma: bool,
     gadget_handoff_no_transfer_resource: bool,
     gadget_handoff_android_resource_order: bool,
+    gadget_handoff_clock_branches_rearm: bool,
+    clock_stable_delay_us: Option<u32>,
+    android_block_reset: bool,
     gadget_handoff_event_ring_size_4096: bool,
     gadget_handoff_start_after_connect: bool,
     gadget_handoff_xbl_deferred_setup: bool,
@@ -1671,6 +1729,9 @@ fn build_aarch64_kernel(
         gadget_handoff_reuse_fastboot_dma,
         gadget_handoff_no_transfer_resource,
         gadget_handoff_android_resource_order,
+        gadget_handoff_clock_branches_rearm,
+        clock_stable_delay_us,
+        android_block_reset,
         gadget_handoff_event_ring_size_4096,
         gadget_handoff_start_after_connect,
         gadget_handoff_xbl_deferred_setup,
@@ -1785,6 +1846,24 @@ fn build_aarch64_kernel(
     if gadget_handoff_android_resource_order {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_RESOURCE_ORDER",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_clock_branches_rearm {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_CLOCK_BRANCHES_REARM",
+            "1".to_owned(),
+        );
+    }
+    if let Some(delay_us) = clock_stable_delay_us {
+        push_env(
+            "FULLERENE_AARCH64_USB_CLOCK_STABLE_DELAY_US",
+            delay_us.to_string(),
+        );
+    }
+    if android_block_reset {
+        push_env(
+            "FULLERENE_AARCH64_USB_ANDROID_BLOCK_RESET",
             "1".to_owned(),
         );
     }

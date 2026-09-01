@@ -52,6 +52,11 @@ pub(crate) const TRACE_DWC3_REVISION_QUIRK: u32 = 38;
 pub(crate) const TRACE_XFER_NOT_READY: u32 = 40;
 pub(crate) const TRACE_GCC_UTMI_CLOCK: u32 = 41;
 pub(crate) const TRACE_USB2_PHY_RESET: u32 = 42;
+/// Snapshot of the DWC3 USB2 PHY and Bramble GCC clock state at a handoff
+/// boundary. The payload is intentionally raw so a later enumerated trace
+/// read can compare source/divider and power-state bits without relying on
+/// UART output from the temporary image.
+pub(crate) const TRACE_UTMI_STATE: u32 = 43;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -300,6 +305,72 @@ pub fn trace_last_event() -> u32 {
                 .add(slot),
         )
         .event
+    }
+}
+
+/// Encode one raw UTMI-facing register field for a host-visible readout.
+///
+/// The temporary image normally cannot enumerate far enough to expose the
+/// retained trace over its vendor control request.  The signal probe uses
+/// this small selector API before reset and publishes the returned nibble in
+/// its reset delay.  Values are taken from the newest complete snapshot that
+/// was appended by `trace_utmi_state()`; no register is written here.
+pub(super) fn utmi_readout_code(selector: &str) -> u32 {
+    unsafe {
+        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
+        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
+        let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2));
+        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION || head == 0 {
+            return 0;
+        }
+
+        // The four records are emitted consecutively for each stage. Keep
+        // the newest value for each group; a complete stage therefore wins
+        // over earlier takeover snapshots even when the core later wedges.
+        let valid = (head as usize).min(USB_TRACE_CAPACITY);
+        let oldest = (head as usize).saturating_sub(valid);
+        let mut gusb2 = 0u32;
+        let mut utmi_source = 0u32;
+        let mut utmi_branch = 0u32;
+        let mut seen = [false; 4];
+        for offset in 0..valid {
+            let slot = (oldest + offset) % USB_TRACE_CAPACITY;
+            let entry = read_volatile(
+                addr_of!(USB_TRACE.entries)
+                    .cast::<UsbTraceEntry>()
+                    .add(slot),
+            );
+            if entry.event != TRACE_UTMI_STATE {
+                continue;
+            }
+            let group = ((entry.request >> 24) & 0x3) as usize;
+            seen[group] = true;
+            match group {
+                0 => {
+                    gusb2 = entry.value;
+                    utmi_source = entry.length;
+                    utmi_branch = entry.status;
+                }
+                _ => {}
+            }
+        }
+        if !seen[0] {
+            return 0;
+        }
+
+        match selector {
+            "utmi-trdtim" => (gusb2 >> 10) & 0xf,
+            "utmi-phyif" => (gusb2 >> 3) & 1,
+            "utmi-susphy" => (gusb2 >> 6) & 1,
+            "utmi-enblslpm" => (gusb2 >> 8) & 1,
+            "utmi-freeclk" => (gusb2 >> 30) & 1,
+            "utmi-parent" => (utmi_source >> 8) & 0x7,
+            "utmi-div" => utmi_source & 0xff,
+            "utmi-branch" => utmi_branch & 0xf,
+            "utmi-gusb2-lo" => gusb2 & 0xf,
+            "utmi-gusb2-hi" => (gusb2 >> 28) & 0xf,
+            _ => 0,
+        }
     }
 }
 

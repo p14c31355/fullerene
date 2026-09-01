@@ -120,6 +120,17 @@ struct LoopArgs {
     no_transfer_resource: bool,
     #[arg(long)]
     android_resource_order: bool,
+    /// Re-enable Android msm's iface/core/sleep controller branches before
+    /// the UTMI branch at the direct USB2 handoff boundary.
+    #[arg(long)]
+    clock_branches_rearm: bool,
+    /// Wait after the controller clock branches are enabled, in microseconds
+    /// (0..=20000), before the first DWC3 setup write.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=20_000))]
+    clock_stable_delay_us: Option<u32>,
+    /// Reproduce Android msm's controller block-reset clock boundary.
+    #[arg(long)]
+    android_block_reset: bool,
     /// Use Android msm's 4096-byte control event buffer instead of the
     /// XBL-derived 0xf0-byte event ring (Bramble A/B).
     #[arg(long)]
@@ -397,6 +408,9 @@ impl Default for LoopArgs {
             reuse_fastboot_dma: false,
             no_transfer_resource: false,
             android_resource_order: false,
+            clock_branches_rearm: false,
+            clock_stable_delay_us: None,
+            android_block_reset: false,
             event_ring_size_4096: false,
             start_after_connect: false,
             xbl_deferred_setup: false,
@@ -942,6 +956,24 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--ep0-initial-512 requires --direct-handoff",
+        ));
+    }
+    if args.clock_branches_rearm && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--clock-branches-rearm requires --direct-handoff",
+        ));
+    }
+    if args.clock_stable_delay_us.is_some() && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--clock-stable-delay-us requires --direct-handoff",
+        ));
+    }
+    if args.android_block_reset && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--android-block-reset requires --direct-handoff",
         ));
     }
     if args.dcfg_ignstrmpp && !args.direct_handoff {
@@ -1631,6 +1663,16 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.android_resource_order {
         arguments.push("--usb-gadget-handoff-android-resource-order".to_owned());
+    }
+    if args.clock_branches_rearm {
+        arguments.push("--usb-gadget-handoff-clock-branches-rearm".to_owned());
+    }
+    if let Some(delay_us) = args.clock_stable_delay_us {
+        arguments.push("--usb-gadget-handoff-clock-stable-delay-us".to_owned());
+        arguments.push(delay_us.to_string());
+    }
+    if args.android_block_reset {
+        arguments.push("--usb-gadget-handoff-android-block-reset".to_owned());
     }
     if args.event_ring_size_4096 {
         arguments.push("--usb-gadget-handoff-event-ring-size-4096".to_owned());

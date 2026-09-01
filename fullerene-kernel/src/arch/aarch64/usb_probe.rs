@@ -400,6 +400,22 @@ fn cmd_gate_is(name: &str) -> bool {
     option_env!("FULLERENE_USB_SIGNAL_CMD_GATE").filter(|value| *value != "0") == Some(name)
 }
 
+fn utmi_gate_selector() -> Option<&'static str> {
+    match option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") {
+        Some("utmi-trdtim") => Some("utmi-trdtim"),
+        Some("utmi-phyif") => Some("utmi-phyif"),
+        Some("utmi-susphy") => Some("utmi-susphy"),
+        Some("utmi-enblslpm") => Some("utmi-enblslpm"),
+        Some("utmi-freeclk") => Some("utmi-freeclk"),
+        Some("utmi-parent") => Some("utmi-parent"),
+        Some("utmi-div") => Some("utmi-div"),
+        Some("utmi-branch") => Some("utmi-branch"),
+        Some("utmi-gusb2-lo") => Some("utmi-gusb2-lo"),
+        Some("utmi-gusb2-hi") => Some("utmi-gusb2-hi"),
+        _ => None,
+    }
+}
+
 fn env_flag(value: Option<&'static str>) -> bool {
     value.filter(|value| *value != "0").is_some()
 }
@@ -988,6 +1004,17 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         }
         park_without_recovery_timer();
     }
+    // UTMI readout: publish one raw field from the retained snapshot as a
+    // reset-delay bucket.  This is intentionally a read-only path: the
+    // packet was already observed to fail, and no clock/PHY bit is changed
+    // while collecting the evidence.  Four-second buckets are wide enough
+    // to separate from the normal Android recovery jitter.
+    if let Some(selector) = utmi_gate_selector() {
+        let code = usb::utmi_readout_code(selector).min(15);
+        trace_gate(0x5554_4d49 | (code & 0xff)); // "UTMI" + nibble
+        let _ = usb::gate_true_stop_device();
+        usb::park_for_seconds(10 + u64::from(code) * 4);
+    }
     if let Some(met) = usb::cmd_gate_condition_met() {
         trace_gate(0x4741_5445 | (met as u32 & 0xff));
         if met {
@@ -1148,6 +1175,11 @@ extern "C" fn usb_probe_entry() -> ! {
     // the PON code (+1 s per step) and is readable in the host journal's
     // attach timestamp.
     let prev_boot_code = usb::prev_boot_progress_code();
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    let prev_boot_utmi_code = utmi_gate_selector()
+        .map(usb::utmi_readout_code)
+        .unwrap_or(0)
+        .min(15);
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     usb::trace_probe_begin();
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
@@ -1312,7 +1344,9 @@ extern "C" fn usb_probe_entry() -> ! {
                 }
             }
         };
-        pon_ms + u64::from(prev_boot_code) * 4000
+        pon_ms
+            + u64::from(prev_boot_code) * 4000
+            + u64::from(prev_boot_utmi_code) * 4000
     };
     #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
     let pon_delay_ms = 0;

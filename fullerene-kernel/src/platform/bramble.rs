@@ -3,8 +3,8 @@ pub mod usb_clock;
 pub mod usb_reset;
 
 pub use usb_clock::{
-    configure_usb_clocks, disable_usb_clock_branches, enable_usb_clock_branches,
-    enable_usb2_utmi_clock,
+    android_controller_block_reset, configure_usb_clocks, disable_usb_clock_branches,
+    enable_usb_clock_branches, enable_usb2_utmi_clock, rearm_usb2_android_clock_branches,
 };
 pub use usb_reset::{pulse_usb2_phy_reset, reset_usb_blocks};
 ///
