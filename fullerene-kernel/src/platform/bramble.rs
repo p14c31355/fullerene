@@ -1012,6 +1012,11 @@ const RPMH_LDOA18: [u8; 8] = rpmh_id(b"ldoa18");
 /// the ARC vote is part of the USB gadget power contract even though no USB
 /// node references it directly.
 const RPMH_CXLVL: [u8; 8] = rpmh_id(b"cx.lvl");
+/// Lito's RPMh `bi_tcxo`/`bi_tcxo_ao` ARC clock resource. The Android USB2
+/// PHY consumes `RPMH_CXO_CLK` as `ref_clk_src`; unlike the GCC mock-UTMI
+/// branch, this fixed 19.2 MHz source has no local MMIO gate.
+const RPMH_XO_LVL: [u8; 8] = rpmh_id(b"xo.lvl");
+const RPMH_XO_LVL_ON: u32 = 0x3;
 
 /// ARC levels from `dt-bindings/regulator/qcom,rpmh-regulator-levels.h` as
 /// mapped by the lito `vdd_corner` table (`vdd-level-lito.h`):
@@ -2730,6 +2735,36 @@ pub unsafe fn apply_usb_cx_vote(vote: UsbBusVote) -> bool {
     let command = RpmhBcmCommand {
         address,
         data: usb_cx_level(vote),
+    };
+    unsafe { send_rpmh_command_batch(core::slice::from_ref(&command)) }
+}
+
+/// Enable the dedicated USB2 PHY reference clock consumed by the Android
+/// `qcom,usb-hsphy-snps-femto` node. Linux implements the DT
+/// `<&rpmhcc RPMH_CXO_CLK>` handle as the Lito RPMh ARC resource `xo.lvl`,
+/// with an active-state value of `0x3`; it is not one of the six GCC USB
+/// branches and therefore cannot be covered by `enable_usb_clock_branches`.
+///
+/// This is an active-only handoff request. The early image remains awake for
+/// the complete enumeration window, so the sleep/wake cache writes performed
+/// by Linux's clock framework are not needed here. Re-sending the same ARC
+/// value is idempotent at RPMh aggregation level and is useful when XBL's
+/// client vote has just disappeared.
+pub unsafe fn enable_usb_hs_phy_ref_clock() -> bool {
+    let clock = usb_resources().hs_phy_clock;
+    if clock.name != "ref_clk_src"
+        || clock.provider != ClockProvider::Rpmh
+        || clock.provider_id != 0
+        || clock.normal_rate_hz != 19_200_000
+    {
+        return false;
+    }
+    let Some(address) = (unsafe { command_db_read_addr(&RPMH_XO_LVL) }) else {
+        return false;
+    };
+    let command = RpmhBcmCommand {
+        address,
+        data: RPMH_XO_LVL_ON,
     };
     unsafe { send_rpmh_command_batch(core::slice::from_ref(&command)) }
 }

@@ -587,6 +587,26 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     loop {
         usb::wdt_pet();
         usb::poll();
+        // `setup-cut` is a one-shot protocol-boundary probe. The latch is set
+        // only after the EP0 setup TRB has been DMAed/parsed; stop immediately
+        // so the host journal can distinguish "SETUP reached software" from
+        // the earlier `-71` transaction-error boundary. A missing disconnect
+        // is meaningful here: it means this boundary was never reached.
+        if cmd_gate_is("setup-cut") && usb::ep0_setup_packet_seen() {
+            trace_gate(0x5355_4301); // "SUC" + stop path reached
+            let stopped = usb::gate_true_stop_device_fast();
+            trace_gate(0x5355_4300 | u32::from(stopped));
+            usb::park_for_seconds(30);
+        }
+        // `event-cut` is the preceding boundary probe. A disconnect here
+        // proves that DWC3 delivered an event to the consumer; an unchanged
+        // descriptor timeout means the failure is before event-ring delivery.
+        if cmd_gate_is("event-cut") && usb::ep0_event_delivered() {
+            trace_gate(0x4556_4301); // "EVC" + stop path reached
+            let stopped = usb::gate_true_stop_device_fast();
+            trace_gate(0x4556_4300 | u32::from(stopped));
+            usb::park_for_seconds(30);
+        }
         if probe_counter() >= next_keepalive {
             let _ = unsafe {
                 platform::bramble::refresh_usb_domain_votes(

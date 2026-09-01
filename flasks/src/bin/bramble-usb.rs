@@ -124,6 +124,10 @@ struct LoopArgs {
     /// the UTMI branch at the direct USB2 handoff boundary.
     #[arg(long)]
     clock_branches_rearm: bool,
+    /// Select Android msm's HS performance state for the DWC3 core clock
+    /// (66.666667 MHz) at the direct USB2 handoff boundary.
+    #[arg(long)]
+    usb_core_hs_clock: bool,
     /// Wait after the controller clock branches are enabled, in microseconds
     /// (0..=20000), before the first DWC3 setup write.
     #[arg(long, value_parser = clap::value_parser!(u32).range(0..=20_000))]
@@ -131,6 +135,9 @@ struct LoopArgs {
     /// Reproduce Android msm's controller block-reset clock boundary.
     #[arg(long)]
     android_block_reset: bool,
+    /// Skip the direct handoff's explicit QUSB2 PHY block-reset pulse (A/B).
+    #[arg(long)]
+    skip_usb2_phy_reset: bool,
     /// Use Android msm's 4096-byte control event buffer instead of the
     /// XBL-derived 0xf0-byte event ring (Bramble A/B).
     #[arg(long)]
@@ -166,6 +173,15 @@ struct LoopArgs {
     /// Use Bramble's DT HIRD threshold (0x10) instead of XBL's observed 7.
     #[arg(long)]
     dt_hird_threshold: bool,
+    /// Apply Android msm's HS Connect Done LPM/HIRD controller policy.
+    #[arg(long)]
+    android_hs_lpm: bool,
+    /// Mirror Factory ABL's additional QUSB2 HS PHY ATE/test cleanup (A/B).
+    #[arg(long)]
+    abl_shared_hs_phy: bool,
+    /// Use Factory ABL's observed narrow DWC3 device-event mask (0x47).
+    #[arg(long)]
+    abl_devten: bool,
     /// Use XBL's separate EP0 OUT/IN TRB slots for direction-specific transfers (A/B).
     #[arg(long)]
     xbl_direction_trb: bool,
@@ -409,8 +425,10 @@ impl Default for LoopArgs {
             no_transfer_resource: false,
             android_resource_order: false,
             clock_branches_rearm: false,
+            usb_core_hs_clock: false,
             clock_stable_delay_us: None,
             android_block_reset: false,
+            skip_usb2_phy_reset: false,
             event_ring_size_4096: false,
             start_after_connect: false,
             xbl_deferred_setup: false,
@@ -422,6 +440,9 @@ impl Default for LoopArgs {
             xbl_stock_ep0_dma: false,
             xbl_raw_runstop: false,
             dt_hird_threshold: false,
+            android_hs_lpm: false,
+            abl_shared_hs_phy: false,
+            abl_devten: false,
             xbl_direction_trb: false,
             xbl_trb_chain: false,
             start_ungated: false,
@@ -898,6 +919,18 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--dt-hird-threshold requires --direct-handoff",
         ));
     }
+    if args.android_hs_lpm && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--android-hs-lpm requires --direct-handoff",
+        ));
+    }
+    if args.abl_shared_hs_phy && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--abl-shared-hs-phy requires --direct-handoff",
+        ));
+    }
     if args.xbl_direction_trb && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -964,6 +997,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--clock-branches-rearm requires --direct-handoff",
         ));
     }
+    if args.usb_core_hs_clock && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-core-hs-clock requires --direct-handoff",
+        ));
+    }
     if args.clock_stable_delay_us.is_some() && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -974,6 +1013,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--android-block-reset requires --direct-handoff",
+        ));
+    }
+    if args.skip_usb2_phy_reset && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--skip-usb2-phy-reset requires --direct-handoff",
         ));
     }
     if args.dcfg_ignstrmpp && !args.direct_handoff {
@@ -1667,12 +1712,18 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.clock_branches_rearm {
         arguments.push("--usb-gadget-handoff-clock-branches-rearm".to_owned());
     }
+    if args.usb_core_hs_clock {
+        arguments.push("--usb-gadget-handoff-core-hs-clock".to_owned());
+    }
     if let Some(delay_us) = args.clock_stable_delay_us {
         arguments.push("--usb-gadget-handoff-clock-stable-delay-us".to_owned());
         arguments.push(delay_us.to_string());
     }
     if args.android_block_reset {
         arguments.push("--usb-gadget-handoff-android-block-reset".to_owned());
+    }
+    if args.skip_usb2_phy_reset {
+        arguments.push("--usb-gadget-handoff-skip-usb2-phy-reset".to_owned());
     }
     if args.event_ring_size_4096 {
         arguments.push("--usb-gadget-handoff-event-ring-size-4096".to_owned());
@@ -1706,6 +1757,15 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.dt_hird_threshold {
         arguments.push("--usb-gadget-handoff-dt-hird-threshold".to_owned());
+    }
+    if args.android_hs_lpm {
+        arguments.push("--usb-gadget-handoff-android-hs-lpm".to_owned());
+    }
+    if args.abl_shared_hs_phy {
+        arguments.push("--usb-gadget-handoff-abl-shared-hs-phy".to_owned());
+    }
+    if args.abl_devten {
+        arguments.push("--usb-gadget-handoff-abl-devten".to_owned());
     }
     if args.xbl_direction_trb {
         arguments.push("--usb-gadget-handoff-xbl-direction-trb".to_owned());

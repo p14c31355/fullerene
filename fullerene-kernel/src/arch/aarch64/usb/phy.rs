@@ -154,16 +154,34 @@ pub(super) unsafe fn init_hsphy() {
             write_volatile(hsphy_reg(offset), value);
         }
 
+        // Android's msm_hsphy_init() enables the external termination tune
+        // unless the DT explicitly says that no external resistor is present
+        // or supplies an efuse RCAL code.  Bramble's usb2_phy0 node has
+        // neither qcom,no-rext-present nor a qcom,rcal-reg/rcal-mask pair,
+        // so the source-equivalent path is RTUNE_SEL=1.
+        hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
+
         // phy-msm-snps-hs.c stops here for the analog setup: VREGBYPASS,
         // the suspend-N hold, SLEEPM, then the POR release. The earlier
-        // RTUNE_SEL write and the ATE/test-toggle commit belong to the older
-        // QUSB v1/v2 drivers, not this femto PHY, and the test-register
-        // toggles mux analog state the overrides above depend on.
+        // RTUNE_SEL write is the source-equivalent femto-PHY termination
+        // setup. Factory ABL's usb_shared_hs_phy_init() additionally clears
+        // the old QUSB ATE/test state before releasing the PHY; keep that
+        // extra sequence opt-in so it remains an isolated A/B variable.
         hsphy_update(
             HSPHY_COMMON2,
             HSPHY_COMMON2_VREGBYPASS,
             HSPHY_COMMON2_VREGBYPASS,
         );
+        if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
+            hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_ATE_RESET, 0);
+            hsphy_update(
+                HSPHY_TEST1,
+                HSPHY_TEST1_TESTDATAOUTSEL | HSPHY_TEST1_TOGGLE_2WR,
+                0,
+            );
+            hsphy_update(HSPHY_COMMON0, HSPHY_COMMON0_VATESTENB_MASK, 0);
+            hsphy_update(HSPHY_TEST0, HSPHY_TEST0_DATA_MASK, 0);
+        }
         hsphy_update(
             HSPHY_CTRL2,
             HSPHY_CTRL2_SUSPEND_N_SEL | HSPHY_CTRL2_SUSPEND_N,
@@ -172,7 +190,16 @@ pub(super) unsafe fn init_hsphy() {
         hsphy_update(HSPHY_UTMI_CTRL0, HSPHY_UTMI_SLEEPM, HSPHY_UTMI_SLEEPM);
         hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_POR, 0);
         hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N_SEL, 0);
+        if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
+            // ABL waits after dropping SUSPEND_N_SEL before releasing the
+            // common-control override.
+            crate::timer::delay_us(20);
+        }
         hsphy_update(HSPHY_CFG0, HSPHY_CFG0_CMN_CTRL_OVERRIDE_EN, 0);
+        if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
+            // It then gives the analog block another 20 us to settle.
+            crate::timer::delay_us(20);
+        }
     }
 }
 

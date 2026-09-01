@@ -9,8 +9,10 @@
 //! the same event ring is drained from the IRQ handler once the GIC is live.
 
 use config::{
-    apply_usb31_gadget_reference_deltas, configure_dwc3_global_control, configure_gadget_speed,
-    configure_gadget_start_defaults, configure_usb2_phy_interface, enable_gadget_susphy,
+    apply_usb31_gadget_reference_deltas, configure_android_hs_connect_done_policy,
+    configure_dwc3_device_mode, configure_dwc3_global_control, configure_gadget_speed,
+    configure_gadget_start_defaults,
+    configure_usb2_phy_interface, enable_gadget_susphy,
     enable_usb2_gadget_susphy, qscratch_set, run_stop_value,
 };
 use control::{
@@ -3356,6 +3358,7 @@ unsafe fn process_event(raw: u32) {
                 let speed = unsafe { read(DSTS) & DSTS_CONNECTSPD_MASK };
                 log_puts("usb: connect done, speed=");
                 log_hex_value(speed as u64);
+                unsafe { configure_android_hs_connect_done_policy(speed) };
                 unsafe {
                     CONNECT_TICK = arch_counter();
                     PENDING_SETUP_ARM = true;
@@ -4200,9 +4203,14 @@ pub fn init_usb2_handoff() -> bool {
     // Fullerene's own votes up front (best-effort; the secure side may reject
     // individual transitions without making the handoff impossible).
     unsafe {
-        let performance = super::platform::bramble::usb_performance_state(
-            super::platform::bramble::UsbBusVote::Nominal,
-        );
+        let performance_vote = if cfg!(fullerene_aarch64_usb_gadget_handoff_core_hs_clock) {
+            log_puts("usb: selecting Android HS core-clock performance state\n");
+            super::platform::bramble::UsbBusVote::Svs
+        } else {
+            super::platform::bramble::UsbBusVote::Nominal
+        };
+        let performance =
+            super::platform::bramble::usb_performance_state(performance_vote);
         if !super::platform::bramble::apply_usb_power(true, false) {
             log_puts("usb: RPMh USB PHY regulator vote unavailable; continuing\n");
         }
@@ -4604,6 +4612,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     {
         log_puts("usb gadget handoff: Android controller clock branch rearm failed\n");
     }
+    if !unsafe { super::platform::bramble::enable_usb_hs_phy_ref_clock() } {
+        log_puts("usb gadget handoff: RPMh HS PHY ref clock enable failed\n");
+    }
     if !unsafe { super::platform::bramble::enable_usb2_utmi_clock() } {
         log_puts("usb gadget handoff: GCC mock UTMI clock enable failed\n");
         trace_event(TRACE_GCC_UTMI_CLOCK, 0, 0, 0, 0, read(DSTS));
@@ -4667,6 +4678,11 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_post_endpoint_global) {
             apply_usb31_gadget_reference_deltas();
         }
+        // Android msm's dwc3_set_mode(DEVICE) performs a second GCTL write
+        // after selecting the device port. Preserve that controller-mode
+        // tail before publishing EP0 resources; it is independent of TRB
+        // payload framing and is especially relevant on DWC_usb31.
+        configure_dwc3_device_mode();
     }
     // An SS-only fastboot session never deasserted the femto PHY block
     // reset (GCC_QUSB2PHY_PRIM_BCR), which can leave the PHY core logic held
@@ -4674,9 +4690,14 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // autonomously.  The 4.19 phy-core deasserts `phy_reset` before
     // `snps_hsphy_init`; pulse the USB2-only line here, before the pull-up
     // is asserted, so the host port stays unattached throughout.
-    if !unsafe { super::platform::bramble::pulse_usb2_phy_reset() } {
-        log_puts("usb gadget handoff: USB2 PHY BCR reset failed\n");
-        trace_event(TRACE_USB2_PHY_RESET, 0, 0, 0, 0, read(DSTS));
+    if !cfg!(fullerene_aarch64_usb_skip_usb2_phy_reset) {
+        if !unsafe { super::platform::bramble::pulse_usb2_phy_reset() } {
+            log_puts("usb gadget handoff: USB2 PHY BCR reset failed\n");
+            trace_event(TRACE_USB2_PHY_RESET, 0, 0, 0, 0, read(DSTS));
+        }
+    } else {
+        log_puts("usb gadget handoff: skipping USB2 PHY BCR reset A/B\n");
+        trace_event(TRACE_USB2_PHY_RESET, 0x534B_4950, 0, 0, 0, read(DSTS));
     }
     // DWC3's device reset does not reset the external Femto PHY.  Reapply the
     // Linux USB2 PHY programming at the same post-reset boundary as the normal
@@ -4900,7 +4921,13 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // Done, and Suspend. Keep the narrower mask limited to the
         // event-driven XBL differential; the generic path retains its
         // broader lifecycle notifications.
-        let devten = if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
+        let devten = if cfg!(any(
+            fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
+            fullerene_aarch64_usb_abl_devten
+        )) {
+            // Factory ABL publishes exactly 0x47 here: Disconnect, USB Reset,
+            // Connect Done, and Suspend. Keep this opt-in so the normal path
+            // remains unchanged while event ownership is isolated.
             DEVTEN_DISCONNECT | DEVTEN_USB_RESET | DEVTEN_CONNECT_DONE | DEVTEN_SUSPEND
         } else {
             DEVTEN_DISCONNECT
@@ -5511,6 +5538,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // framework yet, so perform the small branch/reset part directly.
         let mut qmp_ready = if reset_platform {
             let _ = super::platform::bramble::enable_usb_clock_branches();
+            // Android's PHY probe enables the RPMh-backed `ref_clk_src`
+            // before releasing the PHY/controller reset sequence. This fixed
+            // 19.2 MHz clock is separate from the GCC mock-UTMI branch.
+            let _ = super::platform::bramble::enable_usb_hs_phy_ref_clock();
             let _ = super::platform::bramble::reset_usb_blocks(super_speed);
 
             init_hsphy();
@@ -6868,6 +6899,22 @@ pub fn ep0_signal_code() -> u32 {
     }
 }
 
+/// True once the EP0 SETUP payload has been observed either by the retained
+/// setup latch or by the DMA-buffer sampler. The signal probe uses this as a
+/// precise pre-response boundary: it is intentionally earlier than any
+/// descriptor DATA/TRB completion and does not infer a wire-level CRC error.
+pub fn ep0_setup_packet_seen() -> bool {
+    unsafe { SIGNAL_SETUP_PACKET_RECEIVED }
+}
+
+/// True once the polling path has consumed a non-empty DWC3 device/event-ring
+/// record. This is deliberately one boundary earlier than SETUP parsing and
+/// lets the signal probe test event ownership without changing PHY or TRB
+/// configuration.
+pub fn ep0_event_delivered() -> bool {
+    unsafe { SIGNAL_EVENT_DELIVERED }
+}
+
 /// Link-state variant of the signal ladder. Priority reflects the deepest
 /// USB2 link state the core ever reported after a verified Run/Stop start:
 ///   1 = ON (U0): the core believes the link is up at the detected speed
@@ -7585,6 +7632,14 @@ pub fn restore_usb2_session_votes() {
 /// events while halting per the databook stop contract.
 pub fn gate_true_stop_device() -> bool {
     unsafe { run_stop_device(false) }
+}
+
+/// Stop the gadget at a diagnostic boundary without waiting for the DWC3
+/// halted-state readback. This keeps a SETUP-boundary probe inside the host's
+/// pending control-transfer window; the ordinary gate helper remains the
+/// readback-checked path for non-timing-sensitive tests.
+pub fn gate_true_stop_device_fast() -> bool {
+    unsafe { run_stop_device_no_readback(false) }
 }
 
 /// Public Run/Stop re-assert for the dstat readout: the host-visible side of

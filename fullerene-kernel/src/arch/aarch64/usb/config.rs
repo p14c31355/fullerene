@@ -32,6 +32,44 @@ pub(super) unsafe fn configure_gadget_speed(super_speed: bool) {
     }
 }
 
+/// Apply Android msm's USB2 Connect Done policy for a DWC3 gadget.
+///
+/// The downstream gadget driver enables `DCFG.LPM_CAP` and rewrites the HIRD
+/// threshold after the negotiated speed is known. This is a controller-side
+/// HS link policy, not a software packet wrapper. Keep it as an explicit A/B
+/// because the current handoff reaches the host's HS attach without proving
+/// that the DWC3 receives any SOF/SETUP traffic.
+#[inline]
+pub(super) unsafe fn configure_android_hs_connect_done_policy(speed: u32) {
+    unsafe {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_android_hs_lpm) {
+            return;
+        }
+
+        let snpsid = read(GSNPSID);
+        let revision = if matches!(snpsid >> 16, DWC31_IP | DWC32_IP) {
+            read(VER_NUMBER) | DWC3_REVISION_IS_DWC31
+        } else {
+            snpsid
+        };
+        // Android's conndone path applies this only below SuperSpeed.
+        if revision <= DWC3_REVISION_194A || speed == DSTS_SUPERSPEED {
+            return;
+        }
+
+        let mut dcfg = read(DCFG);
+        dcfg |= DCFG_LPM_CAP;
+        write(DCFG, dcfg);
+
+        let mut dctl = read(DCTL);
+        dctl &= !(DCTL_HIRD_THRES_MASK | DCTL_L1_HIBER_EN);
+        // lito-usb.dtsi supplies snps,hird-threshold = 0x10.
+        dctl |= DCTL_HIRD_THRES_LITO;
+        write(DCTL, dctl);
+        let _ = read(DCTL);
+    }
+}
+
 /// Match the PHY low-power boundary in Linux's `__dwc3_gadget_start()`.
 ///
 /// `dwc3_gadget_run_stop()` temporarily clears these bits around the actual
@@ -156,6 +194,32 @@ pub(super) unsafe fn configure_dwc3_global_control() {
             write(GUCTL2, guctl2);
         }
         configure_usb2_phy_interface();
+    }
+}
+
+/// Apply the device-mode tail of Android msm's `dwc3_set_mode()`.
+///
+/// The direct handoff previously selected `PRTCAPDIR=DEVICE` but omitted the
+/// second write that Android performs immediately afterwards. That write is
+/// not an EP0/TRB formatting choice: it controls the DWC3 USB2 reset-retry,
+/// power-down scale, and LFPS exit policy. Keep this as a source-equivalent
+/// controller-mode correction before endpoint commands are published.
+#[inline]
+pub(super) unsafe fn configure_dwc3_device_mode() {
+    unsafe {
+        let mut gctl = read(GCTL);
+        gctl &= !GCTL_PRTCAPDIR_MASK;
+        gctl |= GCTL_PRTCAP_DEVICE;
+        write(GCTL, gctl);
+
+        // Match Android msm's dwc3_set_mode(...DEVICE) second write. The
+        // source sets U2RSTECN for every mode, clears SOFITPSYNC, programs
+        // PWRDNSCALE=2, and enables U2EXIT_LFPS.
+        gctl |= GCTL_U2RSTECN | GCTL_U2EXIT_LFPS;
+        gctl &= !(GCTL_SOFITPSYNC | GCTL_PWRDNSCALE_MASK);
+        gctl |= GCTL_PWRDNSCALE_2;
+        write(GCTL, gctl);
+        let _ = read(GCTL);
     }
 }
 
