@@ -608,6 +608,8 @@ static mut INIT_CALLS: u32 = 0;
 /// "No resource" even though SETTRANSFRESOURCE reported success. Capture
 /// the working value and re-apply it at every reset boundary.
 static mut RAMCLK_CAPTURE: u32 = 0;
+/// Distinguishes a real capture of RAMCLKSEL=0 from the uninitialized state.
+static mut RAMCLK_CAPTURE_VALID: bool = false;
 
 #[inline]
 fn gctl_ramclksel(gctl: u32) -> u32 {
@@ -662,10 +664,10 @@ fn arch_counter_frequency() -> u64 {
 /// host's bus USB reset, both of which clear the field.
 unsafe fn reapply_ramclksel() {
     unsafe {
-        let captured = RAMCLK_CAPTURE;
-        if captured == 0 {
+        if !RAMCLK_CAPTURE_VALID {
             return;
         }
+        let captured = RAMCLK_CAPTURE;
         let gctl = read(GCTL);
         let updated = (gctl & !(3 << 6)) | (captured << 6);
         if updated != gctl {
@@ -4166,6 +4168,21 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             read(DSTS),
         );
     }
+    // Capture the working Fastboot RAM clock selection before the reuse
+    // helper stops the old session or the device soft reset clears GCTL.
+    // Zero is a valid RAMCLKSEL value, so validity is tracked separately.
+    unsafe {
+        RAMCLK_CAPTURE = gctl_ramclksel(read(GCTL));
+        RAMCLK_CAPTURE_VALID = true;
+        trace_event(
+            TRACE_DWC3_REVISION_QUIRK,
+            0x5243_4150,
+            RAMCLK_CAPTURE,
+            0,
+            0,
+            0,
+        );
+    }
     if !unsafe { init_usb2_bare_pullup_handoff_inner(false) } {
         // Fastboot can leave DSTS.DEVCTRLHLT stale while the device session
         // is already quiescent. The DWC3 device soft reset below is the real
@@ -4225,6 +4242,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             gctl |= GCTL_GBLHIBERNATIONEN;
         }
         write(GCTL, gctl);
+        // The reset may clear RAMCLKSEL even when the surrounding GCTL bits
+        // are preserved. Restore the Fastboot value before endpoint setup.
+        reapply_ramclksel();
         // CSFTRST restores the controller-side PHY mux/timing state on
         // DWC3 revisions used by Bramble. Reapply the Qualcomm controller
         // programming before any endpoint command. In the preserve-core
@@ -5065,6 +5085,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // and with the wrong select the internal endpoint RAM misroutes
         // writes, which is exactly the "No resource" STARTTRANSFER failure.
         RAMCLK_CAPTURE = gctl_ramclksel(read(GCTL));
+        RAMCLK_CAPTURE_VALID = true;
         trace_event(
             TRACE_DWC3_REVISION_QUIRK,
             0x5243_4150,
