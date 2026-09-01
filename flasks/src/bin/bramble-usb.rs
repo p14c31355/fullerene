@@ -174,6 +174,9 @@ struct LoopArgs {
     /// Start EP0 with the Linux/Android 512-byte descriptor state.
     #[arg(long)]
     ep0_initial_512: bool,
+    /// Keep DCFG at the Bramble maximum-speed SuperSpeed state at Run/Stop.
+    #[arg(long)]
+    dcfg_superspeed: bool,
     /// Set DCFG.IGNSTRMPP in the direct gadget-start sequence (A/B).
     #[arg(long)]
     dcfg_ignstrmpp: bool,
@@ -411,6 +414,7 @@ impl Default for LoopArgs {
             event_ring_at_runstop: false,
             gadget_restart_at_runstop: false,
             ep0_initial_512: false,
+            dcfg_superspeed: false,
             dcfg_ignstrmpp: false,
             usb2_susphy: false,
             ep0_stall_flush: false,
@@ -1678,6 +1682,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.ep0_initial_512 {
         arguments.push("--usb-gadget-handoff-ep0-initial-512".to_owned());
+    }
+    if args.dcfg_superspeed {
+        arguments.push("--usb-gadget-handoff-dcfg-superspeed".to_owned());
     }
     if args.dcfg_ignstrmpp {
         arguments.push("--usb-gadget-handoff-dcfg-ignstrmpp".to_owned());

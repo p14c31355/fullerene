@@ -400,6 +400,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_ep0_initial_512: bool,
 
+    /// Bramble differential: keep DCFG at the DT maximum-speed SuperSpeed
+    /// state at the final Run/Stop boundary.
+    #[arg(long)]
+    usb_gadget_handoff_dcfg_superspeed: bool,
+
     /// Bramble differential: set DCFG.IGNSTRMPP in the direct gadget-start
     /// sequence, matching current mainline DWC3.
     #[arg(long)]
@@ -1062,6 +1067,18 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-ep0-initial-512 requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_dcfg_superspeed
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-dcfg-superspeed requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_dcfg_ignstrmpp
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
@@ -1385,6 +1402,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_gadget_restart_at_runstop: args
                     .usb_gadget_handoff_gadget_restart_at_runstop,
                 gadget_handoff_ep0_initial_512: args.usb_gadget_handoff_ep0_initial_512,
+                gadget_handoff_dcfg_superspeed: args.usb_gadget_handoff_dcfg_superspeed,
                 gadget_handoff_dcfg_ignstrmpp: args.usb_gadget_handoff_dcfg_ignstrmpp,
                 gadget_handoff_usb2_susphy: args.usb_gadget_handoff_usb2_susphy,
                 gadget_handoff_ep0_stall_flush: args.usb_gadget_handoff_ep0_stall_flush,
@@ -1582,6 +1600,7 @@ struct Aarch64BuildConfig {
     gadget_handoff_event_ring_at_runstop: bool,
     gadget_handoff_gadget_restart_at_runstop: bool,
     gadget_handoff_ep0_initial_512: bool,
+    gadget_handoff_dcfg_superspeed: bool,
     gadget_handoff_dcfg_ignstrmpp: bool,
     gadget_handoff_usb2_susphy: bool,
     gadget_handoff_ep0_stall_flush: bool,
@@ -1669,6 +1688,7 @@ fn build_aarch64_kernel(
         gadget_handoff_event_ring_at_runstop,
         gadget_handoff_gadget_restart_at_runstop,
         gadget_handoff_ep0_initial_512,
+        gadget_handoff_dcfg_superspeed,
         gadget_handoff_dcfg_ignstrmpp,
         gadget_handoff_usb2_susphy,
         gadget_handoff_ep0_stall_flush,
@@ -1866,6 +1886,9 @@ fn build_aarch64_kernel(
     }
     if gadget_handoff_ep0_initial_512 {
         push_env("FULLERENE_AARCH64_USB_EP0_INITIAL_512", "1".to_owned());
+    }
+    if gadget_handoff_dcfg_superspeed {
+        push_env("FULLERENE_AARCH64_USB_DCFG_SUPERSPEED", "1".to_owned());
     }
     if gadget_handoff_dcfg_ignstrmpp {
         push_env("FULLERENE_AARCH64_USB_DCFG_IGNSTRMPP", "1".to_owned());

@@ -70,6 +70,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_clear)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_set)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_initial_512)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_superspeed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_ignstrmpp)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_susphy)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_ep0_stall_flush)");
@@ -256,6 +257,9 @@ fn main() {
         }
         if env::var_os("FULLERENE_AARCH64_USB_EP0_INITIAL_512").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_initial_512");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_DCFG_SUPERSPEED").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_dcfg_superspeed");
         }
         if env::var_os("FULLERENE_AARCH64_USB_DCFG_IGNSTRMPP").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_dcfg_ignstrmpp");

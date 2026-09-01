@@ -1166,7 +1166,7 @@ unsafe fn stop_after_gadget_handoff_stage(stage: u32) -> bool {
         // a successful STARTTRANSFER indistinguishable from a failed one.
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
-        configure_gadget_speed(false);
+        configure_gadget_speed(cfg!(fullerene_aarch64_usb_dcfg_superspeed));
         if !unsafe { run_stop_device(true) } {
             // If STARTTRANSFER completed but the production Run/Stop
             // boundary did not, reset the controller and expose the known
@@ -1194,7 +1194,7 @@ unsafe fn stop_after_gadget_handoff_stage(stage: u32) -> bool {
         // path from the actual Run/Stop boundary.
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
-        configure_gadget_speed(false);
+        configure_gadget_speed(cfg!(fullerene_aarch64_usb_dcfg_superspeed));
         let _ = unsafe { run_stop_device(true) };
         return true;
     }
@@ -2622,10 +2622,18 @@ unsafe fn try_arm_setup() -> bool {
         // and NAKed the whole first descriptor window (-110). The bus reset
         // ends before the host's first SETUP token, so issuing the re-arm
         // here is safe; only a genuinely halted controller is skipped.
-        let dsts = read(DSTS);
-        if dsts & DSTS_DEVCTRLHLT != 0 {
-            return false;
+        #[cfg(not(fullerene_aarch64_usb_gadget_handoff_start_ungated))]
+        {
+            let dsts = read(DSTS);
+            if dsts & DSTS_DEVCTRLHLT != 0 {
+                return false;
+            }
         }
+        // This A/B deliberately issues STARTTRANSFER without consulting the
+        // firmware-inherited DSTS halt/link readback. The Bramble handoff can
+        // report a stale HALT bit while the host has already reached the
+        // attach boundary; let the command result, rather than that status
+        // read, decide whether the EP0 SETUP TRB can be armed.
         prepare_ep0_setup_trb();
         if start_transfer(0, ep0_trb_ptr(0)) {
             EP0_SETUP_ARMED = true;
@@ -4916,7 +4924,12 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
 
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
-        configure_gadget_speed(false);
+        // Bramble's DT declares maximum-speed = "super-speed". The Android
+        // msm start path keeps that DCFG speed even when the negotiated link
+        // later falls back to USB2; the EP0 context is changed to 64 bytes by
+        // Connect Done. Keep this source-derived speed choice opt-in because
+        // the existing attach-reaching baseline used a USB2 DCFG value.
+        configure_gadget_speed(cfg!(fullerene_aarch64_usb_dcfg_superspeed));
         #[cfg(fullerene_aarch64_usb_gadget_handoff_event_ring_at_runstop)]
         {
             // Android msm republishes the event buffer in
@@ -5197,7 +5210,7 @@ pub fn init_usb2_gadget_handoff() -> bool {
         // USB2 attach without exposing an EP0-less device to the host.
         // Reassert the Qualcomm VBUS/session vote immediately before the
         // final Run/Stop write; this is the glue driver's pre_run_stop hook.
-        configure_gadget_speed(false);
+        configure_gadget_speed(cfg!(fullerene_aarch64_usb_dcfg_superspeed));
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(
             QSCRATCH_HS_PHY_CTRL,
