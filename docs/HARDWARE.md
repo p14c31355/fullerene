@@ -341,8 +341,8 @@ results, host journal, and recovery state are maintained in
 | Target | Pixel 4a 5G / Bramble / `26191JECB00076` | Confirmed | Unlocked; `fastboot boot` only |
 | USB2 attach | Fullerene reaches HS attach | Partially successful | The physical pull-up boundary is crossed |
 | Enumeration | `device descriptor read/64, error -110` | Not reached | `idVendor=1234` has not appeared |
-| Latest A/B | USB2 PHY turnaround timing `USBTRDTIM=5` alone was negative | Negative / diagnostic | Run `tmp/fullerene-bramble-loop.900521.0` reached HS attach at `18:16:55`, timed out with descriptor `-110` at `18:17:00`, and recovered as Android SuperSpeed `18d1:4ee7` at `18:17:21`; no `idVendor=1234` appeared |
-| Next checks | Instrument endpoint-command completion and DWC3 event ownership | Pending | The coupled 16-bit/5-cycle PHY test changed `-110` to `-71`, but timing alone, PHY interface alone by implication, SMMU/reset/TRB/resource/event-ring A/Bs did not enumerate; add read-only command/status evidence before the next physical A/B |
+| Latest A/B | Host-visible `STARTTRANSFER` completion gate was inconclusive | Inconclusive / diagnostic | Run `tmp/fullerene-bramble-loop.910234.0` reached HS attach at `18:24:21`, timed out with descriptor `-110` at `18:24:26`, and recovered as Android SuperSpeed `18d1:4ee7` at `18:24:47`; no `idVendor=1234` appeared |
+| Next checks | Verify the Bramble mock-UTMI clock source/rate and capture `GUSB2PHYCFG` at key boundaries | Pending | The coupled 16-bit/5-cycle PHY test changed `-110` to `-71`, but timing alone and the prior SMMU/reset/TRB/resource/event-ring A/Bs did not enumerate; add read-only UTMI clock and register-state evidence before the next physical A/B |
 
 ## Future Platforms
 
