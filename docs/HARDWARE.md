@@ -342,7 +342,8 @@ results, host journal, and recovery state are maintained in
 | USB2 attach | Fullerene reaches HS attach | Partially successful | The physical pull-up boundary is crossed |
 | Enumeration | `device descriptor read/64, error -110` | Not reached | `idVendor=1234` has not appeared |
 | Latest A/B | Host-visible `STARTTRANSFER` completion gate was inconclusive | Inconclusive / diagnostic | Run `tmp/fullerene-bramble-loop.910234.0` reached HS attach at `18:24:21`, timed out with descriptor `-110` at `18:24:26`, and recovered as Android SuperSpeed `18d1:4ee7` at `18:24:47`; no `idVendor=1234` appeared |
-| Next checks | Verify the Bramble mock-UTMI clock source/rate and capture `GUSB2PHYCFG` at key boundaries | Pending | The coupled 16-bit/5-cycle PHY test changed `-110` to `-71`, but timing alone and the prior SMMU/reset/TRB/resource/event-ring A/Bs did not enumerate; add read-only UTMI clock and register-state evidence before the next physical A/B |
+| Latest A/B | Mock-UTMI 60 MHz source selection was negative | Negative / diagnostic | Run `tmp/fullerene-bramble-loop.922967.0` did not produce a new Fullerene attach and returned to Android SuperSpeed; no `idVendor=1234` appeared |
+| Next checks | Separate 16-bit PHYIF from `USBTRDTIM` and capture `GUSB2PHYCFG` at key boundaries | Pending | The coupled 16-bit/5-cycle PHY test changed `-110` to `-71`, but timing alone and the 60 MHz source A/B did not enumerate; test 16-bit with the 8-bit timing value before adding more clock changes |
 
 ## Future Platforms
 
