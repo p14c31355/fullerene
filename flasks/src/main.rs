@@ -163,6 +163,10 @@ struct Args {
     #[arg(long)]
     usb_signal_dma_probe: bool,
 
+    /// Probe event-DMA liveness after Run/Stop and after the link reaches U0.
+    #[arg(long)]
+    usb_signal_dma_post_runstop: bool,
+
     /// Make the installed SMR a catch-all (mask all IDs) instead of exact
     /// 0xe0, so a misreported stream ID cannot keep transactions faulting.
     #[arg(long)]
@@ -1302,6 +1306,7 @@ fn main() -> io::Result<()> {
                 connect_delay: args.usb_connect_delay,
                 ep0_smmu_install: args.usb_ep0_smmu_install,
                 signal_dma_probe: args.usb_signal_dma_probe,
+                signal_dma_post_runstop: args.usb_signal_dma_post_runstop,
                 smmu_install_all: args.usb_smmu_install_all,
                 signal_fsr_gate: args.usb_signal_fsr_gate,
                 signal_prev_trace_gate: args.usb_signal_prev_trace_gate,
@@ -1488,6 +1493,7 @@ struct Aarch64BuildConfig {
     connect_delay: Option<u64>,
     ep0_smmu_install: bool,
     signal_dma_probe: bool,
+    signal_dma_post_runstop: bool,
     smmu_install_all: bool,
     signal_fsr_gate: Option<u32>,
     signal_prev_trace_gate: Option<u32>,
@@ -1568,6 +1574,7 @@ fn build_aarch64_kernel(
         connect_delay,
         ep0_smmu_install,
         signal_dma_probe,
+        signal_dma_post_runstop,
         smmu_install_all,
         signal_fsr_gate,
         signal_prev_trace_gate,
@@ -1839,6 +1846,12 @@ fn build_aarch64_kernel(
     }
     if signal_dma_probe {
         push_env("FULLERENE_AARCH64_USB_SIGNAL_DMA_PROBE", "1".to_owned());
+    }
+    if signal_dma_post_runstop {
+        push_env(
+            "FULLERENE_AARCH64_USB_SIGNAL_DMA_POST_RUNSTOP",
+            "1".to_owned(),
+        );
     }
     if smmu_install_all {
         push_env("FULLERENE_AARCH64_USB_SMMU_INSTALL_ALL", "1".to_owned());

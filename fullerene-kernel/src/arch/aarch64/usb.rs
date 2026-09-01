@@ -223,12 +223,10 @@ static mut PENDING_SETUP_ARM: bool = false;
 /// command engine at poll rate during that window can wedge it, so the
 /// guard backs off between attempts.
 static mut ARM_COOLDOWN: u32 = 0;
-/// Deferred EP0 data-phase arm. The core fires XferNotReady(CONTROL_DATA)
-/// when the host's first IN token arrives and only consumes a data TRB
-/// armed from that event boundary (the stock XBL flow). A Start Transfer
-/// issued at SETUP-dispatch time retires cleanly but is ignored, and the
-/// host then NAK-loops the whole 5 s control window (-110). The dispatch
-/// prepares the TRB, sets this flag, and the XferNotReady handler arms.
+/// Recovery-only EP0 data-phase arm. Android msm 4.19 starts the data
+/// transfer immediately when the gadget queues the response. This flag is
+/// set only if that initial STARTTRANSFER fails; a later
+/// XferNotReady(CONTROL_DATA) event then provides a bounded retry point.
 static mut DATA_PHASE_PENDING_START: bool = false;
 static mut DATA_PHASE_PENDING_LEN: usize = 0;
 /// CNTPCT tick of the first successful post-connect Run/Stop (quiet-window
@@ -2456,6 +2454,102 @@ unsafe fn complete_xbl_setup_request(error: bool) {
     }
 }
 
+/// Exercise the live EP0 event-DMA path after Run/Stop without issuing a
+/// second STARTTRANSFER on an endpoint that already owns the real SETUP
+/// transfer. DWC3 rejects that overlap as No Resource. End the live request,
+/// consume its command/event record, run the synthetic start/end pair, then
+/// leave the caller to restore the host-facing SETUP transfer.
+#[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+unsafe fn post_runstop_event_dma_probe() -> bool {
+    unsafe {
+        let active_resource = EP0_RESOURCE_INDEX[0];
+        if EP0_SETUP_ARMED || active_resource != 0 {
+            let resource = active_resource.max(1);
+            if !send_ep_command(
+                0,
+                DEPCMD_ENDTRANSFER
+                    | DEPCMD_CMDIOC
+                    | DEPCMD_HIPRI_FORCERM
+                    | ((resource as u32) << DEPCMD_PARAM_SHIFT),
+                0,
+                0,
+                0,
+            ) {
+                log_puts("usb: post-Run/Stop probe could not end live SETUP\n");
+                return false;
+            }
+            EP0_RESOURCE_INDEX[0] = 0;
+            EP0_SETUP_ARMED = false;
+            // Consume the live SETUP ENDTRANSFER completion before sampling
+            // the synthetic request; otherwise the first GEVNTCOUNT word
+            // would describe the teardown rather than the test pair.
+            let _ = poll_ep0_event_ring();
+        }
+
+        let link_ready = read(DSTS) & DSTS_DEVCTRLHLT == 0
+            && (read(DSTS) >> 18) & 0xf == 0;
+        let started = if link_ready {
+            prepare_ep0_setup_trb();
+            start_transfer(0, ep0_trb_ptr(0))
+        } else {
+            false
+        };
+        let resource = if started {
+            EP0_RESOURCE_INDEX[0].max(1)
+        } else {
+            1
+        };
+        let ended = send_ep_command(
+            0,
+            DEPCMD_ENDTRANSFER
+                | DEPCMD_CMDIOC
+                | DEPCMD_HIPRI_FORCERM
+                | ((resource as u32) << DEPCMD_PARAM_SHIFT),
+            0,
+            0,
+            0,
+        );
+        EP0_RESOURCE_INDEX[0] = 0;
+        let mut delivered = false;
+        let mut event_word = 0u32;
+        for _ in 0..100 {
+            super::timer::delay_ms(1);
+            if read(GEVNTCOUNT0) & GEVNTCOUNT_MASK != 0 {
+                delivered = true;
+                break;
+            }
+        }
+        if delivered {
+            let slot = (EVENT_OFFSET % ep0_event_size()) & !0x3;
+            event_word = read_volatile((ep0_event_dma_base() + slot) as *const u32);
+            poll_ep0_event_ring();
+        }
+        trace_event(
+            TRACE_EVENT_RING_READY,
+            0x504F_5354, // "POST"
+            started as u32,
+            ended as u32,
+            event_word | ((delivered as u32) << 31),
+            read(DSTS),
+        );
+        if !started || !ended || !delivered {
+            trace_marker(TRACE_PROBE_WATCHDOG, 0x504F_5346); // "POSF"
+            log_puts("usb: post-Run/Stop event DMA probe failed\n");
+            return false;
+        }
+        EVENT_OFFSET = 0;
+        prepare_ep0_setup_trb();
+        // ENDTRANSFER retires the synthetic probe request. Restore the real
+        // EP0 OUT SETUP transfer before returning to host enumeration.
+        if !start_transfer(0, ep0_trb_ptr(0)) {
+            log_puts("usb: post-Run/Stop probe SETUP re-arm failed\n");
+            return false;
+        }
+        EP0_SETUP_ARMED = true;
+        true
+    }
+}
+
 /// Best-effort SETUP arming for the poll-loop guard. Unlike `rearm_setup()`
 /// this never tears the endpoint down on failure: the core rejects Start
 /// Transfer while the link is not ON, and the guard simply retries on the
@@ -2838,6 +2932,14 @@ unsafe fn setup_request() -> [u8; 8] {
 
 unsafe fn handle_setup() {
     let packet = unsafe { setup_request() };
+    #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+    unsafe {
+        // The SETUP buffer is cleared immediately below so a later poll can
+        // distinguish a fresh packet. Preserve a diagnostic latch before
+        // clearing it; otherwise the host-visible early-drop probe can miss
+        // a real DMA delivery between two 1 ms samples.
+        SIGNAL_SETUP_PACKET_RECEIVED = true;
+    }
     // Zero the DMA buffer after latching the packet: a later non-zero
     // buffer then proves the core delivered a NEW SETUP packet, even while
     // the software state machine was still in the Data/Status phase (the
@@ -2924,15 +3026,18 @@ unsafe fn handle_setup() {
                 read(DSTS),
             );
             EP0_STATE = Ep0State::Data;
-            // XferNotReady-driven arm: a Start Transfer issued at dispatch
-            // time retires cleanly on this core but is then IGNORED - the
-            // core fires XferNotReady(CONTROL_DATA) at the host's first IN
-            // token and only consumes a data TRB armed from that event
-            // boundary (the stock XBL flow). Issuing it here leaves the
-            // endpoint NAKing the entire 5 s control window (-110). Prepare
-            // only; the XferNotReady handler arms.
-            DATA_PHASE_PENDING_START = true;
+            // Android msm 4.19's __dwc3_gadget_ep0_queue() starts the DATA
+            // phase immediately after preparing the response TRB. Waiting
+            // for XferNotReady(DATA) here can miss the host's first IN
+            // token and leave EP1 NAKing the entire control window (-110).
+            // Keep the NRDY path only as recovery if this initial command is
+            // rejected while the link is still settling.
             DATA_PHASE_PENDING_LEN = length;
+            let started = retry_start_transfer(1, ep0_trb_ptr(trb_index), 2500);
+            DATA_PHASE_PENDING_START = !started;
+            if started {
+                note_probe_ep0_progress();
+            }
         },
         ControlAction::StatusIn => unsafe {
             EP0_STATE = Ep0State::Status;
@@ -3233,13 +3338,11 @@ unsafe fn process_event(raw: u32) {
         trace_event(TRACE_XFER_NOT_READY, endpoint as u32, status, 0, 0, raw);
         if status == 1 && endpoint == 1 {
             unsafe {
-                // CONTROL_DATA NRDY on EP1 IN: the host's first data-phase IN
-                // token arrived and the core has no active transfer. This is
-                // the ONLY boundary from which the core consumes a data TRB
-                // (the dispatch-time arm retires cleanly and is ignored), so
-                // arm the prepared TRB here. A failed attempt stays pending:
-                // the host keeps tokening the data phase, each burst fires
-                // another NRDY, and the next event retries the command.
+                // CONTROL_DATA NRDY on EP1 IN is normally informational after
+                // the immediate Android-style arm above. It remains a
+                // recovery boundary only when the initial STARTTRANSFER was
+                // rejected while the link was settling; the host keeps
+                // tokening the data phase and the next event retries it.
                 if DATA_PHASE_PENDING_START && EP0_STATE == Ep0State::Data {
                     let length = DATA_PHASE_PENDING_LEN;
                     let trb_index = ep0_trb_index(1);
@@ -3867,6 +3970,13 @@ pub fn init_usb2_handoff() -> bool {
         if init_usb2_gadget_handoff() {
             return true;
         }
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
+            // Keep the post-link DMA diagnostic one-shot. Falling through to
+            // the SuperSpeed fallback would publish a second controller path
+            // and make a host-visible attach ambiguous.
+            return false;
+        }
     }
 
     if init_with_super_speed(false, true, false) {
@@ -4121,6 +4231,12 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // and the first SETUP TRB armed before Run/Stop is allowed to advertise
     // the device; otherwise the host can issue the first descriptor request
     // while the handoff is still rebuilding DWC3 state.
+    // This USB2 entry point bypasses `init_with_super_speed`; apply the same
+    // explicit SMMU-disable differential here before publishing any new EP0
+    // DMA object. Previously `--smmu-disable` was ignored on this path.
+    if !prepare_smmu_dma_bypass() {
+        return false;
+    }
     // Stage 1 is deliberately before even the initial stop/readback: it is
     // the control experiment against the already-proven bare pull-up path.
     if unsafe { stop_after_gadget_handoff_stage(1) } {
@@ -4638,6 +4754,16 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 super::timer::delay_us(200);
             }
         }
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
+            // The USB2 reuse entry has its own Run/Stop tail, so it must run
+            // the post-link event-DMA check here rather than relying on the
+            // SuperSpeed fallback's equivalent block. End the already armed
+            // real SETUP request before starting the synthetic pair.
+            if !post_runstop_event_dma_probe() {
+                return false;
+            }
+        }
         unsafe { gate_flow_blip() }; // flow-map B4: final Run/Stop readback done
         if stop_after_gadget_handoff_stage(7) {
             return false;
@@ -4913,6 +5039,44 @@ unsafe fn stall_map_beacon() {
     }
 }
 
+/// Put the Apps-SMMU into the verified physical=IOVA state used by the
+/// direct Bramble DMA differential. The USB2 probe and the SuperSpeed
+/// fallback have separate handoff entry points, so keep this ownership
+/// transition in one helper; otherwise `--smmu-disable` can silently apply to
+/// only one of them.
+unsafe fn prepare_smmu_dma_bypass() -> bool {
+    #[cfg(fullerene_aarch64_usb_smmu_disable)]
+    {
+        let scr0 = read_volatile(smmu_reg(SMMU_GR0_SCR0));
+        if scr0 == u32::MAX {
+            trace_marker(TRACE_PROBE_WATCHDOG, 0x5344_5242); // "SDRB"
+            log_puts("usb: SMMU SCR0 unreadable; cannot disable\n");
+            return false;
+        }
+        // sCR0.SMMUEN (bit 0) off, sCR0.CLIENTPD (bit 1) set, and
+        // sCR0.WACFG (bits 7:6) = 00 (unattributed transactions pass).
+        let new_scr0 = (scr0 & !0x1 & !(0b11 << 6)) | 0x2;
+        write_volatile(smmu_reg(SMMU_GR0_SCR0), new_scr0);
+        core::arch::asm!("dsb sy", options(nostack));
+        let readback = read_volatile(smmu_reg(SMMU_GR0_SCR0));
+        let ok = readback == new_scr0;
+        trace_event(
+            TRACE_SMMU_HANDOFF,
+            0x5344_4953,
+            scr0,
+            new_scr0,
+            readback,
+            ok as u32,
+        );
+        if !ok {
+            trace_marker(TRACE_PROBE_WATCHDOG, 0x5344_524A); // "SDRJ"
+            log_puts("usb: SMMU disable rejected; suppressing pull-up\n");
+            return false;
+        }
+    }
+    true
+}
+
 fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bool) -> bool {
     unsafe {
         QMP_PHY_READY = false;
@@ -4925,34 +5089,8 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // take the SMMU out of the path entirely. This must happen before
         // any DWC3 DMA is armed. A rejected (secure-owned) write fails the
         // attempt so the host-visible attach names the outcome.
-        #[cfg(fullerene_aarch64_usb_smmu_disable)]
-        {
-            let scr0 = read_volatile(smmu_reg(SMMU_GR0_SCR0));
-            if scr0 == u32::MAX {
-                trace_marker(TRACE_PROBE_WATCHDOG, 0x5344_5242); // "SDRB"
-                log_puts("usb: SMMU SCR0 unreadable; cannot disable\n");
-                return false;
-            }
-            // sCR0.SMMUEN (bit 0) off, sCR0.CLIENTPD (bit 1) set, and
-            // sCR0.WACFG (bits 7:6) = 00 (unattributed transactions pass).
-            let new_scr0 = (scr0 & !0x1 & !(0b11 << 6)) | 0x2;
-            write_volatile(smmu_reg(SMMU_GR0_SCR0), new_scr0);
-            core::arch::asm!("dsb sy", options(nostack));
-            let readback = read_volatile(smmu_reg(SMMU_GR0_SCR0));
-            let ok = readback == new_scr0;
-            trace_event(
-                TRACE_SMMU_HANDOFF,
-                0x5344_4953,
-                scr0,
-                new_scr0,
-                readback,
-                ok as u32,
-            );
-            if !ok {
-                trace_marker(TRACE_PROBE_WATCHDOG, 0x5344_524A); // "SDRJ"
-                log_puts("usb: SMMU disable rejected; suppressing pull-up\n");
-                return false;
-            }
+        if !prepare_smmu_dma_bypass() {
+            return false;
         }
         // Harvest the previous attempt's STARTTRANSFER outcome before this
         // attempt's DMA-region clear wipes the trace. Attempt 1 skips the
@@ -6085,73 +6223,12 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
-            // The original DMA probe runs before Run/Stop, but this DWC3
-            // rejects or wedges an EP0 transfer while the link is down. This
-            // A/B waits for the controller's U0 state and then performs the
-            // same start/end transfer test against the live event ring.
-            let link_deadline =
-                arch_counter().saturating_add(arch_counter_frequency().saturating_mul(2));
-            let mut link_ready = false;
-            while arch_counter() < link_deadline {
-                let dsts = read(DSTS);
-                if dsts & DSTS_DEVCTRLHLT == 0 && (dsts >> 18) & 0xf == 0 {
-                    link_ready = true;
-                    break;
-                }
-                super::timer::delay_ms(1);
-            }
-            let started = if link_ready {
-                prepare_ep0_setup_trb();
-                start_transfer(0, ep0_trb_ptr(0))
-            } else {
-                false
-            };
-            let resource = if started {
-                EP0_RESOURCE_INDEX[0].max(1)
-            } else {
-                1
-            };
-            let ended = send_ep_command(
-                0,
-                DEPCMD_ENDTRANSFER
-                    | DEPCMD_CMDIOC
-                    | DEPCMD_HIPRI_FORCERM
-                    | ((resource as u32) << DEPCMD_PARAM_SHIFT),
-                0,
-                0,
-                0,
-            );
-            EP0_RESOURCE_INDEX[0] = 0;
-            let mut delivered = false;
-            let mut event_word = 0u32;
-            for _ in 0..100 {
-                super::timer::delay_ms(1);
-                if read(GEVNTCOUNT0) & GEVNTCOUNT_MASK != 0 {
-                    delivered = true;
-                    break;
-                }
-            }
-            if delivered {
-                let slot = (EVENT_OFFSET % ep0_event_size()) & !0x3;
-                event_word = read_volatile((ep0_event_dma_base() + slot) as *const u32);
-                poll_ep0_event_ring();
-            }
-            trace_event(
-                TRACE_EVENT_RING_READY,
-                0x504F_5354, // "POST"
-                started as u32,
-                ended as u32,
-                event_word | ((delivered as u32) << 31),
-                read(DSTS),
-            );
-            if !started || !ended || !delivered {
-                trace_marker(TRACE_PROBE_WATCHDOG, 0x504F_5346); // "POSF"
-                log_puts("usb: post-Run/Stop event DMA probe failed\n");
+            // The USB2 reuse entry normally owns the live setup request by
+            // this point. The shared helper ends it before testing the event
+            // ring, then restores the host-facing SETUP transfer.
+            if !post_runstop_event_dma_probe() {
                 return false;
             }
-            EP0_SETUP_ARMED = false;
-            EVENT_OFFSET = 0;
-            prepare_ep0_setup_trb();
         }
 
         // C5: Run/Stop active and the tight SETUP-arm window is done.
@@ -6610,7 +6687,11 @@ fn ep0_signal_early_drop_check() {
     unsafe {
         let mut observed = 0;
         let mut ms = 0u32;
-        while ms < 1500 {
+        // Bramble can take roughly 14 seconds from Fastboot's disconnect to
+        // the host's first high-speed attach. The old 1.5-second window ended
+        // before any SETUP packet could arrive, so it could not distinguish a
+        // dead EP0 from normal pre-attach delay.
+        while ms < 20_000 {
             ms += 1;
             if condition != 9 {
                 // Consume any pending events first: the delivery latch is
@@ -6888,6 +6969,15 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             // received a word. The gate is useful only when the optional
             // probe was compiled in; a missing record is false.
             "post" => TRACE_HARVEST_POST == 0x1_0007,
+            "post-start" => {
+                TRACE_HARVEST_POST != 0xFFFF_FFFF && TRACE_HARVEST_POST & 1 != 0
+            }
+            "post-end" => {
+                TRACE_HARVEST_POST != 0xFFFF_FFFF && TRACE_HARVEST_POST & 2 != 0
+            }
+            "post-event" => {
+                TRACE_HARVEST_POST != 0xFFFF_FFFF && TRACE_HARVEST_POST & 4 != 0
+            }
             "post-record" => TRACE_HARVEST_POST != 0xFFFF_FFFF,
             "wdt-armed" => WDT_KPSS_EN_AT_ENTRY & 1 != 0,
             "wdt-off" => WDT_KPSS_EN_AT_ENTRY != 0xFFFF_FFFF && WDT_KPSS_EN_AT_ENTRY & 1 == 0,

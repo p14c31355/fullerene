@@ -245,6 +245,9 @@ struct LoopArgs {
     /// Gate the attach on a pre-connect CMDIOC event reaching GEVNTCOUNT.
     #[arg(long)]
     signal_dma_probe: bool,
+    /// Probe event-DMA liveness after Run/Stop and after the link reaches U0.
+    #[arg(long)]
+    signal_dma_post_runstop: bool,
     /// Install the SMR as a catch-all (mask all IDs) instead of exact 0xe0.
     #[arg(long)]
     smmu_install_all: bool,
@@ -401,6 +404,7 @@ impl Default for LoopArgs {
             connect_delay: None,
             smmu_install_bypass: false,
             signal_dma_probe: false,
+            signal_dma_post_runstop: false,
             smmu_install_all: false,
             signal_fsr_gate: None,
             signal_prev_trace_gate: None,
@@ -1110,6 +1114,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--signal-dma-probe requires --direct-handoff",
         ));
     }
+    if args.signal_dma_post_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-dma-post-runstop requires --direct-handoff",
+        ));
+    }
     if (args.start_after_connect as u8
         + args.start_after_reset as u8
         + args.start_at_connect_done as u8)
@@ -1651,6 +1661,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.signal_dma_probe {
         arguments.push("--usb-signal-dma-probe".to_owned());
+    }
+    if args.signal_dma_post_runstop {
+        arguments.push("--usb-signal-dma-post-runstop".to_owned());
     }
     if args.smmu_install_all {
         arguments.push("--usb-smmu-install-all".to_owned());

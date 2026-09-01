@@ -1375,7 +1375,9 @@ extern "C" fn usb_probe_entry() -> ! {
         fullerene_aarch64_usb_pullup_probe
     )) {
         // Retry only ownership races; gate runs use one attempt so evaluation lands before watchdog bite.
-        let attempt_limit = if option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1") {
+        let attempt_limit = if option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1")
+            || option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1")
+        {
             1u32
         } else {
             3u32

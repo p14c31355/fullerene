@@ -341,8 +341,8 @@ results, host journal, and recovery state are maintained in
 | Target | Pixel 4a 5G / Bramble / `26191JECB00076` | Confirmed | Unlocked; `fastboot boot` only |
 | USB2 attach | Fullerene reaches HS attach | Partially successful | The physical pull-up boundary is crossed |
 | Enumeration | `device descriptor read/64, error -110` | Not reached | `idVendor=1234` has not appeared |
-| Latest A/B | `-110` remains after the RAMCLKSEL capture-validity fix | Investigating | Latest run: `tmp/fullerene-bramble-loop.150741.0` |
-| Next checks | EP0 IN data path, HS PHY override, wire-level response | Pending | Detailed history and append-only diagnostics are in the separate file |
+| Latest A/B | Post-Run/Stop probe gate did not confirm all three synthetic event-DMA conditions | Investigating | Latest isolated run: `tmp/fullerene-bramble-loop.328652.0`; `-110` at `12:28:05`, Android fallback `18d1:4ee7` at `12:28:25` |
+| Next checks | Split the post-probe result into STARTTRANSFER, ENDTRANSFER, and event-delivery gates | Pending | `idVendor=1234` has not appeared; detailed history and append-only diagnostics are in [HARDWARE_aarch64.md](HARDWARE_aarch64.md) |
 
 ## Future Platforms
 
