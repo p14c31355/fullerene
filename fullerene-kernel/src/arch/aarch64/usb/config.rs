@@ -2,7 +2,9 @@
 
 use super::super::usb_regs::*;
 use super::mmio::*;
-use super::trace::{TRACE_DWC3_REVISION_QUIRK, TRACE_QSCRATCH_BEGIN, trace_event};
+use super::trace::{
+    TRACE_DWC3_REVISION_QUIRK, TRACE_QSCRATCH_BEGIN, live_utmi_write, trace_event,
+};
 
 pub(super) fn gadget_speed_value(mut dcfg: u32, super_speed: bool, snpsid: u32) -> u32 {
     dcfg &= !DCFG_SPEED_MASK;
@@ -280,7 +282,8 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
             usb2 &= !GUSB2PHYCFG_U2_FREECLK_EXISTS;
         }
         write(GUSB2PHYCFG0, usb2);
-        let _ = read(GUSB2PHYCFG0);
+        let readback = read(GUSB2PHYCFG0);
+        live_utmi_write(usb2, readback);
     }
 }
 

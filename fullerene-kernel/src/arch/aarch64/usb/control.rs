@@ -243,6 +243,23 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
             dctl &= !DCTL_RUN_STOP;
             write_dctl_safe(dctl);
         }
+        // Diagnostic only: put the USB2 interface contract back immediately
+        // after the DCTL Run/Stop write, before the controller's state
+        // transition completes. This distinguishes a write rejected while
+        // running from a transition-time reset/overwrite of GUSB2PHYCFG.
+        if is_on && option_env!("FULLERENE_USB_UTMI_WRITE_AFTER_DCTL") == Some("1") {
+            super::config::configure_usb2_phy_interface();
+        }
+        if is_on && option_env!("FULLERENE_USB_DALEPENA_AFTER_DCTL") == Some("1") {
+            // Diagnostic A/B: if Run/Stop itself drops the endpoint-enable
+            // mask, restore only EP0 OUT/IN here and let the gate-time
+            // snapshot report whether the mask survives the later reset/link
+            // transition. No PHY or transfer descriptor is changed.
+            write(DALEPENA, 0b11);
+        }
+        if is_on && option_env!("FULLERENE_USB_DALEPENA_AFTER_DCTL") == Some("1") {
+            super::trace::live_dalepena_after_dctl(read(DALEPENA));
+        }
         let complete = wait_device_state(!is_on);
 
         if saved_config != 0 {
@@ -287,6 +304,19 @@ pub(super) unsafe fn run_stop_device_no_readback(is_on: bool) -> bool {
         } else {
             dctl &= !DCTL_RUN_STOP;
             write_dctl_safe(dctl);
+        }
+
+        // Keep the no-readback signal-gate path identical at the point where
+        // the DCTL transition is launched. The following readback is omitted
+        // by design, so stage-specific probes are used to observe retention.
+        if is_on && option_env!("FULLERENE_USB_UTMI_WRITE_AFTER_DCTL") == Some("1") {
+            super::config::configure_usb2_phy_interface();
+        }
+        if is_on && option_env!("FULLERENE_USB_DALEPENA_AFTER_DCTL") == Some("1") {
+            write(DALEPENA, 0b11);
+        }
+        if is_on && option_env!("FULLERENE_USB_DALEPENA_AFTER_DCTL") == Some("1") {
+            super::trace::live_dalepena_after_dctl(read(DALEPENA));
         }
 
         if saved_config != 0 {

@@ -198,6 +198,10 @@ static mut DMA_ALLOCATOR: Option<super::platform::bramble::DmaPoolAllocator> = N
 static mut SIGNAL_EVENT_DELIVERED: bool = false;
 static mut SIGNAL_SETUP_TRB_RETIRED: bool = false;
 static mut SIGNAL_SETUP_PACKET_RECEIVED: bool = false;
+/// True once the DWC3 device-event stream delivered one of its own error
+/// notifications. Keep this separate from TRACE_USB_DEVICE_ERROR, which is
+/// also used for software/endpoint-command diagnostics and hibernation.
+static mut SIGNAL_DWC3_DEVICE_ERROR: bool = false;
 static mut SIGNAL_LAST_SOFFN: u16 = 0;
 static mut SIGNAL_SOF_BASELINED: bool = false;
 static mut SIGNAL_SOF_SEEN: bool = false;
@@ -278,6 +282,22 @@ unsafe fn dma_iova_for(cpu: usize) -> u64 {
 /// otherwise the raw DEPCMD register: status in bits 15:12).
 pub fn harvest_last_str_code() -> u32 {
     unsafe { TRACE_HARVEST_LAST }
+}
+
+/// Return a host-visible encoding of the post-Run/Stop event-DMA probe.
+/// `0xffff_ffff` means the probe record was never emitted; otherwise bits
+/// 0..2 are STARTTRANSFER, ENDTRANSFER, and event-ring delivery. The caller
+/// maps no-record to 9 and a recorded bitmask to bitmask+1 so that the
+/// distinction survives the pull-up attach-count channel.
+pub fn post_event_dma_readout_code() -> u32 {
+    unsafe {
+        harvest_trace_outcome();
+        if TRACE_HARVEST_POST == 0xffff_ffff {
+            9
+        } else {
+            (TRACE_HARVEST_POST & 0x7).saturating_add(1)
+        }
+    }
 }
 
 #[inline]
@@ -421,9 +441,10 @@ static mut FUNCTION_BOUND: bool = false;
 /// it per endpoint and supplies it to ENDTRANSFER; using a fixed value works
 /// only accidentally on the first controller generation.
 static mut EP0_RESOURCE_INDEX: [u8; 2] = [0; 2];
-/// Software ownership slot for the stock XBL-style initial EP0 OUT request.
-/// XBL queues this request before Run/Stop and turns it in-flight only when
-/// the first CONTROL_DATA XferNotReady event asks for STARTTRANSFER.
+/// Software ownership slot for the historical XBL differential. This is not
+/// the canonical initial-SETUP arm point: Android msm/Linux prepare the
+/// CONTROL_SETUP TRB and issue STARTTRANSFER before the controller can emit
+/// later phase notifications.
 static mut EP0_SETUP_REQUEST_SLOT: usize = usize::MAX;
 /// Failure stage for the standalone gadget handoff probe. The probe uses
 /// this to make a retained failure host-observable without publishing a
@@ -634,10 +655,12 @@ fn gctl_ramclksel(gctl: u32) -> u32 {
 unsafe fn trace_utmi_state(stage: u32) {
     unsafe {
         let clocks = super::platform::bramble::usb_clock::read_usb_clock_register_state();
+        let gusb2 = read(GUSB2PHYCFG0);
+        live_utmi_stage(stage, gusb2);
         trace_event(
             TRACE_UTMI_STATE,
             stage,
-            read(GUSB2PHYCFG0),
+            gusb2,
             read_qscratch(QSCRATCH_GENERAL_CFG),
             clocks.utmi_source_config,
             clocks.controller_branches[3],
@@ -990,7 +1013,108 @@ pub fn diag_readout_code() -> u32 {
 /// The probe uses this only for a reset-delay diagnostic; it does not alter
 /// the USB controller or clock state.
 pub fn utmi_readout_code(selector: &str) -> u32 {
+    if selector == "protocol" {
+        return protocol_readout_code();
+    }
     trace::utmi_readout_code(selector)
+}
+
+/// Capture the controller boundary immediately before a protocol readout.
+/// This is read-only: it does not acknowledge the event ring, alter the
+/// endpoint command registers, or touch the USB2 PHY. Three records preserve
+/// enough raw state to distinguish an empty event FIFO, a received SETUP, an
+/// unconsumed SETUP TRB, and a stuck EP0 command after the host reports -71.
+pub fn trace_dwc3_boundary() {
+    unsafe {
+        let event_count = read(GEVNTCOUNT0);
+        let dsts = read(DSTS);
+        let dctl = read(DCTL);
+        let devten = read(DEVTEN);
+        let dalepena = read(DALEPENA);
+        let depcmd0 = read(dep_reg(0, 0x0c));
+        let depcmd1 = read(dep_reg(1, 0x0c));
+        let trb0 = ep0_trb_ptr(0);
+        let trb1 = ep0_trb_ptr(ep0_trb_index(1));
+        cache_invalidate(trb0 as usize, core::mem::size_of::<Trb>());
+        cache_invalidate(trb1 as usize, core::mem::size_of::<Trb>());
+        let trb0_ctrl = read_volatile(addr_of!((*trb0).ctrl));
+        let trb1_ctrl = read_volatile(addr_of!((*trb1).ctrl));
+        let setup = ep0_setup_ptr() as *const u8;
+        cache_invalidate(setup as usize, 8);
+        let setup0 = u32::from_le_bytes([
+            read_volatile(setup),
+            read_volatile(setup.add(1)),
+            read_volatile(setup.add(2)),
+            read_volatile(setup.add(3)),
+        ]);
+        let setup1 = u32::from_le_bytes([
+            read_volatile(setup.add(4)),
+            read_volatile(setup.add(5)),
+            read_volatile(setup.add(6)),
+            read_volatile(setup.add(7)),
+        ]);
+        let setup_nonzero = (setup0 | setup1) != 0;
+        let compact = u32::from((event_count & GEVNTCOUNT_MASK) != 0)
+            | (u32::from(setup_nonzero) << 1)
+            | (u32::from((trb0_ctrl & TRB_HWO) != 0) << 2)
+            | (u32::from(SIGNAL_DWC3_DEVICE_ERROR) << 3);
+        trace_event(
+            TRACE_DWC3_BOUNDARY,
+            0x4457_4300,
+            event_count,
+            dsts,
+            dctl,
+            devten,
+        );
+        trace_event(
+            TRACE_DWC3_BOUNDARY,
+            0x4457_4301,
+            dalepena,
+            depcmd0,
+            depcmd1,
+            compact,
+        );
+        trace_event(
+            TRACE_DWC3_BOUNDARY,
+            0x4457_4302,
+            trb0_ctrl,
+            trb1_ctrl,
+            setup0,
+            setup1,
+        );
+    }
+}
+
+/// Classify the first retained EP0 STARTTRANSFER boundary for a host-visible
+/// protocol-error readout. This is deliberately a command/ownership result,
+/// not a claim about CRC or bit stuffing on the USB wires:
+///   0 = no EP0 STARTTRANSFER record
+///   1 = first EP0 STARTTRANSFER timed out with CMDACT still set
+///   2 = first command completed with DWC3 status 0x1 (No Resource)
+///   3 = first command completed with another non-zero DWC3 status
+///   4 = first command completed with status 0
+///   5 = software later received at least one SETUP packet
+/// The signal probe maps this code to code+1 same-boot DCTL stop/run attach
+/// cycles, so the result remains observable even when the current image never
+/// reaches an enumerated trace transport.
+pub fn protocol_readout_code() -> u32 {
+    unsafe {
+        harvest_trace_outcome();
+        if TRACE_HARVEST_SETUP > 0 {
+            return 5;
+        }
+        if TRACE_HARVEST == 0xFFFF_FFFF {
+            return 0;
+        }
+        if TRACE_HARVEST & 0x8000_0000 != 0 {
+            return 1;
+        }
+        match TRACE_HARVEST & 0xf000 {
+            0 => 4,
+            0x1000 => 2,
+            _ => 3,
+        }
+    }
 }
 
 /// True when the newest EP1 transfer-complete event reports success (status
@@ -1846,7 +1970,7 @@ unsafe fn configure_endpoint_config(
     interrupter: u32,
 ) -> bool {
     let action = if modify { DEPCMD_ACTION_MODIFY } else { 0 };
-    let param0 = action | endpoint_type | (max_packet << DEPCFG_MAX_PACKET_SHIFT);
+    let mut param0 = action | endpoint_type | (max_packet << DEPCFG_MAX_PACKET_SHIFT);
     // Match dwc3_gadget_set_ep_config(): control endpoints request both
     // transfer-complete and transfer-not-ready notifications, while ordinary
     // data endpoints request transfer-in-progress and transfer-not-ready.
@@ -1874,7 +1998,22 @@ unsafe fn configure_endpoint_config(
     }
     param1 |= (interrupter & 0x1f) << DEPCFG_INT_NUM_SHIFT;
     param1 |= (endpoint as u32) << DEPCFG_EP_NUMBER_SHIFT;
-    unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, 0) }
+    let param2 = if cfg!(fullerene_aarch64_usb_abl_ep_config)
+        && endpoint <= 1
+        && !modify
+    {
+        // Factory ABL's DwcConfigureEP starts each direction with the raw
+        // pair PAR0=0x1000 and PAR1=0x05001000/0x07001000. The latter adds
+        // 0x02000000 for the second direction. The nearby PAR0=1 write is
+        // for the following SETTRANSFRESOURCE command, not SETEPCONFIG.P2;
+        // keep that distinction exact so this A/B tests the binary sequence.
+        param0 = 0x1000;
+        param1 = 0x0500_1000 | ((endpoint as u32) * 0x0200_0000);
+        0
+    } else {
+        0
+    };
+    unsafe { send_ep_command(endpoint, DEPCMD_SETEPCONFIG, param0, param1, param2) }
 }
 
 #[inline]
@@ -3053,9 +3192,10 @@ unsafe fn restart_control_after_reset() {
                 fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
                 fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
             )) {
-                // USB reset cleared the software request object; XBL posts
-                // its 8-byte EP0 OUT request again before waiting for the
-                // next CONTROL_DATA XferNotReady event.
+                // USB reset cleared the software request object; the
+                // historical XBL differential posts its 8-byte EP0 OUT
+                // request again. This is not the canonical initial SETUP
+                // arm boundary: Linux/Android arm CONTROL_SETUP eagerly.
                 let _ = queue_xbl_setup_request();
             }
             // The host's bus reset is still in progress when this event is
@@ -3351,6 +3491,26 @@ unsafe fn process_event(raw: u32) {
                 trace_event(TRACE_USB_RESET, 0, 0, 0, 0, raw);
                 note_runtime_event(super::platform::bramble::UsbRuntimeEvent::BusReset);
                 unsafe { restart_control_after_reset() }
+                #[cfg(fullerene_aarch64_usb_gadget_handoff_dalepena_after_reset)]
+                unsafe {
+                    // This is deliberately after the reset handler returns:
+                    // it tests the publication boundary without rebuilding
+                    // EP0 contexts, changing the SETUP TRB, or touching the
+                    // PHY/UTMI path. If the bus reset cleared only the active
+                    // endpoint mask, this is the narrowest recovery action.
+                    let before = read(DALEPENA);
+                    write(DALEPENA, 0b11);
+                    let after = read(DALEPENA);
+                    trace::live_dalepena_after_reset(before, after);
+                    trace_event(
+                        TRACE_USB_RESET,
+                        0x4441_4C45, // "DALE"
+                        before,
+                        after,
+                        0,
+                        read(DSTS),
+                    );
+                }
                 trace_utmi_state(7);
             }
             2 => {
@@ -3465,6 +3625,7 @@ unsafe fn process_event(raw: u32) {
                 // invoke it.
             }
             DEVICE_EVENT_ERRATIC_ERROR | DEVICE_EVENT_CMD_COMPLETE | DEVICE_EVENT_OVERFLOW => {
+                SIGNAL_DWC3_DEVICE_ERROR = true;
                 trace_event(TRACE_USB_DEVICE_ERROR, device_event, 0, 0, 0, raw);
             }
             _ => {}
@@ -3584,9 +3745,9 @@ unsafe fn process_event(raw: u32) {
     } else if event == 3 {
         // XferNotReady: the core asks for the next phase's TRB. Record every
         // event for the harvest gates (request=endpoint, value=status).
-        // Stock XBL has already started its initial EP0 setup request before
-        // Run/Stop; a CONTROL_DATA NRDY is therefore not a second initial
-        // STARTTRANSFER trigger.
+        // XferNotReady is a notification for a later control phase, not the
+        // initial SETUP arm point. The ordinary path has already armed EP0;
+        // retain the event trace while handling DATA/STATUS below.
         trace_event(TRACE_XFER_NOT_READY, endpoint as u32, status, 0, 0, raw);
         if status == 1 && endpoint == 1 {
             unsafe {
@@ -4683,8 +4844,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // tail before publishing EP0 resources; it is independent of TRB
         // payload framing and is especially relevant on DWC_usb31.
         configure_dwc3_device_mode();
-    }
-    // An SS-only fastboot session never deasserted the femto PHY block
+        }
+        // An SS-only fastboot session never deasserted the femto PHY block
     // reset (GCC_QUSB2PHY_PRIM_BCR), which can leave the PHY core logic held
     // in reset while the D+/D- IO state machine still answers the host reset
     // autonomously.  The 4.19 phy-core deasserts `phy_reset` before
@@ -4706,6 +4867,13 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     if !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core) {
         unsafe { init_hsphy() };
     }
+    // The external QUSB2 PHY reset/init above can restore the DWC3-side USB2
+    // interface register to its reset value.  Re-apply the UTMI contract
+    // after that boundary, immediately before endpoint resources are built;
+    // otherwise the source-level TRDTIM=9 write made before init_hsphy() is
+    // absent from the actual stage-3 readback and the core advertises a
+    // pull-up without a usable USB2 transaction interface.
+        unsafe { configure_usb2_phy_interface() };
     trace_utmi_state(3);
 
     // The Fastboot session may have left the DWC3 stream behind an SMMU
@@ -4880,6 +5048,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // XBL's DwcConfigureEP publishes the corresponding DALEPENA bit
         // after each SETEPCONFIG -> SETTRANSFRESOURCE pair.
         write(DALEPENA, read(DALEPENA) | (1 << 0));
+        trace::live_dalepena_config(0, read(DALEPENA));
         #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0)]
         {
             // Stock XBL inserts the initial EP0 OUT request immediately after
@@ -4917,6 +5086,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // after each SETEPCONFIG -> SETTRANSFRESOURCE pair. Keep the two
         // physical EP0 directions on the same per-direction boundary.
         write(DALEPENA, read(DALEPENA) | (1 << 1));
+        trace::live_dalepena_config(1, read(DALEPENA));
         // Stock XBL writes exactly 0x47 here: Disconnect, USB Reset, Connect
         // Done, and Suspend. Keep the narrower mask limited to the
         // event-driven XBL differential; the generic path retains its
@@ -5066,12 +5236,66 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // the stale-halt case is exactly what the diag rescue re-arm fixes.
         let gate_run = option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1");
         trace_utmi_state(4);
+        if let Some(selector) = option_env!("FULLERENE_USB_UTMI_PRECONNECT_READOUT") {
+            // Publish the live UTMI field through the physical attach time,
+            // before the host can submit the first SETUP. This short delay
+            // avoids the long post-readout park, which is truncated by the
+            // handset's recovery watchdog on large selector values.
+            let code = utmi_readout_code(selector).min(15);
+            trace_event(
+                TRACE_UTMI_STATE,
+                0x0400_0000 | code,
+                code,
+                0,
+                0,
+                0,
+            );
+            super::timer::delay_ms(u64::from(code) * 1_000);
+        }
+        trace::live_dalepena_before_dctl(read(DALEPENA));
         let start_readback_ok = if gate_run {
             unsafe { run_stop_device_no_readback(true) }
         } else {
             unsafe { run_stop_device(true) }
         };
+        if option_env!("FULLERENE_USB_UTMI_REAPPLY_AFTER_RUNSTOP") == Some("1") {
+            // Diagnostic only: Android/Linux program GUSB2PHYCFG before
+            // gadget start. If the stage-3/4 value is cleared or ignored by
+            // the final Run/Stop transition on this handoff, one immediate
+            // post-Run/Stop write tells us whether the register can be
+            // adopted at all. Do not change the normal path without the
+            // explicit A/B environment flag.
+            log_puts("usb gadget handoff: re-applying USB2 interface after Run/Stop\n");
+            if option_env!("FULLERENE_USB_UTMI_REAPPLY_HALTED") == Some("1") {
+                // Some DWC3 revisions lock GUSB2PHYCFG timing fields while
+                // Run/Stop is asserted. Reapply only at a halted boundary,
+                // then start the device again before the first host SETUP.
+                unsafe {
+                    let _ = run_stop_device(false);
+                    configure_usb2_phy_interface();
+                    let _ = run_stop_device(true);
+                }
+            } else {
+                unsafe { configure_usb2_phy_interface() };
+            }
+        }
         trace_utmi_state(5);
+        if let Some(selector) = option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") {
+            // Encode the post-Run/Stop stage in the attach timestamp. This
+            // is deliberately separate from the pre-connect readout so a
+            // run without the guarded re-apply can show whether Run/Stop
+            // itself cleared or altered the UTMI contract.
+            let code = utmi_readout_code(selector).min(15);
+            trace_event(
+                TRACE_UTMI_STATE,
+                0x0500_0000 | code,
+                code,
+                0,
+                0,
+                0,
+            );
+            super::timer::delay_ms(u64::from(code) * 1_000);
+        }
         if !start_readback_ok {
             // Some Fastboot/DWC3 handoffs keep DSTS.DEVCTRLHLT stale even
             // after the Run/Stop write has reached the controller. The
@@ -5099,6 +5323,13 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 poll_ep0_event_ring();
                 super::timer::delay_us(200);
             }
+            // Keep the arm-status readout meaningful on the direct reuse
+            // path as well as on the fallback recovery path.  The latter
+            // already records 0/8 in u0_arm_recovery(), but direct handoff
+            // used to leave U0_ARM_STATUS at its static sentinel forever,
+            // making armstat unable to distinguish a retired EP0
+            // STARTTRANSFER from a command wedge.
+            U0_ARM_STATUS = if EP0_SETUP_ARMED { 0 } else { 8 };
         }
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
@@ -6541,12 +6772,12 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 sdisc_blips(1);
             }
         } else {
-            // XBL waits for XferNotReady(CONTROL_DATA) and starts EP0 from
-            // that event path; do not let this tight window turn the A/B back
-            // into an eager/poll-loop arm.
+            // Historical XBL differential marker. Source-guided Android/Linux
+            // code eagerly arms CONTROL_SETUP; this flag is not a canonical
+            // initial-SETUP model and must not suppress that baseline.
             trace_event(
                 TRACE_SETUP_QUEUED,
-                0x58424C44, // "XBLD": deferred until XferNotReady
+                0x58424C44, // "XBLD": historical differential marker
                 0,
                 0,
                 8,
@@ -6913,6 +7144,14 @@ pub fn ep0_setup_packet_seen() -> bool {
 /// configuration.
 pub fn ep0_event_delivered() -> bool {
     unsafe { SIGNAL_EVENT_DELIVERED }
+}
+
+/// True once the DWC3 device-event stream delivered an ERRATIC_ERROR,
+/// CMD_COMPLETE, or OVERFLOW notification. The signal probe uses this to
+/// separate a controller-reported device error from the host's generic
+/// xHCI `-EPROTO` completion.
+pub fn dwc3_device_error_seen() -> bool {
+    unsafe { SIGNAL_DWC3_DEVICE_ERROR }
 }
 
 /// Link-state variant of the signal ladder. Priority reflects the deepest
@@ -8104,13 +8343,16 @@ pub fn poll() {
         if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1")
             && POST_RUNSTOP_PROBE_PENDING
             && arch_counter() >= POST_RUNSTOP_PROBE_NOT_BEFORE
-            && read(DSTS) & DSTS_DEVCTRLHLT == 0
             && read(DCTL) & DCTL_RUN_STOP != 0
         {
             // Run/Stop returns before the host's attach debounce. Perform the
             // probe only after the calibrated delay, after the normal event
             // consumer has handled any reset/connect event, so its
-            // STARTTRANSFER/ENDTRANSFER test uses the live EP0 state.
+            // STARTTRANSFER/ENDTRANSFER test uses the live EP0 state. Do not
+            // gate the diagnostic on DSTS.DEVCTRLHLT: a stale halt bit is one
+            // of the hypotheses under test, and the probe records the
+            // start/end/event bits even when the core refuses the synthetic
+            // command.
             POST_RUNSTOP_PROBE_PENDING = false;
             let _ = post_runstop_event_dma_probe();
         }

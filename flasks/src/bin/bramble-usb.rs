@@ -145,8 +145,8 @@ struct LoopArgs {
     /// Arm EP0 STARTTRANSFER immediately after Run/Stop (Bramble A/B).
     #[arg(long)]
     start_after_connect: bool,
-    /// Mirror stock XBL: arm the initial EP0 SETUP transfer only after the
-    /// controller emits XferNotReady(CONTROL_DATA).
+    /// Historical XBL differential for EP0 request ownership. It is not the
+    /// source-confirmed initial SETUP arm model; use only for reproduction.
     #[arg(long)]
     xbl_deferred_setup: bool,
     /// Use XBL's NORMAL TRBCTL=1 for EP0 IN data responses only.
@@ -182,6 +182,9 @@ struct LoopArgs {
     /// Use Factory ABL's observed narrow DWC3 device-event mask (0x47).
     #[arg(long)]
     abl_devten: bool,
+    /// Match Factory ABL's initial EP0 SETEPCONFIG P1/P2 pair (A/B).
+    #[arg(long)]
+    abl_ep_config: bool,
     /// Use XBL's separate EP0 OUT/IN TRB slots for direction-specific transfers (A/B).
     #[arg(long)]
     xbl_direction_trb: bool,
@@ -443,6 +446,7 @@ impl Default for LoopArgs {
             android_hs_lpm: false,
             abl_shared_hs_phy: false,
             abl_devten: false,
+            abl_ep_config: false,
             xbl_direction_trb: false,
             xbl_trb_chain: false,
             start_ungated: false,
@@ -929,6 +933,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--abl-shared-hs-phy requires --direct-handoff",
+        ));
+    }
+    if args.abl_ep_config && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--abl-ep-config requires --direct-handoff",
         ));
     }
     if args.xbl_direction_trb && !args.direct_handoff {
@@ -1766,6 +1776,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.abl_devten {
         arguments.push("--usb-gadget-handoff-abl-devten".to_owned());
+    }
+    if args.abl_ep_config {
+        arguments.push("--usb-gadget-handoff-abl-ep-config".to_owned());
     }
     if args.xbl_direction_trb {
         arguments.push("--usb-gadget-handoff-xbl-direction-trb".to_owned());

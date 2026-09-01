@@ -208,12 +208,12 @@ pub unsafe fn read_usb_clock_register_state() -> UsbClockRegisterState {
 
 /// Bring up only the mock UTMI branch feeding the USB2 datapath.
 ///
-/// The 4.19 msm driver pins `utmi_clk` to 19.2 MHz (BI_TCXO) at probe time
-/// and its resume path enables it after `core_clk`.  An SS-only fastboot
-/// session never raises `gcc_usb30_prim_mock_utmi_clk`, the `utmi_clk` spec
-/// of the dwc3 node, which leaves the core's USB2 link domain unable to
-/// reach U0.  This programs the RCG source and raises that one branch only;
-/// the core/iface/QMP branches are left exactly as firmware left them.
+/// The Lito GCC table exposes `gcc_usb30_prim_mock_utmi_clk_src` at 60 MHz
+/// (`GPLL0_OUT_EVEN / 5`).  The separate 19.2 MHz RPMh XO is the HS PHY
+/// `ref_clk_src`, not the DWC3 mock-UTMI clock.  An SS-only Fastboot session
+/// may leave this GCC branch gated, so program the source and raise that one
+/// branch only; the core/iface/QMP branches are left as firmware configured
+/// them.
 pub unsafe fn enable_usb2_utmi_clock() -> bool {
     unsafe {
         let resources = usb_resources();
@@ -221,15 +221,15 @@ pub unsafe fn enable_usb2_utmi_clock() -> bool {
         if utmi.name != "utmi" || utmi.provider != ClockProvider::Gcc {
             return false;
         }
-        // The 4.19 driver pins UTMI to 19.2 MHz at probe, but the platform
-        // clock plan and Linux parent table define the hardware's 60 MHz
-        // mode as GPLL0_OUT_EVEN divided by 5. The experiment flag selects
-        // that mode to test whether an SS-only Fastboot session left the
-        // USB2 link domain expecting it.
-        let (parent, divider) = if option_env!("FULLERENE_USB_UTMI_60MHZ").is_some() {
-            (6u32, 5u32)
-        } else {
+        // This is the only source present in the official Lito GCC rate
+        // table for the mock-UTMI RCG. Keep the old 19.2 MHz setting only as
+        // an explicit negative-control flag for reproducing earlier runs.
+        let (parent, divider) = if option_env!("FULLERENE_USB_UTMI_19_2MHZ").is_some()
+            && option_env!("FULLERENE_USB_UTMI_60MHZ").is_none()
+        {
             (0u32, 1u32)
+        } else {
+            (6u32, 5u32)
         };
         if utmi.source_offset != 0 && !configure_rcg(utmi.source_offset, parent, divider) {
             return false;

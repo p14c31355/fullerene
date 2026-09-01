@@ -412,6 +412,35 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("utmi-branch") => Some("utmi-branch"),
         Some("utmi-gusb2-lo") => Some("utmi-gusb2-lo"),
         Some("utmi-gusb2-hi") => Some("utmi-gusb2-hi"),
+        Some("utmi-link") => Some("utmi-link"),
+        Some("utmi-halt") => Some("utmi-halt"),
+        Some("utmi-valid") => Some("utmi-valid"),
+        Some("utmi-trdtim-stage1") => Some("utmi-trdtim-stage1"),
+        Some("utmi-trdtim-stage2") => Some("utmi-trdtim-stage2"),
+        Some("utmi-trdtim-stage3") => Some("utmi-trdtim-stage3"),
+        Some("utmi-trdtim-stage4") => Some("utmi-trdtim-stage4"),
+        Some("utmi-trdtim-stage5") => Some("utmi-trdtim-stage5"),
+        Some("utmi-write-requested-trdtim") => Some("utmi-write-requested-trdtim"),
+        Some("utmi-write-readback-trdtim") => Some("utmi-write-readback-trdtim"),
+        Some("protocol") => Some("protocol"),
+        Some("dwc3-state") => Some("dwc3-state"),
+        Some("dwc3-event") => Some("dwc3-event"),
+        Some("dwc3-link") => Some("dwc3-link"),
+        Some("dwc3-run") => Some("dwc3-run"),
+        Some("dwc3-devten") => Some("dwc3-devten"),
+        Some("dwc3-dale") => Some("dwc3-dale"),
+        Some("dwc3-dale-after-dctl") => Some("dwc3-dale-after-dctl"),
+        Some("dwc3-dale-before-dctl") => Some("dwc3-dale-before-dctl"),
+        Some("dwc3-dale-config") => Some("dwc3-dale-config"),
+        Some("dwc3-dale-reset-seen") => Some("dwc3-dale-reset-seen"),
+        Some("dwc3-dale-reset-before") => Some("dwc3-dale-reset-before"),
+        Some("dwc3-dale-reset-after") => Some("dwc3-dale-reset-after"),
+        Some("post-code") => Some("post-code"),
+        Some("dwc3-cmd0") => Some("dwc3-cmd0"),
+        Some("dwc3-cmd1") => Some("dwc3-cmd1"),
+        Some("dwc3-cmd0-act") => Some("dwc3-cmd0-act"),
+        Some("dwc3-cmd1-act") => Some("dwc3-cmd1-act"),
+        Some("dwc3-trb") => Some("dwc3-trb"),
         _ => None,
     }
 }
@@ -607,6 +636,16 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             trace_gate(0x4556_4300 | u32::from(stopped));
             usb::park_for_seconds(30);
         }
+        // `deverr` catches only DWC3's device-level error events, not the
+        // host's generic -EPROTO and not software-generated trace errors.
+        // Leave the broad DEVTEN mask enabled for this run so ERRATIC_ERROR,
+        // CMD_COMPLETE, and OVERFLOW can reach the event ring.
+        if cmd_gate_is("deverr") && usb::dwc3_device_error_seen() {
+            trace_gate(0x4445_5601); // "DEV" + device-error latch
+            let stopped = usb::gate_true_stop_device_fast();
+            trace_gate(0x4445_5600 | u32::from(stopped));
+            usb::park_for_seconds(30);
+        }
         if probe_counter() >= next_keepalive {
             let _ = unsafe {
                 platform::bramble::refresh_usb_domain_votes(
@@ -707,6 +746,25 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         trace_gate(0x4152_4D53 | (status & 0xff));
         let delay = if status == 0 { 16 } else { 1 };
         usb::u0_arm_wdt_bite(delay);
+        park_without_recovery_timer();
+    }
+    // armdelay converts the direct-path EP0 arm result into the only
+    // host-visible timing channel that remains useful during the first
+    // control-transfer window.  The stop itself is not a repair: it merely
+    // lets usbmon/journal correlate the retained 0/8 result with the
+    // pre-response -110/-71 boundary without depending on APSS-WDT
+    // ownership.  Keep both delays before the host's five-second descriptor
+    // timeout when invoked with --observe-secs 1.
+    if cmd_gate_is("armdelay") {
+        let status = usb::u0_arm_status_probe();
+        trace_gate(0x4152_444C | (status & 0xff)); // "ARDL"
+        let seconds = if status == 0 { 1 } else { 3 };
+        let target = usb::arch_counter_ticks().saturating_add(
+            probe_counter_frequency().saturating_mul(seconds),
+        );
+        wait_arch_ticks(target);
+        let _ = usb::gate_true_stop_device_fast();
+        usb::park_for_seconds(30);
         park_without_recovery_timer();
     }
     // armalive: a retired L1 leaves pending TRB or DMA'd SETUP; bite early and park before the generic
@@ -1030,6 +1088,61 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // while collecting the evidence.  Four-second buckets are wide enough
     // to separate from the normal Android recovery jitter.
     if let Some(selector) = utmi_gate_selector() {
+        if selector == "post-code" {
+            // Publish no-record as 9 and the recorded START/END/event bits as
+            // bitmask+1. The code is deliberately emitted as same-boot
+            // DCTL stop/run cycles, because retained DRAM can be overwritten
+            // by Android before a later image can read it.
+            let code = usb::post_event_dma_readout_code().min(9) as u64;
+            trace_gate(0x504F_5354 | ((code as u32) << 16)); // "POST" + code
+            for _ in 0..code {
+                let _ = usb::gate_true_stop_device();
+                let dropped = probe_counter().saturating_add(frequency / 4);
+                poll_until_probe_ticks(frequency, dropped);
+                let _ = usb::gate_true_run_device();
+                let attached = probe_counter().saturating_add(frequency * 3 / 10);
+                poll_until_probe_ticks(frequency, attached);
+            }
+            park_without_recovery_timer();
+        }
+        if selector == "protocol" {
+            // Publish the retained EP0 command/SETUP classification through
+            // the only signal channel that has been useful on this board:
+            // same-boot DCTL stop/run attach cycles.  Use code+1 cycles so
+            // code 0 (no STARTTRANSFER record) remains distinguishable from
+            // a gate that was never evaluated.  This is a diagnostic only;
+            // no PHY, TRB, or response-data field is changed here.
+            let code = usb::protocol_readout_code().min(5) as u64;
+            trace_gate(0x5052_4F54 | ((code as u32) << 16)); // "PROT" + code
+            for _ in 0..code.saturating_add(1) {
+                let _ = usb::gate_true_stop_device();
+                let dropped = probe_counter().saturating_add(frequency / 4);
+                poll_until_probe_ticks(frequency, dropped);
+                let _ = usb::gate_true_run_device();
+                let attached = probe_counter().saturating_add(frequency * 3 / 10);
+                poll_until_probe_ticks(frequency, attached);
+            }
+            park_without_recovery_timer();
+        }
+        if selector.starts_with("dwc3-") {
+            // Snapshot after the observation window, before the readout gate
+            // stops the device. The snapshot itself must not consume events.
+            usb::trace_dwc3_boundary();
+            let code = usb::utmi_readout_code(selector).min(15);
+            trace_gate(0x4457_4300 | (code & 0xff)); // "DWC0" + code
+            // Publish the four-bit boundary code as same-boot attach cycles;
+            // this avoids relying on warm-reset DRAM retention, which Android
+            // may overwrite before the next Fullerene image starts.
+            for _ in 0..code {
+                let _ = usb::gate_true_stop_device();
+                let dropped = probe_counter().saturating_add(frequency / 4);
+                poll_until_probe_ticks(frequency, dropped);
+                let _ = usb::gate_true_run_device();
+                let attached = probe_counter().saturating_add(frequency * 3 / 10);
+                poll_until_probe_ticks(frequency, attached);
+            }
+            park_without_recovery_timer();
+        }
         let code = usb::utmi_readout_code(selector).min(15);
         trace_gate(0x5554_4d49 | (code & 0xff)); // "UTMI" + nibble
         let _ = usb::gate_true_stop_device();

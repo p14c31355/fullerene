@@ -1027,9 +1027,10 @@ pub const RPMH_REGULATOR_LEVEL_SVS: u32 = 128;
 /// CX corner required for the USB clock plan of one bus vote. The lito GCC
 /// driver's rate tables are the binding between `qcom,core-clk-rate` and the
 /// CX corner: `gcc_usb30_prim_master_clk_src` allows 133333333 Hz only from
-/// VDD_LOW (SVS), and the UTMI/AUX 19.2 MHz sources require VDD_LOWER
-/// (LOW_SVS). The winning vote is therefore SVS for the nominal controller
-/// rate and LOW_SVS for the HS/gated states.
+/// VDD_LOW (SVS), while the USB AUX 19.2 MHz source requires VDD_LOWER
+/// (LOW_SVS). The mock-UTMI source is the separate 60 MHz GPLL path. The
+/// winning vote is therefore SVS for the nominal controller rate and LOW_SVS
+/// for the HS/gated states.
 pub const fn usb_cx_level(vote: UsbBusVote) -> u32 {
     match vote {
         UsbBusVote::Nominal => RPMH_REGULATOR_LEVEL_SVS,

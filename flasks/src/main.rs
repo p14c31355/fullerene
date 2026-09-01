@@ -350,8 +350,8 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_start_after_connect: bool,
 
-    /// Bramble differential: mirror stock XBL by arming the initial EP0
-    /// SETUP transfer only from XferNotReady(CONTROL_DATA).
+    /// Bramble differential: reproduce the historical XBL EP0 ownership
+    /// experiment. It is not the source-confirmed initial SETUP arm model.
     #[arg(long)]
     usb_gadget_handoff_xbl_deferred_setup: bool,
 
@@ -409,6 +409,11 @@ struct Args {
     /// event mask (0x47: disconnect/reset/connect-done/suspend).
     #[arg(long)]
     usb_gadget_handoff_abl_devten: bool,
+
+    /// Bramble differential: match Factory ABL's initial EP0 SETEPCONFIG
+    /// parameter pair (P1 extra 0x1000 and P2=1).
+    #[arg(long)]
+    usb_gadget_handoff_abl_ep_config: bool,
 
     /// Bramble differential: use XBL's separate EP0 OUT/IN TRB slots for
     /// direction-specific transfers.
@@ -1491,6 +1496,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_android_hs_lpm: args.usb_gadget_handoff_android_hs_lpm,
                 gadget_handoff_abl_shared_hs_phy: args.usb_gadget_handoff_abl_shared_hs_phy,
                 gadget_handoff_abl_devten: args.usb_gadget_handoff_abl_devten,
+                gadget_handoff_abl_ep_config: args.usb_gadget_handoff_abl_ep_config,
                 gadget_handoff_xbl_direction_trb: args.usb_gadget_handoff_xbl_direction_trb,
                 gadget_handoff_xbl_trb_chain: args.usb_gadget_handoff_xbl_trb_chain,
                 gadget_handoff_start_ungated: args.usb_gadget_handoff_start_ungated,
@@ -1698,6 +1704,7 @@ struct Aarch64BuildConfig {
     gadget_handoff_android_hs_lpm: bool,
     gadget_handoff_abl_shared_hs_phy: bool,
     gadget_handoff_abl_devten: bool,
+    gadget_handoff_abl_ep_config: bool,
     gadget_handoff_xbl_direction_trb: bool,
     gadget_handoff_xbl_trb_chain: bool,
     gadget_handoff_start_ungated: bool,
@@ -1794,6 +1801,7 @@ fn build_aarch64_kernel(
         gadget_handoff_android_hs_lpm,
         gadget_handoff_abl_shared_hs_phy,
         gadget_handoff_abl_devten,
+        gadget_handoff_abl_ep_config,
         gadget_handoff_xbl_direction_trb,
         gadget_handoff_xbl_trb_chain,
         gadget_handoff_start_ungated,
@@ -2010,6 +2018,9 @@ fn build_aarch64_kernel(
     }
     if gadget_handoff_abl_devten {
         push_env("FULLERENE_AARCH64_USB_ABL_DEVTEN", "1".to_owned());
+    }
+    if gadget_handoff_abl_ep_config {
+        push_env("FULLERENE_AARCH64_USB_ABL_EP_CONFIG", "1".to_owned());
     }
     if gadget_handoff_xbl_direction_trb {
         push_env(

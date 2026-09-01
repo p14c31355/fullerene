@@ -57,6 +57,11 @@ pub(crate) const TRACE_USB2_PHY_RESET: u32 = 42;
 /// read can compare source/divider and power-state bits without relying on
 /// UART output from the temporary image.
 pub(crate) const TRACE_UTMI_STATE: u32 = 43;
+/// Gate-evaluation snapshot of the DWC3 protocol boundary. Groups 0..2 carry
+/// the event-count/device registers, endpoint command state, and EP0 TRB/setup
+/// ownership respectively. It is deliberately separate from TRACE_UTMI_STATE
+/// so a protocol-error readout cannot be mistaken for a PHY clock sample.
+pub(crate) const TRACE_DWC3_BOUNDARY: u32 = 44;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -102,6 +107,39 @@ pub(crate) static mut USB_TRACE: UsbTraceBuffer = UsbTraceBuffer {
     reserved: 0,
     entries: [EMPTY_USB_TRACE; USB_TRACE_CAPACITY],
 };
+
+// The retained trace can be scribbled by the stock Android takeover before a
+// later boot reads it. Keep a current-boot copy for the UTMI readout gate so
+// that a register value is not confused with a missing retained record.
+static mut LIVE_UTMI_GUSB2: [u32; 16] = [0; 16];
+static mut LIVE_UTMI_VALID: u16 = 0;
+// The stage snapshots are taken at named handoff boundaries. Keep the
+// write/readback pair separately as well: a zero stage value can mean either
+// that the GUSB2PHYCFG write was ignored immediately or that a later reset
+// cleared it before the boundary snapshot.
+static mut LIVE_UTMI_WRITE_REQUESTED: u32 = 0;
+static mut LIVE_UTMI_WRITE_READBACK: u32 = 0;
+static mut LIVE_UTMI_WRITE_VALID: bool = false;
+/// DALEPENA readback immediately after the final DCTL Run/Stop write. This
+/// separates an accepted post-Run/Stop EP0 enable from a later USB reset or
+/// link transition that clears the endpoint-enable mask.
+static mut LIVE_DALEPENA_AFTER_DCTL: u32 = 0;
+static mut LIVE_DALEPENA_VALID: bool = false;
+/// DALEPENA readback immediately before the final DCTL Run/Stop write.
+static mut LIVE_DALEPENA_BEFORE_DCTL: u32 = 0;
+static mut LIVE_DALEPENA_BEFORE_VALID: bool = false;
+/// DALEPENA readback before and after the opt-in USB-reset re-publication.
+/// The low nibble is the pre-write value; the high nibble is the post-write
+/// value. Keeping both sides distinguishes a reset-cleared mask from a
+/// write that the controller refuses at that boundary.
+static mut LIVE_DALEPENA_AFTER_RESET: u32 = 0;
+static mut LIVE_DALEPENA_AFTER_RESET_VALID: bool = false;
+/// Packed DALEPENA readbacks after the EP0 OUT and EP0 IN configuration
+/// publications. Each direction occupies two bits: OUT in bits 1:0 and IN
+/// in bits 3:2. This is kept outside retained DRAM so the readback belongs to
+/// the current handoff attempt.
+static mut LIVE_DALEPENA_CONFIG: u32 = 0;
+static mut LIVE_DALEPENA_CONFIG_VALID: u8 = 0;
 
 /// Initialize the retained trace header and append a boot boundary marker.
 /// The entry array is intentionally not cleared, so a subsequent boot can
@@ -181,7 +219,74 @@ pub fn trace_probe_begin() {
 pub fn trace_reset_head_for_boot() {
     unsafe {
         write_volatile(addr_of_mut!(USB_TRACE).cast::<u32>().add(2), 0);
+        LIVE_UTMI_VALID = 0;
+        LIVE_UTMI_WRITE_VALID = false;
+        LIVE_DALEPENA_VALID = false;
+        LIVE_DALEPENA_BEFORE_VALID = false;
+        LIVE_DALEPENA_AFTER_RESET = 0;
+        LIVE_DALEPENA_AFTER_RESET_VALID = false;
+        LIVE_DALEPENA_CONFIG = 0;
+        LIVE_DALEPENA_CONFIG_VALID = 0;
         core::arch::asm!("dsb sy", options(nostack));
+    }
+}
+
+/// Save one current-boot UTMI snapshot outside the retained DRAM channel.
+/// This is intentionally volatile-state-free: it is consumed only before the
+/// same boot resets, when the diagnostic gate publishes the value.
+pub(super) fn live_utmi_stage(stage: u32, gusb2: u32) {
+    if stage < 16 {
+        unsafe {
+            LIVE_UTMI_GUSB2[stage as usize] = gusb2;
+            LIVE_UTMI_VALID |= 1 << stage;
+        }
+    }
+}
+
+/// Preserve the immediate GUSB2PHYCFG write/readback pair in current-boot
+/// state. The retained trace may be scribbled by Android before a later
+/// readout, so this diagnostic must remain outside that channel.
+pub(super) fn live_utmi_write(requested: u32, readback: u32) {
+    unsafe {
+        LIVE_UTMI_WRITE_REQUESTED = requested;
+        LIVE_UTMI_WRITE_READBACK = readback;
+        LIVE_UTMI_WRITE_VALID = true;
+    }
+}
+
+/// Preserve the EP0 endpoint-enable readback immediately after Run/Stop.
+pub(super) fn live_dalepena_after_dctl(readback: u32) {
+    unsafe {
+        LIVE_DALEPENA_AFTER_DCTL = readback;
+        LIVE_DALEPENA_VALID = true;
+    }
+}
+
+pub(super) fn live_dalepena_before_dctl(readback: u32) {
+    unsafe {
+        LIVE_DALEPENA_BEFORE_DCTL = readback;
+        LIVE_DALEPENA_BEFORE_VALID = true;
+    }
+}
+
+pub(super) fn live_dalepena_after_reset(before: u32, after: u32) {
+    unsafe {
+        LIVE_DALEPENA_AFTER_RESET = (before & 0xf) | ((after & 0xf) << 4);
+        LIVE_DALEPENA_AFTER_RESET_VALID = true;
+    }
+}
+
+/// Preserve the DALEPENA readback immediately after one EP0 direction is
+/// published. The `dwc3-dale-config` selector packs both readbacks into one
+/// host-visible nibble: OUT bits 1:0, IN bits 3:2.
+pub(super) fn live_dalepena_config(direction: u32, readback: u32) {
+    if direction < 2 {
+        unsafe {
+            let shift = direction * 2;
+            LIVE_DALEPENA_CONFIG =
+                (LIVE_DALEPENA_CONFIG & !(0x3 << shift)) | ((readback & 0x3) << shift);
+            LIVE_DALEPENA_CONFIG_VALID |= 1 << direction;
+        }
     }
 }
 
@@ -317,6 +422,53 @@ pub fn trace_last_event() -> u32 {
 /// was appended by `trace_utmi_state()`; no register is written here.
 pub(super) fn utmi_readout_code(selector: &str) -> u32 {
     unsafe {
+        let live_stage = match selector {
+            "utmi-trdtim-stage1" => Some(1usize),
+            "utmi-trdtim-stage2" => Some(2usize),
+            "utmi-trdtim-stage3" => Some(3usize),
+            "utmi-trdtim-stage4" => Some(4usize),
+            "utmi-trdtim-stage5" => Some(5usize),
+            _ => None,
+        };
+        if let Some(stage) = live_stage {
+            if LIVE_UTMI_VALID & (1 << stage) != 0 {
+                return (LIVE_UTMI_GUSB2[stage] >> 10) & 0xf;
+            }
+        }
+        if selector == "utmi-valid" && LIVE_UTMI_VALID != 0 {
+            return 3;
+        }
+        if LIVE_UTMI_WRITE_VALID {
+            match selector {
+                "utmi-write-requested-trdtim" => {
+                    return (LIVE_UTMI_WRITE_REQUESTED >> 10) & 0xf;
+                }
+                "utmi-write-readback-trdtim" => {
+                    return (LIVE_UTMI_WRITE_READBACK >> 10) & 0xf;
+                }
+                _ => {}
+            }
+        }
+        if selector == "dwc3-dale-after-dctl" && LIVE_DALEPENA_VALID {
+            return LIVE_DALEPENA_AFTER_DCTL & 0xf;
+        }
+        if selector == "dwc3-dale-before-dctl" && LIVE_DALEPENA_BEFORE_VALID {
+            return LIVE_DALEPENA_BEFORE_DCTL & 0xf;
+        }
+        if LIVE_DALEPENA_AFTER_RESET_VALID {
+            if selector == "dwc3-dale-reset-seen" {
+                return 1;
+            }
+            if selector == "dwc3-dale-reset-before" {
+                return LIVE_DALEPENA_AFTER_RESET & 0xf;
+            }
+            if selector == "dwc3-dale-reset-after" {
+                return (LIVE_DALEPENA_AFTER_RESET >> 4) & 0xf;
+            }
+        }
+        if selector == "dwc3-dale-config" && LIVE_DALEPENA_CONFIG_VALID == 0x3 {
+            return LIVE_DALEPENA_CONFIG & 0xf;
+        }
         let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
         let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
         let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2));
@@ -332,6 +484,8 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
         let mut gusb2 = 0u32;
         let mut utmi_source = 0u32;
         let mut utmi_branch = 0u32;
+        let mut dsts = 0u32;
+        let mut gusb2_by_stage = [0u32; 16];
         let mut seen = [false; 4];
         for offset in 0..valid {
             let slot = (oldest + offset) % USB_TRACE_CAPACITY;
@@ -350,9 +504,95 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
                     gusb2 = entry.value;
                     utmi_source = entry.length;
                     utmi_branch = entry.status;
+                    let stage = (entry.request & 0xff) as usize;
+                    if stage < gusb2_by_stage.len() {
+                        gusb2_by_stage[stage] = entry.value;
+                    }
+                }
+                2 => {
+                    // Group 2 is the DWC3 USB3/link snapshot.  Although the
+                    // failed handoff is USB2, DSTS.USBLNKST and
+                    // DEVCTRLHLT are the controller's authoritative view of
+                    // whether the device-side link FSM is running.
+                    dsts = entry.status;
                 }
                 _ => {}
             }
+        }
+        if selector.starts_with("dwc3-") {
+            let mut event_count = 0u32;
+            let mut dsts = 0u32;
+            let mut dctl = 0u32;
+            let mut devten = 0u32;
+            let mut dalepena = 0u32;
+            let mut depcmd0 = 0u32;
+            let mut depcmd1 = 0u32;
+            let mut trb0 = 0u32;
+            let mut trb1 = 0u32;
+            let mut compact = 0u32;
+            let mut dwc3_seen = [false; 3];
+            for offset in 0..valid {
+                let slot = (oldest + offset) % USB_TRACE_CAPACITY;
+                let entry = read_volatile(
+                    addr_of!(USB_TRACE.entries)
+                        .cast::<UsbTraceEntry>()
+                        .add(slot),
+                );
+                if entry.event != TRACE_DWC3_BOUNDARY {
+                    continue;
+                }
+                let group = (entry.request & 0xff) as usize;
+                if group >= dwc3_seen.len() {
+                    continue;
+                }
+                dwc3_seen[group] = true;
+                match group {
+                    0 => {
+                        event_count = entry.value;
+                        dsts = entry.index;
+                        dctl = entry.length;
+                        devten = entry.status;
+                    }
+                    1 => {
+                        dalepena = entry.value;
+                        depcmd0 = entry.index;
+                        depcmd1 = entry.length;
+                        compact = entry.status;
+                    }
+                    2 => {
+                        trb0 = entry.value;
+                        trb1 = entry.index;
+                    }
+                    _ => {}
+                }
+            }
+            if !dwc3_seen[0] || !dwc3_seen[1] {
+                return 0;
+            }
+            return match selector {
+                // Four-bit boundary code, suitable for the attach-cycle
+                // readout: bit 0 event FIFO non-empty, bit 1 setup payload
+                // non-zero, bit 2 setup TRB still owned by the core, bit 3 a
+                // DWC3 device-error event was observed.
+                "dwc3-state" => compact & 0xf,
+                "dwc3-event" => ((event_count & 0xfffc) >> 2) & 0xf,
+                "dwc3-link" => (dsts >> 18) & 0xf,
+                "dwc3-run" => (dctl >> 31) & 1,
+                "dwc3-devten" => devten & 0xf,
+                "dwc3-dale" => dalepena & 0xf,
+                "dwc3-cmd0" => (depcmd0 >> 12) & 0xf,
+                "dwc3-cmd1" => (depcmd1 >> 12) & 0xf,
+                "dwc3-cmd0-act" => (depcmd0 >> 10) & 1,
+                "dwc3-cmd1-act" => (depcmd1 >> 10) & 1,
+                "dwc3-trb" => (trb0 & 1) | ((trb1 & 1) << 1),
+                _ => 0,
+            };
+        }
+        if selector == "utmi-valid" {
+            // Return a presence mask rather than a boolean so a zero raw
+            // register value cannot be confused with a missing snapshot:
+            // bit 0 = GUSB2 group, bit 1 = DSTS/link group.
+            return u32::from(seen[0]) | (u32::from(seen[2]) << 1);
         }
         if !seen[0] {
             return 0;
@@ -369,6 +609,13 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
             "utmi-branch" => utmi_branch & 0xf,
             "utmi-gusb2-lo" => gusb2 & 0xf,
             "utmi-gusb2-hi" => (gusb2 >> 28) & 0xf,
+            "utmi-link" => (dsts >> 18) & 0xf,
+            "utmi-halt" => (dsts >> 22) & 1,
+            "utmi-trdtim-stage1" => (gusb2_by_stage[1] >> 10) & 0xf,
+            "utmi-trdtim-stage2" => (gusb2_by_stage[2] >> 10) & 0xf,
+            "utmi-trdtim-stage3" => (gusb2_by_stage[3] >> 10) & 0xf,
+            "utmi-trdtim-stage4" => (gusb2_by_stage[4] >> 10) & 0xf,
+            "utmi-trdtim-stage5" => (gusb2_by_stage[5] >> 10) & 0xf,
             _ => 0,
         }
     }
