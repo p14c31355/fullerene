@@ -6,9 +6,75 @@ use super::config::qscratch_set;
 use super::log::log_puts;
 use super::mmio::*;
 use super::phy_tables::{ACTIVE_HSPHY_PARAM_OVERRIDE, ACTIVE_QMP_INIT, ACTIVE_QMP_INIT_DELAY_US};
-use super::trace::{TRACE_UTMI_CLOCK, trace_event};
+use super::trace::{TRACE_PROBE_WATCHDOG, TRACE_UTMI_CLOCK, trace_event, trace_marker};
+
+/// Current-boot result for the optional QMP phase probe. This is deliberately
+/// outside the retained DRAM trace: the caller consumes it immediately after
+/// `init_qmp_phy()` returns, before any later boot can scribble the trace.
+static mut QMP_PHASE_PROBE_REACHED: u32 = 0;
+
+#[inline(always)]
+unsafe fn qmp_mb() {
+    // Linux's arm64 `mb()` used by the Qualcomm driver is a system DMB.  The
+    // QMP writes are relaxed MMIO accesses; this orders them before the next
+    // PHY state transition without turning every table write into a DSB.
+    core::arch::asm!("dmb sy", options(nostack, preserves_flags));
+}
+
+#[inline(always)]
+fn qmp_phase_probe_selected(phase: u32) -> bool {
+    match (option_env!("FULLERENE_USB_QMP_PHASE_STOP"), phase) {
+        (Some("1"), 1)
+        | (Some("2"), 2)
+        | (Some("3"), 3)
+        | (Some("4"), 4)
+        | (Some("5"), 5)
+        | (Some("6"), 6)
+        | (Some("7"), 7)
+        | (Some("8"), 8) => true,
+        _ => false,
+    }
+}
+
+#[inline(always)]
+unsafe fn qmp_phase_probe_stop(phase: u32) -> bool {
+    if !qmp_phase_probe_selected(phase) {
+        return false;
+    }
+    QMP_PHASE_PROBE_REACHED = phase;
+    true
+}
+
+pub fn qmp_phase_probe_reached() -> u32 {
+    unsafe { QMP_PHASE_PROBE_REACHED }
+}
+
+pub fn qmp_phase_probe_requested() -> bool {
+    option_env!("FULLERENE_USB_QMP_PHASE_STOP").is_some()
+}
+
+/// Pack the QMP state needed by the post-Run/Stop readout without changing
+/// any PHY state. Bits 15:0 are PCS_STATUS1, bits 23:16 are
+/// PCS_START_CONTROL, and bits 31:24 are COM_TYPEC_CTRL.
+pub(super) unsafe fn qmp_post_runstop_snapshot() -> u32 {
+    let pcs_status = qmp_contract_offset(0, QMP_PCS_STATUS1);
+    let pcs_start = qmp_contract_offset(5, QMP_PCS_START_CONTROL);
+    let typec = qmp_contract_offset(12, QMP_COM_TYPEC_CTRL);
+    let status = read_volatile(qmp_reg(pcs_status));
+    let start = read_volatile(qmp_reg(pcs_start));
+    let lane = read_volatile(qmp_reg(typec));
+    (status & 0xffff) | ((start & 0xff) << 16) | ((lane & 0xff) << 24)
+}
 
 pub(super) unsafe fn init_qmp_phy() -> bool {
+    // Keep the failure boundary in retained trace as well as UART. A Bramble
+    // watchdog can reset the phone before the Fullerene log is readable, and
+    // the QMP block is precisely the kind of MMIO window where the access
+    // immediately following a marker may be the one that aborts.
+    trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_5042); // "QMPB"
+    if qmp_phase_probe_stop(1) {
+        return true;
+    }
     let com_power_down = qmp_contract_offset(8, QMP_COM_POWER_DOWN_CTRL);
     let pcs_power_down = qmp_contract_offset(3, QMP_PCS_POWER_DOWN_CONTROL);
     let reset_override = qmp_contract_offset(10, QMP_COM_RESET_OVRD_CTRL);
@@ -19,35 +85,91 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
     let pcs_start = qmp_contract_offset(5, QMP_PCS_START_CONTROL);
     let pcs_status = qmp_contract_offset(0, QMP_PCS_STATUS1);
     unsafe {
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_4350); // "QMCP"
+        if qmp_phase_probe_stop(2) {
+            return true;
+        }
         // Match msm_ssphy_qmp_init(): power the common and PCS blocks before
         // selecting the Type-C lane and USB+DP combo mode. The lane value is
         // 2 for lane A and 3 for lane B, as used by the Android QMP driver.
         write_volatile(qmp_reg(com_power_down), 0x01);
         write_volatile(qmp_reg(pcs_power_down), 0x01);
-        let lane = if super::TYPEC_LANE_B { 0x03 } else { 0x02 };
+        qmp_mb();
+        // Keep the PMIC observer and the QMP lane decision independently
+        // testable. The explicit build-time A/B override changes only the
+        // QMP TYPEC_CTRL write; it never writes Type-C role/VBUS registers.
+        let lane = match option_env!("FULLERENE_USB_QMP_LANE") {
+            Some("a") => 0x02,
+            Some("b") => 0x03,
+            _ if super::TYPEC_LANE_B => 0x03,
+            _ => 0x02,
+        };
         write_volatile(qmp_reg(reset_override), 0x0f);
         write_volatile(qmp_reg(typec), lane);
         let _ = read_volatile(qmp_reg(typec));
         write_volatile(qmp_reg(phy_mode), 0x03);
         let _ = read_volatile(qmp_reg(phy_mode));
         write_volatile(qmp_reg(reset_override), 0x00);
+        qmp_mb();
 
+        // msm_ssphy_qmp_init() calls usb_qmp_powerup_phy() once from
+        // usb_qmp_update_portselect_phymode() and once again immediately
+        // before the main table. Preserve that second power-up boundary;
+        // combo-PHY reset/mode selection is not interchangeable with the
+        // post-selection common/PCS power-up write.
+        write_volatile(qmp_reg(com_power_down), 0x01);
+        write_volatile(qmp_reg(pcs_power_down), 0x01);
+        qmp_mb();
+
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_5442); // "QMTB"
+        if qmp_phase_probe_stop(3) {
+            return true;
+        }
         let qmp_init = core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_QMP_INIT));
         let qmp_init_delays =
             core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_QMP_INIT_DELAY_US));
-        for (&(offset, value), &delay_us) in qmp_init.iter().zip(qmp_init_delays.iter()) {
+        for (index, (&(offset, value), &delay_us)) in
+            qmp_init.iter().zip(qmp_init_delays.iter()).enumerate()
+        {
+            // One marker per table entry makes the last committed index the
+            // upper bound when a particular QMP register access aborts.
+            trace_marker(
+                TRACE_PROBE_WATCHDOG,
+                0x514d_0000 | (index as u32 & 0xff),
+            );
             write_volatile(qmp_reg(offset), value);
             if delay_us != 0 {
                 crate::timer::delay_us(delay_us as u64);
             }
         }
 
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_5445); // "QMTE"
+        if qmp_phase_probe_stop(4) {
+            return true;
+        }
         write_volatile(qmp_reg(com_sw_reset), 0x00);
         write_volatile(qmp_reg(pcs_sw_reset), 0x00);
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_5354); // "QMST"
+        if qmp_phase_probe_stop(5) {
+            return true;
+        }
         write_volatile(qmp_reg(pcs_start), 0x03);
+        qmp_mb();
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_5352); // "QMSR"
+        if qmp_phase_probe_stop(6) {
+            return true;
+        }
         let _ = read_volatile(qmp_reg(pcs_status));
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_504c); // "QMPL"
+        if qmp_phase_probe_stop(7) {
+            return true;
+        }
         for _ in 0..1_000_000 {
             if read_volatile(qmp_reg(pcs_status)) & QMP_PHYSTATUS == 0 {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_4f4b); // "QMOK"
+                if qmp_phase_probe_stop(8) {
+                    return true;
+                }
                 return true;
             }
             core::arch::asm!("nop", options(nomem, nostack, preserves_flags));

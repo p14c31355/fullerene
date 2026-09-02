@@ -184,6 +184,12 @@ struct Args {
     #[arg(long = "usb-signal-prev-trace-gate", value_name = "MODE")]
     usb_signal_prev_trace_gate: Option<u32>,
 
+    /// Previous-boot QMP phase gate: attach only when the retained QMP marker
+    /// reached this phase (1=entry, 2=preamble, 3=table, 4=table complete,
+    /// 5=PCS start, 6=status read, 7=poll, 8=PHY ready).
+    #[arg(long = "usb-signal-prev-qmp-gate", value_name = "PHASE")]
+    usb_signal_prev_qmp_gate: Option<u32>,
+
     /// Gate the attach on a CPU readback of the .usb_dma region succeeding.
     #[arg(long)]
     usb_signal_ram_gate: bool,
@@ -296,6 +302,22 @@ struct Args {
     /// Build the Bramble SuperSpeed gadget handoff probe with EP0 descriptors.
     #[arg(long)]
     usb_gadget_handoff_super_speed_probe: bool,
+
+    /// Force the QMP combo-PHY lane selection for SuperSpeed handoff (a|b),
+    /// without changing the PMIC Type-C role state.
+    #[arg(long = "usb-qmp-lane", value_parser = ["a", "b"])]
+    usb_qmp_lane: Option<String>,
+
+    /// Stop immediately after a QMP phase marker (1=entry, 2=preamble,
+    /// 3=table start, 4=table complete, 5=PCS start, 6=status read,
+    /// 7=status poll, 8=PHY ready) and publish the known USB2 fallback.
+    /// Same-boot attach presence is the reached/not-reached readout.
+    #[arg(
+        long = "usb-qmp-phase-stop",
+        value_name = "PHASE",
+        value_parser = clap::value_parser!(u32).range(1..=8)
+    )]
+    usb_qmp_phase_stop: Option<u32>,
 
     /// Build the gadget handoff probe without reading or changing the Apps
     /// SMMU. This is a hardware differential for a Fastboot-owned bypass.
@@ -548,7 +570,7 @@ struct Args {
 
     /// Stop the USB2 gadget handoff after a numbered boundary and publish a
     /// temporary physical pull-up for host-side stage diagnostics.
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=12))]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=29))]
     stop_after_stage: Option<u32>,
 
     /// Run the shared USB EP0 protocol self-test on QEMU virt and exit via
@@ -994,6 +1016,29 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-direct requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_qmp_lane.is_some()
+        && (!args.usb_gadget_handoff_super_speed_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-qmp-lane requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_qmp_phase_stop.is_some()
+        && (!args.usb_gadget_handoff_super_speed_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug)
+            || args.stop_after_stage.is_some())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-qmp-phase-stop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug and cannot be combined with --stop-after-stage",
+        ));
+    }
     if args.usb_gadget_handoff_reuse_fastboot_dma
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_no_smmu
@@ -1422,16 +1467,19 @@ fn main() -> io::Result<()> {
             "the Bramble EP0 timing differentials are mutually exclusive",
         ));
     }
+    let ss_signal_probe = args.usb_gadget_handoff_super_speed_probe;
+    let signal_probe_handoff = (args.usb_gadget_handoff_probe
+        && args.usb_gadget_handoff_direct)
+        || ss_signal_probe;
     if args.usb_ep0_signal_probe
-        && (!args.usb_gadget_handoff_probe
-            || !args.usb_gadget_handoff_direct
+        && (!signal_probe_handoff
             || target.arch != Arch::Aarch64
             || target.platform != Platform::Bramble
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--usb-ep0-signal-probe requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+            "--usb-ep0-signal-probe requires the direct Bramble USB2 handoff or a SuperSpeed handoff on AArch64 build/run/debug",
         ));
     }
     if args.usb_ep0_signal_smmu_state && !args.usb_ep0_signal_probe {
@@ -1452,15 +1500,18 @@ fn main() -> io::Result<()> {
             "--usb-ep0-signal-raw-link requires --usb-ep0-signal-probe",
         ));
     }
+    let ss_qmp_stage_probe = matches!(args.stop_after_stage, Some(13..=29))
+        && args.usb_gadget_handoff_super_speed_probe;
     if args.stop_after_stage.is_some()
         && (!args.usb_gadget_handoff_probe
+            && !ss_qmp_stage_probe
             || target.arch != Arch::Aarch64
             || target.platform != Platform::Bramble
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--stop-after-stage requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+            "--stop-after-stage requires a Bramble USB gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     let selected_probe = selected_aarch64_probe(&args, target)?;
@@ -1604,6 +1655,8 @@ fn main() -> io::Result<()> {
                 gadget_handoff_ep0_reset_android_state_order: args
                     .usb_gadget_handoff_ep0_reset_android_state_order,
                 gadget_handoff_stop_after_stage: args.stop_after_stage,
+                gadget_handoff_qmp_lane: args.usb_qmp_lane.clone(),
+                gadget_handoff_qmp_phase_stop: args.usb_qmp_phase_stop,
                 qemu_usb_sim: args.qemu_usb_sim,
                 gadget_handoff_direct: args.usb_gadget_handoff_direct,
                 ep0_signal_probe: args.usb_ep0_signal_probe,
@@ -1623,6 +1676,7 @@ fn main() -> io::Result<()> {
                 smmu_install_all: args.usb_smmu_install_all,
                 signal_fsr_gate: args.usb_signal_fsr_gate,
                 signal_prev_trace_gate: args.usb_signal_prev_trace_gate,
+                signal_prev_qmp_gate: args.usb_signal_prev_qmp_gate,
                 signal_ram_gate: args.usb_signal_ram_gate,
                 signal_diag_publish: args.usb_signal_diag_publish,
                 quiet_after: args.usb_quiet_after,
@@ -1812,6 +1866,8 @@ struct Aarch64BuildConfig {
     gadget_handoff_ep0_reset_callback_first: bool,
     gadget_handoff_ep0_reset_android_state_order: bool,
     gadget_handoff_stop_after_stage: Option<u32>,
+    gadget_handoff_qmp_lane: Option<String>,
+    gadget_handoff_qmp_phase_stop: Option<u32>,
     qemu_usb_sim: bool,
     gadget_handoff_direct: bool,
     ep0_signal_probe: bool,
@@ -1831,6 +1887,7 @@ struct Aarch64BuildConfig {
     smmu_install_all: bool,
     signal_fsr_gate: Option<u32>,
     signal_prev_trace_gate: Option<u32>,
+    signal_prev_qmp_gate: Option<u32>,
     signal_ram_gate: bool,
     signal_diag_publish: bool,
     quiet_after: Option<u64>,
@@ -1914,6 +1971,8 @@ fn build_aarch64_kernel(
         gadget_handoff_ep0_reset_callback_first,
         gadget_handoff_ep0_reset_android_state_order,
         gadget_handoff_stop_after_stage,
+        gadget_handoff_qmp_lane,
+        gadget_handoff_qmp_phase_stop,
         qemu_usb_sim,
         gadget_handoff_direct,
         ep0_signal_probe,
@@ -1933,6 +1992,7 @@ fn build_aarch64_kernel(
         smmu_install_all,
         signal_fsr_gate,
         signal_prev_trace_gate,
+        signal_prev_qmp_gate,
         signal_ram_gate,
         signal_diag_publish,
         quiet_after,
@@ -2259,6 +2319,18 @@ fn build_aarch64_kernel(
             stage.to_string(),
         );
     }
+    if let Some(lane) = gadget_handoff_qmp_lane {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_QMP_LANE",
+            lane,
+        );
+    }
+    if let Some(phase) = gadget_handoff_qmp_phase_stop {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_QMP_PHASE_STOP",
+            phase.to_string(),
+        );
+    }
     if qemu_usb_sim {
         push_env("FULLERENE_AARCH64_QEMU_USB_SIM", "1".to_owned());
     }
@@ -2330,6 +2402,9 @@ fn build_aarch64_kernel(
     }
     if let Some(mode) = signal_prev_trace_gate {
         push_env("FULLERENE_AARCH64_USB_PREV_TRACE_GATE", mode.to_string());
+    }
+    if let Some(phase) = signal_prev_qmp_gate {
+        push_env("FULLERENE_AARCH64_USB_PREV_QMP_GATE", phase.to_string());
     }
     if signal_ram_gate {
         push_env("FULLERENE_AARCH64_USB_SIGNAL_RAM_GATE", "1".to_owned());

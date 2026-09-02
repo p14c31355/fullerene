@@ -443,12 +443,32 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("dwc3-trb") => Some("dwc3-trb"),
         Some("dwc3-first-event") => Some("dwc3-first-event"),
         Some("dwc3-bite") => Some("dwc3-bite"),
+        Some("ss-speed") => Some("ss-speed"),
+        Some("ss-link") => Some("ss-link"),
+        Some("ss-pipe") => Some("ss-pipe"),
+        Some("ss-gctl") => Some("ss-gctl"),
+        Some("ss-qmp") => Some("ss-qmp"),
+        Some("ss-vbus") => Some("ss-vbus"),
         _ => None,
     }
 }
 
 fn env_flag(value: Option<&'static str>) -> bool {
     value.filter(|value| *value != "0").is_some()
+}
+
+#[inline]
+fn signal_cmd_gate_active() -> bool {
+    option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+        .filter(|value| *value != "0")
+        .is_some()
+}
+
+#[inline]
+fn ss_snapshot_gate_active() -> bool {
+    option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+        .filter(|value| value.starts_with("ss-"))
+        .is_some()
 }
 
 fn trace_gate(code: u32) {
@@ -520,6 +540,18 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // Disarm assembly recovery; trace-quiet watchdog owns recovery here.
     unsafe {
         asm!("msr CNTP_CTL_EL0, xzr", "isb", options(nomem, nostack));
+    }
+    // A QMP phase-stop run must not use the normal failed-handoff recovery:
+    // u0_arm_recovery() would publish a USB2 pull-up and make an un-reached
+    // phase look identical to a reached phase's intentional HS fallback.
+    // Phase 1..8 that reaches its marker returns with `gadget_ready=true`;
+    // only the zero marker means that the selected boundary was not reached.
+    if !gadget_ready
+        && usb::qmp_phase_probe_requested()
+        && usb::qmp_phase_probe_reached() == 0
+    {
+        usb::u0_arm_wdt_bite(2);
+        usb::park_for_seconds(0);
     }
     // Failure-stage readout: the parks survive now that the core domain is
     // powered, so park stage*15 s and let the Android return time publish
@@ -606,7 +638,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     let observe_until = probe_counter().saturating_add(frequency.saturating_mul(observe_secs));
     let mut signal_code = signal_smmu_code;
     // Keep gate runs in the full observation window; arm progress on -110 is still diagnostic.
-    let gate_active = env_flag(option_env!("FULLERENE_USB_SIGNAL_CMD_GATE"));
+    let gate_active = signal_cmd_gate_active();
     // Keepalive: the restored core domain is collapsed by RPMh ~5-8 s after
     // the attach wakes it even though the entry-time vote was accepted, and
     // apply_usb_power's state flag makes the park keepalive a no-op. Re-arm
@@ -1150,12 +1182,22 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             usb::u0_arm_wdt_bite(code.saturating_add(1));
             park_without_recovery_timer();
         }
-        if selector.starts_with("dwc3-") {
+        if selector.starts_with("dwc3-") || selector.starts_with("ss-") {
             // Snapshot after the observation window, before the readout gate
             // stops the device. The snapshot itself must not consume events.
+            // The ss-* selectors use the same path because their source is
+            // the post-Run/Stop SS snapshot, while the dwc3-* selectors use
+            // the live DWC3 boundary. Keeping both on the same-boot channel
+            // makes the result readable even when Android overwrites the
+            // retained trace during recovery.
             usb::trace_dwc3_boundary();
             let code = usb::utmi_readout_code(selector).min(15);
-            trace_gate(0x4457_4300 | (code & 0xff)); // "DWC0" + code
+            let tag = if selector.starts_with("ss-") {
+                0x5353_0000 // "SS"
+            } else {
+                0x4457_4300 // "DWC0"
+            };
+            trace_gate(tag | (code & 0xff));
             // Publish the four-bit boundary code as same-boot attach cycles;
             // this avoids relying on warm-reset DRAM retention, which Android
             // may overwrite before the next Fullerene image starts.
@@ -1335,6 +1377,8 @@ extern "C" fn usb_probe_entry() -> ! {
     // attach timestamp.
     let prev_boot_code = usb::prev_boot_progress_code();
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    let prev_boot_qmp_phase = usb::prev_boot_qmp_phase_code().min(8);
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     let prev_boot_utmi_code = utmi_gate_selector()
         .map(usb::utmi_readout_code)
         .unwrap_or(0)
@@ -1363,6 +1407,25 @@ extern "C" fn usb_probe_entry() -> ! {
             usb::TRACE_PROBE_WATCHDOG,
             0x5056_5447 | (prev_boot_code & 0xff), // "PVTG" + previous code
         );
+        if !attach_wanted {
+            reset_after_probe_failure();
+        }
+    }
+    // Previous-boot QMP gate: QMP markers are retained in the same NOLOAD
+    // trace, but the temporary image normally cannot enumerate far enough to
+    // return them. Suppressing the next pull-up when the requested phase was
+    // not reached turns attach presence into a robust threshold readout.
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    if let Some(mode) = option_env!("FULLERENE_USB_PREV_QMP_GATE") {
+        let required = mode
+            .parse::<u32>()
+            .ok()
+            .filter(|phase| (1..=8).contains(phase));
+        let attach_wanted = required.is_none_or(|phase| prev_boot_qmp_phase >= phase);
+        usb::trace_marker(
+            usb::TRACE_PROBE_WATCHDOG,
+            0x514d_4700 | prev_boot_qmp_phase,
+        ); // "QMG"
         if !attach_wanted {
             reset_after_probe_failure();
         }
@@ -1536,6 +1599,15 @@ extern "C" fn usb_probe_entry() -> ! {
         fullerene_aarch64_usb_gadget_handoff_probe
     ))]
     {
+        // The SS snapshot gate is intentionally observational. The regular
+        // signal-gate prologue re-applies power, clock, and reset state before
+        // the handoff; on Bramble that extra reset can destroy the same
+        // Fastboot-owned SS state that stage 21 is meant to measure. Keep the
+        // already-proven stage path intact and use the gate only after its
+        // post-Run/Stop snapshot has been captured.
+        if ss_snapshot_gate_active() {
+            // No pre-handoff writes for ss-* readouts.
+        } else {
         // The fastboot handoff leaves the USB30 core domain collapsed: the
         // physical attach is carried by the QSCRATCH/PHY session alone while
         // every DWC3 core register reads dead (the long-standing "endpoint
@@ -1571,6 +1643,7 @@ extern "C" fn usb_probe_entry() -> ! {
         let pon_until = settle_until + settle_frequency * pon_delay_ms / 1000;
         while probe_counter() < pon_until {
             core::hint::spin_loop();
+        }
         }
     }
     let gadget_ready = if cfg!(any(
@@ -1629,7 +1702,7 @@ extern "C" fn usb_probe_entry() -> ! {
     ))]
     {
         // Failed handoff or diagnostic gate: observe the bounded window, then continue/park as decided.
-        let gate_active = env_flag(option_env!("FULLERENE_USB_SIGNAL_CMD_GATE"));
+        let gate_active = signal_cmd_gate_active();
         // PROBE-CHECK: early park proves cfg block reached; ~37-39 means absent or unreached. stall-map
         // uses ~31s as its init-crossed signature.
         if cmd_gate_is("lnk-nib")
@@ -1662,7 +1735,9 @@ extern "C" fn usb_probe_entry() -> ! {
             // probe queues its own blip only when the handoff failed, so
             // without this the direct branch could never show the SDIS pair.
             usb::arm_blip_queue();
-            if usb::gadget_handoff_stage_probe_enabled() {
+            if usb::gadget_handoff_stage_probe_enabled()
+                && !usb::gadget_handoff_post_init_stage_probe_enabled()
+            {
                 // Stage probes publish EP0-less pull-up; keep attach long enough for xHCI, then recover.
                 let frequency = probe_counter_frequency();
                 let deadline = probe_counter().saturating_add(frequency.saturating_mul(10));
@@ -1736,6 +1811,15 @@ extern "C" fn usb_probe_entry() -> ! {
             unsafe {
                 asm!("msr DAIFClr, #2", "isb", options(nostack));
             }
+            // Stage 25 is after the complete post-init GIC/SPIs setup and
+            // interrupt unmask, before entering either the polling or WFE
+            // ownership loop.  The stage helper converts reach into the
+            // known USB2 marker and never re-runs SS Run/Stop.
+            if usb::gadget_handoff_post_init_stage_probe_enabled()
+                && unsafe { usb::gadget_handoff_post_init_stage_probe(25) }
+            {
+                reset_after_probe_failure();
+            }
         }
         #[cfg(fullerene_aarch64_usb_bare_pullup_probe)]
         {
@@ -1791,6 +1875,9 @@ extern "C" fn usb_probe_entry() -> ! {
                     }
                     usb::wdt_pet();
                     usb::poll();
+                    if unsafe { usb::gadget_handoff_post_init_stage_probe(27) } {
+                        reset_after_probe_failure();
+                    }
                     if usb::probe_ep0_progress() {
                         stable_ep0_park();
                     }
@@ -1811,6 +1898,9 @@ extern "C" fn usb_probe_entry() -> ! {
                 usb::wdt_pet();
                 unsafe { asm!("wfe", options(nomem, nostack)) };
                 usb::service_deferred_platform();
+                if unsafe { usb::gadget_handoff_post_init_stage_probe(26) } {
+                    reset_after_probe_failure();
+                }
                 if usb::probe_ep0_progress() {
                     disarm_recovery_timer();
                     trace_gate(TRACE_STAB);
@@ -1828,6 +1918,65 @@ extern "C" fn usb_probe_entry() -> ! {
                 } else if frequency != 0 && probe_counter() >= deadline {
                     trace_gate(TRACE_WDT);
                     reset_after_probe_failure();
+                }
+                // Stage 27 is after one complete non-direct IRQ-loop
+                // iteration: WFE, deferred platform service, EP0-progress
+                // check, and trace/deadline bookkeeping all returned.
+                if unsafe { usb::gadget_handoff_post_init_stage_probe(27) } {
+                    reset_after_probe_failure();
+                }
+                if unsafe { usb::gadget_handoff_post_init_stage_probe(28) } {
+                    // Hold the same post-init IRQ-loop ownership for 20 s
+                    // before publishing the reach marker.  wdt_pet() keeps
+                    // the APSS watchdog alive; a ~37 s Android return here
+                    // therefore names the separate secure/XBL watchdog,
+                    // while a marker after the delay proves this loop itself
+                    // remains alive beyond the old bite window.
+                    let wait_until = probe_counter().saturating_add(
+                        probe_counter_frequency().saturating_mul(20),
+                    );
+                    while probe_counter() < wait_until {
+                        usb::wdt_pet();
+                        unsafe { asm!("wfe", options(nomem, nostack)) };
+                        usb::service_deferred_platform();
+                    }
+                    if unsafe { usb::gadget_handoff_post_init_stage_probe(28) } {
+                        reset_after_probe_failure();
+                    }
+                }
+                if unsafe { usb::gadget_handoff_post_init_stage_probe(29) } {
+                    // Stage 28 deliberately omitted the two read-only
+                    // bookkeeping calls below.  Repeat the actual loop body
+                    // instead, without entering the success park if an EP0
+                    // progress bit happens to appear.  This isolates a
+                    // repeated probe_ep0_progress()/trace_head() fault from
+                    // the WFE/deferred-service-only hold above.
+                    let mut repeated_head = usb::trace_head();
+                    let mut repeated_deadline = probe_counter().saturating_add(
+                        frequency.saturating_mul(timeout_secs),
+                    );
+                    let wait_until = probe_counter().saturating_add(
+                        probe_counter_frequency().saturating_mul(20),
+                    );
+                    while probe_counter() < wait_until {
+                        usb::wdt_pet();
+                        unsafe { asm!("wfe", options(nomem, nostack)) };
+                        usb::service_deferred_platform();
+                        let _ = usb::probe_ep0_progress();
+                        let head = usb::trace_head();
+                        if head != repeated_head {
+                            repeated_head = head;
+                            repeated_deadline = probe_counter().saturating_add(
+                                frequency.saturating_mul(timeout_secs),
+                            );
+                        } else if frequency != 0 && probe_counter() >= repeated_deadline {
+                            trace_gate(TRACE_WDT);
+                            reset_after_probe_failure();
+                        }
+                    }
+                    if unsafe { usb::gadget_handoff_post_init_stage_probe(29) } {
+                        reset_after_probe_failure();
+                    }
                 }
             }
         }

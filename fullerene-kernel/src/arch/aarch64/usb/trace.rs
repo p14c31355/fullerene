@@ -420,6 +420,60 @@ pub fn prev_boot_progress_code() -> u32 {
     }
 }
 
+/// Classify the deepest QMP initialization marker retained by the previous
+/// boot. This is intentionally a coarse phase code: the host-side loop cannot
+/// read the marker buffer before the temporary image enumerates, but it can
+/// use the next boot's attach/no-attach result as a one-bit threshold test.
+///
+///   0 = no valid retained QMP marker
+///   1 = entered `init_qmp_phy()` (`QMPB`)
+///   2 = control preamble (`QMCP`)
+///   3 = QMP table started (`QMTB` or a table-entry marker)
+///   4 = table completed (`QMTE`)
+///   5 = PCS start boundary (`QMST`)
+///   6 = first PCS status read (`QMSR`)
+///   7 = status poll (`QMPL`)
+///   8 = PHY ready (`QMOK`)
+pub fn prev_boot_qmp_phase_code() -> u32 {
+    unsafe {
+        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
+        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
+        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION {
+            return 0;
+        }
+        let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2));
+        if head == 0 || head as usize > USB_TRACE_CAPACITY {
+            return 0;
+        }
+        let mut phase = 0u32;
+        for index in 0..head as usize {
+            let entry = addr_of!(USB_TRACE.entries)
+                .cast::<UsbTraceEntry>()
+                .add(index);
+            if read_volatile(addr_of!((*entry).sequence)) != (index + 1) as u32 {
+                return 0;
+            }
+            if read_volatile(addr_of!((*entry).event)) != TRACE_PROBE_WATCHDOG {
+                continue;
+            }
+            let marker = read_volatile(addr_of!((*entry).status));
+            phase = phase.max(match marker {
+                0x514d_5042 => 1, // QMPB
+                0x514d_4350 => 2, // QMCP
+                0x514d_5442 => 3, // QMTB
+                0x514d_5445 => 4, // QMTE
+                0x514d_5354 => 5, // QMST
+                0x514d_5352 => 6, // QMSR
+                0x514d_504c => 7, // QMPL
+                0x514d_4f4b => 8, // QMOK
+                value if value & 0xffff_ff00 == 0x514d_0000 => 3,
+                _ => 0,
+            });
+        }
+        phase
+    }
+}
+
 /// Add a marker without touching the controller. This is used around PMIC
 /// and platform transitions where the next MMIO access itself may abort.
 pub fn trace_marker(event: u32, status: u32) {

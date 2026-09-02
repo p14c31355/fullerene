@@ -203,6 +203,24 @@ pub(super) unsafe fn acknowledge_events_while_halting() {
     }
 }
 
+/// Release the DWC3 USB3 PIPE soft-reset bit without issuing a core reset.
+///
+/// The normal `dwc3_core_soft_reset()` path clears this bit as part of its
+/// core/PHY reset sequence. A `--no-core-reset` handoff deliberately skips
+/// that sequence, but it still reinitializes the external QMP PHY. Keep this
+/// as an opt-in differential: clearing an already-clear bit is harmless, and
+/// the A/B can test whether Fastboot left the DWC3-side PIPE held in reset
+/// after the QMP ownership transition.
+#[inline]
+pub(super) unsafe fn release_usb3_phy_reset() {
+    unsafe {
+        let mut usb3 = read(GUSB3PIPECTL0);
+        usb3 &= !GUSB3PIPECTL_PHYSOFTRST;
+        write(GUSB3PIPECTL0, usb3);
+        let _ = read(GUSB3PIPECTL0);
+    }
+}
+
 /// Apply Linux's USB2 PHY guard around a DWC3 Run/Stop transition.
 ///
 /// `dwc3_gadget_run_stop()` clears SUSPHY and ENBLSLPM before writing DCTL,

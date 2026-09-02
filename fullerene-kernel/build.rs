@@ -99,12 +99,14 @@ fn main() {
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_skip_usb2_phy_reset)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_refresh_hsphy_power)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ss_phy_reset_release)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_android_block_reset)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_signal_probe)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_dma_adopt)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_smmu_gate)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_smmu_install)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_smmu_disable)");
-    for stage in 1..=12 {
+    for stage in 1..=29 {
         println!(
             "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_stop_after_{stage})"
         );
@@ -273,6 +275,9 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_DWC31_DCTL_ONLY_RESET").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_dwc31_dctl_only_reset");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_SS_PHY_RESET_RELEASE").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_ss_phy_reset_release");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_BEFORE_RESET").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_before_reset");
         }
@@ -343,6 +348,16 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PRESERVE_RUNSTOP").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_preserve_runstop");
         }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_GADGET_HANDOFF_QMP_LANE") {
+            if matches!(value.as_str(), "a" | "b") {
+                println!("cargo:rustc-env=FULLERENE_USB_QMP_LANE={value}");
+            }
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_GADGET_HANDOFF_QMP_PHASE_STOP") {
+            if matches!(value.as_str(), "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") {
+                println!("cargo:rustc-env=FULLERENE_USB_QMP_PHASE_STOP={value}");
+            }
+        }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_CLOCK_BRANCHES_REARM").is_some() {
             println!(
                 "cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_clock_branches_rearm"
@@ -407,7 +422,7 @@ fn main() {
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
         {
-            if (1..=12).contains(&stage) {
+            if (1..=29).contains(&stage) {
                 println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_stop_after_{stage}");
             }
         }
@@ -473,6 +488,9 @@ fn main() {
         }
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_PREV_TRACE_GATE") {
             println!("cargo:rustc-env=FULLERENE_USB_PREV_TRACE_GATE={value}");
+        }
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_PREV_QMP_GATE") {
+            println!("cargo:rustc-env=FULLERENE_USB_PREV_QMP_GATE={value}");
         }
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_SIGNAL_EVT_DATA_GATE") {
             println!("cargo:rustc-env=FULLERENE_USB_SIGNAL_EVT_DATA_GATE={value}");
@@ -574,6 +592,7 @@ fn main() {
         );
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PRESERVE_CORE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PRESERVE_RUNSTOP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PREV_QMP_GATE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_CLOCK_STABLE_DELAY_US");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_UTMI_REAPPLY_AFTER_RUNSTOP");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_UTMI_REAPPLY_HALTED");
@@ -618,6 +637,7 @@ fn main() {
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_RESET_ANDROID_STATE_ORDER"
         );
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_DWC31_DCTL_ONLY_RESET");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SS_PHY_RESET_RELEASE");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_BEFORE_RESET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PHYIF_16BIT");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ENBLSLPM");
@@ -680,6 +700,8 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_OBSERVE_SECS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_CONNECT_DELAY");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_STOP_STAGE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_QMP_LANE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_QMP_PHASE_STOP");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_TIMEOUT_SECS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_QEMU_USB_SIM");

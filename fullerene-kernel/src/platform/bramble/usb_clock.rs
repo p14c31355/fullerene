@@ -49,6 +49,43 @@ pub unsafe fn enable_usb_clock_branches() -> bool {
     ok
 }
 
+/// Re-enable only the four clocks consumed by the Lito QMP USB+DP PHY.
+///
+/// The Android PHY driver prepares these in `ref_clk_src`, `com_aux_clk`,
+/// `aux_clk`, then `pipe_clk` order.  A SuperSpeed Fastboot handoff must
+/// restore that ownership before touching QMP registers, but must not retune
+/// the live DWC3 core/UTMI clocks as a side effect of a PHY-only operation.
+pub unsafe fn enable_usb_qmp_clock_branches() -> bool {
+    unsafe {
+        let resources = usb_resources();
+        let Some(aux) = resources.qmp_clocks.iter().find(|clock| clock.name == "aux") else {
+            return false;
+        };
+        if aux.provider != ClockProvider::Gcc
+            || aux.source_offset == 0
+            || !configure_rcg(aux.source_offset, 0, 1)
+        {
+            return false;
+        }
+
+        let mut ok = true;
+        for name in ["com_aux", "aux", "pipe"] {
+            let Some(clock) = resources.qmp_clocks.iter().find(|clock| clock.name == name)
+            else {
+                return false;
+            };
+            if clock.provider != ClockProvider::Gcc {
+                return false;
+            }
+            let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
+            let value = core::ptr::read_volatile(address) | 1;
+            core::ptr::write_volatile(address, value);
+            ok &= wait_for_branch_state(address, true);
+        }
+        ok
+    }
+}
+
 /// Gate the USB-specific GCC branches after the controller has stopped and
 /// the interconnect vote has been dropped.  XO is shared with the rest of the
 /// SoC and is intentionally left enabled; Linux's clock framework applies the
@@ -166,7 +203,7 @@ pub unsafe fn configure_usb_clocks(vote: UsbBusVote) -> bool {
             .iter()
             .find(|clock| clock.name == "aux")
         {
-            if aux.source_offset == 0 || !configure_rcg(aux.source_offset, 0, 0) {
+            if aux.source_offset == 0 || !configure_rcg(aux.source_offset, 0, 1) {
                 return false;
             }
         }

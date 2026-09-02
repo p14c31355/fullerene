@@ -4,9 +4,10 @@ pub mod usb_reset;
 
 pub use usb_clock::{
     android_controller_block_reset, configure_usb_clocks, disable_usb_clock_branches,
-    enable_usb_clock_branches, enable_usb2_utmi_clock, rearm_usb2_android_clock_branches,
+    enable_usb_clock_branches, enable_usb2_utmi_clock, enable_usb_qmp_clock_branches,
+    rearm_usb2_android_clock_branches,
 };
-pub use usb_reset::{pulse_usb2_phy_reset, reset_usb_blocks};
+pub use usb_reset::{pulse_usb2_phy_reset, reset_qmp_phy_blocks, reset_usb_blocks};
 ///
 /// The DTB remains authoritative at boot. These constants document the
 /// addresses used by the SM7250 device tree for the first bring-up.
@@ -3276,6 +3277,21 @@ pub unsafe fn refresh_usb_power(super_speed: bool) -> bool {
             ok = false;
         }
     }
+    ok
+}
+
+/// Re-assert only the QMP PHY regulator consumers used by the Android
+/// `msm_ssusb_qmp_ldo_enable(phy, 1)` path.  The Bramble DT supplies the QMP
+/// `core` consumer (`pm8150_l9`) and has no separate `vdd-supply`; keeping
+/// this narrower than `refresh_usb_power(true)` avoids perturbing the live
+/// USB2 PHY during a SuperSpeed-only handoff.
+pub unsafe fn refresh_usb_qmp_power() -> bool {
+    let power = usb_resources().power;
+    let mut ok = true;
+    if power.qmp_vdd_present {
+        ok &= unsafe { send_usb_regulator_request(power.qmp_vdd, true) };
+    }
+    ok &= unsafe { send_usb_regulator_request(power.qmp_core, true) };
     ok
 }
 

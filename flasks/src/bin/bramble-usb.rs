@@ -81,6 +81,13 @@ struct LoopArgs {
     irq_route: Option<Route>,
     #[arg(long)]
     super_speed: bool,
+    /// Force QMP's USB lane A or B without changing PMIC Type-C role state.
+    #[arg(long, value_parser = ["a", "b"])]
+    qmp_lane: Option<String>,
+    /// Stop immediately after a QMP phase marker (1..=8) and use same-boot
+    /// USB2 attach presence as the reached/not-reached readout.
+    #[arg(long, value_name = "PHASE", value_parser = clap::value_parser!(u32).range(1..=8))]
+    qmp_phase_stop: Option<u32>,
     #[arg(long)]
     normal: bool,
     /// Run the normal non-destructive handoff first, with the probe's
@@ -107,8 +114,11 @@ struct LoopArgs {
     #[arg(long)]
     hyper_bare: bool,
     /// Publish only the physical pull-up after one gadget handoff boundary
-    /// (1..=12), then use the normal automatic recovery path.
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=12))]
+    /// (1..=29; stage 13 is the QMP-complete SS boundary, stage 14 is the
+    /// post-global-control SS boundary, and stages 15..=20 bisect the
+    /// post-stage-14 tail), then use the
+    /// normal automatic recovery path.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=29))]
     stop_after_stage: Option<u32>,
     #[arg(long)]
     no_smmu: bool,
@@ -335,6 +345,10 @@ struct LoopArgs {
     /// readout, immune to bootloader attach-time jitter.
     #[arg(long = "signal-prev-trace-gate", value_name = "MODE")]
     signal_prev_trace_gate: Option<u32>,
+    /// Previous-boot QMP phase gate: 1=entry, 2=preamble, 3=table,
+    /// 4=table complete, 5=PCS start, 6=status read, 7=poll, 8=PHY ready.
+    #[arg(long = "signal-prev-qmp-gate", value_name = "PHASE")]
+    signal_prev_qmp_gate: Option<u32>,
     /// Gate the attach on a CPU readback of the .usb_dma region succeeding.
     #[arg(long)]
     signal_ram_gate: bool,
@@ -434,6 +448,8 @@ impl Default for LoopArgs {
             fastboot_wait: 30,
             irq_route: None,
             super_speed: false,
+            qmp_lane: None,
+            qmp_phase_stop: None,
             normal: false,
             direct_handoff: false,
             pullup_only: false,
@@ -508,6 +524,7 @@ impl Default for LoopArgs {
             smmu_install_all: false,
             signal_fsr_gate: None,
             signal_prev_trace_gate: None,
+            signal_prev_qmp_gate: None,
             signal_ram_gate: false,
             skip_typec_spmi: false,
             u0_arm_probe: false,
@@ -1138,10 +1155,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--reset-endpoints requires --direct-handoff",
         ));
     }
-    if args.signal_probe && !args.direct_handoff {
+    let ss_signal_stage = args.super_speed && matches!(args.stop_after_stage, Some(13..=29));
+    let ss_full_signal_probe = args.super_speed;
+    if args.signal_probe && !args.direct_handoff && !ss_full_signal_probe && !ss_signal_stage {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--signal-probe requires --direct-handoff",
+            "--signal-probe requires --direct-handoff, or a SuperSpeed handoff",
         ));
     }
     if args.signal_smmu_state && !args.signal_probe {
@@ -1230,6 +1249,14 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--signal-prev-trace-gate must be 1, 2, or 3",
         ));
     }
+    if args.signal_prev_qmp_gate.is_some()
+        && !matches!(args.signal_prev_qmp_gate, Some(1..=8))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--signal-prev-qmp-gate must be 1 through 8",
+        ));
+    }
     if args.signal_ram_gate && !args.signal_dma_probe {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1281,10 +1308,10 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--dma-origin requires --direct-handoff",
         ));
     }
-    if args.signal_cmd_gate.is_some() && !args.direct_handoff {
+    if args.signal_cmd_gate.is_some() && !args.direct_handoff && !ss_signal_stage {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--signal-cmd-gate requires --direct-handoff",
+            "--signal-cmd-gate requires --direct-handoff, or a SuperSpeed stage probe",
         ));
     }
     if args.signal_rsc_gate.is_some() && !args.direct_handoff {
@@ -1428,6 +1455,7 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             || args.bare_pullup
             || args.no_core_reset
             || args.irq_route.is_some())
+        && !matches!(args.stop_after_stage, Some(13..=29))
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1450,6 +1478,24 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--preserve-fastboot-runstop requires --direct-handoff and --no-core-reset",
+        ));
+    }
+    if args.qmp_lane.is_some() && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--qmp-lane requires --super-speed",
+        ));
+    }
+    if args.qmp_phase_stop.is_some() && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--qmp-phase-stop requires --super-speed",
+        ));
+    }
+    if args.qmp_phase_stop.is_some() && args.stop_after_stage.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--qmp-phase-stop cannot be combined with --stop-after-stage",
         ));
     }
     if !args.template.is_file() {
@@ -1743,6 +1789,14 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         if args.direct_handoff {
             arguments.push("--usb-gadget-handoff-direct".to_owned());
         }
+        if let Some(lane) = &args.qmp_lane {
+            arguments.push("--usb-qmp-lane".to_owned());
+            arguments.push(lane.clone());
+        }
+        if let Some(phase) = args.qmp_phase_stop {
+            arguments.push("--usb-qmp-phase-stop".to_owned());
+            arguments.push(phase.to_string());
+        }
     }
     arguments.extend([
         "--boot-template".to_owned(),
@@ -1954,6 +2008,10 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if let Some(mode) = args.signal_prev_trace_gate {
         arguments.push("--usb-signal-prev-trace-gate".to_owned());
         arguments.push(mode.to_string());
+    }
+    if let Some(phase) = args.signal_prev_qmp_gate {
+        arguments.push("--usb-signal-prev-qmp-gate".to_owned());
+        arguments.push(phase.to_string());
     }
     if args.signal_ram_gate {
         arguments.push("--usb-signal-ram-gate".to_owned());
