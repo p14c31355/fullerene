@@ -189,6 +189,15 @@ pub(super) unsafe fn init_hsphy() {
         );
         hsphy_update(HSPHY_UTMI_CTRL0, HSPHY_UTMI_SLEEPM, HSPHY_UTMI_SLEEPM);
         hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_POR, 0);
+        // Wait for the PLL to lock after POR release. The SNPS femto-PHY's
+        // PLL needs a bounded settling time before it can recover the HS
+        // clock from incoming USB traffic. Without this delay, the PHY can
+        // drive D+ (pull-up) and answer the host's chirp handshake (which
+        // is a simple D- drive), but cannot receive HS data (SOF, SETUP),
+        // which requires a locked PLL for clock recovery. The QUSB2 driver
+        // uses usleep_range(150, 160) after POWER_DOWN clear; match that
+        // lower bound for the femto-PHY's POR release.
+        crate::timer::delay_us(150);
         hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N_SEL, 0);
         if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
             // ABL waits after dropping SUSPEND_N_SEL before releasing the

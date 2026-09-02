@@ -518,3 +518,105 @@ isolated differential.
 - [Linux Qualcomm DWC3 glue](https://github.com/torvalds/linux/blob/master/drivers/usb/dwc3/dwc3-qcom.c)
 - [Bramble USB implementation](../fullerene-kernel/src/arch/aarch64/usb.rs)
 - [Bramble platform resources](../fullerene-kernel/src/platform/bramble.rs)
+
+## 2026-09-02: MMIO write barrier root cause
+
+### Finding
+
+Static source analysis of `fullerene-kernel/src/arch/aarch64/usb/mmio.rs`
+identified that `write()` — the generic DWC3 MMIO write helper — performed
+only `write_volatile` without a subsequent DSB barrier. Linux's `writel()`
+includes `__iowmb()` (a DSB) before the store, and the store itself is to
+Device-nGnRE memory which ordering-wise permits subsequent loads to be
+reordered ahead of the store's observable side-effect on ARM64.
+
+### Evidence correlation
+
+| Run | DALEPENA readback | Event consumption | Interpretation |
+| --- | --- | --- | --- |
+| `1764675.0` | 0 | setup-cut negative | EP0 enable mask written but not observed |
+| `1775927.0` | 0 (before DCTL) | event-cut negative | Same; GEVNTSIZ/GEVNTCOUNT writes also affected |
+| `1785948.0` | 0x0 (both directions) | — | Per-direction readback immediately after write still 0 |
+| `2201961.0` | not read | setup-cut/event-cut negative | Same zero-payload boundary |
+
+The pattern is consistent: every DALEPENA write was followed by a read that
+returned 0, and no DWC3 event was ever consumed. Without the DSB, the CPU's
+store buffer can hold the DALEPENA write while the subsequent `read_volatile`
+executes against the interconnect, returning the pre-write value.
+
+### Fix
+
+Added `core::arch::asm!("dsb st", options(nostack))` after every
+`write_volatile` in `write()`. This matches Linux's `writel()` ordering
+contract. The fix is a single-line semantic change in `mmio.rs` and affects
+every DWC3 register write (DALEPENA, GEVNTCOUNT, GEVNTSIZ, DEPCMD, DCTL,
+DCFG, GCTL, GUSB2PHYCFG, etc.).
+
+### Status
+
+- `cargo check` with `--target aarch64-unknown-none --features aarch64`: PASS
+- `git diff --check`: clean
+- Real-hardware verification: COMPLETED — NOT the root cause
+  - Run `2263604.0` (DSB fix + full ABL baseline): HS attach at 09:40:08, descriptor -110 at 09:40:14, Android recovery at 09:40:35
+  - Run `2278047.0` (DSB fix + usbmon): HS attach at 09:49:18, descriptor -110 at 09:49:24, Android recovery at 09:49:39
+  - Run `2284470.0` (DSB fix + start-at-connect-done): HS attach at 09:53:23, descriptor -110 at 09:53:28
+  - Run `2287872.0` (DSB fix + reuse-fastboot-dma): HS attach at 09:55:34, descriptor -110 at 09:55:39
+  - Run `2292469.0` (DSB fix + clock-branches-rearm): HS attach at 09:58:11, descriptor -110 at 09:58:16
+  - Run `2296840.0` (DSB fix + no-core-reset): HS attach at 10:01:00, descriptor -110 at 10:01:06
+  - Run `2301273.0` (DSB fix + minimal config, no ABL flags): HS attach at 10:03:57, descriptor -110 at 10:04:03
+  - Run `2306323.0` (DSB fix + smmu-disable): HS attach at 10:07:07, descriptor -110 at 10:07:13
+  - Run `2309710.0` (DSB fix, with configure_dwc3_smmu): HS attach at 10:09:23, descriptor -110 at 10:09:29
+  - Run `2313024.0` (DSB fix + signal-dma-probe): HS attach at 10:11:33, descriptor -110 at 10:11:38. **DMA probe PASSED** — event ring DMA works BEFORE Run/Stop.
+  - Run `2318323.0` (DSB fix + dma-post-runstop + arm-blip): HS attach at 10:15:01, descriptor -110 at 10:15:07. **No ARM_BLIP pair** — either arm failed or link not U0.
+  - Run `2323705.0` (DSB fix, armstat gate): HS attach at 10:18:09, descriptor -110 at 10:18:14. **armstat=0** (42s return = 16s bite + boot) — STARTTRANSFER succeeded after Run/Stop.
+  - Run `2331306.0` (DSB fix, lnk3 gate): HS attach at 10:23:08, descriptor -110 at 10:23:13. No mid-transaction seen.
+  - Run `2335384.0` (DSB fix, sof gate): HS attach at 10:25:41, descriptor -110 at 10:25:46. **saw_sof=FALSE** — DWC3 NOT receiving SOF packets. USB2 PHY RX path confirmed broken.
+  - Run `2344541.0` (DSB fix, lnkraw gate): HS attach at 10:31:07, descriptor -110 at 10:31:12. Timing not distinguishable.
+  - Run `2347965.0` (DSB fix + abl-shared-hs-phy, sof gate): HS attach at 10:33:21, descriptor -110 at 10:33:26. ABL extra PHY steps don't help.
+  - Run `2353058.0` (preserve-core + no-core-reset + skip-usb2-phy-reset, sof gate): HS attach at 10:35:54, descriptor -110 at 10:35:59. **Skipping PHY re-init entirely also fails** — Fastboot's PHY state has same RX issue.
+  - Run `2356750.0` (preserve-fastboot-runstop): No HS attach at all — device stays in SuperSpeed, confirms HS attach requires our Run/Stop write.
+  - Run `2361627.0` (PLL lock delay 150us after POR release, sof gate): HS attach at 10:41:20, descriptor -110 at 10:41:25. **PLL delay doesn't help.**
+  - All runs showed identical symptom: HS attach succeeds, no SOF received, descriptor -110
+  - The DSB fix is correct (matches Linux `writel()`) but not the root cause
+
+  **Root cause narrowed to USB2 PHY RX path:**
+  1. PHY TX works (D+ pull-up visible → HS attach succeeds, chirp handshake completes)
+  2. STARTTRANSFER succeeds after Run/Stop (armstat=0)
+  3. DMA probe succeeds before Run/Stop (event ring works)
+  4. But NO SOF packets received (saw_sof=false) → PHY RX not functional for HS data
+  5. No USB Reset / Connect Done events generated → DWC3 link FSM never reaches U0
+  6. Linux msm_hsphy_init() sequence compared — register programming is identical to Fullerene's init_hsphy()
+  7. Bramble DT confirms PHY is "qcom,usb-hsphy-snps-femto" (SNPS femto-PHY, not QUSB2)
+  8. Skipping PHY re-init entirely (preserve-core) also fails — Fastboot's PHY state has same issue
+  9. PLL lock delay (150us after POR release) doesn't help
+  10. Key insight: HS chirp handshake succeeds (requires bidirectional PHY), but HS data reception fails (requires PLL lock for clock recovery). The PHY can drive D+/D- but cannot recover HS clock from incoming data.
+  11. `forcehs` gate (force DCFG=HS): no change. DCFG speed is not the issue.
+  12. Without `--skip-typec-spmi` (let Type-C mux configure): no change. Type-C routing is not the issue.
+  13. `lnkstate` gate: DSTS.USBLNKST is in known set {0,1,2,3,8,9,11,14,15} (16s bite matches). Most likely state=0 (U0/ON) — DWC3 thinks it's in U0 but PHY not passing USB2 data.
+  14. GCTL.U2RSTECN=1 confirmed correct (matches Linux dwc3_set_mode).
+  15. `--refresh-hsphy-power` (re-enable QUSB2 power rails): no change. Rails already on from Fastboot.
+  16. `hsphy_update()` does not verify readback — but `preserve-core` (skip all PHY writes) also fails, so PHY register write completion is not the issue.
+  17. `--skip-usb2-phy-reset` (skip GCC_QUSB2PHY_PRIM_BCR pulse, keep CSFTRST + init_hsphy): no change.
+  18. **`phyretry` gate** (re-run full PHY init AFTER Run/Stop, while DWC3 is in Run mode): **no change**. HS attach at 11:45:42, -110 at 11:45:47. Re-initializing the PHY after the link is established does NOT recover USB2 RX.
+  19. AHB2PHY bridge: Bramble DT has no `ahb2phy_base` reg, so Linux also skips AHB2PHY configuration. Not the issue.
+  20. GUSB2PHYCFG: all bits checked against Linux `dwc3_phy_setup()`. No missing bits (XCVRDLY not set by Linux either).es NOT verify readback (Linux `msm_usb_write_readback` does). If AHB2PHY clock is not enabled, PHY register writes are silently dropped. However, Linux's cfg_ahb_clk is optional (not in Bramble DT), so AHB2PHY is likely always-on.
+  17. QSCRATCH HS_PHY_CTRL writes (UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL) match Linux dwc3-msm.c exactly.
+  18. All register-level checks pass. Every layer (DWC3, PHY, QSCRATCH, GCC, clocks) matches Linux.
+
+  **Conclusion:** 23+ real-hardware runs exhausted all code-level approaches. The USB2 PHY HS RX path is not functional — the PHY can drive D+ (pull-up) and respond to chirp (autonomous), but cannot receive HS data (SOF/SETUP). This cannot be fixed through register programming alone. Further progress requires either:
+  - JTAG/secure debug to read DWC3 and PHY registers in real-time
+  - USB protocol analyzer to verify what's on the wire
+  - A fundamentally different approach (e.g., SuperSpeed-only enumeration to bypass USB2 RX)
+  - Investigation into secure firmware (TrustZone) interactions that may gate the PHY RX path
+
+  **SuperSpeed-only bypass attempts (runs 29-33):**
+  - `GUSB2PHYCFG.SUSPHY=1` successfully suppresses USB2 pull-up (no USB2 attach).
+  - But SS enumeration as 1234 also fails: QMP PHY state lost on Run/Stop toggle, SS link breaks on endpoint reconfig with preserve-runstop.
+  - DCTL bit 30 = CSFTRST (not SFTDISCON). `DCTL_SDIS = bit 0` = RMTWKUPSIG, not soft disconnect — pre-existing bug in sdisc_blips.
+  - SS-only requires QMP PHY init in direct handoff path (major code change).
+
+  **25th run — `pub` gate (diag code readout):**
+  - Run `2423773.0`: HS attach at 11:26:39, descriptor -110 at 11:26:44, Android at 11:27:05.
+  - Return time = attach+26s = observation(5s) + park(22s) = 10 + code*12 where code=1.
+  - **diag_readout_code = 1**: no SETUP token ever reached EP0.
+  - This is the final confirmation: the DWC3 never receives any USB2 data (no SOF, no SETUP).

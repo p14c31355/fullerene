@@ -994,6 +994,18 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         trace_gate(0x5232_0000 | (status & 0xff));
         park_without_recovery_timer();
     }
+    // phyretry: re-initialize the USB2 PHY after Run/Stop to test whether
+    // the Stop→Start cycle loses PHY RX state that can be recovered.
+    if cmd_gate_is("phyretry") {
+        let ok = usb::phy_retry_after_link();
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5048_5952 | (ok as u32)); // "PHYR"
+        let service_until = probe_counter().saturating_add(frequency.saturating_mul(4));
+        while probe_counter() < service_until {
+            usb::wdt_pet();
+            usb::poll();
+        }
+        park_without_recovery_timer();
+    }
     // diag rescues the stuck read/64 stage; journal enumeration, not a park, is the readout.
     if cmd_gate_is("diag") {
         // The full mid-window rescue: device soft reset + complete endpoint

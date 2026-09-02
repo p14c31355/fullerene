@@ -4993,7 +4993,11 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // still reapplies the old-DWC3 speed workaround immediately before
         // connection, but leaving this intermediate state unspecified loses
         // the physical attach on Bramble.
-        write(DCFG, DCFG_HIGHSPEED);
+        write(DCFG, if cfg!(fullerene_aarch64_usb_dcfg_superspeed) {
+            DCFG_SUPERSPEED
+        } else {
+            DCFG_HIGHSPEED
+        });
         configure_gadget_start_defaults();
         // Linux enables each endpoint only after its SETEPCONFIG and
         // SETTRANSFRESOURCE commands complete. Do not advertise EP0 before
@@ -8293,6 +8297,42 @@ pub fn u0_arm_recovery() -> u32 {
 /// invisible and the host simply sees its retries answered. The readout is
 /// the enumeration outcome in the host journal (1234:0001 = the re-arm
 /// landed; -110 again = it did not). Returns the u0_arm_recovery status.
+/// Re-initialize the USB2 PHY after Run/Stop.  This tests whether the PHY
+/// RX path can be recovered by re-running the full init sequence while the
+/// DWC3 is in Run mode (link ON).  The hypothesis: the Stop→Start cycle
+/// loses PHY RX state that can only be restored by re-programming the PHY
+/// after the link is established.
+pub fn phy_retry_after_link() -> bool {
+    unsafe {
+        // Wait for link ON (USBLNKST == 0 in DSTS)
+        let deadline = super::timer::counter() + 5_000_000_000; // 5s in timer ticks
+        while super::timer::counter() < deadline {
+            let dsts = read(DSTS);
+            if (dsts >> 18) & 0xf == 0 && dsts & DSTS_DEVCTRLHLT == 0 {
+                break;
+            }
+        }
+        // Check if we're in U0
+        let dsts = read(DSTS);
+        if (dsts >> 18) & 0xf != 0 {
+            return false;
+        }
+        // Re-run the full PHY init sequence
+        if !cfg!(fullerene_aarch64_usb_skip_usb2_phy_reset) {
+            if !super::platform::bramble::pulse_usb2_phy_reset() {
+                return false;
+            }
+        }
+        phy::init_hsphy();
+        config::configure_usb2_phy_interface();
+        // Clear SUSPHY and ENBLSLPM after PHY re-init
+        let mut usb2 = read(GUSB2PHYCFG0);
+        usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        write(GUSB2PHYCFG0, usb2);
+        true
+    }
+}
+
 pub fn u0_arm_window_recovery() -> u32 {
     unsafe {
         if !device_soft_reset() {

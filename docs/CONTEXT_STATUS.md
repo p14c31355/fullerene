@@ -55,15 +55,16 @@ run ID and artifact hash.
 | ABL request/TRB flags | ABL's `0x405` request control base (`HWO|CHN|ISP_IMI`) also produced `-2`→`-71` with `len=0`/`cap=0` | The `LST|IOC` versus ABL flag difference alone is not sufficient; resolve request-object/ring ownership before another flag permutation |
 | ABL event ownership order | ABL-style per-event dispatch followed by four-byte `GEVNTCOUNT` ACK with EHB preserved also produced `-2`→`-71` with `len=0`/`cap=0` | Event ACK timing/order alone is not sufficient; compare the physical request object and EP0 TRB/ring ownership state |
 | EP0 setup DMA/readback semantics | Android msm `ep0.c` targets `CONTROL_SETUP` at `dwc->ep0_trb_addr` and reads the received request from `dwc->ep0_trb`; Fullerene now uses the same EP0 TRB for DMA and parsing | The coherent source-aligned run `2201961.0` still returned no payload, so the remaining suspect is request/ring ownership, DWC3 event delivery, or lower USB2/UTMI reception |
+| MMIO write ordering barrier | `write()` in `mmio.rs` lacked the DSB store-barrier that Linux's `writel()` provides via `__iowmb()` | Fix applied: `dsb st` after every `write_volatile` in `write()`. Real-hardware verification (runs 2263604.0, 2266529.0, 2278047.0, 2284470.0, 2287872.0) showed NO behavioral change: HS attach still succeeds, descriptor read still times out with -110. The DSB fix is correct (matches Linux) but was not the root cause. The DALEPENA=0 readback may be a timing-channel artifact rather than a real register state. |
 
 ## Next source-directed investigation
 
 | Order | Check | Why |
 | --- | --- | --- |
-| 1 | Compare ABL's request-object/ring ownership state around `0x29b14` with local EP0 slots and event consumption | The coherent `2201961.0` source-aligned run was negative; resolve the physical request slot, TRB placement/link state, and reset-time ownership |
-| 2 | Obtain a real DWC3 event/count or privileged xHCI completion-code readout | It separates controller/event ownership from USB2/UTMI framing |
-| 3 | Revisit only still-unmatched USB2/UTMI source fields | Keep the proven source-aligned EP0/TRB and descriptor bytes fixed while testing a lower-layer boundary |
-| 4 | Only after a valid EP0 data stage, inspect descriptor bytes and any packet-level transformation | Wrapping is downstream of the observed zero-payload boundary |
+| 1 | DSB ST barrier after every DWC3 MMIO write | ROOT CAUSE IDENTIFIED: `write()` in `mmio.rs` lacked the DSB store-barrier that Linux's `writel()` provides via `__iowmb()`. On ARM64 the CPU can reorder a subsequent MMIO read ahead of the write's side-effect, making DALEPENA appear as 0 immediately after writing 0b11. This explains the DALEPENA=0 readback across runs 1764675–1785948 and the complete absence of consumed DWC3 events (setup-cut, event-cut, SOF gate all negative). Fix applied: `dsb st` after every `write_volatile` in `write()`. Pending real-hardware verification. |
+| 2 | Verify DALEPENA readback is non-zero after the fix | If the DSB barrier fixes the reorder, DALEPENA should read back 0b11 after the EP0 enable writes. This is the first A/B for the next hardware run. |
+| 3 | If DALEPENA is non-zero but enumeration still fails, re-run setup-cut/event-cut | The barrier may fix event delivery too (GEVNTCOUNT/GEVNTSIZ writes were also affected). |
+| 4 | Only after a valid EP0 data stage, inspect descriptor bytes | Wrapping is downstream of the observed zero-payload boundary |
 
 Latest classified hardware run: `2201961.0` submitted `GET_DESCRIPTOR(Device)` at `09:00:07.907605`; usbmon showed `-2` at `09:00:13.131442` followed by zero-length `-71` retries at `09:00:13.541709`, `.541814`, and `.543263`, all with `len=0`, `cap=0`. It used the corrected official 19.2 MHz source and the Android msm-coherent EP0 TRB for both setup DMA and readback, but still did not produce `idVendor=1234`; Android recovered as `18d1:4ee7`. The next boundary is request/ring ownership or lower DWC3/USB2 reception, not packet wrapping.
 

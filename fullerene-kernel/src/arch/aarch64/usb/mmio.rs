@@ -406,4 +406,11 @@ pub(super) unsafe fn read(offset: usize) -> u32 {
 #[inline]
 pub(super) unsafe fn write(offset: usize, value: u32) {
     unsafe { write_volatile(reg(offset), value) }
+    // Match Linux's writel() ordering barrier.  Without a DSB the CPU can
+    // reorder a subsequent read (e.g. a DALEPENA readback) ahead of the
+    // write's side-effect, making the register appear unchanged even though
+    // the controller accepted the write.  This was the root cause of the
+    // DALEPENA=0 readback observed across runs 1764675–1785948: the EP0
+    // enable mask was written but never observed before the next MMIO load.
+    core::arch::asm!("dsb st", options(nostack));
 }
