@@ -184,6 +184,9 @@ struct LoopArgs {
     /// Change only DCTL.RUN_STOP at the final XBL handoff boundary (A/B).
     #[arg(long)]
     xbl_raw_runstop: bool,
+    /// Apply only the source-exact DCTL Run/Stop bit change on the SS path.
+    #[arg(long)]
+    source_exact_runstop: bool,
     /// Use Bramble's DT HIRD threshold (0x10) instead of XBL's observed 7.
     #[arg(long)]
     dt_hird_threshold: bool,
@@ -235,6 +238,34 @@ struct LoopArgs {
     /// Keep DCFG at the Bramble maximum-speed SuperSpeed state at Run/Stop.
     #[arg(long)]
     dcfg_superspeed: bool,
+    /// Re-assert DWC3 GCTL device mode immediately before SS Run/Stop.
+    #[arg(long)]
+    ss_reassert_device_mode: bool,
+    /// Re-assert the USB30 GDSC and DWC3 controller clocks after QMP init.
+    #[arg(long)]
+    ss_reassert_core_clocks: bool,
+    /// Re-assert the USB30 GDSC and DWC3 controller clocks immediately after
+    /// the SuperSpeed Run/Stop transition (A/B).
+    #[arg(long)]
+    ss_reassert_core_clocks_after_runstop: bool,
+    /// Re-send Android-style USB domain votes/rails, then re-assert the USB30
+    /// controller domain immediately after Run/Stop (A/B).
+    #[arg(long)]
+    ss_reassert_domain_after_runstop: bool,
+    /// Replay Qualcomm msm's link-clock stop/core-reset/release sequence
+    /// immediately after SS Run/Stop (A/B).
+    #[arg(long)]
+    ss_reassert_link_clocks_after_runstop: bool,
+    /// Replay Android msm's DBM soft-reset/enable sequence before SS
+    /// endpoint publication (the `core_reset = false` block-reset path).
+    #[arg(long)]
+    ss_android_dbm_reset: bool,
+    /// Re-assert QMP common/PCS power-up after QMP init (A/B).
+    #[arg(long)]
+    ss_reassert_qmp_power: bool,
+    /// Re-assert QMP aux/pipe/com_aux clock branches after QMP init (A/B).
+    #[arg(long)]
+    ss_reassert_qmp_clocks: bool,
     /// Set DCFG.IGNSTRMPP in the direct gadget-start sequence (A/B).
     #[arg(long)]
     dcfg_ignstrmpp: bool,
@@ -477,6 +508,7 @@ impl Default for LoopArgs {
             xbl_post_endpoint_global: false,
             xbl_stock_ep0_dma: false,
             xbl_raw_runstop: false,
+            source_exact_runstop: false,
             dt_hird_threshold: false,
             android_hs_lpm: false,
             abl_shared_hs_phy: false,
@@ -493,6 +525,14 @@ impl Default for LoopArgs {
             gadget_restart_at_runstop: false,
             ep0_initial_512: false,
             dcfg_superspeed: false,
+            ss_reassert_device_mode: false,
+            ss_reassert_core_clocks: false,
+            ss_reassert_core_clocks_after_runstop: false,
+            ss_reassert_domain_after_runstop: false,
+            ss_reassert_link_clocks_after_runstop: false,
+            ss_android_dbm_reset: false,
+            ss_reassert_qmp_power: false,
+            ss_reassert_qmp_clocks: false,
             dcfg_ignstrmpp: false,
             usb2_susphy: false,
             ep0_stall_flush: false,
@@ -957,6 +997,60 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--xbl-raw-runstop requires --direct-handoff",
         ));
     }
+    if args.source_exact_runstop && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--source-exact-runstop requires --super-speed",
+        ));
+    }
+    if args.ss_reassert_device_mode && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-device-mode requires --super-speed",
+        ));
+    }
+    if args.ss_reassert_core_clocks && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-core-clocks requires --super-speed",
+        ));
+    }
+    if args.ss_reassert_core_clocks_after_runstop && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-core-clocks-after-runstop requires --super-speed",
+        ));
+    }
+    if args.ss_reassert_domain_after_runstop && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-domain-after-runstop requires --super-speed",
+        ));
+    }
+    if args.ss_reassert_link_clocks_after_runstop && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-link-clocks-after-runstop requires --super-speed",
+        ));
+    }
+    if args.ss_android_dbm_reset && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-android-dbm-reset requires --super-speed",
+        ));
+    }
+    if args.ss_reassert_qmp_power && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-qmp-power requires --super-speed",
+        ));
+    }
+    if args.ss_reassert_qmp_clocks && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-qmp-clocks requires --super-speed",
+        ));
+    }
     if args.dt_hird_threshold && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1053,10 +1147,10 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--event-ring-at-runstop requires --direct-handoff",
         ));
     }
-    if args.gadget_restart_at_runstop && !args.direct_handoff {
+    if args.gadget_restart_at_runstop && !args.direct_handoff && !args.super_speed {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--gadget-restart-at-runstop requires --direct-handoff",
+            "--gadget-restart-at-runstop requires --direct-handoff or --super-speed",
         ));
     }
     if args.ep0_initial_512 && !args.direct_handoff {
@@ -1869,6 +1963,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.xbl_raw_runstop {
         arguments.push("--usb-gadget-handoff-xbl-raw-runstop".to_owned());
     }
+    if args.source_exact_runstop {
+        arguments.push("--usb-gadget-handoff-source-exact-runstop".to_owned());
+    }
     if args.dt_hird_threshold {
         arguments.push("--usb-gadget-handoff-dt-hird-threshold".to_owned());
     }
@@ -1916,6 +2013,34 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.dcfg_superspeed {
         arguments.push("--usb-gadget-handoff-dcfg-superspeed".to_owned());
+    }
+    if args.ss_reassert_device_mode {
+        arguments.push("--usb-gadget-handoff-ss-reassert-device-mode".to_owned());
+    }
+    if args.ss_reassert_core_clocks {
+        arguments.push("--usb-gadget-handoff-ss-reassert-core-clocks".to_owned());
+    }
+    if args.ss_reassert_core_clocks_after_runstop {
+        arguments.push(
+            "--usb-gadget-handoff-ss-reassert-core-clocks-after-runstop".to_owned(),
+        );
+    }
+    if args.ss_reassert_domain_after_runstop {
+        arguments.push("--usb-gadget-handoff-ss-reassert-domain-after-runstop".to_owned());
+    }
+    if args.ss_reassert_link_clocks_after_runstop {
+        arguments.push(
+            "--usb-gadget-handoff-ss-reassert-link-clocks-after-runstop".to_owned(),
+        );
+    }
+    if args.ss_android_dbm_reset {
+        arguments.push("--usb-gadget-handoff-ss-android-dbm-reset".to_owned());
+    }
+    if args.ss_reassert_qmp_power {
+        arguments.push("--usb-gadget-handoff-ss-reassert-qmp-power".to_owned());
+    }
+    if args.ss_reassert_qmp_clocks {
+        arguments.push("--usb-gadget-handoff-ss-reassert-qmp-clocks".to_owned());
     }
     if args.dcfg_ignstrmpp {
         arguments.push("--usb-gadget-handoff-dcfg-ignstrmpp".to_owned());

@@ -238,7 +238,19 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
         }
 
         let mut dctl = read(DCTL);
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop) {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_source_exact_runstop) {
+            // Android msm's gadget_run_stop() re-reads DCTL after gadget
+            // start and applies the source-required Run/Stop bit without
+            // rewriting HIRD/APPL1RES/KEEP_CONNECT. Keep this A/B narrow so
+            // the immediate readback can distinguish a rejected bit write
+            // from a local policy rewrite.
+            if is_on {
+                dctl |= DCTL_RUN_STOP;
+            } else {
+                dctl &= !DCTL_RUN_STOP;
+            }
+            write(DCTL, dctl);
+        } else if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop) {
             // Stock XBL's DwcRunStop only changes DCTL.RUN_STOP. Its core-init
             // sequence has already installed HIRD=7/APPL1RES, and it
             // preserves KEEP_CONNECT/TRGTULST instead of applying Linux's
@@ -304,7 +316,14 @@ pub(super) unsafe fn run_stop_device_no_readback(is_on: bool) -> bool {
         }
 
         let mut dctl = read(DCTL);
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop) {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_source_exact_runstop) {
+            if is_on {
+                dctl |= DCTL_RUN_STOP;
+            } else {
+                dctl &= !DCTL_RUN_STOP;
+            }
+            write(DCTL, dctl);
+        } else if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop) {
             // Keep the gate-run helper identical to the ordinary XBL raw
             // Run/Stop differential. Signal-gated runs use this no-readback
             // path, so falling through to run_stop_value() would silently

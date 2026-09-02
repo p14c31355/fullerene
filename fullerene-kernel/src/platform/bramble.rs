@@ -3,10 +3,13 @@ pub mod usb_clock;
 pub mod usb_reset;
 
 pub use usb_clock::{
-    android_controller_block_reset, configure_usb_clocks, disable_usb_clock_branches,
-    enable_usb_clock_branches, enable_usb2_utmi_clock, enable_usb_qmp_clock_branches,
-    rearm_usb2_android_clock_branches,
+    android_dbm_reset_and_enable, configure_usb_clocks, configure_usb_controller_clocks,
+    disable_usb_clock_branches, enable_usb_clock_branches, enable_usb2_utmi_clock,
+    enable_usb_qmp_clock_branches, rearm_usb2_android_clock_branches,
+    rearm_usb_controller_clock_branches,
 };
+#[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_link_clocks_after_runstop)]
+pub use usb_clock::android_controller_block_reset;
 pub use usb_reset::{pulse_usb2_phy_reset, reset_qmp_phy_blocks, reset_usb_blocks};
 ///
 /// The DTB remains authoritative at boot. These constants document the
@@ -963,7 +966,7 @@ const BRAMBLE_HS_PHY_CLOCK: ClockResource = ClockResource {
 // Android msm-ssusb-qmp driver. Slot 6 is intentionally 0xffff because the
 // combo-PHY does not expose the USB-only PCS_MISC_TYPEC_CTRL register.
 const BRAMBLE_QMP_REG_OFFSETS: [usize; 18] = [
-    0x1c14, 0x1f08, 0x1f14, 0x1c40, 0x1c00, 0x1c44, 0xffff, 0x2a18, 0x0000, 0x0004, 0x001c, 0x0000,
+    0x1c14, 0x1f08, 0x1f14, 0x1c40, 0x1c00, 0x1c44, 0xffff, 0x2a18, 0x0008, 0x0004, 0x001c, 0x0000,
     0x0010, 0x000c, 0x1c8c, 0x1c18, 0x1c50, 0x1c70,
 ];
 
@@ -3311,6 +3314,7 @@ mod tests {
         assert_eq!(resources.qmp_reg_offsets[0], 0x1c14);
         assert_eq!(resources.qmp_reg_offsets[1], 0x1f08);
         assert_eq!(resources.qmp_reg_offsets[2], 0x1f14);
+        assert_eq!(resources.qmp_reg_offsets[8], 0x0008);
         assert_eq!(resources.qmp_reg_offsets[14], 0x1c8c);
         assert_eq!(resources.qmp_reg_offsets[15], 0x1c18);
         assert_eq!(resources.apps_smmu_base, 0x1500_0000);

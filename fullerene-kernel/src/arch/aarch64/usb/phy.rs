@@ -66,6 +66,39 @@ pub(super) unsafe fn qmp_post_runstop_snapshot() -> u32 {
     (status & 0xffff) | ((start & 0xff) << 16) | ((lane & 0xff) << 24)
 }
 
+/// Pack the QMP common/PCS power-control readbacks separately from the
+/// existing status/start/lane snapshot. The Android driver writes `1` to both
+/// controls to power the PHY up; retaining these bits distinguishes a live
+/// register window from a PHY that has silently returned to power-down.
+pub(super) unsafe fn qmp_power_snapshot() -> u32 {
+    let com_power_down = qmp_contract_offset(8, QMP_COM_POWER_DOWN_CTRL);
+    let pcs_power_down = qmp_contract_offset(3, QMP_PCS_POWER_DOWN_CONTROL);
+    let com = read_volatile(qmp_reg(com_power_down));
+    let pcs = read_volatile(qmp_reg(pcs_power_down));
+    (com & 1) | ((pcs & 1) << 1)
+}
+
+/// Read the QMP PCS_STATUS2 link-training indicator without changing PHY
+/// state. On the Bramble/Lito combo PHY, bit 3 is
+/// `RX_EQUALIZATION_IN_PROGRESS`, the same status that Android's optional
+/// link-training-reset workaround polls before toggling INSIG controls.
+pub(super) unsafe fn qmp_status2_snapshot() -> u32 {
+    let status2 = qmp_contract_offset(15, QMP_PCS_STATUS2);
+    read_volatile(qmp_reg(status2))
+}
+
+/// Re-assert the Android QMP power-up writes without resetting the PHY or
+/// replaying its initialization table. This is an isolated ownership/power
+/// A/B for a no-core handoff where the controls read back as zero.
+pub(super) unsafe fn qmp_reassert_power() -> u32 {
+    let com_power_down = qmp_contract_offset(8, QMP_COM_POWER_DOWN_CTRL);
+    let pcs_power_down = qmp_contract_offset(3, QMP_PCS_POWER_DOWN_CONTROL);
+    write_volatile(qmp_reg(com_power_down), 0x01);
+    write_volatile(qmp_reg(pcs_power_down), 0x01);
+    qmp_mb();
+    qmp_power_snapshot()
+}
+
 pub(super) unsafe fn init_qmp_phy() -> bool {
     // Keep the failure boundary in retained trace as well as UART. A Bramble
     // watchdog can reset the phone before the Fullerene log is readable, and

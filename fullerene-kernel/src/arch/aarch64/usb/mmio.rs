@@ -152,6 +152,9 @@ pub(crate) const GHWPARAMS1: usize = 0xc144;
 pub(crate) const GHWPARAMS3: usize = 0xc14c;
 pub(crate) const GHWPARAMS7: usize = 0xc15c;
 pub(crate) const GDBGLTSSM: usize = 0xc164;
+// DWC_usb31 uses a separate link-debug block.  msm-4.19 core.h selects this
+// offset whenever GSNPSID identifies the 0x3331/0x3332 IP.
+pub(crate) const DWC31_LINK_GDBGLTSSM: usize = 0xd050;
 pub(crate) const VER_NUMBER: usize = 0xc1a0;
 pub(crate) const VER_TYPE: usize = 0xc1a4;
 pub(crate) const GFLADJ: usize = 0xc630;
@@ -306,6 +309,7 @@ pub(crate) const QMP_COM_POWER_DOWN_CTRL: usize = 0x0008;
 pub(crate) const QMP_COM_TYPEC_CTRL: usize = 0x0010;
 pub(crate) const QMP_COM_RESET_OVRD_CTRL: usize = 0x001c;
 pub(crate) const QMP_PCS_STATUS1: usize = 0x1c14;
+pub(crate) const QMP_PCS_STATUS2: usize = 0x1c18;
 pub(crate) const QMP_PCS_AUTONOMOUS_MODE_CTRL: usize = 0x1f08;
 pub(crate) const QMP_PCS_LFPS_RXTERM_IRQ_CLEAR: usize = 0x1f14;
 pub(crate) const QMP_PCS_CLAMP_ENABLE: usize = 0x1c8c;

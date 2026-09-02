@@ -449,6 +449,32 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("ss-gctl") => Some("ss-gctl"),
         Some("ss-qmp") => Some("ss-qmp"),
         Some("ss-vbus") => Some("ss-vbus"),
+        Some("ss-dctl") => Some("ss-dctl"),
+        Some("ss-domain") => Some("ss-domain"),
+        Some("ss-domain-core") => Some("ss-domain-core"),
+        Some("ss-domain-gdsc") => Some("ss-domain-gdsc"),
+        Some("ss-domain-core-branch") => Some("ss-domain-core-branch"),
+        Some("ss-domain-utmi-branch") => Some("ss-domain-utmi-branch"),
+        Some("ss-gctl-device") => Some("ss-gctl-device"),
+        Some("ss-qmp-phystatus") => Some("ss-qmp-phystatus"),
+        Some("ss-qmp-start0") => Some("ss-qmp-start0"),
+        Some("ss-qmp-start1") => Some("ss-qmp-start1"),
+        Some("ss-qmp-typec0") => Some("ss-qmp-typec0"),
+        Some("ss-qmp-rxeq") => Some("ss-qmp-rxeq"),
+        Some("ss-qmp-com-power") => Some("ss-qmp-com-power"),
+        Some("ss-qmp-pcs-power") => Some("ss-qmp-pcs-power"),
+        Some("ss-qmp-aux-branch") => Some("ss-qmp-aux-branch"),
+        Some("ss-qmp-pipe-branch") => Some("ss-qmp-pipe-branch"),
+        Some("ss-qmp-com-aux-branch") => Some("ss-qmp-com-aux-branch"),
+        Some("ss-qscratch-utmi-sel") => Some("ss-qscratch-utmi-sel"),
+        Some("ss-qscratch-phystatus-sw") => Some("ss-qscratch-phystatus-sw"),
+        Some("ss-qscratch-utmi-dis") => Some("ss-qscratch-utmi-dis"),
+        Some("ss-ltssm") => Some("ss-ltssm"),
+        Some("ss-ltssm-bit0") => Some("ss-ltssm-bit0"),
+        Some("ss-ltssm-bit1") => Some("ss-ltssm-bit1"),
+        Some("ss-ltssm-bit1-wide") => Some("ss-ltssm-bit1-wide"),
+        Some("ss-ltssm-bit2") => Some("ss-ltssm-bit2"),
+        Some("ss-ltssm-bit3") => Some("ss-ltssm-bit3"),
         _ => None,
     }
 }
@@ -1605,9 +1631,7 @@ extern "C" fn usb_probe_entry() -> ! {
         // Fastboot-owned SS state that stage 21 is meant to measure. Keep the
         // already-proven stage path intact and use the gate only after its
         // post-Run/Stop snapshot has been captured.
-        if ss_snapshot_gate_active() {
-            // No pre-handoff writes for ss-* readouts.
-        } else {
+        if !ss_snapshot_gate_active() {
         // The fastboot handoff leaves the USB30 core domain collapsed: the
         // physical attach is carried by the QSCRATCH/PHY session alone while
         // every DWC3 core register reads dead (the long-standing "endpoint

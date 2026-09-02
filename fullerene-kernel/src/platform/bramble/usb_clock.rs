@@ -132,6 +132,9 @@ pub struct UsbClockRegisterState {
     /// Branch status words in the six-clock DT order:
     /// core, iface, bus_aggr, utmi, sleep, xo.
     pub controller_branches: [u32; 6],
+    /// QMP PHY branch status words in DT order: aux, pipe, ref, com_aux.
+    /// The RPMh ref entry has no GCC branch and is reported as zero.
+    pub qmp_branches: [u32; 4],
 }
 
 #[inline]
@@ -178,6 +181,37 @@ pub unsafe fn configure_usb_clocks(vote: UsbBusVote) -> bool {
     if !plan.branches_enabled {
         return true;
     }
+    if !unsafe { configure_usb_controller_clocks(vote) } {
+        return false;
+    }
+    unsafe {
+        let resources = usb_resources();
+        // The QMP AUX and COM_AUX branches share the 19.2 MHz
+        // gcc_usb3_prim_phy_aux_clk_src.  It is a separate RCG from the
+        // DWC3 core/UTMI sources and must be selected before the PHY reset is
+        // released on a cold platform start.
+        if let Some(aux) = resources
+            .qmp_clocks
+            .iter()
+            .find(|clock| clock.name == "aux")
+        {
+            if aux.source_offset == 0 || !configure_rcg(aux.source_offset, 0, 1) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Select only the DWC3 controller clock sources, leaving the already-live
+/// QMP AUX source untouched.  This is used by the no-core SuperSpeed handoff
+/// differential after QMP init: it tests whether the DWC3 MMIO domain was
+/// left behind by Fastboot without rewriting a running PHY clock.
+pub unsafe fn configure_usb_controller_clocks(vote: UsbBusVote) -> bool {
+    let plan = usb_clock_plan(vote);
+    if !plan.branches_enabled {
+        return true;
+    }
     unsafe {
         let resources = usb_resources();
         let core = resources.controller_clocks[0];
@@ -193,19 +227,6 @@ pub unsafe fn configure_usb_clocks(vote: UsbBusVote) -> bool {
             || !configure_rcg(utmi.source_offset, plan.utmi_parent, plan.utmi_divider)
         {
             return false;
-        }
-        // The QMP AUX and COM_AUX branches share the 19.2 MHz
-        // gcc_usb3_prim_phy_aux_clk_src.  It is a separate RCG from the
-        // DWC3 core/UTMI sources and must be selected before the PHY reset is
-        // released on a cold platform start.
-        if let Some(aux) = resources
-            .qmp_clocks
-            .iter()
-            .find(|clock| clock.name == "aux")
-        {
-            if aux.source_offset == 0 || !configure_rcg(aux.source_offset, 0, 1) {
-                return false;
-            }
         }
         true
     }
@@ -235,10 +256,19 @@ pub unsafe fn read_usb_clock_register_state() -> UsbClockRegisterState {
                 (resources.gcc_base + clock.branch_offset) as *const u32,
             );
         }
+        let mut qmp_branches = [0; 4];
+        for (index, clock) in resources.qmp_clocks.iter().enumerate() {
+            if clock.provider == ClockProvider::Gcc && clock.branch_offset != 0 {
+                qmp_branches[index] = core::ptr::read_volatile(
+                    (resources.gcc_base + clock.branch_offset) as *const u32,
+                );
+            }
+        }
         UsbClockRegisterState {
             core_source_config: source_config(core),
             utmi_source_config: source_config(utmi),
             controller_branches,
+            qmp_branches,
         }
     }
 }
@@ -288,6 +318,35 @@ pub unsafe fn rearm_usb2_android_clock_branches() -> bool {
         let resources = usb_resources();
         let mut ok = true;
         for name in ["iface", "core", "sleep"] {
+            let Some(clock) = resources
+                .controller_clocks
+                .iter()
+                .find(|clock| clock.name == name)
+            else {
+                return false;
+            };
+            if clock.provider != ClockProvider::Gcc {
+                return false;
+            }
+            let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
+            let value = core::ptr::read_volatile(address) | 1;
+            core::ptr::write_volatile(address, value);
+            ok &= wait_for_branch_state(address, true);
+        }
+        ok
+    }
+}
+
+/// Re-enable all DWC3 controller branches without touching the QMP PHY
+/// branches.  The order follows the six controller clocks in the Bramble DT,
+/// minus the shared XO clock.  This is intentionally separate from the USB2
+/// resume helper: the SuperSpeed no-core A/B must include `bus_aggr` and must
+/// be able to restore the controller domain while leaving QMP state intact.
+pub unsafe fn rearm_usb_controller_clock_branches() -> bool {
+    unsafe {
+        let resources = usb_resources();
+        let mut ok = true;
+        for name in ["core", "iface", "bus_aggr", "utmi", "sleep"] {
             let Some(clock) = resources
                 .controller_clocks
                 .iter()
@@ -360,5 +419,53 @@ pub unsafe fn android_controller_block_reset() -> bool {
         }
         crate::timer::delay_us(10_000);
         ok
+    }
+}
+
+/// Mirror the `core_reset = false` part of Android msm's
+/// `dwc3_msm_block_reset()`: reset the DBM, enable its two FIFO-address/size
+/// masks, and set QSCRATCH `DBM_EN`. This is separate from the GCC link-clock
+/// reset above; the Bramble DT does not describe a DBM node because Android
+/// derives the DBM base from the Qualcomm wrapper/DWC3 resource base
+/// (`+ 0xf8000`). QSCRATCH is a different window at wrapper `+ 0xf8800`, so
+/// it must not be used as the DBM base.
+pub unsafe fn android_dbm_reset_and_enable() -> bool {
+    unsafe {
+        const DBM_BASE_OFFSET: usize = 0xf8000;
+        const DBM_DATA_FIFO_ADDR_EN: usize = 0x0200;
+        const DBM_SOFT_RESET: usize = 0x020c;
+        const DBM_DATA_FIFO_SIZE_EN: usize = 0x0204;
+        const DBM_SFT_RST_MASK: u32 = 1 << 31;
+        const DBM_ENABLE: u32 = 1 << 1;
+
+        let resources = usb_resources();
+        let qscratch_base = resources.qscratch_base;
+        let Some(dbm_base) = resources.dwc3_base.checked_add(DBM_BASE_OFFSET) else {
+            return false;
+        };
+        let reset_address = (dbm_base + DBM_SOFT_RESET) as *mut u32;
+        let saved = core::ptr::read_volatile(reset_address);
+        if saved == u32::MAX {
+            return false;
+        }
+        core::ptr::write_volatile(reset_address, saved | DBM_SFT_RST_MASK);
+        // The Android driver does not gate the sequence on DBM reset
+        // readback; keep the read as an ordering/readout point only.
+        let _ = core::ptr::read_volatile(reset_address);
+        crate::timer::delay_us(1_000);
+        let released = core::ptr::read_volatile(reset_address) & !DBM_SFT_RST_MASK;
+        core::ptr::write_volatile(reset_address, released);
+        let _ = core::ptr::read_volatile(reset_address);
+
+        let general_address = (qscratch_base + 0x08) as *mut u32;
+        let general = core::ptr::read_volatile(general_address) | DBM_ENABLE;
+        core::ptr::write_volatile(general_address, general);
+        // Match dwc3_msm_write_reg_field(): the readback confirms ordering,
+        // but a write-only/masked status bit must not abort the source path.
+        let _ = core::ptr::read_volatile(general_address);
+        core::ptr::write_volatile((dbm_base + DBM_DATA_FIFO_ADDR_EN) as *mut u32, 0xff);
+        core::ptr::write_volatile((dbm_base + DBM_DATA_FIFO_SIZE_EN) as *mut u32, 0xff);
+        let _ = core::ptr::read_volatile((dbm_base + DBM_DATA_FIFO_SIZE_EN) as *const u32);
+        true
     }
 }

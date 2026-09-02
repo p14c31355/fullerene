@@ -67,6 +67,17 @@ use super::{
     usb_regs::*,
 };
 
+/// Return whether a GSNPSID read has a known Synopsys USB core IP prefix.
+///
+/// DWC_usb3 uses the 0x5532/0x5533 prefixes, while Bramble's DWC_usb31
+/// reports 0x3331 (and DWC_usb32 reports 0x3332).  Keep this predicate in one
+/// place: treating a USB31 read as unknown makes read-only domain probes look
+/// like a post-Run/Stop core failure even when the MMIO read is valid.
+#[inline]
+fn known_dwc_core_ip(snpsid: u32) -> bool {
+    matches!(snpsid >> 16, 0x5532 | DWC3_IP | DWC31_IP | DWC32_IP)
+}
+
 unsafe extern "C" {
     static __usb_dma_start: u8;
     static __usb_dma_end: u8;
@@ -481,17 +492,35 @@ static mut TYPEC_LANE_B: bool = false;
 /// USB2 handoff deliberately keeps this false: the USB2 path must not touch
 /// SuperSpeed-only autonomous-mode registers owned by the bootloader.
 static mut QMP_PHY_READY: bool = false;
-// Snapshot captured at the minimal post-QMP SS Run/Stop boundary. The
-// standalone probe cannot rely on UART or warm-reset DRAM after recovery, so
-// the signal gate reads this same-boot copy instead of sampling a later state
-// that the host may already have changed.
+// Snapshot captured at an explicitly selected SS boundary. Stage 20 captures
+// the pre-production Run/Stop state; stage 21 captures the immediate
+// post-Run/Stop state. The standalone probe cannot rely on UART or warm-reset
+// DRAM after recovery, so the signal gate reads this same-boot copy instead of
+// sampling a later state that the host may already have changed.
 static mut SS_STATE_SNAPSHOT_VALID: bool = false;
 static mut SS_STATE_SNAPSHOT_DSTS: u32 = 0xffff_ffff;
 static mut SS_STATE_SNAPSHOT_DCTL: u32 = 0xffff_ffff;
 static mut SS_STATE_SNAPSHOT_PIPE: u32 = 0xffff_ffff;
 static mut SS_STATE_SNAPSHOT_GCTL: u32 = 0xffff_ffff;
 static mut SS_STATE_SNAPSHOT_QSCRATCH: u32 = 0xffff_ffff;
+static mut SS_STATE_SNAPSHOT_QSCRATCH_GENERAL: u32 = 0xffff_ffff;
 static mut SS_STATE_SNAPSHOT_QMP: u32 = 0xffff_ffff;
+static mut SS_STATE_SNAPSHOT_QMP_STATUS2: u32 = 0xffff_ffff;
+static mut SS_STATE_SNAPSHOT_QMP_POWER: u32 = 0xffff_ffff;
+static mut SS_STATE_SNAPSHOT_QMP_BRANCHES: [u32; 4] = [0xffff_ffff; 4];
+static mut SS_STATE_SNAPSHOT_LTSSM: u32 = 0xffff_ffff;
+// Controller-domain snapshot bits: bit 0 = DWC3 GSNPSID responds with a
+// known revision, bit 1 = USB30 GDSC PWR_ON, bit 2 = GCC core branch is on,
+// bit 3 = GCC mock-UTMI branch is on.  The source/config words are retained
+// in the trace records emitted by capture_ss_state_snapshot().
+static mut SS_STATE_SNAPSHOT_DOMAIN: u32 = 0;
+// Same-boot Run/Stop differential: bit 0 is the DCTL.RUN_STOP state just
+// before the production write, bit 1 is the immediate post-write state, bit
+// 2 is the later stage-21 snapshot, and bit 3 is the stage-21 DSTS halt bit.
+// 0xffff_ffff means the production transition was not instrumented.
+static mut SS_RUNSTOP_PRE_DCTL: u32 = 0xffff_ffff;
+static mut SS_RUNSTOP_POST_DCTL: u32 = 0xffff_ffff;
+static mut SS_RUNSTOP_POST_DSTS: u32 = 0xffff_ffff;
 static mut TYPEC_STATE_VALID: bool = false;
 static mut TYPEC_STATE: super::platform::bramble::TypecState =
     super::platform::bramble::TypecState {
@@ -1009,8 +1038,8 @@ pub fn diag_readout_code() -> u32 {
     }
 }
 
-/// Return a host-readable nibble from the newest retained UTMI snapshot.
-/// The probe uses this only for a reset-delay diagnostic; it does not alter
+/// Return a host-readable nibble from the newest retained SS snapshot.
+/// The probe uses this only for a timing-channel diagnostic; it does not alter
 /// the USB controller or clock state.
 unsafe fn capture_ss_state_snapshot() {
     unsafe {
@@ -1019,7 +1048,73 @@ unsafe fn capture_ss_state_snapshot() {
         SS_STATE_SNAPSHOT_PIPE = read(GUSB3PIPECTL0);
         SS_STATE_SNAPSHOT_GCTL = read(GCTL);
         SS_STATE_SNAPSHOT_QSCRATCH = read_qscratch(QSCRATCH_SS_PHY_CTRL);
+        SS_STATE_SNAPSHOT_QSCRATCH_GENERAL = read_qscratch(QSCRATCH_GENERAL_CFG);
         SS_STATE_SNAPSHOT_QMP = phy::qmp_post_runstop_snapshot();
+        SS_STATE_SNAPSHOT_QMP_STATUS2 = phy::qmp_status2_snapshot();
+        SS_STATE_SNAPSHOT_QMP_POWER = phy::qmp_power_snapshot();
+        let clocks = super::platform::bramble::usb_clock::read_usb_clock_register_state();
+        SS_STATE_SNAPSHOT_QMP_BRANCHES = clocks.qmp_branches;
+        let gdsc = core::ptr::read_volatile(
+            super::platform::bramble::usb_resources().gdsc as *const u32,
+        );
+        let snpsid = read(GSNPSID);
+        let ltssm_reg = if matches!(snpsid >> 16, DWC31_IP | DWC32_IP) {
+            DWC31_LINK_GDBGLTSSM
+        } else {
+            GDBGLTSSM
+        };
+        SS_STATE_SNAPSHOT_LTSSM = (read(ltssm_reg) >> 22) & 0xf;
+        let domain = u32::from(known_dwc_core_ip(snpsid))
+            | (u32::from(gdsc & (1 << 31) != 0) << 1)
+            | (u32::from(
+                clocks.controller_branches[0] & 1 != 0
+                    && clocks.controller_branches[0] & (1 << 31) == 0,
+            ) << 2)
+            | (u32::from(
+                clocks.controller_branches[3] & 1 != 0
+                    && clocks.controller_branches[3] & (1 << 31) == 0,
+            ) << 3);
+        SS_STATE_SNAPSHOT_DOMAIN = domain;
+        trace_event(
+            TRACE_UTMI_STATE,
+            0x0300_0000 | domain,
+            snpsid,
+            gdsc,
+            clocks.core_source_config,
+            clocks.utmi_source_config,
+        );
+        trace_event(
+            TRACE_UTMI_STATE,
+            0x0400_0000 | domain,
+            clocks.controller_branches[0],
+            clocks.controller_branches[3],
+            clocks.controller_branches[1],
+            clocks.controller_branches[2],
+        );
+        trace_event(
+            TRACE_UTMI_STATE,
+            0x0500_0000 | domain,
+            clocks.controller_branches[4],
+            clocks.controller_branches[5],
+            0,
+            0,
+        );
+        trace_event(
+            TRACE_UTMI_STATE,
+            0x0600_0000 | domain,
+            clocks.qmp_branches[0],
+            clocks.qmp_branches[1],
+            clocks.qmp_branches[3],
+            0,
+        );
+        trace_event(
+            TRACE_UTMI_STATE,
+            0x0700_0000 | domain,
+            SS_STATE_SNAPSHOT_QSCRATCH_GENERAL,
+            SS_STATE_SNAPSHOT_QSCRATCH,
+            SS_STATE_SNAPSHOT_QMP_POWER,
+            SS_STATE_SNAPSHOT_LTSSM,
+        );
         SS_STATE_SNAPSHOT_VALID = true;
     }
 }
@@ -1028,9 +1123,62 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
     if selector == "protocol" {
         return protocol_readout_code();
     }
+    if selector.starts_with("ss-") {
+        // A failed handoff can enter the generic signal path and publish the
+        // same USB2 marker without ever reaching stage 13/21. Reserve 15 for
+        // that case so a missing SS snapshot cannot masquerade as a valid
+        // zero-valued register field.
+        unsafe {
+            if !SS_STATE_SNAPSHOT_VALID {
+                return if selector == "ss-domain" {
+                    31
+                } else if selector.starts_with("ss-domain-") {
+                    2
+                } else if selector.starts_with("ss-gctl-") {
+                    2
+                } else if selector.starts_with("ss-qmp-") {
+                    2
+                } else if selector.starts_with("ss-qscratch-") {
+                    2
+                } else if selector == "ss-ltssm" {
+                    16
+                } else if selector.starts_with("ss-ltssm-bit") {
+                    2
+                } else {
+                    15
+                };
+            }
+        }
+    }
     if matches!(
         selector,
         "ss-speed" | "ss-link" | "ss-pipe" | "ss-gctl" | "ss-qmp" | "ss-vbus"
+            | "ss-dctl"
+            | "ss-domain"
+            | "ss-domain-core"
+            | "ss-domain-gdsc"
+            | "ss-domain-core-branch"
+            | "ss-domain-utmi-branch"
+            | "ss-gctl-device"
+            | "ss-qmp-phystatus"
+            | "ss-qmp-start0"
+            | "ss-qmp-start1"
+            | "ss-qmp-typec0"
+            | "ss-qmp-rxeq"
+            | "ss-qmp-com-power"
+            | "ss-qmp-pcs-power"
+            | "ss-qmp-aux-branch"
+            | "ss-qmp-pipe-branch"
+            | "ss-qmp-com-aux-branch"
+            | "ss-qscratch-utmi-sel"
+            | "ss-qscratch-phystatus-sw"
+            | "ss-qscratch-utmi-dis"
+            | "ss-ltssm"
+            | "ss-ltssm-bit0"
+            | "ss-ltssm-bit1"
+            | "ss-ltssm-bit1-wide"
+            | "ss-ltssm-bit2"
+            | "ss-ltssm-bit3"
     ) {
         unsafe {
             let dsts = if SS_STATE_SNAPSHOT_VALID {
@@ -1058,10 +1206,20 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
             } else {
                 read_qscratch(QSCRATCH_SS_PHY_CTRL)
             };
+            let qscratch_general = if SS_STATE_SNAPSHOT_VALID {
+                SS_STATE_SNAPSHOT_QSCRATCH_GENERAL
+            } else {
+                read_qscratch(QSCRATCH_GENERAL_CFG)
+            };
             let qmp = if SS_STATE_SNAPSHOT_VALID {
                 SS_STATE_SNAPSHOT_QMP
             } else {
                 phy::qmp_post_runstop_snapshot()
+            };
+            let ltssm = if SS_STATE_SNAPSHOT_VALID {
+                SS_STATE_SNAPSHOT_LTSSM
+            } else {
+                gdb_ltssm_link_state()
             };
             return match selector {
                 // DWC3 DSTS.CONNECTSPD: 4 = SuperSpeed, 5 = SuperSpeed+.
@@ -1083,6 +1241,76 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
                     | (((qmp >> 16) & 0x3) << 1)
                     | (((qmp >> 24) & 0x1) << 3),
                 "ss-vbus" => (qscratch >> 24) & 0x1,
+                // Run/Stop lifecycle: pre-write DCTL, immediate post-write
+                // DCTL, later stage-21 DCTL, and later DSTS halted.
+                "ss-dctl" => {
+                    let pre = SS_RUNSTOP_PRE_DCTL;
+                    let post = SS_RUNSTOP_POST_DCTL;
+                    let post_dsts = SS_RUNSTOP_POST_DSTS;
+                    u32::from(pre != 0xffff_ffff && pre & DCTL_RUN_STOP != 0)
+                        | (u32::from(post != 0xffff_ffff && post & DCTL_RUN_STOP != 0) << 1)
+                        | (u32::from(dctl & DCTL_RUN_STOP != 0) << 2)
+                        | (u32::from(post_dsts != 0xffff_ffff
+                            && post_dsts & DSTS_DEVCTRLHLT != 0)
+                            << 3)
+                }
+                // Encode the four domain bits as N+1 so 1..=16 are valid
+                // snapshots and 31 remains the missing-snapshot sentinel.
+                "ss-domain" => SS_STATE_SNAPSHOT_DOMAIN + 1,
+                "ss-domain-core" => SS_STATE_SNAPSHOT_DOMAIN & 1,
+                "ss-domain-gdsc" => (SS_STATE_SNAPSHOT_DOMAIN >> 1) & 1,
+                "ss-domain-core-branch" => (SS_STATE_SNAPSHOT_DOMAIN >> 2) & 1,
+                "ss-domain-utmi-branch" => (SS_STATE_SNAPSHOT_DOMAIN >> 3) & 1,
+                // DWC3 GCTL.PRTCAPDIR: 2 = DEVICE. This is separated from
+                // the clock/GDSC domain bits because a live MMIO readback
+                // does not prove that the controller retained its protocol
+                // capability through the no-core handoff.
+                "ss-gctl-device" => {
+                    u32::from(gctl & GCTL_PRTCAPDIR_MASK == GCTL_PRTCAP_DEVICE)
+                }
+                "ss-qmp-phystatus" => u32::from(qmp & QMP_PHYSTATUS != 0),
+                "ss-qmp-start0" => (qmp >> 16) & 1,
+                "ss-qmp-start1" => (qmp >> 17) & 1,
+                "ss-qmp-typec0" => (qmp >> 24) & 1,
+                // QMP PCS_STATUS2[3] is the official Qualcomm
+                // RX_EQUALIZATION_IN_PROGRESS indicator.
+                "ss-qmp-rxeq" => {
+                    u32::from(SS_STATE_SNAPSHOT_QMP_STATUS2 & (1 << 3) != 0)
+                }
+                "ss-qmp-com-power" => u32::from(SS_STATE_SNAPSHOT_QMP_POWER & 1 != 0),
+                "ss-qmp-pcs-power" => u32::from(SS_STATE_SNAPSHOT_QMP_POWER & 2 != 0),
+                "ss-qmp-aux-branch" => u32::from(
+                    SS_STATE_SNAPSHOT_QMP_BRANCHES[0] & 1 != 0
+                        && SS_STATE_SNAPSHOT_QMP_BRANCHES[0] & (1 << 31) == 0,
+                ),
+                "ss-qmp-pipe-branch" => u32::from(
+                    SS_STATE_SNAPSHOT_QMP_BRANCHES[1] & 1 != 0
+                        && SS_STATE_SNAPSHOT_QMP_BRANCHES[1] & (1 << 31) == 0,
+                ),
+                "ss-qmp-com-aux-branch" => u32::from(
+                    SS_STATE_SNAPSHOT_QMP_BRANCHES[3] & 1 != 0
+                        && SS_STATE_SNAPSHOT_QMP_BRANCHES[3] & (1 << 31) == 0,
+                ),
+                // Qualcomm's SS path leaves the UTMI-as-PIPE mux sequence
+                // alone; the glue only applies it for HS/full-speed. These
+                // are read-only bits from the selected same-boot snapshot so
+                // a stale Fastboot HS mux can be separated from QMP state.
+                "ss-qscratch-utmi-sel" => u32::from(qscratch_general & (1 << 0) != 0),
+                "ss-qscratch-phystatus-sw" => {
+                    u32::from(qscratch_general & (1 << 3) != 0)
+                }
+                "ss-qscratch-utmi-dis" => u32::from(qscratch_general & (1 << 8) != 0),
+                // Qualcomm msm's DWC3 glue reads LINKSTATE from bits 25:22
+                // of the USB31 link-debug register. This is a raw four-bit
+                // snapshot from the selected boundary, separate from
+                // DSTS.USBLNKST. Stage 20 is pre-Run/Stop and normally reads
+                // SS_DIS; use stage 21 to classify the running link.
+                "ss-ltssm" => ltssm,
+                "ss-ltssm-bit0" => ltssm & 1,
+                "ss-ltssm-bit1" => (ltssm >> 1) & 1,
+                "ss-ltssm-bit1-wide" => (ltssm >> 1) & 1,
+                "ss-ltssm-bit2" => (ltssm >> 2) & 1,
+                "ss-ltssm-bit3" => (ltssm >> 3) & 1,
                 _ => 0,
             };
         }
@@ -1500,6 +1728,40 @@ unsafe fn stop_after_gadget_handoff_stage(stage: u32) -> bool {
         if cfg!(fullerene_aarch64_usb_gadget_handoff_super_speed) {
             capture_ss_state_snapshot();
         }
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if let Some(selector) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+            .filter(|value| value.starts_with("ss-"))
+        {
+            // Stage 21 is the post-production Run/Stop boundary.  The
+            // generic SS gate below only adds a sub-second DCTL cycle per
+            // set bit, which is not separable in the host's whole-second
+            // journal.  Reuse the stage-20 0/4/8-second encoding here, after
+            // the live snapshot and before the known USB2 fallback, so the
+            // post-Run/Stop register value is actually measurable without
+            // changing PHY, DWC3, endpoint, or packet state.
+            let code = utmi_readout_code(selector).min(15);
+            let delay_ms = if selector == "ss-ltssm-bit1-wide" {
+                // The ordinary 4 s bucket landed at 12 s in one host
+                // journal, between the observed 0-bit and 1-bit clusters.
+                // This diagnostic keeps the captured bit unchanged but gives
+                // a 1-bit result an 8 s publication delay, making it
+                // separable from attach jitter while staying below recovery.
+                match code {
+                    0 => 0,
+                    1 => 8_000,
+                    _ => 8_000,
+                }
+            } else if selector == "ss-ltssm" {
+                u64::from(code.saturating_mul(250).min(4_000))
+            } else {
+                match code {
+                    0 => 0,
+                    1 => 4_000,
+                    _ => 8_000,
+                }
+            };
+            crate::timer::delay_ms(delay_ms);
+        }
         let _ = super::platform::bramble::rearm_usb2_android_clock_branches();
         let _ = super::platform::bramble::enable_usb2_utmi_clock();
         let _ = unsafe { init_usb2_bare_pullup_handoff_inner(true) };
@@ -1529,7 +1791,10 @@ unsafe fn stop_after_gadget_handoff_stage(stage: u32) -> bool {
                 || (stage >= 13 && cfg!(fullerene_aarch64_usb_gadget_handoff_super_speed)),
         );
         let _ = unsafe { run_stop_device(true) };
-        if stage >= 13 && cfg!(fullerene_aarch64_usb_gadget_handoff_super_speed) {
+        if stage >= 13
+            && stage != 20
+            && cfg!(fullerene_aarch64_usb_gadget_handoff_super_speed)
+        {
             // Capture before returning to the host-visible probe. The host
             // may issue reset/descriptor traffic immediately after attach;
             // a later live read would no longer describe this boundary.
@@ -5886,6 +6151,43 @@ unsafe fn prepare_smmu_dma_bypass() -> bool {
     true
 }
 
+/// Reassert the Qualcomm USB30 controller domain without resetting DWC3 or
+/// replaying QMP state.  This is kept as one operation so the pre-Run/Stop
+/// and post-Run/Stop A/B use exactly the same CX/bus/GDSC/RCG/branch order.
+unsafe fn reassert_ss_controller_domain() -> bool {
+    unsafe {
+        let cx_vote = super::platform::bramble::apply_usb_cx_vote(
+            super::platform::bramble::UsbBusVote::Nominal,
+        );
+        let bus_vote = super::platform::bramble::apply_usb_bus_vote(
+            super::platform::bramble::UsbBusVote::Nominal,
+        );
+        let gdsc = super::platform::bramble::force_enable_usb30_gdsc();
+        let sources = super::platform::bramble::configure_usb_controller_clocks(
+            super::platform::bramble::UsbBusVote::Nominal,
+        );
+        let branches = super::platform::bramble::rearm_usb_controller_clock_branches();
+        super::platform::bramble::apply_usb_pm_qos(
+            super::platform::bramble::UsbBusVote::Nominal,
+        );
+        log_hex(
+            "usb: SS controller clock reassert mask=",
+            u64::from(
+                (cx_vote as u8)
+                    | ((bus_vote as u8) << 1)
+                    | ((gdsc as u8) << 2)
+                    | ((sources as u8) << 3)
+                    | ((branches as u8) << 4),
+            ),
+        );
+        if !(cx_vote && bus_vote && gdsc && sources && branches) {
+            log_puts("usb: SS controller clock reassert incomplete\n");
+        }
+        crate::timer::delay_us(1_000);
+        cx_vote && bus_vote && gdsc && sources && branches
+    }
+}
+
 fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bool) -> bool {
     unsafe {
         QMP_PHY_READY = false;
@@ -6143,6 +6445,30 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             }
             qmp_ready = init_qmp_phy();
             QMP_PHY_READY = qmp_ready;
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_qmp_power)]
+            if qmp_ready {
+                let qmp_power = phy::qmp_reassert_power();
+                log_hex("usb: SS QMP power reassert mask=", qmp_power as u64);
+            }
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_core_clocks)]
+            if qmp_ready {
+                // Fastboot's SS session can leave the DWC3 core domain
+                // collapsed while its QMP branches remain usable. Reassert
+                // only the source-derived CX/bus votes, USB30 GDSC, and the
+                // five controller branches here. No reset and no QMP branch
+                // rewrite are part of this A/B, so a changed result points to
+                // controller-domain ownership rather than PHY initialization.
+                let _ = reassert_ss_controller_domain();
+            }
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_qmp_clocks)]
+            if qmp_ready {
+                // The QMP branches depend on the CX/GDSC/controller vote
+                // above on the no-core path. Reassert them only after that
+                // domain is live, matching the Android clock ownership
+                // order rather than attempting the branch write too early.
+                let ok = super::platform::bramble::enable_usb_qmp_clock_branches();
+                log_hex("usb: SS QMP clock reassert=", u64::from(ok));
+            }
             let qmp_probe_phase = qmp_phase_probe_reached();
             if qmp_probe_phase != 0 {
                 // The phase probe intentionally stops before the next QMP
@@ -6159,6 +6485,19 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             if !qmp_ready {
                 log_puts("usb: Fastboot QMP SuperSpeed handoff unavailable\n");
                 return false;
+            }
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_android_dbm_reset)]
+            {
+                // Android's `dwc3_msm_block_reset(false)` does not assert
+                // the GCC/DWC3 core reset here; it resets and enables the
+                // Qualcomm DBM immediately before peripheral-mode startup.
+                // Keep this source-ordered A/B before any SS endpoint command
+                // and before Run/Stop so it can be distinguished from the
+                // failed post-Run/Stop link-clock experiment.
+                if !super::platform::bramble::android_dbm_reset_and_enable() {
+                    log_puts("usb: Android DBM reset/enable failed\n");
+                    return false;
+                }
             }
             // `--no-core-reset` skips the normal DWC3 core/PHY soft-reset
             // sequence, including its USB3 PIPE PHYSOFTRST release. The
@@ -7077,12 +7416,143 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // setup/ownership work above and leaves only the actual production
         // Run/Stop transition plus post-connect arm logic unexecuted.
         #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
-        if super_speed && stop_after_gadget_handoff_stage(20) {
-            return true;
+        if super_speed && gadget_handoff_stop_selected(20) {
+            #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+            if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+                .filter(|value| value.starts_with("ss-"))
+                .is_some()
+            {
+                // Capture before the selected stage helper performs its
+                // diagnostic recovery. This is the actual pre-production
+                // boundary; capturing after the helper would describe its
+                // extra Run/Stop instead.
+                SS_RUNSTOP_PRE_DCTL = read(DCTL);
+                capture_ss_state_snapshot();
+            }
+            #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+            if let Some(selector) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+                .filter(|value| {
+                    value.starts_with("ss-domain-")
+                        || value.starts_with("ss-gctl-")
+                        || value.starts_with("ss-qmp-")
+                        || value.starts_with("ss-qscratch-")
+                        || *value == "ss-ltssm"
+                        || value.starts_with("ss-ltssm-bit")
+                })
+            {
+                // DCTL stop/run is not a reliable physical readout at this
+                // boundary. Encode one domain/GCTL/QMP bit in the time at which the
+                // known HS fallback is published: 0 = no extra delay, 1 =
+                // 4 seconds, and 2 = missing snapshot sentinel. The 4 s
+                // separation is wider than the observed host attach jitter
+                // while remaining below the handset's watchdog window.
+                let code = utmi_readout_code(selector);
+                let delay_ms = if selector == "ss-ltssm" {
+                    // Raw LTSSM values use a compact 250-ms bucket. The
+                    // missing-snapshot sentinel is 16 and remains bounded
+                    // below the normal watchdog recovery window.
+                    u64::from(code.saturating_mul(250).min(4_000))
+                } else {
+                    match code {
+                        0 => 0,
+                        1 => 4_000,
+                        _ => 8_000,
+                    }
+                };
+                crate::timer::delay_ms(delay_ms);
+            }
+            if stop_after_gadget_handoff_stage(20) {
+                return true;
+            }
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_device_mode)]
+        if super_speed {
+            // The post-Run/Stop `ss-gctl=0` readout indicates that this
+            // DWC_usb31 instance is not retaining PRTCAPDIR=DEVICE. Reapply
+            // only the Android msm device-mode tail immediately before the
+            // production transition; leave PHY, endpoint, and packet state
+            // untouched for this controller-only A/B.
+            configure_dwc3_device_mode();
+        }
+        if super_speed && cfg!(fullerene_aarch64_usb_ep0_signal_probe) {
+            SS_RUNSTOP_PRE_DCTL = read(DCTL);
         }
         if !run_stop_device(true) {
             log_hex("usb: DWC3 remained halted, DSTS=", read(DSTS) as u64);
             return false;
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_link_clocks_after_runstop)]
+        if super_speed {
+            // Qualcomm's msm glue treats the link-clock reset as a separate
+            // boundary from DWC3 CSFTRST. Replay that source-ordered
+            // iface/core/sleep/utmi stop -> GCC core-reset -> release sequence
+            // only after the production Run/Stop write, so this A/B answers
+            // whether the post-transition domain loss is an omitted glue
+            // ownership boundary. The stage-21 snapshot follows immediately;
+            // no endpoint or packet operation is added to the test.
+            trace_marker(TRACE_DWC3_RESET_BEGIN, 0x4C435253); // "LCRS"
+            if !super::platform::bramble::android_controller_block_reset() {
+                log_puts("usb: SS post-Run/Stop Android link-clock reset failed\n");
+            }
+        }
+        #[cfg(any(
+            fullerene_aarch64_usb_gadget_handoff_ss_reassert_core_clocks_after_runstop,
+            fullerene_aarch64_usb_gadget_handoff_ss_reassert_domain_after_runstop
+        ))]
+        if super_speed {
+            // The stage-21 domain readouts show that this platform can drop
+            // the USB30 domain at the Run/Stop boundary even after the same
+            // vote/branch sequence was applied before it.  Keep both tests
+            // opt-in and immediately after the production transition so
+            // they change only domain persistence, before any SS snapshot or
+            // endpoint/packet activity.
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_ss_reassert_domain_after_runstop) {
+                // This is the full Android-style keepalive prefix: resend
+                // the CX/BCM and regulator votes first, then restore GDSC,
+                // RCG sources, and controller branches.
+                let votes = super::platform::bramble::refresh_usb_domain_votes(
+                    super::platform::bramble::UsbBusVote::Nominal,
+                    true,
+                );
+                let controller = reassert_ss_controller_domain();
+                log_hex(
+                    "usb: SS post-Run/Stop domain refresh mask=",
+                    u64::from((votes as u8) | ((controller as u8) << 1)),
+                );
+            } else {
+                // Narrow control: no regulator re-send, only the controller
+                // domain operation used by the earlier A/B.
+                let _ = reassert_ss_controller_domain();
+            }
+        }
+        #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+        if super_speed
+            && option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+                .filter(|value| value.starts_with("ss-"))
+                .is_some()
+        {
+            // Stage 20 is the pre-Run/Stop snapshot.  Capture again here,
+            // immediately after the production transition, so stage 21
+            // readouts classify the running USB31 link rather than the
+            // expected pre-start SS_DIS state.  Keep this before the optional
+            // device-mode A/B, which is intentionally a separate mutation.
+            SS_RUNSTOP_POST_DCTL = read(DCTL);
+            SS_RUNSTOP_POST_DSTS = read(DSTS);
+            capture_ss_state_snapshot();
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_device_mode)]
+        if super_speed {
+            // The preceding pre-Run/Stop write did not change the post
+            // snapshot (`ss-gctl=0`). Repeat the same narrow mode tail after
+            // Run/Stop to distinguish a transition-time GCTL overwrite from
+            // an unwritable/incorrect PRTCAPDIR field.
+            configure_dwc3_device_mode();
+        }
+        if super_speed && cfg!(fullerene_aarch64_usb_ep0_signal_probe) {
+            if SS_RUNSTOP_POST_DCTL == 0xffff_ffff {
+                SS_RUNSTOP_POST_DCTL = read(DCTL);
+                SS_RUNSTOP_POST_DSTS = read(DSTS);
+            }
         }
         RUN_STOP_TICK = arch_counter();
         // Stage 21 is immediately after the production Run/Stop transition
@@ -7897,7 +8367,15 @@ pub fn dsts_raw_link_state() -> u32 {
 /// distinguishes a reserved/legacy DSTS encoding such as 13 from the
 /// physical LTSSM state and its real sub-state bits.
 pub fn gdb_ltssm_link_state() -> u32 {
-    unsafe { (read(GDBGLTSSM) >> 22) & 0xf }
+    unsafe {
+        let snpsid = read(GSNPSID);
+        let offset = if matches!(snpsid >> 16, DWC31_IP | DWC32_IP) {
+            DWC31_LINK_GDBGLTSSM
+        } else {
+            GDBGLTSSM
+        };
+        (read(offset) >> 22) & 0xf
+    }
 }
 
 /// DSTS SOF frame number (bits 16:3). A value that changes across samples
@@ -8414,7 +8892,7 @@ pub fn core_attach_delay_code() -> u32 {
         let snpsid = read(GSNPSID);
         let dsts = read(DSTS);
         let gdscr_bits = (gdscr & 0x7) << 3;
-        let snpsid_ok = (snpsid >> 16 == 0x5533 || snpsid >> 16 == 0x5532) as u32;
+        let snpsid_ok = known_dwc_core_ip(snpsid) as u32;
         let halt = (dsts & DSTS_DEVCTRLHLT != 0) as u32;
         let link = ((dsts >> 18) & 0xf != 0) as u32;
         gdscr_bits | (snpsid_ok << 2) | (halt << 1) | link
@@ -8436,7 +8914,7 @@ pub fn core_power_recovery_code() -> u32 {
         );
         let collapse_cleared = (gdscr & 1 == 0) as u32;
         let snpsid = read(GSNPSID);
-        let snpsid_ok = (snpsid >> 16 == 0x5533 || snpsid >> 16 == 0x5532) as u32;
+        let snpsid_ok = known_dwc_core_ip(snpsid) as u32;
         votes as u32 | ((gdsc_on as u32) << 1) | (collapse_cleared << 2) | (snpsid_ok << 3)
     }
 }
@@ -8456,7 +8934,7 @@ pub fn core_alive_attach_delay_secs() -> u64 {
         let _ = super::platform::bramble::enable_usb_clock_branches();
         let _ = super::platform::bramble::usb_reset::reset_usb_blocks(false);
         let snpsid = read(GSNPSID);
-        let snpsid_ok = snpsid >> 16 == 0x5533 || snpsid >> 16 == 0x5532;
+        let snpsid_ok = known_dwc_core_ip(snpsid);
         if snpsid_ok { 4_000 } else { 500 }
     }
 }
