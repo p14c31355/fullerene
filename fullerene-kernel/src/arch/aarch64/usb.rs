@@ -25,8 +25,8 @@ use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use log::{log_hex, log_hex_value, log_puts};
 use mmio::*;
 use phy::{
-    init_hsphy, init_qmp_phy, qmp_set_autonomous_mode, select_utmi_pipe_clock,
-    update_dwc3_ref_clock,
+    init_hsphy, init_hsphy_source_exact, init_qmp_phy, qmp_set_autonomous_mode,
+    select_utmi_pipe_clock, update_dwc3_ref_clock,
 };
 pub use phy::{qmp_phase_probe_reached, qmp_phase_probe_requested};
 mod config;
@@ -2613,6 +2613,41 @@ unsafe fn end_transfer(endpoint: usize) -> bool {
     }
 }
 
+/// Apply the hardware portion of the official Qualcomm DWC3 stop cleanup.
+///
+/// `dwc3_gadget_run_stop(false, false)` acknowledges the GSI event buffers
+/// and then sends `DWC3_CONTROLLER_NOTIFY_CLEAR_DB`; the msm glue blocks GSI
+/// write-go and clears GSI_EN. The active-transfer helper is intentionally
+/// not folded in here: Linux supplies its per-endpoint resource index from
+/// `struct dwc3_ep`, which a fresh fastboot handoff does not inherit.
+pub(super) unsafe fn clear_gsi_stop_state() {
+    unsafe {
+        let gsi = super::platform::bramble::usb_resources().gsi;
+        for index in 0..gsi.event_buffer_count.min(3) as usize {
+            let register = GEVNTCOUNT0 + (index + 1) * GEVNT_BUFFER_STRIDE;
+            let count = read(register) & GEVNTCOUNT_MASK;
+            write(register, count);
+        }
+
+        clear_gsi_doorbell_state();
+    }
+}
+
+/// Reproduce Qualcomm's DWC3_CONTROLLER_NOTIFY_CLEAR_DB notification.
+///
+/// The Android msm callback only performs this write when its GSI event
+/// buffers exist: block new GSI doorbells, then clear GSI_EN. It does not
+/// touch EP0, the USB2 PHY, or the primary DWC3 event ring.
+pub(super) unsafe fn clear_gsi_doorbell_state() {
+    unsafe {
+        let offset = super::platform::bramble::usb_resources().gsi.general_cfg_offset;
+        let mut value = read_qscratch(offset) | GSI_BLOCK_WR_GO;
+        write_qscratch(offset, value);
+        value = read_qscratch(offset) & !GSI_EN;
+        write_qscratch(offset, value);
+    }
+}
+
 /// Revoke every ordinary UDC data transfer before endpoint state or request
 /// ownership is reset. EP0 is handled by the control-reset path separately.
 unsafe fn teardown_data_endpoints() {
@@ -4920,8 +4955,9 @@ pub fn init_usb2_pullup_handoff() -> bool {
         }
         configure_dwc3_global_control();
 
-        // This probe also resets the controller, so mirror the Qualcomm
-        // post-reset callback before asking Run/Stop to reconnect.
+        // This probe also resets the controller, so keep the historical
+        // Fullerene controller-timing experiment at this boundary unless the
+        // source-confirmed preserve-state A/B disables it.
         select_utmi_pipe_clock();
         update_dwc3_ref_clock();
 
@@ -5209,16 +5245,27 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         );
         trace_event(TRACE_DWC3_HALT_TIMEOUT, 0, 0, 0, 0, read(DSTS));
     }
-    // Android's msm_hsphy_init() always calls msm_hsphy_enable_power(true)
+    // Android's msm_hsphy_init() first checks the DT-provided EUD ownership
+    // status and returns without touching the PHY when EUD owns it. Capture
+    // that source-defined gate before the optional rail refresh and before
+    // the reset/init sequence below.
+    let hsphy_eud_enabled = if cfg!(fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact) {
+        unsafe { super::platform::bramble::usb_hs_phy_eud_enabled() }
+    } else {
+        false
+    };
+    // Android's msm_hsphy_init() calls msm_hsphy_enable_power(true)
     // before enabling the 19.2 MHz ref clock, asserting PHY reset, and
     // programming the analog registers. The normal non-destructive path
     // preserves Fastboot's rails; this opt-in A/B re-sends the exact three
     // QUSB2 rail enable requests before the direct reset/init boundary
     // without changing the DWC3 command or response path.
     #[cfg(fullerene_aarch64_usb_refresh_hsphy_power)]
-    if !unsafe { super::platform::bramble::refresh_usb_power(false) } {
-        log_puts("usb gadget handoff: HS PHY rail refresh failed\n");
-        trace_event(TRACE_USB2_PHY_RESET, 0x5057_5246, 0, 0, 0, read(DSTS)); // "PWRF"
+    if !hsphy_eud_enabled {
+        if !unsafe { super::platform::bramble::refresh_usb_power(false) } {
+            log_puts("usb gadget handoff: HS PHY rail refresh failed\n");
+            trace_event(TRACE_USB2_PHY_RESET, 0x5057_5246, 0, 0, 0, read(DSTS)); // "PWRF"
+        }
     }
     #[cfg(fullerene_aarch64_usb_android_block_reset)]
     if !unsafe { super::platform::bramble::android_controller_block_reset() } {
@@ -5300,10 +5347,10 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // programming before any endpoint command. In the preserve-core
         // differential these writes are deliberately retained as the common
         // post-halt handoff sequence; only CSFTRST itself is omitted.
-        // The Qualcomm msm glue selects UTMI-as-PIPE and then updates the
-        // DWC3 reference-clock period. The direct Fastboot reuse path must
-        // keep that callback too: an electrical attach can succeed while
-        // stale REFCLKPER/GFLADJ leaves UTMI packet timing unusable.
+        // The direct Fastboot reuse path retains the historical controller
+        // timing experiment here. The Bramble qpr1 source does not contain
+        // this callback, so the preserve-state A/B can leave firmware's
+        // REFCLKPER/GFLADJ values untouched.
         select_utmi_pipe_clock();
         update_dwc3_ref_clock();
         let mut usb2 = read(GUSB2PHYCFG0);
@@ -5333,7 +5380,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // autonomously.  The 4.19 phy-core deasserts `phy_reset` before
     // `snps_hsphy_init`; pulse the USB2-only line here, before the pull-up
     // is asserted, so the host port stays unattached throughout.
-    if !cfg!(fullerene_aarch64_usb_skip_usb2_phy_reset) {
+    if hsphy_eud_enabled {
+        log_puts("usb gadget handoff: HS PHY EUD enabled; preserving PHY state\n");
+    } else if !cfg!(fullerene_aarch64_usb_skip_usb2_phy_reset) {
         if !unsafe { super::platform::bramble::pulse_usb2_phy_reset() } {
             log_puts("usb gadget handoff: USB2 PHY BCR reset failed\n");
             trace_event(TRACE_USB2_PHY_RESET, 0, 0, 0, 0, read(DSTS));
@@ -5346,8 +5395,15 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // Linux USB2 PHY programming at the same post-reset boundary as the normal
     // Qualcomm glue path; the GCC/Type-C power-domain (core) reset stays
     // untouched, only the USB2 PHY BCR line above is pulsed.
-    if !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core) {
-        unsafe { init_hsphy() };
+    if !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core) && !hsphy_eud_enabled {
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact)]
+        unsafe {
+            init_hsphy_source_exact()
+        };
+        #[cfg(not(fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact))]
+        unsafe {
+            init_hsphy()
+        };
     }
     // The external QUSB2 PHY reset/init above can restore the DWC3-side USB2
     // interface register to its reset value.  Re-apply the UTMI contract
@@ -6413,15 +6469,112 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             if reset_core && !stop_running_device() {
                 return false;
             }
-            // Match dwc3_phy_setup(): the official core writes the USB3 PIPE
-            // suspend bit before dwc3_core_soft_reset() invokes
-            // usb_phy_init(usb3), which is the QMP init boundary. Fastboot's
-            // retained value is not a valid substitute for that source-
-            // ordered write.
-            let mut usb3 = read(GUSB3PIPECTL0);
-            usb3 |= GUSB3PIPECTL_SUSPHY;
-            write(GUSB3PIPECTL0, usb3);
-            let _ = read(GUSB3PIPECTL0);
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_qmp_notify_disconnect)]
+            {
+                // Qualcomm's stop-peripheral path notifies the SS PHY before
+                // the next PHY reset/init epoch. This opt-in isolates that
+                // source-confirmed PCS POWER_DOWN_CONTROL=0 write after the
+                // old DWC3 session has halted.
+                phy::qmp_notify_disconnect();
+            }
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_clear_vbus_override_before_qmp)]
+            {
+                // Qualcomm's dwc3_override_vbus_status(false) clears the
+                // session/VBUS overrides after PHY disconnect. Keep this
+                // A/B limited to the three source-confirmed QSCRATCH bits.
+                let ss = read_qscratch(QSCRATCH_SS_PHY_CTRL);
+                write_qscratch(QSCRATCH_SS_PHY_CTRL, ss & !(1 << 24));
+                let hs = read_qscratch(QSCRATCH_HS_PHY_CTRL);
+                write_qscratch(QSCRATCH_HS_PHY_CTRL, hs & !((1 << 20) | (1 << 28)));
+                let _ = read_qscratch(QSCRATCH_SS_PHY_CTRL);
+                let _ = read_qscratch(QSCRATCH_HS_PHY_CTRL);
+            }
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_clear_usb3_susphy_before_qmp)]
+            {
+                // Qualcomm's peripheral-stop path wakes the USB3 PHY after
+                // the PHY disconnect and VBUS/session override clear. Keep
+                // this A/B to the source-confirmed SUSPHY clear only.
+                let usb3 = read(GUSB3PIPECTL0) & !GUSB3PIPECTL_SUSPHY;
+                write(GUSB3PIPECTL0, usb3);
+                let _ = read(GUSB3PIPECTL0);
+            }
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reinit_hs_phy)]
+            {
+                // `dwc3_core_soft_reset()` resets and initializes the legacy
+                // USB2 PHY before it resets/initializes the USB3 PHY. The
+                // no-core path previously reproduced only the QMP half;
+                // this opt-in restores the source-confirmed Bramble
+                // `dwc3_phy_setup()` SUSPHY writes before the legacy PHY
+                // boundary, then the two legacy reset calls represented by
+                // `usb_phy_reset(usb2_phy)` and the reset inside
+                // `msm_hsphy_init()`.
+                let mut usb3 = read(GUSB3PIPECTL0);
+                usb3 |= GUSB3PIPECTL_SUSPHY;
+                write(GUSB3PIPECTL0, usb3);
+                let _ = read(GUSB3PIPECTL0);
+                let mut usb2 = read(GUSB2PHYCFG0);
+                usb2 |= GUSB2PHYCFG_SUSPHY;
+                write(GUSB2PHYCFG0, usb2);
+                let _ = read(GUSB2PHYCFG0);
+                if !super::platform::bramble::pulse_usb2_phy_reset() {
+                    log_puts("usb: Fastboot HS PHY pre-init reset failed\n");
+                    return false;
+                }
+                // `msm_hsphy_enable_power(true)` +
+                // `msm_hsphy_enable_clocks(true)` + `msm_hsphy_reset()` +
+                // `msm_hsphy_init()` boundary before QMP reset/init.
+                // The Android driver returns early when its DT-provided EUD
+                // status resource is asserted. Preserve that ownership rule
+                // after the preceding official usb_phy_reset() call.
+                if super::platform::bramble::usb_hs_phy_eud_enabled() {
+                    log_puts("usb: HS PHY EUD enabled; skipping analog init\n");
+                } else {
+                    if !super::platform::bramble::refresh_usb_power(false) {
+                        log_puts("usb: Fastboot HS PHY regulator refresh failed\n");
+                        return false;
+                    }
+                    if !super::platform::bramble::enable_usb_hs_phy_ref_clock() {
+                        log_puts("usb: Fastboot HS PHY ref clock enable failed\n");
+                        return false;
+                    }
+                    if !super::platform::bramble::pulse_usb2_phy_reset() {
+                        log_puts("usb: Fastboot HS PHY init reset failed\n");
+                        return false;
+                    }
+                    init_hsphy_source_exact();
+                }
+            }
+            #[cfg(not(fullerene_aarch64_usb_gadget_handoff_ss_reinit_hs_phy))]
+            {
+                // Match dwc3_phy_setup(): the official core writes the USB3
+                // PIPE suspend bit before dwc3_core_soft_reset() invokes
+                // usb_phy_init(usb3), which is the QMP init boundary.
+                // Fastboot's retained value is not a valid substitute for
+                // that source-ordered write.
+                let mut usb3 = read(GUSB3PIPECTL0);
+                usb3 |= GUSB3PIPECTL_SUSPHY;
+                write(GUSB3PIPECTL0, usb3);
+                let _ = read(GUSB3PIPECTL0);
+            }
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_pre_qmp_phy_setup)]
+            {
+                // qpr1's dwc3_phy_setup() executes before the external PHY
+                // init/reset boundary. Reproduce its controller-side
+                // defaults here, before QMP reset/init: clear UX_EXIT_PX,
+                // select UTMI-8/TRDTIM=9, and assert both SUSPHY bits.
+                // This is intentionally separate from the existing
+                // post-global-control UX/UTMI A/Bs.
+                let mut usb3 = read(GUSB3PIPECTL0);
+                usb3 &= !GUSB3PIPECTL_UX_EXIT_PX;
+                usb3 |= GUSB3PIPECTL_SUSPHY;
+                write(GUSB3PIPECTL0, usb3);
+                let _ = read(GUSB3PIPECTL0);
+                configure_usb2_phy_interface();
+                let mut usb2 = read(GUSB2PHYCFG0);
+                usb2 |= GUSB2PHYCFG_SUSPHY;
+                write(GUSB2PHYCFG0, usb2);
+                let _ = read(GUSB2PHYCFG0);
+            }
             // Android resets the combo PHY immediately before QMP init.
             // Keep the DWC3 core untouched for --no-core-reset, but restore
             // this separate global/USB3-PHY reset boundary first.
@@ -6596,6 +6749,58 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // VBUS/gadget connect. Keep it as the next isolated SS A/B.
         configure_usb31_lfps_exit_timer();
         configure_usb31_phy_setup();
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_qmp_power_after_gctl)]
+        if qmp_ready {
+            // `msm_ssphy_qmp_set_suspend(usb3, 0)` first re-enables the QMP
+            // PHY power consumers after `dwc3_core_setup_global_control()`.
+            // This opt-in isolates that source-confirmed post-GCTL power
+            // boundary from the earlier QMP init-time power writes.
+            let ok = super::platform::bramble::refresh_usb_qmp_power();
+            log_hex("usb: SS QMP post-GCTL power reassert=", u64::from(ok));
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_qmp_clocks_after_gctl)]
+        if qmp_ready {
+            // Bramble's usb_phy_set_suspend(usb3, 0) enables the QMP clock
+            // set after dwc3_core_setup_global_control(). The existing clock
+            // reassertion is intentionally earlier; this opt-in isolates the
+            // source-confirmed post-global-control ownership boundary.
+            let ok = super::platform::bramble::enable_usb_qmp_clock_branches();
+            log_hex("usb: SS QMP post-GCTL clock reassert=", u64::from(ok));
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_hs_phy_ref_after_gctl)]
+        if qmp_ready {
+            // Bramble's phy-msm-snps-hs.c implementation of
+            // usb_phy_set_suspend(usb2, 0) re-enables ref_clk_src after the
+            // DWC3 global-control setup. The handoff already enables that
+            // RPMh-backed clock before QMP init; this opt-in isolates the
+            // source-confirmed post-global-control ownership boundary.
+            let ok = super::platform::bramble::enable_usb_hs_phy_ref_clock();
+            log_hex("usb: SS HS PHY ref post-GCTL reassert=", u64::from(ok));
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_dis_sleep_mode_before_gadget)]
+        if qmp_ready {
+            // Qualcomm's dwc3_otg_start_peripheral() calls
+            // dwc3_dis_sleep_mode() after selecting DEVICE and before the
+            // SuperSpeed gadget start. The normal path clears these bits
+            // later, after SMMU setup; this opt-in isolates only that order.
+            let mut usb2 = read(GUSB2PHYCFG0);
+            usb2 &= !GUSB2PHYCFG_ENBLSLPM;
+            write(GUSB2PHYCFG0, usb2);
+            let guctl1 = read(GUCTL1);
+            write(GUCTL1, guctl1 & !GUCTL1_L1_SUSP_THRLD_EN_FOR_HOST);
+        }
+        #[cfg(any(
+            fullerene_aarch64_usb_gadget_handoff_ss_clear_qmp_autonomous,
+            fullerene_aarch64_usb_gadget_handoff_ss_clear_qmp_autonomous_exact
+        ))]
+        if qmp_ready {
+            // Bramble's msm_ssphy_qmp_set_suspend(usb3, 0) resumes the QMP
+            // clocks/power and, when the cable is connected, clears
+            // autonomous mode before dwc3_gadget_run_stop(). The handoff
+            // already reasserts the clocks/power above; this opt-in isolates
+            // the missing connected-cable autonomous-mode transition.
+            phy::qmp_set_autonomous_mode(false);
+        }
 
         // Stage 14 is the post-QMP DWC3 global-control boundary. It keeps the
         // core reset differential unchanged, but includes the device-mode,
@@ -6670,9 +6875,9 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             select_utmi_pipe_clock();
         }
 
-        // Match dwc3_msm_update_ref_clk() from the Qualcomm glue. This is a
-        // controller post-reset setting, so it must also run after a
-        // Fastboot handoff reset; it does not retune the GCC source clock.
+        // Retain the historical controller timing experiment after the
+        // handoff reset. The Bramble qpr1 Qualcomm source has no equivalent;
+        // the preserve-state A/B leaves these registers unchanged.
         update_dwc3_ref_clock();
 
         // Linux/Android install the Apps-SMMU context before the DWC3 gadget

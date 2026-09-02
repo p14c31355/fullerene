@@ -1331,6 +1331,35 @@ pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
 
 static mut ACTIVE_USB_RESOURCES: UsbPlatformResources = BRAMBLE_USB_RESOURCES;
 
+/// Second `reg` resource of Bramble's `qcom,usb-hsphy-snps-femto` node.
+/// `phy-msm-snps-hs.c` treats a non-zero value here as an EUD-owned PHY and
+/// returns from `msm_hsphy_init()` before changing its power or analog state.
+const BRAMBLE_USB_HS_PHY_EUD_BASE: usize = 0x088e_2000;
+static mut ACTIVE_USB_HS_PHY_EUD_BASE: usize = BRAMBLE_USB_HS_PHY_EUD_BASE;
+
+/// Install the DT-selected HS-PHY EUD status resource. The compiled Bramble
+/// address remains the fallback when the bootloader does not pass a DTB.
+pub fn install_usb_hs_phy_eud_base(base: Option<u64>) -> bool {
+    let Some(base) = base else {
+        return false;
+    };
+    if base == 0 || base > usize::MAX as u64 {
+        return false;
+    }
+    unsafe {
+        ACTIVE_USB_HS_PHY_EUD_BASE = base as usize;
+    }
+    true
+}
+
+/// Read the optional EUD ownership gate used by the Android HS-PHY driver.
+/// This is a read-only status check; it does not synthesize or modify any PHY
+/// register address.
+pub unsafe fn usb_hs_phy_eud_enabled() -> bool {
+    let base = unsafe { ACTIVE_USB_HS_PHY_EUD_BASE };
+    unsafe { core::ptr::read_volatile(base as *const u32) != 0 }
+}
+
 /// Replace the compiled GCC provider base with the DT node selected for this
 /// boot. Clock IDs/branch offsets remain provider-specific, but the provider
 /// MMIO base itself is a normal DT resource and must not be hard-coded in the

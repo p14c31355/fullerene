@@ -266,10 +266,10 @@ visible through the firmware-owned SMMU context.
 If the temporary boot falls back to Android, the harness recognizes the
 `18d1:4ee7` charging/debug identity immediately and saves its USB descriptor,
 ADB state, slot, build fingerprint, and kernel version. This is recorded as a
-stock fallback, not as Fullerene enumeration. The Rust harness automatically
-uses only `adb reboot bootloader` to restore host-visible Fastboot before a
-subsequent probe; it leaves partitions untouched and keeps the only image-
-transfer operation as `fastboot boot`.
+stock fallback, not as Fullerene enumeration. The harness does not reboot the
+phone or issue any other recovery command; it waits for host-visible Fastboot
+to return before a subsequent probe. The only device-side image operation is
+`fastboot boot`, and partitions are left untouched.
 
 The `--stop-after-stage` probes publish the known physical USB2 pull-up after
 one handoff boundary and then let the watchdog recover. Stages 1--4 cover
@@ -284,11 +284,9 @@ that allocates resources before `SETEPCONFIG`.
 
 The Rust `bramble-usb matrix` command runs the five bounded IRQ-route variants in sequence
 and proceeds to the next one only after the probe watchdog has restored
-host-visible Fastboot. It stops at the first successful Fullerene gadget, so
-no manual phone interaction is needed between failed probe attempts. When a
-case has already fallen back to Android, matrix uses only `adb reboot
-bootloader` to restore Fastboot before the next case; it never flashes or
-erases a partition.
+host-visible Fastboot. It stops at the first successful Fullerene gadget. When
+a case has already fallen back to Android, matrix only waits for Fastboot and
+does not reboot the phone; it never flashes or erases a partition.
 
 `--bare-pullup` is the minimal physical comparison: it omits DWC3 reset,
 SMMU, DMA, and EP0 setup, so a host-side descriptor timeout is expected and

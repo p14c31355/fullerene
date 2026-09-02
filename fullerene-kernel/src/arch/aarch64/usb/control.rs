@@ -66,6 +66,15 @@ pub(super) unsafe fn device_soft_reset() -> bool {
         if ip == DWC31_IP {
             crate::timer::delay_ms(50);
         }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_clear_gsi_after_reset)]
+        {
+            // Android's dwc3_device_core_soft_reset() sends
+            // DWC3_CONTROLLER_NOTIFY_CLEAR_DB immediately after this
+            // synchronization delay. Keep the source-confirmed Qualcomm
+            // GSI doorbell transition isolated from the DWC3 reset and
+            // endpoint/PHY configuration A/Bs.
+            super::clear_gsi_doorbell_state();
+        }
         true
     }
 }
@@ -141,6 +150,23 @@ pub(super) unsafe fn core_soft_reset(super_speed: bool) -> bool {
 /// DEPSTARTCFG/SETEPCONFIG are issued; a handoff cannot assume that the
 /// bootloader performed the normal gadget-stop sequence.
 pub(super) unsafe fn stop_running_device() -> bool {
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_disable_gadget_irq_before_stop)]
+    {
+        // Linux disables DWC3 gadget event interrupts at the start of the
+        // official teardown. Keep this source-confirmed write separate from
+        // endpoint cleanup and the Run/Stop transition.
+        write(DEVTEN, 0);
+        let _ = read(DEVTEN);
+    }
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_disable_ep0_before_stop)]
+    {
+        // The official teardown invokes __dwc3_gadget_ep_disable() for EP0
+        // OUT and IN, which clears their DALEPENA bits. Keep that hardware
+        // write separate from active-transfer cleanup and Run/Stop.
+        let dalepena = read(DALEPENA);
+        write(DALEPENA, dalepena & !0b11);
+        let _ = read(DALEPENA);
+    }
     unsafe { run_stop_device(false) }
 }
 
@@ -271,7 +297,21 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
             write(DCTL, dctl);
         } else {
             dctl &= !DCTL_RUN_STOP;
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_clear_keep_connect_before_stop)]
+            if read(GHWPARAMS1) & GHWPARAMS1_EN_PWROPT_MASK == GHWPARAMS1_EN_PWROPT_HIB {
+                // Linux clears KEEP_CONNECT on a non-suspend gadget stop
+                // when the DWC3 core advertises hibernation. Keep this
+                // source-confirmed A/B in the same DCTL write as RUN_STOP.
+                dctl &= !DCTL_KEEP_CONNECT;
+            }
             write_dctl_safe(dctl);
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_clear_gsi_stop_state)]
+        if !is_on {
+            // The official stop path clears the GSI event-buffer counts and
+            // Qualcomm doorbell wrapper immediately after DCTL.RUN_STOP is
+            // cleared, before waiting for DEVCTRLHLT.
+            super::clear_gsi_stop_state();
         }
         // Diagnostic only: put the USB2 interface contract back immediately
         // after the DCTL Run/Stop write, before the controller's state

@@ -22,6 +22,13 @@ unsafe fn qmp_mb() {
 }
 
 #[inline(always)]
+unsafe fn qmp_wmb() {
+    // Linux arm64 defines wmb() as dsb(st). The QMP resume path uses this
+    // stronger write-only barrier after its relaxed PHY writes.
+    core::arch::asm!("dsb st", options(nostack, preserves_flags));
+}
+
+#[inline(always)]
 fn qmp_phase_probe_selected(phase: u32) -> bool {
     match (option_env!("FULLERENE_USB_QMP_PHASE_STOP"), phase) {
         (Some("1"), 1)
@@ -97,6 +104,17 @@ pub(super) unsafe fn qmp_reassert_power() -> u32 {
     write_volatile(qmp_reg(pcs_power_down), 0x01);
     qmp_mb();
     qmp_power_snapshot()
+}
+
+/// Match the Bramble QMP PHY's `usb_phy_notify_disconnect()` callback.
+/// `dwc3_otg_start_peripheral(..., 0)` invokes this before suspending the
+/// connected SuperSpeed PHY; the callback writes zero to the PCS power-down
+/// control and performs a readback before the later PHY reset/init boundary.
+pub(super) unsafe fn qmp_notify_disconnect() {
+    let power_down = qmp_contract_offset(3, QMP_PCS_POWER_DOWN_CONTROL);
+    write_volatile(qmp_reg(power_down), 0);
+    let readback = read_volatile(qmp_reg(power_down));
+    super::log::log_hex("usb: QMP disconnect power-down=", u64::from(readback));
 }
 
 pub(super) unsafe fn init_qmp_phy() -> bool {
@@ -220,6 +238,9 @@ pub(super) unsafe fn qmp_clear_lfps_rxterm_irq() {
     let clear = qmp_contract_offset(2, QMP_PCS_LFPS_RXTERM_IRQ_CLEAR);
     unsafe {
         write_volatile(qmp_reg(clear), QMP_LFPS_IRQ_CLEAR);
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_qmp_lfps_clear_wmb)]
+        qmp_wmb();
+        #[cfg(not(fullerene_aarch64_usb_gadget_handoff_ss_qmp_lfps_clear_wmb))]
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         write_volatile(qmp_reg(clear), 0);
         let _ = read_volatile(qmp_reg(clear));
@@ -255,10 +276,19 @@ pub(super) unsafe fn qmp_set_autonomous_mode(enable: bool) {
             let mut clamp = read_volatile(qmp_reg(clamp_offset));
             clamp |= QMP_CLAMP_EN;
             write_volatile(qmp_reg(clamp_offset), clamp);
-            let mut value = read_volatile(qmp_reg(autonomous));
-            value &= !(QMP_ARCVR_DTCT_EN | QMP_ALFPS_DTCT_EN | QMP_ARCVR_DTCT_EVENT_SEL);
-            write_volatile(qmp_reg(autonomous), value);
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_clear_qmp_autonomous_exact)]
+            write_volatile(qmp_reg(autonomous), 0);
+            #[cfg(not(fullerene_aarch64_usb_gadget_handoff_ss_clear_qmp_autonomous_exact))]
+            {
+                let mut value = read_volatile(qmp_reg(autonomous));
+                value &= !(QMP_ARCVR_DTCT_EN
+                    | QMP_ALFPS_DTCT_EN
+                    | QMP_ARCVR_DTCT_EVENT_SEL);
+                write_volatile(qmp_reg(autonomous), value);
+            }
             qmp_clear_lfps_rxterm_irq();
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_qmp_resume_wmb)]
+            qmp_wmb();
         }
     }
 }
@@ -271,6 +301,18 @@ pub(super) unsafe fn qmp_set_autonomous_mode(enable: bool) {
 /// from the `qcom,usb-hsphy-snps-femto` driver and the Bramble override
 /// sequence in its device tree.
 pub(super) unsafe fn init_hsphy() {
+    unsafe { init_hsphy_inner(false) }
+}
+
+/// Run the Bramble qpr1 `msm_hsphy_init()` register sequence without the
+/// legacy handoff helper's extra RTUNE write or post-POR delay.  Power,
+/// reference-clock, and reset ownership are established by the caller at the
+/// same boundary as the official DWC3 soft-reset path.
+pub(super) unsafe fn init_hsphy_source_exact() {
+    unsafe { init_hsphy_inner(true) }
+}
+
+unsafe fn init_hsphy_inner(source_exact: bool) {
     unsafe {
         hsphy_update(
             HSPHY_CFG0,
@@ -309,19 +351,19 @@ pub(super) unsafe fn init_hsphy() {
             write_volatile(hsphy_reg(offset), value);
         }
 
-        // Android's msm_hsphy_init() enables the external termination tune
-        // unless the DT explicitly says that no external resistor is present
-        // or supplies an efuse RCAL code.  Bramble's usb2_phy0 node has
-        // neither qcom,no-rext-present nor a qcom,rcal-reg/rcal-mask pair,
-        // so the source-equivalent path is RTUNE_SEL=1.
-        hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
+        // The Bramble qpr1 `msm_hsphy_init()` body does not write RTUNE_SEL;
+        // retain the old local write only for the pre-existing non-exact
+        // helper paths.
+        if !source_exact {
+            hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
+        }
 
-        // phy-msm-snps-hs.c stops here for the analog setup: VREGBYPASS,
-        // the suspend-N hold, SLEEPM, then the POR release. The earlier
-        // RTUNE_SEL write is the source-equivalent femto-PHY termination
-        // setup. Factory ABL's usb_shared_hs_phy_init() additionally clears
-        // the old QUSB ATE/test state before releasing the PHY; keep that
-        // extra sequence opt-in so it remains an isolated A/B variable.
+        // phy-msm-snps-hs.c continues with VREGBYPASS, the suspend-N hold,
+        // SLEEPM, POR release, suspend-N select clear, and common-control
+        // override release. Factory ABL's usb_shared_hs_phy_init()
+        // additionally clears the old QUSB ATE/test state before releasing
+        // the PHY; keep that extra sequence opt-in so it remains an isolated
+        // A/B variable.
         hsphy_update(
             HSPHY_COMMON2,
             HSPHY_COMMON2_VREGBYPASS,
@@ -344,15 +386,12 @@ pub(super) unsafe fn init_hsphy() {
         );
         hsphy_update(HSPHY_UTMI_CTRL0, HSPHY_UTMI_SLEEPM, HSPHY_UTMI_SLEEPM);
         hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_POR, 0);
-        // Wait for the PLL to lock after POR release. The SNPS femto-PHY's
-        // PLL needs a bounded settling time before it can recover the HS
-        // clock from incoming USB traffic. Without this delay, the PHY can
-        // drive D+ (pull-up) and answer the host's chirp handshake (which
-        // is a simple D- drive), but cannot receive HS data (SOF, SETUP),
-        // which requires a locked PLL for clock recovery. The QUSB2 driver
-        // uses usleep_range(150, 160) after POWER_DOWN clear; match that
-        // lower bound for the femto-PHY's POR release.
-        crate::timer::delay_us(150);
+        // The official SNPS femto-PHY init has no delay at this boundary. The
+        // old local helper's 150 us wait is retained only outside the exact
+        // source-confirmed A/B.
+        if !source_exact {
+            crate::timer::delay_us(150);
+        }
         hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N_SEL, 0);
         if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
             // ABL waits after dropping SUSPEND_N_SEL before releasing the
@@ -387,11 +426,15 @@ pub(super) unsafe fn select_utmi_pipe_clock() {
     trace_event(TRACE_UTMI_CLOCK, 1, 0, 0, 0, 0);
 }
 
-/// Apply the DWC3 post-reset reference-clock calibration from
-/// dwc3_msm_update_ref_clk(). The GCC source clock is managed separately by
-/// the Bramble platform layer; this only programs the controller's timing
-/// registers after a core reset.
+/// Apply the historical controller reference-clock calibration retained by
+/// Fullerene's earlier handoff experiments.
+///
+/// The Bramble qpr1 `dwc3-msm.c` source has no `dwc3_msm_update_ref_clk()`
+/// helper and does not write these `GUCTL`/extended `GFLADJ` fields. The
+/// source-confirmed A/B therefore has an opt-in path that skips this function
+/// and preserves the firmware's register state.
 pub(super) unsafe fn update_dwc3_ref_clock() {
+    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_ss_preserve_ref_clock_state))]
     unsafe {
         let guctl = read(GUCTL);
         write(

@@ -232,6 +232,14 @@ struct LoopArgs {
     /// Run/Stop.
     #[arg(long)]
     gadget_restart_at_runstop: bool,
+    /// Reproduce Qualcomm's DWC3_CONTROLLER_NOTIFY_CLEAR_DB immediately
+    /// after the device-core reset (A/B).
+    #[arg(long)]
+    clear_gsi_after_reset: bool,
+    /// Use the source-exact Bramble msm_hsphy_init() sequence on the direct
+    /// USB2 handoff instead of the legacy helper's local RTUNE/delay steps.
+    #[arg(long)]
+    hsphy_source_exact: bool,
     /// Start EP0 with the Linux/Android 512-byte descriptor state.
     #[arg(long)]
     ep0_initial_512: bool,
@@ -263,9 +271,75 @@ struct LoopArgs {
     /// Re-assert QMP common/PCS power-up after QMP init (A/B).
     #[arg(long)]
     ss_reassert_qmp_power: bool,
+    /// Re-assert QMP common/PCS power-up after DWC3 global-control setup,
+    /// matching the USB3 PHY resume ordering (A/B).
+    #[arg(long)]
+    ss_reassert_qmp_power_after_gctl: bool,
+    /// Re-run the official USB2 legacy-PHY power/reset/init sequence before
+    /// the no-core SuperSpeed QMP reset/init boundary (A/B).
+    #[arg(long)]
+    ss_reinit_hs_phy: bool,
+    /// Apply the controller-side dwc3_phy_setup() writes before the
+    /// no-core SuperSpeed QMP reset/init boundary (A/B).
+    #[arg(long)]
+    ss_pre_qmp_phy_setup: bool,
+    /// Clear QMP autonomous mode after the USB3 PHY resume boundary (A/B).
+    #[arg(long)]
+    ss_clear_qmp_autonomous: bool,
     /// Re-assert QMP aux/pipe/com_aux clock branches after QMP init (A/B).
     #[arg(long)]
     ss_reassert_qmp_clocks: bool,
+    /// Re-assert QMP aux/pipe/com_aux clock branches after DWC3 global
+    /// control setup, matching the USB3 PHY resume ordering (A/B).
+    #[arg(long)]
+    ss_reassert_qmp_clocks_after_gctl: bool,
+    /// Re-assert the Bramble USB2 PHY ref_clk_src after DWC3 global control
+    /// setup, matching usb_phy_set_suspend(usb2, 0) ordering (A/B).
+    #[arg(long)]
+    ss_reassert_hs_phy_ref_after_gctl: bool,
+    /// Clear the Qualcomm DWC3 sleep-mode bits before the SuperSpeed gadget
+    /// start, matching dwc3_otg_start_peripheral() (A/B).
+    #[arg(long)]
+    ss_dis_sleep_mode_before_gadget: bool,
+    /// Write literal zero to the QMP autonomous-mode register, matching the
+    /// official connected-cable resume path (A/B).
+    #[arg(long)]
+    ss_clear_qmp_autonomous_exact: bool,
+    /// Apply the official arm64 wmb() after QMP resume writes (A/B).
+    #[arg(long)]
+    ss_qmp_resume_wmb: bool,
+    /// Use the official arm64 wmb() between the QMP LFPS IRQ-clear writes
+    /// (A/B).
+    #[arg(long)]
+    ss_qmp_lfps_clear_wmb: bool,
+    /// Replay the official QMP USB PHY disconnect-notifier power-down write
+    /// before the no-core QMP reset/init (A/B).
+    #[arg(long)]
+    ss_qmp_notify_disconnect: bool,
+    /// Clear the official Qualcomm USB2/USB3 VBUS/session overrides before
+    /// the no-core QMP reset/init (A/B).
+    #[arg(long)]
+    ss_clear_vbus_override_before_qmp: bool,
+    /// Clear DCTL.KEEP_CONNECT on the old-session stop when hibernation is
+    /// supported, matching dwc3_gadget_run_stop(..., false, false) (A/B).
+    #[arg(long)]
+    ss_clear_keep_connect_before_stop: bool,
+    /// Clear USB3 GUSB3PIPECTL.SUSPHY after old-session teardown, matching
+    /// dwc3_usb3_phy_suspend(dwc, false) (A/B).
+    #[arg(long)]
+    ss_clear_usb3_susphy_before_qmp: bool,
+    /// Disable DWC3 gadget event interrupts before old-session stop, matching
+    /// dwc3_gadget_disable_irq() in the official teardown (A/B).
+    #[arg(long)]
+    ss_disable_gadget_irq_before_stop: bool,
+    /// Disable EP0 OUT/IN in DALEPENA before old-session stop, matching the
+    /// official dwc3_gadget_run_stop(false) endpoint teardown (A/B).
+    #[arg(long)]
+    ss_disable_ep0_before_stop: bool,
+    /// Clear the official GSI event-buffer and Qualcomm doorbell state after
+    /// old-session DCTL.Run/Stop is cleared (A/B).
+    #[arg(long)]
+    ss_clear_gsi_stop_state: bool,
     /// Apply Qualcomm msm's USB31 LFPS exit-response timer values immediately
     /// before the SuperSpeed gadget start (A/B).
     #[arg(long)]
@@ -273,6 +347,10 @@ struct LoopArgs {
     /// Clear DWC31 GUSB3PIPECTL.UX_EXIT_PX as in dwc3_phy_setup() (A/B).
     #[arg(long)]
     ss_clear_ux_exit_px: bool,
+    /// Preserve the DWC3 reference-clock timing registers instead of applying
+    /// the historical non-Bramble calibration (A/B).
+    #[arg(long)]
+    ss_preserve_ref_clock_state: bool,
     /// Set DCFG.IGNSTRMPP in the direct gadget-start sequence (A/B).
     #[arg(long)]
     dcfg_ignstrmpp: bool,
@@ -530,6 +608,8 @@ impl Default for LoopArgs {
             start_ungated: false,
             event_ring_at_runstop: false,
             gadget_restart_at_runstop: false,
+            clear_gsi_after_reset: false,
+            hsphy_source_exact: false,
             ep0_initial_512: false,
             dcfg_superspeed: false,
             ss_reassert_device_mode: false,
@@ -539,9 +619,27 @@ impl Default for LoopArgs {
             ss_reassert_link_clocks_after_runstop: false,
             ss_android_dbm_reset: false,
             ss_reassert_qmp_power: false,
+            ss_reassert_qmp_power_after_gctl: false,
+            ss_reinit_hs_phy: false,
+            ss_pre_qmp_phy_setup: false,
+            ss_clear_qmp_autonomous: false,
             ss_reassert_qmp_clocks: false,
+            ss_reassert_qmp_clocks_after_gctl: false,
+            ss_reassert_hs_phy_ref_after_gctl: false,
+            ss_dis_sleep_mode_before_gadget: false,
+            ss_clear_qmp_autonomous_exact: false,
+            ss_qmp_resume_wmb: false,
+            ss_qmp_lfps_clear_wmb: false,
+            ss_qmp_notify_disconnect: false,
+            ss_clear_vbus_override_before_qmp: false,
+            ss_clear_keep_connect_before_stop: false,
+            ss_clear_usb3_susphy_before_qmp: false,
+            ss_disable_gadget_irq_before_stop: false,
+            ss_disable_ep0_before_stop: false,
+            ss_clear_gsi_stop_state: false,
             ss_lfps_timer: false,
             ss_clear_ux_exit_px: false,
+            ss_preserve_ref_clock_state: false,
             dcfg_ignstrmpp: false,
             usb2_susphy: false,
             ep0_stall_flush: false,
@@ -895,14 +993,14 @@ fn run_matrix(workspace: &Path, args: MatrixArgs) -> io::Result<()> {
             }
             Err(error) => {
                 eprintln!("route {} failed: {error}", route.as_str());
-                if let Err(recovery) = restore_fastboot(&args.serial, args.fastboot_wait) {
+                if let Err(recovery) = wait_for_fastboot(&args.serial, args.fastboot_wait) {
                     return Err(io::Error::other(format!(
-                        "route {} failed and Rust recovery to Fastboot failed: {recovery}; logs are under {}",
+                        "route {} failed and Fastboot did not return: {recovery}; logs are under {}",
                         route.as_str(),
                         run_dir.display()
                     )));
                 }
-                eprintln!("recovered to Fastboot; trying the next route");
+                eprintln!("Fastboot returned; trying the next route");
             }
         }
     }
@@ -1054,10 +1152,112 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--ss-reassert-qmp-power requires --super-speed",
         ));
     }
+    if args.ss_reassert_qmp_power_after_gctl && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-qmp-power-after-gctl requires --super-speed",
+        ));
+    }
+    if args.ss_reinit_hs_phy && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reinit-hs-phy requires --super-speed",
+        ));
+    }
+    if args.ss_pre_qmp_phy_setup && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-pre-qmp-phy-setup requires --super-speed",
+        ));
+    }
+    if args.ss_clear_qmp_autonomous && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-clear-qmp-autonomous requires --super-speed",
+        ));
+    }
     if args.ss_reassert_qmp_clocks && !args.super_speed {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--ss-reassert-qmp-clocks requires --super-speed",
+        ));
+    }
+    if args.ss_reassert_qmp_clocks_after_gctl && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-qmp-clocks-after-gctl requires --super-speed",
+        ));
+    }
+    if args.ss_reassert_hs_phy_ref_after_gctl && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-reassert-hs-phy-ref-after-gctl requires --super-speed",
+        ));
+    }
+    if args.ss_dis_sleep_mode_before_gadget && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-dis-sleep-mode-before-gadget requires --super-speed",
+        ));
+    }
+    if args.ss_clear_qmp_autonomous_exact && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-clear-qmp-autonomous-exact requires --super-speed",
+        ));
+    }
+    if args.ss_qmp_resume_wmb && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-qmp-resume-wmb requires --super-speed",
+        ));
+    }
+    if args.ss_qmp_lfps_clear_wmb && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-qmp-lfps-clear-wmb requires --super-speed",
+        ));
+    }
+    if args.ss_qmp_notify_disconnect && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-qmp-notify-disconnect requires --super-speed",
+        ));
+    }
+    if args.ss_clear_vbus_override_before_qmp && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-clear-vbus-override-before-qmp requires --super-speed",
+        ));
+    }
+    if args.ss_clear_keep_connect_before_stop && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-clear-keep-connect-before-stop requires --super-speed",
+        ));
+    }
+    if args.ss_clear_usb3_susphy_before_qmp && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-clear-usb3-susphy-before-qmp requires --super-speed",
+        ));
+    }
+    if args.ss_disable_gadget_irq_before_stop && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-disable-gadget-irq-before-stop requires --super-speed",
+        ));
+    }
+    if args.ss_disable_ep0_before_stop && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-disable-ep0-before-stop requires --super-speed",
+        ));
+    }
+    if args.ss_clear_gsi_stop_state && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-clear-gsi-stop-state requires --super-speed",
         ));
     }
     if args.ss_lfps_timer && !args.super_speed {
@@ -1070,6 +1270,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--ss-clear-ux-exit-px requires --super-speed",
+        ));
+    }
+    if args.ss_preserve_ref_clock_state && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-preserve-ref-clock-state requires --super-speed",
         ));
     }
     if args.dt_hird_threshold && !args.direct_handoff {
@@ -1172,6 +1378,18 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--gadget-restart-at-runstop requires --direct-handoff or --super-speed",
+        ));
+    }
+    if args.clear_gsi_after_reset && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--clear-gsi-after-reset requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_source_exact && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-source-exact requires --direct-handoff",
         ));
     }
     if args.ep0_initial_512 && !args.direct_handoff {
@@ -1644,10 +1862,11 @@ fn run_loop_with_dir(
     println!("Logs: {}", run_dir.display());
 
     // A previous probe normally recovers through Android before the next
-    // iteration. Make a standalone Rust loop just as self-contained as the
-    // matrix: if Fastboot is not already visible, request the bootloader via
-    // ADB. This is a reboot-only operation; it never flashes or erases.
-    restore_fastboot(&args.serial, args.fastboot_wait)?;
+    // iteration. Do not request a reboot here: the Bramble workflow permits
+    // only `fastboot boot` as a device operation. Wait for the bootloader USB
+    // identity to return, or require the operator to restore it outside this
+    // harness.
+    wait_for_fastboot(&args.serial, args.fastboot_wait)?;
     let product = fastboot_getvar(&args.serial, "product")?;
     if !product
         .lines()
@@ -2029,6 +2248,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.gadget_restart_at_runstop {
         arguments.push("--usb-gadget-handoff-gadget-restart-at-runstop".to_owned());
     }
+    if args.clear_gsi_after_reset {
+        arguments.push("--usb-gadget-handoff-clear-gsi-after-reset".to_owned());
+    }
+    if args.hsphy_source_exact {
+        arguments.push("--usb-gadget-handoff-hsphy-source-exact".to_owned());
+    }
     if args.ep0_initial_512 {
         arguments.push("--usb-gadget-handoff-ep0-initial-512".to_owned());
     }
@@ -2060,14 +2285,68 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.ss_reassert_qmp_power {
         arguments.push("--usb-gadget-handoff-ss-reassert-qmp-power".to_owned());
     }
+    if args.ss_reassert_qmp_power_after_gctl {
+        arguments.push("--usb-gadget-handoff-ss-reassert-qmp-power-after-gctl".to_owned());
+    }
+    if args.ss_reinit_hs_phy {
+        arguments.push("--usb-gadget-handoff-ss-reinit-hs-phy".to_owned());
+    }
+    if args.ss_pre_qmp_phy_setup {
+        arguments.push("--usb-gadget-handoff-ss-pre-qmp-phy-setup".to_owned());
+    }
+    if args.ss_clear_qmp_autonomous {
+        arguments.push("--usb-gadget-handoff-ss-clear-qmp-autonomous".to_owned());
+    }
     if args.ss_reassert_qmp_clocks {
         arguments.push("--usb-gadget-handoff-ss-reassert-qmp-clocks".to_owned());
+    }
+    if args.ss_reassert_qmp_clocks_after_gctl {
+        arguments.push("--usb-gadget-handoff-ss-reassert-qmp-clocks-after-gctl".to_owned());
+    }
+    if args.ss_reassert_hs_phy_ref_after_gctl {
+        arguments.push("--usb-gadget-handoff-ss-reassert-hs-phy-ref-after-gctl".to_owned());
+    }
+    if args.ss_dis_sleep_mode_before_gadget {
+        arguments.push("--usb-gadget-handoff-ss-dis-sleep-mode-before-gadget".to_owned());
+    }
+    if args.ss_clear_qmp_autonomous_exact {
+        arguments.push("--usb-gadget-handoff-ss-clear-qmp-autonomous-exact".to_owned());
+    }
+    if args.ss_qmp_resume_wmb {
+        arguments.push("--usb-gadget-handoff-ss-qmp-resume-wmb".to_owned());
+    }
+    if args.ss_qmp_lfps_clear_wmb {
+        arguments.push("--usb-gadget-handoff-ss-qmp-lfps-clear-wmb".to_owned());
+    }
+    if args.ss_qmp_notify_disconnect {
+        arguments.push("--usb-gadget-handoff-ss-qmp-notify-disconnect".to_owned());
+    }
+    if args.ss_clear_vbus_override_before_qmp {
+        arguments.push("--usb-gadget-handoff-ss-clear-vbus-override-before-qmp".to_owned());
+    }
+    if args.ss_clear_keep_connect_before_stop {
+        arguments.push("--usb-gadget-handoff-ss-clear-keep-connect-before-stop".to_owned());
+    }
+    if args.ss_clear_usb3_susphy_before_qmp {
+        arguments.push("--usb-gadget-handoff-ss-clear-usb3-susphy-before-qmp".to_owned());
+    }
+    if args.ss_disable_gadget_irq_before_stop {
+        arguments.push("--usb-gadget-handoff-ss-disable-gadget-irq-before-stop".to_owned());
+    }
+    if args.ss_disable_ep0_before_stop {
+        arguments.push("--usb-gadget-handoff-ss-disable-ep0-before-stop".to_owned());
+    }
+    if args.ss_clear_gsi_stop_state {
+        arguments.push("--usb-gadget-handoff-ss-clear-gsi-stop-state".to_owned());
     }
     if args.ss_lfps_timer {
         arguments.push("--usb-gadget-handoff-ss-lfps-timer".to_owned());
     }
     if args.ss_clear_ux_exit_px {
         arguments.push("--usb-gadget-handoff-ss-clear-ux-exit-px".to_owned());
+    }
+    if args.ss_preserve_ref_clock_state {
+        arguments.push("--usb-gadget-handoff-ss-preserve-ref-clock-state".to_owned());
     }
     if args.dcfg_ignstrmpp {
         arguments.push("--usb-gadget-handoff-dcfg-ignstrmpp".to_owned());
@@ -2350,40 +2629,6 @@ fn wait_for_fastboot(serial: &str, timeout_secs: u64) -> io::Result<()> {
     Err(io::Error::other(format!(
         "device {serial} is not available in Fastboot"
     )))
-}
-
-/// Return the phone to the only state from which the next matrix child may
-/// run. This is deliberately an ADB reboot request, never a flash/erase
-/// operation; it covers the normal probe failure path where the kernel's
-/// watchdog has already handed control to stock Android.
-fn restore_fastboot(serial: &str, timeout_secs: u64) -> io::Result<()> {
-    if wait_for_fastboot(serial, timeout_secs.min(3)).is_ok() {
-        return Ok(());
-    }
-    let output = Command::new("adb")
-        .args(["-s", serial, "reboot", "bootloader"])
-        .output()?;
-    if !output.status.success() {
-        // Android can disappear from ADB in the same instant that it is
-        // already transitioning to the bootloader. Treat the transient
-        // "device not found" result as a race and give Fastboot the rest of
-        // the bounded recovery window to appear. This keeps the Rust loop
-        // unattended without retrying a reboot command against a changing
-        // USB identity.
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        if !stderr.contains("not found") && !stderr.contains("no devices") {
-            return Err(io::Error::other(format!(
-                "adb reboot bootloader failed: {stderr}"
-            )));
-        }
-        if wait_for_fastboot(serial, timeout_secs).is_ok() {
-            return Ok(());
-        }
-        return Err(io::Error::other(format!(
-            "adb reboot bootloader raced with USB disappearance: {stderr}"
-        )));
-    }
-    wait_for_fastboot(serial, timeout_secs)
 }
 
 fn fastboot_getvar(serial: &str, variable: &str) -> io::Result<String> {
