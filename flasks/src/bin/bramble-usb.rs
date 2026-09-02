@@ -195,6 +195,10 @@ struct LoopArgs {
     /// Use Factory ABL's EP0 request TRB flags HWO|CHN|ISP_IMI (0x405) (A/B).
     #[arg(long)]
     abl_trb_flags: bool,
+    /// Use Factory ABL's CONTROL_SETUP buffer pointer: the EP0 TRB address
+    /// itself rather than the separate 8-byte setup buffer (A/B).
+    #[arg(long)]
+    abl_setup_trb_buffer: bool,
     /// Consume each EP0 event after dispatching it, matching Factory ABL's
     /// four-byte GEVNTCOUNT acknowledgement order (A/B).
     #[arg(long)]
@@ -464,6 +468,7 @@ impl Default for LoopArgs {
             abl_ep_config: false,
             abl_command_params: false,
             abl_trb_flags: false,
+            abl_setup_trb_buffer: false,
             abl_event_consume: false,
             xbl_direction_trb: false,
             xbl_trb_chain: false,
@@ -969,6 +974,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--abl-trb-flags requires --direct-handoff",
+        ));
+    }
+    if args.abl_setup_trb_buffer && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--abl-setup-trb-buffer requires --direct-handoff",
         ));
     }
     if args.abl_event_consume && !args.direct_handoff {
@@ -1824,6 +1835,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.abl_trb_flags {
         arguments.push("--usb-gadget-handoff-abl-trb-flags".to_owned());
+    }
+    if args.abl_setup_trb_buffer {
+        arguments.push("--usb-gadget-handoff-abl-setup-trb-buffer".to_owned());
     }
     if args.abl_event_consume {
         arguments.push("--usb-gadget-handoff-abl-event-consume".to_owned());

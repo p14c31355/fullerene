@@ -92,10 +92,8 @@ const XBL_EP0_EVENT_SIZE: usize = 0xf0;
 // address. The A/B below uses it for the event ring only; setup/TRB/response
 // objects stay in the known linker DMA pool.
 const XBL_EP0_EVENT_DMA_ADDRESS: usize = 0x0a6f_c010;
-// Stock XBL's initial EP0 request builder publishes these fixed DDR
-// addresses: the setup payload at 0x80798d70 and the first EP0 TRB at
-// 0x80798f70. The differential below uses them only for EP0 setup DMA.
-const XBL_EP0_SETUP_DMA_ADDRESS: usize = 0x8079_8d70;
+// Stock XBL's initial EP0 request builder publishes this fixed DDR address
+// for the first EP0 TRB. Its CONTROL_SETUP buffer field points here as well.
 const XBL_EP0_TRB_DMA_ADDRESS: usize = 0x8079_8f70;
 // Stock Bramble XBL's initial EP0 request builder reaches TRBCTL=2
 // (CONTROL_SETUP). Keep the XBL-specific control word named here; the
@@ -106,7 +104,6 @@ const TRB_XBL_EP0_SETUP: u32 = TRB_CONTROL_SETUP;
 // (0x405), leaving LST/IOC clear. This is intentionally an explicit A/B: it
 // is not equivalent to adding CHN to the Linux LST|IOC form.
 const TRB_ABL_REQUEST_FLAGS: u32 = TRB_HWO | TRB_CHN | TRB_ISP_IMI;
-const FASTBOOT_EP0_SETUP_OFFSET: usize = 0x100;
 const FASTBOOT_EP0_TRB_OFFSET: usize = 0x140;
 const FASTBOOT_EP0_RESPONSE_OFFSET: usize = 0x180;
 const TRACE_FASTBOOT_EVENT_DMA: u32 = 39;
@@ -134,11 +131,6 @@ static mut GSI_EVENTS: [EventBuffer; 3] = [
     EventBuffer([0; EVENT_BUFFER_SIZE]),
     EventBuffer([0; EVENT_BUFFER_SIZE]),
 ];
-#[repr(C, align(64))]
-struct SetupPacket([u8; 8]);
-
-#[unsafe(link_section = ".usb_dma")]
-static mut SETUP_PACKET: SetupPacket = SetupPacket([0; 8]);
 #[unsafe(link_section = ".usb_dma")]
 static mut EP0_TRBS: [Trb; 2] = [
     Trb {
@@ -353,25 +345,6 @@ unsafe fn ep0_event_size() -> usize {
 }
 
 #[inline]
-unsafe fn ep0_setup_ptr() -> *mut u8 {
-    unsafe {
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_stock_ep0_dma) {
-            return XBL_EP0_SETUP_DMA_ADDRESS as *mut u8;
-        }
-        if DMA_ADOPTED {
-            return (DMA_ADOPTED_CPU as *mut u8).add(FASTBOOT_EP0_SETUP_OFFSET);
-        }
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
-            && FASTBOOT_EVENT_DMA_BASE != 0
-        {
-            (ep0_event_dma_base() as *mut u8).add(FASTBOOT_EP0_SETUP_OFFSET)
-        } else {
-            addr_of_mut!(SETUP_PACKET).cast::<u8>()
-        }
-    }
-}
-
-#[inline]
 unsafe fn ep0_trb_ptr(index: usize) -> *mut Trb {
     unsafe {
         if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_stock_ep0_dma) {
@@ -392,6 +365,16 @@ unsafe fn ep0_trb_ptr(index: usize) -> *mut Trb {
             addr_of_mut!(EP0_TRBS).cast::<Trb>().add(index)
         }
     }
+}
+
+/// DWC3's EP0 CONTROL_SETUP transfer DMA target is the EP0 TRB itself.
+/// The controller writes the eight-byte USB setup packet over the TRB's
+/// first eight bytes, and Linux/Android reads it back through `dwc->ep0_trb`.
+/// Keep this separate from the TRB descriptor pointer so all cache operations
+/// use the same address and ownership boundary.
+#[inline]
+unsafe fn ep0_setup_data_ptr() -> *mut u8 {
+    unsafe { ep0_trb_ptr(0).cast::<u8>() }
 }
 
 #[inline]
@@ -1043,7 +1026,7 @@ pub fn trace_dwc3_boundary() {
         cache_invalidate(trb1 as usize, core::mem::size_of::<Trb>());
         let trb0_ctrl = read_volatile(addr_of!((*trb0).ctrl));
         let trb1_ctrl = read_volatile(addr_of!((*trb1).ctrl));
-        let setup = ep0_setup_ptr() as *const u8;
+        let setup = ep0_setup_data_ptr() as *const u8;
         cache_invalidate(setup as usize, 8);
         let setup0 = u32::from_le_bytes([
             read_volatile(setup),
@@ -1162,7 +1145,7 @@ pub fn rescue_read64() -> u32 {
         if dsts & DSTS_DEVCTRLHLT != 0 || (dsts >> 18) & 0xf != 0 {
             return 0;
         }
-        let setup = ep0_setup_ptr();
+        let setup = ep0_setup_data_ptr();
         cache_invalidate(setup as usize, 8);
         let mut latched = false;
         for offset in 0..8 {
@@ -2633,23 +2616,16 @@ unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32)
     }
 }
 
-/// Prepare the EP0 SETUP TRB. Stock Bramble XBL has a special initial setup
-/// branch: after allocating the ring entry it publishes that entry's own
-/// address as the TRB buffer address. Keep that quirk confined to the XBL
-/// differential; ordinary Fullerene control transfers use the explicit setup
-/// buffer.
+/// Prepare the EP0 SETUP TRB. DWC3's CONTROL_SETUP buffer pointer is the
+/// ring entry's own address: the controller writes the setup packet into the
+/// first eight bytes of that TRB, which is also how Android msm reads it.
 unsafe fn prepare_ep0_setup_trb() {
-    let buffer = if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
-        unsafe { ep0_trb_ptr(0).cast::<u8>() }
-    } else {
-        unsafe { ep0_setup_ptr() }
-    };
     let kind = if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
         TRB_XBL_EP0_SETUP
     } else {
         TRB_CONTROL_SETUP
     };
-    unsafe { prepare_trb(0, buffer, 8, kind) };
+    unsafe { prepare_trb(0, ep0_setup_data_ptr() as *const u8, 8, kind) };
 }
 
 unsafe fn prepare_trb_at(trb: *mut Trb, buffer: *const u8, length: usize, kind: u32) {
@@ -3349,7 +3325,7 @@ unsafe fn stall_control(endpoint: usize) {
 unsafe fn setup_request() -> [u8; 8] {
     let mut packet = [0; 8];
     unsafe {
-        let setup = ep0_setup_ptr();
+        let setup = ep0_setup_data_ptr();
         cache_invalidate(setup as usize, 8);
         core::ptr::copy_nonoverlapping(setup, packet.as_mut_ptr(), 8);
     }
@@ -3372,8 +3348,9 @@ unsafe fn handle_setup() {
     // host aborts in-flight control transfers with a new SETUP - Linux
     // handles this via its setup_packet_pending logic).
     unsafe {
-        core::ptr::write_bytes(ep0_setup_ptr(), 0, 8);
-        cache_clean(ep0_setup_ptr() as usize, 8);
+        let setup = ep0_setup_data_ptr();
+        core::ptr::write_bytes(setup, 0, 8);
+        cache_clean(setup as usize, 8);
     }
     let request_type = packet[0];
     let request = packet[1];
@@ -3701,7 +3678,7 @@ unsafe fn process_event(raw: u32) {
             // Linux recovers via setup_packet_pending; without this the new
             // SETUP is dispatched into the stale Data/Status handler and the
             // request is silently lost (the mid-enumeration death).
-            let setup = ep0_setup_ptr();
+            let setup = ep0_setup_data_ptr();
             cache_invalidate(setup as usize, 8);
             let mut fresh_setup = false;
             for offset in 0..8 {
@@ -4957,7 +4934,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         for index in 0..(event_size / core::mem::size_of::<u32>()) {
             write_volatile(event_words.add(index), 0);
         }
-        core::ptr::write_bytes(ep0_setup_ptr(), 0, 8);
         core::ptr::write_bytes(
             ep0_trb_ptr(0).cast::<u8>(),
             0,
@@ -4965,7 +4941,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         );
         core::ptr::write_bytes(ep0_response_ptr(), 0, 512);
         cache_clean(ep0_event_dma_base(), event_size);
-        cache_clean(ep0_setup_ptr() as usize, 8);
         cache_clean(ep0_trb_ptr(0) as usize, 2 * core::mem::size_of::<Trb>());
         cache_clean(ep0_response_ptr() as usize, 512);
         write(GEVNTADRLO0, event_address as u32);
@@ -6348,10 +6323,9 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 // event ring: a partially backed region can pass the first
                 // page while the TRB/SETUP pages hang the core's fetch.
                 let mut ram_ok = true;
-                let targets: [(usize, usize); 4] = [
+                let targets: [(usize, usize); 3] = [
                     (ep0_event_dma_base(), 16),
                     (ep0_trb_ptr(0) as usize, 64),
-                    (ep0_setup_ptr() as usize, 8),
                     (ep0_response_ptr() as usize, 512),
                 ];
                 for (address, span) in targets {
@@ -6886,10 +6860,17 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
 /// DWC3 GEVNTCOUNT is a write-to-consume register. Android msm's
 /// `dwc3_event_buffers_setup()` initializes the buffer by writing zero to the
 /// complete register, including when the previous Fastboot owner left a stale
-/// event-buffer state behind. Match that publication boundary exactly.
+/// event-buffer state behind. Factory ABL instead preserves the register's
+/// EHB bit during that initial publication; the ABL event-consume A/B carries
+/// that source-derived difference together with its per-event ACK order.
 unsafe fn acknowledge_ep0_event_count() {
     unsafe {
-        write(GEVNTCOUNT0, 0);
+        let value = if cfg!(fullerene_aarch64_usb_abl_event_consume) {
+            read(GEVNTCOUNT0) & GEVNTCOUNT_EHB
+        } else {
+            0
+        };
+        write(GEVNTCOUNT0, value);
         core::arch::asm!("dsb sy", options(nostack));
     }
 }
@@ -7230,7 +7211,7 @@ unsafe fn update_signal_latches() {
         if read_volatile(addr_of!((*trb).ctrl)) & TRB_HWO == 0 {
             SIGNAL_SETUP_TRB_RETIRED = true;
         }
-        let setup = ep0_setup_ptr() as *const u8;
+        let setup = ep0_setup_data_ptr() as *const u8;
         cache_invalidate(setup as usize, 8);
         for offset in 0..8 {
             if read_volatile(setup.add(offset)) != 0 {
@@ -7604,7 +7585,7 @@ pub fn armalive_probe() -> u32 {
         if EP0_SETUP_ARMED {
             state |= 0x1;
         }
-        let setup = ep0_setup_ptr();
+        let setup = ep0_setup_data_ptr();
         cache_invalidate(setup as usize, 8);
         for offset in 0..8 {
             if read_volatile(setup.add(offset)) != 0 {

@@ -223,6 +223,9 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_ABL_TRB_FLAGS").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_abl_trb_flags");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_ABL_SETUP_TRB_BUFFER").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_abl_setup_trb_buffer");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_ABL_EVENT_CONSUME").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_abl_event_consume");
         }
@@ -588,6 +591,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABL_SHARED_HSPHY");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABL_EP_CONFIG");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABL_COMMAND_PARAMS");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABL_SETUP_TRB_BUFFER");
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT"
         );

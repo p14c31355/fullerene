@@ -208,12 +208,12 @@ pub unsafe fn read_usb_clock_register_state() -> UsbClockRegisterState {
 
 /// Bring up only the mock UTMI branch feeding the USB2 datapath.
 ///
-/// The Lito GCC table exposes `gcc_usb30_prim_mock_utmi_clk_src` at 60 MHz
-/// (`GPLL0_OUT_EVEN / 5`).  The separate 19.2 MHz RPMh XO is the HS PHY
-/// `ref_clk_src`, not the DWC3 mock-UTMI clock.  An SS-only Fastboot session
-/// may leave this GCC branch gated, so program the source and raise that one
-/// branch only; the core/iface/QMP branches are left as firmware configured
-/// them.
+/// The Bramble Lito GCC table exposes `gcc_usb30_prim_mock_utmi_clk_src` at
+/// 19.2 MHz (`BI_TCXO / 1`), and `dwc3-msm.c` requests that rate explicitly.
+/// An SS-only Fastboot session may leave this GCC branch gated, so program the
+/// source and raise that one branch only; the core/iface/QMP branches are left
+/// as firmware configured them.  The old 60 MHz path is retained only behind
+/// an explicit negative-control build flag.
 pub unsafe fn enable_usb2_utmi_clock() -> bool {
     unsafe {
         let resources = usb_resources();
@@ -221,15 +221,15 @@ pub unsafe fn enable_usb2_utmi_clock() -> bool {
         if utmi.name != "utmi" || utmi.provider != ClockProvider::Gcc {
             return false;
         }
-        // This is the only source present in the official Lito GCC rate
-        // table for the mock-UTMI RCG. Keep the old 19.2 MHz setting only as
-        // an explicit negative-control flag for reproducing earlier runs.
-        let (parent, divider) = if option_env!("FULLERENE_USB_UTMI_19_2MHZ").is_some()
-            && option_env!("FULLERENE_USB_UTMI_60MHZ").is_none()
+        // 60 MHz is not an official Bramble-Lito rate; keep it only for
+        // reproducing the earlier invalid-source experiments.  The legacy
+        // 19.2 MHz flag remains accepted for build-script compatibility.
+        let (parent, divider) = if option_env!("FULLERENE_USB_UTMI_60MHZ").is_some()
+            && option_env!("FULLERENE_USB_UTMI_19_2MHZ").is_none()
         {
-            (0u32, 1u32)
-        } else {
             (6u32, 5u32)
+        } else {
+            (0u32, 1u32)
         };
         if utmi.source_offset != 0 && !configure_rcg(utmi.source_offset, parent, divider) {
             return false;

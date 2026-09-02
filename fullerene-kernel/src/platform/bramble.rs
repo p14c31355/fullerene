@@ -491,17 +491,17 @@ pub const fn usb_clock_plan(vote: UsbBusVote) -> UsbClockPlan {
         UsbBusVote::Nominal => UsbClockPlan {
             core_parent: 1,
             core_divider: 8,
-            // gcc_usb30_prim_mock_utmi_clk_src: 60 MHz from
-            // GPLL0_OUT_EVEN with the HID divider encoded as 5.
-            utmi_parent: 6,
-            utmi_divider: 5,
+            // gcc_usb30_prim_mock_utmi_clk_src: 19.2 MHz from BI_TCXO.
+            // This is the only rate in the Bramble Lito GCC table.
+            utmi_parent: 0,
+            utmi_divider: 1,
             branches_enabled: true,
         },
         UsbBusVote::Svs => UsbClockPlan {
             core_parent: 6,
             core_divider: 8,
-            utmi_parent: 6,
-            utmi_divider: 5,
+            utmi_parent: 0,
+            utmi_divider: 1,
             branches_enabled: true,
         },
         UsbBusVote::Suspend | UsbBusVote::Minimum => UsbClockPlan {
@@ -882,9 +882,11 @@ const BRAMBLE_CONTROLLER_CLOCKS: [ClockResource; 6] = [
         branch_offset: 0xf01c,
         source_offset: 0xf038,
         // gcc_usb30_prim_mock_utmi_clk_src has one supported rate:
-        // GPLL0_OUT_EVEN / 5 = 60 MHz.
-        normal_rate_hz: 60_000_000,
-        high_speed_rate_hz: 60_000_000,
+        // BI_TCXO / 1 = 19.2 MHz.  The 60 MHz path is not in the
+        // Bramble Lito GCC rate table and is retained only as an explicit
+        // negative-control build option.
+        normal_rate_hz: 19_200_000,
+        high_speed_rate_hz: 19_200_000,
     },
     ClockResource {
         name: "sleep",
@@ -3608,8 +3610,8 @@ mod tests {
             UsbClockPlan {
                 core_parent: 1,
                 core_divider: 8,
-                utmi_parent: 6,
-                utmi_divider: 5,
+                utmi_parent: 0,
+                utmi_divider: 1,
                 branches_enabled: true,
             }
         );

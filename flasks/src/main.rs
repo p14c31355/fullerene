@@ -430,6 +430,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_abl_trb_flags: bool,
 
+    /// Bramble differential: use Factory ABL's CONTROL_SETUP buffer pointer
+    /// (the EP0 TRB address itself) instead of the separate setup buffer.
+    #[arg(long)]
+    usb_gadget_handoff_abl_setup_trb_buffer: bool,
+
     /// Bramble differential: consume each EP0 event after dispatching it,
     /// matching Factory ABL's four-byte GEVNTCOUNT acknowledgement order.
     #[arg(long)]
@@ -1143,6 +1148,18 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-abl-trb-flags requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_abl_setup_trb_buffer
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-abl-setup-trb-buffer requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_abl_event_consume
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
@@ -1557,6 +1574,8 @@ fn main() -> io::Result<()> {
                 gadget_handoff_abl_command_params: args
                     .usb_gadget_handoff_abl_command_params,
                 gadget_handoff_abl_trb_flags: args.usb_gadget_handoff_abl_trb_flags,
+                gadget_handoff_abl_setup_trb_buffer: args
+                    .usb_gadget_handoff_abl_setup_trb_buffer,
                 gadget_handoff_abl_event_consume: args.usb_gadget_handoff_abl_event_consume,
                 gadget_handoff_xbl_direction_trb: args.usb_gadget_handoff_xbl_direction_trb,
                 gadget_handoff_xbl_trb_chain: args.usb_gadget_handoff_xbl_trb_chain,
@@ -1769,6 +1788,7 @@ struct Aarch64BuildConfig {
     gadget_handoff_abl_ep_config: bool,
     gadget_handoff_abl_command_params: bool,
     gadget_handoff_abl_trb_flags: bool,
+    gadget_handoff_abl_setup_trb_buffer: bool,
     gadget_handoff_abl_event_consume: bool,
     gadget_handoff_xbl_direction_trb: bool,
     gadget_handoff_xbl_trb_chain: bool,
@@ -1870,6 +1890,7 @@ fn build_aarch64_kernel(
         gadget_handoff_abl_ep_config,
         gadget_handoff_abl_command_params,
         gadget_handoff_abl_trb_flags,
+        gadget_handoff_abl_setup_trb_buffer,
         gadget_handoff_abl_event_consume,
         gadget_handoff_xbl_direction_trb,
         gadget_handoff_xbl_trb_chain,
@@ -2105,6 +2126,12 @@ fn build_aarch64_kernel(
     }
     if gadget_handoff_abl_trb_flags {
         push_env("FULLERENE_AARCH64_USB_ABL_TRB_FLAGS", "1".to_owned());
+    }
+    if gadget_handoff_abl_setup_trb_buffer {
+        push_env(
+            "FULLERENE_AARCH64_USB_ABL_SETUP_TRB_BUFFER",
+            "1".to_owned(),
+        );
     }
     if gadget_handoff_abl_event_consume {
         push_env(
