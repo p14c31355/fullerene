@@ -225,6 +225,61 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
     }
 }
 
+/// Apply Bramble's Qualcomm USB31 LFPS exit-response timer workaround.
+///
+/// The vendor glue writes `DWC31_LINK_LU3LFPSRXTIM(0)` during
+/// `dwc3_otg_start_peripheral()`, after DBM/device-mode setup and immediately
+/// before gadget VBUS connect. Keep this source-confirmed controller-link
+/// delta opt-in: it changes no PHY table, endpoint state, or packet payload.
+#[inline]
+pub(super) unsafe fn configure_usb31_lfps_exit_timer() {
+    unsafe {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_ss_lfps_timer) {
+            return;
+        }
+        if read(GSNPSID) >> 16 != DWC31_IP {
+            return;
+        }
+        let revision = read(VER_NUMBER) | DWC3_REVISION_IS_DWC31;
+        if revision != DWC3_USB31_REVISION_170A || read(VER_TYPE) != DWC3_USB31_VER_TYPE_GA {
+            return;
+        }
+        let mut reg = read(DWC31_LINK_LU3LFPSRXTIM0);
+        reg &= !(DWC31_LINK_LU3LFPSRXTIM_GEN2_MASK | DWC31_LINK_LU3LFPSRXTIM_GEN1_MASK);
+        reg |= DWC31_LINK_LU3LFPSRXTIM_GEN2_BRAMBLE | DWC31_LINK_LU3LFPSRXTIM_GEN1_BRAMBLE;
+        write(DWC31_LINK_LU3LFPSRXTIM0, reg);
+        let readback = read(DWC31_LINK_LU3LFPSRXTIM0);
+        super::log::log_hex("usb: SS LFPS exit timer=", readback as u64);
+    }
+}
+
+/// Apply the DWC31 part of Linux's `dwc3_phy_setup()`.
+///
+/// The reference code clears `GUSB3PIPECTL.UX_EXIT_PX` before applying the
+/// revision/DT-specific PIPE policy.  This is a controller-side link setup
+/// bit, so expose only that source-confirmed operation as a separate A/B.
+#[inline]
+pub(super) unsafe fn configure_usb31_phy_setup() {
+    unsafe {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_ss_clear_ux_exit_px) {
+            return;
+        }
+        if read(GSNPSID) >> 16 != DWC31_IP {
+            return;
+        }
+        let revision = read(VER_NUMBER) | DWC3_REVISION_IS_DWC31;
+        if revision < DWC3_USB31_REVISION_170A {
+            return;
+        }
+        let before = read(GUSB3PIPECTL0);
+        let after = before & !GUSB3PIPECTL_UX_EXIT_PX;
+        write(GUSB3PIPECTL0, after);
+        let readback = read(GUSB3PIPECTL0);
+        super::log::log_hex("usb: SS PHY UX_EXIT_PX before=", u64::from(before & GUSB3PIPECTL_UX_EXIT_PX));
+        super::log::log_hex("usb: SS PHY GUSB3PIPECTL=", readback as u64);
+    }
+}
+
 /// Reapply the DWC3-side USB2 interface contract after a controller reset.
 ///
 /// Linux's `dwc3_hs_phy_setup()` selects the UTMI interface and programs the

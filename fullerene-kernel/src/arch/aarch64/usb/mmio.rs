@@ -155,6 +155,14 @@ pub(crate) const GDBGLTSSM: usize = 0xc164;
 // DWC_usb31 uses a separate link-debug block.  msm-4.19 core.h selects this
 // offset whenever GSNPSID identifies the 0x3331/0x3332 IP.
 pub(crate) const DWC31_LINK_GDBGLTSSM: usize = 0xd050;
+// msm-4.19 dwc3_otg_start_peripheral() programs the USB3 LFPS exit-response
+// timers on Bramble's DWC_usb31 before gadget VBUS connect.  This register is
+// in the DWC3 core's USB31 link block, not in the QMP PHY window.
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM0: usize = 0xd010;
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM_GEN2_MASK: u32 = 0xff << 16;
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM_GEN1_MASK: u32 = 0xff;
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM_GEN2_BRAMBLE: u32 = 6 << 16;
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM_GEN1_BRAMBLE: u32 = 5;
 pub(crate) const VER_NUMBER: usize = 0xc1a0;
 pub(crate) const VER_TYPE: usize = 0xc1a4;
 pub(crate) const GFLADJ: usize = 0xc630;
@@ -210,6 +218,7 @@ pub(crate) const GUCTL3_USB20_RETRY_DISABLE: u32 = 1 << 16;
 pub(crate) const GSBUSCFG1_PIPETRANSLIMIT_MASK: u32 = 0x0f << 8;
 pub(crate) const GSBUSCFG1_PIPETRANSLIMIT_E: u32 = 0xe << 8;
 pub(crate) const GUSB3PIPECTL_SUSPHY: u32 = 1 << 17;
+pub(crate) const GUSB3PIPECTL_UX_EXIT_PX: u32 = 1 << 27;
 pub(crate) const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 
 pub(crate) const DCTL_CSFTRST: u32 = 1 << 30;

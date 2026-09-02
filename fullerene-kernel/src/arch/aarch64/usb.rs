@@ -12,7 +12,8 @@ use config::{
     apply_usb31_gadget_reference_deltas, configure_android_hs_connect_done_policy,
     configure_dwc3_device_mode, configure_dwc3_global_control, configure_gadget_speed,
     configure_gadget_start_defaults,
-    configure_usb2_phy_interface, enable_gadget_susphy,
+    configure_usb2_phy_interface, configure_usb31_lfps_exit_timer, configure_usb31_phy_setup,
+    enable_gadget_susphy,
     enable_usb2_gadget_susphy, qscratch_set, run_stop_value,
 };
 use control::{
@@ -6591,6 +6592,10 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // Apply it before the stage-14 SS boundary and before publishing any
         // endpoint resources.
         configure_dwc3_device_mode();
+        // Qualcomm's Bramble glue applies this USB31 link timer before
+        // VBUS/gadget connect. Keep it as the next isolated SS A/B.
+        configure_usb31_lfps_exit_timer();
+        configure_usb31_phy_setup();
 
         // Stage 14 is the post-QMP DWC3 global-control boundary. It keeps the
         // core reset differential unchanged, but includes the device-mode,

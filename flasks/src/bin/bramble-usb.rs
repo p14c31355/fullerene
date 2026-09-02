@@ -266,6 +266,13 @@ struct LoopArgs {
     /// Re-assert QMP aux/pipe/com_aux clock branches after QMP init (A/B).
     #[arg(long)]
     ss_reassert_qmp_clocks: bool,
+    /// Apply Qualcomm msm's USB31 LFPS exit-response timer values immediately
+    /// before the SuperSpeed gadget start (A/B).
+    #[arg(long)]
+    ss_lfps_timer: bool,
+    /// Clear DWC31 GUSB3PIPECTL.UX_EXIT_PX as in dwc3_phy_setup() (A/B).
+    #[arg(long)]
+    ss_clear_ux_exit_px: bool,
     /// Set DCFG.IGNSTRMPP in the direct gadget-start sequence (A/B).
     #[arg(long)]
     dcfg_ignstrmpp: bool,
@@ -533,6 +540,8 @@ impl Default for LoopArgs {
             ss_android_dbm_reset: false,
             ss_reassert_qmp_power: false,
             ss_reassert_qmp_clocks: false,
+            ss_lfps_timer: false,
+            ss_clear_ux_exit_px: false,
             dcfg_ignstrmpp: false,
             usb2_susphy: false,
             ep0_stall_flush: false,
@@ -1049,6 +1058,18 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--ss-reassert-qmp-clocks requires --super-speed",
+        ));
+    }
+    if args.ss_lfps_timer && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-lfps-timer requires --super-speed",
+        ));
+    }
+    if args.ss_clear_ux_exit_px && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-clear-ux-exit-px requires --super-speed",
         ));
     }
     if args.dt_hird_threshold && !args.direct_handoff {
@@ -2041,6 +2062,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.ss_reassert_qmp_clocks {
         arguments.push("--usb-gadget-handoff-ss-reassert-qmp-clocks".to_owned());
+    }
+    if args.ss_lfps_timer {
+        arguments.push("--usb-gadget-handoff-ss-lfps-timer".to_owned());
+    }
+    if args.ss_clear_ux_exit_px {
+        arguments.push("--usb-gadget-handoff-ss-clear-ux-exit-px".to_owned());
     }
     if args.dcfg_ignstrmpp {
         arguments.push("--usb-gadget-handoff-dcfg-ignstrmpp".to_owned());

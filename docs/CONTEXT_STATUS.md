@@ -130,6 +130,12 @@ The next DBM A/B was source-checked against Qualcomm `dbm.c`: DBM v1.5 uses `wra
 
 `3507048.0` ran that corrected DBM path at stage 21. Fastboot disconnected at `23:33:32`, the intentional HS marker appeared at `23:33:42`, the descriptor timed out with `-110` at `23:33:48`, and Android `18d1:4ee7` returned at `23:34:09`; `boot-reason=watchdog`. This is only a stage-reach diagnostic because stage 21 deliberately falls back before SS endpoint publication. The next run must use the full SuperSpeed path; the post-Run/Stop GCC reset flag remains excluded. Artifact SHA: `5b8ba03592839d7722140fc044621eba8d0e35ec1294c25a8d0055c1d492e11d`.
 
+`3513063.0` ran the full SuperSpeed path with the corrected, source-confirmed Android DBM reset/enable sequence. Fastboot disconnected at `23:37:31`; Fullerene's intentional HS attach appeared at `23:37:41`; the descriptor timed out with `-110` at `23:37:47`; Android `18d1:4ee7` returned at `23:38:07`; `boot-reason=watchdog`; no `1234:0001`. The full endpoint-publication path therefore reached the same failure boundary as the no-DBM control: DBM reset/enable is not the missing SS-link transition. Artifact SHA: `119bd17828ae571fee648c53ad9895afc40dce66178fccde15af4b6b79605796`.
+
+The source audit then found a concrete remaining Bramble delta: Qualcomm's official `dwc3_otg_start_peripheral()` writes USB31 `DWC31_LINK_LU3LFPSRXTIM(0)` with GEN2=`6` and GEN1=`5` after DBM reset/device-mode selection and before gadget VBUS connect. The local SS handoff had no equivalent write. This is a controller link-handshake setting, not a packet wrapper; it is the next opt-in A/B, with the exact `0xd010`, `[23:16]`, and `[7:0]` fields taken from the official Bramble headers/glue.
+
+`3544447.0` applied the source-confirmed Bramble USB31 LFPS exit-response timer (`DWC31_LINK_LU3LFPSRXTIM(0)`, GEN2=`6`, GEN1=`5`) with the same fixed lane-A/no-core-reset/no-SMMU/QMP/controller-clock/DBM conditions. Fastboot disconnected at `23:58:52`; Fullerene HS attach appeared at `23:59:03`; the descriptor timed out with `-110` at `23:59:08`; Android `18d1:4ee7` returned at `23:59:29`; `boot-reason=watchdog`; no `1234:0001`. The timer delta is negative and the next source comparison is the official `dwc3_phy_setup()` clear of `GUSB3PIPECTL.UX_EXIT_PX`. Artifact SHA: `594a941bb9505900fca579e8cb013e9a032320d4672a70fa62dbac2bc75f96d5`.
+
 ## Next source-directed investigation
 
 | Order | Check | Why |
@@ -138,27 +144,27 @@ The next DBM A/B was source-checked against Qualcomm `dbm.c`: DBM v1.5 uses `wra
 | 1a | Read QMP `PCS_STATUS2[3]` (`RX_EQUALIZATION_IN_PROGRESS`) at stage 20 | Complete: `3264118.0` measured the 0-bit bucket, so RX equalization was not in progress at the snapshot. Do not introduce the optional INSIG/link-training mutation on this evidence alone |
 | 1b | Read the live USB31 DWC3 `LINKSTATE` from `DWC31_LINK_GDBGLTSSM=0xd050` with `ss-ltssm-bit0..3` at stage 21 | `3283449.0` and the four old bit runs were valid pre-Run/Stop samples only; Qualcomm gadget start initializes `SS_DIS` before production `DCTL.Run/Stop`. Corrected timing runs give bit0=`0` (`3383134.0`), bit2=`0` (`3395716.0`), bit3=`0` (`3401041.0`), and wide bit1=`0` (`3408278.0`), but retake `ss-domain-core` first because `3380073.0` used the wrong IP-prefix predicate |
 | 1c | Split the corrected post-Run/Stop domain result into GDSC/core-branch/mock-UTMI branch selectors | Complete: `3422166.0`, `3426864.0`, `3429063.0`, and `3457638.0` all read `0`; the full post-Run/Stop CX/BCM, regulator, GDSC, RCG, and branch refresh in `3449266.0`/`3453087.0`/`3455402.0`/`3457638.0` also leaves each selected bit at `0`. This is a shared transition/ownership collapse, not a single missing branch |
-| 2 | Run the full SS path with the source-confirmed `dwc3_msm_block_reset(false)` DBM reset/enable before SS endpoint publication | `3507048.0` exercised only stage-21 reach and the intentional HS marker, so it does not judge endpoint publication. The corrected helper uses `dwc3_base + 0xf8000`; keep `--no-core-reset`, lane A, no-SMMU, QMP/controller clocks, and packet state fixed, and do not repeat the destabilizing post-Run/Stop GCC reset |
-| 3 | If a QMP/PCS readout indicates a ready link, trace DWC3 SS Run/Stop and only then endpoint ownership | Keep DCTL, SMMU, endpoint, event-ring, and packet changes downstream of a host-visible SS attach |
+| 2 | Apply the official USB31 LFPS exit-response timer delta before SS Run/Stop | Complete: `3544447.0` applied GEN2=`6` / GEN1=`5`; the full path still produced HS attach, descriptor `-110`, Android `18d1:4ee7`, and watchdog recovery with no `1234:0001` |
+| 3 | Compare/apply the official `dwc3_phy_setup()` clear of `GUSB3PIPECTL.UX_EXIT_PX` | Source audit next: this is a bounded USB3 core/PIPE setup-order delta; keep DCTL, SMMU, endpoint, event-ring, and packet changes downstream of a host-visible SS attach |
 | 4 | Only if SS link is present, inspect DWC3/SMMU/endpoint ownership | Then move to `DCFG`, `DEPSTARTCFG`, endpoint resources, event ring, and EP0. Until then, endpoint and packet-format changes are downstream |
 | 5 | Only after a valid EP0 data stage, inspect descriptor bytes | Wrapping is downstream of the observed no-identity/no-payload boundary |
 
-Latest classified hardware run: `3473325.0` replayed the Qualcomm link-clock stop/reset/release sequence after SS Run/Stop with QMP lane A, `--no-core-reset`, and `--no-smmu`. Fastboot disconnected at `23:15:11`, HS attach appeared at `23:15:25`, the descriptor first returned `-110` at `23:15:31`, then xHCI reported `-71` and power-cycled the port; no `1234:0001` appeared, no Android SS fallback was captured, and the phone disappeared from USB afterward. The post-Run/Stop GCC reset is classified as destabilizing; the next check is the pre-Run/Stop Android DBM reset/enable boundary, with packet wrapping downstream.
+Latest classified hardware run: `3544447.0` applied the source-confirmed USB31 LFPS timer delta with QMP lane A, `--no-core-reset`, and `--no-smmu`; it still produced HS attach, descriptor `-110`, Android `18d1:4ee7`, and watchdog recovery with no `1234:0001`. The next check is the official `GUSB3PIPECTL.UX_EXIT_PX` clear, with packet wrapping downstream.
 
 ## Document routing and context cost
 
 | Document | Size | Use | Loading policy |
 | --- | ---: | --- | --- |
-| [`HARDWARE_aarch64.md`](HARDWARE_aarch64.md) | 787 lines / 376.6 KiB | Full Bramble ledger and source audit | Read targeted sections or this index first |
-| [`HARDWARE.md`](HARDWARE.md) | 692 lines / 240.1 KiB | Cross-platform hardware notes plus Bramble summary | Read the Bramble section and this index; avoid loading the full table |
-| [`BUG_JOURNAL.md`](BUG_JOURNAL.md) | 1,410 lines / 66 KB | Historical software investigations, mostly Wi-Fi and runtime | Not needed for the Bramble USB path unless a related regression appears |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | 1,037 lines / 38 KB | Project-wide design rules | Read only when changing architecture or ownership boundaries |
-| [`BUILD.md`](BUILD.md) | 679 lines / 29 KB | Build and run procedures | Read the Bramble command section when running hardware |
+| [`HARDWARE_aarch64.md`](HARDWARE_aarch64.md) | 792 lines / 379.4 KB | Full Bramble ledger and source audit | Read targeted sections or this index first |
+| [`HARDWARE.md`](HARDWARE.md) | 697 lines / 248.8 KB | Cross-platform hardware notes plus Bramble summary | Read the Bramble section and this index; avoid loading the full table |
+| [`BUG_JOURNAL.md`](BUG_JOURNAL.md) | 1,410 lines / 65.7 KB | Historical software investigations, mostly Wi-Fi and runtime | Not needed for the Bramble USB path unless a related regression appears |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | 1,037 lines / 37.9 KB | Project-wide design rules | Read only when changing architecture or ownership boundaries |
+| [`BUILD.md`](BUILD.md) | 679 lines / 28.8 KB | Build and run procedures | Read the Bramble command section when running hardware |
 | `docs/history/*.png` | 3.1 MB | Historical screenshots/artifacts | Do not load for USB source debugging |
 
-The two hardware ledgers account for about 567 KiB of text and contain the
-only unusually long lines in this USB context: 541 rows in
-`HARDWARE_aarch64.md` and 305 rows in `HARDWARE.md` exceed 200 characters;
+The two hardware ledgers account for about 628 KB of text and contain the
+only unusually long lines in this USB context: 573 rows in
+`HARDWARE_aarch64.md` and 336 rows in `HARDWARE.md` exceed 200 characters;
 the longest row is about 1,409 characters. The individual
 experiment rows are valuable evidence, but loading the whole ledger into an
 agent context repeats the same negative conclusion many times. This index is

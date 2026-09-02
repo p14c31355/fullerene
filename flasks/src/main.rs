@@ -541,6 +541,16 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_ss_reassert_qmp_clocks: bool,
 
+    /// Bramble differential: apply Qualcomm msm's USB31 LFPS exit-response
+    /// timer values immediately before the SuperSpeed gadget start.
+    #[arg(long)]
+    usb_gadget_handoff_ss_lfps_timer: bool,
+
+    /// Bramble differential: clear the DWC31 GUSB3PIPECTL UX_EXIT_PX bit
+    /// from the source-confirmed dwc3_phy_setup() sequence.
+    #[arg(long)]
+    usb_gadget_handoff_ss_clear_ux_exit_px: bool,
+
     /// Bramble differential: set DCFG.IGNSTRMPP in the direct gadget-start
     /// sequence, matching current mainline DWC3.
     #[arg(long)]
@@ -1409,6 +1419,28 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-ss-reassert-qmp-clocks requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_ss_lfps_timer
+        && (!args.usb_gadget_handoff_super_speed_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-ss-lfps-timer requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_ss_clear_ux_exit_px
+        && (!args.usb_gadget_handoff_super_speed_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-ss-clear-ux-exit-px requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_ep0_initial_512
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
@@ -1798,6 +1830,8 @@ fn main() -> io::Result<()> {
                     .usb_gadget_handoff_ss_reassert_qmp_power,
                 gadget_handoff_ss_reassert_qmp_clocks: args
                     .usb_gadget_handoff_ss_reassert_qmp_clocks,
+                gadget_handoff_ss_lfps_timer: args.usb_gadget_handoff_ss_lfps_timer,
+                gadget_handoff_ss_clear_ux_exit_px: args.usb_gadget_handoff_ss_clear_ux_exit_px,
                 gadget_handoff_dcfg_ignstrmpp: args.usb_gadget_handoff_dcfg_ignstrmpp,
                 gadget_handoff_usb2_susphy: args.usb_gadget_handoff_usb2_susphy,
                 gadget_handoff_ep0_stall_flush: args.usb_gadget_handoff_ep0_stall_flush,
@@ -2022,6 +2056,8 @@ struct Aarch64BuildConfig {
     gadget_handoff_ss_android_dbm_reset: bool,
     gadget_handoff_ss_reassert_qmp_power: bool,
     gadget_handoff_ss_reassert_qmp_clocks: bool,
+    gadget_handoff_ss_lfps_timer: bool,
+    gadget_handoff_ss_clear_ux_exit_px: bool,
     gadget_handoff_dcfg_ignstrmpp: bool,
     gadget_handoff_usb2_susphy: bool,
     gadget_handoff_ep0_stall_flush: bool,
@@ -2136,6 +2172,8 @@ fn build_aarch64_kernel(
         gadget_handoff_ss_android_dbm_reset,
         gadget_handoff_ss_reassert_qmp_power,
         gadget_handoff_ss_reassert_qmp_clocks,
+        gadget_handoff_ss_lfps_timer,
+        gadget_handoff_ss_clear_ux_exit_px,
         gadget_handoff_dcfg_ignstrmpp,
         gadget_handoff_usb2_susphy,
         gadget_handoff_ep0_stall_flush,
@@ -2466,6 +2504,18 @@ fn build_aarch64_kernel(
     if gadget_handoff_ss_reassert_qmp_clocks {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_REASSERT_QMP_CLOCKS",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_ss_lfps_timer {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_LFPS_TIMER",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_ss_clear_ux_exit_px {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_CLEAR_UX_EXIT_PX",
             "1".to_owned(),
         );
     }
