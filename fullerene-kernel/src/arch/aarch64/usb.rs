@@ -11,14 +11,13 @@
 use config::{
     apply_usb31_gadget_reference_deltas, configure_android_hs_connect_done_policy,
     configure_dwc3_device_mode, configure_dwc3_global_control, configure_gadget_speed,
-    configure_gadget_start_defaults,
-    configure_usb2_phy_interface, configure_usb31_lfps_exit_timer, configure_usb31_phy_setup,
-    enable_gadget_susphy,
-    enable_usb2_gadget_susphy, qscratch_set, run_stop_value,
+    configure_gadget_start_defaults, configure_usb2_phy_interface, configure_usb31_lfps_exit_timer,
+    configure_usb31_phy_setup, enable_gadget_susphy, enable_usb2_gadget_susphy, qscratch_set,
+    run_stop_value,
 };
 use control::{
-    core_soft_reset, device_soft_reset, run_stop_device, run_stop_device_no_readback,
-    release_usb3_phy_reset, stop_running_device, write_dctl_safe,
+    core_soft_reset, device_soft_reset, release_usb3_phy_reset, run_stop_device,
+    run_stop_device_no_readback, stop_running_device, write_dctl_safe,
 };
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
@@ -41,8 +40,7 @@ pub use trace::{
     TRACE_BOOT_USB_ENTRY, TRACE_EXCEPTION_SYNC, TRACE_PLATFORM_IRQ, TRACE_PROBE_WATCHDOG,
     TRACE_TYPEC_BEGIN, TRACE_TYPEC_DONE, TRACE_TYPEC_EVENT, TRACE_UDC_REARM,
     TRACE_USB_HANDOFF_BEGIN, dump_trace, prev_boot_progress_code, prev_boot_qmp_phase_code,
-    trace_head, trace_last_event,
-    trace_marker, trace_probe_begin, trace_reset_head_for_boot,
+    trace_head, trace_last_event, trace_marker, trace_probe_begin, trace_reset_head_for_boot,
 };
 mod log;
 mod mmio;
@@ -1055,9 +1053,8 @@ unsafe fn capture_ss_state_snapshot() {
         SS_STATE_SNAPSHOT_QMP_POWER = phy::qmp_power_snapshot();
         let clocks = super::platform::bramble::usb_clock::read_usb_clock_register_state();
         SS_STATE_SNAPSHOT_QMP_BRANCHES = clocks.qmp_branches;
-        let gdsc = core::ptr::read_volatile(
-            super::platform::bramble::usb_resources().gdsc as *const u32,
-        );
+        let gdsc =
+            core::ptr::read_volatile(super::platform::bramble::usb_resources().gdsc as *const u32);
         let snpsid = read(GSNPSID);
         let ltssm_reg = if matches!(snpsid >> 16, DWC31_IP | DWC32_IP) {
             DWC31_LINK_GDBGLTSSM
@@ -1153,7 +1150,12 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
     }
     if matches!(
         selector,
-        "ss-speed" | "ss-link" | "ss-pipe" | "ss-gctl" | "ss-qmp" | "ss-vbus"
+        "ss-speed"
+            | "ss-link"
+            | "ss-pipe"
+            | "ss-gctl"
+            | "ss-qmp"
+            | "ss-vbus"
             | "ss-dctl"
             | "ss-domain"
             | "ss-domain-core"
@@ -1230,17 +1232,20 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
                 "ss-link" => (dsts >> 18) & 0xf,
                 // Four independent bits: USB3 PIPE SUSPHY, PIPE soft reset,
                 // DCTL Run/Stop, and DSTS halted.
-                "ss-pipe" => (u32::from(pipe & GUSB3PIPECTL_SUSPHY != 0))
-                    | (u32::from(pipe & GUSB3PIPECTL_PHYSOFTRST != 0) << 1)
-                    | (u32::from(dctl & DCTL_RUN_STOP != 0) << 2)
-                    | (u32::from(dsts & DSTS_DEVCTRLHLT != 0) << 3),
+                "ss-pipe" => {
+                    (u32::from(pipe & GUSB3PIPECTL_SUSPHY != 0))
+                        | (u32::from(pipe & GUSB3PIPECTL_PHYSOFTRST != 0) << 1)
+                        | (u32::from(dctl & DCTL_RUN_STOP != 0) << 2)
+                        | (u32::from(dsts & DSTS_DEVCTRLHLT != 0) << 3)
+                }
                 // GCTL.PRTCAPDIR plus the two-bit RAMCLKSEL value.
-                "ss-gctl" => ((gctl & GCTL_PRTCAPDIR_MASK) >> 12)
-                    | (gctl_ramclksel(gctl) << 2),
+                "ss-gctl" => ((gctl & GCTL_PRTCAPDIR_MASK) >> 12) | (gctl_ramclksel(gctl) << 2),
                 // QMP PHYSTATUS, PCS_START_CONTROL[1:0], and TYPEC_CTRL[0].
-                "ss-qmp" => u32::from(qmp & QMP_PHYSTATUS != 0)
-                    | (((qmp >> 16) & 0x3) << 1)
-                    | (((qmp >> 24) & 0x1) << 3),
+                "ss-qmp" => {
+                    u32::from(qmp & QMP_PHYSTATUS != 0)
+                        | (((qmp >> 16) & 0x3) << 1)
+                        | (((qmp >> 24) & 0x1) << 3)
+                }
                 "ss-vbus" => (qscratch >> 24) & 0x1,
                 // Run/Stop lifecycle: pre-write DCTL, immediate post-write
                 // DCTL, later stage-21 DCTL, and later DSTS halted.
@@ -1251,8 +1256,7 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
                     u32::from(pre != 0xffff_ffff && pre & DCTL_RUN_STOP != 0)
                         | (u32::from(post != 0xffff_ffff && post & DCTL_RUN_STOP != 0) << 1)
                         | (u32::from(dctl & DCTL_RUN_STOP != 0) << 2)
-                        | (u32::from(post_dsts != 0xffff_ffff
-                            && post_dsts & DSTS_DEVCTRLHLT != 0)
+                        | (u32::from(post_dsts != 0xffff_ffff && post_dsts & DSTS_DEVCTRLHLT != 0)
                             << 3)
                 }
                 // Encode the four domain bits as N+1 so 1..=16 are valid
@@ -1266,18 +1270,14 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
                 // the clock/GDSC domain bits because a live MMIO readback
                 // does not prove that the controller retained its protocol
                 // capability through the no-core handoff.
-                "ss-gctl-device" => {
-                    u32::from(gctl & GCTL_PRTCAPDIR_MASK == GCTL_PRTCAP_DEVICE)
-                }
+                "ss-gctl-device" => u32::from(gctl & GCTL_PRTCAPDIR_MASK == GCTL_PRTCAP_DEVICE),
                 "ss-qmp-phystatus" => u32::from(qmp & QMP_PHYSTATUS != 0),
                 "ss-qmp-start0" => (qmp >> 16) & 1,
                 "ss-qmp-start1" => (qmp >> 17) & 1,
                 "ss-qmp-typec0" => (qmp >> 24) & 1,
                 // QMP PCS_STATUS2[3] is the official Qualcomm
                 // RX_EQUALIZATION_IN_PROGRESS indicator.
-                "ss-qmp-rxeq" => {
-                    u32::from(SS_STATE_SNAPSHOT_QMP_STATUS2 & (1 << 3) != 0)
-                }
+                "ss-qmp-rxeq" => u32::from(SS_STATE_SNAPSHOT_QMP_STATUS2 & (1 << 3) != 0),
                 "ss-qmp-com-power" => u32::from(SS_STATE_SNAPSHOT_QMP_POWER & 1 != 0),
                 "ss-qmp-pcs-power" => u32::from(SS_STATE_SNAPSHOT_QMP_POWER & 2 != 0),
                 "ss-qmp-aux-branch" => u32::from(
@@ -1297,9 +1297,7 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
                 // are read-only bits from the selected same-boot snapshot so
                 // a stale Fastboot HS mux can be separated from QMP state.
                 "ss-qscratch-utmi-sel" => u32::from(qscratch_general & (1 << 0) != 0),
-                "ss-qscratch-phystatus-sw" => {
-                    u32::from(qscratch_general & (1 << 3) != 0)
-                }
+                "ss-qscratch-phystatus-sw" => u32::from(qscratch_general & (1 << 3) != 0),
                 "ss-qscratch-utmi-dis" => u32::from(qscratch_general & (1 << 8) != 0),
                 // Qualcomm msm's DWC3 glue reads LINKSTATE from bits 25:22
                 // of the USB31 link-debug register. This is a raw four-bit
@@ -1730,8 +1728,8 @@ unsafe fn stop_after_gadget_handoff_stage(stage: u32) -> bool {
             capture_ss_state_snapshot();
         }
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
-        if let Some(selector) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
-            .filter(|value| value.starts_with("ss-"))
+        if let Some(selector) =
+            option_env!("FULLERENE_USB_SIGNAL_CMD_GATE").filter(|value| value.starts_with("ss-"))
         {
             // Stage 21 is the post-production Run/Stop boundary.  The
             // generic SS gate below only adds a sub-second DCTL cycle per
@@ -1792,10 +1790,7 @@ unsafe fn stop_after_gadget_handoff_stage(stage: u32) -> bool {
                 || (stage >= 13 && cfg!(fullerene_aarch64_usb_gadget_handoff_super_speed)),
         );
         let _ = unsafe { run_stop_device(true) };
-        if stage >= 13
-            && stage != 20
-            && cfg!(fullerene_aarch64_usb_gadget_handoff_super_speed)
-        {
+        if stage >= 13 && stage != 20 && cfg!(fullerene_aarch64_usb_gadget_handoff_super_speed) {
             // Capture before returning to the host-visible probe. The host
             // may issue reset/descriptor traffic immediately after attach;
             // a later live read would no longer describe this boundary.
@@ -2438,9 +2433,7 @@ unsafe fn configure_endpoint_config(
     } else {
         DEPCFG_XFER_IN_PROGRESS_EN
     };
-    let abl_ep_config = cfg!(fullerene_aarch64_usb_abl_ep_config)
-        && endpoint <= 1
-        && !modify;
+    let abl_ep_config = cfg!(fullerene_aarch64_usb_abl_ep_config) && endpoint <= 1 && !modify;
     if abl_ep_config {
         // Factory Bramble ABL's DwcConfigureEP follows the Qualcomm msm
         // DEPCFG contract: burst size 3, FIFO number on IN endpoints, and
@@ -2640,7 +2633,9 @@ pub(super) unsafe fn clear_gsi_stop_state() {
 /// touch EP0, the USB2 PHY, or the primary DWC3 event ring.
 pub(super) unsafe fn clear_gsi_doorbell_state() {
     unsafe {
-        let offset = super::platform::bramble::usb_resources().gsi.general_cfg_offset;
+        let offset = super::platform::bramble::usb_resources()
+            .gsi
+            .general_cfg_offset;
         let mut value = read_qscratch(offset) | GSI_BLOCK_WR_GO;
         write_qscratch(offset, value);
         value = read_qscratch(offset) & !GSI_EN;
@@ -3092,10 +3087,7 @@ unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32)
         write_volatile(addr_of_mut!((*trb).bpl), address as u32);
         write_volatile(addr_of_mut!((*trb).bph), (address >> 32) as u32);
         write_volatile(addr_of_mut!((*trb).size), length as u32);
-        write_volatile(
-            addr_of_mut!((*trb).ctrl),
-            kind | flags,
-        );
+        write_volatile(addr_of_mut!((*trb).ctrl), kind | flags);
         cache_clean(trb as usize, core::mem::size_of::<Trb>());
     }
 }
@@ -3232,8 +3224,7 @@ unsafe fn post_runstop_event_dma_probe() -> bool {
             let _ = poll_ep0_event_ring();
         }
 
-        let link_ready = read(DSTS) & DSTS_DEVCTRLHLT == 0
-            && read(DCTL) & DCTL_RUN_STOP != 0;
+        let link_ready = read(DSTS) & DSTS_DEVCTRLHLT == 0 && read(DCTL) & DCTL_RUN_STOP != 0;
         let started = if link_ready {
             prepare_ep0_setup_trb();
             start_transfer(0, ep0_trb_ptr(0))
@@ -4868,8 +4859,7 @@ pub fn init_usb2_handoff() -> bool {
         } else {
             super::platform::bramble::UsbBusVote::Nominal
         };
-        let performance =
-            super::platform::bramble::usb_performance_state(performance_vote);
+        let performance = super::platform::bramble::usb_performance_state(performance_vote);
         if !super::platform::bramble::apply_usb_power(true, false) {
             log_puts("usb: RPMh USB PHY regulator vote unavailable; continuing\n");
         }
@@ -5399,8 +5389,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // tail before publishing EP0 resources; it is independent of TRB
         // payload framing and is especially relevant on DWC_usb31.
         configure_dwc3_device_mode();
-        }
-        // An SS-only fastboot session never deasserted the femto PHY block
+    }
+    // An SS-only fastboot session never deasserted the femto PHY block
     // reset (GCC_QUSB2PHY_PRIM_BCR), which can leave the PHY core logic held
     // in reset while the D+/D- IO state machine still answers the host reset
     // autonomously.  The 4.19 phy-core deasserts `phy_reset` before
@@ -5439,7 +5429,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // otherwise the source-level TRDTIM=9 write made before init_hsphy() is
     // absent from the actual stage-3 readback and the core advertises a
     // pull-up without a usable USB2 transaction interface.
-        unsafe { configure_usb2_phy_interface() };
+    unsafe { configure_usb2_phy_interface() };
     trace_utmi_state(3);
 
     // The Fastboot session may have left the DWC3 stream behind an SMMU
@@ -5534,11 +5524,14 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // still reapplies the old-DWC3 speed workaround immediately before
         // connection, but leaving this intermediate state unspecified loses
         // the physical attach on Bramble.
-        write(DCFG, if cfg!(fullerene_aarch64_usb_dcfg_superspeed) {
-            DCFG_SUPERSPEED
-        } else {
-            DCFG_HIGHSPEED
-        });
+        write(
+            DCFG,
+            if cfg!(fullerene_aarch64_usb_dcfg_superspeed) {
+                DCFG_SUPERSPEED
+            } else {
+                DCFG_HIGHSPEED
+            },
+        );
         configure_gadget_start_defaults();
         // Linux enables each endpoint only after its SETEPCONFIG and
         // SETTRANSFRESOURCE commands complete. Do not advertise EP0 before
@@ -5584,13 +5577,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             64
         };
         if !unsafe {
-            configure_endpoint_config(
-                0,
-                ep0_packet_size,
-                DEPCFG_EP_TYPE_CONTROL,
-                false,
-                0,
-            )
+            configure_endpoint_config(0, ep0_packet_size, DEPCFG_EP_TYPE_CONTROL, false, 0)
         } {
             log_puts("usb gadget handoff: USB2 EP0 OUT configure failed\n");
             return gadget_handoff_fail(5); // EP0 config
@@ -5810,14 +5797,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             // avoids the long post-readout park, which is truncated by the
             // handset's recovery watchdog on large selector values.
             let code = utmi_readout_code(selector).min(15);
-            trace_event(
-                TRACE_UTMI_STATE,
-                0x0400_0000 | code,
-                code,
-                0,
-                0,
-                0,
-            );
+            trace_event(TRACE_UTMI_STATE, 0x0400_0000 | code, code, 0, 0, 0);
             super::timer::delay_ms(u64::from(code) * 1_000);
         }
         trace::live_dalepena_before_dctl(read(DALEPENA));
@@ -5854,14 +5834,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             // run without the guarded re-apply can show whether Run/Stop
             // itself cleared or altered the UTMI contract.
             let code = utmi_readout_code(selector).min(15);
-            trace_event(
-                TRACE_UTMI_STATE,
-                0x0500_0000 | code,
-                code,
-                0,
-                0,
-                0,
-            );
+            trace_event(TRACE_UTMI_STATE, 0x0500_0000 | code, code, 0, 0, 0);
             super::timer::delay_ms(u64::from(code) * 1_000);
         }
         if !start_readback_ok {
@@ -6252,9 +6225,7 @@ unsafe fn reassert_ss_controller_domain() -> bool {
             super::platform::bramble::UsbBusVote::Nominal,
         );
         let branches = super::platform::bramble::rearm_usb_controller_clock_branches();
-        super::platform::bramble::apply_usb_pm_qos(
-            super::platform::bramble::UsbBusVote::Nominal,
-        );
+        super::platform::bramble::apply_usb_pm_qos(super::platform::bramble::UsbBusVote::Nominal);
         log_hex(
             "usb: SS controller clock reassert mask=",
             u64::from(
@@ -6657,10 +6628,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 // access and falls back to the known USB2 pull-up. Host
                 // attach is therefore a same-boot reached/not-reached bit;
                 // it does not claim that the partial QMP state is usable.
-                trace_marker(
-                    TRACE_PROBE_WATCHDOG,
-                    0x5150_0000 | (qmp_probe_phase & 0xff),
-                ); // "QP" + phase
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x5150_0000 | (qmp_probe_phase & 0xff)); // "QP" + phase
                 QMP_PHY_READY = false;
                 return init_usb2_bare_pullup_handoff_inner(true);
             }
@@ -7668,16 +7636,14 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 capture_ss_state_snapshot();
             }
             #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
-            if let Some(selector) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
-                .filter(|value| {
-                    value.starts_with("ss-domain-")
-                        || value.starts_with("ss-gctl-")
-                        || value.starts_with("ss-qmp-")
-                        || value.starts_with("ss-qscratch-")
-                        || *value == "ss-ltssm"
-                        || value.starts_with("ss-ltssm-bit")
-                })
-            {
+            if let Some(selector) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE").filter(|value| {
+                value.starts_with("ss-domain-")
+                    || value.starts_with("ss-gctl-")
+                    || value.starts_with("ss-qmp-")
+                    || value.starts_with("ss-qscratch-")
+                    || *value == "ss-ltssm"
+                    || value.starts_with("ss-ltssm-bit")
+            }) {
                 // DCTL stop/run is not a reliable physical readout at this
                 // boundary. Encode one domain/GCTL/QMP bit in the time at which the
                 // known HS fallback is published: 0 = no extra delay, 1 =
@@ -8778,15 +8744,9 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             // received a word. The gate is useful only when the optional
             // probe was compiled in; a missing record is false.
             "post" => TRACE_HARVEST_POST == 0x1_0007,
-            "post-start" => {
-                TRACE_HARVEST_POST != 0xFFFF_FFFF && TRACE_HARVEST_POST & 1 != 0
-            }
-            "post-end" => {
-                TRACE_HARVEST_POST != 0xFFFF_FFFF && TRACE_HARVEST_POST & 2 != 0
-            }
-            "post-event" => {
-                TRACE_HARVEST_POST != 0xFFFF_FFFF && TRACE_HARVEST_POST & 4 != 0
-            }
+            "post-start" => TRACE_HARVEST_POST != 0xFFFF_FFFF && TRACE_HARVEST_POST & 1 != 0,
+            "post-end" => TRACE_HARVEST_POST != 0xFFFF_FFFF && TRACE_HARVEST_POST & 2 != 0,
+            "post-event" => TRACE_HARVEST_POST != 0xFFFF_FFFF && TRACE_HARVEST_POST & 4 != 0,
             "post-record" => TRACE_HARVEST_POST != 0xFFFF_FFFF,
             "wdt-armed" => WDT_KPSS_EN_AT_ENTRY & 1 != 0,
             "wdt-off" => WDT_KPSS_EN_AT_ENTRY != 0xFFFF_FFFF && WDT_KPSS_EN_AT_ENTRY & 1 == 0,

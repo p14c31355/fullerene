@@ -1970,9 +1970,8 @@ fn main() -> io::Result<()> {
         ));
     }
     let ss_signal_probe = args.usb_gadget_handoff_super_speed_probe;
-    let signal_probe_handoff = (args.usb_gadget_handoff_probe
-        && args.usb_gadget_handoff_direct)
-        || ss_signal_probe;
+    let signal_probe_handoff =
+        (args.usb_gadget_handoff_probe && args.usb_gadget_handoff_direct) || ss_signal_probe;
     if args.usb_ep0_signal_probe
         && (!signal_probe_handoff
             || target.arch != Arch::Aarch64
@@ -2002,11 +2001,10 @@ fn main() -> io::Result<()> {
             "--usb-ep0-signal-raw-link requires --usb-ep0-signal-probe",
         ));
     }
-    let ss_qmp_stage_probe = matches!(args.stop_after_stage, Some(13..=29))
-        && args.usb_gadget_handoff_super_speed_probe;
+    let ss_qmp_stage_probe =
+        matches!(args.stop_after_stage, Some(13..=29)) && args.usb_gadget_handoff_super_speed_probe;
     if args.stop_after_stage.is_some()
-        && (!args.usb_gadget_handoff_probe
-            && !ss_qmp_stage_probe
+        && (!args.usb_gadget_handoff_probe && !ss_qmp_stage_probe
             || target.arch != Arch::Aarch64
             || target.platform != Platform::Bramble
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
@@ -2100,16 +2098,14 @@ fn main() -> io::Result<()> {
                 gadget_handoff_no_transfer_resource: args.usb_gadget_handoff_no_transfer_resource,
                 gadget_handoff_android_resource_order: args
                     .usb_gadget_handoff_android_resource_order,
-                gadget_handoff_clock_branches_rearm: args
-                    .usb_gadget_handoff_clock_branches_rearm,
+                gadget_handoff_clock_branches_rearm: args.usb_gadget_handoff_clock_branches_rearm,
                 gadget_handoff_core_hs_clock: args.usb_gadget_handoff_core_hs_clock,
                 clock_stable_delay_us: args.usb_gadget_handoff_clock_stable_delay_us,
                 android_block_reset: args.usb_gadget_handoff_android_block_reset,
                 refresh_hsphy_power: args.usb_gadget_handoff_refresh_hsphy_power,
                 hsphy_source_exact: args.usb_gadget_handoff_hsphy_source_exact,
                 skip_usb2_phy_reset: args.usb_gadget_handoff_skip_usb2_phy_reset,
-                gadget_handoff_event_ring_size_4096: args
-                    .usb_gadget_handoff_event_ring_size_4096,
+                gadget_handoff_event_ring_size_4096: args.usb_gadget_handoff_event_ring_size_4096,
                 gadget_handoff_start_after_connect: args.usb_gadget_handoff_start_after_connect,
                 gadget_handoff_xbl_deferred_setup: args.usb_gadget_handoff_xbl_deferred_setup,
                 gadget_handoff_xbl_ep0_in_data: args.usb_gadget_handoff_xbl_ep0_in_data,
@@ -2120,18 +2116,15 @@ fn main() -> io::Result<()> {
                     .usb_gadget_handoff_xbl_post_endpoint_global,
                 gadget_handoff_xbl_stock_ep0_dma: args.usb_gadget_handoff_xbl_stock_ep0_dma,
                 gadget_handoff_xbl_raw_runstop: args.usb_gadget_handoff_xbl_raw_runstop,
-                gadget_handoff_source_exact_runstop: args
-                    .usb_gadget_handoff_source_exact_runstop,
+                gadget_handoff_source_exact_runstop: args.usb_gadget_handoff_source_exact_runstop,
                 gadget_handoff_dt_hird_threshold: args.usb_gadget_handoff_dt_hird_threshold,
                 gadget_handoff_android_hs_lpm: args.usb_gadget_handoff_android_hs_lpm,
                 gadget_handoff_abl_shared_hs_phy: args.usb_gadget_handoff_abl_shared_hs_phy,
                 gadget_handoff_abl_devten: args.usb_gadget_handoff_abl_devten,
                 gadget_handoff_abl_ep_config: args.usb_gadget_handoff_abl_ep_config,
-                gadget_handoff_abl_command_params: args
-                    .usb_gadget_handoff_abl_command_params,
+                gadget_handoff_abl_command_params: args.usb_gadget_handoff_abl_command_params,
                 gadget_handoff_abl_trb_flags: args.usb_gadget_handoff_abl_trb_flags,
-                gadget_handoff_abl_setup_trb_buffer: args
-                    .usb_gadget_handoff_abl_setup_trb_buffer,
+                gadget_handoff_abl_setup_trb_buffer: args.usb_gadget_handoff_abl_setup_trb_buffer,
                 gadget_handoff_abl_event_consume: args.usb_gadget_handoff_abl_event_consume,
                 gadget_handoff_xbl_direction_trb: args.usb_gadget_handoff_xbl_direction_trb,
                 gadget_handoff_xbl_trb_chain: args.usb_gadget_handoff_xbl_trb_chain,
@@ -2139,8 +2132,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_event_ring_at_runstop: args.usb_gadget_handoff_event_ring_at_runstop,
                 gadget_handoff_gadget_restart_at_runstop: args
                     .usb_gadget_handoff_gadget_restart_at_runstop,
-                gadget_handoff_clear_gsi_after_reset: args
-                    .usb_gadget_handoff_clear_gsi_after_reset,
+                gadget_handoff_clear_gsi_after_reset: args.usb_gadget_handoff_clear_gsi_after_reset,
                 gadget_handoff_ep0_initial_512: args.usb_gadget_handoff_ep0_initial_512,
                 gadget_handoff_dcfg_superspeed: args.usb_gadget_handoff_dcfg_superspeed,
                 gadget_handoff_ss_reassert_device_mode: args
@@ -2153,15 +2145,12 @@ fn main() -> io::Result<()> {
                     .usb_gadget_handoff_ss_reassert_domain_after_runstop,
                 gadget_handoff_ss_reassert_link_clocks_after_runstop: args
                     .usb_gadget_handoff_ss_reassert_link_clocks_after_runstop,
-                gadget_handoff_ss_android_dbm_reset: args
-                    .usb_gadget_handoff_ss_android_dbm_reset,
-                gadget_handoff_ss_reassert_qmp_power: args
-                    .usb_gadget_handoff_ss_reassert_qmp_power,
+                gadget_handoff_ss_android_dbm_reset: args.usb_gadget_handoff_ss_android_dbm_reset,
+                gadget_handoff_ss_reassert_qmp_power: args.usb_gadget_handoff_ss_reassert_qmp_power,
                 gadget_handoff_ss_reassert_qmp_power_after_gctl: args
                     .usb_gadget_handoff_ss_reassert_qmp_power_after_gctl,
                 gadget_handoff_ss_reinit_hs_phy: args.usb_gadget_handoff_ss_reinit_hs_phy,
-                gadget_handoff_ss_pre_qmp_phy_setup: args
-                    .usb_gadget_handoff_ss_pre_qmp_phy_setup,
+                gadget_handoff_ss_pre_qmp_phy_setup: args.usb_gadget_handoff_ss_pre_qmp_phy_setup,
                 gadget_handoff_ss_clear_qmp_autonomous: args
                     .usb_gadget_handoff_ss_clear_qmp_autonomous,
                 gadget_handoff_ss_reassert_qmp_clocks: args
@@ -2174,10 +2163,8 @@ fn main() -> io::Result<()> {
                     .usb_gadget_handoff_ss_dis_sleep_mode_before_gadget,
                 gadget_handoff_ss_clear_qmp_autonomous_exact: args
                     .usb_gadget_handoff_ss_clear_qmp_autonomous_exact,
-                gadget_handoff_ss_qmp_resume_wmb: args
-                    .usb_gadget_handoff_ss_qmp_resume_wmb,
-                gadget_handoff_ss_qmp_lfps_clear_wmb: args
-                    .usb_gadget_handoff_ss_qmp_lfps_clear_wmb,
+                gadget_handoff_ss_qmp_resume_wmb: args.usb_gadget_handoff_ss_qmp_resume_wmb,
+                gadget_handoff_ss_qmp_lfps_clear_wmb: args.usb_gadget_handoff_ss_qmp_lfps_clear_wmb,
                 gadget_handoff_ss_qmp_notify_disconnect: args
                     .usb_gadget_handoff_ss_qmp_notify_disconnect,
                 gadget_handoff_ss_clear_vbus_override_before_qmp: args
@@ -2206,8 +2193,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_start_at_connect_done: args.usb_gadget_handoff_start_at_connect_done,
                 gadget_handoff_reset_resource: args.usb_gadget_handoff_reset_resource,
                 gadget_handoff_reset_endpoints: args.usb_gadget_handoff_reset_endpoints,
-                gadget_handoff_ep0_reset_clear_stall: args
-                    .usb_gadget_handoff_ep0_reset_clear_stall,
+                gadget_handoff_ep0_reset_clear_stall: args.usb_gadget_handoff_ep0_reset_clear_stall,
                 gadget_handoff_ep0_reset_clear_test_mode: args
                     .usb_gadget_handoff_ep0_reset_clear_test_mode,
                 gadget_handoff_ep0_reset_callback_first: args
@@ -2699,16 +2685,10 @@ fn build_aarch64_kernel(
         );
     }
     if android_block_reset {
-        push_env(
-            "FULLERENE_AARCH64_USB_ANDROID_BLOCK_RESET",
-            "1".to_owned(),
-        );
+        push_env("FULLERENE_AARCH64_USB_ANDROID_BLOCK_RESET", "1".to_owned());
     }
     if refresh_hsphy_power {
-        push_env(
-            "FULLERENE_AARCH64_USB_REFRESH_HSPHY_POWER",
-            "1".to_owned(),
-        );
+        push_env("FULLERENE_AARCH64_USB_REFRESH_HSPHY_POWER", "1".to_owned());
     }
     if hsphy_source_exact {
         push_env(
@@ -2717,10 +2697,7 @@ fn build_aarch64_kernel(
         );
     }
     if skip_usb2_phy_reset {
-        push_env(
-            "FULLERENE_AARCH64_USB_SKIP_USB2_PHY_RESET",
-            "1".to_owned(),
-        );
+        push_env("FULLERENE_AARCH64_USB_SKIP_USB2_PHY_RESET", "1".to_owned());
     }
     if gadget_handoff_event_ring_size_4096 {
         push_env(
@@ -2801,10 +2778,7 @@ fn build_aarch64_kernel(
         );
     }
     if gadget_handoff_abl_shared_hs_phy {
-        push_env(
-            "FULLERENE_AARCH64_USB_ABL_SHARED_HSPHY",
-            "1".to_owned(),
-        );
+        push_env("FULLERENE_AARCH64_USB_ABL_SHARED_HSPHY", "1".to_owned());
     }
     if gadget_handoff_abl_devten {
         push_env("FULLERENE_AARCH64_USB_ABL_DEVTEN", "1".to_owned());
@@ -2813,25 +2787,16 @@ fn build_aarch64_kernel(
         push_env("FULLERENE_AARCH64_USB_ABL_EP_CONFIG", "1".to_owned());
     }
     if gadget_handoff_abl_command_params {
-        push_env(
-            "FULLERENE_AARCH64_USB_ABL_COMMAND_PARAMS",
-            "1".to_owned(),
-        );
+        push_env("FULLERENE_AARCH64_USB_ABL_COMMAND_PARAMS", "1".to_owned());
     }
     if gadget_handoff_abl_trb_flags {
         push_env("FULLERENE_AARCH64_USB_ABL_TRB_FLAGS", "1".to_owned());
     }
     if gadget_handoff_abl_setup_trb_buffer {
-        push_env(
-            "FULLERENE_AARCH64_USB_ABL_SETUP_TRB_BUFFER",
-            "1".to_owned(),
-        );
+        push_env("FULLERENE_AARCH64_USB_ABL_SETUP_TRB_BUFFER", "1".to_owned());
     }
     if gadget_handoff_abl_event_consume {
-        push_env(
-            "FULLERENE_AARCH64_USB_ABL_EVENT_CONSUME",
-            "1".to_owned(),
-        );
+        push_env("FULLERENE_AARCH64_USB_ABL_EVENT_CONSUME", "1".to_owned());
     }
     if gadget_handoff_xbl_direction_trb {
         push_env(
@@ -3128,10 +3093,7 @@ fn build_aarch64_kernel(
         );
     }
     if let Some(lane) = gadget_handoff_qmp_lane {
-        push_env(
-            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_QMP_LANE",
-            lane,
-        );
+        push_env("FULLERENE_AARCH64_USB_GADGET_HANDOFF_QMP_LANE", lane);
     }
     if let Some(phase) = gadget_handoff_qmp_phase_stop {
         push_env(

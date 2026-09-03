@@ -256,8 +256,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             let dwc3 = fdt::find_compatible(address, b"snps,dwc3")
                 .or_else(|| fdt::find_compatible(address, b"qcom,dwc-usb3-msm"));
             let hs_phy = fdt::find_compatible(address, b"qcom,usb-hsphy-snps-femto");
-            let hs_phy_eud =
-                fdt::find_compatible_nth(address, b"qcom,usb-hsphy-snps-femto", 1);
+            let hs_phy_eud = fdt::find_compatible_nth(address, b"qcom,usb-hsphy-snps-femto", 1);
             let qmp_phy = fdt::find_compatible(address, b"qcom,usb-ssphy-qmp-dp-combo");
             let gcc = fdt::find_compatible(address, b"qcom,gcc-lito");
             let pdc = fdt::find_compatible(address, b"qcom,lito-pdc");

@@ -572,10 +572,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // phase look identical to a reached phase's intentional HS fallback.
     // Phase 1..8 that reaches its marker returns with `gadget_ready=true`;
     // only the zero marker means that the selected boundary was not reached.
-    if !gadget_ready
-        && usb::qmp_phase_probe_requested()
-        && usb::qmp_phase_probe_reached() == 0
-    {
+    if !gadget_ready && usb::qmp_phase_probe_requested() && usb::qmp_phase_probe_reached() == 0 {
         usb::u0_arm_wdt_bite(2);
         usb::park_for_seconds(0);
     }
@@ -819,9 +816,8 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         let status = usb::u0_arm_status_probe();
         trace_gate(0x4152_444C | (status & 0xff)); // "ARDL"
         let seconds = if status == 0 { 1 } else { 3 };
-        let target = usb::arch_counter_ticks().saturating_add(
-            probe_counter_frequency().saturating_mul(seconds),
-        );
+        let target = usb::arch_counter_ticks()
+            .saturating_add(probe_counter_frequency().saturating_mul(seconds));
         wait_arch_ticks(target);
         let _ = usb::gate_true_stop_device_fast();
         usb::park_for_seconds(30);
@@ -939,9 +935,8 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         // host's first descriptor window. The disconnect timestamp relative
         // to HS attach identifies the captured nibble without depending on
         // secure watchdog ownership.
-        let delay_ticks = probe_counter_frequency()
-            .saturating_mul(u64::from(state.saturating_add(1)))
-            / 4;
+        let delay_ticks =
+            probe_counter_frequency().saturating_mul(u64::from(state.saturating_add(1))) / 4;
         wait_arch_ticks(usb::arch_counter_ticks().saturating_add(delay_ticks));
         let _ = usb::gate_true_stop_device();
         park_without_recovery_timer();
@@ -1448,10 +1443,7 @@ extern "C" fn usb_probe_entry() -> ! {
             .ok()
             .filter(|phase| (1..=8).contains(phase));
         let attach_wanted = required.is_none_or(|phase| prev_boot_qmp_phase >= phase);
-        usb::trace_marker(
-            usb::TRACE_PROBE_WATCHDOG,
-            0x514d_4700 | prev_boot_qmp_phase,
-        ); // "QMG"
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x514d_4700 | prev_boot_qmp_phase); // "QMG"
         if !attach_wanted {
             reset_after_probe_failure();
         }
@@ -1592,9 +1584,7 @@ extern "C" fn usb_probe_entry() -> ! {
                 }
             }
         };
-        pon_ms
-            + u64::from(prev_boot_code) * 4000
-            + u64::from(prev_boot_utmi_code) * 4000
+        pon_ms + u64::from(prev_boot_code) * 4000 + u64::from(prev_boot_utmi_code) * 4000
     };
     #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
     let pon_delay_ms = 0;
@@ -1632,42 +1622,42 @@ extern "C" fn usb_probe_entry() -> ! {
         // already-proven stage path intact and use the gate only after its
         // post-Run/Stop snapshot has been captured.
         if !ss_snapshot_gate_active() {
-        // The fastboot handoff leaves the USB30 core domain collapsed: the
-        // physical attach is carried by the QSCRATCH/PHY session alone while
-        // every DWC3 core register reads dead (the long-standing "endpoint
-        // command wedge" and the ~17 s post-attach reset are both symptoms).
-        // Restore the rails, GDSC, clock sources/branches and reset lines
-        // BEFORE the handoff so the core answers MMIO, the endpoint commands
-        // retire, and the first host SETUP can be armed and served.
-        unsafe {
-            // Vote the FULL rail set (super_speed=true includes the QMP
-            // core rail pm8150_l9): the USB30 GDSC's parent supply is not
-            // otherwise held, and RPMh collapses it ~7 s after the attach
-            // wakes the domain, killing the core mid-park. The QMP PHY
-            // itself stays unused; only the rail keeps the GDSC powered.
-            let _ = platform::bramble::apply_usb_power(true, true);
-            let _ = platform::bramble::force_enable_usb30_gdsc();
-            let _ = platform::bramble::usb_clock::configure_usb_clocks(
-                platform::bramble::UsbBusVote::Nominal,
-            );
-            let _ = platform::bramble::enable_usb_clock_branches();
-            let _ = platform::bramble::usb_reset::reset_usb_blocks(false);
-        }
-        // Settle: the one surviving 30 s park (the run that attached at
-        // +14 s) had a 4 s quiet gap between this power sequence and the
-        // handoff; every immediate handoff since failed DEPSTARTCFG in the
-        // reuse path and fell to the flaky fallback. The GDSC ramp, the RCG
-        // switch and the post-reset PLL need the quiet window before the
-        // first endpoint command. Pure spin, no MMIO.
-        let settle_frequency = probe_counter_frequency();
-        let settle_until = probe_counter().saturating_add(settle_frequency.saturating_mul(3));
-        while probe_counter() < settle_until {
-            core::hint::spin_loop();
-        }
-        let pon_until = settle_until + settle_frequency * pon_delay_ms / 1000;
-        while probe_counter() < pon_until {
-            core::hint::spin_loop();
-        }
+            // The fastboot handoff leaves the USB30 core domain collapsed: the
+            // physical attach is carried by the QSCRATCH/PHY session alone while
+            // every DWC3 core register reads dead (the long-standing "endpoint
+            // command wedge" and the ~17 s post-attach reset are both symptoms).
+            // Restore the rails, GDSC, clock sources/branches and reset lines
+            // BEFORE the handoff so the core answers MMIO, the endpoint commands
+            // retire, and the first host SETUP can be armed and served.
+            unsafe {
+                // Vote the FULL rail set (super_speed=true includes the QMP
+                // core rail pm8150_l9): the USB30 GDSC's parent supply is not
+                // otherwise held, and RPMh collapses it ~7 s after the attach
+                // wakes the domain, killing the core mid-park. The QMP PHY
+                // itself stays unused; only the rail keeps the GDSC powered.
+                let _ = platform::bramble::apply_usb_power(true, true);
+                let _ = platform::bramble::force_enable_usb30_gdsc();
+                let _ = platform::bramble::usb_clock::configure_usb_clocks(
+                    platform::bramble::UsbBusVote::Nominal,
+                );
+                let _ = platform::bramble::enable_usb_clock_branches();
+                let _ = platform::bramble::usb_reset::reset_usb_blocks(false);
+            }
+            // Settle: the one surviving 30 s park (the run that attached at
+            // +14 s) had a 4 s quiet gap between this power sequence and the
+            // handoff; every immediate handoff since failed DEPSTARTCFG in the
+            // reuse path and fell to the flaky fallback. The GDSC ramp, the RCG
+            // switch and the post-reset PLL need the quiet window before the
+            // first endpoint command. Pure spin, no MMIO.
+            let settle_frequency = probe_counter_frequency();
+            let settle_until = probe_counter().saturating_add(settle_frequency.saturating_mul(3));
+            while probe_counter() < settle_until {
+                core::hint::spin_loop();
+            }
+            let pon_until = settle_until + settle_frequency * pon_delay_ms / 1000;
+            while probe_counter() < pon_until {
+                core::hint::spin_loop();
+            }
         }
     }
     let gadget_ready = if cfg!(any(
@@ -1956,9 +1946,8 @@ extern "C" fn usb_probe_entry() -> ! {
                     // therefore names the separate secure/XBL watchdog,
                     // while a marker after the delay proves this loop itself
                     // remains alive beyond the old bite window.
-                    let wait_until = probe_counter().saturating_add(
-                        probe_counter_frequency().saturating_mul(20),
-                    );
+                    let wait_until = probe_counter()
+                        .saturating_add(probe_counter_frequency().saturating_mul(20));
                     while probe_counter() < wait_until {
                         usb::wdt_pet();
                         unsafe { asm!("wfe", options(nomem, nostack)) };
@@ -1976,12 +1965,10 @@ extern "C" fn usb_probe_entry() -> ! {
                     // repeated probe_ep0_progress()/trace_head() fault from
                     // the WFE/deferred-service-only hold above.
                     let mut repeated_head = usb::trace_head();
-                    let mut repeated_deadline = probe_counter().saturating_add(
-                        frequency.saturating_mul(timeout_secs),
-                    );
-                    let wait_until = probe_counter().saturating_add(
-                        probe_counter_frequency().saturating_mul(20),
-                    );
+                    let mut repeated_deadline =
+                        probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
+                    let wait_until = probe_counter()
+                        .saturating_add(probe_counter_frequency().saturating_mul(20));
                     while probe_counter() < wait_until {
                         usb::wdt_pet();
                         unsafe { asm!("wfe", options(nomem, nostack)) };
@@ -1990,9 +1977,8 @@ extern "C" fn usb_probe_entry() -> ! {
                         let head = usb::trace_head();
                         if head != repeated_head {
                             repeated_head = head;
-                            repeated_deadline = probe_counter().saturating_add(
-                                frequency.saturating_mul(timeout_secs),
-                            );
+                            repeated_deadline = probe_counter()
+                                .saturating_add(frequency.saturating_mul(timeout_secs));
                         } else if frequency != 0 && probe_counter() >= repeated_deadline {
                             trace_gate(TRACE_WDT);
                             reset_after_probe_failure();

@@ -58,7 +58,11 @@ pub unsafe fn enable_usb_clock_branches() -> bool {
 pub unsafe fn enable_usb_qmp_clock_branches() -> bool {
     unsafe {
         let resources = usb_resources();
-        let Some(aux) = resources.qmp_clocks.iter().find(|clock| clock.name == "aux") else {
+        let Some(aux) = resources
+            .qmp_clocks
+            .iter()
+            .find(|clock| clock.name == "aux")
+        else {
             return false;
         };
         if aux.provider != ClockProvider::Gcc
@@ -70,8 +74,7 @@ pub unsafe fn enable_usb_qmp_clock_branches() -> bool {
 
         let mut ok = true;
         for name in ["com_aux", "aux", "pipe"] {
-            let Some(clock) = resources.qmp_clocks.iter().find(|clock| clock.name == name)
-            else {
+            let Some(clock) = resources.qmp_clocks.iter().find(|clock| clock.name == name) else {
                 return false;
             };
             if clock.provider != ClockProvider::Gcc {
@@ -252,9 +255,8 @@ pub unsafe fn read_usb_clock_register_state() -> UsbClockRegisterState {
         };
         let mut controller_branches = [0; 6];
         for (index, clock) in resources.controller_clocks.iter().enumerate() {
-            controller_branches[index] = core::ptr::read_volatile(
-                (resources.gcc_base + clock.branch_offset) as *const u32,
-            );
+            controller_branches[index] =
+                core::ptr::read_volatile((resources.gcc_base + clock.branch_offset) as *const u32);
         }
         let mut qmp_branches = [0; 4];
         for (index, clock) in resources.qmp_clocks.iter().enumerate() {

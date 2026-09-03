@@ -2,14 +2,13 @@
 pub mod usb_clock;
 pub mod usb_reset;
 
-pub use usb_clock::{
-    android_dbm_reset_and_enable, configure_usb_clocks, configure_usb_controller_clocks,
-    disable_usb_clock_branches, enable_usb_clock_branches, enable_usb2_utmi_clock,
-    enable_usb_qmp_clock_branches, rearm_usb2_android_clock_branches,
-    rearm_usb_controller_clock_branches,
-};
 #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_link_clocks_after_runstop)]
 pub use usb_clock::android_controller_block_reset;
+pub use usb_clock::{
+    android_dbm_reset_and_enable, configure_usb_clocks, configure_usb_controller_clocks,
+    disable_usb_clock_branches, enable_usb_clock_branches, enable_usb_qmp_clock_branches,
+    enable_usb2_utmi_clock, rearm_usb_controller_clock_branches, rearm_usb2_android_clock_branches,
+};
 pub use usb_reset::{pulse_usb2_phy_reset, reset_qmp_phy_blocks, reset_usb_blocks};
 ///
 /// The DTB remains authoritative at boot. These constants document the
@@ -2308,7 +2307,8 @@ pub fn read_imem_restart_reason() -> u32 {
 /// Read one raw PON register by page offset for the death-reason readout
 /// channel. Only the registers that name the ~5.6 s post-attach watchdog are
 /// whitelisted so a caller typo cannot turn into a stray SPMI transaction.
-pub unsafe fn read_pm8150_pon_register(register: u16) -> Option<u8> {    if !matches!(
+pub unsafe fn read_pm8150_pon_register(register: u16) -> Option<u8> {
+    if !matches!(
         register,
         PON_WD_S1_TIMER
             | PON_WD_S2_TIMER

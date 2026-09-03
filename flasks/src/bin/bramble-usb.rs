@@ -1600,9 +1600,7 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--signal-prev-trace-gate must be 1, 2, or 3",
         ));
     }
-    if args.signal_prev_qmp_gate.is_some()
-        && !matches!(args.signal_prev_qmp_gate, Some(1..=8))
-    {
+    if args.signal_prev_qmp_gate.is_some() && !matches!(args.signal_prev_qmp_gate, Some(1..=8)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--signal-prev-qmp-gate must be 1 through 8",
@@ -2299,17 +2297,13 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         arguments.push("--usb-gadget-handoff-ss-reassert-core-clocks".to_owned());
     }
     if args.ss_reassert_core_clocks_after_runstop {
-        arguments.push(
-            "--usb-gadget-handoff-ss-reassert-core-clocks-after-runstop".to_owned(),
-        );
+        arguments.push("--usb-gadget-handoff-ss-reassert-core-clocks-after-runstop".to_owned());
     }
     if args.ss_reassert_domain_after_runstop {
         arguments.push("--usb-gadget-handoff-ss-reassert-domain-after-runstop".to_owned());
     }
     if args.ss_reassert_link_clocks_after_runstop {
-        arguments.push(
-            "--usb-gadget-handoff-ss-reassert-link-clocks-after-runstop".to_owned(),
-        );
+        arguments.push("--usb-gadget-handoff-ss-reassert-link-clocks-after-runstop".to_owned());
     }
     if args.ss_android_dbm_reset {
         arguments.push("--usb-gadget-handoff-ss-android-dbm-reset".to_owned());

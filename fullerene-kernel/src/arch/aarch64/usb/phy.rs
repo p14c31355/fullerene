@@ -184,10 +184,7 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
         {
             // One marker per table entry makes the last committed index the
             // upper bound when a particular QMP register access aborts.
-            trace_marker(
-                TRACE_PROBE_WATCHDOG,
-                0x514d_0000 | (index as u32 & 0xff),
-            );
+            trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_0000 | (index as u32 & 0xff));
             write_volatile(qmp_reg(offset), value);
             if delay_us != 0 {
                 crate::timer::delay_us(delay_us as u64);
@@ -281,9 +278,7 @@ pub(super) unsafe fn qmp_set_autonomous_mode(enable: bool) {
             #[cfg(not(fullerene_aarch64_usb_gadget_handoff_ss_clear_qmp_autonomous_exact))]
             {
                 let mut value = read_volatile(qmp_reg(autonomous));
-                value &= !(QMP_ARCVR_DTCT_EN
-                    | QMP_ALFPS_DTCT_EN
-                    | QMP_ARCVR_DTCT_EVENT_SEL);
+                value &= !(QMP_ARCVR_DTCT_EN | QMP_ALFPS_DTCT_EN | QMP_ARCVR_DTCT_EVENT_SEL);
                 write_volatile(qmp_reg(autonomous), value);
             }
             qmp_clear_lfps_rxterm_irq();

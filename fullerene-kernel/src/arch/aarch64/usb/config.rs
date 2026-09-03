@@ -2,9 +2,7 @@
 
 use super::super::usb_regs::*;
 use super::mmio::*;
-use super::trace::{
-    TRACE_DWC3_REVISION_QUIRK, TRACE_QSCRATCH_BEGIN, live_utmi_write, trace_event,
-};
+use super::trace::{TRACE_DWC3_REVISION_QUIRK, TRACE_QSCRATCH_BEGIN, live_utmi_write, trace_event};
 
 pub(super) fn gadget_speed_value(mut dcfg: u32, super_speed: bool, snpsid: u32) -> u32 {
     dcfg &= !DCFG_SPEED_MASK;
@@ -275,7 +273,10 @@ pub(super) unsafe fn configure_usb31_phy_setup() {
         let after = before & !GUSB3PIPECTL_UX_EXIT_PX;
         write(GUSB3PIPECTL0, after);
         let readback = read(GUSB3PIPECTL0);
-        super::log::log_hex("usb: SS PHY UX_EXIT_PX before=", u64::from(before & GUSB3PIPECTL_UX_EXIT_PX));
+        super::log::log_hex(
+            "usb: SS PHY UX_EXIT_PX before=",
+            u64::from(before & GUSB3PIPECTL_UX_EXIT_PX),
+        );
         super::log::log_hex("usb: SS PHY GUSB3PIPECTL=", readback as u64);
     }
 }
