@@ -420,6 +420,62 @@ pub fn prev_boot_progress_code() -> u32 {
     }
 }
 
+/// Classify the previous boot at the protocol boundary for A/B gates. This
+/// intentionally reports only the two milestones that are useful when the
+/// ordinary progress code is still `1`: an `ARME` record proves that the EP0
+/// SETUP Start Transfer command completed, while a Connect Done record proves
+/// that the DWC3 link FSM reached the device-connect event. A SETUP received
+/// by software takes precedence over both because it is already a later,
+/// stronger milestone.
+///
+///   0 = no verifiable retained trace
+///   1 = valid trace, but neither marker was retained
+///   4 = EP0 SETUP transfer was armed, but no SETUP was received
+///   5 = Connect Done was observed, but no SETUP was received
+///   6 = a SETUP was received (the later progress ladder is available)
+pub fn prev_boot_boundary_code() -> u32 {
+    unsafe {
+        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
+        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
+        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION {
+            return 0;
+        }
+        let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2));
+        if head == 0 || head as usize > USB_TRACE_CAPACITY {
+            return 0;
+        }
+        let count = head as usize;
+        let mut armed = false;
+        let mut connected = false;
+        let mut setup = false;
+        for index in 0..count {
+            let entry = addr_of!(USB_TRACE.entries)
+                .cast::<UsbTraceEntry>()
+                .add(index);
+            if read_volatile(addr_of!((*entry).sequence)) != (index + 1) as u32 {
+                return 0;
+            }
+            match read_volatile(addr_of!((*entry).event)) {
+                TRACE_SETUP_QUEUED if read_volatile(addr_of!((*entry).request)) == 0x4152_4D45 => {
+                    armed = true;
+                }
+                TRACE_DEVICE_CONNECT => connected = true,
+                TRACE_SETUP_RECEIVED => setup = true,
+                _ => {}
+            }
+        }
+        if setup {
+            6
+        } else if armed {
+            4
+        } else if connected {
+            5
+        } else {
+            1
+        }
+    }
+}
+
 /// Classify the deepest QMP initialization marker retained by the previous
 /// boot. This is intentionally a coarse phase code: the host-side loop cannot
 /// read the marker buffer before the temporary image enumerates, but it can
@@ -580,6 +636,10 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
         let mut utmi_source = 0u32;
         let mut utmi_branch = 0u32;
         let mut dsts = 0u32;
+        let mut hs_ctrl0 = 0u32;
+        let mut hs_ctrl2 = 0u32;
+        let mut hs_ctrl5 = 0u32;
+        let mut hs_qscratch = 0u32;
         let mut gusb2_by_stage = [0u32; 16];
         let mut seen = [false; 4];
         for offset in 0..valid {
@@ -610,6 +670,14 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
                     // DEVCTRLHLT are the controller's authoritative view of
                     // whether the device-side link FSM is running.
                     dsts = entry.status;
+                }
+                3 => {
+                    // Group 3 is the raw Qualcomm HS-PHY snapshot:
+                    // UTMI_CTRL0, CTRL2, UTMI_CTRL5, and HS PHY QSCRATCH.
+                    hs_ctrl0 = entry.value;
+                    hs_ctrl2 = entry.index;
+                    hs_ctrl5 = entry.length;
+                    hs_qscratch = entry.status;
                 }
                 _ => {}
             }
@@ -692,8 +760,30 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
         if selector == "utmi-valid" {
             // Return a presence mask rather than a boolean so a zero raw
             // register value cannot be confused with a missing snapshot:
-            // bit 0 = GUSB2 group, bit 1 = DSTS/link group.
-            return u32::from(seen[0]) | (u32::from(seen[2]) << 1);
+            // bit 0 = GUSB2 group, bit 1 = DSTS/link group, bit 2 = HS-PHY
+            // group.
+            return u32::from(seen[0]) | (u32::from(seen[2]) << 1) | (u32::from(seen[3]) << 2);
+        }
+        if selector == "hsphy-valid" {
+            return u32::from(seen[3]);
+        }
+        if seen[3] {
+            let value = match selector {
+                "hsphy-sleepm" => hs_ctrl0 & 1,
+                "hsphy-opmode" => (hs_ctrl0 >> 3) & 0x3,
+                "hsphy-termsel" => (hs_ctrl0 >> 5) & 1,
+                "hsphy-suspend-n" => (hs_ctrl2 >> 2) & 1,
+                "hsphy-suspend-n-sel" => (hs_ctrl2 >> 3) & 1,
+                "hsphy-por" | "hsphy-por-clear-after-runstop" => (hs_ctrl5 >> 1) & 1,
+                // Both locations have existed in Qualcomm HS-PHY revisions;
+                // expose them independently instead of guessing in firmware.
+                "hsphy-vbus-valid0" => (hs_qscratch >> 20) & 1,
+                "hsphy-vbus-valid1" => (hs_qscratch >> 28) & 1,
+                _ => u32::MAX,
+            };
+            if value != u32::MAX {
+                return value;
+            }
         }
         if !seen[0] {
             return 0;

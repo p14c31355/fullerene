@@ -347,6 +347,12 @@ pub(super) fn hsphy_reg(offset: usize) -> *mut u32 {
     (hsphy_base() + offset) as *mut u32
 }
 
+#[inline(always)]
+pub(super) unsafe fn hsphy_write_barrier() {
+    #[cfg(fullerene_aarch64_usb_hsphy_write_barrier)]
+    core::arch::asm!("dsb st", options(nostack, preserves_flags));
+}
+
 #[inline]
 pub(super) fn qmp_reg(offset: usize) -> *mut u32 {
     (qmp_base() + offset) as *mut u32
@@ -396,6 +402,7 @@ pub(super) unsafe fn read_qscratch(offset: usize) -> u32 {
 #[inline]
 pub(super) unsafe fn write_qscratch(offset: usize, value: u32) {
     unsafe { write_volatile(qscratch_reg(offset), value) };
+    unsafe { hsphy_write_barrier() };
     let _ = unsafe { read_volatile(qscratch_reg(offset)) };
 }
 
@@ -403,6 +410,7 @@ pub(super) unsafe fn write_qscratch(offset: usize, value: u32) {
 pub(super) unsafe fn hsphy_update(offset: usize, mask: u32, value: u32) {
     let current = unsafe { read_volatile(hsphy_reg(offset)) };
     unsafe { write_volatile(hsphy_reg(offset), (current & !mask) | (value & mask)) };
+    unsafe { hsphy_write_barrier() };
     let _ = unsafe { read_volatile(hsphy_reg(offset)) };
 }
 

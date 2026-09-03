@@ -2,7 +2,10 @@
 pub mod usb_clock;
 pub mod usb_reset;
 
-#[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_link_clocks_after_runstop)]
+#[cfg(any(
+    fullerene_aarch64_usb_android_block_reset,
+    fullerene_aarch64_usb_gadget_handoff_ss_reassert_link_clocks_after_runstop,
+))]
 pub use usb_clock::android_controller_block_reset;
 pub use usb_clock::{
     android_dbm_reset_and_enable, configure_usb_clocks, configure_usb_controller_clocks,
@@ -3166,7 +3169,9 @@ unsafe fn send_usb_regulator_request(rail: UsbRailResource, enable: bool) -> boo
         count += 1;
         commands[count] = RpmhBcmCommand {
             address: address + RPMH_REGULATOR_MODE,
-            data: if rail.max_load_ua != 0 {
+            data: if rail.max_load_ua != 0
+                && !(cfg!(fullerene_aarch64_usb_hsphy_vdd_lpm) && rail.name == "vdd")
+            {
                 RPMH_REGULATOR_MODE_HPM
             } else {
                 RPMH_REGULATOR_MODE_LPM

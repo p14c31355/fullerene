@@ -422,6 +422,16 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("utmi-trdtim-stage5") => Some("utmi-trdtim-stage5"),
         Some("utmi-write-requested-trdtim") => Some("utmi-write-requested-trdtim"),
         Some("utmi-write-readback-trdtim") => Some("utmi-write-readback-trdtim"),
+        Some("hsphy-valid") => Some("hsphy-valid"),
+        Some("hsphy-sleepm") => Some("hsphy-sleepm"),
+        Some("hsphy-opmode") => Some("hsphy-opmode"),
+        Some("hsphy-termsel") => Some("hsphy-termsel"),
+        Some("hsphy-suspend-n") => Some("hsphy-suspend-n"),
+        Some("hsphy-suspend-n-sel") => Some("hsphy-suspend-n-sel"),
+        Some("hsphy-por") => Some("hsphy-por"),
+        Some("hsphy-por-clear-after-runstop") => Some("hsphy-por-clear-after-runstop"),
+        Some("hsphy-vbus-valid0") => Some("hsphy-vbus-valid0"),
+        Some("hsphy-vbus-valid1") => Some("hsphy-vbus-valid1"),
         Some("protocol") => Some("protocol"),
         Some("dwc3-state") => Some("dwc3-state"),
         Some("dwc3-event") => Some("dwc3-event"),
@@ -1398,6 +1408,12 @@ extern "C" fn usb_probe_entry() -> ! {
     // attach timestamp.
     let prev_boot_code = usb::prev_boot_progress_code();
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    // Boundary readout: 4 = an EP0 SETUP STARTTRANSFER completed but no
+    // SETUP reached software; 5 = DWC3 Connect Done arrived but no SETUP
+    // reached software. These are intentionally separate from the ordinary
+    // progress ladder so the next boot can gate on one exact milestone.
+    let prev_boot_boundary_code = usb::prev_boot_boundary_code();
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     let prev_boot_qmp_phase = usb::prev_boot_qmp_phase_code().min(8);
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     let prev_boot_utmi_code = utmi_gate_selector()
@@ -1413,15 +1429,19 @@ extern "C" fn usb_probe_entry() -> ! {
     // Previous-boot trace gate: 1 = attach only when the previous boot's
     // trace reached a SETUP (code >= 2), 2 = attach only when it did not,
     // 3 = attach only when the previous trace was verifiable but held no
-    // SETUP (code == 1) - which separates a surviving trace from a lost or
-    // scribbled one. The suppressed path resets before any pull-up publish,
-    // so the host journal's attach-line presence is the one-bit readout -
-    // immune to the bootloader jitter that swamps the attach-delay ladder.
+    // SETUP (code == 1); 4 = attach only when the previous trace armed the
+    // EP0 SETUP transfer but received no SETUP; 5 = attach only when the
+    // previous trace observed Connect Done but received no SETUP. These
+    // exact gates separate the DWC3 command and event-ring boundaries. The
+    // suppressed path resets before any pull-up publish, so the host
+    // journal's attach-line presence is the one-bit readout.
     if let Some(mode) = option_env!("FULLERENE_USB_PREV_TRACE_GATE") {
         let attach_wanted = match mode {
             "1" => prev_boot_code >= 2,
             "2" => prev_boot_code < 2,
             "3" => prev_boot_code == 1,
+            "4" => prev_boot_boundary_code == 4,
+            "5" => prev_boot_boundary_code == 5,
             _ => true,
         };
         usb::trace_marker(

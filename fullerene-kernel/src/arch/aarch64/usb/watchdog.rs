@@ -123,6 +123,33 @@ unsafe fn scm_smc_call_once(fnid: u64, arginfo: u64, a0: u64, a1: u64, a2: u64) 
     (result, a6)
 }
 
+/// Issue the legacy Qualcomm SCM IO write used by the Android EUD driver.
+///
+/// `qcom_scm_io_writel()` uses SVC_IO (0x05), IO_WRITE (0x02), and two value
+/// arguments: the physical address and the value. Keep this as an explicit
+/// opt-in helper because an arbitrary secure write is not part of the normal
+/// USB handoff contract. A non-zero result is returned to the caller and no
+/// follow-up MMIO write should be made in that case.
+pub(super) fn secure_scm_io_write(address: usize, value: u32) -> u64 {
+    // Legacy QCOM_SCM_FNID(SVC_IO, IO_WRITE):
+    // 0x02000000 | (0x05 << 10) | 0x02 = 0x02001402.
+    // The A/B can select the ARM SMCCC FAST/SMC64 form used by newer
+    // qcom_scm (`0xC2000502`) without changing the physical test image.
+    let fnid = option_env!("FULLERENE_USB_EUD_SCM_FNID")
+        .and_then(|value| u64::from_str_radix(value.trim_start_matches("0x"), 16).ok())
+        .unwrap_or(0x0200_1402);
+    let result = unsafe { scm_smc_call_once(fnid, 2, address as u64, value as u64, 0) }.0;
+    trace_event(
+        TRACE_PROBE_WATCHDOG,
+        0x4544_5752, // "EDWR"
+        result as u32,
+        fnid as u32,
+        (fnid >> 32) as u32,
+        value,
+    );
+    result
+}
+
 /// ARM_SMCCC_CALL_VAL(ARM_SMCCC_STD_CALL, conv, OWNER_SIP=2, fn) per the
 /// 5.4 qcom_scm driver: TYPE(31)=0, CONV(30), OWNER(24..29)=2, FN(0..15).
 #[inline]

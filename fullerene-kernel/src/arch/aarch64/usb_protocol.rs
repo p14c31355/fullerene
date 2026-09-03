@@ -419,7 +419,18 @@ pub const DEVICE_DESCRIPTOR: [u8; 18] = [
     18, 1, 0x00, 0x03, 0, 0, 0, 9, 0x34, 0x12, 0x01, 0x00, 0, 1, 1, 2, 3, 1,
 ];
 
-#[cfg(not(fullerene_aarch64_usb_gadget_handoff_super_speed))]
+#[cfg(all(
+    not(fullerene_aarch64_usb_gadget_handoff_super_speed),
+    fullerene_aarch64_usb_dcfg_lowspeed
+))]
+pub const DEVICE_DESCRIPTOR: [u8; 18] = [
+    18, 1, 0x00, 0x02, 0, 0, 0, 8, 0x34, 0x12, 0x01, 0x00, 0, 1, 1, 2, 3, 1,
+];
+
+#[cfg(all(
+    not(fullerene_aarch64_usb_gadget_handoff_super_speed),
+    not(fullerene_aarch64_usb_dcfg_lowspeed)
+))]
 pub const DEVICE_DESCRIPTOR: [u8; 18] = [
     18, 1, 0x00, 0x02, 0, 0, 0, 64, 0x34, 0x12, 0x01, 0x00, 0, 1, 1, 2, 3, 1,
 ];

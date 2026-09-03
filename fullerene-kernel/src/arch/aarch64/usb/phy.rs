@@ -336,8 +336,15 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
         );
 
         // qcom,param-override-seq is encoded as (value, register offset).
-        let hsphy_param_override =
+        let mut hsphy_param_override =
             core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_HSPHY_PARAM_OVERRIDE));
+        #[cfg(fullerene_aarch64_usb_hsphy_qrd_override)]
+        {
+            // The Pixel QRD overlay uses 0xc8 for QUSB2 TUNE2 at 0x70,
+            // while the factory Bramble DT uses 0x85. Keep this as an
+            // opt-in physical A/B; the normal DT-selected value is intact.
+            hsphy_param_override[1] = (0x70, 0xc8);
+        }
         for &(offset, value) in hsphy_param_override.iter() {
             // The production Bramble/Barbet table has only two QUSB2
             // overrides. A trailing sentinel preserves the fixed table shape
@@ -346,12 +353,13 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
                 continue;
             }
             write_volatile(hsphy_reg(offset), value);
+            hsphy_write_barrier();
         }
 
         // The Bramble qpr1 `msm_hsphy_init()` body does not write RTUNE_SEL;
         // retain the old local write only for the pre-existing non-exact
         // helper paths.
-        if !source_exact {
+        if !source_exact || cfg!(fullerene_aarch64_usb_hsphy_rtune) {
             hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
         }
 
@@ -421,6 +429,27 @@ pub(super) unsafe fn select_utmi_pipe_clock() {
         write_qscratch(QSCRATCH_GENERAL_CFG, value);
     }
     trace_event(TRACE_UTMI_CLOCK, 1, 0, 0, 0, 0);
+}
+
+/// Reproduce qpr1's `DWC3_CONTROLLER_POST_RESET_EVENT` USB2-only mux turn.
+///
+/// The Qualcomm glue uses a much shorter 2--5 us interval in this callback
+/// than the standalone UTMI clock-source helper above. The distinction is
+/// important for the direct Fastboot handoff: qpr1 runs this immediately
+/// after `dwc3_core_init()` returns, before gadget endpoint state is built.
+/// Keep the three read-modify-write steps and the final clear separate so a
+/// retained trace can identify this post-reset boundary.
+pub(super) unsafe fn select_utmi_pipe_clock_post_reset() {
+    trace_event(TRACE_UTMI_CLOCK, 2, 0, 0, 0, 0);
+    unsafe {
+        qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_DIS);
+        crate::timer::delay_us(3);
+        qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
+        crate::timer::delay_us(3);
+        let value = read_qscratch(QSCRATCH_GENERAL_CFG) & !PIPE_UTMI_CLK_DIS;
+        write_qscratch(QSCRATCH_GENERAL_CFG, value);
+    }
+    trace_event(TRACE_UTMI_CLOCK, 3, 0, 0, 0, 0);
 }
 
 /// Apply the historical controller reference-clock calibration retained by

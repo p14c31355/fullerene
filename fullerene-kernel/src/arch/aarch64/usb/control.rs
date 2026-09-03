@@ -20,15 +20,23 @@ pub(super) unsafe fn device_soft_reset() -> bool {
         trace_event(TRACE_DWC3_RESET_BEGIN, 0, 0, 0, 0, 0);
         trace_event(TRACE_DEVICE_RESET, 0, 0, 0, 0, 0);
         let initial_dctl = read(DCTL);
-        // Match Linux's reconnect path: clear stale endpoint/device state
-        // without touching the already-running Qualcomm PHY and clock
-        // branches. RUN_STOP must be cleared in the same write; preserving
-        // Fastboot's RUN_STOP bit can leave the device half-running while
-        // CSFTRST is asserted.
-        let mut dctl = initial_dctl;
-        dctl |= DCTL_CSFTRST;
-        dctl &= !DCTL_RUN_STOP;
-        write_dctl_safe(dctl);
+        let source_exact = cfg!(fullerene_aarch64_usb_usb2_source_exact_device_reset);
+        if source_exact {
+            // qpr1's dwc3_device_core_soft_reset() writes DCTL verbatim
+            // after adding CSFTRST. In particular, it does not clear
+            // RUN_STOP or mask TRGTULST before the reset.
+            write(DCTL, initial_dctl | DCTL_CSFTRST);
+        } else {
+            // Match Linux's reconnect path: clear stale endpoint/device state
+            // without touching the already-running Qualcomm PHY and clock
+            // branches. RUN_STOP must be cleared in the same write; preserving
+            // Fastboot's RUN_STOP bit can leave the device half-running while
+            // CSFTRST is asserted.
+            let mut dctl = initial_dctl;
+            dctl |= DCTL_CSFTRST;
+            dctl &= !DCTL_RUN_STOP;
+            write_dctl_safe(dctl);
+        }
         let snpsid = read(GSNPSID);
         let ip = snpsid >> 16;
         // DWC_usb31 1.90a+ and DWC_usb32 synchronize CSFTRST through all
@@ -40,14 +48,20 @@ pub(super) unsafe fn device_soft_reset() -> bool {
             0
         };
         let slow_reset = ip == DWC32_IP || (ip == DWC31_IP && version >= DWC31_REVISION_190A);
-        let retries = if slow_reset { 10 } else { 1_000 };
+        let retries = if source_exact || slow_reset {
+            10
+        } else {
+            1_000
+        };
         let mut device_reset_complete = false;
         for _ in 0..retries {
             if read(DCTL) & DCTL_CSFTRST == 0 {
                 device_reset_complete = true;
                 break;
             }
-            if slow_reset {
+            if source_exact {
+                crate::timer::delay_ms(1);
+            } else if slow_reset {
                 crate::timer::delay_ms(20);
             } else {
                 crate::timer::delay_us(1);
@@ -58,6 +72,9 @@ pub(super) unsafe fn device_soft_reset() -> bool {
             return false;
         }
 
+        // qpr1 uses a 1-ms usleep cadence for this device-core reset. The
+        // source-exact A/B keeps that cadence; the existing path retains its
+        // controller-revision-specific polling delay.
         // DWC_usb31 requires a synchronization delay after CSFTRST clears
         // before software accesses the PHY domain. The Bramble 4.19 driver
         // applies this to every DWC_usb31 revision, not only the older
@@ -66,14 +83,17 @@ pub(super) unsafe fn device_soft_reset() -> bool {
         if ip == DWC31_IP {
             crate::timer::delay_ms(50);
         }
-        #[cfg(fullerene_aarch64_usb_gadget_handoff_clear_gsi_after_reset)]
-        {
-            // Android's dwc3_device_core_soft_reset() sends
-            // DWC3_CONTROLLER_NOTIFY_CLEAR_DB immediately after this
-            // synchronization delay. Keep the source-confirmed Qualcomm
-            // GSI doorbell transition isolated from the DWC3 reset and
-            // endpoint/PHY configuration A/Bs.
+        if source_exact {
+            // Android's source-exact reset clears the DWC3 doorbell block
+            // immediately after the 50-ms PHY synchronization delay.
             super::clear_gsi_doorbell_state();
+        } else {
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_clear_gsi_after_reset)]
+            {
+                // Keep the source-confirmed Qualcomm GSI doorbell transition
+                // isolated from the DWC3 reset and endpoint/PHY A/Bs.
+                super::clear_gsi_doorbell_state();
+            }
         }
         true
     }
@@ -252,6 +272,24 @@ pub(super) unsafe fn release_usb3_phy_reset() {
 /// wait, so both the checked and no-readback paths launch the same transition.
 unsafe fn prepare_run_stop_device(is_on: bool) -> u32 {
     unsafe {
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_no_usb2_runstop_guard)]
+        if is_on {
+            // The Bramble downstream dwc3-gadget run/stop path does not use
+            // mainline's temporary SUSPHY/ENBLSLPM clear. Keep this narrow
+            // A/B for the direct USB2 handoff so the DCTL transition can be
+            // compared with the vendor source without changing the normal
+            // Linux-compatible path.
+            let dctl = read(DCTL);
+            write(
+                DCTL,
+                if cfg!(fullerene_aarch64_usb_gadget_handoff_source_exact_runstop) {
+                    dctl | DCTL_RUN_STOP
+                } else {
+                    run_stop_value(dctl, read(GSNPSID))
+                },
+            );
+            return 0;
+        }
         let mut usb2 = read(GUSB2PHYCFG0);
         let saved_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
         if saved_config != 0 {
@@ -341,6 +379,58 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
     unsafe {
         let saved_config = prepare_run_stop_device(is_on);
         let complete = wait_device_state(!is_on);
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_runstop)]
+        if is_on {
+            let snpsid = read(GSNPSID);
+            let ip = snpsid >> 16;
+            if (ip == DWC31_IP || ip == DWC32_IP) && read(DCTL) & DCTL_RUN_STOP == 0 {
+                // Some DWC_usb31 handoffs accept the first Run/Stop write but
+                // clear it while the device-state transition synchronizes.
+                // Reapply only the start bit after the wait so the SS PHY and
+                // endpoint programming remain untouched.
+                let dctl = run_stop_value(read(DCTL), snpsid);
+                write(DCTL, dctl);
+                let readback = read(DCTL);
+                trace_event(TRACE_DWC3_HALTED, 0x5253_5354, readback, read(DSTS), 0, 0);
+            }
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_hold_runstop)]
+        if is_on {
+            let snpsid = read(GSNPSID);
+            let ip = snpsid >> 16;
+            if ip == DWC31_IP || ip == DWC32_IP {
+                // A DWC_usb31 handoff can clear RUN_STOP while its SS link
+                // state machine is still leaving SS_DIS.  Keep this A/B
+                // deliberately limited to the start bit: no PHY, endpoint,
+                // event-ring, or transfer-resource state is rewritten.
+                // Reassert for the same bounded window used by the SS EP0
+                // arm retry, so the host can observe whether the controller
+                // accepts the request once link training has progressed.
+                let deadline = super::arch_counter()
+                    .saturating_add(super::arch_counter_frequency().saturating_mul(5_000) / 1000);
+                let mut writes = 0u32;
+                let mut last_dctl = read(DCTL);
+                while super::arch_counter() < deadline {
+                    last_dctl = read(DCTL);
+                    if last_dctl & DCTL_RUN_STOP != 0 {
+                        break;
+                    }
+                    let dctl = run_stop_value(last_dctl, snpsid);
+                    write(DCTL, dctl);
+                    last_dctl = read(DCTL);
+                    writes = writes.saturating_add(1);
+                    crate::timer::delay_us(200);
+                }
+                trace_event(
+                    TRACE_DWC3_HALTED,
+                    0x4852_5354, // "HRST": held RUN_STOP result
+                    writes,
+                    last_dctl,
+                    read(DSTS),
+                    u32::from(last_dctl & DCTL_RUN_STOP != 0),
+                );
+            }
+        }
         if saved_config != 0 {
             let current = read(GUSB2PHYCFG0);
             write(GUSB2PHYCFG0, current | saved_config);

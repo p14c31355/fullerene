@@ -4,8 +4,26 @@ use super::super::usb_regs::*;
 use super::mmio::*;
 use super::trace::{TRACE_DWC3_REVISION_QUIRK, TRACE_QSCRATCH_BEGIN, live_utmi_write, trace_event};
 
-pub(super) fn gadget_speed_value(mut dcfg: u32, super_speed: bool, snpsid: u32) -> u32 {
+pub(super) fn gadget_speed_value(
+    mut dcfg: u32,
+    super_speed: bool,
+    full_speed: bool,
+    snpsid: u32,
+) -> u32 {
     dcfg &= !DCFG_SPEED_MASK;
+    // DCFG.LOWSPEED is the standard DWC3 low-speed device mode. Keep this
+    // explicit ahead of the legacy SuperSpeed metastability workaround so a
+    // low-speed PHY path can be tested without changing endpoint ownership.
+    if cfg!(fullerene_aarch64_usb_dcfg_lowspeed) {
+        return dcfg | DCFG_LOWSPEED;
+    }
+    // DCFG.FULLSPEED is a standard DWC3 device-speed mode. Keep this
+    // explicit A/B ahead of the legacy SuperSpeed metastability workaround:
+    // the purpose of this experiment is to avoid the HS chirp/data path and
+    // see whether the FS SOF/SETUP receive path still responds.
+    if full_speed {
+        return dcfg | DCFG_FULLSPEED;
+    }
     // Linux's DWC3 metastability workaround: revisions before 2.20a must
     // keep the device in the SuperSpeed DCFG mode even when the negotiated
     // link is expected to fall back to USB2. Selecting High-Speed here can
@@ -26,7 +44,12 @@ pub(super) fn gadget_speed_value(mut dcfg: u32, super_speed: bool, snpsid: u32) 
 /// field at this final connect boundary.
 pub(super) unsafe fn configure_gadget_speed(super_speed: bool) {
     unsafe {
-        let dcfg = gadget_speed_value(read(DCFG), super_speed, read(GSNPSID));
+        let dcfg = gadget_speed_value(
+            read(DCFG),
+            super_speed,
+            cfg!(fullerene_aarch64_usb_dcfg_fullspeed),
+            read(GSNPSID),
+        );
         write(DCFG, dcfg);
         let _ = read(DCFG);
     }
@@ -128,7 +151,20 @@ pub(super) fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
         // value at every device Run/Stop transition.
         dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_LITO;
     }
-    dctl &= !DCTL_TRGTULST_MASK;
+    // TRGTULST occupies bits 17..20 only on pre-1.87a DWC3. On modern
+    // DWC_usb31 those same bits are CSS/CRS/L1_HIBER_EN/KEEP_CONNECT or the
+    // NYET threshold, so a blanket clear changes the state that the vendor
+    // gadget_run_stop() preserves. Keep the historical behavior by default
+    // for existing A/Bs, and make the source-faithful modern behavior an
+    // explicit handoff experiment.
+    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_modern_dctl_preserve))]
+    {
+        dctl &= !DCTL_TRGTULST_MASK;
+    }
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_modern_dctl_preserve)]
+    if (snpsid & 0xffff_0000) == 0x5533_0000 && snpsid <= DWC3_REVISION_187A {
+        dctl &= !DCTL_TRGTULST_MASK;
+    }
     if (snpsid & 0xffff_0000) == 0x5533_0000 {
         if snpsid <= DWC3_REVISION_187A {
             dctl |= DCTL_TRGTULST_RX_DET;
@@ -146,6 +182,14 @@ pub(super) fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
     // while the new device session is already advertising its pull-up.
     if matches!(snpsid >> 16, DWC31_IP | DWC32_IP) {
         dctl &= !DCTL_KEEP_CONNECT;
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_keep_connect_on_start)]
+        {
+            // Qualcomm's gadget_run_stop(true) restores KEEP_CONNECT after
+            // its revision-gated clear when the DWC3 core supports
+            // hibernation. Exercise that start-side state as an isolated
+            // handoff A/B; the normal path intentionally retains the clear.
+            dctl |= DCTL_KEEP_CONNECT;
+        }
     }
     dctl | DCTL_RUN_STOP
 }
@@ -337,9 +381,59 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
             // other inherited bits.
             usb2 &= !GUSB2PHYCFG_U2_FREECLK_EXISTS;
         }
+        #[cfg(fullerene_aarch64_usb_u2_freeclk_set)]
+        {
+            // The Linux default is that a free-running USB2 PHY clock exists;
+            // the clear variant above is only for platforms with the matching
+            // device-tree quirk.  Fastboot handoff state is not a reliable
+            // source for this capability bit, so expose the source-default
+            // value as an explicit diagnostic A/B as well.
+            usb2 |= GUSB2PHYCFG_U2_FREECLK_EXISTS;
+        }
         write(GUSB2PHYCFG0, usb2);
         let readback = read(GUSB2PHYCFG0);
         live_utmi_write(usb2, readback);
+    }
+}
+
+/// Apply the controller-side portion of qpr1's `dwc3_phy_setup()` before the
+/// DWC3 device-core soft reset.  qpr1 programs the UTMI interface and leaves
+/// USB2 `SUSPHY` asserted for the subsequent PHY/core reset; the direct
+/// handoff historically applied only the post-reset steady-state value.
+/// Keep this boundary separate because the final value is intentionally
+/// cleared again before endpoint commands are issued.
+#[inline]
+pub(super) unsafe fn configure_usb2_phy_interface_pre_reset() {
+    unsafe {
+        let mut usb2 = read(GUSB2PHYCFG0);
+        usb2 &= !(GUSB2PHYCFG_ULPI_UTMI | GUSB2PHYCFG_PHYIF_MASK | GUSB2PHYCFG_USBTRDTIM_MASK);
+        let trdtim = match option_env!("FULLERENE_USB_USBTRDTIM") {
+            Some("5") => 5,
+            Some("6") => 6,
+            Some("7") => 7,
+            Some("8") => 8,
+            Some("10") => 10,
+            Some("11") => 11,
+            Some("12") => 12,
+            Some("13") => 13,
+            Some("14") => 14,
+            Some("15") => 15,
+            #[cfg(fullerene_aarch64_usb_phyif_16bit)]
+            _ => 5,
+            #[cfg(not(fullerene_aarch64_usb_phyif_16bit))]
+            _ => 9,
+        };
+        usb2 |= trdtim << 10;
+        #[cfg(fullerene_aarch64_usb_phyif_16bit)]
+        {
+            usb2 |= GUSB2PHYCFG_PHYIF_MASK;
+        }
+        // qpr1's dwc3_phy_setup() asserts SUSPHY during coreConsultant
+        // configuration for revisions newer than 1.94a. Bramble's DWC31
+        // revision is in that range.
+        usb2 |= GUSB2PHYCFG_SUSPHY;
+        write(GUSB2PHYCFG0, usb2);
+        let _ = read(GUSB2PHYCFG0);
     }
 }
 
@@ -487,10 +581,10 @@ pub(super) unsafe fn qscratch_set(offset: usize, mask: u32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DCFG_SPEED_MASK, DCFG_SUPERSPEED, DCTL_HIRD_THRES_LITO, DCTL_HIRD_THRES_MASK,
-        DCTL_KEEP_CONNECT, DCTL_RUN_STOP, DCTL_TRGTULST_MASK, DCTL_TRGTULST_RX_DET,
-        DWC3_REVISION_187A, DWC3_REVISION_194A, DWC3_REVISION_220A, gadget_nump,
-        gadget_speed_value, run_stop_value,
+        DCFG_FULLSPEED, DCFG_LOWSPEED, DCFG_SPEED_MASK, DCFG_SUPERSPEED, DCTL_HIRD_THRES_LITO,
+        DCTL_HIRD_THRES_MASK, DCTL_KEEP_CONNECT, DCTL_RUN_STOP, DCTL_TRGTULST_MASK,
+        DCTL_TRGTULST_RX_DET, DWC3_REVISION_187A, DWC3_REVISION_194A, DWC3_REVISION_220A,
+        gadget_nump, gadget_speed_value, run_stop_value,
     };
 
     #[test]
@@ -519,15 +613,29 @@ mod tests {
     #[test]
     fn gadget_speed_value_changes_only_speed_field() {
         let old = 0x00a5_1234;
-        let usb2 = gadget_speed_value(old, false, DWC3_REVISION_220A);
+        let usb2 = gadget_speed_value(old, false, false, DWC3_REVISION_220A);
         assert_eq!(usb2 & DCFG_SPEED_MASK, 0);
         assert_eq!(usb2 & !DCFG_SPEED_MASK, old & !DCFG_SPEED_MASK);
 
-        let superspeed = gadget_speed_value(usb2, true, DWC3_REVISION_220A);
+        let superspeed = gadget_speed_value(usb2, true, false, DWC3_REVISION_220A);
         assert_eq!(superspeed & DCFG_SPEED_MASK, DCFG_SUPERSPEED);
         assert_eq!(superspeed & !DCFG_SPEED_MASK, old & !DCFG_SPEED_MASK);
 
-        let legacy = gadget_speed_value(old, false, DWC3_REVISION_187A);
+        let legacy = gadget_speed_value(old, false, false, DWC3_REVISION_187A);
         assert_eq!(legacy & DCFG_SPEED_MASK, DCFG_SUPERSPEED);
+
+        let full_speed = gadget_speed_value(old, false, true, DWC3_REVISION_187A);
+        assert_eq!(full_speed & DCFG_SPEED_MASK, DCFG_FULLSPEED);
+        assert_eq!(full_speed & !DCFG_SPEED_MASK, old & !DCFG_SPEED_MASK);
+
+        let low_speed = {
+            // The production cfg is normally absent in host-side tests; this
+            // keeps the encoding assertion local to the register contract.
+            let mut value = old & !DCFG_SPEED_MASK;
+            value |= DCFG_LOWSPEED;
+            value
+        };
+        assert_eq!(low_speed & DCFG_SPEED_MASK, DCFG_LOWSPEED);
+        assert_eq!(low_speed & !DCFG_SPEED_MASK, old & !DCFG_SPEED_MASK);
     }
 }

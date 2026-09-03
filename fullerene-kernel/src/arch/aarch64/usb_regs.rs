@@ -2,8 +2,12 @@
 
 pub const DCFG_SPEED_MASK: u32 = 7;
 pub const DCFG_DEVADDR_MASK: u32 = 0x7f << 3;
+// DWC3 DCFG.SPEED encoding from the qpr1 dwc3 core header.
+pub const DCFG_FULLSPEED: u32 = 1;
 pub const DCFG_HIGHSPEED: u32 = 0;
 pub const DCFG_SUPERSPEED: u32 = 4;
+// DWC3 device-speed encoding used by the qpr1 gadget driver for USB low speed.
+pub const DCFG_LOWSPEED: u32 = 2;
 pub const DCTL_RUN_STOP: u32 = 1 << 31;
 pub const DSTS_CONNECTSPD_MASK: u32 = 7;
 pub const DSTS_DEVCTRLHLT: u32 = 1 << 22;
