@@ -229,6 +229,10 @@ pub(crate) const DCTL_HIRD_THRES_LITO: u32 = 0x10 << 24;
 pub(crate) const DCTL_HIRD_THRES_XBL: u32 = 0x07 << 24;
 pub(crate) const DCTL_L1_HIBER_EN: u32 = 1 << 18;
 pub(crate) const DCTL_KEEP_CONNECT: u32 = 1 << 19;
+// gadget.c: DWC3_DCTL_LPM_ERRATA(n) = (n) << 20, mask 0xf << 20.  The Lito DT
+// supplies snps,has-lpm-erratum with the core.c default lpm_nyet_threshold
+// 0xf, so the platform value is 0xf << 20.
+pub(crate) const DCTL_LPM_ERRATA_LITO: u32 = 0xf << 20;
 pub(crate) const DCTL_TSTCTRL_MASK: u32 = 0xf << 1;
 pub(crate) const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
 pub(crate) const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
@@ -252,6 +256,9 @@ pub(crate) const DWC31_REVISION_190A: u32 = 0x3139_302a;
 pub(crate) const DWC3_REVISION_187A: u32 = 0x5533_187a;
 pub(crate) const DWC3_REVISION_190A: u32 = 0x5533_190a;
 pub(crate) const DWC3_REVISION_194A: u32 = 0x5533_194a;
+// gadget.c gates the DCTL.LPM_ERRATA write on revision >= 240A; a DWC_usb31
+// core carries the DWC3_REVISION_IS_DWC31 bit, so its revision always passes.
+pub(crate) const DWC3_REVISION_240A: u32 = 0x5533_240a;
 pub(crate) const DWC3_REVISION_220A: u32 = 0x5533_220a;
 pub(crate) const DWC3_REVISION_250A: u32 = 0x5533_250a;
 pub(crate) const DWC3_REVISION_310A: u32 = 0x5533_310a;

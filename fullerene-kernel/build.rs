@@ -133,6 +133,7 @@ fn main() {
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_dt_hird_threshold)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_android_hs_lpm)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_android_lpm_errata)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_abl_shared_hsphy)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_abl_devten)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_abl_ep_config)");
@@ -533,6 +534,9 @@ fn main() {
         }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_HS_LPM").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_android_hs_lpm");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_LPM_ERRATA").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_android_lpm_errata");
         }
         if env::var_os("FULLERENE_AARCH64_USB_ABL_SHARED_HSPHY").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_abl_shared_hsphy");
@@ -1084,6 +1088,9 @@ fn main() {
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_FULL_CORE_RESET"
         );
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_HS_LPM");
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_LPM_ERRATA"
+        );
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABL_SHARED_HSPHY");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABL_EP_CONFIG");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_ABL_COMMAND_PARAMS");

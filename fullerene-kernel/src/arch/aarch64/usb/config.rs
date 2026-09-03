@@ -88,6 +88,17 @@ pub(super) unsafe fn configure_android_hs_connect_done_policy(speed: u32) {
         dctl &= !(DCTL_HIRD_THRES_MASK | DCTL_L1_HIBER_EN);
         // lito-usb.dtsi supplies snps,hird-threshold = 0x10.
         dctl |= DCTL_HIRD_THRES_LITO;
+        // gadget.c dwc3_gadget_conndone_interrupt() additionally sets
+        // DCTL.LPM_ERRATA from the DT quirk snps,has-lpm-erratum on revisions
+        // >= 240A with the core.c default lpm_nyet_threshold = 0xf.  Bramble's
+        // DWC_usb31 revision passes the same >= 240A test through
+        // DWC3_REVISION_IS_DWC31, so the vendor policy includes this field;
+        // keep it behind its own opt-in so run 1223833.0's exact A/B remains
+        // reproducible.
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_android_lpm_errata)]
+        if revision >= DWC3_REVISION_240A {
+            dctl |= DCTL_LPM_ERRATA_LITO;
+        }
         write(DCTL, dctl);
         let _ = read(DCTL);
     }

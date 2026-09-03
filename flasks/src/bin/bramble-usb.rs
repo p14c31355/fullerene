@@ -215,6 +215,10 @@ struct LoopArgs {
     /// Apply Android msm's HS Connect Done LPM/HIRD controller policy.
     #[arg(long)]
     android_hs_lpm: bool,
+    /// Extend the HS Connect Done policy with the DT snps,has-lpm-erratum
+    /// field (DCTL.LPM_ERRATA=0xf) exactly where gadget.c sets it.
+    #[arg(long, requires = "android_hs_lpm")]
+    android_lpm_errata: bool,
     /// Mirror Factory ABL's additional QUSB2 HS PHY ATE/test cleanup (A/B).
     #[arg(long)]
     abl_shared_hs_phy: bool,
@@ -680,6 +684,7 @@ impl Default for LoopArgs {
             ss_retry_setup: false,
             dt_hird_threshold: false,
             android_hs_lpm: false,
+            android_lpm_errata: false,
             abl_shared_hs_phy: false,
             abl_devten: false,
             abl_ep_config: false,
@@ -1445,6 +1450,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--android-hs-lpm requires --direct-handoff",
+        ));
+    }
+    if args.android_lpm_errata && !args.android_hs_lpm {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--android-lpm-errata requires --android-hs-lpm",
         ));
     }
     if args.abl_shared_hs_phy && !args.direct_handoff {
@@ -2442,6 +2453,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.android_hs_lpm {
         arguments.push("--usb-gadget-handoff-android-hs-lpm".to_owned());
+    }
+    if args.android_lpm_errata {
+        arguments.push("--usb-gadget-handoff-android-lpm-errata".to_owned());
     }
     if args.abl_shared_hs_phy {
         arguments.push("--usb-gadget-handoff-abl-shared-hs-phy".to_owned());

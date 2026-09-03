@@ -466,6 +466,12 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_android_hs_lpm: bool,
 
+    /// Bramble differential: extend the HS Connect Done policy with the DT
+    /// snps,has-lpm-erratum field (DCTL.LPM_ERRATA=0xf), the one remaining
+    /// lito-usb.dtsi property gadget.c consumes at Connect Done.
+    #[arg(long, requires = "usb_gadget_handoff_android_hs_lpm")]
+    usb_gadget_handoff_android_lpm_errata: bool,
+
     /// Bramble differential: mirror Factory ABL's additional QUSB2 HS PHY
     /// ATE/test cleanup and settle delays.
     #[arg(long)]
@@ -2464,6 +2470,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_ss_retry_setup: args.usb_gadget_handoff_ss_retry_setup,
                 gadget_handoff_dt_hird_threshold: args.usb_gadget_handoff_dt_hird_threshold,
                 gadget_handoff_android_hs_lpm: args.usb_gadget_handoff_android_hs_lpm,
+                gadget_handoff_android_lpm_errata: args.usb_gadget_handoff_android_lpm_errata,
                 gadget_handoff_abl_shared_hs_phy: args.usb_gadget_handoff_abl_shared_hs_phy,
                 gadget_handoff_abl_devten: args.usb_gadget_handoff_abl_devten,
                 gadget_handoff_abl_ep_config: args.usb_gadget_handoff_abl_ep_config,
@@ -2757,6 +2764,7 @@ struct Aarch64BuildConfig {
     gadget_handoff_ss_retry_setup: bool,
     gadget_handoff_dt_hird_threshold: bool,
     gadget_handoff_android_hs_lpm: bool,
+    gadget_handoff_android_lpm_errata: bool,
     gadget_handoff_abl_shared_hs_phy: bool,
     gadget_handoff_abl_devten: bool,
     gadget_handoff_abl_ep_config: bool,
@@ -2912,6 +2920,7 @@ fn build_aarch64_kernel(
         gadget_handoff_ss_retry_setup,
         gadget_handoff_dt_hird_threshold,
         gadget_handoff_android_hs_lpm,
+        gadget_handoff_android_lpm_errata,
         gadget_handoff_abl_shared_hs_phy,
         gadget_handoff_abl_devten,
         gadget_handoff_abl_ep_config,
@@ -3206,6 +3215,12 @@ fn build_aarch64_kernel(
     if gadget_handoff_android_hs_lpm {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_HS_LPM",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_android_lpm_errata {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_ANDROID_LPM_ERRATA",
             "1".to_owned(),
         );
     }
