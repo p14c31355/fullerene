@@ -178,6 +178,32 @@ The official `dwc3_stop_active_transfers_to_halt()` audit is complete but not di
 
 `1807705.0` applied the last uncovered lito-usb.dtsi Connect-Done property: `--android-lpm-errata` (requires `--android-hs-lpm`) sets `DCTL.LPM_ERRATA=0xf` from the DT `snps,has-lpm-erratum` quirk exactly where qpr1 `dwc3_gadget_conndone_interrupt()` sets it on revisions >= 240A (Bramble's DWC_usb31 passes through the DWC31 flag), with the qpr1 `core.c` default `lpm_nyet_threshold = 0xf`. This was the only DT-sourced register field not yet covered by an A/B; the DT audit (tmp clone of `android-msm-bramble-4.19-android11-qpr1`, the only bramble branch) also machine-verified the 146-entry QMP init table, the 18-entry reg-offset list, the GSI offsets, the PDC trigger types (including HEAD `5d23766e` EDGE_RISING for dp/dm), the six controller clocks, and the `<0x3>` GSI event-buffer count as already implemented. ADB was `device`; `adb reboot bootloader` and `fastboot boot: OKAY` succeeded. The host saw Fullerene HS attach at `05:47:54`, the descriptor timed out with `-110` at `05:47:59`, and Android `18d1:4ee7` returned at `05:48:20`; `boot-reason=watchdog`; no `1234:0001`. The delta is negative; the remaining DT properties (`tx-fifo-resize` IN-EP resize, `usb3-u1u2-disable` SET_FEATURE gate) are unreachable in a control-only fresh-gadget handoff. Artifact SHA: `3eb706858475e2a94a3e26796c9af2236519f75dbc3c588e0ecf8b6f648e5315`.
 
+### No-hardware enumeration proof (host-side, Linux-usbcore-faithful)
+
+With the handset unavailable for further probing, the enumeration protocol was
+proven host-side instead. `fullerene-kernel/src/arch/aarch64/usb_linux_host_enum.rs`
+implements the exact Linux v6.6 usbcore enumeration sequence (source-fetched
+from git.kernel.org: `hub.c` `hub_port_init()`/`get_bMaxPacketSize0()`/
+`hub_set_address()`, `message.c` `usb_get_descriptor()`/`usb_get_string()`/
+`usb_get_device_descriptor()`, `config.c` `usb_get_configuration()`/
+`usb_get_bos_descriptor()`) as a virtual host driving Fullerene's
+`Ep0Simulator` through the same `ControlAction`/response-buffer protocol the
+hardware wrapper uses. Four tests pass (`cargo test --bin fullerene-kernel`,
+98 total): the new-scheme 64-byte-read → SET_ADDRESS(7) → 18-byte descriptor →
+config → strings → SET_CONFIGURATION sequence reaches `idVendor=0x1234`,
+`idProduct=0x0001`, a consistent `wTotalLength`, and a committed
+configuration; the old scheme (SET_ADDRESS first, then the 8-byte
+`bMaxPacketSize0` read) also completes; a full USB reset between
+enumerations returns to `1234:0001`; and an exact-length config read
+terminates cleanly into the next SETUP. The QEMU EP0 self-test
+(`--qemu-usb-sim`) still passes unchanged. This closes every software-side
+question the host can ask: descriptor content, EP0 ordering, retry handling,
+and post-status rearm are all enumeration-correct. The Bramble failure is
+therefore confirmed to be entirely below EP0 — the USB2 PHY RX path that
+never delivers a SETUP token — and remains reachable only with physical
+evidence (JTAG/secure-debug capture or a USB protocol analyzer), consistent
+with the boundary snapshot in `boundary-state.md`.
+
 ## Next source-directed investigation
 
 | Order | Check | Result | Why |

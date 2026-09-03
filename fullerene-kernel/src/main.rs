@@ -14,6 +14,9 @@ mod usb_protocol;
 #[cfg(test)]
 #[path = "arch/aarch64/usb_regs.rs"]
 mod usb_regs;
+#[cfg(test)]
+#[path = "arch/aarch64/usb_linux_host_enum.rs"]
+mod usb_linux_host_enum;
 
 // ── Panic-screen framebuffer drawing (no alloc, no locks) ─────────────
 //
