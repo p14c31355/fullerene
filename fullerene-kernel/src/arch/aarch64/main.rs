@@ -256,6 +256,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             let dwc3 = fdt::find_compatible(address, b"snps,dwc3")
                 .or_else(|| fdt::find_compatible(address, b"qcom,dwc-usb3-msm"));
             let hs_phy = fdt::find_compatible(address, b"qcom,usb-hsphy-snps-femto");
+            let hs_phy_eud = fdt::find_compatible_nth(address, b"qcom,usb-hsphy-snps-femto", 1);
             let qmp_phy = fdt::find_compatible(address, b"qcom,usb-ssphy-qmp-dp-combo");
             let gcc = fdt::find_compatible(address, b"qcom,gcc-lito");
             let pdc = fdt::find_compatible(address, b"qcom,lito-pdc");
@@ -564,6 +565,9 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             } else {
                 uart::puts("platform: Bramble DTB has no usable USB resource overrides\n");
             }
+            let _ = platform::bramble::install_usb_hs_phy_eud_base(
+                hs_phy_eud.map(|region| region.base),
+            );
         } else {
             uart::puts("platform: Bramble DTB unavailable; using compiled Lito resources\n");
         }
@@ -724,14 +728,21 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
         uart::puts("platform: bramble USB2 gadget handoff: ready\n");
     } else {
         uart::puts("platform: bramble USB2 gadget handoff: failed\n");
-        // `fastboot boot` may jump through a vendor trampoline that tears
-        // down the Fastboot controller before entering the image.  In that
-        // case preserving the bootloader's PHY state cannot work; retry with
-        // the complete Qualcomm USB2 platform sequence.
-        if usb::init_usb2_only() {
-            uart::puts("platform: bramble USB2 cold fallback: ready\n");
+        if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
+            // A post-Run/Stop event-DMA diagnostic must not be masked by the
+            // ordinary cold fallback: its host-visible attach would no longer
+            // identify the tested USB2 handoff result.
+            uart::puts("platform: post-Run/Stop DMA diagnostic: no cold fallback\n");
         } else {
-            uart::puts("platform: bramble USB2 cold fallback: failed\n");
+            // `fastboot boot` may jump through a vendor trampoline that tears
+            // down the Fastboot controller before entering the image.  In
+            // that case preserving the bootloader's PHY state cannot work;
+            // retry with the complete Qualcomm USB2 platform sequence.
+            if usb::init_usb2_only() {
+                uart::puts("platform: bramble USB2 cold fallback: ready\n");
+            } else {
+                uart::puts("platform: bramble USB2 cold fallback: failed\n");
+            }
         }
     }
     // USB setup itself remains trace-only; emit the compact ring after

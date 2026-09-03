@@ -2,7 +2,7 @@
 
 use super::super::usb_regs::*;
 use super::mmio::*;
-use super::trace::{TRACE_DWC3_REVISION_QUIRK, TRACE_QSCRATCH_BEGIN, trace_event};
+use super::trace::{TRACE_DWC3_REVISION_QUIRK, TRACE_QSCRATCH_BEGIN, live_utmi_write, trace_event};
 
 pub(super) fn gadget_speed_value(mut dcfg: u32, super_speed: bool, snpsid: u32) -> u32 {
     dcfg &= !DCFG_SPEED_MASK;
@@ -32,6 +32,44 @@ pub(super) unsafe fn configure_gadget_speed(super_speed: bool) {
     }
 }
 
+/// Apply Android msm's USB2 Connect Done policy for a DWC3 gadget.
+///
+/// The downstream gadget driver enables `DCFG.LPM_CAP` and rewrites the HIRD
+/// threshold after the negotiated speed is known. This is a controller-side
+/// HS link policy, not a software packet wrapper. Keep it as an explicit A/B
+/// because the current handoff reaches the host's HS attach without proving
+/// that the DWC3 receives any SOF/SETUP traffic.
+#[inline]
+pub(super) unsafe fn configure_android_hs_connect_done_policy(speed: u32) {
+    unsafe {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_android_hs_lpm) {
+            return;
+        }
+
+        let snpsid = read(GSNPSID);
+        let revision = if matches!(snpsid >> 16, DWC31_IP | DWC32_IP) {
+            read(VER_NUMBER) | DWC3_REVISION_IS_DWC31
+        } else {
+            snpsid
+        };
+        // Android's conndone path applies this only below SuperSpeed.
+        if revision <= DWC3_REVISION_194A || speed == DSTS_SUPERSPEED {
+            return;
+        }
+
+        let mut dcfg = read(DCFG);
+        dcfg |= DCFG_LPM_CAP;
+        write(DCFG, dcfg);
+
+        let mut dctl = read(DCTL);
+        dctl &= !(DCTL_HIRD_THRES_MASK | DCTL_L1_HIBER_EN);
+        // lito-usb.dtsi supplies snps,hird-threshold = 0x10.
+        dctl |= DCTL_HIRD_THRES_LITO;
+        write(DCTL, dctl);
+        let _ = read(DCTL);
+    }
+}
+
 /// Match the PHY low-power boundary in Linux's `__dwc3_gadget_start()`.
 ///
 /// `dwc3_gadget_run_stop()` temporarily clears these bits around the actual
@@ -51,12 +89,45 @@ pub(super) unsafe fn enable_gadget_susphy() {
     }
 }
 
+/// Restore only the USB2 PHY wake bit for the Bramble USB2 handoff A/B.
+///
+/// The direct path intentionally clears SUSPHY while rebuilding the DWC3
+/// endpoint state. Android's Run/Stop path preserves an enabled USB2 PHY
+/// across its transition, so keep this differential separate from the
+/// SuperSpeed helper and avoid changing the USB3 side of the experiment.
+#[inline]
+pub(super) unsafe fn enable_usb2_gadget_susphy() {
+    unsafe {
+        let mut usb2 = read(GUSB2PHYCFG0);
+        usb2 |= GUSB2PHYCFG_SUSPHY;
+        write(GUSB2PHYCFG0, usb2);
+    }
+}
+
 #[inline]
 pub(super) fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
-    // Lito's DWC3 node supplies snps,hird-threshold = 0x10.  A Fastboot
-    // handoff can inherit a different value, so restore the platform value
-    // at every device Run/Stop transition.
-    dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_LITO;
+    // Stock Bramble XBL's DwcCoreInit writes APPL1RES and HIRD_THRES=7 after
+    // endpoint setup. Keep that exact device-mode state through the probe's
+    // Run/Stop transition; the generic Lito DT value remains the default for
+    // non-probe paths.
+    #[cfg(all(
+        fullerene_aarch64_usb_gadget_handoff_probe,
+        not(fullerene_aarch64_usb_gadget_handoff_dt_hird_threshold)
+    ))]
+    {
+        dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_XBL;
+        dctl |= DCTL_APPL1RES;
+    }
+    #[cfg(any(
+        not(fullerene_aarch64_usb_gadget_handoff_probe),
+        fullerene_aarch64_usb_gadget_handoff_dt_hird_threshold
+    ))]
+    {
+        // Lito's DWC3 node supplies snps,hird-threshold = 0x10. A Fastboot
+        // handoff can inherit a different value, so restore the platform
+        // value at every device Run/Stop transition.
+        dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_LITO;
+    }
     dctl &= !DCTL_TRGTULST_MASK;
     if (snpsid & 0xffff_0000) == 0x5533_0000 {
         if snpsid <= DWC3_REVISION_187A {
@@ -67,6 +138,14 @@ pub(super) fn run_stop_value(mut dctl: u32, snpsid: u32) -> u32 {
             // disconnect/reconnect boundary needed by a gadget handoff.
             dctl &= !DCTL_KEEP_CONNECT;
         }
+    }
+    // Lito/Bramble uses the DWC_usb31 IP (0x3331xxxx), whose revision is
+    // reported separately through VER_NUMBER. The KEEP_CONNECT field is
+    // still part of the gadget reconnect contract on that IP; preserving a
+    // bootloader value can keep the old Fastboot session logically attached
+    // while the new device session is already advertising its pull-up.
+    if matches!(snpsid >> 16, DWC31_IP | DWC32_IP) {
+        dctl &= !DCTL_KEEP_CONNECT;
     }
     dctl | DCTL_RUN_STOP
 }
@@ -93,6 +172,8 @@ pub(super) unsafe fn configure_dwc3_global_control() {
             gctl |= GCTL_U2RSTECN;
             applied |= GCTL_U2RSTECN;
         }
+        write(GCTL, gctl);
+        let _ = read(GCTL);
         // The lito/bramble vendor DT sets snps,disable-clk-gating, which
         // overrides the generic pwropt-based logic in
         // dwc3_core_setup_global_control(): this platform ALWAYS runs with
@@ -116,6 +197,90 @@ pub(super) unsafe fn configure_dwc3_global_control() {
     }
 }
 
+/// Apply the device-mode tail of Android msm's `dwc3_set_mode()`.
+///
+/// The direct handoff previously selected `PRTCAPDIR=DEVICE` but omitted the
+/// second write that Android performs immediately afterwards. That write is
+/// not an EP0/TRB formatting choice: it controls the DWC3 USB2 reset-retry,
+/// power-down scale, and LFPS exit policy. Keep this as a source-equivalent
+/// controller-mode correction before endpoint commands are published.
+#[inline]
+pub(super) unsafe fn configure_dwc3_device_mode() {
+    unsafe {
+        let mut gctl = read(GCTL);
+        gctl &= !GCTL_PRTCAPDIR_MASK;
+        gctl |= GCTL_PRTCAP_DEVICE;
+        write(GCTL, gctl);
+
+        // Match Android msm's dwc3_set_mode(...DEVICE) second write. The
+        // source sets U2RSTECN for every mode, clears SOFITPSYNC, programs
+        // PWRDNSCALE=2, and enables U2EXIT_LFPS.
+        gctl |= GCTL_U2RSTECN | GCTL_U2EXIT_LFPS;
+        gctl &= !(GCTL_SOFITPSYNC | GCTL_PWRDNSCALE_MASK);
+        gctl |= GCTL_PWRDNSCALE_2;
+        write(GCTL, gctl);
+        let _ = read(GCTL);
+    }
+}
+
+/// Apply Bramble's Qualcomm USB31 LFPS exit-response timer workaround.
+///
+/// The vendor glue writes `DWC31_LINK_LU3LFPSRXTIM(0)` during
+/// `dwc3_otg_start_peripheral()`, after DBM/device-mode setup and immediately
+/// before gadget VBUS connect. Keep this source-confirmed controller-link
+/// delta opt-in: it changes no PHY table, endpoint state, or packet payload.
+#[inline]
+pub(super) unsafe fn configure_usb31_lfps_exit_timer() {
+    unsafe {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_ss_lfps_timer) {
+            return;
+        }
+        if read(GSNPSID) >> 16 != DWC31_IP {
+            return;
+        }
+        let revision = read(VER_NUMBER) | DWC3_REVISION_IS_DWC31;
+        if revision != DWC3_USB31_REVISION_170A || read(VER_TYPE) != DWC3_USB31_VER_TYPE_GA {
+            return;
+        }
+        let mut reg = read(DWC31_LINK_LU3LFPSRXTIM0);
+        reg &= !(DWC31_LINK_LU3LFPSRXTIM_GEN2_MASK | DWC31_LINK_LU3LFPSRXTIM_GEN1_MASK);
+        reg |= DWC31_LINK_LU3LFPSRXTIM_GEN2_BRAMBLE | DWC31_LINK_LU3LFPSRXTIM_GEN1_BRAMBLE;
+        write(DWC31_LINK_LU3LFPSRXTIM0, reg);
+        let readback = read(DWC31_LINK_LU3LFPSRXTIM0);
+        super::log::log_hex("usb: SS LFPS exit timer=", readback as u64);
+    }
+}
+
+/// Apply the DWC31 part of Linux's `dwc3_phy_setup()`.
+///
+/// The reference code clears `GUSB3PIPECTL.UX_EXIT_PX` before applying the
+/// revision/DT-specific PIPE policy.  This is a controller-side link setup
+/// bit, so expose only that source-confirmed operation as a separate A/B.
+#[inline]
+pub(super) unsafe fn configure_usb31_phy_setup() {
+    unsafe {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_ss_clear_ux_exit_px) {
+            return;
+        }
+        if read(GSNPSID) >> 16 != DWC31_IP {
+            return;
+        }
+        let revision = read(VER_NUMBER) | DWC3_REVISION_IS_DWC31;
+        if revision < DWC3_USB31_REVISION_170A {
+            return;
+        }
+        let before = read(GUSB3PIPECTL0);
+        let after = before & !GUSB3PIPECTL_UX_EXIT_PX;
+        write(GUSB3PIPECTL0, after);
+        let readback = read(GUSB3PIPECTL0);
+        super::log::log_hex(
+            "usb: SS PHY UX_EXIT_PX before=",
+            u64::from(before & GUSB3PIPECTL_UX_EXIT_PX),
+        );
+        super::log::log_hex("usb: SS PHY GUSB3PIPECTL=", readback as u64);
+    }
+}
+
 /// Reapply the DWC3-side USB2 interface contract after a controller reset.
 ///
 /// Linux's `dwc3_hs_phy_setup()` selects the UTMI interface and programs the
@@ -134,9 +299,47 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
         // the power-management bits because their policy is handled by the
         // surrounding run/stop guard.
         usb2 &= !(GUSB2PHYCFG_ULPI_UTMI | GUSB2PHYCFG_PHYIF_MASK | GUSB2PHYCFG_USBTRDTIM_MASK);
-        usb2 |= GUSB2PHYCFG_USBTRDTIM_UTMI_8_BIT;
+        // USBTRDTIM is in PHY clock cycles. Preserve the Linux 8-bit default
+        // unless an explicit A/B overrides it. This allows the 16-bit PHYIF
+        // bit to be tested separately from the nominal 5-cycle timing.
+        let trdtim = match option_env!("FULLERENE_USB_USBTRDTIM") {
+            Some("5") => 5,
+            Some("6") => 6,
+            Some("7") => 7,
+            Some("8") => 8,
+            Some("10") => 10,
+            Some("11") => 11,
+            Some("12") => 12,
+            Some("13") => 13,
+            Some("14") => 14,
+            Some("15") => 15,
+            #[cfg(fullerene_aarch64_usb_phyif_16bit)]
+            _ => 5,
+            #[cfg(not(fullerene_aarch64_usb_phyif_16bit))]
+            _ => 9,
+        };
+        usb2 |= trdtim << 10;
+        #[cfg(fullerene_aarch64_usb_phyif_16bit)]
+        {
+            // DWC3's PHYIF field is bit 3; bit 8 is ENBLSLPM, not PHYIF.
+            usb2 |= GUSB2PHYCFG_PHYIF_MASK;
+        }
+        #[cfg(fullerene_aarch64_usb_enblslpm)]
+        {
+            // Bit 8 is ENBLSLPM. Keep this explicit A/B separate from PHYIF.
+            usb2 |= GUSB2PHYCFG_ENBLSLPM;
+        }
+        #[cfg(fullerene_aarch64_usb_u2_freeclk_clear)]
+        {
+            // Linux treats a missing USB2 free clock as a device-tree quirk,
+            // but the Fastboot handoff cannot rely on our DT interpretation.
+            // Keep bit 30 as an explicit post-reset A/B while preserving all
+            // other inherited bits.
+            usb2 &= !GUSB2PHYCFG_U2_FREECLK_EXISTS;
+        }
         write(GUSB2PHYCFG0, usb2);
-        let _ = read(GUSB2PHYCFG0);
+        let readback = read(GUSB2PHYCFG0);
+        live_utmi_write(usb2, readback);
     }
 }
 
@@ -174,6 +377,23 @@ pub(super) unsafe fn apply_usb31_gadget_reference_deltas() {
         }
         // core.c ~1060: usb31 1.70a GA only, STAR 9001346572.
         if revision == DWC3_USB31_REVISION_170A && read(VER_TYPE) == DWC3_USB31_VER_TYPE_GA {
+            let mut reg = read(GUCTL3);
+            reg |= GUCTL3_USB20_RETRY_DISABLE;
+            write(GUCTL3, reg);
+        }
+        #[cfg(fullerene_aarch64_usb_guctl3_usb20_retry_clear)]
+        {
+            // Separate the silicon-revision condition from the vendor
+            // workaround itself: force the retry engine to its reset default
+            // even when the reference path would set it.
+            let mut reg = read(GUCTL3);
+            reg &= !GUCTL3_USB20_RETRY_DISABLE;
+            write(GUCTL3, reg);
+        }
+        #[cfg(fullerene_aarch64_usb_guctl3_usb20_retry_set)]
+        {
+            // This is the explicit opposite A/B for the same STAR workaround,
+            // independent of the exact VER_NUMBER/VER_TYPE reading.
             let mut reg = read(GUCTL3);
             reg |= GUCTL3_USB20_RETRY_DISABLE;
             write(GUCTL3, reg);
@@ -239,9 +459,17 @@ pub(super) unsafe fn configure_gadget_start_defaults() {
         let nump = gadget_nump(ram2_depth, mdwidth);
         let mut dcfg = read(DCFG) & !DCFG_NUMP_MASK;
         dcfg |= nump << DCFG_NUMP_SHIFT;
-        // msm-4.19 does not program DCFG.IGNSTRMPP; keep the
-        // post-reset 0 instead of forcing the bit.
-        dcfg &= !DCFG_IGNSTRMPP;
+        // msm-4.19 does not program DCFG.IGNSTRMPP. Keep the post-reset 0
+        // by default, while allowing one direct-path A/B to match current
+        // mainline DWC3's gadget-start sequence exactly.
+        #[cfg(fullerene_aarch64_usb_dcfg_ignstrmpp)]
+        {
+            dcfg |= DCFG_IGNSTRMPP;
+        }
+        #[cfg(not(fullerene_aarch64_usb_dcfg_ignstrmpp))]
+        {
+            dcfg &= !DCFG_IGNSTRMPP;
+        }
         write(DCFG, dcfg);
     }
 }

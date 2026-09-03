@@ -27,6 +27,46 @@ pub unsafe fn reset_usb_blocks(super_speed: bool) -> bool {
     ok
 }
 
+/// Reset only the two reset resources owned by the Lito USB+DP combo PHY.
+/// This is the `msm_ssphy_qmp_dp_combo_reset()` boundary used by Android:
+/// assert global DP-PHY reset, assert USB3-PHY reset, then deassert USB3-PHY
+/// followed by global reset.  It deliberately excludes the DWC3 core reset
+/// and the USB2 femto-PHY reset, so it is safe to use as the `--no-core-reset`
+/// SuperSpeed differential.
+pub unsafe fn reset_qmp_phy_blocks() -> bool {
+    unsafe {
+        let resources = usb_resources();
+        let global = resources.resets[3];
+        let phy = resources.resets[2];
+        if global.name != "usb3dp_phy_reset" || phy.name != "usb3phy_reset" {
+            return false;
+        }
+
+        let global_address = (resources.gcc_base + global.offset) as *mut u32;
+        let phy_address = (resources.gcc_base + phy.offset) as *mut u32;
+        let mut ok = true;
+
+        let global_asserted = core::ptr::read_volatile(global_address) | 1;
+        core::ptr::write_volatile(global_address, global_asserted);
+        ok &= core::ptr::read_volatile(global_address) & 1 != 0;
+
+        let phy_asserted = core::ptr::read_volatile(phy_address) | 1;
+        core::ptr::write_volatile(phy_address, phy_asserted);
+        ok &= core::ptr::read_volatile(phy_address) & 1 != 0;
+
+        core::ptr::write_volatile(phy_address, phy_asserted & !1);
+        ok &= core::ptr::read_volatile(phy_address) & 1 == 0;
+
+        core::ptr::write_volatile(global_address, global_asserted & !1);
+        ok &= core::ptr::read_volatile(global_address) & 1 == 0;
+
+        if ok {
+            set_usb_resource_state(|state| state.reset_released_mask |= 0x0c);
+        }
+        ok
+    }
+}
+
 /// Pulse the USB2 (femto) PHY block reset and return it to its running state.
 ///
 /// The lito femto PHY's `phy_reset` is the `GCC_QUSB2PHY_PRIM_BCR` line.  An
@@ -46,13 +86,13 @@ pub unsafe fn pulse_usb2_phy_reset() -> bool {
         let address = (resources.gcc_base + reset.offset) as *mut u32;
         let asserted = core::ptr::read_volatile(address) | 1;
         core::ptr::write_volatile(address, asserted);
-        for _ in 0..250_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
+        // Android's msm_hsphy_reset() uses usleep_range(100, 150) between
+        // reset_control_assert() and reset_control_deassert(). A fixed
+        // instruction-count loop is CPU-frequency dependent and can be much
+        // shorter or longer across boot stages, so use the architectural
+        // counter just as the source driver does.
+        crate::timer::delay_us(100);
         core::ptr::write_volatile(address, asserted & !1);
-        for _ in 0..250_000u32 {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
         core::ptr::read_volatile(address) & 1 == 0
     }
 }

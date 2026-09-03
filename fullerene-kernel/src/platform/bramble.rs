@@ -2,11 +2,14 @@
 pub mod usb_clock;
 pub mod usb_reset;
 
+#[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_link_clocks_after_runstop)]
+pub use usb_clock::android_controller_block_reset;
 pub use usb_clock::{
-    configure_usb_clocks, disable_usb_clock_branches, enable_usb_clock_branches,
-    enable_usb2_utmi_clock,
+    android_dbm_reset_and_enable, configure_usb_clocks, configure_usb_controller_clocks,
+    disable_usb_clock_branches, enable_usb_clock_branches, enable_usb_qmp_clock_branches,
+    enable_usb2_utmi_clock, rearm_usb_controller_clock_branches, rearm_usb2_android_clock_branches,
 };
-pub use usb_reset::{pulse_usb2_phy_reset, reset_usb_blocks};
+pub use usb_reset::{pulse_usb2_phy_reset, reset_qmp_phy_blocks, reset_usb_blocks};
 ///
 /// The DTB remains authoritative at boot. These constants document the
 /// addresses used by the SM7250 device tree for the first bring-up.
@@ -491,17 +494,17 @@ pub const fn usb_clock_plan(vote: UsbBusVote) -> UsbClockPlan {
         UsbBusVote::Nominal => UsbClockPlan {
             core_parent: 1,
             core_divider: 8,
-            // gcc_usb30_prim_mock_utmi_clk_src: 60 MHz from
-            // GPLL0_OUT_EVEN with the HID divider encoded as 5.
-            utmi_parent: 6,
-            utmi_divider: 5,
+            // gcc_usb30_prim_mock_utmi_clk_src: 19.2 MHz from BI_TCXO.
+            // This is the only rate in the Bramble Lito GCC table.
+            utmi_parent: 0,
+            utmi_divider: 0,
             branches_enabled: true,
         },
         UsbBusVote::Svs => UsbClockPlan {
             core_parent: 6,
             core_divider: 8,
-            utmi_parent: 6,
-            utmi_divider: 5,
+            utmi_parent: 0,
+            utmi_divider: 0,
             branches_enabled: true,
         },
         UsbBusVote::Suspend | UsbBusVote::Minimum => UsbClockPlan {
@@ -882,9 +885,11 @@ const BRAMBLE_CONTROLLER_CLOCKS: [ClockResource; 6] = [
         branch_offset: 0xf01c,
         source_offset: 0xf038,
         // gcc_usb30_prim_mock_utmi_clk_src has one supported rate:
-        // GPLL0_OUT_EVEN / 5 = 60 MHz.
-        normal_rate_hz: 60_000_000,
-        high_speed_rate_hz: 60_000_000,
+        // BI_TCXO / 1 = 19.2 MHz.  The 60 MHz path is not in the
+        // Bramble Lito GCC rate table and is retained only as an explicit
+        // negative-control build option.
+        normal_rate_hz: 19_200_000,
+        high_speed_rate_hz: 19_200_000,
     },
     ClockResource {
         name: "sleep",
@@ -960,7 +965,7 @@ const BRAMBLE_HS_PHY_CLOCK: ClockResource = ClockResource {
 // Android msm-ssusb-qmp driver. Slot 6 is intentionally 0xffff because the
 // combo-PHY does not expose the USB-only PCS_MISC_TYPEC_CTRL register.
 const BRAMBLE_QMP_REG_OFFSETS: [usize; 18] = [
-    0x1c14, 0x1f08, 0x1f14, 0x1c40, 0x1c00, 0x1c44, 0xffff, 0x2a18, 0x0000, 0x0004, 0x001c, 0x0000,
+    0x1c14, 0x1f08, 0x1f14, 0x1c40, 0x1c00, 0x1c44, 0xffff, 0x2a18, 0x0008, 0x0004, 0x001c, 0x0000,
     0x0010, 0x000c, 0x1c8c, 0x1c18, 0x1c50, 0x1c70,
 ];
 
@@ -1006,6 +1011,37 @@ const RPMH_LDOA12: [u8; 8] = rpmh_id(b"ldoa12");
 const RPMH_LDOA2: [u8; 8] = rpmh_id(b"ldoa2");
 const RPMH_LDOA9: [u8; 8] = rpmh_id(b"ldoa9");
 const RPMH_LDOA18: [u8; 8] = rpmh_id(b"ldoa18");
+/// The `rpmh-regulator-cxlvl` resource consumed by the GCC block
+/// (`vdd_cx-supply`/`vdd_cx_ao-supply` on the `qcom,gcc@100000` node).  Every
+/// USB clock branch and the USB30 GDSC live inside the CX corner domain, so
+/// the ARC vote is part of the USB gadget power contract even though no USB
+/// node references it directly.
+const RPMH_CXLVL: [u8; 8] = rpmh_id(b"cx.lvl");
+/// Lito's RPMh `bi_tcxo`/`bi_tcxo_ao` ARC clock resource. The Android USB2
+/// PHY consumes `RPMH_CXO_CLK` as `ref_clk_src`; unlike the GCC mock-UTMI
+/// branch, this fixed 19.2 MHz source has no local MMIO gate.
+const RPMH_XO_LVL: [u8; 8] = rpmh_id(b"xo.lvl");
+const RPMH_XO_LVL_ON: u32 = 0x3;
+
+/// ARC levels from `dt-bindings/regulator/qcom,rpmh-regulator-levels.h` as
+/// mapped by the lito `vdd_corner` table (`vdd-level-lito.h`):
+/// VDD_LOWER = LOW_SVS and VDD_LOW = SVS.
+pub const RPMH_REGULATOR_LEVEL_LOW_SVS: u32 = 64;
+pub const RPMH_REGULATOR_LEVEL_SVS: u32 = 128;
+
+/// CX corner required for the USB clock plan of one bus vote. The lito GCC
+/// driver's rate tables are the binding between `qcom,core-clk-rate` and the
+/// CX corner: `gcc_usb30_prim_master_clk_src` allows 133333333 Hz only from
+/// VDD_LOW (SVS), while the USB AUX 19.2 MHz source requires VDD_LOWER
+/// (LOW_SVS). The mock-UTMI source is the separate 60 MHz GPLL path. The
+/// winning vote is therefore SVS for the nominal controller rate and LOW_SVS
+/// for the HS/gated states.
+pub const fn usb_cx_level(vote: UsbBusVote) -> u32 {
+    match vote {
+        UsbBusVote::Nominal => RPMH_REGULATOR_LEVEL_SVS,
+        UsbBusVote::Svs | UsbBusVote::Suspend | UsbBusVote::Minimum => RPMH_REGULATOR_LEVEL_LOW_SVS,
+    }
+}
 
 const BRAMBLE_HS_PHY_RAILS: [UsbRailResource; 3] = [
     UsbRailResource {
@@ -1013,7 +1049,11 @@ const BRAMBLE_HS_PHY_RAILS: [UsbRailResource; 3] = [
         rpmh_resource_id: RPMH_LDOA5,
         min_uv: 880_000,
         max_uv: 880_000,
-        max_load_ua: 0,
+        // lito-regulators.dtsi gives ldoa5 `qcom,mode-threshold-currents =
+        // <0 1>`: any nonzero consumer load requires HPM. The DT's
+        // `qcom,init-mode` is only the firmware boot state; the PHY's
+        // 0.88 V rail must run HPM while the UTMI interface is live.
+        max_load_ua: 19_000,
         program_voltage: true,
         owner: PowerOwner::SecureFirmware,
     },
@@ -1289,6 +1329,35 @@ pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
 };
 
 static mut ACTIVE_USB_RESOURCES: UsbPlatformResources = BRAMBLE_USB_RESOURCES;
+
+/// Second `reg` resource of Bramble's `qcom,usb-hsphy-snps-femto` node.
+/// `phy-msm-snps-hs.c` treats a non-zero value here as an EUD-owned PHY and
+/// returns from `msm_hsphy_init()` before changing its power or analog state.
+const BRAMBLE_USB_HS_PHY_EUD_BASE: usize = 0x088e_2000;
+static mut ACTIVE_USB_HS_PHY_EUD_BASE: usize = BRAMBLE_USB_HS_PHY_EUD_BASE;
+
+/// Install the DT-selected HS-PHY EUD status resource. The compiled Bramble
+/// address remains the fallback when the bootloader does not pass a DTB.
+pub fn install_usb_hs_phy_eud_base(base: Option<u64>) -> bool {
+    let Some(base) = base else {
+        return false;
+    };
+    if base == 0 || base > usize::MAX as u64 {
+        return false;
+    }
+    unsafe {
+        ACTIVE_USB_HS_PHY_EUD_BASE = base as usize;
+    }
+    true
+}
+
+/// Read the optional EUD ownership gate used by the Android HS-PHY driver.
+/// This is a read-only status check; it does not synthesize or modify any PHY
+/// register address.
+pub unsafe fn usb_hs_phy_eud_enabled() -> bool {
+    let base = unsafe { ACTIVE_USB_HS_PHY_EUD_BASE };
+    unsafe { core::ptr::read_volatile(base as *const u32) != 0 }
+}
 
 /// Replace the compiled GCC provider base with the DT node selected for this
 /// boot. Clock IDs/branch offsets remain provider-specific, but the provider
@@ -1683,6 +1752,32 @@ const SPMI_EE: usize = 0;
 const PM8150B_SID: u8 = 2;
 const PM8150B_TYPEC_PPID: u16 = ((PM8150B_SID as u16) << 8) | 0x15;
 const PM8150B_TYPEC_BASE: u16 = 0x1500;
+// The primary PON peripheral is SID 0/peripheral 8. Its power-off reason
+// survives the automatic recovery reset and can be read before the USB
+// handoff to publish the previous reset's cause through attach delay.
+const PM8150_PON_PPID: u16 = 0x0008;
+const PON_SUBTYPE: u16 = 0x05;
+const PON_OFF_SEQ: u16 = 0xc7;
+const PON_REASON1: u16 = 0xc0;
+pub const PON_WARM_RESET_REASON1: u16 = 0xc2;
+pub const PON_SOFT_RESET_REASON1: u16 = 0xcb;
+const PON_POFF_REASON1: u16 = 0xc5;
+const PON_POFF_REASON2: u16 = 0xc6;
+const PON_FAULT_REASON1: u16 = 0xc8;
+const PON_FAULT_REASON2: u16 = 0xc9;
+const PON_S3_RESET_REASON: u16 = 0xca;
+/// PMIC-watchdog configuration (qpnp-power-on `PON_PMIC_WD_RESET_*`): the S1
+/// and S2 timers plus the S2 control pair whose CTL2 bit 7 (`WD_EN`) says
+/// whether the watchdog that survives APSS resets is armed at all. These are
+/// configuration registers, so they still describe XBL's arming at the next
+/// probe entry even after Android reboots in between.
+pub const PON_WD_S1_TIMER: u16 = 0x54;
+pub const PON_WD_S2_TIMER: u16 = 0x55;
+pub const PON_WD_S2_CTL: u16 = 0x56;
+pub const PON_WD_S2_CTL2: u16 = 0x57;
+const PON_POFF_SEQ: u8 = 1 << 7;
+const PON_FAULT_SEQ: u8 = 1 << 6;
+const PON_S3_RESET_SEQ: u8 = 1 << 5;
 const TYPEC_MISC_STATUS: u16 = PM8150B_TYPEC_BASE + 0x0b;
 const TYPEC_MODE_CFG: u16 = PM8150B_TYPEC_BASE + 0x44;
 const TYPEC_CC_ATTACHED: u8 = 1 << 0;
@@ -2079,6 +2174,12 @@ unsafe fn spmi_write(base: usize, offset: usize, value: u32) {
 }
 
 fn find_typec_apid(version: u32) -> Option<(usize, bool)> {
+    unsafe { find_spmi_apid(version, PM8150B_TYPEC_PPID) }
+}
+
+/// Resolve the APID for one `<SID>:<peripheral>` PPID. This is the same
+/// owner-preferred arbiter walk used by Type-C discovery.
+fn find_spmi_apid(version: u32, ppid: u16) -> Option<(usize, bool)> {
     unsafe {
         if version >= 0x5000_0000 {
             // v5 has a flat APID -> PPID table.  Multiple APIDs can refer to
@@ -2087,7 +2188,7 @@ fn find_typec_apid(version: u32) -> Option<(usize, bool)> {
             let mut fallback = None;
             for apid in 0..512usize {
                 let entry = spmi_read(SPMI_CORE, SPMI_APID_MAP_V5 + apid * 4);
-                if ((entry >> 8) & 0x0fff) as u16 != PM8150B_TYPEC_PPID {
+                if ((entry >> 8) & 0x0fff) as u16 != ppid {
                     continue;
                 }
                 let owner = spmi_read(SPMI_CONFIG, SPMI_OWNERSHIP_TABLE + apid * 4) & 0x7;
@@ -2106,7 +2207,7 @@ fn find_typec_apid(version: u32) -> Option<(usize, bool)> {
         for _ in 0..16 {
             let entry = spmi_read(SPMI_CONFIG, SPMI_MAPPING_TABLE + index * 4);
             let bit = ((entry >> 18) & 0xf) as u16;
-            let one = (PM8150B_TYPEC_PPID & (1 << bit)) != 0;
+            let one = (ppid & (1 << bit)) != 0;
             let flag = if one {
                 (entry >> 8) & 1
             } else {
@@ -2125,6 +2226,109 @@ fn find_typec_apid(version: u32) -> Option<(usize, bool)> {
         }
     }
     None
+}
+
+/// Read the primary PM8150 PON reset reason as a small bucket code. The
+/// raw registers are a bitmask, so return the selected sequence's first set
+/// bit (1-based) and add 8 for the FAULT sequence or 16 for S3_RESET.
+pub unsafe fn read_pm8150_pon_reset_code() -> Option<u8> {
+    let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
+    if version == 0 || version == u32::MAX {
+        return None;
+    }
+    let (apid, _) = unsafe { find_spmi_apid(version, PM8150_PON_PPID)? };
+    let mut subtype = 0u8;
+    if !unsafe { spmi_transfer(version, apid, PON_SUBTYPE, &mut subtype, false) } {
+        return None;
+    }
+    // Only the primary/gen2 PON layouts have the 0xC0..0xCA reason block.
+    if !matches!(subtype, 1..=5) {
+        return None;
+    }
+    let mut reason1 = 0u8;
+    let mut poff1 = 0u8;
+    let mut poff2 = 0u8;
+    let mut off_seq = 0u8;
+    if !unsafe { spmi_transfer(version, apid, PON_REASON1, &mut reason1, false) }
+        || !unsafe { spmi_transfer(version, apid, PON_POFF_REASON1, &mut poff1, false) }
+        || !unsafe { spmi_transfer(version, apid, PON_POFF_REASON2, &mut poff2, false) }
+        || !unsafe { spmi_transfer(version, apid, PON_OFF_SEQ, &mut off_seq, false) }
+    {
+        return None;
+    }
+    let first_set = |value: u8| -> u8 {
+        if value == 0 {
+            0
+        } else {
+            (value.trailing_zeros() + 1) as u8
+        }
+    };
+    let poff_code = first_set(poff1).max(first_set(poff2));
+    let code = if off_seq & PON_POFF_SEQ != 0 {
+        poff_code
+    } else if off_seq & PON_FAULT_SEQ != 0 {
+        let mut fault1 = 0u8;
+        let mut fault2 = 0u8;
+        if !unsafe { spmi_transfer(version, apid, PON_FAULT_REASON1, &mut fault1, false) }
+            || !unsafe { spmi_transfer(version, apid, PON_FAULT_REASON2, &mut fault2, false) }
+        {
+            return None;
+        }
+        8 + first_set(fault1).max(first_set(fault2))
+    } else if off_seq & PON_S3_RESET_SEQ != 0 {
+        let mut s3 = 0u8;
+        if !unsafe { spmi_transfer(version, apid, PON_S3_RESET_REASON, &mut s3, false) } {
+            return None;
+        }
+        16 + first_set(s3)
+    } else {
+        poff_code
+    };
+    if code != 0 {
+        return Some(code);
+    }
+    Some(first_set(reason1))
+}
+
+/// IMEM restart-reason cookie (lito `qcom,msm-imem@146ab000`,
+/// `restart_reason@65c`): the 32-bit magic the last resetter wrote before
+/// rebooting. The kernel's restart path writes 0x77665500 (bootloader) and
+/// 0x77665502 (recovery); a watchdog bark handler writes its own magic, and
+/// XBL decodes the cookie into the bootreason it hands Android. Read at probe
+/// entry the cookie names what rebooted the handset mid-probe - unless the
+/// automatic recovery's `adb reboot bootloader` (0x77665500) overwrote it
+/// last.
+const IMEM_RESTART_REASON: usize = 0x146a_b65c;
+
+pub fn read_imem_restart_reason() -> u32 {
+    unsafe { core::ptr::read_volatile(IMEM_RESTART_REASON as *const u32) }
+}
+
+/// Read one raw PON register by page offset for the death-reason readout
+/// channel. Only the registers that name the ~5.6 s post-attach watchdog are
+/// whitelisted so a caller typo cannot turn into a stray SPMI transaction.
+pub unsafe fn read_pm8150_pon_register(register: u16) -> Option<u8> {
+    if !matches!(
+        register,
+        PON_WD_S1_TIMER
+            | PON_WD_S2_TIMER
+            | PON_WD_S2_CTL
+            | PON_WD_S2_CTL2
+            | PON_WARM_RESET_REASON1
+            | PON_SOFT_RESET_REASON1
+    ) {
+        return None;
+    }
+    let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
+    if version == 0 || version == u32::MAX {
+        return None;
+    }
+    let (apid, _) = unsafe { find_spmi_apid(version, PM8150_PON_PPID)? };
+    let mut value = 0u8;
+    if !unsafe { spmi_transfer(version, apid, register, &mut value, false) } {
+        return None;
+    }
+    Some(value)
 }
 
 fn spmi_channel_offset(version: u32, apid: usize, observer: bool) -> usize {
@@ -2502,6 +2706,36 @@ pub unsafe fn enable_usb30_gdsc() -> bool {
     false
 }
 
+/// Force the USB3 GDSC on WITHOUT the secure-rail contract gate. The
+/// attach-delay readout measured the core domain SW_COLLAPSED with a dead
+/// GSNPSID at probe entry in the fastboot handoff state: the physical attach
+/// is carried by the QSCRATCH/PHY domain while every DWC3 core register
+/// reads dead, which is the long-standing "endpoint command wedge". Gate-run
+/// flows call this before the handoff so the core answers MMIO again; the
+/// parent RPMh supplies are left to the boot chain exactly as in
+/// `enable_usb30_gdsc`.
+pub unsafe fn force_enable_usb30_gdsc() -> bool {
+    let address = usb_resources().gdsc as *mut u32;
+    let mut value = unsafe { core::ptr::read_volatile(address) };
+    value &= !(GDSC_HW_CONTROL | GDSC_SW_OVERRIDE | GDSC_WAIT_MASK);
+    value |= GDSC_WAIT_VALUE;
+    unsafe { core::ptr::write_volatile(address, value) };
+    let _ = unsafe { core::ptr::read_volatile(address) };
+
+    value &= !GDSC_SW_COLLAPSE;
+    unsafe { core::ptr::write_volatile(address, value) };
+    let _ = unsafe { core::ptr::read_volatile(address) };
+
+    for _ in 0..1_000_000u32 {
+        if unsafe { core::ptr::read_volatile(address) } & GDSC_PWR_ON != 0 {
+            set_usb_resource_state(|state| state.gdsc_enabled = true);
+            return true;
+        }
+        unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
+    }
+    false
+}
+
 /// Collapse the USB3 GDSC after the controller and GSI write path are idle.
 /// This is the inverse of `enable_usb30_gdsc`; secure-owned regulator rails
 /// remain untouched and the caller controls the ordering relative to clocks.
@@ -2523,10 +2757,63 @@ pub unsafe fn disable_usb30_gdsc() -> bool {
     false
 }
 
+/// Submit the CX ARC vote demanded by the GCC USB clock tree. The `gcc`
+/// node's `vdd_cx-supply` is `VDD_CX_LEVEL` (`cx.lvl`, `S1A`), whose DT init
+/// level is RETENTION, so an unvoted CX corner drops the USB30 GDSC domain
+/// and the USB clock branches out of operating spec even while the GDSC
+/// reads PWR_ON. Linux issues this vote from the clock framework's
+/// `vdd_class` when the USB RCGs are prepared; the vote rides the same
+/// single-command VRM transport with the level as the data word.
+pub unsafe fn apply_usb_cx_vote(vote: UsbBusVote) -> bool {
+    let Some(address) = (unsafe { command_db_read_addr(&RPMH_CXLVL) }) else {
+        return false;
+    };
+    let command = RpmhBcmCommand {
+        address,
+        data: usb_cx_level(vote),
+    };
+    unsafe { send_rpmh_command_batch(core::slice::from_ref(&command)) }
+}
+
+/// Enable the dedicated USB2 PHY reference clock consumed by the Android
+/// `qcom,usb-hsphy-snps-femto` node. Linux implements the DT
+/// `<&rpmhcc RPMH_CXO_CLK>` handle as the Lito RPMh ARC resource `xo.lvl`,
+/// with an active-state value of `0x3`; it is not one of the six GCC USB
+/// branches and therefore cannot be covered by `enable_usb_clock_branches`.
+///
+/// This is an active-only handoff request. The early image remains awake for
+/// the complete enumeration window, so the sleep/wake cache writes performed
+/// by Linux's clock framework are not needed here. Re-sending the same ARC
+/// value is idempotent at RPMh aggregation level and is useful when XBL's
+/// client vote has just disappeared.
+pub unsafe fn enable_usb_hs_phy_ref_clock() -> bool {
+    let clock = usb_resources().hs_phy_clock;
+    if clock.name != "ref_clk_src"
+        || clock.provider != ClockProvider::Rpmh
+        || clock.provider_id != 0
+        || clock.normal_rate_hz != 19_200_000
+    {
+        return false;
+    }
+    let Some(address) = (unsafe { command_db_read_addr(&RPMH_XO_LVL) }) else {
+        return false;
+    };
+    let command = RpmhBcmCommand {
+        address,
+        data: RPMH_XO_LVL_ON,
+    };
+    unsafe { send_rpmh_command_batch(core::slice::from_ref(&command)) }
+}
+
 /// Apply one complete Android-style performance transition.  The bus vote is
 /// issued only after the clock source has been selected, matching the order
 /// in which the Qualcomm glue raises the core clock and interconnect vote.
 pub unsafe fn apply_usb_performance(vote: UsbBusVote) -> bool {
+    // The GCC node's `vdd_cx-supply` must be raised before any USB clock is
+    // prepared; a collapsed CX corner leaves the branch enable stalled.
+    if unsafe { !apply_usb_cx_vote(vote) } {
+        return false;
+    }
     if unsafe { !configure_usb_clocks(vote) } {
         return false;
     }
@@ -2842,9 +3129,13 @@ pub unsafe fn apply_usb_bus_vote(vote: UsbBusVote) -> bool {
     unsafe { send_usb_rpmh_vote(vote) }
 }
 
-const RPMH_REGULATOR_VRM_VOLTAGE: u32 = 0;
-const RPMH_REGULATOR_ENABLE: u32 = 1;
-const RPMH_REGULATOR_MODE: u32 = 2;
+// VRM command sub-addresses from the msm-4.19 rpmh regulator driver
+// (`RPMH_REGULATOR_REG_VRM_VOLTAGE`, `_ENABLE`, `_MODE`): the enable and mode
+// requests are issued at resource+0x4 and resource+0x8, not at consecutive
+// byte addresses.
+const RPMH_REGULATOR_VRM_VOLTAGE: u32 = 0x0;
+const RPMH_REGULATOR_ENABLE: u32 = 0x4;
+const RPMH_REGULATOR_MODE: u32 = 0x8;
 const RPMH_REGULATOR_MODE_LPM: u32 = 5;
 const RPMH_REGULATOR_MODE_HPM: u32 = 7;
 
@@ -2968,6 +3259,74 @@ pub unsafe fn apply_usb_power(enabled: bool, super_speed: bool) -> bool {
     true
 }
 
+/// Re-assert every RPMh vote the USB gadget domain depends on: the CX ARC
+/// corner (`gcc` `vdd_cx-supply`), the interconnect BCM vectors
+/// (`qcom,msm-bus,vectors-KBps`), and the PHY rail enables. Fastboot's votes
+/// die with its exit and `apply_usb_power` early-returns once its state flag
+/// matches, so the keepalive paths use this refresh instead: a VRM enable
+/// request that never leaves the APSS cannot hold a domain whose CX corner
+/// has already been demoted to the DT init level (RETENTION).
+pub unsafe fn refresh_usb_domain_votes(vote: UsbBusVote, super_speed: bool) -> bool {
+    let mut ok = unsafe { apply_usb_cx_vote(vote) };
+    ok &= unsafe { send_usb_rpmh_vote(vote) };
+    ok &= unsafe { refresh_usb_power(super_speed) };
+    ok
+}
+
+/// Re-send the USB rail enable requests unconditionally. `apply_usb_power`
+/// early-returns when its state flag already matches, which silently turns
+/// the periodic keepalive into a no-op: the initial vote is the only vote
+/// that ever leaves the APSS, and the ~5-8 s post-attach collapse then wins.
+/// The refresh re-arms the exact same VRM requests without touching GDSC,
+/// clock, or reset state, so it is safe to call from any park or poll loop.
+pub unsafe fn refresh_usb_power(super_speed: bool) -> bool {
+    let power = usb_resources().power;
+    let mut rails = [power.hs_phy_rails[0]; 5];
+    rails[1] = power.hs_phy_rails[1];
+    rails[2] = power.hs_phy_rails[2];
+    let mut count = 3;
+    if super_speed && power.qmp_vdd_present {
+        rails[count] = power.qmp_vdd;
+        count += 1;
+    }
+    if super_speed {
+        rails[count] = power.qmp_core;
+        count += 1;
+    }
+    let mut unique = [false; 5];
+    for index in 0..count {
+        unique[index] = true;
+        for previous in 0..index {
+            if rails[previous].rpmh_resource_id == rails[index].rpmh_resource_id {
+                unique[index] = false;
+                break;
+            }
+        }
+    }
+    let mut ok = true;
+    for index in 0..count {
+        if unique[index] && !unsafe { send_usb_regulator_request(rails[index], true) } {
+            ok = false;
+        }
+    }
+    ok
+}
+
+/// Re-assert only the QMP PHY regulator consumers used by the Android
+/// `msm_ssusb_qmp_ldo_enable(phy, 1)` path.  The Bramble DT supplies the QMP
+/// `core` consumer (`pm8150_l9`) and has no separate `vdd-supply`; keeping
+/// this narrower than `refresh_usb_power(true)` avoids perturbing the live
+/// USB2 PHY during a SuperSpeed-only handoff.
+pub unsafe fn refresh_usb_qmp_power() -> bool {
+    let power = usb_resources().power;
+    let mut ok = true;
+    if power.qmp_vdd_present {
+        ok &= unsafe { send_usb_regulator_request(power.qmp_vdd, true) };
+    }
+    ok &= unsafe { send_usb_regulator_request(power.qmp_core, true) };
+    ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2984,6 +3343,7 @@ mod tests {
         assert_eq!(resources.qmp_reg_offsets[0], 0x1c14);
         assert_eq!(resources.qmp_reg_offsets[1], 0x1f08);
         assert_eq!(resources.qmp_reg_offsets[2], 0x1f14);
+        assert_eq!(resources.qmp_reg_offsets[8], 0x0008);
         assert_eq!(resources.qmp_reg_offsets[14], 0x1c8c);
         assert_eq!(resources.qmp_reg_offsets[15], 0x1c18);
         assert_eq!(resources.apps_smmu_base, 0x1500_0000);
@@ -3021,6 +3381,9 @@ mod tests {
             *b"ldoa5\0\0\0"
         );
         assert_eq!(resources.power.hs_phy_rails[0].min_uv, 880_000);
+        // ldoa5 `qcom,mode-threshold-currents = <0 1>`: the 0.88 V rail must
+        // be requested in HPM for any nonzero PHY load.
+        assert_eq!(resources.power.hs_phy_rails[0].max_load_ua, 19_000);
         assert_eq!(resources.power.hs_phy_rails[1].min_uv, 1_704_000);
         assert_eq!(resources.power.hs_phy_rails[1].max_uv, 1_800_000);
         assert_eq!(resources.power.hs_phy_rails[1].max_load_ua, 19_000);
@@ -3117,8 +3480,8 @@ mod tests {
         assert_eq!(clocks[5].name, "xo");
         assert_eq!(clocks[0].normal_rate_hz, 133_333_333);
         assert_eq!(clocks[0].high_speed_rate_hz, 66_666_667);
-        assert_eq!(clocks[3].normal_rate_hz, 60_000_000);
-        assert_eq!(clocks[3].high_speed_rate_hz, 60_000_000);
+        assert_eq!(clocks[3].normal_rate_hz, 19_200_000);
+        assert_eq!(clocks[3].high_speed_rate_hz, 19_200_000);
         assert_eq!(clocks[5].normal_rate_hz, 19_200_000);
 
         let qmp = resources.qmp_clocks;
@@ -3186,6 +3549,26 @@ mod tests {
             BRAMBLE_USB_RESOURCES.typec_irq.trigger,
             IrqTrigger::RisingEdge
         );
+    }
+
+    #[test]
+    fn cx_arc_vote_tracks_the_lito_gcc_rate_tables() {
+        assert_eq!(RPMH_CXLVL, *b"cx.lvl\0\0");
+        assert_eq!(usb_cx_level(UsbBusVote::Nominal), RPMH_REGULATOR_LEVEL_SVS);
+        assert_eq!(usb_cx_level(UsbBusVote::Svs), RPMH_REGULATOR_LEVEL_LOW_SVS);
+        assert_eq!(
+            usb_cx_level(UsbBusVote::Suspend),
+            RPMH_REGULATOR_LEVEL_LOW_SVS
+        );
+    }
+
+    #[test]
+    fn vrm_requests_use_the_reference_sub_addresses() {
+        // drivers/regulator/qcom-rpmh-regulator.c:
+        // RPMH_REGULATOR_REG_VRM_VOLTAGE/ENABLE/MODE = 0x0/0x4/0x8.
+        assert_eq!(RPMH_REGULATOR_VRM_VOLTAGE, 0x0);
+        assert_eq!(RPMH_REGULATOR_ENABLE, 0x4);
+        assert_eq!(RPMH_REGULATOR_MODE, 0x8);
     }
 
     #[test]
@@ -3276,8 +3659,8 @@ mod tests {
             UsbClockPlan {
                 core_parent: 1,
                 core_divider: 8,
-                utmi_parent: 6,
-                utmi_divider: 5,
+                utmi_parent: 0,
+                utmi_divider: 0,
                 branches_enabled: true,
             }
         );

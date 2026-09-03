@@ -137,6 +137,7 @@ pub(crate) const PWR_EVENT_LPM_OUT_L1: u32 = 1 << 13;
 pub(crate) const GCTL: usize = 0xc110;
 pub(crate) const GUCTL: usize = 0xc12c;
 pub(crate) const GUCTL2: usize = 0xc19c;
+pub(crate) const GTXFIFOSIZ0: usize = 0xc300;
 // DWC3_GUCTL1 is part of the global register block immediately after GCTL;
 // 0xc360 is in the FIFO-register area and is not a user-control register.
 pub(crate) const GUCTL1: usize = 0xc11c;
@@ -151,6 +152,17 @@ pub(crate) const GHWPARAMS1: usize = 0xc144;
 pub(crate) const GHWPARAMS3: usize = 0xc14c;
 pub(crate) const GHWPARAMS7: usize = 0xc15c;
 pub(crate) const GDBGLTSSM: usize = 0xc164;
+// DWC_usb31 uses a separate link-debug block.  msm-4.19 core.h selects this
+// offset whenever GSNPSID identifies the 0x3331/0x3332 IP.
+pub(crate) const DWC31_LINK_GDBGLTSSM: usize = 0xd050;
+// msm-4.19 dwc3_otg_start_peripheral() programs the USB3 LFPS exit-response
+// timers on Bramble's DWC_usb31 before gadget VBUS connect.  This register is
+// in the DWC3 core's USB31 link block, not in the QMP PHY window.
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM0: usize = 0xd010;
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM_GEN2_MASK: u32 = 0xff << 16;
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM_GEN1_MASK: u32 = 0xff;
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM_GEN2_BRAMBLE: u32 = 6 << 16;
+pub(crate) const DWC31_LINK_LU3LFPSRXTIM_GEN1_BRAMBLE: u32 = 5;
 pub(crate) const VER_NUMBER: usize = 0xc1a0;
 pub(crate) const VER_TYPE: usize = 0xc1a4;
 pub(crate) const GFLADJ: usize = 0xc630;
@@ -160,6 +172,8 @@ pub(crate) const GUSB2PHYCFG_ULPI_UTMI: u32 = 1 << 4;
 pub(crate) const GUSB2PHYCFG_PHYIF_MASK: u32 = 1 << 3;
 pub(crate) const GUSB2PHYCFG_USBTRDTIM_MASK: u32 = 0xf << 10;
 pub(crate) const GUSB2PHYCFG_USBTRDTIM_UTMI_8_BIT: u32 = 9 << 10;
+pub(crate) const GUSB2PHYCFG_USBTRDTIM_UTMI_16_BIT: u32 = 5 << 10;
+pub(crate) const GUSB2PHYCFG_U2_FREECLK_EXISTS: u32 = 1 << 30;
 pub(crate) const GEVNTADRLO0: usize = 0xc400;
 pub(crate) const GEVNTADRHI0: usize = 0xc404;
 pub(crate) const GEVNTSIZ0: usize = 0xc408;
@@ -175,9 +189,13 @@ pub(crate) const DEP_BASE: usize = 0xc800;
 
 pub(crate) const GCTL_PRTCAPDIR_MASK: u32 = 3 << 12;
 pub(crate) const GCTL_PRTCAP_DEVICE: u32 = 2 << 12;
+pub(crate) const GCTL_PWRDNSCALE_MASK: u32 = 0xfff8_0000;
+pub(crate) const GCTL_PWRDNSCALE_2: u32 = 2 << 19;
 pub(crate) const GCTL_U2RSTECN: u32 = 1 << 16;
+pub(crate) const GCTL_SOFITPSYNC: u32 = 1 << 10;
 pub(crate) const GCTL_SCALEDOWN_MASK: u32 = 3 << 4;
 pub(crate) const GCTL_DISSCRAMBLE: u32 = 1 << 3;
+pub(crate) const GCTL_U2EXIT_LFPS: u32 = 1 << 2;
 pub(crate) const GCTL_CORESOFTRESET: u32 = 1 << 11;
 pub(crate) const GCTL_GBLHIBERNATIONEN: u32 = 1 << 1;
 pub(crate) const GHWPARAMS1_EN_PWROPT_MASK: u32 = 3 << 24;
@@ -200,17 +218,23 @@ pub(crate) const GUCTL3_USB20_RETRY_DISABLE: u32 = 1 << 16;
 pub(crate) const GSBUSCFG1_PIPETRANSLIMIT_MASK: u32 = 0x0f << 8;
 pub(crate) const GSBUSCFG1_PIPETRANSLIMIT_E: u32 = 0xe << 8;
 pub(crate) const GUSB3PIPECTL_SUSPHY: u32 = 1 << 17;
+pub(crate) const GUSB3PIPECTL_UX_EXIT_PX: u32 = 1 << 27;
 pub(crate) const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 
 pub(crate) const DCTL_CSFTRST: u32 = 1 << 30;
 pub(crate) const DCTL_SDIS: u32 = 1 << 0;
+pub(crate) const DCTL_APPL1RES: u32 = 1 << 23;
 pub(crate) const DCTL_HIRD_THRES_MASK: u32 = 0x1f << 24;
 pub(crate) const DCTL_HIRD_THRES_LITO: u32 = 0x10 << 24;
+pub(crate) const DCTL_HIRD_THRES_XBL: u32 = 0x07 << 24;
+pub(crate) const DCTL_L1_HIBER_EN: u32 = 1 << 18;
 pub(crate) const DCTL_KEEP_CONNECT: u32 = 1 << 19;
+pub(crate) const DCTL_TSTCTRL_MASK: u32 = 0xf << 1;
 pub(crate) const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
 pub(crate) const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
 pub(crate) const DCFG_NUMP_SHIFT: u32 = 17;
 pub(crate) const DCFG_NUMP_MASK: u32 = 0x1f << DCFG_NUMP_SHIFT;
+pub(crate) const DCFG_LPM_CAP: u32 = 1 << 22;
 pub(crate) const DCFG_IGNSTRMPP: u32 = 1 << 23;
 pub(crate) const DWC3_GRXTHRCFG_PKTCNTSEL: u32 = 1 << 29;
 pub(crate) const DWC31_GRXTHRCFG_PKTCNTSEL: u32 = 1 << 26;
@@ -294,6 +318,7 @@ pub(crate) const QMP_COM_POWER_DOWN_CTRL: usize = 0x0008;
 pub(crate) const QMP_COM_TYPEC_CTRL: usize = 0x0010;
 pub(crate) const QMP_COM_RESET_OVRD_CTRL: usize = 0x001c;
 pub(crate) const QMP_PCS_STATUS1: usize = 0x1c14;
+pub(crate) const QMP_PCS_STATUS2: usize = 0x1c18;
 pub(crate) const QMP_PCS_AUTONOMOUS_MODE_CTRL: usize = 0x1f08;
 pub(crate) const QMP_PCS_LFPS_RXTERM_IRQ_CLEAR: usize = 0x1f14;
 pub(crate) const QMP_PCS_CLAMP_ENABLE: usize = 0x1c8c;
@@ -394,4 +419,11 @@ pub(super) unsafe fn read(offset: usize) -> u32 {
 #[inline]
 pub(super) unsafe fn write(offset: usize, value: u32) {
     unsafe { write_volatile(reg(offset), value) }
+    // Match Linux's writel() ordering barrier.  Without a DSB the CPU can
+    // reorder a subsequent read (e.g. a DALEPENA readback) ahead of the
+    // write's side-effect, making the register appear unchanged even though
+    // the controller accepted the write.  This was the root cause of the
+    // DALEPENA=0 readback observed across runs 1764675–1785948: the EP0
+    // enable mask was written but never observed before the next MMIO load.
+    core::arch::asm!("dsb st", options(nostack));
 }

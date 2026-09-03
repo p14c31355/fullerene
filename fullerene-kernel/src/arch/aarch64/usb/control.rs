@@ -58,11 +58,22 @@ pub(super) unsafe fn device_soft_reset() -> bool {
             return false;
         }
 
-        // Upstream Linux waits an additional 50 ms only for DWC_usb31 1.80a
-        // and earlier before accessing its PHY domain. DWC3/1.90a+ do not
-        // require that legacy synchronization delay.
-        if ip == DWC31_IP && version <= DWC31_REVISION_180A {
+        // DWC_usb31 requires a synchronization delay after CSFTRST clears
+        // before software accesses the PHY domain. The Bramble 4.19 driver
+        // applies this to every DWC_usb31 revision, not only the older
+        // 1.80a-and-earlier parts; the reset completion poll alone is not
+        // sufficient for the PHY clock-domain crossing to settle.
+        if ip == DWC31_IP {
             crate::timer::delay_ms(50);
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_clear_gsi_after_reset)]
+        {
+            // Android's dwc3_device_core_soft_reset() sends
+            // DWC3_CONTROLLER_NOTIFY_CLEAR_DB immediately after this
+            // synchronization delay. Keep the source-confirmed Qualcomm
+            // GSI doorbell transition isolated from the DWC3 reset and
+            // endpoint/PHY configuration A/Bs.
+            super::clear_gsi_doorbell_state();
         }
         true
     }
@@ -85,6 +96,15 @@ pub(super) unsafe fn core_soft_reset(super_speed: bool) -> bool {
     unsafe {
         if !device_soft_reset() {
             return false;
+        }
+
+        // The DWC_usb31 reference reset sequence is DCTL.CSFTRST after the
+        // external PHY reset. A second GCTL.CORESOFTRESET is not part of
+        // that sequence and can invalidate the device-side state that was
+        // just synchronized. Keep this as a hardware A/B so DWC3 revisions
+        // retain the existing full-core reset path.
+        if cfg!(fullerene_aarch64_usb_dwc31_dctl_only_reset) && read(GSNPSID) >> 16 == DWC31_IP {
+            return true;
         }
 
         // B3a: the CSFTRST handshake completed (DCTL.CSFTRST cleared) but
@@ -130,6 +150,23 @@ pub(super) unsafe fn core_soft_reset(super_speed: bool) -> bool {
 /// DEPSTARTCFG/SETEPCONFIG are issued; a handoff cannot assume that the
 /// bootloader performed the normal gadget-stop sequence.
 pub(super) unsafe fn stop_running_device() -> bool {
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_disable_gadget_irq_before_stop)]
+    {
+        // Linux disables DWC3 gadget event interrupts at the start of the
+        // official teardown. Keep this source-confirmed write separate from
+        // endpoint cleanup and the Run/Stop transition.
+        write(DEVTEN, 0);
+        let _ = read(DEVTEN);
+    }
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_disable_ep0_before_stop)]
+    {
+        // The official teardown invokes __dwc3_gadget_ep_disable() for EP0
+        // OUT and IN, which clears their DALEPENA bits. Keep that hardware
+        // write separate from active-transfer cleanup and Run/Stop.
+        let dalepena = read(DALEPENA);
+        write(DALEPENA, dalepena & !0b11);
+        let _ = read(DALEPENA);
+    }
     unsafe { run_stop_device(false) }
 }
 
@@ -178,9 +215,9 @@ pub(super) unsafe fn wait_device_state(want_halted: bool) -> bool {
 /// Acknowledge events generated while DWC3 is draining a device stop.
 ///
 /// This is intentionally separate from `acknowledge_ep0_event_count()`: event
-/// buffer setup preserves the complete GEVNTCOUNT register (including EHB),
-/// while the Run/Stop halt contract consumes only the byte count and advances
-/// the software cursor just as Linux advances `ev_buf->lpos`.
+/// buffer setup initializes the complete GEVNTCOUNT register with zero, while
+/// the Run/Stop halt contract consumes only the byte count and advances the
+/// software cursor just as Linux advances `ev_buf->lpos`.
 pub(super) unsafe fn acknowledge_events_while_halting() {
     unsafe {
         let count = read(GEVNTCOUNT0) & GEVNTCOUNT_MASK;
@@ -189,6 +226,107 @@ pub(super) unsafe fn acknowledge_events_while_halting() {
             super::EVENT_OFFSET = (super::EVENT_OFFSET + count as usize) % super::ep0_event_size();
             core::arch::asm!("dsb sy", options(nostack));
         }
+    }
+}
+
+/// Release the DWC3 USB3 PIPE soft-reset bit without issuing a core reset.
+///
+/// The normal `dwc3_core_soft_reset()` path clears this bit as part of its
+/// core/PHY reset sequence. A `--no-core-reset` handoff deliberately skips
+/// that sequence, but it still reinitializes the external QMP PHY. Keep this
+/// as an opt-in differential: clearing an already-clear bit is harmless, and
+/// the A/B can test whether Fastboot left the DWC3-side PIPE held in reset
+/// after the QMP ownership transition.
+#[inline]
+pub(super) unsafe fn release_usb3_phy_reset() {
+    unsafe {
+        let mut usb3 = read(GUSB3PIPECTL0);
+        usb3 &= !GUSB3PIPECTL_PHYSOFTRST;
+        write(GUSB3PIPECTL0, usb3);
+        let _ = read(GUSB3PIPECTL0);
+    }
+}
+
+/// Apply the shared Linux-style preparation for a DWC3 Run/Stop transition.
+/// The caller restores the saved USB2 low-power bits after any required halt
+/// wait, so both the checked and no-readback paths launch the same transition.
+unsafe fn prepare_run_stop_device(is_on: bool) -> u32 {
+    unsafe {
+        let mut usb2 = read(GUSB2PHYCFG0);
+        let saved_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        if saved_config != 0 {
+            usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+            write(GUSB2PHYCFG0, usb2);
+        }
+
+        let mut dctl = read(DCTL);
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_source_exact_runstop) {
+            // Android msm's gadget_run_stop() re-reads DCTL after gadget
+            // start and applies the source-required Run/Stop bit without
+            // rewriting HIRD/APPL1RES/KEEP_CONNECT. Keep this A/B narrow so
+            // the immediate readback can distinguish a rejected bit write
+            // from a local policy rewrite.
+            if is_on {
+                dctl |= DCTL_RUN_STOP;
+            } else {
+                dctl &= !DCTL_RUN_STOP;
+            }
+            write(DCTL, dctl);
+        } else if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop) {
+            // Stock XBL's DwcRunStop only changes DCTL.RUN_STOP. Its core-init
+            // sequence has already installed HIRD=7/APPL1RES, and it
+            // preserves KEEP_CONNECT/TRGTULST instead of applying Linux's
+            // generic reconnect policy here.
+            if is_on {
+                dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_XBL;
+                dctl |= DCTL_APPL1RES | DCTL_RUN_STOP;
+            } else {
+                dctl &= !DCTL_RUN_STOP;
+            }
+            write(DCTL, dctl);
+        } else if is_on {
+            dctl = run_stop_value(dctl, read(GSNPSID));
+            // `run_stop_value` deliberately preserves RX_DET for older DWC3
+            // revisions. `write_dctl_safe` is used by reset/stop paths and
+            // clears that target bit, so the Run/Stop transition must write
+            // this value directly.
+            write(DCTL, dctl);
+        } else {
+            dctl &= !DCTL_RUN_STOP;
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_clear_keep_connect_before_stop)]
+            if read(GHWPARAMS1) & GHWPARAMS1_EN_PWROPT_MASK == GHWPARAMS1_EN_PWROPT_HIB {
+                // Linux clears KEEP_CONNECT on a non-suspend gadget stop
+                // when the DWC3 core advertises hibernation. Keep this
+                // source-confirmed A/B in the same DCTL write as RUN_STOP.
+                dctl &= !DCTL_KEEP_CONNECT;
+            }
+            write_dctl_safe(dctl);
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_clear_gsi_stop_state)]
+        if !is_on {
+            // The official stop path clears the GSI event-buffer counts and
+            // Qualcomm doorbell wrapper immediately after DCTL.RUN_STOP is
+            // cleared, before waiting for DEVCTRLHLT.
+            super::clear_gsi_stop_state();
+        }
+        // Diagnostic only: put the USB2 interface contract back immediately
+        // after the DCTL Run/Stop write, before the controller's state
+        // transition completes. This distinguishes a write rejected while
+        // running from a transition-time reset/overwrite of GUSB2PHYCFG.
+        if is_on && option_env!("FULLERENE_USB_UTMI_WRITE_AFTER_DCTL") == Some("1") {
+            super::config::configure_usb2_phy_interface();
+        }
+        if is_on && option_env!("FULLERENE_USB_DALEPENA_AFTER_DCTL") == Some("1") {
+            // Diagnostic A/B: if Run/Stop itself drops the endpoint-enable
+            // mask, restore only EP0 OUT/IN here and let the gate-time
+            // snapshot report whether the mask survives the later reset/link
+            // transition. No PHY or transfer descriptor is changed.
+            write(DALEPENA, 0b11);
+        }
+        if is_on && option_env!("FULLERENE_USB_DALEPENA_AFTER_DCTL") == Some("1") {
+            super::trace::live_dalepena_after_dctl(read(DALEPENA));
+        }
+        saved_config
     }
 }
 
@@ -201,31 +339,29 @@ pub(super) unsafe fn acknowledge_events_while_halting() {
 /// a stale USB2 low-power state.
 pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
     unsafe {
-        let mut usb2 = read(GUSB2PHYCFG0);
-        let saved_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
-        if saved_config != 0 {
-            usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
-            write(GUSB2PHYCFG0, usb2);
-        }
-
-        let mut dctl = read(DCTL);
-        if is_on {
-            dctl = run_stop_value(dctl, read(GSNPSID));
-            // `run_stop_value` deliberately preserves RX_DET for older DWC3
-            // revisions. `write_dctl_safe` is used by reset/stop paths and
-            // clears that target bit, so the Run/Stop transition must write
-            // this value directly.
-            write(DCTL, dctl);
-        } else {
-            dctl &= !DCTL_RUN_STOP;
-            write_dctl_safe(dctl);
-        }
+        let saved_config = prepare_run_stop_device(is_on);
         let complete = wait_device_state(!is_on);
-
         if saved_config != 0 {
             let current = read(GUSB2PHYCFG0);
             write(GUSB2PHYCFG0, current | saved_config);
         }
         complete
+    }
+}
+
+/// The Run/Stop write without the DEVCTRLHLT readback wait. Gate runs must
+/// return to the probe before the attach-triggered ~17 s biter window
+/// closes, and the stale-halt readback timeout (up to 2 s, the common
+/// "RUN/STOP readback timed out; continuing" case) is the handoff's slowest
+/// bounded wait. The physical pull-up transition is identical to
+/// `run_stop_device(true)`; only the status wait is skipped.
+pub(super) unsafe fn run_stop_device_no_readback(is_on: bool) -> bool {
+    unsafe {
+        let saved_config = prepare_run_stop_device(is_on);
+        if saved_config != 0 {
+            let current = read(GUSB2PHYCFG0);
+            write(GUSB2PHYCFG0, current | saved_config);
+        }
+        true
     }
 }
