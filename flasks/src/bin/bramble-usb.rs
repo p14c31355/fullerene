@@ -1,8 +1,10 @@
 //! Rust replacement for the Bramble USB handoff shell harness.
 //!
 //! The harness deliberately delegates image construction and the actual
-//! Fastboot protocol to Flasks, so the safety boundary stays in one place:
-//! the only device-side image operation is `fastboot boot`.
+//! Fastboot protocol to Flasks, so the image-operation safety boundary stays
+//! in one place: the only device-side image operation is `fastboot boot`.
+//! An explicit `--adb-reboot-to-fastboot` opt-in may additionally transition
+//! the selected handset from Android ADB into its bootloader.
 
 use clap::{Parser, Subcommand, ValueEnum};
 use nusb::transfer::{ControlIn, ControlType, Recipient};
@@ -77,6 +79,11 @@ struct LoopArgs {
     hold: u64,
     #[arg(long, default_value_t = 30)]
     fastboot_wait: u64,
+    /// If Fastboot is absent, verify this serial is an ADB device and issue
+    /// `adb reboot bootloader` before waiting for Fastboot. This is opt-in;
+    /// the image operation remains the non-destructive `fastboot boot`.
+    #[arg(long)]
+    adb_reboot_to_fastboot: bool,
     #[arg(long)]
     irq_route: Option<Route>,
     #[arg(long)]
@@ -562,6 +569,7 @@ impl Default for LoopArgs {
             enum_timeout: 30,
             hold: 30,
             fastboot_wait: 30,
+            adb_reboot_to_fastboot: false,
             irq_route: None,
             super_speed: false,
             qmp_lane: None,
@@ -715,6 +723,10 @@ struct MatrixArgs {
     hold: u64,
     #[arg(long, default_value_t = 30)]
     fastboot_wait: u64,
+    /// If Fastboot is absent, transition the selected ADB device into its
+    /// bootloader before each matrix route. This is opt-in.
+    #[arg(long)]
+    adb_reboot_to_fastboot: bool,
     #[arg(long)]
     super_speed: bool,
     #[arg(long)]
@@ -993,7 +1005,12 @@ fn run_matrix(workspace: &Path, args: MatrixArgs) -> io::Result<()> {
             }
             Err(error) => {
                 eprintln!("route {} failed: {error}", route.as_str());
-                if let Err(recovery) = wait_for_fastboot(&args.serial, args.fastboot_wait) {
+                let recovery = if args.adb_reboot_to_fastboot {
+                    ensure_fastboot_from_adb(&args.serial, args.fastboot_wait, &run_dir)
+                } else {
+                    wait_for_fastboot(&args.serial, args.fastboot_wait)
+                };
+                if let Err(recovery) = recovery {
                     return Err(io::Error::other(format!(
                         "route {} failed and Fastboot did not return: {recovery}; logs are under {}",
                         route.as_str(),
@@ -1017,6 +1034,7 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         enum_timeout: args.enum_timeout,
         hold: args.hold,
         fastboot_wait: args.fastboot_wait,
+        adb_reboot_to_fastboot: args.adb_reboot_to_fastboot,
         irq_route: Some(route),
         super_speed: args.super_speed,
         no_smmu: args.no_smmu,
@@ -1862,11 +1880,13 @@ fn run_loop_with_dir(
     println!("Logs: {}", run_dir.display());
 
     // A previous probe normally recovers through Android before the next
-    // iteration. Do not request a reboot here: the Bramble workflow permits
-    // only `fastboot boot` as a device operation. Wait for the bootloader USB
-    // identity to return, or require the operator to restore it outside this
-    // harness.
-    wait_for_fastboot(&args.serial, args.fastboot_wait)?;
+    // iteration. The default remains passive Fastboot waiting; the explicit
+    // opt-in can transition the selected ADB device into the bootloader.
+    if args.adb_reboot_to_fastboot {
+        ensure_fastboot_from_adb(&args.serial, args.fastboot_wait, &run_dir)?;
+    } else {
+        wait_for_fastboot(&args.serial, args.fastboot_wait)?;
+    }
     let product = fastboot_getvar(&args.serial, "product")?;
     if !product
         .lines()
@@ -2074,7 +2094,19 @@ fn print_loop_command(args: &LoopArgs) {
     if let Some(route) = args.irq_route {
         println!("irq-route={}", route.as_str());
     }
-    println!("operation=fastboot boot only");
+    println!(
+        "adb-reboot-to-fastboot={}",
+        if args.adb_reboot_to_fastboot {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    if args.adb_reboot_to_fastboot {
+        println!("operation=adb reboot bootloader + fastboot boot only");
+    } else {
+        println!("operation=fastboot boot only");
+    }
 }
 
 fn mode_name(args: &LoopArgs) -> &'static str {
@@ -2614,21 +2646,76 @@ fn fastboot_command(serial: &str, arguments: &[&str]) -> Command {
     command
 }
 
+fn fastboot_present(serial: &str) -> bool {
+    Command::new("fastboot")
+        .args(["devices", "-l"])
+        .output()
+        .map(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .any(|line| line.split_whitespace().next() == Some(serial))
+        })
+        .unwrap_or(false)
+}
+
 fn wait_for_fastboot(serial: &str, timeout_secs: u64) -> io::Result<()> {
+    if fastboot_present(serial) {
+        return Ok(());
+    }
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
-        let output = Command::new("fastboot").args(["devices", "-l"]).output();
-        if let Ok(output) = output {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if text.lines().any(|line| line.starts_with(serial)) {
-                return Ok(());
-            }
+        if fastboot_present(serial) {
+            return Ok(());
         }
         thread::sleep(Duration::from_secs(1));
     }
     Err(io::Error::other(format!(
         "device {serial} is not available in Fastboot"
     )))
+}
+
+fn ensure_fastboot_from_adb(serial: &str, timeout_secs: u64, run_dir: &Path) -> io::Result<()> {
+    if fastboot_present(serial) {
+        fs::write(
+            run_dir.join("transport-preflight.txt"),
+            "Fastboot already present; adb reboot bootloader was not issued.\n",
+        )?;
+        return Ok(());
+    }
+
+    let state = capture_simple(
+        run_dir,
+        "adb-state-before-fastboot",
+        "adb",
+        &["-s", serial, "get-state"],
+    )?;
+    let state_text = String::from_utf8_lossy(&state.stdout).trim().to_owned();
+    if !state.status.success() || state_text != "device" {
+        let detail = String::from_utf8_lossy(&state.stderr).trim().to_owned();
+        return Err(io::Error::other(format!(
+            "device {serial} is neither in Fastboot nor ready in ADB (state={state_text:?}, detail={detail:?})"
+        )));
+    }
+
+    let reboot = capture_simple(
+        run_dir,
+        "adb-reboot-bootloader",
+        "adb",
+        &["-s", serial, "reboot", "bootloader"],
+    )?;
+    if !reboot.status.success() {
+        return Err(io::Error::other(format!(
+            "adb reboot bootloader failed for device {serial}"
+        )));
+    }
+    fs::write(
+        run_dir.join("transport-preflight.txt"),
+        format!(
+            "ADB state was device; issued adb -s {serial} reboot bootloader; waiting for Fastboot.\n"
+        ),
+    )?;
+    wait_for_fastboot(serial, timeout_secs)
 }
 
 fn fastboot_getvar(serial: &str, variable: &str) -> io::Result<String> {

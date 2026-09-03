@@ -5274,6 +5274,32 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     }
     #[cfg(fullerene_aarch64_usb_android_block_reset)]
     trace_event(TRACE_DWC3_RESET_BEGIN, 0x424C_4B52, 0, 0, 0, 0); // "BLKR"
+    // The Android msm probe enables the HS-PHY reference clock and performs
+    // the external PHY reset/init before DWC3 CSFTRST.  The original
+    // `HSPHY_BEFORE_RESET` A/B was wired only into the older
+    // `init_with_super_speed` path; this direct Fastboot-reuse path is the
+    // attach-reaching USB2 path used by the current probe.  Keep the ordering
+    // opt-in and preserve the EUD ownership early return.
+    let hsphy_before_core_reset = cfg!(fullerene_aarch64_usb_hsphy_before_reset)
+        && !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core);
+    if hsphy_before_core_reset && !hsphy_eud_enabled {
+        if !unsafe { super::platform::bramble::enable_usb_hs_phy_ref_clock() } {
+            log_puts("usb gadget handoff: pre-reset HS PHY ref clock enable failed\n");
+        }
+        if !cfg!(fullerene_aarch64_usb_skip_usb2_phy_reset)
+            && !unsafe { super::platform::bramble::pulse_usb2_phy_reset() }
+        {
+            log_puts("usb gadget handoff: pre-reset HS PHY BCR reset failed\n");
+            trace_event(TRACE_USB2_PHY_RESET, 0x5052_4553, 0, 0, 0, read(DSTS)); // "PRES"
+        }
+        unsafe {
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact) {
+                init_hsphy_source_exact();
+            } else {
+                init_hsphy();
+            }
+        }
+    }
     // Fastboot may have stopped Run/Stop, but that is not the same ownership
     // boundary as Linux's DWC3 probe.  The default path terminates its
     // endpoint-resource epoch with a device core soft reset.  The explicit
@@ -5382,6 +5408,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // is asserted, so the host port stays unattached throughout.
     if hsphy_eud_enabled {
         log_puts("usb gadget handoff: HS PHY EUD enabled; preserving PHY state\n");
+    } else if hsphy_before_core_reset {
+        log_puts("usb gadget handoff: HS PHY reset/init already performed before DWC3 reset\n");
     } else if !cfg!(fullerene_aarch64_usb_skip_usb2_phy_reset) {
         if !unsafe { super::platform::bramble::pulse_usb2_phy_reset() } {
             log_puts("usb gadget handoff: USB2 PHY BCR reset failed\n");

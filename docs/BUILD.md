@@ -226,6 +226,13 @@ saves build, boot, and kernel logs under a temporary run directory. A failed
 handoff is reported as a failure rather than being confused with a still-live
 bootloader session.
 
+When the handset is in Android and ADB is authorized, add
+`--adb-reboot-to-fastboot`. The harness checks that the selected serial is an
+ADB `device`, issues `adb reboot bootloader`, waits for that same serial in
+Fastboot, and records the transport transition in the run directory. The
+option is explicit because it reboots the handset; without it the harness
+remains a passive Fastboot wait.
+
 Useful comparisons are:
 
 ```bash
@@ -244,6 +251,7 @@ cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --no-transfer-resourc
 cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --android-resource-order
 cargo run -q -p flasks --bin bramble-usb -- loop --no-smmu --reuse-fastboot-dma
 cargo run -q -p flasks --bin bramble-usb -- matrix
+cargo run -q -p flasks --bin bramble-usb -- loop --adb-reboot-to-fastboot
 ```
 
 The first bypasses generated `Image.lz4`; the second exercises the normal
@@ -285,8 +293,10 @@ that allocates resources before `SETEPCONFIG`.
 The Rust `bramble-usb matrix` command runs the five bounded IRQ-route variants in sequence
 and proceeds to the next one only after the probe watchdog has restored
 host-visible Fastboot. It stops at the first successful Fullerene gadget. When
-a case has already fallen back to Android, matrix only waits for Fastboot and
-does not reboot the phone; it never flashes or erases a partition.
+a case has already fallen back to Android, matrix only waits for Fastboot by
+default. Pass `--adb-reboot-to-fastboot` to have each next route transition
+the selected authorized ADB device automatically; the matrix never flashes or
+erases a partition.
 
 `--bare-pullup` is the minimal physical comparison: it omits DWC3 reset,
 SMMU, DMA, and EP0 setup, so a host-side descriptor timeout is expected and
@@ -480,8 +490,10 @@ cargo run -q -p flasks --bin bramble-usb -- loop --super-speed
 
 That variant selects the QMP/SuperSpeed handoff probe and additionally
 requires a `5000M` or `10000M` link in `lsusb -t`. Neither mode invokes
-`fastboot flash`, `erase`, or reboot; if the probe watchdog must recover the
-phone, it waits for the bootloader USB device to return.
+`fastboot flash` or `erase`; if the probe watchdog must recover the phone, it
+waits for the bootloader USB device to return. To start from authorized ADB,
+append `--adb-reboot-to-fastboot`; this explicitly performs only
+`adb reboot bootloader` before the same `fastboot boot` flow.
 
 The Qualcomm platform IRQ boundaries can be compared without changing the
 image workflow, for example:
