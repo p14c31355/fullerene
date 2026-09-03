@@ -497,14 +497,14 @@ pub const fn usb_clock_plan(vote: UsbBusVote) -> UsbClockPlan {
             // gcc_usb30_prim_mock_utmi_clk_src: 19.2 MHz from BI_TCXO.
             // This is the only rate in the Bramble Lito GCC table.
             utmi_parent: 0,
-            utmi_divider: 1,
+            utmi_divider: 0,
             branches_enabled: true,
         },
         UsbBusVote::Svs => UsbClockPlan {
             core_parent: 6,
             core_divider: 8,
             utmi_parent: 0,
-            utmi_divider: 1,
+            utmi_divider: 0,
             branches_enabled: true,
         },
         UsbBusVote::Suspend | UsbBusVote::Minimum => UsbClockPlan {
@@ -3480,8 +3480,8 @@ mod tests {
         assert_eq!(clocks[5].name, "xo");
         assert_eq!(clocks[0].normal_rate_hz, 133_333_333);
         assert_eq!(clocks[0].high_speed_rate_hz, 66_666_667);
-        assert_eq!(clocks[3].normal_rate_hz, 60_000_000);
-        assert_eq!(clocks[3].high_speed_rate_hz, 60_000_000);
+        assert_eq!(clocks[3].normal_rate_hz, 19_200_000);
+        assert_eq!(clocks[3].high_speed_rate_hz, 19_200_000);
         assert_eq!(clocks[5].normal_rate_hz, 19_200_000);
 
         let qmp = resources.qmp_clocks;
@@ -3660,7 +3660,7 @@ mod tests {
                 core_parent: 1,
                 core_divider: 8,
                 utmi_parent: 0,
-                utmi_divider: 1,
+                utmi_divider: 0,
                 branches_enabled: true,
             }
         );

@@ -5,7 +5,6 @@ pub const DCFG_DEVADDR_MASK: u32 = 0x7f << 3;
 pub const DCFG_HIGHSPEED: u32 = 0;
 pub const DCFG_SUPERSPEED: u32 = 4;
 pub const DCTL_RUN_STOP: u32 = 1 << 31;
-pub const DCTL_SFTDISCON: u32 = 1 << 30;
 pub const DSTS_CONNECTSPD_MASK: u32 = 7;
 pub const DSTS_DEVCTRLHLT: u32 = 1 << 22;
 // DWC3_DSTS_DCNRD is bit 29. Bit 23 is COREIDLE; treating it as

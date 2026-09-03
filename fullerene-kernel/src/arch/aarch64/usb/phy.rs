@@ -182,9 +182,11 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
         for (index, (&(offset, value), &delay_us)) in
             qmp_init.iter().zip(qmp_init_delays.iter()).enumerate()
         {
-            // One marker per table entry makes the last committed index the
-            // upper bound when a particular QMP register access aborts.
-            trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_0000 | (index as u32 & 0xff));
+            // Sample the table index so QMP setup cannot consume the retained
+            // trace ring before the phase markers and final QMOK record.
+            if index % 16 == 0 || index + 1 == qmp_init.len() {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_0000 | (index as u32 & 0xff));
+            }
             write_volatile(qmp_reg(offset), value);
             if delay_us != 0 {
                 crate::timer::delay_us(delay_us as u64);

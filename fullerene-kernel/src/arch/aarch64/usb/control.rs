@@ -247,14 +247,10 @@ pub(super) unsafe fn release_usb3_phy_reset() {
     }
 }
 
-/// Apply Linux's USB2 PHY guard around a DWC3 Run/Stop transition.
-///
-/// `dwc3_gadget_run_stop()` clears SUSPHY and ENBLSLPM before writing DCTL,
-/// waits for DEVCTRLHLT, and restores the saved bits afterwards. Keeping that
-/// sequence in one helper prevents the Fastboot handoff and runtime-PM paths
-/// from diverging at exactly the transition where DWC3 is most sensitive to
-/// a stale USB2 low-power state.
-pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
+/// Apply the shared Linux-style preparation for a DWC3 Run/Stop transition.
+/// The caller restores the saved USB2 low-power bits after any required halt
+/// wait, so both the checked and no-readback paths launch the same transition.
+unsafe fn prepare_run_stop_device(is_on: bool) -> u32 {
     unsafe {
         let mut usb2 = read(GUSB2PHYCFG0);
         let saved_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
@@ -330,8 +326,21 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
         if is_on && option_env!("FULLERENE_USB_DALEPENA_AFTER_DCTL") == Some("1") {
             super::trace::live_dalepena_after_dctl(read(DALEPENA));
         }
-        let complete = wait_device_state(!is_on);
+        saved_config
+    }
+}
 
+/// Apply Linux's USB2 PHY guard around a DWC3 Run/Stop transition.
+///
+/// `dwc3_gadget_run_stop()` clears SUSPHY and ENBLSLPM before writing DCTL,
+/// waits for DEVCTRLHLT, and restores the saved bits afterwards. Keeping that
+/// sequence in one helper prevents the Fastboot handoff and runtime-PM paths
+/// from diverging at exactly the transition where DWC3 is most sensitive to
+/// a stale USB2 low-power state.
+pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
+    unsafe {
+        let saved_config = prepare_run_stop_device(is_on);
+        let complete = wait_device_state(!is_on);
         if saved_config != 0 {
             let current = read(GUSB2PHYCFG0);
             write(GUSB2PHYCFG0, current | saved_config);
@@ -348,54 +357,7 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
 /// `run_stop_device(true)`; only the status wait is skipped.
 pub(super) unsafe fn run_stop_device_no_readback(is_on: bool) -> bool {
     unsafe {
-        let mut usb2 = read(GUSB2PHYCFG0);
-        let saved_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
-        if saved_config != 0 {
-            usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
-            write(GUSB2PHYCFG0, usb2);
-        }
-
-        let mut dctl = read(DCTL);
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_source_exact_runstop) {
-            if is_on {
-                dctl |= DCTL_RUN_STOP;
-            } else {
-                dctl &= !DCTL_RUN_STOP;
-            }
-            write(DCTL, dctl);
-        } else if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_raw_runstop) {
-            // Keep the gate-run helper identical to the ordinary XBL raw
-            // Run/Stop differential. Signal-gated runs use this no-readback
-            // path, so falling through to run_stop_value() would silently
-            // discard the requested XBL write semantics.
-            if is_on {
-                dctl = (dctl & !DCTL_HIRD_THRES_MASK) | DCTL_HIRD_THRES_XBL;
-                dctl |= DCTL_APPL1RES | DCTL_RUN_STOP;
-            } else {
-                dctl &= !DCTL_RUN_STOP;
-            }
-            write(DCTL, dctl);
-        } else if is_on {
-            dctl = run_stop_value(dctl, read(GSNPSID));
-            write(DCTL, dctl);
-        } else {
-            dctl &= !DCTL_RUN_STOP;
-            write_dctl_safe(dctl);
-        }
-
-        // Keep the no-readback signal-gate path identical at the point where
-        // the DCTL transition is launched. The following readback is omitted
-        // by design, so stage-specific probes are used to observe retention.
-        if is_on && option_env!("FULLERENE_USB_UTMI_WRITE_AFTER_DCTL") == Some("1") {
-            super::config::configure_usb2_phy_interface();
-        }
-        if is_on && option_env!("FULLERENE_USB_DALEPENA_AFTER_DCTL") == Some("1") {
-            write(DALEPENA, 0b11);
-        }
-        if is_on && option_env!("FULLERENE_USB_DALEPENA_AFTER_DCTL") == Some("1") {
-            super::trace::live_dalepena_after_dctl(read(DALEPENA));
-        }
-
+        let saved_config = prepare_run_stop_device(is_on);
         if saved_config != 0 {
             let current = read(GUSB2PHYCFG0);
             write(GUSB2PHYCFG0, current | saved_config);

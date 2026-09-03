@@ -67,7 +67,7 @@ pub unsafe fn enable_usb_qmp_clock_branches() -> bool {
         };
         if aux.provider != ClockProvider::Gcc
             || aux.source_offset == 0
-            || !configure_rcg(aux.source_offset, 0, 1)
+            || !configure_rcg(aux.source_offset, 0, 0)
         {
             return false;
         }
@@ -148,7 +148,7 @@ unsafe fn gcc_reg(offset: usize) -> *mut u32 {
 /// Program one Qualcomm RCG2 clock source and commit the change.
 ///
 /// The Lito GCC driver describes the USB master clock as parent 1 divided by
-/// 8 and the mock UTMI clock as parent 6 divided by 5. Keeping this in the
+/// 8 and the mock UTMI clock as the BI_TCXO parent with encoded divider 0. Keeping this in the
 /// platform layer prevents the DWC3 driver from depending on GCC register
 /// layout.
 unsafe fn configure_rcg(cmd_offset: usize, parent: u32, divider: u32) -> bool {
@@ -198,7 +198,7 @@ pub unsafe fn configure_usb_clocks(vote: UsbBusVote) -> bool {
             .iter()
             .find(|clock| clock.name == "aux")
         {
-            if aux.source_offset == 0 || !configure_rcg(aux.source_offset, 0, 1) {
+            if aux.source_offset == 0 || !configure_rcg(aux.source_offset, 0, 0) {
                 return false;
             }
         }
@@ -298,7 +298,7 @@ pub unsafe fn enable_usb2_utmi_clock() -> bool {
         {
             (6u32, 5u32)
         } else {
-            (0u32, 1u32)
+            (0u32, 0u32)
         };
         if utmi.source_offset != 0 && !configure_rcg(utmi.source_offset, parent, divider) {
             return false;
