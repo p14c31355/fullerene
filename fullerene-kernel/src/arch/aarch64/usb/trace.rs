@@ -3,7 +3,11 @@
 use super::super::usb_protocol::{
     TRACE_CONTROL_ENTRY_BYTES, TRACE_CONTROL_HEADER_BYTES, TRACE_CONTROL_PAGE_ENTRIES,
 };
-use super::{EP0_STATE, Ep0State};
+use super::{
+    DWC3_DEBUG_QUEUE_COUNT, DWC3_DEBUG_QUEUE_EVENTQ, DWC3_DEBUG_QUEUE_RXFIFO,
+    DWC3_DEBUG_QUEUE_RXINFOQ, DWC3_DEBUG_QUEUE_RXREQQ, DWC3_DEBUG_QUEUE_TXFIFO,
+    EP0_STATE, Ep0State,
+};
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
 pub(crate) const USB_TRACE_CAPACITY: usize = 256;
@@ -161,9 +165,11 @@ static mut LIVE_DWC3_FIRST_EVENT_VALID: bool = false;
 /// The exact min/max values remain in retained TRACE_DWC3_DEBUG records;
 /// these live fields expose only bounded categorical summaries.
 static mut LIVE_DWC3_DEBUG_VALID: bool = false;
-static mut LIVE_DWC3_DEBUG_LAST: [u32; 8] = [0; 8];
-static mut LIVE_DWC3_DEBUG_MIN: [u32; 8] = [u32::MAX; 8];
-static mut LIVE_DWC3_DEBUG_MAX: [u32; 8] = [0; 8];
+static mut LIVE_DWC3_DEBUG_LAST: [u32; DWC3_DEBUG_QUEUE_COUNT] = [0; DWC3_DEBUG_QUEUE_COUNT];
+static mut LIVE_DWC3_DEBUG_MIN: [u32; DWC3_DEBUG_QUEUE_COUNT] =
+    [u32::MAX; DWC3_DEBUG_QUEUE_COUNT];
+static mut LIVE_DWC3_DEBUG_MAX: [u32; DWC3_DEBUG_QUEUE_COUNT] =
+    [0; DWC3_DEBUG_QUEUE_COUNT];
 static mut LIVE_DWC3_DEBUG_CHANGE: u32 = 0;
 static mut LIVE_DWC3_DEBUG_LSP_LAST: [u32; 16] = [0; 16];
 static mut LIVE_DWC3_DEBUG_LSP_MIN: [u32; 16] = [u32::MAX; 16];
@@ -171,6 +177,11 @@ static mut LIVE_DWC3_DEBUG_LSP_MAX: [u32; 16] = [0; 16];
 static mut LIVE_DWC3_DEBUG_LSP_CHANGE: u32 = 0;
 static mut LIVE_DWC3_DEBUG_EPINFO0: u32 = 0;
 static mut LIVE_DWC3_DEBUG_EPINFO1: u32 = 0;
+/// SPACE_AVAILABLE snapshots at named handoff stages. Each stage stores the
+/// eight queue free-space values returned by GDBGFIFOSPACE, not occupancy.
+static mut LIVE_DWC3_DEBUG_STAGE_VALID: u32 = 0;
+static mut LIVE_DWC3_DEBUG_STAGE_VALUES: [[u32; DWC3_DEBUG_QUEUE_COUNT]; 8] =
+    [[0; DWC3_DEBUG_QUEUE_COUNT]; 8];
 
 /// Initialize the retained trace header and append a boot boundary marker.
 /// The entry array is intentionally not cleared, so a subsequent boot can
@@ -265,9 +276,9 @@ pub fn trace_reset_head_for_boot() {
         LIVE_DWC3_FIRST_EVENT_DCTL = 0;
         LIVE_DWC3_FIRST_EVENT_VALID = false;
         LIVE_DWC3_DEBUG_VALID = false;
-        LIVE_DWC3_DEBUG_LAST = [0; 8];
-        LIVE_DWC3_DEBUG_MIN = [u32::MAX; 8];
-        LIVE_DWC3_DEBUG_MAX = [0; 8];
+        LIVE_DWC3_DEBUG_LAST = [0; DWC3_DEBUG_QUEUE_COUNT];
+        LIVE_DWC3_DEBUG_MIN = [u32::MAX; DWC3_DEBUG_QUEUE_COUNT];
+        LIVE_DWC3_DEBUG_MAX = [0; DWC3_DEBUG_QUEUE_COUNT];
         LIVE_DWC3_DEBUG_CHANGE = 0;
         LIVE_DWC3_DEBUG_LSP_LAST = [0; 16];
         LIVE_DWC3_DEBUG_LSP_MIN = [u32::MAX; 16];
@@ -275,6 +286,8 @@ pub fn trace_reset_head_for_boot() {
         LIVE_DWC3_DEBUG_LSP_CHANGE = 0;
         LIVE_DWC3_DEBUG_EPINFO0 = 0;
         LIVE_DWC3_DEBUG_EPINFO1 = 0;
+        LIVE_DWC3_DEBUG_STAGE_VALID = 0;
+        LIVE_DWC3_DEBUG_STAGE_VALUES = [[0; DWC3_DEBUG_QUEUE_COUNT]; 8];
         core::arch::asm!("dsb sy", options(nostack));
     }
 }
@@ -342,13 +355,13 @@ pub(super) fn live_dalepena_config(direction: u32, readback: u32) {
 /// count. Returns true only for the first observation so the retained trace
 /// gets one stable record rather than a stream of polling duplicates.
 pub(super) fn live_dwc3_debug_sample(
-    queues: [u32; 8],
+    queues: [u32; DWC3_DEBUG_QUEUE_COUNT],
     lsp: [u32; 16],
     epinfo0: u32,
     epinfo1: u32,
 ) {
     unsafe {
-        for index in 0..8 {
+        for index in 0..DWC3_DEBUG_QUEUE_COUNT {
             if LIVE_DWC3_DEBUG_VALID && LIVE_DWC3_DEBUG_LAST[index] != queues[index] {
                 LIVE_DWC3_DEBUG_CHANGE |= 1 << index;
             }
@@ -367,6 +380,24 @@ pub(super) fn live_dwc3_debug_sample(
         LIVE_DWC3_DEBUG_EPINFO0 = epinfo0;
         LIVE_DWC3_DEBUG_EPINFO1 = epinfo1;
         LIVE_DWC3_DEBUG_VALID = true;
+    }
+}
+
+/// Save one SPACE_AVAILABLE vector at a named handoff stage. Stage numbers
+/// are caller-defined; stages 0..4 are entry, reset, endpoint-config,
+/// pre-Run/Stop, and post-Run/Stop respectively.
+pub(super) const DWC3_DEBUG_STAGE_ENTRY: u32 = 0;
+pub(super) const DWC3_DEBUG_STAGE_POST_RESET: u32 = 1;
+pub(super) const DWC3_DEBUG_STAGE_ENDPOINT_CONFIG: u32 = 2;
+pub(super) const DWC3_DEBUG_STAGE_PRE_RUNSTOP: u32 = 3;
+pub(super) const DWC3_DEBUG_STAGE_POST_RUNSTOP: u32 = 4;
+
+pub(super) fn live_dwc3_debug_stage(stage: u32, queues: [u32; DWC3_DEBUG_QUEUE_COUNT]) {
+    if stage < 8 {
+        unsafe {
+            LIVE_DWC3_DEBUG_STAGE_VALUES[stage as usize] = queues;
+            LIVE_DWC3_DEBUG_STAGE_VALID |= 1 << stage;
+        }
     }
 }
 
@@ -624,26 +655,94 @@ pub fn trace_last_event() -> u32 {
     }
 }
 
-/// Convert a queue's min/max observation into a small timing-channel code:
-/// 0=no sample, 1=sampled and always zero, 2=zero then nonzero, 3=constant
-/// nonzero, 4=multiple/nonzero values. Exact values remain in the retained
-/// TRACE_DWC3_DEBUG records.
+/// Convert a queue's min/max SPACE_AVAILABLE observation into a small
+/// timing-channel code: 0=no sample, 1=sampled and always zero, 2=zero then
+/// nonzero, 3=constant nonzero, 4=multiple/nonzero values. Zero means no free
+/// space (or an unsupported/debug-invalid result), not empty occupancy.
 fn debug_queue_metric(index: usize) -> u32 {
     unsafe {
         if !LIVE_DWC3_DEBUG_VALID {
             return 0;
         }
-        let min = LIVE_DWC3_DEBUG_MIN[index];
-        let max = LIVE_DWC3_DEBUG_MAX[index];
-        if min == 0 && max == 0 {
+        let min_free = LIVE_DWC3_DEBUG_MIN[index];
+        let max_free = LIVE_DWC3_DEBUG_MAX[index];
+        if min_free == 0 && max_free == 0 {
             1
-        } else if min == 0 {
+        } else if min_free == 0 {
             2
-        } else if min == max {
+        } else if min_free == max_free {
             3
         } else {
             4
         }
+    }
+}
+
+/// Stage category for SPACE_AVAILABLE: 0=not sampled, 1=no free space,
+/// 2=1..15 free entries/words, 3=16+ free entries/words.
+fn debug_stage_metric(stage: usize, queue: usize) -> u32 {
+    unsafe {
+        if stage >= 8 || queue >= DWC3_DEBUG_QUEUE_COUNT {
+            return 0;
+        }
+        if LIVE_DWC3_DEBUG_STAGE_VALID & (1 << stage) == 0 {
+            return 0;
+        }
+        let free = LIVE_DWC3_DEBUG_STAGE_VALUES[stage][queue];
+        if free == 0 {
+            1
+        } else if free < 16 {
+            2
+        } else {
+            3
+        }
+    }
+}
+
+/// Wide entry snapshot classification: 0=not sampled, 1=zero,
+/// 2=1..15, 3=16..255, 4=256+.
+fn debug_stage_metric_wide(stage: usize, queue: usize) -> u32 {
+    unsafe {
+        if stage >= 8 || queue >= DWC3_DEBUG_QUEUE_COUNT {
+            return 0;
+        }
+        if LIVE_DWC3_DEBUG_STAGE_VALID & (1 << stage) == 0 {
+            return 0;
+        }
+        let free = LIVE_DWC3_DEBUG_STAGE_VALUES[stage][queue];
+        if free == 0 {
+            1
+        } else if free < 16 {
+            2
+        } else if free < 256 {
+            3
+        } else {
+            4
+        }
+    }
+}
+
+/// Compare the five named handoff-stage SPACE_AVAILABLE snapshots for a queue.
+/// This is a free-space transition, not a queue-occupancy claim.
+fn debug_stage_change(queue: usize) -> u32 {
+    unsafe {
+        if queue >= DWC3_DEBUG_QUEUE_COUNT {
+            return 0;
+        }
+        let mut have_value = false;
+        let mut first = 0u32;
+        for stage in 0..5usize {
+            if LIVE_DWC3_DEBUG_STAGE_VALID & (1 << stage) == 0 {
+                continue;
+            }
+            let value = LIVE_DWC3_DEBUG_STAGE_VALUES[stage][queue];
+            if have_value && value != first {
+                return 1;
+            }
+            first = value;
+            have_value = true;
+        }
+        0
     }
 }
 
@@ -678,6 +777,24 @@ pub(super) fn dwc3_debug_readout_code(selector: &str) -> Option<u32> {
             "dwc3-debug-epinfo" => u32::from(
                 LIVE_DWC3_DEBUG_EPINFO0 != 0 || LIVE_DWC3_DEBUG_EPINFO1 != 0,
             ),
+            "dwc3-free-entry-rxreq" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_RXREQQ),
+            "dwc3-free-entry-rxreq-wide" => debug_stage_metric_wide(0, DWC3_DEBUG_QUEUE_RXREQQ),
+            "dwc3-free-post-reset-rxreq" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_RXREQQ),
+            "dwc3-free-pre-runstop-rxreq" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_RXREQQ),
+            "dwc3-free-post-runstop-rxreq" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_RXREQQ),
+            "dwc3-free-rxreq-change" => debug_stage_change(DWC3_DEBUG_QUEUE_RXREQQ),
+            "dwc3-free-entry-rxinfo" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_RXINFOQ),
+            "dwc3-free-post-reset-rxinfo" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_RXINFOQ),
+            "dwc3-free-pre-runstop-rxinfo" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_RXINFOQ),
+            "dwc3-free-post-runstop-rxinfo" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_RXINFOQ),
+            "dwc3-free-rxinfo-change" => debug_stage_change(DWC3_DEBUG_QUEUE_RXINFOQ),
+            "dwc3-free-entry-eventq" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_EVENTQ),
+            "dwc3-free-post-reset-eventq" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_EVENTQ),
+            "dwc3-free-pre-runstop-eventq" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_EVENTQ),
+            "dwc3-free-post-runstop-eventq" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_EVENTQ),
+            "dwc3-free-eventq-change" => debug_stage_change(DWC3_DEBUG_QUEUE_EVENTQ),
+            "dwc3-free-entry-txfifo" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_TXFIFO),
+            "dwc3-free-entry-rxfifo" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_RXFIFO),
             _ => return None,
         })
     }

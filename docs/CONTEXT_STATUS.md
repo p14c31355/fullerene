@@ -454,39 +454,62 @@ numeric queue result because it is a whole-second host observation. The new
 selector family is ready for calibrated one-bit runs (`dwc3-debug-rxreq`,
 `dwc3-debug-rxinfo`, `dwc3-debug-eventq`, and `dwc3-debug-lsp-change`).
 
-The boundary is therefore moved, but not closed to hardware evidence: FS
-also fails, while DWC3 internal queue/LSP data remains to be decoded with the
-same calibrated readout method. Keep the analyzer deferred until those
-read-only queue selectors are measured.
+The boundary is therefore not closed to hardware evidence: FS also fails,
+while the corrected DWC3 `SPACE_AVAILABLE` stage values remain undecoded from
+coarse host timing. The selectors have now been measured as readout executions,
+but their values must not be interpreted as queue occupancy. Keep the analyzer
+deferred only until one separated free-space bucket or retained-trace decode is
+attempted.
 
-### Calibrated internal DWC3 debug queue/LSP audit
+### Corrected DWC3 `SPACE_AVAILABLE` audit
 
-Four calibrated selector runs used the same fixed direct USB2 baseline and
-the source-aligned read-only sampler:
+The earlier interpretation of the `GDBGFIFOSPACE` results is withdrawn. Linux's
+`dwc3_core_fifo_space()` writes the EP0/queue selector and returns
+`DWC3_GDBGFIFOSPACE_SPACE_AVAILABLE(reg)`, namely bits 31:16. A reported zero
+therefore means **zero free space (or an unsupported/debug-invalid readout)**;
+it is not an occupancy/empty-queue value and does not prove that USB packets
+never reached the controller.
+
+The sampler is now explicitly labeled `SPACE_AVAILABLE` and retains five
+stage vectors for every queue:
+
+```text
+0 entry / Fastboot-inherited
+1 after DWC3 reset
+2 after EP0 endpoint/resource publication
+3 immediately before Run/Stop
+4 immediately after Run/Stop
+```
+
+It also exposes per-queue stage-change selectors. The LSP local comparison was
+renamed to `lsp_selector_diff_mask`; the live `LIVE_DWC3_DEBUG_LSP_CHANGE`
+field remains the actual time-direction change mask.
+
+Four new hardware runs used the rebuilt image and the same direct USB2 profile:
 
 | Run | selector | host timeline | interpretation |
 | --- | --- | --- | --- |
-| `205936.0` | `dwc3-debug-rxreq` | disconnect `21:10:12` → HS attach `21:10:27` → `-110` `21:10:32` → Android `21:10:54` | 15-second bucket: RXREQQ category 1 (sampled and always zero) |
-| `208096.0` | `dwc3-debug-rxinfo` | disconnect `21:11:40` → HS attach `21:11:55` → `-110` `21:12:00` → Android `21:12:21` | same category-1 bucket: RXINFOQ stayed zero |
-| `210370.0` | `dwc3-debug-eventq` | disconnect `21:13:04` → HS attach `21:13:18` → `-110` `21:13:23` → Android `21:13:44` | same category-1 bucket: EVENTQ stayed zero |
-| `212890.0` | `dwc3-debug-lsp-change` | disconnect `21:14:35` → HS attach `21:14:50` → `-110` `21:14:55` → Android `21:15:16` | negative; the whole-second bucket is not decoded as a numeric LSP result |
-| `215522.0` | `dwc3-debug-queue-change` | disconnect `21:16:21` → HS attach `21:16:35` → `-110` `21:16:41` → Android `21:17:02` | 0-bit category: no queue min/max change observed |
+| `264920.0` | `dwc3-free-entry-rxreq-wide` | disconnect `21:51:37` → HS attach `21:51:57` → `-110` `21:52:03` → Android `21:52:23` | entry `SPACE_AVAILABLE` wide bucket exercised; value not decoded from whole-second timing |
+| `267527.0` | `dwc3-free-entry-rxinfo` | disconnect `21:53:21` → HS attach `21:53:35` → `-110` `21:53:40` → Android `21:54:01` | entry `SPACE_AVAILABLE` selector exercised; value not decoded |
+| `270353.0` | `dwc3-free-entry-eventq` | disconnect `21:55:01` → HS attach `21:55:15` → `-110` `21:55:20` → Android `21:55:41` | entry `SPACE_AVAILABLE` selector exercised; value not decoded |
+| `272154.0` | `dwc3-free-rxreq-change` | disconnect `21:55:58` → HS attach `21:56:17` → `-110` `21:56:22` → Android `21:56:45` | stage free-space change selector exercised; value not decoded |
 
-All five runs remained non-enumerating and used read-only debug-register
-access; none acknowledged `GEVNTCOUNT`, issued an endpoint command, or
-changed PHY/session state. The calibrated queue results are now stronger than
-the prior single `199575.0` attempt: RXREQQ, RXINFOQ, EVENTQ, and the queue
-change aggregate all remain zero during the host's descriptor request.
-`dwc3-debug-lsp-change` is deliberately not assigned a numeric value from
-the host timestamps and remains an inconclusive secondary observation.
+Artifacts:
 
-This moves the software boundary again: the DWC3 internal receive/request
-queues do not show activity even when the host is issuing `GET_DESCRIPTOR`.
-Together with the independent Full-Speed negative (`190834.0`), this makes a
-common PHY/UTMI-to-DWC3 ingress failure substantially more likely than an
-EP0 packet-format or endpoint-ownership bug. The next physical evidence is
-now justified, but the exact wire-vs-PHY split still requires a USB analyzer
-or JTAG/secure-debug capture.
+```text
+264920.0  cecde97c748783e5b63e91b349266df3ed51e72a0d89a6cacd06551330bd2649
+267527.0  0b90233a55a3cfe5ca097b78de714341dd548ee38edcaa7f66c34977fcf17445
+270353.0  e359e338711f9fc62870e08faf851d43cd72bf030e086f76d7d9f3cb34dbac30
+272154.0  17fba1d30c2bdc0d8897931c86b360233fba387be2a0e1b3d6f3e88b9f2faab8
+```
+
+All four runs remained non-enumerating and recovered by the normal watchdog
+path. The host timestamps prove the readout images reached the ordinary HS
+attach boundary, but they do **not** decode the free-space categories. Thus the
+DWC3 queue evidence is currently provisional, not a PHY/UTMI ingress proof.
+The Full-Speed negative remains valid, but the next software step is to make
+one wider/separated stage bucket independently decodable before escalating to
+wire or secure-debug capture.
 
 ## Document routing and context cost
 

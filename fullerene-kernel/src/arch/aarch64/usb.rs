@@ -1499,7 +1499,7 @@ pub fn trace_dwc3_debug_sample() {
             values[queue_type as usize] = read(GDBGFIFOSPACE) >> GDBGFIFOSPACE_SPACE_SHIFT;
         }
         let mut lsp0 = 0u32;
-        let mut lsp_change = 0u32;
+        let mut lsp_selector_diff_mask = 0u32;
         for selector in 0..16u32 {
             write(
                 GDBGLSPMUX,
@@ -1509,7 +1509,7 @@ pub fn trace_dwc3_debug_sample() {
             if selector == 0 {
                 lsp0 = value;
             } else if value != lsp0 {
-                lsp_change |= 1 << selector;
+                lsp_selector_diff_mask |= 1 << selector;
             }
         }
         trace_event(TRACE_DWC3_DEBUG, 0, values[0], values[1], values[2], values[3]);
@@ -1530,9 +1530,33 @@ pub fn trace_dwc3_debug_sample() {
             TRACE_DWC3_DEBUG,
             2,
             lsp0,
-            lsp_change,
+            lsp_selector_diff_mask,
             read(GDBGEPINFO0),
             read(GDBGEPINFO1),
+        );
+    }
+}
+
+/// Capture only the DWC3 queue SPACE_AVAILABLE vector at a named handoff stage.
+/// The value is free space, not occupancy.
+pub fn trace_dwc3_debug_stage(stage: u32) {
+    unsafe {
+        let mut values = [0u32; DWC3_DEBUG_QUEUE_COUNT];
+        for queue_type in 0..DWC3_DEBUG_QUEUE_COUNT as u32 {
+            write(
+                GDBGFIFOSPACE,
+                (queue_type << GDBGFIFOSPACE_TYPE_SHIFT) & GDBGFIFOSPACE_TYPE_MASK,
+            );
+            values[queue_type as usize] = read(GDBGFIFOSPACE) >> GDBGFIFOSPACE_SPACE_SHIFT;
+        }
+        trace::live_dwc3_debug_stage(stage, values);
+        trace_event(
+            TRACE_DWC3_DEBUG,
+            0x100 | (stage & 0xff),
+            values[DWC3_DEBUG_QUEUE_TXFIFO],
+            values[DWC3_DEBUG_QUEUE_RXFIFO],
+            values[DWC3_DEBUG_QUEUE_RXREQQ],
+            values[DWC3_DEBUG_QUEUE_EVENTQ],
         );
     }
 }
@@ -5349,6 +5373,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // Snapshot the Fastboot-owned clock/PHY state before the handoff starts
     // changing the controller-side USB2 session.
     trace_utmi_state(1);
+    // Linux calls GDBGFIFOSPACE's returned field SPACE_AVAILABLE. Capture the
+    // inherited free-space vector explicitly; zero is not queue occupancy.
+    trace_dwc3_debug_stage(0);
     // Stage 1 is deliberately before even the initial stop/readback: it is
     // the control experiment against the already-proven bare pull-up path.
     if unsafe { stop_after_gadget_handoff_stage(1) } {
@@ -5574,6 +5601,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         trace_event(TRACE_GCC_UTMI_CLOCK, 0, 0, 0, 0, read(DSTS));
     }
     trace_utmi_state(2);
+    trace_dwc3_debug_stage(1);
     let clock_delay_us = usb_clock_stable_delay_us();
     if clock_delay_us != 0 {
         log_hex(
@@ -5712,8 +5740,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         let guctl1 = read(GUCTL1);
         write(GUCTL1, guctl1 & !GUCTL1_L1_SUSP_THRLD_EN_FOR_HOST);
     }
-    trace_utmi_state(3);
-
     // The Fastboot session may have left the DWC3 stream behind an SMMU
     // mapping that only covers its own buffers.  Our TRBs/event ring are
     // intentionally identity-addressed in the 0x9b800000 DMA section.  Keep
@@ -5961,6 +5987,10 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         ENDPOINTS_READY = true;
         let _ = udc_mut().configure_endpoint(0, 64, false);
         let _ = udc_mut().configure_endpoint(1, 64, false);
+        // Both EP0 directions, their resources, DALEPENA, and DEVTEN have
+        // now been published. This is the endpoint-config boundary, still
+        // before the final Run/Stop transition.
+        trace_dwc3_debug_stage(2);
         if cfg!(any(
             fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
             fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
@@ -6112,6 +6142,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // the stale-halt case is exactly what the diag rescue re-arm fixes.
         let gate_run = option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1");
         trace_utmi_state(4);
+        trace_dwc3_debug_stage(3);
         if let Some(selector) = option_env!("FULLERENE_USB_UTMI_PRECONNECT_READOUT") {
             // Publish the live UTMI field through the physical attach time,
             // before the host can submit the first SETUP. This short delay
@@ -6127,6 +6158,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         } else {
             unsafe { run_stop_device(true) }
         };
+        // Capture the controller's immediate post-Run/Stop free-space state
+        // before any optional post-boundary PHY or clock differential.
+        trace_dwc3_debug_stage(4);
         #[cfg(fullerene_aarch64_usb_hsphy_ref_after_runstop)]
         {
             // The downstream msm_hsphy resume path re-enables the only
@@ -6172,6 +6206,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             super::timer::delay_us(100);
         }
         trace_utmi_state(5);
+        trace_dwc3_debug_stage(4);
         if let Some(selector) = option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") {
             // Encode the post-Run/Stop stage in the attach timestamp. This
             // is deliberately separate from the pre-connect readout so a

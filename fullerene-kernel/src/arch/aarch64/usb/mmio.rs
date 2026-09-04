@@ -157,6 +157,19 @@ pub(crate) const GDBGFIFOSPACE_SPACE_SHIFT: u32 = 16;
 pub(crate) const GDBGFIFOSPACE_NUM_MASK: u32 = 0x1f;
 pub(crate) const GDBGFIFOSPACE_TYPE_SHIFT: u32 = 5;
 pub(crate) const GDBGFIFOSPACE_TYPE_MASK: u32 = 0x1e0;
+// Linux's DWC3 core.h names these results SPACE_AVAILABLE: they are free
+// entries/words, not queue occupancy. Keep the masks explicit so the probe
+// cannot accidentally interpret zero as "empty".
+pub(crate) const DWC3_DEBUG_QUEUE_COUNT: usize = 8;
+pub(crate) const DWC3_DEBUG_QUEUE_TXFIFO: usize = 0;
+pub(crate) const DWC3_DEBUG_QUEUE_RXFIFO: usize = 1;
+pub(crate) const DWC3_DEBUG_QUEUE_TXREQQ: usize = 2;
+pub(crate) const DWC3_DEBUG_QUEUE_RXREQQ: usize = 3;
+pub(crate) const DWC3_DEBUG_QUEUE_RXINFOQ: usize = 4;
+pub(crate) const DWC3_DEBUG_QUEUE_PSTATQ: usize = 5;
+pub(crate) const DWC3_DEBUG_QUEUE_DESCFETCHQ: usize = 6;
+pub(crate) const DWC3_DEBUG_QUEUE_EVENTQ: usize = 7;
+pub(crate) const DWC3_DEBUG_QUEUE_AUXEVENTQ: usize = 8;
 pub(crate) const GDBGLSPMUX_DEVSELECT_SHIFT: u32 = 4;
 pub(crate) const GSNPSID: usize = 0xc120;
 pub(crate) const GRXTHRCFG: usize = 0xc10c;
