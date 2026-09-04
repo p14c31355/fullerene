@@ -35,6 +35,7 @@ mod phy;
 mod phy_tables;
 pub use phy_tables::install_dt_phy_sequences;
 pub use phy_tables::hsphy_table_source;
+pub use phy_tables::record_hs_dt_param_override_observation;
 use trace::{fill_trace_control_response, trace_begin, trace_event};
 pub mod trace;
 use trace::*;
@@ -1206,20 +1207,13 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
         // classification there.
         return hsphy_table_source();
     }
-    if let Some(cell) = selector.strip_prefix("hsphy-dt-cell") {
-        // Publish the raw DT property cells the classifier consumed, one
-        // selector per cell. The classification alone cannot distinguish
-        // "the handset DT really has two entries" from "the FDT reader
-        // truncated a three-entry property", and the qpr1 source ships a
-        // three-entry `qcom,param-override-seq`, so the raw values are the
-        // decisive evidence. Cells are (value, offset) pairs; the published
-        // code packs value<<8 | offset for 0x6c/0x70/0x74 offsets. A cell
-        // the property does not contain returns 0.
-        let index: usize = cell.parse().unwrap_or(6);
-        if index >= 6 {
-            return 0;
-        }
-        return phy_tables::hsphy_dt_cell(index);
+    if let Some(cell) = selector.strip_prefix("hsphy-prop-") {
+        // Categorical DT-observation codes (see hsphy_prop_code): tiny
+        // values that survive the .min(15) clamp of the attach-delay
+        // ladder. Aspects: present (0/1), len (0=absent, 1/2/3 = 8/16/24
+        // bytes, 4 = other), pair0/1/2 (0=absent/incomplete, 1 = exact
+        // qpr1 base value, 2 = known alternate, 3 = other).
+        return phy_tables::hsphy_prop_code(cell);
     }
     if selector.starts_with("ss-") {
         // A failed handoff can enter the generic signal path and publish the

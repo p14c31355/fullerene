@@ -553,6 +553,21 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
                     "platform: PHY init properties absent/invalid; retaining compiled tables\n",
                 );
             }
+            // Record the DT observation after the install attempt: presence
+            // and exact byte length come from their own walk, and the raw
+            // cells come from the reader the classifier consumed. This
+            // closes the round-3 gap where "absent" and "present but the
+            // first pair incomplete" were indistinguishable.
+            #[cfg(fullerene_aarch64_bramble)]
+            usb::record_hs_dt_param_override_observation(
+                fdt::find_compatible_property_observation(
+                    address,
+                    b"qcom,usb-hsphy-snps-femto",
+                    b"qcom,param-override-seq",
+                    0,
+                ),
+                contract.hs_param_override,
+            );
             if platform::bramble::install_usb_resource_contract(
                 dwc3.map(|r| (r.base, r.size)),
                 hs_phy.map(|r| (r.base, r.size)),

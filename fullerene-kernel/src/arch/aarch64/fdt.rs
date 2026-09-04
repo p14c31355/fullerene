@@ -270,6 +270,64 @@ pub fn find_compatible_property_u32(
     find_compatible_nth_property_u32(address, target, property, index, 0)
 }
 
+/// Report whether a property exists on the `node_index`th enabled node whose
+/// compatible list contains `target`, and its exact byte length. Fullerene's
+/// round-3 DT readout could not distinguish "property absent" from
+/// "property present but the first (value, offset) pair incomplete"; this
+/// observation plus `find_compatible_property_u32` closes that gap: the
+/// presence bit comes from the same walk, so an absent property and a
+/// zero-length property are both reported without guessing.
+pub fn find_compatible_property_observation(
+    address: u64,
+    target: &[u8],
+    property: &[u8],
+    node_index: usize,
+) -> Option<(bool, u32)> {
+    let mut states = [PropertyNodeState::new(); 16];
+    let mut matching_nodes = 0usize;
+    let mut result: Option<(bool, u32)> = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => states[depth] = PropertyNodeState::new(),
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
+                {
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"compatible") {
+                    state.compatible = compatible_list_contains(item.value, item.length, target);
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, property) {
+                    state.property_present = true;
+                    state.property_length = item.length as u32;
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.compatible {
+                    let selected = matching_nodes == node_index;
+                    matching_nodes = matching_nodes.saturating_add(1);
+                    if selected {
+                        result = Some((state.property_present, state.property_length));
+                        if result.is_some() {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
+}
+
 /// Read one 32-bit property from the `node_index`th enabled node whose
 /// `compatible` list contains `target`. Qualcomm DTs commonly contain more
 /// than one `qcom,qsmmu-v500` node (for example KGSL followed by Apps-SMMU),
@@ -615,6 +673,12 @@ struct PropertyNodeState {
     enabled: bool,
     property_value: Option<u32>,
     phandle: Option<u32>,
+    /// Whether the tracked property name was seen on this node at all,
+    /// independent of its length. The observation walk uses this to report
+    /// "absent" separately from "present but shorter than the read".
+    property_present: bool,
+    /// Exact byte length of the tracked property when it was seen.
+    property_length: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -665,6 +729,8 @@ impl PropertyNodeState {
             enabled: true,
             property_value: None,
             phandle: None,
+            property_present: false,
+            property_length: 0,
         }
     }
 }

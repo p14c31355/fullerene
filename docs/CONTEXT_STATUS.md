@@ -295,6 +295,57 @@ makes future DT questions one run each, and the DCFG policy family was
 already closed by `810905.0`. The no-SETUP boundary remains; physical
 capture (analyzer/JTAG) is again the next decisive step.
 
+### Reviewer round 4: observer bugs fixed, divergence confirmed both sides
+
+The reviewer correctly identified three defects in the round-3 observer, and
+all three are fixed:
+
+1. `HS_DT_PARAM_OVERRIDE_CELLS` packed six raw cells into three slots
+   (pair-combined) and collapsed "absent" into the same zero as an
+   incomplete pair. Replaced by `HS_DT_PARAM_OVERRIDE = (present, len_bytes,
+   [Option<u32>; 6])`, captured at install time in `main.rs` via the new
+   `fdt::find_compatible_property_observation()` (same walk discipline, a
+   presence bit independent of length).
+2. The timing channel clamped raw values with `.min(15)`; a valid qpr1 pair
+   (0x636c packed) would have saturated to 15 s and the ~17 s biter could
+   kill a legitimately-nonzero property run. The channel now publishes only
+   small categorical codes via `hsphy_prop_code()`:
+   `hsphy-prop-present` (0/1), `hsphy-prop-len` (0=absent, 1/2/3 =
+   8/16/24 bytes, 4=other), `hsphy-prop-pair0/1/2` (0=absent/incomplete,
+   1 = exact qpr1 base value, 2 = the qrd alternate `0xc8/0x70`,
+   3 = other).
+3. The fallback comment ("production has exactly two entries") contradicted
+   the qpr1 source, which is three-entry in both `lito-usb.dtsi` and
+   `lito-qrd.dtsi`. The comment now states both forms are experiment
+   boundaries rather than verified production matches, and
+   `install_dt_phy_sequences()` accepts both.
+
+Two hardware runs with the fixed observer:
+
+- `113968.0` (gate `hsphy-prop-present`): FALSE branch (recovery at 37 s,
+  matching the bite+1 s FALSE bucket), tentative presence = 0.
+- `116370.0` (pre-connect ladder `hsphy-prop-present`): disconnect
+  `20:03:04` → attach `20:03:14` = 10 s = baseline + 0 ⇒ **presence code 0,
+  confirmed**. Artifact SHA `443abc777ea21d0e1c1d56fd445534ad241f68691a99b881f7ac78c5afc6a539`.
+
+Android-side cross-check: the runtime DT
+(`/sys/firmware/devicetree/base/soc/hsphy@88e3000/`) **lists** the
+`qcom,param-override-seq` name on the same node path, but the file content
+is mode-000 to shell on this production user build (no root/su/magisk), so
+the bytes are unreadable. The combination is decisive in direction:
+**Fullerene's fastboot-boot DTB (x0) lacks the property while the Android
+runtime DT (post-DTBO) carries it** — the divergence the reviewer
+hypothesized, now measured from both sides. All hardware runs therefore
+used the compiled fallback, and the round-3 "DT_TWO_ENTRY" claim is
+withdrawn; the TUNE3 symmetric closure (3-entry fallback failed in every
+pre-2026-09-04 run, 2-entry fallback fails identically now) stands.
+
+With the observer fixed, the property question is closed, and the remaining
+open families are the ones the ledger already bounds (no SETUP token past
+the PHY; SOF-less RX). A USB protocol analyzer on D+/D- remains the next
+decisive step: it separates "host emits SETUP, device silent" from
+"PHY/UTMI ingress drops it", which no software readout can reach.
+
 ## Next source-directed investigation
 
 | Order | Check | Result | Why |

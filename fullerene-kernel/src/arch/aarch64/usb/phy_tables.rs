@@ -158,11 +158,17 @@ pub(super) static mut ACTIVE_QMP_INIT: [(usize, u32); 146] = QMP_INIT;
 pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
 // The compiled fallback must match the Google Bramble production device
 // tree: qcom,param-override-seq has exactly two entries, TUNE1 (0x6c) and
-// TUNE2 (0x70). The base Lito node's third entry (TUNE3 at 0x74) is
-// intentionally omitted by the bramble qrd overlay, so the previous
-// three-entry fallback wrote an analog tuning value that the production
-// handset never programs. The trailing sentinel keeps the fixed table shape
-// and is skipped by the writer, exactly like the DT's absent third entry.
+// TUNE2 (0x70). NOTE (2026-09-04 round 3): the public qpr1 source is
+// three-entry in both lito-usb.dtsi and lito-qrd.dtsi, so this two-entry
+// fallback does NOT match the published SoC source; it matches the
+// production form the round-3 readout attributed to the handset DTB, which
+// the round-4 probe then showed is the compiled fallback path anyway. Both
+// forms have now failed identically on hardware (TUNE3 present in every
+// pre-2026-09-04 run, absent here), so this default is an experiment
+// boundary, not a verified production match. Restore the qpr1 three-entry
+// form via FULLERENE_AARCH64_USB_HSPHY_QRD_OVERRIDE-style flags if a new
+// source distinction appears. The trailing sentinel keeps the fixed table
+// shape and is skipped by the writer.
 pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] = [
     (0x6c, 0x63),
     (0x70, 0x85),
@@ -177,19 +183,73 @@ pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] = [
 /// 0, which is the correct classification before any install attempt.
 pub(crate) static mut HSPHY_TABLE_SOURCE: u32 = 0;
 
-/// The raw DT `qcom,param-override-seq` cells the classifier consumed, in
-/// property order (value, offset) pairs packed as value<<8 | offset for the
-/// known tune offsets. Captured at install time so the host readout can
-/// distinguish a genuinely two-entry production property from an FDT-reader
-/// truncation; 0 means the cell was absent.
-pub(crate) static mut HS_DT_PARAM_OVERRIDE_CELLS: [u32; 6] = [0; 6];
+/// Observation of the DT `qcom,param-override-seq` property exactly as the
+/// FDT reader returned it, captured before any validation. The round-3
+/// packing collapsed (value, offset) pairs into one slot and conflated
+/// "property absent" with "property present but the first pair incomplete",
+/// so the fields below are kept separately:
+/// - `present` is set iff the property name was found on a matched,
+///   enabled hsphy node (regardless of its length).
+/// - `length_bytes` is the raw property byte length (0 when absent).
+/// - `cells` holds the six raw big-endian cells in property order; `None`
+///   means the cell was not present in the property.
+pub(crate) static mut HS_DT_PARAM_OVERRIDE: (
+    bool,
+    u32,
+    [Option<u32>; 6],
+) = (false, 0, [None; 6]);
 
 pub fn hsphy_table_source() -> u32 {
     unsafe { HSPHY_TABLE_SOURCE }
 }
 
-pub fn hsphy_dt_cell(index: usize) -> u32 {
-    unsafe { HS_DT_PARAM_OVERRIDE_CELLS[index] }
+/// Categorical readout of the DT observation, one small code per aspect:
+/// `0` = property absent, `1` = present with the given byte length
+/// (8/16/24 map to themselves, anything else reads as 4), so the timing
+/// channel never carries a huge raw value. `pair0/1/2` classify each
+/// (value, offset) entry: 0 = absent/incomplete, 1 = exactly the qpr1
+/// base value, 2 = the known alternate, 3 = other. Each code fits in the
+/// 4-bit attach-delay ladder without clipping.
+pub fn hsphy_prop_code(aspect: &str) -> u32 {
+    let (present, length, cells) = unsafe { HS_DT_PARAM_OVERRIDE };
+    match aspect {
+        "present" => u32::from(present),
+        "len" => match length {
+            0 => 0,
+            8 | 16 | 24 => length / 8,
+            _ => 4,
+        },
+        "pair0" | "pair1" | "pair2" => {
+            let index = aspect["pair".len()..].parse::<usize>().unwrap_or(3);
+            if index >= 3 {
+                return 0;
+            }
+            let (value, offset) = match (cells[index * 2], cells[index * 2 + 1]) {
+                (Some(value), Some(offset)) => (value, offset),
+                _ => return 0,
+            };
+            match (aspect, value, offset) {
+                ("pair0", 0x63, 0x6c) => 1,
+                ("pair1", 0x85, 0x70) => 1,
+                ("pair1", 0xc8, 0x70) => 2,
+                ("pair2", 0x17, 0x74) => 1,
+                _ => 3,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Record the DT observation from the install path. Called from main.rs
+/// while the DTB is live; later code reads it through `hsphy_prop_code()`.
+pub fn record_hs_dt_param_override_observation(
+    observation: Option<(bool, u32)>,
+    cells: [Option<u32>; 6],
+) {
+    let (present, length) = observation.unwrap_or((false, 0));
+    unsafe {
+        HS_DT_PARAM_OVERRIDE = (present, length, cells);
+    }
 }
 
 /// Install the complete PHY programming properties from the bootloader DTB.
@@ -199,24 +259,14 @@ pub fn hsphy_dt_cell(index: usize) -> u32 {
 pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>; 441]) -> bool {
     let mut installed = false;
 
-    // The base Lito node has three QUSB2 override entries, but Google's
-    // Bramble/Barbet override replaces the property with only two entries:
-    // TUNE1 (0x6c) and TUNE2 (0x70); TUNE3 (0x74) is intentionally omitted.
-    // Accept either form so the two-entry production DT is not silently
-    // discarded in favour of the broader SoC fallback.
+    // The base Lito node has three QUSB2 override entries, and the Google
+    // qpr1 sources (lito-usb.dtsi and lito-qrd.dtsi) both keep three
+    // entries: TUNE1 (0x6c), TUNE2 (0x70), TUNE3 (0x74). Accept both the
+    // three-entry source form and the two-entry historical fallback so a
+    // shorter production DT is not silently discarded in favour of the
+    // broader SoC fallback.
     let hs_three = hs_raw.iter().all(Option::is_some);
     let hs_two = hs_raw[..4].iter().all(Option::is_some) && hs_raw[4..].iter().all(Option::is_none);
-    // Capture the raw cells exactly as the FDT reader returned them, packed
-    // value<<8 | offset for the known tune offsets, before any validation
-    // can reject them. This is the decisive evidence for whether the
-    // handset DT genuinely carries two or three override entries.
-    unsafe {
-        for index in 0..3 {
-            if let (Some(value), Some(offset)) = (hs_raw[index * 2], hs_raw[index * 2 + 1]) {
-                HS_DT_PARAM_OVERRIDE_CELLS[index] = (value << 8) | (offset & 0xff);
-            }
-        }
-    }
     if hs_three || hs_two {
         let count = if hs_two { 2 } else { 3 };
         let mut entries = [(0usize, 0u32), (0usize, 0u32), (usize::MAX, 0u32)];
