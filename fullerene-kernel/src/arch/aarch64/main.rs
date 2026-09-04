@@ -398,14 +398,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
                 b"resets",
                 1,
             );
-            for index in 0..6 {
-                contract.hs_param_override[index] = fdt::find_compatible_property_u32(
-                    address,
-                    b"qcom,usb-hsphy-snps-femto",
-                    b"qcom,param-override-seq",
-                    index,
-                );
-            }
+            let hsphy_observation = fdt::find_compatible_node_property_observation(
+                address,
+                b"qcom,usb-hsphy-snps-femto",
+                b"qcom,param-override-seq",
+                0,
+            );
+            contract.hs_param_override = hsphy_observation
+                .map(|item| item.cells)
+                .unwrap_or([None; 6]);
             for index in 0..441 {
                 contract.qmp_init_seq[index] = fdt::find_compatible_property_u32(
                     address,
@@ -559,15 +560,17 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
             // closes the round-3 gap where "absent" and "present but the
             // first pair incomplete" were indistinguishable.
             #[cfg(fullerene_aarch64_bramble)]
-            usb::record_hs_dt_param_override_observation(
-                fdt::find_compatible_property_observation(
-                    address,
-                    b"qcom,usb-hsphy-snps-femto",
-                    b"qcom,param-override-seq",
-                    0,
-                ),
-                contract.hs_param_override,
-            );
+            {
+                usb::record_hs_dt_param_override_observation(
+                    hsphy_observation.map(|item| (item.property_present, item.property_length)),
+                    hsphy_observation
+                        .map(|item| item.cells)
+                        .unwrap_or(contract.hs_param_override),
+                );
+                usb::record_hs_dt_node_identity(
+                    hsphy_observation.map(|item| (item.ordinal, item.reg_base)),
+                );
+            }
             if platform::bramble::install_usb_resource_contract(
                 dwc3.map(|r| (r.base, r.size)),
                 hs_phy.map(|r| (r.base, r.size)),

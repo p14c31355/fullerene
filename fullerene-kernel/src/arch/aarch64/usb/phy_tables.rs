@@ -169,11 +169,8 @@ pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
 // form via FULLERENE_AARCH64_USB_HSPHY_QRD_OVERRIDE-style flags if a new
 // source distinction appears. The trailing sentinel keeps the fixed table
 // shape and is skipped by the writer.
-pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] = [
-    (0x6c, 0x63),
-    (0x70, 0x85),
-    (usize::MAX, 0),
-];
+pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] =
+    [(0x6c, 0x63), (0x70, 0x85), (usize::MAX, 0)];
 
 /// Which table source the current boot is using. Recorded by
 /// `install_dt_phy_sequences()` and published through the retained-trace
@@ -199,8 +196,54 @@ pub(crate) static mut HS_DT_PARAM_OVERRIDE: (
     [Option<u32>; 6],
 ) = (false, 0, [None; 6]);
 
+/// Identity of the compatible HS-PHY node used for the observation. The
+/// ordinal is among enabled matching nodes; `reg_base` is the first `reg`
+/// tuple address.
+pub(crate) static mut HS_DT_NODE_IDENTITY: (bool, u32, u64) = (false, 0, 0);
+
 pub fn hsphy_table_source() -> u32 {
     unsafe { HSPHY_TABLE_SOURCE }
+}
+
+/// Small identity readout codes. `ordinal` is capped for the four-bit timing
+/// channel; `reg-match` is 1 only for the qpr1 primary base 0x088e3000.
+pub fn hsphy_node_code(aspect: &str) -> u32 {
+    let (node_present, ordinal, reg_base) = unsafe { HS_DT_NODE_IDENTITY };
+    let (property_present, property_length, _) = unsafe { HS_DT_PARAM_OVERRIDE };
+    match aspect {
+        "ordinal" => node_present.then_some(ordinal.min(15)).unwrap_or(0),
+        "reg-match" => {
+            if !node_present {
+                0
+            } else if reg_base == 0x088e3000 {
+                1
+            } else {
+                2
+            }
+        }
+        // 1 = ordinal 0 + 0x088e3000 + property absent; 2/3/4 are
+        // the same identity with 8/16/24-byte properties; 5 is another
+        // length, 6 is another ordinal, and 7 is another base.
+        "proof" => {
+            if !node_present {
+                0
+            } else if ordinal != 0 {
+                6
+            } else if reg_base != 0x088e3000 {
+                7
+            } else if !property_present {
+                1
+            } else {
+                match property_length {
+                    8 => 2,
+                    16 => 3,
+                    24 => 4,
+                    _ => 5,
+                }
+            }
+        }
+        _ => 0,
+    }
 }
 
 /// Categorical readout of the DT observation, one small code per aspect:
@@ -249,6 +292,16 @@ pub fn record_hs_dt_param_override_observation(
     let (present, length) = observation.unwrap_or((false, 0));
     unsafe {
         HS_DT_PARAM_OVERRIDE = (present, length, cells);
+    }
+}
+
+pub fn record_hs_dt_node_identity(observation: Option<(usize, Option<u64>)>) {
+    unsafe {
+        HS_DT_NODE_IDENTITY = observation
+            .map(|(ordinal, reg_base)| {
+                (true, ordinal.min(u32::MAX as usize) as u32, reg_base.unwrap_or(0))
+            })
+            .unwrap_or((false, 0, 0));
     }
 }
 

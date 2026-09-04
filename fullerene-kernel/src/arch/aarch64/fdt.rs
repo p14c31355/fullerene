@@ -270,55 +270,102 @@ pub fn find_compatible_property_u32(
     find_compatible_nth_property_u32(address, target, property, index, 0)
 }
 
-/// Report whether a property exists on the `node_index`th enabled node whose
-/// compatible list contains `target`, and its exact byte length. Fullerene's
-/// round-3 DT readout could not distinguish "property absent" from
-/// "property present but the first (value, offset) pair incomplete"; this
-/// observation plus `find_compatible_property_u32` closes that gap: the
-/// presence bit comes from the same walk, so an absent property and a
-/// zero-length property are both reported without guessing.
-pub fn find_compatible_property_observation(
+/// Identity and property observation for one enabled compatible node.
+/// `ordinal` is zero-based among enabled nodes whose compatible list contains
+/// the requested string. `reg_base` is the first address cell of that node's
+/// first `reg` tuple, decoded with the same parent-cell rules as
+/// `find_compatible_nth`. `cells` are the first six big-endian cells of the
+/// requested property, without validation or pair packing.
+#[derive(Clone, Copy)]
+pub struct CompatiblePropertyObservation {
+    pub ordinal: usize,
+    pub reg_base: Option<u64>,
+    pub property_present: bool,
+    pub property_length: u32,
+    pub cells: [Option<u32>; 6],
+}
+
+/// Observe the identity and raw property of the `node_index`th enabled node
+/// whose compatible list contains `target`. This deliberately combines node
+/// matching, `reg` decoding, property presence/length, and raw-cell capture
+/// in one FDT walk: a property result cannot be accidentally attributed to a
+/// different compatible node than the resource address.
+pub fn find_compatible_node_property_observation(
     address: u64,
     target: &[u8],
     property: &[u8],
     node_index: usize,
-) -> Option<(bool, u32)> {
-    let mut states = [PropertyNodeState::new(); 16];
+) -> Option<CompatiblePropertyObservation> {
+    let mut states = [NodePropertyObservationState::new(); 16];
     let mut matching_nodes = 0usize;
-    let mut result: Option<(bool, u32)> = None;
+    let mut result = None;
     walk_structure(address, |event| {
         match event {
-            StructureEvent::BeginNode { depth, .. } => states[depth] = PropertyNodeState::new(),
+            StructureEvent::BeginNode { depth, .. } => {
+                let parent = states[depth - 1];
+                states[depth] = NodePropertyObservationState {
+                    address_cells: parent.child_address_cells,
+                    size_cells: parent.child_size_cells,
+                    child_address_cells: parent.child_address_cells,
+                    child_size_cells: parent.child_size_cells,
+                    ..NodePropertyObservationState::new()
+                };
+            }
             StructureEvent::Property {
                 depth,
                 property: item,
             } => {
                 let state = &mut states[depth];
-                if c_string_eq(item.name, item.name_end, b"phandle")
-                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
+                if c_string_eq(item.name, item.name_end, b"#address-cells")
+                    && item.length >= 4
                 {
-                    if item.length >= 4 {
-                        state.phandle = read_be32(item.value, 0);
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_address_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells")
+                    && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_size_cells = value as u8;
                     }
                 } else if c_string_eq(item.name, item.name_end, b"compatible") {
                     state.compatible = compatible_list_contains(item.value, item.length, target);
                 } else if c_string_eq(item.name, item.name_end, b"status") {
                     state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, b"reg") {
+                    state.regions = read_regions(
+                        item.value,
+                        item.length,
+                        state.address_cells,
+                        state.size_cells,
+                    );
                 } else if c_string_eq(item.name, item.name_end, property) {
                     state.property_present = true;
-                    state.property_length = item.length as u32;
+                    state.property_length = item.length.min(u32::MAX as usize) as u32;
+                    for index in 0..state.cells.len() {
+                        if let Some(offset) = index.checked_mul(4) {
+                            if offset.checked_add(4).is_some_and(|end| end <= item.length) {
+                                state.cells[index] = read_be32(item.value, offset as u32);
+                            }
+                        }
+                    }
                 }
             }
             StructureEvent::EndNode { depth } => {
                 let state = states[depth];
                 if state.enabled && state.compatible {
                     let selected = matching_nodes == node_index;
+                    let ordinal = matching_nodes;
                     matching_nodes = matching_nodes.saturating_add(1);
                     if selected {
-                        result = Some((state.property_present, state.property_length));
-                        if result.is_some() {
-                            return false;
-                        }
+                        result = Some(CompatiblePropertyObservation {
+                            ordinal,
+                            reg_base: state.regions[0].map(|region| region.base),
+                            property_present: state.property_present,
+                            property_length: state.property_length,
+                            cells: state.cells,
+                        });
+                        return false;
                     }
                 }
             }
@@ -326,6 +373,20 @@ pub fn find_compatible_property_observation(
         true
     })?;
     result
+}
+
+/// Report whether a property exists on the `node_index`th enabled node whose
+/// compatible list contains `target`, and its exact byte length. Keep this
+/// compatibility wrapper for callers that do not need node identity; the
+/// identity-aware implementation above is the authoritative walk.
+pub fn find_compatible_property_observation(
+    address: u64,
+    target: &[u8],
+    property: &[u8],
+    node_index: usize,
+) -> Option<(bool, u32)> {
+    find_compatible_node_property_observation(address, target, property, node_index)
+        .map(|observation| (observation.property_present, observation.property_length))
 }
 
 /// Read one 32-bit property from the `node_index`th enabled node whose
@@ -679,6 +740,37 @@ struct PropertyNodeState {
     property_present: bool,
     /// Exact byte length of the tracked property when it was seen.
     property_length: u32,
+}
+
+#[derive(Clone, Copy)]
+struct NodePropertyObservationState {
+    address_cells: u8,
+    size_cells: u8,
+    child_address_cells: u8,
+    child_size_cells: u8,
+    compatible: bool,
+    enabled: bool,
+    regions: [Option<Region>; 2],
+    property_present: bool,
+    property_length: u32,
+    cells: [Option<u32>; 6],
+}
+
+impl NodePropertyObservationState {
+    const fn new() -> Self {
+        Self {
+            address_cells: 2,
+            size_cells: 1,
+            child_address_cells: 2,
+            child_size_cells: 1,
+            compatible: false,
+            enabled: true,
+            regions: [None; 2],
+            property_present: false,
+            property_length: 0,
+            cells: [None; 6],
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

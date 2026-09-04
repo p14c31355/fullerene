@@ -327,6 +327,14 @@ Two hardware runs with the fixed observer:
 - `116370.0` (pre-connect ladder `hsphy-prop-present`): disconnect
   `20:03:04` → attach `20:03:14` = 10 s = baseline + 0 ⇒ **presence code 0,
   confirmed**. Artifact SHA `443abc777ea21d0e1c1d56fd445534ad241f68691a99b881f7ac78c5afc6a539`.
+- `174974.0` (same-walk `hsphy-node-proof`): disconnect `20:48:36` → HS
+  attach `20:48:47` (11 s; baseline timing jitter), descriptor `-110` at
+  `20:48:52`, Android `18d1:4ee7` at `20:49:13`, watchdog recovery; no
+  `1234:0001`. Artifact SHA
+  `4e8565dbc105b89629cdd7aab08e3a2d91e0aa6abcc3a3a0eaa023699bd7f7f0`.
+  The run is a negative identity-readout attempt; the pre-connect timing
+  bucket is not independently decodable from whole-second host timestamps,
+  so it does not claim a numeric proof code.
 
 Android-side cross-check: the runtime DT
 (`/sys/firmware/devicetree/base/soc/hsphy@88e3000/`) **lists** the

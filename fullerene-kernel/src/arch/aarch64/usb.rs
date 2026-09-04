@@ -35,7 +35,8 @@ mod phy;
 mod phy_tables;
 pub use phy_tables::install_dt_phy_sequences;
 pub use phy_tables::hsphy_table_source;
-pub use phy_tables::record_hs_dt_param_override_observation;
+pub use phy_tables::hsphy_node_code;
+pub use phy_tables::{record_hs_dt_node_identity, record_hs_dt_param_override_observation};
 use trace::{fill_trace_control_response, trace_begin, trace_event};
 pub mod trace;
 use trace::*;
@@ -1214,6 +1215,11 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
         // bytes, 4 = other), pair0/1/2 (0=absent/incomplete, 1 = exact
         // qpr1 base value, 2 = known alternate, 3 = other).
         return phy_tables::hsphy_prop_code(cell);
+    }
+    if let Some(aspect) = selector.strip_prefix("hsphy-node-") {
+        // Identity codes are categorical; never send a raw 0x088e3000 value
+        // through the four-bit attach-delay channel.
+        return phy_tables::hsphy_node_code(aspect);
     }
     if selector.starts_with("ss-") {
         // A failed handoff can enter the generic signal path and publish the
