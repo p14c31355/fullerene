@@ -4,8 +4,9 @@ use super::super::usb_protocol::{
     TRACE_CONTROL_ENTRY_BYTES, TRACE_CONTROL_HEADER_BYTES, TRACE_CONTROL_PAGE_ENTRIES,
 };
 use super::{
-    DWC3_DEBUG_QUEUE_COUNT, DWC3_DEBUG_QUEUE_EVENTQ, DWC3_DEBUG_QUEUE_RXFIFO,
-    DWC3_DEBUG_QUEUE_RXINFOQ, DWC3_DEBUG_QUEUE_RXREQQ, DWC3_DEBUG_QUEUE_TXFIFO,
+    DWC3_DEBUG_QUEUE_COUNT, DWC3_DEBUG_QUEUE_DESCFETCHQ, DWC3_DEBUG_QUEUE_EVENTQ,
+    DWC3_DEBUG_QUEUE_PSTATQ, DWC3_DEBUG_QUEUE_RXFIFO, DWC3_DEBUG_QUEUE_RXINFOQ,
+    DWC3_DEBUG_QUEUE_RXREQQ, DWC3_DEBUG_QUEUE_TXFIFO, DWC3_DEBUG_QUEUE_TXREQQ,
     EP0_STATE, Ep0State,
 };
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
@@ -182,6 +183,15 @@ static mut LIVE_DWC3_DEBUG_EPINFO1: u32 = 0;
 static mut LIVE_DWC3_DEBUG_STAGE_VALID: u32 = 0;
 static mut LIVE_DWC3_DEBUG_STAGE_VALUES: [[u32; DWC3_DEBUG_QUEUE_COUNT]; 8] =
     [[0; DWC3_DEBUG_QUEUE_COUNT]; 8];
+/// Samples collected after the post-Run/Stop baseline and before the signal
+/// gate evaluates. This window is independent of the all-boot min/max values.
+static mut LIVE_DWC3_DEBUG_WINDOW_VALID: bool = false;
+static mut LIVE_DWC3_DEBUG_WINDOW_BASELINE: [u32; DWC3_DEBUG_QUEUE_COUNT] =
+    [0; DWC3_DEBUG_QUEUE_COUNT];
+static mut LIVE_DWC3_DEBUG_WINDOW_MIN: [u32; DWC3_DEBUG_QUEUE_COUNT] =
+    [u32::MAX; DWC3_DEBUG_QUEUE_COUNT];
+static mut LIVE_DWC3_DEBUG_WINDOW_MAX: [u32; DWC3_DEBUG_QUEUE_COUNT] =
+    [0; DWC3_DEBUG_QUEUE_COUNT];
 
 /// Initialize the retained trace header and append a boot boundary marker.
 /// The entry array is intentionally not cleared, so a subsequent boot can
@@ -288,6 +298,10 @@ pub fn trace_reset_head_for_boot() {
         LIVE_DWC3_DEBUG_EPINFO1 = 0;
         LIVE_DWC3_DEBUG_STAGE_VALID = 0;
         LIVE_DWC3_DEBUG_STAGE_VALUES = [[0; DWC3_DEBUG_QUEUE_COUNT]; 8];
+        LIVE_DWC3_DEBUG_WINDOW_VALID = false;
+        LIVE_DWC3_DEBUG_WINDOW_BASELINE = [0; DWC3_DEBUG_QUEUE_COUNT];
+        LIVE_DWC3_DEBUG_WINDOW_MIN = [u32::MAX; DWC3_DEBUG_QUEUE_COUNT];
+        LIVE_DWC3_DEBUG_WINDOW_MAX = [0; DWC3_DEBUG_QUEUE_COUNT];
         core::arch::asm!("dsb sy", options(nostack));
     }
 }
@@ -368,6 +382,12 @@ pub(super) fn live_dwc3_debug_sample(
             LIVE_DWC3_DEBUG_LAST[index] = queues[index];
             LIVE_DWC3_DEBUG_MIN[index] = LIVE_DWC3_DEBUG_MIN[index].min(queues[index]);
             LIVE_DWC3_DEBUG_MAX[index] = LIVE_DWC3_DEBUG_MAX[index].max(queues[index]);
+            if LIVE_DWC3_DEBUG_WINDOW_VALID {
+                LIVE_DWC3_DEBUG_WINDOW_MIN[index] =
+                    LIVE_DWC3_DEBUG_WINDOW_MIN[index].min(queues[index]);
+                LIVE_DWC3_DEBUG_WINDOW_MAX[index] =
+                    LIVE_DWC3_DEBUG_WINDOW_MAX[index].max(queues[index]);
+            }
         }
         for index in 0..16 {
             if LIVE_DWC3_DEBUG_VALID && LIVE_DWC3_DEBUG_LSP_LAST[index] != lsp[index] {
@@ -397,6 +417,12 @@ pub(super) fn live_dwc3_debug_stage(stage: u32, queues: [u32; DWC3_DEBUG_QUEUE_C
         unsafe {
             LIVE_DWC3_DEBUG_STAGE_VALUES[stage as usize] = queues;
             LIVE_DWC3_DEBUG_STAGE_VALID |= 1 << stage;
+            if stage == DWC3_DEBUG_STAGE_POST_RUNSTOP && !LIVE_DWC3_DEBUG_WINDOW_VALID {
+                LIVE_DWC3_DEBUG_WINDOW_BASELINE = queues;
+                LIVE_DWC3_DEBUG_WINDOW_MIN = queues;
+                LIVE_DWC3_DEBUG_WINDOW_MAX = queues;
+                LIVE_DWC3_DEBUG_WINDOW_VALID = true;
+            }
         }
     }
 }
@@ -678,48 +704,33 @@ fn debug_queue_metric(index: usize) -> u32 {
     }
 }
 
-/// Stage category for SPACE_AVAILABLE: 0=not sampled, 1=no free space,
-/// 2=1..15 free entries/words, 3=16+ free entries/words.
+/// Stage category for SPACE_AVAILABLE: 1=0 free, 2=1 free, 3=2..3 free,
+/// 4=4..7 free, 5=8+ free, 6=not sampled/invalid.
+/// This is intentionally a transport code, not an occupancy claim.
 fn debug_stage_metric(stage: usize, queue: usize) -> u32 {
     unsafe {
         if stage >= 8 || queue >= DWC3_DEBUG_QUEUE_COUNT {
-            return 0;
+            return 6;
         }
         if LIVE_DWC3_DEBUG_STAGE_VALID & (1 << stage) == 0 {
-            return 0;
+            return 6;
         }
         let free = LIVE_DWC3_DEBUG_STAGE_VALUES[stage][queue];
-        if free == 0 {
-            1
-        } else if free < 16 {
-            2
-        } else {
-            3
+        match free {
+            0 => 1,
+            1 => 2,
+            2..=3 => 3,
+            4..=7 => 4,
+            _ => 5,
         }
     }
 }
 
-/// Wide entry snapshot classification: 0=not sampled, 1=zero,
-/// 2=1..15, 3=16..255, 4=256+.
+/// Compatibility alias for the former wide selector. New transport users use
+/// the same five free-space categories as the ordinary stage selector so a
+/// host pair count has one meaning for every queue/stage readout.
 fn debug_stage_metric_wide(stage: usize, queue: usize) -> u32 {
-    unsafe {
-        if stage >= 8 || queue >= DWC3_DEBUG_QUEUE_COUNT {
-            return 0;
-        }
-        if LIVE_DWC3_DEBUG_STAGE_VALID & (1 << stage) == 0 {
-            return 0;
-        }
-        let free = LIVE_DWC3_DEBUG_STAGE_VALUES[stage][queue];
-        if free == 0 {
-            1
-        } else if free < 16 {
-            2
-        } else if free < 256 {
-            3
-        } else {
-            4
-        }
-    }
+    debug_stage_metric(stage, queue)
 }
 
 /// Compare the five named handoff-stage SPACE_AVAILABLE snapshots for a queue.
@@ -727,22 +738,56 @@ fn debug_stage_metric_wide(stage: usize, queue: usize) -> u32 {
 fn debug_stage_change(queue: usize) -> u32 {
     unsafe {
         if queue >= DWC3_DEBUG_QUEUE_COUNT {
-            return 0;
+            return 6;
         }
         let mut have_value = false;
         let mut first = 0u32;
+        let mut samples = 0u32;
         for stage in 0..5usize {
             if LIVE_DWC3_DEBUG_STAGE_VALID & (1 << stage) == 0 {
                 continue;
             }
             let value = LIVE_DWC3_DEBUG_STAGE_VALUES[stage][queue];
             if have_value && value != first {
-                return 1;
+                return 2;
             }
             first = value;
             have_value = true;
+            samples += 1;
         }
-        0
+        if samples < 5 {
+            return 6;
+        }
+        if have_value {
+            1
+        } else {
+            6
+        }
+    }
+}
+
+/// Classify the descriptor observation window against the post-Run/Stop
+/// baseline: 1=same, 2=decreased free space, 3=increased free space,
+/// 4=both directions observed, 6=window/baseline unavailable.
+fn debug_descriptor_window_metric(queue: usize) -> u32 {
+    unsafe {
+        if queue >= DWC3_DEBUG_QUEUE_COUNT || !LIVE_DWC3_DEBUG_WINDOW_VALID {
+            return 6;
+        }
+        let baseline = LIVE_DWC3_DEBUG_WINDOW_BASELINE[queue];
+        let min_free = LIVE_DWC3_DEBUG_WINDOW_MIN[queue];
+        let max_free = LIVE_DWC3_DEBUG_WINDOW_MAX[queue];
+        if min_free == u32::MAX {
+            return 6;
+        }
+        let decreased = min_free < baseline;
+        let increased = max_free > baseline;
+        match (decreased, increased) {
+            (false, false) => 1,
+            (true, false) => 2,
+            (false, true) => 3,
+            (true, true) => 4,
+        }
     }
 }
 
@@ -774,27 +819,104 @@ pub(super) fn dwc3_debug_readout_code(selector: &str) -> Option<u32> {
             "dwc3-debug-descfetch-change" => u32::from(LIVE_DWC3_DEBUG_CHANGE & (1 << 6) != 0),
             "dwc3-debug-eventq-change" => u32::from(LIVE_DWC3_DEBUG_CHANGE & (1 << 7) != 0),
             "dwc3-debug-lsp-change" => u32::from(LIVE_DWC3_DEBUG_LSP_CHANGE != 0),
-            "dwc3-debug-epinfo" => u32::from(
-                LIVE_DWC3_DEBUG_EPINFO0 != 0 || LIVE_DWC3_DEBUG_EPINFO1 != 0,
-            ),
+            "dwc3-debug-epinfo" => {
+                u32::from(LIVE_DWC3_DEBUG_EPINFO0 != 0 || LIVE_DWC3_DEBUG_EPINFO1 != 0)
+            },
             "dwc3-free-entry-rxreq" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_RXREQQ),
+            "dwc3-free-descriptor-window-rxreq" => {
+                debug_descriptor_window_metric(DWC3_DEBUG_QUEUE_RXREQQ)
+            },
+            "dwc3-free-descriptor-window-txfifo" => {
+                debug_descriptor_window_metric(DWC3_DEBUG_QUEUE_TXFIFO)
+            },
+            "dwc3-free-descriptor-window-rxfifo" => {
+                debug_descriptor_window_metric(DWC3_DEBUG_QUEUE_RXFIFO)
+            },
+            "dwc3-free-descriptor-window-txreq" => {
+                debug_descriptor_window_metric(DWC3_DEBUG_QUEUE_TXREQQ)
+            },
+            "dwc3-free-descriptor-window-rxinfo" => {
+                debug_descriptor_window_metric(DWC3_DEBUG_QUEUE_RXINFOQ)
+            },
+            "dwc3-free-descriptor-window-eventq" => {
+                debug_descriptor_window_metric(DWC3_DEBUG_QUEUE_EVENTQ)
+            },
+            "dwc3-free-descriptor-window-pstat" => {
+                debug_descriptor_window_metric(DWC3_DEBUG_QUEUE_PSTATQ)
+            },
+            "dwc3-free-descriptor-window-descfetch" => {
+                debug_descriptor_window_metric(DWC3_DEBUG_QUEUE_DESCFETCHQ)
+            },
             "dwc3-free-entry-rxreq-wide" => debug_stage_metric_wide(0, DWC3_DEBUG_QUEUE_RXREQQ),
             "dwc3-free-post-reset-rxreq" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_RXREQQ),
+            "dwc3-free-endpoint-config-rxreq" => {
+                debug_stage_metric(2, DWC3_DEBUG_QUEUE_RXREQQ)
+            },
             "dwc3-free-pre-runstop-rxreq" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_RXREQQ),
             "dwc3-free-post-runstop-rxreq" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_RXREQQ),
             "dwc3-free-rxreq-change" => debug_stage_change(DWC3_DEBUG_QUEUE_RXREQQ),
             "dwc3-free-entry-rxinfo" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_RXINFOQ),
             "dwc3-free-post-reset-rxinfo" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_RXINFOQ),
+            "dwc3-free-endpoint-config-rxinfo" => {
+                debug_stage_metric(2, DWC3_DEBUG_QUEUE_RXINFOQ)
+            },
             "dwc3-free-pre-runstop-rxinfo" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_RXINFOQ),
             "dwc3-free-post-runstop-rxinfo" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_RXINFOQ),
             "dwc3-free-rxinfo-change" => debug_stage_change(DWC3_DEBUG_QUEUE_RXINFOQ),
             "dwc3-free-entry-eventq" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_EVENTQ),
             "dwc3-free-post-reset-eventq" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_EVENTQ),
+            "dwc3-free-endpoint-config-eventq" => {
+                debug_stage_metric(2, DWC3_DEBUG_QUEUE_EVENTQ)
+            },
             "dwc3-free-pre-runstop-eventq" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_EVENTQ),
             "dwc3-free-post-runstop-eventq" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_EVENTQ),
             "dwc3-free-eventq-change" => debug_stage_change(DWC3_DEBUG_QUEUE_EVENTQ),
             "dwc3-free-entry-txfifo" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_TXFIFO),
             "dwc3-free-entry-rxfifo" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_RXFIFO),
+            "dwc3-free-post-reset-txfifo" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_TXFIFO),
+            "dwc3-free-post-reset-rxfifo" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_RXFIFO),
+            "dwc3-free-endpoint-config-txfifo" => {
+                debug_stage_metric(2, DWC3_DEBUG_QUEUE_TXFIFO)
+            },
+            "dwc3-free-endpoint-config-rxfifo" => {
+                debug_stage_metric(2, DWC3_DEBUG_QUEUE_RXFIFO)
+            },
+            "dwc3-free-pre-runstop-txfifo" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_TXFIFO),
+            "dwc3-free-pre-runstop-rxfifo" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_RXFIFO),
+            "dwc3-free-post-runstop-txfifo" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_TXFIFO),
+            "dwc3-free-post-runstop-rxfifo" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_RXFIFO),
+            "dwc3-free-txfifo-change" => debug_stage_change(DWC3_DEBUG_QUEUE_TXFIFO),
+            "dwc3-free-rxfifo-change" => debug_stage_change(DWC3_DEBUG_QUEUE_RXFIFO),
+            "dwc3-free-entry-txreq" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_TXREQQ),
+            "dwc3-free-post-reset-txreq" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_TXREQQ),
+            "dwc3-free-endpoint-config-txreq" => {
+                debug_stage_metric(2, DWC3_DEBUG_QUEUE_TXREQQ)
+            },
+            "dwc3-free-pre-runstop-txreq" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_TXREQQ),
+            "dwc3-free-post-runstop-txreq" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_TXREQQ),
+            "dwc3-free-txreq-change" => debug_stage_change(DWC3_DEBUG_QUEUE_TXREQQ),
+            "dwc3-free-entry-pstat" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_PSTATQ),
+            "dwc3-free-post-reset-pstat" => debug_stage_metric(1, DWC3_DEBUG_QUEUE_PSTATQ),
+            "dwc3-free-endpoint-config-pstat" => {
+                debug_stage_metric(2, DWC3_DEBUG_QUEUE_PSTATQ)
+            },
+            "dwc3-free-pre-runstop-pstat" => debug_stage_metric(3, DWC3_DEBUG_QUEUE_PSTATQ),
+            "dwc3-free-post-runstop-pstat" => debug_stage_metric(4, DWC3_DEBUG_QUEUE_PSTATQ),
+            "dwc3-free-pstat-change" => debug_stage_change(DWC3_DEBUG_QUEUE_PSTATQ),
+            "dwc3-free-entry-descfetch" => debug_stage_metric(0, DWC3_DEBUG_QUEUE_DESCFETCHQ),
+            "dwc3-free-post-reset-descfetch" => {
+                debug_stage_metric(1, DWC3_DEBUG_QUEUE_DESCFETCHQ)
+            },
+            "dwc3-free-endpoint-config-descfetch" => {
+                debug_stage_metric(2, DWC3_DEBUG_QUEUE_DESCFETCHQ)
+            },
+            "dwc3-free-pre-runstop-descfetch" => {
+                debug_stage_metric(3, DWC3_DEBUG_QUEUE_DESCFETCHQ)
+            },
+            "dwc3-free-post-runstop-descfetch" => {
+                debug_stage_metric(4, DWC3_DEBUG_QUEUE_DESCFETCHQ)
+            },
+            "dwc3-free-descfetch-change" => debug_stage_change(DWC3_DEBUG_QUEUE_DESCFETCHQ),
             _ => return None,
         })
     }

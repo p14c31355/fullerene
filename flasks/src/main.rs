@@ -243,7 +243,7 @@ struct Args {
     #[arg(long = "usb-swdd-skip")]
     usb_swdd_skip: bool,
 
-    /// Emit one host-visible DCTL.SDIS blip after the post-Run/Stop arm
+    /// Emit one host-visible DWC3 Run/Stop pair after the post-Run/Stop arm
     /// window when the SETUP arm succeeded (link U0 reached per the core).
     #[arg(long = "usb-arm-blip")]
     usb_arm_blip: bool,

@@ -249,7 +249,6 @@ pub(crate) const GUSB3PIPECTL_UX_EXIT_PX: u32 = 1 << 27;
 pub(crate) const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 
 pub(crate) const DCTL_CSFTRST: u32 = 1 << 30;
-pub(crate) const DCTL_SDIS: u32 = 1 << 0;
 pub(crate) const DCTL_APPL1RES: u32 = 1 << 23;
 pub(crate) const DCTL_HIRD_THRES_MASK: u32 = 0x1f << 24;
 pub(crate) const DCTL_HIRD_THRES_LITO: u32 = 0x10 << 24;

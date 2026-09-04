@@ -576,7 +576,7 @@ struct LoopArgs {
     /// attach/-110 readouts).
     #[arg(long)]
     swdd_skip: bool,
-    /// Emit one host-visible DCTL.SDIS blip after the post-Run/Stop arm
+    /// Emit one host-visible DWC3 Run/Stop pair after the post-Run/Stop arm
     /// window when the SETUP arm succeeded (a disconnect/re-attach pair at
     /// attach proves the core's link FSM reached U0).
     #[arg(long)]

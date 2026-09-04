@@ -6553,18 +6553,15 @@ unsafe fn init_beacon() {
     }
 }
 
-/// stall-map beacon: one host-visible DCTL.SDIS disconnect/re-attach pair
-/// (see `sdisc_blips`: the QSCRATCH/VBUS session overrides are
-/// host-invisible on this board, and the SDIS soft disconnect is the proven
-/// visible lever). The soft disconnect is honored only while the core is
-/// running with the link ON, so beacons before Run/Stop are silent by
-/// design; the last visible pair in the host journal names how far the init
-/// tail got, and the ~31 s PSCI return from the cfg-block park names that
-/// the tail completed at all.
+/// stall-map beacon: one host-visible DWC3 Run/Stop disconnect/re-attach pair.
+/// qpr1's DWC3 source uses DCTL.RUN_STOP for gadget pull-up control; it does
+/// not define the DWC2 SDIS bit at DCTL bit 0. The beacon is honored only
+/// while the core is running with the link ON, so beacons before Run/Stop are
+/// silent by design.
 #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
 unsafe fn stall_map_beacon() {
     unsafe {
-        sdisc_blips_link_on(1);
+        runstop_blips_link_on(1);
     }
 }
 
@@ -8313,17 +8310,12 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 0,
                 read(DSTS),
             );
-            // Host-visible arm readout: a single DCTL.SDIS toggle right after
-            // the window is one disconnect/re-attach pair in the host log.
-            // It fires ONLY when the arm succeeded, which requires the core's
-            // own link state to read ON (USBLNKST == 0) while the core is
-            // running - so a pair at attach proves the core sees the HS link
-            // in U0 and the -110 is in the EP0 data path (event ring / IN
-            // DMA), while zero pairs means the core's link FSM never reached
-            // U0 (PHY-level training the host saw, the core did not). SDIS on
-            // a non-U0 link is host-invisible, so the absence is safe.
+            // Host-visible arm readout: a single source-aligned DWC3
+            // Run/Stop pair after the window is one disconnect/re-attach pair
+            // in the host log. It fires only after a successful arm and a core
+            // link-state check of U0.
             if armed && option_env!("FULLERENE_USB_ARM_BLIP") == Some("1") {
-                sdisc_blips(1);
+                runstop_blips(1);
             }
         } else {
             // Historical XBL differential marker. Source-guided Android/Linux
@@ -9612,8 +9604,8 @@ pub fn restore_usb2_session_votes() {
 /// session votes and is host-invisible on this board - the DWC3 Run/Stop bit
 /// owns the physical pull-up: stopping the core while the host still tracks
 /// the device publishes a real "USB disconnect" line in the host kernel
-/// log. This is the one-bit gate-TRUE readout; the SDIS blips and the
-/// QSCRATCH drop are both dead channels here. The wait acknowledges device
+/// log. This is the one-bit gate-TRUE readout; the old SDIS-named path and
+/// the QSCRATCH drop are both dead channels here. The wait acknowledges device
 /// events while halting per the databook stop contract.
 pub fn gate_true_stop_device() -> bool {
     unsafe { run_stop_device(false) }
@@ -9738,7 +9730,7 @@ pub fn ep0_signal_restore_pullup() {
 /// cleared because the bootloader's fastboot address must not survive into
 /// the new enumeration (a stale non-zero DEVADDR makes the core ignore the
 /// host's default-address SETUP tokens). Gated by a build-time env var; the
-/// status code is kept for the retained trace and the DCTL.SDIS blip
+/// the status code is kept for the retained trace and the Run/Stop-pair
 /// readout.
 pub fn u0_arm_recovery() -> u32 {
     if option_env!("FULLERENE_USB_U0_ARM_PROBE")
@@ -9991,67 +9983,52 @@ unsafe fn try_u0_blip() {
         }
         let count = U0_BLIP_PENDING;
         U0_BLIP_PENDING = 0;
-        sdisc_blips(count);
+        runstop_blips(count);
     }
 }
 
-/// Emit up to `count` SDIS blips only when the core reports the link ON
-/// (running, unhalted, USBLNKST == 0). On a non-U0 link the soft
-/// disconnect is host-invisible, so this is a silent no-op before attach.
-pub fn sdisc_blips_link_on(count: u32) {
+/// Emit up to `count` Run/Stop blips only when the core reports the link ON
+/// (running, unhalted, USBLNKST == 0). A non-U0 link is not a valid transport
+/// precondition, so this is a silent no-op.
+pub fn runstop_blips_link_on(count: u32) {
     unsafe {
         let dsts = read(DSTS);
         if dsts & DSTS_DEVCTRLHLT != 0 || (dsts >> 18) & 0xf != 0 {
             return;
         }
-        sdisc_blips(count);
+        runstop_blips(count);
     }
 }
 
-/// Host-visible failure readout: toggle the core's own soft disconnect
-/// (`DCTL.SDIS`) `count` times. Each toggle is one disconnect/re-attach
-/// pair in the host kernel log, so the LAST run's pair count names which
-/// recovery step failed without any other channel (timing readouts are
-/// masked by the secure watchdog, and the QSCRATCH session overrides are
-/// host-invisible on this board). A core that never reached Run/Stop
-/// ignores DCTL, so ZERO blips is itself the "core not running" signal.
-pub fn sdisc_blips(count: u32) {
+/// Host-visible diagnostic transport: toggle the qpr1 DWC3 Run/Stop control
+/// `count` times. Each stop/run pair is one disconnect/re-attach pair in the
+/// host kernel log. This is deliberately called only after the sampled state
+/// has been latched. It is not a read-only observation.
+pub fn runstop_blips(count: u32) {
     unsafe {
         for _ in 0..count.min(6) {
-            let mut dctl = read(DCTL);
-            dctl |= DCTL_SDIS;
-            write_dctl_safe(dctl);
+            let _ = run_stop_device_no_readback(false);
             super::timer::delay_ms(300);
-            dctl = read(DCTL);
-            dctl &= !DCTL_SDIS;
-            write_dctl_safe(dctl);
+            let _ = run_stop_device_no_readback(true);
             super::timer::delay_ms(200);
         }
     }
 }
 
-/// Fast SDIS blip variant for the "diag" gate readout: 100 ms disconnect +
-/// 70 ms reconnect per pair (170 ms total), so the control pair plus all
-/// six code pairs finish in ~1.2 s. The gate evaluates at ~T+15.3 (4 s
-/// observation window after the ~T+11.3 post-init probe entry) and the last
-/// re-attach must land before the ~T+17-18 secure-WDT bite. Same link-ON
-/// guard as `sdisc_blips_link_on`: a core that is not running (or whose
-/// link is down) ignores DCTL, so ZERO pairs in the host journal is itself
-/// the "no live core at eval" readout.
-pub fn sdisc_blips_fast(count: u32) {
+/// Fast Run/Stop transport for categorical readouts: 100 ms disconnected +
+/// 70 ms reconnected per pair. Six pairs fit in about 1.2 s. The status
+/// readback is intentionally skipped here to stay inside the secure-WDT
+/// window; the normal handoff still uses the checked source-aligned helper.
+pub fn runstop_blips_fast(count: u32) {
     unsafe {
         let dsts = read(DSTS);
         if dsts & DSTS_DEVCTRLHLT != 0 || (dsts >> 18) & 0xf != 0 {
             return;
         }
         for _ in 0..count.min(6) {
-            let mut dctl = read(DCTL);
-            dctl |= DCTL_SDIS;
-            write_dctl_safe(dctl);
+            let _ = run_stop_device_no_readback(false);
             super::timer::delay_ms(100);
-            dctl = read(DCTL);
-            dctl &= !DCTL_SDIS;
-            write_dctl_safe(dctl);
+            let _ = run_stop_device_no_readback(true);
             super::timer::delay_ms(70);
         }
     }

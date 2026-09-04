@@ -356,8 +356,8 @@ extern "C" fn usb_probe_irq() {
     let interrupt = interrupt_id as u32;
     // Handle timer PPI before platform IRQ filtering; otherwise a no-host probe can stay in WFE forever.
     if interrupt == timer::TIMER_PPI {
-        // One SDIS blip proves timer PPI delivery and handler execution on link-ON stall-map runs.
-        usb::sdisc_blips_link_on(1);
+        // One Run/Stop blip proves timer PPI delivery and handler execution on link-ON stall-map runs.
+        usb::runstop_blips_link_on(1);
         reset_after_probe_failure();
     }
     if platform::bramble::is_usb_irq(interrupt) {
@@ -468,23 +468,67 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("dwc3-debug-lsp-change") => Some("dwc3-debug-lsp-change"),
         Some("dwc3-debug-epinfo") => Some("dwc3-debug-epinfo"),
         Some("dwc3-free-entry-rxreq") => Some("dwc3-free-entry-rxreq"),
+        Some("dwc3-free-descriptor-window-rxreq") => Some("dwc3-free-descriptor-window-rxreq"),
+        Some("dwc3-free-descriptor-window-txfifo") => Some("dwc3-free-descriptor-window-txfifo"),
+        Some("dwc3-free-descriptor-window-rxfifo") => Some("dwc3-free-descriptor-window-rxfifo"),
+        Some("dwc3-free-descriptor-window-txreq") => Some("dwc3-free-descriptor-window-txreq"),
+        Some("dwc3-free-descriptor-window-rxinfo") => Some("dwc3-free-descriptor-window-rxinfo"),
+        Some("dwc3-free-descriptor-window-eventq") => Some("dwc3-free-descriptor-window-eventq"),
+        Some("dwc3-free-descriptor-window-pstat") => Some("dwc3-free-descriptor-window-pstat"),
+        Some("dwc3-free-descriptor-window-descfetch") => Some("dwc3-free-descriptor-window-descfetch"),
         Some("dwc3-free-entry-rxreq-wide") => Some("dwc3-free-entry-rxreq-wide"),
         Some("dwc3-free-post-reset-rxreq") => Some("dwc3-free-post-reset-rxreq"),
+        Some("dwc3-free-endpoint-config-rxreq") => Some("dwc3-free-endpoint-config-rxreq"),
+        Some("dwc3-free-endpoint-config-txfifo") => Some("dwc3-free-endpoint-config-txfifo"),
+        Some("dwc3-free-endpoint-config-rxfifo") => Some("dwc3-free-endpoint-config-rxfifo"),
+        Some("dwc3-free-endpoint-config-txreq") => Some("dwc3-free-endpoint-config-txreq"),
+        Some("dwc3-free-endpoint-config-pstat") => Some("dwc3-free-endpoint-config-pstat"),
+        Some("dwc3-free-endpoint-config-descfetch") => Some("dwc3-free-endpoint-config-descfetch"),
         Some("dwc3-free-pre-runstop-rxreq") => Some("dwc3-free-pre-runstop-rxreq"),
         Some("dwc3-free-post-runstop-rxreq") => Some("dwc3-free-post-runstop-rxreq"),
         Some("dwc3-free-rxreq-change") => Some("dwc3-free-rxreq-change"),
         Some("dwc3-free-entry-rxinfo") => Some("dwc3-free-entry-rxinfo"),
         Some("dwc3-free-post-reset-rxinfo") => Some("dwc3-free-post-reset-rxinfo"),
+        Some("dwc3-free-endpoint-config-rxinfo") => Some("dwc3-free-endpoint-config-rxinfo"),
         Some("dwc3-free-pre-runstop-rxinfo") => Some("dwc3-free-pre-runstop-rxinfo"),
         Some("dwc3-free-post-runstop-rxinfo") => Some("dwc3-free-post-runstop-rxinfo"),
         Some("dwc3-free-rxinfo-change") => Some("dwc3-free-rxinfo-change"),
         Some("dwc3-free-entry-eventq") => Some("dwc3-free-entry-eventq"),
         Some("dwc3-free-post-reset-eventq") => Some("dwc3-free-post-reset-eventq"),
+        Some("dwc3-free-endpoint-config-eventq") => Some("dwc3-free-endpoint-config-eventq"),
         Some("dwc3-free-pre-runstop-eventq") => Some("dwc3-free-pre-runstop-eventq"),
         Some("dwc3-free-post-runstop-eventq") => Some("dwc3-free-post-runstop-eventq"),
         Some("dwc3-free-eventq-change") => Some("dwc3-free-eventq-change"),
         Some("dwc3-free-entry-txfifo") => Some("dwc3-free-entry-txfifo"),
+        Some("dwc3-free-post-reset-txfifo") => Some("dwc3-free-post-reset-txfifo"),
+        Some("dwc3-free-endpoint-config-txfifo") => Some("dwc3-free-endpoint-config-txfifo"),
+        Some("dwc3-free-pre-runstop-txfifo") => Some("dwc3-free-pre-runstop-txfifo"),
+        Some("dwc3-free-post-runstop-txfifo") => Some("dwc3-free-post-runstop-txfifo"),
+        Some("dwc3-free-txfifo-change") => Some("dwc3-free-txfifo-change"),
         Some("dwc3-free-entry-rxfifo") => Some("dwc3-free-entry-rxfifo"),
+        Some("dwc3-free-post-reset-rxfifo") => Some("dwc3-free-post-reset-rxfifo"),
+        Some("dwc3-free-endpoint-config-rxfifo") => Some("dwc3-free-endpoint-config-rxfifo"),
+        Some("dwc3-free-pre-runstop-rxfifo") => Some("dwc3-free-pre-runstop-rxfifo"),
+        Some("dwc3-free-post-runstop-rxfifo") => Some("dwc3-free-post-runstop-rxfifo"),
+        Some("dwc3-free-rxfifo-change") => Some("dwc3-free-rxfifo-change"),
+        Some("dwc3-free-entry-txreq") => Some("dwc3-free-entry-txreq"),
+        Some("dwc3-free-post-reset-txreq") => Some("dwc3-free-post-reset-txreq"),
+        Some("dwc3-free-endpoint-config-txreq") => Some("dwc3-free-endpoint-config-txreq"),
+        Some("dwc3-free-pre-runstop-txreq") => Some("dwc3-free-pre-runstop-txreq"),
+        Some("dwc3-free-post-runstop-txreq") => Some("dwc3-free-post-runstop-txreq"),
+        Some("dwc3-free-txreq-change") => Some("dwc3-free-txreq-change"),
+        Some("dwc3-free-entry-pstat") => Some("dwc3-free-entry-pstat"),
+        Some("dwc3-free-post-reset-pstat") => Some("dwc3-free-post-reset-pstat"),
+        Some("dwc3-free-endpoint-config-pstat") => Some("dwc3-free-endpoint-config-pstat"),
+        Some("dwc3-free-pre-runstop-pstat") => Some("dwc3-free-pre-runstop-pstat"),
+        Some("dwc3-free-post-runstop-pstat") => Some("dwc3-free-post-runstop-pstat"),
+        Some("dwc3-free-pstat-change") => Some("dwc3-free-pstat-change"),
+        Some("dwc3-free-entry-descfetch") => Some("dwc3-free-entry-descfetch"),
+        Some("dwc3-free-post-reset-descfetch") => Some("dwc3-free-post-reset-descfetch"),
+        Some("dwc3-free-endpoint-config-descfetch") => Some("dwc3-free-endpoint-config-descfetch"),
+        Some("dwc3-free-pre-runstop-descfetch") => Some("dwc3-free-pre-runstop-descfetch"),
+        Some("dwc3-free-post-runstop-descfetch") => Some("dwc3-free-post-runstop-descfetch"),
+        Some("dwc3-free-descfetch-change") => Some("dwc3-free-descfetch-change"),
         Some("dwc3-first-event") => Some("dwc3-first-event"),
         Some("dwc3-bite") => Some("dwc3-bite"),
         Some("ss-speed") => Some("ss-speed"),
@@ -656,7 +700,8 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         0 | 8 => usb::u0_arm_set_blips(1),
         _ => {}
     }
-    // Clear u0 blips for diag readouts so they own every SDIS pair.
+    // Clear queued transport blips for diag readouts so they own every
+    // Run/Stop pair.
     if cmd_gate_is("diag")
         || cmd_gate_is("lnk3")
         || cmd_gate_is("sof")
@@ -1264,16 +1309,21 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
                 0x4457_4300 // "DWC0"
             };
             trace_gate(tag | (code & 0xff));
-            // Publish the four-bit boundary code as same-boot attach cycles;
-            // this avoids relying on warm-reset DRAM retention, which Android
-            // may overwrite before the next Fullerene image starts.
-            for _ in 0..code {
-                let _ = usb::gate_true_stop_device();
-                let dropped = probe_counter().saturating_add(frequency / 4);
-                poll_until_probe_ticks(frequency, dropped);
-                let _ = usb::gate_true_run_device();
-                let attached = probe_counter().saturating_add(frequency * 3 / 10);
-                poll_until_probe_ticks(frequency, attached);
+            // Publish the bounded readout as fast source-aligned Run/Stop
+            // pairs. Unlike the old timing bucket, host jitter is irrelevant:
+            // one completed stop/run pair is one host disconnect/re-attach
+            // observation. Code 6 is reserved for invalid/unavailable.
+            if selector.starts_with("dwc3-free-") {
+                usb::runstop_blips_fast(code);
+            } else {
+                for _ in 0..code {
+                    let _ = usb::gate_true_stop_device();
+                    let dropped = probe_counter().saturating_add(frequency / 4);
+                    poll_until_probe_ticks(frequency, dropped);
+                    let _ = usb::gate_true_run_device();
+                    let attached = probe_counter().saturating_add(frequency * 3 / 10);
+                    poll_until_probe_ticks(frequency, attached);
+                }
             }
             park_without_recovery_timer();
         }
@@ -1429,8 +1479,9 @@ extern "C" fn usb_probe_entry() -> ! {
     }
     // Pet the apps watchdog next: it may also have been left counting.
     usb::wdt_pet();
-    // stall-map arms timer at entry+15s, after link ON. The handler SDIS blip proves PPI/handler; ~36s
-    // means SMC reset works, ~38s means SMC is dead or PS_HOLD stalled.
+    // stall-map arms timer at entry+15s, after link ON. The handler Run/Stop
+    // pair proves PPI/handler; ~36s means SMC reset works, ~38s means SMC is
+    // dead or PS_HOLD stalled.
     if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("stall-map") {
         timer::arm_ms(15_000);
     }

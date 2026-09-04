@@ -852,7 +852,38 @@ DCFG, GCTL, GUSB2PHYCFG, etc.).
   **SuperSpeed-only bypass attempts (runs 29-33):**
   - `GUSB2PHYCFG.SUSPHY=1` successfully suppresses USB2 pull-up (no USB2 attach).
   - But SS enumeration as 1234 also fails: QMP PHY state lost on Run/Stop toggle, SS link breaks on endpoint reconfig with preserve-runstop.
-  - DCTL bit 30 = CSFTRST (not SFTDISCON). `DCTL_SDIS = bit 0` = RMTWKUPSIG, not soft disconnect — pre-existing bug in sdisc_blips.
+  - qpr1 DWC3 uses `DCTL.RUN_STOP` (bit 31) for gadget pull-up control; bit 30 is `CSFTRST`. The former `DCTL_SDIS`/`sdisc_blips` path was removed because bit 0 is not the qpr1 DWC3 soft-disconnect control.
+
+## Host-visible SPACE_AVAILABLE transport
+
+The corrected queue observer uses Linux's `GDBGFIFOSPACE` semantics: bits 31:16
+are `SPACE_AVAILABLE`, not occupancy. After latching the read-only snapshot,
+the probe publishes a bounded category through source-aligned DWC3
+`DCTL.RUN_STOP` stop/run pairs. One completed pair is one host disconnect/
+re-attach pair. The categories are `1=0`, `2=1`, `3=2..3`, `4=4..7`,
+`5>=8`, and `6=invalid/unavailable`; zero host pairs is reserved for a
+transport precondition failure (core halted or link not U0), not category zero.
+This transport changes link state only after the measurement is latched.
+
+Descriptor-window selectors compare the post-Run/Stop baseline with polling
+min/max and return `1=same`, `2=decreased`, `3=increased`, `4=both`, or
+`6=unavailable`.
+
+The implementation is build-verified. Physical run `630881.0` used
+`dwc3-free-entry-rxreq` after an ADB→Fastboot transition and `fastboot boot`.
+The probe reached the normal fallback path and Android `18d1:4ee7` returned,
+but the host log contained no Fullerene HS attach and no Run/Stop pair count;
+therefore no `SPACE_AVAILABLE` category is claimed. Artifact SHA:
+`b8f5573b4df681322fd6e15a8ad3fa8d8f790a3a057d20f338efcadbd2df6b5a`.
+
+## Source-aligned transport correction
+
+The Bramble qpr1 `drivers/usb/dwc3/core.h` defines `DWC3_DCTL_RUN_STOP` as
+bit 31 and `DWC3_DCTL_CSFTRST` as bit 30. Its `gadget.c` pull-up path uses
+`dwc3_gadget_run_stop()`; it does not define a DWC3 `DCTL.SDIS` bit. The old
+`DCTL_SDIS`/`sdisc_blips*()` names were therefore misleading and are not used
+by the corrected observer.
+
   - SS-only requires QMP PHY init in direct handoff path (major code change).
 
   **25th run — `pub` gate (diag code readout):**

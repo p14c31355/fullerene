@@ -11,7 +11,22 @@ commands, timestamps, hashes, and per-run notes.
 | Pixel 4a 5G (Bramble) USB handoff | Fullerene enumerates as `idVendor=1234` | Not reached |
 | Recovery safety | Failed handoff returns to Android without flashing or erasing | Confirmed with `fastboot boot` runs |
 
+## Corrected SPACE_AVAILABLE transport
+
+The Linux-equivalent `GDBGFIFOSPACE` observer now treats bits 31:16 as
+`SPACE_AVAILABLE` free space. After latching the read-only observation, the
+probe emits category `1=0`, `2=1`, `3=2..3`, `4=4..7`, `5=>=8`, or
+`6=invalid/unavailable` using DWC3 `DCTL.RUN_STOP` stop/run pairs. One completed
+pair is one host disconnect/re-attach pair. Zero pairs means the core/link
+transport precondition failed, not free-space category zero. Descriptor-window
+selectors compare the post-Run/Stop baseline with polling min/max. The code, workspace/tests, and Bramble probe build are verified. Physical run
+`630881.0` was attempted after ADB→Fastboot and `fastboot boot`; Android
+`18d1:4ee7` returned, but no Fullerene HS attach or Run/Stop pair count was
+captured, so no category is claimed. Artifact SHA:
+`b8f5573b4df681322fd6e15a8ad3fa8d8f790a3a057d20f338efcadbd2df6b5a`.
+
 ## What is actually known
+
 
 | Boundary | Evidence | Interpretation |
 | --- | --- | --- |
@@ -19,7 +34,7 @@ commands, timestamps, hashes, and per-run notes.
 | First control request | Host submits `GET_DESCRIPTOR(Device)` | The host sees a Fullerene USB device address path |
 | Response | usbmon records no returned bytes (`len=0`, `cap=0`) | No descriptor payload exists to wrap or re-encode |
 | Failure | A valid capture shows `-2`, followed by zero-length `-71` retries | The error is before a usable EP0 response; Linux `-EPROTO` is a broad host error class |
-| Software latches | Current setup/event/SOF diagnostic latches have not produced a usable readout | DWC3 event production/consumption and USB2 RX/UTMI remain unresolved |
+| Software latches | Corrected `SPACE_AVAILABLE` sampler and Run/Stop pair transport are implemented; no physical pair count was obtained because the handset was unavailable in Fastboot | DWC3 event production/consumption and USB2 RX/UTMI remain unresolved |
 | Recovery | Android returns as `18d1:4ee7` | The experiment is non-destructive, but Fullerene still does not enumerate |
 
 ## Current fixed baseline
