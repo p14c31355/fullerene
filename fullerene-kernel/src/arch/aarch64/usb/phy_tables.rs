@@ -149,22 +149,37 @@ const QMP_INIT: [(usize, u32); 146] = [
     (0x1f38, 0x07), // USB3_DP_PCS_USB3_RXEQTRAINING_DFE_TIME_S2
 ];
 
-/// Active PHY tables. The compiled values are the Bramble fallback, while
-/// the DT path may replace them after validating the complete vendor
-/// property. Keeping the delay array separate preserves the compact static
-/// table and still executes the DT's third cell rather than silently dropping
-/// it.
+/// Active PHY tables. The compiled values are the Bramble production
+/// fallback, while the DT path may replace them after validating the complete
+/// vendor property. Keeping the delay array separate preserves the compact
+/// static table and still executes the DT's third cell rather than silently
+/// dropping it.
 pub(super) static mut ACTIVE_QMP_INIT: [(usize, u32); 146] = QMP_INIT;
 pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
+// The compiled fallback must match the Google Bramble production device
+// tree: qcom,param-override-seq has exactly two entries, TUNE1 (0x6c) and
+// TUNE2 (0x70). The base Lito node's third entry (TUNE3 at 0x74) is
+// intentionally omitted by the bramble qrd overlay, so the previous
+// three-entry fallback wrote an analog tuning value that the production
+// handset never programs. The trailing sentinel keeps the fixed table shape
+// and is skipped by the writer, exactly like the DT's absent third entry.
 pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] = [
-    // The stock lito-usb.dtsi (android-msm-bramble-4.19-android11-qpr1)
-    // qcom,param-override-seq: TUNE1 0x63, TUNE2 0x85, TUNE3 0x17. The
-    // earlier (0x67, 0xc8, no-TUNE3) web-sourced production table was never
-    // validated against this branch's own device tree.
     (0x6c, 0x63),
     (0x70, 0x85),
-    (0x74, 0x17),
+    (usize::MAX, 0),
 ];
+
+/// Which table source the current boot is using. Recorded by
+/// `install_dt_phy_sequences()` and published through the retained-trace
+/// readout channel: 0 = compiled fallback (or no DT at all), 1 = a two-entry
+/// HS override from the DT, 2 = a three-entry HS override from the DT, 3 =
+/// the QMP table also installed from the DT. The fallback initial value is
+/// 0, which is the correct classification before any install attempt.
+pub(crate) static mut HSPHY_TABLE_SOURCE: u32 = 0;
+
+pub fn hsphy_table_source() -> u32 {
+    unsafe { HSPHY_TABLE_SOURCE }
+}
 
 /// Install the complete PHY programming properties from the bootloader DTB.
 /// A partial or malformed property is rejected as a unit, leaving the known
@@ -195,7 +210,13 @@ pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>;
             entries[index] = (offset as usize, value);
         }
         if valid {
-            unsafe { ACTIVE_HSPHY_PARAM_OVERRIDE = entries };
+            unsafe {
+                ACTIVE_HSPHY_PARAM_OVERRIDE = entries;
+                // 1 = two-entry production override, 2 = three-entry SoC
+                // override. Distinguish them so the retained-trace readout
+                // can prove which analog tuning the boot actually used.
+                HSPHY_TABLE_SOURCE = if hs_two { 1 } else { 2 };
+            }
             installed = true;
         }
     }
@@ -221,6 +242,10 @@ pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>;
             unsafe {
                 ACTIVE_QMP_INIT = entries;
                 ACTIVE_QMP_INIT_DELAY_US = delays;
+                // Bit 8 marks a fully DT-installed QMP table on top of the
+                // HS classification, so a fallback QMP table cannot be
+                // confused with a DT-supplied one in the readout.
+                HSPHY_TABLE_SOURCE |= 0x100;
             }
             installed = true;
         }

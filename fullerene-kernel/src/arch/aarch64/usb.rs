@@ -34,6 +34,7 @@ mod control;
 mod phy;
 mod phy_tables;
 pub use phy_tables::install_dt_phy_sequences;
+pub use phy_tables::hsphy_table_source;
 use trace::{fill_trace_control_response, trace_begin, trace_event};
 pub mod trace;
 use trace::*;
@@ -1195,6 +1196,15 @@ unsafe fn capture_ss_state_snapshot() {
 pub fn utmi_readout_code(selector: &str) -> u32 {
     if selector == "protocol" {
         return protocol_readout_code();
+    }
+    if selector == "hsphy-table" {
+        // The PHY tuning table source is decided at DTB-install time in
+        // main.rs, before any DWC3/PHY access. Bit 0-1: 0 = compiled
+        // fallback, 1 = two-entry DT override, 2 = three-entry DT override.
+        // Bit 8: the QMP table also came from the DT. The direct USB2 path
+        // never touches the QMP poll, so the low bits are the relevant
+        // classification there.
+        return hsphy_table_source();
     }
     if selector.starts_with("ss-") {
         // A failed handoff can enter the generic signal path and publish the
