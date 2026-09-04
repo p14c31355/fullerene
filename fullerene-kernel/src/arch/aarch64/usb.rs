@@ -1483,6 +1483,60 @@ pub fn trace_dwc3_boundary() {
     }
 }
 
+/// Sample Synopsys internal debug queues and device-mode LSP values without
+/// consuming events or changing endpoint state. This mirrors Linux's
+/// `dwc3_core_fifo_space()` and gadget `lsp_dump` read paths.
+pub fn trace_dwc3_debug_sample() {
+    unsafe {
+        let mut values = [0u32; 8];
+        // Linux queue types: TXFIFO, RXFIFO, TXREQQ, RXREQQ, RXINFOQ,
+        // PSTATQ, DESCFETCHQ, EVENTQ. EP0 OUT is endpoint 0.
+        for queue_type in 0..8u32 {
+            write(
+                GDBGFIFOSPACE,
+                (queue_type << GDBGFIFOSPACE_TYPE_SHIFT) & GDBGFIFOSPACE_TYPE_MASK,
+            );
+            values[queue_type as usize] = read(GDBGFIFOSPACE) >> GDBGFIFOSPACE_SPACE_SHIFT;
+        }
+        let mut lsp0 = 0u32;
+        let mut lsp_change = 0u32;
+        for selector in 0..16u32 {
+            write(
+                GDBGLSPMUX,
+                (selector << GDBGLSPMUX_DEVSELECT_SHIFT) & 0xf0,
+            );
+            let value = read(GDBGLSP);
+            if selector == 0 {
+                lsp0 = value;
+            } else if value != lsp0 {
+                lsp_change |= 1 << selector;
+            }
+        }
+        trace_event(TRACE_DWC3_DEBUG, 0, values[0], values[1], values[2], values[3]);
+        trace_event(TRACE_DWC3_DEBUG, 1, values[4], values[5], values[6], values[7]);
+        let mut lsp = [0u32; 16];
+        lsp[0] = lsp0;
+        for selector in 1..16u32 {
+            write(GDBGLSPMUX, (selector << GDBGLSPMUX_DEVSELECT_SHIFT) & 0xf0);
+            lsp[selector as usize] = read(GDBGLSP);
+        }
+        trace::live_dwc3_debug_sample(
+            values,
+            lsp,
+            read(GDBGEPINFO0),
+            read(GDBGEPINFO1),
+        );
+        trace_event(
+            TRACE_DWC3_DEBUG,
+            2,
+            lsp0,
+            lsp_change,
+            read(GDBGEPINFO0),
+            read(GDBGEPINFO1),
+        );
+    }
+}
+
 /// Classify the first retained EP0 STARTTRANSFER boundary for a host-visible
 /// protocol-error readout. This is deliberately a command/ownership result,
 /// not a claim about CRC or bit stuffing on the USB wires:

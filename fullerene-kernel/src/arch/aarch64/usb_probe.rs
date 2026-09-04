@@ -451,6 +451,22 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("dwc3-cmd0-act") => Some("dwc3-cmd0-act"),
         Some("dwc3-cmd1-act") => Some("dwc3-cmd1-act"),
         Some("dwc3-trb") => Some("dwc3-trb"),
+        Some("dwc3-debug-valid") => Some("dwc3-debug-valid"),
+        Some("dwc3-debug-txfifo") => Some("dwc3-debug-txfifo"),
+        Some("dwc3-debug-rxfifo") => Some("dwc3-debug-rxfifo"),
+        Some("dwc3-debug-txreq") => Some("dwc3-debug-txreq"),
+        Some("dwc3-debug-rxreq") => Some("dwc3-debug-rxreq"),
+        Some("dwc3-debug-rxinfo") => Some("dwc3-debug-rxinfo"),
+        Some("dwc3-debug-pstat") => Some("dwc3-debug-pstat"),
+        Some("dwc3-debug-descfetch") => Some("dwc3-debug-descfetch"),
+        Some("dwc3-debug-eventq") => Some("dwc3-debug-eventq"),
+        Some("dwc3-debug-queue-change") => Some("dwc3-debug-queue-change"),
+        Some("dwc3-debug-rxreq-change") => Some("dwc3-debug-rxreq-change"),
+        Some("dwc3-debug-rxinfo-change") => Some("dwc3-debug-rxinfo-change"),
+        Some("dwc3-debug-descfetch-change") => Some("dwc3-debug-descfetch-change"),
+        Some("dwc3-debug-eventq-change") => Some("dwc3-debug-eventq-change"),
+        Some("dwc3-debug-lsp-change") => Some("dwc3-debug-lsp-change"),
+        Some("dwc3-debug-epinfo") => Some("dwc3-debug-epinfo"),
         Some("dwc3-first-event") => Some("dwc3-first-event"),
         Some("dwc3-bite") => Some("dwc3-bite"),
         Some("ss-speed") => Some("ss-speed"),
@@ -683,6 +699,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     loop {
         usb::wdt_pet();
         usb::poll();
+        usb::trace_dwc3_debug_sample();
         // `setup-cut` is a one-shot protocol-boundary probe. The latch is set
         // only after the EP0 setup TRB has been DMAed/parsed; stop immediately
         // so the host journal can distinguish "SETUP reached software" from

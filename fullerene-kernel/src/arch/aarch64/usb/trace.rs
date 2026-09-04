@@ -62,6 +62,12 @@ pub(crate) const TRACE_UTMI_STATE: u32 = 43;
 /// ownership respectively. It is deliberately separate from TRACE_UTMI_STATE
 /// so a protocol-error readout cannot be mistaken for a PHY clock sample.
 pub(crate) const TRACE_DWC3_BOUNDARY: u32 = 44;
+/// Read-only Synopsys DWC3 internal debug observation. The four payload words
+/// are min/max/change masks for the selected queue family; the fifth word
+/// carries the GDBGLSP selector-0..15 change mask. This is intentionally a
+/// separate event so a debug-register observation cannot be confused with a
+/// protocol/event-ring observation.
+pub(crate) const TRACE_DWC3_DEBUG: u32 = 45;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -151,6 +157,20 @@ static mut LIVE_DWC3_FIRST_EVENT_WORD: u32 = 0;
 static mut LIVE_DWC3_FIRST_EVENT_DSTS: u32 = 0;
 static mut LIVE_DWC3_FIRST_EVENT_DCTL: u32 = 0;
 static mut LIVE_DWC3_FIRST_EVENT_VALID: bool = false;
+/// Current-boot statistics for the read-only Synopsys debug-register sampler.
+/// The exact min/max values remain in retained TRACE_DWC3_DEBUG records;
+/// these live fields expose only bounded categorical summaries.
+static mut LIVE_DWC3_DEBUG_VALID: bool = false;
+static mut LIVE_DWC3_DEBUG_LAST: [u32; 8] = [0; 8];
+static mut LIVE_DWC3_DEBUG_MIN: [u32; 8] = [u32::MAX; 8];
+static mut LIVE_DWC3_DEBUG_MAX: [u32; 8] = [0; 8];
+static mut LIVE_DWC3_DEBUG_CHANGE: u32 = 0;
+static mut LIVE_DWC3_DEBUG_LSP_LAST: [u32; 16] = [0; 16];
+static mut LIVE_DWC3_DEBUG_LSP_MIN: [u32; 16] = [u32::MAX; 16];
+static mut LIVE_DWC3_DEBUG_LSP_MAX: [u32; 16] = [0; 16];
+static mut LIVE_DWC3_DEBUG_LSP_CHANGE: u32 = 0;
+static mut LIVE_DWC3_DEBUG_EPINFO0: u32 = 0;
+static mut LIVE_DWC3_DEBUG_EPINFO1: u32 = 0;
 
 /// Initialize the retained trace header and append a boot boundary marker.
 /// The entry array is intentionally not cleared, so a subsequent boot can
@@ -244,6 +264,17 @@ pub fn trace_reset_head_for_boot() {
         LIVE_DWC3_FIRST_EVENT_DSTS = 0;
         LIVE_DWC3_FIRST_EVENT_DCTL = 0;
         LIVE_DWC3_FIRST_EVENT_VALID = false;
+        LIVE_DWC3_DEBUG_VALID = false;
+        LIVE_DWC3_DEBUG_LAST = [0; 8];
+        LIVE_DWC3_DEBUG_MIN = [u32::MAX; 8];
+        LIVE_DWC3_DEBUG_MAX = [0; 8];
+        LIVE_DWC3_DEBUG_CHANGE = 0;
+        LIVE_DWC3_DEBUG_LSP_LAST = [0; 16];
+        LIVE_DWC3_DEBUG_LSP_MIN = [u32::MAX; 16];
+        LIVE_DWC3_DEBUG_LSP_MAX = [0; 16];
+        LIVE_DWC3_DEBUG_LSP_CHANGE = 0;
+        LIVE_DWC3_DEBUG_EPINFO0 = 0;
+        LIVE_DWC3_DEBUG_EPINFO1 = 0;
         core::arch::asm!("dsb sy", options(nostack));
     }
 }
@@ -310,6 +341,35 @@ pub(super) fn live_dalepena_config(direction: u32, readback: u32) {
 /// Save the first producer/consumer boundary without touching the event
 /// count. Returns true only for the first observation so the retained trace
 /// gets one stable record rather than a stream of polling duplicates.
+pub(super) fn live_dwc3_debug_sample(
+    queues: [u32; 8],
+    lsp: [u32; 16],
+    epinfo0: u32,
+    epinfo1: u32,
+) {
+    unsafe {
+        for index in 0..8 {
+            if LIVE_DWC3_DEBUG_VALID && LIVE_DWC3_DEBUG_LAST[index] != queues[index] {
+                LIVE_DWC3_DEBUG_CHANGE |= 1 << index;
+            }
+            LIVE_DWC3_DEBUG_LAST[index] = queues[index];
+            LIVE_DWC3_DEBUG_MIN[index] = LIVE_DWC3_DEBUG_MIN[index].min(queues[index]);
+            LIVE_DWC3_DEBUG_MAX[index] = LIVE_DWC3_DEBUG_MAX[index].max(queues[index]);
+        }
+        for index in 0..16 {
+            if LIVE_DWC3_DEBUG_VALID && LIVE_DWC3_DEBUG_LSP_LAST[index] != lsp[index] {
+                LIVE_DWC3_DEBUG_LSP_CHANGE |= 1 << index;
+            }
+            LIVE_DWC3_DEBUG_LSP_LAST[index] = lsp[index];
+            LIVE_DWC3_DEBUG_LSP_MIN[index] = LIVE_DWC3_DEBUG_LSP_MIN[index].min(lsp[index]);
+            LIVE_DWC3_DEBUG_LSP_MAX[index] = LIVE_DWC3_DEBUG_LSP_MAX[index].max(lsp[index]);
+        }
+        LIVE_DWC3_DEBUG_EPINFO0 = epinfo0;
+        LIVE_DWC3_DEBUG_EPINFO1 = epinfo1;
+        LIVE_DWC3_DEBUG_VALID = true;
+    }
+}
+
 pub(super) fn live_dwc3_first_event(
     count: u32,
     offset: u32,
@@ -564,6 +624,65 @@ pub fn trace_last_event() -> u32 {
     }
 }
 
+/// Convert a queue's min/max observation into a small timing-channel code:
+/// 0=no sample, 1=sampled and always zero, 2=zero then nonzero, 3=constant
+/// nonzero, 4=multiple/nonzero values. Exact values remain in the retained
+/// TRACE_DWC3_DEBUG records.
+fn debug_queue_metric(index: usize) -> u32 {
+    unsafe {
+        if !LIVE_DWC3_DEBUG_VALID {
+            return 0;
+        }
+        let min = LIVE_DWC3_DEBUG_MIN[index];
+        let max = LIVE_DWC3_DEBUG_MAX[index];
+        if min == 0 && max == 0 {
+            1
+        } else if min == 0 {
+            2
+        } else if min == max {
+            3
+        } else {
+            4
+        }
+    }
+}
+
+/// Read-only categorical selectors for the Linux DWC3 debugfs-equivalent
+/// observation. The host cannot fetch a raw trace from the non-enumerating
+/// gadget, so the timing channel exposes only bounded states; the trace still
+/// records the raw samples when a later boot can retrieve it.
+pub(super) fn dwc3_debug_readout_code(selector: &str) -> Option<u32> {
+    let index = match selector {
+        "dwc3-debug-txfifo" => Some(0),
+        "dwc3-debug-rxfifo" => Some(1),
+        "dwc3-debug-txreq" => Some(2),
+        "dwc3-debug-rxreq" => Some(3),
+        "dwc3-debug-rxinfo" => Some(4),
+        "dwc3-debug-pstat" => Some(5),
+        "dwc3-debug-descfetch" => Some(6),
+        "dwc3-debug-eventq" => Some(7),
+        _ => None,
+    };
+    if let Some(index) = index {
+        return Some(debug_queue_metric(index));
+    }
+    unsafe {
+        Some(match selector {
+            "dwc3-debug-valid" => u32::from(LIVE_DWC3_DEBUG_VALID),
+            "dwc3-debug-queue-change" => u32::from(LIVE_DWC3_DEBUG_CHANGE != 0),
+            "dwc3-debug-rxreq-change" => u32::from(LIVE_DWC3_DEBUG_CHANGE & (1 << 3) != 0),
+            "dwc3-debug-rxinfo-change" => u32::from(LIVE_DWC3_DEBUG_CHANGE & (1 << 4) != 0),
+            "dwc3-debug-descfetch-change" => u32::from(LIVE_DWC3_DEBUG_CHANGE & (1 << 6) != 0),
+            "dwc3-debug-eventq-change" => u32::from(LIVE_DWC3_DEBUG_CHANGE & (1 << 7) != 0),
+            "dwc3-debug-lsp-change" => u32::from(LIVE_DWC3_DEBUG_LSP_CHANGE != 0),
+            "dwc3-debug-epinfo" => u32::from(
+                LIVE_DWC3_DEBUG_EPINFO0 != 0 || LIVE_DWC3_DEBUG_EPINFO1 != 0,
+            ),
+            _ => return None,
+        })
+    }
+}
+
 /// Encode one raw UTMI-facing register field for a host-visible readout.
 ///
 /// The temporary image normally cannot enumerate far enough to expose the
@@ -572,6 +691,9 @@ pub fn trace_last_event() -> u32 {
 /// its reset delay.  Values are taken from the newest complete snapshot that
 /// was appended by `trace_utmi_state()`; no register is written here.
 pub(super) fn utmi_readout_code(selector: &str) -> u32 {
+    if let Some(code) = dwc3_debug_readout_code(selector) {
+        return code;
+    }
     unsafe {
         let live_stage = match selector {
             "utmi-trdtim-stage1" => Some(1usize),

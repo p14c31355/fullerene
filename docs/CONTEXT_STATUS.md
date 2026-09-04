@@ -410,6 +410,84 @@ decisive step: it separates "host emits SETUP, device silent" from
 
 Latest classified hardware run: `853186.0` combined the source-defined HS-PHY/QSCRATCH `dsb st` barrier with `GUSB2PHYCFG.U2_FREECLK_EXISTS` on the ADB-to-Fastboot source-exact USB2 path. Fastboot boot succeeded and the HS attach path ran. usbmon recorded `GET_DESCRIPTOR(Device)` at `18:18:03.090496`, first completion `-2` at `18:18:08.202448`, then three `-71` retries; every completion had `len=0`/`cap=0`. The handset recovered to Android `18d1:4ee7`; no `1234:0001`. Dump SHA: `9d3e4e30496c196dfe74e946330aac112368db3940d7cabde596a84d3f989208`; boot image SHA: `b4cf5d6b23db3839bed4f8459698a5b4b8a48bcd2b9391ae0a584a4c136b53f0`. The preceding `843743.0` free-clock-only A/B and `834988.0` barrier-only A/B were also negative. The concrete USB2 boundary remains no EP0 response/no USB2 RX payload; `1234:0001` has not been observed.
 
+### Final software audit follow-up: Full-Speed bypass and DWC3 internal debug queues
+
+The reviewer identified two remaining software-only discriminators. The
+published qpr1/DWC3 sources were re-read before testing: `DCFG.FULLSPEED` is
+the standard DWC3 device-speed encoding, and Linux `debugfs.c` exposes
+`GDBGFIFOSPACE`, `GDBGLSPMUX/GDBGLSP`, and `GDBGEPINFO0/1` as read-only
+diagnostics. The FIFO sampler was implemented without acknowledging the event
+ring or changing endpoint state. It samples the eight Linux queue types and
+all 16 device-mode LSP selectors during the existing EP0 observation loop;
+raw samples are retained as `TRACE_DWC3_DEBUG`, while the timing channel only
+publishes bounded min/max/change categories.
+
+`190834.0` exercised the already-wired `--dcfg-fullspeed` diagnostic on the
+fixed direct USB2 baseline. The host explicitly reported:
+
+```text
+usb 1-9: new full-speed USB device number 15 using xhci_hcd
+```
+
+but no descriptor response arrived before Android fallback:
+
+```text
+disconnect 21:00:34 -> full-speed attach 21:00:45
+Android 18d1:4ee7 21:01:11
+boot-reason=watchdog
+1234:0001: not reached
+```
+
+Artifact SHA:
+`9b8b57af06b70ca3cd674c23f9bab929743a59e5ab25ade8303c997806f1d296`.
+This is a strong negative for the narrow hypothesis "HS chirp/data mode alone
+is the failure": forcing the host to FS removes HS attach, but the EP0
+descriptor path still produces no response. It does not yet distinguish the
+common FS/HS PHY RX path from the DWC3 device ingress.
+
+The read-only internal-debug sampler is now part of the probe loop. A first
+run (`199575.0`, selector `dwc3-debug-rxreq`) built and booted the new image,
+reached the ordinary HS attach, and returned Android after 42 seconds; the
+host still saw descriptor `-110` and no `1234:0001`. Artifact details are in
+`tmp/fullerene-bramble-loop.199575.0/`; the timing bucket is not treated as a
+numeric queue result because it is a whole-second host observation. The new
+selector family is ready for calibrated one-bit runs (`dwc3-debug-rxreq`,
+`dwc3-debug-rxinfo`, `dwc3-debug-eventq`, and `dwc3-debug-lsp-change`).
+
+The boundary is therefore moved, but not closed to hardware evidence: FS
+also fails, while DWC3 internal queue/LSP data remains to be decoded with the
+same calibrated readout method. Keep the analyzer deferred until those
+read-only queue selectors are measured.
+
+### Calibrated internal DWC3 debug queue/LSP audit
+
+Four calibrated selector runs used the same fixed direct USB2 baseline and
+the source-aligned read-only sampler:
+
+| Run | selector | host timeline | interpretation |
+| --- | --- | --- | --- |
+| `205936.0` | `dwc3-debug-rxreq` | disconnect `21:10:12` → HS attach `21:10:27` → `-110` `21:10:32` → Android `21:10:54` | 15-second bucket: RXREQQ category 1 (sampled and always zero) |
+| `208096.0` | `dwc3-debug-rxinfo` | disconnect `21:11:40` → HS attach `21:11:55` → `-110` `21:12:00` → Android `21:12:21` | same category-1 bucket: RXINFOQ stayed zero |
+| `210370.0` | `dwc3-debug-eventq` | disconnect `21:13:04` → HS attach `21:13:18` → `-110` `21:13:23` → Android `21:13:44` | same category-1 bucket: EVENTQ stayed zero |
+| `212890.0` | `dwc3-debug-lsp-change` | disconnect `21:14:35` → HS attach `21:14:50` → `-110` `21:14:55` → Android `21:15:16` | negative; the whole-second bucket is not decoded as a numeric LSP result |
+| `215522.0` | `dwc3-debug-queue-change` | disconnect `21:16:21` → HS attach `21:16:35` → `-110` `21:16:41` → Android `21:17:02` | 0-bit category: no queue min/max change observed |
+
+All five runs remained non-enumerating and used read-only debug-register
+access; none acknowledged `GEVNTCOUNT`, issued an endpoint command, or
+changed PHY/session state. The calibrated queue results are now stronger than
+the prior single `199575.0` attempt: RXREQQ, RXINFOQ, EVENTQ, and the queue
+change aggregate all remain zero during the host's descriptor request.
+`dwc3-debug-lsp-change` is deliberately not assigned a numeric value from
+the host timestamps and remains an inconclusive secondary observation.
+
+This moves the software boundary again: the DWC3 internal receive/request
+queues do not show activity even when the host is issuing `GET_DESCRIPTOR`.
+Together with the independent Full-Speed negative (`190834.0`), this makes a
+common PHY/UTMI-to-DWC3 ingress failure substantially more likely than an
+EP0 packet-format or endpoint-ownership bug. The next physical evidence is
+now justified, but the exact wire-vs-PHY split still requires a USB analyzer
+or JTAG/secure-debug capture.
+
 ## Document routing and context cost
 
 | Document | Size | Use | Loading policy |

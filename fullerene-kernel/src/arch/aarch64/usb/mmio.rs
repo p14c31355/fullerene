@@ -144,6 +144,20 @@ pub(crate) const GUCTL1: usize = 0xc11c;
 // msm-4.19 core.h: GUCTL3 sits in the 0xc600 block, not next to
 // GUCTL1; the 4.19 offset is 0xc60c.
 pub(crate) const GUCTL3: usize = 0xc60c;
+// Synopsys DWC3 debug queue/FIFO and logic-state registers. Linux exposes
+// these through debugfs as read-only diagnostics; do not use them for normal
+// gadget control. GDBGFIFOSPACE is selected by endpoint number and queue type
+// and returns SPACE_AVAILABLE in bits 31:16.
+pub(crate) const GDBGFIFOSPACE: usize = 0xc160;
+pub(crate) const GDBGLSPMUX: usize = 0xc170;
+pub(crate) const GDBGLSP: usize = 0xc174;
+pub(crate) const GDBGEPINFO0: usize = 0xc178;
+pub(crate) const GDBGEPINFO1: usize = 0xc17c;
+pub(crate) const GDBGFIFOSPACE_SPACE_SHIFT: u32 = 16;
+pub(crate) const GDBGFIFOSPACE_NUM_MASK: u32 = 0x1f;
+pub(crate) const GDBGFIFOSPACE_TYPE_SHIFT: u32 = 5;
+pub(crate) const GDBGFIFOSPACE_TYPE_MASK: u32 = 0x1e0;
+pub(crate) const GDBGLSPMUX_DEVSELECT_SHIFT: u32 = 4;
 pub(crate) const GSNPSID: usize = 0xc120;
 pub(crate) const GRXTHRCFG: usize = 0xc10c;
 pub(crate) const GSBUSCFG1: usize = 0xc104;
