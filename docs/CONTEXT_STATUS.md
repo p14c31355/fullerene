@@ -253,6 +253,48 @@ attach-reaching USB2 path and is now a reproduced negative. The remaining
 reviewer concern (point 3 analog rails) has no host-readable state without a
 protocol analyzer; the vote-based evidence stands.
 
+### Reviewer round 3: DT source correction and raw-cell readout (2026-09-04)
+
+The reviewer correctly flagged that the previous `DT_TWO_ENTRY` conclusion
+rested on an 11-second attach that sits inside the ±1–2 s jitter band, and
+that the qpr1 source itself is three-entry. Source recheck: `lito-usb.dtsi`
+and `lito-qrd.dtsi` both carry `qcom,param-override-seq` with **three**
+entries (`0x63 0x6c`, `0x85 0x70`/`0xc8 0x70`, `0x17 0x74`); the old
+`phy_tables.rs` comment claiming a two-entry Google override contradicted
+the very source it cited. Three fixes and two readout runs followed:
+
+- `HS_DT_PARAM_OVERRIDE_CELLS` now captures the six raw FDT cells (packed
+  value<<8|offset) at install time, published per-cell through the
+  pre-connect readout channel (`hsphy-dt-cell0`..`5`).
+- `53319.0`'s 11-second attach is reclassified as jitter, not code 1.
+- `69825.0` (`hsphy-dt-cell0`): disconnect `19:28:50` → attach `19:29:00`
+  = 10 s ⇒ **cell0 = 0**: the handset DTB does not provide
+  `qcom,param-override-seq` to Fullerene at all (property absent from the
+  matched node). The earlier `DT_TWO_ENTRY` classification was wrong.
+- `72382.0` (`hsphy-table`): disconnect `19:30:22` → attach `19:30:32`
+  = 10 s ⇒ **classification 0 = compiled fallback**. Every hardware run to
+  date, including all `-110`/`-71` A/Bs, ran the compiled fallback.
+- Combined with the fallback history this closes the TUNE3 question
+  symmetrically: the old three-entry fallback (TUNE3=0x17 written) failed in
+  every prior run, and the new two-entry fallback (TUNE3 absent) fails
+  identically in `72382.0` (descriptor `-110`, watchdog, no `1234:0001`;
+  artifact SHA `4e8565dbc105b89629cdd7aab08e3a2d91e0aa6abcc3a3a0eaa023699bd7f7f0`
+  covers the cell0 run; the classification run's boot image is identical
+  apart from the readout env). Analog tuning is not the boundary.
+- The reviewer's priority-1 DCFG experiment already exists as a documented
+  negative: `810905.0` set `--dcfg-superspeed` on the attach-reaching USB2
+  path and lost even the HS attach. `857076.0` covers the DCFG
+  receive-policy A/B. The initial-EP0-MPS-512 hybrid-state concern is
+  therefore bounded by an existing run and the EP0-contract proof in
+  `usb_linux_host_enum.rs`.
+
+Net: the handset-DTB-vs-source divergence is real and now measured (the
+bootloader hands Fullerene a DTB without the HS override property), the
+fallback is corrected to the production two-entry form, the raw-cell channel
+makes future DT questions one run each, and the DCFG policy family was
+already closed by `810905.0`. The no-SETUP boundary remains; physical
+capture (analyzer/JTAG) is again the next decisive step.
+
 ## Next source-directed investigation
 
 | Order | Check | Result | Why |

@@ -1206,6 +1206,21 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
         // classification there.
         return hsphy_table_source();
     }
+    if let Some(cell) = selector.strip_prefix("hsphy-dt-cell") {
+        // Publish the raw DT property cells the classifier consumed, one
+        // selector per cell. The classification alone cannot distinguish
+        // "the handset DT really has two entries" from "the FDT reader
+        // truncated a three-entry property", and the qpr1 source ships a
+        // three-entry `qcom,param-override-seq`, so the raw values are the
+        // decisive evidence. Cells are (value, offset) pairs; the published
+        // code packs value<<8 | offset for 0x6c/0x70/0x74 offsets. A cell
+        // the property does not contain returns 0.
+        let index: usize = cell.parse().unwrap_or(6);
+        if index >= 6 {
+            return 0;
+        }
+        return phy_tables::hsphy_dt_cell(index);
+    }
     if selector.starts_with("ss-") {
         // A failed handoff can enter the generic signal path and publish the
         // same USB2 marker without ever reaching stage 13/21. Reserve 15 for

@@ -177,8 +177,19 @@ pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] = [
 /// 0, which is the correct classification before any install attempt.
 pub(crate) static mut HSPHY_TABLE_SOURCE: u32 = 0;
 
+/// The raw DT `qcom,param-override-seq` cells the classifier consumed, in
+/// property order (value, offset) pairs packed as value<<8 | offset for the
+/// known tune offsets. Captured at install time so the host readout can
+/// distinguish a genuinely two-entry production property from an FDT-reader
+/// truncation; 0 means the cell was absent.
+pub(crate) static mut HS_DT_PARAM_OVERRIDE_CELLS: [u32; 6] = [0; 6];
+
 pub fn hsphy_table_source() -> u32 {
     unsafe { HSPHY_TABLE_SOURCE }
+}
+
+pub fn hsphy_dt_cell(index: usize) -> u32 {
+    unsafe { HS_DT_PARAM_OVERRIDE_CELLS[index] }
 }
 
 /// Install the complete PHY programming properties from the bootloader DTB.
@@ -195,6 +206,17 @@ pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>;
     // discarded in favour of the broader SoC fallback.
     let hs_three = hs_raw.iter().all(Option::is_some);
     let hs_two = hs_raw[..4].iter().all(Option::is_some) && hs_raw[4..].iter().all(Option::is_none);
+    // Capture the raw cells exactly as the FDT reader returned them, packed
+    // value<<8 | offset for the known tune offsets, before any validation
+    // can reject them. This is the decisive evidence for whether the
+    // handset DT genuinely carries two or three override entries.
+    unsafe {
+        for index in 0..3 {
+            if let (Some(value), Some(offset)) = (hs_raw[index * 2], hs_raw[index * 2 + 1]) {
+                HS_DT_PARAM_OVERRIDE_CELLS[index] = (value << 8) | (offset & 0xff);
+            }
+        }
+    }
     if hs_three || hs_two {
         let count = if hs_two { 2 } else { 3 };
         let mut entries = [(0usize, 0u32), (0usize, 0u32), (usize::MAX, 0u32)];
