@@ -214,7 +214,7 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
         if qmp_phase_probe_stop(7) {
             return true;
         }
-        for _ in 0..1_000_000 {
+        for attempt in 0..1_000 {
             if read_volatile(qmp_reg(pcs_status)) & QMP_PHYSTATUS == 0 {
                 trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_4f4b); // "QMOK"
                 if qmp_phase_probe_stop(8) {
@@ -222,7 +222,19 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
                 }
                 return true;
             }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+            // Android's msm_ssphy_qmp_init() waits usleep_range(1, 2) between
+            // PHYSTATUS samples, so the loop has real-time meaning: at most
+            // ~1 ms of settling, sampled every microsecond. A back-to-back
+            // MMIO loop is a different time base entirely, and the UTMI
+            // clock-source helper above already switched to
+            // crate::timer::delay_us() for the same reason. Keep the
+            // historical nop-loop behavior behind an opt-out A/B.
+            if cfg!(fullerene_aarch64_usb_qmp_poll_nop_loop) {
+                core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+            } else {
+                crate::timer::delay_us(1);
+            }
+            let _ = attempt;
         }
     }
     log_puts("usb: QMP PHY initialization timeout\n");
@@ -393,7 +405,14 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
         hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_POR, 0);
         // The official SNPS femto-PHY init has no delay at this boundary. The
         // old local helper's 150 us wait is retained only outside the exact
-        // source-confirmed A/B.
+        // source-confirmed A/B. The reviewer A/B restores it even in the
+        // source-exact path: Android's equivalent settling time lives in the
+        // external reset hold (msm_hsphy_reset's 100-150 us), so a handoff
+        // that pulses the BCR line may still owe the analog block settle time
+        // here that the official driver never needs at this exact spot.
+        #[cfg(fullerene_aarch64_usb_hsphy_por_delay_150)]
+        crate::timer::delay_us(150);
+        #[cfg(not(fullerene_aarch64_usb_hsphy_por_delay_150))]
         if !source_exact {
             crate::timer::delay_us(150);
         }

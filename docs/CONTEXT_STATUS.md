@@ -204,6 +204,55 @@ never delivers a SETUP token — and remains reachable only with physical
 evidence (JTAG/secure-debug capture or a USB protocol analyzer), consistent
 with the boundary snapshot in `boundary-state.md`.
 
+### Reviewer timing/reset follow-up (2026-09-04, handset reconnected)
+
+The reviewer's six-point audit was source-checked against the qpr1 clone and
+the current `main` before running. Point 2 (external HS-PHY reset assert →
+100–150 µs → deassert) is already implemented:
+`platform/bramble/usb_reset.rs::pulse_usb2_phy_reset()` drives the DT's
+`phy_reset` (`GCC_QUSB2PHY_PRIM_BCR`, resource index 1) with
+`delay_us(100)` between assert and deassert, runs before
+`init_hsphy*()` exactly like `msm_hsphy_reset()` → `msm_hsphy_init()`, and is
+on the fixed baseline. Point 3 (vdd/vdda18/vdda33) is likewise covered by the
+baseline `--refresh-hsphy-power` RPMh re-vote (`refresh_usb_power(false)`);
+these rails are RPMh-managed with no MMIO readback, so a state table is not
+available and the vote itself is the only observable. Points 1 (QMP PHYSTATUS
+poll time base), 4 (poll timeout as wall time), 5 (post-POR settle), and 6
+(MMIO completion) produced three new source-confirmed A/Bs:
+
+- `10801.0` is the corrected real-time-poll control build with no extra
+  delta (rejected before boot because Fastboot was not engaged); the first
+  booted run with the new default — `init_qmp_phy()` now samples PHYSTATUS
+  every 1 µs for at most 1000 iterations (`usleep_range(1,2)` ×
+  `INIT_MAX_TIME_USEC` = 1000, exactly Android's time base), with the old
+  nop-loop retained behind `FULLERENE_AARCH64_USB_QMP_POLL_NOP_LOOP` — is
+  `11071.0`. Fastboot disconnected; HS attach at `18:49:44`; descriptor
+  `-110` at `18:49:49`; Android `18d1:4ee7` at `18:50:10`;
+  `boot-reason=watchdog`; no `1234:0001`. Negative. Boot image SHA
+  `c32b0324ca3fff6b1f8333b579844ecaf589176a5eb5d0f8fa10dd68d033df6f`
+  (identical to the `1721868.0` baseline because the USB2-only path never
+  reaches the QMP poll).
+- `12066.0` restored the 150 µs post-POR settle inside the source-exact HS
+  path (`FULLERENE_AARCH64_USB_HSPHY_POR_DELAY_150=1`, artifact SHA
+  `a2d53cc6e04566d04ff439dc44e24f8635b43cd7d27b2a17c5cf244a812d61d5`). HS
+  attach at `18:51:01`; descriptor `-110` at `18:51:06`; Android at
+  `18:51:27`; `boot-reason=watchdog`; no `1234:0001`. Negative.
+- `15449.0` combined both deltas (POR delay + nop-loop QMP poll restored, so
+  the run is the exact pre-change kernel behavior on both axes and the
+  Android-timescale default is validated against it). HS attach at
+  `18:53:36`; descriptor `-110` at `18:53:41`; Android at `18:54:02`;
+  `boot-reason=watchdog`; no `1234:0001`. Negative. Artifact SHA
+  `a2d53cc6e04566d04ff439dc44e24f8635b43cd7d27b2a17c5cf244a812d61d5`.
+
+The direct USB2 handoff does not reach the QMP poll at all (that loop only
+runs on the SuperSpeed path), so the reviewer's point 1 cannot explain the
+USB2 no-SETUP boundary; it is kept as the new default because it matches the
+qpr1 time base, and the full-SS A/B of the poll change remains pending until
+the SS path is revisited. The post-POR settle (point 5) acts on the
+attach-reaching USB2 path and is now a reproduced negative. The remaining
+reviewer concern (point 3 analog rails) has no host-readable state without a
+protocol analyzer; the vote-based evidence stands.
+
 ## Next source-directed investigation
 
 | Order | Check | Result | Why |
