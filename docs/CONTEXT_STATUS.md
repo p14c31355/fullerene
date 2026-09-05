@@ -22,9 +22,11 @@ poll only the selected queue. Window results map to `1 same`, `2..4 changed`,
 ADB→Fastboot observer-isolation runs after these changes were:
 `1068508.0` clean baseline (Android after 38 s), `1070466.0` signal-probe only
 (Android after 42 s), and `1072643.0` descriptor-window RXINFOQ (Android after
-51 s). All accepted `fastboot boot`, but none produced a Fullerene HS attach or
-Run/Stop pair count; no SPACE_AVAILABLE category is claimed. Artifact SHA files
-are retained in each run directory.
+51 s). Current HEAD bare-pullup control `1085078.0` also returned to Android
+after 38 s without a host-visible Fullerene attach. All accepted `fastboot boot`,
+but none produced a Fullerene HS attach or Run/Stop pair count; no
+SPACE_AVAILABLE category is claimed. Artifact SHA files are retained in each
+run directory.
 
 ## Corrected SPACE_AVAILABLE transport
 
