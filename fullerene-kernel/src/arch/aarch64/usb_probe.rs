@@ -681,6 +681,12 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // Re-issue the Linux soft_connect tail after a failed handoff. Success enumerates; failure schedules
     // a status-coded APSS bite: 1=+2s, 4=+6s, 5/6=+10s, 0/8=Run/Stop reached with a host-visible blip if
     // available. T+37-39/-110 can also mean a secure/unwritable WDT.
+    // All DWC3 free-space selectors own the transport and must not inherit the
+    // legacy U0-arm marker, which can stop/start the core before the first
+    // attach becomes host-visible.
+    let free_gate = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+        .filter(|value| value.starts_with("dwc3-free-"))
+        .is_some();
     // A SUCCESSFUL handoff must NOT be rescued: re-running the tail on a
     // live gadget wedges endpoint commands (CMDACT races on re-Run/Stop)
     // and the un-petted rescue time crosses the ~17 s unknown watchdog,
@@ -697,7 +703,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         5 | 6 => usb::u0_arm_wdt_bite(10),
         // A 0/8 blip proves a running core and U0; its presence/absence distinguishes dead EP0 from failed HS
         // training.
-        0 | 8 => usb::u0_arm_set_blips(1),
+        0 | 8 if !free_gate => usb::u0_arm_set_blips(1),
         _ => {}
     }
     // Clear queued transport blips for diag readouts so they own every
@@ -707,6 +713,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         || cmd_gate_is("sof")
     // forcehs is an enumeration attempt; do not reset it with a blip.
         || cmd_gate_is("forcehs")
+        || free_gate
     {
         usb::u0_arm_set_blips(0);
     }
@@ -762,7 +769,9 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     loop {
         usb::wdt_pet();
         usb::poll();
-        usb::trace_dwc3_debug_sample();
+        if let Some(queue) = usb::dwc3_debug_window_queue() {
+            usb::trace_dwc3_debug_window_sample(queue);
+        }
         // `setup-cut` is a one-shot protocol-boundary probe. The latch is set
         // only after the EP0 setup TRB has been DMAed/parsed; stop immediately
         // so the host journal can distinguish "SETUP reached software" from
@@ -1314,7 +1323,17 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             // one completed stop/run pair is one host disconnect/re-attach
             // observation. Code 6 is reserved for invalid/unavailable.
             if selector.starts_with("dwc3-free-") {
-                usb::runstop_blips_fast(code);
+                let pairs = if selector.starts_with("dwc3-free-descriptor-window-") {
+                    match code {
+                        1 => 1,      // same as baseline
+                        2..=4 => 2, // changed: decreased/increased/both
+                        6 => 3,      // invalid/unavailable
+                        _ => 0,
+                    }
+                } else {
+                    code
+                };
+                usb::runstop_blips_fast(pairs);
             } else {
                 for _ in 0..code {
                     let _ = usb::gate_true_stop_device();

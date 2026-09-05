@@ -869,12 +869,12 @@ Descriptor-window selectors compare the post-Run/Stop baseline with polling
 min/max and return `1=same`, `2=decreased`, `3=increased`, `4=both`, or
 `6=unavailable`.
 
-The implementation is build-verified. Physical run `630881.0` used
-`dwc3-free-entry-rxreq` after an ADB→Fastboot transition and `fastboot boot`.
-The probe reached the normal fallback path and Android `18d1:4ee7` returned,
-but the host log contained no Fullerene HS attach and no Run/Stop pair count;
-therefore no `SPACE_AVAILABLE` category is claimed. Artifact SHA:
-`b8f5573b4df681322fd6e15a8ad3fa8d8f790a3a057d20f338efcadbd2df6b5a`.
+The implementation is build-verified. Observer-isolation ADB→Fastboot runs
+`1068508.0` (clean baseline), `1070466.0` (signal-probe only), and `1072643.0`
+(`dwc3-free-descriptor-window-rxinfo`) all accepted `fastboot boot` and
+returned to Android, but none produced a Fullerene HS attach or Run/Stop pair
+count. Therefore no `SPACE_AVAILABLE` category is claimed. Artifact SHA files
+are retained in each run directory.
 
 ## Source-aligned transport correction
 
@@ -889,8 +889,8 @@ by the corrected observer.
   **25th run — `pub` gate (diag code readout):**
   - Run `2423773.0`: HS attach at 11:26:39, descriptor -110 at 11:26:44, Android at 11:27:05.
   - Return time = attach+26s = observation(5s) + park(22s) = 10 + code*12 where code=1.
-  - **diag_readout_code = 1**: no SETUP token ever reached EP0.
-  - This is the final confirmation: the DWC3 never receives any USB2 data (no SOF, no SETUP).
+  - **diag_readout_code = 1**: no SETUP token reached EP0 in that historical diagnostic path.
+  - Historical interpretation "DWC3 never receives any USB2 data" is withdrawn as a global closure: later `GDBGFIFOSPACE` reads are `SPACE_AVAILABLE`, not occupancy, and remain to be decoded without observer contamination.
 
   **Software-only follow-up — Full-Speed and internal DWC3 debug observation:**
   - Run `190834.0` used the already-wired `--dcfg-fullspeed` diagnostic on the fixed direct USB2 baseline. The host reported `new full-speed USB device`, proving DCFG.FULLSPEED changed the negotiated host path, but no descriptor response arrived; Android `18d1:4ee7` returned and `boot-reason=watchdog`. Artifact SHA `9b8b57af06b70ca3cd674c23f9bab929743a59e5ab25ade8303c997806f1d296`. This rules out only the narrow HS-only hypothesis.

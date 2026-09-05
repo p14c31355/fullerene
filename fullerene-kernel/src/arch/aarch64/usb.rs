@@ -1489,8 +1489,6 @@ pub fn trace_dwc3_boundary() {
 pub fn trace_dwc3_debug_sample() {
     unsafe {
         let mut values = [0u32; 8];
-        // Linux queue types: TXFIFO, RXFIFO, TXREQQ, RXREQQ, RXINFOQ,
-        // PSTATQ, DESCFETCHQ, EVENTQ. EP0 OUT is endpoint 0.
         for queue_type in 0..8u32 {
             write(
                 GDBGFIFOSPACE,
@@ -1498,42 +1496,40 @@ pub fn trace_dwc3_debug_sample() {
             );
             values[queue_type as usize] = read(GDBGFIFOSPACE) >> GDBGFIFOSPACE_SPACE_SHIFT;
         }
-        let mut lsp0 = 0u32;
-        let mut lsp_selector_diff_mask = 0u32;
-        for selector in 0..16u32 {
-            write(
-                GDBGLSPMUX,
-                (selector << GDBGLSPMUX_DEVSELECT_SHIFT) & 0xf0,
-            );
-            let value = read(GDBGLSP);
-            if selector == 0 {
-                lsp0 = value;
-            } else if value != lsp0 {
-                lsp_selector_diff_mask |= 1 << selector;
-            }
-        }
+        trace::live_dwc3_debug_sample(values, [0; 16], read(GDBGEPINFO0), read(GDBGEPINFO1));
         trace_event(TRACE_DWC3_DEBUG, 0, values[0], values[1], values[2], values[3]);
         trace_event(TRACE_DWC3_DEBUG, 1, values[4], values[5], values[6], values[7]);
-        let mut lsp = [0u32; 16];
-        lsp[0] = lsp0;
-        for selector in 1..16u32 {
-            write(GDBGLSPMUX, (selector << GDBGLSPMUX_DEVSELECT_SHIFT) & 0xf0);
-            lsp[selector as usize] = read(GDBGLSP);
+    }
+}
+
+pub fn trace_dwc3_debug_window_sample(queue: usize) {
+    unsafe {
+        if queue >= DWC3_DEBUG_QUEUE_COUNT {
+            return;
         }
-        trace::live_dwc3_debug_sample(
-            values,
-            lsp,
-            read(GDBGEPINFO0),
-            read(GDBGEPINFO1),
+        write(
+            GDBGFIFOSPACE,
+            ((queue as u32) << GDBGFIFOSPACE_TYPE_SHIFT) & GDBGFIFOSPACE_TYPE_MASK,
         );
-        trace_event(
-            TRACE_DWC3_DEBUG,
-            2,
-            lsp0,
-            lsp_selector_diff_mask,
-            read(GDBGEPINFO0),
-            read(GDBGEPINFO1),
-        );
+        let value = read(GDBGFIFOSPACE) >> GDBGFIFOSPACE_SPACE_SHIFT;
+        trace::live_dwc3_debug_window_sample(queue, value);
+    }
+}
+
+/// Return the one queue selected by a descriptor-window readout. Entry/stage
+/// selectors deliberately return None so the observation loop performs no
+/// continuous GDBGFIFOSPACE or GDBGLSPMUX writes after the stage latch.
+pub fn dwc3_debug_window_queue() -> Option<usize> {
+    match option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") {
+        Some("dwc3-free-descriptor-window-txfifo") => Some(DWC3_DEBUG_QUEUE_TXFIFO),
+        Some("dwc3-free-descriptor-window-rxfifo") => Some(DWC3_DEBUG_QUEUE_RXFIFO),
+        Some("dwc3-free-descriptor-window-txreq") => Some(DWC3_DEBUG_QUEUE_TXREQQ),
+        Some("dwc3-free-descriptor-window-rxreq") => Some(DWC3_DEBUG_QUEUE_RXREQQ),
+        Some("dwc3-free-descriptor-window-rxinfo") => Some(DWC3_DEBUG_QUEUE_RXINFOQ),
+        Some("dwc3-free-descriptor-window-pstat") => Some(DWC3_DEBUG_QUEUE_PSTATQ),
+        Some("dwc3-free-descriptor-window-descfetch") => Some(DWC3_DEBUG_QUEUE_DESCFETCHQ),
+        Some("dwc3-free-descriptor-window-eventq") => Some(DWC3_DEBUG_QUEUE_EVENTQ),
+        _ => None,
     }
 }
 
@@ -9940,9 +9936,12 @@ pub fn u0_arm_window_recovery() -> u32 {
 /// after the failed handoff would be invisible; the poll loop emits it via
 /// `try_u0_blip` when the core reports the link ON.
 pub fn u0_arm_set_blips(count: u32) {
-    if option_env!("FULLERENE_USB_U0_ARM_PROBE")
-        .filter(|value| *value != "0")
-        .is_none()
+    // Clearing is unconditional so a diagnostic gate can take ownership of
+    // the transport even when the legacy U0-arm feature was enabled.
+    if count != 0
+        && option_env!("FULLERENE_USB_U0_ARM_PROBE")
+            .filter(|value| *value != "0")
+            .is_none()
     {
         return;
     }

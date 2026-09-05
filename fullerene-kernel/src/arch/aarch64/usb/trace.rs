@@ -192,6 +192,8 @@ static mut LIVE_DWC3_DEBUG_WINDOW_MIN: [u32; DWC3_DEBUG_QUEUE_COUNT] =
     [u32::MAX; DWC3_DEBUG_QUEUE_COUNT];
 static mut LIVE_DWC3_DEBUG_WINDOW_MAX: [u32; DWC3_DEBUG_QUEUE_COUNT] =
     [0; DWC3_DEBUG_QUEUE_COUNT];
+static mut LIVE_DWC3_DEBUG_WINDOW_SAMPLES: [u32; DWC3_DEBUG_QUEUE_COUNT] =
+    [0; DWC3_DEBUG_QUEUE_COUNT];
 
 /// Initialize the retained trace header and append a boot boundary marker.
 /// The entry array is intentionally not cleared, so a subsequent boot can
@@ -302,6 +304,7 @@ pub fn trace_reset_head_for_boot() {
         LIVE_DWC3_DEBUG_WINDOW_BASELINE = [0; DWC3_DEBUG_QUEUE_COUNT];
         LIVE_DWC3_DEBUG_WINDOW_MIN = [u32::MAX; DWC3_DEBUG_QUEUE_COUNT];
         LIVE_DWC3_DEBUG_WINDOW_MAX = [0; DWC3_DEBUG_QUEUE_COUNT];
+        LIVE_DWC3_DEBUG_WINDOW_SAMPLES = [0; DWC3_DEBUG_QUEUE_COUNT];
         core::arch::asm!("dsb sy", options(nostack));
     }
 }
@@ -387,6 +390,8 @@ pub(super) fn live_dwc3_debug_sample(
                     LIVE_DWC3_DEBUG_WINDOW_MIN[index].min(queues[index]);
                 LIVE_DWC3_DEBUG_WINDOW_MAX[index] =
                     LIVE_DWC3_DEBUG_WINDOW_MAX[index].max(queues[index]);
+                LIVE_DWC3_DEBUG_WINDOW_SAMPLES[index] =
+                    LIVE_DWC3_DEBUG_WINDOW_SAMPLES[index].saturating_add(1);
             }
         }
         for index in 0..16 {
@@ -421,7 +426,23 @@ pub(super) fn live_dwc3_debug_stage(stage: u32, queues: [u32; DWC3_DEBUG_QUEUE_C
                 LIVE_DWC3_DEBUG_WINDOW_BASELINE = queues;
                 LIVE_DWC3_DEBUG_WINDOW_MIN = queues;
                 LIVE_DWC3_DEBUG_WINDOW_MAX = queues;
+                LIVE_DWC3_DEBUG_WINDOW_SAMPLES = [0; DWC3_DEBUG_QUEUE_COUNT];
                 LIVE_DWC3_DEBUG_WINDOW_VALID = true;
+            }
+        }
+    }
+}
+
+pub(super) fn live_dwc3_debug_window_sample(queue: usize, free_space: u32) {
+    if queue < DWC3_DEBUG_QUEUE_COUNT {
+        unsafe {
+            if LIVE_DWC3_DEBUG_WINDOW_VALID {
+                LIVE_DWC3_DEBUG_WINDOW_MIN[queue] =
+                    LIVE_DWC3_DEBUG_WINDOW_MIN[queue].min(free_space);
+                LIVE_DWC3_DEBUG_WINDOW_MAX[queue] =
+                    LIVE_DWC3_DEBUG_WINDOW_MAX[queue].max(free_space);
+                LIVE_DWC3_DEBUG_WINDOW_SAMPLES[queue] =
+                    LIVE_DWC3_DEBUG_WINDOW_SAMPLES[queue].saturating_add(1);
             }
         }
     }
@@ -777,7 +798,7 @@ fn debug_descriptor_window_metric(queue: usize) -> u32 {
         let baseline = LIVE_DWC3_DEBUG_WINDOW_BASELINE[queue];
         let min_free = LIVE_DWC3_DEBUG_WINDOW_MIN[queue];
         let max_free = LIVE_DWC3_DEBUG_WINDOW_MAX[queue];
-        if min_free == u32::MAX {
+        if min_free == u32::MAX || LIVE_DWC3_DEBUG_WINDOW_SAMPLES[queue] == 0 {
             return 6;
         }
         let decreased = min_free < baseline;

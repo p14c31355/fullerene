@@ -11,6 +11,21 @@ commands, timestamps, hashes, and per-run notes.
 | Pixel 4a 5G (Bramble) USB handoff | Fullerene enumerates as `idVendor=1234` | Not reached |
 | Recovery safety | Failed handoff returns to Android without flashing or erasing | Confirmed with `fastboot boot` runs |
 
+## Observer-isolation follow-up
+
+Observer-isolation follow-up is now implemented: free-space gates clear the
+legacy U0-arm blip unconditionally, entry/stage gates do not continuously poll
+GDBGFIFOSPACE/GDBGLSPMUX after their stage latch, and descriptor-window gates
+poll only the selected queue. Window results map to `1 same`, `2..4 changed`,
+`6 unavailable`, then publish 1/2/3 Run/Stop pairs respectively.
+
+ADB→Fastboot observer-isolation runs after these changes were:
+`1068508.0` clean baseline (Android after 38 s), `1070466.0` signal-probe only
+(Android after 42 s), and `1072643.0` descriptor-window RXINFOQ (Android after
+51 s). All accepted `fastboot boot`, but none produced a Fullerene HS attach or
+Run/Stop pair count; no SPACE_AVAILABLE category is claimed. Artifact SHA files
+are retained in each run directory.
+
 ## Corrected SPACE_AVAILABLE transport
 
 The Linux-equivalent `GDBGFIFOSPACE` observer now treats bits 31:16 as
