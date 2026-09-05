@@ -352,15 +352,22 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_HSPHY_PARAM_OVERRIDE));
         #[cfg(fullerene_aarch64_usb_hsphy_qrd_override)]
         {
-            // The Pixel QRD overlay uses 0xc8 for QUSB2 TUNE2 at 0x70,
-            // while the factory Bramble DT uses 0x85. Keep this as an
-            // opt-in physical A/B; the normal DT-selected value is intact.
+            // Keep the QRD alternate explicit. The exact-build stock
+            // fallback uses 0x85 at 0x70; this flag changes only that pair.
             hsphy_param_override[1] = (0x70, 0xc8);
         }
+        #[cfg(fullerene_aarch64_usb_hsphy_legacy_fallback)]
+        {
+            // Physical control only: retain the historical two-pair form and
+            // omit TUNE3. The exact-build stock three-pair form is the normal
+            // default after the factory-DTB extraction.
+            hsphy_param_override[0] = (0x6c, 0x63);
+            hsphy_param_override[1] = (0x70, 0x85);
+            hsphy_param_override[2] = (usize::MAX, 0);
+        }
         for &(offset, value) in hsphy_param_override.iter() {
-            // The production Bramble/Barbet table has only two QUSB2
-            // overrides. A trailing sentinel preserves the fixed table shape
-            // and must be skipped exactly like the DT's absent third entry.
+            // The fixed table may end in a sentinel for the historical
+            // two-pair A/B; skip it exactly like an absent DT entry.
             if offset == usize::MAX {
                 continue;
             }

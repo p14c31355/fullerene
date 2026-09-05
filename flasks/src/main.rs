@@ -325,6 +325,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_no_smmu: bool,
 
+    /// Force cache clean/invalidate operations for the standalone Bramble USB
+    /// probe's DMA window instead of its no-MMU uncached fast path (A/B).
+    #[arg(long)]
+    usb_gadget_handoff_dma_cache_maintenance: bool,
+
     /// Reuse the Fastboot DWC3 event-ring DMA page for the EP0 probe. This is
     /// a hardware differential for firmware-owned SMMU/DMA visibility.
     #[arg(long)]
@@ -376,6 +381,11 @@ struct Args {
     /// USB2 handoff instead of the legacy helper's local RTUNE/delay steps.
     #[arg(long)]
     usb_gadget_handoff_hsphy_source_exact: bool,
+
+    /// Bramble physical control: force the historical HS-PHY tuning pairs
+    /// 0x63/0x85; the qpr1 source-confirmed pairs remain the default.
+    #[arg(long)]
+    usb_gadget_handoff_hsphy_legacy_fallback: bool,
 
     /// Run the HS-PHY reset/init before the DWC3 device-core reset, matching
     /// qpr1's msm_usb2_phy_probe() ownership order.
@@ -530,6 +540,11 @@ struct Args {
     /// sequence immediately before the final DWC3 Run/Stop transition.
     #[arg(long)]
     usb_gadget_handoff_gadget_restart_at_runstop: bool,
+
+    /// Bramble/qpr1 differential: skip the initial EP0 construction and run
+    /// the Android gadget-start sequence only at the final Run/Stop boundary.
+    #[arg(long)]
+    usb_gadget_handoff_gadget_start_only_at_runstop: bool,
 
     /// Bramble differential: reproduce Qualcomm's
     /// DWC3_CONTROLLER_NOTIFY_CLEAR_DB immediately after the device-core
@@ -754,6 +769,26 @@ struct Args {
     /// direct gadget Run/Stop boundary.
     #[arg(long)]
     usb_gadget_handoff_usb2_susphy: bool,
+
+    /// Bramble differential: retain qpr1's USB2 SUSPHY through endpoint and
+    /// transfer-resource setup; endpoint commands clear it transiently.
+    #[arg(long)]
+    usb_gadget_handoff_usb2_source_susphy: bool,
+
+    /// Bramble differential: force the qpr1 USB2 SUSPHY/ENBLSLPM guard around
+    /// every endpoint command instead of trusting stale Fastboot DSTS speed.
+    #[arg(long)]
+    usb_gadget_handoff_usb2_cmd_guard: bool,
+
+    /// Bramble differential: use qpr1's exact DWC3 device-event enable mask,
+    /// including vendor, overflow, command-complete, and erratic-error bits.
+    #[arg(long)]
+    usb_gadget_handoff_usb2_source_exact_devten: bool,
+
+    /// Bramble differential: apply qpr1's USB2 gadget Run/Stop write, changing
+    /// only the source-required DCTL.RUN_STOP bit.
+    #[arg(long)]
+    usb_gadget_handoff_usb2_source_exact_runstop: bool,
 
     /// Bramble differential: clear the DWC3 USB2 sleep-mode bits before the
     /// direct gadget handoff, matching qpr1 dwc3_dis_sleep_mode().
@@ -1269,6 +1304,18 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-no-smmu requires a Bramble gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_dma_cache_maintenance
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-dma-cache-maintenance requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_direct
         && (!args.usb_gadget_handoff_probe && !args.usb_gadget_handoff_super_speed_probe
             || target.arch != Arch::Aarch64
@@ -1395,6 +1442,18 @@ fn main() -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb-gadget-handoff-hsphy-source-exact requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_hsphy_legacy_fallback
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-hsphy-legacy-fallback requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_before_reset
@@ -1565,6 +1624,20 @@ fn main() -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb-gadget-handoff-gadget-restart-at-runstop requires the Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_gadget_start_only_at_runstop
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || args.usb_gadget_handoff_super_speed_probe
+            || !args.usb_gadget_handoff_gadget_restart_at_runstop
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-gadget-start-only-at-runstop requires direct USB2 gadget restart at Run/Stop on AArch64 Bramble build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_clear_gsi_after_reset
@@ -2147,6 +2220,57 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-usb2-susphy requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_usb2_source_susphy
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-usb2-source-susphy requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_usb2_cmd_guard
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || args.usb_gadget_handoff_super_speed_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-usb2-cmd-guard requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_usb2_source_exact_devten
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || args.usb_gadget_handoff_super_speed_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-usb2-source-exact-devten requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_usb2_source_exact_runstop
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || args.usb_gadget_handoff_super_speed_probe
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-usb2-source-exact-runstop requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_usb2_dis_sleep_mode
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
@@ -2440,6 +2564,8 @@ fn main() -> io::Result<()> {
             Aarch64BuildConfig {
                 probe_env: selected_probe.and_then(|probe| probe.env),
                 gadget_handoff_no_smmu: args.usb_gadget_handoff_no_smmu,
+                gadget_handoff_dma_cache_maintenance:
+                    args.usb_gadget_handoff_dma_cache_maintenance,
                 gadget_handoff_reuse_fastboot_dma: args.usb_gadget_handoff_reuse_fastboot_dma,
                 gadget_handoff_no_transfer_resource: args.usb_gadget_handoff_no_transfer_resource,
                 gadget_handoff_android_resource_order: args
@@ -2451,6 +2577,7 @@ fn main() -> io::Result<()> {
                 android_block_reset: args.usb_gadget_handoff_android_block_reset,
                 refresh_hsphy_power: args.usb_gadget_handoff_refresh_hsphy_power,
                 hsphy_source_exact: args.usb_gadget_handoff_hsphy_source_exact,
+                hsphy_legacy_fallback: args.usb_gadget_handoff_hsphy_legacy_fallback,
                 hsphy_before_reset: args.usb_gadget_handoff_hsphy_before_reset,
                 skip_usb2_phy_reset: args.usb_gadget_handoff_skip_usb2_phy_reset,
                 gadget_handoff_event_ring_size_4096: args.usb_gadget_handoff_event_ring_size_4096,
@@ -2484,6 +2611,8 @@ fn main() -> io::Result<()> {
                 gadget_handoff_event_ring_at_runstop: args.usb_gadget_handoff_event_ring_at_runstop,
                 gadget_handoff_gadget_restart_at_runstop: args
                     .usb_gadget_handoff_gadget_restart_at_runstop,
+                gadget_handoff_gadget_start_only_at_runstop: args
+                    .usb_gadget_handoff_gadget_start_only_at_runstop,
                 gadget_handoff_clear_gsi_after_reset: args.usb_gadget_handoff_clear_gsi_after_reset,
                 gadget_handoff_ep0_initial_512: args.usb_gadget_handoff_ep0_initial_512,
                 gadget_handoff_dcfg_superspeed: args.usb_gadget_handoff_dcfg_superspeed,
@@ -2555,6 +2684,13 @@ fn main() -> io::Result<()> {
                 gadget_handoff_ss_preserve_phy_state: args.usb_gadget_handoff_ss_preserve_phy_state,
                 gadget_handoff_dcfg_ignstrmpp: args.usb_gadget_handoff_dcfg_ignstrmpp,
                 gadget_handoff_usb2_susphy: args.usb_gadget_handoff_usb2_susphy,
+                gadget_handoff_usb2_source_susphy: args
+                    .usb_gadget_handoff_usb2_source_susphy,
+                gadget_handoff_usb2_cmd_guard: args.usb_gadget_handoff_usb2_cmd_guard,
+                gadget_handoff_usb2_source_exact_devten: args
+                    .usb_gadget_handoff_usb2_source_exact_devten,
+                gadget_handoff_usb2_source_exact_runstop: args
+                    .usb_gadget_handoff_usb2_source_exact_runstop,
                 gadget_handoff_usb2_dis_sleep_mode: args.usb_gadget_handoff_usb2_dis_sleep_mode,
                 gadget_handoff_usb2_android_dbm_reset: args
                     .usb_gadget_handoff_usb2_android_dbm_reset,
@@ -2736,6 +2872,7 @@ fn fnv1a64(data: &str) -> u64 {
 struct Aarch64BuildConfig {
     probe_env: Option<&'static str>,
     gadget_handoff_no_smmu: bool,
+    gadget_handoff_dma_cache_maintenance: bool,
     gadget_handoff_reuse_fastboot_dma: bool,
     gadget_handoff_no_transfer_resource: bool,
     gadget_handoff_android_resource_order: bool,
@@ -2746,6 +2883,7 @@ struct Aarch64BuildConfig {
     android_block_reset: bool,
     refresh_hsphy_power: bool,
     hsphy_source_exact: bool,
+    hsphy_legacy_fallback: bool,
     hsphy_before_reset: bool,
     skip_usb2_phy_reset: bool,
     gadget_handoff_event_ring_size_4096: bool,
@@ -2777,6 +2915,7 @@ struct Aarch64BuildConfig {
     gadget_handoff_start_ungated: bool,
     gadget_handoff_event_ring_at_runstop: bool,
     gadget_handoff_gadget_restart_at_runstop: bool,
+    gadget_handoff_gadget_start_only_at_runstop: bool,
     gadget_handoff_clear_gsi_after_reset: bool,
     gadget_handoff_ep0_initial_512: bool,
     gadget_handoff_dcfg_superspeed: bool,
@@ -2821,6 +2960,10 @@ struct Aarch64BuildConfig {
     gadget_handoff_ss_preserve_phy_state: bool,
     gadget_handoff_dcfg_ignstrmpp: bool,
     gadget_handoff_usb2_susphy: bool,
+    gadget_handoff_usb2_source_susphy: bool,
+    gadget_handoff_usb2_cmd_guard: bool,
+    gadget_handoff_usb2_source_exact_devten: bool,
+    gadget_handoff_usb2_source_exact_runstop: bool,
     gadget_handoff_usb2_dis_sleep_mode: bool,
     gadget_handoff_usb2_android_dbm_reset: bool,
     gadget_handoff_ep0_stall_flush: bool,
@@ -2892,6 +3035,7 @@ fn build_aarch64_kernel(
     let Aarch64BuildConfig {
         probe_env,
         gadget_handoff_no_smmu,
+        gadget_handoff_dma_cache_maintenance,
         gadget_handoff_reuse_fastboot_dma,
         gadget_handoff_no_transfer_resource,
         gadget_handoff_android_resource_order,
@@ -2902,6 +3046,7 @@ fn build_aarch64_kernel(
         android_block_reset,
         refresh_hsphy_power,
         hsphy_source_exact,
+        hsphy_legacy_fallback,
         hsphy_before_reset,
         skip_usb2_phy_reset,
         gadget_handoff_event_ring_size_4096,
@@ -2933,6 +3078,7 @@ fn build_aarch64_kernel(
         gadget_handoff_start_ungated,
         gadget_handoff_event_ring_at_runstop,
         gadget_handoff_gadget_restart_at_runstop,
+        gadget_handoff_gadget_start_only_at_runstop,
         gadget_handoff_clear_gsi_after_reset,
         gadget_handoff_ep0_initial_512,
         gadget_handoff_dcfg_superspeed,
@@ -2977,6 +3123,10 @@ fn build_aarch64_kernel(
         gadget_handoff_ss_preserve_phy_state,
         gadget_handoff_dcfg_ignstrmpp,
         gadget_handoff_usb2_susphy,
+        gadget_handoff_usb2_source_susphy,
+        gadget_handoff_usb2_cmd_guard,
+        gadget_handoff_usb2_source_exact_devten,
+        gadget_handoff_usb2_source_exact_runstop,
         gadget_handoff_usb2_dis_sleep_mode,
         gadget_handoff_usb2_android_dbm_reset,
         gadget_handoff_ep0_stall_flush,
@@ -3062,6 +3212,12 @@ fn build_aarch64_kernel(
             "1".to_owned(),
         );
     }
+    if gadget_handoff_dma_cache_maintenance {
+        push_env(
+            "FULLERENE_AARCH64_USB_DMA_CACHE_MAINTENANCE",
+            "1".to_owned(),
+        );
+    }
     if gadget_handoff_reuse_fastboot_dma {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_REUSE_FASTBOOT_DMA",
@@ -3113,6 +3269,12 @@ fn build_aarch64_kernel(
     if hsphy_source_exact {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_HSPHY_SOURCE_EXACT",
+            "1".to_owned(),
+        );
+    }
+    if hsphy_legacy_fallback {
+        push_env(
+            "FULLERENE_AARCH64_USB_HSPHY_LEGACY_FALLBACK",
             "1".to_owned(),
         );
     }
@@ -3272,6 +3434,12 @@ fn build_aarch64_kernel(
     if gadget_handoff_gadget_restart_at_runstop {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_GADGET_RESTART_AT_RUNSTOP",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_gadget_start_only_at_runstop {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_GADGET_START_ONLY_AT_RUNSTOP",
             "1".to_owned(),
         );
     }
@@ -3518,6 +3686,30 @@ fn build_aarch64_kernel(
     if gadget_handoff_usb2_susphy {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SUSPHY",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_usb2_source_susphy {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_SUSPHY",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_usb2_cmd_guard {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_CMD_GUARD",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_usb2_source_exact_devten {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_EXACT_DEVTEN",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_usb2_source_exact_runstop {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_EXACT_RUNSTOP",
             "1".to_owned(),
         );
     }

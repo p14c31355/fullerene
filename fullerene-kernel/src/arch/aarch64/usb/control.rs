@@ -272,17 +272,33 @@ pub(super) unsafe fn release_usb3_phy_reset() {
 /// wait, so both the checked and no-readback paths launch the same transition.
 unsafe fn prepare_run_stop_device(is_on: bool) -> u32 {
     unsafe {
-        #[cfg(fullerene_aarch64_usb_gadget_handoff_no_usb2_runstop_guard)]
+        #[cfg(any(
+            fullerene_aarch64_usb_gadget_handoff_no_usb2_runstop_guard,
+            fullerene_aarch64_usb_gadget_handoff_usb2_source_exact_runstop
+        ))]
         if is_on {
             // The Bramble downstream dwc3-gadget run/stop path does not use
             // mainline's temporary SUSPHY/ENBLSLPM clear. Keep this narrow
             // A/B for the direct USB2 handoff so the DCTL transition can be
             // compared with the vendor source without changing the normal
             // Linux-compatible path.
-            let dctl = read(DCTL);
+            let mut dctl = read(DCTL);
+            if cfg!(any(
+                fullerene_aarch64_usb_gadget_handoff_source_exact_runstop,
+                fullerene_aarch64_usb_gadget_handoff_usb2_source_exact_runstop
+            )) && matches!(read(GSNPSID) >> 16, DWC31_IP | DWC32_IP)
+            {
+                // The source-exact USB2 variant returns through this early
+                // path, so it needs the same qpr1 revision-gated
+                // KEEP_CONNECT clear as the checked path below.
+                dctl &= !DCTL_KEEP_CONNECT;
+            }
             write(
                 DCTL,
-                if cfg!(fullerene_aarch64_usb_gadget_handoff_source_exact_runstop) {
+                if cfg!(any(
+                    fullerene_aarch64_usb_gadget_handoff_source_exact_runstop,
+                    fullerene_aarch64_usb_gadget_handoff_usb2_source_exact_runstop
+                )) {
                     dctl | DCTL_RUN_STOP
                 } else {
                     run_stop_value(dctl, read(GSNPSID))
@@ -298,13 +314,26 @@ unsafe fn prepare_run_stop_device(is_on: bool) -> u32 {
         }
 
         let mut dctl = read(DCTL);
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_source_exact_runstop) {
+        if cfg!(any(
+            fullerene_aarch64_usb_gadget_handoff_source_exact_runstop,
+            fullerene_aarch64_usb_gadget_handoff_usb2_source_exact_runstop
+        )) {
             // Android msm's gadget_run_stop() re-reads DCTL after gadget
             // start and applies the source-required Run/Stop bit without
-            // rewriting HIRD/APPL1RES/KEEP_CONNECT. Keep this A/B narrow so
-            // the immediate readback can distinguish a rejected bit write
-            // from a local policy rewrite.
+            // rewriting HIRD/APPL1RES. The qpr1 revision-gated
+            // KEEP_CONNECT clear is retained below for DWC_usb31. Keep this
+            // A/B narrow so the immediate readback can distinguish a
+            // rejected bit write from a local policy rewrite.
             if is_on {
+                // qpr1's dwc3_gadget_run_stop() clears KEEP_CONNECT on
+                // revisions >= 1.94a before __dwc3_gadget_start(). For a
+                // DWC_usb31 core the vendor driver represents VER_NUMBER
+                // with DWC3_REVISION_IS_DWC31, so Bramble's 0x3331 core is
+                // in that revision-gated branch as well. Preserve the
+                // source-exact policy while changing no other DCTL fields.
+                if matches!(read(GSNPSID) >> 16, DWC31_IP | DWC32_IP) {
+                    dctl &= !DCTL_KEEP_CONNECT;
+                }
                 dctl |= DCTL_RUN_STOP;
             } else {
                 dctl &= !DCTL_RUN_STOP;

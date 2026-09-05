@@ -129,6 +129,10 @@ struct LoopArgs {
     stop_after_stage: Option<u32>,
     #[arg(long)]
     no_smmu: bool,
+    /// Force cache clean/invalidate operations for the standalone probe's
+    /// DMA window, which normally uses the no-MMU uncached fast path (A/B).
+    #[arg(long)]
+    dma_cache_maintenance: bool,
     /// Reuse Fastboot's event-ring DMA page instead of the linker-reserved
     /// EP0 DMA objects. This is a Rust-only firmware-mapping differential.
     #[arg(long)]
@@ -258,6 +262,10 @@ struct LoopArgs {
     /// Run/Stop.
     #[arg(long)]
     gadget_restart_at_runstop: bool,
+    /// Skip the initial EP0 construction and perform the Android gadget-start
+    /// sequence only at the final Run/Stop boundary (source-order A/B).
+    #[arg(long)]
+    gadget_start_only_at_runstop: bool,
     /// Reproduce Qualcomm's DWC3_CONTROLLER_NOTIFY_CLEAR_DB immediately
     /// after the device-core reset (A/B).
     #[arg(long)]
@@ -266,6 +274,10 @@ struct LoopArgs {
     /// USB2 handoff instead of the legacy helper's local RTUNE/delay steps.
     #[arg(long)]
     hsphy_source_exact: bool,
+    /// Force the historical Bramble HS-PHY tuning pairs 0x63/0x85 for a
+    /// physical control run; the qpr1 source-confirmed pairs remain default.
+    #[arg(long)]
+    hsphy_legacy_fallback: bool,
     /// Run the HS-PHY reset/init before the DWC3 device-core reset, matching
     /// qpr1's msm_usb2_phy_probe() ownership order (A/B).
     #[arg(long)]
@@ -429,6 +441,22 @@ struct LoopArgs {
     /// Restore USB2 SUSPHY immediately before the direct Run/Stop boundary.
     #[arg(long)]
     usb2_susphy: bool,
+    /// Keep USB2 SUSPHY enabled through qpr1's endpoint/resource setup;
+    /// endpoint commands still clear it transiently as Linux does (A/B).
+    #[arg(long)]
+    usb2_source_susphy: bool,
+    /// Use qpr1's exact DWC3 device-event enable mask, including vendor,
+    /// overflow, command-complete, and erratic-error events (A/B).
+    #[arg(long)]
+    usb2_source_exact_devten: bool,
+    /// Force qpr1's USB2 SUSPHY/ENBLSLPM guard around every EP command;
+    /// this avoids trusting a stale Fastboot DSTS speed value (A/B).
+    #[arg(long)]
+    usb2_source_exact_cmd_guard: bool,
+    /// Apply qpr1's USB2 gadget Run/Stop write: keep the current DCTL policy
+    /// and change only the source-required RUN_STOP bit (A/B).
+    #[arg(long)]
+    usb2_source_exact_runstop: bool,
     /// Clear DWC3 USB2 sleep-mode bits before the direct gadget handoff,
     /// matching qpr1 dwc3_dis_sleep_mode() (A/B).
     #[arg(long)]
@@ -658,6 +686,7 @@ impl Default for LoopArgs {
             hyper_bare: false,
             stop_after_stage: None,
             no_smmu: false,
+            dma_cache_maintenance: false,
             reuse_fastboot_dma: false,
             no_transfer_resource: false,
             android_resource_order: false,
@@ -697,8 +726,10 @@ impl Default for LoopArgs {
             start_ungated: false,
             event_ring_at_runstop: false,
             gadget_restart_at_runstop: false,
+            gadget_start_only_at_runstop: false,
             clear_gsi_after_reset: false,
             hsphy_source_exact: false,
+            hsphy_legacy_fallback: false,
             hsphy_before_reset: false,
             ep0_initial_512: false,
             dcfg_superspeed: false,
@@ -743,6 +774,10 @@ impl Default for LoopArgs {
             ss_preserve_phy_state: false,
             dcfg_ignstrmpp: false,
             usb2_susphy: false,
+            usb2_source_susphy: false,
+            usb2_source_exact_devten: false,
+            usb2_source_exact_cmd_guard: false,
+            usb2_source_exact_runstop: false,
             usb2_dis_sleep_mode: false,
             usb2_android_dbm_reset: false,
             ep0_stall_flush: false,
@@ -1548,6 +1583,14 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--gadget-restart-at-runstop requires --direct-handoff or --super-speed",
         ));
     }
+    if args.gadget_start_only_at_runstop
+        && (!args.direct_handoff || !args.gadget_restart_at_runstop || args.super_speed)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--gadget-start-only-at-runstop requires direct USB2 --gadget-restart-at-runstop",
+        ));
+    }
     if args.clear_gsi_after_reset && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1558,6 +1601,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--hsphy-source-exact requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_legacy_fallback && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-legacy-fallback requires --direct-handoff",
         ));
     }
     if args.hsphy_before_reset && !args.direct_handoff {
@@ -1630,6 +1679,30 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb2-susphy requires --direct-handoff",
+        ));
+    }
+    if args.usb2_source_susphy && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-susphy requires --direct-handoff",
+        ));
+    }
+    if args.usb2_source_exact_devten && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-exact-devten requires --direct-handoff",
+        ));
+    }
+    if args.usb2_source_exact_cmd_guard && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-exact-cmd-guard requires --direct-handoff",
+        ));
+    }
+    if args.usb2_source_exact_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-exact-runstop requires --direct-handoff",
         ));
     }
     if args.usb2_dis_sleep_mode && !args.direct_handoff {
@@ -2375,6 +2448,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.no_smmu {
         arguments.push("--usb-gadget-handoff-no-smmu".to_owned());
     }
+    if args.dma_cache_maintenance {
+        arguments.push("--usb-gadget-handoff-dma-cache-maintenance".to_owned());
+    }
     if args.reuse_fastboot_dma {
         arguments.push("--usb-gadget-handoff-reuse-fastboot-dma".to_owned());
     }
@@ -2493,11 +2569,17 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.gadget_restart_at_runstop {
         arguments.push("--usb-gadget-handoff-gadget-restart-at-runstop".to_owned());
     }
+    if args.gadget_start_only_at_runstop {
+        arguments.push("--usb-gadget-handoff-gadget-start-only-at-runstop".to_owned());
+    }
     if args.clear_gsi_after_reset {
         arguments.push("--usb-gadget-handoff-clear-gsi-after-reset".to_owned());
     }
     if args.hsphy_source_exact {
         arguments.push("--usb-gadget-handoff-hsphy-source-exact".to_owned());
+    }
+    if args.hsphy_legacy_fallback {
+        arguments.push("--usb-gadget-handoff-hsphy-legacy-fallback".to_owned());
     }
     if args.hsphy_before_reset {
         arguments.push("--usb-gadget-handoff-hsphy-before-reset".to_owned());
@@ -2630,6 +2712,18 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.usb2_susphy {
         arguments.push("--usb-gadget-handoff-usb2-susphy".to_owned());
+    }
+    if args.usb2_source_susphy {
+        arguments.push("--usb-gadget-handoff-usb2-source-susphy".to_owned());
+    }
+    if args.usb2_source_exact_devten {
+        arguments.push("--usb-gadget-handoff-usb2-source-exact-devten".to_owned());
+    }
+    if args.usb2_source_exact_cmd_guard {
+        arguments.push("--usb-gadget-handoff-usb2-cmd-guard".to_owned());
+    }
+    if args.usb2_source_exact_runstop {
+        arguments.push("--usb-gadget-handoff-usb2-source-exact-runstop".to_owned());
     }
     if args.usb2_dis_sleep_mode {
         arguments.push("--usb-gadget-handoff-usb2-dis-sleep-mode".to_owned());

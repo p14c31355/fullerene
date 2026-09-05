@@ -156,21 +156,16 @@ const QMP_INIT: [(usize, u32); 146] = [
 /// dropping it.
 pub(super) static mut ACTIVE_QMP_INIT: [(usize, u32); 146] = QMP_INIT;
 pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
-// The compiled fallback must match the Google Bramble production device
-// tree: qcom,param-override-seq has exactly two entries, TUNE1 (0x6c) and
-// TUNE2 (0x70). NOTE (2026-09-04 round 3): the public qpr1 source is
-// three-entry in both lito-usb.dtsi and lito-qrd.dtsi, so this two-entry
-// fallback does NOT match the published SoC source; it matches the
-// production form the round-3 readout attributed to the handset DTB, which
-// the round-4 probe then showed is the compiled fallback path anyway. Both
-// forms have now failed identically on hardware (TUNE3 present in every
-// pre-2026-09-04 run, absent here), so this default is an experiment
-// boundary, not a verified production match. Restore the qpr1 three-entry
-// form via FULLERENE_AARCH64_USB_HSPHY_QRD_OVERRIDE-style flags if a new
-// source distinction appears. The trailing sentinel keeps the fixed table
-// shape and is skipped by the writer.
+// The compiled fallback matches the exact-build Bramble stock DTB extracted
+// from Google's UP1A.231105.001.B2 factory package:
+// qcom,param-override-seq = <0x63 0x6c 0x85 0x70 0x17 0x74>. The first cell
+// is the value and the second is the register offset; the writer below stores
+// the pair as (offset, value). This fallback is used when `fastboot boot`
+// supplies no usable property, so the exact stock package is the strongest
+// available board-specific source. The trailing sentinel keeps the fixed
+// table shape and is skipped by the writer.
 pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] =
-    [(0x6c, 0x63), (0x70, 0x85), (usize::MAX, 0)];
+    [(0x6c, 0x63), (0x70, 0x85), (0x74, 0x17)];
 
 /// Which table source the current boot is using. Recorded by
 /// `install_dt_phy_sequences()` and published through the retained-trace
@@ -272,9 +267,9 @@ pub fn hsphy_prop_code(aspect: &str) -> u32 {
                 _ => return 0,
             };
             match (aspect, value, offset) {
-                ("pair0", 0x63, 0x6c) => 1,
-                ("pair1", 0x85, 0x70) => 1,
-                ("pair1", 0xc8, 0x70) => 2,
+                ("pair0", 0x67, 0x6c) => 1,
+                ("pair1", 0xc8, 0x70) => 1,
+                ("pair0", 0x63, 0x6c) | ("pair1", 0x85, 0x70) => 2,
                 ("pair2", 0x17, 0x74) => 1,
                 _ => 3,
             }

@@ -123,34 +123,5 @@ fn is_mmio(physical: u64) -> bool {
     {
         return true;
     }
-    // The DWC3 DMA objects (event ring, TRBs, setup/response buffers) and the
-    // retained trace live in the .usb_dma/.usb_trace sections. The USB master
-    // is NOT hardware-coherent with the CPU on this SoC, and a stale cache
-    // line here makes the controller read pre-prepare garbage (or the CPU
-    // miss controller writes), so map the whole containing 2 MiB block as
-    // Device memory: every CPU access goes straight to DRAM and all explicit
-    // cache maintenance for these objects becomes a no-op by construction.
-    let dma_start = unsafe { core::ptr::addr_of!(__usb_dma_start) } as u64;
-    let dma_end = unsafe { core::ptr::addr_of!(__usb_dma_end) } as u64;
-    let trace_start = unsafe { core::ptr::addr_of!(__usb_trace_start) } as u64;
-    let trace_end = unsafe { core::ptr::addr_of!(__usb_trace_end) } as u64;
-    let section_bounds = match (
-        (dma_start != 0).then_some((dma_start, dma_end > dma_start)),
-        (trace_start != 0).then_some((trace_start, trace_end > trace_start)),
-    ) {
-        (Some((_, true)), Some((_, true))) => {
-            Some((dma_start.min(trace_start), dma_end.max(trace_end)))
-        }
-        (Some((_, true)), _) => Some((dma_start, dma_end)),
-        (_, Some((_, true))) => Some((trace_start, trace_end)),
-        _ => None,
-    };
-    if let Some((section_start, section_end)) = section_bounds {
-        let first_block = section_start & !(BLOCK_SIZE - 1);
-        let last_block = section_end.saturating_sub(1) & !(BLOCK_SIZE - 1);
-        if physical >= first_block && physical <= last_block {
-            return true;
-        }
-    }
     false
 }

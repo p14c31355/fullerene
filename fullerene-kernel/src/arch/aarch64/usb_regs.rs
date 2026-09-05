@@ -35,6 +35,8 @@ pub const DEVTEN_SUSPEND: u32 = 1 << 6;
 pub const DEVTEN_ERRATIC_ERROR: u32 = 1 << 9;
 pub const DEVTEN_CMD_COMPLETE: u32 = 1 << 10;
 pub const DEVTEN_OVERFLOW: u32 = 1 << 11;
+// DWC3_DEVTEN_VNDRDEVTSTRCVEDEN from the qpr1 gadget driver.
+pub const DEVTEN_VENDOR_EVENT: u32 = 1 << 12;
 
 pub const DEVICE_EVENT_KIND_SHIFT: u32 = 8;
 pub const DEVICE_EVENT_KIND_MASK: u32 = 0x0f;

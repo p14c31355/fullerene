@@ -177,6 +177,8 @@ pub(crate) const GSBUSCFG1: usize = 0xc104;
 pub(crate) const GHWPARAMS0: usize = 0xc140;
 pub(crate) const GHWPARAMS1: usize = 0xc144;
 pub(crate) const GHWPARAMS3: usize = 0xc14c;
+pub(crate) const GHWPARAMS3_NUM_EPS_SHIFT: u32 = 12;
+pub(crate) const GHWPARAMS3_NUM_EPS_MASK: u32 = 0x3f << GHWPARAMS3_NUM_EPS_SHIFT;
 pub(crate) const GHWPARAMS7: usize = 0xc15c;
 pub(crate) const GDBGLTSSM: usize = 0xc164;
 // DWC_usb31 uses a separate link-debug block.  msm-4.19 core.h selects this
@@ -286,6 +288,7 @@ pub(crate) const DWC3_REVISION_194A: u32 = 0x5533_194a;
 // core carries the DWC3_REVISION_IS_DWC31 bit, so its revision always passes.
 pub(crate) const DWC3_REVISION_240A: u32 = 0x5533_240a;
 pub(crate) const DWC3_REVISION_220A: u32 = 0x5533_220a;
+pub(crate) const DWC3_REVISION_230A: u32 = 0x5533_230a;
 pub(crate) const DWC3_REVISION_250A: u32 = 0x5533_250a;
 pub(crate) const DWC3_REVISION_310A: u32 = 0x5533_310a;
 pub(crate) const DWC3_REVISION_270A: u32 = 0x5533_270a;

@@ -451,22 +451,29 @@ pub unsafe fn android_dbm_reset_and_enable() -> bool {
             return false;
         }
         core::ptr::write_volatile(reset_address, saved | DBM_SFT_RST_MASK);
+        // qpr1's dbm.c reaches this register through iowrite32(), whose
+        // AArch64 implementation performs __iowmb() before the store.
+        core::arch::asm!("dsb st", options(nostack, preserves_flags));
         // The Android driver does not gate the sequence on DBM reset
         // readback; keep the read as an ordering/readout point only.
         let _ = core::ptr::read_volatile(reset_address);
         crate::timer::delay_us(1_000);
         let released = core::ptr::read_volatile(reset_address) & !DBM_SFT_RST_MASK;
         core::ptr::write_volatile(reset_address, released);
+        core::arch::asm!("dsb st", options(nostack, preserves_flags));
         let _ = core::ptr::read_volatile(reset_address);
 
         let general_address = (qscratch_base + 0x08) as *mut u32;
         let general = core::ptr::read_volatile(general_address) | DBM_ENABLE;
         core::ptr::write_volatile(general_address, general);
+        core::arch::asm!("dsb st", options(nostack, preserves_flags));
         // Match dwc3_msm_write_reg_field(): the readback confirms ordering,
         // but a write-only/masked status bit must not abort the source path.
         let _ = core::ptr::read_volatile(general_address);
         core::ptr::write_volatile((dbm_base + DBM_DATA_FIFO_ADDR_EN) as *mut u32, 0xff);
+        core::arch::asm!("dsb st", options(nostack, preserves_flags));
         core::ptr::write_volatile((dbm_base + DBM_DATA_FIFO_SIZE_EN) as *mut u32, 0xff);
+        core::arch::asm!("dsb st", options(nostack, preserves_flags));
         let _ = core::ptr::read_volatile((dbm_base + DBM_DATA_FIFO_SIZE_EN) as *const u32);
         true
     }
