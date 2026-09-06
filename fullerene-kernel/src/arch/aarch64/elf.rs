@@ -10,9 +10,10 @@ use super::{allocator::PhysicalFrameAllocator, mmu};
 
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
-const MAX_LOAD_SEGMENTS: usize = 4;
-const MAX_IMAGE_PAGES: usize = 32;
+const MAX_LOAD_SEGMENTS: usize = 8;
+const MAX_IMAGE_PAGES: usize = 4096;
 const PT_LOAD: u32 = 1;
+const PT_DYNAMIC: u32 = 2;
 const EM_AARCH64: u16 = 183;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
@@ -20,6 +21,15 @@ const PF_W: u32 = 2;
 const PF_X: u32 = 1;
 const PAGE_SIZE: u64 = 4096;
 const USER_ADDRESS_LIMIT: u64 = 0x1_0000_0000;
+const ET_DYN_LOAD_BASE: u64 = 0x4040_0000;
+const R_AARCH64_RELATIVE: u32 = 1027;
+const DT_NULL: i64 = 0;
+const DT_RELA: i64 = 7;
+const DT_RELASZ: i64 = 8;
+const DT_RELAENT: i64 = 9;
+const DT_RELR: i64 = 36;
+const DT_RELRSZ: i64 = 35;
+const DT_RELRENT: i64 = 37;
 
 #[derive(Clone, Copy)]
 struct LoadSegment {
@@ -28,6 +38,12 @@ struct LoadSegment {
     virtual_address: u64,
     file_size: usize,
     memory_size: u64,
+}
+
+#[derive(Clone, Copy)]
+struct DynamicTable {
+    file_offset: usize,
+    file_size: usize,
 }
 
 impl LoadSegment {
@@ -62,6 +78,12 @@ pub(crate) struct LoadedImage {
     pub(crate) page_count: usize,
 }
 
+// The first AArch64 loader is single-core and performs one load at a time.
+// Keep the descriptor scratch outside the EL1 call stack so a larger image
+// does not consume the bootstrap stack. The mapped pages themselves remain
+// owned by the process address space and are not backed by this array.
+static mut IMAGE_PAGES: [ImagePage; MAX_IMAGE_PAGES] = [ImagePage::EMPTY; MAX_IMAGE_PAGES];
+
 /// Load a bounded native ELF image into pages obtained from the early frame
 /// allocator. Segment data is copied through the identity map, while the
 /// user-visible mappings are installed by `mmu::map_user_page`.
@@ -70,8 +92,11 @@ pub(crate) fn load_image(
     image: &[u8],
     frames: &mut PhysicalFrameAllocator,
 ) -> Option<LoadedImage> {
-    let (entry, segments, segment_count) = parse_segments(image)?;
-    let mut pages = [ImagePage::EMPTY; MAX_IMAGE_PAGES];
+    let (entry, segments, segment_count, dynamic, load_bias) = parse_segments(image)?;
+    let pages = unsafe { &mut *core::ptr::addr_of_mut!(IMAGE_PAGES) };
+    for page in pages.iter_mut() {
+        *page = ImagePage::EMPTY;
+    }
     let mut page_count = 0usize;
 
     for segment in segments.iter().take(segment_count) {
@@ -150,6 +175,20 @@ pub(crate) fn load_image(
         }
     }
 
+    if let Some(dynamic) = dynamic {
+        if !apply_relocations(
+            image,
+            &segments[..segment_count],
+            dynamic,
+            pages,
+            page_count,
+            load_bias,
+        ) {
+            release_image_pages(frames, pages, page_count);
+            return None;
+        }
+    }
+
     for page in pages.iter().take(page_count).filter(|page| page.executable) {
         mmu::sync_code(page.physical_address);
     }
@@ -192,7 +231,15 @@ fn release_image_pages(
     }
 }
 
-fn parse_segments(image: &[u8]) -> Option<(u64, [LoadSegment; MAX_LOAD_SEGMENTS], usize)> {
+fn parse_segments(
+    image: &[u8],
+) -> Option<(
+    u64,
+    [LoadSegment; MAX_LOAD_SEGMENTS],
+    usize,
+    Option<DynamicTable>,
+    u64,
+)> {
     if image.len() < ELF_HEADER_SIZE
         || image.get(0..4)? != b"\x7fELF"
         || image.get(4).copied()? != 2
@@ -206,7 +253,13 @@ fn parse_segments(image: &[u8]) -> Option<(u64, [LoadSegment; MAX_LOAD_SEGMENTS]
         return None;
     }
 
-    let entry = read_u64(image, 24)?;
+    let image_type = read_u16(image, 16)?;
+    let load_bias = if image_type == ET_DYN {
+        ET_DYN_LOAD_BASE
+    } else {
+        0
+    };
+    let entry = read_u64(image, 24)?.checked_add(load_bias)?;
     let program_header_offset = usize::try_from(read_u64(image, 32)?).ok()?;
     let program_header_count = read_u16(image, 56)? as usize;
     if program_header_count == 0 || program_header_count > 32 {
@@ -220,9 +273,27 @@ fn parse_segments(image: &[u8]) -> Option<(u64, [LoadSegment; MAX_LOAD_SEGMENTS]
 
     let mut segments = [LoadSegment::EMPTY; MAX_LOAD_SEGMENTS];
     let mut segment_count = 0usize;
+    let mut dynamic = None;
     for index in 0..program_header_count {
         let offset = program_header_offset.checked_add(index * PROGRAM_HEADER_SIZE)?;
-        if read_u32(image, offset)? != PT_LOAD {
+        let program_type = read_u32(image, offset)?;
+        if program_type == PT_DYNAMIC {
+            if dynamic.is_some() {
+                return None;
+            }
+            let file_offset = usize::try_from(read_u64(image, offset + 8)?).ok()?;
+            let file_size = usize::try_from(read_u64(image, offset + 32)?).ok()?;
+            let file_end = file_offset.checked_add(file_size)?;
+            if file_size == 0 || file_end > image.len() {
+                return None;
+            }
+            dynamic = Some(DynamicTable {
+                file_offset,
+                file_size,
+            });
+            continue;
+        }
+        if program_type != PT_LOAD {
             continue;
         }
         if segment_count == MAX_LOAD_SEGMENTS {
@@ -230,7 +301,8 @@ fn parse_segments(image: &[u8]) -> Option<(u64, [LoadSegment; MAX_LOAD_SEGMENTS]
         }
         let flags = read_u32(image, offset + 4)?;
         let file_offset = usize::try_from(read_u64(image, offset + 8)?).ok()?;
-        let virtual_address = read_u64(image, offset + 16)?;
+        let raw_virtual_address = read_u64(image, offset + 16)?;
+        let virtual_address = raw_virtual_address.checked_add(load_bias)?;
         let file_size = usize::try_from(read_u64(image, offset + 32)?).ok()?;
         let memory_size = read_u64(image, offset + 40)?;
         let segment_end = virtual_address.checked_add(memory_size)?;
@@ -240,7 +312,7 @@ fn parse_segments(image: &[u8]) -> Option<(u64, [LoadSegment; MAX_LOAD_SEGMENTS]
             || file_end > image.len()
             || segment_end > USER_ADDRESS_LIMIT
             || virtual_address >= USER_ADDRESS_LIMIT
-            || (file_offset as u64 & (PAGE_SIZE - 1)) != (virtual_address & (PAGE_SIZE - 1))
+            || (file_offset as u64 & (PAGE_SIZE - 1)) != (raw_virtual_address & (PAGE_SIZE - 1))
         {
             return None;
         }
@@ -262,7 +334,235 @@ fn parse_segments(image: &[u8]) -> Option<(u64, [LoadSegment; MAX_LOAD_SEGMENTS]
     {
         return None;
     }
-    Some((entry, segments, segment_count))
+    Some((entry, segments, segment_count, dynamic, load_bias))
+}
+
+/// Apply the relocation forms emitted by static AArch64 PIE linkers.
+///
+/// This intentionally handles only `R_AARCH64_RELATIVE` in RELA and RELR
+/// tables. A dynamic symbol resolver is outside the early user boundary;
+/// rejecting all other relocation types is safer than entering an image with
+/// partially relocated pointers.
+fn apply_relocations(
+    image: &[u8],
+    segments: &[LoadSegment],
+    dynamic: DynamicTable,
+    pages: &[ImagePage; MAX_IMAGE_PAGES],
+    page_count: usize,
+    load_bias: u64,
+) -> bool {
+    let Some(dynamic_end) = dynamic.file_offset.checked_add(dynamic.file_size) else {
+        return false;
+    };
+    let Some(dynamic_bytes) = image.get(dynamic.file_offset..dynamic_end) else {
+        return false;
+    };
+    if dynamic_bytes.len() % 16 != 0 {
+        return false;
+    }
+    let mut rela_address = 0u64;
+    let mut rela_size = 0usize;
+    let mut rela_entry_size = 24usize;
+    let mut relr_address = 0u64;
+    let mut relr_size = 0usize;
+    let mut relr_entry_size = 8usize;
+
+    let mut offset = 0usize;
+    while offset
+        .checked_add(16)
+        .is_some_and(|end| end <= dynamic_bytes.len())
+    {
+        let tag = i64::from_ne_bytes(
+            dynamic_bytes[offset..offset + 8]
+                .try_into()
+                .expect("dynamic tag has fixed width"),
+        );
+        let value = u64::from_ne_bytes(
+            dynamic_bytes[offset + 8..offset + 16]
+                .try_into()
+                .expect("dynamic value has fixed width"),
+        );
+        offset += 16;
+        match tag {
+            DT_NULL => break,
+            DT_RELA => rela_address = value,
+            DT_RELASZ => rela_size = usize::try_from(value).ok().unwrap_or(usize::MAX),
+            DT_RELAENT => rela_entry_size = usize::try_from(value).ok().unwrap_or(0),
+            DT_RELR => relr_address = value,
+            DT_RELRSZ => relr_size = usize::try_from(value).ok().unwrap_or(usize::MAX),
+            DT_RELRENT => relr_entry_size = usize::try_from(value).ok().unwrap_or(0),
+            _ => {}
+        }
+    }
+    if rela_size != 0 {
+        if rela_address == 0 || rela_entry_size != 24 {
+            return false;
+        }
+        let Some(rela_virtual_address) = rela_address.checked_add(load_bias) else {
+            return false;
+        };
+        let Some(rela_offset) = file_offset_for_virtual(rela_virtual_address, segments) else {
+            return false;
+        };
+        let Some(rela_end) = rela_offset.checked_add(rela_size) else {
+            return false;
+        };
+        let Some(rela_bytes) = image.get(rela_offset..rela_end) else {
+            return false;
+        };
+        if rela_bytes.len() % rela_entry_size != 0 {
+            return false;
+        }
+        for entry in rela_bytes.chunks_exact(rela_entry_size) {
+            let target = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+            let info = u64::from_le_bytes(entry[8..16].try_into().unwrap());
+            let addend = i64::from_le_bytes(entry[16..24].try_into().unwrap());
+            if (info & 0xffff_ffff) as u32 != R_AARCH64_RELATIVE {
+                return false;
+            }
+            let Some(value) = addend_to_absolute(target, addend, load_bias) else {
+                return false;
+            };
+            if !write_mapped_u64(value.0, value.1, pages, page_count) {
+                return false;
+            }
+        }
+    }
+
+    if relr_size != 0 {
+        if relr_address == 0 || relr_entry_size != 8 {
+            return false;
+        }
+        let Some(relr_virtual_address) = relr_address.checked_add(load_bias) else {
+            return false;
+        };
+        let Some(relr_offset) = file_offset_for_virtual(relr_virtual_address, segments) else {
+            return false;
+        };
+        let Some(relr_end) = relr_offset.checked_add(relr_size) else {
+            return false;
+        };
+        let Some(relr_bytes) = image.get(relr_offset..relr_end) else {
+            return false;
+        };
+        if relr_bytes.len() % relr_entry_size != 0 {
+            return false;
+        }
+        let mut next_address = None;
+        for entry in relr_bytes.chunks_exact(relr_entry_size) {
+            let encoded = u64::from_le_bytes(entry.try_into().unwrap());
+            if encoded & 1 == 0 {
+                let Some(address) = encoded.checked_add(load_bias) else {
+                    return false;
+                };
+                if !apply_relr_at(address, pages, page_count, load_bias) {
+                    return false;
+                }
+                next_address = address.checked_add(8);
+            } else {
+                let Some(mut address) = next_address else {
+                    return false;
+                };
+                for bit in 1..64 {
+                    if encoded & (1u64 << bit) != 0
+                        && !apply_relr_at(address, pages, page_count, load_bias)
+                    {
+                        return false;
+                    }
+                    address = match address.checked_add(8) {
+                        Some(address) => address,
+                        None => return false,
+                    };
+                }
+                next_address = Some(address);
+            }
+        }
+    }
+    true
+}
+
+fn file_offset_for_virtual(address: u64, segments: &[LoadSegment]) -> Option<usize> {
+    segments.iter().find_map(|segment| {
+        let file_end = segment
+            .virtual_address
+            .checked_add(segment.file_size as u64)?;
+        if address < segment.virtual_address || address >= file_end {
+            return None;
+        }
+        segment
+            .file_offset
+            .checked_add((address - segment.virtual_address) as usize)
+    })
+}
+
+fn addend_to_absolute(target: u64, addend: i64, load_bias: u64) -> Option<(u64, u64)> {
+    let target = target.checked_add(load_bias)?;
+    let value = if addend >= 0 {
+        load_bias.checked_add(addend as u64)?
+    } else {
+        load_bias.checked_sub(addend.unsigned_abs())?
+    };
+    Some((target, value))
+}
+
+fn apply_relr_at(
+    address: u64,
+    pages: &[ImagePage; MAX_IMAGE_PAGES],
+    page_count: usize,
+    load_bias: u64,
+) -> bool {
+    let Some(current) = read_mapped_u64(address, pages, page_count) else {
+        return false;
+    };
+    write_mapped_u64(address, current.wrapping_add(load_bias), pages, page_count)
+}
+
+fn read_mapped_u64(
+    address: u64,
+    pages: &[ImagePage; MAX_IMAGE_PAGES],
+    page_count: usize,
+) -> Option<u64> {
+    if address & 7 != 0 {
+        return None;
+    }
+    let page_address = address & !(PAGE_SIZE - 1);
+    let page = pages
+        .iter()
+        .take(page_count)
+        .find(|page| page.virtual_address == page_address)?;
+    let offset = usize::try_from(address - page_address).ok()?;
+    (offset + 8 <= PAGE_SIZE as usize).then(|| unsafe {
+        core::ptr::read_unaligned((page.physical_address + offset as u64) as *const u64)
+    })
+}
+
+fn write_mapped_u64(
+    address: u64,
+    value: u64,
+    pages: &[ImagePage; MAX_IMAGE_PAGES],
+    page_count: usize,
+) -> bool {
+    if address & 7 != 0 {
+        return false;
+    }
+    let page_address = address & !(PAGE_SIZE - 1);
+    let Some(page) = pages
+        .iter()
+        .take(page_count)
+        .find(|page| page.virtual_address == page_address)
+    else {
+        return false;
+    };
+    let Ok(offset) = usize::try_from(address - page_address) else {
+        return false;
+    };
+    if offset + 8 > PAGE_SIZE as usize {
+        return false;
+    }
+    unsafe {
+        core::ptr::write_unaligned((page.physical_address + offset as u64) as *mut u64, value);
+    }
+    true
 }
 
 /// Map and clear one user stack page through the same bounded MMU boundary.

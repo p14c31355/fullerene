@@ -1,32 +1,94 @@
 //! Qualcomm UFS platform contract and guarded bring-up for AArch64.
 //!
-//! This module deliberately stops at the device-tree boundary. A Qualcomm
-//! UFS host is not a single MMIO window: the platform driver also owns the
-//! UFS PHY, clocks, resets, regulators, interrupt routing, and sometimes an
-//! IOMMU context. Keep the DT contract and source-ordered side effects
-//! separate so a backend cannot touch the platform without an exact contract.
+//! A Qualcomm UFS host is not a single MMIO window: the platform driver also
+//! owns the UFS PHY, clocks, resets, regulators, interrupt routing, and
+//! sometimes an IOMMU context. Keep the DT contract, Linux-aligned pure HCI
+//! encoding, and side-effectful backends separate so a backend cannot touch
+//! the platform without an exact contract.
 
 use super::fdt;
 
+#[cfg(fullerene_aarch64_bramble)]
+use genome::block::{BlockDevice, BlockError};
+
 const UFS_CONTROLLER: &[u8] = b"qcom,ufshc";
 const UFS_PHY: &[u8] = b"qcom,ufs-phy-qmp-v4-lito";
+const RPMH_SET_ACTIVE: u32 = 1;
+const RPMH_SET_ALL: u32 = 3;
+
+/// Fixed early-boot UFSHCI arena. It is deliberately a distinct linker
+/// section from the USB gadget DMA pool; no SMMU or cache attribute is
+/// inferred from the USB contract.
+#[repr(C, align(1024))]
+struct UfsDmaArena {
+    transfer_list: [u8; 1024],
+    task_list: [u8; 1024],
+    // The reserved device-management slot uses a 4 KiB response UCD.
+    devman_descriptor: [u8; 8192],
+    command_descriptor: [u8; 2048],
+    // One legacy PRD may describe up to 256 KiB. Keeping the whole transfer
+    // in the reserved arena lets the block adapter serve bounded multi-block
+    // reads without allocating DMA memory from the general heap.
+    data: [u8; 256 * 1024],
+}
+
+#[unsafe(link_section = ".ufs_dma")]
+#[used]
+static mut UFS_DMA_ARENA: UfsDmaArena = UfsDmaArena {
+    transfer_list: [0; 1024],
+    task_list: [0; 1024],
+    devman_descriptor: [0; 8192],
+    command_descriptor: [0; 2048],
+    data: [0; 256 * 1024],
+};
+
+#[allow(dead_code)]
+struct UfsDmaLayout;
+
+#[allow(dead_code)]
+impl UfsDmaLayout {
+    const TRANSFER_LIST_BYTES: usize = 1024;
+    const TASK_LIST_BYTES: usize = 1024;
+    const DEVMAN_DESCRIPTOR_BYTES: usize = 8192;
+    const COMMAND_DESCRIPTOR_BYTES: usize = 2048;
+    const DATA_BYTES: usize = 256 * 1024;
+
+    /// Return the physical/identity address of the arena only for a future
+    /// backend that has separately proved the UFS DMA ownership contract.
+    #[cfg(fullerene_aarch64_bramble)]
+    unsafe fn addresses() -> (u64, u64, u64, u64, u64) {
+        (
+            core::ptr::addr_of!(UFS_DMA_ARENA.transfer_list) as u64,
+            core::ptr::addr_of!(UFS_DMA_ARENA.task_list) as u64,
+            core::ptr::addr_of!(UFS_DMA_ARENA.devman_descriptor) as u64,
+            core::ptr::addr_of!(UFS_DMA_ARENA.command_descriptor) as u64,
+            core::ptr::addr_of!(UFS_DMA_ARENA.data) as u64,
+        )
+    }
+}
 
 /// UFSHCI layout and descriptor encoding. This is intentionally a pure
 /// little-endian layer: the future driver can put these bytes in a DMA-safe
 /// allocation only after the platform power/PHY contract has been claimed.
 #[allow(dead_code)]
-mod hci {
+pub(crate) mod hci {
     pub(crate) const REG_CONTROLLER_CAPABILITIES: u32 = 0x00;
     pub(crate) const REG_UFS_VERSION: u32 = 0x08;
     pub(crate) const REG_INTERRUPT_STATUS: u32 = 0x20;
     pub(crate) const REG_INTERRUPT_ENABLE: u32 = 0x24;
     pub(crate) const REG_CONTROLLER_STATUS: u32 = 0x30;
     pub(crate) const REG_CONTROLLER_ENABLE: u32 = 0x34;
+    pub(crate) const REG_UTP_TRANSFER_REQ_INT_AGG_CONTROL: u32 = 0x4c;
     pub(crate) const REG_UTP_TRANSFER_REQ_LIST_BASE_L: u32 = 0x50;
     pub(crate) const REG_UTP_TRANSFER_REQ_LIST_BASE_H: u32 = 0x54;
     pub(crate) const REG_UTP_TRANSFER_REQ_DOOR_BELL: u32 = 0x58;
     pub(crate) const REG_UTP_TRANSFER_REQ_LIST_CLEAR: u32 = 0x5c;
     pub(crate) const REG_UTP_TRANSFER_REQ_LIST_RUN_STOP: u32 = 0x60;
+    pub(crate) const REG_UTP_TASK_REQ_LIST_BASE_L: u32 = 0x70;
+    pub(crate) const REG_UTP_TASK_REQ_LIST_BASE_H: u32 = 0x74;
+    pub(crate) const REG_UTP_TASK_REQ_DOOR_BELL: u32 = 0x78;
+    pub(crate) const REG_UTP_TASK_REQ_LIST_CLEAR: u32 = 0x7c;
+    pub(crate) const REG_UTP_TASK_REQ_LIST_RUN_STOP: u32 = 0x80;
     pub(crate) const REG_UIC_COMMAND: u32 = 0x90;
     pub(crate) const REG_UIC_COMMAND_ARG_1: u32 = 0x94;
     pub(crate) const REG_UIC_COMMAND_ARG_2: u32 = 0x98;
@@ -51,7 +113,54 @@ mod hci {
     pub(crate) const PRD_DATA_BYTE_COUNT_MAX: u32 = 256 * 1024;
     pub(crate) const PRD_DATA_BYTE_COUNT_GRANULARITY: u32 = 4;
     pub(crate) const ALIGNED_UPIU_SIZE: u16 = 512;
+    pub(crate) const ALIGNED_DEVMAN_RSP_SIZE: u16 = 4096;
+    pub(crate) const UPIU_HEADER_SIZE: usize = 12;
+    pub(crate) const UPIU_QUERY_SIZE: usize = 20;
+    pub(crate) const UPIU_GENERAL_REQUEST_SIZE: usize = UPIU_HEADER_SIZE + UPIU_QUERY_SIZE;
+    pub(crate) const COMMAND_DESCRIPTOR_ALIGNMENT: u64 = 128;
+    pub(crate) const TRANSFER_REQUEST_LIST_ALIGNMENT: u64 = 1024;
     pub(crate) const TRANSFER_REQUEST_DESCRIPTOR_SIZE: usize = 32;
+    pub(crate) const COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET: usize = 0;
+    pub(crate) const COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET: usize =
+        COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET + ALIGNED_UPIU_SIZE as usize;
+    pub(crate) const COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET: usize =
+        COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET + ALIGNED_UPIU_SIZE as usize;
+    pub(crate) const DEVMAN_COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET: usize =
+        ALIGNED_UPIU_SIZE as usize;
+    pub(crate) const DEVMAN_COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET: usize =
+        DEVMAN_COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET + ALIGNED_DEVMAN_RSP_SIZE as usize;
+
+    pub(crate) const UTP_CMD_TYPE_SCSI: u8 = 0x0;
+    pub(crate) const UTP_CMD_TYPE_UFS: u8 = 0x1;
+    pub(crate) const UTP_CMD_TYPE_DEV_MANAGE: u8 = 0x2;
+    pub(crate) const UTP_REQ_DESC_INT_CMD: u32 = 0x0100_0000;
+    pub(crate) const UTP_REQ_DESC_CRYPTO_ENABLE_CMD: u32 = 0x0080_0000;
+    pub(crate) const UTP_NO_DATA_TRANSFER: u32 = 0x0000_0000;
+    pub(crate) const UTP_HOST_TO_DEVICE: u32 = 0x0200_0000;
+    pub(crate) const UTP_DEVICE_TO_HOST: u32 = 0x0400_0000;
+    pub(crate) const OCS_SUCCESS: u8 = 0x0;
+    pub(crate) const OCS_INVALID_COMMAND_STATUS: u8 = 0xf;
+    pub(crate) const MASK_OCS: u8 = 0xf;
+
+    pub(crate) const UPIU_TRANSACTION_NOP_OUT: u8 = 0x00;
+    pub(crate) const UPIU_TRANSACTION_COMMAND: u8 = 0x01;
+    pub(crate) const UPIU_TRANSACTION_QUERY_REQ: u8 = 0x16;
+    pub(crate) const UPIU_TRANSACTION_NOP_IN: u8 = 0x20;
+    pub(crate) const UPIU_TRANSACTION_RESPONSE: u8 = 0x21;
+    pub(crate) const UPIU_TRANSACTION_QUERY_RSP: u8 = 0x36;
+    pub(crate) const UPIU_CMD_FLAGS_NONE: u8 = 0x00;
+    pub(crate) const UPIU_CMD_FLAGS_WRITE: u8 = 0x20;
+    pub(crate) const UPIU_CMD_FLAGS_READ: u8 = 0x40;
+    pub(crate) const UPIU_COMMAND_SET_TYPE_SCSI: u8 = 0x0;
+    pub(crate) const UPIU_COMMAND_SET_TYPE_UFS: u8 = 0x1;
+    pub(crate) const UPIU_COMMAND_SET_TYPE_QUERY: u8 = 0x2;
+    pub(crate) const UPIU_QUERY_FUNC_STANDARD_READ_REQUEST: u8 = 0x01;
+    pub(crate) const UPIU_QUERY_FUNC_STANDARD_WRITE_REQUEST: u8 = 0x81;
+    pub(crate) const UPIU_QUERY_OPCODE_READ_DESC: u8 = 0x01;
+    pub(crate) const UPIU_QUERY_OPCODE_WRITE_DESC: u8 = 0x02;
+    pub(crate) const QUERY_DESC_MIN_SIZE: u16 = 2;
+    pub(crate) const QUERY_DESC_MAX_SIZE: u16 = 255;
+    pub(crate) const SCSI_READ10_OPCODE: u8 = 0x28;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) struct ControllerCapabilities {
@@ -83,65 +192,65 @@ mod hci {
         }
     }
 
-    /// The common 16-byte UTRD header. `flags` is encoded as the two bytes
-    /// prescribed by the little-endian UFSHCI bitfield layout when serialized.
+    /// The common 16-byte UTRD header.
+    ///
+    /// The four dwords are little-endian on the wire. In particular, the
+    /// command type and data direction are bitfields in DW0, while OCS is the
+    /// low nibble of DW2. They are not a protocol command tag or a UPIU
+    /// header; the controller associates a tag with the transfer-list slot.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) struct RequestHeader {
-        pub command_tag: u8,
-        pub ehs_length: u8,
-        pub enable_crypto: bool,
         pub command_type: u8,
-        pub data_direction: u8,
+        pub data_direction: u32,
+        pub ehs_length: u8,
         pub interrupt: bool,
-        pub data_unit_number_low: u32,
+        pub enable_crypto: bool,
         pub overall_command_status: u8,
-        pub command_desc_status: u8,
-        pub logical_block_data_count: u16,
-        pub data_unit_number_high: u32,
     }
 
     impl RequestHeader {
         pub(crate) const BYTE_SIZE: usize = 16;
 
-        pub(crate) fn new(
-            command_tag: u8,
-            command_type: u8,
-            data_direction: u8,
-            interrupt: bool,
-        ) -> Option<Self> {
-            (command_type < 16 && data_direction < 4).then_some(Self {
-                command_tag,
-                ehs_length: 0,
-                enable_crypto: false,
+        pub(crate) fn new(command_type: u8, data_direction: u32, interrupt: bool) -> Option<Self> {
+            let valid_direction = matches!(
+                data_direction,
+                UTP_NO_DATA_TRANSFER | UTP_HOST_TO_DEVICE | UTP_DEVICE_TO_HOST
+            );
+            (command_type < 16 && valid_direction).then_some(Self {
                 command_type,
                 data_direction,
+                ehs_length: 0,
                 interrupt,
-                data_unit_number_low: 0,
-                overall_command_status: 0,
-                command_desc_status: 0,
-                logical_block_data_count: 0,
-                data_unit_number_high: 0,
+                enable_crypto: false,
+                overall_command_status: OCS_INVALID_COMMAND_STATUS,
             })
         }
 
         pub(crate) fn to_le_bytes(self) -> [u8; Self::BYTE_SIZE] {
             let mut bytes = [0; Self::BYTE_SIZE];
-            bytes[0] = self.command_tag;
-            bytes[1] = self.ehs_length;
-            bytes[2] = u8::from(self.enable_crypto) << 7;
-            bytes[3] = u8::from(self.interrupt)
-                | ((self.data_direction & 0x3) << 1)
-                | ((self.command_type & 0xf) << 4);
-            bytes[4..8].copy_from_slice(&self.data_unit_number_low.to_le_bytes());
-            bytes[8] = self.overall_command_status;
-            bytes[9] = self.command_desc_status;
-            bytes[10..12].copy_from_slice(&self.logical_block_data_count.to_le_bytes());
-            bytes[12..16].copy_from_slice(&self.data_unit_number_high.to_le_bytes());
+            let mut dword_0 = self.data_direction
+                | ((self.command_type as u32 & 0xf) << 28)
+                | ((self.ehs_length as u32) << 8);
+            if self.interrupt {
+                dword_0 |= UTP_REQ_DESC_INT_CMD;
+            }
+            if self.enable_crypto {
+                dword_0 |= UTP_REQ_DESC_CRYPTO_ENABLE_CMD;
+            }
+            bytes[0..4].copy_from_slice(&dword_0.to_le_bytes());
+            bytes[8..12].copy_from_slice(
+                &(u32::from(self.overall_command_status) & u32::from(MASK_OCS)).to_le_bytes(),
+            );
             bytes
         }
     }
 
     /// The 32-byte legacy single-queue UTP transfer request descriptor.
+    ///
+    /// Length and offset fields use UFSHCI double-word units on the normal
+    /// path. A controller quirk may select byte-granular fields; that choice
+    /// belongs to the controller backend and is intentionally not hidden by
+    /// this byte serializer.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) struct TransferRequestDescriptor {
         pub header: RequestHeader,
@@ -167,15 +276,415 @@ mod hci {
         }
     }
 
+    /// One UFSHCI physical-region descriptor (PRD).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) struct PhysicalRegionDescriptor {
+        pub address: u64,
+        pub byte_count: u32,
+    }
+
+    impl PhysicalRegionDescriptor {
+        pub(crate) const BYTE_SIZE: usize = 16;
+
+        /// Construct a PRD whose encoded count is `(byte_count - 1)`.
+        ///
+        /// UFSHCI requires a non-zero, four-byte-granular segment no larger
+        /// than 256 KiB. The alignment of `address` is an IOMMU/DMA contract,
+        /// so it is checked by the allocator/backend rather than here.
+        pub(crate) fn new(address: u64, byte_count: u32) -> Option<Self> {
+            (byte_count != 0
+                && byte_count <= PRD_DATA_BYTE_COUNT_MAX
+                && byte_count % PRD_DATA_BYTE_COUNT_GRANULARITY == 0)
+                .then_some(Self {
+                    address,
+                    byte_count,
+                })
+        }
+
+        pub(crate) fn to_le_bytes(self) -> [u8; Self::BYTE_SIZE] {
+            let mut bytes = [0; Self::BYTE_SIZE];
+            bytes[0..8].copy_from_slice(&self.address.to_le_bytes());
+            bytes[12..16].copy_from_slice(&(self.byte_count - 1).to_le_bytes());
+            bytes
+        }
+    }
+
+    /// The 12-byte big-endian UPIU header used inside a UTP command
+    /// descriptor. `function` is the query or task-management function byte;
+    /// it is zero for a normal SCSI command.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) struct UpiuHeader {
+        pub transaction_code: u8,
+        pub flags: u8,
+        pub lun: u8,
+        pub task_tag: u8,
+        pub initiator_id: u8,
+        pub command_set_type: u8,
+        pub function: u8,
+        pub response: u8,
+        pub status: u8,
+        pub ehs_length: u8,
+        pub device_information: u8,
+        pub data_segment_length: u16,
+    }
+
+    impl UpiuHeader {
+        pub(crate) const BYTE_SIZE: usize = UPIU_HEADER_SIZE;
+
+        pub(crate) fn to_be_bytes(self) -> [u8; Self::BYTE_SIZE] {
+            let mut bytes = [0; Self::BYTE_SIZE];
+            bytes[0] = self.transaction_code;
+            bytes[1] = self.flags;
+            bytes[2] = self.lun;
+            bytes[3] = self.task_tag;
+            bytes[4] = (self.command_set_type & 0xf) | ((self.initiator_id & 0xf) << 4);
+            bytes[5] = self.function;
+            bytes[6] = self.response;
+            bytes[7] = self.status;
+            bytes[8] = self.ehs_length;
+            bytes[9] = self.device_information;
+            bytes[10..12].copy_from_slice(&self.data_segment_length.to_be_bytes());
+            bytes
+        }
+    }
+
+    /// The 20-byte query-specific OSF area following a UPIU header.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) struct UpiuQuery {
+        pub opcode: u8,
+        pub idn: u8,
+        pub index: u8,
+        pub selector: u8,
+        pub length: u16,
+        pub value: u32,
+    }
+
+    impl UpiuQuery {
+        pub(crate) const BYTE_SIZE: usize = UPIU_QUERY_SIZE;
+
+        pub(crate) fn to_be_bytes(self) -> [u8; Self::BYTE_SIZE] {
+            let mut bytes = [0; Self::BYTE_SIZE];
+            bytes[0] = self.opcode;
+            bytes[1] = self.idn;
+            bytes[2] = self.index;
+            bytes[3] = self.selector;
+            bytes[6..8].copy_from_slice(&self.length.to_be_bytes());
+            bytes[8..12].copy_from_slice(&self.value.to_be_bytes());
+            bytes
+        }
+    }
+
+    /// Prepare the fixed-size NOP device-management command used to prove
+    /// that link startup reached the UTP transfer path. The caller still
+    /// owns DMA address translation, cache maintenance, and doorbell order.
+    pub(crate) fn prepare_nop_out(
+        command_descriptor_base: u64,
+        descriptor: &mut [u8],
+        task_tag: u8,
+    ) -> Option<TransferRequestDescriptor> {
+        if command_descriptor_base % COMMAND_DESCRIPTOR_ALIGNMENT != 0
+            || descriptor.len() < DEVMAN_COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET
+        {
+            return None;
+        }
+        let header = RequestHeader::new(UTP_CMD_TYPE_UFS, UTP_NO_DATA_TRANSFER, true)?;
+        descriptor.fill(0);
+        descriptor[COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET
+            ..COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET + UPIU_HEADER_SIZE]
+            .copy_from_slice(
+                &UpiuHeader {
+                    transaction_code: UPIU_TRANSACTION_NOP_OUT,
+                    flags: UPIU_CMD_FLAGS_NONE,
+                    lun: 0,
+                    task_tag,
+                    initiator_id: 0,
+                    command_set_type: 0,
+                    function: 0,
+                    response: 0,
+                    status: 0,
+                    ehs_length: 0,
+                    device_information: 0,
+                    data_segment_length: 0,
+                }
+                .to_be_bytes(),
+            );
+        Some(TransferRequestDescriptor {
+            header,
+            command_desc_base_addr: command_descriptor_base,
+            response_upiu_length: ALIGNED_DEVMAN_RSP_SIZE / 4,
+            response_upiu_offset: (DEVMAN_COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET / 4) as u16,
+            prd_table_length: 0,
+            prd_table_offset: (DEVMAN_COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET / 4) as u16,
+        })
+    }
+
+    /// Prepare Linux's standard READ DESCRIPTOR query in the reserved
+    /// device-management UCD. Descriptor data is returned in the response
+    /// UPIU data segment at byte 32, not through a PRD.
+    pub(crate) fn prepare_query_read_desc(
+        command_descriptor_base: u64,
+        descriptor: &mut [u8],
+        task_tag: u8,
+        idn: u8,
+        index: u8,
+        length: u16,
+    ) -> Option<TransferRequestDescriptor> {
+        if command_descriptor_base % COMMAND_DESCRIPTOR_ALIGNMENT != 0
+            || !(QUERY_DESC_MIN_SIZE..=QUERY_DESC_MAX_SIZE).contains(&length)
+            || descriptor.len() < DEVMAN_COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET
+        {
+            return None;
+        }
+        let header = RequestHeader::new(UTP_CMD_TYPE_UFS, UTP_NO_DATA_TRANSFER, true)?;
+        descriptor.fill(0);
+        descriptor[COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET
+            ..COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET + UPIU_HEADER_SIZE]
+            .copy_from_slice(
+                &UpiuHeader {
+                    transaction_code: UPIU_TRANSACTION_QUERY_REQ,
+                    flags: UPIU_CMD_FLAGS_NONE,
+                    lun: 0,
+                    task_tag,
+                    initiator_id: 0,
+                    command_set_type: 0,
+                    function: UPIU_QUERY_FUNC_STANDARD_READ_REQUEST,
+                    response: 0,
+                    status: 0,
+                    ehs_length: 0,
+                    device_information: 0,
+                    data_segment_length: 0,
+                }
+                .to_be_bytes(),
+            );
+        descriptor[COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET + UPIU_HEADER_SIZE
+            ..COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET + UPIU_GENERAL_REQUEST_SIZE]
+            .copy_from_slice(
+                &UpiuQuery {
+                    opcode: UPIU_QUERY_OPCODE_READ_DESC,
+                    idn,
+                    index,
+                    selector: 0,
+                    length,
+                    value: 0,
+                }
+                .to_be_bytes(),
+            );
+        Some(TransferRequestDescriptor {
+            header,
+            command_desc_base_addr: command_descriptor_base,
+            response_upiu_length: ALIGNED_DEVMAN_RSP_SIZE / 4,
+            response_upiu_offset: (DEVMAN_COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET / 4) as u16,
+            prd_table_length: 0,
+            prd_table_offset: (DEVMAN_COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET / 4) as u16,
+        })
+    }
+
+    /// Copy a successful READ DESCRIPTOR response from the response UPIU's
+    /// data segment. The caller supplies the DMA-synchronized response area.
+    pub(crate) fn copy_query_read_desc_response(
+        response: &[u8],
+        descriptor: &mut [u8],
+    ) -> Option<usize> {
+        if response.len() < UPIU_GENERAL_REQUEST_SIZE
+            || response[0] != UPIU_TRANSACTION_QUERY_RSP
+            || response[6] != 0
+        {
+            return None;
+        }
+        let length = u16::from_be_bytes([response[10], response[11]]) as usize;
+        if !(QUERY_DESC_MIN_SIZE as usize..=QUERY_DESC_MAX_SIZE as usize).contains(&length)
+            || length > descriptor.len()
+            || UPIU_GENERAL_REQUEST_SIZE + length > response.len()
+        {
+            return None;
+        }
+        descriptor[..length].copy_from_slice(
+            &response[UPIU_GENERAL_REQUEST_SIZE..UPIU_GENERAL_REQUEST_SIZE + length],
+        );
+        Some(length)
+    }
+
+    /// Prepare a single-PRD SCSI READ(10) request in a normal UCD. This is a
+    /// pure command builder; it does not imply that the supplied data address
+    /// is DMA-visible to the UFS controller.
+    pub(crate) fn prepare_scsi_read10(
+        command_descriptor_base: u64,
+        descriptor: &mut [u8],
+        data_address: u64,
+        task_tag: u8,
+        lun: u8,
+        lba: u32,
+        block_count: u16,
+        block_size: u32,
+    ) -> Option<TransferRequestDescriptor> {
+        if command_descriptor_base % COMMAND_DESCRIPTOR_ALIGNMENT != 0
+            || block_count == 0
+            || descriptor.len()
+                < COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET + PhysicalRegionDescriptor::BYTE_SIZE
+        {
+            return None;
+        }
+        let transfer_bytes = u32::from(block_count).checked_mul(block_size)?;
+        let prd = PhysicalRegionDescriptor::new(data_address, transfer_bytes)?;
+        let header = RequestHeader::new(UTP_CMD_TYPE_UFS, UTP_DEVICE_TO_HOST, true)?;
+        descriptor.fill(0);
+        descriptor[COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET
+            ..COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET + UPIU_HEADER_SIZE]
+            .copy_from_slice(
+                &UpiuHeader {
+                    transaction_code: UPIU_TRANSACTION_COMMAND,
+                    flags: UPIU_CMD_FLAGS_READ,
+                    lun,
+                    task_tag,
+                    initiator_id: 0,
+                    command_set_type: UPIU_COMMAND_SET_TYPE_SCSI,
+                    function: 0,
+                    response: 0,
+                    status: 0,
+                    ehs_length: 0,
+                    device_information: 0,
+                    data_segment_length: 0,
+                }
+                .to_be_bytes(),
+            );
+        let command_offset = COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET + UPIU_HEADER_SIZE;
+        descriptor[command_offset..command_offset + 4]
+            .copy_from_slice(&transfer_bytes.to_be_bytes());
+        let cdb_offset = command_offset + 4;
+        descriptor[cdb_offset] = SCSI_READ10_OPCODE;
+        descriptor[cdb_offset + 2..cdb_offset + 6].copy_from_slice(&lba.to_be_bytes());
+        descriptor[cdb_offset + 7..cdb_offset + 9].copy_from_slice(&block_count.to_be_bytes());
+        descriptor[COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET
+            ..COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET + PhysicalRegionDescriptor::BYTE_SIZE]
+            .copy_from_slice(&prd.to_le_bytes());
+        Some(TransferRequestDescriptor {
+            header,
+            command_desc_base_addr: command_descriptor_base,
+            response_upiu_length: ALIGNED_UPIU_SIZE / 4,
+            response_upiu_offset: (COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET / 4) as u16,
+            prd_table_length: 1,
+            prd_table_offset: (COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET / 4) as u16,
+        })
+    }
+
+    pub(crate) fn scsi_response_success(response: &[u8], task_tag: u8) -> bool {
+        response.len() >= UPIU_HEADER_SIZE
+            && response[0] == UPIU_TRANSACTION_RESPONSE
+            && response[3] == task_tag
+            && response[7] == 0
+    }
+
+    pub(crate) fn nop_response_success(response: &[u8], task_tag: u8) -> bool {
+        response.len() >= UPIU_HEADER_SIZE
+            && response[0] == UPIU_TRANSACTION_NOP_IN
+            && response[3] == task_tag
+    }
+
     pub(crate) const fn layout_is_supported() -> bool {
         REGISTER_SPACE_SIZE == 0xa0
             && ALIGNED_UPIU_SIZE == 512
+            && UPIU_HEADER_SIZE == 12
+            && UPIU_QUERY_SIZE == 20
+            && UPIU_GENERAL_REQUEST_SIZE == 32
+            && COMMAND_DESCRIPTOR_ALIGNMENT == 128
+            && TRANSFER_REQUEST_LIST_ALIGNMENT == 1024
             && TRANSFER_REQUEST_DESCRIPTOR_SIZE == 32
+            && COMMAND_DESCRIPTOR_REQUEST_UPIU_OFFSET == 0
+            && COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET == 512
+            && COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET == 1024
+            && DEVMAN_COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET == 512
+            && DEVMAN_COMMAND_DESCRIPTOR_PRD_TABLE_OFFSET == 4608
+            && ALIGNED_DEVMAN_RSP_SIZE == 4096
+            && QUERY_DESC_MIN_SIZE == 2
+            && QUERY_DESC_MAX_SIZE == 255
             && PRD_DATA_BYTE_COUNT_GRANULARITY == 4
             && PRD_DATA_BYTE_COUNT_MAX == 256 * 1024
+            && PhysicalRegionDescriptor::BYTE_SIZE == 16
     }
 
     const _: () = assert!(layout_is_supported());
+}
+
+const UFS_DESC_TYPE_DEVICE: u8 = 0x00;
+const UFS_DESC_TYPE_UNIT: u8 = 0x02;
+const UFS_DEVICE_DESC_NUM_LU_OFFSET: usize = 0x06;
+const UFS_UNIT_DESC_INDEX_OFFSET: usize = 0x02;
+const UFS_UNIT_DESC_ENABLE_OFFSET: usize = 0x03;
+const UFS_UNIT_DESC_BLOCK_SIZE_OFFSET: usize = 0x0a;
+const UFS_UNIT_DESC_BLOCK_COUNT_OFFSET: usize = 0x0b;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UfsGeometry {
+    pub lun: u8,
+    pub block_size: u32,
+    pub total_blocks: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DescriptorError {
+    TooShort,
+    InvalidLength,
+    WrongType,
+    InvalidField,
+}
+
+fn descriptor_payload(descriptor: &[u8], expected_type: u8) -> Result<&[u8], DescriptorError> {
+    if descriptor.len() < 2 {
+        return Err(DescriptorError::TooShort);
+    }
+    let length = descriptor[0] as usize;
+    if length < 2 || length > descriptor.len() {
+        return Err(DescriptorError::InvalidLength);
+    }
+    if descriptor[1] != expected_type {
+        return Err(DescriptorError::WrongType);
+    }
+    Ok(&descriptor[..length])
+}
+
+pub(crate) fn parse_device_num_lu(descriptor: &[u8]) -> Result<u8, DescriptorError> {
+    let descriptor = descriptor_payload(descriptor, UFS_DESC_TYPE_DEVICE)?;
+    descriptor
+        .get(UFS_DEVICE_DESC_NUM_LU_OFFSET)
+        .copied()
+        .filter(|count| *count != 0)
+        .ok_or(DescriptorError::InvalidField)
+}
+
+pub(crate) fn parse_unit_geometry(
+    descriptor: &[u8],
+    lun: u8,
+) -> Result<UfsGeometry, DescriptorError> {
+    let descriptor = descriptor_payload(descriptor, UFS_DESC_TYPE_UNIT)?;
+    let unit_index = *descriptor
+        .get(UFS_UNIT_DESC_INDEX_OFFSET)
+        .ok_or(DescriptorError::InvalidField)?;
+    let enabled = *descriptor
+        .get(UFS_UNIT_DESC_ENABLE_OFFSET)
+        .ok_or(DescriptorError::InvalidField)?;
+    let block_exponent = *descriptor
+        .get(UFS_UNIT_DESC_BLOCK_SIZE_OFFSET)
+        .ok_or(DescriptorError::InvalidField)?;
+    let count_end = UFS_UNIT_DESC_BLOCK_COUNT_OFFSET + core::mem::size_of::<u64>();
+    if unit_index != lun || enabled == 0 || !(9..=20).contains(&block_exponent) {
+        return Err(DescriptorError::InvalidField);
+    }
+    let block_count = u64::from_be_bytes(
+        descriptor[UFS_UNIT_DESC_BLOCK_COUNT_OFFSET..count_end]
+            .try_into()
+            .map_err(|_| DescriptorError::InvalidField)?,
+    );
+    let block_size = 1u32
+        .checked_shl(u32::from(block_exponent))
+        .ok_or(DescriptorError::InvalidField)?;
+    if block_count == 0 {
+        return Err(DescriptorError::InvalidField);
+    }
+    Ok(UfsGeometry {
+        lun,
+        block_size,
+        total_blocks: block_count,
+    })
 }
 
 /// Bring-up states exposed to the inventory layer. `init()` still publishes
@@ -194,8 +703,8 @@ pub(crate) enum BringupStage {
 }
 
 /// The ordering boundary copied from the Qualcomm Linux split between the
-/// PHY driver's `power_on()` and the UFS-QCOM HCE notification.  A sequence
-/// The sequence is consumed by `execute_platform()` through a narrow backend,
+/// PHY driver's `power_on()` and the UFS-QCOM HCE notification. The sequence
+/// is consumed by `execute_platform()` through a narrow backend,
 /// so order can be tested without permitting arbitrary MMIO from the caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -215,11 +724,12 @@ pub(crate) enum PlatformStep {
     SelectUniproMode = 12,
     EnableLaneClocks = 13,
     EnableController = 14,
+    EnableDeviceRefRail = 15,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PlatformSequence {
-    pub steps: [PlatformStep; 15],
+    pub steps: [PlatformStep; 16],
     pub count: u8,
 }
 
@@ -232,6 +742,7 @@ impl PlatformSequence {
             PlatformStep::PowerOnPhyAnalog,
             PlatformStep::EnablePhyInterfaceClocks,
             PlatformStep::EnableReferenceClocks,
+            PlatformStep::EnableDeviceRefRail,
             PlatformStep::AssertControllerPhyReset,
             PlatformStep::ApplyRateACalibration,
             PlatformStep::ApplySecondLaneCalibration,
@@ -242,7 +753,7 @@ impl PlatformSequence {
             PlatformStep::EnableLaneClocks,
             PlatformStep::EnableController,
         ],
-        count: 15,
+        count: 16,
     };
 }
 
@@ -283,6 +794,7 @@ pub(crate) trait PlatformOps {
     fn delay_us(&mut self, microseconds: u32);
     fn select_unipro_mode(&mut self) -> bool;
     fn enable_controller(&mut self) -> bool;
+    fn enable_device_ref_rail(&mut self) -> bool;
 }
 
 /// The minimal controller surface needed after HCE: UFSHCI UIC commands are
@@ -292,6 +804,217 @@ pub(crate) trait ControllerOps {
     fn read_controller(&mut self, offset: u32) -> u32;
     fn write_controller(&mut self, offset: u32, value: u32);
     fn delay_us(&mut self, microseconds: u32);
+}
+
+/// DMA addresses and ownership evidence required before programming UFSHCI.
+/// The DT's lack of an `iommus` property is not itself treated as proof of
+/// identity DMA, so a platform backend must provide both evidence bits
+/// explicitly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DmaContract {
+    pub transfer_list: u64,
+    pub task_list: u64,
+    pub devman_descriptor: u64,
+    pub command_descriptor: u64,
+    pub data: u64,
+    pub dma_visible: bool,
+    pub cache_maintained: bool,
+}
+
+impl DmaContract {
+    pub(crate) const fn ready(self) -> bool {
+        self.transfer_list != 0
+            && self.task_list != 0
+            && self.devman_descriptor != 0
+            && self.command_descriptor != 0
+            && self.data != 0
+            && self.transfer_list % hci::TRANSFER_REQUEST_LIST_ALIGNMENT == 0
+            && self.task_list % hci::TRANSFER_REQUEST_LIST_ALIGNMENT == 0
+            && self.devman_descriptor % hci::COMMAND_DESCRIPTOR_ALIGNMENT == 0
+            && self.command_descriptor % hci::COMMAND_DESCRIPTOR_ALIGNMENT == 0
+            && self.dma_visible
+            && self.cache_maintained
+    }
+
+    pub(crate) fn any_address_above_32_bits(self) -> bool {
+        self.transfer_list > u64::from(u32::MAX)
+            || self.task_list > u64::from(u32::MAX)
+            || self.devman_descriptor > u64::from(u32::MAX)
+            || self.command_descriptor > u64::from(u32::MAX)
+            || self.data > u64::from(u32::MAX)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TransferEngineError {
+    DmaContractUnproven,
+    AddressWidthUnsupported,
+    ControllerNotReady,
+    InvalidSlot,
+    CompletionTimeout,
+    ControllerFault(u32),
+}
+
+const INTERRUPT_TRANSFER_REQ_COMPLETION: u32 = 1 << 0;
+const INTERRUPT_TASK_REQ_COMPLETION: u32 = 1 << 9;
+const INTERRUPT_UTP_ERROR: u32 = 1 << 12;
+const INTERRUPT_FATAL_ERROR: u32 = (1 << 11) | (1 << 16) | (1 << 17) | (1 << 18);
+const TRANSFER_ENGINE_INTERRUPT_MASK: u32 = INTERRUPT_TRANSFER_REQ_COMPLETION
+    | INTERRUPT_TASK_REQ_COMPLETION
+    | INTERRUPT_UTP_ERROR
+    | INTERRUPT_FATAL_ERROR
+    | hci::INTERRUPT_UIC_ERROR
+    | hci::INTERRUPT_UIC_LINK_LOST;
+
+/// Configure the legacy single-doorbell UFSHCI request engine after link
+/// startup. This function is deliberately not called by generic boot: the
+/// explicit DMA contract is a separate proof obligation from the DT contract.
+pub(crate) fn configure_transfer_engine<O: ControllerOps>(
+    ops: &mut O,
+    dma: DmaContract,
+) -> Result<hci::ControllerCapabilities, TransferEngineError> {
+    if !dma.ready() {
+        return Err(TransferEngineError::DmaContractUnproven);
+    }
+    let capabilities = hci::ControllerCapabilities {
+        raw: ops.read_controller(hci::REG_CONTROLLER_CAPABILITIES),
+    };
+    if !capabilities.supports_64bit_addressing() && dma.any_address_above_32_bits() {
+        return Err(TransferEngineError::AddressWidthUnsupported);
+    }
+    if ops.read_controller(hci::REG_CONTROLLER_STATUS) & hci::STATUS_READY != hci::STATUS_READY {
+        return Err(TransferEngineError::ControllerNotReady);
+    }
+
+    // Linux's make_hba_operational() disables aggregation in the one-command
+    // bring-up path, clears stale status, enables completion/error sources,
+    // then publishes both list bases before run/stop.
+    ops.write_controller(hci::REG_UTP_TRANSFER_REQ_INT_AGG_CONTROL, 0);
+    let pending = ops.read_controller(hci::REG_INTERRUPT_STATUS) & TRANSFER_ENGINE_INTERRUPT_MASK;
+    if pending != 0 {
+        ops.write_controller(hci::REG_INTERRUPT_STATUS, pending);
+    }
+    let interrupt_enable =
+        ops.read_controller(hci::REG_INTERRUPT_ENABLE) | TRANSFER_ENGINE_INTERRUPT_MASK;
+    ops.write_controller(hci::REG_INTERRUPT_ENABLE, interrupt_enable);
+    ops.write_controller(
+        hci::REG_UTP_TRANSFER_REQ_LIST_BASE_L,
+        dma.transfer_list as u32,
+    );
+    ops.write_controller(
+        hci::REG_UTP_TRANSFER_REQ_LIST_BASE_H,
+        (dma.transfer_list >> 32) as u32,
+    );
+    ops.write_controller(hci::REG_UTP_TASK_REQ_LIST_BASE_L, dma.task_list as u32);
+    ops.write_controller(
+        hci::REG_UTP_TASK_REQ_LIST_BASE_H,
+        (dma.task_list >> 32) as u32,
+    );
+    ops.write_controller(
+        hci::REG_UTP_TASK_REQ_LIST_RUN_STOP,
+        hci::TRANSFER_LIST_RUN_STOP,
+    );
+    ops.write_controller(
+        hci::REG_UTP_TRANSFER_REQ_LIST_RUN_STOP,
+        hci::TRANSFER_LIST_RUN_STOP,
+    );
+    Ok(capabilities)
+}
+
+/// Install one serialized UTRD into a legacy transfer list. Cache cleaning
+/// and DMA address translation remain outside this pure memory operation.
+pub(crate) fn install_transfer_slot(
+    transfer_list: &mut [u8],
+    slot: usize,
+    request: hci::TransferRequestDescriptor,
+) -> bool {
+    if slot >= 32 {
+        return false;
+    }
+    let offset = slot * hci::TRANSFER_REQUEST_DESCRIPTOR_SIZE;
+    let end = offset + hci::TRANSFER_REQUEST_DESCRIPTOR_SIZE;
+    if end > transfer_list.len() {
+        return false;
+    }
+    transfer_list[offset..end].copy_from_slice(&request.to_le_bytes());
+    true
+}
+
+pub(crate) fn transfer_slot_ocs(transfer_list: &[u8], slot: usize) -> Option<u8> {
+    if slot >= 32 {
+        return None;
+    }
+    let offset = slot * hci::TRANSFER_REQUEST_DESCRIPTOR_SIZE;
+    (offset + 12 <= transfer_list.len()).then_some(transfer_list[offset + 8] & hci::MASK_OCS)
+}
+
+/// Ring one legacy transfer slot after the caller has installed and cache-
+/// cleaned its UTRD/UCD/PRDT objects.
+pub(crate) fn ring_transfer_request<O: ControllerOps>(
+    ops: &mut O,
+    dma: DmaContract,
+    slot: usize,
+) -> Result<(), TransferEngineError> {
+    if !dma.ready() {
+        return Err(TransferEngineError::DmaContractUnproven);
+    }
+    if slot >= 32 {
+        return Err(TransferEngineError::InvalidSlot);
+    }
+    ops.write_controller(hci::REG_UTP_TRANSFER_REQ_DOOR_BELL, 1 << slot);
+    Ok(())
+}
+
+pub(crate) fn poll_transfer_completion<O: ControllerOps>(
+    ops: &mut O,
+    slot: usize,
+    timeout_us: u32,
+) -> Result<(), TransferEngineError> {
+    if slot >= 32 {
+        return Err(TransferEngineError::InvalidSlot);
+    }
+    let mut elapsed = 0;
+    while elapsed <= timeout_us {
+        let status = ops.read_controller(hci::REG_INTERRUPT_STATUS);
+        if status & (INTERRUPT_FATAL_ERROR | INTERRUPT_UTP_ERROR) != 0 {
+            ops.write_controller(
+                hci::REG_INTERRUPT_STATUS,
+                status & TRANSFER_ENGINE_INTERRUPT_MASK,
+            );
+            return Err(TransferEngineError::ControllerFault(status));
+        }
+        if status & INTERRUPT_TRANSFER_REQ_COMPLETION != 0 {
+            ops.write_controller(hci::REG_INTERRUPT_STATUS, INTERRUPT_TRANSFER_REQ_COMPLETION);
+            return Ok(());
+        }
+        if elapsed == timeout_us {
+            return Err(TransferEngineError::CompletionTimeout);
+        }
+        ops.delay_us(10);
+        elapsed = elapsed.saturating_add(10);
+    }
+    Err(TransferEngineError::CompletionTimeout)
+}
+
+/// Submit one already-serialized transfer-list slot. The caller must clean
+/// the UTRD/UCD/PRDT cache lines before calling and invalidate them after this
+/// function returns; the generic queue layer cannot infer either policy.
+pub(crate) fn submit_transfer_slot<O: ControllerOps>(
+    ops: &mut O,
+    dma: DmaContract,
+    transfer_list: &mut [u8],
+    slot: usize,
+    request: hci::TransferRequestDescriptor,
+    timeout_us: u32,
+) -> Result<(), TransferEngineError> {
+    if !dma.ready() {
+        return Err(TransferEngineError::DmaContractUnproven);
+    }
+    if !install_transfer_slot(transfer_list, slot, request) {
+        return Err(TransferEngineError::InvalidSlot);
+    }
+    ring_transfer_request(ops, dma, slot)?;
+    poll_transfer_completion(ops, slot, timeout_us)
 }
 
 const QPHY_RPMH_RESOURCE: [u8; 8] = *b"qphy.lvl";
@@ -362,6 +1085,11 @@ pub(crate) fn execute_platform<O: PlatformOps>(
             PlatformStep::EnableReferenceClocks,
         )?;
     }
+
+    run_step(
+        ops.enable_device_ref_rail(),
+        PlatformStep::EnableDeviceRefRail,
+    )?;
 
     run_step(
         ops.set_controller_phy_reset(true),
@@ -517,6 +1245,7 @@ pub(crate) fn execute_link_startup<O: ControllerOps>(
 /// in `main.rs`; generic QEMU has no path to these Qualcomm writes.
 #[cfg(fullerene_aarch64_bramble)]
 pub(crate) struct BramblePlatformOps {
+    profile: PlatformContract,
     controller_base: u64,
     phy_base: u64,
     gcc_base: u64,
@@ -539,6 +1268,7 @@ impl BramblePlatformOps {
             return Err(PlatformError::InvalidContract);
         };
         Ok(Self {
+            profile,
             controller_base: profile.controller[0].base,
             phy_base: profile.phy[0].base,
             gcc_base: gcc_region.base,
@@ -615,6 +1345,32 @@ impl BramblePlatformOps {
         }
         false
     }
+
+    unsafe fn enable_gdsc(&self, address: u64) -> bool {
+        const PWR_ON: u32 = 1 << 31;
+        const HW_CONTROL: u32 = 1 << 1;
+        const SW_OVERRIDE: u32 = 1 << 2;
+        const SW_COLLAPSE: u32 = 1 << 0;
+        const WAIT_MASK: u32 = (0xf << 20) | (0xf << 16) | (0xf << 12);
+        const WAIT_VALUE: u32 = (0x2 << 20) | (0x8 << 16) | (0x2 << 12);
+        let register = address as *mut u32;
+        let mut value = unsafe { core::ptr::read_volatile(register) };
+        value &= !(HW_CONTROL | SW_OVERRIDE | WAIT_MASK);
+        value |= WAIT_VALUE;
+        unsafe { core::ptr::write_volatile(register, value) };
+        let _ = unsafe { core::ptr::read_volatile(register) };
+        value &= !SW_COLLAPSE;
+        unsafe { core::ptr::write_volatile(register, value) };
+        let _ = unsafe { core::ptr::read_volatile(register) };
+        unsafe { Self::barrier() };
+        for _ in 0..1_000_000u32 {
+            if unsafe { core::ptr::read_volatile(register) } & PWR_ON != 0 {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
 }
 
 #[cfg(fullerene_aarch64_bramble)]
@@ -628,10 +1384,45 @@ impl PlatformOps for BramblePlatformOps {
     }
 
     fn enable_phy_rails(&mut self) -> bool {
-        // `new()` has already refused every DT-described regulator until a
-        // PMIC provider implementation is mapped. This remains a separate
-        // sequence step because Linux powers controller/PHY rails before
-        // touching the QMP analog registers.
+        let Some(hba_region) = self.profile.vdd_hba_power.region else {
+            return false;
+        };
+        if unsafe { !self.enable_gdsc(hba_region.base) } {
+            return false;
+        }
+        let rails = [
+            (self.profile.phy_vdda_power, None, 7),
+            (self.profile.phy_vdda_pll_power, None, 7),
+            (
+                self.profile.vcc_power,
+                self.profile.vcc_power.consumer_min_uv,
+                7,
+            ),
+            (
+                self.profile.vccq2_power,
+                self.profile.vccq2_power.provider_min_uv,
+                6,
+            ),
+        ];
+        for (rail, voltage_uv, mode) in rails {
+            let Some(resource_id) = rail.resource_id else {
+                return false;
+            };
+            let Some(set_mask) = rail.qcom_set else {
+                return false;
+            };
+            if unsafe {
+                !super::platform::bramble::send_rpmh_regulator_request(
+                    &resource_id,
+                    voltage_uv,
+                    mode,
+                    true,
+                    set_mask,
+                )
+            } {
+                return false;
+            }
+        }
         true
     }
 
@@ -732,6 +1523,25 @@ impl PlatformOps for BramblePlatformOps {
         }
         false
     }
+
+    fn enable_device_ref_rail(&mut self) -> bool {
+        let rail = self.profile.vddp_ref_clk_power;
+        let Some(resource_id) = rail.resource_id else {
+            return false;
+        };
+        let Some(set_mask) = rail.qcom_set else {
+            return false;
+        };
+        unsafe {
+            super::platform::bramble::send_rpmh_regulator_request(
+                &resource_id,
+                Some(1_200_000),
+                7,
+                true,
+                set_mask,
+            )
+        }
+    }
 }
 
 #[cfg(fullerene_aarch64_bramble)]
@@ -750,6 +1560,453 @@ impl ControllerOps for BramblePlatformOps {
     fn delay_us(&mut self, microseconds: u32) {
         super::timer::delay_us(microseconds as u64);
     }
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+const UFS_TRANSFER_TIMEOUT_US: u32 = 1_500_000;
+
+#[cfg(fullerene_aarch64_bramble)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadOnlyProbeError {
+    DmaContractUnproven,
+    Platform(PlatformError),
+    Link(LinkStartupError),
+    Transfer(TransferEngineError),
+    CommandStatus(u8),
+    InvalidResponse,
+    Descriptor(DescriptorError),
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+unsafe fn arena_transfer_list() -> &'static mut [u8] {
+    core::slice::from_raw_parts_mut(
+        core::ptr::addr_of_mut!(UFS_DMA_ARENA.transfer_list).cast::<u8>(),
+        UfsDmaLayout::TRANSFER_LIST_BYTES,
+    )
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+unsafe fn arena_task_list() -> &'static mut [u8] {
+    core::slice::from_raw_parts_mut(
+        core::ptr::addr_of_mut!(UFS_DMA_ARENA.task_list).cast::<u8>(),
+        UfsDmaLayout::TASK_LIST_BYTES,
+    )
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+unsafe fn arena_devman_descriptor() -> &'static mut [u8] {
+    core::slice::from_raw_parts_mut(
+        core::ptr::addr_of_mut!(UFS_DMA_ARENA.devman_descriptor).cast::<u8>(),
+        UfsDmaLayout::DEVMAN_DESCRIPTOR_BYTES,
+    )
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+unsafe fn arena_command_descriptor() -> &'static mut [u8] {
+    core::slice::from_raw_parts_mut(
+        core::ptr::addr_of_mut!(UFS_DMA_ARENA.command_descriptor).cast::<u8>(),
+        UfsDmaLayout::COMMAND_DESCRIPTOR_BYTES,
+    )
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+unsafe fn arena_data() -> &'static mut [u8] {
+    core::slice::from_raw_parts_mut(
+        core::ptr::addr_of_mut!(UFS_DMA_ARENA.data).cast::<u8>(),
+        UfsDmaLayout::DATA_BYTES,
+    )
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+unsafe fn cache_line_size() -> usize {
+    let ctr: u64;
+    core::arch::asm!(
+        "mrs {ctr}, ctr_el0",
+        ctr = out(reg) ctr,
+        options(nostack, preserves_flags)
+    );
+    4usize << ((ctr >> 16) & 0xf) as usize
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+unsafe fn cache_maintain_range(address: u64, length: usize, clean: bool, invalidate: bool) {
+    if length == 0 {
+        return;
+    }
+    let line = unsafe { cache_line_size() }.max(4);
+    let mask = (line - 1) as u64;
+    let start = address & !mask;
+    let end = address.saturating_add(length as u64).saturating_add(mask) & !mask;
+    let mut current = start;
+    while current < end {
+        if clean && invalidate {
+            core::arch::asm!("dc civac, {address}", address = in(reg) current, options(nostack));
+        } else if clean {
+            core::arch::asm!("dc cvac, {address}", address = in(reg) current, options(nostack));
+        } else if invalidate {
+            core::arch::asm!("dc ivac, {address}", address = in(reg) current, options(nostack));
+        }
+        current = current.saturating_add(line as u64);
+    }
+    core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+fn bramble_dma_contract() -> Result<DmaContract, ReadOnlyProbeError> {
+    // The active DTB has no UFS `iommus` property, but absence is not proof of
+    // identity DMA. Require a deliberate build-time assertion for this first
+    // physical read-only trial; the cache instructions below are the other
+    // half of the contract.
+    if option_env!("FULLERENE_AARCH64_UFS_DMA_IDENTITY") != Some("1") {
+        return Err(ReadOnlyProbeError::DmaContractUnproven);
+    }
+    let (transfer_list, task_list, devman_descriptor, command_descriptor, data) =
+        unsafe { UfsDmaLayout::addresses() };
+    let dma = DmaContract {
+        transfer_list,
+        task_list,
+        devman_descriptor,
+        command_descriptor,
+        data,
+        dma_visible: true,
+        cache_maintained: true,
+    };
+    dma.ready()
+        .then_some(dma)
+        .ok_or(ReadOnlyProbeError::DmaContractUnproven)
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+pub(crate) struct BrambleUfsBlockDevice {
+    backend: BramblePlatformOps,
+    dma: DmaContract,
+    lun: u8,
+    block_size: u32,
+    total_blocks: u64,
+    slot: usize,
+    next_tag: u8,
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+static BRAMBLE_UFS_DEVICE: spin::Mutex<Option<BrambleUfsBlockDevice>> = spin::Mutex::new(None);
+
+/// A filesystem-facing handle for the installed read-only backend. The
+/// controller-owning object stays in the global mutex; this zero-sized handle
+/// prevents the VFS from taking ownership of platform state or DMA buffers.
+#[cfg(fullerene_aarch64_bramble)]
+pub(crate) struct BrambleUfsReadOnlyHandle;
+
+#[cfg(fullerene_aarch64_bramble)]
+impl BlockDevice for BrambleUfsReadOnlyHandle {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        read_bramble_blocks(lba, count, buf)
+    }
+
+    fn write_sectors(&mut self, _lba: u64, _count: u16, _buf: &[u8]) -> Result<(), BlockError> {
+        Err(BlockError::Device)
+    }
+
+    fn sector_size(&self) -> u32 {
+        bramble_block_info().map_or(0, |(sector_size, _)| sector_size)
+    }
+
+    fn total_sectors(&self) -> u64 {
+        bramble_block_info().map_or(0, |(_, total_sectors)| total_sectors)
+    }
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+impl BrambleUfsBlockDevice {
+    fn submit_transfer(
+        &mut self,
+        request: hci::TransferRequestDescriptor,
+        descriptor_address: u64,
+        descriptor_bytes: usize,
+        data_address: Option<u64>,
+        data_bytes: usize,
+    ) -> Result<(), ReadOnlyProbeError> {
+        let installed = unsafe { install_transfer_slot(arena_transfer_list(), self.slot, request) };
+        if !installed {
+            return Err(ReadOnlyProbeError::Transfer(
+                TransferEngineError::InvalidSlot,
+            ));
+        }
+        unsafe {
+            cache_maintain_range(
+                self.dma.transfer_list,
+                hci::TRANSFER_REQUEST_DESCRIPTOR_SIZE,
+                true,
+                false,
+            );
+            cache_maintain_range(descriptor_address, descriptor_bytes, true, false);
+            if let Some(address) = data_address {
+                cache_maintain_range(address, data_bytes, true, true);
+            }
+        }
+        let result = ring_transfer_request(&mut self.backend, self.dma, self.slot).and_then(|_| {
+            poll_transfer_completion(&mut self.backend, self.slot, UFS_TRANSFER_TIMEOUT_US)
+        });
+        unsafe {
+            cache_maintain_range(
+                self.dma.transfer_list,
+                hci::TRANSFER_REQUEST_DESCRIPTOR_SIZE,
+                false,
+                true,
+            );
+            cache_maintain_range(descriptor_address, descriptor_bytes, false, true);
+            if let Some(address) = data_address {
+                cache_maintain_range(address, data_bytes, false, true);
+            }
+        }
+        result.map_err(ReadOnlyProbeError::Transfer)?;
+        let status = unsafe { transfer_slot_ocs(arena_transfer_list(), self.slot) }.ok_or(
+            ReadOnlyProbeError::Transfer(TransferEngineError::InvalidSlot),
+        )?;
+        if status != hci::OCS_SUCCESS {
+            return Err(ReadOnlyProbeError::CommandStatus(status));
+        }
+        Ok(())
+    }
+
+    fn next_tag(&mut self) -> u8 {
+        let tag = self.next_tag;
+        self.next_tag = self.next_tag.wrapping_add(1);
+        tag
+    }
+
+    fn submit_nop(&mut self) -> Result<(), ReadOnlyProbeError> {
+        let tag = self.next_tag();
+        let request = unsafe {
+            hci::prepare_nop_out(self.dma.devman_descriptor, arena_devman_descriptor(), tag)
+        }
+        .ok_or(ReadOnlyProbeError::InvalidResponse)?;
+        self.submit_transfer(
+            request,
+            self.dma.devman_descriptor,
+            UfsDmaLayout::DEVMAN_DESCRIPTOR_BYTES,
+            None,
+            0,
+        )?;
+        let response = unsafe {
+            core::slice::from_raw_parts(
+                (self.dma.devman_descriptor
+                    + hci::DEVMAN_COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET as u64)
+                    as *const u8,
+                hci::UPIU_HEADER_SIZE,
+            )
+        };
+        if hci::nop_response_success(response, tag) {
+            Ok(())
+        } else {
+            Err(ReadOnlyProbeError::InvalidResponse)
+        }
+    }
+
+    fn query_descriptor(
+        &mut self,
+        idn: u8,
+        index: u8,
+    ) -> Result<([u8; hci::QUERY_DESC_MAX_SIZE as usize], usize), ReadOnlyProbeError> {
+        let tag = self.next_tag();
+        let request = unsafe {
+            hci::prepare_query_read_desc(
+                self.dma.devman_descriptor,
+                arena_devman_descriptor(),
+                tag,
+                idn,
+                index,
+                hci::QUERY_DESC_MAX_SIZE,
+            )
+        }
+        .ok_or(ReadOnlyProbeError::InvalidResponse)?;
+        self.submit_transfer(
+            request,
+            self.dma.devman_descriptor,
+            UfsDmaLayout::DEVMAN_DESCRIPTOR_BYTES,
+            None,
+            0,
+        )?;
+        let response = unsafe {
+            core::slice::from_raw_parts(
+                (self.dma.devman_descriptor
+                    + hci::DEVMAN_COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET as u64)
+                    as *const u8,
+                hci::ALIGNED_DEVMAN_RSP_SIZE as usize,
+            )
+        };
+        let mut descriptor = [0_u8; hci::QUERY_DESC_MAX_SIZE as usize];
+        let length = hci::copy_query_read_desc_response(response, &mut descriptor)
+            .ok_or(ReadOnlyProbeError::InvalidResponse)?;
+        Ok((descriptor, length))
+    }
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+impl BlockDevice for BrambleUfsBlockDevice {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        if count == 0 {
+            return Ok(());
+        }
+        let required = (count as usize)
+            .checked_mul(self.block_size as usize)
+            .ok_or(BlockError::LbaOverflow)?;
+        if buf.len() < required {
+            return Err(BlockError::BufferTooSmall {
+                required,
+                provided: buf.len(),
+            });
+        }
+        let end = lba
+            .checked_add(count as u64)
+            .ok_or(BlockError::LbaOverflow)?;
+        if end > self.total_blocks
+            || lba > u64::from(u32::MAX)
+            || required > UfsDmaLayout::DATA_BYTES
+        {
+            return Err(BlockError::LbaOverflow);
+        }
+        let tag = self.next_tag();
+        let request = unsafe {
+            hci::prepare_scsi_read10(
+                self.dma.command_descriptor,
+                arena_command_descriptor(),
+                self.dma.data,
+                tag,
+                self.lun,
+                lba as u32,
+                count,
+                self.block_size,
+            )
+        }
+        .ok_or(BlockError::Device)?;
+        self.submit_transfer(
+            request,
+            self.dma.command_descriptor,
+            UfsDmaLayout::COMMAND_DESCRIPTOR_BYTES,
+            Some(self.dma.data),
+            required,
+        )
+        .map_err(|_| BlockError::Device)?;
+        let response = unsafe {
+            core::slice::from_raw_parts(
+                (self.dma.command_descriptor + hci::COMMAND_DESCRIPTOR_RESPONSE_UPIU_OFFSET as u64)
+                    as *const u8,
+                hci::ALIGNED_UPIU_SIZE as usize,
+            )
+        };
+        if !hci::scsi_response_success(response, tag) {
+            return Err(BlockError::Device);
+        }
+        let data = unsafe { arena_data() };
+        buf[..required].copy_from_slice(&data[..required]);
+        Ok(())
+    }
+
+    fn write_sectors(&mut self, _lba: u64, _count: u16, _buf: &[u8]) -> Result<(), BlockError> {
+        // The first storage registration is intentionally read-only. No
+        // WRITE(10), descriptor write, format, or partition operation is
+        // reachable through this adapter.
+        Err(BlockError::Device)
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.block_size
+    }
+
+    fn total_sectors(&self) -> u64 {
+        self.total_blocks
+    }
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+pub(crate) fn install_bramble_block_device(device: BrambleUfsBlockDevice) -> bool {
+    let mut registered = BRAMBLE_UFS_DEVICE.lock();
+    if registered.is_some() {
+        return false;
+    }
+    *registered = Some(device);
+    true
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+pub(crate) fn bramble_read_only_handle() -> Option<BrambleUfsReadOnlyHandle> {
+    bramble_block_info().map(|_| BrambleUfsReadOnlyHandle)
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+pub(crate) fn read_bramble_blocks(lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+    BRAMBLE_UFS_DEVICE
+        .lock()
+        .as_mut()
+        .ok_or(BlockError::Device)?
+        .read_sectors(lba, count, buf)
+}
+
+pub(crate) fn bramble_block_info() -> Option<(u32, u64)> {
+    #[cfg(fullerene_aarch64_bramble)]
+    {
+        return BRAMBLE_UFS_DEVICE
+            .lock()
+            .as_ref()
+            .map(|device| (device.sector_size(), device.total_sectors()));
+    }
+    #[cfg(not(fullerene_aarch64_bramble))]
+    {
+        None
+    }
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+pub(crate) fn execute_bramble_read_only(
+    profile: PlatformContract,
+    rate_b: bool,
+) -> Result<(BrambleUfsBlockDevice, UfsGeometry), ReadOnlyProbeError> {
+    let dma = bramble_dma_contract()?;
+    let mut backend = BramblePlatformOps::new(profile).map_err(ReadOnlyProbeError::Platform)?;
+    execute_platform(profile, &mut backend, rate_b).map_err(ReadOnlyProbeError::Platform)?;
+    execute_link_startup(profile, &mut backend).map_err(ReadOnlyProbeError::Link)?;
+
+    unsafe {
+        arena_transfer_list().fill(0);
+        arena_task_list().fill(0);
+        cache_maintain_range(
+            dma.transfer_list,
+            UfsDmaLayout::TRANSFER_LIST_BYTES,
+            true,
+            false,
+        );
+        cache_maintain_range(dma.task_list, UfsDmaLayout::TASK_LIST_BYTES, true, false);
+    }
+    configure_transfer_engine(&mut backend, dma).map_err(ReadOnlyProbeError::Transfer)?;
+
+    let mut device = BrambleUfsBlockDevice {
+        backend,
+        dma,
+        lun: 0,
+        block_size: 0,
+        total_blocks: 0,
+        slot: 0,
+        next_tag: 0,
+    };
+    device.submit_nop()?;
+    let (device_descriptor, device_descriptor_len) = device.query_descriptor(0x00, 0)?;
+    let device_num_lu = parse_device_num_lu(&device_descriptor[..device_descriptor_len])
+        .map_err(ReadOnlyProbeError::Descriptor)?;
+    if device_num_lu == 0 {
+        return Err(ReadOnlyProbeError::Descriptor(
+            DescriptorError::InvalidField,
+        ));
+    }
+    let (unit_descriptor, unit_descriptor_len) = device.query_descriptor(0x02, 0)?;
+    let geometry = parse_unit_geometry(&unit_descriptor[..unit_descriptor_len], 0)
+        .map_err(ReadOnlyProbeError::Descriptor)?;
+    device.lun = geometry.lun;
+    device.block_size = geometry.block_size;
+    device.total_blocks = geometry.total_blocks;
+    unsafe {
+        STAGE = BringupStage::BlockReady;
+    }
+    Ok((device, geometry))
 }
 
 #[cfg(fullerene_aarch64_bramble)]
@@ -1469,6 +2726,10 @@ pub(crate) struct PlatformContract {
     pub vdd_hba_power: SupplyContract,
     pub vcc_power: SupplyContract,
     pub vccq2_power: SupplyContract,
+    pub vddp_ref_clk_supply: PropertyShape,
+    pub vddp_ref_clk_power: SupplyContract,
+    pub phy_vdda_power: SupplyContract,
+    pub phy_vdda_pll_power: SupplyContract,
 }
 
 const EMPTY_REGION: fdt::Region = fdt::Region { base: 0, size: 0 };
@@ -1524,6 +2785,10 @@ impl PlatformContract {
             vdd_hba_power: EMPTY_SUPPLY_CONTRACT,
             vcc_power: EMPTY_SUPPLY_CONTRACT,
             vccq2_power: EMPTY_SUPPLY_CONTRACT,
+            vddp_ref_clk_supply: EMPTY_PROPERTY,
+            vddp_ref_clk_power: EMPTY_SUPPLY_CONTRACT,
+            phy_vdda_power: EMPTY_SUPPLY_CONTRACT,
+            phy_vdda_pll_power: EMPTY_SUPPLY_CONTRACT,
         }
     }
 
@@ -1638,17 +2903,40 @@ impl PlatformContract {
             && self.vccq2_power.provider_max_uv == Some(1_800_000)
             && self.vccq2_power.consumer_max_load_ua == Some(800_000)
             && self.vccq2_power.qcom_set == Some(3)
+            && supply_string_is(self.vddp_ref_clk_power.regulator_name, b"pm8150_l9")
+            && supply_string_is(self.vddp_ref_clk_power.resource_name, b"ldoa9")
+            && self.vddp_ref_clk_power.resource_id == Some(*b"ldoa9\0\0\0")
+            && self.vddp_ref_clk_power.provider_min_uv == Some(1_152_000)
+            && self.vddp_ref_clk_power.provider_max_uv == Some(1_320_000)
+            && self.vddp_ref_clk_power.consumer_max_load_ua == Some(100)
+            && self.vddp_ref_clk_power.qcom_set == Some(3)
+            && supply_string_is(self.phy_vdda_power.regulator_name, b"pm8150_l5")
+            && supply_string_is(self.phy_vdda_power.resource_name, b"ldoa5")
+            && self.phy_vdda_power.resource_id == Some(*b"ldoa5\0\0\0")
+            && self.phy_vdda_power.provider_min_uv == Some(720_000)
+            && self.phy_vdda_power.provider_max_uv == Some(1_056_000)
+            && self.phy_vdda_power.consumer_max_load_ua == Some(90_200)
+            && self.phy_vdda_power.qcom_set == Some(3)
+            && supply_string_is(self.phy_vdda_pll_power.regulator_name, b"pm8150_l9")
+            && supply_string_is(self.phy_vdda_pll_power.resource_name, b"ldoa9")
+            && self.phy_vdda_pll_power.resource_id == Some(*b"ldoa9\0\0\0")
+            && self.phy_vdda_pll_power.provider_min_uv == Some(1_152_000)
+            && self.phy_vdda_pll_power.provider_max_uv == Some(1_320_000)
+            && self.phy_vdda_pll_power.consumer_max_load_ua == Some(19_000)
+            && self.phy_vdda_pll_power.qcom_set == Some(3)
     }
 
-    /// The current RPMh helper owns active TCS requests only. Both UFS VRM
-    /// supplies are declared with `qcom,set = RPMH_REGULATOR_SET_ALL`, which
-    /// also requires cached sleep-set handling before a cold-start write can
-    /// be enabled. Keep the physical backend closed until that shared RSC
-    /// ownership layer exists.
+    /// The Bramble RPMh transport can now target both active and sleep TCS
+    /// families. Keep the backend closed for a malformed set mask even when
+    /// the names and provider ranges look correct.
     pub(crate) fn power_transaction_ready(self) -> bool {
+        let valid_set = |set| matches!(set, Some(RPMH_SET_ACTIVE) | Some(RPMH_SET_ALL));
         self.power_contract_valid()
-            && self.vcc_power.qcom_set == Some(1)
-            && self.vccq2_power.qcom_set == Some(1)
+            && valid_set(self.phy_vdda_power.qcom_set)
+            && valid_set(self.phy_vdda_pll_power.qcom_set)
+            && valid_set(self.vcc_power.qcom_set)
+            && valid_set(self.vccq2_power.qcom_set)
+            && valid_set(self.vddp_ref_clk_power.qcom_set)
     }
 }
 
@@ -1776,17 +3064,51 @@ pub(crate) fn describe(address: u64) -> Option<PlatformContract> {
     contract.vcc_supply = property(address, UFS_CONTROLLER, b"vcc-supply");
     contract.vccq_supply = property(address, UFS_CONTROLLER, b"vccq-supply");
     contract.vccq2_supply = property(address, UFS_CONTROLLER, b"vccq2-supply");
+    contract.vddp_ref_clk_supply = property(address, UFS_CONTROLLER, b"qcom,vddp-ref-clk-supply");
     contract.phy_vdda_supply = property(address, UFS_PHY, b"vdda-phy-supply");
     contract.phy_vdda_pll_supply = property(address, UFS_PHY, b"vdda-pll-supply");
-    contract.vdd_hba_power = describe_supply(address, b"vdd-hba-supply", None, None);
+    contract.vdd_hba_power =
+        describe_supply(address, UFS_CONTROLLER, b"vdd-hba-supply", None, None, None);
     contract.vcc_power = describe_supply(
         address,
+        UFS_CONTROLLER,
         b"vcc-supply",
         Some(b"vcc-voltage-level"),
+        None,
         Some(b"vcc-max-microamp"),
     );
-    contract.vccq2_power =
-        describe_supply(address, b"vccq2-supply", None, Some(b"vccq2-max-microamp"));
+    contract.vccq2_power = describe_supply(
+        address,
+        UFS_CONTROLLER,
+        b"vccq2-supply",
+        None,
+        None,
+        Some(b"vccq2-max-microamp"),
+    );
+    contract.vddp_ref_clk_power = describe_supply(
+        address,
+        UFS_CONTROLLER,
+        b"qcom,vddp-ref-clk-supply",
+        None,
+        None,
+        Some(b"qcom,vddp-ref-clk-max-microamp"),
+    );
+    contract.phy_vdda_power = describe_supply(
+        address,
+        UFS_PHY,
+        b"vdda-phy-supply",
+        None,
+        None,
+        Some(b"vdda-phy-max-microamp"),
+    );
+    contract.phy_vdda_pll_power = describe_supply(
+        address,
+        UFS_PHY,
+        b"vdda-pll-supply",
+        None,
+        None,
+        Some(b"vdda-pll-max-microamp"),
+    );
     Some(contract)
 }
 
@@ -1858,18 +3180,19 @@ fn property(address: u64, compatible: &[u8], name: &[u8]) -> PropertyShape {
 
 fn describe_supply(
     address: u64,
+    source_node: &[u8],
     property_name: &[u8],
     consumer_voltage_property: Option<&[u8]>,
+    consumer_voltage_max_property: Option<&[u8]>,
     consumer_load_property: Option<&[u8]>,
 ) -> SupplyContract {
-    let Some(phandle) =
-        fdt::find_compatible_property_u32(address, UFS_CONTROLLER, property_name, 0)
+    let Some(phandle) = fdt::find_compatible_property_u32(address, source_node, property_name, 0)
     else {
         return EMPTY_SUPPLY_CONTRACT;
     };
     let regulator_name = fdt::find_phandle_property_string(
         address,
-        UFS_CONTROLLER,
+        source_node,
         property_name,
         0,
         b"regulator-name",
@@ -1880,11 +3203,14 @@ fn describe_supply(
         fdt::find_compatible_property_u32(address, UFS_CONTROLLER, property, 0)
     });
     let consumer_max_uv = consumer_voltage_property.and_then(|property| {
-        fdt::find_compatible_property_u32(address, UFS_CONTROLLER, property, 1)
+        consumer_voltage_max_property
+            .and_then(|max_property| {
+                fdt::find_compatible_property_u32(address, source_node, max_property, 0)
+            })
+            .or_else(|| fdt::find_compatible_property_u32(address, source_node, property, 1))
     });
-    let consumer_max_load_ua = consumer_load_property.and_then(|property| {
-        fdt::find_compatible_property_u32(address, UFS_CONTROLLER, property, 0)
-    });
+    let consumer_max_load_ua = consumer_load_property
+        .and_then(|property| fdt::find_compatible_property_u32(address, source_node, property, 0));
     let resource_id = regulator_name.and_then(ufs_rpmh_resource_id);
     SupplyContract {
         phandle: Some(phandle),
@@ -1921,6 +3247,8 @@ fn supply_string_is(value: Option<fdt::StringValue>, expected: &[u8]) -> bool {
 fn ufs_rpmh_resource_id(name: fdt::StringValue) -> Option<[u8; 8]> {
     let bytes = &name.bytes[..name.len];
     match bytes {
+        b"pm8150_l5" => Some(*b"ldoa5\0\0\0"),
+        b"pm8150_l9" => Some(*b"ldoa9\0\0\0"),
         b"pm8150a_l7" => Some(*b"ldoc7\0\0\0"),
         b"pm8150_s4" => Some(*b"smpa4\0\0\0"),
         _ => None,

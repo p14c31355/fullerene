@@ -632,57 +632,31 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     uart::puts("timer: generic counter ready, ticks=");
     uart::put_hex_value(elapsed);
 
-    // The UFS platform backend is an explicit Bramble build opt-in. The
-    // default image continues to describe the DT only; this gate prevents a
-    // generic QEMU image or an accidental production build from issuing GCC,
-    // RPMh, or PHY writes before a deliberate hardware trial.
+    // The UFS platform/storage backend is an explicit Bramble build opt-in.
+    // The default image continues to describe the DT only; the additional DMA
+    // identity assertion in execute_bramble_read_only prevents a physical
+    // platform transaction until the UTP ownership contract is deliberate.
     #[cfg(fullerene_aarch64_bramble)]
     if option_env!("FULLERENE_AARCH64_UFS_EXECUTE") == Some("1") {
         if let Some(profile) = ufs::profile() {
             let rate_b = option_env!("FULLERENE_AARCH64_UFS_RATE_B") == Some("1");
-            match ufs::execute_bramble_platform(profile, rate_b) {
-                Ok(stage) => {
-                    uart::put_hex("ufs: executed stage=", stage as u64);
-                    match ufs::execute_bramble_link_startup(profile) {
-                        Ok(link_stage) => uart::put_hex("ufs: link stage=", link_stage as u64),
-                        Err(ufs::LinkStartupError::InvalidContract) => {
-                            uart::puts("ufs: link refused invalid contract\n")
-                        }
-                        Err(ufs::LinkStartupError::UnmappedRegulators) => {
-                            uart::puts("ufs: link blocked by unmapped regulators\n")
-                        }
-                        Err(ufs::LinkStartupError::PowerStateUnsupported) => {
-                            uart::puts("ufs: link blocked by unsupported RPMh power state\n")
-                        }
-                        Err(ufs::LinkStartupError::ControllerNotReady) => {
-                            uart::puts("ufs: link controller not ready\n")
-                        }
-                        Err(ufs::LinkStartupError::CommandTimeout) => {
-                            uart::puts("ufs: link UIC command timeout\n")
-                        }
-                        Err(ufs::LinkStartupError::CommandFailed(result)) => {
-                            uart::put_hex("ufs: link UIC result=", result as u64)
-                        }
-                        Err(ufs::LinkStartupError::DeviceAbsent) => {
-                            uart::puts("ufs: link device absent\n")
-                        }
+            match ufs::execute_bramble_read_only(profile, rate_b) {
+                Ok((device, geometry)) => {
+                    let installed = ufs::install_bramble_block_device(device);
+                    uart::put_hex("ufs: block size=", geometry.block_size as u64);
+                    uart::put_hex("ufs: block count=", geometry.total_blocks);
+                    if installed {
+                        uart::puts("ufs: read-only block device registered\n");
+                        #[cfg(feature = "aarch64-user-launchd")]
+                        fs::mount_bramble_ufs();
+                    } else {
+                        uart::puts("ufs: read-only block device registration failed\n");
                     }
                 }
-                Err(ufs::PlatformError::InvalidContract) => {
-                    uart::puts("ufs: backend refused invalid contract\n")
+                Err(ufs::ReadOnlyProbeError::DmaContractUnproven) => {
+                    uart::puts("ufs: read-only probe withheld; DMA contract unproven\n")
                 }
-                Err(ufs::PlatformError::UnmappedRegulators) => {
-                    uart::puts("ufs: backend blocked by unmapped regulators\n")
-                }
-                Err(ufs::PlatformError::PowerStateUnsupported) => {
-                    uart::puts("ufs: backend blocked by unsupported RPMh power state\n")
-                }
-                Err(ufs::PlatformError::PcsReadyTimeout) => {
-                    uart::puts("ufs: backend PCS-ready timeout\n")
-                }
-                Err(ufs::PlatformError::Step(step)) => {
-                    uart::put_hex("ufs: backend step failed=", step as u64)
-                }
+                Err(_) => uart::puts("ufs: read-only probe failed; block device withheld\n"),
             }
         } else {
             uart::puts("ufs: backend requested without profile\n");

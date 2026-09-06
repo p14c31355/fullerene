@@ -31,6 +31,7 @@ use phy::{
 pub use phy::{qmp_phase_probe_reached, qmp_phase_probe_requested};
 mod config;
 mod control;
+mod debug_transport;
 mod phy;
 mod phy_tables;
 pub use phy_tables::hsphy_node_code;
@@ -706,6 +707,32 @@ static mut USB_RUNTIME_STATE: super::platform::bramble::UsbRuntimeState =
 static mut GADGET: Ep0Simulator = Ep0Simulator::new();
 static mut UDC: UsbUdc = UsbUdc::new();
 
+/// Ask the boot chain for a normal system reset. This is deliberately kept
+/// separate from the diagnostic transport: the command is accepted only in a
+/// build with `FULLERENE_AARCH64_DEBUG_RETURN=1`, and no partition or boot
+/// metadata is written. Whether the platform returns to Fastboot or follows
+/// its ordinary boot target remains a firmware policy decision.
+pub(super) fn return_to_boot_chain() -> ! {
+    unsafe {
+        core::arch::asm!(
+            "mov w0, #9",
+            "movk w0, #0x8400, lsl #16",
+            "mov x1, xzr",
+            "mov x2, xzr",
+            "mov x3, xzr",
+            "smc #0",
+            out("x0") _,
+            out("x1") _,
+            out("x2") _,
+            out("x3") _,
+            options(nostack)
+        );
+    }
+    loop {
+        unsafe { core::arch::asm!("wfe", options(nomem, nostack, preserves_flags)) };
+    }
+}
+
 #[inline]
 unsafe fn gadget_mut() -> &'static mut Ep0Simulator {
     // Use a raw pointer for the retained early-boot singleton.  Rust 2024
@@ -728,6 +755,7 @@ unsafe fn udc_mut() -> &'static mut UsbUdc {
 /// commands, or DMA channels are torn down.
 unsafe fn unbind_function() {
     unsafe {
+        debug_transport::reset();
         if FUNCTION_BOUND {
             GadgetDriver::on_function_unbind(gadget_mut());
             FUNCTION_BOUND = false;
@@ -4623,6 +4651,15 @@ unsafe fn complete_bulk_transfer(endpoint: usize, status: u32, raw: u32) {
             .unwrap_or(0);
         let error = status != 0;
         let _ = udc_mut().complete(address, slot, actual, error);
+        if endpoint == 2 {
+            let data = core::slice::from_raw_parts(
+                addr_of!(DATA_OUT_BUFFER.0).cast::<u8>(),
+                actual as usize,
+            );
+            debug_transport::on_bulk_out(data, error);
+        } else {
+            debug_transport::on_bulk_in_complete(error);
+        }
         GadgetDriver::on_data_complete(gadget_mut(), address, actual, error);
         trace_event(
             TRACE_TRANSFER_COMPLETE,

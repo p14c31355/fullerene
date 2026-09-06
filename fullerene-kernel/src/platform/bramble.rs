@@ -2988,6 +2988,20 @@ const RPMH_CMD_MSGID_WRITE: u32 = 1 << 16;
 const RPMH_CMD_STATUS_ISSUED: u32 = 1 << 8;
 const RPMH_CMD_STATUS_COMPLETE: u32 = 1 << 16;
 
+pub const RPMH_REGULATOR_SET_ACTIVE: u32 = 1;
+pub const RPMH_REGULATOR_SET_SLEEP: u32 = 2;
+pub const RPMH_REGULATOR_SET_ALL: u32 = RPMH_REGULATOR_SET_ACTIVE | RPMH_REGULATOR_SET_SLEEP;
+
+/// One Apps-RSC TCS family. Qualcomm's RPMh regulator `qcom,set` property
+/// selects these independently; an active request cannot stand in for the
+/// sleep-set request used after assisted power collapse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpmhTcsSet {
+    Active,
+    Sleep,
+    Wake,
+}
+
 #[inline]
 unsafe fn rpmh_reg(base: usize, offset: usize) -> *mut u32 {
     (base + offset) as *mut u32
@@ -3004,11 +3018,11 @@ unsafe fn rpmh_write_sync(base: usize, offset: usize, value: u32) -> bool {
     false
 }
 
-/// Submit a bounded batch of RPMh commands through an Apps-RSC active TCS.
+/// Submit a bounded batch of RPMh commands through one Apps-RSC TCS family.
 /// Both BCM interconnect votes and VRM regulator requests use this same
 /// ownership/trigger/completion protocol; keeping it shared prevents the
 /// regulator path from accidentally bypassing TCS arbitration.
-unsafe fn send_rpmh_command_batch(commands: &[RpmhBcmCommand]) -> bool {
+unsafe fn send_rpmh_command_batch_in_set(commands: &[RpmhBcmCommand], set: RpmhTcsSet) -> bool {
     if commands.is_empty() || commands.len() > 4 {
         return false;
     }
@@ -3018,8 +3032,13 @@ unsafe fn send_rpmh_command_batch(commands: &[RpmhBcmCommand]) -> bool {
         return false;
     };
     let tcs_base = resources.driver_base + resources.tcs_offset;
+    let (tcs_offset, tcs_count) = match set {
+        RpmhTcsSet::Active => (resources.active_tcs_offset, resources.active_tcs),
+        RpmhTcsSet::Sleep => (resources.sleep_tcs_offset, resources.sleep_tcs),
+        RpmhTcsSet::Wake => (resources.wake_tcs_offset, resources.wake_tcs),
+    };
     let mut selected = None;
-    for tcs in resources.active_tcs_offset..resources.active_tcs_offset + resources.active_tcs {
+    for tcs in tcs_offset..tcs_offset + tcs_count {
         let base = tcs_base + tcs as usize * layout.tcs_stride;
         let enabled = unsafe { core::ptr::read_volatile(rpmh_reg(base, layout.command_enable)) };
         if enabled == 0 {
@@ -3094,6 +3113,69 @@ unsafe fn send_rpmh_command_batch(commands: &[RpmhBcmCommand]) -> bool {
         && unsafe { rpmh_write_sync(base, layout.command_enable, 0) }
         && unsafe { rpmh_write_sync(base, layout.wait_for_completion, 0) };
     complete && released
+}
+
+/// Preserve the existing active-only callers while making the TCS set
+/// explicit for new secure-resource clients.
+unsafe fn send_rpmh_command_batch(commands: &[RpmhBcmCommand]) -> bool {
+    unsafe { send_rpmh_command_batch_in_set(commands, RpmhTcsSet::Active) }
+}
+
+/// Send a PMIC VRM request to the set(s) selected by a Qualcomm `qcom,set`
+/// value. The command addresses are resolved from Command DB and the request
+/// is acknowledged independently in each selected TCS family.
+pub unsafe fn send_rpmh_regulator_request(
+    resource_id: &[u8; 8],
+    voltage_uv: Option<u32>,
+    mode: u32,
+    enabled: bool,
+    set_mask: u32,
+) -> bool {
+    if set_mask == 0 || set_mask & !(RPMH_REGULATOR_SET_ACTIVE | RPMH_REGULATOR_SET_SLEEP) != 0 {
+        return false;
+    }
+    let Some(address) = (unsafe { command_db_read_addr(resource_id) }) else {
+        return false;
+    };
+    let mut commands = [RpmhBcmCommand {
+        address: 0,
+        data: 0,
+    }; 3];
+    let mut count = 0;
+    if let Some(voltage_uv) = voltage_uv {
+        if voltage_uv == 0 {
+            return false;
+        }
+        commands[count] = RpmhBcmCommand {
+            address: address + RPMH_REGULATOR_VRM_VOLTAGE,
+            data: voltage_uv / 1000,
+        };
+        count += 1;
+    }
+    commands[count] = RpmhBcmCommand {
+        address: address + RPMH_REGULATOR_ENABLE,
+        data: u32::from(enabled),
+    };
+    count += 1;
+    commands[count] = RpmhBcmCommand {
+        address: address + RPMH_REGULATOR_MODE,
+        data: mode,
+    };
+    count += 1;
+
+    // Linux's RPMh aggregator programs the lower-power state before the
+    // immediate active state. Keep that order for qcom,set=3.
+    if set_mask & RPMH_REGULATOR_SET_SLEEP != 0
+        && !unsafe { send_rpmh_command_batch_in_set(&commands[..count], RpmhTcsSet::Sleep) }
+    {
+        return false;
+    }
+    if set_mask & RPMH_REGULATOR_SET_ACTIVE != 0
+        && !unsafe { send_rpmh_command_batch_in_set(&commands[..count], RpmhTcsSet::Active) }
+    {
+        return false;
+    }
+    true
 }
 
 /// Send one direct active-only RPMh command after resolving its Command DB

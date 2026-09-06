@@ -24,9 +24,16 @@ const DESC_PXN: u64 = 1 << 53;
 const DESC_UXN: u64 = 1 << 54;
 // AArch64 reserves bits 55..58 for software use in a stage-1 descriptor.
 const DESC_COW: u64 = 1 << 55;
+const DESC_CLONE_PENDING: u64 = 1 << 56;
 const DESC_OUTPUT_ADDRESS_MASK: u64 = 0x0000_ffff_ffff_f000;
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const MAX_USER_SPACES: usize = 8;
+// The first user-space prototype used one 2 MiB L3 table.  That is enough
+// for the bundled launchd but too small for a real Android executable. Keep
+// the expansion statically bounded while providing a 32 MiB user window.
+const USER_L2_TABLES: usize = 16;
+pub(crate) const USER_SPACE_BASE: u64 = 0x4000_0000;
+pub(crate) const USER_SPACE_END: u64 = USER_SPACE_BASE + USER_L2_TABLES as u64 * BLOCK_SIZE;
 
 #[derive(Clone, Copy)]
 #[repr(C, align(4096))]
@@ -51,7 +58,7 @@ static mut L2_3: PageTable = PageTable([0; TABLE_ENTRIES]);
 struct Aarch64UserAddressSpace {
     root: PageTable,
     user_l2: PageTable,
-    user_l3: PageTable,
+    user_l3: [PageTable; USER_L2_TABLES],
     ready: bool,
 }
 
@@ -59,7 +66,7 @@ impl Aarch64UserAddressSpace {
     const EMPTY: Self = Self {
         root: PageTable::EMPTY,
         user_l2: PageTable::EMPTY,
-        user_l3: PageTable::EMPTY,
+        user_l3: [PageTable::EMPTY; USER_L2_TABLES],
         ready: false,
     };
 }
@@ -189,7 +196,8 @@ fn map_user_page_with_cow(
     executable: bool,
     copy_on_write: bool,
 ) -> bool {
-    if virtual_address >= 0x1_0000_0000
+    if virtual_address < USER_SPACE_BASE
+        || virtual_address >= USER_SPACE_END
         || space_id >= MAX_USER_SPACES
         || physical_address & (PAGE_SIZE - 1) != 0
         || virtual_address & (PAGE_SIZE - 1) != 0
@@ -199,31 +207,35 @@ fn map_user_page_with_cow(
     let l1_index = ((virtual_address >> 30) & 0x1ff) as usize;
     let l2_index = ((virtual_address >> 21) & 0x1ff) as usize;
     let l3_index = ((virtual_address >> 12) & 0x1ff) as usize;
-    if l1_index != 1 || l2_index != 0 {
+    if l1_index != 1 || l2_index >= USER_L2_TABLES {
         return false;
     }
 
     unsafe {
         let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
-        let l3 = core::ptr::addr_of_mut!((*space).user_l3);
         if !(*space).ready {
-            for index in 0..TABLE_ENTRIES {
-                // The current linker image and EL1 stack occupy the same
-                // 2 MiB window as the first user VA. Preserve that window as
-                // EL1-only identity pages; explicit user mappings below
-                // replace individual entries with EL0 permissions.
-                let physical = 0x4000_0000 + index as u64 * PAGE_SIZE;
-                core::ptr::write_volatile(
-                    core::ptr::addr_of_mut!((*l3).0[index]),
-                    page_descriptor(physical, false, true, true, false),
-                );
+            for table_index in 0..USER_L2_TABLES {
+                for page_index in 0..TABLE_ENTRIES {
+                    // Preserve the identity map as EL1-only pages; explicit
+                    // user mappings replace individual entries below.
+                    let physical = USER_SPACE_BASE
+                        + table_index as u64 * BLOCK_SIZE
+                        + page_index as u64 * PAGE_SIZE;
+                    core::ptr::write_volatile(
+                        core::ptr::addr_of_mut!((*space).user_l3[table_index].0[page_index]),
+                        page_descriptor(physical, false, true, true, false),
+                    );
+                }
             }
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*space).user_l2.0[l2_index]),
-                table_descriptor(l3 as u64),
-            );
             (*space).ready = true;
         }
+        let l3 = core::ptr::addr_of_mut!((*space).user_l3[l2_index]);
+        // A user table is installed lazily so untouched portions retain the
+        // shared identity block mapping.
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!((*space).user_l2.0[l2_index]),
+            table_descriptor(l3 as u64),
+        );
         core::ptr::write_volatile(
             core::ptr::addr_of_mut!((*l3).0[l3_index]),
             page_descriptor(
@@ -245,7 +257,7 @@ pub(crate) fn unmap_user_page(space_id: usize, virtual_address: u64) -> Option<u
     let Some((l1_index, l2_index, l3_index)) = user_indices(space_id, virtual_address) else {
         return None;
     };
-    if l1_index != 1 || l2_index != 0 {
+    if l1_index != 1 || l2_index >= USER_L2_TABLES {
         return None;
     }
     let physical = user_page_physical_in_space(space_id, virtual_address)?;
@@ -254,9 +266,9 @@ pub(crate) fn unmap_user_page(space_id: usize, virtual_address: u64) -> Option<u
         if !(*space).ready {
             return None;
         }
-        let identity = 0x4000_0000 + l3_index as u64 * PAGE_SIZE;
+        let identity = USER_SPACE_BASE + l2_index as u64 * BLOCK_SIZE + l3_index as u64 * PAGE_SIZE;
         core::ptr::write_volatile(
-            core::ptr::addr_of_mut!((*space).user_l3.0[l3_index]),
+            core::ptr::addr_of_mut!((*space).user_l3[l2_index].0[l3_index]),
             page_descriptor(identity, false, true, true, false),
         );
         flush_translations();
@@ -272,7 +284,7 @@ pub(crate) fn user_page_physical_in_space(space_id: usize, virtual_address: u64)
     let Some((l1_index, l2_index, l3_index)) = user_indices(space_id, virtual_address) else {
         return None;
     };
-    if l1_index != 1 || l2_index != 0 {
+    if l1_index != 1 || l2_index >= USER_L2_TABLES {
         return None;
     }
     unsafe {
@@ -281,7 +293,7 @@ pub(crate) fn user_page_physical_in_space(space_id: usize, virtual_address: u64)
             return None;
         }
         let descriptor =
-            core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[l3_index]));
+            core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3[l2_index].0[l3_index]));
         if descriptor & DESC_VALID == 0
             || !matches!(descriptor & DESC_AP_MASK, DESC_AP_USER_RW | DESC_AP_USER_RO)
         {
@@ -302,7 +314,7 @@ pub(crate) fn protect_user_page(
     let Some((l1_index, l2_index, l3_index)) = user_indices(space_id, virtual_address) else {
         return false;
     };
-    if l1_index != 1 || l2_index != 0 {
+    if l1_index != 1 || l2_index >= USER_L2_TABLES {
         return false;
     }
     unsafe {
@@ -311,14 +323,14 @@ pub(crate) fn protect_user_page(
             return false;
         }
         let descriptor =
-            core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[l3_index]));
+            core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3[l2_index].0[l3_index]));
         if descriptor & DESC_VALID == 0 {
             return false;
         }
         let physical = descriptor & DESC_OUTPUT_ADDRESS_MASK;
         let copy_on_write = descriptor & DESC_COW != 0;
         core::ptr::write_volatile(
-            core::ptr::addr_of_mut!((*space).user_l3.0[l3_index]),
+            core::ptr::addr_of_mut!((*space).user_l3[l2_index].0[l3_index]),
             page_descriptor(
                 physical,
                 readable || writable || executable,
@@ -358,91 +370,127 @@ pub(crate) fn clone_user_space(
     }
     let active_space = unsafe { ACTIVE_USER_SPACE };
     switch_ttbr0(core::ptr::addr_of!(L1) as u64);
-    let mut modified_indices = [0usize; TABLE_ENTRIES];
-    let mut modified_descriptors = [0u64; TABLE_ENTRIES];
-    let mut modified_count = 0usize;
     let mut success = true;
-    for index in 0..TABLE_ENTRIES {
-        let descriptor = unsafe {
-            core::ptr::read_volatile(core::ptr::addr_of!(
-                (*core::ptr::addr_of!(USER_SPACES[source_id])).user_l3.0[index]
-            ))
-        };
-        let access = descriptor & DESC_AP_MASK;
-        if descriptor & DESC_VALID == 0 || !matches!(access, DESC_AP_USER_RW | DESC_AP_USER_RO) {
-            continue;
-        }
-        let source_physical = descriptor & DESC_OUTPUT_ADDRESS_MASK;
-        let virtual_address = 0x4000_0000 + index as u64 * PAGE_SIZE;
-        let is_shared = shared_ranges.iter().any(|(base, length)| {
-            virtual_address >= *base && virtual_address < base.saturating_add(*length)
-        });
-        if is_shared {
+    for table_index in 0..USER_L2_TABLES {
+        for page_index in 0..TABLE_ENTRIES {
+            let descriptor = unsafe {
+                core::ptr::read_volatile(core::ptr::addr_of!(
+                    (*core::ptr::addr_of!(USER_SPACES[source_id])).user_l3[table_index].0
+                        [page_index]
+                ))
+            };
+            let access = descriptor & DESC_AP_MASK;
+            if descriptor & DESC_VALID == 0 || !matches!(access, DESC_AP_USER_RW | DESC_AP_USER_RO)
+            {
+                continue;
+            }
+            let source_physical = descriptor & DESC_OUTPUT_ADDRESS_MASK;
+            let virtual_address =
+                USER_SPACE_BASE + table_index as u64 * BLOCK_SIZE + page_index as u64 * PAGE_SIZE;
+            let is_shared = shared_ranges.iter().any(|(base, length)| {
+                virtual_address >= *base && virtual_address < base.saturating_add(*length)
+            });
+            if is_shared {
+                if !map_user_page_with_cow(
+                    target_id,
+                    virtual_address,
+                    source_physical,
+                    true,
+                    access == DESC_AP_USER_RW,
+                    descriptor & DESC_UXN == 0,
+                    false,
+                ) {
+                    success = false;
+                    break;
+                }
+                continue;
+            }
+            if !frames.retain_shared_frame(source_physical) {
+                success = false;
+                break;
+            }
+            let source_writable = access == DESC_AP_USER_RW;
+            let source_copy_on_write = descriptor & DESC_COW != 0;
+            let copy_on_write = source_writable || source_copy_on_write;
+            if source_writable && !source_copy_on_write {
+                unsafe {
+                    core::ptr::write_volatile(
+                        core::ptr::addr_of_mut!(
+                            (*core::ptr::addr_of_mut!(USER_SPACES[source_id])).user_l3[table_index]
+                                .0[page_index]
+                        ),
+                        page_descriptor(
+                            source_physical,
+                            true,
+                            false,
+                            descriptor & DESC_UXN == 0,
+                            true,
+                        ) | DESC_CLONE_PENDING,
+                    );
+                }
+            }
+            let executable = descriptor & DESC_UXN == 0;
             if !map_user_page_with_cow(
                 target_id,
                 virtual_address,
                 source_physical,
                 true,
-                access == DESC_AP_USER_RW,
-                descriptor & DESC_UXN == 0,
                 false,
+                executable,
+                copy_on_write,
             ) {
+                let _ = frames.release_frame(source_physical);
                 success = false;
                 break;
             }
-            continue;
         }
-        if !frames.retain_shared_frame(source_physical) {
-            success = false;
-            break;
-        }
-        let source_writable = access == DESC_AP_USER_RW;
-        let source_copy_on_write = descriptor & DESC_COW != 0;
-        let copy_on_write = source_writable || source_copy_on_write;
-        if source_writable && !source_copy_on_write {
-            modified_indices[modified_count] = index;
-            modified_descriptors[modified_count] = descriptor;
-            modified_count += 1;
-            unsafe {
-                core::ptr::write_volatile(
-                    core::ptr::addr_of_mut!(
-                        (*core::ptr::addr_of_mut!(USER_SPACES[source_id])).user_l3.0[index]
-                    ),
-                    page_descriptor(
-                        source_physical,
-                        true,
-                        false,
-                        descriptor & DESC_UXN == 0,
-                        true,
-                    ),
-                );
-            }
-        }
-        let executable = descriptor & DESC_UXN == 0;
-        if !map_user_page_with_cow(
-            target_id,
-            virtual_address,
-            source_physical,
-            true,
-            false,
-            executable,
-            copy_on_write,
-        ) {
-            let _ = frames.release_frame(source_physical);
-            success = false;
+        if !success {
             break;
         }
     }
     let restored = activate_user_space(active_space);
-    if !success {
+    if success && restored {
+        // The pending marker is only needed to make the failure rollback
+        // allocation-free.  Successful clones keep ordinary COW state.
         switch_ttbr0(core::ptr::addr_of!(L1) as u64);
         unsafe {
             let source = core::ptr::addr_of_mut!(USER_SPACES[source_id]);
-            for position in 0..modified_count {
-                core::ptr::write_volatile(
-                    core::ptr::addr_of_mut!((*source).user_l3.0[modified_indices[position]]),
-                    modified_descriptors[position],
-                );
+            for table_index in 0..USER_L2_TABLES {
+                for page_index in 0..TABLE_ENTRIES {
+                    let address = core::ptr::addr_of!((*source).user_l3[table_index].0[page_index]);
+                    let descriptor = core::ptr::read_volatile(address);
+                    if descriptor & DESC_CLONE_PENDING != 0 {
+                        core::ptr::write_volatile(
+                            core::ptr::addr_of_mut!((*source).user_l3[table_index].0[page_index]),
+                            descriptor & !DESC_CLONE_PENDING,
+                        );
+                    }
+                }
+            }
+        }
+        let _ = activate_user_space(active_space);
+    } else {
+        switch_ttbr0(core::ptr::addr_of!(L1) as u64);
+        unsafe {
+            let source = core::ptr::addr_of_mut!(USER_SPACES[source_id]);
+            for table_index in 0..USER_L2_TABLES {
+                for page_index in 0..TABLE_ENTRIES {
+                    let address = core::ptr::addr_of!((*source).user_l3[table_index].0[page_index]);
+                    let descriptor = core::ptr::read_volatile(address);
+                    if descriptor & DESC_CLONE_PENDING != 0 {
+                        let physical = descriptor & DESC_OUTPUT_ADDRESS_MASK;
+                        core::ptr::write_volatile(
+                            core::ptr::addr_of_mut!((*source).user_l3[table_index].0[page_index]),
+                            page_descriptor(
+                                physical,
+                                true,
+                                true,
+                                descriptor & DESC_UXN == 0,
+                                false,
+                            ),
+                        );
+                    }
+                }
             }
         }
         let _ = release_user_space(target_id, frames, shared_ranges);
@@ -475,29 +523,33 @@ pub(crate) fn release_user_space(
         return true;
     }
 
-    let mut physical_pages = [0u64; TABLE_ENTRIES];
-    let mut page_count = 0usize;
     switch_ttbr0(core::ptr::addr_of!(L1) as u64);
+    let mut release_ok = true;
     unsafe {
         let space = core::ptr::addr_of!(USER_SPACES[space_id]);
-        for index in 0..TABLE_ENTRIES {
-            let descriptor =
-                core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[index]));
-            if descriptor & DESC_VALID != 0
-                && matches!(descriptor & DESC_AP_MASK, DESC_AP_USER_RW | DESC_AP_USER_RO)
-            {
-                let virtual_address = 0x4000_0000 + index as u64 * PAGE_SIZE;
-                let is_shared = shared_ranges.iter().any(|(base, length)| {
-                    virtual_address >= *base && virtual_address < base.saturating_add(*length)
-                });
-                if !is_shared {
-                    physical_pages[page_count] = descriptor & DESC_OUTPUT_ADDRESS_MASK;
-                    page_count += 1;
+        'tables: for table_index in 0..USER_L2_TABLES {
+            for page_index in 0..TABLE_ENTRIES {
+                let descriptor = core::ptr::read_volatile(core::ptr::addr_of!(
+                    (*space).user_l3[table_index].0[page_index]
+                ));
+                if descriptor & DESC_VALID != 0
+                    && matches!(descriptor & DESC_AP_MASK, DESC_AP_USER_RW | DESC_AP_USER_RO)
+                {
+                    let virtual_address = USER_SPACE_BASE
+                        + table_index as u64 * BLOCK_SIZE
+                        + page_index as u64 * PAGE_SIZE;
+                    let is_shared = shared_ranges.iter().any(|(base, length)| {
+                        virtual_address >= *base && virtual_address < base.saturating_add(*length)
+                    });
+                    if !is_shared && !frames.release_frame(descriptor & DESC_OUTPUT_ADDRESS_MASK) {
+                        release_ok = false;
+                        break 'tables;
+                    }
                 }
             }
         }
     }
-    if !frames.release_frames(&physical_pages[..page_count]) {
+    if !release_ok {
         let _ = activate_user_space(active_space);
         return false;
     }
@@ -525,7 +577,7 @@ pub(crate) fn resolve_copy_on_write(
     let Some((l1_index, l2_index, l3_index)) = user_indices(space_id, virtual_address) else {
         return false;
     };
-    if l1_index != 1 || l2_index != 0 {
+    if l1_index != 1 || l2_index >= USER_L2_TABLES {
         return false;
     }
     if unsafe { ACTIVE_USER_SPACE != space_id } {
@@ -536,7 +588,7 @@ pub(crate) fn resolve_copy_on_write(
         if !(*space).ready {
             return false;
         }
-        core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[l3_index]))
+        core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3[l2_index].0[l3_index]))
     };
     if descriptor & DESC_VALID == 0
         || descriptor & DESC_COW == 0
@@ -559,7 +611,7 @@ pub(crate) fn resolve_copy_on_write(
         unsafe {
             let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
             core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*space).user_l3.0[l3_index]),
+                core::ptr::addr_of_mut!((*space).user_l3[l2_index].0[l3_index]),
                 page_descriptor(old_physical, true, true, executable, false),
             );
         }
@@ -591,7 +643,7 @@ pub(crate) fn resolve_copy_on_write(
         unsafe {
             let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
             core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*space).user_l3.0[l3_index]),
+                core::ptr::addr_of_mut!((*space).user_l3[l2_index].0[l3_index]),
                 descriptor,
             );
         }
@@ -610,15 +662,19 @@ pub(crate) fn reset_user_space(space_id: usize) -> bool {
     }
     unsafe {
         let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
-        for index in 0..TABLE_ENTRIES {
-            let physical = 0x4000_0000 + index as u64 * PAGE_SIZE;
+        for table_index in 0..USER_L2_TABLES {
+            for page_index in 0..TABLE_ENTRIES {
+                let physical = USER_SPACE_BASE
+                    + table_index as u64 * BLOCK_SIZE
+                    + page_index as u64 * PAGE_SIZE;
+                core::ptr::write_volatile(
+                    core::ptr::addr_of_mut!((*space).user_l3[table_index].0[page_index]),
+                    page_descriptor(physical, false, true, true, false),
+                );
+            }
             core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*space).user_l3.0[index]),
-                page_descriptor(physical, false, true, true, false),
-            );
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*space).user_l2.0[index]),
-                core::ptr::read_volatile(core::ptr::addr_of!(L2_1.0[index])),
+                core::ptr::addr_of_mut!((*space).user_l2.0[table_index]),
+                core::ptr::read_volatile(core::ptr::addr_of!(L2_1.0[table_index])),
             );
         }
         (*space).ready = false;
@@ -642,17 +698,22 @@ pub(crate) fn activate_user_space(space_id: usize) -> bool {
         }
         let root = core::ptr::addr_of!((*space).root) as u64;
         let user_l2 = core::ptr::addr_of!((*space).user_l2) as u64;
-        let user_l3 = core::ptr::addr_of!((*space).user_l3) as u64;
         asm!(
             "dc cvac, {root}",
             "dc cvac, {user_l2}",
-            "dc cvac, {user_l3}",
             "dsb sy",
             root = in(reg) root,
             user_l2 = in(reg) user_l2,
-            user_l3 = in(reg) user_l3,
             options(nostack)
         );
+        for table_index in 0..USER_L2_TABLES {
+            let user_l3 = core::ptr::addr_of!((*space).user_l3[table_index]) as u64;
+            asm!(
+                "dc cvac, {user_l3}",
+                user_l3 = in(reg) user_l3,
+                options(nostack)
+            );
+        }
         switch_ttbr0(root);
         ACTIVE_USER_SPACE = space_id;
     }
@@ -720,13 +781,16 @@ pub(crate) fn user_page_physical_read(virtual_address: u64) -> Option<u64> {
 }
 
 fn user_page_physical_with_access(virtual_address: u64, require_write: bool) -> Option<u64> {
-    if virtual_address >= 0x1_0000_0000 || virtual_address & (PAGE_SIZE - 1) != 0 {
+    if virtual_address < USER_SPACE_BASE
+        || virtual_address >= USER_SPACE_END
+        || virtual_address & (PAGE_SIZE - 1) != 0
+    {
         return None;
     }
     let l1_index = ((virtual_address >> 30) & 0x1ff) as usize;
     let l2_index = ((virtual_address >> 21) & 0x1ff) as usize;
     let l3_index = ((virtual_address >> 12) & 0x1ff) as usize;
-    if l1_index != 1 || l2_index != 0 {
+    if l1_index != 1 || l2_index >= USER_L2_TABLES {
         return None;
     }
     unsafe {
@@ -736,7 +800,7 @@ fn user_page_physical_with_access(virtual_address: u64, require_write: bool) -> 
             return None;
         }
         let descriptor =
-            core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[l3_index]));
+            core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3[l2_index].0[l3_index]));
         if descriptor & DESC_VALID == 0
             || (require_write && descriptor & DESC_AP_MASK != DESC_AP_USER_RW)
             || (!require_write
@@ -750,7 +814,8 @@ fn user_page_physical_with_access(virtual_address: u64, require_write: bool) -> 
 
 fn user_indices(space_id: usize, virtual_address: u64) -> Option<(usize, usize, usize)> {
     if space_id >= MAX_USER_SPACES
-        || virtual_address >= 0x1_0000_0000
+        || virtual_address < USER_SPACE_BASE
+        || virtual_address >= USER_SPACE_END
         || virtual_address & (PAGE_SIZE - 1) != 0
     {
         return None;

@@ -20,7 +20,7 @@ const MAX_SPAWN_IMAGE: usize = 96 * 1024;
 const MAX_TASK_NAME: usize = 16;
 const MAX_EXEC_ARGUMENTS: usize = 8;
 const MAX_EXEC_STRING: usize = 128;
-const STACK_ADDRESS: u64 = 0x4001_0000;
+const STACK_ADDRESS: u64 = 0x41ff_0000;
 const PAGE_SIZE: u64 = 4096;
 
 #[derive(Clone, Copy)]

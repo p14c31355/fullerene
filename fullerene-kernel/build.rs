@@ -7,6 +7,9 @@ use std::process::Command;
 use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_glibc_x86_64_elf};
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_EXECUTE");
+    println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_IDENTITY");
+    println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_RATE_B");
     // This cfg is also referenced by the host-built USB protocol tests, so
     // declare it before the AArch64-only build branch below.
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
@@ -2024,6 +2027,17 @@ SECTIONS
         KEEP(*(.usb_trace .usb_trace.*))
         . = ALIGN(4K);
         __usb_trace_end = .;
+    }}
+
+    /* UFSHCI transfer descriptors and data are never placed in the USB
+       gadget pool. The controller has a separate DMA ownership contract, so
+       keep its future arena independently addressable and reservable. */
+    .ufs_dma (NOLOAD) : ALIGN(4K)
+    {{
+        __ufs_dma_start = .;
+        KEEP(*(.ufs_dma .ufs_dma.*))
+        . = ALIGN(4K);
+        __ufs_dma_end = .;
     }}
 
     __image_end = .;

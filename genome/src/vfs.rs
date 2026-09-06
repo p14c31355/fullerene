@@ -530,8 +530,16 @@ impl Vfs {
         f(fs, &p)
     }
 
+    pub fn open_with_mount(&mut self, path: &str, flags: u32) -> Option<(usize, FileDescriptor)> {
+        let absolute = self.resolve_path(path);
+        let index = self.find_fs_index_for_absolute_path(&absolute)?;
+        let remaining = relative_to_mount(&absolute, &self.mounts[index].mount_point)?.to_string();
+        let file = self.mounts.get_mut(index)?.fs.open(&remaining, flags)?;
+        Some((index, file))
+    }
+
     pub fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
-        self.with_fs(path, |fs, p| fs.open(p, flags))
+        self.open_with_mount(path, flags).map(|(_, file)| file)
     }
 
     pub fn read_at(&mut self, mount_idx: usize, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
@@ -791,6 +799,26 @@ mod tests {
         let (mounted_fs, relative_path) = vfs.find_fs("/mnt/inside").unwrap();
         assert_eq!(relative_path, "inside");
         assert!(mounted_fs.exists(&relative_path));
+    }
+
+    #[test]
+    fn open_with_mount_keeps_the_routed_filesystem_index() {
+        let mut root = MemFileSystem::new();
+        root.mkdir("/mnt").unwrap();
+        let mut mounted = MemFileSystem::new();
+        mounted.create("/hello", InodeType::File).unwrap();
+        let fd = mounted.open("/hello", 0).unwrap();
+        mounted.write(fd.fd, b"mounted").unwrap();
+        mounted.close(fd.fd).unwrap();
+
+        let mut vfs = Vfs::new(Box::new(root));
+        vfs.mount("/mnt", Box::new(mounted)).unwrap();
+
+        let (mount_index, fd) = vfs.open_with_mount("/mnt/hello", 0).unwrap();
+        let mut output = [0u8; 7];
+        assert_eq!(vfs.read_at(mount_index, fd.fd, &mut output), Ok(7));
+        assert_eq!(&output, b"mounted");
+        vfs.close_at(mount_index, fd.fd).unwrap();
     }
 
     #[test]

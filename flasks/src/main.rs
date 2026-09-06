@@ -10,6 +10,7 @@ use std::{
 
 use env_logger;
 
+mod adb;
 mod fastboot;
 
 #[derive(Parser)]
@@ -921,6 +922,11 @@ struct Args {
     #[arg(value_name = "IMAGE")]
     image: Option<PathBuf>,
 
+    /// Command for the Rust-only Fullerene debug transport (status, trace,
+    /// help, return, or shell:<command>).
+    #[arg(long = "adb-command", default_value = "status", value_name = "COMMAND")]
+    adb_command: String,
+
     /// Serial device used by ESP32 run/flash/monitor actions.
     #[arg(long, value_name = "DEVICE")]
     serial: Option<String>,
@@ -936,6 +942,7 @@ enum Action {
     Run,
     Debug,
     Device,
+    Adb,
     Boot,
     Flash,
     Monitor,
@@ -1058,6 +1065,12 @@ impl Platform {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "boot currently requires the AArch64 bramble platform",
+            ));
+        }
+        if action == Action::Adb && (arch != Arch::Aarch64 || self != Self::Bramble) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "adb currently requires the AArch64 bramble platform",
             ));
         }
         Ok(())
@@ -1235,6 +1248,22 @@ fn main() -> io::Result<()> {
             ));
         }
         return fastboot::run_device();
+    }
+    if args.command == Action::Adb {
+        if args.image.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "adb does not accept an image path",
+            ));
+        }
+        let target = Target::from_args(&args)?;
+        if target.arch != Arch::Aarch64 || target.platform != Platform::Bramble {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "adb currently requires the AArch64 bramble platform",
+            ));
+        }
+        return adb::run(&args.adb_command);
     }
     if args.command == Action::Boot {
         if args.image.is_none() {
@@ -3274,6 +3303,18 @@ fn build_aarch64_kernel(
     // (for example after the QEMU preflight switches back to Bramble).
     let mut cargo_envs: Vec<(String, String)> = Vec::new();
     let mut push_env = |name: &str, value: String| cargo_envs.push((name.to_owned(), value));
+    // These gates are consumed by `option_env!` in the AArch64 kernel. Keep
+    // them in the same cache key as the platform knobs so an opt-in UFS image
+    // cannot be confused with the default side-effect-free image.
+    for name in [
+        "FULLERENE_AARCH64_UFS_EXECUTE",
+        "FULLERENE_AARCH64_UFS_DMA_IDENTITY",
+        "FULLERENE_AARCH64_UFS_RATE_B",
+    ] {
+        if let Ok(value) = env::var(name) {
+            push_env(name, value);
+        }
+    }
     // Keep the EL0/SVC smoke path opt-in: it intentionally never participates
     // in a normal hardware or QEMU build unless the caller asks for it.
     let aarch64_features = match (

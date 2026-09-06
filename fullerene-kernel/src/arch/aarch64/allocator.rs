@@ -13,7 +13,7 @@ use super::fdt;
 const HEAP_SIZE: usize = 256 * 1024;
 pub const PAGE_SIZE: u64 = 4096;
 const MAX_FRAME_RANGES: usize = 8;
-const MAX_RESERVED_RANGES: usize = 4;
+const MAX_RESERVED_RANGES: usize = 5;
 const MAX_RELEASED_FRAMES: usize = 1024;
 const MAX_SHARED_FRAMES: usize = 1024;
 
@@ -187,6 +187,8 @@ impl PhysicalFrameAllocator {
             static __usb_dma_end: u8;
             static __usb_trace_start: u8;
             static __usb_trace_end: u8;
+            static __ufs_dma_start: u8;
+            static __ufs_dma_end: u8;
         }
         allocator.push_reserved(symbol_range(
             core::ptr::addr_of!(__image_start) as u64,
@@ -199,6 +201,10 @@ impl PhysicalFrameAllocator {
         allocator.push_reserved(symbol_range(
             core::ptr::addr_of!(__usb_trace_start) as u64,
             core::ptr::addr_of!(__usb_trace_end) as u64,
+        ));
+        allocator.push_reserved(symbol_range(
+            core::ptr::addr_of!(__ufs_dma_start) as u64,
+            core::ptr::addr_of!(__ufs_dma_end) as u64,
         ));
         if let Some(header) = fdt::inspect(info.fdt_address) {
             allocator.push_reserved(

@@ -23,10 +23,12 @@ const PROCESS_HANDLE_GENERATION_MASK: u64 = 0xffff;
 const PROCESS_HANDLE_PID_MASK: u64 = 0xffff;
 const MAX_PROCESS_CONTROLS: usize = 8;
 const INIT_PID: u64 = 1;
-const STACK_ADDRESS: u64 = 0x4001_0000;
+const STACK_ADDRESS: u64 = 0x41ff_0000;
 const PAGE_SIZE: u64 = 4096;
 const DYNAMIC_MEMORY_START: u64 = 0x4002_0000;
-const DYNAMIC_MEMORY_END: u64 = 0x4020_0000;
+// Keep this below mmu::USER_SPACE_END. The stack occupies the final page of
+// the bounded user window, leaving the lower range available for mappings.
+const DYNAMIC_MEMORY_END: u64 = STACK_ADDRESS;
 const MAX_MEMORY_MAPPINGS: usize = 8;
 const MAX_MEMORY_PAGES: usize = 64;
 

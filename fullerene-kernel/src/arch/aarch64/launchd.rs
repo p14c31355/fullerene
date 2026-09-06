@@ -7,7 +7,9 @@
 
 use super::{cpu, elf, exceptions, fs, mmu, task, uart};
 
-const STACK_ADDRESS: u64 = 0x4001_0000;
+// Keep the bootstrap stack outside the fixed-address ET_EXEC image window.
+// The old 0x4001_0000 page overlapped launchd's read-only data segment.
+const STACK_ADDRESS: u64 = 0x41ff_0000;
 const PAGE_SIZE: u64 = 4096;
 const MAX_LAUNCHD_IMAGE: usize = 96 * 1024;
 

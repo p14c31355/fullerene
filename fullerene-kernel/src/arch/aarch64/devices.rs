@@ -7,19 +7,24 @@
 //! boundary: no platform driver or arbitrary MMIO access is implied.
 
 use fullerene_abi::{
-    DeviceCapabilityInfo, DeviceInfo, DeviceResourceInfo, device_class, device_ioctl,
-    device_resource,
+    BlockDeviceInfo, DeviceCapabilityInfo, DeviceInfo, DeviceResourceInfo, device_capability,
+    device_class, device_ioctl, device_resource,
 };
+
+#[cfg(fullerene_aarch64_bramble)]
+use fullerene_abi::BlockRequest;
 
 use super::{fdt, fs, task, ufs, user_memory};
 
 const ERR_ADDRESS: u64 = (-(14i64)) as u64;
 const ERR_BAD_FD: u64 = (-(9i64)) as u64;
 const ERR_INVALID: u64 = (-(22i64)) as u64;
+const ERR_IO: u64 = (-(5i64)) as u64;
 const ERR_NAME_TOO_LONG: u64 = (-(36i64)) as u64;
 const ERR_NO_DEVICE: u64 = (-(19i64)) as u64;
 const ERR_NOT_SUPPORTED: u64 = (-(95i64)) as u64;
 const MAX_DEVICE_BYTES: usize = 1 << 20;
+const MAX_UFS_READ_BYTES: usize = 256 * 1024;
 const MAX_DEVICES: usize = 8;
 const MAX_IDENTIFIER: usize = 64;
 const USB_DESCRIPTOR_VENDOR_OFFSET: usize = 8;
@@ -48,6 +53,14 @@ const DEVICE_ID_SDMMC0: u32 = 4;
 const DEVICE_ID_SDMMC1: u32 = 5;
 const DEVICE_ID_QEMU_UART: u32 = 6;
 const DEVICE_ID_TOUCH: u32 = 7;
+
+// A user buffer cannot be used as a UFS DMA target: the UTP contract only
+// covers the fixed, cache-maintained arena owned by the storage backend.
+// Serialize the bounded copy-out scratch buffer with the early AArch64
+// device inventory's simple locking model.
+#[cfg(fullerene_aarch64_bramble)]
+static UFS_READ_SCRATCH: spin::Mutex<[u8; MAX_UFS_READ_BYTES]> =
+    spin::Mutex::new([0; MAX_UFS_READ_BYTES]);
 
 /// Publish the platform identity after the early USB handoff has been
 /// configured.  The descriptor is the source of truth for both fields:
@@ -273,14 +286,23 @@ pub(crate) fn open(identifier_address: u64) -> u64 {
     fs::install_device_handle(owner_pid, slot as u8).unwrap_or_else(|error| error)
 }
 
-/// Expose the class and zero driver capability flags, while keeping
-/// PCI/MMIO/block operations unsupported until a real AArch64 host-side driver
-/// owns the resource. `GET_RESOURCES` is metadata-only and handled separately.
+/// Expose native device operations. UFS is advertised only after the guarded
+/// Bramble read-only probe has installed a geometry-bearing backend. Its
+/// user-facing path copies through a kernel scratch buffer, so arbitrary EL0
+/// memory is never handed to the UFS DMA engine. `GET_RESOURCES` remains
+/// metadata-only and does not authorize direct MMIO access.
 pub(crate) fn ioctl(handle: u64, command: u64, argument: u64) -> u64 {
     let Some(slot) = fs::device_slot(handle) else {
         return ERR_BAD_FD;
     };
-    if command != device_ioctl::GET_CAPABILITIES && command != device_ioctl::GET_RESOURCES {
+    if !matches!(
+        command,
+        device_ioctl::GET_CAPABILITIES
+            | device_ioctl::GET_RESOURCES
+            | device_ioctl::GET_BLOCK_INFO
+            | device_ioctl::READ_BLOCKS
+            | device_ioctl::WRITE_BLOCKS
+    ) {
         return ERR_NOT_SUPPORTED;
     }
     let info = unsafe {
@@ -315,16 +337,97 @@ pub(crate) fn ioctl(handle: u64, command: u64, argument: u64) -> u64 {
             0
         };
     }
+    if info.device_id == DEVICE_ID_UFS {
+        match command {
+            device_ioctl::GET_BLOCK_INFO => {
+                let Some((sector_size, total_sectors)) = ufs::bramble_block_info() else {
+                    return ERR_NO_DEVICE;
+                };
+                let block_info = BlockDeviceInfo {
+                    sector_size,
+                    reserved: 0,
+                    total_sectors,
+                };
+                return if user_memory::copy_to_user(argument, &block_info.to_ne_bytes()).is_err() {
+                    ERR_ADDRESS
+                } else {
+                    0
+                };
+            }
+            device_ioctl::READ_BLOCKS => {
+                let Some((sector_size, total_sectors)) = ufs::bramble_block_info() else {
+                    return ERR_NO_DEVICE;
+                };
+                #[cfg(fullerene_aarch64_bramble)]
+                {
+                    return read_ufs_blocks(argument, sector_size, total_sectors);
+                }
+                #[cfg(not(fullerene_aarch64_bramble))]
+                {
+                    let _ = (argument, sector_size, total_sectors);
+                    return ERR_NOT_SUPPORTED;
+                }
+            }
+            device_ioctl::WRITE_BLOCKS => {
+                // No WRITE(10), descriptor write, format, or partition write
+                // is reachable through the first AArch64 UFS registration.
+                return ERR_NOT_SUPPORTED;
+            }
+            _ => {}
+        }
+    }
+    if command != device_ioctl::GET_CAPABILITIES {
+        return ERR_NOT_SUPPORTED;
+    }
     let capabilities = DeviceCapabilityInfo {
         class: info.class,
         reserved: 0,
-        capabilities: 0,
+        capabilities: if info.device_id == DEVICE_ID_UFS && ufs::bramble_block_info().is_some() {
+            device_capability::BLOCK_INFO | device_capability::BLOCK_READ
+        } else {
+            0
+        },
     };
     if user_memory::copy_to_user(argument, &capabilities.to_ne_bytes()).is_err() {
         ERR_ADDRESS
     } else {
         0
     }
+}
+
+#[cfg(fullerene_aarch64_bramble)]
+fn read_ufs_blocks(argument: u64, sector_size: u32, total_sectors: u64) -> u64 {
+    if argument == 0 || sector_size == 0 {
+        return ERR_INVALID;
+    }
+    let mut request_bytes = [0u8; BlockRequest::BYTE_SIZE];
+    if user_memory::copy_from_user(argument, &mut request_bytes).is_err() {
+        return ERR_ADDRESS;
+    }
+    let request = BlockRequest::from_ne_bytes(request_bytes);
+    if request.reserved != 0 || request.count == 0 || request.buffer_ptr == 0 {
+        return ERR_INVALID;
+    }
+    let required = match (request.count as usize).checked_mul(sector_size as usize) {
+        Some(required) if required <= MAX_UFS_READ_BYTES => required,
+        _ => return ERR_INVALID,
+    };
+    if (request.buffer_len as usize) < required {
+        return ERR_INVALID;
+    }
+    match request.lba.checked_add(request.count as u64) {
+        Some(end) if end <= total_sectors => {}
+        _ => return ERR_INVALID,
+    }
+
+    let mut scratch = UFS_READ_SCRATCH.lock();
+    if ufs::read_bramble_blocks(request.lba, request.count, &mut scratch[..required]).is_err() {
+        return ERR_IO;
+    }
+    if user_memory::copy_to_user(request.buffer_ptr, &scratch[..required]).is_err() {
+        return ERR_ADDRESS;
+    }
+    required as u64
 }
 
 fn copy_identifier(address: u64) -> Result<([u8; MAX_IDENTIFIER], usize), u64> {

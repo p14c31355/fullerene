@@ -7,9 +7,15 @@
 //! initramfs/FAT mount without changing OPEN/READ/CLOSE dispatch.
 
 use alloc::boxed::Box;
+#[cfg(fullerene_aarch64_bramble)]
+use genome::android_fs::{self, AndroidFilesystemKind};
+#[cfg(fullerene_aarch64_bramble)]
+use genome::block::{BlockDevice, Sector512Device};
 use genome::vfs::{MemFileSystem, Vfs};
 use spin::Mutex;
 
+#[cfg(fullerene_aarch64_bramble)]
+use super::ufs;
 use super::{
     allocator, devices, exceptions::Aarch64TrapFrame, mmu, task, uart, user_memory, window,
 };
@@ -65,6 +71,7 @@ struct OpenFile {
     owner_pid: u64,
     handle_index: u16,
     local_fd: u32,
+    mount_index: usize,
     generation: u64,
     kind: u8,
     pipe_slot: u8,
@@ -167,6 +174,7 @@ impl OpenFile {
         owner_pid: 0,
         handle_index: 0,
         local_fd: 0,
+        mount_index: 0,
         generation: 0,
         kind: KIND_FILE,
         pipe_slot: 0,
@@ -296,6 +304,235 @@ pub(crate) fn init() {
     }
 }
 
+/// Probe the installed Bramble UFS backend through Genome's filesystem
+/// boundary. This is deliberately optional and read-only: Android's GPT
+/// `super` metadata is mapped first, then supported ext4/EROFS logical
+/// partitions are mounted at `/system` and `/vendor`; raw `userdata` is
+/// mounted at `/data` when its F2FS checkpoint is clean. FAT/exFAT remains an
+/// independent `/storage` fallback.
+#[cfg(fullerene_aarch64_bramble)]
+pub(crate) fn mount_bramble_ufs() {
+    let Some(mut probe) = ufs::bramble_read_only_handle() else {
+        uart::puts("aarch64 fs: UFS filesystem probe skipped; no device\n");
+        return;
+    };
+    let table = match genome::gpt::scan(&mut probe) {
+        Ok(table) => {
+            uart::puts("aarch64 fs: UFS GPT partitions=");
+            uart::put_hex_value(table.partitions.len() as u64);
+            for partition in &table.partitions {
+                uart::put_hex("aarch64 fs: UFS GPT partition start=", partition.first_lba);
+                uart::put_hex(" end=", partition.last_lba);
+                uart::puts(" name=");
+                let name = partition.name();
+                uart::puts(&name);
+                uart::puts("\n");
+            }
+            Some(table)
+        }
+        Err(genome::gpt::GptError::InvalidSignature) => {
+            uart::puts("aarch64 fs: UFS has no primary GPT signature\n");
+            None
+        }
+        Err(error) => {
+            let _ = error;
+            uart::puts("aarch64 fs: UFS GPT probe rejected\n");
+            None
+        }
+    };
+
+    if let Some(super_partition) = table
+        .as_ref()
+        .and_then(|table| {
+            table
+                .partitions
+                .iter()
+                .find(|partition| partition.name() == "super")
+        })
+        .copied()
+    {
+        if let Some((sector_size, _)) = ufs::bramble_block_info() {
+            let partition_sectors = super_partition
+                .last_lba
+                .saturating_sub(super_partition.first_lba)
+                .saturating_add(1);
+            let base_bytes = super_partition.first_lba.checked_mul(sector_size as u64);
+            let total_bytes = partition_sectors.checked_mul(sector_size as u64);
+            if let (Some(base_bytes), Some(total_bytes)) = (base_bytes, total_bytes)
+                && base_bytes % genome::android_lp::LP_SECTOR_SIZE == 0
+                && total_bytes % genome::android_lp::LP_SECTOR_SIZE == 0
+            {
+                if let Some(super_handle) = ufs::bramble_read_only_handle() {
+                    let super_device = Sector512Device::new(
+                        Box::new(super_handle),
+                        base_bytes / genome::android_lp::LP_SECTOR_SIZE,
+                        total_bytes / genome::android_lp::LP_SECTOR_SIZE,
+                    );
+                    match genome::android_lp::read_metadata(Box::new(super_device), 0) {
+                        Ok(metadata) => {
+                            uart::puts("aarch64 fs: Android LP partitions=");
+                            uart::put_hex_value(metadata.partitions.len() as u64);
+                            for partition in &metadata.partitions {
+                                uart::puts(" name=");
+                                uart::puts(&partition.name);
+                            }
+                            uart::puts("\n");
+                            let mut system_mounted = false;
+                            let mut vendor_mounted = false;
+                            for candidate in ["system", "system_a", "vendor", "vendor_a"] {
+                                let Some(super_handle) = ufs::bramble_read_only_handle() else {
+                                    break;
+                                };
+                                let super_device = Sector512Device::new(
+                                    Box::new(super_handle),
+                                    base_bytes / genome::android_lp::LP_SECTOR_SIZE,
+                                    total_bytes / genome::android_lp::LP_SECTOR_SIZE,
+                                );
+                                if let Ok(logical) = genome::android_lp::LinearBlockDevice::new(
+                                    &metadata,
+                                    Box::new(super_device),
+                                    candidate,
+                                ) {
+                                    let logical_sectors = logical.total_sectors();
+                                    uart::puts("aarch64 fs: Android LP mapped ");
+                                    uart::puts(candidate);
+                                    uart::put_hex(" sectors=", logical_sectors);
+                                    uart::puts("\n");
+
+                                    let (mount_point, mounted) = if candidate.starts_with("system")
+                                    {
+                                        ("/system", &mut system_mounted)
+                                    } else {
+                                        ("/vendor", &mut vendor_mounted)
+                                    };
+                                    if !*mounted {
+                                        match android_fs::mount(Box::new(logical)) {
+                                            Ok((filesystem, kind)) => {
+                                                let result = with_vfs(|vfs| {
+                                                    if !vfs.exists(mount_point) {
+                                                        vfs.mkdir(mount_point)?;
+                                                    }
+                                                    vfs.mount(mount_point, filesystem)
+                                                });
+                                                match result {
+                                                    Some(Ok(())) => {
+                                                        *mounted = true;
+                                                        uart::puts("aarch64 fs: Android ");
+                                                        uart::puts(match kind {
+                                                            AndroidFilesystemKind::Ext4 => "ext4",
+                                                            AndroidFilesystemKind::Erofs => "EROFS",
+                                                            AndroidFilesystemKind::F2fs => "F2FS",
+                                                        });
+                                                        uart::puts(" mounted at ");
+                                                        uart::puts(mount_point);
+                                                        uart::puts("\n");
+                                                    }
+                                                    Some(Err(_)) => uart::puts(
+                                                        "aarch64 fs: Android VFS mount failed\n",
+                                                    ),
+                                                    None => uart::puts(
+                                                        "aarch64 fs: Android VFS unavailable\n",
+                                                    ),
+                                                }
+                                            }
+                                            Err(_) => uart::puts(
+                                                "aarch64 fs: Android LP partition filesystem unsupported\n",
+                                            ),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            let _ = error;
+                            uart::puts("aarch64 fs: Android LP metadata unavailable\n");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(userdata_partition) = table.as_ref().and_then(|table| {
+        table
+            .partitions
+            .iter()
+            .find(|partition| partition.name() == "userdata")
+            .copied()
+    }) {
+        if let Some((sector_size, _)) = ufs::bramble_block_info() {
+            let partition_sectors = userdata_partition
+                .last_lba
+                .saturating_sub(userdata_partition.first_lba)
+                .saturating_add(1);
+            let base_bytes = userdata_partition.first_lba.checked_mul(sector_size as u64);
+            let total_bytes = partition_sectors.checked_mul(sector_size as u64);
+            if let (Some(base_bytes), Some(total_bytes)) = (base_bytes, total_bytes)
+                && base_bytes % genome::android_lp::LP_SECTOR_SIZE == 0
+                && total_bytes % genome::android_lp::LP_SECTOR_SIZE == 0
+            {
+                if let Some(userdata_handle) = ufs::bramble_read_only_handle() {
+                    let userdata_device = Sector512Device::new(
+                        Box::new(userdata_handle),
+                        base_bytes / genome::android_lp::LP_SECTOR_SIZE,
+                        total_bytes / genome::android_lp::LP_SECTOR_SIZE,
+                    );
+                    match android_fs::mount(Box::new(userdata_device)) {
+                        Ok((filesystem, AndroidFilesystemKind::F2fs)) => {
+                            let result = with_vfs(|vfs| {
+                                if !vfs.exists("/data") {
+                                    vfs.mkdir("/data")?;
+                                }
+                                vfs.mount("/data", filesystem)
+                            });
+                            match result {
+                                Some(Ok(())) => uart::puts(
+                                    "aarch64 fs: Android F2FS userdata mounted at /data\n",
+                                ),
+                                Some(Err(_)) => {
+                                    uart::puts("aarch64 fs: Android userdata VFS mount failed\n")
+                                }
+                                None => {
+                                    uart::puts("aarch64 fs: Android userdata VFS unavailable\n")
+                                }
+                            }
+                        }
+                        Ok((_filesystem, _)) => {
+                            uart::puts("aarch64 fs: Android userdata is not F2FS\n")
+                        }
+                        Err(_) => {
+                            uart::puts("aarch64 fs: Android userdata filesystem unsupported\n")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(device) = ufs::bramble_read_only_handle() else {
+        uart::puts("aarch64 fs: UFS filesystem probe skipped; device disappeared\n");
+        return;
+    };
+    let mounted = match genome::fat::mount_device(Box::new(device) as Box<dyn BlockDevice>) {
+        Ok(filesystem) => with_vfs(|vfs| {
+            if !vfs.exists("/storage") {
+                vfs.mkdir("/storage")?;
+            }
+            vfs.mount("/storage", filesystem)
+        }),
+        Err((error, _device)) => {
+            let _ = error;
+            uart::puts("aarch64 fs: UFS filesystem probe found no FAT/exFAT volume\n");
+            return;
+        }
+    };
+    match mounted {
+        Some(Ok(())) => uart::puts("aarch64 fs: UFS FAT/exFAT mounted at /storage\n"),
+        Some(Err(_)) => uart::puts("aarch64 fs: UFS filesystem mount failed\n"),
+        None => uart::puts("aarch64 fs: UFS filesystem mount unavailable\n"),
+    }
+}
+
 fn seed_file(vfs: &mut Vfs, path: &str, data: &[u8]) -> bool {
     let Some(_) = vfs.create(path) else {
         return false;
@@ -410,7 +647,13 @@ fn cpio_path(name: &[u8]) -> Option<&str> {
     })
 }
 
-fn install_handle(owner_pid: u64, local_fd: u32, kind: u8, pipe_slot: u8) -> Result<u64, u64> {
+fn install_handle(
+    owner_pid: u64,
+    local_fd: u32,
+    mount_index: usize,
+    kind: u8,
+    pipe_slot: u8,
+) -> Result<u64, u64> {
     let (storage_index, handle_index) = unsafe {
         let files = core::ptr::addr_of_mut!(OPEN_FILES);
         let handle_index = (0..MAX_HANDLE_SLOTS).find(|index| {
@@ -437,6 +680,7 @@ fn install_handle(owner_pid: u64, local_fd: u32, kind: u8, pipe_slot: u8) -> Res
             owner_pid,
             handle_index: handle_index as u16,
             local_fd,
+            mount_index,
             generation,
             kind,
             pipe_slot,
@@ -448,11 +692,11 @@ fn install_handle(owner_pid: u64, local_fd: u32, kind: u8, pipe_slot: u8) -> Res
 }
 
 pub(crate) fn install_device_handle(owner_pid: u64, device_slot: u8) -> Result<u64, u64> {
-    install_handle(owner_pid, 0, KIND_DEVICE, device_slot)
+    install_handle(owner_pid, 0, 0, KIND_DEVICE, device_slot)
 }
 
 pub(crate) fn install_window_handle(owner_pid: u64, window_slot: u8) -> Result<u64, u64> {
-    install_handle(owner_pid, 0, KIND_WINDOW, window_slot)
+    install_handle(owner_pid, 0, 0, KIND_WINDOW, window_slot)
 }
 
 fn next_generation() -> u64 {
@@ -560,15 +804,18 @@ pub(crate) fn open(path_address: u64, flags: u64, _mode: u64) -> u64 {
         Some(pid) => pid,
         None => return ERR_BAD_FD,
     };
-    let Some(local_fd) = with_vfs(|vfs| vfs.open(path, flags as u32).map(|file| file.fd)).flatten()
-    else {
+    let Some((mount_index, local_fd)) = with_vfs(|vfs| {
+        vfs.open_with_mount(path, flags as u32)
+            .map(|(mount_index, file)| (mount_index, file.fd))
+    })
+    .flatten() else {
         return ERR_NO_ENTRY;
     };
 
-    match install_handle(owner_pid, local_fd, KIND_FILE, 0) {
+    match install_handle(owner_pid, local_fd, mount_index, KIND_FILE, 0) {
         Ok(handle) => handle,
         Err(error) => {
-            let _ = with_vfs(|vfs| vfs.close_at(0, local_fd));
+            let _ = with_vfs(|vfs| vfs.close_at(mount_index, local_fd));
             error
         }
     }
@@ -611,7 +858,7 @@ pub(crate) fn create_terminal(title_address: u64, length: u64) -> u64 {
             active: true,
         };
     }
-    match install_handle(owner_pid, 0, KIND_TERMINAL, slot as u8) {
+    match install_handle(owner_pid, 0, 0, KIND_TERMINAL, slot as u8) {
         Ok(handle) => handle,
         Err(error) => {
             unsafe {
@@ -641,14 +888,14 @@ pub(crate) fn pipe_create(buffer_address: u64) -> u64 {
         };
     }
 
-    let read_handle = match install_handle(owner_pid, 0, KIND_PIPE_READ, pipe_slot as u8) {
+    let read_handle = match install_handle(owner_pid, 0, 0, KIND_PIPE_READ, pipe_slot as u8) {
         Ok(handle) => handle,
         Err(error) => {
             unsafe { (*core::ptr::addr_of_mut!(PIPE_SLOTS))[pipe_slot] = PipeSlot::EMPTY };
             return error;
         }
     };
-    let write_handle = match install_handle(owner_pid, 0, KIND_PIPE_WRITE, pipe_slot as u8) {
+    let write_handle = match install_handle(owner_pid, 0, 0, KIND_PIPE_WRITE, pipe_slot as u8) {
         Ok(handle) => handle,
         Err(error) => {
             let _ = close(read_handle);
@@ -682,7 +929,7 @@ pub(crate) fn channel_create(_flags: u64) -> u64 {
             ..ChannelSlot::EMPTY
         };
     }
-    match install_handle(owner_pid, 0, KIND_CHANNEL, channel_slot as u8) {
+    match install_handle(owner_pid, 0, 0, KIND_CHANNEL, channel_slot as u8) {
         Ok(handle) => handle,
         Err(error) => {
             unsafe {
@@ -954,7 +1201,7 @@ pub(crate) fn shared_buffer_create(length: u64, flags: u64) -> u64 {
             active: true,
         };
     }
-    match install_handle(owner_pid, 0, KIND_SHARED_BUFFER, buffer_slot as u8) {
+    match install_handle(owner_pid, 0, 0, KIND_SHARED_BUFFER, buffer_slot as u8) {
         Ok(handle) => handle,
         Err(error) => {
             release_shared_buffer_slot(buffer_slot as u8);
@@ -1104,7 +1351,7 @@ pub(crate) fn event_create(flags: u64) -> u64 {
             ..EventSlot::EMPTY
         };
     }
-    match install_handle(owner_pid, 0, KIND_EVENT, event_slot as u8) {
+    match install_handle(owner_pid, 0, 0, KIND_EVENT, event_slot as u8) {
         Ok(handle) => handle,
         Err(error) => {
             unsafe {
@@ -1146,7 +1393,7 @@ pub(crate) fn timer_create(clock_id: u64, deadline_ns: u64, event_handle: u64) -
         };
         (*core::ptr::addr_of_mut!(TIMER_SLOTS))[timer_slot].active = true;
     }
-    match install_handle(owner_pid, 0, KIND_TIMER, timer_slot as u8) {
+    match install_handle(owner_pid, 0, 0, KIND_TIMER, timer_slot as u8) {
         Ok(handle) => handle,
         Err(error) => {
             unsafe {
@@ -1173,7 +1420,7 @@ pub(crate) fn thread_handle_create(owner_pid: u64, target_pid: u64) -> Result<u6
             ..ThreadSlot::EMPTY
         };
     }
-    match install_handle(owner_pid, 0, KIND_THREAD, thread_slot as u8) {
+    match install_handle(owner_pid, 0, 0, KIND_THREAD, thread_slot as u8) {
         Ok(handle) => Ok(handle),
         Err(error) => {
             unsafe {
@@ -1369,7 +1616,13 @@ pub(crate) fn duplicate(handle: u64) -> u64 {
     let Some(owner_pid) = task::resource_owner_pid() else {
         return ERR_BAD_FD;
     };
-    match install_handle(owner_pid, source.local_fd, source.kind, source.pipe_slot) {
+    match install_handle(
+        owner_pid,
+        source.local_fd,
+        source.mount_index,
+        source.kind,
+        source.pipe_slot,
+    ) {
         Ok(handle) => handle,
         Err(error) => error,
     }
@@ -1450,10 +1703,13 @@ pub(crate) fn read(handle: u64, buffer_address: u64, requested: u64) -> u64 {
         return ERR_PERMISSION;
     }
     let local_fd = file.local_fd;
+    let mount_index = file.mount_index;
     let mut buffer = [0u8; MAX_READ];
-    let Some(bytes_read) =
-        with_vfs(|vfs| vfs.read_at(0, local_fd, &mut buffer[..count]).ok()).flatten()
-    else {
+    let Some(bytes_read) = with_vfs(|vfs| {
+        vfs.read_at(mount_index, local_fd, &mut buffer[..count])
+            .ok()
+    })
+    .flatten() else {
         return ERR_BAD_FD;
     };
     if user_memory::copy_to_user(buffer_address, &buffer[..bytes_read]).is_err() {
@@ -1490,8 +1746,9 @@ pub(crate) fn write(handle: u64, buffer_address: u64, requested: u64) -> u64 {
         return ERR_PERMISSION;
     }
     let local_fd = file.local_fd;
+    let mount_index = file.mount_index;
     let Some(bytes_written) =
-        with_vfs(|vfs| vfs.write_at(0, local_fd, &buffer[..count]).ok()).flatten()
+        with_vfs(|vfs| vfs.write_at(mount_index, local_fd, &buffer[..count]).ok()).flatten()
     else {
         return ERR_BAD_FD;
     };
@@ -1654,9 +1911,12 @@ pub(crate) fn close(handle: u64) -> u64 {
                         || !other.active
                         || other.kind != KIND_FILE
                         || other.local_fd != file.local_fd
+                        || other.mount_index != file.mount_index
                 })
         };
-        if last_reference && with_vfs(|vfs| vfs.close_at(0, file.local_fd).is_ok()) != Some(true) {
+        if last_reference
+            && with_vfs(|vfs| vfs.close_at(file.mount_index, file.local_fd).is_ok()) != Some(true)
+        {
             return ERR_BAD_FD;
         }
     } else if file.kind == KIND_PIPE_READ
@@ -1742,13 +2002,13 @@ pub(crate) fn inherit_terminal_handle(
     if source.kind != KIND_TERMINAL {
         return Err(ERR_PERMISSION);
     }
-    install_handle(child_pid, 0, KIND_TERMINAL, source.pipe_slot)
+    install_handle(child_pid, 0, 0, KIND_TERMINAL, source.pipe_slot)
 }
 
 /// Roll back descriptor rows after a failed fork installation.
 pub(crate) fn drop_owner(owner_pid: u64) {
     cleanup_shared_mappings(owner_pid);
-    let mut local_fds = [0u32; MAX_OPEN_FILES];
+    let mut local_files = [(0usize, 0u32); MAX_OPEN_FILES];
     let mut local_count = 0usize;
     let mut resource_kinds = [KIND_FILE; MAX_OPEN_FILES];
     let mut pipe_slots = [0u8; MAX_OPEN_FILES];
@@ -1758,7 +2018,7 @@ pub(crate) fn drop_owner(owner_pid: u64) {
         for file in (*files).iter_mut() {
             if file.active && file.owner_pid == owner_pid {
                 if file.kind == KIND_FILE {
-                    local_fds[local_count] = file.local_fd;
+                    local_files[local_count] = (file.mount_index, file.local_fd);
                     local_count += 1;
                 } else {
                     resource_kinds[resource_count] = file.kind;
@@ -1777,14 +2037,17 @@ pub(crate) fn drop_owner(owner_pid: u64) {
     {
         release_resource(kind, slot);
     }
-    for local_fd in local_fds.iter().copied().take(local_count) {
+    for (mount_index, local_fd) in local_files.iter().copied().take(local_count) {
         let still_open = unsafe {
-            (*core::ptr::addr_of!(OPEN_FILES))
-                .iter()
-                .any(|file| file.active && file.kind == KIND_FILE && file.local_fd == local_fd)
+            (*core::ptr::addr_of!(OPEN_FILES)).iter().any(|file| {
+                file.active
+                    && file.kind == KIND_FILE
+                    && file.mount_index == mount_index
+                    && file.local_fd == local_fd
+            })
         };
         if !still_open {
-            let _ = with_vfs(|vfs| vfs.close_at(0, local_fd));
+            let _ = with_vfs(|vfs| vfs.close_at(mount_index, local_fd));
         }
     }
 }
@@ -1821,12 +2084,13 @@ pub(super) fn read_kernel_path(path: &str, destination: &mut [u8]) -> Result<usi
 
 fn read_vfs_path(path: &str, destination: &mut [u8]) -> Result<usize, u64> {
     let read_result = with_vfs(|vfs| {
-        let local_fd = vfs.open(path, 0).ok_or(ERR_NO_ENTRY)?.fd;
+        let (mount_index, local_file) = vfs.open_with_mount(path, 0).ok_or(ERR_NO_ENTRY)?;
+        let local_fd = local_file.fd;
         let result = (|| {
             let mut total = 0usize;
             while total < destination.len() {
                 let count = vfs
-                    .read_at(0, local_fd, &mut destination[total..])
+                    .read_at(mount_index, local_fd, &mut destination[total..])
                     .map_err(|_| ERR_INVALID)?;
                 if count == 0 {
                     return Ok(total);
@@ -1835,14 +2099,14 @@ fn read_vfs_path(path: &str, destination: &mut [u8]) -> Result<usize, u64> {
             }
             let mut extra = [0u8; 1];
             let count = vfs
-                .read_at(0, local_fd, &mut extra)
+                .read_at(mount_index, local_fd, &mut extra)
                 .map_err(|_| ERR_INVALID)?;
             if count != 0 {
                 return Err(ERR_OVERFLOW);
             }
             Ok(total)
         })();
-        let _ = vfs.close_at(0, local_fd);
+        let _ = vfs.close_at(mount_index, local_fd);
         result
     });
     match read_result {

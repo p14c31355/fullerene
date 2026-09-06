@@ -6,6 +6,10 @@ use crate::fs::FsError;
 use super::block_device::read_boot_sector;
 use super::exfat::is_exfat;
 
+const EFI_SYSTEM_PARTITION_GUID: [u8; 16] = [
+    0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
+];
+
 const MBR_SIGNATURE: u16 = 0xAA55;
 const PARTITION_FAT32: u8 = 0x0B;
 const PARTITION_FAT32_LBA: u8 = 0x0C;
@@ -39,6 +43,9 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo,
 
     let signature = u16::from_le_bytes([boot[0x1FE], boot[0x1FF]]);
     if signature != MBR_SIGNATURE {
+        if let Some(info) = find_gpt_fat_partition(device) {
+            return Ok(info);
+        }
         log::info!("FAT: no MBR signature at LBA 0 (0x{:04X})", signature);
         return Ok(PartitionInfo {
             start_lba: 0,
@@ -91,8 +98,71 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo,
         return Ok(info);
     }
 
+    if let Some(info) = find_gpt_fat_partition(device) {
+        return Ok(info);
+    }
+
     log::info!("FAT: no FAT partition found in MBR");
     Err(FsError::FileNotFound)
+}
+
+fn find_gpt_fat_partition(device: &mut dyn BlockDevice) -> Option<PartitionInfo> {
+    let table = match crate::gpt::scan(device) {
+        Ok(table) => table,
+        Err(crate::gpt::GptError::InvalidSignature) => return None,
+        Err(error) => {
+            log::info!("FAT: GPT probe rejected: {:?}", error);
+            return None;
+        }
+    };
+
+    let mut best: Option<PartitionInfo> = None;
+    for partition in table.partitions {
+        if partition.is_type(&EFI_SYSTEM_PARTITION_GUID) {
+            log::info!(
+                "FAT: probing GPT EFI System Partition at LBA {}",
+                partition.first_lba
+            );
+        }
+        let boot = match read_boot_sector(device, partition.first_lba) {
+            Ok(boot) => boot,
+            Err(error) => {
+                log::info!(
+                    "FAT: GPT partition at LBA {} could not be read: {:?}",
+                    partition.first_lba,
+                    error
+                );
+                continue;
+            }
+        };
+        let is_fat = is_exfat(&boot)
+            || matches!(
+                u16::from_le_bytes([boot[11], boot[12]]),
+                512 | 1024 | 2048 | 4096
+            );
+        if is_fat
+            && best.as_ref().is_none_or(|current| {
+                partition.last_lba - partition.first_lba + 1 > current.total_sectors
+            })
+        {
+            best = Some(PartitionInfo {
+                start_lba: partition.first_lba,
+                total_sectors: partition.last_lba - partition.first_lba + 1,
+            });
+        }
+    }
+
+    if let Some(info) = best {
+        log::info!(
+            "FAT: selected GPT partition at LBA {} ({} sectors)",
+            info.start_lba,
+            info.total_sectors,
+        );
+        Some(info)
+    } else {
+        log::info!("FAT: GPT contains no FAT/exFAT volume");
+        None
+    }
 }
 
 pub struct PartitionBlockDevice {
@@ -268,6 +338,39 @@ mod tests {
         let info = find_fat_partition(&mut device).unwrap();
         assert_eq!(info.start_lba, 512);
         assert_eq!(info.total_sectors, 4096);
+    }
+
+    #[test]
+    fn gpt_selects_largest_fat_partition() {
+        let mut disk = MemoryBlockDevice {
+            data: vec![0; 1_000 * 512],
+        };
+        let header = &mut disk.data[512..1024];
+        header[..8].copy_from_slice(b"EFI PART");
+        header[12..16].copy_from_slice(&92u32.to_le_bytes());
+        header[24..32].copy_from_slice(&1u64.to_le_bytes());
+        header[32..40].copy_from_slice(&999u64.to_le_bytes());
+        header[40..48].copy_from_slice(&34u64.to_le_bytes());
+        header[48..56].copy_from_slice(&900u64.to_le_bytes());
+        header[72..80].copy_from_slice(&2u64.to_le_bytes());
+        header[80..84].copy_from_slice(&4u32.to_le_bytes());
+        header[84..88].copy_from_slice(&128u32.to_le_bytes());
+
+        let small = &mut disk.data[2 * 512..3 * 512];
+        small[..16].copy_from_slice(&[1; 16]);
+        small[32..40].copy_from_slice(&100u64.to_le_bytes());
+        small[40..48].copy_from_slice(&199u64.to_le_bytes());
+        let large = &mut disk.data[2 * 512 + 128..3 * 512];
+        large[..16].copy_from_slice(&[2; 16]);
+        large[32..40].copy_from_slice(&200u64.to_le_bytes());
+        large[40..48].copy_from_slice(&499u64.to_le_bytes());
+
+        disk.data[100 * 512 + 11..100 * 512 + 13].copy_from_slice(&512u16.to_le_bytes());
+        disk.data[200 * 512 + 11..200 * 512 + 13].copy_from_slice(&512u16.to_le_bytes());
+
+        let info = find_fat_partition(&mut disk).unwrap();
+        assert_eq!(info.start_lba, 200);
+        assert_eq!(info.total_sectors, 300);
     }
 
     #[test]
