@@ -1014,6 +1014,8 @@ const RPMH_LDOA12: [u8; 8] = rpmh_id(b"ldoa12");
 const RPMH_LDOA2: [u8; 8] = rpmh_id(b"ldoa2");
 const RPMH_LDOA9: [u8; 8] = rpmh_id(b"ldoa9");
 const RPMH_LDOA18: [u8; 8] = rpmh_id(b"ldoa18");
+const RPMH_LDOC7: [u8; 8] = rpmh_id(b"ldoc7");
+const RPMH_SMPA4: [u8; 8] = rpmh_id(b"smpa4");
 /// The `rpmh-regulator-cxlvl` resource consumed by the GCC block
 /// (`vdd_cx-supply`/`vdd_cx_ao-supply` on the `qcom,gcc@100000` node).  Every
 /// USB clock branch and the USB30 GDSC live inside the CX corner domain, so
@@ -1424,6 +1426,8 @@ pub fn rpmh_resource_id_from_regulator_name(bytes: &[u8], len: usize) -> Option<
         b"pm8150b_l12" => Some(rpmh_id(b"ldob12")),
         b"pm8150b_l2" => Some(rpmh_id(b"ldob2")),
         b"pm8150_l9" => Some(RPMH_LDOA9),
+        b"pm8150a_l7" => Some(RPMH_LDOC7),
+        b"pm8150_s4" => Some(RPMH_SMPA4),
         _ => None,
     }
 }
@@ -3092,6 +3096,29 @@ unsafe fn send_rpmh_command_batch(commands: &[RpmhBcmCommand]) -> bool {
     complete && released
 }
 
+/// Send one direct active-only RPMh command after resolving its Command DB
+/// resource name. Qualcomm PHY resources such as `qphy.lvl` are not VRM
+/// regulator subcommands and must be sent as the resource's raw ARC value;
+/// keeping this wrapper beside the TCS arbitration prevents UFS from
+/// reimplementing ownership and completion handling.
+pub unsafe fn send_rpmh_resource_value(resource: &[u8; 8], value: u32) -> bool {
+    let Some(address) = (unsafe { command_db_read_addr(resource) }) else {
+        return false;
+    };
+    let command = RpmhBcmCommand {
+        address,
+        data: value,
+    };
+    unsafe { send_rpmh_command_batch(core::slice::from_ref(&command)) }
+}
+
+/// Enable the Lito RPMh CXO ARC used by both the UFS controller `ref_clk`
+/// and the QMP PHY `ref_clk_src`. The value is the Android clock driver's
+/// active vote for `xo.lvl`; it is not a guessed MMIO write.
+pub unsafe fn enable_rpmh_xo_clock() -> bool {
+    unsafe { send_rpmh_resource_value(&RPMH_XO_LVL, RPMH_XO_LVL_ON) }
+}
+
 /// Send an already-resolved USB BCM vote through one free Apps-RSC active
 /// TCS. This mirrors the ordering in `rpmh_rsc_send_data()` and
 /// `__tcs_buffer_write()`: claim an idle TCS, program all commands, trigger
@@ -3453,6 +3480,14 @@ mod tests {
         assert_eq!(
             rpmh_resource_id_from_regulator_name(b"pm8150_l18", 10),
             Some(*b"ldoa18\0\0")
+        );
+        assert_eq!(
+            rpmh_resource_id_from_regulator_name(b"pm8150a_l7", 10),
+            Some(*b"ldoc7\0\0\0")
+        );
+        assert_eq!(
+            rpmh_resource_id_from_regulator_name(b"pm8150_s4", 10),
+            Some(*b"smpa4\0\0\0")
         );
         assert_eq!(rpmh_resource_id_from_regulator_name(b"pm8998_l5", 9), None);
     }

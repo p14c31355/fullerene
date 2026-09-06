@@ -54,14 +54,10 @@ extern "C" fn aarch64_bootstrap(x0: usize, x1: usize, x2: usize, x3: usize) -> !
     let relocation_delta = aarch64_apply_relocations(runtime_entry);
     zero_bss();
 
-    if current_el & 0xc == 0x8 {
-        unsafe { enter_el1() };
-    } else {
-        // QEMU's virt machine can hand the kernel directly to EL1. Rust may
-        // use SIMD registers for ordinary copies, so enable them on that
-        // path too; the EL2 path programs CPACR_EL1 before eret.
-        unsafe { enable_el1_fp_simd() };
-    }
+    // QEMU's virt machine can hand the kernel directly to EL1. Keep that
+    // path and the EL2 transition in one assembly boundary: both must leave
+    // CPACR_EL1 ready before Rust performs ordinary copies.
+    unsafe { configure_el1(current_el & 0xc == 0x8) };
 
     let context = Aarch64BootContext {
         x0,
@@ -90,13 +86,13 @@ fn read_boot_state() -> (usize, usize) {
     (current_el, runtime_entry)
 }
 
-/// Transition from EL2 to EL1 while retaining the current Rust stack.
-///
-/// The compiler resumes at the local label after `eret`; no separate
-/// assembly entry stub is needed for the EL1 half of the handoff.
-unsafe fn enter_el1() {
+/// Transition from EL2 to EL1, or enable the EL1 FP/SIMD trap path when the
+/// bootloader already entered at EL1. One block owns both cases so the
+/// architecture entry does not grow duplicate inline-assembly boundaries.
+unsafe fn configure_el1(from_el2: bool) {
     unsafe {
         asm!(
+            "cbz {from_el2}, 1f",
             "mov x5, #(1 << 31)",
             "msr HCR_EL2, x5",
             "msr CPTR_EL2, xzr",
@@ -116,21 +112,14 @@ unsafe fn enter_el1() {
             "msr CPACR_EL1, x5",
             "isb",
             "eret",
-            "2:",
-            out("x5") _,
-            out("x6") _,
-            options(nostack),
-        );
-    }
-}
-
-unsafe fn enable_el1_fp_simd() {
-    unsafe {
-        asm!(
+            "1:",
             "mov x5, #(3 << 20)",
             "msr CPACR_EL1, x5",
             "isb",
+            "2:",
+            from_el2 = in(reg) from_el2 as usize,
             out("x5") _,
+            out("x6") _,
             options(nostack),
         );
     }

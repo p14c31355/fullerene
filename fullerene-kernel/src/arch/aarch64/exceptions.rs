@@ -275,11 +275,11 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
     let usb_irq = super::platform::bramble::is_usb_irq(interrupt_id as u32);
     #[cfg(not(fullerene_aarch64_bramble))]
     let usb_irq = false;
-    if !usb_irq {
+    if !usb_irq && interrupt_id as u32 != super::timer::TIMER_PPI {
         // DWC3's IRQ path must stay free of UART MMIO: a host SETUP can
         // arrive immediately after Connect Done, and the UART transaction
         // is much slower than draining the event buffer. Keep diagnostics
-        // for timer and unexpected interrupts only.
+        // for unexpected non-timer interrupts only.
         uart::put_hex("aarch64 exception: irq id=", interrupt_id);
     }
     #[cfg(fullerene_aarch64_bramble)]
@@ -303,7 +303,9 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         }
     }
     if interrupt_id as u32 == super::timer::TIMER_PPI {
-        super::timer::arm_ms(100);
+        super::timer::arm_ms(1);
+        let _ = super::task::wake_event_timeouts(super::timer::uptime_us());
+        super::fs::fire_timers(super::timer::uptime_us().saturating_mul(1_000));
     }
     if usb_irq {
         // Make the event-count acknowledgement visible before deasserting a

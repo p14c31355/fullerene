@@ -342,6 +342,7 @@ pub(crate) fn clone_user_space(
     source_id: usize,
     target_id: usize,
     frames: &mut super::allocator::PhysicalFrameAllocator,
+    shared_ranges: &[(u64, u64)],
 ) -> bool {
     if source_id >= MAX_USER_SPACES || target_id >= MAX_USER_SPACES || source_id == target_id {
         return false;
@@ -372,6 +373,25 @@ pub(crate) fn clone_user_space(
             continue;
         }
         let source_physical = descriptor & DESC_OUTPUT_ADDRESS_MASK;
+        let virtual_address = 0x4000_0000 + index as u64 * PAGE_SIZE;
+        let is_shared = shared_ranges.iter().any(|(base, length)| {
+            virtual_address >= *base && virtual_address < base.saturating_add(*length)
+        });
+        if is_shared {
+            if !map_user_page_with_cow(
+                target_id,
+                virtual_address,
+                source_physical,
+                true,
+                access == DESC_AP_USER_RW,
+                descriptor & DESC_UXN == 0,
+                false,
+            ) {
+                success = false;
+                break;
+            }
+            continue;
+        }
         if !frames.retain_shared_frame(source_physical) {
             success = false;
             break;
@@ -398,7 +418,6 @@ pub(crate) fn clone_user_space(
                 );
             }
         }
-        let virtual_address = 0x4000_0000 + index as u64 * PAGE_SIZE;
         let executable = descriptor & DESC_UXN == 0;
         if !map_user_page_with_cow(
             target_id,
@@ -426,7 +445,7 @@ pub(crate) fn clone_user_space(
                 );
             }
         }
-        let _ = release_user_space(target_id, frames);
+        let _ = release_user_space(target_id, frames, shared_ranges);
         let _ = activate_user_space(active_space);
     }
     success && restored
@@ -442,6 +461,7 @@ pub(crate) fn clone_user_space(
 pub(crate) fn release_user_space(
     space_id: usize,
     frames: &mut super::allocator::PhysicalFrameAllocator,
+    shared_ranges: &[(u64, u64)],
 ) -> bool {
     if space_id >= MAX_USER_SPACES {
         return false;
@@ -466,8 +486,14 @@ pub(crate) fn release_user_space(
             if descriptor & DESC_VALID != 0
                 && matches!(descriptor & DESC_AP_MASK, DESC_AP_USER_RW | DESC_AP_USER_RO)
             {
-                physical_pages[page_count] = descriptor & DESC_OUTPUT_ADDRESS_MASK;
-                page_count += 1;
+                let virtual_address = 0x4000_0000 + index as u64 * PAGE_SIZE;
+                let is_shared = shared_ranges.iter().any(|(base, length)| {
+                    virtual_address >= *base && virtual_address < base.saturating_add(*length)
+                });
+                if !is_shared {
+                    physical_pages[page_count] = descriptor & DESC_OUTPUT_ADDRESS_MASK;
+                    page_count += 1;
+                }
             }
         }
     }

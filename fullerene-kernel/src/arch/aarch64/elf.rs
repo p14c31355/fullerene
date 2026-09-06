@@ -172,7 +172,7 @@ pub(crate) fn load_image(
             {
                 let _ = frames.release_frame(remaining.physical_address);
             }
-            let _ = mmu::release_user_space(space_id, frames);
+            let _ = mmu::release_user_space(space_id, frames, &[]);
             return None;
         }
     }

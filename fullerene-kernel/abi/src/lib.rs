@@ -638,6 +638,13 @@ pub mod device_capability {
     pub const BLOCK_WRITE: u64 = 1 << 8;
 }
 
+/// Kinds of hardware resources returned by `device_ioctl(GET_RESOURCES, ...)`.
+pub mod device_resource {
+    /// A memory-mapped register window decoded from the device-tree `reg`
+    /// property.  The resource is descriptive; it does not grant MMIO access.
+    pub const MMIO: u32 = 1;
+}
+
 /// Capability flags and class returned for an opened device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
@@ -655,6 +662,32 @@ impl DeviceCapabilityInfo {
         bytes[0..4].copy_from_slice(&self.class.to_ne_bytes());
         bytes[4..8].copy_from_slice(&self.reserved.to_ne_bytes());
         bytes[8..16].copy_from_slice(&self.capabilities.to_ne_bytes());
+        bytes
+    }
+}
+
+/// First MMIO resource belonging to an opened platform device.
+///
+/// This is intentionally separate from [`DeviceCapabilityInfo`]: discovering
+/// a DT resource does not mean that a driver has claimed or may access it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct DeviceResourceInfo {
+    pub base: u64,
+    pub size: u64,
+    pub kind: u32,
+    pub reserved: u32,
+}
+
+impl DeviceResourceInfo {
+    pub const BYTE_SIZE: usize = 24;
+
+    pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
+        let mut bytes = [0; Self::BYTE_SIZE];
+        bytes[0..8].copy_from_slice(&self.base.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&self.size.to_ne_bytes());
+        bytes[16..20].copy_from_slice(&self.kind.to_ne_bytes());
+        bytes[20..24].copy_from_slice(&self.reserved.to_ne_bytes());
         bytes
     }
 }
@@ -742,6 +775,9 @@ pub mod device_ioctl {
     pub const READ_BLOCKS: u64 = 10;
     /// Write sectors from a user buffer to a block-capable device.
     pub const WRITE_BLOCKS: u64 = 11;
+    /// Return the first DT-described resource of the opened platform device.
+    /// This is metadata only and does not authorize direct MMIO access.
+    pub const GET_RESOURCES: u64 = 12;
 }
 
 /// PCI identity returned by `device_ioctl(GET_PCI_INFO, ...)`.
@@ -866,6 +902,11 @@ pub struct WindowEvent {
     pub data: [u64; 14],
 }
 
+/// Kinds returned in [`WindowEvent::kind`].
+pub mod window_event {
+    pub const REDRAW: u32 = 1;
+}
+
 impl WindowEvent {
     /// Size accepted from clients built against ABI version 0.3.
     /// This value remains fixed when fields are appended in later versions.
@@ -906,6 +947,8 @@ const _: () = {
     assert!(core::mem::align_of::<DeviceInfo>() == 4);
     assert!(core::mem::size_of::<DeviceCapabilityInfo>() == DeviceCapabilityInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<DeviceCapabilityInfo>() == 8);
+    assert!(core::mem::size_of::<DeviceResourceInfo>() == DeviceResourceInfo::BYTE_SIZE);
+    assert!(core::mem::align_of::<DeviceResourceInfo>() == 8);
     assert!(core::mem::size_of::<BlockDeviceInfo>() == BlockDeviceInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<BlockDeviceInfo>() == 8);
     assert!(core::mem::size_of::<BlockRequest>() == BlockRequest::BYTE_SIZE);

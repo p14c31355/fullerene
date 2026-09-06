@@ -345,6 +345,48 @@ pub fn find_compatible_property_u32(
     find_compatible_nth_property_u32(address, target, property, index, 0)
 }
 
+/// Hash the complete byte payload of a property on the first enabled node
+/// matching `target`.  This is used for bounded DT string-list contracts:
+/// length alone cannot distinguish two provider bindings with the same number
+/// of names, while copying an unbounded string list would violate the early
+/// boot parser's no-heap contract.
+pub fn find_compatible_property_fnv1a(address: u64, target: &[u8], property: &[u8]) -> Option<u32> {
+    let mut states = [TextPropertyNodeState::new(); 16];
+    let mut matching_nodes = 0usize;
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => states[depth] = TextPropertyNodeState::new(),
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"compatible") {
+                    state.compatible = compatible_list_contains(item.value, item.length, target);
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, property) {
+                    state.property_hash = Some(fnv1a(item.value, item.length));
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.compatible {
+                    let selected = matching_nodes == 0;
+                    matching_nodes = matching_nodes.saturating_add(1);
+                    if selected {
+                        result = state.property_hash;
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
+}
+
 /// Identity and property observation for one enabled compatible node.
 /// `ordinal` is zero-based among enabled nodes whose compatible list contains
 /// the requested string. `reg_base` is the first address cell of that node's
@@ -641,6 +683,20 @@ pub struct StringValue {
     pub len: usize,
 }
 
+fn string_value(value: *const u8, length: usize) -> Option<StringValue> {
+    if length == 0 || length > 48 {
+        return None;
+    }
+    let mut string = StringValue {
+        bytes: [0; 48],
+        len: length.saturating_sub(1),
+    };
+    for offset in 0..length {
+        string.bytes[offset] = unsafe { *value.add(offset) };
+    }
+    Some(string)
+}
+
 /// Resolve one phandle-valued property on the first compatible node and
 /// return a string property from the referenced enabled node. The helper
 /// deliberately requires an exact phandle match and a bounded string copy; a
@@ -673,24 +729,62 @@ pub fn find_phandle_property_string(
                         state.phandle = read_be32(item.value, 0);
                     }
                 } else if c_string_eq(item.name, item.name_end, target_property) {
-                    if item.length == 0 || item.length > 48 {
-                        state.value = None;
-                    } else {
-                        let mut string = StringValue {
-                            bytes: [0; 48],
-                            len: item.length.saturating_sub(1),
-                        };
-                        for offset in 0..item.length {
-                            string.bytes[offset] = unsafe { *item.value.add(offset) };
-                        }
-                        state.value = Some(string);
-                    }
+                    state.value = string_value(item.value, item.length);
                 }
             }
             StructureEvent::EndNode { depth } => {
                 let state = states[depth];
                 if state.enabled && state.phandle == Some(target) {
                     result = state.value;
+                    if result.is_some() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    })?;
+    result
+}
+
+/// Resolve a property from the provider node that directly contains a
+/// phandle-targeted child. Qualcomm RPMh regulators put the consumer-visible
+/// `regulator-name` on the child and the Command DB resource name on the
+/// parent, so resolving only the child would permit a regulator-name/resource
+/// mismatch to pass the early platform contract.
+pub fn find_phandle_parent_property_string(
+    address: u64,
+    target: u32,
+    target_property: &[u8],
+) -> Option<StringValue> {
+    let mut states = [PhandleNodeState::new(); 16];
+    let mut result = None;
+    walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode { depth, .. } => {
+                states[depth] = PhandleNodeState::new();
+            }
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"phandle")
+                    || c_string_eq(item.name, item.name_end, b"linux,phandle")
+                {
+                    if item.length >= 4 {
+                        state.phandle = read_be32(item.value, 0);
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, target_property) {
+                    state.value = string_value(item.value, item.length);
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.phandle == Some(target) && depth > 1 {
+                    result = states[depth - 1].value;
                     if result.is_some() {
                         return false;
                     }
@@ -824,6 +918,23 @@ struct PropertyNodeState {
     property_present: bool,
     /// Exact byte length of the tracked property when it was seen.
     property_length: u32,
+}
+
+#[derive(Clone, Copy)]
+struct TextPropertyNodeState {
+    compatible: bool,
+    enabled: bool,
+    property_hash: Option<u32>,
+}
+
+impl TextPropertyNodeState {
+    const fn new() -> Self {
+        Self {
+            compatible: false,
+            enabled: true,
+            property_hash: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -991,6 +1102,17 @@ fn compatible_list_contains(pointer: *const u8, length: usize, target: &[u8]) ->
         offset += end + 1;
     }
     false
+}
+
+fn fnv1a(pointer: *const u8, length: usize) -> u32 {
+    let mut hash = 0x811c9dc5u32;
+    let mut index = 0usize;
+    while index < length {
+        hash ^= unsafe { *pointer.add(index) } as u32;
+        hash = hash.wrapping_mul(0x01000193);
+        index += 1;
+    }
+    hash
 }
 
 fn read_region(

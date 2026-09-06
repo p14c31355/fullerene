@@ -4,6 +4,7 @@ use fullerene_abi::boot::{self, BootArchitecture, BootInfo, BootPlatform};
 
 mod allocator;
 mod cpu;
+mod devices;
 mod elf;
 mod entry;
 mod exceptions;
@@ -18,6 +19,7 @@ mod syscall;
 mod task;
 pub(crate) mod timer;
 mod uart;
+mod ufs;
 #[cfg(fullerene_aarch64_bramble)]
 mod usb;
 #[cfg(fullerene_aarch64_qemu_usb_sim)]
@@ -31,6 +33,7 @@ mod usb_regs;
 mod user_memory;
 #[cfg(any(feature = "aarch64-user-smoke", feature = "aarch64-user-fault-smoke"))]
 mod user_smoke;
+mod window;
 
 const MAX_MEMORY_REGIONS: usize = 8;
 
@@ -546,6 +549,34 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::puts("dtb: not supplied; using compiled platform defaults\n");
     }
 
+    // UFS is described before the USB/GIC handoff, but this stage only reads
+    // the merged DTB. No clock, regulator, PHY, interrupt, or MMIO ownership
+    // is claimed until the real UFS host driver exists.
+    match ufs::init(dtb_address) {
+        Some(profile) => {
+            uart::put_hex(
+                "ufs: controller_regions=",
+                profile.controller_regions as u64,
+            );
+            uart::put_hex("ufs: phy_regions=", profile.phy_regions as u64);
+            uart::put_hex("ufs: irq_spi=", profile.irq_spi.unwrap_or(0) as u64);
+            uart::put_hex(
+                "ufs: missing_platform_mask=",
+                profile.missing_required_mask() as u64,
+            );
+            uart::put_hex("ufs: dt_stage=", ufs::stage() as u64);
+            if profile.platform_ready() {
+                if let Some(sequence) = ufs::platform_sequence(profile) {
+                    uart::put_hex("ufs: platform sequence steps=", sequence.count as u64);
+                }
+                uart::puts("ufs: platform contract described; HCI probe withheld\n");
+            } else {
+                uart::puts("ufs: incomplete platform contract; HCI probe withheld\n");
+            }
+        }
+        None => uart::puts("ufs: no active qcom,ufshc platform contract\n"),
+    }
+
     uart::puts("arch: aarch64, exception vectors: ready\n");
     uart::put_hex("currentel: ", exceptions::current_el() as u64);
 
@@ -601,6 +632,63 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     uart::puts("timer: generic counter ready, ticks=");
     uart::put_hex_value(elapsed);
 
+    // The UFS platform backend is an explicit Bramble build opt-in. The
+    // default image continues to describe the DT only; this gate prevents a
+    // generic QEMU image or an accidental production build from issuing GCC,
+    // RPMh, or PHY writes before a deliberate hardware trial.
+    #[cfg(fullerene_aarch64_bramble)]
+    if option_env!("FULLERENE_AARCH64_UFS_EXECUTE") == Some("1") {
+        if let Some(profile) = ufs::profile() {
+            let rate_b = option_env!("FULLERENE_AARCH64_UFS_RATE_B") == Some("1");
+            match ufs::execute_bramble_platform(profile, rate_b) {
+                Ok(stage) => {
+                    uart::put_hex("ufs: executed stage=", stage as u64);
+                    match ufs::execute_bramble_link_startup(profile) {
+                        Ok(link_stage) => uart::put_hex("ufs: link stage=", link_stage as u64),
+                        Err(ufs::LinkStartupError::InvalidContract) => {
+                            uart::puts("ufs: link refused invalid contract\n")
+                        }
+                        Err(ufs::LinkStartupError::UnmappedRegulators) => {
+                            uart::puts("ufs: link blocked by unmapped regulators\n")
+                        }
+                        Err(ufs::LinkStartupError::PowerStateUnsupported) => {
+                            uart::puts("ufs: link blocked by unsupported RPMh power state\n")
+                        }
+                        Err(ufs::LinkStartupError::ControllerNotReady) => {
+                            uart::puts("ufs: link controller not ready\n")
+                        }
+                        Err(ufs::LinkStartupError::CommandTimeout) => {
+                            uart::puts("ufs: link UIC command timeout\n")
+                        }
+                        Err(ufs::LinkStartupError::CommandFailed(result)) => {
+                            uart::put_hex("ufs: link UIC result=", result as u64)
+                        }
+                        Err(ufs::LinkStartupError::DeviceAbsent) => {
+                            uart::puts("ufs: link device absent\n")
+                        }
+                    }
+                }
+                Err(ufs::PlatformError::InvalidContract) => {
+                    uart::puts("ufs: backend refused invalid contract\n")
+                }
+                Err(ufs::PlatformError::UnmappedRegulators) => {
+                    uart::puts("ufs: backend blocked by unmapped regulators\n")
+                }
+                Err(ufs::PlatformError::PowerStateUnsupported) => {
+                    uart::puts("ufs: backend blocked by unsupported RPMh power state\n")
+                }
+                Err(ufs::PlatformError::PcsReadyTimeout) => {
+                    uart::puts("ufs: backend PCS-ready timeout\n")
+                }
+                Err(ufs::PlatformError::Step(step)) => {
+                    uart::put_hex("ufs: backend step failed=", step as u64)
+                }
+            }
+        } else {
+            uart::puts("ufs: backend requested without profile\n");
+        }
+    }
+
     // Bring up the USB handoff before touching the GIC redistributor.  On a
     // phone boot path the redistributor may still be owned by firmware; USB
     // is polled during this early diagnostic phase and does not depend on it.
@@ -652,48 +740,60 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     }
     #[cfg(fullerene_aarch64_bramble)]
     usb::trace_marker(usb::TRACE_USB_HANDOFF_BEGIN, 0);
+    let mut usb_ready = true;
     #[cfg(fullerene_aarch64_bramble)]
-    if usb::init_usb2_handoff() {
-        uart::puts("platform: bramble USB2 gadget handoff: ready\n");
-    } else {
-        uart::puts("platform: bramble USB2 gadget handoff: failed\n");
-        if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
-            // A post-Run/Stop event-DMA diagnostic must not be masked by the
-            // ordinary cold fallback: its host-visible attach would no longer
-            // identify the tested USB2 handoff result.
-            uart::puts("platform: post-Run/Stop DMA diagnostic: no cold fallback\n");
+    {
+        usb_ready = if usb::init_usb2_handoff() {
+            uart::puts("platform: bramble USB2 gadget handoff: ready\n");
+            true
         } else {
-            // `fastboot boot` may jump through a vendor trampoline that tears
-            // down the Fastboot controller before entering the image.  In
-            // that case preserving the bootloader's PHY state cannot work;
-            // retry with the complete Qualcomm USB2 platform sequence.
-            if usb::init_usb2_only() {
-                uart::puts("platform: bramble USB2 cold fallback: ready\n");
+            uart::puts("platform: bramble USB2 gadget handoff: failed\n");
+            if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
+                // A post-Run/Stop event-DMA diagnostic must not be masked by the
+                // ordinary cold fallback: its host-visible attach would no longer
+                // identify the tested USB2 handoff result.
+                uart::puts("platform: post-Run/Stop DMA diagnostic: no cold fallback\n");
+                false
             } else {
-                uart::puts("platform: bramble USB2 cold fallback: failed\n");
+                // `fastboot boot` may jump through a vendor trampoline that tears
+                // down the Fastboot controller before entering the image.  In
+                // that case preserving the bootloader's PHY state cannot work;
+                // retry with the complete Qualcomm USB2 platform sequence.
+                if usb::init_usb2_only() {
+                    uart::puts("platform: bramble USB2 cold fallback: ready\n");
+                    true
+                } else {
+                    uart::puts("platform: bramble USB2 cold fallback: failed\n");
+                    false
+                }
             }
-        }
+        };
     }
     // USB setup itself remains trace-only; emit the compact ring after
     // controller initialization has returned and UART is safe to use again.
     #[cfg(fullerene_aarch64_bramble)]
     usb::dump_trace();
-
-    // USB must be handed off before entering launchd: the first user process
-    // is a non-returning EL0 transition, so placing it above the controller
-    // setup would make a launchd-enabled Bramble image skip its own gadget
-    // enumeration entirely. QEMU still follows the same ordering; it simply
-    // has no physical Bramble handoff to perform.
     #[cfg(feature = "aarch64-user-launchd")]
-    launchd::run();
+    devices::init(usb_ready, dtb_address);
+    #[cfg(feature = "aarch64-user-launchd")]
+    window::init();
 
+    // USB must be handed off before touching the GIC, but the GIC/timer must
+    // be live before launchd: native SLEEP and event deadlines are scheduler
+    // waits, not architectural-counter spin loops. QEMU follows the same
+    // ordering even though it has no physical Bramble handoff to perform.
     if bramble {
         platform::bramble::init_interrupt_controller(gicd_base, gicr_base);
     } else {
         platform::qemu_virt::init_interrupt_controller(gicd_base, gicr_base);
     }
-    timer::arm_ms(100);
+    timer::arm_ms(1);
     exceptions::enable_irqs();
+    timer::mark_irq_ready();
+
+    #[cfg(feature = "aarch64-user-launchd")]
+    launchd::run();
+
     uart::puts("aarch64 early boot complete; waiting for timer irq / USB events\n");
     loop {
         #[cfg(fullerene_aarch64_bramble)]

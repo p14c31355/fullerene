@@ -7,7 +7,9 @@
 
 use fullerene_abi::SyscallNumber;
 
-use super::{allocator, exceptions::Aarch64TrapFrame, fs, task, timer, uart, user_memory};
+use super::{
+    allocator, devices, exceptions::Aarch64TrapFrame, fs, task, timer, uart, user_memory, window,
+};
 
 const ERR_NOT_SUPPORTED: u64 = (-(95i64)) as u64;
 const ERR_ADDRESS: u64 = (-(14i64)) as u64;
@@ -51,20 +53,70 @@ pub(super) fn dispatch(frame: &mut Aarch64TrapFrame) -> bool {
         Ok(SyscallNumber::UnmapMemory) => syscall_unmap_memory(frame),
         Ok(SyscallNumber::ProtectMemory) => syscall_protect_memory(frame),
         Ok(SyscallNumber::QueryMemory) => syscall_query_memory(frame),
+        Ok(SyscallNumber::SharedBufferCreate) => fs::shared_buffer_create(frame.x[0], frame.x[1]),
+        Ok(SyscallNumber::SharedBufferMap) => {
+            fs::shared_buffer_map(frame.x[0], frame.x[1], frame.x[2])
+        }
+        Ok(SyscallNumber::SharedBufferUnmap) => fs::shared_buffer_unmap(frame.x[0], frame.x[1]),
         Ok(SyscallNumber::Fork) => syscall_fork(frame),
         Ok(SyscallNumber::Read) => fs::read(frame.x[0], frame.x[1], frame.x[2]),
         Ok(SyscallNumber::Open) => fs::open(frame.x[0], frame.x[1], frame.x[2]),
-        Ok(SyscallNumber::Close) => fs::close(frame.x[0]),
+        Ok(SyscallNumber::Close) => {
+            if task::is_process_control_handle(frame.x[0]) {
+                task::close_process_control(frame.x[0]).unwrap_or_else(|error| error)
+            } else {
+                fs::close(frame.x[0])
+            }
+        }
+        Ok(SyscallNumber::ChannelCreate) => fs::channel_create(frame.x[0]),
+        Ok(SyscallNumber::ChannelSend) => fs::channel_send(frame.x[0], frame.x[1], frame.x[2]),
+        Ok(SyscallNumber::ChannelRecv) => fs::channel_recv(frame.x[0], frame.x[1], frame.x[2]),
         Ok(SyscallNumber::PipeCreate) => fs::pipe_create(frame.x[0]),
-        Ok(SyscallNumber::HandleDuplicate) => fs::duplicate(frame.x[0]),
+        Ok(SyscallNumber::HandleDuplicate) => {
+            if task::is_process_control_handle(frame.x[0]) {
+                task::duplicate_process_control(frame.x[0]).unwrap_or_else(|error| error)
+            } else {
+                fs::duplicate(frame.x[0])
+            }
+        }
+        Ok(SyscallNumber::HandleTransfer) => {
+            if task::is_process_control_handle(frame.x[1]) {
+                task::transfer_process_control(frame.x[0], frame.x[1]).unwrap_or_else(|error| error)
+            } else {
+                fs::transfer(frame.x[0], frame.x[1])
+            }
+        }
+        Ok(SyscallNumber::HandleRevoke) => {
+            if task::is_process_control_handle(frame.x[0]) {
+                task::revoke_process_control(frame.x[0]).unwrap_or_else(|error| error)
+            } else {
+                fs::revoke(frame.x[0])
+            }
+        }
+        Ok(SyscallNumber::CreateEvent) => fs::event_create(frame.x[0]),
+        Ok(SyscallNumber::SignalEvent) => fs::event_signal(frame.x[0]),
+        Ok(SyscallNumber::SubscribeEvent) => fs::event_subscribe(frame.x[0], frame.x[1]),
+        Ok(SyscallNumber::WaitEvent) => return fs::event_wait(frame.x[0], frame.x[1], frame),
         Ok(SyscallNumber::Wait) => return syscall_wait(frame),
+        Ok(SyscallNumber::CreateThread) => {
+            task::create_thread(frame, frame.x[0], frame.x[1]).unwrap_or_else(|error| error)
+        }
+        Ok(SyscallNumber::JoinThread) => return fs::thread_join(frame.x[0], frame),
+        Ok(SyscallNumber::DetachThread) => fs::thread_detach(frame.x[0]),
         Ok(SyscallNumber::OpenProcessControl) => {
             task::open_process_control(frame.x[0]).unwrap_or_else(|error| error)
+        }
+        Ok(SyscallNumber::ProcessControlStop) => {
+            task::process_control_stop(frame.x[0], frame.x[1] as u32 as u64)
+                .unwrap_or_else(|error| error)
         }
         Ok(SyscallNumber::ProcessControlStatus) => {
             task::process_control_status(frame.x[0]).unwrap_or_else(|error| error)
         }
         Ok(SyscallNumber::ProcessControlReap) => syscall_process_control_reap(frame),
+        Ok(SyscallNumber::ProcessControlAssign) => {
+            task::process_control_assign(frame.x[0], frame.x[1]).unwrap_or_else(|error| error)
+        }
         Ok(SyscallNumber::GetPid) => task::current_pid().unwrap_or(ERR_NOT_SUPPORTED),
         Ok(SyscallNumber::GetProcessName) => {
             let mut name = [0u8; 16];
@@ -81,9 +133,32 @@ pub(super) fn dispatch(frame: &mut Aarch64TrapFrame) -> bool {
         Ok(SyscallNumber::Spawn) => syscall_spawn(frame),
         Ok(SyscallNumber::Exec) => syscall_exec(frame),
         Ok(SyscallNumber::ExecPath) => syscall_exec_path(frame),
+        Ok(SyscallNumber::CreateTerminal) => fs::create_terminal(frame.x[0], frame.x[1]),
+        Ok(SyscallNumber::EnumerateDevices) => {
+            devices::enumerate(frame.x[0], frame.x[1], frame.x[2])
+        }
+        Ok(SyscallNumber::OpenDevice) => devices::open(frame.x[0]),
+        Ok(SyscallNumber::DeviceIoctl) => devices::ioctl(frame.x[0], frame.x[1], frame.x[2]),
+        Ok(SyscallNumber::CreateWindow) => window::create(
+            frame.x[0] as i32,
+            frame.x[1] as i32,
+            frame.x[2] as u32,
+            frame.x[3] as u32,
+            frame.x[4],
+        ),
+        Ok(SyscallNumber::DestroyWindow) => window::destroy(frame.x[0]),
+        Ok(SyscallNumber::ResizeWindow) => {
+            window::resize(frame.x[0], frame.x[1] as u32, frame.x[2] as u32)
+        }
+        Ok(SyscallNumber::PresentWindow) => window::present(frame.x[0]),
+        Ok(SyscallNumber::GetWindowEvent) => window::get_event(frame.x[0], frame.x[1], frame.x[2]),
         Ok(SyscallNumber::Yield) => return task::yield_syscall(frame),
-        Ok(SyscallNumber::Uptime) => timer::counter(),
+        Ok(SyscallNumber::ClockGetTime) => syscall_clock_gettime(frame),
+        Ok(SyscallNumber::TimerCreate) => fs::timer_create(frame.x[0], frame.x[1], frame.x[2]),
+        Ok(SyscallNumber::Sleep) => return syscall_sleep(frame),
+        Ok(SyscallNumber::Uptime) => syscall_uptime(frame),
         Ok(SyscallNumber::Exit) => return task::exit_syscall(frame, frame.x[0]),
+        Ok(SyscallNumber::ExitThread) => return task::exit_syscall(frame, frame.x[0]),
         Ok(_) | Err(()) => ERR_NOT_SUPPORTED,
     };
 
@@ -91,6 +166,57 @@ pub(super) fn dispatch(frame: &mut Aarch64TrapFrame) -> bool {
     uart::put_hex("aarch64 syscall nr=", number);
     uart::put_hex("aarch64 syscall ret=", result);
     true
+}
+
+fn syscall_clock_gettime(frame: &Aarch64TrapFrame) -> u64 {
+    let clock_id = frame.x[0];
+    let destination = frame.x[1];
+    if destination == 0 || !matches!(clock_id, 0 | 1) {
+        return ERR_INVALID;
+    }
+    let microseconds = if clock_id == 0 { timer::uptime_us() } else { 0 };
+    let value = fullerene_abi::TimeSpec {
+        seconds: microseconds / 1_000_000,
+        nanoseconds: (microseconds % 1_000_000) * 1_000,
+    };
+    if user_memory::copy_to_user(destination, &value.to_ne_bytes()).is_err() {
+        ERR_ADDRESS
+    } else {
+        0
+    }
+}
+
+fn syscall_sleep(frame: &mut Aarch64TrapFrame) -> bool {
+    let duration_us = frame.x[0];
+    if duration_us == 0 {
+        frame.x[0] = 0;
+        return true;
+    }
+
+    // Preserve progress if a platform has not enabled its interrupt
+    // controller yet; once IRQs are live, park the current task and let the
+    // architectural timer wake it. A single runnable task also uses the
+    // bounded fallback because blocking it would leave no task to switch to.
+    if !timer::irq_ready() || !task::can_block_sleep() {
+        timer::delay_us(duration_us);
+        fs::fire_timers(timer::uptime_us().saturating_mul(1_000));
+        frame.x[0] = 0;
+        return true;
+    }
+    task::sleep_syscall(frame, duration_us)
+}
+
+fn syscall_uptime(frame: &Aarch64TrapFrame) -> u64 {
+    let destination = frame.x[0];
+    if destination == 0 {
+        return ERR_INVALID;
+    }
+    let value = timer::uptime_us().to_ne_bytes();
+    if user_memory::copy_to_user(destination, &value).is_err() {
+        ERR_ADDRESS
+    } else {
+        0
+    }
 }
 
 fn syscall_map_memory(frame: &Aarch64TrapFrame) -> u64 {
@@ -209,7 +335,9 @@ fn syscall_spawn(frame: &Aarch64TrapFrame) -> u64 {
         return ERR_ADDRESS;
     }
 
-    match allocator::with_global(|frames| task::spawn(frames, image, &name[..name_length])) {
+    match allocator::with_global(|frames| {
+        task::spawn(frames, image, &name[..name_length], frame.x[6], frame.x[4])
+    }) {
         Some(Ok(pid)) => pid,
         Some(Err(error)) => error,
         None => ERR_NOT_SUPPORTED,
