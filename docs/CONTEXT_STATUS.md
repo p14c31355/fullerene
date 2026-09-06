@@ -1883,7 +1883,9 @@ attempted for `dtbo_b` but this device rejected it because its fastboot lacks
 production adbd with `Permission denied`. A future DT extraction must use a
 read-only, permitted bootloader/image path or a matching official stock image,
 rather than treating the existing Fullerene boot artifact as the stock device
-tree.
+tree. This was the state of the workspace before the factory-image extraction
+recorded immediately below; it is not a claim that the current Downloads
+directory lacks a matching stock DTB/DTBO.
 
 ### 2026-09-05 exact-build stock image extraction and fallback A/B
 
@@ -1898,6 +1900,27 @@ The package matches the connected device's
 fingerprint. The outer ZIP is about 2.43 GB, but it was not downloaded in full;
 the extracted `boot.img`, `vendor_boot.img`, and `dtbo.img` members are retained
 under `tmp/` for reproducibility.
+
+On 2026-09-06 the actual Downloads copy was rechecked at
+`/home/placeless/ダウンロード/bramble-up1a.231105.001.b2-factory-46a218d9.zip`:
+size `2430380082` bytes, SHA-256
+`46a218d9dc2bf1802a584fa4e7e1b4d609a62189bd87a474201fb6d84e1c3e1c`. Its outer
+ZIP lists the stored inner archive
+`bramble-up1a.231105.001.b2/image-bramble-up1a.231105.001.b2.zip` (size
+`2350546036` bytes), plus the matching bootloader, radio, and flash scripts.
+The inner archive contains the `boot.img`, `vendor_boot.img`, and `dtbo.img`
+members used for the retained extractions. This is the exact file in Downloads,
+not a separate user-data backup or an unverified similarly named artifact; the
+connected device again reported the same fingerprint and incremental `11260668`.
+
+For Android boot image v3, the board DTB is in `vendor_boot.img` and the
+compiled device-tree overlays are in `dtbo.img`. The retained exact-build
+artifacts are therefore the usable stock tree/overlay source:
+[`tmp/bramble-stock-vendor_boot.img`](../tmp/bramble-stock-vendor_boot.img),
+[`tmp/bramble-stock-vendor_boot.dtb`](../tmp/bramble-stock-vendor_boot.dtb),
+and [`tmp/bramble-stock-dtbo.img`](../tmp/bramble-stock-dtbo.img). The DTBO
+table has 36 entries. This confirms the factory image does contain the device
+tree; it does not mean that a live Android user-data backup was taken.
 
 The stock artifacts are:
 
@@ -1920,6 +1943,47 @@ two-pair qpr1 fallback in the working tree was a source/version mismatch for
 this exact Android 14 factory package; the compiled fallback was corrected to
 the three stock pairs. The older DTB SHA recorded above this section was stale
 and is superseded by the extracted file's SHA.
+
+The same exact outer ZIP also contains
+`bootloader-bramble-b5-0.6-10489838.img` (8,972,680 bytes), SHA-256
+`63df7c9a2957ffb6f648ea0973f1b2f3ada427a10bd1ac29ac8741a3c8ff3272`.
+Read-only inspection found the Qualcomm `FBPK/FBPT` container and extracted
+the `xbl_a` payload at FBPK offset `9928`, size `0x380000`, as
+`tmp/bramble-factory-xbl_a.elf`, SHA-256
+`7748d80644542c5972b469472ff86ba9130b6d3f580a6b5d810b2a7d0f931dce`.
+The public `linux-msm/xbltools` splitter produced these AArch64 ELF
+components:
+
+- `tmp/bramble-factory-xbl-sbl1.elf`, SHA-256
+  `41fe85b8d32d73cd2b00e1512ece165b68d389efa934aacc331b201664dbeda6`
+- `tmp/bramble-factory-xbl-core.elf`, SHA-256
+  `52146ad38fae5baa9bf18121d0f800b5842dc808ebd3b0c5cd7cdead94090322`
+- `tmp/bramble-factory-xbl-sec.mbn`, SHA-256
+  `43c8f792f89fa300675d52629437fcc4591d1f383240d2776fc968d763af862b`
+
+The Qualcomm FBPK unpacker also exposes the packed `abl` payload, correcting
+the earlier shorthand that said there was no standalone ABL image. The exact
+artifact is retained as `tmp/bramble-factory-abl.elf`, size `1048576` bytes,
+SHA-256 `1a14a6a3cb65fcdab9c6121d81c81f50084283d206a75865c71c2382fd9cfefe`.
+It is an ARM ELF whose embedded firmware volume begins at ELF file offset
+`0x3000` and has size `0xfd000`. UEFI parsing of that volume found the
+`LinuxLoader` application, `FastbootTransportUsbDxe` driver, and
+`B1c1FastbootApp` application. The retained nested PE artifacts are
+`tmp/bramble-factory-abl-fastboot-transport-usb.pe` (SHA-256
+`13cf166d7f96ca0e78da38510b859b73c92c85da046a84463e316ed6fed5350a`) and
+`tmp/bramble-factory-abl-b1c1-fastboot.pe` (SHA-256
+`c7c29304afdec988d578b4655199d33a38870ef02f8878ba2429fa6e76baf313`).
+The USB driver strings include `FastbootTransportUsbDxe`, connection and
+transfer-completion states, and the generic `Protocol Error`/`CRC Error`
+names; the ABL UEFI layer is therefore real same-build evidence, but the
+strings alone are not a live DWC3 register trace.
+
+The extracted XBL strings expose `USB30_PRIM = 0x0a600000`, `USB_RUMI`,
+`USB30_SEC`, and `UsbFnIoRevNum = 0x00010001`. The XBL/SBL-side USB strings
+also include `endxfer EP0 OUT`, `endxfer EP0 IN`, `usb_shared_hs_phy_init`,
+and `usb_shared_ss_phy_init`. These are same-build bootloader observations,
+not a live register trace or proof that each string belongs to the production
+path; no bootloader partition was flashed or booted.
 
 Run `1878964.0` used that corrected fallback with the direct USB2 handoff.
 `fastboot boot` accepted
@@ -2007,6 +2071,775 @@ usbmon archive was produced for this run; the per-run host kernel capture is
 Run/Stop delta did not move the attach-to-descriptor boundary. The phone is
 back in Android. No partition was read or written, no user-data backup was
 made, and no analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 current-HEAD SuperSpeed full-path retake (Run 18290.0)
+
+The current HEAD was retested against the exact matching stock `boot.img` with
+the full lane-A SuperSpeed profile. This includes the post-`1693171.0`
+source-order corrections for DISSCRAMBLE, MMIO/DBM barriers, per-direction
+DALEPENA publication, and DWC31 KEEP_CONNECT/Run-Stop handling. The complete
+invocation was
+
+```text
+cargo run -q -p flasks --bin bramble-usb -- loop \
+  --template tmp/bramble-stock-boot.img \
+  --adb-reboot-to-fastboot --super-speed --qmp-lane a \
+  --ss-pre-qmp-phy-setup \
+  --ss-reassert-qmp-power-after-gctl \
+  --ss-reassert-qmp-clocks \
+  --ss-reassert-qmp-clocks-after-gctl \
+  --ss-reassert-hs-phy-ref-after-gctl \
+  --ss-dis-sleep-mode-before-gadget \
+  --ss-clear-qmp-autonomous \
+  --ss-clear-qmp-autonomous-exact \
+  --ss-qmp-resume-wmb \
+  --ss-qmp-lfps-clear-wmb \
+  --ss-qmp-notify-disconnect \
+  --ss-clear-vbus-override-before-qmp \
+  --ss-clear-keep-connect-before-stop \
+  --ss-clear-usb3-susphy-before-qmp \
+  --ss-disable-gadget-irq-before-stop \
+  --ss-disable-ep0-before-stop \
+  --ss-clear-gsi-stop-state \
+  --ss-preserve-ref-clock-state \
+  --ss-reassert-core-clocks \
+  --ss-android-dbm-reset \
+  --ss-lfps-timer \
+  --ss-clear-ux-exit-px \
+  --source-exact-runstop \
+  --no-core-reset --no-smmu \
+  --enum-timeout 30 --hold 30 --fastboot-wait 60 --observe-secs 10
+```
+
+Build audit, QEMU preflight, and the Fastboot image audit passed. `fastboot
+boot` accepted `tmp/fullerene-bramble-loop.18290.0/fullerene-bramble-boot.img`
+with SHA-256
+`d2e982efd5ab280483d7bfecd3757c5a65580ea1fe46faea531798bd3f11aaee`.
+The host saw the old Android `18d1:4ee0` disconnect at `09:06:36 JST`, then
+Fullerene's High-Speed attach on `usb 1-9` at `09:06:47`; the first
+`GET_DESCRIPTOR(Device)` failed with `device descriptor read/64, error -110`
+at `09:06:52`. No `1234:0001` device or completed Fullerene descriptor was
+observed. Stock Android `18d1:4ee7` returned over SuperSpeed at `09:07:13`
+with serial `26191JECB00076`; the harness recorded
+`ro.boot.bootreason=watchdog` and returned exit status 1 for the enumeration
+timeout. This current-HEAD SuperSpeed retake therefore did not move the
+attach-to-EP0-response boundary. The per-run host captures are
+`tmp/fullerene-bramble-loop.18290.0/kernel-final.log` and
+`tmp/fullerene-bramble-loop.18290.0/android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 current-HEAD USB2 source-exact device-reset A/B (Run 29473.0)
+
+The latest known HS-attach-reaching USB2 profile was retested on current HEAD
+with the qpr1 source-exact device-core reset added. This is a current-code
+retake of the older `1235572.0` device-reset experiment, after the later
+MMIO/DBM barrier, endpoint publication-order, DISSCRAMBLE, and DWC31
+KEEP_CONNECT/Run-Stop corrections. The complete invocation was
+
+```text
+cargo run -q -p flasks --bin bramble-usb -- loop \
+  --template tmp/bramble-stock-boot.img --adb-reboot-to-fastboot \
+  --direct-handoff --start-after-connect --no-smmu \
+  --hsphy-source-exact --refresh-hsphy-power \
+  --usb2-source-susphy --usb2-source-exact-devten \
+  --usb2-source-exact-cmd-guard \
+  --usb2-source-exact-runstop \
+  --usb2-source-exact-device-reset \
+  --enum-timeout 30 --hold 5 --fastboot-wait 60
+```
+
+QEMU preflight, image audit, and `fastboot boot` acceptance passed. The
+accepted artifact is
+`tmp/fullerene-bramble-loop.29473.0/fullerene-bramble-boot.img`, SHA-256
+`2a8040f3d5128d9f60d6020926e9b27db02fb1a2590d72d7bcbb0def5aabf416`.
+The host saw the old Android USB disconnect at `09:13:34 JST`, Fullerene
+High-Speed attach on `usb 1-9` at `09:13:44`, and
+`device descriptor read/64, error -110` at `09:13:50`. No `1234:0001`
+device or completed Fullerene descriptor appeared. Stock Android
+`18d1:4ee7` returned over SuperSpeed at `09:14:11`, with serial
+`26191JECB00076`; `ro.boot.bootreason=watchdog`. The source-exact device-reset
+delta therefore did not move the current HS attach-to-EP0-response boundary.
+The per-run host captures are
+`tmp/fullerene-bramble-loop.29473.0/kernel-final.log` and
+`tmp/fullerene-bramble-loop.29473.0/android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 current-HEAD SuperSpeed USB2-pull-up-after-Run/Stop A/B (Run 38747.0)
+
+The source audit found an existing but unreachable cfg branch in the current
+SuperSpeed path: `fullerene_aarch64_usb_usb2_susphy_after_runstop`. It repeats
+the USB2 `SUSPHY` write immediately after the production DWC3 Run/Stop
+transition, before the SuperSpeed state snapshot. `bramble-usb` had no public
+flag or environment forwarding for it, so the harness was extended with
+`--usb2-susphy-after-runstop`, requiring `--super-speed` and setting
+`FULLERENE_AARCH64_USB_USB2_SUSPHY_AFTER_RUNSTOP`. The kernel CLI was not given
+an unknown argument; the existing build-time cfg is the only control.
+
+The current-HEAD lane-A SuperSpeed profile was then rerun with that A/B:
+
+```text
+cargo run -q -p flasks --bin bramble-usb -- loop \
+  --template tmp/bramble-stock-boot.img --adb-reboot-to-fastboot \
+  --super-speed --qmp-lane a \
+  --ss-pre-qmp-phy-setup \
+  --ss-reassert-qmp-power-after-gctl \
+  --ss-reassert-qmp-clocks --ss-reassert-qmp-clocks-after-gctl \
+  --ss-reassert-hs-phy-ref-after-gctl \
+  --ss-dis-sleep-mode-before-gadget \
+  --ss-clear-qmp-autonomous --ss-clear-qmp-autonomous-exact \
+  --ss-qmp-resume-wmb --ss-qmp-lfps-clear-wmb \
+  --ss-qmp-notify-disconnect --ss-clear-vbus-override-before-qmp \
+  --ss-clear-keep-connect-before-stop --ss-clear-usb3-susphy-before-qmp \
+  --ss-disable-gadget-irq-before-stop --ss-disable-ep0-before-stop \
+  --ss-clear-gsi-stop-state --ss-preserve-ref-clock-state \
+  --ss-reassert-core-clocks --ss-android-dbm-reset --ss-lfps-timer \
+  --ss-clear-ux-exit-px --source-exact-runstop \
+  --usb2-susphy-after-runstop --no-core-reset --no-smmu \
+  --enum-timeout 30 --hold 30 --fastboot-wait 60 --observe-secs 10
+```
+
+The build audit, QEMU preflight, and image audit passed. `fastboot boot`
+accepted `tmp/fullerene-bramble-loop.38747.0/fullerene-bramble-boot.img`,
+SHA-256
+`f54a0ced4f68adb9288c0a8a62d950e23da6d1b6b691ceaea6bf799f80cf3da4`.
+The host saw the old Android `18d1:4ee7` disconnect at `09:20:13 JST`, then
+Fullerene High-Speed attach on `usb 1-9` at `09:20:24`; the first Device
+Descriptor failed with `device descriptor read/64, error -110` at `09:20:29`.
+No `1234:0001` appeared. Stock Android `18d1:4ee7` returned over SuperSpeed
+at `09:20:50` with serial `26191JECB00076`; the harness recorded
+`ro.boot.bootreason=watchdog`. The A/B therefore did not move the
+attach-to-EP0-response boundary. Evidence is in
+`tmp/fullerene-bramble-loop.38747.0/kernel-final.log` and
+`tmp/fullerene-bramble-loop.38747.0/android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 current-HEAD SuperSpeed USB3-SUSPHY-after-Run/Stop A/B (Run 43733.0)
+
+The existing source-aligned `--ss-clear-usb3-susphy-after-runstop` branch was
+tested as the next single-delta SuperSpeed experiment, retaining the newly
+reachable `--usb2-susphy-after-runstop` control and the full lane-A profile.
+The USB3 suspend bit was cleared immediately after DWC3 Run/Stop, before the
+post-boundary state snapshot; no endpoint or packet behavior was changed.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.43733.0/fullerene-bramble-boot.img`, SHA-256
+`7924eadd433d1a1d2a0755807e7fe1b01707cbaa43bf51d18d61fe2d5706086c`.
+The host saw the old Android USB disconnect at `09:23:54 JST`, Fullerene
+High-Speed attach on `usb 1-9` at `09:24:04`, and
+`device descriptor read/64, error -110` at `09:24:09`. No `1234:0001`
+appeared. Stock Android `18d1:4ee7` returned over SuperSpeed at `09:24:31`
+with serial `26191JECB00076`; `ro.boot.bootreason=watchdog`. The USB3
+post-Run/Stop SUSPHY delta did not move the attach-to-EP0-response boundary.
+Evidence is in `tmp/fullerene-bramble-loop.43733.0/kernel-final.log` and
+`tmp/fullerene-bramble-loop.43733.0/android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 current-HEAD SuperSpeed preserve-Fastboot-Run/Stop retake (Run 47845.0)
+
+The older preserve-Run/Stop result was not treated as a specification. The
+current-HEAD full lane-A SuperSpeed profile was retested with
+`--direct-handoff --preserve-fastboot-runstop --no-core-reset`, retaining the
+source-aligned PHY and DWC3 controls. This skips only the old-session
+Run/Stop=0 write before the handoff; the later gadget boundary remains active.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.47845.0/fullerene-bramble-boot.img`, SHA-256
+`50cd84b0baeec6e9f2f359fdcdfbfad741b15db6a056fca27c4fcb6587f59841`.
+The host saw the old Android `18d1:4ee0` disconnect at `09:26:38 JST`, then
+Fullerene High-Speed attach on `usb 1-9` at `09:26:49`; the first Device
+Descriptor failed with `device descriptor read/64, error -110` at `09:26:54`.
+No `1234:0001` appeared. Stock Android `18d1:4ee7` returned over SuperSpeed
+at `09:27:15` with serial `26191JECB00076`; `ro.boot.bootreason=watchdog`.
+The current retake therefore does not recover the SS path or move the
+attach-to-EP0-response boundary. Evidence is in
+`tmp/fullerene-bramble-loop.47845.0/kernel-final.log` and
+`tmp/fullerene-bramble-loop.47845.0/android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 current-HEAD SuperSpeed preserve-phy retake (Run 50706.0)
+
+The current-HEAD full lane-A SuperSpeed profile was rerun with
+`--ss-preserve-phy-state`, retaining Fastboot's already-trained QMP/USB3 PHY
+and rebuilding only the DWC3 gadget/EP0 side. This is a source-distinct
+retake of the older preserve-phy records, after the current DWC31 and EP0
+publication-order corrections.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.50706.0/fullerene-bramble-boot.img`, SHA-256
+`0b4141d455473e3ead1df1a3c3f55b8f5a202b3e4e9d8ba62cdf44039b874613`.
+The host saw the old Android USB disconnect at `09:28:37 JST`. No Fullerene
+HS attach appeared. Instead, the host reached the SuperSpeed setup path and
+reported `device not accepting address 14, error -62` at `09:28:59`, then
+power-cycled the port at `09:29:03`. Stock Android `18d1:4ee7` returned over
+SuperSpeed at `09:29:13` with serial `26191JECB00076`; `ro.boot.bootreason=watchdog`.
+No `1234:0001` appeared. Preserving the trained PHY suppresses the HS
+fallback but still does not produce a completed Fullerene descriptor.
+Evidence is in `tmp/fullerene-bramble-loop.50706.0/kernel-final.log` and
+`tmp/fullerene-bramble-loop.50706.0/android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 current-HEAD SuperSpeed preserve-phy + retry-setup A/B (Run 53664.0)
+
+The preserve-phy path was retested with `--ss-retry-setup`, extending the
+post-Run/Stop EP0 OUT `STARTTRANSFER` arm window from 100 ms to 5 seconds.
+This was intended to distinguish SuperSpeed training latency from the EP0
+ownership boundary without changing the PHY or descriptor data.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.53664.0/fullerene-bramble-boot.img`, SHA-256
+`cb74dedb9afc8874aa288ec0e15a6c707f981fc9e9c6b4fa13f22ab62dc9f188`.
+The host saw the old Android `18d1:4ee0` disconnect at `09:30:29 JST`, then
+SuperSpeed setup reached `device not accepting address 19, error -62` at
+`09:30:51`; xHCI power-cycled the port at `09:30:55`. Stock Android
+`18d1:4ee7` returned over SuperSpeed at `09:31:06` with serial
+`26191JECB00076`; `ro.boot.bootreason=watchdog`. No `1234:0001` appeared.
+The longer setup-arm window did not move the SS address/EP0 boundary. Evidence
+is in `tmp/fullerene-bramble-loop.53664.0/kernel-final.log` and
+`tmp/fullerene-bramble-loop.53664.0/android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 current-HEAD SuperSpeed preserve-phy + separate-SETUP A/B (Run 56664.0)
+
+The current preserve-phy SuperSpeed path was retested with the non-source
+diagnostic `--ss-separate-setup-buffer`, replacing qpr1's EP0 TRB alias for
+the eight-byte SETUP DMA object while leaving the PHY, endpoint, and
+descriptor paths otherwise unchanged.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.56664.0/fullerene-bramble-boot.img`, SHA-256
+`148e4ee3b548231be90c40215bf3844f852756899e2eb71e6f230bbee8469dfc`.
+The host saw the old Android USB disconnect at `09:32:27 JST`, then the same
+SuperSpeed setup-command timeouts and `device not accepting address 24,
+error -62` at `09:32:49`; xHCI power-cycled the port at `09:32:53`. Stock
+Android `18d1:4ee7` returned over SuperSpeed at `09:33:04` with serial
+`26191JECB00076`; `ro.boot.bootreason=watchdog`. No `1234:0001` appeared.
+Changing the SETUP buffer ownership did not move the SS address/EP0 boundary.
+Evidence is in `tmp/fullerene-bramble-loop.56664.0/kernel-final.log` and
+`tmp/fullerene-bramble-loop.56664.0/android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 qpr1 SuperSpeed eager-SETUP A/B harness correction (Run 66527.0)
+
+The first attempt to exercise the new source-directed `--ss-eager-setup`
+candidate stopped before `fastboot boot`: `bramble-usb` forwarded the new
+kernel option, but the outer `flasks` argument/build-option layer did not yet
+accept it. The run directory is
+`tmp/fullerene-bramble-loop.66527.0`; its `build.log` records
+`unexpected argument '--usb-gadget-handoff-ss-eager-setup'` and no boot
+artifact was produced.
+
+This is a harness/build-wiring failure, not a device result. The phone remained
+in Fastboot as `18d1:4ee0`; no Fullerene attach, `1234:0001`, or
+`fastboot boot` result is claimed. The missing outer parser/build-option/env
+wiring was then added. No partition was read or written, no user-data backup
+was created, and no analyzer, flash, erase, or secure-debug operation was
+used.
+
+### 2026-09-06 qpr1 SuperSpeed eager-SETUP physical A/B (Run 73831.0)
+
+After correcting the outer parser/build-option/env wiring, the new
+`--ss-eager-setup` path was exercised on the connected exact-build Bramble.
+The path arms EP0 SETUP before the production Run/Stop write, matching qpr1
+`__dwc3_gadget_start()` ordering. `fastboot boot` accepted
+`tmp/fullerene-bramble-loop.73831.0/fullerene-bramble-boot.img`, SHA-256
+`774244fb06c0614f4a5ee0ca1886a1c993c10374eef3fab1a5719b962a7b1011`.
+
+The host did not observe `1234:0001`. Fullerene produced no host-visible
+identity; after the 38-second recovery window, stock Android returned as
+SuperSpeed `18d1:4ee7` (serial `26191JECB00076`) with
+`ro.boot.bootreason=watchdog`. The host kernel log records only the Android
+device attach at `09:45:33 JST`; evidence is in
+`tmp/fullerene-bramble-loop.73831.0/kernel-final.log` and
+`android-fallback-usb.txt`. This A/B does not validate the eager-SETUP
+hypothesis, although it confirms the corrected build wiring reaches physical
+`fastboot boot`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 qpr1 SS SUSPHY/resource-order A/B harness correction (Run 81942.0)
+
+The next source-directed attempt combined qpr1's SS `SUSPHY`-through-gadget
+start policy (`--ss-source-susphy`) with qpr1's endpoint resource ordering
+(`--android-resource-order`) and the corrected eager-SETUP wiring. The outer
+`flasks` validation rejected the latter because it was incorrectly restricted
+to the USB2 probe, so the run stopped before image creation and before
+`fastboot boot`; no physical result or `1234:0001` claim is made. The
+validation was corrected to allow the shared resource-order implementation on
+the SuperSpeed probe as well.
+
+No partition was read or written, no user-data backup was created, and no
+analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 qpr1 SS SUSPHY/resource-order validation retake (Run 83393.0)
+
+The first validation correction changed only the diagnostic text; the actual
+condition still required the USB2 probe boolean, so the same SS invocation
+was rejected before image creation with
+`--usb-gadget-handoff-android-resource-order requires the Bramble gadget
+handoff probe on AArch64 build/run/debug`. The condition was then corrected
+to accept either the USB2 or SuperSpeed probe. This is another harness result,
+not a physical device result.
+
+No partition was read or written, no user-data backup was created, and no
+analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 qpr1 SS SUSPHY/resource-order compile correction (Run 84582.0)
+
+With the validation fixed, the SS source-directed attempt reached the build
+stage but failed before `fastboot boot`: Rust rejected an expression-level
+`#[cfg]` used in the new USB3 SUSPHY branch (`E0658`). No boot artifact was
+executed and no physical USB result or `1234:0001` claim is made. The branch
+was rewritten as cfg-selected blocks. The phone was left in Fastboot by the
+ADB-to-Fastboot preflight and is restored with `fastboot reboot` before the
+next attempt.
+
+No partition was read or written, no user-data backup was created, and no
+analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 qpr1 SS SUSPHY + resource-order + eager-SETUP physical A/B (Run 86658.0)
+
+The corrected source-directed profile was finally booted on the exact-build
+Bramble. It combined `--ss-source-susphy` (retain USB3 PIPE SUSPHY through
+endpoint construction), `--android-resource-order` (preallocate endpoint
+resources before EP0 configuration), and `--ss-eager-setup`, with the same
+factory-image template and lane-A SS profile.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.86658.0/fullerene-bramble-boot.img`, SHA-256
+`f8c067ea73a93cb45fdef2cf3fb6341fe0c8137cb3a5229702b612625486539d`.
+The host did not observe `1234:0001` or a Fullerene identity. After the
+recovery window, Android returned over SuperSpeed as `18d1:4ee7` (serial
+`26191JECB00076`) at `09:53:39 JST`; `ro.boot.bootreason=watchdog`.
+Evidence is in `tmp/fullerene-bramble-loop.86658.0/kernel-final.log` and
+`android-fallback-usb.txt`. This source-aligned SS A/B is negative.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 qpr1 SS SUSPHY + resource-order without eager-SETUP physical A/B (Run 90289.0)
+
+This control removed only `--ss-eager-setup` from the previous source-directed
+profile, retaining `--ss-source-susphy`, `--android-resource-order`, the exact
+factory-image template, and the lane-A SuperSpeed controls.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.90289.0/fullerene-bramble-boot.img`, SHA-256
+`2c104d6c6734395984683bb72d42a64e6df488d04065f0610961a21c251d7402`.
+The host saw a Fullerene high-speed attach at `09:55:37 JST`, but the first
+Device Descriptor timed out with `-110` at `09:55:42`; no `1234:0001` appeared.
+Stock Android then returned as SuperSpeed `18d1:4ee7` at `09:56:02`, serial
+`26191JECB00076`, with `ro.boot.bootreason=watchdog`. Evidence is in
+`tmp/fullerene-bramble-loop.90289.0/kernel-final.log` and
+`android-fallback-usb.txt`. The SUSPHY/resource-order delta alone is negative;
+removing eager SETUP restores the ordinary HS-attach boundary but not EP0
+descriptor response.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 factory-XBL EP0 IN NORMAL-TRB A/B (Run 95984.0)
+
+The exact factory package's XBL observation records `TRBCTL=1` (`NORMAL`) for
+the EP0 IN data response. This run enabled only that XBL-derived data-phase
+TRB differential (`--xbl-ep0-in-data`) on the previously attach-reaching
+ADB-to-Fastboot USB2 profile; EP0 SETUP/status TRBs and the PHY/resource
+controls were unchanged.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.95984.0/fullerene-bramble-boot.img`, SHA-256
+`3836f77c5bbb8f8718c750cfa147a5970bd5752b25b219fc067a5c77fad64d15`.
+The host reached Fullerene high-speed attach at `09:59:38 JST`, but the first
+Device Descriptor timed out with `-110` at `09:59:43`; no `1234:0001` or
+Fullerene descriptor appeared. Stock Android returned as SuperSpeed
+`18d1:4ee7` at `10:00:04`, serial `26191JECB00076`, with
+`ro.boot.bootreason=watchdog`. Evidence is in
+`tmp/fullerene-bramble-loop.95984.0/kernel-final.log` and
+`android-fallback-usb.txt`. The factory-XBL NORMAL data-TRB A/B did not move
+the host-visible attach-to-descriptor boundary.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 factory-XBL EP0 SETEPCONFIG P1 A/B (Run 116759.0)
+
+The next isolated factory-XBL candidate enabled only the EP0 endpoint
+configuration in-progress bit (`--xbl-ep0-config`), corresponding to XBL's
+`SETEPCONFIG` P1 value `0x300` for the control endpoints. It retained the
+known HS-attach-reaching ADB-to-Fastboot direct USB2 profile and did not enable
+the already-negative XBL NORMAL data-TRB differential.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.116759.0/fullerene-bramble-boot.img`, SHA-256
+`1457816ca2e64c036532060ef2a7f00a03a4cc251c495413af493e7b53f65b53`.
+The host saw Fullerene high-speed attach at `10:13:33`, but the first Device
+Descriptor timed out with `-110` at `10:13:38`; no `1234:0001` or Fullerene
+descriptor appeared. Stock Android returned as SuperSpeed `18d1:4ee7` at
+`10:13:59`, serial `26191JECB00076`, with `ro.boot.bootreason=watchdog`.
+Evidence is in `tmp/fullerene-bramble-loop.116759.0/kernel-final.log` and
+`android-fallback-usb.txt`. The XBL P1 in-progress-enable bit did not move the
+attach-to-descriptor boundary.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 exact Factory XBL QMP table source audit
+
+The exact same-build factory package in `Downloads` was inspected through its
+packed `xbl_config`. Its effective `ss_phy_cfg_addr`/`ss_phy_cfg_val` sequence
+has 146 QMP pairs. The current DT/Linux-derived table matches all entries
+except the TXB block (indices 86..95): Factory XBL writes `0x16a4` first and
+writes address `0x1684` twice, while the Linux labels place those writes in a
+different address/order sequence. The new `--xbl-qmp-table` flag selects the
+Factory sequence only for the SuperSpeed A/B; it does not alter the normal
+fallback. This is static factory-image evidence, not a live MMIO trace.
+
+### 2026-09-06 exact Factory XBL QMP table A/B (Run 154049.0)
+
+The first physical A/B used the exact factory `xbl_config` QMP table with lane
+A: `--super-speed --qmp-lane a --xbl-qmp-table --no-core-reset --no-smmu
+--skip-typec-spmi`. QEMU preflight, image audit, ADB-to-Fastboot transition,
+and `fastboot boot` all passed. The accepted artifact was
+`tmp/fullerene-bramble-loop.154049.0/fullerene-bramble-boot.img`, SHA-256
+`8fb93b083d39f108dc85588a89370f48ebfe5636b663382617604669a50e7f33`.
+
+The host saw Fastboot disconnect at `10:42:04 JST`, Fullerene high-speed
+attach at `10:42:15`, and the first Device Descriptor timeout (`-110`) at
+`10:42:20`. No `1234:0001` or Fullerene descriptor appeared. Android returned
+as stock SuperSpeed `18d1:4ee7` at `10:42:41`, serial `26191JECB00076`, with
+watchdog recovery. Evidence is in
+`tmp/fullerene-bramble-loop.154049.0/kernel-final.log` and
+`android-fallback-usb.txt`. The exact Factory XBL QMP table did not move the
+attach-to-descriptor boundary.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 exact Factory XBL HS-PHY table source audit
+
+The exact `xbl_config` `hs_phy_cfg_addr` array contains valid Bramble entries
+`0x6c, 0x70, 0x74, 0x78`. The MTP value bytes are `0x63, 0x85, 0x17, 0x03`,
+and the hardware selector byte is `1`, so the XBL path selects MTP rather than
+QRD. The stock DT-derived fallback previously applied only the first three
+pairs. `--xbl-hs-phy-table` adds only the fourth write `0x78 <- 0x03`; this is
+static factory-image evidence, not a live MMIO trace.
+
+### 2026-09-06 exact Factory XBL HS-PHY fourth override A/B (Run 162215.0)
+
+The next physical A/B added only the fourth Factory XBL HS-PHY override using
+`--super-speed --qmp-lane a --xbl-hs-phy-table --no-core-reset --no-smmu
+--skip-typec-spmi`. QEMU preflight, image audit, ADB-to-Fastboot transition,
+and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.162215.0/fullerene-bramble-boot.img`, SHA-256
+`53f3c86b7ef6789cfa767fc76a06d4529f6d287779b80c4856aadab7a02b6611`.
+
+The host saw Fastboot disconnect at `10:48:25 JST`, Fullerene high-speed
+attach at `10:48:36`, and Device Descriptor timeout `-110` at `10:48:41`.
+No `1234:0001` or Fullerene descriptor appeared. Android returned as stock
+SuperSpeed `18d1:4ee7` at `10:49:02`, serial `26191JECB00076`, with watchdog
+recovery. Evidence is in
+`tmp/fullerene-bramble-loop.162215.0/kernel-final.log` and
+`android-fallback-usb.txt`. The fourth XBL HS-PHY override did not move the
+attach-to-descriptor boundary.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 exact factory `vendor_boot` Linux USB driver audit
+
+The `Downloads` package is the exact same-build Google factory image, not a
+user-data backup. Its outer ZIP is
+`/home/placeless/ダウンロード/bramble-up1a.231105.001.b2-factory-46a218d9.zip`
+(SHA-256
+`46a218d9dc2bf1802a584fa4e7e1b4d609a62189bd87a474201fb6d84e1c3e1c`), and
+the extracted `vendor_boot.img` is the stock artifact already used here (SHA-256
+`8af68ba6199cb6947fdb1e1f49cb2052537d284ef38e1ea1beb3c4a2ca7bc135`). The
+vendor ramdisk contains the unstripped AArch64 modules `dwc3.ko`,
+`dwc3-qcom.ko`, `usb-dwc3-msm.ko`, and `phy-msm-ssusb-qmp.ko`, with full
+symbols. This is the closest available software evidence to the production
+USB path; it does not require an analyzer and does not prove a live register
+value by itself.
+
+The matching qpr1 Linux source shows that `dwc3_gadget_run_stop(true)` first
+sets up event buffers and runs `__dwc3_gadget_start` (EP0 descriptors,
+resource window, DALEPENA, initial SETUP TRB, and DEVTEN), then writes the
+maximum-speed field and DCTL RUN/STOP. The previous Run 167195 used an
+ABL-oriented `--start-after-connect` order and therefore did not exercise this
+source-aligned final restart boundary. The next A/B is explicitly scoped to
+this ordering. No factory bootloader or partition is flashed.
+
+### 2026-09-06 full Factory XBL/ABL USB2 profile A/B (Run 167195.0)
+
+The exact factory-image-derived candidates were then combined: the XBL fourth
+HS-PHY override plus the full ABL-derived USB2 handoff controls for shared
+HS-PHY cleanup, endpoint configuration, command parameters, TRB flags, event
+consumption, setup-TRB buffer, source-exact HS-PHY, and refreshed HS-PHY power.
+The run used `--direct-handoff --no-smmu --start-after-connect --start-ungated
+--android-resource-order --event-ring-size-4096 --abl-shared-hs-phy
+--abl-ep-config --abl-command-params --abl-trb-flags --abl-event-consume
+--abl-setup-trb-buffer --hsphy-source-exact --refresh-hsphy-power
+--xbl-hs-phy-table --skip-typec-spmi`.
+
+`fastboot boot` accepted
+`tmp/fullerene-bramble-loop.167195.0/fullerene-bramble-boot.img`, SHA-256
+`67508d312387251095111d9926eb48d59a1c7b7c6a55c05d7dca10b0a9648e4b`.
+Fastboot disconnected at `10:51:57 JST`; Fullerene high-speed attach appeared
+at `10:52:07`, but the first Device Descriptor timed out with `-110` at
+`10:52:13`. No `1234:0001` or Fullerene descriptor appeared. Stock Android
+returned over SuperSpeed as `18d1:4ee7` at `10:52:33`, serial
+`26191JECB00076`, with watchdog recovery. The complete static factory-derived
+ABL/XBL profile therefore did not move the attach-to-descriptor boundary.
+Evidence is in `tmp/fullerene-bramble-loop.167195.0/kernel-final.log` and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 source-aligned Linux USB2 final-restart A/B (Run 206207.0)
+
+The exact-factory `vendor_boot`/qpr1 source audit was exercised with
+`--direct-handoff --no-smmu --gadget-restart-at-runstop
+--gadget-start-only-at-runstop --event-ring-size-4096
+--android-resource-order --usb2-source-exact-runstop
+--usb2-source-exact-devten --usb2-source-exact-cmd-guard
+--usb2-dis-sleep-mode --usb2-android-dbm-reset --ep0-initial-512
+--android-hs-lpm --android-lpm-errata --hsphy-source-exact
+--xbl-hs-phy-table --skip-typec-spmi`. QEMU preflight, image audit, and
+`fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.206207.0/fullerene-bramble-boot.img`, SHA-256
+`a0bb4df7de12e54f4dfd8525db9bda532a9d01f4df868d3aca6a9ce90d6ae451`.
+
+This profile produced no Fullerene USB attach after Fastboot disconnected at
+`11:19:58 JST`; the host saw neither `1234:0001` nor the previous Fullerene
+high-speed attach. Stock Android returned over SuperSpeed as `18d1:4ee7` at
+`11:20:34 JST`, serial `26191JECB00076`, with watchdog recovery. This is a
+negative result and points to the `gadget-start-only-at-runstop` ordering (or
+its interaction with the restart path) as a new connection-boundary regression;
+it does not disprove the Linux source sequence. Evidence is in
+`tmp/fullerene-bramble-loop.206207.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 source-aligned Linux USB2 restart-only A/B (Run 210043.0)
+
+The follow-up removed only `--gadget-start-only-at-runstop` while retaining
+`--gadget-restart-at-runstop` and the same source/factory controls as Run
+206207. QEMU preflight, image audit, and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.210043.0/fullerene-bramble-boot.img`, SHA-256
+`ff2c223d51963ca6c1e02ba339a4c1444b029a4fa9c8ec021eb276aeead22997`.
+
+This also produced no Fullerene USB attach after Fastboot disconnected at
+`11:22:22 JST`; the host saw neither `1234:0001` nor the prior Fullerene
+high-speed attach. Stock Android returned over SuperSpeed as `18d1:4ee7` at
+`11:22:58 JST`, serial `26191JECB00076`, with watchdog recovery. Removing
+`--gadget-start-only-at-runstop` did not restore the connection boundary, so
+the next baseline removes `--gadget-restart-at-runstop` as well. Evidence is
+in `tmp/fullerene-bramble-loop.210043.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 source-control USB2 baseline without final restart (Run 213239.0)
+
+The next control removed `--gadget-restart-at-runstop` as well, retaining the
+source/factory controls from Runs 206207 and 210043. QEMU preflight, image
+audit, and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.213239.0/fullerene-bramble-boot.img`, SHA-256
+`36aaf1fd08a2da1288ed61ad2c84d3e7eb00122d63edd0f76997d96c7766ff34`.
+
+The host saw Fastboot disconnect at `11:24:10 JST`, but no Fullerene USB
+attach, no `1234:0001`, and no Device Descriptor attempt. Stock Android
+returned over SuperSpeed as `18d1:4ee7` at `11:24:46 JST`, serial
+`26191JECB00076`, with watchdog recovery. Thus the source-control set itself
+does not reproduce the older attach-reaching profile; the next A/B restores
+the known `--start-after-connect --start-ungated` timing controls before
+changing another source-derived variable. Evidence is in
+`tmp/fullerene-bramble-loop.213239.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 source-control timing retake (Run 217026.0)
+
+The source-control set was retested with the known timing controls
+`--start-after-connect --start-ungated`, while retaining the exact-factory
+HS-PHY and qpr1-derived USB2 controls. QEMU preflight, image audit, and
+`fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.217026.0/fullerene-bramble-boot.img`, SHA-256
+`(recorded after run; see artifact.sha256)`.
+
+Fastboot disconnected at `11:26:24 JST`; the host then saw a Fullerene
+high-speed attach on `usb 1-9` followed by Device Descriptor `-110` at
+`11:26:40 JST`. No `1234:0001` descriptor arrived before stock Android
+`18d1:4ee7` fallback at `11:27:00 JST`. The timing controls therefore restore
+the HS attach boundary, but not EP0 descriptor response; its ABL-derived
+endpoint/TRB/event/setup controls remain a necessary unisolated part of the
+attach-reaching baseline. Evidence is in
+`tmp/fullerene-bramble-loop.217026.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 qpr1 USB2 device-core-reset-at-Run/Stop A/B (Run 220831.0)
+
+The qpr1 `dwc3_gadget_pullup(true)` boundary was tested by adding
+`--usb2-core-reset-at-runstop` to the source/factory USB2 controls. QEMU
+preflight, image audit, and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.220831.0/fullerene-bramble-boot.img`, SHA-256
+`d2d95be013316c211b2ac2e0e2ae23d262772e2345b21f7fa2310a3c18faf47d`.
+
+The host saw Fastboot disconnect at `11:29:06 JST`, but no Fullerene attach,
+no `1234:0001`, and no descriptor attempt. Stock Android returned over
+SuperSpeed as `18d1:4ee7` at `11:29:43 JST`, serial `26191JECB00076`, with
+watchdog recovery. The reset-at-Run/Stop differential regressed before the
+HS-attach boundary and is not retained as the next baseline. Evidence is in
+`tmp/fullerene-bramble-loop.220831.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 Factory ABL endpoint/TRB profile without deferred initial SETUP (Run 223715.0)
+
+The historical attach-reaching ABL-derived controls were retained
+(`--start-ungated --android-resource-order --event-ring-size-4096
+--abl-shared-hs-phy --abl-ep-config --abl-command-params --abl-trb-flags
+--abl-event-consume --abl-setup-trb-buffer --hsphy-source-exact
+--refresh-hsphy-power --xbl-hs-phy-table`), while removing
+`--start-after-connect` so the initial SETUP could be armed before the final
+RUN/STOP boundary. QEMU preflight, image audit, and `fastboot boot` passed.
+Artifact: `tmp/fullerene-bramble-loop.223715.0/fullerene-bramble-boot.img`,
+SHA-256 `5a64b82ebe9bd0b044069d1d85fee95129a90ccffeebc2927ca09fd14d530166`.
+
+The host saw Fastboot disconnect at `11:30:54 JST`, but no Fullerene attach,
+no `1234:0001`, and no descriptor attempt. Stock Android returned over
+SuperSpeed as `18d1:4ee7` at `11:31:31 JST`, serial `26191JECB00076`, with
+watchdog recovery. Arming the initial SETUP before this handoff's RUN/STOP
+boundary does not work with the current ABL-derived endpoint profile; the
+attach-reaching deferred-SETUP profile remains the physical baseline. Evidence
+is in `tmp/fullerene-bramble-loop.223715.0/kernel-final.log`, `kernel.log`,
+and `android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 Factory ABL profile with Connect Done-gated SETUP (Run 229817.0)
+
+The attach-reaching Factory ABL endpoint/TRB/event profile was retained, while
+the initial SETUP arm was moved to the Connect Done path with
+`--start-at-connect-done --start-ungated`. The complete command was
+`--direct-handoff --no-smmu --start-at-connect-done --start-ungated
+--android-resource-order --event-ring-size-4096 --abl-shared-hs-phy
+--abl-ep-config --abl-command-params --abl-trb-flags --abl-event-consume
+--abl-setup-trb-buffer --hsphy-source-exact --refresh-hsphy-power
+--xbl-hs-phy-table --skip-typec-spmi`. QEMU preflight, image audit, and
+`fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.229817.0/fullerene-bramble-boot.img`, SHA-256
+`61e088d7262d685a20ccba5fd81d2773037b64fee4c1425bdd66652ff63ee0b2`.
+
+Fastboot disconnected at `11:34:57 JST`; the host saw Fullerene high-speed
+attach on `usb 1-9` at `11:35:08`, but the first Device Descriptor timed out
+with `-110` at `11:35:13`. No `1234:0001` descriptor arrived. Stock Android
+returned over SuperSpeed as `18d1:4ee7` at `11:35:34`, serial
+`26191JECB00076`, with watchdog recovery. Connect Done-gated SETUP therefore
+restores the HS attach boundary but not EP0 descriptor response. Evidence is
+in `tmp/fullerene-bramble-loop.229817.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 Corrected Factory ABL Connect Done-only SETUP A/B (Run 255300.0)
+
+The source was corrected so `--start-at-connect-done` also suppresses the
+bounded post-Run/Stop arm window; the first EP0 SETUP `STARTTRANSFER` can now
+only be issued from the DWC3 Connect Done handler. The same Factory ABL/XBL
+profile as Run 229817.0 was rebuilt from the exact factory `boot.img` with
+`--adb-reboot-to-fastboot` used only to enter Fastboot. QEMU preflight, image
+audit, and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.255300.0/fullerene-bramble-boot.img`, SHA-256
+`9915757e5bd2cbe8b8e963fa0bd91282a75c1ed9efed13866b58296be37c4f75`.
+
+Fastboot disconnected at `11:53:06 JST`; the host saw Fullerene high-speed
+attach on `usb 1-9` at `11:53:19`, but the first Device Descriptor timed out
+with `-110` at `11:53:24`. No `1234:0001` descriptor arrived. Stock Android
+returned over SuperSpeed as `18d1:4ee7` at `11:53:44`, serial
+`26191JECB00076`, with watchdog recovery. Strict Connect Done-only arm timing
+therefore still leaves the HS attach-to-EP0-response boundary unchanged.
+Evidence is in `tmp/fullerene-bramble-loop.255300.0/kernel-final.log`,
+`kernel.log`, and `android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 Factory-DTB `tx-fifo-resize` A/B (Run 260701.0)
+
+The corrected Connect Done-only profile was retained and the exact factory
+DTB's `tx-fifo-resize` behavior was exercised through
+`--ep0-txfifo-fix`, which raises a degenerate EP0 IN FIFO to depth 32 while
+preserving its start address. The exact factory `boot.img` was used;
+`--adb-reboot-to-fastboot` only entered Fastboot. QEMU preflight, image audit,
+and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.260701.0/fullerene-bramble-boot.img`, SHA-256
+`c2e880b0a53d85ea9595aeaef8933a84ee67167be6abb5a89628d5ec28d88e0e`.
+
+Fastboot disconnected at `11:56:43 JST`; the host saw Fullerene high-speed
+attach on `usb 1-9` at `11:56:54`, but the first Device Descriptor timed out
+with `-110` at `11:56:59`. No `1234:0001` descriptor arrived. Stock Android
+returned over SuperSpeed as `18d1:4ee7` at `11:57:20`, serial
+`26191JECB00076`, with watchdog recovery. Correcting the possible EP0 IN FIFO
+depth did not move the attach-to-EP0-response boundary. Evidence is in
+`tmp/fullerene-bramble-loop.260701.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
 
 ## Document routing and context cost
 

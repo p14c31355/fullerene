@@ -7493,7 +7493,17 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         write(GUCTL1, guctl1 & !GUCTL1_L1_SUSP_THRLD_EN_FOR_HOST);
         let mut usb3 = read(GUSB3PIPECTL0);
         if qmp_ready {
-            usb3 &= !GUSB3PIPECTL_SUSPHY;
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_source_susphy)]
+            {
+                // qpr1 dwc3_phy_setup() asserts USB3 SUSPHY after core
+                // configuration and leaves it asserted through gadget-start
+                // endpoint construction. The link exits suspend at connect.
+                usb3 |= GUSB3PIPECTL_SUSPHY;
+            }
+            #[cfg(not(fullerene_aarch64_usb_gadget_handoff_ss_source_susphy))]
+            {
+                usb3 &= !GUSB3PIPECTL_SUSPHY;
+            }
         } else {
             // Keep the USB2 gadget usable if the board-specific SuperSpeed
             // calibration does not reach PHY ready.
@@ -7673,6 +7683,29 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         }
 
         prepare_ep0_setup_trb();
+
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_eager_setup)]
+        if qmp_ready {
+            // qpr1's __dwc3_gadget_start() arms CONTROL_SETUP before the
+            // production Run/Stop write. The normal Bramble handoff defers
+            // this command because the same boundary wedges the USB2 path;
+            // keep the SS-only source-order A/B separate and let the command
+            // result decide whether this DWC31 accepts the earlier arm.
+            let armed = start_setup();
+            trace_event(
+                TRACE_SETUP_QUEUED,
+                0x5353_4541, // "SSEA" source-order SS eager arm
+                armed as u32,
+                0,
+                8,
+                read(DSTS),
+            );
+            if !armed {
+                log_puts("usb: SS eager SETUP STARTTRANSFER failed\n");
+                return false;
+            }
+            poll_ep0_event_ring();
+        }
 
         #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_stall_flush)]
         {
@@ -8406,7 +8439,13 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         // was still waiting for the link state. The SS retry A/B extends
         // this bounded window to 5 seconds because SuperSpeed training can
         // outlast the USB2-oriented default.
-        if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup)
+            && !cfg!(fullerene_aarch64_usb_gadget_handoff_start_at_connect_done)
+        {
+            // With the Connect-Done differential, do not let this bounded
+            // post-Run/Stop retry window arm EP0 first.  The Android gadget
+            // path reaches its initial SETUP arm from the Connect Done
+            // handler; allowing both paths would make the A/B indistinct.
             let arm_deadline = arch_counter().saturating_add(
                 arch_counter_frequency().saturating_mul(
                     if cfg!(fullerene_aarch64_usb_gadget_handoff_ss_retry_setup) {

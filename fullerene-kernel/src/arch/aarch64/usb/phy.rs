@@ -5,7 +5,9 @@ use core::ptr::{read_volatile, write_volatile};
 use super::config::qscratch_set;
 use super::log::log_puts;
 use super::mmio::*;
-use super::phy_tables::{ACTIVE_HSPHY_PARAM_OVERRIDE, ACTIVE_QMP_INIT, ACTIVE_QMP_INIT_DELAY_US};
+use super::phy_tables::{
+    qmp_init_entry, ACTIVE_HSPHY_PARAM_OVERRIDE, ACTIVE_QMP_INIT, ACTIVE_QMP_INIT_DELAY_US,
+};
 use super::trace::{TRACE_PROBE_WATCHDOG, TRACE_UTMI_CLOCK, trace_event, trace_marker};
 
 /// Current-boot result for the optional QMP phase probe. This is deliberately
@@ -187,6 +189,7 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
             if index % 16 == 0 || index + 1 == qmp_init.len() {
                 trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_0000 | (index as u32 & 0xff));
             }
+            let (offset, value) = qmp_init_entry(index, (offset, value));
             write_volatile(qmp_reg(offset), value);
             if delay_us != 0 {
                 crate::timer::delay_us(delay_us as u64);
@@ -364,6 +367,12 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             hsphy_param_override[0] = (0x6c, 0x63);
             hsphy_param_override[1] = (0x70, 0x85);
             hsphy_param_override[2] = (usize::MAX, 0);
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_hsphy_table)]
+        {
+            // The same-build Factory XBL has a fourth valid HS-PHY property
+            // entry, 0x78 <- 0x03, after the three DT override pairs.
+            hsphy_param_override[3] = (0x78, 0x03);
         }
         for &(offset, value) in hsphy_param_override.iter() {
             // The fixed table may end in a sentinel for the historical

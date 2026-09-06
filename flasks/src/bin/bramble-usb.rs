@@ -91,6 +91,14 @@ struct LoopArgs {
     /// Force QMP's USB lane A or B without changing PMIC Type-C role state.
     #[arg(long, value_parser = ["a", "b"])]
     qmp_lane: Option<String>,
+    /// Use the exact same-build Factory XBL `xbl_config` SuperSpeed PHY table
+    /// instead of the normal DT/Linux-derived table.
+    #[arg(long)]
+    xbl_qmp_table: bool,
+    /// Add the exact same-build Factory XBL fourth HS-PHY override
+    /// (`0x78 <- 0x03`) after the three stock DT override pairs.
+    #[arg(long)]
+    xbl_hs_phy_table: bool,
     /// Stop immediately after a QMP phase marker (1..=8) and use same-boot
     /// USB2 attach presence as the reached/not-reached readout.
     #[arg(long, value_name = "PHASE", value_parser = clap::value_parser!(u32).range(1..=8))]
@@ -213,6 +221,14 @@ struct LoopArgs {
     /// Retry SS EP0 STARTTRANSFER after revoking a stale transfer resource.
     #[arg(long)]
     ss_retry_setup: bool,
+    /// Arm the SS EP0 SETUP transfer before Run/Stop, matching qpr1's
+    /// __dwc3_gadget_start() ordering (A/B).
+    #[arg(long)]
+    ss_eager_setup: bool,
+    /// Keep USB3 PIPE SUSPHY asserted through SS endpoint construction, as
+    /// qpr1's dwc3_phy_setup() does before gadget Run/Stop (A/B).
+    #[arg(long)]
+    ss_source_susphy: bool,
     /// Use Bramble's DT HIRD threshold (0x10) instead of XBL's observed 7.
     #[arg(long)]
     dt_hird_threshold: bool,
@@ -441,6 +457,10 @@ struct LoopArgs {
     /// Restore USB2 SUSPHY immediately before the direct Run/Stop boundary.
     #[arg(long)]
     usb2_susphy: bool,
+    /// Restore USB2 SUSPHY immediately after the SuperSpeed Run/Stop boundary
+    /// (A/B; this is intentionally separate from the direct USB2 option).
+    #[arg(long)]
+    usb2_susphy_after_runstop: bool,
     /// Keep USB2 SUSPHY enabled through qpr1's endpoint/resource setup;
     /// endpoint commands still clear it transiently as Linux does (A/B).
     #[arg(long)]
@@ -677,6 +697,8 @@ impl Default for LoopArgs {
             irq_route: None,
             super_speed: false,
             qmp_lane: None,
+            xbl_qmp_table: false,
+            xbl_hs_phy_table: false,
             qmp_phase_stop: None,
             normal: false,
             direct_handoff: false,
@@ -711,6 +733,8 @@ impl Default for LoopArgs {
             ss_reassert_runstop: false,
             ss_hold_runstop: false,
             ss_retry_setup: false,
+            ss_eager_setup: false,
+            ss_source_susphy: false,
             dt_hird_threshold: false,
             android_hs_lpm: false,
             android_lpm_errata: false,
@@ -774,6 +798,7 @@ impl Default for LoopArgs {
             ss_preserve_phy_state: false,
             dcfg_ignstrmpp: false,
             usb2_susphy: false,
+            usb2_susphy_after_runstop: false,
             usb2_source_susphy: false,
             usb2_source_exact_devten: false,
             usb2_source_exact_cmd_guard: false,
@@ -1277,6 +1302,18 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--ss-retry-setup requires --super-speed",
         ));
     }
+    if args.ss_eager_setup && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-eager-setup requires --super-speed",
+        ));
+    }
+    if args.ss_source_susphy && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ss-source-susphy requires --super-speed",
+        ));
+    }
     if args.ss_reassert_device_mode && !args.super_speed {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1679,6 +1716,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb2-susphy requires --direct-handoff",
+        ));
+    }
+    if args.usb2_susphy_after_runstop && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-susphy-after-runstop requires --super-speed",
         ));
     }
     if args.usb2_source_susphy && !args.direct_handoff {
@@ -2108,6 +2151,18 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--qmp-lane requires --super-speed",
         ));
     }
+    if args.xbl_qmp_table && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-qmp-table requires --super-speed",
+        ));
+    }
+    if args.xbl_hs_phy_table && !(args.super_speed || args.direct_handoff) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--xbl-hs-phy-table requires --super-speed or --direct-handoff",
+        ));
+    }
     if args.qmp_phase_stop.is_some() && !args.super_speed {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2430,6 +2485,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
             arguments.push("--usb-qmp-lane".to_owned());
             arguments.push(lane.clone());
         }
+        if args.xbl_qmp_table {
+            arguments.push("--usb-xbl-qmp-table".to_owned());
+        }
+        if args.xbl_hs_phy_table {
+            arguments.push("--usb-xbl-hs-phy-table".to_owned());
+        }
         if let Some(phase) = args.qmp_phase_stop {
             arguments.push("--usb-qmp-phase-stop".to_owned());
             arguments.push(phase.to_string());
@@ -2523,6 +2584,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.ss_retry_setup {
         arguments.push("--usb-gadget-handoff-ss-retry-setup".to_owned());
+    }
+    if args.ss_eager_setup {
+        arguments.push("--usb-gadget-handoff-ss-eager-setup".to_owned());
+    }
+    if args.ss_source_susphy {
+        arguments.push("--usb-gadget-handoff-ss-source-susphy".to_owned());
     }
     if args.dt_hird_threshold {
         arguments.push("--usb-gadget-handoff-dt-hird-threshold".to_owned());
@@ -2935,6 +3002,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.preserve_fastboot_runstop {
         envs.push((
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_PRESERVE_RUNSTOP".to_owned(),
+            "1".to_owned(),
+        ));
+    }
+    if args.usb2_susphy_after_runstop {
+        envs.push((
+            "FULLERENE_AARCH64_USB_USB2_SUSPHY_AFTER_RUNSTOP".to_owned(),
             "1".to_owned(),
         ));
     }

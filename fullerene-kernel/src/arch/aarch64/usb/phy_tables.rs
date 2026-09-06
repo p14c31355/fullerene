@@ -149,6 +149,31 @@ const QMP_INIT: [(usize, u32); 146] = [
     (0x1f38, 0x07), // USB3_DP_PCS_USB3_RXEQTRAINING_DFE_TIME_S2
 ];
 
+/// The exact 146-entry `ss_phy_cfg_addr`/`ss_phy_cfg_val` sequence from the
+/// same-build Factory XBL `xbl_config`. The production DT/Linux table above
+/// is identical except for the TXB entries: XBL writes the RX-detect entry
+/// first, then writes 0x1684 twice. Keep this as an opt-in differential rather
+/// than silently changing the normal DT-derived fallback.
+#[inline(always)]
+pub(super) fn qmp_init_entry(index: usize, active: (usize, u32)) -> (usize, u32) {
+    if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_qmp_table) {
+        return active;
+    }
+    match index {
+        86 => (0x16a4, 0x12),
+        87 => (0x1634, 0x00),
+        88 => (0x1638, 0x00),
+        89 => (0x163c, 0x16),
+        90 => (0x1640, 0x05),
+        91 => (0x1684, 0x55),
+        92 => (0x1684, 0x02),
+        93 => (0x1690, 0x2a),
+        94 => (0x1694, 0x3f),
+        95 => (0x16e4, 0x02),
+        _ => QMP_INIT[index],
+    }
+}
+
 /// Active PHY tables. The compiled values are the Bramble production
 /// fallback, while the DT path may replace them after validating the complete
 /// vendor property. Keeping the delay array separate preserves the compact
@@ -164,8 +189,8 @@ pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
 // supplies no usable property, so the exact stock package is the strongest
 // available board-specific source. The trailing sentinel keeps the fixed
 // table shape and is skipped by the writer.
-pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] =
-    [(0x6c, 0x63), (0x70, 0x85), (0x74, 0x17)];
+pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 4] =
+    [(0x6c, 0x63), (0x70, 0x85), (0x74, 0x17), (usize::MAX, 0)];
 
 /// Which table source the current boot is using. Recorded by
 /// `install_dt_phy_sequences()` and published through the retained-trace
@@ -317,7 +342,12 @@ pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>;
     let hs_two = hs_raw[..4].iter().all(Option::is_some) && hs_raw[4..].iter().all(Option::is_none);
     if hs_three || hs_two {
         let count = if hs_two { 2 } else { 3 };
-        let mut entries = [(0usize, 0u32), (0usize, 0u32), (usize::MAX, 0u32)];
+        let mut entries = [
+            (0usize, 0u32),
+            (0usize, 0u32),
+            (usize::MAX, 0u32),
+            (usize::MAX, 0u32),
+        ];
         let mut valid = true;
         for index in 0..count {
             let value = hs_raw[index * 2].unwrap();
