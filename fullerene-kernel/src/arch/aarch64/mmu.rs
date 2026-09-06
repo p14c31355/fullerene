@@ -18,22 +18,55 @@ const DESC_ATTR_DEVICE: u64 = 1 << 2;
 const DESC_AF: u64 = 1 << 10;
 const DESC_SH_INNER: u64 = 0b11 << 8;
 const DESC_AP_USER_RW: u64 = 0b01 << 6;
+const DESC_AP_MASK: u64 = 0b11 << 6;
+const DESC_AP_USER_RO: u64 = 0b11 << 6;
 const DESC_PXN: u64 = 1 << 53;
 const DESC_UXN: u64 = 1 << 54;
+// AArch64 reserves bits 55..58 for software use in a stage-1 descriptor.
+const DESC_COW: u64 = 1 << 55;
+const DESC_OUTPUT_ADDRESS_MASK: u64 = 0x0000_ffff_ffff_f000;
 const PAGE_SIZE: u64 = 4096;
+pub(crate) const MAX_USER_SPACES: usize = 8;
 
 #[derive(Clone, Copy)]
 #[repr(C, align(4096))]
 struct PageTable([u64; TABLE_ENTRIES]);
+
+impl PageTable {
+    const EMPTY: Self = Self([0; TABLE_ENTRIES]);
+}
 
 static mut L1: PageTable = PageTable([0; TABLE_ENTRIES]);
 static mut L2_0: PageTable = PageTable([0; TABLE_ENTRIES]);
 static mut L2_1: PageTable = PageTable([0; TABLE_ENTRIES]);
 static mut L2_2: PageTable = PageTable([0; TABLE_ENTRIES]);
 static mut L2_3: PageTable = PageTable([0; TABLE_ENTRIES]);
-// The first user-space bring-up uses one split 2 MiB window. Later address
-// spaces will allocate these L3 tables from the physical frame allocator.
-static mut USER_L3_1_0: PageTable = PageTable([0; TABLE_ENTRIES]);
+
+/// The bounded bootstrap address-space object owns the user-side walk while
+/// pointing its root's kernel entries at the shared identity-map L2 tables.
+/// This makes the TTBR0 switch real without pretending that the static tables
+/// are already allocator-owned or ASID-managed.
+#[derive(Clone, Copy)]
+#[repr(C, align(4096))]
+struct Aarch64UserAddressSpace {
+    root: PageTable,
+    user_l2: PageTable,
+    user_l3: PageTable,
+    ready: bool,
+}
+
+impl Aarch64UserAddressSpace {
+    const EMPTY: Self = Self {
+        root: PageTable::EMPTY,
+        user_l2: PageTable::EMPTY,
+        user_l3: PageTable::EMPTY,
+        ready: false,
+    };
+}
+
+static mut USER_SPACES: [Aarch64UserAddressSpace; MAX_USER_SPACES] =
+    [Aarch64UserAddressSpace::EMPTY; MAX_USER_SPACES];
+static mut ACTIVE_USER_SPACE: usize = 0;
 
 /// Install a small identity map covering the first 4 GiB of physical memory.
 ///
@@ -61,6 +94,31 @@ pub fn init() {
                     block_descriptor(physical, is_mmio(physical)),
                 );
             }
+        }
+        for space_id in 0..MAX_USER_SPACES {
+            let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
+            for index in 0..TABLE_ENTRIES {
+                core::ptr::write_volatile(
+                    core::ptr::addr_of_mut!((*space).user_l2.0[index]),
+                    core::ptr::read_volatile(core::ptr::addr_of!(L2_1.0[index])),
+                );
+            }
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*space).root.0[0]),
+                table_descriptor(core::ptr::addr_of!(L2_0) as u64),
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*space).root.0[1]),
+                table_descriptor(core::ptr::addr_of!((*space).user_l2) as u64),
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*space).root.0[2]),
+                table_descriptor(core::ptr::addr_of!(L2_2) as u64),
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*space).root.0[3]),
+                table_descriptor(core::ptr::addr_of!(L2_3) as u64),
+            );
         }
         // QEMU places its DTB at 0x44000000; Bramble's normal DRAM load
         // address is 0x80080000 (DRAM base plus the arm64 Image text offset).
@@ -103,8 +161,36 @@ pub fn init() {
 /// This is intentionally a bounded first mapping primitive. It gives the
 /// AArch64 runtime a real user-page boundary without pretending that the
 /// eventual per-process page-table allocator already exists.
-pub fn map_user_page(virtual_address: u64, physical_address: u64, executable: bool) -> bool {
+pub(crate) fn map_user_page(
+    space_id: usize,
+    virtual_address: u64,
+    physical_address: u64,
+    readable: bool,
+    writable: bool,
+    executable: bool,
+) -> bool {
+    map_user_page_with_cow(
+        space_id,
+        virtual_address,
+        physical_address,
+        readable,
+        writable,
+        executable,
+        false,
+    )
+}
+
+fn map_user_page_with_cow(
+    space_id: usize,
+    virtual_address: u64,
+    physical_address: u64,
+    readable: bool,
+    writable: bool,
+    executable: bool,
+    copy_on_write: bool,
+) -> bool {
     if virtual_address >= 0x1_0000_0000
+        || space_id >= MAX_USER_SPACES
         || physical_address & (PAGE_SIZE - 1) != 0
         || virtual_address & (PAGE_SIZE - 1) != 0
     {
@@ -118,32 +204,465 @@ pub fn map_user_page(virtual_address: u64, physical_address: u64, executable: bo
     }
 
     unsafe {
-        let l3 = core::ptr::addr_of_mut!(USER_L3_1_0);
-        let block_base = 0x4000_0000u64;
-        for index in 0..TABLE_ENTRIES {
-            let physical = block_base + index as u64 * PAGE_SIZE;
+        let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
+        let l3 = core::ptr::addr_of_mut!((*space).user_l3);
+        if !(*space).ready {
+            for index in 0..TABLE_ENTRIES {
+                // The current linker image and EL1 stack occupy the same
+                // 2 MiB window as the first user VA. Preserve that window as
+                // EL1-only identity pages; explicit user mappings below
+                // replace individual entries with EL0 permissions.
+                let physical = 0x4000_0000 + index as u64 * PAGE_SIZE;
+                core::ptr::write_volatile(
+                    core::ptr::addr_of_mut!((*l3).0[index]),
+                    page_descriptor(physical, false, true, true, false),
+                );
+            }
             core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*l3).0[index]),
-                page_descriptor(physical, false, true),
+                core::ptr::addr_of_mut!((*space).user_l2.0[l2_index]),
+                table_descriptor(l3 as u64),
             );
+            (*space).ready = true;
         }
         core::ptr::write_volatile(
-            core::ptr::addr_of_mut!(L2_1.0[l2_index]),
-            table_descriptor(l3 as u64),
-        );
-        core::ptr::write_volatile(
             core::ptr::addr_of_mut!((*l3).0[l3_index]),
-            page_descriptor(physical_address, true, executable),
+            page_descriptor(
+                physical_address,
+                readable || writable || executable,
+                writable,
+                executable,
+                copy_on_write,
+            ),
         );
+        flush_translations();
+    }
+    true
+}
+
+/// Remove one explicit user mapping while restoring the EL1-only identity
+/// page that keeps the bootstrap kernel runnable in this 2 MiB window.
+pub(crate) fn unmap_user_page(space_id: usize, virtual_address: u64) -> Option<u64> {
+    let Some((l1_index, l2_index, l3_index)) = user_indices(space_id, virtual_address) else {
+        return None;
+    };
+    if l1_index != 1 || l2_index != 0 {
+        return None;
+    }
+    let physical = user_page_physical_in_space(space_id, virtual_address)?;
+    unsafe {
+        let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
+        if !(*space).ready {
+            return None;
+        }
+        let identity = 0x4000_0000 + l3_index as u64 * PAGE_SIZE;
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!((*space).user_l3.0[l3_index]),
+            page_descriptor(identity, false, true, true, false),
+        );
+        flush_translations();
+    }
+    Some(physical)
+}
+
+/// Resolve one explicit user mapping in a specific bounded address space.
+///
+/// Unlike `user_page_physical`, this does not depend on the currently active
+/// TTBR0 root, so lifecycle code can validate a mapping before changing it.
+pub(crate) fn user_page_physical_in_space(space_id: usize, virtual_address: u64) -> Option<u64> {
+    let Some((l1_index, l2_index, l3_index)) = user_indices(space_id, virtual_address) else {
+        return None;
+    };
+    if l1_index != 1 || l2_index != 0 {
+        return None;
+    }
+    unsafe {
+        let space = core::ptr::addr_of!(USER_SPACES[space_id]);
+        if !(*space).ready {
+            return None;
+        }
+        let descriptor =
+            core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[l3_index]));
+        if descriptor & DESC_VALID == 0
+            || !matches!(descriptor & DESC_AP_MASK, DESC_AP_USER_RW | DESC_AP_USER_RO)
+        {
+            return None;
+        }
+        Some(descriptor & DESC_OUTPUT_ADDRESS_MASK)
+    }
+}
+
+/// Change access permissions for one already mapped user page.
+pub(crate) fn protect_user_page(
+    space_id: usize,
+    virtual_address: u64,
+    readable: bool,
+    writable: bool,
+    executable: bool,
+) -> bool {
+    let Some((l1_index, l2_index, l3_index)) = user_indices(space_id, virtual_address) else {
+        return false;
+    };
+    if l1_index != 1 || l2_index != 0 {
+        return false;
+    }
+    unsafe {
+        let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
+        if !(*space).ready {
+            return false;
+        }
+        let descriptor =
+            core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[l3_index]));
+        if descriptor & DESC_VALID == 0 {
+            return false;
+        }
+        let physical = descriptor & DESC_OUTPUT_ADDRESS_MASK;
+        let copy_on_write = descriptor & DESC_COW != 0;
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!((*space).user_l3.0[l3_index]),
+            page_descriptor(
+                physical,
+                readable || writable || executable,
+                writable && !copy_on_write,
+                executable,
+                copy_on_write,
+            ),
+        );
+        flush_translations();
+    }
+    true
+}
+
+/// Clone the explicit EL0 mappings from one bounded root into another using
+/// copy-on-write for pages that were writable in the source.
+///
+/// Both roots receive read-only descriptors for a shared writable page. The
+/// first subsequent EL0 store is resolved by `resolve_copy_on_write`, which
+/// either makes a last-owner page private or copies it into a fresh frame.
+pub(crate) fn clone_user_space(
+    source_id: usize,
+    target_id: usize,
+    frames: &mut super::allocator::PhysicalFrameAllocator,
+) -> bool {
+    if source_id >= MAX_USER_SPACES || target_id >= MAX_USER_SPACES || source_id == target_id {
+        return false;
+    }
+    unsafe {
+        let source = core::ptr::addr_of!(USER_SPACES[source_id]);
+        if !(*source).ready {
+            return false;
+        }
+    }
+    if !reset_user_space(target_id) {
+        return false;
+    }
+    let active_space = unsafe { ACTIVE_USER_SPACE };
+    switch_ttbr0(core::ptr::addr_of!(L1) as u64);
+    let mut modified_indices = [0usize; TABLE_ENTRIES];
+    let mut modified_descriptors = [0u64; TABLE_ENTRIES];
+    let mut modified_count = 0usize;
+    let mut success = true;
+    for index in 0..TABLE_ENTRIES {
+        let descriptor = unsafe {
+            core::ptr::read_volatile(core::ptr::addr_of!(
+                (*core::ptr::addr_of!(USER_SPACES[source_id])).user_l3.0[index]
+            ))
+        };
+        let access = descriptor & DESC_AP_MASK;
+        if descriptor & DESC_VALID == 0 || !matches!(access, DESC_AP_USER_RW | DESC_AP_USER_RO) {
+            continue;
+        }
+        let source_physical = descriptor & DESC_OUTPUT_ADDRESS_MASK;
+        if !frames.retain_shared_frame(source_physical) {
+            success = false;
+            break;
+        }
+        let source_writable = access == DESC_AP_USER_RW;
+        let source_copy_on_write = descriptor & DESC_COW != 0;
+        let copy_on_write = source_writable || source_copy_on_write;
+        if source_writable && !source_copy_on_write {
+            modified_indices[modified_count] = index;
+            modified_descriptors[modified_count] = descriptor;
+            modified_count += 1;
+            unsafe {
+                core::ptr::write_volatile(
+                    core::ptr::addr_of_mut!(
+                        (*core::ptr::addr_of_mut!(USER_SPACES[source_id])).user_l3.0[index]
+                    ),
+                    page_descriptor(
+                        source_physical,
+                        true,
+                        false,
+                        descriptor & DESC_UXN == 0,
+                        true,
+                    ),
+                );
+            }
+        }
+        let virtual_address = 0x4000_0000 + index as u64 * PAGE_SIZE;
+        let executable = descriptor & DESC_UXN == 0;
+        if !map_user_page_with_cow(
+            target_id,
+            virtual_address,
+            source_physical,
+            true,
+            false,
+            executable,
+            copy_on_write,
+        ) {
+            let _ = frames.release_frame(source_physical);
+            success = false;
+            break;
+        }
+    }
+    let restored = activate_user_space(active_space);
+    if !success {
+        switch_ttbr0(core::ptr::addr_of!(L1) as u64);
+        unsafe {
+            let source = core::ptr::addr_of_mut!(USER_SPACES[source_id]);
+            for position in 0..modified_count {
+                core::ptr::write_volatile(
+                    core::ptr::addr_of_mut!((*source).user_l3.0[modified_indices[position]]),
+                    modified_descriptors[position],
+                );
+            }
+        }
+        let _ = release_user_space(target_id, frames);
+        let _ = activate_user_space(active_space);
+    }
+    success && restored
+}
+
+/// Release every explicit EL0 page owned by one inactive user root.
+///
+/// Page tables are static in this bounded port, but user frames are supplied
+/// by the physical allocator. Teardown therefore has to inspect the target
+/// root while the shared identity root is active, return the whole batch, and
+/// only then reset the descriptors. The active task is never eligible for
+/// this operation.
+pub(crate) fn release_user_space(
+    space_id: usize,
+    frames: &mut super::allocator::PhysicalFrameAllocator,
+) -> bool {
+    if space_id >= MAX_USER_SPACES {
+        return false;
+    }
+    let active_space = unsafe { ACTIVE_USER_SPACE };
+    if active_space == space_id {
+        return false;
+    }
+    let ready = unsafe { (*core::ptr::addr_of!(USER_SPACES[space_id])).ready };
+    if !ready {
+        return true;
+    }
+
+    let mut physical_pages = [0u64; TABLE_ENTRIES];
+    let mut page_count = 0usize;
+    switch_ttbr0(core::ptr::addr_of!(L1) as u64);
+    unsafe {
+        let space = core::ptr::addr_of!(USER_SPACES[space_id]);
+        for index in 0..TABLE_ENTRIES {
+            let descriptor =
+                core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[index]));
+            if descriptor & DESC_VALID != 0
+                && matches!(descriptor & DESC_AP_MASK, DESC_AP_USER_RW | DESC_AP_USER_RO)
+            {
+                physical_pages[page_count] = descriptor & DESC_OUTPUT_ADDRESS_MASK;
+                page_count += 1;
+            }
+        }
+    }
+    if !frames.release_frames(&physical_pages[..page_count]) {
+        let _ = activate_user_space(active_space);
+        return false;
+    }
+    if !reset_user_space(space_id) {
+        let _ = activate_user_space(active_space);
+        return false;
+    }
+    activate_user_space(active_space)
+}
+
+/// Resolve a write into a shared COW page for the active user space.
+///
+/// A page whose reference count has fallen to one can simply regain write
+/// permission. Otherwise the old frame remains mapped read-only in the other
+/// address spaces and this routine installs a private copied frame here.
+pub(crate) fn resolve_copy_on_write(
+    space_id: usize,
+    virtual_address: u64,
+    frames: &mut super::allocator::PhysicalFrameAllocator,
+) -> bool {
+    if space_id >= MAX_USER_SPACES {
+        return false;
+    }
+    let virtual_address = virtual_address & !(PAGE_SIZE - 1);
+    let Some((l1_index, l2_index, l3_index)) = user_indices(space_id, virtual_address) else {
+        return false;
+    };
+    if l1_index != 1 || l2_index != 0 {
+        return false;
+    }
+    if unsafe { ACTIVE_USER_SPACE != space_id } {
+        return false;
+    }
+    let descriptor = unsafe {
+        let space = core::ptr::addr_of!(USER_SPACES[space_id]);
+        if !(*space).ready {
+            return false;
+        }
+        core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[l3_index]))
+    };
+    if descriptor & DESC_VALID == 0
+        || descriptor & DESC_COW == 0
+        || descriptor & DESC_AP_MASK != DESC_AP_USER_RO
+    {
+        return false;
+    }
+    let old_physical = descriptor & DESC_OUTPUT_ADDRESS_MASK;
+    let executable = descriptor & DESC_UXN == 0;
+    let Some(references) = frames.shared_frame_references(old_physical) else {
+        return false;
+    };
+
+    switch_ttbr0(core::ptr::addr_of!(L1) as u64);
+    if references == 1 {
+        if !frames.make_frame_private(old_physical) {
+            let _ = activate_user_space(space_id);
+            return false;
+        }
+        unsafe {
+            let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*space).user_l3.0[l3_index]),
+                page_descriptor(old_physical, true, true, executable, false),
+            );
+        }
+        flush_translations();
+        return activate_user_space(space_id);
+    }
+
+    let Some(new_physical) = frames.next_frame() else {
+        let _ = activate_user_space(space_id);
+        return false;
+    };
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            old_physical as *const u8,
+            new_physical as *mut u8,
+            PAGE_SIZE as usize,
+        );
+    }
+    let mapped = map_user_page_with_cow(
+        space_id,
+        virtual_address,
+        new_physical,
+        true,
+        true,
+        executable,
+        false,
+    );
+    if !mapped || !frames.release_frame(old_physical) {
+        unsafe {
+            let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*space).user_l3.0[l3_index]),
+                descriptor,
+            );
+        }
+        let _ = frames.release_frame(new_physical);
+        let _ = activate_user_space(space_id);
+        return false;
+    }
+    sync_code(new_physical);
+    activate_user_space(space_id)
+}
+
+/// Clear one bounded user root before reusing its process slot.
+pub(crate) fn reset_user_space(space_id: usize) -> bool {
+    if space_id >= MAX_USER_SPACES {
+        return false;
+    }
+    unsafe {
+        let space = core::ptr::addr_of_mut!(USER_SPACES[space_id]);
+        for index in 0..TABLE_ENTRIES {
+            let physical = 0x4000_0000 + index as u64 * PAGE_SIZE;
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*space).user_l3.0[index]),
+                page_descriptor(physical, false, true, true, false),
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*space).user_l2.0[index]),
+                core::ptr::read_volatile(core::ptr::addr_of!(L2_1.0[index])),
+            );
+        }
+        (*space).ready = false;
+    }
+    true
+}
+
+/// Make one bounded user-space root the active translation for EL0.
+///
+/// Each root points at the shared kernel identity-map L2 tables and owns its
+/// user L2/L3. ASIDs are deliberately not enabled yet, so the root switch
+/// flushes all EL1 translations before returning to the selected task.
+pub(crate) fn activate_user_space(space_id: usize) -> bool {
+    if space_id >= MAX_USER_SPACES {
+        return false;
+    }
+    unsafe {
+        let space = core::ptr::addr_of!(USER_SPACES[space_id]);
+        if !(*space).ready {
+            return false;
+        }
+        let root = core::ptr::addr_of!((*space).root) as u64;
+        let user_l2 = core::ptr::addr_of!((*space).user_l2) as u64;
+        let user_l3 = core::ptr::addr_of!((*space).user_l3) as u64;
         asm!(
-            "dsb ish",
+            "dc cvac, {root}",
+            "dc cvac, {user_l2}",
+            "dc cvac, {user_l3}",
+            "dsb sy",
+            root = in(reg) root,
+            user_l2 = in(reg) user_l2,
+            user_l3 = in(reg) user_l3,
+            options(nostack)
+        );
+        switch_ttbr0(root);
+        ACTIVE_USER_SPACE = space_id;
+    }
+    true
+}
+
+fn switch_ttbr0(root: u64) {
+    unsafe {
+        asm!(
+            "dsb sy",
+            "msr TTBR0_EL1, {root}",
+            "dsb sy",
             "tlbi vmalle1",
-            "dsb ish",
+            "dsb sy",
             "isb",
+            root = in(reg) root,
             options(nostack)
         );
     }
-    true
+}
+
+/// Read back the hardware root used by the active address space.
+pub(crate) fn active_ttbr0() -> u64 {
+    let root: u64;
+    unsafe {
+        asm!("mrs {root}, TTBR0_EL1", root = out(reg) root, options(nomem, nostack));
+    }
+    root & DESC_OUTPUT_ADDRESS_MASK
+}
+
+pub(crate) fn activate_kernel_identity_space() {
+    switch_ttbr0(core::ptr::addr_of!(L1) as u64);
+}
+
+pub(crate) fn active_user_space() -> usize {
+    unsafe { ACTIVE_USER_SPACE }
 }
 
 /// Publish instructions written through the identity map before EL0 fetches
@@ -154,9 +673,76 @@ pub fn sync_code(address: u64) {
             "dc cvac, {address}",
             "dsb ish",
             "ic ivau, {address}",
+            "ic iallu",
             "dsb ish",
             "isb",
             address = in(reg) address,
+            options(nostack)
+        );
+    }
+}
+
+/// Resolve one page only when its descriptor grants EL0 access.
+pub(crate) fn user_page_physical(virtual_address: u64) -> Option<u64> {
+    user_page_physical_with_access(virtual_address, true)
+}
+
+/// Resolve a user page for a kernel read. Both EL0-RW and EL0-RO/X pages are
+/// readable; the copy-to-user path above continues to require EL0-RW.
+pub(crate) fn user_page_physical_read(virtual_address: u64) -> Option<u64> {
+    user_page_physical_with_access(virtual_address, false)
+}
+
+fn user_page_physical_with_access(virtual_address: u64, require_write: bool) -> Option<u64> {
+    if virtual_address >= 0x1_0000_0000 || virtual_address & (PAGE_SIZE - 1) != 0 {
+        return None;
+    }
+    let l1_index = ((virtual_address >> 30) & 0x1ff) as usize;
+    let l2_index = ((virtual_address >> 21) & 0x1ff) as usize;
+    let l3_index = ((virtual_address >> 12) & 0x1ff) as usize;
+    if l1_index != 1 || l2_index != 0 {
+        return None;
+    }
+    unsafe {
+        let space_id = ACTIVE_USER_SPACE;
+        let space = core::ptr::addr_of!(USER_SPACES[space_id]);
+        if !(*space).ready {
+            return None;
+        }
+        let descriptor =
+            core::ptr::read_volatile(core::ptr::addr_of!((*space).user_l3.0[l3_index]));
+        if descriptor & DESC_VALID == 0
+            || (require_write && descriptor & DESC_AP_MASK != DESC_AP_USER_RW)
+            || (!require_write
+                && !matches!(descriptor & DESC_AP_MASK, DESC_AP_USER_RW | DESC_AP_USER_RO))
+        {
+            return None;
+        }
+        Some(descriptor & DESC_OUTPUT_ADDRESS_MASK)
+    }
+}
+
+fn user_indices(space_id: usize, virtual_address: u64) -> Option<(usize, usize, usize)> {
+    if space_id >= MAX_USER_SPACES
+        || virtual_address >= 0x1_0000_0000
+        || virtual_address & (PAGE_SIZE - 1) != 0
+    {
+        return None;
+    }
+    Some((
+        ((virtual_address >> 30) & 0x1ff) as usize,
+        ((virtual_address >> 21) & 0x1ff) as usize,
+        ((virtual_address >> 12) & 0x1ff) as usize,
+    ))
+}
+
+fn flush_translations() {
+    unsafe {
+        asm!(
+            "dsb ish",
+            "tlbi vmalle1",
+            "dsb ish",
+            "isb",
             options(nostack)
         );
     }
@@ -176,14 +762,27 @@ fn block_descriptor(physical: u64, device: bool) -> u64 {
     descriptor
 }
 
-fn page_descriptor(physical: u64, user: bool, executable: bool) -> u64 {
+fn page_descriptor(
+    physical: u64,
+    user: bool,
+    writable: bool,
+    executable: bool,
+    copy_on_write: bool,
+) -> u64 {
     let mut descriptor =
         (physical & !(PAGE_SIZE - 1)) | DESC_VALID | DESC_TABLE | DESC_AF | DESC_SH_INNER;
     if user {
-        descriptor |= DESC_AP_USER_RW;
+        descriptor |= if writable {
+            DESC_AP_USER_RW
+        } else {
+            DESC_AP_USER_RO
+        };
     }
     if !executable {
         descriptor |= DESC_UXN;
+    }
+    if user && copy_on_write {
+        descriptor |= DESC_COW;
     }
     descriptor
 }

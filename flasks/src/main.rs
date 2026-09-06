@@ -1417,8 +1417,7 @@ fn main() -> io::Result<()> {
         ));
     }
     if args.usb_gadget_handoff_android_resource_order
-        && (!args.usb_gadget_handoff_probe
-            && !args.usb_gadget_handoff_super_speed_probe
+        && (!args.usb_gadget_handoff_probe && !args.usb_gadget_handoff_super_speed_probe
             || target.arch != Arch::Aarch64
             || target.platform != Platform::Bramble
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
@@ -2621,7 +2620,13 @@ fn main() -> io::Result<()> {
 
         let kernel_artifact = selected_probe
             .map(|probe| probe.artifact)
-            .unwrap_or_else(|| target.arch.kernel_artifact());
+            .unwrap_or_else(|| {
+                if env::var_os("FULLERENE_AARCH64_GENERIC_KERNEL").is_some() {
+                    "fullerene-kernel"
+                } else {
+                    target.arch.kernel_artifact()
+                }
+            });
         let kernel_path = build_aarch64_kernel(
             &workspace_root,
             profile,
@@ -2630,8 +2635,7 @@ fn main() -> io::Result<()> {
             Aarch64BuildConfig {
                 probe_env: selected_probe.and_then(|probe| probe.env),
                 gadget_handoff_no_smmu: args.usb_gadget_handoff_no_smmu,
-                gadget_handoff_dma_cache_maintenance:
-                    args.usb_gadget_handoff_dma_cache_maintenance,
+                gadget_handoff_dma_cache_maintenance: args.usb_gadget_handoff_dma_cache_maintenance,
                 gadget_handoff_reuse_fastboot_dma: args.usb_gadget_handoff_reuse_fastboot_dma,
                 gadget_handoff_no_transfer_resource: args.usb_gadget_handoff_no_transfer_resource,
                 gadget_handoff_android_resource_order: args
@@ -2664,8 +2668,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_ss_hold_runstop: args.usb_gadget_handoff_ss_hold_runstop,
                 gadget_handoff_ss_retry_setup: args.usb_gadget_handoff_ss_retry_setup,
                 gadget_handoff_ss_eager_setup: args.usb_gadget_handoff_ss_eager_setup,
-                gadget_handoff_ss_source_susphy: args
-                    .usb_gadget_handoff_ss_source_susphy,
+                gadget_handoff_ss_source_susphy: args.usb_gadget_handoff_ss_source_susphy,
                 gadget_handoff_dt_hird_threshold: args.usb_gadget_handoff_dt_hird_threshold,
                 gadget_handoff_android_hs_lpm: args.usb_gadget_handoff_android_hs_lpm,
                 gadget_handoff_android_lpm_errata: args.usb_gadget_handoff_android_lpm_errata,
@@ -2755,8 +2758,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_ss_preserve_phy_state: args.usb_gadget_handoff_ss_preserve_phy_state,
                 gadget_handoff_dcfg_ignstrmpp: args.usb_gadget_handoff_dcfg_ignstrmpp,
                 gadget_handoff_usb2_susphy: args.usb_gadget_handoff_usb2_susphy,
-                gadget_handoff_usb2_source_susphy: args
-                    .usb_gadget_handoff_usb2_source_susphy,
+                gadget_handoff_usb2_source_susphy: args.usb_gadget_handoff_usb2_source_susphy,
                 gadget_handoff_usb2_cmd_guard: args.usb_gadget_handoff_usb2_cmd_guard,
                 gadget_handoff_usb2_source_exact_devten: args
                     .usb_gadget_handoff_usb2_source_exact_devten,
@@ -3274,10 +3276,15 @@ fn build_aarch64_kernel(
     let mut push_env = |name: &str, value: String| cargo_envs.push((name.to_owned(), value));
     // Keep the EL0/SVC smoke path opt-in: it intentionally never participates
     // in a normal hardware or QEMU build unless the caller asks for it.
-    let aarch64_features = if env::var_os("FULLERENE_AARCH64_USER_SMOKE").is_some() {
-        "aarch64,aarch64-user-smoke"
-    } else {
-        "aarch64"
+    let aarch64_features = match (
+        env::var_os("FULLERENE_AARCH64_USER_SMOKE").is_some(),
+        env::var_os("FULLERENE_AARCH64_USER_FAULT_SMOKE").is_some(),
+        env::var_os("FULLERENE_AARCH64_USER_LAUNCHD").is_some(),
+    ) {
+        (_, true, _) => "aarch64,aarch64-user-smoke,aarch64-user-fault-smoke",
+        (true, false, _) => "aarch64,aarch64-user-smoke",
+        (false, false, true) => "aarch64,aarch64-user-launchd",
+        (false, false, false) => "aarch64",
     };
     push_env(
         "FULLERENE_AARCH64_PLATFORM",

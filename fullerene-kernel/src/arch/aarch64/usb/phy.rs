@@ -6,7 +6,7 @@ use super::config::qscratch_set;
 use super::log::log_puts;
 use super::mmio::*;
 use super::phy_tables::{
-    qmp_init_entry, ACTIVE_HSPHY_PARAM_OVERRIDE, ACTIVE_QMP_INIT, ACTIVE_QMP_INIT_DELAY_US,
+    ACTIVE_HSPHY_PARAM_OVERRIDE, ACTIVE_QMP_INIT, ACTIVE_QMP_INIT_DELAY_US, qmp_init_entry,
 };
 use super::trace::{TRACE_PROBE_WATCHDOG, TRACE_UTMI_CLOCK, trace_event, trace_marker};
 

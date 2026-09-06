@@ -8,6 +8,7 @@ use super::uart;
 /// the user stack pointer. Keeping this layout explicit is the ABI boundary
 /// for future SVC, page-fault, and scheduler paths; assembly only moves this
 /// frame, while Rust interprets it.
+#[derive(Clone, Copy)]
 #[repr(C, align(16))]
 pub(crate) struct Aarch64TrapFrame {
     pub(crate) x: [u64; 31],
@@ -232,10 +233,15 @@ pub(crate) fn enter_user(frame: &Aarch64TrapFrame) -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_exception_sync(frame: *mut Aarch64TrapFrame) {
     let frame = unsafe { &mut *frame };
-    #[cfg(feature = "aarch64-user-smoke")]
     if frame.from_user()
         && ((frame.esr_el1 >> 26) & 0x3f) == 0x15
-        && super::user_smoke::handle_svc(frame)
+        && super::syscall::dispatch(frame)
+    {
+        return;
+    }
+    if frame.from_user()
+        && is_lower_el_abort(frame.esr_el1)
+        && super::task::handle_user_fault(frame)
     {
         return;
     }
@@ -248,6 +254,10 @@ extern "C" fn aarch64_exception_sync(frame: *mut Aarch64TrapFrame) {
     uart::put_hex("exception: from_user=", frame.from_user() as u64);
     report_exception_state(frame);
     halt()
+}
+
+fn is_lower_el_abort(esr: u64) -> bool {
+    matches!((esr >> 26) & 0x3f, 0x20 | 0x21 | 0x24 | 0x25)
 }
 
 #[unsafe(no_mangle)]

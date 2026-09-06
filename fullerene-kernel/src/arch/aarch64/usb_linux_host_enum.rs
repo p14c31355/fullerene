@@ -1,7 +1,7 @@
 //! Linux usbcore `hub_port_init()` + `usb_enumerate_device()` enumeration
 //! host, driven against Fullerene's `Ep0Simulator` gadget.
 //!
-//! Source: Linux v6.6 `drivers/usb/core/hub.c` (hub_port_init 4795, 
+//! Source: Linux v6.6 `drivers/usb/core/hub.c` (hub_port_init 4795,
 //! get_bMaxPacketSize0 4731, hub_set_address 4645, usb_enumerate_device 2423),
 //! `drivers/usb/core/message.c` (usb_get_descriptor 781, usb_get_string 833,
 //! usb_string 968, usb_get_device_descriptor 1056), and
@@ -137,16 +137,7 @@ fn get_b_max_packet_size0(
     response: &mut [u8],
     trace: &mut heapless_trace::Trace,
 ) -> Result<u16, &'static str> {
-    let setup = [
-        0x80,
-        USB_REQ_GET_DESCRIPTOR,
-        0,
-        USB_DT_DEVICE,
-        0,
-        0,
-        64,
-        0,
-    ];
+    let setup = [0x80, USB_REQ_GET_DESCRIPTOR, 0, USB_DT_DEVICE, 0, 0, 64, 0];
     let len = control_transfer(ep0, setup, response)?;
     if len < 8 {
         trace.push("device descriptor read/64: too short");
@@ -238,16 +229,8 @@ fn usb_get_configuration(
     if len < 9 {
         return Err("unable to read config index 0 descriptor/start");
     }
-    let total_length =
-        u16::from_le_bytes([response[2], response[3]]).max(9) as usize;
-    let len = usb_get_descriptor(
-        ep0,
-        USB_DT_CONFIG,
-        0,
-        total_length as u16,
-        response,
-        trace,
-    )?;
+    let total_length = u16::from_le_bytes([response[2], response[3]]).max(9) as usize;
+    let len = usb_get_descriptor(ep0, USB_DT_CONFIG, 0, total_length as u16, response, trace)?;
     if len < total_length {
         return Err("unable to read config index 0 descriptor/all");
     }
@@ -271,14 +254,7 @@ fn usb_get_bos_descriptor(
     if total_length < 5 {
         return Err("BOS wTotalLength too short");
     }
-    let len = usb_get_descriptor(
-        ep0,
-        USB_DT_BOS,
-        0,
-        total_length as u16,
-        response,
-        trace,
-    )?;
+    let len = usb_get_descriptor(ep0, USB_DT_BOS, 0, total_length as u16, response, trace)?;
     if len < total_length {
         return Err("unable to get BOS descriptor set");
     }
@@ -629,7 +605,10 @@ mod tests {
         assert_eq!(ep0.on_transfer_complete(), ControlAction::Setup);
         // The gadget must be ready for the next SETUP immediately.
         assert_eq!(
-            ep0.on_setup([0x80, USB_REQ_GET_DESCRIPTOR, 0, USB_DT_DEVICE, 0, 0, 18, 0], &mut response),
+            ep0.on_setup(
+                [0x80, USB_REQ_GET_DESCRIPTOR, 0, USB_DT_DEVICE, 0, 0, 18, 0],
+                &mut response
+            ),
             ControlAction::DataIn(18)
         );
     }

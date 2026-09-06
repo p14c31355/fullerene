@@ -215,9 +215,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_legacy_fallback)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_ignstrmpp)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_susphy)");
-    println!(
-        "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_source_susphy)"
-    );
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_source_susphy)");
     println!(
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_source_exact_devten)"
     );
@@ -246,9 +244,7 @@ fn main() {
     println!(
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_full_core_reset)"
     );
-    println!(
-        "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_reapply_ramclksel)"
-    );
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_reapply_ramclksel)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_skip_usb2_phy_reset)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_refresh_hsphy_power)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_write_barrier)");
@@ -292,11 +288,30 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_bare_pullup_probe)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_qemu_usb_sim)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hyper_bare)");
-    // The AArch64 bootstrap binary is intentionally dependency-free. Avoid
-    // the x86_64 kernel's generated userland/assets while building it; those
-    // steps require host tools and x86-only target support.
+    // The AArch64 bootstrap binary is intentionally dependency-light, but the
+    // generated Solvent Linux integration is also consumed by the generic
+    // kernel target. Generate that architecture-neutral source before the
+    // target-specific early return so an AArch64 generic build can expose its
+    // real Rust integration boundary instead of failing on a missing file.
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+        let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+        generate_solvent_linux(&manifest_dir, &out_dir);
+        let child = build_aarch64_child(&manifest_dir, &out_dir);
+        let launchd = build_aarch64_launchd(&manifest_dir, &out_dir, &child);
+        let initramfs = build_aarch64_initramfs(&out_dir, &child, &launchd);
+        println!(
+            "cargo:rustc-env=FULLERENE_LAUNCHD_IMAGE={}",
+            launchd.display()
+        );
+        println!(
+            "cargo:rustc-env=FULLERENE_AARCH64_CHILD_IMAGE={}",
+            child.display()
+        );
+        println!(
+            "cargo:rustc-env=FULLERENE_AARCH64_INITRAMFS={}",
+            initramfs.display()
+        );
         let platform = env::var("FULLERENE_AARCH64_PLATFORM").unwrap_or_default();
         let linker_script = out_dir.join("aarch64-linker.ld");
         fs::write(&linker_script, aarch64_linker_script(&platform)).unwrap();
@@ -628,8 +643,7 @@ fn main() {
                 "cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_gadget_start_only_at_runstop"
             );
         }
-        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_GADGET_SPEED_AFTER_RESTART")
-            .is_some()
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_GADGET_SPEED_AFTER_RESTART").is_some()
         {
             println!(
                 "cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_gadget_speed_after_restart"
@@ -826,9 +840,7 @@ fn main() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_usb2_susphy");
         }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_SUSPHY").is_some() {
-            println!(
-                "cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_usb2_source_susphy"
-            );
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_usb2_source_susphy");
         }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_EXACT_DEVTEN").is_some() {
             println!(
@@ -890,9 +902,7 @@ fn main() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_usb2_full_core_reset");
         }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_REAPPLY_RAMCLKSEL").is_some() {
-            println!(
-                "cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_reapply_ramclksel"
-            );
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_reapply_ramclksel");
         }
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_CLOCK_STABLE_DELAY_US") {
             if let Ok(delay_us) = value.parse::<u32>() {
@@ -1358,7 +1368,9 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_HOLD_RUNSTOP");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_RETRY_SETUP");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_EAGER_SETUP");
-        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_SOURCE_SUSPHY");
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_SOURCE_SUSPHY"
+        );
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_CLEAR_USB3_SUSPHY_BEFORE_RUNSTOP"
         );
@@ -1450,6 +1462,10 @@ fn main() {
         );
         println!(
             "cargo:rustc-link-arg-bin=fullerene-kernel-aarch64-usb-probe=-T{}",
+            linker_script.display()
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=fullerene-kernel=-T{}",
             linker_script.display()
         );
         println!("cargo:rerun-if-changed=src/arch/aarch64");
@@ -1935,6 +1951,17 @@ SECTIONS
         KEEP(*(.text.boot))
     }}
 
+    /*
+       The bootstrap stack is needed before BSS is cleared. Keep it adjacent
+       to the entry shim so the shim can reach its top with one PC-relative
+       ADR instead of materializing a 64 KiB size constant.
+    */
+    .boot_stack (NOLOAD) : ALIGN(16)
+    {{
+        KEEP(*(.boot_stack))
+        __aarch64_boot_stack_top = .;
+    }}
+
     .text.exception_vectors : ALIGN(2K)
     {{
         KEEP(*(.text.exception_vectors))
@@ -2009,6 +2036,162 @@ SECTIONS
 }}
 "#
     )
+}
+
+/// Build the first native AArch64 user ELF embedded in the kernel image.
+///
+/// The kernel's AArch64 path must not silently replace a missing userspace
+/// with an empty placeholder: a successful kernel build should contain a
+/// loadable first process. This payload is deliberately a small ABI probe
+/// until the full launchd service table is ported, but it exercises the real
+/// ELF/SVC boundary rather than an in-kernel synthetic instruction array.
+fn build_aarch64_launchd(manifest_dir: &Path, out_dir: &Path, child_image: &Path) -> PathBuf {
+    let source = manifest_dir
+        .join("examples")
+        .join("native_aarch64_launchd.rs");
+    let output = out_dir.join("native_aarch64_launchd");
+    let linker = out_dir.join("aarch64-user-linker.ld");
+    println!("cargo:rerun-if-changed={}", source.display());
+    fs::write(&linker, aarch64_user_linker_script()).unwrap();
+
+    build_aarch64_user_payload(&source, &output, &linker, "launchd", Some(child_image));
+    output
+}
+
+fn build_aarch64_child(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
+    let source = manifest_dir
+        .join("examples")
+        .join("native_aarch64_child.rs");
+    let output = out_dir.join("native_aarch64_child");
+    let linker = out_dir.join("aarch64-user-linker.ld");
+    println!("cargo:rerun-if-changed={}", source.display());
+    fs::write(&linker, aarch64_user_linker_script()).unwrap();
+
+    build_aarch64_user_payload(&source, &output, &linker, "child", None);
+    output
+}
+
+/// Package the first native userland boundary as a small `newc` initramfs.
+///
+/// The AArch64 kernel currently uses a bounded in-memory VFS, but it must
+/// consume the same archive-shaped input that the generic kernel receives.
+/// Keeping the archive generation here makes the kernel image self-contained
+/// and leaves the OPEN/EXEC_PATH syscall boundary independent of the source of
+/// the files.
+fn build_aarch64_initramfs(out_dir: &Path, child: &Path, launchd: &Path) -> PathBuf {
+    let child_data = fs::read(child).unwrap_or_else(|error| {
+        panic!(
+            "cannot read AArch64 child payload {}: {error}",
+            child.display()
+        )
+    });
+    let launchd_data = fs::read(launchd).unwrap_or_else(|error| {
+        panic!(
+            "cannot read AArch64 launchd payload {}: {error}",
+            launchd.display()
+        )
+    });
+    let mut archive = Vec::new();
+    write_cpio_file(&mut archive, "etc", true, &[]);
+    write_cpio_file(&mut archive, "bin", true, &[]);
+    write_cpio_file(
+        &mut archive,
+        "etc/motd",
+        false,
+        b"FullereneOS AArch64 VFS\n",
+    );
+    write_cpio_file(&mut archive, "etc/write-test", false, &[]);
+    write_cpio_file(&mut archive, "bin/child", false, &child_data);
+    write_cpio_file(&mut archive, "bin/launchd", false, &launchd_data);
+    write_cpio_trailer(&mut archive);
+
+    let output = out_dir.join("native_aarch64_initramfs.cpio");
+    fs::write(&output, &archive).unwrap_or_else(|error| {
+        panic!(
+            "cannot write AArch64 initramfs {}: {error}",
+            output.display()
+        )
+    });
+    println!("cargo:rerun-if-changed={}", child.display());
+    println!("cargo:rerun-if-changed={}", launchd.display());
+    output
+}
+
+fn build_aarch64_user_payload(
+    source: &Path,
+    output: &Path,
+    linker: &Path,
+    role: &str,
+    child_image: Option<&Path>,
+) {
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let mut command = Command::new(&rustc);
+    command
+        .args([
+            "--edition=2024",
+            "--target",
+            "aarch64-unknown-none",
+            "-C",
+            "panic=abort",
+            "-C",
+            "relocation-model=static",
+            "-C",
+            "opt-level=2",
+            "-C",
+            "strip=debuginfo",
+            "-C",
+            "linker=rust-lld",
+        ])
+        .arg(format!("-Clink-arg=-T{}", linker.display()))
+        .arg("-o")
+        .arg(&output)
+        .arg(&source);
+    if let Some(child_image) = child_image {
+        command.env("FULLERENE_AARCH64_CHILD_IMAGE", child_image);
+    }
+    let status = command.status().unwrap_or_else(|error| {
+        panic!("could not start rustc for the AArch64 {role} payload: {error}")
+    });
+    assert!(
+        status.success(),
+        "AArch64 {role} payload compilation failed (rustc exit {status})"
+    );
+}
+
+fn aarch64_user_linker_script() -> &'static str {
+    r#"OUTPUT_ARCH(aarch64)
+ENTRY(_start)
+
+PHDRS
+{
+    text PT_LOAD FLAGS(5);
+    rodata PT_LOAD FLAGS(4);
+    data PT_LOAD FLAGS(6);
+}
+
+SECTIONS
+{
+    . = 0x40000000;
+    .text : ALIGN(0x1000)
+    {
+        KEEP(*(.text._start))
+        *(.text*)
+    } :text
+    .rodata : ALIGN(0x1000)
+    {
+        *(.rodata*)
+    } :rodata
+    .data : ALIGN(0x1000)
+    {
+        *(.data*)
+    } :data
+    .bss : ALIGN(0x1000)
+    {
+        *(.bss*)
+        *(COMMON)
+    } :data
+}
+"#
 }
 
 /// Validate and stage a dynamically linked glibc x86_64 BusyBox and its

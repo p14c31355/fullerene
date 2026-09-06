@@ -21,7 +21,7 @@ bench = false
 
 [[bin]]
 name = "fullerene-kernel-aarch64"
-path = "src/arch/aarch64/main.rs"
+path = "src/arch/aarch64/bin.rs"
 required-features = ["aarch64"]
 test = false
 bench = false
@@ -119,6 +119,8 @@ wasi_runtime = { path = "../solvent/wasi" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 fullerene-abi = { path = "abi" }
+genome = { path = "../genome" }
+spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 fullerene-abi = { path = "abi" }
@@ -137,6 +139,8 @@ busybox-build = { path = "../toluene/busybox-build" }
 default = []
 aarch64 = []
 aarch64-user-smoke = []
+aarch64-user-fault-smoke = ["aarch64-user-smoke"]
+aarch64-user-launchd = []
 esp32 = [
   "nitrogen/esp32",
   "genome/esp32",

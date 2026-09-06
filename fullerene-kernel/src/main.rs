@@ -9,14 +9,14 @@ extern crate alloc;
 #[path = "arch/aarch64/usb_dwc3_sim.rs"]
 mod usb_dwc3_sim;
 #[cfg(test)]
+#[path = "arch/aarch64/usb_linux_host_enum.rs"]
+mod usb_linux_host_enum;
+#[cfg(test)]
 #[path = "arch/aarch64/usb_protocol.rs"]
 mod usb_protocol;
 #[cfg(test)]
 #[path = "arch/aarch64/usb_regs.rs"]
 mod usb_regs;
-#[cfg(test)]
-#[path = "arch/aarch64/usb_linux_host_enum.rs"]
-mod usb_linux_host_enum;
 
 // ── Panic-screen framebuffer drawing (no alloc, no locks) ─────────────
 //
@@ -24,7 +24,11 @@ mod usb_linux_host_enum;
 // identity-mapped or higher-half VA.  This runs in the panic handler
 // and must not allocate, lock, or dereference any pointer that might
 // itself have caused the panic.
-#[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
+#[cfg(all(
+    any(target_os = "none", target_os = "uefi"),
+    not(target_arch = "aarch64"),
+    not(test)
+))]
 mod panic_screen {
     /// Fill the framebuffer with a diagnostic color and return the boot stage.
     ///
@@ -143,7 +147,11 @@ mod panic_screen {
 }
 
 // ---- Custom panic handler (replaces petroleum::define_panic_handler!) ----
-#[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
+#[cfg(all(
+    any(target_os = "none", target_os = "uefi"),
+    not(target_arch = "aarch64"),
+    not(test)
+))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     crate::boot_stage::set_boot_stage(crate::boot_stage::BootStage::Panic);
@@ -169,59 +177,101 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 petroleum::define_alloc_error_handler!();
 
 // Exported globals
+#[cfg(not(target_arch = "aarch64"))]
 pub use heap::MEMORY_MAP;
+
+#[cfg(target_arch = "aarch64")]
+#[path = "arch/aarch64/main.rs"]
+mod aarch64_runtime;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use aarch64_runtime::timer;
 
 // Module declarations
 // ── Drivers (storage, GPU, network) ───────────────────────────────
+#[cfg(not(target_arch = "aarch64"))]
 pub mod drivers;
 
 // ── WiFi service (registered with Solvent at runtime) ──────────────
 
 // ── DriverContext bridge (kernel → nitrogen) ──────────────────────
+#[cfg(not(target_arch = "aarch64"))]
 pub mod driver_context_impl;
 
 // ── DevFs ─────────────────────────────────────────────────────────
+#[cfg(not(target_arch = "aarch64"))]
 pub mod devfs;
 
 // ── Kernel core ────────────────────────────────────────────────────
+#[cfg(not(target_arch = "aarch64"))]
 pub mod boot;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod boot_stage;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod context_switch;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod contexts;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod fpu;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod fs;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod gdt;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod graphics;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod gui;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod hardware;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod heap;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod init;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod initramfs;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod installer;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod interrupts;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod klog;
 // The Linux personality is owned by Solvent.  It is compiled into the
 // kernel through this explicit integration boundary because the current
 // personality still needs kernel-owned process, VFS, loader, and page-table
 // services.  Keeping the source path explicit makes `solvent/linux` the
 // single source of truth without restoring a kernel-owned Linux namespace.
+#[cfg(not(target_arch = "aarch64"))]
 pub mod loader;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod memory_management;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod metrics;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod ports;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod process;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod scheduler;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod scheduler_context;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod shell;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod slab;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod smp;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod solvent_linux;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod syscall;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod task;
+#[cfg(not(target_arch = "aarch64"))]
 mod user_memory;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod vdso;
 
 // ── Host-target main (enables `cargo check` on Linux) ──

@@ -174,8 +174,7 @@ pub fn find_memory_regions(address: u64, out: &mut [Region]) -> usize {
                     if let Some(value) = read_be32(item.value, 0) {
                         state.child_address_cells = value as u8;
                     }
-                } else if c_string_eq(item.name, item.name_end, b"#size-cells")
-                    && item.length >= 4
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells") && item.length >= 4
                 {
                     if let Some(value) = read_be32(item.value, 0) {
                         state.child_size_cells = value as u8;
@@ -392,14 +391,11 @@ pub fn find_compatible_node_property_observation(
                 property: item,
             } => {
                 let state = &mut states[depth];
-                if c_string_eq(item.name, item.name_end, b"#address-cells")
-                    && item.length >= 4
-                {
+                if c_string_eq(item.name, item.name_end, b"#address-cells") && item.length >= 4 {
                     if let Some(value) = read_be32(item.value, 0) {
                         state.child_address_cells = value as u8;
                     }
-                } else if c_string_eq(item.name, item.name_end, b"#size-cells")
-                    && item.length >= 4
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells") && item.length >= 4
                 {
                     if let Some(value) = read_be32(item.value, 0) {
                         state.child_size_cells = value as u8;
@@ -1085,7 +1081,7 @@ fn read_cells(pointer: *const u8, count: usize) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_memory_regions, inspect, Region};
+    use super::{Region, find_memory_regions, inspect};
 
     fn be32(value: u32, out: &mut Vec<u8>) {
         out.extend_from_slice(&value.to_be_bytes());
@@ -1123,12 +1119,7 @@ mod tests {
         structure.extend_from_slice(b"memory@80000000\0");
         pad4(&mut structure);
         property(&mut structure, device_type, b"memory\0");
-        let reg_value = [
-            0x0000_0000u32,
-            0x8000_0000,
-            0x0000_0000,
-            0x4000_0000,
-        ];
+        let reg_value = [0x0000_0000u32, 0x8000_0000, 0x0000_0000, 0x4000_0000];
         let mut reg_bytes = Vec::new();
         for cell in reg_value {
             be32(cell, &mut reg_bytes);

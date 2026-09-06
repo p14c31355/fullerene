@@ -1,20 +1,22 @@
-#![feature(alloc_error_handler)]
-#![no_std]
-#![no_main]
-
 extern crate alloc;
 
 use fullerene_abi::boot::{self, BootArchitecture, BootInfo, BootPlatform};
 
 mod allocator;
 mod cpu;
+mod elf;
 mod entry;
 mod exceptions;
 mod fdt;
+mod fs;
+#[cfg(feature = "aarch64-user-launchd")]
+mod launchd;
 mod mmu;
 #[path = "../../platform/mod.rs"]
 mod platform;
-mod timer;
+mod syscall;
+mod task;
+pub(crate) mod timer;
 mod uart;
 #[cfg(fullerene_aarch64_bramble)]
 mod usb;
@@ -26,7 +28,8 @@ mod usb_protocol;
 mod usb_qemu_sim;
 #[cfg(any(fullerene_aarch64_bramble, fullerene_aarch64_qemu_usb_sim))]
 mod usb_regs;
-#[cfg(feature = "aarch64-user-smoke")]
+mod user_memory;
+#[cfg(any(feature = "aarch64-user-smoke", feature = "aarch64-user-fault-smoke"))]
 mod user_smoke;
 
 const MAX_MEMORY_REGIONS: usize = 8;
@@ -101,7 +104,6 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     uart::put_hex("boot: x2=", fdt_arg2);
     uart::put_hex("boot: x3=", arg3);
     uart::put_hex("boot: currentel=", boot.current_el as u64);
-    uart::put_hex("boot: entry_sp=", boot.entry_sp as u64);
     uart::put_hex("boot: relocation_delta=", boot.relocation_delta as u64);
 
     // The architectural arm64 boot contract puts the physical DTB address in
@@ -561,9 +563,18 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             "memory: first free frame=",
             frames.first_available_frame().unwrap_or(0),
         );
-        #[cfg(feature = "aarch64-user-smoke")]
+        #[cfg(any(feature = "aarch64-user-smoke", feature = "aarch64-user-fault-smoke"))]
         user_smoke::run(&mut frames);
-        #[cfg(not(feature = "aarch64-user-smoke"))]
+        #[cfg(feature = "aarch64-user-launchd")]
+        {
+            allocator::install_global(frames);
+            fs::init();
+        }
+        #[cfg(not(any(
+            feature = "aarch64-user-smoke",
+            feature = "aarch64-user-fault-smoke",
+            feature = "aarch64-user-launchd"
+        )))]
         {
             if frames.next_frame().is_some() {
                 uart::puts("memory: DTB map frame allocator ready\n");
@@ -667,6 +678,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // controller initialization has returned and UART is safe to use again.
     #[cfg(fullerene_aarch64_bramble)]
     usb::dump_trace();
+
+    // USB must be handed off before entering launchd: the first user process
+    // is a non-returning EL0 transition, so placing it above the controller
+    // setup would make a launchd-enabled Bramble image skip its own gadget
+    // enumeration entirely. QEMU still follows the same ordering; it simply
+    // has no physical Bramble handoff to perform.
+    #[cfg(feature = "aarch64-user-launchd")]
+    launchd::run();
 
     if bramble {
         platform::bramble::init_interrupt_controller(gicd_base, gicr_base);

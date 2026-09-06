@@ -210,11 +210,7 @@ pub(crate) static mut HSPHY_TABLE_SOURCE: u32 = 0;
 /// - `length_bytes` is the raw property byte length (0 when absent).
 /// - `cells` holds the six raw big-endian cells in property order; `None`
 ///   means the cell was not present in the property.
-pub(crate) static mut HS_DT_PARAM_OVERRIDE: (
-    bool,
-    u32,
-    [Option<u32>; 6],
-) = (false, 0, [None; 6]);
+pub(crate) static mut HS_DT_PARAM_OVERRIDE: (bool, u32, [Option<u32>; 6]) = (false, 0, [None; 6]);
 
 /// Identity of the compatible HS-PHY node used for the observation. The
 /// ordinal is among enabled matching nodes; `reg_base` is the first `reg`
@@ -319,7 +315,11 @@ pub fn record_hs_dt_node_identity(observation: Option<(usize, Option<u64>)>) {
     unsafe {
         HS_DT_NODE_IDENTITY = observation
             .map(|(ordinal, reg_base)| {
-                (true, ordinal.min(u32::MAX as usize) as u32, reg_base.unwrap_or(0))
+                (
+                    true,
+                    ordinal.min(u32::MAX as usize) as u32,
+                    reg_base.unwrap_or(0),
+                )
             })
             .unwrap_or((false, 0, 0));
     }

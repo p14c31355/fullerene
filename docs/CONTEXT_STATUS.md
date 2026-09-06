@@ -3190,20 +3190,268 @@ operation was used.
 - Final command: `FULLERENE_AARCH64_USER_SMOKE=1 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt --timeout 5`. The run reached `bootinfo: flags=0x9`, `memory: first free frame=0x40000000`, `user-smoke: svc=0x1`, `user-smoke: svc=0x2`, and `user-smoke: returned to EL1h`. The command then timed out intentionally in the EL1 `wfe` continuation; no exception fault was printed. Evidence: `/tmp/fullerene-user-smoke-flasks.1KQ1XA.log`.
 - `flasks` now honors `FULLERENE_AARCH64_USER_SMOKE=1` only for this opt-in QEMU/build test and hashes the feature selection into its isolated Cargo target directory. No physical Bramble result is claimed, and this still does not constitute the generic FullereneOS runtime port.
 
+### 2026-09-06 — AArch64 native syscall ABI smoke
+
+- Added the architecture-local syscall dispatcher at `fullerene-kernel/src/arch/aarch64/syscall.rs`. It consumes `x8` as the `fullerene-abi::SyscallNumber`, returns through `x0`, and is reached only for user-origin AArch64 SVC exceptions. The first shared ABI slice is `ABI_QUERY`, `GETPID`, `YIELD`, `UPTIME`, and the opt-in smoke-only `EXIT` continuation.
+- The user smoke payload now executes the real register convention rather than counting SVCs. Final QEMU output recorded `nr=0x0 ret=0x0000000600000000` (ABI 0.6.0), `nr=0x14 ret=1` (temporary bootstrap PID), `nr=0x16 ret=0` (yield), `exit=0`, and `returned to EL1h`.
+- Reproducible command: `FULLERENE_AARCH64_USER_SMOKE=1 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt --timeout 5`; the nonzero command status is the expected timeout after the EL1 continuation enters `wfe`. Build check passed with `--features aarch64,aarch64-user-smoke`. Evidence: `/tmp/fullerene-aarch64-syscall-smoke.2upvYm.log`.
+- This is the first native syscall ABI execution on the AArch64 path, not yet process creation or a generic scheduler. PID allocation, user-copy validation, ELF loading, and the rest of the syscall table still belong to the next runtime layers; no physical Bramble result is claimed.
+
+### 2026-09-06 — AArch64 single-segment ELF loader smoke
+
+- Added `fullerene-kernel/src/arch/aarch64/elf.rs`. It validates ELF64 little-endian, AArch64 `ET_EXEC`/`ET_DYN`, one `PT_LOAD`, entry-point bounds, file/memory sizes, page alignment, and executable flags; then maps one user page, zero-fills it, copies the segment, synchronizes caches, and returns the ELF entry/stack contract.
+- The existing ABI payload is now synthesized as a real ELF image in the smoke path and loaded through that parser. The final QEMU run again reached ABI query (`0x0000000600000000`), bootstrap PID 1, yield 0, exit 0, and EL1h return. No direct instruction writes remain in the user-smoke launch path.
+- Evidence: `/tmp/fullerene-aarch64-elf-smoke.2y6xqa.log`; command was `FULLERENE_AARCH64_USER_SMOKE=1 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt --timeout 5`. Timeout remains intentional after the EL1 wait loop.
+- Scope remains deliberately bounded: no multi-segment address spaces, demand paging, process table, user-copy fault recovery, or generic FullereneOS scheduler is claimed yet. No physical Bramble result is claimed.
+
+### 2026-09-06 — AArch64 cooperative user-frame switching smoke
+
+- The opt-in ELF smoke now creates two separately mapped user pages and two saved `Aarch64TrapFrame` contexts. `YIELD` saves the current frame, writes the ABI return value, and copies the next frame into the live exception frame before `eret`; `EXIT` retires one task and switches to the remaining task.
+- Final UART evidence shows `task0 page=0x40000000`, `task1 page=0x40001000`, task 0 yield/switch to task 1, task 1 yield/switch back, task 0 exit status 0, task 1 exit status 0, and `returned to EL1h`. The prior save-order bug that returned task 0's GETPID value as its exit status was corrected before this final run.
+- Evidence: `/tmp/fullerene-aarch64-scheduler-smoke.P0XXD7.log`; command `FULLERENE_AARCH64_USER_SMOKE=1 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt --timeout 5`. Timeout remains intentional after the EL1 wait loop.
+- This validates a real cooperative context-switch boundary, not the generic process manager. Address-space isolation, preemption, lifecycle objects, and the full scheduler remain unported; no physical Bramble result is claimed.
+
+### 2026-09-06 — AArch64 task scheduler extraction rerun
+
+- Extracted the saved-frame/task-slot logic from `user_smoke.rs` into `fullerene-kernel/src/arch/aarch64/task.rs`. The scheduler remains deliberately bounded and cooperative, with no allocation, process table, or address-space policy.
+- The first post-extraction `cargo check` caught one non-runtime logging type mismatch (`usize` task index passed to the UART's `u64` formatter) in `/tmp/fullerene-aarch64-task-check.Q3MYpL.log`; it was corrected, and the follow-up check passed with only the existing unused platform-code warnings (`/tmp/fullerene-aarch64-task-check.3tuMh7.log`).
+- The post-extraction QEMU rerun produced the expected task IDs (`yield task=0`, `switch to=1`, `yield task=1`, `switch to=0`), both exit statuses 0, and `returned to EL1h`; this confirms the refactor preserved the prior frame-switch behavior.
+- Evidence: `/tmp/fullerene-aarch64-scheduler-task-refactor.9xuRw5.log`; command `FULLERENE_AARCH64_USER_SMOKE=1 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt --timeout 5`. The nonzero status is the intentional timeout after the EL1 wait loop. No physical Bramble result is claimed.
+- Final post-format verification passed: smoke build `/tmp/fullerene-aarch64-final-check.banip4.log`, targeted rustfmt, and `git diff --check`. The default QEMU path still reached `bootinfo: flags=0x9`, `memory: first free frame=0x40000000`, timer initialization, and `aarch64 early boot complete` before its intentional 3-second wait-loop timeout (`/tmp/fullerene-aarch64-default-final.wrRmPF.log`).
+
+### 2026-09-06 — AArch64 scheduler-owned PID/lifecycle boundary
+
+- Extended `Aarch64TaskScheduler` with bounded task identity and lifecycle state, moved its singleton ownership out of `user_smoke.rs`, and made the native `GETPID` syscall read the current scheduler slot instead of returning a hard-coded 1.
+- The QEMU smoke now installs PID 1 and PID 2. UART recorded `GETPID=1`, yield `PID 1→2`, `GETPID=2`, yield `PID 2→1`, then task exit `PID 1→2` and final exit status 0. This is the first runtime evidence that the syscall return value follows the saved user-frame switch.
+- Build evidence: `/tmp/fullerene-aarch64-process-table-check.24FKJ6.log`; runtime evidence: `/tmp/fullerene-aarch64-process-table-smoke.V53XHL.log`; command `FULLERENE_AARCH64_USER_SMOKE=1 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt --timeout 5`. Timeout remains intentional after EL1 `wfe`; no physical Bramble result is claimed.
+
+### 2026-09-06 — AArch64 user stack split from executable pages
+
+- Replaced the smoke path's code-page-end `SP_EL0` shortcut with two separately allocated and mapped stack pages at `0x40002000` and `0x40003000`. `elf.rs` now exposes an explicit zeroed user-page mapping helper, and `LoadedPage` returns only the executable entry point.
+- QEMU reached both stack mappings, retained PID 1/2 switching, and returned to EL1h with exit status 0. This removes one invalid process-layout assumption; it does not yet provide per-process page tables or stack-growth faults.
+- Build evidence: `/tmp/fullerene-aarch64-separate-stack-check.lAfm60.log`; runtime evidence: `/tmp/fullerene-aarch64-separate-stack-smoke.y7Rz4M.log`; timeout remains intentional after the EL1 wait loop. No physical Bramble result is claimed.
+
+### 2026-09-06 — AArch64 multi-segment ELF load boundary
+
+- Replaced the one-`PT_LOAD` loader with a bounded fixed-array loader accepting up to four load segments and 32 pages. It validates ELF64/AArch64 headers, page-offset congruence, file/memory bounds, entry ownership, zero-fills BSS, copies segment bytes through the identity map, and synchronizes executable pages.
+- The first two-segment QEMU attempt exposed a real test-image error: `e_entry` pointed at the page start while code was emitted at file/page offset `0x200`; QEMU faulted at `ELR=0x40000000` before the first syscall (`/tmp/fullerene-aarch64-multisegment-smoke.z2tHk8.log`). The image generator was corrected to set `e_entry` to the code offset.
+- Corrected QEMU output reports two image pages per task, separate stacks, PID 1/2 switching, both exits, and EL1h return. Build evidence: `/tmp/fullerene-aarch64-multisegment-rerun.t7CgQt.log`; runtime evidence: `/tmp/fullerene-aarch64-multisegment-rerun.xckGnD.log`. Timeout remains intentional; no physical Bramble result is claimed.
+
+### 2026-09-06 — AArch64 native YIELD/EXIT moved out of smoke-only code
+
+- Moved the `YIELD` and `EXIT` syscall actions into `task.rs`. The AArch64 dispatcher now invokes scheduler-owned operations without a `aarch64-user-smoke` conditional; the smoke launcher only creates the test images and installs tasks.
+- Both the feature-enabled and default AArch64 kernel checks passed. The feature-enabled QEMU run retained the two-segment image, separate stacks, dynamic PID 1/2 returns, cooperative switches, and EL1h exit continuation.
+- Evidence: checks `/tmp/fullerene-aarch64-syscall-generic-check.bwttRg.log` and `/tmp/fullerene-aarch64-syscall-default-check.DXvd43.log`; runtime `/tmp/fullerene-aarch64-syscall-generic-smoke.pzXYzF.log`. The timeout remains intentional; no physical Bramble result is claimed.
+
+### 2026-09-06 — AArch64 checked user-copy and GET_PROCESS_NAME
+
+- Added an MMU-validated `copy_to_user` path that accepts only EL0-writable descriptors, plus scheduler-owned task names. `GET_PROCESS_NAME` now copies the current task name into its user buffer and returns the byte count.
+- The first QEMU run exposed descriptor attribute leakage: the `UXN` bit was included in the physical address returned by the page walk, producing `FAR=0x0040000040001003` during the kernel copy (`/tmp/fullerene-aarch64-user-copy-smoke.rTEKd7.log`). Masking the AArch64 output address bits fixed it.
+- Corrected QEMU recorded syscall 21 (`GET_PROCESS_NAME`) returning 5 for both PID 1 and PID 2, followed by the existing switch/exit/EL1h sequence. Build evidence: `/tmp/fullerene-aarch64-user-copy-rerun.bkyke0.log`; runtime evidence: `/tmp/fullerene-aarch64-user-copy-rerun.Y2toCX.log`. Timeout remains intentional; no physical Bramble result is claimed.
+- The non-smoke AArch64 check also passed (`/tmp/fullerene-aarch64-user-copy-default.XNxBRr.log`), alongside `cargo check -p flasks`, targeted rustfmt, and `git diff --check`.
+
+### 2026-09-06 — physical-state check after AArch64 software work
+
+- Read-only `fastboot devices` returned no device. No `fastboot boot`, flash, erase, partition access, analyzer, secure-debug, or user-data backup operation was attempted in this step. The prior transient physical `1234:0001` evidence remains unchanged.
+
+### 2026-09-06 — AArch64 per-task user L3 address-space switching
+
+- Replaced the single shared user L3 with eight bounded address-space slots. Each task now owns a slot, and `YIELD`/`EXIT` rebind the split user window to the next task's L3 before restoring its register frame.
+- The smoke deliberately loads both tasks at the same user VA (`0x40000000`) and uses separate physical image/stack pages. QEMU recorded address-space 0/1, identical user VAs, successful `GETPID`/`GET_PROCESS_NAME` in both contexts, both switches, both exits, and EL1h return.
+- Build evidence: `/tmp/fullerene-aarch64-address-space-rerun.Wxsqp1.log`; runtime evidence: `/tmp/fullerene-aarch64-address-space-rerun.99WA37.log`. This is serialized L3 rebinding, not yet independent TTBR0 roots/ASIDs, demand paging, or a generic process manager; no physical Bramble result is claimed.
+
+### 2026-09-06 — AArch64 user page permission enforcement
+
+- Marked ELF `PF_R|PF_X` pages as EL0 read-only and `PF_R|PF_W` pages as EL0 read/write. The loader now copies and cache-synchronizes segment data before publishing the final user permissions, avoiding an EL1 permission fault during image construction.
+- The first permission run exposed that ordering bug: QEMU faulted on the first user instruction with `ESR=0x9600004f`, `FAR=0x40000000` while the code page was already user-read-only (`/tmp/fullerene-aarch64-page-permissions-smoke.oQswSV.log`). The loader was corrected to finish the identity-mapped zero/copy phase before installing the read-only descriptor.
+- Corrected QEMU evidence: for both tasks, `GET_PROCESS_NAME` to the code page returned `0xfffffffffffffff2` (`-EFAULT`), the same syscall to the writable data page returned `5`, and the existing same-VA address-space switch, exits, and EL1h return completed. Evidence: `/tmp/fullerene-aarch64-page-permissions-rerun.log`; timeout is intentional after the EL1 `wfe` loop.
+- This verifies the current descriptor permissions in QEMU only. It is not yet demand-paging/page-fault recovery, independent TTBR0 roots/ASIDs, or a physical Bramble result.
+
+### 2026-09-06 — AArch64 independent TTBR0 user roots
+
+- Replaced the shared-L1/L2 user-window rebinding with bounded `Aarch64UserAddressSpace` objects. Each object owns a root, a user L2, and a user L3; the root's kernel entries still point to the shared identity-map L2 tables. `activate_user_space` now writes `TTBR0_EL1` to the selected root and flushes translations.
+- QEMU read back `TTBR0_EL1` as task 0 `0x40290000`, task 1 `0x40294000`, then task 0 `0x40290000` and task 1 `0x40294000` again across yield/exit. Both tasks kept the same user VA (`0x40000000`), returned `-EFAULT` for code-page writes and `5` for data-page writes, and returned to EL1h.
+- Build evidence: `/tmp/fullerene-aarch64-ttbr0-root-check.log`; runtime evidence: `/tmp/fullerene-aarch64-independent-ttbr0-smoke.log`. ASIDs remain deliberately disabled; this uses a full EL1 TLB flush on root switch. Demand paging, fault recovery, allocator-owned page tables, and the generic process manager remain open; no physical Bramble result is claimed.
+
+### 2026-09-06 — generic Fullerene kernel AArch64 entry integration
+
+- The generic `fullerene-kernel` AArch64 target previously stopped in `build.rs` before generating `solvent-linux.rs` and `FULLERENE_LAUNCHD_IMAGE`; the baseline failure is `/tmp/fullerene-generic-aarch64-baseline.log`. `build.rs` now always generates the architecture-neutral Solvent integration and supplies an explicit empty launchd fixture for this still-early AArch64 path.
+- Refactored the AArch64 implementation behind `src/arch/aarch64/bin.rs` plus the reusable runtime module. The dedicated `fullerene-kernel-aarch64` target still compiles, and the package's generic `fullerene-kernel` target now also compiles for `aarch64-unknown-none` instead of pulling the x86-only common modules.
+- Added opt-in Flasks selection via `FULLERENE_AARCH64_GENERIC_KERNEL=1`. Its QEMU run reached the same DTB/MMU/EL0 syscall smoke through the generic artifact, including distinct TTBR0 roots, permission failures/successes, task switches, and EL1h return. Evidence: `/tmp/fullerene-generic-aarch64-wrapper-check2.log`, `/tmp/fullerene-generic-aarch64-qemu-smoke.log`.
+- This is an entry/build integration milestone, not the complete FullereneOS runtime: the generic AArch64 path currently gates the x86-coupled process/VFS/GUI/service modules while their AArch64 backends are being ported. No physical Bramble result is claimed.
+
+### 2026-09-06 — AArch64 user page-fault retirement boundary
+
+- Added a bounded lower-EL instruction/data-abort path to the typed AArch64 exception handler. A user fault is logged with the current task, `ESR_EL1`, and `FAR_EL1`, then the task is marked exited and the scheduler switches to the next saved user frame; if no task remains, the handler returns to the EL1h continuation with `-EFAULT` in `x0`.
+- The fault smoke deliberately executes an EL0 load from unmapped `0x05000000`. Both the dedicated and opt-in generic kernel artifacts produced `ESR=0x9200000e` (lower-EL data abort) and `FAR=0x05000000`; task 0 switched to task 1 with `TTBR0=0x40294000`, task 1 faulted, and execution returned to EL1h.
+- Reproducible commands: `FULLERENE_AARCH64_USER_FAULT_SMOKE=1 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt --timeout 5` and the same command with `FULLERENE_AARCH64_GENERIC_KERNEL=1`. Evidence: `/tmp/fullerene-aarch64-user-fault-smoke.log` and `/tmp/fullerene-generic-aarch64-user-fault-smoke.log`. Both commands end with the intentional 5-second QEMU wait-loop timeout after the expected EL1h marker.
+- This is fault containment, not fault resolution: demand paging, copy-on-write, signal delivery, a general process manager, and physical Bramble validation remain open. No physical device was touched.
+
+### 2026-09-06 — AArch64 entry assembly absolute reduction and regression fix
+
+- The prior entry refactor was corrected to reduce the amount of assembly itself, not merely move it from `main.rs` to `entry.rs`. The `_start` trampoline now only computes the bootstrap-stack top and branches to Rust; the old `.text.boot` was 0xd4 bytes (53 AArch64 instruction slots), while the new image is 0x14 bytes (5 instructions). The architecture-required EL2→EL1 system-register transition, relocation address discovery, and EL1 SIMD enable remain as small inline primitives; `main.rs` still contains no `asm!`/`global_asm!`.
+- The first reduced-entry QEMU run exposed a real EL1-only regression: QEMU enters directly at EL1, and without `CPACR_EL1.FPEN` enabled, an optimized Rust copy trapped before the normal UART banner (`ESR=0x1fe00000`, `ELR=0x40087070`). Enabling FP/SIMD for the direct-EL1 path, while retaining the existing post-`eret` EL2 path, fixed it. The diagnostic-only bootstrap SP capture was also removed from the typed handoff.
+- Corrected dedicated QEMU smoke reached DTB discovery, MMU, both same-VA tasks, permission checks (`-14` on code / `5` on data), TTBR0 switches, both exits, and `returned to EL1h`. Final evidence: `/tmp/fullerene-aarch64-entry-absolute-reduction-final-check.log` and `/tmp/fullerene-aarch64-entry-absolute-reduction-final-smoke.log`; the 5-second timeout is intentional after the EL1 wait loop.
+- The opt-in generic `fullerene-kernel` artifact now also launches the real embedded AArch64 ELF `launchd` payload and reached ABI query, PID 1, process-name length 7, YIELD, EXIT 0, and `returned to EL1h`. Final evidence: `/tmp/fullerene-generic-aarch64-entry-absolute-reduction-final-launchd.log`. This remains QEMU-only; exception-vector assembly and userland `svc` instructions are separate architectural boundaries, and no physical Bramble operation was performed.
+
+### 2026-09-06 — AArch64 launchd SPAWN/WRITE child-process boundary
+
+- Extended the real embedded AArch64 `launchd` payload with `WRITE` and `SPAWN`. The kernel now copies a bounded child ELF and name through the active user page walk, allocates child image/stack pages from the DTB-backed frame allocator, creates a separate task slot and TTBR0 root, and enters the child through the same typed EL0 frame path. The child writes a message and exits; this is process creation across the syscall boundary, not an in-kernel function call.
+- The first post-change QEMU runs hung immediately after the launchd stack log. The cause was that clearing every L3 entry removed the EL1-only identity mapping for the kernel itself: the current linker image is in the same 2 MiB window as user VA `0x40000000`. The corrected MMU keeps that window as EL1-only identity pages and replaces only explicit image/stack entries with EL0 permissions. Dedicated user smoke, launchd, and fault smoke all passed afterward.
+- Dedicated QEMU evidence: `/tmp/fullerene-aarch64-spawn-launchd-2.log` shows launchd `SPAWN` returning PID 2, child TTBR0 `0x40284000`, `child: spawned and running`, child `EXIT`, return to PID 1, and `returned to EL1h`. The opt-in generic artifact reproduced the same trace in `/tmp/fullerene-generic-aarch64-spawn-launchd.log`. Regression evidence is `/tmp/fullerene-aarch64-post-spawn-smoke-2.log`; fault evidence is `/tmp/fullerene-aarch64-post-spawn-fault.log`.
+- Build checks passed with `cargo check -p flasks` and `cargo check -p fullerene-kernel --target aarch64-unknown-none --features aarch64,aarch64-user-launchd --bin fullerene-kernel-aarch64`; `git diff --check` passed. The graph coverage check reported `coverage_unavailable` for the changed AArch64/build paths, so direct source and runtime results are authoritative for this change.
+- This remains a bounded QEMU/software milestone: eight task/address-space slots, bounded image/name/write sizes, no wait/reap, signals, fork/exec semantics, filesystem/VFS, device services, GUI, or physical Bramble validation yet. No physical device was touched in this step.
+
+### 2026-09-06 — AArch64 parent WAIT and child wake-up boundary
+
+- Added the ABI's `WAIT` syscall to the AArch64 scheduler. A parent can wait for one child (or any child with the ABI wildcard), becomes `Blocked` instead of spinning, and is woken by child `EXIT` with the encoded status placed in its saved `x0`. The launchd probe now uses this path rather than an explicit yield.
+- QEMU evidence: `/tmp/fullerene-aarch64-wait-launchd.log` shows `wait task=0`, switch to child task 1/ PID 2, child `WRITE`, child exit, switch back to PID 1, parent exit 0, and `returned to EL1h`. The opt-in generic artifact reproduces the same sequence in `/tmp/fullerene-generic-aarch64-wait-launchd.log`.
+- Existing two-task permissions, independent TTBR0, yield, exit, and fault-sensitive paths remained green in `/tmp/fullerene-aarch64-wait-regression-smoke.log`. The AArch64 build check passed in `/tmp/fullerene-aarch64-wait-check.log`; the timeout in each QEMU run is intentional after the final EL1 wait loop.
+- This is still bounded lifecycle support, not the generic process manager: exited slots and physical pages are not reclaimed for reuse, parent reparenting/signals/process-control handles are absent, and VFS/filesystem/device/GUI services plus physical Bramble validation remain open. No physical device was touched.
+
+### 2026-09-06 — AArch64 process-control handle/status/reap boundary
+
+- Added the process-control ABI subset used by the native supervisor: `OPEN_PROCESS_CONTROL` returns an opaque tagged handle for a child, `PROCESS_CONTROL_STATUS` reports `READY/RUNNING/BLOCKED/TERMINATED`, and `PROCESS_CONTROL_REAP` returns the encoded exit status. Parent authorization is checked against the bounded scheduler's parent PID.
+- The native AArch64 launchd probe now opens a control handle for PID 2, yields, observes `STATUS=3`, reaps `0`, and exits. Dedicated QEMU evidence is `/tmp/fullerene-aarch64-process-control-launchd.log`; the generic artifact reproduces it in `/tmp/fullerene-generic-aarch64-process-control-launchd.log`.
+- The dedicated permission/scheduler smoke and lower-EL fault smoke remained green in `/tmp/fullerene-aarch64-process-control-regression-smoke.log` and `/tmp/fullerene-aarch64-process-control-regression-fault.log`. Build evidence is `/tmp/fullerene-aarch64-process-control-check.log`; the intentional QEMU timeout occurs only after the EL1 wait loop.
+- This is still a bounded process-control implementation: handles are not a general capability table, stop/assign/reparent/signals are absent, exited slots and physical pages are not reclaimed, and VFS/filesystem/terminal/GUI/device services plus physical Bramble validation remain open. No physical device was touched.
+
+### 2026-09-06 — AArch64 process-control handle ownership correction
+
+- The first process-control handle encoding was only a tagged target PID (`0x800...2`), which was too guessable for an authorization boundary. It was corrected to encode both owner and target (`0x8000000100000002` for PID 1 controlling PID 2); `STATUS` and `REAP` now reject handles whose owner does not match the current process.
+- Corrected dedicated and generic QEMU runs retained `STATUS=3`, `REAP=0`, child output, parent exit, and EL1h return. Evidence: `/tmp/fullerene-aarch64-process-control-owner-launchd.log` and `/tmp/fullerene-generic-aarch64-process-control-owner-launchd.log`. The earlier unowned-handle result remains recorded as the failed trial above.
+- The owner-checked AArch64 build passed in `/tmp/fullerene-aarch64-process-control-owner-check.log`. This remains a bounded scheduler capability approximation, not the full kernel handle table; no physical device was touched.
+
+### 2026-09-06 — AArch64 bounded dynamic memory syscall boundary
+
+- Added AArch64 `MAP_MEMORY`, `UNMAP_MEMORY`, `PROTECT_MEMORY`, and `QUERY_MEMORY`. Each task now has bounded dynamic mapping records; mappings allocate and zero DTB-backed physical frames, install EL0 permissions in the task's TTBR0 root, and support protection changes or unmapping back to an EL1-only identity page. The current window is intentionally bounded to 64 pages per mapping and eight mapping records per task.
+- The launchd probe exercises the complete path: map with read/write protection, copy a string into the returned user address, `WRITE` it, change it read-only, query a 64-byte `MemoryInfo`, and unmap it. QEMU returned address `0x40020000`, `WRITE=25`, `PROTECT=0`, `QUERY=64`, and `UNMAP=0`; evidence: `/tmp/fullerene-aarch64-dynamic-memory-launchd.log`.
+- The opt-in generic artifact reproduced the same dynamic mapping sequence in `/tmp/fullerene-generic-aarch64-dynamic-memory-launchd.log`. Existing permission/scheduler and lower-EL fault paths remained green in `/tmp/fullerene-aarch64-dynamic-memory-regression-smoke.log` and `/tmp/fullerene-aarch64-dynamic-memory-regression-fault.log`.
+- Build evidence is `/tmp/fullerene-aarch64-memory-launchd-check.log`; the existing unused platform-code warnings remain. This is a bounded user-memory backend, not yet demand paging, reclamation, fork/clone, shared buffers, or the generic architecture-neutral memory manager. No physical device was touched.
+
+### 2026-09-06 — AArch64 copied-address-space FORK boundary
+
+- Added the shared ABI's `FORK=2` to the native AArch64 syscall dispatcher. The scheduler copies the live parent trap frame, returns child PID 0 in the child and the new PID in the parent, records the parent PID, and starts the child at the same post-`SVC` EL0 instruction.
+- `mmu::clone_user_space` now creates an independent bounded user root, copies every explicit EL0 image/stack/dynamic page into newly allocated physical frames, and preserves each page's read-only/read-write and executable state. This is a physical-copy fork; copy-on-write, page reclamation, ASIDs, and rollback of already allocated frames are still not implemented.
+- The native launchd probe calls `FORK`, has the child print `launchd: fork child` and exit, and has the parent block in `WAIT` before continuing to the existing dynamic/`SPAWN`/process-control sequence. Dedicated QEMU evidence is `/tmp/fullerene-aarch64-fork-launchd.log`: `FORK` returned PID 2, the child printed and exited with status 1, the parent resumed on PID 1, then spawned PID 3 and completed process-control `STATUS=3`/`REAP=0`.
+- The generic artifact reproduced the complete sequence in `/tmp/fullerene-generic-aarch64-fork-launchd.log`. Existing permission/independent-TTBR0 scheduler smoke and lower-EL abort retirement remained green in `/tmp/fullerene-aarch64-fork-regression-smoke.log` and `/tmp/fullerene-aarch64-fork-regression-fault.log`; host build evidence is `/tmp/fullerene-host-fork-check.log` and AArch64 build evidence is `/tmp/fullerene-aarch64-fork-check.log`.
+- Targeted rustfmt and `git diff --check` passed. The QEMU commands end in the intentional 5-second EL1 `wfe` timeout after `returned to EL1h`. This remains a bounded QEMU/software milestone: no generic process manager, fork/exec, COW/reclamation, shared buffers, VFS/filesystem/device/GUI services, or physical Bramble validation is claimed, and no physical device was touched.
+
+### 2026-09-06 — AArch64 fork cloned-page probe: first attempt failed
+
+- A follow-up launchd probe kept the dynamic mapping alive across `FORK` so the child could read the copied page. The first attempt failed before `FORK`: after `PROTECT_MEMORY` changed `0x40020000` read-only, `QUERY_MEMORY` wrote into the launchd static `MEMORY_INFO` buffer at the same VA, causing an EL1 permission fault (`ESR=0x9600004f`, `FAR=0x40020000`).
+- This was a probe-layout error, not evidence against the fork/MMU implementation. The static query buffer was moved onto the writable user stack; the failed evidence is `/tmp/fullerene-aarch64-fork-cloned-page-launchd.log`.
+
+### 2026-09-06 — AArch64 fork cloned-page probe: second attempt exposed MMU copy collision
+
+- After moving the query buffer to stack, `QUERY_MEMORY` succeeded (`64`), but the next `FORK` still faulted in EL1 while copying the dynamic page. The parent user root was still active, so the physical identity address used by the copy could resolve through an EL0 permission descriptor; evidence is `/tmp/fullerene-aarch64-fork-cloned-page-fixed-launchd.log`.
+- This second failure led to the identity-root copy fix recorded next; it was distinct from the first probe-buffer failure.
+
+### 2026-09-06 — AArch64 fork physical-copy isolation corrected
+
+- The next run showed the deeper issue in the cloned-page probe: `clone_user_space` was copying physical frames while the parent user root was still active. When a physical frame fell in the same 2 MiB identity window as an EL0 descriptor, the EL1 copy could hit that user permission, so the fork path was changed to switch temporarily to the shared EL1 identity root, copy/synchronize all pages, and restore the parent root even on the bounded failure path.
+- With the stack query buffer and identity-copy fix, dedicated QEMU evidence `/tmp/fullerene-aarch64-fork-cloned-page-fixed2-launchd.log` recorded query `64`, `FORK` PID 2, the child reading the cloned read-only dynamic page and printing `launchd: dynamic mapping`, child `launchd: fork child`, parent wake, `UNMAP=0`, SPAWN PID 3, process-control `STATUS=3`/`REAP=0`, and `returned to EL1h` before the intentional timeout.
+- The generic artifact reproduced the same cloned-page output in `/tmp/fullerene-generic-aarch64-fork-cloned-page-fixed-launchd.log`. Build evidence is `/tmp/fullerene-aarch64-fork-identity-copy-check.log`; targeted rustfmt passed. This verifies physical-copy fork for the current image, stack, and active dynamic mapping, but not COW, reclamation, ASIDs, or general fork/exec semantics. No physical device was touched.
+
+### 2026-09-06 — AArch64 entry absolute count reduction and native VFS first read
+
+- This follow-up reduced entry.rs itself: .boot_stack is adjacent to .text.boot, so _start now loads the linker-exported stack top with one ADR, copies it to SP, and branches to Rust. The linked stub is 0x0c/3 instructions instead of the prior 0x14/5; the EL2 handoff reuses its synchronization barrier for CPACR_EL1 instead of carrying a second post-ERET sequence. main.rs remains free of AArch64 asm!/global_asm!.
+- Static-PIE relocation code was kept because the Bramble-linked artifact still contains 55 R_AARCH64_RELATIVE records. The dedicated static build log is /tmp/fullerene-bramble-entry-reduction-static-build.log; dedicated QEMU and generic QEMU both booted through the reduced stub.
+- The first VFS trial exposed a real handle-decoding bug: OPEN succeeded but READ/CLOSE returned -9 because the tag bit was included in the generation comparison. The failed log is /tmp/fullerene-aarch64-entry-reduction-vfs-smoke.log; the correction masks the tag before generation extraction.
+- The corrected native launchd path initialized Genome's in-memory VFS, opened /etc/motd, read 24 bytes, wrote FullereneOS AArch64 VFS, and closed with 0. Dedicated evidence is /tmp/fullerene-aarch64-entry-reduction-vfs-smoke-fixed-handle.log; the generic artifact reproduced it in /tmp/fullerene-generic-aarch64-entry-reduction-vfs.log. Smoke/fault regressions retained the expected returned to EL1h, ESR=0x9200000e, and FAR=0x05000000. (The earlier `0x50000000` text was a documentation typo; the instruction encoding and UART logs identify `0x05000000`.)
+- This advances only the bounded native AArch64 path: the VFS is memory-backed, descriptor inheritance and persistent mounts are absent, and this remains QEMU/software evidence with no physical device operation.
+
+### 2026-09-06 — AArch64 file-backed VFS / executable-launch trials
+
+- Native launchd now seeds `/bin/child` in Genome's in-memory VFS and reads the 70,768-byte child ELF through repeated `OPEN`/`READ`/`CLOSE` syscalls into a user mapping. The first QEMU trial hit physical-frame exhaustion after `CLOSE` because `UNMAP_MEMORY` did not reclaim pages (`/tmp/fullerene-aarch64-vfs-file-backed-launchd-1.log`).
+- The bounded free-list correction made `UNMAP=0` and returned frames, but the next trial exposed the separate 128 KiB kernel-heap limit: the resident VFS file plus the checked `SPAWN` staging vector exhausted the heap (`/tmp/fullerene-aarch64-vfs-file-backed-launchd-reclaim.log`). The AArch64 heap is now 256 KiB for this bounded handoff.
+- With that resource fix, `SPAWN=3` was reached, but the child entered an undefined instruction (`ESR=0x02000000`, `ELR=0x40000000`, `FAR=0`). The root cause was writing allocated physical pages through the parent's TTBR0 while its file buffer mapping was active; the diagnostic logs are `/tmp/fullerene-aarch64-vfs-file-backed-launchd-reclaim-2.log` and `/tmp/fullerene-aarch64-vfs-file-backed-debug-map.log`.
+- The corrected loader switches to the shared EL1 identity root for ELF/stack physical writes and restores the caller root. Dedicated `/tmp/fullerene-aarch64-vfs-file-backed-final-dedicated.log` and generic `/tmp/fullerene-generic-aarch64-vfs-file-backed-final.log` now show motd read, dynamic memory, physical-copy fork, repeated file reads, `SPAWN=3`, child output, buffer unmap, process-control `STATUS=3`/`REAP=0`, and `returned to EL1h`. Dedicated/generic smoke and lower-EL fault regressions remain green. This is still QEMU/software evidence; no physical Bramble operation was attempted.
+
+### 2026-09-06 — AArch64 exited-task reclamation and repeatable spawn
+
+- Added real bounded teardown for inactive exited tasks. `WAIT` and `PROCESS_CONTROL_REAP` now return the child's complete explicit user-page batch to the physical-frame free list, reset its user TTBR0 root, and clear the task slot. ELF allocation, failed spawn, and failed fork-clone paths also roll back pages instead of leaking them.
+- Dedicated launchd QEMU evidence `/tmp/fullerene-aarch64-task-reclaim-repeat.log` shows the fork child being waited/reclaimed, followed by two file-backed child launches that both reuse PID 3, execute `child: spawned and running`, report `STATUS=3`, `REAP=0`, and return to EL1h. Generic static-PIE evidence is `/tmp/fullerene-generic-task-reclaim-repeat-pie.log`; the non-PIE manual build failure is retained as `/tmp/fullerene-generic-task-reclaim-repeat.log` and is a build-condition failure, not a lifecycle result.
+- Fault regression `/tmp/fullerene-aarch64-task-reclaim-fault.log` retained lower-EL abort retirement (`ESR=0x9200000e`, `FAR=0x05000000`). AArch64 and host checks passed in `/tmp/fullerene-aarch64-task-reclaim-check.log` and `/tmp/fullerene-host-task-reclaim-check.log`. The result remains QEMU/software-only; COW, demand paging, reparenting/signals, general `exec`, persistent filesystems, device/GUI services, and physical Bramble validation remain open.
+
+### 2026-09-06 — AArch64 COW fork and physical-alias correction
+
+- `FORK` now shares resident writable pages with bounded frame reference counts and read-only software-COW descriptors. The lower-EL write fault resolves by making a last-owner page private or copying the page, then returns to the faulting user instruction.
+- Dedicated `/tmp/fullerene-aarch64-cow-fixed2.log` proves `cow resolved`, child-side `launchd: cow child`, parent-side unchanged `launchd: dynamic mapping`, and two later `SPAWN=3`/child/`REAP=0` cycles. Generic static-PIE evidence is `/tmp/fullerene-generic-aarch64-cow.log`.
+- The first COW trial exposed a physical-alias bug in kernel frame zeroing and checked user copies when a recycled frame overlapped a read-only user stack. Those operations now use the shared EL1 identity root. Fault regression `/tmp/fullerene-aarch64-cow-fault.log`, AArch64 check `/tmp/fullerene-aarch64-cow-check.log`, and host check `/tmp/fullerene-host-cow-check.log` passed; no physical device was touched.
+- COW is currently bounded to resident writable mappings. Demand paging, ASIDs, dynamic page tables, general `exec`, reparenting/signals, persistent filesystems, device/GUI services, and physical Bramble validation remain open.
+
+### 2026-09-06 — AArch64 blocking WAIT auto-reap after COW
+
+- A blocked `WAIT` now reaps the child after switching back to its parent, so the wakeup path also releases the child address space and COW references. Dedicated `/tmp/fullerene-aarch64-cow-wait-reap.log` and generic `/tmp/fullerene-generic-aarch64-cow-wait-reap.log` both show `wait task=0`, COW resolution, child exit, two later `SPAWN=3` cycles, and `returned to EL1h`.
+- This closes the bounded wait-wakeup lifetime hole. Reparenting, signals, general process manager/`exec`, demand paging, persistent filesystems, device/GUI services, and physical Bramble validation remain open; no physical device was touched.
+
+### 2026-09-06 — AArch64 monotonic PID allocation after reap
+
+- The scheduler now uses a monotonic PID cursor with live-collision checks instead of deriving the next PID from the current maximum. Dedicated `/tmp/fullerene-aarch64-pid-cursor.log` and generic `/tmp/fullerene-generic-aarch64-pid-cursor.log` retain COW resolution and launch PID 3 then PID 4 after reaping; both reach `returned to EL1h` before the intentional timeout.
+- AArch64 and host checks passed in `/tmp/fullerene-aarch64-pid-cursor-check.log` and `/tmp/fullerene-host-pid-cursor-check.log`; no physical device was touched. PID wrap-generation handling, reparenting, signals, general `exec`, demand paging, persistent filesystems, device/GUI services, and physical Bramble validation remain open.
+
+### 2026-09-06 — AArch64 orphan adoption and init WAIT/reap
+
+- The file-backed child probe now forks a grandchild and exits first. Dedicated `/tmp/fullerene-aarch64-reparent-smoke.log` and generic `/tmp/fullerene-generic-aarch64-reparent-smoke.log` show PID 3→4 and PID 5→6 sequences, `orphan adopted by init`, init-side `reaped adopted child`, and `returned to EL1h` with no synchronous exception.
+- This verifies the bounded parent-exit adoption path and `WAIT(-1)` reap. Signals, PID-wrap generations, general `exec`, demand paging, persistent filesystems, device/GUI services, and physical Bramble validation remain open; no physical device was touched.
+
+### 2026-09-06 — AArch64 same-PID image replacement and staging correction
+
+- Added ABI `Exec=24`: checked image/name copy, staged ELF in an unreferenced TTBR0 root, fresh user stack, old-root release after activation, and unchanged PID/parent. `SPAWN`/`FORK` now select free roots independently of task-slot indices.
+- An initial exec trial exhausted the bump heap before `EXEC` returned; fixed 96 KiB syscall image staging and stack-backed VFS paths remove the per-call temporary-allocation leak. Final dedicated and generic QEMU logs `/tmp/fullerene-aarch64-exec-smoke.log` and `/tmp/fullerene-generic-aarch64-exec-smoke.log` show PID 7 `aarch64 exec`, replacement child output, orphan adoption/reap, and `returned to EL1h` with no synchronous fault or allocator exhaustion.
+- Checks passed: `/tmp/fullerene-aarch64-exec-check.log`, `/tmp/fullerene-host-exec-check.log`, `/tmp/fullerene-abi-exec-test.log`; QEMU nonzero status is only the intentional timeout after EL1 `wfe`. This is bounded image-buffer exec, not yet pathname/argv/envp, demand paging, signals, full handle inheritance, persistent filesystems, services, or physical Bramble validation.
+
+### 2026-09-06 — AArch64 pathname exec and argv/envp
+
+- Added `EXEC_PATH=25`: `/bin/child` is read from the native VFS into fixed staging, its basename becomes the process name, and bounded `argv`/`envp` data is installed on the replacement image's user stack. Dedicated/generic QEMU logs `/tmp/fullerene-aarch64-exec-argv-smoke.log` and `/tmp/fullerene-generic-aarch64-exec-argv-smoke.log` show PID 9, `argc=1`, `envc=0`, `sp=0x40010fc0`, replacement execution, orphan adoption/reap, and `returned to EL1h` without a synchronous exception or allocator exhaustion.
+- This is a bounded ABI only: auxv, interpreter/path search, demand paging, signals, and physical Bramble validation remain open. Checks passed in `/tmp/fullerene-aarch64-fd-lifecycle-check.log`, `/tmp/fullerene-host-fd-lifecycle-check.log`, and `/tmp/fullerene-abi-fd-lifecycle-test.log`.
+
+### 2026-09-06 — AArch64 fork file-descriptor inheritance and cleanup
+
+- Fork now duplicates logical handle values and local VFS descriptions, preserving the shared file offset; the last close across owners closes the underlying descriptor. Exit/rollback removes owner rows. Dedicated/generic runtime logs include `launchd: inherited fd child`, the child prints `FullereneOS AArch64 VFS` after the parent closes its copy, and both reach `returned to EL1h` without a synchronous exception.
+- The table is bounded to 32 storage rows and 16 logical handles. `CLOEXEC`, `dup`, pipes, general capabilities, persistent filesystems, and physical Bramble validation remain open.
+
+### 2026-09-06 — AArch64 initramfs-backed native VFS
+
+- Replaced hard-coded VFS seeds with a build-produced `newc` CPIO containing `/etc/motd`, `/bin/child`, and `/bin/launchd`. The kernel validates bounds, alignment, path components, file types, and a 32-entry limit before installing the archive into the native VFS.
+- Dedicated/generic QEMU logs `/tmp/fullerene-aarch64-initramfs-smoke.log` and `/tmp/fullerene-generic-aarch64-initramfs-smoke.log` report five unpacked entries, retain pathname exec/orphan reap/FD inheritance, print the VFS message, and reach `returned to EL1h`; only the intentional wait-loop timeout follows.
+
+### 2026-09-06 — AArch64 launchd loaded from initramfs VFS
+
+- The first user process no longer reads a second direct embedded launchd image. It reads `/bin/launchd` through the native VFS into a bounded 96 KiB staging buffer, then uses the ordinary ELF loader and TTBR0/task path.
+- Dedicated/generic logs `/tmp/fullerene-aarch64-initramfs-launchd-from-vfs-smoke.log` and `/tmp/fullerene-generic-aarch64-initramfs-launchd-from-vfs-smoke.log` report five entries, three launchd image pages at `0x40000000`, the existing exec/orphan/FD checks, and `returned to EL1h`; only the intentional timeout follows.
+
+### 2026-09-06 — AArch64 Bramble USB handoff before launchd
+
+- Corrected a real boot-order hole: the launchd-enabled path previously entered non-returning EL0 before the Bramble DWC3/Type-C handoff. The kernel now installs the frame allocator/VFS, completes USB handoff, then enters `/bin/launchd`.
+- QEMU smoke `/tmp/fullerene-aarch64-usb-before-launchd-smoke.log` and AArch64 check `/tmp/fullerene-aarch64-usb-before-launchd-check-fixed.log` passed. Latest temporary Bramble image `/tmp/fullerene-bramble-aarch64-launchd.img` passed its boot audit with SHA-256 `21d7be84213ce83ba8015b5561a85f520d497e87d97fb2d950faa2e4c28428ab` (2,473,984 bytes); it is not yet physically booted.
+
+### 2026-09-06 — AArch64 Bramble launchd image preparation and current descriptor
+
+- The earlier launchd-enabled temporary Bramble image `/tmp/fullerene-bramble-aarch64-launchd.img` after the VFS switch had SHA-256 `bf596af44afca263a0337d362e73d767c1784a286ce275cac738b5050d581337`; the current reordered image and its audit are recorded in the preceding entry. It has not yet been booted because the handset was not in Fastboot during this build.
+- Read-only capture `/tmp/fullerene-bramble-1234-descriptor-current.txt` confirms the connected Pixel host identity `1234:0001`, USB 3.20, one vendor-specific interface, and bulk EP1 IN/OUT. This proves the host-visible identity, not execution of the newly built Fullerene image. No flash, erase, partition write, analyzer, or user-data operation was used.
+
+### 2026-09-06 — AArch64 VFS file write and read-back
+
+- `WRITE` now handles owner/generation-checked VFS file handles as well as UART descriptors. It copies a bounded 4 KiB EL0 buffer and calls Genome `Vfs::write_at`; the initramfs contains an empty `/etc/write-test` used by launchd for write, close, reopen, read-back, and UART output.
+- Dedicated and generic QEMU logs `/tmp/fullerene-dedicated-aarch64-vfs-write-smoke.log` and `/tmp/fullerene-generic-aarch64-vfs-write-smoke.log` both show `WRITE=21`, read-back `READ=21`, `AArch64 VFS write ok`, and `returned to EL1h`; the final 15-second timeout is intentional. No synchronous exception or allocator exhaustion occurred.
+- Checks passed: `/tmp/fullerene-aarch64-check-vfs-write.log`, `/tmp/fullerene-host-check-vfs-write.log`, `/tmp/fullerene-abi-test-vfs-write.log` (11 ABI tests), rustfmt, and `git diff --check`. Temporary Bramble artifact `/tmp/fullerene-bramble-aarch64-vfs-write.img` passed audit with SHA-256 `cf84125a008c71d50f1c20233f0fb5ebadce21c87b7c2fc4a487486f6f60b9f7` and size 2,473,984 bytes; it has not been physically booted.
+
 ## Document routing and context cost
 
 | Document | Size | Use | Loading policy |
 | --- | ---: | --- | --- |
-| [`HARDWARE_aarch64.md`](HARDWARE_aarch64.md) | 979 lines / 491.2 KB | Full Bramble ledger and source audit | Read targeted sections or this index first |
-| [`HARDWARE.md`](HARDWARE.md) | 839 lines / 353.0 KB | Cross-platform hardware notes plus Bramble summary | Read the Bramble section and this index; avoid loading the full table |
+| [`HARDWARE_aarch64.md`](HARDWARE_aarch64.md) | 1,394 lines / 607.6 KB | Full Bramble ledger and source audit | Read targeted sections or this index first |
+| [`HARDWARE.md`](HARDWARE.md) | 926 lines / 418.6 KB | Cross-platform hardware notes plus Bramble summary | Read the Bramble section and this index; avoid loading the full table |
 | [`BUG_JOURNAL.md`](BUG_JOURNAL.md) | 1,410 lines / 65.7 KB | Historical software investigations, mostly Wi-Fi and runtime | Not needed for the Bramble USB path unless a related regression appears |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 1,037 lines / 37.9 KB | Project-wide design rules | Read only when changing architecture or ownership boundaries |
-| [`BUILD.md`](BUILD.md) | 679 lines / 28.8 KB | Build and run procedures | Read the Bramble command section when running hardware |
+| [`BUILD.md`](BUILD.md) | 689 lines / 28.8 KB | Build and run procedures | Read the Bramble command section when running hardware |
 | `docs/history/*.png` | 3.1 MB | Historical screenshots/artifacts | Do not load for USB source debugging |
 
-The two hardware ledgers account for about 830.6 KB of text and contain the
-only unusually long lines in this USB context: 715 rows in
-`HARDWARE_aarch64.md` and 470 rows in `HARDWARE.md` exceed 200 characters;
+The two hardware ledgers account for about 1,026.2 KB of text and contain the
+only unusually long lines in this USB context: 937 rows in
+`HARDWARE_aarch64.md` and 552 rows in `HARDWARE.md` exceed 200 characters;
 the longest row is about 1,512 characters. The individual
 experiment rows are valuable evidence, but loading the whole ledger into an
 agent context repeats the same negative conclusion many times. This index is

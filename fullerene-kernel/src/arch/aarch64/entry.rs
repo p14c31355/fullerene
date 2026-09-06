@@ -2,9 +2,9 @@ use core::arch::{asm, global_asm};
 
 const BOOT_STACK_SIZE: usize = 64 * 1024;
 
-/// Values captured from the bootloader before the bootstrap starts using
-/// caller-saved registers. The assembly entry owns this layout until Rust
-/// receives a pointer to it.
+/// Values captured from the bootloader before the normal Rust entry starts.
+/// The bootstrap shim only establishes a stack and branches to
+/// `aarch64_bootstrap`; the rest of this typed handoff is assembled by Rust.
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(crate) struct Aarch64BootContext {
@@ -13,7 +13,6 @@ pub(crate) struct Aarch64BootContext {
     pub(crate) x2: usize,
     pub(crate) x3: usize,
     pub(crate) current_el: usize,
-    pub(crate) entry_sp: usize,
     pub(crate) relocation_delta: isize,
 }
 
@@ -24,84 +23,131 @@ impl Aarch64BootContext {
     }
 }
 
-const BOOT_CONTEXT_SIZE: usize = (core::mem::size_of::<Aarch64BootContext>() + 15) & !15;
-
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".boot_stack")]
 static mut AARCH64_BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];
 
-// Keep the unavoidably low-level boot contract in one module. The Rust entry
-// point in main.rs receives only the typed Aarch64BootContext.
+// This is the only assembly needed to establish a valid stack. Rust owns
+// zeroing BSS, relocation processing, EL2->EL1 setup, and context creation.
 global_asm!(
     ".section .text.boot,\"ax\"\n\
      .balign 4\n\
      .global _start\n\
      .type _start, %function\n\
      _start:\n\
-         adrp x9, AARCH64_BOOT_STACK\n\
-         add x9, x9, :lo12:AARCH64_BOOT_STACK\n\
-         mov x10, #{stack_size}\n\
-         add sp, x9, x10\n\
-         mov x6, sp\n\
-         adrp x11, __bss_start\n\
-         add x11, x11, :lo12:__bss_start\n\
-         adrp x12, __bss_end\n\
-         add x12, x12, :lo12:__bss_end\n\
-     1:\n\
-         cmp x11, x12\n\
-         b.hs 2f\n\
-         str xzr, [x11], #8\n\
-         b 1b\n\
-     2:\n\
-         sub sp, sp, #{context_size}\n\
-         mov x19, sp\n\
-         stp x0, x1, [x19]\n\
-         stp x2, x3, [x19, #16]\n\
-         mrs x5, CurrentEL\n\
-         str x5, [x19, #32]\n\
-         str x6, [x19, #40]\n\
-         str xzr, [x19, #48]\n\
-         mrs x5, CurrentEL\n\
-         and x5, x5, #0xc\n\
-         cmp x5, #0x8\n\
-         b.eq 3f\n\
-         b aarch64_el1_entry\n\
-     3:\n\
-         mov x5, #(1 << 31)\n\
-         msr HCR_EL2, x5\n\
-         msr CPTR_EL2, xzr\n\
-         mov x5, #9\n\
-         msr ICC_SRE_EL2, x5\n\
-         isb\n\
-         mov x5, #3\n\
-         msr CNTHCTL_EL2, x5\n\
-         msr CNTVOFF_EL2, xzr\n\
-         mov x5, #0x3c5\n\
-         msr SPSR_EL2, x5\n\
-         adrp x5, aarch64_el1_entry\n\
-         add x5, x5, :lo12:aarch64_el1_entry\n\
-         msr ELR_EL2, x5\n\
-         mov x6, sp\n\
-         msr SP_EL1, x6\n\
-         isb\n\
-         eret\n\
+         adr x9, __aarch64_boot_stack_top\n\
+         mov sp, x9\n\
+         b aarch64_bootstrap\n\
      .size _start, . - _start\n\
-     .global aarch64_el1_entry\n\
-     .type aarch64_el1_entry, %function\n\
-     aarch64_el1_entry:\n\
-         mov x5, #(3 << 20)\n\
-         msr CPACR_EL1, x5\n\
-         isb\n\
-         adr x7, _start\n\
-         mov x0, x7\n\
-         bl aarch64_apply_relocations\n\
-         str x0, [x19, #48]\n\
-         mov x0, x19\n\
-         b aarch64_rust_entry\n\
-     .size aarch64_el1_entry, . - aarch64_el1_entry\n\
      ",
-    stack_size = const BOOT_STACK_SIZE,
-    context_size = const BOOT_CONTEXT_SIZE,
 );
+
+/// Finish the architecture-neutral part of the boot handoff in Rust.
+///
+/// The entry shim deliberately preserves x0..x3 and does not touch BSS before
+/// this function. Relocation addresses are obtained PC-relatively first, then
+/// BSS is cleared after the static-PIE fixups, so the bootstrap stack can live
+/// outside the cleared range.
+#[unsafe(no_mangle)]
+extern "C" fn aarch64_bootstrap(x0: usize, x1: usize, x2: usize, x3: usize) -> ! {
+    let (current_el, runtime_entry) = read_boot_state();
+    let relocation_delta = aarch64_apply_relocations(runtime_entry);
+    zero_bss();
+
+    if current_el & 0xc == 0x8 {
+        unsafe { enter_el1() };
+    } else {
+        // QEMU's virt machine can hand the kernel directly to EL1. Rust may
+        // use SIMD registers for ordinary copies, so enable them on that
+        // path too; the EL2 path programs CPACR_EL1 before eret.
+        unsafe { enable_el1_fp_simd() };
+    }
+
+    let context = Aarch64BootContext {
+        x0,
+        x1,
+        x2,
+        x3,
+        current_el,
+        relocation_delta,
+    };
+    super::aarch64_rust_entry(&context)
+}
+
+#[inline(always)]
+fn read_boot_state() -> (usize, usize) {
+    let current_el: usize;
+    let runtime_entry: usize;
+    unsafe {
+        asm!(
+            "mrs {current_el}, CurrentEL",
+            "adr {runtime_entry}, _start",
+            current_el = out(reg) current_el,
+            runtime_entry = out(reg) runtime_entry,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    (current_el, runtime_entry)
+}
+
+/// Transition from EL2 to EL1 while retaining the current Rust stack.
+///
+/// The compiler resumes at the local label after `eret`; no separate
+/// assembly entry stub is needed for the EL1 half of the handoff.
+unsafe fn enter_el1() {
+    unsafe {
+        asm!(
+            "mov x5, #(1 << 31)",
+            "msr HCR_EL2, x5",
+            "msr CPTR_EL2, xzr",
+            "mov x5, #9",
+            "msr ICC_SRE_EL2, x5",
+            "isb",
+            "mov x5, #3",
+            "msr CNTHCTL_EL2, x5",
+            "msr CNTVOFF_EL2, xzr",
+            "mov x5, #0x3c5",
+            "msr SPSR_EL2, x5",
+            "adr x5, 2f",
+            "msr ELR_EL2, x5",
+            "mov x6, sp",
+            "msr SP_EL1, x6",
+            "mov x5, #(3 << 20)",
+            "msr CPACR_EL1, x5",
+            "isb",
+            "eret",
+            "2:",
+            out("x5") _,
+            out("x6") _,
+            options(nostack),
+        );
+    }
+}
+
+unsafe fn enable_el1_fp_simd() {
+    unsafe {
+        asm!(
+            "mov x5, #(3 << 20)",
+            "msr CPACR_EL1, x5",
+            "isb",
+            out("x5") _,
+            options(nostack),
+        );
+    }
+}
+
+unsafe extern "C" {
+    static __bss_start: u8;
+    static __bss_end: u8;
+}
+
+fn zero_bss() {
+    let start = core::ptr::addr_of!(__bss_start) as usize;
+    let end = core::ptr::addr_of!(__bss_end) as usize;
+    if end > start {
+        unsafe { core::ptr::write_bytes(start as *mut u8, 0, end - start) };
+    }
+}
 
 #[cfg(fullerene_aarch64_bramble)]
 const LINK_ENTRY: usize = 0x8008_0040;

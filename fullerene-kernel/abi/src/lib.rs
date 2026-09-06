@@ -29,6 +29,8 @@ pub enum SyscallNumber {
     GetProcessName = 21,
     Yield = 22,
     Spawn = 23,
+    Exec = 24,
+    ExecPath = 25,
     MapMemory = 30,
     UnmapMemory = 31,
     ProtectMemory = 32,
@@ -76,7 +78,7 @@ pub enum SyscallNumber {
 impl SyscallNumber {
     all_syscall! {
         AbiQuery, Exit, Fork, Read, Write, Open, Close, Wait,
-        GetPid, GetProcessName, Yield, Spawn,
+        GetPid, GetProcessName, Yield, Spawn, Exec, ExecPath,
         MapMemory, UnmapMemory, ProtectMemory, QueryMemory,
         SharedBufferCreate, SharedBufferMap, SharedBufferUnmap,
         CreateEvent, WaitEvent, SignalEvent, SubscribeEvent,
@@ -103,7 +105,8 @@ impl TryFrom<u64> for SyscallNumber {
         match_num! {
             ABI_QUERY => AbiQuery, EXIT => Exit, FORK => Fork, READ => Read, WRITE => Write,
             OPEN => Open, CLOSE => Close, WAIT => Wait, GETPID => GetPid, GET_PROCESS_NAME => GetProcessName,
-            YIELD => Yield, SPAWN => Spawn, MAP_MEMORY => MapMemory, UNMAP_MEMORY => UnmapMemory,
+            YIELD => Yield, SPAWN => Spawn, EXEC => Exec, EXEC_PATH => ExecPath,
+            MAP_MEMORY => MapMemory, UNMAP_MEMORY => UnmapMemory,
             PROTECT_MEMORY => ProtectMemory, QUERY_MEMORY => QueryMemory,
             SHARED_BUFFER_CREATE => SharedBufferCreate, SHARED_BUFFER_MAP => SharedBufferMap,
             SHARED_BUFFER_UNMAP => SharedBufferUnmap,
@@ -130,6 +133,7 @@ pub mod syscall_numbers {
         ABI_QUERY = AbiQuery, ABI_VERSION = AbiQuery,
         EXIT = Exit, FORK = Fork, READ = Read, WRITE = Write, OPEN = Open, CLOSE = Close, WAIT = Wait,
         GETPID = GetPid, GET_PROCESS_NAME = GetProcessName, YIELD = Yield, SPAWN = Spawn,
+        EXEC = Exec, EXEC_PATH = ExecPath,
         MAP_MEMORY = MapMemory, UNMAP_MEMORY = UnmapMemory, PROTECT_MEMORY = ProtectMemory, QUERY_MEMORY = QueryMemory,
         SHARED_BUFFER_CREATE = SharedBufferCreate, SHARED_BUFFER_MAP = SharedBufferMap,
         SHARED_BUFFER_UNMAP = SharedBufferUnmap,
@@ -272,6 +276,7 @@ pub enum Capability {
     ProcessSpawn = 1 << 9,
     SharedBuffers = 1 << 10,
     ProcessSupervision = 1 << 11,
+    ProcessExec = 1 << 12,
 }
 
 impl Capability {
@@ -300,7 +305,8 @@ impl CapabilitySet {
             | Capability::DeviceEnumeration.bit()
             | Capability::ProcessSpawn.bit()
             | Capability::SharedBuffers.bit()
-            | Capability::ProcessSupervision.bit(),
+            | Capability::ProcessSupervision.bit()
+            | Capability::ProcessExec.bit(),
     );
 
     #[inline]

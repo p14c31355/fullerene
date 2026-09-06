@@ -33,9 +33,9 @@ mod config;
 mod control;
 mod phy;
 mod phy_tables;
-pub use phy_tables::install_dt_phy_sequences;
-pub use phy_tables::hsphy_table_source;
 pub use phy_tables::hsphy_node_code;
+pub use phy_tables::hsphy_table_source;
+pub use phy_tables::install_dt_phy_sequences;
 pub use phy_tables::{record_hs_dt_node_identity, record_hs_dt_param_override_observation};
 use trace::{fill_trace_control_response, trace_begin, trace_event};
 pub mod trace;
@@ -1579,8 +1579,22 @@ pub fn trace_dwc3_debug_sample() {
             values[queue_type as usize] = read(GDBGFIFOSPACE) >> GDBGFIFOSPACE_SPACE_SHIFT;
         }
         trace::live_dwc3_debug_sample(values, [0; 16], read(GDBGEPINFO0), read(GDBGEPINFO1));
-        trace_event(TRACE_DWC3_DEBUG, 0, values[0], values[1], values[2], values[3]);
-        trace_event(TRACE_DWC3_DEBUG, 1, values[4], values[5], values[6], values[7]);
+        trace_event(
+            TRACE_DWC3_DEBUG,
+            0,
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+        );
+        trace_event(
+            TRACE_DWC3_DEBUG,
+            1,
+            values[4],
+            values[5],
+            values[6],
+            values[7],
+        );
     }
 }
 
@@ -5961,238 +5975,238 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             write(DALEPENA, 0);
             ENDPOINTS_READY = false;
         } else {
-        // Linux enables each endpoint only after its SETEPCONFIG and
-        // SETTRANSFRESOURCE commands complete. Do not advertise EP0 before
-        // the controller has accepted the corresponding resource state.
-        write(DALEPENA, 0);
-        // DEPSTARTCFG(0) opens a new endpoint-resource allocation window.
-        // SETEPCONFIG(INIT) then allocates one resource per EP0 direction.
-        if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
-            log_puts("usb gadget handoff: DEPSTARTCFG failed\n");
-            return gadget_handoff_fail(4); // resource window
-        }
-        if stop_after_gadget_handoff_stage(4) {
-            return false;
-        }
-        // Android's msm DWC3 glue allocates transfer resources for the
-        // available endpoints immediately after DEPSTARTCFG, before issuing
-        // SETEPCONFIG. Keep this ordering as an explicit Bramble differential;
-        // the upstream Linux ordering remains the default path elsewhere.
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
-            && !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
-        {
-            // qpr1 walks the endpoint objects created from GHWPARAMS3's
-            // num_eps field immediately after DEPSTARTCFG and before any
-            // SETEPCONFIG. Mirror that available-endpoint range rather than
-            // issuing commands to the unused physical endpoint slots.
-            for endpoint in 0..qpr1_endpoint_count() as u32 {
-                if !set_transfer_resource(endpoint as usize) {
-                    log_puts("usb gadget handoff: Android resource preallocation failed\n");
-                    return gadget_handoff_fail(5); // resource allocation
+            // Linux enables each endpoint only after its SETEPCONFIG and
+            // SETTRANSFRESOURCE commands complete. Do not advertise EP0 before
+            // the controller has accepted the corresponding resource state.
+            write(DALEPENA, 0);
+            // DEPSTARTCFG(0) opens a new endpoint-resource allocation window.
+            // SETEPCONFIG(INIT) then allocates one resource per EP0 direction.
+            if !send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) {
+                log_puts("usb gadget handoff: DEPSTARTCFG failed\n");
+                return gadget_handoff_fail(4); // resource window
+            }
+            if stop_after_gadget_handoff_stage(4) {
+                return false;
+            }
+            // Android's msm DWC3 glue allocates transfer resources for the
+            // available endpoints immediately after DEPSTARTCFG, before issuing
+            // SETEPCONFIG. Keep this ordering as an explicit Bramble differential;
+            // the upstream Linux ordering remains the default path elsewhere.
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
+                && !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
+            {
+                // qpr1 walks the endpoint objects created from GHWPARAMS3's
+                // num_eps field immediately after DEPSTARTCFG and before any
+                // SETEPCONFIG. Mirror that available-endpoint range rather than
+                // issuing commands to the unused physical endpoint slots.
+                for endpoint in 0..qpr1_endpoint_count() as u32 {
+                    if !set_transfer_resource(endpoint as usize) {
+                        log_puts("usb gadget handoff: Android resource preallocation failed\n");
+                        return gadget_handoff_fail(5); // resource allocation
+                    }
                 }
             }
-        }
-        // The direct reuse entry has already selected DCFG High-Speed. Keep
-        // EP0 at the USB2 maximum packet size unless the explicit
-        // Linux/Android initial-512 A/B is requested; using the SuperSpeed
-        // value unconditionally leaves a High-Speed core with a mismatched
-        // control context before Connect Done can modify it.
-        let ep0_packet_size = if cfg!(fullerene_aarch64_usb_ep0_initial_512) {
-            INITIAL_EP0_MAX_PACKET_SIZE
-        } else {
-            64
-        };
-        if !unsafe {
-            configure_endpoint_config(0, ep0_packet_size, DEPCFG_EP_TYPE_CONTROL, false, 0)
-        } {
-            log_puts("usb gadget handoff: USB2 EP0 OUT configure failed\n");
-            return gadget_handoff_fail(5); // EP0 config
-        }
-        if stop_after_gadget_handoff_stage(9) {
-            return false;
-        }
-        // This path intentionally uses the config-only helper above so the
-        // Qualcomm sequence remains a single SETEPCONFIG ->
-        // SETTRANSFRESOURCE pair for EP0 OUT. The outer allocation is
-        // required here; unlike configure_endpoint(), the config-only helper
-        // does not allocate the transfer resource itself.
-        if !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
-            && !cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
-            && !set_transfer_resource(0)
-        {
-            log_puts("usb gadget handoff: USB2 EP0 OUT resource failed\n");
-            return gadget_handoff_fail(5); // EP0 resource
-        }
-        if stop_after_gadget_handoff_stage(10) {
-            return false;
-        }
-        // XBL's DwcConfigureEP publishes the corresponding DALEPENA bit
-        // after each SETEPCONFIG -> SETTRANSFRESOURCE pair.
-        write(DALEPENA, read(DALEPENA) | (1 << 0));
-        trace::live_dalepena_config(0, read(DALEPENA));
-        #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0)]
-        {
-            // Stock XBL inserts the initial EP0 OUT request immediately after
-            // the OUT pair and before configuring the EP0 IN direction. Keep
-            // this as a separate ordering A/B; the explicit setup payload is
-            // retained because the earlier XBL zero/self-buffer tests did not
-            // attach on this handoff path.
-            if !queue_xbl_setup_request() {
-                log_puts("usb gadget handoff: XBL inter-pair request queue failed\n");
-                return gadget_handoff_fail(5);
+            // The direct reuse entry has already selected DCFG High-Speed. Keep
+            // EP0 at the USB2 maximum packet size unless the explicit
+            // Linux/Android initial-512 A/B is requested; using the SuperSpeed
+            // value unconditionally leaves a High-Speed core with a mismatched
+            // control context before Connect Done can modify it.
+            let ep0_packet_size = if cfg!(fullerene_aarch64_usb_ep0_initial_512) {
+                INITIAL_EP0_MAX_PACKET_SIZE
+            } else {
+                64
+            };
+            if !unsafe {
+                configure_endpoint_config(0, ep0_packet_size, DEPCFG_EP_TYPE_CONTROL, false, 0)
+            } {
+                log_puts("usb gadget handoff: USB2 EP0 OUT configure failed\n");
+                return gadget_handoff_fail(5); // EP0 config
             }
-            prepare_ep0_setup_trb();
-            if !start_transfer(0, ep0_trb_ptr(0)) {
-                log_puts("usb gadget handoff: XBL inter-pair SETUP STARTTRANSFER failed\n");
-                return gadget_handoff_fail(12);
+            if stop_after_gadget_handoff_stage(9) {
+                return false;
             }
-            let slot = EP0_SETUP_REQUEST_SLOT;
-            if slot == usize::MAX || !udc_mut().start(0, slot) {
-                log_puts("usb gadget handoff: XBL inter-pair request start failed\n");
-                return gadget_handoff_fail(5);
+            // This path intentionally uses the config-only helper above so the
+            // Qualcomm sequence remains a single SETEPCONFIG ->
+            // SETTRANSFRESOURCE pair for EP0 OUT. The outer allocation is
+            // required here; unlike configure_endpoint(), the config-only helper
+            // does not allocate the transfer resource itself.
+            if !cfg!(fullerene_aarch64_usb_gadget_handoff_no_transfer_resource)
+                && !cfg!(fullerene_aarch64_usb_gadget_handoff_android_resource_order)
+                && !set_transfer_resource(0)
+            {
+                log_puts("usb gadget handoff: USB2 EP0 OUT resource failed\n");
+                return gadget_handoff_fail(5); // EP0 resource
             }
-            EP0_SETUP_ARMED = true;
-        }
-        // Stage 8 isolates the first SETEPCONFIG/SETTRANSFRESOURCE pair from
-        // the corresponding EP0 IN pair. It is intentionally appended to the
-        // original 1..7 sequence so existing stage numbers remain stable.
-        if stop_after_gadget_handoff_stage(8) {
-            return false;
-        }
-        if !configure_endpoint(1, ep0_packet_size, false) {
-            log_puts("usb gadget handoff: USB2 EP0 configure failed\n");
-            return gadget_handoff_fail(5); // EP0 config
-        }
-        // XBL's DwcConfigureEP publishes the corresponding DALEPENA bit
-        // after each SETEPCONFIG -> SETTRANSFRESOURCE pair. Keep the two
-        // physical EP0 directions on the same per-direction boundary.
-        write(DALEPENA, read(DALEPENA) | (1 << 1));
-        trace::live_dalepena_config(1, read(DALEPENA));
-        // Stock XBL writes exactly 0x47 here: Disconnect, USB Reset, Connect
-        // Done, and Suspend. Keep the narrower mask limited to the
-        // event-driven XBL differential; the generic path retains its
-        // broader lifecycle notifications.
-        let devten = if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_exact_devten) {
-            qpr1_gadget_devten()
-        } else if cfg!(any(
-            fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
-            fullerene_aarch64_usb_abl_devten
-        )) {
-            // Factory ABL publishes exactly 0x47 here: Disconnect, USB Reset,
-            // Connect Done, and Suspend. Keep this opt-in so the normal path
-            // remains unchanged while event ownership is isolated.
-            DEVTEN_DISCONNECT | DEVTEN_USB_RESET | DEVTEN_CONNECT_DONE | DEVTEN_SUSPEND
-        } else {
-            DEVTEN_DISCONNECT
-                | DEVTEN_USB_RESET
-                | DEVTEN_CONNECT_DONE
-                | DEVTEN_LINK_STATUS_CHANGE
-                | DEVTEN_WAKEUP
-                | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND
-        };
-        write(DEVTEN, devten);
-        #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_post_endpoint_global)]
-        {
-            // Stock XBL applies the usb31 global deltas only after both EP0
-            // SETEPCONFIG -> SETTRANSFRESOURCE pairs and after DEVTEN /
-            // DALEPENA publication. Keep this register-order differential
-            // isolated from the endpoint/request A/Bs.
-            apply_usb31_gadget_reference_deltas();
-        }
-        ENDPOINTS_READY = true;
-        let _ = udc_mut().configure_endpoint(0, 64, false);
-        let _ = udc_mut().configure_endpoint(1, 64, false);
-        // Both EP0 directions, their resources, DALEPENA, and DEVTEN have
-        // now been published. This is the endpoint-config boundary, still
-        // before the final Run/Stop transition.
-        trace_dwc3_debug_stage(2);
-        if cfg!(any(
-            fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
-            fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
-        )) {
-            // Stock XBL queues this request before Run/Stop, after both EP0
-            // directions have their transfer resources.
-            if !queue_xbl_setup_request() {
-                log_puts("usb gadget handoff: XBL EP0 request queue failed\n");
-                return gadget_handoff_fail(5);
+            if stop_after_gadget_handoff_stage(10) {
+                return false;
             }
-        }
-        if stop_after_gadget_handoff_stage(5) {
-            return false;
-        }
-        if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
-            trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, read(DSTS));
-            prepare_ep0_setup_trb();
-        }
-        #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_stall_flush)]
-        {
-            // Keep the stall-flush differential effective when the proven
-            // Fastboot-reuse handoff is selected as the primary path too.
-            let _ = send_ep_command(0, DEPCMD_SETSTALL, 0, 0, 0);
-            trace_event(
-                TRACE_SETUP_QUEUED,
-                0x5354_4C46, // "STLF"
-                0,
-                0,
-                0,
-                read(DSTS),
-            );
-        }
-        apply_ep0_txfifo_fix();
-        // Stage 11 isolates the cache-cleaned SETUP buffer/TRB publication
-        // from the DWC3 STARTTRANSFER command itself. The old stage 6
-        // combined both operations, so a failure there could not tell us
-        // whether the DMA object or the command latch was the boundary.
-        if stop_after_gadget_handoff_stage(11) {
-            return false;
-        }
-        // On Bramble, a STARTTRANSFER issued while the device is still
-        // disconnected can complete with No Resource even after
-        // SETTRANSFRESOURCE returned index 1. The timing A/Bs move this
-        // exact command across the Run/Stop/link boundary; the default keeps
-        // the historical pre-connect command for comparison.
-        let defer_initial_setup = cfg!(any(
-            fullerene_aarch64_usb_gadget_handoff_start_after_connect,
-            fullerene_aarch64_usb_gadget_handoff_start_after_reset,
-            fullerene_aarch64_usb_gadget_handoff_start_at_connect_done
-        ));
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
-            // The inter-pair XBL differential armed the setup TRB above.
-        } else if defer_initial_setup {
-            PENDING_SETUP_ARM = true;
-        } else if !start_transfer(0, ep0_trb_ptr(0)) {
-            log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
-            return gadget_handoff_fail(12); // STARTTRANSFER
-        }
-        // Record the armed SETUP TRB so the USB-reset handler takes the
-        // Linux-equivalent keep-the-TRB path instead of tearing it down and
-        // racing the host's first post-reset SETUP token.
-        if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
-            EP0_SETUP_ARMED = !defer_initial_setup;
-        }
-        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
-            enable_gadget_controller_irq();
-        }
-        // Linux enables the DWC3 event interrupt immediately after arming the
-        // EP0 OUT SETUP TRB. The probe owns no asynchronous IRQ path yet, so
-        // drain the ring once synchronously at the same boundary. This keeps
-        // an early XFER_NOT_READY/command event from waiting until after the
-        // final Run/Stop transition.
-        poll_ep0_event_ring();
-        // The Android downstream Bramble driver leaves the USB2 PHY wake
-        // bits in the state restored by the endpoint command helper here.
-        // Mainline Linux later adds an explicit dwc3_enable_susphy(true),
-        // but the stage-11 control experiment shows that this older Android
-        // boundary is the one that still reaches the physical pull-up.
-        // Stage 12 is immediately after STARTTRANSFER completion and before
-        // the final VBUS/session + Run/Stop transition.
-        if stop_after_gadget_handoff_stage(12) {
-            return false;
-        }
-        if stop_after_gadget_handoff_stage(6) {
-            return false;
-        }
+            // XBL's DwcConfigureEP publishes the corresponding DALEPENA bit
+            // after each SETEPCONFIG -> SETTRANSFRESOURCE pair.
+            write(DALEPENA, read(DALEPENA) | (1 << 0));
+            trace::live_dalepena_config(0, read(DALEPENA));
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0)]
+            {
+                // Stock XBL inserts the initial EP0 OUT request immediately after
+                // the OUT pair and before configuring the EP0 IN direction. Keep
+                // this as a separate ordering A/B; the explicit setup payload is
+                // retained because the earlier XBL zero/self-buffer tests did not
+                // attach on this handoff path.
+                if !queue_xbl_setup_request() {
+                    log_puts("usb gadget handoff: XBL inter-pair request queue failed\n");
+                    return gadget_handoff_fail(5);
+                }
+                prepare_ep0_setup_trb();
+                if !start_transfer(0, ep0_trb_ptr(0)) {
+                    log_puts("usb gadget handoff: XBL inter-pair SETUP STARTTRANSFER failed\n");
+                    return gadget_handoff_fail(12);
+                }
+                let slot = EP0_SETUP_REQUEST_SLOT;
+                if slot == usize::MAX || !udc_mut().start(0, slot) {
+                    log_puts("usb gadget handoff: XBL inter-pair request start failed\n");
+                    return gadget_handoff_fail(5);
+                }
+                EP0_SETUP_ARMED = true;
+            }
+            // Stage 8 isolates the first SETEPCONFIG/SETTRANSFRESOURCE pair from
+            // the corresponding EP0 IN pair. It is intentionally appended to the
+            // original 1..7 sequence so existing stage numbers remain stable.
+            if stop_after_gadget_handoff_stage(8) {
+                return false;
+            }
+            if !configure_endpoint(1, ep0_packet_size, false) {
+                log_puts("usb gadget handoff: USB2 EP0 configure failed\n");
+                return gadget_handoff_fail(5); // EP0 config
+            }
+            // XBL's DwcConfigureEP publishes the corresponding DALEPENA bit
+            // after each SETEPCONFIG -> SETTRANSFRESOURCE pair. Keep the two
+            // physical EP0 directions on the same per-direction boundary.
+            write(DALEPENA, read(DALEPENA) | (1 << 1));
+            trace::live_dalepena_config(1, read(DALEPENA));
+            // Stock XBL writes exactly 0x47 here: Disconnect, USB Reset, Connect
+            // Done, and Suspend. Keep the narrower mask limited to the
+            // event-driven XBL differential; the generic path retains its
+            // broader lifecycle notifications.
+            let devten = if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_exact_devten) {
+                qpr1_gadget_devten()
+            } else if cfg!(any(
+                fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
+                fullerene_aarch64_usb_abl_devten
+            )) {
+                // Factory ABL publishes exactly 0x47 here: Disconnect, USB Reset,
+                // Connect Done, and Suspend. Keep this opt-in so the normal path
+                // remains unchanged while event ownership is isolated.
+                DEVTEN_DISCONNECT | DEVTEN_USB_RESET | DEVTEN_CONNECT_DONE | DEVTEN_SUSPEND
+            } else {
+                DEVTEN_DISCONNECT
+                    | DEVTEN_USB_RESET
+                    | DEVTEN_CONNECT_DONE
+                    | DEVTEN_LINK_STATUS_CHANGE
+                    | DEVTEN_WAKEUP
+                    | DEVTEN_HIBERNATION_REQUEST
+                    | DEVTEN_SUSPEND
+            };
+            write(DEVTEN, devten);
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_post_endpoint_global)]
+            {
+                // Stock XBL applies the usb31 global deltas only after both EP0
+                // SETEPCONFIG -> SETTRANSFRESOURCE pairs and after DEVTEN /
+                // DALEPENA publication. Keep this register-order differential
+                // isolated from the endpoint/request A/Bs.
+                apply_usb31_gadget_reference_deltas();
+            }
+            ENDPOINTS_READY = true;
+            let _ = udc_mut().configure_endpoint(0, 64, false);
+            let _ = udc_mut().configure_endpoint(1, 64, false);
+            // Both EP0 directions, their resources, DALEPENA, and DEVTEN have
+            // now been published. This is the endpoint-config boundary, still
+            // before the final Run/Stop transition.
+            trace_dwc3_debug_stage(2);
+            if cfg!(any(
+                fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
+                fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
+            )) {
+                // Stock XBL queues this request before Run/Stop, after both EP0
+                // directions have their transfer resources.
+                if !queue_xbl_setup_request() {
+                    log_puts("usb gadget handoff: XBL EP0 request queue failed\n");
+                    return gadget_handoff_fail(5);
+                }
+            }
+            if stop_after_gadget_handoff_stage(5) {
+                return false;
+            }
+            if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
+                trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, read(DSTS));
+                prepare_ep0_setup_trb();
+            }
+            #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_stall_flush)]
+            {
+                // Keep the stall-flush differential effective when the proven
+                // Fastboot-reuse handoff is selected as the primary path too.
+                let _ = send_ep_command(0, DEPCMD_SETSTALL, 0, 0, 0);
+                trace_event(
+                    TRACE_SETUP_QUEUED,
+                    0x5354_4C46, // "STLF"
+                    0,
+                    0,
+                    0,
+                    read(DSTS),
+                );
+            }
+            apply_ep0_txfifo_fix();
+            // Stage 11 isolates the cache-cleaned SETUP buffer/TRB publication
+            // from the DWC3 STARTTRANSFER command itself. The old stage 6
+            // combined both operations, so a failure there could not tell us
+            // whether the DMA object or the command latch was the boundary.
+            if stop_after_gadget_handoff_stage(11) {
+                return false;
+            }
+            // On Bramble, a STARTTRANSFER issued while the device is still
+            // disconnected can complete with No Resource even after
+            // SETTRANSFRESOURCE returned index 1. The timing A/Bs move this
+            // exact command across the Run/Stop/link boundary; the default keeps
+            // the historical pre-connect command for comparison.
+            let defer_initial_setup = cfg!(any(
+                fullerene_aarch64_usb_gadget_handoff_start_after_connect,
+                fullerene_aarch64_usb_gadget_handoff_start_after_reset,
+                fullerene_aarch64_usb_gadget_handoff_start_at_connect_done
+            ));
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
+                // The inter-pair XBL differential armed the setup TRB above.
+            } else if defer_initial_setup {
+                PENDING_SETUP_ARM = true;
+            } else if !start_transfer(0, ep0_trb_ptr(0)) {
+                log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
+                return gadget_handoff_fail(12); // STARTTRANSFER
+            }
+            // Record the armed SETUP TRB so the USB-reset handler takes the
+            // Linux-equivalent keep-the-TRB path instead of tearing it down and
+            // racing the host's first post-reset SETUP token.
+            if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
+                EP0_SETUP_ARMED = !defer_initial_setup;
+            }
+            if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+                enable_gadget_controller_irq();
+            }
+            // Linux enables the DWC3 event interrupt immediately after arming the
+            // EP0 OUT SETUP TRB. The probe owns no asynchronous IRQ path yet, so
+            // drain the ring once synchronously at the same boundary. This keeps
+            // an early XFER_NOT_READY/command event from waiting until after the
+            // final Run/Stop transition.
+            poll_ep0_event_ring();
+            // The Android downstream Bramble driver leaves the USB2 PHY wake
+            // bits in the state restored by the endpoint command helper here.
+            // Mainline Linux later adds an explicit dwc3_enable_susphy(true),
+            // but the stage-11 control experiment shows that this older Android
+            // boundary is the one that still reaches the physical pull-up.
+            // Stage 12 is immediately after STARTTRANSFER completion and before
+            // the final VBUS/session + Run/Stop transition.
+            if stop_after_gadget_handoff_stage(12) {
+                return false;
+            }
+            if stop_after_gadget_handoff_stage(6) {
+                return false;
+            }
         }
 
         if !cfg!(any(
