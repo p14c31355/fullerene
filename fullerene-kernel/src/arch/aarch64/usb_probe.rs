@@ -8,6 +8,8 @@ use core::{
 
 #[path = "../../platform/mod.rs"]
 mod platform;
+#[path = "fdt.rs"]
+mod fdt;
 mod timer;
 mod uart;
 mod usb;
@@ -121,11 +123,12 @@ global_asm!(
          .if {minimal}\n\
              adr x7, _start\n\
              sub sp, sp, #16\n\
-             str x0, [sp]\n\
+             stp x0, x2, [sp]\n\
              mov x0, x7\n\
              bl aarch64_usb_probe_apply_relocations\n\
-             ldr x0, [sp]\n\
+             ldp x0, x2, [sp]\n\
              add sp, sp, #16\n\
+             mov x1, x2\n\
              b usb_probe_entry\n\
          .endif\n\
       // Timer IRQ is the recovery net; gadget disables it after EP0 progress, pullup-only leaves it armed.
@@ -188,11 +191,12 @@ global_asm!(
          msr DAIFClr, #2\n\
          adr x7, _start\n\
          sub sp, sp, #16\n\
-         str x0, [sp]\n\
+         stp x0, x2, [sp]\n\
          mov x0, x7\n\
          bl aarch64_usb_probe_apply_relocations\n\
-         ldr x0, [sp]\n\
+         ldp x0, x2, [sp]\n\
          add sp, sp, #16\n\
+         mov x1, x2\n\
          b usb_probe_entry\n\
      .size usb_probe_el1_entry, . - usb_probe_el1_entry\n\
      .balign 4\n\
@@ -1467,8 +1471,243 @@ extern "C" fn usb_probe_hyper_bare() -> ! {
     }
 }
 
+/// Install the USB PHY properties from the DTB supplied by the Android
+/// bootloader.  The standalone probe is a separate binary from the normal
+/// AArch64 kernel, so it cannot rely on `main.rs` having already discovered
+/// the vendor DTB and installed its Qualcomm PHY contract.
+///
+/// On Bramble, `fastboot boot` still boots with the handset's vendor_boot and
+/// selected DTBO state.  A factory `dtbo_idx=17` therefore has to reach this
+/// binary through the same x0 DTB handoff; otherwise the probe silently uses
+/// its compiled three-pair fallback even when the device selected the
+/// production two-pair PVT override.
+#[cfg(fullerene_aarch64_bramble)]
+fn install_bootloader_usb_dt(dtb_address: u64, fallback_dtb_address: u64) {
+    let Some(dtb_address) = [dtb_address, fallback_dtb_address]
+        .into_iter()
+        .filter(|address| *address != 0 && *address % 8 == 0)
+        .find(|address| fdt::inspect(*address).is_some())
+    else {
+        return;
+    };
+    let usb_node = b"qcom,dwc-usb3-msm";
+    let hs_node = b"qcom,usb-hsphy-snps-femto";
+    let qmp_node = b"qcom,usb-ssphy-qmp-dp-combo";
+    let Some(observation) = fdt::find_compatible_node_property_observation(
+        dtb_address,
+        hs_node,
+        b"qcom,param-override-seq",
+        0,
+    ) else {
+        return;
+    };
+
+    let mut qmp_init_seq = [None; 441];
+    for (index, cell) in qmp_init_seq.iter_mut().enumerate() {
+        *cell = fdt::find_compatible_property_u32(
+            dtb_address,
+            qmp_node,
+            b"qcom,qmp-phy-init-seq",
+            index,
+        );
+    }
+    #[cfg(fullerene_aarch64_usb_probe_dt_qmp)]
+    let _ = usb::install_dt_phy_sequences(observation.cells, qmp_init_seq);
+    #[cfg(not(fullerene_aarch64_usb_probe_dt_qmp))]
+    let _ = usb::install_dt_phy_sequences(observation.cells, [None; 441]);
+    usb::record_hs_dt_param_override_observation(
+        Some((observation.property_present, observation.property_length)),
+        observation.cells,
+    );
+    usb::record_hs_dt_node_identity(Some((observation.ordinal, observation.reg_base)));
+
+    #[cfg(fullerene_aarch64_usb_probe_dt_resources)]
+    {
+    // Keep the standalone probe's active resources aligned with the normal
+    // AArch64 entry path. The factory DTB is authoritative for address-bearing
+    // resources and Qualcomm glue-owned values; the compiled Bramble tables
+    // remain the validated fallback for provider-local clock/reset and RPMh
+    // supply mappings not needed by this early image.
+    let dwc3 = fdt::find_compatible(dtb_address, b"snps,dwc3")
+        .or_else(|| fdt::find_compatible(dtb_address, usb_node));
+    let hs_phy = fdt::find_compatible(dtb_address, hs_node);
+    let hs_phy_eud = fdt::find_compatible_nth(dtb_address, hs_node, 1);
+    let qmp_phy = fdt::find_compatible(dtb_address, qmp_node);
+    let gcc = fdt::find_compatible(dtb_address, b"qcom,gcc-lito");
+    let pdc = fdt::find_compatible(dtb_address, b"qcom,lito-pdc");
+    let usb_smmu_phandle =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"iommus", 0);
+    let apps_smmu = usb_smmu_phandle
+        .and_then(|phandle| fdt::find_phandle_region(dtb_address, phandle))
+        .or_else(|| fdt::find_compatible_nth(dtb_address, b"qcom,qsmmu-v500", 1))
+        .or_else(|| fdt::find_compatible(dtb_address, b"qcom,qsmmu-v500"));
+
+    let mut contract = platform::bramble::UsbDtContract::empty();
+    contract.dma_pool = match (
+        fdt::find_compatible_property_u32(
+            dtb_address,
+            usb_node,
+            b"qcom,iommu-dma-addr-pool",
+            0,
+        ),
+        fdt::find_compatible_property_u32(
+            dtb_address,
+            usb_node,
+            b"qcom,iommu-dma-addr-pool",
+            1,
+        ),
+    ) {
+        (Some(base), Some(size)) => Some((base as u64, size as u64)),
+        _ => None,
+    };
+    contract.stream_id =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"iommus", 1);
+    contract.smmu_use_3_level_tables = usb_smmu_phandle.and_then(|phandle| {
+        fdt::find_phandle_property_u32(
+            dtb_address,
+            phandle,
+            b"qcom,use-3-lvl-tables",
+            0,
+        )
+        .map(|_| true)
+    });
+    if let Some(phandle) = usb_smmu_phandle {
+        contract.smmu_global_irq =
+            fdt::find_phandle_property_u32(dtb_address, phandle, b"interrupts", 0);
+        for index in 0..platform::bramble::SMMU_CONTEXT_IRQ_COUNT {
+            contract.smmu_context_irqs[index] = fdt::find_phandle_property_u32(
+                dtb_address,
+                phandle,
+                b"interrupts",
+                3 * (index + 1) + 1,
+            );
+        }
+    }
+    for (slot, cell) in contract.qmp_reg_offsets.iter_mut().zip(0..18) {
+        *slot = fdt::find_compatible_property_u32(
+            dtb_address,
+            qmp_node,
+            b"qcom,qmp-phy-reg-offset",
+            cell,
+        );
+    }
+    contract.core_clk_rate_hz =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,core-clk-rate", 0);
+    contract.core_clk_rate_hs_hz = fdt::find_compatible_property_u32(
+        dtb_address,
+        usb_node,
+        b"qcom,core-clk-rate-hs",
+        0,
+    );
+    contract.gsi_event_buffer_count = fdt::find_compatible_property_u32(
+        dtb_address,
+        usb_node,
+        b"qcom,num-gsi-evt-buffs",
+        0,
+    );
+    for (slot, cell) in contract.gsi_reg_offsets.iter_mut().zip(0..6) {
+        *slot = fdt::find_compatible_property_u32(
+            dtb_address,
+            usb_node,
+            b"qcom,gsi-reg-offset",
+            cell,
+        );
+    }
+    contract.gsi_disable_io_coherency = fdt::find_compatible_property_u32(
+        dtb_address,
+        usb_node,
+        b"qcom,gsi-disable-io-coherency",
+        0,
+    )
+    .is_some();
+    contract.pm_qos_latency_us =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,pm-qos-latency", 0);
+    contract.bus_mode_count =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,msm-bus,num-cases", 0);
+    contract.bus_path_count =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,msm-bus,num-paths", 0);
+    for flat in 0..12 {
+        for field in 0..4 {
+            contract.bus_vectors[flat][field] = fdt::find_compatible_property_u32(
+                dtb_address,
+                usb_node,
+                b"qcom,msm-bus,vectors-KBps",
+                flat * 4 + field,
+            );
+        }
+    }
+    contract.irq_numbers[0] =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 1);
+    contract.irq_numbers[1] =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 5);
+    contract.irq_numbers[2] =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 8);
+    contract.irq_numbers[3] =
+        fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 11);
+    contract.irq_numbers[4] = fdt::find_compatible_property_u32(
+        dtb_address,
+        b"snps,dwc3",
+        b"interrupts",
+        1,
+    );
+    for index in 0..4 {
+        contract.typec_irq[index] = fdt::find_named_property_u32(
+            dtb_address,
+            b"qcom,typec@1500",
+            b"interrupts",
+            index,
+        );
+    }
+    contract.spmi_parent_irq =
+        fdt::find_compatible_property_u32(dtb_address, b"qcom,spmi-pmic-arb", b"interrupts", 1);
+    contract.qmp_vbus_valid_override = Some(
+        fdt::find_compatible_property_u32(dtb_address, qmp_node, b"qcom,vbus-valid-override", 0)
+            .is_some(),
+    );
+    contract.vbus_reg_base = fdt::find_compatible(dtb_address, b"qcom,pm8150b-vbus-reg")
+        .and_then(|region| (region.base <= u32::MAX as u64).then_some(region.base as u32));
+    contract.gdsc = fdt::find_phandle_property_region(
+        dtb_address,
+        usb_node,
+        b"USB3_GDSC-supply",
+    )
+    .map(|region| (region.base, region.size));
+
+    for (slot, cell) in contract.hs_vdd_voltage_level.iter_mut().zip(0..3) {
+        *slot = fdt::find_compatible_property_u32(dtb_address, hs_node, b"qcom,vdd-voltage-level", cell);
+    }
+    for (slot, cell) in contract.qmp_vdd_voltage_level.iter_mut().zip(0..3) {
+        *slot = fdt::find_compatible_property_u32(dtb_address, qmp_node, b"qcom,vdd-voltage-level", cell);
+    }
+    contract.qmp_vdd_max_load_ua =
+        fdt::find_compatible_property_u32(dtb_address, qmp_node, b"qcom,vdd-max-load-uA", 0);
+    for (slot, cell) in contract.qmp_core_voltage_level.iter_mut().zip(0..3) {
+        *slot = fdt::find_compatible_property_u32(dtb_address, qmp_node, b"qcom,core-voltage-level", cell);
+    }
+    contract.qmp_core_max_load_ua =
+        fdt::find_compatible_property_u32(dtb_address, qmp_node, b"qcom,core-max-load-uA", 0);
+
+    let _ = platform::bramble::install_usb_gcc_base(gcc.map(|region| region.base));
+    let _ = platform::bramble::install_usb_resource_contract(
+        dwc3.map(|region| (region.base, region.size)),
+        hs_phy.map(|region| (region.base, region.size)),
+        qmp_phy.map(|region| (region.base, region.size)),
+        apps_smmu.map(|region| (region.base, region.size)),
+        pdc.map(|region| (region.base, region.size)),
+        contract,
+    );
+    let _ = platform::bramble::install_usb_hs_phy_eud_base(
+        hs_phy_eud.map(|region| region.base),
+    );
+    }
+}
+
+#[cfg(not(fullerene_aarch64_bramble))]
+fn install_bootloader_usb_dt(_dtb_address: u64, _fallback_dtb_address: u64) {}
+
 #[unsafe(no_mangle)]
-extern "C" fn usb_probe_entry() -> ! {
+extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! {
+    install_bootloader_usb_dt(dtb_address, fallback_dtb_address);
     // Disable the secure WDT first; XBL/ABL leaves it biting ~17s and killing enumeration.
     // FULLERENE_USB_SWDD_SKIP=1 isolates the SMC cost and lets it remain armed.
     if option_env!("FULLERENE_USB_SWDD_SKIP").is_none() {

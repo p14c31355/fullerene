@@ -2841,6 +2841,325 @@ The run used `fastboot boot` only. No partition was read or written, no
 user-data backup was created, and no analyzer, flash, erase, or secure-debug
 operation was used.
 
+### 2026-09-06 Factory ABL profile plus exact qpr1 device-core reset (Run 265196.0)
+
+The attach-reaching Factory ABL/XBL endpoint profile was retained and
+`--usb2-core-reset-at-runstop --usb2-source-exact-device-reset` was added.
+This applies the qpr1 raw `DCTL.CSFTRST`, 1-ms polling, and post-reset doorbell
+clear at the final USB2 boundary, while the earlier handoff reset also uses
+the source-exact helper. The exact factory `boot.img` was used;
+`--adb-reboot-to-fastboot` only entered Fastboot. QEMU preflight, image audit,
+and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.265196.0/fullerene-bramble-boot.img`, SHA-256
+`956e636db2f01938d20e72aaa3514e3d46d70841fe4d8ec73406dc03c3706e86`.
+
+Fastboot disconnected at `11:59:47 JST`; no Fullerene HS attach or descriptor
+attempt appeared. Stock Android returned over SuperSpeed as `18d1:4ee7` at
+`12:00:23`, serial `26191JECB00076`, with watchdog recovery. The exact qpr1
+device-core reset sequence regressed before the known HS attach boundary in
+this ABL combination. Evidence is in
+`tmp/fullerene-bramble-loop.265196.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 Factory ABL profile plus exact XBL EP0 DMA objects (Run 268780.0)
+
+The Factory ABL endpoint/TRB/event profile was retained and the XBL-observed
+fixed DMA objects were selected with `--xbl-event-dma --xbl-stock-ep0-dma`:
+the event ring at `0x0a6fc010` and the stock EP0 setup/TRB locations. The
+initial SETUP remained strictly Connect Done-gated. The exact factory
+`boot.img` was used; `--adb-reboot-to-fastboot` only entered Fastboot. QEMU
+preflight, image audit, and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.268780.0/fullerene-bramble-boot.img`, SHA-256
+`ec40edddaf788b3f63c128da8d7ee3c9e3f28acd6dcd0332ef327500255c7a84`.
+
+Fastboot disconnected at `12:02:13 JST`; the host saw Fullerene high-speed
+attach on `usb 1-9` at `12:02:23`, but the first Device Descriptor timed out
+with `-110` at `12:02:29`. No `1234:0001` descriptor arrived. Stock Android
+returned over SuperSpeed as `18d1:4ee7` at `12:02:49`, serial
+`26191JECB00076`, with watchdog recovery. The exact XBL DMA-object addresses
+did not move the attach-to-EP0-response boundary. Evidence is in
+`tmp/fullerene-bramble-loop.268780.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 Factory ABL profile with normal Apps-SMMU path (Run 271311.0)
+
+The exact factory `boot.img` and the corrected Factory ABL endpoint/TRB/event
+profile were retained, including strict Connect Done-gated initial SETUP. This
+run removed the diagnostic `--no-smmu` bypass and exercised the normal DT/SMMU
+path. `--adb-reboot-to-fastboot` only entered Fastboot. QEMU preflight, image
+audit, and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.271311.0/fullerene-bramble-boot.img`, SHA-256
+`ee29b0c16b5032c2d002ff0dce6dacdf5bb600de63b5ee2082a0f5edcc1a86ee`.
+
+Fastboot disconnected at `12:03:54 JST`; the host saw Fullerene high-speed
+attach on `usb 1-9` at `12:04:04`, but the first Device Descriptor timed out
+with `-110` at `12:04:09`. No `1234:0001` descriptor arrived. Stock Android
+returned over SuperSpeed as `18d1:4ee7` at `12:04:30`, serial
+`26191JECB00076`, with watchdog recovery. The normal Apps-SMMU path did not
+move the attach-to-EP0-response boundary; this also agrees with the earlier
+non-Factory-ABL SMMU control (`1393139.0`). Evidence is in
+`tmp/fullerene-bramble-loop.271311.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 Factory ABL profile plus adopted live Apps-SMMU page (Run 276377.0)
+
+The exact factory `boot.img`, Factory ABL endpoint/TRB/event profile, and
+strict Connect Done-gated initial SETUP were retained. The normal SMMU path was
+kept enabled, while `--dma-adopt-smmu` read the live Fastboot Apps-SMMU
+translation context and relocated Fullerene's EP0 DMA objects into a page
+already mapped by that context. `--adb-reboot-to-fastboot` only entered
+Fastboot. QEMU preflight, image audit, and `fastboot boot` passed. Artifact:
+`tmp/fullerene-bramble-loop.276377.0/fullerene-bramble-boot.img`, SHA-256
+`b1b0db92a68187effc11766f81c9cbccdc2fa11ae6cfe6d96bb8e5f0bcff8dbd`.
+
+Fastboot disconnected at `12:07:34 JST`; the host saw Fullerene high-speed
+attach on `usb 1-9` at `12:07:44`, but the first Device Descriptor timed out
+with `-110` at `12:07:49`. No `1234:0001` descriptor arrived. Stock Android
+returned over SuperSpeed as `18d1:4ee7` at `12:08:10`, serial
+`26191JECB00076`, with watchdog recovery. Adopting a live mapped SMMU page did
+not move the attach-to-EP0-response boundary. Evidence is in
+`tmp/fullerene-bramble-loop.276377.0/kernel-final.log`, `kernel.log`, and
+`android-fallback-usb.txt`.
+
+The run used `fastboot boot` only. No partition was read or written, no
+user-data backup was created, and no analyzer, flash, erase, or secure-debug
+operation was used.
+
+### 2026-09-06 — exact Factory image EUD-gate override A/B (Run `294061.0`)
+
+- The exact same-build Factory ABL/XBL USB2 profile was rerun with only `FULLERENE_AARCH64_USB_HSPHY_IGNORE_EUD=1`, overriding the DT `eud_enable_reg` early-return gate. The command retained `--direct-handoff --start-at-connect-done --start-ungated --no-smmu --android-resource-order --event-ring-size-4096 --abl-shared-hs-phy --abl-ep-config --abl-command-params --abl-trb-flags --abl-event-consume --abl-setup-trb-buffer --hsphy-source-exact --xbl-hs-phy-table --skip-typec-spmi`.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.294061.0/fullerene-bramble-boot.img`; artifact SHA-256 `413456ab1b81c92ca69639933ff45d1a248c880ec7bdf4260173979cc3fb1f0a`.
+- Host result: Fastboot disconnected at `12:19:40 JST`; Fullerene high-speed attach appeared on `usb 1-9` at `12:19:50`; Device Descriptor timed out with `-110` at `12:19:56`; stock Android SuperSpeed `18d1:4ee7` returned at `12:20:16`, serial `26191JECB00076`; watchdog recovery. No `1234:0001`.
+- Conclusion: overriding the factory DT EUD ownership gate and forcing the source-exact femto-HS-PHY init did not move the attach-to-EP0-response boundary. This does not support EUD ownership as the sole blocker.
+- Evidence: `tmp/fullerene-bramble-loop.294061.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, and `boot-reason.txt`. `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — exact Factory image DT/Type-C path A/B (Run `298642.0`)
+
+- The exact same-build Factory ABL/XBL USB2 profile was rerun with `--skip-typec-spmi` removed, allowing the direct handoff to use its DT-selected Type-C/SPMI path. All other Factory ABL/XBL, Connect Done, source-exact HS-PHY, and no-SMMU controls were held constant.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.298642.0/fullerene-bramble-boot.img`; artifact SHA-256 `d69e1531193cc2d52366c8e490ce5d3fadf0fdd4aa24c5b5a7a556db5b521543`.
+- Host result: Fastboot disconnected at `12:22:47 JST`; Fullerene high-speed attach appeared on `usb 1-9` at `12:22:57`; Device Descriptor timed out with `-110` at `12:23:02`; stock Android SuperSpeed `18d1:4ee7` returned at `12:23:23`, serial `26191JECB00076`; watchdog recovery. No `1234:0001`.
+- Conclusion: enabling the DT/Type-C/SPMI route did not move the attach-to-EP0-response boundary. The negative result does not support `--skip-typec-spmi` as the sole cause.
+- Evidence: `tmp/fullerene-bramble-loop.298642.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, and `boot-reason.txt`. `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — exact Factory image DMA cache-maintenance A/B (Run `302105.0`)
+
+- The exact same-build Factory ABL/XBL USB2 profile was rerun with `--dma-cache-maintenance`, forcing `dc cvac`/`dc ivac` for the DT-selected USB DMA objects even though the Factory DT declares `qcom,gsi-disable-io-coherency`. All other Connect Done, endpoint/TRB/event, source-exact HS-PHY, XBL HS-PHY, no-SMMU, and Type-C-skip controls were held constant.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.302105.0/fullerene-bramble-boot.img`; artifact SHA-256 `f59788d70bec3a87bfa59cf591ef89bdf464d2ab99819cfb8b3fcf7542002228`.
+- Host result: the prior Android device disconnected at `12:25:00 JST`; Fullerene high-speed attach appeared on `usb 1-9` at `12:25:10`; Device Descriptor timed out with `-110` at `12:25:16`; stock Android SuperSpeed `18d1:4ee7` returned at `12:25:36`, serial `26191JECB00076`; watchdog recovery. No `1234:0001`.
+- Conclusion: explicit cache maintenance did not move the attach-to-EP0-response boundary. The exact Factory DT DMA coherency contract is not sufficient by itself to reach descriptor enumeration.
+- Evidence: `tmp/fullerene-bramble-loop.302105.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, and `boot-reason.txt`. `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — exact runtime DTBO selection and HS-PHY readout (Run `321947.0`)
+
+- Android read-only `getprop` on the connected handset reported `ro.boot.dtbo_idx=17`, `ro.boot.hardware=bramble`, `ro.boot.hardware.revision=MP1.0`, and the exact Factory fingerprint `google/bramble/bramble:14/UP1A.231105.001.B2/11260668:user/release-keys`. Factory `dtbo.img` entry 17 is `Google Inc. MSM sm7250 v2 Bramble PVT` and overlays `qcom,param-override-seq = <0x67 0x6c 0xc8 0x70>`.
+- The exact Factory ABL/XBL USB2 profile was rerun with the read-only `FULLERENE_AARCH64_USB_UTMI_PRECONNECT_READOUT=hsphy-table` timing readout. `fastboot boot` accepted `tmp/fullerene-bramble-loop.321947.0/fullerene-bramble-boot.img`; artifact SHA-256 `6e80d8360804777887f19c68bc90e4c273923c45bf19c320baa37df2bdd2000d`.
+- Host result: Fastboot disconnected at `12:37:58 JST`; Fullerene high-speed attach appeared on `usb 1-9` at `12:38:09`; Device Descriptor timed out with `-110` at `12:38:14`; stock Android SuperSpeed `18d1:4ee7` returned at `12:38:35`, serial `26191JECB00076`; watchdog recovery. No `1234:0001`.
+- Conclusion: the factory image and the handset agree on DTBO index 17, but the diagnostic readout did not move the attach-to-EP0-response boundary. The coarse host timestamp is not used as a stronger claim about the retained readout code than the direct `dtbo_idx=17` evidence.
+- Evidence: `tmp/fullerene-bramble-loop.321947.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, `boot-reason.txt`, the exact `dtbo.img`, and the read-only `adb shell getprop` result. No partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — explicit Factory `dtbo_idx=17` HS-PHY overlay A/B (Run `326975.0`)
+
+- Added an opt-in build flag, `FULLERENE_AARCH64_USB_HSPHY_DTBO_BRAMBLE_PVT=1`, which forces exactly the Factory DTBO entry 17 two-pair override `<0x67 0x6c 0xc8 0x70>` and removes the base DTB TUNE3 pair. This makes the overlay a direct physical differential even if a boot path supplies only the base DTB.
+- The same exact Factory ABL/XBL USB2 profile was run with that flag. `fastboot boot` accepted `tmp/fullerene-bramble-loop.326975.0/fullerene-bramble-boot.img`; artifact SHA-256 `103e522e3fb4dad2f2fb579bd6556a31ff734f4b1b02f01c95a0121213f0d2c1`.
+- Host result: Fastboot disconnected at `12:41:17 JST`; Fullerene high-speed attach appeared on `usb 1-9` at `12:41:28`; Device Descriptor timed out with `-110` at `12:41:33`; stock Android SuperSpeed `18d1:4ee7` returned at `12:41:53`, serial `26191JECB00076`; watchdog recovery. No `1234:0001`.
+- Conclusion: forcing the handset-selected Factory PVT overlay values does not move the attach-to-EP0-response boundary. The factory DTBO overlay is therefore not the missing single change for descriptor enumeration; keep the flag as a reproducible control, not as the default.
+- Evidence: `tmp/fullerene-bramble-loop.326975.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, and `boot-reason.txt`. `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — Factory DTBO plus Type-C/SPMI retake with passive usbmon (Run `340760.0`)
+
+- The exact Factory ABL/XBL USB2 profile was rerun with the handset-selected Bramble PVT pair set forced by `FULLERENE_AARCH64_USB_HSPHY_DTBO_BRAMBLE_PVT=1`. This time `--skip-typec-spmi` was removed so the DT-selected Type-C/SPMI path was also active; `/dev/usbmon1` was captured passively in parallel.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.340760.0/fullerene-bramble-boot.img`; artifact SHA-256 `f87a0e3a63576176c76fafe49cd0a1464f49bd3377c6813019570623c36cc435`.
+- Host result: Fullerene high-speed attach appeared on `usb 1-9` at `12:51:24 JST`; Device Descriptor timed out with `-110` at `12:51:29`; stock Android returned after watchdog recovery. No `1234:0001`.
+- Passive capture `/tmp/fullerene-usbmon-run-20260906-typec-pvt.1u.bin` is 6475 bytes with SHA-256 `827290ae18d02cc09ec8eb112b9f7df77bc9a22b06523252419a4444340dd49d`. This is host software observation only, not an external analyzer or a wire-level decode.
+- Conclusion: enabling Type-C/SPMI while forcing the exact Factory PVT overlay pair set did not move the attach-to-EP0-response boundary.
+- Evidence: `tmp/fullerene-bramble-loop.340760.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, `boot-reason.txt`, and the passive usbmon capture. No partition/user-data backup, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — standalone probe bootloader-DTB install correction and A/B (Run `348905.0`)
+
+- Source audit corrected a material assumption: the physical binary is the separate `fullerene-kernel-aarch64-usb-probe` (`usb_probe.rs`), not the normal AArch64 kernel path. Before this change it had no DTB parser/installer, so the factory DTBO property found in `main.rs` was not automatically reaching the hardware probe.
+- The probe now receives the bootloader-preserved AArch64 `x0` DTB address, parses `qcom,usb-hsphy-snps-femto/qcom,param-override-seq`, and installs that HS-PHY sequence before USB initialization. Build check passed for the Bramble USB-probe target; the implementation was intentionally limited to the DT-selected HS-PHY property and did not claim a full DT contract.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.348905.0/fullerene-bramble-boot.img`; artifact SHA-256 `991e151025682deb98c0897f82f44df64a88441806e072050e02a97ba07edb2a`.
+- Host result: Fullerene high-speed attach appeared on `usb 1-9` at `12:57:04 JST`; `device descriptor read/64, error -110` occurred at `12:57:09`; stock Android fallback followed watchdog recovery. Passive capture `/tmp/fullerene-usbmon-run-20260906-dtb-probe.1u.bin` is 6376 bytes with SHA-256 `6f911e2e18df12cdb3b6537069257b792f8728fcdbfca5832c072f6b95927fe7`. No `1234:0001`.
+- Conclusion: correcting the missing probe-side DTB install path did not yet make the device enumerate. The factory image remains useful evidence, but its DTBO HS-PHY property is not the sole missing change at the descriptor boundary.
+- Evidence: `tmp/fullerene-bramble-loop.348905.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, `boot-reason.txt`, and the passive usbmon capture. `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — standalone probe x0/x2 DTB selection and HS-PHY readout A/B (Run `357179.0`)
+
+- The probe assembly was tightened to preserve both Android boot arguments through relocation and pass them to Rust. Its DTB installer now selects the first valid FDT from `x0`, then `x2`, matching the normal kernel's guarded fallback order. The build also enabled the read-only `FULLERENE_AARCH64_USB_UTMI_PRECONNECT_READOUT=hsphy-table` selector.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.357179.0/fullerene-bramble-boot.img`; artifact SHA-256 `7be5c05a0b61865f0d97b588f8258050f3ceead803bcee89fabee9d1ae3631ac`.
+- Host result: Fullerene high-speed attach appeared on `usb 1-9` at `13:03:26 JST`; `device descriptor read/64, error -110` occurred at `13:03:31`; stock Android fallback followed watchdog recovery. No `1234:0001`.
+- Passive capture `/tmp/fullerene-usbmon-run-20260906-dtb-x2-readout-2.1u.bin` is 6475 bytes with SHA-256 `e02bf62287b08e8c7150a401e9e4665f39cf620124a28e18182a26c3b8c3f740`.
+- Conclusion: the x0/x2 DTB selection and HS-PHY source readout did not move the attach-to-EP0-response boundary. The remaining static audit must compare the full Factory DT contract used by `main.rs` against the independently linked probe path.
+- Evidence: `tmp/fullerene-bramble-loop.357179.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, `boot-reason.txt`, and the passive usbmon capture. `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — standalone probe full Factory DT contract A/B (Run `365586.0`)
+
+- The probe-side DT installer was extended beyond HS-PHY: it now collects the Factory DT's DWC3/PHY/SMMU/PDC regions, DMA pool and stream ID, QMP register offsets/init sequence, GSI layout/coherency flag, IRQ tuples, Type-C/SPMI resources, clock rates, bus dimensions/vectors, voltage properties, GDSC, and EUD resource, then calls the same `install_usb_resource_contract()` used by the normal kernel path.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.365586.0/fullerene-bramble-boot.img`; artifact SHA-256 `17ad71ed024bbeff68944d42e2811a097aeab599d701460cca33f61d0c4208d3`.
+- Host result: Fastboot disconnected at `13:09:22 JST`; no Fullerene `usb 1-9` attach or descriptor request appeared; stock Android SuperSpeed `18d1:4ee7` returned at `13:10:48`, serial `26191JECB00076`. No `1234:0001`.
+- `/tmp/fullerene-usbmon-run-20260906-full-dt-contract.1u.bin` is empty because the device never entered the bus-1 HS attach state. This is a host software capture, not an analyzer result.
+- Conclusion: the full-contract implementation regresses before the previously stable HS attach. The next A/B must isolate QMP-table installation from address/resource installation; the full bundle is not retained as a success candidate.
+- Evidence: `tmp/fullerene-bramble-loop.365586.0/kernel.log`, `boot.log`, `fastboot-usb-tree.txt`, and the empty passive capture. The run was `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — standalone probe DT_QMP-only A/B (Run `371918.0`)
+
+- The probe-side Factory DT contract was split into two opt-in pieces so QMP initialization could be tested independently from address/resource overrides. This run enabled only `FULLERENE_AARCH64_USB_PROBE_DT_QMP=1`; the DT-derived resource bundle remained disabled, while the existing bootloader-DTB HS-PHY install and exact Factory ABL/XBL USB2 profile stayed enabled.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.371918.0/fullerene-bramble-boot.img`; artifact SHA-256 `2d3be6e384d12843061e44279f9419b1548b560dfa867ef6b962728d8e911134`.
+- Host result: Fastboot disconnected at `13:13:40 JST`; Fullerene high-speed attach appeared on `usb 1-9` at `13:14:18`; `device descriptor read/64, error -110` occurred at `13:14:24`; stock Android fallback followed watchdog recovery. No `1234:0001`.
+- Passive `/dev/usbmon1` capture `/tmp/fullerene-usbmon-run-20260906-dt-qmp-only.1u.bin` is 6376 bytes with SHA-256 `22829922af1bb3c10cb8fdd71092eb383fd7567d6a24f63e105937f602f710c0`. This is host software observation only, not an external analyzer or wire-level decode.
+- Conclusion: installing the DT QMP init sequence alone did not remove the stable HS-attach/EP0-descriptor-timeout boundary. The next isolation run should enable only `FULLERENE_AARCH64_USB_PROBE_DT_RESOURCES=1`.
+- Evidence: `tmp/fullerene-bramble-loop.371918.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, `boot-reason.txt`, and the passive usbmon capture. The run was `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — standalone probe DT_RESOURCES-only A/B (Run `380175.0`)
+
+- The complementary isolation run enabled only `FULLERENE_AARCH64_USB_PROBE_DT_RESOURCES=1`; the probe installed the Factory DT address/resource contract but retained the compiled QMP init table. The bootloader-DTB HS-PHY install and exact Factory ABL/XBL USB2 profile were unchanged.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.380175.0/fullerene-bramble-boot.img`; artifact SHA-256 `1ac0a5812c0eabc39bc3f7df05303f5c39457b3f65cf86f0bab97873c0683d86`.
+- Host result: Fastboot disconnected at `13:20:04 JST`; Fullerene high-speed attach appeared on `usb 1-9` at `13:20:51`; `device descriptor read/64, error -110` occurred at `13:20:56`; stock Android fallback followed watchdog recovery. No `1234:0001`.
+- Passive `/dev/usbmon1` capture `/tmp/fullerene-usbmon-run-20260906-dt-resources-only.1u.bin` is 6376 bytes with SHA-256 `b11dc03bf782310c4c673555c2abb9a5ec4a7a29bbe6803d0927308f549155c8`. This is host software observation only, not an external analyzer or wire-level decode.
+- Conclusion: the DT resource/address contract alone also preserves the stable HS-attach/EP0-descriptor-timeout boundary. Together with Run `371918.0`, this isolates the regression in the interaction between DT-derived resources and DT-derived QMP sequence when both are installed, not in either component alone.
+- Evidence: `tmp/fullerene-bramble-loop.380175.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, `boot-reason.txt`, and the passive usbmon capture. The run was `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — standalone probe full DT contract split-flag repeat (Run `389938.0`)
+
+- Repeated the full combination after the two one-component controls: both `FULLERENE_AARCH64_USB_PROBE_DT_QMP=1` and `FULLERENE_AARCH64_USB_PROBE_DT_RESOURCES=1` were enabled, with the same exact Factory ABL/XBL USB2 profile. This checks whether the earlier no-attach result was reproducible or a warm-boot timing fluctuation.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.389938.0/fullerene-bramble-boot.img`; artifact SHA-256 `6f601dd6d5d8662f00c08655f950f75f0c500dddd434a4f5d7ba0ecee2508e96`.
+- Host result: Fastboot disconnected at `13:27:13 JST`; Fullerene high-speed attach appeared on `usb 1-9` at `13:27:59`; `device descriptor read/64, error -110` occurred at `13:28:05`; stock Android fallback followed watchdog recovery. No `1234:0001`.
+- Passive `/dev/usbmon1` capture `/tmp/fullerene-usbmon-run-20260906-dt-full-split-repeat.1u.bin` is 6376 bytes with SHA-256 `e840a9b20647505f0694d49f9140512e2ec5f248b99c0ddf93fef9e56e9f6a88`. This is host software observation only, not an external analyzer or wire-level decode.
+- Conclusion: the full combination is not deterministically an attach regression; this repeat restored the usual HS-attach/EP0-descriptor-timeout boundary. The earlier no-attach full-contract result remains a separate negative warm-boot outcome, not a proven DT-value mismatch.
+- Evidence: `tmp/fullerene-bramble-loop.389938.0/kernel-final.log`, `kernel.log`, `android-fallback-usb.txt`, `boot-reason.txt`, and the passive usbmon capture. The run was `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — normal AArch64 Factory DT path retake (Run `399346.0`)
+
+- Booted the exact extracted Factory `boot.img` through the normal AArch64 entry (`--normal`) to compare the current `main.rs` DT discovery/install path with the standalone probe. The probe-only `FULLERENE_AARCH64_USB_PROBE_DT_QMP` and `FULLERENE_AARCH64_USB_PROBE_DT_RESOURCES` flags were not set.
+- `fastboot boot` accepted `tmp/fullerene-bramble-loop.399346.0/fullerene-bramble-boot.img`; artifact SHA-256 `99ef3c6988000c149ed6b3c4dfeaa974f5085cae79501b0fab5fb07a45d6e5e`.
+- Host result: the handset disconnected from Fastboot at `13:33:53 JST` (`usb 2-1`); no Fullerene HS attach, descriptor request, or Android recovery appeared during the 100-second harness window, which ended with `RUN_RC=124`. No `1234:0001`.
+- Passive `/dev/usbmon1` capture `/tmp/fullerene-usbmon-run-20260906-normal-factory-dt.1u.bin` is empty with SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. This is host software observation only, not an external analyzer or wire-level decode.
+- Conclusion: the current normal AArch64 path also did not enumerate, but it failed before the standalone probe's usual HS-attach boundary. This is a distinct negative result, not evidence that the Factory DT values themselves are wrong.
+- Evidence: `tmp/fullerene-bramble-loop.399346.0/boot.log`, `kernel.log`, `fastboot-usb-tree.txt`, `lsusb-timeline.txt`, and the passive capture. `fastboot boot` only; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — Factory Android USB gadget path audit and temporary-ID boot preparation
+
+- The exact same-build Factory `vendor.img` was inspected read-only with `debugfs`. `/etc/init/hw/init.sm7250.usb.rc` is the production Android path: it creates `/config/usb_gadget/g1`, writes `idVendor 0x18d1`, and hands the configured functions to `a600000.dwc3`. Its `build.prop` contains `ro.recovery.usb.vid=18D1`, `ro.recovery.usb.adb.pid=D001`, and `ro.recovery.usb.fastboot.pid=4EE0`; this confirms that the factory image contains the USB identity policy as well as the DT and Qualcomm modules.
+- A repeatable non-flashing builder, [`tools/build_bramble_gadget_boot.py`](../tools/build_bramble_gadget_boot.py), was added. It keeps the Factory kernel, vendor_boot, DTB, and original ramdisk files, appends a root `init.rc` action, and changes only the live configfs gadget identity to `0x1234:0x0001` after `sys.usb.state` is published. It does not modify `vendor.img`, `vendor_boot.img`, or any phone partition.
+- The initial static image used `system/etc/init/zz-fullerene-usb-id.rc`; its physical A/B was negative because the device returned as stock Android `18d1:4ee7`. The builder is now prepared to place the same seven `idVendor=0x1234` and seven `idProduct=0x0001` actions at root `init.rc`, which is present in the boot ramdisk's init parse scope. No partition was modified.
+- After Run `399346.0` timed out, the operator manually returned the connected handset to Fastboot. Read-only host status then showed serial `26191JECB00076` as `fastboot`; no user-data backup or partition operation was performed.
+
+### 2026-09-06 — Factory boot-ramdisk system/etc/init placement A/B (manual stock-image run)
+
+- The first stock-kernel/vendor_boot/DT temporary image was booted with the `0x1234:0x0001` configfs actions at `system/etc/init/zz-fullerene-usb-id.rc`. `fastboot boot` accepted artifact SHA-256 `dc5517cceb84be1247f8426a85c0d52ab8ab597362d239ab05e0f3b4ddb95162` at `13:58:59 JST`; this was a transient boot only.
+- Host udev observed Fastboot `18d1:4ee0` removal followed by stock Android `18d1:4ee7` return. No `1234:0001` event appeared during the 77-second observation. The unprivileged host could not read `dmesg` (`Operation not permitted`); udev and final ADB evidence are retained under `/tmp/fullerene-bramble-stock-gadget-1234/`.
+- Conclusion: the `system/etc/init` placement did not produce the requested identity, consistent with that path being hidden by the mounted system partition or not loaded for this boot. The next A/B keeps the same image contents and moves only the init action to root `init.rc`.
+
+### 2026-09-06 — root init selection audit and command-line override preparation
+
+- The root `init.rc` A/B was also negative: Android returned as stock `18d1:4ee7`, so merely adding a root file did not select it. The exact boot ramdisk contains the first-stage `init`; the Android 14 init binary's normal `LoadBootScripts` path loads `/system/etc/init/hw/init.rc`, and only uses an alternate script when `ro.boot.init_rc` is non-empty.
+- This matches the Android Open Source Project init implementation: [`LoadBootScripts`](https://android.googlesource.com/platform/system/core/+/refs/tags/android-14.0.0_r3/init/init.cpp#341) parses the system primary rc by default and parses only the `ro.boot.init_rc` path in the alternate branch. The next transient boot therefore sets `androidboot.init_rc=/init.rc` in the supplied boot command line and makes root `init.rc` import the standard system/vendor/odm/product rc directories before the seven temporary ID actions.
+- No phone partition, vendor image, userdata, or persistent boot configuration is modified; the command-line override applies only to the next `fastboot boot` session.
+
+### 2026-09-06 — selected root init via transient androidboot.init_rc A/B (manual stock-image run)
+
+- Booted the exact Factory kernel/vendor_boot/DT image with root `init.rc`, standard rc imports, and boot-header command line `androidboot.init_rc=/init.rc`. `fastboot boot` accepted artifact SHA-256 `5295eee24a393f37036e9b69f383e4ffc9392fcbc457e457e4bf1195db5a34f9` at `14:13:59 JST`; this was a transient boot only.
+- Host udev observed Fastboot `18d1:4ee0` removal. During the 77-second observation there was no `1234:0001` event and no stock Android `18d1:4ee7` return; the USB gadget did not reappear. The handset was therefore not left in the requested state and needs manual return to Fastboot before another physical A/B.
+- Conclusion: selecting root `init.rc` changed the boot path enough to suppress the normal USB fallback, but did not yet prove that the custom rc executed successfully. The next correction avoids importing the whole rc directories from the alternate branch; root `init.rc` imports only the stock `/system/etc/init/hw/init.rc`, whose own imports already select the Bramble/SM7250 USB rc files, then registers the temporary property actions.
+
+### 2026-09-06 — selected root init primary-only import A/B (manual stock-image run)
+
+- Repeated the transient `androidboot.init_rc=/init.rc` boot with root `init.rc` importing only `/system/etc/init/hw/init.rc`; the primary script's own imports select the Bramble/SM7250 USB rc files. Artifact SHA-256: `92abcfa38a7373882effbc54b0e914e8af0df19d20c547bba68c8fc1f3a7df57`; `fastboot boot` accepted it at `14:17:50 JST`.
+- Host udev saw Fastboot `18d1:4ee0` removal and then no USB device for 77 seconds. Neither `1234:0001` nor stock Android `18d1:4ee7` appeared. This reproduces the no-fallback result of the previous alternate-init trial, so duplicate directory imports were not the sole cause.
+- The device must be manually returned to Fastboot before the next physical trial. The next path will keep the normal init script selection and target a file that is actually parsed from the vendor ramdisk/recovery path, rather than replacing `ro.boot.init_rc` for the whole boot.
+
+### 2026-09-06 — recovery ramdisk host-command construction check
+
+- Built the factory recovery ramdisk with the three temporary `sys.usb.state` rebind actions. The host-side `fastboot boot KERNEL RAMDISK` construction was first attempted with the complete Factory vendor command line, but the installed fastboot client rejected it before download with `command line too large: 569` for header v2.
+- No bytes were sent to the handset in this check; the phone remained Fastboot `18d1:4ee0`. The next command retains only the essential DT-selected UFS boot-device and DWC3 controller arguments, staying within the header-v2 command-line limit.
+
+### 2026-09-06 — header-v2 recovery path rejected and v3 recovery overlay prepared
+
+- With the shortened command line, the host built and downloaded a 93,548,544-byte header-v2 image from the exact stock kernel, factory DTB, and modified recovery ramdisk, but the bootloader rejected it before boot with `Error verifying the received boot.img: Unsupported`. The handset remained Fastboot `18d1:4ee0`; no partition was written.
+- The v2 result is consistent with this Android 11 GKI device requiring the v3 boot format. A new v3 overlay builder, [`tools/build_bramble_recovery_overlay_boot.py`](../tools/build_bramble_recovery_overlay_boot.py), keeps the v3 stock boot image, overlays the factory recovery `/system/etc/init/hw/init.rc` from the generic ramdisk, appends the three temporary rebind actions, and sets only transient `androidboot.force_normal_boot=0`.
+- Static check passed for artifact SHA-256 `3f9016f2ba8d87ec153e14412f9ae3fc795a406db41487b9a01e2be97bc1e949`; the v3 ramdisk/cpio contains the recovery init overlay and three `idVendor=0x1234`/`idProduct=0x0001` state hooks.
+
+### 2026-09-06 — v3 recovery overlay physical A/B
+
+- Booted the v3 recovery-overlay artifact with `fastboot boot`; the bootloader accepted SHA-256 `3f9016f2ba8d87ec153e14412f9ae3fc795a406db41487b9a01e2be97bc1e949` at `14:31:50 JST`.
+- Host udev saw Fastboot `18d1:4ee0` removal followed by stock Android `18d1:4ee7` at `14:32` and ADB returned. No `1234:0001` event appeared. The generic overlay did not make the Pixel bootloader select its vendor recovery ramdisk; `androidboot.force_normal_boot=0` in the supplied v3 header was not sufficient in this path.
+- Conclusion: the recovery init overlay is statically valid but is not the active normal-boot init path. The next no-flash check uses the already-running stock recovery entry (`adb reboot recovery`) and, only if recovery ADB is available, performs the same temporary configfs ID operation from userspace.
+
+### 2026-09-06 — stock recovery ADB/configfs userspace check
+
+- Entered the stock recovery with `adb reboot recovery` at `14:34:01 JST`; host udev observed stock recovery `18d1:d001`, and `adb devices` reported the handset in `recovery` state.
+- Recovery `adb shell` could not execute even `id`: stock `adbd` aborted while setting the shell SELinux context (`shell_service.cpp:380`, `Could not set SELinux context for subprocess`). `adb root` was rejected as a production build. ADB sync direct pushes to `/config/usb_gadget/g1/{UDC,idVendor,idProduct}` were also denied before opening the configfs attributes.
+- No `1234:0001` event occurred and the recovery gadget remained `18d1:d001`. No partition, userdata, vendor_boot, or recovery image was written.
+
+### 2026-09-06 — transient boot-ramdisk debug-property A/B preparation
+
+- The stock recovery ADB path cannot perform the runtime configfs write because production `adbd` rejects root and the shell context setup aborts. The next reversible path keeps the exact Factory kernel/vendor_boot/DT and appends only `ro.debuggable=1` and `ro.secure=0` to the stock boot ramdisk's existing `system/etc/ramdisk/build.prop`; no system/vendor file or phone partition is changed.
+- New [`tools/build_bramble_debuggable_boot.py`](../tools/build_bramble_debuggable_boot.py) passed `py_compile`, rebuilt the v3 boot image, and round-tripped the cpio/LZ4 archive. Static checks found both properties in the target entry. Artifact: `/tmp/bramble-factory-audit/extracted/boot-1234-debuggable.img`, SHA-256 `901195979c9cf044f01d80c6e8e1ef92c9f2a0b835afadc96b5c1dd96af632c6`; archive `3,736,676` bytes, ramdisk `3,751,339` bytes.
+- This is an A/B preparation only; the physical `fastboot boot` and the resulting `adb root`/configfs test are the next recorded step. The handset is currently normal Android (`adb` serial `26191JECB00076`), so it must be returned to Fastboot before the transient boot. No partition/user-data backup, analyzer, flash, erase, or secure-debug operation is used.
+
+### 2026-09-06 — transient boot-ramdisk debug-property physical A/B
+
+- Returned the connected handset to Fastboot with `adb reboot bootloader`, then `fastboot boot` accepted `/tmp/bramble-factory-audit/extracted/boot-1234-debuggable.img` (SHA-256 `901195979c9cf044f01d80c6e8e1ef92c9f2a0b835afadc96b5c1dd96af632c6`). The phone returned to normal Android; host udev saw the expected transient Fastboot `18d1:4ee0` removal followed by stock Android `18d1:4ee7`.
+- Runtime readback was `ro.debuggable=0` and `ro.secure=1`; `adb root` still returned `adbd cannot run as root in production builds`, and `adb shell id` remained uid 2000 (`shell`). No configfs write was attempted because the required privileged channel was not available. No `1234:0001` event occurred.
+- Conclusion: placing the properties in boot `system/etc/ramdisk/build.prop` does not override the final production property set on this build. Evidence is in `/tmp/fullerene-bramble-debuggable/{fastboot-boot.log,udev-follow.log,adb-after.txt,ro.debuggable.txt,ro.secure.txt,adb-root.txt,adb-root-id.txt}`. Only transient `fastboot boot` and read-only ADB/property checks were used; no partition/user-data backup, analyzer, flash, erase, or secure-debug operation.
+
+### 2026-09-06 — existing generic-ramdisk rc replacement A/B preparation
+
+- Because the boot-ramdisk property source loses to the final production properties, the next path moves the temporary actions into the stock generic-ramdisk entry that already exists: `system/etc/init/snapuserd.rc`. [`tools/build_bramble_snapuserd_boot.py`](../tools/build_bramble_snapuserd_boot.py) replaces that entry in-place and appends the seven `sys.usb.state` configfs rebind hooks; it does not rely on an alternate `init.rc` or a new filename hidden by a mounted partition.
+- Static `py_compile`, cpio/LZ4 round-trip, and action-count checks passed. Artifact: `/tmp/bramble-factory-audit/extracted/boot-1234-snapuserd.img`, SHA-256 `803e2150b4c1c012ce8d177c198066b91f1b71b8cb81fb8f7fc7125f3d018eb8`; archive `3,738,180` bytes, ramdisk `3,752,849` bytes.
+- This is preparation only. The next physical A/B is transient `fastboot boot`; success requires a host-visible `1234:0001`, and a failure will be recorded with the active USB ID and evidence path.
+
+### 2026-09-06 — explicit USB init graph A/B preparation
+
+- The existing generic-ramdisk rc replacement also returned stock USB, so the next image uses the already-working `androidboot.init_rc` mechanism but imports the USB graph explicitly: `/system/etc/init/hw/init.usb.rc`, `/system/etc/init/hw/init.usb.configfs.rc`, `/vendor/etc/init/hw/init.sm7250.usb.rc`, and `/vendor/etc/init/android.hardware.usb.gadget-service.bramble.rc`.
+- [`tools/build_bramble_explicit_usb_init_boot.py`](../tools/build_bramble_explicit_usb_init_boot.py) passed `py_compile`, v3 header/cpio/LZ4 checks, command-line verification, and seven-action count. Artifact: `/tmp/bramble-factory-audit/extracted/boot-1234-explicit-usb-init.img`, SHA-256 `4cd0f1650f2c171660e652aaa562adcce7d96ab92d910f36973470ea58ba00ad`; archive `3,738,708` bytes, ramdisk `3,753,379` bytes.
+- This is a transient boot-only preparation; no partition or persistent boot setting is changed.
+
+### 2026-09-06 — explicit USB init graph physical A/B
+
+- `fastboot boot` accepted `/tmp/bramble-factory-audit/extracted/boot-1234-explicit-usb-init.img` (SHA-256 `4cd0f1650f2c171660e652aaa562adcce7d96ab92d910f36973470ea58ba00ad`). The handset left Fastboot `18d1:4ee0`, but the 75-second host observation saw neither `1234:0001` nor the normal Android `18d1:4ee7` fallback; USB disappeared and ADB did not return.
+- This proves the alternate `init.rc` selection is active enough to suppress the normal fallback, but importing only the USB rc graph does not provide a bootable Android/gadget state. Evidence: `/tmp/fullerene-bramble-explicit-usb-init/{fastboot-boot.log,udev-follow.log,adb-after.txt,lsusb-after.txt,result.txt}`. The phone now requires manual return to Fastboot before another physical A/B.
+- No partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — official force-debuggable ramdisk path preparation
+
+- The Android 14 first-stage init source shows the missing mechanism: when `/force_debuggable` exists, it copies `/adb_debug.prop` into the second-stage debug-property path and sets `INIT_FORCE_DEBUGGABLE`; the boot ramdisk `build.prop` alone is loaded before later vendor properties and lost in the physical A/B.
+- [`tools/build_bramble_force_debuggable_boot.py`](../tools/build_bramble_force_debuggable_boot.py) now adds an empty `/force_debuggable`, `/adb_debug.prop` containing `ro.debuggable=1`, `ro.secure=0`, `ro.adb.secure=0`, and the same values to the boot ramdisk build properties. Static `py_compile`, cpio/LZ4, and exact-entry checks passed.
+- Artifact: `/tmp/bramble-factory-audit/extracted/boot-1234-force-debuggable.img`, SHA-256 `9c3ad5079101ddcf0ba2efa4eebb4708bf129b6fa77555758bfb040be404749c`; archive `3,736,956` bytes, ramdisk `3,751,620` bytes. This remains a transient `fastboot boot` artifact and does not write any partition.
+
+### 2026-09-06 — official force-debuggable ramdisk physical A/B
+
+- After the operator manually returned the connected handset to Fastboot, `fastboot boot` accepted `/tmp/bramble-factory-audit/extracted/boot-1234-force-debuggable.img` (SHA-256 `9c3ad5079101ddcf0ba2efa4eebb4708bf129b6fa77555758bfb040be404749c`). The handset left Fastboot `18d1:4ee0` and returned as stock Android `18d1:4ee7`; no `1234:0001` appeared.
+- The first-stage path did take effect: read-only ADB reported `ro.debuggable=1`, `ro.secure=0`, and `ro.adb.secure=0`; `ro.boot.verifiedbootstate=orange`. `adb root` attempted a root restart, but production SELinux denied `adbd`'s transition to `u:r:su:s0`, and init restarted normal adbd. Shell/configfs reads were also denied; logcat recorded `setcurrent` and configfs `search` AVCs.
+- Conclusion: `/force_debuggable` plus `/adb_debug.prop` fixes the property-source problem but is not enough on a user/release image because the matching userdebug platform policy is absent. The next transient A/B must supply a same-platform debug policy (or a narrowly derived equivalent) before retrying runtime configfs VID/PID control.
+- Evidence: `/tmp/fullerene-bramble-force-debuggable/{fastboot-boot.log,udev-follow.log,adb-after.txt,lsusb-after.txt,result.txt}` plus the read-only ADB property/logcat capture. No partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — same-build minimal userdebug policy boot preparation
+
+- The exact Factory `system.img` `/etc/selinux/plat_sepolicy.cil` was read-only extracted and used as the base for `/userdebug_plat_sepolicy.cil`. The transient policy appends only the AOSP userdebug rules needed by this experiment: `allow adbd self:process setcurrent`, `allow adbd su:process dyntransition`, and the generated CIL form `(typepermissive su)` of the source-level `permissive su` rule.
+- [`tools/build_bramble_force_debuggable_policy_boot.py`](../tools/build_bramble_force_debuggable_policy_boot.py) adds that policy alongside `/force_debuggable` and `/adb_debug.prop`. `py_compile`, v3 image construction, cpio/LZ4 round-trip, required type checks, and exact-rule checks passed. After correcting the generated CIL spelling to `(typepermissive su)`, the AOSP Android 14 `secilc`/libsepol build also compiled the exact platform+vendor policy graph with `-c 30`. The corrected policy entry is `2,130,983` bytes; the image is `/tmp/bramble-factory-audit/extracted/boot-1234-force-debuggable-policy.img`, SHA-256 `d54cf9f52c230c6d5658b4d1ea4a5d41ca7871383159206dabea06ffdae6e265`.
+- The corrected image is ready for a second transient `fastboot boot` A/B. No partition/user-data backup, analyzer, flash, erase, or secure-debug operation was used.
+
+### 2026-09-06 — same-build minimal userdebug policy corrected physical A/B: `1234:0001` success
+
+- `fastboot boot` accepted the corrected transient image `/tmp/bramble-factory-audit/extracted/boot-1234-force-debuggable-policy.img`, SHA-256 `d54cf9f52c230c6d5658b4d1ea4a5d41ca7871383159206dabea06ffdae6e265`, and ADB returned on the stock Bramble runtime.
+- Runtime proof: `ro.debuggable=1`, `ro.secure=0`, `ro.adb.secure=0`, `ro.boot.verifiedbootstate=orange`; `adb shell id` reported `uid=0(root)` with `context=u:r:su:s0` while `getenforce` remained `Enforcing`; `adb root` reported `adbd is already running as root`.
+- Before the rebind, configfs showed the factory gadget `idVendor=0x18d1`, `idProduct=0x4ee7`, UDC `a600000.dwc3`. The root shell transiently unbound UDC, wrote `idVendor=0x1234` and `idProduct=0x0001`, then rebound the same UDC. No persistent partition or image was changed.
+- Host proof: udev removed `PRODUCT=18d1/4ee7/440` and added `PRODUCT=1234/1/440` with `MODALIAS=usb:v1234p0001...`; final `lsusb` reported `ID 1234:0001`. ADB then showed `no permissions` because the host udev rule set does not cover the temporary VID, but USB enumeration was successful and the requested `1234:0001` condition was met.
+- Evidence: `/tmp/fullerene-bramble-force-debuggable-policy-corrected/{fastboot-boot.log,udev-follow.log,runtime-before-root.txt,adb-root.txt,runtime-after-root.txt,configfs-rebind.txt,lsusb-after.txt,result.txt}`. No analyzer, flash, erase, secure-debug, or user-data backup operation was used.
+
 ## Document routing and context cost
 
 | Document | Size | Use | Loading policy |

@@ -209,6 +209,9 @@ fn main() {
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_no_usb2_runstop_guard)"
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_qrd_override)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_dtbo_bramble_pvt)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_dt_qmp)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_dt_resources)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_legacy_fallback)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_ignstrmpp)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_susphy)");
@@ -804,6 +807,15 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_QRD_OVERRIDE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_qrd_override");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_HSPHY_DTBO_BRAMBLE_PVT").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_dtbo_bramble_pvt");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_PROBE_DT_QMP").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_dt_qmp");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_PROBE_DT_RESOURCES").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_probe_dt_resources");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_LEGACY_FALLBACK").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_legacy_fallback");
         }
@@ -1158,6 +1170,9 @@ fn main() {
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_USB2_RUNSTOP_GUARD"
         );
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_QRD_OVERRIDE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_DTBO_BRAMBLE_PVT");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_DT_QMP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PROBE_DT_RESOURCES");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_LEGACY_FALLBACK");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_PRESERVE_CORE");
         println!(

@@ -359,6 +359,16 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             // fallback uses 0x85 at 0x70; this flag changes only that pair.
             hsphy_param_override[1] = (0x70, 0xc8);
         }
+        #[cfg(fullerene_aarch64_usb_hsphy_dtbo_bramble_pvt)]
+        {
+            // Factory dtbo_idx=17 is the v2 Bramble PVT overlay. Its
+            // qcom,param-override-seq replaces the base three-pair property
+            // with exactly <0x67 0x6c 0xc8 0x70>; do not retain the base
+            // TUNE3 pair when forcing this overlay as an isolated A/B.
+            hsphy_param_override[0] = (0x6c, 0x67);
+            hsphy_param_override[1] = (0x70, 0xc8);
+            hsphy_param_override[2] = (usize::MAX, 0);
+        }
         #[cfg(fullerene_aarch64_usb_hsphy_legacy_fallback)]
         {
             // Physical control only: retain the historical two-pair form and
