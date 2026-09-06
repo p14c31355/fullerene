@@ -136,6 +136,7 @@ busybox-build = { path = "../toluene/busybox-build" }
 [features]
 default = []
 aarch64 = []
+aarch64-user-smoke = []
 esp32 = [
   "nitrogen/esp32",
   "genome/esp32",

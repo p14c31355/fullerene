@@ -4,10 +4,11 @@
 
 extern crate alloc;
 
-use core::arch::{asm, global_asm};
 use fullerene_abi::boot::{self, BootArchitecture, BootInfo, BootPlatform};
 
 mod allocator;
+mod cpu;
+mod entry;
 mod exceptions;
 mod fdt;
 mod mmu;
@@ -25,159 +26,17 @@ mod usb_protocol;
 mod usb_qemu_sim;
 #[cfg(any(fullerene_aarch64_bramble, fullerene_aarch64_qemu_usb_sim))]
 mod usb_regs;
+#[cfg(feature = "aarch64-user-smoke")]
+mod user_smoke;
 
-const BOOT_STACK_SIZE: usize = 64 * 1024;
+const MAX_MEMORY_REGIONS: usize = 8;
 
-/// Values supplied by the bootloader and captured before the bootstrap starts
-/// using caller-saved registers.  This is deliberately `repr(C)`: the entry
-/// stub owns the layout until it hands a pointer to Rust.
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct Aarch64BootContext {
-    pub x0: usize,
-    pub x1: usize,
-    pub x2: usize,
-    pub x3: usize,
-    pub current_el: usize,
-    pub entry_sp: usize,
-    pub relocation_delta: isize,
-}
-
-// Keep SP 16-byte aligned when the context is allocated. The final 8 bytes
-// are padding reserved for the bootstrap frame, not part of the C layout.
-const BOOT_CONTEXT_SIZE: usize = (core::mem::size_of::<Aarch64BootContext>() + 15) & !15;
-
-#[unsafe(no_mangle)]
-static mut AARCH64_BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];
-
-// QEMU -kernel enters at _start without promising a usable SP. Establish a
-// known, aligned stack before calling any Rust code, then capture the complete
-// boot handoff in a stable context before any relocation or EL transition.
-global_asm!(
-    ".section .text.boot,\"ax\"\n\
-     .balign 4\n\
-     .global _start\n\
-     .type _start, %function\n\
-     _start:\n\
-         adrp x9, AARCH64_BOOT_STACK\n\
-         add x9, x9, :lo12:AARCH64_BOOT_STACK\n\
-         mov x10, #{stack_size}\n\
-         add sp, x9, x10\n\
-         mov x6, sp\n\
-         adrp x11, __bss_start\n\
-         add x11, x11, :lo12:__bss_start\n\
-         adrp x12, __bss_end\n\
-         add x12, x12, :lo12:__bss_end\n\
-     1:\n\
-         cmp x11, x12\n\
-         b.hs 2f\n\
-         str xzr, [x11], #8\n\
-         b 1b\n\
-     2:\n\
-         // The boot stack is part of .bss, so capture handoff registers only\n\
-         // after the clear. x19 is callee-saved and survives the relocation\n\
-         // call below; it holds the context pointer until Rust entry.\n\
-         sub sp, sp, #{context_size}\n\
-         mov x19, sp\n\
-         stp x0, x1, [x19]\n\
-         stp x2, x3, [x19, #16]\n\
-         mrs x5, CurrentEL\n\
-         str x5, [x19, #32]\n\
-         str x6, [x19, #40]\n\
-         str xzr, [x19, #48]\n\
-         // QEMU may enter at EL1; Android-style AArch64 bootloaders may hand\n\
-         // off at EL2. Normalize the latter to EL1h while preserving x0\n\
-         // through the context and preserving the bootstrap stack.\n\
-         mrs x5, CurrentEL\n\
-         and x5, x5, #0xc\n\
-         cmp x5, #0x8\n\
-         b.eq 3f\n\
-         b aarch64_el1_entry\n\
-     3:\n\
-         mov x5, #(1 << 31)\n\
-         msr HCR_EL2, x5\n\
-         msr CPTR_EL2, xzr\n\
-         mov x5, #9\n\
-         msr ICC_SRE_EL2, x5\n\
-         isb\n\
-         mov x5, #3\n\
-         msr CNTHCTL_EL2, x5\n\
-         msr CNTVOFF_EL2, xzr\n\
-         mov x5, #0x3c5\n\
-         msr SPSR_EL2, x5\n\
-         adrp x5, aarch64_el1_entry\n\
-         add x5, x5, :lo12:aarch64_el1_entry\n\
-         msr ELR_EL2, x5\n\
-         mov x6, sp\n\
-         msr SP_EL1, x6\n\
-         isb\n\
-         eret\n\
-     .size _start, . - _start\n\
-     // Execute the FP/SIMD enable at EL1. Some firmware/QEMU reset paths\n\
-     // ignore an EL2 write to CPACR_EL1 until the lower exception level is\n\
-     // active.\n\
-     .global aarch64_el1_entry\n\
-     .type aarch64_el1_entry, %function\n\
-     aarch64_el1_entry:\n\
-         mov x5, #(3 << 20)\n\
-         msr CPACR_EL1, x5\n\
-         isb\n\
-         // Android bootloaders may place an Image at a different physical\n\
-         // base. Apply the PIE's relative relocations before entering Rust;\n\
-         // the handoff values remain in the context while x0 is scratch.\n\
-         adr x7, _start\n\
-         mov x0, x7\n\
-         bl aarch64_apply_relocations\n\
-         str x0, [x19, #48]\n\
-         mov x0, x19\n\
-         b aarch64_rust_entry\n\
-     .size aarch64_el1_entry, . - aarch64_el1_entry\n\
-     ",
-    stack_size = const BOOT_STACK_SIZE,
-    context_size = const BOOT_CONTEXT_SIZE,
-);
-
-#[cfg(fullerene_aarch64_bramble)]
-const LINK_ENTRY: usize = 0x8008_0040;
-#[cfg(not(fullerene_aarch64_bramble))]
-const LINK_ENTRY: usize = 0x4200_0040;
-
-/// Apply the small relocation set emitted by the static-PIE linker.
-///
-/// This function is called before the normal Rust entry, so it intentionally
-/// only uses PC-relative local code, linker symbols, and immediates. It must
-/// not acquire a GOT-backed reference of its own.
-#[unsafe(no_mangle)]
-extern "C" fn aarch64_apply_relocations(runtime_entry: usize) -> isize {
-    let relocation_delta = runtime_entry.wrapping_sub(LINK_ENTRY) as isize;
-    let (mut cursor, end): (usize, usize);
-    unsafe {
-        // These must be PC-relative: the GOT is one of the things this loop
-        // may be fixing up, so it cannot be read before the loop runs.
-        asm!(
-            "adr {cursor}, __rela_dyn_start",
-            "adr {end}, __rela_dyn_end",
-            cursor = out(reg) cursor,
-            end = out(reg) end,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-
-    while cursor < end {
-        let offset = unsafe { core::ptr::read_unaligned(cursor as *const usize) };
-        let relocation_type = unsafe { core::ptr::read_unaligned((cursor + 8) as *const u32) };
-        if relocation_type == 0x403 || relocation_type == 0x101 {
-            let addend = unsafe { core::ptr::read_unaligned((cursor + 16) as *const usize) };
-            let target = offset.wrapping_add(relocation_delta as usize) as *mut usize;
-            unsafe {
-                target.write(addend.wrapping_add(relocation_delta as usize));
-            }
-        }
-        cursor += 24;
-    }
-
-    relocation_delta
-}
+// The arm64 Linux boot contract supplies a DTB rather than an EFI memory-map
+// table. Keep the bounded DT-derived map in the image's identity-mapped BSS
+// so the next architecture layer can consume the same pointer-free BootInfo
+// contract as the x86_64 loader path.
+static mut AARCH64_MEMORY_REGIONS: [fdt::Region; MAX_MEMORY_REGIONS] =
+    [fdt::Region { base: 0, size: 0 }; MAX_MEMORY_REGIONS];
 
 fn make_boot_info(platform: BootPlatform, dtb_address: Option<u64>) -> BootInfo {
     let mut info = BootInfo::new(BootArchitecture::Aarch64, platform);
@@ -185,16 +44,36 @@ fn make_boot_info(platform: BootPlatform, dtb_address: Option<u64>) -> BootInfo 
         info.fdt_address = address;
         if fdt::inspect(address).is_some() {
             info.flags |= boot::flags::FDT;
+
+            // Publish the DT-derived memory map in a stable, identity-mapped
+            // buffer. This is deliberately done before the generic runtime
+            // exists; a future AArch64 frame allocator will replace the
+            // fixed early MMU map but keep this handoff shape.
+            let count = unsafe {
+                fdt::find_memory_regions(
+                    address,
+                    core::slice::from_raw_parts_mut(
+                        core::ptr::addr_of_mut!(AARCH64_MEMORY_REGIONS).cast::<fdt::Region>(),
+                        MAX_MEMORY_REGIONS,
+                    ),
+                )
+            };
+            if count != 0 {
+                info.flags |= boot::flags::MEMORY_MAP;
+                info.memory_map_address = core::ptr::addr_of!(AARCH64_MEMORY_REGIONS) as u64;
+                info.memory_map_size = (count * core::mem::size_of::<fdt::Region>()) as u64;
+                info.memory_map_descriptor_size = core::mem::size_of::<fdt::Region>() as u64;
+            }
         }
     }
     info
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
+extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext) -> ! {
     // The context lives at the top of the bootstrap stack. Copy it before
     // Rust starts using that stack for ordinary locals and call frames.
-    let boot = unsafe { core::ptr::read(boot_context) };
+    let boot = entry::Aarch64BootContext::read(boot_context);
     let fdt_address = boot.x0 as u64;
     let arg1 = boot.x1 as u64;
     let fdt_arg2 = boot.x2 as u64;
@@ -632,6 +511,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     uart::put_hex("bootinfo: size=", BootInfo::BYTE_SIZE as u64);
     uart::put_hex("bootinfo: flags=", boot_info.flags);
     uart::put_hex("bootinfo: fdt=", boot_info.fdt_address);
+    uart::put_hex("bootinfo: memory_map=", boot_info.memory_map_address);
+    uart::put_hex("bootinfo: memory_map_size=", boot_info.memory_map_size);
     uart::put_hex(
         "gicd: base=",
         gicd_base.unwrap_or(if bramble {
@@ -669,11 +550,30 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     #[cfg(fullerene_aarch64_qemu_usb_sim)]
     {
         let passed = usb_qemu_sim::run();
-        qemu_semihost_exit(passed);
+        cpu::semihost_exit(passed);
     }
 
     mmu::init();
     uart::puts("mmu: identity map and caches ready\n");
+
+    if let Some(mut frames) = allocator::PhysicalFrameAllocator::from_boot_info(&boot_info) {
+        uart::put_hex(
+            "memory: first free frame=",
+            frames.first_available_frame().unwrap_or(0),
+        );
+        #[cfg(feature = "aarch64-user-smoke")]
+        user_smoke::run(&mut frames);
+        #[cfg(not(feature = "aarch64-user-smoke"))]
+        {
+            if frames.next_frame().is_some() {
+                uart::puts("memory: DTB map frame allocator ready\n");
+            } else {
+                uart::puts("memory: DTB map has no free frame\n");
+            }
+        }
+    } else {
+        uart::puts("memory: no usable DTB map; frame allocator withheld\n");
+    }
 
     allocator::smoke();
     uart::puts("allocator: bump heap ready\n");
@@ -681,7 +581,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
     if !timer::init() {
         uart::puts("timer: CNTFRQ_EL0 is zero; refusing to use the timer\n");
         loop {
-            unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
+            cpu::wait_for_event();
         }
     }
     let before = timer::counter();
@@ -783,38 +683,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const Aarch64BootContext) -> ! {
         // installing the USB SPI route. QEMU has no hardware USB path here,
         // so it can sleep on the timer as before.
         #[cfg(not(fullerene_aarch64_bramble))]
-        unsafe {
-            core::arch::asm!("wfe", options(nomem, nostack, preserves_flags))
-        };
-    }
-}
-
-#[cfg(fullerene_aarch64_qemu_usb_sim)]
-fn qemu_semihost_exit(passed: bool) -> ! {
-    #[repr(C)]
-    struct ExitBlock {
-        reason: u64,
-        status: u64,
-    }
-
-    let block = ExitBlock {
-        reason: 0x20026, // ADP_Stopped_ApplicationExit
-        status: if passed { 0 } else { 1 },
-    };
-    unsafe {
-        asm!(
-            "hlt #0xf000",
-            in("x0") 0x18usize, // SYS_EXIT
-            in("x1") &block as *const ExitBlock,
-            options(noreturn),
-        );
+        cpu::wait_for_event();
     }
 }
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     uart::puts("fullerene aarch64 panic\n");
-    loop {
-        unsafe { core::arch::asm!("wfe", options(nomem, nostack, preserves_flags)) };
-    }
+    cpu::wait_forever();
 }

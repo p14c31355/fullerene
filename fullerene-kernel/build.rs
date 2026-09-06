@@ -1928,6 +1928,7 @@ SECTIONS
     /* The generated Linux Image header occupies the 64 bytes immediately
        before this payload. */
     . = {image_base};
+    __image_start = .;
 
     .text.boot : ALIGN(4)
     {{
@@ -1997,6 +1998,8 @@ SECTIONS
         . = ALIGN(4K);
         __usb_trace_end = .;
     }}
+
+    __image_end = .;
 
     /DISCARD/ :
     {{

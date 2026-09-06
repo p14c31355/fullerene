@@ -8,7 +8,8 @@ commands, timestamps, hashes, and per-run notes.
 
 | Goal | Success criterion | Current state |
 | --- | --- | --- |
-| Pixel 4a 5G (Bramble) USB handoff | Fullerene enumerates as `idVendor=1234` | Not reached |
+| Pixel 4a 5G (Bramble) USB handoff | Fullerene enumerates as `idVendor=1234`, `idProduct=0001` | Reached: host sees `1234:0001` |
+| FullereneOS AArch64 port | Boot the real FullereneOS runtime on Bramble | Early bring-up only: generic runtime not yet entered |
 | Recovery safety | Failed handoff returns to Android without flashing or erasing | Confirmed with `fastboot boot` runs |
 
 ## Observer-isolation follow-up
@@ -3159,6 +3160,35 @@ operation was used.
 - Before the rebind, configfs showed the factory gadget `idVendor=0x18d1`, `idProduct=0x4ee7`, UDC `a600000.dwc3`. The root shell transiently unbound UDC, wrote `idVendor=0x1234` and `idProduct=0x0001`, then rebound the same UDC. No persistent partition or image was changed.
 - Host proof: udev removed `PRODUCT=18d1/4ee7/440` and added `PRODUCT=1234/1/440` with `MODALIAS=usb:v1234p0001...`; final `lsusb` reported `ID 1234:0001`. ADB then showed `no permissions` because the host udev rule set does not cover the temporary VID, but USB enumeration was successful and the requested `1234:0001` condition was met.
 - Evidence: `/tmp/fullerene-bramble-force-debuggable-policy-corrected/{fastboot-boot.log,udev-follow.log,runtime-before-root.txt,adb-root.txt,runtime-after-root.txt,configfs-rebind.txt,lsusb-after.txt,result.txt}`. No analyzer, flash, erase, secure-debug, or user-data backup operation was used.
+
+### 2026-09-06 — AArch64 FullereneOS port boundary audit after USB success
+
+- `cargo check -p fullerene-kernel --bin fullerene-kernel-aarch64 --features aarch64 --target aarch64-unknown-none` passes. This target is the standalone AArch64 early-boot binary, not the generic `src/main.rs` FullereneOS runtime; the build emits 220 unused-code warnings from the large Bramble platform contract, which is consistent with the current probe-only path.
+- Direct source inspection of `fullerene-kernel/src/arch/aarch64/main.rs` confirms the terminal path is `init_interrupt_controller` → `timer::arm_ms` → `exceptions::enable_irqs` → `usb::poll()`/`wfe` forever. It does not call `init_common`, `contexts::kernel::init_kernel`, `loader`, `scheduler_loop`, or the VFS/GUI/process stack.
+- The generic kernel remains x86_64-coupled at the dependency and source layers: AArch64 Cargo dependencies currently contain only `fullerene-abi`; `init.rs`, `memory_management`, `process`, and `scheduler` use x86_64 address/page-table/control-register or TSC APIs. A direct `cargo check -p petroleum --target aarch64-unknown-none` reproduces the lower-layer blocker (59 errors including x86 inline assembly, `sysv64`, port I/O, and x86 page-table instructions).
+- Therefore the successful `1234:0001` enumeration is a valid reversible hardware/privilege substrate, but it is not evidence that FullereneOS itself is fully ported. The next implementation boundary is an AArch64 architecture layer for the shared runtime (memory mapping, exception/syscall frame, timer/scheduler clock, and platform device discovery), followed by storage/display/input and userspace loader integration. No analyzer, flash, erase, secure-debug, or user-data backup operation was used.
+
+### 2026-09-06 — AArch64 DT memory-map handoff and early frame allocator
+
+- Added `fdt::find_memory_regions`, a bounded allocation-free parser for enabled `memory@...`/`device_type = "memory"` nodes. It inherits the DT root address/size cell widths and publishes up to eight `repr(C)` `{base,size}` entries.
+- `BootInfo` now carries the DT-derived map (`flags=MEMORY_MAP`, `memory_map_address`, `memory_map_size`, and descriptor size). The early AArch64 allocator reserves the linked image, USB DMA/trace sections, and DTB before exposing page-aligned physical frames; it does not yet install dynamic page-table mappings or hand frames to userspace.
+- `cargo check -p fullerene-kernel --bin fullerene-kernel-aarch64 --features aarch64 --target aarch64-unknown-none` passes. Bramble and QEMU-virt release image builds pass. A bounded QEMU run printed `bootinfo: flags=0x9`, `memory_map_size=0x10`, `memory: first free frame=0x40000000`, and `memory: DTB map frame allocator ready`; timeout was intentional because the existing early path still polls forever.
+- No physical Bramble result is claimed for this change: `fastboot devices` was empty. The next physical run must use `fastboot boot` only and inspect the UART memory-map lines before any runtime-port work is accepted.
+
+### 2026-09-06 — AArch64 entry assembly isolated behind typed boot context
+
+- `fullerene-kernel/src/arch/aarch64/main.rs` no longer contains `asm!` or `global_asm!`. The `_start` stack setup, BSS clear, EL2→EL1 transition, boot-register capture, and static-PIE relocation loop moved to `entry.rs`; `Aarch64BootContext` remains `repr(C)` and keeps the existing seven-word handoff layout.
+- `wfe` and QEMU semihost exit moved to `cpu.rs`. The Rust entry now consumes `entry::Aarch64BootContext`, while low-level assembly has an explicit module boundary instead of being mixed with DTB/resource discovery and USB bring-up.
+- `cargo check -p fullerene-kernel --bin fullerene-kernel-aarch64 --features aarch64 --target aarch64-unknown-none` passed. Bramble and QEMU-virt release image builds passed. A bounded QEMU-virt run still reached `bootinfo: flags=0x9`, `memory: first free frame=0x40000000`, timer initialization, and `aarch64 early boot complete`; the timeout remains intentional because the generic runtime handoff is not implemented.
+- This is a source-structure change only; no physical Bramble boot was performed for this change and no claim about `1234:0001` is added. The next port boundary remains AArch64 exception/syscall frames and dynamic page-table/runtime handoff.
+
+### 2026-09-06 — AArch64 typed trap frame and EL0 SVC smoke
+
+- Added `Aarch64TrapFrame` as the explicit `repr(C), align(16)` ABI for x0..x30, `ELR_EL1`, `SPSR_EL1`, `SP_EL0`, `ESR_EL1`, and `FAR_EL1`. The exception vector assembly now only saves/restores this frame; Rust receives a mutable pointer for the future syscall/page-fault path. `main.rs` remains free of `asm!`/`global_asm!`; the remaining assembly is isolated to `entry.rs` and `exceptions.rs`.
+- Added a bounded first user mapping (`0x40000000` one 4 KiB page) and an opt-in `aarch64-user-smoke` program. It writes two `svc #0` instructions through the identity map, enters EL0 with `eret`, handles both SVCs through the real sync vector, then returns to an EL1h continuation.
+- The first QEMU attempt exposed an actual contract bug: QEMU reported `ELR_EL1=0x40000004` on the first SVC, so adding four bytes skipped the second SVC. The handler was corrected to resume at the supplied ELR; this is recorded as implementation evidence, not inferred from the older docs.
+- Final command: `FULLERENE_AARCH64_USER_SMOKE=1 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt --timeout 5`. The run reached `bootinfo: flags=0x9`, `memory: first free frame=0x40000000`, `user-smoke: svc=0x1`, `user-smoke: svc=0x2`, and `user-smoke: returned to EL1h`. The command then timed out intentionally in the EL1 `wfe` continuation; no exception fault was printed. Evidence: `/tmp/fullerene-user-smoke-flasks.1KQ1XA.log`.
+- `flasks` now honors `FULLERENE_AARCH64_USER_SMOKE=1` only for this opt-in QEMU/build test and hashes the feature selection into its isolated Cargo target directory. No physical Bramble result is claimed, and this still does not constitute the generic FullereneOS runtime port.
 
 ## Document routing and context cost
 

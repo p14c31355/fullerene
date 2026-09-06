@@ -3272,6 +3272,13 @@ fn build_aarch64_kernel(
     // (for example after the QEMU preflight switches back to Bramble).
     let mut cargo_envs: Vec<(String, String)> = Vec::new();
     let mut push_env = |name: &str, value: String| cargo_envs.push((name.to_owned(), value));
+    // Keep the EL0/SVC smoke path opt-in: it intentionally never participates
+    // in a normal hardware or QEMU build unless the caller asks for it.
+    let aarch64_features = if env::var_os("FULLERENE_AARCH64_USER_SMOKE").is_some() {
+        "aarch64,aarch64-user-smoke"
+    } else {
+        "aarch64"
+    };
     push_env(
         "FULLERENE_AARCH64_PLATFORM",
         match platform {
@@ -4077,6 +4084,8 @@ fn build_aarch64_kernel(
         combo.push('\n');
     }
     combo.push_str(&rustflags);
+    combo.push_str("\nfeatures=");
+    combo.push_str(aarch64_features);
     let digest = fnv1a64(&combo);
     let cargo_target_dir = workspace_root.join(format!("target/ak{digest:016x}"));
 
@@ -4089,7 +4098,7 @@ fn build_aarch64_kernel(
             "--package",
             target.cargo_package(),
             "--features",
-            "aarch64",
+            aarch64_features,
             "--bin",
             kernel_artifact,
             "--target",

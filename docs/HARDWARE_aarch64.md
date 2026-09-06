@@ -18,8 +18,8 @@ recorded here before the next test.
 | Serial | `26191JECB00076` | Confirmed | Fixed target for physical tests |
 | Bootloader | `b5-0.6-10489838` | Confirmed | Production secure boot; unlocked |
 | Test operation | `fastboot boot` only | Ongoing | No `flash`, `erase`, or partition writes |
-| Success condition | Host journal contains `New USB device found, idVendor=1234` | Not reached | The implementation uses PID `0001` |
-| Current failure | High-speed attach with no completed device descriptor | Reproduced | The current attach-reaching profile reaches HS, but the host still receives no EP0 data before Android fallback; the separate `--dcfg-fullspeed` run is only a historical diagnostic |
+| Success condition | Host sees `idVendor=1234`, `idProduct=0001` | Reached | The corrected transient same-build debug-policy boot enumerated as `1234:0001`; no partition was written |
+| Current FullereneOS state | AArch64 early bring-up only | Confirmed | The Bramble entry initializes DTB/MMU/heap/timer/GIC/USB and then polls; the generic x86_64 FullereneOS runtime is not yet entered |
 
 ## Public device tree and implementation
 
@@ -1085,6 +1085,18 @@ are retained in each run directory.
 - Root configfs control read the initial `0x18d1/0x4ee7` gadget, unbound `a600000.dwc3`, wrote `0x1234/0x0001`, and rebound the same UDC. This was runtime-only and transient.
 - Host udev removed the factory `18d1:4ee7` device and added `PRODUCT=1234/1/440`, `MODALIAS=usb:v1234p0001...`; final `lsusb` reported `Bus 002 Device 122: ID 1234:0001 Brain Actuated Technologies Pixel 4a (5G)`. The temporary VID is outside the current ADB udev rule, so `adb` reported `no permissions` after rebind; that does not negate USB enumeration.
 - This is the first run satisfying the requested host-visible `1234:0001` condition. Evidence: `/tmp/fullerene-bramble-force-debuggable-policy-corrected/{fastboot-boot.log,udev-follow.log,runtime-before-root.txt,adb-root.txt,runtime-after-root.txt,configfs-rebind.txt,lsusb-after.txt,result.txt}`. No analyzer, flash, erase, secure-debug, or user-data backup operation was used.
+
+### 2026-09-06 — AArch64 boot-entry assembly boundary refactor
+
+- Moved the `_start`/EL transition/boot-register capture/static-PIE relocation assembly from `fullerene-kernel/src/arch/aarch64/main.rs` to `entry.rs`, retaining the same `repr(C)` seven-word `Aarch64BootContext` layout. Moved `wfe` and QEMU semihost exit primitives to `cpu.rs`; `main.rs` now contains no `asm!`/`global_asm!` calls.
+- `cargo check` for the AArch64 kernel passed, both Bramble and QEMU-virt release image builds passed, and QEMU-virt reached the existing DTB memory-map/frame allocator/timer/early-boot markers. This refactor has no physical handset result and does not alter the prior successful transient `1234:0001` record.
+
+### 2026-09-06 — AArch64 typed exception frame and EL0 SVC QEMU smoke
+
+- Added the typed `Aarch64TrapFrame` boundary in `fullerene-kernel/src/arch/aarch64/exceptions.rs`. It covers x0..x30 plus `ELR_EL1`, `SPSR_EL1`, `SP_EL0`, `ESR_EL1`, and `FAR_EL1`; the vector stubs save/restore it and the Rust sync handler can mutate the return state.
+- Added a bounded one-page user mapping and an opt-in `aarch64-user-smoke` path. The test enters EL0, executes two SVCs, handles both through the real exception vector, and returns to an EL1h continuation. The first attempt showed QEMU's SVC `ELR_EL1` already at the next instruction (`0x40000004`); removing the incorrect extra `+4` made the second SVC execute.
+- Reproducible command: `FULLERENE_AARCH64_USER_SMOKE=1 cargo run -q -p flasks -- run --arch aarch64 --platform qemu-virt --timeout 5`. Observed: `user-smoke: svc=0x1`, `user-smoke: svc=0x2`, `user-smoke: returned to EL1h`; the final timeout is the deliberate EL1 `wfe` wait. Evidence: `/tmp/fullerene-user-smoke-flasks.1KQ1XA.log`.
+- This is QEMU-only software evidence. It does not claim a Bramble boot, USB result, userspace ELF loader, scheduler, or complete FullereneOS port, and it does not modify the prior physical `1234:0001` record.
 
 The Bramble qpr1 `drivers/usb/dwc3/core.h` defines `DWC3_DCTL_RUN_STOP` as
 bit 31 and `DWC3_DCTL_CSFTRST` as bit 30. Its `gadget.c` pull-up path uses

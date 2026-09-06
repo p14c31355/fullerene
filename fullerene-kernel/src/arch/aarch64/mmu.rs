@@ -17,8 +17,10 @@ const DESC_TABLE: u64 = 1 << 1;
 const DESC_ATTR_DEVICE: u64 = 1 << 2;
 const DESC_AF: u64 = 1 << 10;
 const DESC_SH_INNER: u64 = 0b11 << 8;
+const DESC_AP_USER_RW: u64 = 0b01 << 6;
 const DESC_PXN: u64 = 1 << 53;
 const DESC_UXN: u64 = 1 << 54;
+const PAGE_SIZE: u64 = 4096;
 
 #[derive(Clone, Copy)]
 #[repr(C, align(4096))]
@@ -29,6 +31,9 @@ static mut L2_0: PageTable = PageTable([0; TABLE_ENTRIES]);
 static mut L2_1: PageTable = PageTable([0; TABLE_ENTRIES]);
 static mut L2_2: PageTable = PageTable([0; TABLE_ENTRIES]);
 static mut L2_3: PageTable = PageTable([0; TABLE_ENTRIES]);
+// The first user-space bring-up uses one split 2 MiB window. Later address
+// spaces will allocate these L3 tables from the physical frame allocator.
+static mut USER_L3_1_0: PageTable = PageTable([0; TABLE_ENTRIES]);
 
 /// Install a small identity map covering the first 4 GiB of physical memory.
 ///
@@ -92,6 +97,71 @@ pub fn init() {
     }
 }
 
+/// Replace the identity 2 MiB block containing `virtual_address` with a
+/// 4 KiB table and make one page accessible from EL0.
+///
+/// This is intentionally a bounded first mapping primitive. It gives the
+/// AArch64 runtime a real user-page boundary without pretending that the
+/// eventual per-process page-table allocator already exists.
+pub fn map_user_page(virtual_address: u64, physical_address: u64, executable: bool) -> bool {
+    if virtual_address >= 0x1_0000_0000
+        || physical_address & (PAGE_SIZE - 1) != 0
+        || virtual_address & (PAGE_SIZE - 1) != 0
+    {
+        return false;
+    }
+    let l1_index = ((virtual_address >> 30) & 0x1ff) as usize;
+    let l2_index = ((virtual_address >> 21) & 0x1ff) as usize;
+    let l3_index = ((virtual_address >> 12) & 0x1ff) as usize;
+    if l1_index != 1 || l2_index != 0 {
+        return false;
+    }
+
+    unsafe {
+        let l3 = core::ptr::addr_of_mut!(USER_L3_1_0);
+        let block_base = 0x4000_0000u64;
+        for index in 0..TABLE_ENTRIES {
+            let physical = block_base + index as u64 * PAGE_SIZE;
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*l3).0[index]),
+                page_descriptor(physical, false, true),
+            );
+        }
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!(L2_1.0[l2_index]),
+            table_descriptor(l3 as u64),
+        );
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!((*l3).0[l3_index]),
+            page_descriptor(physical_address, true, executable),
+        );
+        asm!(
+            "dsb ish",
+            "tlbi vmalle1",
+            "dsb ish",
+            "isb",
+            options(nostack)
+        );
+    }
+    true
+}
+
+/// Publish instructions written through the identity map before EL0 fetches
+/// them through the executable user mapping.
+pub fn sync_code(address: u64) {
+    unsafe {
+        asm!(
+            "dc cvac, {address}",
+            "dsb ish",
+            "ic ivau, {address}",
+            "dsb ish",
+            "isb",
+            address = in(reg) address,
+            options(nostack)
+        );
+    }
+}
+
 fn table_descriptor(address: u64) -> u64 {
     (address & !0xfff) | DESC_VALID | DESC_TABLE
 }
@@ -102,6 +172,18 @@ fn block_descriptor(physical: u64, device: bool) -> u64 {
         descriptor |= DESC_ATTR_DEVICE | DESC_PXN | DESC_UXN;
     } else {
         descriptor |= DESC_SH_INNER;
+    }
+    descriptor
+}
+
+fn page_descriptor(physical: u64, user: bool, executable: bool) -> u64 {
+    let mut descriptor =
+        (physical & !(PAGE_SIZE - 1)) | DESC_VALID | DESC_TABLE | DESC_AF | DESC_SH_INNER;
+    if user {
+        descriptor |= DESC_AP_USER_RW;
+    }
+    if !executable {
+        descriptor |= DESC_UXN;
     }
     descriptor
 }

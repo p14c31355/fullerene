@@ -20,6 +20,7 @@ pub struct Header {
 }
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub struct Region {
     pub base: u64,
     pub size: u64,
@@ -133,6 +134,81 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
         true
     })?;
     result
+}
+
+/// Collect enabled system-memory regions from the DTB's `memory` nodes.
+///
+/// Linux arm64 bootloaders describe usable DRAM with a node named
+/// `memory@...` and/or `device_type = "memory"`; the `reg` cells inherit the
+/// root bus `#address-cells`/`#size-cells`.  Keep this parser bounded and
+/// allocation-free because it runs before the full allocator exists.  The
+/// caller owns `out`, and the return value is the number of entries written.
+pub fn find_memory_regions(address: u64, out: &mut [Region]) -> usize {
+    let mut states = [MemoryNodeState::new(); 16];
+    let mut count = 0usize;
+    let _ = walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode {
+                depth,
+                name,
+                name_end,
+            } => {
+                let parent = states[depth - 1];
+                states[depth] = MemoryNodeState {
+                    address_cells: parent.child_address_cells,
+                    size_cells: parent.child_size_cells,
+                    child_address_cells: parent.child_address_cells,
+                    child_size_cells: parent.child_size_cells,
+                    enabled: true,
+                    is_memory_name: c_string_is_memory_node(name, name_end),
+                    is_memory_type: false,
+                    regions: [None; 8],
+                };
+            }
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"#address-cells") && item.length >= 4 {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_address_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells")
+                    && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_size_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"device_type") {
+                    state.is_memory_type = c_string_eq(item.value, item.value_end, b"memory");
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, b"reg") {
+                    state.regions = read_regions_bounded(
+                        item.value,
+                        item.length,
+                        state.address_cells,
+                        state.size_cells,
+                    );
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && (state.is_memory_name || state.is_memory_type) {
+                    for region in state.regions.into_iter().flatten() {
+                        if count >= out.len() {
+                            return false;
+                        }
+                        out[count] = region;
+                        count += 1;
+                    }
+                }
+            }
+        }
+        true
+    });
+    count
 }
 
 #[derive(Clone, Copy)]
@@ -728,6 +804,18 @@ struct NodeState {
 }
 
 #[derive(Clone, Copy)]
+struct MemoryNodeState {
+    address_cells: u8,
+    size_cells: u8,
+    child_address_cells: u8,
+    child_size_cells: u8,
+    enabled: bool,
+    is_memory_name: bool,
+    is_memory_type: bool,
+    regions: [Option<Region>; 8],
+}
+
+#[derive(Clone, Copy)]
 struct PropertyNodeState {
     compatible: bool,
     name_matches: bool,
@@ -841,6 +929,21 @@ impl NodeState {
     }
 }
 
+impl MemoryNodeState {
+    const fn new() -> Self {
+        Self {
+            address_cells: 2,
+            size_cells: 1,
+            child_address_cells: 2,
+            child_size_cells: 1,
+            enabled: true,
+            is_memory_name: false,
+            is_memory_type: false,
+            regions: [None; 8],
+        }
+    }
+}
+
 fn align4_checked(pointer: *const u8) -> Option<*const u8> {
     Some(((pointer as usize).checked_add(3)? & !3) as *const u8)
 }
@@ -858,6 +961,23 @@ fn c_string_eq(pointer: *const u8, end: *const u8, target: &[u8]) -> bool {
         index += 1;
     }
     (pointer as usize) + target.len() < (end as usize) && unsafe { *pointer.add(target.len()) == 0 }
+}
+
+fn c_string_is_memory_node(pointer: *const u8, end: *const u8) -> bool {
+    if (pointer as usize) >= end as usize {
+        return false;
+    }
+    let mut index = 0usize;
+    while index < b"memory".len() {
+        if (pointer as usize) + index >= end as usize
+            || unsafe { *pointer.add(index) } != b"memory"[index]
+        {
+            return false;
+        }
+        index += 1;
+    }
+    let next = (pointer as usize).saturating_add(index);
+    next < end as usize && matches!(unsafe { *pointer.add(index) }, 0 | b'@')
 }
 
 fn compatible_list_contains(pointer: *const u8, length: usize, target: &[u8]) -> bool {
@@ -924,10 +1044,137 @@ fn read_regions(
     regions
 }
 
+fn read_regions_bounded(
+    pointer: *const u8,
+    length: usize,
+    address_cells: u8,
+    size_cells: u8,
+) -> [Option<Region>; 8] {
+    let mut regions = [None; 8];
+    if !matches!((address_cells, size_cells), (1..=2, 1..=2)) {
+        return regions;
+    }
+    let tuple_size = (address_cells as usize + size_cells as usize) * 4;
+    if tuple_size == 0 {
+        return regions;
+    }
+    for (index, region) in regions.iter_mut().enumerate() {
+        let Some(offset) = index.checked_mul(tuple_size) else {
+            break;
+        };
+        if offset + tuple_size > length {
+            break;
+        }
+        *region = read_region(
+            unsafe { pointer.add(offset) },
+            tuple_size,
+            address_cells,
+            size_cells,
+        );
+    }
+    regions
+}
+
 fn read_cells(pointer: *const u8, count: usize) -> Option<u64> {
     let mut value = 0u64;
     for index in 0..count {
         value = (value << 32) | read_be32(unsafe { pointer.add(index * 4) }, 0)? as u64;
     }
     Some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_memory_regions, inspect, Region};
+
+    fn be32(value: u32, out: &mut Vec<u8>) {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn pad4(out: &mut Vec<u8>) {
+        while out.len() % 4 != 0 {
+            out.push(0);
+        }
+    }
+
+    fn property(out: &mut Vec<u8>, name: u32, value: &[u8]) {
+        be32(3, out);
+        be32(value.len() as u32, out);
+        be32(name, out);
+        out.extend_from_slice(value);
+        pad4(out);
+    }
+
+    fn memory_dtb(disabled: bool) -> Vec<u8> {
+        // The builder intentionally uses a 2-cell address and 2-cell size so
+        // the test exercises the same 64-bit cell path used by Bramble.
+        let strings = b"#address-cells\0#size-cells\0device_type\0reg\0status\0";
+        let address_cells = 0u32;
+        let size_cells = 15u32;
+        let device_type = 27u32;
+        let reg = 39u32;
+        let mut structure = Vec::new();
+        be32(1, &mut structure);
+        structure.push(0);
+        pad4(&mut structure);
+        property(&mut structure, address_cells, &2u32.to_be_bytes());
+        property(&mut structure, size_cells, &2u32.to_be_bytes());
+        be32(1, &mut structure);
+        structure.extend_from_slice(b"memory@80000000\0");
+        pad4(&mut structure);
+        property(&mut structure, device_type, b"memory\0");
+        let reg_value = [
+            0x0000_0000u32,
+            0x8000_0000,
+            0x0000_0000,
+            0x4000_0000,
+        ];
+        let mut reg_bytes = Vec::new();
+        for cell in reg_value {
+            be32(cell, &mut reg_bytes);
+        }
+        property(&mut structure, reg, &reg_bytes);
+        if disabled {
+            let status = 43u32;
+            property(&mut structure, status, b"disabled\0");
+        }
+        be32(2, &mut structure);
+        be32(2, &mut structure);
+        be32(9, &mut structure);
+
+        let structure_offset = 40u32;
+        let strings_offset = structure_offset + structure.len() as u32;
+        let total_size = strings_offset + strings.len() as u32;
+        let mut dtb = Vec::new();
+        be32(0xd00d_feed, &mut dtb);
+        be32(total_size, &mut dtb);
+        be32(structure_offset, &mut dtb);
+        be32(strings_offset, &mut dtb);
+        be32(0, &mut dtb); // memory reservation block offset
+        be32(17, &mut dtb);
+        be32(16, &mut dtb);
+        be32(0, &mut dtb); // boot CPU
+        be32(strings.len() as u32, &mut dtb);
+        be32(structure.len() as u32, &mut dtb);
+        dtb.extend_from_slice(&structure);
+        dtb.extend_from_slice(strings);
+        dtb
+    }
+
+    #[test]
+    fn memory_node_with_64_bit_cells_is_collected() {
+        let dtb = memory_dtb(false);
+        assert!(inspect(dtb.as_ptr() as u64).is_some());
+        let mut regions = [Region { base: 0, size: 0 }; 2];
+        assert_eq!(find_memory_regions(dtb.as_ptr() as u64, &mut regions), 1);
+        assert_eq!(regions[0].base, 0x8000_0000);
+        assert_eq!(regions[0].size, 0x4000_0000);
+    }
+
+    #[test]
+    fn disabled_memory_node_is_ignored() {
+        let dtb = memory_dtb(true);
+        let mut regions = [Region { base: 0, size: 0 }; 2];
+        assert_eq!(find_memory_regions(dtb.as_ptr() as u64, &mut regions), 0);
+    }
 }
