@@ -452,13 +452,13 @@ pub const TRACE_CONTROL_HEADER_BYTES: usize = 16;
 pub const TRACE_CONTROL_ENTRY_BYTES: usize = 32;
 pub const TRACE_CONTROL_PAGE_ENTRIES: usize = 15;
 
-/// One vendor function with a bulk IN/OUT pair. The function is deliberately
-/// protocol-neutral; higher layers can bind their own payload format without
-/// changing the UDC/EP0 lifecycle.
+/// One ADB-class-compatible bulk function with a bulk IN/OUT pair. The
+/// transport accepts the bounded ADB framing and the legacy FDBG diagnostic
+/// framing without changing the UDC/EP0 lifecycle.
 #[cfg(not(fullerene_aarch64_usb_gadget_handoff_super_speed))]
 pub const CONFIG_DESCRIPTOR: [u8; 32] = [
     9, 2, 32, 0, 1, 1, 0, 0x80, 50, // configuration
-    9, 4, 0, 0, 2, 0xff, 0, 0, 0, // interface
+    9, 4, 0, 0, 2, 0xff, 0x42, 0x01, 0, // Android ADB interface
     7, 5, 0x83, 2, 0, 2, 0, // bulk IN, EP3
     7, 5, 0x02, 2, 0, 2, 0, // bulk OUT, EP2
 ];
@@ -470,7 +470,7 @@ pub const CONFIG_DESCRIPTOR: [u8; 32] = [
 #[cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)]
 pub const CONFIG_DESCRIPTOR: [u8; 44] = [
     9, 2, 44, 0, 1, 1, 0, 0x80, 50, // configuration
-    9, 4, 0, 0, 2, 0xff, 0, 0, 0, // interface
+    9, 4, 0, 0, 2, 0xff, 0x42, 0x01, 0, // Android ADB interface
     7, 5, 0x83, 2, 0, 2, 0, // bulk IN, EP3
     6, 0x30, 0, 0, 0, 0, // SS endpoint companion
     7, 5, 0x02, 2, 0, 2, 0, // bulk OUT, EP2
@@ -823,6 +823,7 @@ mod tests {
         );
         assert_eq!(CONFIG_DESCRIPTOR.len(), 32);
         assert_eq!(CONFIG_DESCRIPTOR[13], 2);
+        assert_eq!(&CONFIG_DESCRIPTOR[14..17], &[0xff, 0x42, 0x01]);
         assert_eq!(CONFIG_DESCRIPTOR[18], 7);
         assert_eq!(CONFIG_DESCRIPTOR[19], 5);
         assert_eq!(CONFIG_DESCRIPTOR[20], 0x83);

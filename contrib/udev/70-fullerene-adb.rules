@@ -1,8 +1,0 @@
-# FullereneOS development transport.
-#
-# 1234:0001 is the temporary FullereneOS ADB identity used by the Bramble
-# bring-up.  18d1:4ee7 is the stock Pixel 4a (5G) ADB/Fastboot identity.
-# Keep both entries so a controlled return to the bootloader does not lose
-# access to the device node.
-SUBSYSTEM=="usb", ATTR{idVendor}=="1234", ATTR{idProduct}=="0001", MODE="0660", GROUP="plugdev", TAG+="uaccess", ENV{adb_user}="yes"
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="4ee7", MODE="0660", GROUP="plugdev", TAG+="uaccess", ENV{adb_user}="yes"

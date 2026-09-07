@@ -633,15 +633,16 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     uart::puts("timer: generic counter ready, ticks=");
     uart::put_hex_value(elapsed);
 
-    // The UFS platform/storage backend is an explicit Bramble build opt-in.
-    // The default image continues to describe the DT only; the additional DMA
-    // identity assertion in execute_bramble_read_only prevents a physical
-    // platform transaction until the UTP ownership contract is deliberate.
+    // The UFS platform/storage backend is a Bramble build opt-in. Flasks
+    // enables the read-only attempt for `--android-init` images; the direct
+    // Cargo path still requires FULLERENE_AARCH64_UFS_EXECUTE=1. The separate
+    // DMA identity assertion prevents a physical transaction until UTP
+    // ownership is deliberate.
     #[cfg(fullerene_aarch64_bramble)]
     if option_env!("FULLERENE_AARCH64_UFS_EXECUTE") == Some("1") {
         if let Some(profile) = ufs::profile() {
             let rate_b = option_env!("FULLERENE_AARCH64_UFS_RATE_B") == Some("1");
-            match ufs::execute_bramble_read_only(profile, rate_b) {
+            match ufs::execute_bramble_read_only(profile, rate_b, dtb_address) {
                 Ok((device, geometry)) => {
                     let installed = ufs::install_bramble_block_device(device);
                     uart::put_hex("ufs: block size=", geometry.block_size as u64);

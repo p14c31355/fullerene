@@ -13,7 +13,9 @@ use alloc::vec::Vec;
 
 use crate::block::BlockDevice;
 use crate::fs::FsError;
-use crate::vfs::{FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, VNode};
+use crate::vfs::{
+    FileDescriptor, FileMetadata, FileSystem, FileSystemCapabilities, InodeType, VNode,
+};
 
 const F2FS_SUPER_OFFSET: u64 = 1024;
 const F2FS_SUPER_BYTES: usize = 3072;
@@ -110,6 +112,8 @@ struct Checkpoint {
 struct InodeRecord {
     nid: u32,
     mode: u16,
+    uid: u32,
+    gid: u32,
     inline_flags: u8,
     size: u64,
     extra_isize: usize,
@@ -599,6 +603,8 @@ impl F2fsFileSystem {
         Ok(InodeRecord {
             nid,
             mode: le_u16(&node, 0),
+            uid: le_u32(&node, 4),
+            gid: le_u32(&node, 8),
             inline_flags,
             size: le_u64(&node, 16),
             extra_isize,
@@ -1054,6 +1060,30 @@ impl FileSystem for F2fsFileSystem {
         Ok(self.read_inode(nid)?.size)
     }
 
+    fn metadata(&mut self, path: &str) -> Result<FileMetadata, FsError> {
+        let nid = self.lookup(path)?;
+        let inode = self.read_inode(nid)?;
+        Ok(FileMetadata {
+            mode: inode.mode as u32,
+            uid: inode.uid,
+            gid: inode.gid,
+            size: inode.size,
+            kind: inode.kind()?,
+        })
+    }
+
+    fn metadata_at(&mut self, fd: u32) -> Result<FileMetadata, FsError> {
+        let (nid, _) = self.handle(fd)?;
+        let inode = self.read_inode(nid)?;
+        Ok(FileMetadata {
+            mode: inode.mode as u32,
+            uid: inode.uid,
+            gid: inode.gid,
+            size: inode.size,
+            kind: inode.kind()?,
+        })
+    }
+
     fn create(&mut self, _path: &str, _kind: InodeType) -> Option<u64> {
         None
     }
@@ -1083,6 +1113,28 @@ impl FileSystem for F2fsFileSystem {
                 })
             })
             .collect())
+    }
+
+    fn read_link(&mut self, path: &str) -> Result<String, FsError> {
+        let path = path.trim_end_matches('/');
+        let split = path.rfind('/');
+        let (parent_path, name) = match split {
+            Some(0) => ("/", &path[1..]),
+            Some(index) => (&path[..index], &path[index + 1..]),
+            None => ("", path),
+        };
+        if name.is_empty() {
+            return Err(FsError::InvalidPath);
+        }
+        let parent = self.lookup(parent_path)?;
+        let child = self
+            .find_child(parent, name)?
+            .ok_or(FsError::FileNotFound)?;
+        let inode = self.read_inode(child.nid)?;
+        if inode.kind()? != InodeType::Symlink {
+            return Err(FsError::InvalidInput);
+        }
+        self.read_symlink(&inode)
     }
 
     fn exists(&mut self, path: &str) -> bool {
@@ -1207,13 +1259,17 @@ mod tests {
 
         // Root inode node and /hello inode node.
         let root = &mut image[3584 * 4096..3585 * 4096];
-        put_u16(root, 0, S_IFDIR);
+        put_u16(root, 0, S_IFDIR | 0o750);
+        put_u32(root, 4, 1000);
+        put_u32(root, 8, 1001);
         put_u64(root, 16, 4096);
         put_u32(root, 360, 3585);
         put_u32(root, 4072, 3);
         put_u32(root, 4076, 3);
         let file = &mut image[3586 * 4096..3587 * 4096];
-        put_u16(file, 0, S_IFREG);
+        put_u16(file, 0, S_IFREG | 0o640);
+        put_u32(file, 4, 2000);
+        put_u32(file, 8, 2001);
         put_u64(file, 16, 5);
         put_u32(file, 360, 3587);
         put_u32(file, 4072, 4);
@@ -1242,6 +1298,17 @@ mod tests {
         let entries = fs.readdir("/").unwrap();
         assert_eq!(entries[0].name, "hello");
         let file = fs.open("/hello", 0).unwrap();
+        assert_eq!(
+            fs.metadata("/hello").unwrap(),
+            FileMetadata {
+                mode: (S_IFREG | 0o640) as u32,
+                uid: 2000,
+                gid: 2001,
+                size: 5,
+                kind: InodeType::File,
+            }
+        );
+        assert_eq!(fs.metadata_at(file.fd).unwrap().uid, 2000);
         let mut output = [0u8; 5];
         assert_eq!(fs.read(file.fd, &mut output).unwrap(), 5);
         assert_eq!(&output, b"world");

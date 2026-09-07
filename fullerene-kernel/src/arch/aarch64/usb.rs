@@ -161,6 +161,10 @@ unsafe extern "C" {
 
 const EVENT_BUFFER_SIZE: usize = 4096;
 const MAX_PACKET_SIZE: u32 = 512;
+// ADB advertises a 4 KiB transport window. The controller still uses a
+// 512-byte USB packet size; this is the aggregate OUT request buffer that
+// receives one complete ADB message before the protocol parser runs.
+const DATA_OUT_BUFFER_SIZE: usize = 4096 + 24;
 // Linux starts the gadget with the SuperSpeed EP0 descriptor size while the
 // link speed is still unknown, then changes it to 64 on a High-Speed
 // Connect Done event. The first SETUP transfer must use that initial state.
@@ -308,10 +312,10 @@ static mut DATA_TRBS: [Trb; 2] = [
     },
 ];
 #[repr(C, align(64))]
-struct DataBuffer([u8; MAX_PACKET_SIZE as usize]);
+struct DataBuffer([u8; DATA_OUT_BUFFER_SIZE]);
 
 #[unsafe(link_section = ".usb_dma")]
-static mut DATA_OUT_BUFFER: DataBuffer = DataBuffer([0; MAX_PACKET_SIZE as usize]);
+static mut DATA_OUT_BUFFER: DataBuffer = DataBuffer([0; DATA_OUT_BUFFER_SIZE]);
 #[unsafe(link_section = ".usb_dma")]
 static mut RESPONSE: ResponseBuffer = ResponseBuffer([0; 512]);
 static mut FASTBOOT_EVENT_DMA_BASE: u64 = 0;
@@ -4016,10 +4020,10 @@ unsafe fn sync_gadget_state() {
         udc_mut().address = gadget_ref().address();
         udc_mut().configured = CONFIGURED;
         if CONFIGURED && !DATA_ENDPOINTS_READY {
-            // The protocol layer exposes one vendor function with either an
-            // ordinary bulk pair or an explicitly supplied IPA/GSI binding.
-            // Configure it only after SET_CONFIGURATION has committed,
-            // matching gadget-core ordering.
+            // The protocol layer exposes one ADB-class-compatible function
+            // with either an ordinary bulk pair or an explicitly supplied
+            // IPA/GSI binding. Configure it only after SET_CONFIGURATION has
+            // committed, matching gadget-core ordering.
             let gsi_config = gadget_ref().gsi_endpoint();
             if let Some(config) = gsi_config {
                 if let Some((ring, buffers)) = configure_gsi_data_endpoint(
@@ -4058,7 +4062,7 @@ unsafe fn sync_gadget_state() {
                     let _ = queue_bulk_transfer(
                         2,
                         addr_of_mut!(DATA_OUT_BUFFER.0).cast::<u8>(),
-                        MAX_PACKET_SIZE as usize,
+                        DATA_OUT_BUFFER_SIZE,
                     );
                 }
             } else {
@@ -4679,7 +4683,7 @@ unsafe fn complete_bulk_transfer(endpoint: usize, status: u32, raw: u32) {
             let _ = queue_bulk_transfer(
                 2,
                 addr_of_mut!(DATA_OUT_BUFFER.0).cast::<u8>(),
-                MAX_PACKET_SIZE as usize,
+                DATA_OUT_BUFFER_SIZE,
             );
         }
     }
@@ -5143,7 +5147,7 @@ pub fn runtime_resume() -> bool {
             let _ = queue_bulk_transfer(
                 2,
                 addr_of_mut!(DATA_OUT_BUFFER.0).cast::<u8>(),
-                MAX_PACKET_SIZE as usize,
+                DATA_OUT_BUFFER_SIZE,
             );
         }
         if GSI_GADGET_BOUND {

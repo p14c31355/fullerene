@@ -12,8 +12,10 @@ const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_LOAD_SEGMENTS: usize = 8;
 const MAX_IMAGE_PAGES: usize = 4096;
+pub(crate) const MAX_INTERPRETER_PATH: usize = 128;
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
+const PT_INTERP: u32 = 3;
 const EM_AARCH64: u16 = 183;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
@@ -22,6 +24,10 @@ const PF_X: u32 = 1;
 const PAGE_SIZE: u64 = 4096;
 const USER_ADDRESS_LIMIT: u64 = 0x1_0000_0000;
 const ET_DYN_LOAD_BASE: u64 = 0x4040_0000;
+// Keep the Android interpreter below the main executable and reserve a
+// separate main-image base so the two ET_DYN images cannot overlap.
+pub(crate) const INTERPRETER_LOAD_BASE: u64 = 0x4000_0000;
+pub(crate) const MAIN_EXECUTABLE_LOAD_BASE: u64 = 0x4160_0000;
 const R_AARCH64_RELATIVE: u32 = 1027;
 const DT_NULL: i64 = 0;
 const DT_RELA: i64 = 7;
@@ -44,6 +50,20 @@ struct LoadSegment {
 struct DynamicTable {
     file_offset: usize,
     file_size: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ParsedImage {
+    entry: u64,
+    segments: [LoadSegment; MAX_LOAD_SEGMENTS],
+    segment_count: usize,
+    dynamic: Option<DynamicTable>,
+    load_bias: u64,
+    phdr: u64,
+    phent: u64,
+    phnum: u64,
+    interpreter_path: [u8; MAX_INTERPRETER_PATH],
+    interpreter_path_len: usize,
 }
 
 impl LoadSegment {
@@ -79,6 +99,9 @@ pub(crate) struct LoadedImage {
     pub(crate) phdr: u64,
     pub(crate) phent: u64,
     pub(crate) phnum: u64,
+    pub(crate) load_bias: u64,
+    pub(crate) interpreter_path: [u8; MAX_INTERPRETER_PATH],
+    pub(crate) interpreter_path_len: usize,
 }
 
 // The first AArch64 loader is single-core and performs one load at a time.
@@ -95,8 +118,58 @@ pub(crate) fn load_image(
     image: &[u8],
     frames: &mut PhysicalFrameAllocator,
 ) -> Option<LoadedImage> {
-    let (entry, segments, segment_count, dynamic, load_bias, phdr, phent, phnum) =
-        parse_segments(image)?;
+    let initial = parse_segments(image, None)?;
+    let load_bias = if initial.interpreter_path_len != 0 {
+        MAIN_EXECUTABLE_LOAD_BASE
+    } else {
+        initial.load_bias
+    };
+    load_image_at(
+        space_id,
+        image,
+        frames,
+        load_bias,
+        initial.interpreter_path_len == 0,
+    )
+}
+
+/// Load an ELF image at an explicit ET_DYN base.
+///
+/// The Android kernel contract leaves relocation processing to the dynamic
+/// linker for both the main executable and `PT_INTERP`. `apply_relocations`
+/// therefore remains an explicit choice: static-PIE images use the bounded
+/// in-kernel relative relocator, while dynamically linked images are handed
+/// to the Android linker unchanged.
+pub(crate) fn load_image_at(
+    space_id: usize,
+    image: &[u8],
+    frames: &mut PhysicalFrameAllocator,
+    load_bias: u64,
+    relocate: bool,
+) -> Option<LoadedImage> {
+    let parsed = parse_segments(image, Some(load_bias))?;
+    load_parsed_image(space_id, image, frames, parsed, relocate)
+}
+
+fn load_parsed_image(
+    space_id: usize,
+    image: &[u8],
+    frames: &mut PhysicalFrameAllocator,
+    parsed: ParsedImage,
+    relocate: bool,
+) -> Option<LoadedImage> {
+    let ParsedImage {
+        entry,
+        segments,
+        segment_count,
+        dynamic,
+        load_bias,
+        phdr,
+        phent,
+        phnum,
+        interpreter_path,
+        interpreter_path_len,
+    } = parsed;
     let pages = unsafe { &mut *core::ptr::addr_of_mut!(IMAGE_PAGES) };
     for page in pages.iter_mut() {
         *page = ImagePage::EMPTY;
@@ -179,17 +252,19 @@ pub(crate) fn load_image(
         }
     }
 
-    if let Some(dynamic) = dynamic {
-        if !apply_relocations(
-            image,
-            &segments[..segment_count],
-            dynamic,
-            pages,
-            page_count,
-            load_bias,
-        ) {
-            release_image_pages(frames, pages, page_count);
-            return None;
+    if relocate {
+        if let Some(dynamic) = dynamic {
+            if !apply_relocations(
+                image,
+                &segments[..segment_count],
+                dynamic,
+                pages,
+                page_count,
+                load_bias,
+            ) {
+                release_image_pages(frames, pages, page_count);
+                return None;
+            }
         }
     }
 
@@ -226,6 +301,9 @@ pub(crate) fn load_image(
         phdr,
         phent,
         phnum,
+        load_bias,
+        interpreter_path,
+        interpreter_path_len,
     })
 }
 
@@ -241,18 +319,7 @@ fn release_image_pages(
     }
 }
 
-fn parse_segments(
-    image: &[u8],
-) -> Option<(
-    u64,
-    [LoadSegment; MAX_LOAD_SEGMENTS],
-    usize,
-    Option<DynamicTable>,
-    u64,
-    u64,
-    u64,
-    u64,
-)> {
+fn parse_segments(image: &[u8], requested_load_bias: Option<u64>) -> Option<ParsedImage> {
     if image.len() < ELF_HEADER_SIZE
         || image.get(0..4)? != b"\x7fELF"
         || image.get(4).copied()? != 2
@@ -267,10 +334,15 @@ fn parse_segments(
     }
 
     let image_type = read_u16(image, 16)?;
-    let load_bias = if image_type == ET_DYN {
-        ET_DYN_LOAD_BASE
-    } else {
-        0
+    let load_bias = match image_type {
+        ET_DYN => requested_load_bias.unwrap_or(ET_DYN_LOAD_BASE),
+        ET_EXEC => {
+            if requested_load_bias.unwrap_or(0) != 0 {
+                return None;
+            }
+            0
+        }
+        _ => return None,
     };
     let entry = read_u64(image, 24)?.checked_add(load_bias)?;
     let program_header_offset = usize::try_from(read_u64(image, 32)?).ok()?;
@@ -287,6 +359,8 @@ fn parse_segments(
     let mut segments = [LoadSegment::EMPTY; MAX_LOAD_SEGMENTS];
     let mut segment_count = 0usize;
     let mut dynamic = None;
+    let mut interpreter_path = [0u8; MAX_INTERPRETER_PATH];
+    let mut interpreter_path_len = 0usize;
     for index in 0..program_header_count {
         let offset = program_header_offset.checked_add(index * PROGRAM_HEADER_SIZE)?;
         let program_type = read_u32(image, offset)?;
@@ -304,6 +378,25 @@ fn parse_segments(
                 file_offset,
                 file_size,
             });
+            continue;
+        }
+        if program_type == PT_INTERP {
+            if interpreter_path_len != 0 {
+                return None;
+            }
+            let file_offset = usize::try_from(read_u64(image, offset + 8)?).ok()?;
+            let file_size = usize::try_from(read_u64(image, offset + 32)?).ok()?;
+            let file_end = file_offset.checked_add(file_size)?;
+            if file_size < 2 || file_size > MAX_INTERPRETER_PATH || file_end > image.len() {
+                return None;
+            }
+            let bytes = image.get(file_offset..file_end)?;
+            let nul = bytes.iter().position(|byte| *byte == 0)?;
+            if nul == 0 || nul + 1 != bytes.len() {
+                return None;
+            }
+            interpreter_path[..nul].copy_from_slice(&bytes[..nul]);
+            interpreter_path_len = nul;
             continue;
         }
         if program_type != PT_LOAD {
@@ -365,16 +458,18 @@ fn parse_segments(
             )
         })
         .unwrap_or(0);
-    Some((
+    Some(ParsedImage {
         entry,
         segments,
         segment_count,
         dynamic,
         load_bias,
         phdr,
-        PROGRAM_HEADER_SIZE as u64,
-        program_header_count as u64,
-    ))
+        phent: PROGRAM_HEADER_SIZE as u64,
+        phnum: program_header_count as u64,
+        interpreter_path,
+        interpreter_path_len,
+    })
 }
 
 /// Apply the relocation forms emitted by static AArch64 PIE linkers.

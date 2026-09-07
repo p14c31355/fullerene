@@ -12,6 +12,7 @@ use env_logger;
 
 mod adb;
 mod fastboot;
+mod udev;
 
 #[derive(Parser)]
 struct Args {
@@ -922,8 +923,9 @@ struct Args {
     #[arg(value_name = "IMAGE")]
     image: Option<PathBuf>,
 
-    /// Command for the Rust-only Fullerene debug transport (status, trace,
-    /// help, return, or shell:<command>).
+    /// Command for Fullerene diagnostics or the standard ADB bring-up path.
+    /// `status`, `trace`, `help`, `return` use FDBG; `shell:*` and `reboot:*`
+    /// use standard ADB framing.
     #[arg(long = "adb-command", default_value = "status", value_name = "COMMAND")]
     adb_command: String,
 
@@ -931,10 +933,21 @@ struct Args {
     #[arg(long, default_value_t = 1, value_name = "COUNT")]
     iterations: u32,
 
-    /// Select `/system/bin/init` as the first Linux-personality image after
-    /// the guarded Bramble UFS/LP/filesystem mount.
+    /// Select the Rust `/init` PID 1 payload as the first Linux-personality
+    /// image; a guarded Bramble UFS/LP/filesystem mount remains available
+    /// underneath the Fullerene-owned initramfs root.
     #[arg(long)]
     android_init: bool,
+
+    /// Enable the build-gated standard ADB `reboot:*` return path for a
+    /// non-persistent verification image.
+    #[arg(long)]
+    adb_return: bool,
+
+    /// Generate the udev deployment artifact from the Rust USB identity
+    /// specification. Without --output, print it to stdout.
+    #[arg(long = "output", value_name = "PATH")]
+    udev_output: Option<PathBuf>,
 
     /// Seconds to wait for Fastboot before each verification iteration.
     #[arg(long, default_value_t = 30, value_name = "SECONDS")]
@@ -962,6 +975,7 @@ enum Action {
     Adb,
     Boot,
     VerifyLoop,
+    UdevRules,
     Flash,
     Monitor,
 }
@@ -1295,6 +1309,21 @@ fn main() -> io::Result<()> {
     // Initialize env_logger - it will respect RUST_LOG environment variable for filtering
     env_logger::init();
     let args = Args::parse();
+    if args.command == Action::UdevRules {
+        if args.image.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "udev-rules does not accept an image path",
+            ));
+        }
+        if let Some(path) = args.udev_output.as_deref() {
+            udev::write_rules(path)?;
+            println!("Generated {}", path.display());
+        } else {
+            udev::print_rules();
+        }
+        return Ok(());
+    }
     if args.command == Action::Device {
         if args.image.is_some() {
             return Err(io::Error::new(
@@ -2740,6 +2769,7 @@ fn main() -> io::Result<()> {
             kernel_artifact,
             Aarch64BuildConfig {
                 android_init: args.android_init,
+                adb_return: args.adb_return,
                 probe_env: selected_probe.and_then(|probe| probe.env),
                 gadget_handoff_no_smmu: args.usb_gadget_handoff_no_smmu,
                 gadget_handoff_dma_cache_maintenance: args.usb_gadget_handoff_dma_cache_maintenance,
@@ -3051,6 +3081,7 @@ fn fnv1a64(data: &str) -> u64 {
 #[derive(Default)]
 struct Aarch64BuildConfig {
     android_init: bool,
+    adb_return: bool,
     probe_env: Option<&'static str>,
     gadget_handoff_no_smmu: bool,
     gadget_handoff_dma_cache_maintenance: bool,
@@ -3219,6 +3250,7 @@ fn build_aarch64_kernel(
     let target = Arch::Aarch64;
     let Aarch64BuildConfig {
         android_init,
+        adb_return,
         probe_env,
         gadget_handoff_no_smmu,
         gadget_handoff_dma_cache_maintenance,
@@ -3389,11 +3421,23 @@ fn build_aarch64_kernel(
     for name in [
         "FULLERENE_AARCH64_UFS_EXECUTE",
         "FULLERENE_AARCH64_UFS_DMA_IDENTITY",
+        "FULLERENE_AARCH64_UFS_DMA_ORIGIN",
         "FULLERENE_AARCH64_UFS_RATE_B",
     ] {
         if let Ok(value) = env::var(name) {
             push_env(name, value);
         }
+    }
+    // An Android-init Bramble image is intended to exercise the mounted
+    // Android storage path. Keep the DMA-identity assertion separate: the
+    // image may describe and attempt the read-only backend by default, but a
+    // physical UFS transaction still requires the explicit identity contract.
+    // An explicitly supplied value (including `0`) remains an opt-out.
+    if platform == Platform::Bramble
+        && android_init
+        && env::var_os("FULLERENE_AARCH64_UFS_EXECUTE").is_none()
+    {
+        push_env("FULLERENE_AARCH64_UFS_EXECUTE", "1".to_owned());
     }
     // Keep the EL0/SVC smoke path opt-in: it intentionally never participates
     // in a normal hardware or QEMU build unless the caller asks for it.
@@ -3420,6 +3464,9 @@ fn build_aarch64_kernel(
     );
     if let Some(probe_env) = probe_env {
         push_env(probe_env, "1".to_owned());
+    }
+    if adb_return {
+        push_env("FULLERENE_AARCH64_DEBUG_RETURN", "1".to_owned());
     }
     if gadget_handoff_no_smmu {
         push_env(

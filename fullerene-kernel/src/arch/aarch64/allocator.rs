@@ -10,7 +10,11 @@ use super::fdt;
 // The native VFS keeps the file-backed child image resident while SPAWN
 // stages one checked user copy. Keep both bounded buffers available during
 // the first VFS-to-process handoff.
-const HEAP_SIZE: usize = 256 * 1024;
+// Android-init now keeps the Rust PID-1 image, property-area metadata, and
+// the bounded virtual filesystems resident at the same time. 256 KiB was
+// enough for the original launchd probe but made a valid initramfs fail as
+// soon as the property-service protocol handler grew past that boundary.
+const HEAP_SIZE: usize = 512 * 1024;
 pub const PAGE_SIZE: u64 = 4096;
 const MAX_FRAME_RANGES: usize = 8;
 const MAX_RESERVED_RANGES: usize = 5;

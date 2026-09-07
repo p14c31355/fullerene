@@ -28,10 +28,10 @@ const DESC_CLONE_PENDING: u64 = 1 << 56;
 const DESC_OUTPUT_ADDRESS_MASK: u64 = 0x0000_ffff_ffff_f000;
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const MAX_USER_SPACES: usize = 8;
-// The first user-space prototype used one 2 MiB L3 table.  That is enough
-// for the bundled launchd but too small for a real Android executable. Keep
-// the expansion statically bounded while providing a 32 MiB user window.
-const USER_L2_TABLES: usize = 16;
+// Android's interpreter and its shared objects need room beside the main
+// executable. Keep the table count statically bounded while providing a
+// 128 MiB user window for the early dynamic-linker bring-up.
+const USER_L2_TABLES: usize = 64;
 pub(crate) const USER_SPACE_BASE: u64 = 0x4000_0000;
 pub(crate) const USER_SPACE_END: u64 = USER_SPACE_BASE + USER_L2_TABLES as u64 * BLOCK_SIZE;
 

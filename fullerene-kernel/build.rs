@@ -9,7 +9,10 @@ use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_gli
 fn main() {
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_EXECUTE");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_IDENTITY");
+    println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_ORIGIN");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_RATE_B");
+    println!("cargo:rerun-if-env-changed=FULLERENE_ANDROID_INIT_SELFTEST");
+    println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_DEBUG_RETURN");
     // This cfg is also referenced by the host-built USB protocol tests, so
     // declare it before the AArch64-only build branch below.
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
@@ -302,12 +305,29 @@ fn main() {
         generate_solvent_linux(&manifest_dir, &out_dir);
         let child = build_aarch64_child(&manifest_dir, &out_dir);
         let launchd = build_aarch64_launchd(&manifest_dir, &out_dir, &child);
+        let android_init = if env::var_os("CARGO_FEATURE_AARCH64_ANDROID_INIT").is_some() {
+            Some(build_aarch64_android_init(&manifest_dir, &out_dir))
+        } else {
+            None
+        };
+        let android_service = if android_init.is_some() {
+            Some(build_aarch64_android_service(&manifest_dir, &out_dir))
+        } else {
+            None
+        };
         let linux_smoke = if env::var_os("CARGO_FEATURE_AARCH64_LINUX_SMOKE").is_some() {
             Some(build_aarch64_linux_smoke(&manifest_dir, &out_dir))
         } else {
             None
         };
-        let initramfs = build_aarch64_initramfs(&out_dir, &child, &launchd, linux_smoke.as_deref());
+        let initramfs = build_aarch64_initramfs(
+            &out_dir,
+            &child,
+            &launchd,
+            android_init.as_deref(),
+            android_service.as_deref(),
+            linux_smoke.as_deref(),
+        );
         println!(
             "cargo:rustc-env=FULLERENE_LAUNCHD_IMAGE={}",
             launchd.display()
@@ -1944,6 +1964,42 @@ fn aarch64_linker_script(platform: &str) -> String {
         String::new()
     };
 
+    let requested_ufs_dma_origin = match env::var("FULLERENE_AARCH64_UFS_DMA_ORIGIN") {
+        Ok(value) => {
+            let value = value.trim();
+            let digits = value
+                .strip_prefix("0x")
+                .or_else(|| value.strip_prefix("0X"))
+                .unwrap_or(value);
+            let address = u64::from_str_radix(digits, 16).unwrap_or_else(|_| {
+                panic!(
+                    "FULLERENE_AARCH64_UFS_DMA_ORIGIN must be a hexadecimal address, got {value:?}"
+                )
+            });
+            assert!(
+                address != 0 && address & 0xfff == 0,
+                "FULLERENE_AARCH64_UFS_DMA_ORIGIN must be nonzero and 4K-aligned, got {value:?}"
+            );
+            Some(address)
+        }
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => {
+            panic!("FULLERENE_AARCH64_UFS_DMA_ORIGIN must be valid UTF-8")
+        }
+    };
+    let ufs_dma_origin = if let Some(origin) = requested_ufs_dma_origin {
+        format!(". = {origin:#x};")
+    } else if platform == "bramble" {
+        // The Android Lito DT reserves 0x8c000000..0x9b800000 for the
+        // modem/wlan image and begins another fixed reservation at
+        // 0x9f400000. Keep the UFS arena in the documented physical hole
+        // between them; the runtime DT reservation/memory gate is still
+        // authoritative and can reject a board-specific overlay.
+        ". = 0x9c000000;".to_string()
+    } else {
+        String::new()
+    };
+
     format!(
         r#"ENTRY(_start)
 
@@ -2036,7 +2092,10 @@ SECTIONS
 
     /* UFSHCI transfer descriptors and data are never placed in the USB
        gadget pool. The controller has a separate DMA ownership contract, so
-       keep its future arena independently addressable and reservable. */
+       keep its future arena independently addressable and reservable. The
+       Bramble default is generated above; callers may supply a board-specific
+       address after inspecting the active DTB. */
+    {ufs_dma_origin}
     .ufs_dma (NOLOAD) : ALIGN(4K)
     {{
         __ufs_dma_start = .;
@@ -2088,6 +2147,40 @@ fn build_aarch64_linux_smoke(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
     output
 }
 
+fn build_aarch64_android_init(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
+    let source = manifest_dir
+        .join("examples")
+        .join("android_aarch64_init.rs");
+    let service_config = manifest_dir
+        .join("examples")
+        .join("android_init_services.rs");
+    let action_config = manifest_dir
+        .join("examples")
+        .join("android_init_actions.rs");
+    let output = out_dir.join("android_aarch64_init");
+    let linker = out_dir.join("aarch64-user-linker.ld");
+    println!("cargo:rerun-if-changed={}", source.display());
+    println!("cargo:rerun-if-changed={}", service_config.display());
+    println!("cargo:rerun-if-changed={}", action_config.display());
+    fs::write(&linker, aarch64_user_linker_script()).unwrap();
+
+    build_aarch64_user_payload(&source, &output, &linker, "android-init", None);
+    output
+}
+
+fn build_aarch64_android_service(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
+    let source = manifest_dir
+        .join("examples")
+        .join("android_aarch64_service.rs");
+    let output = out_dir.join("android_aarch64_service");
+    let linker = out_dir.join("aarch64-user-linker.ld");
+    println!("cargo:rerun-if-changed={}", source.display());
+    fs::write(&linker, aarch64_user_linker_script()).unwrap();
+
+    build_aarch64_user_payload(&source, &output, &linker, "android-service", None);
+    output
+}
+
 fn build_aarch64_child(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
     let source = manifest_dir
         .join("examples")
@@ -2112,6 +2205,8 @@ fn build_aarch64_initramfs(
     out_dir: &Path,
     child: &Path,
     launchd: &Path,
+    android_init: Option<&Path>,
+    android_service: Option<&Path>,
     linux_smoke: Option<&Path>,
 ) -> PathBuf {
     let child_data = fs::read(child).unwrap_or_else(|error| {
@@ -2138,6 +2233,42 @@ fn build_aarch64_initramfs(
     write_cpio_file(&mut archive, "etc/write-test", false, &[]);
     write_cpio_file(&mut archive, "bin/child", false, &child_data);
     write_cpio_file(&mut archive, "bin/launchd", false, &launchd_data);
+    if let Some(android_init) = android_init {
+        let android_init_data = fs::read(android_init).unwrap_or_else(|error| {
+            panic!(
+                "cannot read AArch64 Android init payload {}: {error}",
+                android_init.display()
+            )
+        });
+        // `/init` is the FullereneOS-owned PID 1 entry point.  It must live
+        // outside `/system` so a physical Android mount cannot shadow it.
+        write_cpio_file(&mut archive, "init", false, &android_init_data);
+        write_cpio_file(
+            &mut archive,
+            "etc/fstab.fullerene",
+            false,
+            b"# FullereneOS bounded Android mount table\n\
+/dev/block/by-name/system /system ext4 ro,optional,first_stage_mount 0 0\n\
+/dev/block/by-name/vendor /vendor ext4 ro,optional,first_stage_mount 0 0\n\
+/dev/block/by-name/userdata /data f2fs ro,optional,first_stage_mount 0 0\n",
+        );
+        println!("cargo:rerun-if-changed={}", android_init.display());
+        if let Some(android_service) = android_service {
+            let android_service_data = fs::read(android_service).unwrap_or_else(|error| {
+                panic!(
+                    "cannot read AArch64 Android service payload {}: {error}",
+                    android_service.display()
+                )
+            });
+            write_cpio_file(
+                &mut archive,
+                "system/bin/fullerened",
+                false,
+                &android_service_data,
+            );
+            println!("cargo:rerun-if-changed={}", android_service.display());
+        }
+    }
     if let Some(linux_smoke) = linux_smoke {
         let linux_smoke_data = fs::read(linux_smoke).unwrap_or_else(|error| {
             panic!(

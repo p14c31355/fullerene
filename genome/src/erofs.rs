@@ -12,7 +12,9 @@ use alloc::vec::Vec;
 
 use crate::block::BlockDevice;
 use crate::fs::FsError;
-use crate::vfs::{FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, VNode};
+use crate::vfs::{
+    FileDescriptor, FileMetadata, FileSystem, FileSystemCapabilities, InodeType, VNode,
+};
 
 const SUPERBLOCK_OFFSET: u64 = 1024;
 const SUPERBLOCK_BYTES: usize = 128;
@@ -45,6 +47,8 @@ struct ErofsHandle {
 #[derive(Clone)]
 struct ErofsInode {
     mode: u16,
+    uid: u32,
+    gid: u32,
     size: u64,
     layout: u8,
     start_block: u64,
@@ -254,9 +258,21 @@ impl ErofsFileSystem {
         } else {
             le_u32(&raw, 8) as u64
         };
+        let uid = if inode_size == EROFS_INODE_SIZE_EXTENDED {
+            le_u32(&raw, 24)
+        } else {
+            le_u16(&raw, 24) as u32
+        };
+        let gid = if inode_size == EROFS_INODE_SIZE_EXTENDED {
+            le_u32(&raw, 28)
+        } else {
+            le_u16(&raw, 26) as u32
+        };
         let start_block = le_u32(&raw, 16) as u64;
         let inode = ErofsInode {
             mode,
+            uid,
+            gid,
             size,
             layout,
             start_block,
@@ -599,6 +615,30 @@ impl FileSystem for ErofsFileSystem {
         Ok(self.read_inode(nid)?.size)
     }
 
+    fn metadata(&mut self, path: &str) -> Result<FileMetadata, FsError> {
+        let nid = self.lookup(path)?;
+        let inode = self.read_inode(nid)?;
+        Ok(FileMetadata {
+            mode: inode.mode as u32,
+            uid: inode.uid,
+            gid: inode.gid,
+            size: inode.size,
+            kind: Self::kind(&inode)?,
+        })
+    }
+
+    fn metadata_at(&mut self, fd: u32) -> Result<FileMetadata, FsError> {
+        let (nid, _) = self.handle(fd)?;
+        let inode = self.read_inode(nid)?;
+        Ok(FileMetadata {
+            mode: inode.mode as u32,
+            uid: inode.uid,
+            gid: inode.gid,
+            size: inode.size,
+            kind: Self::kind(&inode)?,
+        })
+    }
+
     fn create(&mut self, _path: &str, _kind: InodeType) -> Option<u64> {
         None
     }
@@ -628,6 +668,28 @@ impl FileSystem for ErofsFileSystem {
                 })
             })
             .collect())
+    }
+
+    fn read_link(&mut self, path: &str) -> Result<String, FsError> {
+        let path = path.trim_end_matches('/');
+        let split = path.rfind('/');
+        let (parent_path, name) = match split {
+            Some(0) => ("/", &path[1..]),
+            Some(index) => (&path[..index], &path[index + 1..]),
+            None => ("", path),
+        };
+        if name.is_empty() {
+            return Err(FsError::InvalidPath);
+        }
+        let parent = self.lookup(parent_path)?;
+        let child = self
+            .find_child(parent, name)?
+            .ok_or(FsError::FileNotFound)?;
+        let inode = self.read_inode(child.nid)?;
+        if Self::kind(&inode)? != InodeType::Symlink {
+            return Err(FsError::InvalidInput);
+        }
+        self.read_symlink(&inode)
     }
 
     fn exists(&mut self, path: &str) -> bool {
@@ -737,12 +799,16 @@ mod tests {
 
         // Metadata block 2: NID 1 is root, NID 2 is /hello.
         let root = &mut image[2 * block_size + 32..2 * block_size + 64];
-        put_u16(root, 4, EROFS_S_IFDIR);
+        put_u16(root, 4, EROFS_S_IFDIR | 0o750);
+        put_u16(root, 24, 1000);
+        put_u16(root, 26, 1001);
         put_u32(root, 8, 44);
         put_u32(root, 16, 4);
 
         let file = &mut image[2 * block_size + 64..2 * block_size + 96];
-        put_u16(file, 4, EROFS_S_IFREG);
+        put_u16(file, 4, EROFS_S_IFREG | 0o640);
+        put_u16(file, 24, 2000);
+        put_u16(file, 26, 2001);
         put_u32(file, 8, 5);
         put_u32(file, 16, 5);
 
@@ -771,6 +837,17 @@ mod tests {
         let entries = fs.readdir("/").unwrap();
         assert_eq!(entries[0].name, "hello");
         let file = fs.open("/hello", 0).unwrap();
+        assert_eq!(
+            fs.metadata("/hello").unwrap(),
+            FileMetadata {
+                mode: (EROFS_S_IFREG | 0o640) as u32,
+                uid: 2000,
+                gid: 2001,
+                size: 5,
+                kind: InodeType::File,
+            }
+        );
+        assert_eq!(fs.metadata_at(file.fd).unwrap().gid, 2001);
         let mut output = [0u8; 5];
         assert_eq!(fs.read(file.fd, &mut output).unwrap(), 5);
         assert_eq!(&output, b"world");

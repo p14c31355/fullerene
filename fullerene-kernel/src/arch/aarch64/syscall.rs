@@ -17,11 +17,11 @@ const ERR_ADDRESS: u64 = (-(14i64)) as u64;
 const ERR_INVALID: u64 = (-(22i64)) as u64;
 const ERR_OVERFLOW: u64 = (-(75i64)) as u64;
 const MAX_WRITE: usize = 4096;
-const MAX_SPAWN_IMAGE: usize = 96 * 1024;
+const MAX_SPAWN_IMAGE: usize = 4 * 1024 * 1024;
 const MAX_TASK_NAME: usize = 16;
 const MAX_EXEC_ARGUMENTS: usize = 8;
 const MAX_EXEC_STRING: usize = 128;
-const STACK_ADDRESS: u64 = 0x41ff_0000;
+const STACK_ADDRESS: u64 = 0x47ff_0000;
 const PAGE_SIZE: u64 = 4096;
 
 #[derive(Clone, Copy)]
@@ -373,7 +373,7 @@ fn syscall_exec(frame: &mut Aarch64TrapFrame) -> u64 {
     }
 
     match allocator::with_global(|frames| task::exec(frames, frame, image, &name[..name_length])) {
-        Some(Ok(())) => 0,
+        Some(Ok(_)) => 0,
         Some(Err(error)) => error,
         None => ERR_NOT_SUPPORTED,
     }
@@ -406,7 +406,7 @@ fn syscall_exec_path(frame: &mut Aarch64TrapFrame) -> u64 {
     let replaced = match allocator::with_global(|frames| {
         task::exec(frames, frame, &image[..image_length], &name[..name_length])
     }) {
-        Some(Ok(())) => true,
+        Some(Ok(_)) => true,
         Some(Err(error)) => return error,
         None => return ERR_NOT_SUPPORTED,
     };
@@ -460,14 +460,14 @@ pub(super) fn linux_exec_path(
     if image_length == 0 {
         return ERR_INVALID;
     }
-    match allocator::with_global(|frames| {
+    let image_info = match allocator::with_global(|frames| {
         task::exec(frames, frame, &image[..image_length], &name[..name_length])
     }) {
-        Some(Ok(())) => {}
+        Some(Ok(info)) => info,
         Some(Err(error)) => return error,
         None => return ERR_NOT_SUPPORTED,
-    }
-    if let Err(error) = install_linux_exec_stack(frame, &argv[..argc], &envp[..envc]) {
+    };
+    if let Err(error) = install_linux_exec_stack(frame, &argv[..argc], &envp[..envc], &image_info) {
         return error;
     }
     let result = fs::linux_close_on_exec();
@@ -481,6 +481,7 @@ fn install_linux_exec_stack(
     frame: &mut Aarch64TrapFrame,
     argv: &[ExecString],
     envp: &[ExecString],
+    image: &task::ExecImageInfo,
 ) -> Result<(), u64> {
     let mut cursor = STACK_ADDRESS + PAGE_SIZE;
     let mut argv_addresses = [0u64; MAX_EXEC_ARGUMENTS];
@@ -517,10 +518,18 @@ fn install_linux_exec_stack(
         push(address);
     }
     push(0);
+    push(7); // AT_BASE
+    push(image.interpreter_base.unwrap_or(0));
+    push(3); // AT_PHDR
+    push(image.phdr);
+    push(4); // AT_PHENT
+    push(image.phent);
+    push(5); // AT_PHNUM
+    push(image.phnum);
     push(6); // AT_PAGESZ
     push(PAGE_SIZE);
     push(9); // AT_ENTRY
-    push(frame.elr_el1);
+    push(image.entry);
     push(23); // AT_SECURE
     push(0);
     push(31); // AT_EXECFN

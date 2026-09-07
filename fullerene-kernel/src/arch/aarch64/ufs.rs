@@ -15,6 +15,8 @@ const UFS_CONTROLLER: &[u8] = b"qcom,ufshc";
 const UFS_PHY: &[u8] = b"qcom,ufs-phy-qmp-v4-lito";
 const RPMH_SET_ACTIVE: u32 = 1;
 const RPMH_SET_ALL: u32 = 3;
+const MAX_DT_MEMORY_REGIONS: usize = 8;
+const MAX_DT_RESERVED_MEMORY_REGIONS: usize = 32;
 
 /// Fixed early-boot UFSHCI arena. It is deliberately a distinct linker
 /// section from the USB gadget DMA pool; no SMMU or cache attribute is
@@ -1241,8 +1243,9 @@ pub(crate) fn execute_link_startup<O: ControllerOps>(
 }
 
 /// Real Bramble backend. It is compiled only for the Bramble image and is
-/// invoked only by the explicit `FULLERENE_AARCH64_UFS_EXECUTE=1` build opt-in
-/// in `main.rs`; generic QEMU has no path to these Qualcomm writes.
+/// invoked only when `FULLERENE_AARCH64_UFS_EXECUTE=1` reaches `main.rs`.
+/// Flasks supplies that value for a Bramble `--android-init` artifact, while
+/// generic QEMU has no path to these Qualcomm writes.
 #[cfg(fullerene_aarch64_bramble)]
 pub(crate) struct BramblePlatformOps {
     profile: PlatformContract,
@@ -1652,16 +1655,47 @@ unsafe fn cache_maintain_range(address: u64, length: usize, clean: bool, invalid
 }
 
 #[cfg(fullerene_aarch64_bramble)]
-fn bramble_dma_contract() -> Result<DmaContract, ReadOnlyProbeError> {
+fn bramble_dma_contract(dtb_address: Option<u64>) -> Result<DmaContract, ReadOnlyProbeError> {
     // The active DTB has no UFS `iommus` property, but absence is not proof of
     // identity DMA. Require a deliberate build-time assertion for this first
     // physical read-only trial; the cache instructions below are the other
-    // half of the contract.
+    // half of the contract. Also require the complete arena to be inside an
+    // active DT memory range and outside every fixed /reserved-memory range.
     if option_env!("FULLERENE_AARCH64_UFS_DMA_IDENTITY") != Some("1") {
         return Err(ReadOnlyProbeError::DmaContractUnproven);
     }
+    let Some(dtb_address) = dtb_address else {
+        return Err(ReadOnlyProbeError::DmaContractUnproven);
+    };
+    let mut memory = [fdt::Region { base: 0, size: 0 }; MAX_DT_MEMORY_REGIONS];
+    let memory_count = fdt::find_memory_regions(dtb_address, &mut memory);
+    if memory_count == 0 {
+        return Err(ReadOnlyProbeError::DmaContractUnproven);
+    }
+    let mut reserved = [fdt::Region { base: 0, size: 0 }; MAX_DT_RESERVED_MEMORY_REGIONS];
+    let reserved_count = fdt::find_reserved_memory_regions(dtb_address, &mut reserved);
     let (transfer_list, task_list, devman_descriptor, command_descriptor, data) =
         unsafe { UfsDmaLayout::addresses() };
+    let arena_start = transfer_list;
+    let Some(arena_end) = data.checked_add(UfsDmaLayout::DATA_BYTES as u64) else {
+        return Err(ReadOnlyProbeError::DmaContractUnproven);
+    };
+    let contains_range = |region: fdt::Region| {
+        let Some(region_end) = region.base.checked_add(region.size) else {
+            return false;
+        };
+        arena_start >= region.base && arena_end <= region_end
+    };
+    let arena_in_memory = memory[..memory_count].iter().copied().any(contains_range);
+    let arena_overlaps_reserved = reserved[..reserved_count].iter().copied().any(|region| {
+        let Some(region_end) = region.base.checked_add(region.size) else {
+            return true;
+        };
+        arena_start < region_end && region.base < arena_end
+    });
+    if !arena_in_memory || arena_overlaps_reserved {
+        return Err(ReadOnlyProbeError::DmaContractUnproven);
+    }
     let dma = DmaContract {
         transfer_list,
         task_list,
@@ -1960,8 +1994,9 @@ pub(crate) fn bramble_block_info() -> Option<(u32, u64)> {
 pub(crate) fn execute_bramble_read_only(
     profile: PlatformContract,
     rate_b: bool,
+    dtb_address: Option<u64>,
 ) -> Result<(BrambleUfsBlockDevice, UfsGeometry), ReadOnlyProbeError> {
-    let dma = bramble_dma_contract()?;
+    let dma = bramble_dma_contract(dtb_address)?;
     let mut backend = BramblePlatformOps::new(profile).map_err(ReadOnlyProbeError::Platform)?;
     execute_platform(profile, &mut backend, rate_b).map_err(ReadOnlyProbeError::Platform)?;
     execute_link_startup(profile, &mut backend).map_err(ReadOnlyProbeError::Link)?;

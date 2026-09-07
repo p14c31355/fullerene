@@ -86,6 +86,7 @@ const fn user_frame(entry: u64, stack_top: u64) -> exceptions::Aarch64TrapFrame 
         sp_el0: stack_top,
         esr_el1: 0,
         far_el1: 0,
+        tpidr_el0: 0,
     }
 }
 

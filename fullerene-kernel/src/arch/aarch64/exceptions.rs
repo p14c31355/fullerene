@@ -4,10 +4,10 @@ use super::uart;
 
 /// Register state captured by an EL1 exception entry.
 ///
-/// The first 31 words match x0..x30, followed by the EL1 return state and
-/// the user stack pointer. Keeping this layout explicit is the ABI boundary
-/// for future SVC, page-fault, and scheduler paths; assembly only moves this
-/// frame, while Rust interprets it.
+/// The first 31 words match x0..x30, followed by the EL1 return state, the
+/// user stack pointer, and the user TLS register. Keeping this layout
+/// explicit is the ABI boundary for SVC, page-fault, and scheduler paths;
+/// assembly only moves this frame, while Rust interprets it.
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
 pub(crate) struct Aarch64TrapFrame {
@@ -17,6 +17,8 @@ pub(crate) struct Aarch64TrapFrame {
     pub(crate) sp_el0: u64,
     pub(crate) esr_el1: u64,
     pub(crate) far_el1: u64,
+    /// Linux AArch64 uses TPIDR_EL0 for the thread pointer.
+    pub(crate) tpidr_el0: u64,
 }
 
 impl Aarch64TrapFrame {
@@ -53,7 +55,7 @@ global_asm!(
      .global aarch64_exception_irq_entry\n\
      .type aarch64_exception_irq_entry, %function\n\
      aarch64_exception_irq_entry:\n\
-         sub sp, sp, #288\n\
+         sub sp, sp, #304\n\
          stp x0, x1, [sp, #0]\n\
          stp x2, x3, [sp, #16]\n\
          stp x4, x5, [sp, #32]\n\
@@ -80,6 +82,8 @@ global_asm!(
          str x1, [sp, #272]\n\
          mrs x1, FAR_EL1\n\
          str x1, [sp, #280]\n\
+         mrs x1, TPIDR_EL0\n\
+         str x1, [sp, #288]\n\
          mov x0, sp\n\
          bl aarch64_exception_irq\n\
          ldr x1, [sp, #248]\n\
@@ -88,6 +92,8 @@ global_asm!(
          msr SPSR_EL1, x1\n\
          ldr x1, [sp, #264]\n\
          msr SP_EL0, x1\n\
+         ldr x1, [sp, #288]\n\
+         msr TPIDR_EL0, x1\n\
          ldr x30, [sp, #240]\n\
          ldp x28, x29, [sp, #224]\n\
          ldp x26, x27, [sp, #208]\n\
@@ -104,14 +110,14 @@ global_asm!(
          ldp x4, x5, [sp, #32]\n\
          ldp x2, x3, [sp, #16]\n\
          ldp x0, x1, [sp, #0]\n\
-         add sp, sp, #288\n\
+         add sp, sp, #304\n\
          eret\n\
      .size aarch64_exception_irq_entry, . - aarch64_exception_irq_entry\n\
 \
      .global aarch64_exception_sync_entry\n\
      .type aarch64_exception_sync_entry, %function\n\
      aarch64_exception_sync_entry:\n\
-         sub sp, sp, #288\n\
+         sub sp, sp, #304\n\
          stp x0, x1, [sp, #0]\n\
          stp x2, x3, [sp, #16]\n\
          stp x4, x5, [sp, #32]\n\
@@ -138,6 +144,8 @@ global_asm!(
          str x1, [sp, #272]\n\
          mrs x1, FAR_EL1\n\
          str x1, [sp, #280]\n\
+         mrs x1, TPIDR_EL0\n\
+         str x1, [sp, #288]\n\
          mov x0, sp\n\
          bl aarch64_exception_sync\n\
          ldr x1, [sp, #248]\n\
@@ -146,6 +154,8 @@ global_asm!(
          msr SPSR_EL1, x1\n\
          ldr x1, [sp, #264]\n\
          msr SP_EL0, x1\n\
+         ldr x1, [sp, #288]\n\
+         msr TPIDR_EL0, x1\n\
          ldr x30, [sp, #240]\n\
          ldp x28, x29, [sp, #224]\n\
          ldp x26, x27, [sp, #208]\n\
@@ -162,7 +172,7 @@ global_asm!(
          ldp x4, x5, [sp, #32]\n\
          ldp x2, x3, [sp, #16]\n\
          ldp x0, x1, [sp, #0]\n\
-         add sp, sp, #288\n\
+         add sp, sp, #304\n\
          eret\n\
      .size aarch64_exception_sync_entry, . - aarch64_exception_sync_entry\n"
 );
@@ -181,6 +191,8 @@ global_asm!(
          msr SPSR_EL1, x1\n\
          ldr x1, [x0, #264]\n\
          msr SP_EL0, x1\n\
+         ldr x1, [x0, #288]\n\
+         msr TPIDR_EL0, x1\n\
          ldp x1, x2, [x0, #8]\n\
          ldp x3, x4, [x0, #24]\n\
          ldp x5, x6, [x0, #40]\n\
@@ -237,6 +249,7 @@ extern "C" fn aarch64_exception_sync(frame: *mut Aarch64TrapFrame) {
         && ((frame.esr_el1 >> 26) & 0x3f) == 0x15
         && super::syscall::dispatch(frame)
     {
+        super::task::deliver_pending_linux_signal(frame);
         return;
     }
     if frame.from_user()
@@ -262,7 +275,7 @@ fn is_lower_el_abort(esr: u64) -> bool {
 
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
-    let _frame = unsafe { &mut *frame };
+    let frame = unsafe { &mut *frame };
     let interrupt_id: u64;
     unsafe {
         asm!(
@@ -306,6 +319,9 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         super::timer::arm_ms(1);
         let _ = super::task::wake_event_timeouts(super::timer::uptime_us());
         super::fs::fire_timers(super::timer::uptime_us().saturating_mul(1_000));
+    }
+    if frame.from_user() {
+        super::task::deliver_pending_linux_signal(frame);
     }
     if usb_irq {
         // Make the event-count acknowledgement visible before deasserting a

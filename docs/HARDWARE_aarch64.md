@@ -1626,7 +1626,7 @@ by the corrected observer.
 - **Merged-DTB contract:** `/tmp/fullerene-ufs-backend-dtb-contract.log` reports the exact same-build merged DTB contract as valid: controller and PHY each have two regions, GCC phandle `0x4f` resolves to `0x100000/0x1f0000`, controller SPI is `265`, and `qcom,rpmh-resource-name` is 9 bytes with FNV-1a `0xea4c294d`. No MMIO was touched by this parser.
 - **Implemented backend:** `fullerene-kernel/src/arch/aarch64/ufs.rs` adds a Bramble-only `BramblePlatformOps`. It maps provider-qualified Lito GCC sources and branches, including UFS AXI 200 MHz, UniPro 150 MHz, ICE 300 MHz, and PHY auxiliary CXO; updates and reads back clock gates; sends `qphy.lvl` and a single `xo.lvl=0x3` vote through the existing RPMh active-TCS/Command-DB path; then performs the QMP analog, calibration, reset, SerDes, PCS, UniPro, lane-clock, and HCE sequence with readback checks. The source order follows the [Qualcomm UFS host](https://linux.googlesource.com/linux/kernel/git/torvalds/linux/+/2b414a95b8f7307d42173ba9e580d6d3e2bcbfce/drivers/ufs/host/ufs-qcom.c), [generic Qualcomm PHY](https://android.googlesource.com/kernel/msm.git/+/8787e484d7b365cc4fd6d113f61b91a80e221543/drivers/phy/qualcomm/phy-qcom-ufs.c), and [Lito QMP PHY](https://android.googlesource.com/kernel/msm.git/+/8787e484d7b365cc4fd6d113f61b91a80e221543/drivers/phy/qualcomm/phy-qcom-ufs-qmp-v4-lito.c) sources.
 - **Regulator stop condition:** the active merged PHY node has no `vdda-phy-supply` or `vdda-pll-supply`, but the UFS controller does have `vdd-hba-supply`, `vcc-supply`, and `vccq2-supply`; `/tmp/fullerene-ufs-backend-dtb-contract.log` records those shapes. No PMIC regulator provider mapping is implemented. `BramblePlatformOps::new()` now refuses the entire transaction before any GCC/RPMh/PHY write when any controller or PHY supply property is described, so there are no guessed rail writes and no false physical-power claim.
-- **Execution guard:** normal AArch64 and QEMU builds cannot call the backend. Bramble requires `FULLERENE_AARCH64_UFS_EXECUTE=1`; `FULLERENE_AARCH64_UFS_RATE_B=1` is an additional explicit Rate-B selection. The default image therefore remains side-effect free with respect to Qualcomm UFS registers.
+- **Execution guard:** normal AArch64 and QEMU builds cannot call the backend. Direct Cargo Bramble builds require `FULLERENE_AARCH64_UFS_EXECUTE=1`; Flasks supplies it automatically for `--android-init` artifacts. `FULLERENE_AARCH64_UFS_RATE_B=1` is an additional explicit Rate-B selection. Generic/default images remain side-effect free with respect to Qualcomm UFS registers.
 - **Software results:** `/tmp/fullerene-aarch64-ufs-backend-check.log`, `/tmp/fullerene-host-ufs-backend-check.log`, `/tmp/fullerene-abi-ufs-backend-check.log`, `/tmp/fullerene-fmt-ufs-backend-check.log`, and `/tmp/fullerene-diff-ufs-backend-check.log` all passed. Generic QEMU `/tmp/fullerene-generic-aarch64-ufs-backend.log` reached `AArch64 device inventory ok`, `AArch64 window ok`, `AArch64 time ok`, `AArch64 VFS write ok`, and `user-smoke: returned to EL1h`; status `124` is the intentional outer timeout.
 - **Bramble artifacts:** default `/tmp/fullerene-bramble-aarch64-ufs-backend.img` passed the Android v3 audit, size `2,351,104` bytes, SHA-256 `0d95fb038f18cf45bdab0b1e6f5c97b904bea5aac14073e1da62916c8fb88f0f`; opt-in compile image `/tmp/fullerene-bramble-aarch64-ufs-backend-optin.img` also passed, SHA-256 `7fb4902e16269536b91a059013f637386001b82d969cc5c1ed6c50083f7e88c6`. Neither image was booted, `fastboot boot`ed, flashed, erased, or sent to the handset.
 - **Physical result:** `/tmp/fullerene-ufs-backend-physical-recheck.log` at `2026-09-07T03:03:51+09:00` records empty Fastboot, ADB `26191JECB00076` with missing udev permission, and USB `1234:0001` / `Brain Actuated Technologies Pixel 4a (5G)`. This confirms host USB identity only; it is not evidence that the new UFS backend ran. No analyzer, secure-debug capture, or user-data operation occurred.
@@ -1740,14 +1740,523 @@ by the corrected observer.
 
 ### 2026-09-07 — AArch64 user-window and PIE-loader prerequisite
 
-- The AArch64 user translation prototype now owns sixteen static L3 tables covering `0x40000000..0x42000000`. The dynamic mapping range remains below the reserved stack page at `0x41ff0000`; moving the stack fixed an existing overlap with launchd's read-only data page.
-- The bounded loader now supports eight `PT_LOAD` segments, 4096 mapped image pages, fixed-bias ET_DYN images, and only relative AArch64 RELA/RELR relocations. It rejects unsupported symbol relocations before EL0 entry.
+- The AArch64 user translation prototype now owns 64 static L3 tables covering `0x40000000..0x48000000`. The interpreter/main images occupy the lower range, dynamic mappings begin at `0x42020000`, and the reserved stack page is at `0x47ff0000`; moving the stack fixed an existing overlap with launchd's read-only data page.
+- The bounded loader now supports eight `PT_LOAD` segments, 4096 mapped image pages, fixed-bias ET_DYN images, and only relative AArch64 RELA/RELR relocations. Static ET_DYN keeps the `0x40400000` bias; PT_INTERP main/interpreter images use `0x41600000`/`0x40000000` and defer dynamic relocation to the Android linker.
 - The Bramble build and the AArch64 `aarch64-user-launchd` check passed, as did Genome's `66` passing tests (one ignored), formatting, and diff checks. The resulting ELF/Image/Image.lz4 hashes are `9d18fa88d32cea47f8ec00a072cc001f0970aa6b6e89fdb0b4c1f164e0d8efa9`, `6d8ab846289f728bb7448c6664b910191ec0b54811a56336ee43b75730a077fc`, and `6a48504950ee6f5a56c0d72e66f739343a7738c3876015ed187d0c36938758f8`.
 - This is a loader/address-space prerequisite only. No image was booted and no UFS command, physical filesystem read, Fastboot command, flash, erase, partition write, backup, analyzer, or user-data operation occurred. The remaining Android userspace and physical UFS/PMIC/DMA gates are unchanged.
 
 ### 2026-09-07 — AArch64 Linux fd/mmap/exec boundary
 
 - The Linux personality now translates bounded integer fds `3..34` to native Fullerene file capabilities, including read-only `openat`, `read`, `write`, `close`, `dup`, `dup3`, `lseek`, and `fstat`. File-backed private `mmap` copies through a checked kernel buffer and publishes the requested final permissions with `mprotect`; shared write-back mappings remain rejected.
-- Linux initial stack construction now supplies `argc/argv/envp/auxv`; `execve`/`execveat` use checked pathname/VFS staging and the same address-space replacement path. `fork` and process-style `clone` inherit the fd table; thread-style shared address spaces remain unsupported.
+- Linux initial stack construction now supplies `argc/argv/envp/auxv`; `execve`/`execveat` use checked pathname/VFS staging and the same address-space replacement path. `fork` and process-style `clone` inherit the fd table; thread-style `clone` now has bounded shared-address-space/TLS/child-tid-futex support, while complete thread semantics remain unsupported.
 - Added the opt-in `aarch64-android-init` feature to select `/system/bin/init` after the guarded Bramble UFS/LP/filesystem mount. It is deliberately separate from the default `/bin/launchd` and has not been booted. Android init's remaining syscall, pseudo-filesystem, property, SELinux, service, and driver requirements are still open.
-- Linker scripts continue to be emitted by Rust `build.rs` generators into `OUT_DIR`; udev's host rule stays a `.rules` artifact because that is the format udev loads. No physical boot, UFS read, Fastboot command, flash, erase, partition write, backup, analyzer, or user-data operation occurred.
+- Linker scripts continue to be emitted by Rust `build.rs` generators into `OUT_DIR`; udev's host rule stays a `.rules` artifact because that is the format udev loads, while `flasks/src/udev_spec.rs` is its Rust source of truth. `flasks udev-rules --output PATH` regenerates the deployment artifact and matches the checked-in file. No physical boot, UFS read, Fastboot command, flash, erase, partition write, backup, analyzer, or user-data operation occurred.
+
+### 2026-09-07 — Android PT_INTERP and linker syscall prerequisite
+
+- Stock-artifact inspection established the dynamic boundary: `/system/bin/init` is ET_DYN with PT_INTERP `/system/bin/bootstrap/linker64`, and the init image declares 21 DT_NEEDED libraries. The loader now stages the two images separately, keeps the interpreter at `0x40000000`, the main executable at `0x41600000`, and builds Linux auxv with the main executable metadata.
+- The bounded Linux address-space layer now has 128 mapping descriptors and implements private `MAP_FIXED` replacement for the Android linker's reserve-then-overlay pattern. VFS-backed `readlinkat`, `faccessat`, `fstatat`, `fstatfs`, `pread64`, early `fcntl`, `getresuid/gid`, capability, and `madvise` compatibility paths are present.
+- This advances the Android-init bring-up boundary: the Linux personality additionally covers bounded `readv`/`writev` and native-pipe-backed `pipe2`, the AArch64 exception frame preserves `TPIDR_EL0`, and Linux thread-style `clone`/child-tid futex wakeups have a bounded implementation. It is not a claim of Android userspace boot: Bionic/library symbol behavior, complete signal and process-group semantics, `/proc`/`/sys`/`/dev`, property service, SELinux policy loading, service manager, and physical UFS/driver proof remain required. No handset state was changed.
+
+### 2026-09-07 — Linux directory handles and bounded Android virtual filesystems
+
+- Linux `getdents64` now traverses the existing read-only Genome VFS through bounded directory descriptors. Directory handles preserve their path across Linux fd duplication/inheritance and emit conservative dirent64 records; no filesystem mutation was added.
+- The AArch64 bootstrap now creates and mounts bounded virtual `/dev`, `/proc`, and `/sys` trees. `/dev` contains only explicit diagnostic endpoints, while `/proc` and `/sys` are static read-only MemFS content for early init inspection. Dynamic proc state, writable sysfs, entropy, property sockets, and hardware device nodes remain intentionally absent.
+- This is a compatibility boundary, not Android boot proof. Property service and Unix sockets, full signal/process-group behavior, SELinux policy/domain loading, Bionic/linker execution, Android service manager, and physical UFS/PMIC/driver validation remain open. The default artifact still starts native Fullerene launchd; Android init remains opt-in.
+- No physical boot, UFS read, Fastboot command, flash, erase, partition write, backup, analyzer, or user-data operation occurred.
+
+### 2026-09-07 — Bounded Linux Unix sockets and Android-init syscall boundary
+
+- The AArch64 Linux personality now has a bounded pathname `AF_UNIX` implementation for the property-service-shaped socket lifecycle: create, bind, listen, connect, accept, stream transfer, socket options, and shutdown. The runtime `/dev/socket` namespace is represented separately from the read-only filesystem, and pending sockets are reclaimed on listener/client close.
+- Immediate `poll`/`ppoll` and `epoll` readiness now covers Linux fds, native files, socket peers, listener queues, and close/error state. `wait4` returns the Linux child PID and writes the bounded exit status for direct waits; `faccessat2`, runtime `mkdirat`, and runtime `unlinkat` are wired as well.
+- This remains a compatibility slice rather than proof that Android init can boot: `sendmsg`/`recvmsg`, abstract/datagram-complete behavior, blocking waits/timeouts, property protocol, SELinux, service manager, full signals/process groups, and physical UFS/rootfs/driver integration remain open.
+- AArch64 host/Linux-smoke/Android-init checks, Flasks tests, Genome tests, formatting, and diff checks passed. No handset boot or persistent device operation was performed; host USB `1234:0001` remains enumeration-only evidence and ADB still needs the generated host udev rule installed by the operator.
+
+### 2026-09-07 — Linux message I/O and Android namespace metadata boundary
+
+- Added bounded `sendmsg`/`recvmsg` over pathname Unix stream sockets, including checked AArch64 iovec traversal and the root-only `SCM_CREDENTIALS` form used by the early property-service boundary. Abstract/datagram sockets and descriptor-passing ancillary data are still unsupported.
+- Android init's early namespace calls now have a bounded read-only response for Fullerene's virtual `/dev`, `/proc`, `/sys`, `/data`, `/metadata`, `/system`, and `/vendor` paths. Runtime `/dev/socket`, `/dev/selinux`, and `/dev/__properties__` entries are handled separately from the read-only VFS; no actual mount or persistent mutation is performed.
+- `fstat`/`fstatat`/`statx` now report directories with directory mode bits, and `chdir`/`mknodat` use the corresponding bounded path policy. The change compiled for the opt-in Android-init target; the complete stock-init syscall, Bionic, SELinux, property, service, and hardware contracts remain unimplemented.
+- No handset boot, Fastboot command, UFS read, flash, erase, partition write, backup, analyzer, or user-data operation occurred.
+
+### 2026-09-07 — Android property-area and shared-read mapping prerequisite
+
+- The virtual `/dev/__properties__` now emits a valid Android property-area prefix for `properties_serial` and split-context `u:*` files: Android 14 area magic/version, 128 KiB file size, and bounded `ro.debuggable=1`/`ro.hardware=bramble` entries.
+- Linux `mmap` accepts read-only `MAP_SHARED` file mappings, while writable sharing remains limited to property-area descriptors. `ftruncate` and `fsetxattr` acknowledge the property bootstrap contract, and the kernel-global property pages are shared across mappings and forked address spaces.
+- `property_info` is deliberately absent so Bionic can use its split-context path. A bounded property-service publication and property-serial wake path is now present; persistent property files, generic futex coverage, SELinux property labels, production context separation, and service-manager boot remain open. Host/AArch64/Genome/format/diff verification passed; no physical device operation occurred.
+
+### 2026-09-07 — Bounded Android property-service publication
+
+- The kernel now stages AOSP `PROP_MSG_SETPROP`/`PROP_MSG_SETPROP2` writes arriving through `/dev/socket/property_service`, without consuming the stream that `/system/bin/init` reads. Valid bounded updates rebuild the shared `prop_bt`/`prop_info` image, so already-mapped and fork-inherited property views observe the new value.
+- This closes only the publication path: the table is capped at 32 properties and still lacks persistent storage, SELinux property labels/context checks, and complete asynchronous property-service replies. Serial futex waiters are now woken across active virtual mappings, and property mappings have a read-only `mprotect` path.
+- Host kernel, Linux-smoke AArch64, Android-init AArch64, Genome, Flasks, rustfmt, and diff checks passed. No physical device operation occurred.
+
+### 2026-09-07 — Linux eventfd, inotify, signalfd, ioctl, and early identity boundary
+
+- Added Linux `eventfd2` counter/semaphore descriptors and connected them to the AArch64 integer-fd table, duplication/inheritance, close-on-exec, poll, and epoll. Added bounded empty-queue `inotify` and `signalfd4` descriptors with path/mask/size validation.
+- Added init-facing ioctl compatibility for nonblocking mode, terminal dimensions/line discipline, interface flag probes, close-on-exec, filesystem flags, and read-only block queries. Root identity transitions, process-group/session probes, time/resource/cpu structures, and bounded `getrandom` are now wired.
+- `/dev/selinux`, `/dev/__properties__`, and a Rust-owned `/sys/fs/selinux` are exposed through the virtual VFS. The selinuxfs boundary accepts bounded policy-load writes and retains enforce/context state, but does not parse or enforce policy. Generic futex operations beyond the bounded property wait path, signal/inotify production, uevent delivery, SELinux policy/domain decisions, and service manager semantics remain open.
+- Host kernel, Linux-smoke AArch64, Android-init AArch64, Genome, Flasks, formatting, and diff checks passed. No handset boot, UFS read, Fastboot command, flash, erase, partition write, backup, analyzer, or user-data operation occurred.
+
+### 2026-09-07 — Bounded standard ADB wire boundary
+
+- The AArch64 USB bulk interface now advertises Android's ADB class tuple `0xff/0x42/0x01`. The Rust transport accepts bounded ADB `CNXN`/`OPEN`/`OKAY`/`WRTE`/`CLSE` frames and returns a Fullerene banner; the `reboot:*` services use the existing `FULLERENE_AARCH64_DEBUG_RETURN=1` build gate.
+- This makes the descriptor and initial wire contract compatible with host ADB discovery, but it is not a complete `adbd`: authentication, sync, forwarding, service management, and the full stream lifecycle remain open. The legacy FDBG transport remains available to `flasks adb`, while the bounded shell adapter is documented below.
+- AArch64 cross-builds, host checks, tests, generated udev output, formatting, and diff checks passed. No physical USB/ADB exchange or boot was performed; the handset evidence remains host-side `1234:0001` enumeration.
+
+### 2026-09-07 — Standard ADB host bring-up and bounded shell output
+
+- `flasks adb --adb-command reboot:bootloader` now constructs the standard
+  ADB `CNXN`/`OPEN` exchange instead of using only the legacy FDBG helper.
+  Standard `shell:*` commands use the same bounded stream path and consume
+  `WRTE` output through host `OKAY`/`CLSE` handshakes.
+- The Rust device side supplies bounded output for `id`, selected `getprop`
+  values, `uname`, `status`, `true`, and `echo`; other commands fail
+  deterministically. This remains a diagnostic shell boundary, not complete
+  `adbd` authentication, sync, forwarding, or service management.
+- Host wire tests, AArch64 cross-checks, kernel tests, formatting, and diff
+  checks passed. No physical USB/ADB exchange or device boot was performed.
+
+### 2026-09-07 — Explicit ADB return build gate
+
+- Added the Rust CLI flag `--adb-return` for AArch64 verification builds. It
+  propagates `FULLERENE_AARCH64_DEBUG_RETURN=1` through Flasks' isolated Cargo
+  environment and cache key, enabling the existing standard ADB `reboot:*`
+  return path only in an explicitly requested image.
+- The default build remains return-disabled. The gate performs no partition,
+  boot-metadata, or user-data write; physical USB/ADB and boot validation are
+  still pending.
+
+### 2026-09-07 — Rust-owned Android PID 1 boundary
+
+- The opt-in `aarch64-android-init` image now packages a freestanding Rust
+  `/system/bin/init`, generated by `fullerene-kernel/build.rs` and entered via
+  the normal ELF/Linux SVC path. It prints a startup marker, sets its task
+  name, binds/listens on `/dev/socket/property_service`, and stays resident as
+  PID 1.
+- QEMU output reached `fullerene-init: Rust PID 1 active` and
+  `fullerene-init: property_service listening` after the virtual Android
+  filesystems were mounted. The previous empty-initramfs stopping point is
+  therefore closed for the software path.
+- This remains a bounded Fullerene early-init implementation: it is not stock
+  AOSP `init`, does not include Bionic or a complete service manager, and does
+  not parse/enforce SELinux policy. No physical Bramble boot or persistent
+  device operation was performed.
+
+### 2026-09-07 — Android property protocol v2 response boundary
+
+- The property-service command constant now matches AOSP's v2 tag
+  `0x00020001`, and the bootstrap property area publishes
+  `ro.property_service.version=2`. This lets a future Rust/Bionic client
+  select the length-prefixed protocol.
+- Rust PID 1 parses bounded legacy and v2 property messages. v2 requests
+  receive a little-endian AOSP result word; successful requests are published
+  through the existing shared property table and serial wake path. The
+  protocol self-test uses a local AF_UNIX client/server exchange and reached
+  `fullerene-init: property protocol v2 ok` in QEMU.
+- This is still not the complete Android property daemon: source-context
+  checks, SELinux property labels, persistent-property storage, asynchronous
+  `ctl.*` handling, and full init/service semantics remain unimplemented. No
+  physical Bramble boot was performed.
+
+### 2026-09-07 — Bounded Rust Android service-manager lifecycle boundary
+
+- Rust PID 1 now handles bounded property-v2 `ctl.start`, `ctl.stop`, and
+  `ctl.restart` requests for `fullerened`. Start uses Linux `clone` and
+  `execve`; stop uses the Linux `kill`/`waitid(P_PID, WEXITED|WNOHANG)`
+  boundary to terminate and reap the child before restart creates a fresh PID.
+- The QEMU self-test reached `fullerene-init: fullerened started`,
+  `fullerene-init: fullerened stopped`,
+  `fullerene-init: fullerened restarted`,
+  `fullerene-init: service manager v2 ok`, and
+  `fullerene-service: fullerened active`. The outer timeout remains expected
+  because PID 1 and the service are intentionally resident.
+- This is still not AOSP `init`: service `.rc` parsing, dependency ordering,
+  credentials, namespaces, signal delivery beyond bounded termination,
+  SELinux transitions, crash restart policy, and complete lifecycle semantics
+  remain unimplemented. No physical Bramble boot or persistent device
+  operation occurred.
+
+### 2026-09-07 — Linux child-subreaper compatibility boundary
+
+- Added bounded `prctl(PR_SET_CHILD_SUBREAPER)` and
+  `PR_GET_CHILD_SUBREAPER` behavior. PID 1 explicitly selects the mode during
+  startup, and the existing scheduler's orphan-adoption path reports PID 1 as
+  the active subreaper.
+- The Android-init QEMU path now emits `fullerene-init: child subreaper
+  ready` before opening the property socket. This is process-adoption
+  compatibility only; process groups and the complete Linux subreaper
+  inheritance rules remain unimplemented.
+
+### 2026-09-07 — Bounded Linux signal disposition and mask state
+
+- Linux AArch64 `rt_sigaction` now stores and retrieves bounded 32-byte
+  dispositions per task, rejects SIGKILL/SIGSTOP changes, and inherits the
+  state across fork and Linux threads. `rt_sigprocmask` now implements the
+  bounded BLOCK/UNBLOCK/SETMASK operations while keeping the two unmaskable
+  signals clear.
+- The Android-init QEMU self-test reached
+  `fullerene-init: signal ABI v1 ok` after registering, reading, and restoring
+  a SIGCHLD disposition and round-tripping a SIGUSR1 mask. The follow-up
+  signal-delivery boundary is recorded below.
+
+### 2026-09-07 — Bounded Linux signal delivery and sigreturn boundary
+
+- Linux AArch64 tasks now retain bounded pending-signal bits and up to four
+  nested saved trap frames. `kill`, `tkill`, and `tgkill` queue signals with
+  target validation; unblocked user handlers receive the AArch64 argument
+  convention, while default terminating signals retire the target process.
+  `rt_sigreturn` restores the saved frame and signal mask. Blocked waits are
+  made runnable with `-EINTR` when an unblocked signal arrives.
+- QEMU Android-init reached `fullerened stopped` and
+  `fullerened restarted` through the new default SIGTERM path, then reached
+  `fullerene-init: service manager v2 ok`. The PID 1 self-test also entered a
+  SIGUSR1 handler and returned through `rt_sigreturn`, ending at
+  `fullerene-init: signal ABI v1 ok`.
+- This remains bounded: complete signal-info/ucontext ABI, VDSO/restorer
+  integration, blocking signalfd waits, and full AOSP signal/lifecycle
+  behavior remain open. No physical Bramble boot, persistent-device
+  operation, flash, erase, partition write, backup, analyzer, or user-data
+  operation occurred.
+
+### 2026-09-07 — Bounded Linux process groups and signalfd delivery
+
+- Linux tasks now carry inherited PGID/SID state with bounded
+  `setpgid`/`getpgid`/`getsid`/`setsid` behavior. `kill(0, sig)`,
+  `kill(-pgid, sig)`, and the bounded `kill(-1, sig)` broadcast path route
+  through the same pending-signal queue while preserving PID 1's protected
+  group behavior.
+- `signalfd4` now consumes matching pending signals from the current task,
+  emits one 128-byte `signalfd_siginfo` record, and reports readability to
+  poll/epoll. QEMU reached `fullerene-init: process groups v1 ok` and
+  `fullerene-init: signalfd v1 ok` after blocking and reading SIGUSR1.
+- Complete process-group permission/session rules, blocking signalfd waits,
+  sender credentials and full `signalfd_siginfo`, and production AOSP
+  lifecycle behavior remain open. No physical Bramble boot or persistent
+  device operation occurred.
+
+### 2026-09-07 — Bounded Linux credentials and supplementary groups
+
+- Linux AArch64 task state now carries real/effective/saved UID and GID,
+  FSUID/FSGID, and up to 16 supplementary groups. The state is inherited by
+  fork/clone children and shared by the bounded Linux thread group.
+- `getuid`/`geteuid`/`getgid`/`getegid`, `getresuid`/`getresgid`,
+  `setuid`/`setgid`, the `setre*`/`setres*` variants, `setfsuid`/`setfsgid`,
+  and root-gated `getgroups`/`setgroups` now use that state instead of a
+  fixed root return path. The Android-init QEMU self-test reached
+  `fullerene-init: credentials v1 ok`.
+- This remains a bounded credential model: capabilities, user namespaces,
+  securebits, keyrings, and complete Linux/SELinux permission transitions
+  remain open. No physical Bramble boot or persistent-device operation
+  occurred.
+
+### 2026-09-07 — Bounded Linux capability and prctl state
+
+- Linux AArch64 now retains effective, permitted, inheritable, and bounded
+  capability masks (41 capability bits) with fork/clone and thread-group
+  credential sharing. `capget`/`capset` use the standard two-word capability
+  ABI, and `PR_CAPBSET_READ`/`PR_CAPBSET_DROP` operate on the bounded mask.
+- `PR_GET/SET_DUMPABLE`, `PR_GET/SET_KEEPCAPS`, and
+  `PR_GET/SET_NO_NEW_PRIVS` now read and update task state. The Android-init
+  QEMU self-test still reaches `fullerene-init: credentials v1 ok` after a
+  capability round-trip.
+- User namespaces, securebits beyond the bounded zero state, keyrings,
+  ambient capabilities, and SELinux capability/domain enforcement remain
+  open. No physical Bramble boot or persistent-device operation occurred.
+
+### 2026-09-07 — Linux procfs SELinux attribute files
+
+- The Android virtual VFS now exposes `/proc/self/attr/current` and the PID 1
+  equivalent, plus the bounded `exec`, `fscreate`, `keycreate`, and
+  `sockcreate` attribute files. The initial context is
+  `u:r:init:s0`, allowing the libselinux-style context probe to cross the
+  ordinary Linux file ABI.
+- Android-init QEMU reached `fullerene-init: selinux attr v1 ok`. This is
+  still a static attribute surface: no AVC policy decision, domain
+  transition, or per-task SELinux enforcement is claimed. No physical
+  Bramble boot or persistent-device operation occurred.
+
+### 2026-09-07 — Rust-owned Android service-stanza parser and credentials
+
+- Added a bounded no-std parser for the service-stanza subset of Android
+  `.rc`: `service`, `class`, `user`, `group`, `seclabel`, `disabled`,
+  `oneshot`, and `critical`. The early configuration is Rust-owned and the
+  parser self-test also covers named and numeric identities plus lifecycle
+  flags.
+- PID 1 now resolves service names through that table, builds the executable
+  path from the parsed stanza, and applies parsed supplementary groups, GID,
+  and UID in the child before `execve`. `ctl.start`/`stop`/`restart` no longer
+  depend on a hard-coded executable path.
+- QEMU reached `fullerene-init: service config v1 ok` followed by the full
+  start/stop/restart lifecycle markers. This remains a bounded parser and
+  supervisor: dependency/action ordering, namespaces, SELinux transitions,
+  backoff/critical crash policy, and the complete AOSP init grammar remain
+  open; non-`oneshot` child exits now receive a bounded immediate restart. No
+  physical Bramble boot or persistent-device operation occurred.
+
+### 2026-09-07 — Bramble Android-init image packaging audit
+
+- Rebuilt the Bramble AArch64 kernel with the Rust service table and Android
+  initramfs, then patched a local Android v3 boot template. The offline
+  `Bramble boot audit` passed with a `1,241,346`-byte kernel payload and a
+  `2,045,806`-byte ramdisk; the resulting image is
+  `/tmp/fullerene-rust-service-config.img` (SHA-256
+  `72484c4a399dd46ef3de7052498ac2c041879841ae2708a8dbce854d3723a07a`).
+- This is an image-construction and header/ramdisk-preservation result only.
+  It was not sent through Fastboot and no handset, partition, or user-data
+  state was changed.
+
+### 2026-09-07 — Rust Android init trigger/action boundary
+
+- Added a Rust no-std parser and executor for bounded Android init actions:
+  `on early-init`, `on init`, and `on boot`, with `setprop`,
+  `start`/`stop`/`restart`, bounded virtual `mount`, and `wait` commands. The actions are data-driven
+  and execute in trigger order rather than being hard-coded service calls.
+- QEMU reached `fullerene-init: action config v1 ok` and
+  `fullerene-init: init actions v1 ok`; the `boot` action started
+  `fullerened`, while `setprop` actions went through the property-service
+  protocol and shared property-area publication path.
+- This remains a bounded subset: imports, wildcard/property-context details,
+  `mount_all`,
+  filesystem/permission commands, namespaces, SELinux transitions, and the
+  full AOSP action grammar remain open. The refreshed local Bramble image
+  passed audit (`kernel=1,257,795`, `ramdisk=2,045,806`); SHA-256
+  `07f81ec3c60d099e661abcbf989e6a0cef18ba4787a2fe7797496b623c2bc44e`.
+  It was not sent through Fastboot and no handset or persistent storage was
+  changed.
+
+### 2026-09-07 — Standard ADB shell-v2 bounded stream
+
+- The Rust device transport accepts `shell,v2`, `shell,v2:<cmd>`,
+  `shell,v2,raw:<cmd>`, and `shell,v2,TERM:<cmd>` service names. It emits
+  bounded stdout and exit frames, consumes host `OKAY`, and closes with the
+  standard `CLSE` exchange.
+- `flasks adb --adb-command shell[:<cmd>]` now opens the raw shell-v2 form,
+  prints output frames, and returns a host error for a nonzero shell exit
+  code. Unknown bounded commands report exit status `127`.
+- This is still a transport/diagnostic boundary, not complete `adbd`: no
+  authentication, sync, forwarding, PTY, or unrestricted command execution
+  is implemented. The refreshed local boot image passed the offline Bramble
+  audit (`kernel=1,245,458`, `ramdisk=2,045,806`); SHA-256 is
+  `c5e8249286ba51062a8ec362707a05c74f0021bfa3eb9b75994aaa87e4ef84be`.
+  It was not sent through Fastboot and no handset, partition, or user-data
+  state was changed.
+
+### 2026-09-07 — Rust Android init virtual-mount actions
+
+- Extended the Rust no-std init action table with bounded
+  `mount <source> <target> <fstype> <flags> [data]` parsing, checked numeric
+  flags, fixed-size C-string marshalling, and Linux `mount(2)` dispatch for
+  `/dev`, `/proc`, and `/sys`.
+- QEMU executed all three mount actions and reached
+  `fullerene-init: init actions v1 ok`. The kernel side acknowledges only the
+  existing read-only virtual namespace paths; this does not claim a real
+  superblock, block-device mount, `mount_all`, or writable userdata/system
+  integration.
+- The refreshed local Bramble image passed the offline audit
+  (`kernel=1,257,795`, `ramdisk=2,045,806`); SHA-256
+  `76204c55d5c041b8fa8c7745751139d0e7734792841e309896fb5bb5c5b1f92d`.
+  It was not sent through Fastboot and no handset or persistent storage was
+  changed.
+
+### 2026-09-07 — Rust Android init property triggers and mkdir actions
+
+- Added bounded `on property:<name>=<value>` matching in the Rust action table.
+  PID 1 now evaluates all matching property actions in configuration order,
+  with a fixed recursion-depth guard for cyclic `setprop` actions.
+- The QEMU self-test stops `fullerened`, sets
+  `sys.fullerene.trigger=restart`, and verifies that the property trigger
+  restarts the service, reaching `fullerene-init: property triggers v1 ok`.
+  The `init` trigger also executes `mkdir /dev/socket 0755` through the
+  existing Linux `mkdirat` boundary.
+- This is still a bounded init subset: wildcard/property-context semantics,
+  complete command grammar, ownership/SELinux transitions, and real writable
+  filesystem integration remain open. The refreshed local Bramble image
+  passed the offline audit (`kernel=1,266,019`, `ramdisk=2,045,806`); SHA-256
+  `bdb030f4c40e3763821819f40cc2762a01f95c2c488ebe691e3d4408c55d29b8`.
+  It was not sent through Fastboot and no handset or persistent storage was
+  changed.
+
+### 2026-09-07 — Rust Android init write action
+
+- Added bounded `write <path> <contents>` support to the Rust action executor
+  and connected it to Linux `openat`/`write`/`close`. The `init` table now
+  writes `CONFIGURED` to `/sys/class/android_usb/state` during early setup.
+- The kernel permits writes only to the two explicitly virtual nodes
+  `/sys/class/android_usb/state` and `/proc/sys/kernel/hostname`; ordinary
+  files, block devices, UFS, userdata, and persistent partitions remain
+  read-only at this boundary.
+- AArch64 compile, QEMU init self-test, Flasks 24 tests, kernel 98 tests,
+  formatting, diff checks, and generated-udev comparison passed. The local
+  Bramble image passed offline audit (`kernel=1,266,019`, `ramdisk=2,045,806`);
+  SHA-256 `4b16bf465b4bcf3663561042984fc2943036390325d739d93a71523e5ae80b03`.
+  It was not sent through Fastboot and no handset or persistent storage was
+  changed.
+
+### 2026-09-07 — Rust Android init permission metadata actions
+
+- Added bounded Rust `chmod <path> <mode>` and `chown <uid> <gid> <path>`
+  actions. They use AArch64 `fchmodat`/`fchownat` and update Genome
+  `MemFileSystem` inode metadata rather than returning a compatibility-only
+  success value.
+- The kernel permits these operations only for
+  `/sys/class/android_usb/state` and `/proc/sys/kernel/hostname`. The
+  read-only ext4/EROFS/F2FS/UFS paths retain `NotSupported` behavior for
+  chmod/chown, while `stat`/`statx` expose their on-disk mode/uid/gid metadata
+  when the filesystem reader supports it.
+- QEMU reached `fullerene-init: init metadata v1 ok` after reading back
+  mode `0100644`, uid `0`, and gid `0` with `fstatat`. Genome 68 tests,
+  kernel 98 tests, Flasks tests, AArch64 compile, formatting, generated-udev
+  comparison, and diff checks passed. The offline Bramble audit passed for
+  the refreshed image (`kernel=1,271,159`, `ramdisk=2,045,806`); SHA-256
+  `0ad58226903948db29faad3e35dd48f2ffa41e6270207263e499672057daa528`.
+  No Fastboot send or persistent-device operation was performed.
+
+### 2026-09-07 — Rust read-only filesystem inode metadata
+
+- Connected the on-disk inode metadata of the bounded read-only ext4, EROFS,
+  and F2FS readers to Genome `FileMetadata`. Linux `fstat`, `fstatat`, and
+  `statx` can now expose the real filesystem mode, uid, gid, and size for
+  mounted `/system`, `/vendor`, and `/data` entries instead of the previous
+  conservative fallback.
+- The readers remain strictly read-only: journal replay, allocation, xattrs,
+  encryption/compression variants outside their supported subset, and all
+  filesystem mutation remain outside this boundary. The exact `chmod`/`chown`
+  whitelist is still limited to the two virtual init nodes.
+- Genome 69 tests, kernel 98 tests, Flasks tests, AArch64 compile, QEMU init
+  metadata self-test, formatting, generated-udev comparison, and diff checks
+  passed. The offline Bramble audit passed for the refreshed image
+  (`kernel=1,271,159`, `ramdisk=2,045,806`); SHA-256
+  `19f8ff9d230a56e579e1ae53738368ab141cc1586208ae5e4cabbf03583c5179`.
+  No Fastboot send or persistent-device operation was performed.
+
+### 2026-09-07 — Rust Android init `mount_all` boundary
+
+- Added a Rust-owned `/etc/fstab.fullerene` to the Android initramfs and a
+  bounded `mount_all` action. PID 1 reads the fstab, parses source/target/
+  filesystem/options, propagates `MS_RDONLY`, and invokes the existing Linux
+  `mount(2)` ABI for each entry.
+- `/system`, `/vendor`, and `/data` now succeed through `mount(2)` only after
+  the Bramble GPT/LP/read-only filesystem path has installed a non-root VFS
+  mount. QEMU's `optional` entries correctly skip absent physical partitions;
+  malformed entries, read errors, and non-optional mount failures abort the
+  action.
+- QEMU reached `fullerene-init: mount_all v1 ok`, followed by the existing
+  init metadata marker. The offline Bramble audit passed for the refreshed
+  image (`kernel=1,279,383`, `ramdisk=2,045,806`); SHA-256
+  `e2dba5f579db0960f001dbcb665711b31f6edb64dd830634c91f8429f0f88ff3`.
+  This remains read-only and no Fastboot send or persistent-device operation
+  was performed.
+
+### 2026-09-07 — Rust Android block aliases and mount-table publication
+
+- Bramble GPT and validated Android LP metadata now populate the Rust
+  `/dev/block/by-name` namespace. The entries are visible to Android init via
+  `open`, `readdir`, and the Linux `stat` family, with read-only block mode and
+  discovered partition sizes; `_a` logical names also publish their canonical
+  unsuffixed first-slot alias.
+- Once the read-only VFS mounts are accepted, `/proc/mounts` is rebuilt with
+  the actual `/system`, `/vendor`, and `/data` entries and detected ext4,
+  EROFS, or F2FS type. QEMU still correctly has no fabricated physical aliases
+  when no UFS/GPT device is present.
+- AArch64 QEMU self-test, 98 host kernel tests, 68 passing Genome tests plus
+  one ignored test, Bramble/QEMU cross-checks, formatting, and diff checks
+  passed. Offline boot audit passed for
+  `/tmp/fullerene-rust-init-block-aliases.img` (`kernel=1,283,495`,
+  `ramdisk=2,045,806`), SHA-256
+  `f4022ee228838b74d110cc1839a3c2cf33570899b36d3f6179d196c0a0d21a2a`.
+  No Fastboot send or persistent-device operation was performed.
+
+### 2026-09-07 — Rust Android init SELinux exec-domain handoff
+
+- AArch64 tasks now carry bounded current and pending exec SELinux contexts.
+  Fork/clone inheritance and successful `execve` commit the pending service
+  context at the scheduler boundary.
+- Rust `/proc/self/attr/current` reads the live task context and
+  `/proc/self/attr/exec` accepts validated labels. PID 1 applies the parsed
+  `seclabel u:r:fullerened:s0` before service exec; the service verified its
+  post-exec context under QEMU with `fullerene-service: seclabel fullerened
+  ok`.
+- QEMU reached the SELinux attribute self-test, `mount_all`, and metadata
+  markers. The offline Bramble v3 boot-template audit passed for
+  `/tmp/fullerene-rust-init-selinux-domain.img` (`kernel=1,296,988`,
+  `ramdisk=2,045,806`), SHA-256
+  `d1c5091ccc54d40de0a40689ce9038cd32ec9fe06364572c70011ca2a2756f21`.
+  SELinux policy parsing/AVC enforcement remains open; no Fastboot send or
+  persistent-device operation was performed.
+
+### 2026-09-07 — Rust bootstrap SELinux policy transition enforcement
+
+- Added a validated Rust `FSP1` policy stream to `/sys/fs/selinux/load`, with
+  explicit source-to-target transition rules and a real enforcing switch.
+  The Linux write whitelist now covers only the bounded SELinux control files.
+- With enforcement enabled, task `attr/exec` writes are checked against the
+  loaded transition table. QEMU rejected `u:r:untrusted_app:s0` from init and
+  accepted the configured `u:r:fullerened:s0` transition before service exec.
+- QEMU reached the policy, attribute, mount, and metadata markers. Offline
+  Bramble v3 boot-template audit passed for
+  `/tmp/fullerene-rust-init-selinux-policy.img` (`kernel=1,296,988`,
+  `ramdisk=2,045,806`), SHA-256
+  `7d4110e5d42b51b4729c1e2c3d611491c26f1d844d7f74f92c050682d181871d`.
+  This is not yet AOSP policydb parsing or AVC/object-permission enforcement;
+  no Fastboot send or persistent-device operation was performed.
+
+### 2026-09-07 — Android init executable source selection
+
+- `launchd` now logs whether `/system` is a non-root mounted VFS route before
+  reading `/system/bin/init`: `mounted-system` selects the physical Android
+  image, while `initramfs-fallback` preserves the QEMU Rust PID-1 path.
+  Resolution remains a single ordinary VFS lookup.
+- QEMU emitted `user-launchd: Android init source=initramfs-fallback` and
+  retained all Android-init self-test markers. The Bramble image was rebuilt
+  and passed the offline v3 audit; `/tmp/fullerene-rust-init-system-source.img`
+  has SHA-256
+  `5c671fc849e3452f3422cc55cdfa07230dd6cd4e2b4a3f14089ec3fe48f4ab02`.
+  No Fastboot send or persistent-device operation was performed.
+
+### 2026-09-07 — Bramble Android-init UFS gate default
+
+- A Bramble `--android-init` build now supplies
+  `FULLERENE_AARCH64_UFS_EXECUTE=1` unless the caller explicitly provides a
+  value. The Android-init artifact therefore includes the read-only UFS/
+  GPT/LP/filesystem attempt by default.
+- The DMA identity assertion is not implied. Without the explicit
+  `FULLERENE_AARCH64_UFS_DMA_IDENTITY=1`, the physical controller/DMA path
+  remains fail-closed; `FULLERENE_AARCH64_UFS_EXECUTE=0` disables the attempt.
+- The no-environment Bramble artifact passed the offline v3 audit as
+  `/tmp/fullerene-rust-init-auto-ufs.img` (`kernel=1,078,727`,
+  `ramdisk=2,045,806`). No physical boot or persistent-device operation was
+  performed.
+
+### 2026-09-07 — Rust FSP2 SELinux exact-object permissions
+
+- Rust selinuxfs now accepts FSP2 streams containing both context transitions
+  and exact-path read/write allow rules. `openat` checks the current task
+  context before opening a labeled SELinux/Android virtual object; unlisted
+  paths are intentionally outside this bounded layer.
+- PID 1 builds the FSP2 policy in Rust and QEMU reached
+  `fullerene-init: selinux policy v2 ok`, `selinux attr v1 ok`, and
+  `fullerened: seclabel fullerened ok`. FSP1 transition-only input remains
+  accepted for compatibility.
+- This is not AOSP policydb/AVC/class-permission compatibility. The refreshed
+  Bramble v3 offline audit passed for `/tmp/fullerene-rust-init-fsp2.img`
+  (`kernel=1,082,839`, `ramdisk=2,045,806`), SHA-256
+  `80890d7c16cb85618fb33407027fbc804337b4429217ab7b56816676454bd76f`.
+  No physical boot or persistent-device operation was performed.
+
+### 2026-09-07 — Fullerene Rust PID 1 owns the Android-init entry point
+
+- `aarch64-android-init` now loads the Rust PID-1 image from initramfs
+  `/init`, rather than allowing a mounted `/system/bin/init` to select stock
+  Android init. The physical Android filesystems remain available under
+  their mounted paths, but they do not own the first user process.
+- QEMU logged
+  `user-launchd: Fullerene Rust init source=initramfs; Android system absent`
+  and retained the Rust PID-1, property-service, FSP2 SELinux, `mount_all`,
+  and service-class self-test markers. The final timeout is the intentional
+  resident-loop timeout.
+- Offline Bramble v3 audit passed for
+  `/tmp/fullerene-rust-pid1-root-init.img` (`kernel=1,082,839`,
+  `ramdisk=2,045,806`), SHA-256
+  `4eb4902e9239c70b57ce28c1125a324919af4c92a63b140e5a44106fa81c7400`.
+  No physical boot or persistent-device operation was performed.

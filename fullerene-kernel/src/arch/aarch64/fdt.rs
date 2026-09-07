@@ -210,6 +210,78 @@ pub fn find_memory_regions(address: u64, out: &mut [Region]) -> usize {
     count
 }
 
+/// Collect fixed `reg` ranges below the DT `/reserved-memory` container.
+///
+/// A physical DMA address is not safe merely because it falls inside a
+/// `memory` node: Qualcomm firmware and remote processors retain several
+/// sub-ranges as `no-map`/removed-dma-pool memory.  This bounded view is used
+/// by early device bring-up to reject an arena that overlaps one of those
+/// reservations before a controller can receive its address.
+pub fn find_reserved_memory_regions(address: u64, out: &mut [Region]) -> usize {
+    let mut states = [ReservedMemoryNodeState::new(); 16];
+    let mut count = 0usize;
+    let _ = walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode {
+                depth,
+                name,
+                name_end,
+            } => {
+                let parent = states[depth - 1];
+                states[depth] = ReservedMemoryNodeState {
+                    address_cells: parent.child_address_cells,
+                    size_cells: parent.child_size_cells,
+                    child_address_cells: parent.child_address_cells,
+                    child_size_cells: parent.child_size_cells,
+                    enabled: true,
+                    reserved_container: c_string_eq(name, name_end, b"reserved-memory"),
+                    reserved_region: parent.reserved_container,
+                    regions: [None; 8],
+                };
+            }
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"#address-cells") && item.length >= 4 {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_address_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells") && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_size_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, b"reg") {
+                    state.regions = read_regions_bounded(
+                        item.value,
+                        item.length,
+                        state.address_cells,
+                        state.size_cells,
+                    );
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.reserved_region {
+                    for region in state.regions.into_iter().flatten() {
+                        if count >= out.len() {
+                            return false;
+                        }
+                        out[count] = region;
+                        count += 1;
+                    }
+                }
+            }
+        }
+        true
+    });
+    count
+}
+
 #[derive(Clone, Copy)]
 struct StructureProperty {
     name: *const u8,
@@ -903,6 +975,33 @@ struct MemoryNodeState {
     is_memory_name: bool,
     is_memory_type: bool,
     regions: [Option<Region>; 8],
+}
+
+#[derive(Clone, Copy)]
+struct ReservedMemoryNodeState {
+    address_cells: u8,
+    size_cells: u8,
+    child_address_cells: u8,
+    child_size_cells: u8,
+    enabled: bool,
+    reserved_container: bool,
+    reserved_region: bool,
+    regions: [Option<Region>; 8],
+}
+
+impl ReservedMemoryNodeState {
+    const fn new() -> Self {
+        Self {
+            address_cells: 2,
+            size_cells: 1,
+            child_address_cells: 2,
+            child_size_cells: 1,
+            enabled: true,
+            reserved_container: false,
+            reserved_region: false,
+            regions: [None; 8],
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

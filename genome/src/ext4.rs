@@ -12,7 +12,9 @@ use alloc::vec::Vec;
 
 use crate::block::BlockDevice;
 use crate::fs::FsError;
-use crate::vfs::{FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, VNode};
+use crate::vfs::{
+    FileDescriptor, FileMetadata, FileSystem, FileSystemCapabilities, InodeType, VNode,
+};
 
 const SUPERBLOCK_OFFSET: u64 = 1024;
 const SUPERBLOCK_BYTES: usize = 1024;
@@ -66,6 +68,8 @@ fn le_u32(bytes: &[u8], offset: usize) -> u32 {
 #[derive(Clone)]
 struct InodeRecord {
     mode: u16,
+    uid: u32,
+    gid: u32,
     flags: u32,
     size: u64,
     block: [u8; 60],
@@ -361,6 +365,8 @@ impl Ext4FileSystem {
         let size_high = le_u32(&raw, 108) as u64;
         Ok(InodeRecord {
             mode: le_u16(&raw, 0),
+            uid: le_u16(&raw, 2) as u32 | ((le_u16(&raw, 120) as u32) << 16),
+            gid: le_u16(&raw, 24) as u32 | ((le_u16(&raw, 122) as u32) << 16),
             flags: le_u32(&raw, 32),
             size: size_low | (size_high << 32),
             block,
@@ -745,6 +751,30 @@ impl FileSystem for Ext4FileSystem {
         Ok(self.read_inode(ino)?.size)
     }
 
+    fn metadata(&mut self, path: &str) -> Result<FileMetadata, FsError> {
+        let ino = self.lookup(path)?;
+        let inode = self.read_inode(ino)?;
+        Ok(FileMetadata {
+            mode: inode.mode as u32,
+            uid: inode.uid,
+            gid: inode.gid,
+            size: inode.size,
+            kind: inode.kind()?,
+        })
+    }
+
+    fn metadata_at(&mut self, fd: u32) -> Result<FileMetadata, FsError> {
+        let (ino, _) = self.handle(fd)?;
+        let inode = self.read_inode(ino)?;
+        Ok(FileMetadata {
+            mode: inode.mode as u32,
+            uid: inode.uid,
+            gid: inode.gid,
+            size: inode.size,
+            kind: inode.kind()?,
+        })
+    }
+
     fn create(&mut self, _path: &str, _kind: InodeType) -> Option<u64> {
         None
     }
@@ -774,6 +804,28 @@ impl FileSystem for Ext4FileSystem {
                 })
             })
             .collect())
+    }
+
+    fn read_link(&mut self, path: &str) -> Result<String, FsError> {
+        let path = path.trim_end_matches('/');
+        let split = path.rfind('/');
+        let (parent_path, name) = match split {
+            Some(0) => ("/", &path[1..]),
+            Some(index) => (&path[..index], &path[index + 1..]),
+            None => ("", path),
+        };
+        if name.is_empty() {
+            return Err(FsError::InvalidPath);
+        }
+        let parent = self.lookup(parent_path)?;
+        let child = self
+            .find_child(parent, name)?
+            .ok_or(FsError::FileNotFound)?;
+        let inode = self.read_inode(child.ino)?;
+        if inode.kind()? != InodeType::Symlink {
+            return Err(FsError::InvalidInput);
+        }
+        self.read_symlink(&inode)
     }
 
     fn exists(&mut self, path: &str) -> bool {
@@ -854,7 +906,9 @@ mod tests {
         // Inode 2 is the root directory and inode 3 is /hello.
         let inode_table = &mut image[3 * block_size..4 * block_size];
         let root_inode = &mut inode_table[128..256];
-        put_u16(root_inode, 0, EXT4_S_IFDIR);
+        put_u16(root_inode, 0, EXT4_S_IFDIR | 0o750);
+        put_u16(root_inode, 2, 1000);
+        put_u16(root_inode, 24, 1001);
         put_u32(root_inode, 4, block_size as u32);
         put_u32(root_inode, 32, EXT4_EXTENTS_FL);
         put_u16(root_inode, 40, EXT4_EXTENT_MAGIC);
@@ -865,7 +919,9 @@ mod tests {
         put_u32(root_inode, 60, 10);
 
         let file_inode = &mut inode_table[256..384];
-        put_u16(file_inode, 0, EXT4_S_IFREG);
+        put_u16(file_inode, 0, EXT4_S_IFREG | 0o640);
+        put_u16(file_inode, 2, 2000);
+        put_u16(file_inode, 24, 2001);
         put_u32(file_inode, 4, 5);
         put_u32(file_inode, 32, EXT4_EXTENTS_FL);
         put_u16(file_inode, 40, EXT4_EXTENT_MAGIC);
@@ -900,6 +956,17 @@ mod tests {
         let entries = fs.readdir("/").unwrap();
         assert_eq!(entries[0].name, "hello");
         let file = fs.open("/hello", 0).unwrap();
+        assert_eq!(
+            fs.metadata("/hello").unwrap(),
+            FileMetadata {
+                mode: (EXT4_S_IFREG | 0o640) as u32,
+                uid: 2000,
+                gid: 2001,
+                size: 5,
+                kind: InodeType::File,
+            }
+        );
+        assert_eq!(fs.metadata_at(file.fd).unwrap().uid, 2000);
         let mut output = [0u8; 5];
         assert_eq!(fs.read(file.fd, &mut output).unwrap(), 5);
         assert_eq!(&output, b"world");
