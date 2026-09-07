@@ -4355,3 +4355,65 @@ the compact working memory; the ledgers remain the evidence archive.
   `ramdisk=2,045,806`), SHA-256
   `4eb4902e9239c70b57ce28c1125a324919af4c92a63b140e5a44106fa81c7400`.
   No physical boot or persistent-device operation was performed.
+
+### 2026-09-07 — Bramble UFS DMA DT reservation gate
+
+- Added a bounded Rust FDT parser for fixed `/reserved-memory` `reg` ranges.
+  The Bramble UFS read-only path now requires the entire `.ufs_dma` arena to
+  lie inside an active DT memory range and outside every fixed reservation;
+  missing memory evidence or an overlap keeps the controller/DMA path
+  fail-closed.
+- The generated Bramble linker script now places `.ufs_dma` at `0x9c000000`
+  by default, outside the Lito modem/wlan reservation ending at
+  `0x9b800000`; `FULLERENE_AARCH64_UFS_DMA_ORIGIN` permits a board-specific
+  address only when the active DT passes the runtime gate. The explicit
+  `FULLERENE_AARCH64_UFS_DMA_IDENTITY=1` assertion remains required.
+- The primary Lito DT source defines the UFS PHY rails as `pm8150_l5` and
+  `pm8150_l9`; the merged factory DTB verifier still passes the exact rail,
+  RPMh, clock, reset, and resource contract. See the Android kernel
+  [Lito DT](https://android.googlesource.com/kernel/msm-extra/devicetree/+/refs/heads/android-msm-bramble-4.19-android11-qpr1/qcom/lito-qrd.dtsi#138)
+  and [UFS PHY power-on sequence](https://android.googlesource.com/kernel/common/+/11a083724be9/drivers/phy/phy-qcom-ufs.c).
+- Standalone FDT tests (4), kernel tests (98), AArch64 check, Flasks tests,
+  formatting, and diff checks passed. The Bramble image passed the offline v3
+  audit as
+  `/tmp/fullerene-rust-ufs-dma-safe.img` (SHA-256
+  `cf6351271a9bb74404651d4b836edad37467e2e6f2e48c5d450004748c5aaac8`);
+  its ELF `.ufs_dma` section is `0x9c000000`/`0x43000`. No physical boot or
+  persistent-device operation was performed.
+
+### 2026-09-07 — Rust Android service kept outside the physical `/system` mount
+
+- The first Rust service was previously packaged as
+  `/system/bin/fullerened`. That path is shadowed when the read-only physical
+  Android `/system` filesystem is mounted, so PID 1 would lose its own service
+  executable exactly at the handoff this port is meant to test.
+- Moved the generated service payload to initramfs `/bin/fullerened` and
+  changed the Rust service table to execute that stable root-owned path. The
+  physical `/system`, `/vendor`, and `/data` mounts therefore remain available
+  without replacing Fullerene's early service set.
+- QEMU reached `fullerened started`, `fullerene-service: fullerened active`,
+  and `fullerene-service: seclabel fullerened ok`. The regenerated Bramble v3
+  image passed its offline audit at
+  `/tmp/fullerene-rust-service-root-path.img` (SHA-256
+  `c38c541eab151daa5ea6660893ed1446513a0d259dde54df8cce72e484580759`).
+  Kernel tests (98), AArch64 check, formatting, and diff checks passed. No
+  physical boot or persistent-device operation was performed.
+
+### 2026-09-07 — ADB shell reads the Rust Android state boundary
+
+- Standard ADB shell-v2 `getprop` now serializes the live Rust Android
+  property table, including properties published through the PID-1 property
+  service. `getprop <name>` follows the same table rather than a separate
+  hard-coded response.
+- `cat /proc/mounts` and `mount` now return the last Rust-published mount
+  snapshot. The USB completion path consumes fixed-size snapshots and does
+  not enter the VFS mutex from the USB interrupt boundary; the USB-only probe
+  keeps an explicit default snapshot because it has no PID-1 filesystem.
+- Kernel tests (98), Flasks tests, AArch64 cross-check, QEMU Android-init
+  self-test, formatting, and diff checks passed. The Bramble v3 offline audit
+  passed for `/tmp/fullerene-rust-adb-state.img` (`kernel=1,086,951`,
+  `ramdisk=2,045,806`), SHA-256
+  `e7521a33ca58304a98682543961c3846ea24acb4db70347cdc4d740d454f3587`.
+  This remains bounded shell transport rather than complete `adbd`
+  authentication/sync/forwarding/PTY behavior; no physical boot or persistent
+  device operation was performed.

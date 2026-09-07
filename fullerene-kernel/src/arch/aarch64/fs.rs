@@ -344,6 +344,7 @@ const ANDROID_PROPERTY_VALUE_MAX: usize = 92;
 const MAX_ANDROID_PROPERTIES: usize = 32;
 const MAX_ANDROID_PROPERTY_NODES: usize = 128;
 const ANDROID_PROPERTY_ROOT_RESERVED: usize = 112;
+const DEBUG_MOUNT_TABLE_CAPACITY: usize = 1024;
 const PROPERTY_SERVICE_PATH: &[u8] = b"/dev/socket/property_service";
 const PROP_MSG_SETPROP: u32 = 1;
 // Android's version-2 property protocol uses a tagged command value rather
@@ -550,6 +551,113 @@ fn android_property_set(name: &[u8], value: &[u8]) -> bool {
     } else {
         true
     }
+}
+
+fn debug_append_bytes(destination: &mut [u8], length: &mut usize, bytes: &[u8]) -> bool {
+    let Some(end) = length.checked_add(bytes.len()) else {
+        return false;
+    };
+    if end > destination.len() {
+        return false;
+    }
+    destination[*length..end].copy_from_slice(bytes);
+    *length = end;
+    true
+}
+
+/// Copy the current property table into an ADB-sized response buffer. The
+/// USB completion path calls this without taking the VFS mutex; this is the
+/// same table that is rebuilt for Android's shared property area.
+pub(super) fn debug_property_dump(destination: &mut [u8]) -> usize {
+    android_property_table_init();
+    let mut length = 0usize;
+    for property_index in 0..MAX_ANDROID_PROPERTIES {
+        let property = unsafe { (*core::ptr::addr_of!(ANDROID_PROPERTIES))[property_index] };
+        if !property.active
+            || !debug_append_bytes(destination, &mut length, b"[")
+            || !debug_append_bytes(
+                destination,
+                &mut length,
+                &property.name[..property.name_length],
+            )
+            || !debug_append_bytes(destination, &mut length, b"]: [")
+            || !debug_append_bytes(
+                destination,
+                &mut length,
+                &property.value[..property.value_length],
+            )
+            || !debug_append_bytes(destination, &mut length, b"]\n")
+        {
+            break;
+        }
+    }
+    length
+}
+
+/// Return one property in the same value-only form as `getprop name`.
+pub(super) fn debug_property_value(name: &[u8], destination: &mut [u8]) -> Option<usize> {
+    android_property_table_init();
+    let index = android_property_find(name)?;
+    let property = unsafe { (*core::ptr::addr_of!(ANDROID_PROPERTIES))[index] };
+    let mut length = 0usize;
+    debug_append_bytes(
+        destination,
+        &mut length,
+        &property.value[..property.value_length],
+    )
+    .then_some(length)
+}
+
+fn update_debug_mount_table(mounts: &[u8]) {
+    let length = mounts.len().min(DEBUG_MOUNT_TABLE_CAPACITY);
+    unsafe {
+        let table = core::ptr::addr_of_mut!(DEBUG_MOUNT_TABLE);
+        (&mut *table)[..length].copy_from_slice(&mounts[..length]);
+        *core::ptr::addr_of_mut!(DEBUG_MOUNT_TABLE_LENGTH) = length;
+    }
+}
+
+/// Copy the last published Android mount table without entering the VFS.
+pub(super) fn debug_mount_table(destination: &mut [u8]) -> usize {
+    let length = unsafe { (*core::ptr::addr_of!(DEBUG_MOUNT_TABLE_LENGTH)).min(destination.len()) };
+    unsafe {
+        let table = core::ptr::addr_of!(DEBUG_MOUNT_TABLE);
+        destination[..length].copy_from_slice(&(&*table)[..length]);
+    }
+    length
+}
+
+/// Return a read-only snapshot of the small virtual files that are safe to
+/// expose through the bounded ADB sync reader. This deliberately avoids
+/// entering the VFS mutex from the USB completion path.
+pub(super) fn debug_file_snapshot(path: &[u8], destination: &mut [u8]) -> Option<usize> {
+    match path {
+        b"/proc/mounts" => Some(debug_mount_table(destination)),
+        b"/proc/cmdline" => Some(debug_copy_static(
+            destination,
+            b"console=ttyMSM0 androidboot.hardware=bramble\n",
+        )),
+        b"/proc/version" => Some(debug_copy_static(
+            destination,
+            b"FullereneOS Linux compatibility boundary\n",
+        )),
+        b"/proc/filesystems" => Some(debug_copy_static(
+            destination,
+            b"nodev\tproc\nnodev\tsysfs\nnodev\ttmpfs\next4\neroFS\nf2fs\n",
+        )),
+        b"/proc/meminfo" => Some(debug_copy_static(
+            destination,
+            b"MemTotal:       262144 kB\nMemFree:        131072 kB\n",
+        )),
+        b"/sys/class/android_usb/state" => Some(debug_copy_static(destination, b"CONFIGURED\n")),
+        _ => None,
+    }
+}
+
+fn debug_copy_static(destination: &mut [u8], source: &[u8]) -> usize {
+    let length = source.len().min(destination.len());
+    destination[..length].copy_from_slice(&source[..length]);
+    length
 }
 
 fn android_property_node_offset(offsets: &[u32; MAX_ANDROID_PROPERTY_NODES], node: u16) -> u32 {
@@ -2171,6 +2279,8 @@ static mut ANDROID_PROPERTIES: [AndroidProperty; MAX_ANDROID_PROPERTIES] =
     [AndroidProperty::EMPTY; MAX_ANDROID_PROPERTIES];
 static mut ANDROID_PROPERTIES_INITIALIZED: bool = false;
 static mut ANDROID_PROPERTY_SERIAL: u32 = 1;
+static mut DEBUG_MOUNT_TABLE: [u8; DEBUG_MOUNT_TABLE_CAPACITY] = [0; DEBUG_MOUNT_TABLE_CAPACITY];
+static mut DEBUG_MOUNT_TABLE_LENGTH: usize = 0;
 static mut LINUX_PROPERTY_MAPPINGS: [LinuxPropertyMapping; MAX_LINUX_PROPERTY_MAPPINGS] =
     [LinuxPropertyMapping::EMPTY; MAX_LINUX_PROPERTY_MAPPINGS];
 static mut TERMINAL_SLOTS: [TerminalSlot; MAX_TERMINAL_SLOTS] =
@@ -2237,6 +2347,8 @@ fn mount_android_virtual_filesystems(vfs: &mut Vfs) -> Result<(), FsError> {
     }
     vfs.mount("/sys/fs/selinux", Box::new(SelinuxFs::new()))?;
 
+    let default_mounts = b"proc /proc proc ro 0 0\nsysfs /sys sysfs ro 0 0\n";
+    update_debug_mount_table(default_mounts);
     for (path, contents) in [
         (
             "/proc/cmdline",
@@ -2250,10 +2362,7 @@ fn mount_android_virtual_filesystems(vfs: &mut Vfs) -> Result<(), FsError> {
             "/proc/filesystems",
             b"nodev\tproc\nnodev\tsysfs\nnodev\ttmpfs\next4\neroFS\nf2fs\n".as_slice(),
         ),
-        (
-            "/proc/mounts",
-            b"proc /proc proc ro 0 0\nsysfs /sys sysfs ro 0 0\n".as_slice(),
-        ),
+        ("/proc/mounts", default_mounts.as_slice()),
         (
             "/proc/meminfo",
             b"MemTotal:       262144 kB\nMemFree:        131072 kB\n".as_slice(),
@@ -2592,6 +2701,7 @@ fn publish_android_mount_table(
         mounts.push_str(android_filesystem_name(kind));
         mounts.push_str(" ro 0 0\n");
     }
+    update_debug_mount_table(mounts.as_bytes());
     let _ = with_vfs(|vfs| seed_vfs_file(vfs, "/proc/mounts", mounts.as_bytes()));
 }
 

@@ -2260,12 +2260,7 @@ fn build_aarch64_initramfs(
                     android_service.display()
                 )
             });
-            write_cpio_file(
-                &mut archive,
-                "system/bin/fullerened",
-                false,
-                &android_service_data,
-            );
+            write_cpio_file(&mut archive, "bin/fullerened", false, &android_service_data);
             println!("cargo:rerun-if-changed={}", android_service.display());
         }
     }

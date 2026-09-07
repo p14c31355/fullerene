@@ -1373,6 +1373,60 @@ mod tests {
         dtb
     }
 
+    fn reserved_memory_dtb(disabled: bool) -> Vec<u8> {
+        let strings = b"#address-cells\0#size-cells\0reg\0status\0";
+        let address_cells = 0u32;
+        let size_cells = 15u32;
+        let reg = 27u32;
+        let status = 31u32;
+        let mut structure = Vec::new();
+        be32(1, &mut structure);
+        structure.push(0);
+        pad4(&mut structure);
+        property(&mut structure, address_cells, &2u32.to_be_bytes());
+        property(&mut structure, size_cells, &2u32.to_be_bytes());
+        be32(1, &mut structure);
+        structure.extend_from_slice(b"reserved-memory\0");
+        pad4(&mut structure);
+        property(&mut structure, address_cells, &2u32.to_be_bytes());
+        property(&mut structure, size_cells, &2u32.to_be_bytes());
+        be32(1, &mut structure);
+        structure.extend_from_slice(b"modem@8c000000\0");
+        pad4(&mut structure);
+        let reg_value = [0x0000_0000u32, 0x8c00_0000, 0x0000_0000, 0x0100_0000];
+        let mut reg_bytes = Vec::new();
+        for cell in reg_value {
+            be32(cell, &mut reg_bytes);
+        }
+        property(&mut structure, reg, &reg_bytes);
+        if disabled {
+            property(&mut structure, status, b"disabled\0");
+        }
+        be32(2, &mut structure);
+        be32(2, &mut structure);
+        be32(2, &mut structure);
+        be32(2, &mut structure);
+        be32(9, &mut structure);
+
+        let structure_offset = 40u32;
+        let strings_offset = structure_offset + structure.len() as u32;
+        let total_size = strings_offset + strings.len() as u32;
+        let mut dtb = Vec::new();
+        be32(0xd00d_feed, &mut dtb);
+        be32(total_size, &mut dtb);
+        be32(structure_offset, &mut dtb);
+        be32(strings_offset, &mut dtb);
+        be32(0, &mut dtb);
+        be32(17, &mut dtb);
+        be32(16, &mut dtb);
+        be32(0, &mut dtb);
+        be32(strings.len() as u32, &mut dtb);
+        be32(structure.len() as u32, &mut dtb);
+        dtb.extend_from_slice(&structure);
+        dtb.extend_from_slice(strings);
+        dtb
+    }
+
     #[test]
     fn memory_node_with_64_bit_cells_is_collected() {
         let dtb = memory_dtb(false);
@@ -1388,5 +1442,27 @@ mod tests {
         let dtb = memory_dtb(true);
         let mut regions = [Region { base: 0, size: 0 }; 2];
         assert_eq!(find_memory_regions(dtb.as_ptr() as u64, &mut regions), 0);
+    }
+
+    #[test]
+    fn fixed_reserved_memory_region_is_collected() {
+        let dtb = reserved_memory_dtb(false);
+        let mut regions = [Region { base: 0, size: 0 }; 2];
+        assert_eq!(
+            super::find_reserved_memory_regions(dtb.as_ptr() as u64, &mut regions),
+            1
+        );
+        assert_eq!(regions[0].base, 0x8c00_0000);
+        assert_eq!(regions[0].size, 0x0100_0000);
+    }
+
+    #[test]
+    fn disabled_reserved_memory_region_is_ignored() {
+        let dtb = reserved_memory_dtb(true);
+        let mut regions = [Region { base: 0, size: 0 }; 2];
+        assert_eq!(
+            super::find_reserved_memory_regions(dtb.as_ptr() as u64, &mut regions),
+            0
+        );
     }
 }

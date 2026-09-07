@@ -10,6 +10,55 @@ use core::{
 mod fdt;
 #[path = "../../platform/mod.rs"]
 mod platform;
+mod fs {
+    pub(crate) fn debug_property_dump(destination: &mut [u8]) -> usize {
+        let output =
+            b"[ro.debuggable]: [1]\n[ro.hardware]: [bramble]\n[ro.property_service.version]: [2]\n";
+        let length = output.len().min(destination.len());
+        destination[..length].copy_from_slice(&output[..length]);
+        length
+    }
+
+    pub(crate) fn debug_property_value(name: &[u8], destination: &mut [u8]) -> Option<usize> {
+        let value = match name {
+            b"ro.debuggable" => b"1".as_slice(),
+            b"ro.hardware" => b"bramble".as_slice(),
+            b"ro.property_service.version" => b"2".as_slice(),
+            _ => return None,
+        };
+        let length = value.len().min(destination.len());
+        destination[..length].copy_from_slice(&value[..length]);
+        Some(length)
+    }
+
+    pub(crate) fn debug_mount_table(destination: &mut [u8]) -> usize {
+        let output = b"proc /proc proc ro 0 0\nsysfs /sys sysfs ro 0 0\n";
+        let length = output.len().min(destination.len());
+        destination[..length].copy_from_slice(&output[..length]);
+        length
+    }
+
+    pub(crate) fn debug_file_snapshot(path: &[u8], destination: &mut [u8]) -> Option<usize> {
+        match path {
+            b"/proc/mounts" => Some(debug_mount_table(destination)),
+            b"/proc/cmdline" => Some(debug_copy_static(
+                destination,
+                b"console=ttyMSM0 androidboot.hardware=bramble\n",
+            )),
+            b"/proc/version" => Some(debug_copy_static(
+                destination,
+                b"FullereneOS Linux compatibility boundary\n",
+            )),
+            _ => None,
+        }
+    }
+
+    fn debug_copy_static(destination: &mut [u8], source: &[u8]) -> usize {
+        let length = source.len().min(destination.len());
+        destination[..length].copy_from_slice(&source[..length]);
+        length
+    }
+}
 mod timer;
 mod uart;
 mod usb;

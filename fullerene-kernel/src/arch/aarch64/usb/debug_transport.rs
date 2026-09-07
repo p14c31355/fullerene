@@ -40,8 +40,15 @@ const ADB_STREAM_SHELL: u8 = 2;
 const ADB_SHELL_FOLLOWUP_OUTPUT: u8 = 1;
 const ADB_SHELL_COMMAND_CAPACITY: usize = 128;
 const ADB_STREAM_SHELL_V2: u8 = 3;
+const ADB_STREAM_SYNC: u8 = 4;
 const ADB_SHELL_V2_STDOUT: u8 = 1;
 const ADB_SHELL_V2_EXIT: u8 = 3;
+const ADB_SYNC_FOLLOWUP_NONE: u8 = 0;
+const ADB_SYNC_FOLLOWUP_RESPONSE: u8 = 1;
+const ADB_SYNC_FOLLOWUP_RECV: u8 = 2;
+const ADB_SYNC_RESPONSE_CAPACITY: usize = MAX_FRAME_BYTES - ADB_HEADER_BYTES;
+const ADB_SYNC_DATA_CAPACITY: usize = 1024;
+const ADB_SYNC_PATH_CAPACITY: usize = 256;
 
 #[repr(C, align(64))]
 struct ResponseBuffer([u8; MAX_FRAME_BYTES]);
@@ -62,6 +69,14 @@ static mut ADB_SHELL_V2: bool = false;
 static mut ADB_SHELL_EXIT_CODE: u32 = 0;
 static mut ADB_SHELL_COMMAND: [u8; ADB_SHELL_COMMAND_CAPACITY] = [0; ADB_SHELL_COMMAND_CAPACITY];
 static mut ADB_SHELL_COMMAND_LENGTH: usize = 0;
+static mut ADB_SYNC_FOLLOWUP: u8 = ADB_SYNC_FOLLOWUP_NONE;
+static mut ADB_SYNC_RESPONSE: [u8; ADB_SYNC_RESPONSE_CAPACITY] = [0; ADB_SYNC_RESPONSE_CAPACITY];
+static mut ADB_SYNC_RESPONSE_LENGTH: usize = 0;
+static mut ADB_SYNC_RECV_DATA: [u8; ADB_SYNC_DATA_CAPACITY] = [0; ADB_SYNC_DATA_CAPACITY];
+static mut ADB_SYNC_RECV_LENGTH: usize = 0;
+static mut ADB_SYNC_RECV_OFFSET: usize = 0;
+static mut ADB_SYNC_RECV_DONE_SENT: bool = false;
+static mut ADB_SYNC_RECV_ACTIVE: bool = false;
 
 /// Handle one completed bulk OUT packet from EP2.
 pub(super) fn on_bulk_out(data: &[u8], error: bool) {
@@ -127,22 +142,34 @@ pub(super) fn on_bulk_out(data: &[u8], error: bool) {
 /// Handle completion of the response on EP3 IN.  Returning only after the
 /// response transfer has completed makes the host-side command observable.
 pub(super) fn on_bulk_in_complete(error: bool) {
-    let (send_shell_output, device_id, host_id, return_after, shell_v2) = unsafe {
+    let (send_shell_output, sync_followup, device_id, host_id, return_after, shell_v2) = unsafe {
         let send_shell_output = !error && ADB_SHELL_FOLLOWUP == ADB_SHELL_FOLLOWUP_OUTPUT;
+        let sync_followup = if error {
+            ADB_SYNC_FOLLOWUP_NONE
+        } else {
+            ADB_SYNC_FOLLOWUP
+        };
         let device_id = ADB_DEVICE_ID;
         let host_id = ADB_HOST_ID;
         let return_after = !error && RETURN_AFTER_RESPONSE;
         let shell_v2 = ADB_SHELL_V2;
         ADB_SHELL_FOLLOWUP = 0;
+        ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_NONE;
         RESPONSE_PENDING = false;
         if error {
             RETURN_AFTER_RESPONSE = false;
             ADB_SHELL_CLOSE_AFTER_OKAY = false;
             ADB_SHELL_V2_OUTPUT_SENT = false;
             ADB_SHELL_V2 = false;
+            ADB_SYNC_RESPONSE_LENGTH = 0;
+            ADB_SYNC_RECV_LENGTH = 0;
+            ADB_SYNC_RECV_OFFSET = 0;
+            ADB_SYNC_RECV_DONE_SENT = false;
+            ADB_SYNC_RECV_ACTIVE = false;
         }
         (
             send_shell_output,
+            sync_followup,
             device_id,
             host_id,
             return_after,
@@ -176,6 +203,21 @@ pub(super) fn on_bulk_in_complete(error: bool) {
         }
     }
 
+    match sync_followup {
+        ADB_SYNC_FOLLOWUP_RESPONSE => {
+            let length = unsafe { ADB_SYNC_RESPONSE_LENGTH };
+            let response = unsafe {
+                core::slice::from_raw_parts(
+                    core::ptr::addr_of!(ADB_SYNC_RESPONSE).cast::<u8>(),
+                    length,
+                )
+            };
+            queue_adb(ADB_WRTE, device_id, host_id, response, false);
+        }
+        ADB_SYNC_FOLLOWUP_RECV => queue_sync_recv_chunk(device_id, host_id),
+        _ => {}
+    }
+
     unsafe {
         if return_after {
             RETURN_AFTER_RESPONSE = false;
@@ -199,14 +241,16 @@ pub(super) fn reset() {
         ADB_SHELL_V2_OUTPUT_SENT = false;
         ADB_SHELL_V2 = false;
         ADB_SHELL_EXIT_CODE = 0;
-        ADB_SHELL_COMMAND_LENGTH = 0;
-        ADB_SHELL_FOLLOWUP = 0;
-        ADB_SHELL_CLOSE_AFTER_OKAY = false;
-        ADB_SHELL_V2_OUTPUT_SENT = false;
-        ADB_SHELL_V2 = false;
-        ADB_SHELL_EXIT_CODE = 0;
         ADB_SHELL_COMMAND = [0; ADB_SHELL_COMMAND_CAPACITY];
         ADB_SHELL_COMMAND_LENGTH = 0;
+        ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_NONE;
+        ADB_SYNC_RESPONSE = [0; ADB_SYNC_RESPONSE_CAPACITY];
+        ADB_SYNC_RESPONSE_LENGTH = 0;
+        ADB_SYNC_RECV_DATA = [0; ADB_SYNC_DATA_CAPACITY];
+        ADB_SYNC_RECV_LENGTH = 0;
+        ADB_SYNC_RECV_OFFSET = 0;
+        ADB_SYNC_RECV_DONE_SENT = false;
+        ADB_SYNC_RECV_ACTIVE = false;
     }
 }
 
@@ -327,6 +371,17 @@ fn handle_adb(command: u32, arg0: u32, arg1: u32, payload: &[u8]) {
                     ADB_SHELL_CLOSE_AFTER_OKAY = false;
                 }
                 queue_adb(ADB_OKAY, device_id, arg0, &[], false);
+            } else if service == b"sync:" {
+                unsafe {
+                    ADB_STREAM_KIND = ADB_STREAM_SYNC;
+                    ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_NONE;
+                    ADB_SYNC_RESPONSE_LENGTH = 0;
+                    ADB_SYNC_RECV_LENGTH = 0;
+                    ADB_SYNC_RECV_OFFSET = 0;
+                    ADB_SYNC_RECV_DONE_SENT = false;
+                    ADB_SYNC_RECV_ACTIVE = false;
+                }
+                queue_adb(ADB_OKAY, device_id, arg0, &[], false);
             } else {
                 unsafe { ADB_STREAM_KIND = ADB_STREAM_NONE };
                 queue_adb(ADB_CLSE, 0, arg0, &[], false);
@@ -338,8 +393,15 @@ fn handle_adb(command: u32, arg0: u32, arg1: u32, payload: &[u8]) {
             };
             if valid && command == ADB_WRTE {
                 let (device_id, host_id) = unsafe { (ADB_DEVICE_ID, ADB_HOST_ID) };
+                if unsafe { ADB_STREAM_KIND == ADB_STREAM_SYNC } {
+                    prepare_sync_request(payload);
+                }
                 queue_adb(ADB_OKAY, device_id, host_id, &[], false);
             } else if valid && command == ADB_OKAY {
+                if unsafe { ADB_STREAM_KIND == ADB_STREAM_SYNC } {
+                    sync_on_okay();
+                    return;
+                }
                 let (close, v2_output_sent, device_id, host_id) = unsafe {
                     (
                         ADB_SHELL_CLOSE_AFTER_OKAY,
@@ -373,6 +435,12 @@ fn handle_adb(command: u32, arg0: u32, arg1: u32, payload: &[u8]) {
                 ADB_SHELL_V2_OUTPUT_SENT = false;
                 ADB_SHELL_V2 = false;
                 ADB_SHELL_EXIT_CODE = 0;
+                ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_NONE;
+                ADB_SYNC_RESPONSE_LENGTH = 0;
+                ADB_SYNC_RECV_LENGTH = 0;
+                ADB_SYNC_RECV_OFFSET = 0;
+                ADB_SYNC_RECV_DONE_SENT = false;
+                ADB_SYNC_RECV_ACTIVE = false;
             }
         },
         _ => {}
@@ -433,20 +501,232 @@ fn adb_return_enabled() -> bool {
     option_env!("FULLERENE_AARCH64_DEBUG_RETURN") == Some("1")
 }
 
+#[cfg(feature = "aarch64-android-init")]
+fn shell_property_dump(destination: &mut [u8]) -> usize {
+    super::super::fs::debug_property_dump(destination)
+}
+
+#[cfg(not(feature = "aarch64-android-init"))]
+fn shell_property_dump(destination: &mut [u8]) -> usize {
+    let output =
+        b"[ro.debuggable]: [1]\n[ro.hardware]: [bramble]\n[ro.property_service.version]: [2]\n";
+    let length = output.len().min(destination.len());
+    destination[..length].copy_from_slice(&output[..length]);
+    length
+}
+
+#[cfg(feature = "aarch64-android-init")]
+fn shell_property_value(name: &[u8], destination: &mut [u8]) -> Option<usize> {
+    super::super::fs::debug_property_value(name, destination)
+}
+
+#[cfg(not(feature = "aarch64-android-init"))]
+fn shell_property_value(name: &[u8], destination: &mut [u8]) -> Option<usize> {
+    let value = match name {
+        b"ro.debuggable" => b"1".as_slice(),
+        b"ro.hardware" => b"bramble".as_slice(),
+        b"ro.property_service.version" => b"2".as_slice(),
+        _ => return None,
+    };
+    let length = value.len().min(destination.len());
+    destination[..length].copy_from_slice(&value[..length]);
+    Some(length)
+}
+
+#[cfg(feature = "aarch64-android-init")]
+fn shell_mount_table(destination: &mut [u8]) -> usize {
+    super::super::fs::debug_mount_table(destination)
+}
+
+#[cfg(not(feature = "aarch64-android-init"))]
+fn shell_mount_table(destination: &mut [u8]) -> usize {
+    let output = b"proc /proc proc ro 0 0\nsysfs /sys sysfs ro 0 0\n";
+    let length = output.len().min(destination.len());
+    destination[..length].copy_from_slice(&output[..length]);
+    length
+}
+
+#[cfg(feature = "aarch64-android-init")]
+fn shell_file_snapshot(path: &[u8], destination: &mut [u8]) -> Option<usize> {
+    super::super::fs::debug_file_snapshot(path, destination)
+}
+
+#[cfg(not(feature = "aarch64-android-init"))]
+fn shell_file_snapshot(path: &[u8], destination: &mut [u8]) -> Option<usize> {
+    match path {
+        b"/proc/mounts" => Some(shell_mount_table(destination)),
+        b"/proc/cmdline" => Some(copy_shell_static(
+            destination,
+            b"console=ttyMSM0 androidboot.hardware=bramble\n",
+        )),
+        b"/proc/version" => Some(copy_shell_static(
+            destination,
+            b"FullereneOS Linux compatibility boundary\n",
+        )),
+        _ => None,
+    }
+}
+
+fn copy_shell_static(destination: &mut [u8], source: &[u8]) -> usize {
+    let length = source.len().min(destination.len());
+    destination[..length].copy_from_slice(&source[..length]);
+    length
+}
+
+fn prepare_sync_request(payload: &[u8]) {
+    unsafe {
+        ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_NONE;
+        ADB_SYNC_RESPONSE_LENGTH = 0;
+        ADB_SYNC_RECV_LENGTH = 0;
+        ADB_SYNC_RECV_OFFSET = 0;
+        ADB_SYNC_RECV_DONE_SENT = false;
+        ADB_SYNC_RECV_ACTIVE = false;
+    }
+    if payload.len() < 8 {
+        sync_fail(b"malformed sync request");
+        return;
+    }
+    let command = &payload[..4];
+    let path_length = usize::try_from(u32::from_le_bytes(
+        payload[4..8].try_into().unwrap_or([0; 4]),
+    ))
+    .unwrap_or(usize::MAX);
+    let Some(path_end) = 8usize.checked_add(path_length) else {
+        sync_fail(b"sync path overflow");
+        return;
+    };
+    if path_length == 0 || path_length > ADB_SYNC_PATH_CAPACITY || path_end != payload.len() {
+        sync_fail(b"invalid sync path");
+        return;
+    }
+    let path = &payload[8..path_end];
+    match command {
+        b"STAT" => {
+            let mut data = [0u8; ADB_SYNC_DATA_CAPACITY];
+            let Some(length) = shell_file_snapshot(path, &mut data) else {
+                sync_fail(b"not found");
+                return;
+            };
+            unsafe {
+                ADB_SYNC_RESPONSE[..4].copy_from_slice(b"STAT");
+                ADB_SYNC_RESPONSE[4..8].copy_from_slice(&0o100444u32.to_le_bytes());
+                ADB_SYNC_RESPONSE[8..12].copy_from_slice(&(length as u32).to_le_bytes());
+                ADB_SYNC_RESPONSE[12..16].copy_from_slice(&0u32.to_le_bytes());
+                ADB_SYNC_RESPONSE_LENGTH = 16;
+                ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_RESPONSE;
+            }
+        }
+        b"RECV" => {
+            let Some(length) = shell_file_snapshot(path, unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(ADB_SYNC_RECV_DATA).cast::<u8>(),
+                    ADB_SYNC_DATA_CAPACITY,
+                )
+            }) else {
+                sync_fail(b"not found");
+                return;
+            };
+            unsafe {
+                ADB_SYNC_RECV_LENGTH = length;
+                ADB_SYNC_RECV_OFFSET = 0;
+                ADB_SYNC_RECV_DONE_SENT = false;
+                ADB_SYNC_RECV_ACTIVE = true;
+                ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_RECV;
+            }
+        }
+        b"SEND" => sync_fail(b"read-only sync endpoint"),
+        _ => sync_fail(b"unsupported sync command"),
+    }
+}
+
+fn sync_fail(message: &[u8]) {
+    let length = message
+        .len()
+        .min(ADB_SYNC_RESPONSE_CAPACITY.saturating_sub(8));
+    unsafe {
+        ADB_SYNC_RESPONSE[..4].copy_from_slice(b"FAIL");
+        ADB_SYNC_RESPONSE[4..8].copy_from_slice(&(length as u32).to_le_bytes());
+        ADB_SYNC_RESPONSE[8..8 + length].copy_from_slice(&message[..length]);
+        ADB_SYNC_RESPONSE_LENGTH = 8 + length;
+        ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_RESPONSE;
+    }
+}
+
+fn queue_sync_recv_chunk(device_id: u32, host_id: u32) {
+    let mut response = [0u8; ADB_SYNC_RESPONSE_CAPACITY];
+    let length = unsafe {
+        if ADB_SYNC_RECV_OFFSET < ADB_SYNC_RECV_LENGTH {
+            let count =
+                (ADB_SYNC_RECV_LENGTH - ADB_SYNC_RECV_OFFSET).min(ADB_SYNC_RESPONSE_CAPACITY - 8);
+            response[..4].copy_from_slice(b"DATA");
+            response[4..8].copy_from_slice(&(count as u32).to_le_bytes());
+            let source = core::slice::from_raw_parts(
+                core::ptr::addr_of!(ADB_SYNC_RECV_DATA).cast::<u8>(),
+                ADB_SYNC_DATA_CAPACITY,
+            );
+            response[8..8 + count]
+                .copy_from_slice(&source[ADB_SYNC_RECV_OFFSET..ADB_SYNC_RECV_OFFSET + count]);
+            ADB_SYNC_RECV_OFFSET += count;
+            8 + count
+        } else if !ADB_SYNC_RECV_DONE_SENT {
+            response[..4].copy_from_slice(b"DONE");
+            response[4..8].copy_from_slice(&0u32.to_le_bytes());
+            ADB_SYNC_RECV_DONE_SENT = true;
+            8
+        } else {
+            return;
+        }
+    };
+    queue_adb(ADB_WRTE, device_id, host_id, &response[..length], false);
+}
+
+fn sync_on_okay() {
+    let (device_id, host_id, active, done_sent) = unsafe {
+        (
+            ADB_DEVICE_ID,
+            ADB_HOST_ID,
+            ADB_SYNC_RECV_ACTIVE,
+            ADB_SYNC_RECV_DONE_SENT,
+        )
+    };
+    if !active {
+        return;
+    }
+    if done_sent {
+        unsafe {
+            ADB_SYNC_RECV_LENGTH = 0;
+            ADB_SYNC_RECV_OFFSET = 0;
+            ADB_SYNC_RECV_DONE_SENT = false;
+            ADB_SYNC_RECV_ACTIVE = false;
+        }
+    } else {
+        queue_sync_recv_chunk(device_id, host_id);
+    }
+}
+
 fn shell_output(command: &[u8], destination: &mut [u8]) -> usize {
     let command = command
         .iter()
         .position(|byte| *byte == 0)
         .map(|length| &command[..length])
         .unwrap_or(command);
+    if command == b"getprop" {
+        return shell_property_dump(destination);
+    }
+    if let Some(name) = command.strip_prefix(b"getprop ") {
+        let mut value = [0u8; 256];
+        let value_length = shell_property_value(name, &mut value).unwrap_or(0);
+        let mut writer = ByteWriter::new(destination);
+        let _ = writer.write_str("[");
+        let _ = writer.write_bytes(&value[..value_length]);
+        let _ = writer.write_str("]\n");
+        return writer.length;
+    }
+    if command == b"cat /proc/mounts" || command == b"mount" {
+        return shell_mount_table(destination);
+    }
     let output: &[u8] = match command {
         b"" | b"id" => b"uid=0(root) gid=0(root) groups=0(root) context=u:r:su:s0\n",
-        b"getprop" => {
-            b"[ro.debuggable]: [1]\n[ro.hardware]: [bramble]\n[ro.property_service.version]: [2]\n"
-        }
-        b"getprop ro.debuggable" => b"[1]\n",
-        b"getprop ro.hardware" => b"[bramble]\n",
-        b"getprop ro.property_service.version" => b"[2]\n",
         b"uname" | b"uname -a" => b"Fullerene bramble 1.0.0 aarch64 GNU/Linux\n",
         b"status" => b"fullerene-debug/1\nreturn=enabled-or-build-gated\n",
         b"true" => b"",
@@ -480,17 +760,16 @@ fn shell_exit_code(command: &[u8]) -> u32 {
         .position(|byte| *byte == 0)
         .map(|length| &command[..length])
         .unwrap_or(command);
+    if command == b"getprop"
+        || command.strip_prefix(b"getprop ").is_some()
+        || command == b"cat /proc/mounts"
+        || command == b"mount"
+    {
+        return 0;
+    }
     if matches!(
         command,
-        b"" | b"id"
-            | b"getprop"
-            | b"getprop ro.debuggable"
-            | b"getprop ro.hardware"
-            | b"getprop ro.property_service.version"
-            | b"uname"
-            | b"uname -a"
-            | b"status"
-            | b"true"
+        b"" | b"id" | b"uname" | b"uname -a" | b"status" | b"true"
     ) || command.starts_with(b"echo ")
     {
         0

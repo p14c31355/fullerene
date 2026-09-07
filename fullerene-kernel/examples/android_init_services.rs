@@ -12,7 +12,7 @@ pub const MAX_SERVICES: usize = 4;
 pub const MAX_GROUPS: usize = 4;
 
 pub const CONFIG: &[u8] = b"# FullereneOS early Android services\n\
-service fullerened /system/bin/fullerened\n\
+service fullerened /bin/fullerened\n\
     class core\n\
     user root\n\
     group root\n\
@@ -206,7 +206,7 @@ pub fn self_test() -> bool {
         return false;
     };
     if index != 0
-        || spec.path != b"/system/bin/fullerened"
+        || spec.path != b"/bin/fullerened"
         || spec.class != b"core"
         || spec.seclabel != b"u:r:fullerened:s0"
         || spec.uid != 0

@@ -38,6 +38,10 @@ const ADB_READ_BUFFER_BYTES: usize = 4096;
 const ADB_SHELL_V2_STDOUT: u8 = 1;
 const ADB_SHELL_V2_STDERR: u8 = 2;
 const ADB_SHELL_V2_EXIT: u8 = 3;
+const ADB_SYNC_STAT: &[u8; 4] = b"STAT";
+const ADB_SYNC_DATA: &[u8; 4] = b"DATA";
+const ADB_SYNC_DONE: &[u8; 4] = b"DONE";
+const ADB_SYNC_FAIL: &[u8; 4] = b"FAIL";
 
 const COMMAND_STATUS: u16 = 1;
 const COMMAND_TRACE: u16 = 2;
@@ -63,6 +67,7 @@ fn is_standard_adb_command(command: &str) -> bool {
         || command.starts_with("reboot:")
         || command == "shell"
         || command.starts_with("shell:")
+        || command.starts_with("sync:")
 }
 
 /// Wait until exactly one Fullerene USB debug device is visible.
@@ -174,8 +179,10 @@ async fn run_async(command: &str) -> io::Result<()> {
 ///
 /// This is deliberately limited to the boot bring-up services. It is enough
 /// to make `flasks adb --adb-command reboot:bootloader` use the same CNXN/OPEN
-/// exchange as a normal ADB host, while status/trace remain available through
-/// the deterministic FDBG diagnostics above.
+/// exchange as a normal ADB host. The bounded read-only `sync:stat:` and
+/// `sync:recv:` services use the same exchange for filesystem diagnostics;
+/// status/trace remain available through the deterministic FDBG diagnostics
+/// above.
 async fn run_standard_async(command: &str) -> io::Result<()> {
     let devices = nusb::list_devices().await.map_err(other)?;
     let devices: Vec<_> = devices
@@ -273,6 +280,17 @@ async fn run_standard_async(command: &str) -> io::Result<()> {
 
     let local_id = opened.2;
     let remote_id = opened.1;
+    if let Some(sync_command) = command.strip_prefix("sync:") {
+        return run_sync_stream(
+            &mut endpoint_out,
+            &mut endpoint_in,
+            local_id,
+            remote_id,
+            sync_command,
+        )
+        .await;
+    }
+
     let mut exit_code = None;
     loop {
         let frame = receive_adb_frame(&mut endpoint_in).await?;
@@ -309,6 +327,125 @@ async fn run_standard_async(command: &str) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+async fn run_sync_stream(
+    endpoint_out: &mut nusb::Endpoint<Bulk, Out>,
+    endpoint_in: &mut nusb::Endpoint<Bulk, In>,
+    local_id: u32,
+    remote_id: u32,
+    command: &str,
+) -> io::Result<()> {
+    let (operation, path) = command
+        .split_once(':')
+        .ok_or_else(|| other("sync command must be sync:stat:<path> or sync:recv:<path>"))?;
+    if path.is_empty() || path.len() > 256 || !path.starts_with('/') {
+        return Err(other(
+            "sync path must be an absolute path of at most 256 bytes",
+        ));
+    }
+    let operation = match operation {
+        "stat" => ADB_SYNC_STAT,
+        "recv" => b"RECV",
+        _ => return Err(other("sync operation must be stat or recv")),
+    };
+    let request = encode_sync_request(operation, path.as_bytes())?;
+    send_adb_frame(endpoint_out, ADB_WRTE, local_id, remote_id, &request).await?;
+
+    let acknowledged = receive_adb_frame(endpoint_in).await?;
+    if acknowledged.0 != ADB_OKAY || acknowledged.1 != remote_id || acknowledged.2 != local_id {
+        return Err(other(format!(
+            "sync request was not acknowledged: {}",
+            command_name(acknowledged.0)
+        )));
+    }
+
+    let first = receive_adb_frame(endpoint_in).await?;
+    if operation == ADB_SYNC_STAT {
+        let (mode, size, mtime) = parse_sync_stat(&first.3)?;
+        println!("sync stat {path}: mode={mode:o} size={size} mtime={mtime}");
+        send_adb_frame(endpoint_out, ADB_OKAY, local_id, remote_id, &[]).await?;
+        return Ok(());
+    }
+
+    let mut total = 0usize;
+    let mut frame = first;
+    loop {
+        if frame.0 != ADB_WRTE || frame.1 != remote_id || frame.2 != local_id {
+            return Err(other(format!(
+                "unexpected sync frame {}",
+                command_name(frame.0)
+            )));
+        }
+        match parse_sync_chunk(&frame.3)? {
+            SyncChunk::Data(data) => {
+                print!("{}", String::from_utf8_lossy(data));
+                total = total
+                    .checked_add(data.len())
+                    .ok_or_else(|| other("sync byte count overflow"))?;
+                send_adb_frame(endpoint_out, ADB_OKAY, local_id, remote_id, &[]).await?;
+                frame = receive_adb_frame(endpoint_in).await?;
+            }
+            SyncChunk::Done => {
+                send_adb_frame(endpoint_out, ADB_OKAY, local_id, remote_id, &[]).await?;
+                eprintln!("\nsync recv {path}: {total} bytes");
+                return Ok(());
+            }
+            SyncChunk::Fail(message) => {
+                return Err(other(format!(
+                    "sync recv failed: {}",
+                    String::from_utf8_lossy(message)
+                )));
+            }
+        }
+    }
+}
+
+fn encode_sync_request(operation: &[u8; 4], path: &[u8]) -> io::Result<Vec<u8>> {
+    if path.is_empty() || path.len() > 256 {
+        return Err(other("sync path is outside the bounded request size"));
+    }
+    let mut request = Vec::with_capacity(8 + path.len());
+    request.extend_from_slice(operation);
+    request.extend_from_slice(&(path.len() as u32).to_le_bytes());
+    request.extend_from_slice(path);
+    Ok(request)
+}
+
+fn parse_sync_stat(payload: &[u8]) -> io::Result<(u32, u32, u32)> {
+    if payload.len() != 16 || &payload[..4] != ADB_SYNC_STAT {
+        return Err(other("invalid sync STAT response"));
+    }
+    Ok((
+        u32::from_le_bytes(payload[4..8].try_into().unwrap()),
+        u32::from_le_bytes(payload[8..12].try_into().unwrap()),
+        u32::from_le_bytes(payload[12..16].try_into().unwrap()),
+    ))
+}
+
+enum SyncChunk<'a> {
+    Data(&'a [u8]),
+    Done,
+    Fail(&'a [u8]),
+}
+
+fn parse_sync_chunk(payload: &[u8]) -> io::Result<SyncChunk<'_>> {
+    if payload.len() < 8 {
+        return Err(other("truncated sync response"));
+    }
+    let length = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
+    let end = 8usize
+        .checked_add(length)
+        .ok_or_else(|| other("sync response length overflow"))?;
+    if end != payload.len() {
+        return Err(other("invalid sync response length"));
+    }
+    match &payload[..4] {
+        value if value == ADB_SYNC_DATA => Ok(SyncChunk::Data(&payload[8..])),
+        value if value == ADB_SYNC_DONE && length == 0 => Ok(SyncChunk::Done),
+        value if value == ADB_SYNC_FAIL => Ok(SyncChunk::Fail(&payload[8..])),
+        _ => Err(other("unknown sync response")),
+    }
 }
 
 async fn send_adb_frame(
@@ -470,7 +607,9 @@ fn other(error: impl Display) -> io::Error {
 mod tests {
     use super::{
         ADB_CNXN, ADB_HEADER_BYTES, ADB_MAX_DATA, ADB_SHELL_V2_EXIT, ADB_SHELL_V2_STDOUT,
-        adb_checksum, encode_adb_frame, parse_adb_frame, parse_shell_v2_frame,
+        ADB_SYNC_DATA, ADB_SYNC_STAT, adb_checksum, encode_adb_frame,
+        encode_sync_request, parse_adb_frame, parse_shell_v2_frame, parse_sync_chunk,
+        parse_sync_stat,
     };
 
     #[test]
@@ -518,5 +657,36 @@ mod tests {
         );
         assert!(parse_shell_v2_frame(&[]).is_err());
         assert!(parse_shell_v2_frame(&[ADB_SHELL_V2_EXIT, 0]).is_err());
+    }
+
+    #[test]
+    fn sync_request_and_stat_round_trip() {
+        let request = encode_sync_request(ADB_SYNC_STAT, b"/proc/mounts").unwrap();
+        assert_eq!(&request[..4], ADB_SYNC_STAT);
+        assert_eq!(u32::from_le_bytes(request[4..8].try_into().unwrap()), 12);
+        assert_eq!(&request[8..], b"/proc/mounts");
+
+        let mut response = Vec::from(*ADB_SYNC_STAT);
+        response.extend_from_slice(&0o100444u32.to_le_bytes());
+        response.extend_from_slice(&42u32.to_le_bytes());
+        response.extend_from_slice(&7u32.to_le_bytes());
+        assert_eq!(parse_sync_stat(&response).unwrap(), (0o100444, 42, 7));
+    }
+
+    #[test]
+    fn sync_chunk_parser_checks_lengths_and_kinds() {
+        let mut data = Vec::from(*ADB_SYNC_DATA);
+        data.extend_from_slice(&3u32.to_le_bytes());
+        data.extend_from_slice(b"ok\n");
+        match parse_sync_chunk(&data).unwrap() {
+            super::SyncChunk::Data(payload) => assert_eq!(payload, b"ok\n"),
+            _ => panic!("expected DATA"),
+        }
+
+        assert!(matches!(parse_sync_chunk(b"DONE\x01\0\0\0\0"), Err(_)));
+        assert!(matches!(
+            parse_sync_chunk(b"DONE\0\0\0\0"),
+            Ok(super::SyncChunk::Done)
+        ));
     }
 }

@@ -2260,3 +2260,51 @@ by the corrected observer.
   `ramdisk=2,045,806`), SHA-256
   `4eb4902e9239c70b57ce28c1125a324919af4c92a63b140e5a44106fa81c7400`.
   No physical boot or persistent-device operation was performed.
+
+### 2026-09-07 — Bramble UFS DMA DT reservation gate
+
+- The Rust FDT layer now enumerates fixed `/reserved-memory` `reg` ranges.
+  Before any UFSHCI address is published, the complete `.ufs_dma` arena must
+  be inside DT-declared memory and outside those reservations; otherwise the
+  read-only probe stops before platform/controller MMIO.
+- The generated Bramble linker layout moves `.ufs_dma` from the old USB-pool
+  adjacency (`0x9000d000`) to `0x9c000000` by default, between the Lito
+  `modem_wlan` reservation end (`0x9b800000`) and the next fixed reservation.
+  `FULLERENE_AARCH64_UFS_DMA_ORIGIN` is available for a DT-verified board
+  override, while `FULLERENE_AARCH64_UFS_DMA_IDENTITY=1` remains mandatory.
+- The merged factory DTB UFS contract verifier continues to resolve
+  `vdda-phy=pm8150_l5`, `vdda-pll=pm8150_l9`, `vddp-ref-clk=pm8150_l9`,
+  `vcc=pm8150a_l7`, and `vccq2=pm8150_s4`; no rail is inferred from a missing
+  property. The Bramble image `/tmp/fullerene-rust-ufs-dma-safe.img` passed
+  the offline v3 audit (SHA-256
+  `cf6351271a9bb74404651d4b836edad37467e2e6f2e48c5d450004748c5aaac8`;
+  `.ufs_dma=0x9c000000/0x43000`). No physical boot or persistent-device
+  operation was performed. Standalone FDT tests (4), kernel tests (98), the
+  AArch64 check, Flasks tests, formatting, and diff checks passed.
+
+### 2026-09-07 — Root-owned Rust service survives Android `/system` mount
+
+- The Rust Android-init service table now executes `/bin/fullerened` from the
+  Fullerene-owned initramfs root. Packaging the service under
+  `/system/bin/fullerened` was unsafe because a physical read-only `/system`
+  mount shadows that path.
+- QEMU verified `fullerened started`, the service's resident output, and its
+  `u:r:fullerened:s0` context after `execve`. The Bramble v3 offline image
+  audit passed for `/tmp/fullerene-rust-service-root-path.img`, SHA-256
+  `c38c541eab151daa5ea6660893ed1446513a0d259dde54df8cce72e484580759`.
+  This is a software/image result; no physical boot or persistent-device
+  operation was performed.
+
+### 2026-09-07 — ADB shell reports live Rust properties and mounts
+
+- The standard Rust ADB shell-v2 path now reads the live Rust property table
+  for `getprop` and the last Rust-published `/proc/mounts` snapshot for
+  `mount`/`cat /proc/mounts`. USB completion uses fixed-size snapshots instead
+  of taking the VFS lock in an interrupt path; the standalone USB probe uses
+  an explicit no-PID-1 default.
+- Kernel tests (98), Flasks tests, AArch64 cross-check, QEMU Android-init
+  self-test, formatting, and diff checks passed. The refreshed offline
+  Bramble v3 image audit passed for `/tmp/fullerene-rust-adb-state.img`
+  (`kernel=1,086,951`, `ramdisk=2,045,806`), SHA-256
+  `e7521a33ca58304a98682543961c3846ea24acb4db70347cdc4d740d454f3587`. No physical boot, Fastboot send,
+  persistent-device operation, or USB analyzer run was performed.
