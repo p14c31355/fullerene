@@ -141,6 +141,11 @@ aarch64 = []
 aarch64-user-smoke = []
 aarch64-user-fault-smoke = ["aarch64-user-smoke"]
 aarch64-user-launchd = []
+aarch64-linux-smoke = ["aarch64-user-launchd"]
+# Boot the read-only Android `/system/bin/init` through the same AArch64
+# user-task boundary. The feature is intentionally opt-in because it requires
+# a successful Bramble UFS/LP/filesystem mount at runtime.
+aarch64-android-init = ["aarch64-user-launchd"]
 esp32 = [
   "nitrogen/esp32",
   "genome/esp32",

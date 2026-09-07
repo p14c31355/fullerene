@@ -76,6 +76,9 @@ impl ImagePage {
 pub(crate) struct LoadedImage {
     pub(crate) entry: u64,
     pub(crate) page_count: usize,
+    pub(crate) phdr: u64,
+    pub(crate) phent: u64,
+    pub(crate) phnum: u64,
 }
 
 // The first AArch64 loader is single-core and performs one load at a time.
@@ -92,7 +95,8 @@ pub(crate) fn load_image(
     image: &[u8],
     frames: &mut PhysicalFrameAllocator,
 ) -> Option<LoadedImage> {
-    let (entry, segments, segment_count, dynamic, load_bias) = parse_segments(image)?;
+    let (entry, segments, segment_count, dynamic, load_bias, phdr, phent, phnum) =
+        parse_segments(image)?;
     let pages = unsafe { &mut *core::ptr::addr_of_mut!(IMAGE_PAGES) };
     for page in pages.iter_mut() {
         *page = ImagePage::EMPTY;
@@ -216,7 +220,13 @@ pub(crate) fn load_image(
         }
     }
 
-    Some(LoadedImage { entry, page_count })
+    Some(LoadedImage {
+        entry,
+        page_count,
+        phdr,
+        phent,
+        phnum,
+    })
 }
 
 fn release_image_pages(
@@ -238,6 +248,9 @@ fn parse_segments(
     [LoadSegment; MAX_LOAD_SEGMENTS],
     usize,
     Option<DynamicTable>,
+    u64,
+    u64,
+    u64,
     u64,
 )> {
     if image.len() < ELF_HEADER_SIZE
@@ -334,7 +347,34 @@ fn parse_segments(
     {
         return None;
     }
-    Some((entry, segments, segment_count, dynamic, load_bias))
+    let phdr_size =
+        u64::from(PROGRAM_HEADER_SIZE as u16).checked_mul(program_header_count as u64)?;
+    let phdr_file_end = read_u64(image, 32)?.checked_add(phdr_size)?;
+    let phdr = segments
+        .iter()
+        .take(segment_count)
+        .find_map(|segment| {
+            let file_end = (segment.file_offset as u64).checked_add(
+                // `segment.virtual_address` already includes the load bias,
+                // but its file offset remains the original ELF offset.
+                segment.file_size as u64,
+            )?;
+            let program_header_offset = read_u64(image, 32)?;
+            (program_header_offset >= segment.file_offset as u64 && phdr_file_end <= file_end).then(
+                || segment.virtual_address + (program_header_offset - segment.file_offset as u64),
+            )
+        })
+        .unwrap_or(0);
+    Some((
+        entry,
+        segments,
+        segment_count,
+        dynamic,
+        load_bias,
+        phdr,
+        PROGRAM_HEADER_SIZE as u64,
+        program_header_count as u64,
+    ))
 }
 
 /// Apply the relocation forms emitted by static AArch64 PIE linkers.

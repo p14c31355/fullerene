@@ -12,6 +12,7 @@ mod fdt;
 mod fs;
 #[cfg(feature = "aarch64-user-launchd")]
 mod launchd;
+mod linux;
 mod mmu;
 #[path = "../../platform/mod.rs"]
 mod platform;

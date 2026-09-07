@@ -927,6 +927,23 @@ struct Args {
     #[arg(long = "adb-command", default_value = "status", value_name = "COMMAND")]
     adb_command: String,
 
+    /// Number of non-persistent Bramble boot/diagnostic iterations.
+    #[arg(long, default_value_t = 1, value_name = "COUNT")]
+    iterations: u32,
+
+    /// Select `/system/bin/init` as the first Linux-personality image after
+    /// the guarded Bramble UFS/LP/filesystem mount.
+    #[arg(long)]
+    android_init: bool,
+
+    /// Seconds to wait for Fastboot before each verification iteration.
+    #[arg(long, default_value_t = 30, value_name = "SECONDS")]
+    fastboot_wait_seconds: u64,
+
+    /// Seconds to wait for the Fullerene vendor-bulk USB function after boot.
+    #[arg(long, default_value_t = 30, value_name = "SECONDS")]
+    debug_wait_seconds: u64,
+
     /// Serial device used by ESP32 run/flash/monitor actions.
     #[arg(long, value_name = "DEVICE")]
     serial: Option<String>,
@@ -944,6 +961,7 @@ enum Action {
     Device,
     Adb,
     Boot,
+    VerifyLoop,
     Flash,
     Monitor,
 }
@@ -1061,10 +1079,12 @@ impl Platform {
                 ),
             ));
         }
-        if action == Action::Boot && (arch != Arch::Aarch64 || self != Self::Bramble) {
+        if matches!(action, Action::Boot | Action::VerifyLoop)
+            && (arch != Arch::Aarch64 || self != Self::Bramble)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "boot currently requires the AArch64 bramble platform",
+                "boot and verify-loop require the AArch64 bramble platform",
             ));
         }
         if action == Action::Adb && (arch != Arch::Aarch64 || self != Self::Bramble) {
@@ -1236,6 +1256,41 @@ impl BuildProfile {
     }
 }
 
+/// Run the non-persistent Bramble bring-up loop.
+///
+/// Each iteration starts from Fastboot, boots the supplied Android v3 image,
+/// waits for the Fullerene vendor-bulk function, collects the two read-only
+/// diagnostics, and asks the image to reset. The final iteration intentionally
+/// stays running so the caller can inspect its last boot. No partition or
+/// boot-metadata command is issued by this loop.
+fn run_bramble_verify_loop(
+    image: &Path,
+    iterations: u32,
+    fastboot_timeout: std::time::Duration,
+    debug_timeout: std::time::Duration,
+) -> io::Result<()> {
+    for iteration in 1..=iterations {
+        println!("verify-loop: waiting for Fastboot ({iteration}/{iterations})");
+        fastboot::wait_for_device(fastboot_timeout)?;
+
+        println!("verify-loop: fastboot boot {}", image.display());
+        fastboot::run_boot(image)?;
+
+        println!("verify-loop: waiting for Fullerene USB");
+        adb::wait_for_device(debug_timeout)?;
+        adb::run("status")?;
+        adb::run("trace")?;
+
+        if iteration != iterations {
+            println!("verify-loop: requesting post-diagnostic reset");
+            adb::run("return")?;
+        } else {
+            println!("verify-loop: final iteration is left running");
+        }
+    }
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     // Initialize env_logger - it will respect RUST_LOG environment variable for filtering
     env_logger::init();
@@ -1265,20 +1320,42 @@ fn main() -> io::Result<()> {
         }
         return adb::run(&args.adb_command);
     }
-    if args.command == Action::Boot {
+    if matches!(args.command, Action::Boot | Action::VerifyLoop) {
         if args.image.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "boot requires an Android boot image path",
+                "boot and verify-loop require an Android boot image path",
             ));
         }
     } else if args.image.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "an image path is only valid with the boot action",
+            "an image path is only valid with the boot or verify-loop action",
         ));
     }
     let target = Target::from_args(&args)?;
+    if args.command == Action::VerifyLoop {
+        if target.arch != Arch::Aarch64 || target.platform != Platform::Bramble {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "verify-loop requires the AArch64 bramble platform",
+            ));
+        }
+        if args.iterations == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "verify-loop requires --iterations >= 1",
+            ));
+        }
+        let image = args.image.as_deref().unwrap();
+        audit_android_boot_image(image)?;
+        return run_bramble_verify_loop(
+            image,
+            args.iterations,
+            std::time::Duration::from_secs(args.fastboot_wait_seconds),
+            std::time::Duration::from_secs(args.debug_wait_seconds),
+        );
+    }
     let profile = BuildProfile::from_debug(args.debug || args.command == Action::Debug);
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -2662,6 +2739,7 @@ fn main() -> io::Result<()> {
             target.platform,
             kernel_artifact,
             Aarch64BuildConfig {
+                android_init: args.android_init,
                 probe_env: selected_probe.and_then(|probe| probe.env),
                 gadget_handoff_no_smmu: args.usb_gadget_handoff_no_smmu,
                 gadget_handoff_dma_cache_maintenance: args.usb_gadget_handoff_dma_cache_maintenance,
@@ -2972,6 +3050,7 @@ fn fnv1a64(data: &str) -> u64 {
 
 #[derive(Default)]
 struct Aarch64BuildConfig {
+    android_init: bool,
     probe_env: Option<&'static str>,
     gadget_handoff_no_smmu: bool,
     gadget_handoff_dma_cache_maintenance: bool,
@@ -3139,6 +3218,7 @@ fn build_aarch64_kernel(
 ) -> io::Result<PathBuf> {
     let target = Arch::Aarch64;
     let Aarch64BuildConfig {
+        android_init,
         probe_env,
         gadget_handoff_no_smmu,
         gadget_handoff_dma_cache_maintenance,
@@ -3324,6 +3404,7 @@ fn build_aarch64_kernel(
     ) {
         (_, true, _) => "aarch64,aarch64-user-smoke,aarch64-user-fault-smoke",
         (true, false, _) => "aarch64,aarch64-user-smoke",
+        (false, false, _) if android_init => "aarch64,aarch64-android-init",
         (false, false, true) => "aarch64,aarch64-user-launchd",
         (false, false, false) => "aarch64",
     };

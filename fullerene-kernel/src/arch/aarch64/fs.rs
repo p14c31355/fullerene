@@ -29,11 +29,18 @@ const ERR_INVALID: u64 = (-(22i64)) as u64;
 const ERR_OVERFLOW: u64 = (-(75i64)) as u64;
 const ERR_NAME_TOO_LONG: u64 = (-(36i64)) as u64;
 const ERR_OUT_OF_MEMORY: u64 = (-(12i64)) as u64;
+const ERR_TOO_MANY_FILES: u64 = (-(24i64)) as u64;
 const FILE_HANDLE_TAG: u64 = 1 << 62;
 const FILE_HANDLE_INDEX_BITS: u64 = 8;
 const FILE_HANDLE_INDEX_MASK: u64 = (1 << FILE_HANDLE_INDEX_BITS) - 1;
 const FILE_HANDLE_GENERATION_SHIFT: u64 = FILE_HANDLE_INDEX_BITS;
 const MAX_OPEN_FILES: usize = 32;
+const MAX_LINUX_FDS_PER_PROCESS: usize = 32;
+const MAX_LINUX_FD_ENTRIES: usize = task::MAX_TASKS * MAX_LINUX_FDS_PER_PROCESS;
+const LINUX_FD_MIN: u32 = 3;
+const LINUX_FD_MAX: u32 = LINUX_FD_MIN + MAX_LINUX_FDS_PER_PROCESS as u32 - 1;
+const LINUX_STDIO_NONE: u8 = u8::MAX;
+const LINUX_FD_CLOEXEC: u32 = 0x80000;
 const MAX_HANDLE_SLOTS: usize = 16;
 const MAX_PATH: usize = 256;
 const MAX_READ: usize = 4096;
@@ -75,6 +82,20 @@ struct OpenFile {
     generation: u64,
     kind: u8,
     pipe_slot: u8,
+    active: bool,
+}
+
+/// Linux's small integer descriptor namespace is layered over the native
+/// generation-checked capability namespace. Keeping this table separate lets
+/// Android/Linux code use fd 3, 4, ... without exposing native capability
+/// tokens or changing the existing Fullerene ABI.
+#[derive(Clone, Copy)]
+struct LinuxFdEntry {
+    owner_pid: u64,
+    fd: u32,
+    native_handle: u64,
+    stdio_fd: u8,
+    flags: u32,
     active: bool,
 }
 
@@ -182,6 +203,17 @@ impl OpenFile {
     };
 }
 
+impl LinuxFdEntry {
+    const EMPTY: Self = Self {
+        owner_pid: 0,
+        fd: 0,
+        native_handle: 0,
+        stdio_fd: LINUX_STDIO_NONE,
+        flags: 0,
+        active: false,
+    };
+}
+
 impl PipeSlot {
     const EMPTY: Self = Self {
         buffer: [0; PIPE_CAPACITY],
@@ -273,6 +305,8 @@ impl TerminalSlot {
 
 static mut VFS: Option<Mutex<Vfs>> = None;
 static mut OPEN_FILES: [OpenFile; MAX_OPEN_FILES] = [OpenFile::EMPTY; MAX_OPEN_FILES];
+static mut LINUX_FDS: [LinuxFdEntry; MAX_LINUX_FD_ENTRIES] =
+    [LinuxFdEntry::EMPTY; MAX_LINUX_FD_ENTRIES];
 static mut PIPE_SLOTS: [PipeSlot; MAX_PIPE_SLOTS] = [PipeSlot::EMPTY; MAX_PIPE_SLOTS];
 static mut CHANNEL_SLOTS: [ChannelSlot; MAX_CHANNEL_SLOTS] =
     [ChannelSlot::EMPTY; MAX_CHANNEL_SLOTS];
@@ -1628,6 +1662,315 @@ pub(crate) fn duplicate(handle: u64) -> u64 {
     }
 }
 
+fn linux_fd_entry(owner_pid: u64, fd: u32) -> Option<(usize, LinuxFdEntry)> {
+    unsafe {
+        (*core::ptr::addr_of!(LINUX_FDS))
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.active && entry.owner_pid == owner_pid && entry.fd == fd)
+            .map(|(index, entry)| (index, *entry))
+    }
+}
+
+fn linux_fd_in_use(owner_pid: u64, fd: u32) -> bool {
+    linux_fd_entry(owner_pid, fd).is_some()
+}
+
+fn linux_fd_install_at(
+    owner_pid: u64,
+    fd: u32,
+    native_handle: u64,
+    stdio_fd: u32,
+    flags: u64,
+) -> Result<u64, u64> {
+    if owner_pid == 0 || !(LINUX_FD_MIN..=LINUX_FD_MAX).contains(&fd) {
+        return Err(ERR_TOO_MANY_FILES);
+    }
+    if linux_fd_in_use(owner_pid, fd) {
+        return Err(ERR_TOO_MANY_FILES);
+    }
+    let Some(index) = (unsafe { *core::ptr::addr_of!(LINUX_FDS) })
+        .iter()
+        .position(|entry| !entry.active)
+    else {
+        return Err(ERR_OUT_OF_MEMORY);
+    };
+    unsafe {
+        (*core::ptr::addr_of_mut!(LINUX_FDS))[index] = LinuxFdEntry {
+            owner_pid,
+            fd,
+            native_handle,
+            stdio_fd: u8::try_from(stdio_fd).unwrap_or(LINUX_STDIO_NONE),
+            flags: u32::try_from(flags).unwrap_or(u32::MAX),
+            active: true,
+        };
+    }
+    Ok(fd as u64)
+}
+
+fn linux_next_fd(owner_pid: u64) -> Option<u32> {
+    (LINUX_FD_MIN..=LINUX_FD_MAX).find(|&fd| !linux_fd_in_use(owner_pid, fd))
+}
+
+/// Install a native file capability in the current process's Linux fd table.
+/// On table exhaustion, the native capability is closed before returning the
+/// Linux `EMFILE`/`ENOMEM` error so an `openat` failure cannot leak a handle.
+pub(crate) fn linux_install_handle(native_handle: u64, flags: u64) -> u64 {
+    let Some(owner_pid) = task::resource_owner_pid() else {
+        let _ = close(native_handle);
+        return ERR_BAD_FD;
+    };
+    let Some(fd) = linux_next_fd(owner_pid) else {
+        let _ = close(native_handle);
+        return ERR_TOO_MANY_FILES;
+    };
+    match linux_fd_install_at(
+        owner_pid,
+        fd,
+        native_handle,
+        u32::from(LINUX_STDIO_NONE),
+        flags,
+    ) {
+        Ok(fd) => fd,
+        Err(error) => {
+            let _ = close(native_handle);
+            error
+        }
+    }
+}
+
+/// Return the native capability behind a Linux fd, or `None` for stdio and
+/// invalid descriptors. Linux stdio is handled directly by the personality.
+pub(crate) fn linux_native_handle(fd: u64) -> Option<u64> {
+    let owner_pid = task::resource_owner_pid()?;
+    let fd = u32::try_from(fd).ok()?;
+    let (_, entry) = linux_fd_entry(owner_pid, fd)?;
+    (entry.stdio_fd == LINUX_STDIO_NONE).then_some(entry.native_handle)
+}
+
+/// Resolve a Linux fd to its stdio source. The base descriptors and their
+/// duplicated table entries both use the UART-backed stdio boundary.
+pub(crate) fn linux_stdio_fd(fd: u64) -> Option<u32> {
+    if fd <= 2 {
+        return Some(fd as u32);
+    }
+    let owner_pid = task::resource_owner_pid()?;
+    let fd = u32::try_from(fd).ok()?;
+    linux_fd_entry(owner_pid, fd).and_then(|(_, entry)| {
+        (entry.stdio_fd != LINUX_STDIO_NONE).then_some(entry.stdio_fd as u32)
+    })
+}
+
+pub(crate) fn linux_duplicate(fd: u64, flags: u64) -> u64 {
+    let Some(owner_pid) = task::resource_owner_pid() else {
+        return ERR_BAD_FD;
+    };
+    let source = if fd <= 2 {
+        LinuxFdEntry {
+            owner_pid,
+            fd: fd as u32,
+            native_handle: 0,
+            stdio_fd: fd as u8,
+            flags: u32::try_from(flags).unwrap_or(u32::MAX),
+            active: true,
+        }
+    } else {
+        let Ok(fd) = u32::try_from(fd) else {
+            return ERR_BAD_FD;
+        };
+        let Some((_, source)) = linux_fd_entry(owner_pid, fd) else {
+            return ERR_BAD_FD;
+        };
+        source
+    };
+    let Some(target_fd) = linux_next_fd(owner_pid) else {
+        return ERR_TOO_MANY_FILES;
+    };
+    if source.stdio_fd != LINUX_STDIO_NONE {
+        return linux_fd_install_at(owner_pid, target_fd, 0, source.stdio_fd as u32, flags)
+            .unwrap_or_else(|error| error);
+    }
+    let native_handle = duplicate(source.native_handle);
+    if (native_handle as i64) < 0 {
+        return native_handle;
+    }
+    match linux_fd_install_at(
+        owner_pid,
+        target_fd,
+        native_handle,
+        u32::from(LINUX_STDIO_NONE),
+        flags,
+    ) {
+        Ok(fd) => fd,
+        Err(error) => {
+            let _ = close(native_handle);
+            error
+        }
+    }
+}
+
+pub(crate) fn linux_duplicate_at(fd: u64, target_fd: u64, flags: u64) -> u64 {
+    if fd == target_fd {
+        return ERR_INVALID;
+    }
+    if flags & !0x80000 != 0 {
+        return ERR_INVALID;
+    }
+    let Ok(target_fd) = u32::try_from(target_fd) else {
+        return ERR_TOO_MANY_FILES;
+    };
+    if !(LINUX_FD_MIN..=LINUX_FD_MAX).contains(&target_fd) {
+        return ERR_TOO_MANY_FILES;
+    }
+    let Some(owner_pid) = task::resource_owner_pid() else {
+        return ERR_BAD_FD;
+    };
+    let source = if fd <= 2 {
+        LinuxFdEntry {
+            owner_pid,
+            fd: fd as u32,
+            native_handle: 0,
+            stdio_fd: fd as u8,
+            flags: u32::try_from(flags).unwrap_or(u32::MAX),
+            active: true,
+        }
+    } else {
+        let Ok(fd) = u32::try_from(fd) else {
+            return ERR_BAD_FD;
+        };
+        let Some((_, source)) = linux_fd_entry(owner_pid, fd) else {
+            return ERR_BAD_FD;
+        };
+        source
+    };
+    if linux_fd_in_use(owner_pid, target_fd) {
+        let result = linux_close(target_fd as u64);
+        if (result as i64) < 0 {
+            return result;
+        }
+    }
+    if source.stdio_fd != LINUX_STDIO_NONE {
+        return linux_fd_install_at(owner_pid, target_fd, 0, source.stdio_fd as u32, flags)
+            .unwrap_or_else(|error| error);
+    }
+    let native_handle = duplicate(source.native_handle);
+    if (native_handle as i64) < 0 {
+        return native_handle;
+    }
+    match linux_fd_install_at(
+        owner_pid,
+        target_fd,
+        native_handle,
+        u32::from(LINUX_STDIO_NONE),
+        flags,
+    ) {
+        Ok(fd) => fd,
+        Err(error) => {
+            let _ = close(native_handle);
+            error
+        }
+    }
+}
+
+pub(crate) fn linux_close(fd: u64) -> u64 {
+    if fd <= 2 {
+        return 0;
+    }
+    let Some(owner_pid) = task::resource_owner_pid() else {
+        return ERR_BAD_FD;
+    };
+    let Ok(fd) = u32::try_from(fd) else {
+        return ERR_BAD_FD;
+    };
+    let Some((index, entry)) = linux_fd_entry(owner_pid, fd) else {
+        return ERR_BAD_FD;
+    };
+    if entry.stdio_fd == LINUX_STDIO_NONE {
+        let result = close_for_owner(owner_pid, entry.native_handle);
+        if (result as i64) < 0 {
+            return result;
+        }
+    }
+    unsafe {
+        (*core::ptr::addr_of_mut!(LINUX_FDS))[index] = LinuxFdEntry::EMPTY;
+    }
+    0
+}
+
+/// Close Linux descriptors carrying `O_CLOEXEC` after a successful exec.
+///
+/// The descriptors are collected before closing so the global table is never
+/// mutably aliased while it is being traversed.
+pub(crate) fn linux_close_on_exec() -> u64 {
+    let Some(owner_pid) = task::resource_owner_pid() else {
+        return ERR_BAD_FD;
+    };
+    let mut close_fds = [0u32; MAX_LINUX_FDS_PER_PROCESS];
+    let mut close_count = 0usize;
+    unsafe {
+        for entry in (*core::ptr::addr_of!(LINUX_FDS)).iter() {
+            if entry.active
+                && entry.owner_pid == owner_pid
+                && entry.flags & LINUX_FD_CLOEXEC != 0
+                && close_count < close_fds.len()
+            {
+                close_fds[close_count] = entry.fd;
+                close_count += 1;
+            }
+        }
+    }
+    for fd in close_fds.iter().copied().take(close_count) {
+        let result = linux_close(fd as u64);
+        if (result as i64) < 0 {
+            return result;
+        }
+    }
+    0
+}
+
+fn linux_inherit_capacity(parent_pid: u64) -> Option<usize> {
+    let count = unsafe {
+        (*core::ptr::addr_of!(LINUX_FDS))
+            .iter()
+            .filter(|entry| entry.active && entry.owner_pid == parent_pid)
+            .count()
+    };
+    let free = unsafe {
+        (*core::ptr::addr_of!(LINUX_FDS))
+            .iter()
+            .filter(|entry| !entry.active)
+            .count()
+    };
+    (free >= count).then_some(count)
+}
+
+fn linux_inherit_fds_unchecked(parent_pid: u64, child_pid: u64, count: usize) {
+    let mut inherited = [LinuxFdEntry::EMPTY; MAX_LINUX_FDS_PER_PROCESS];
+    let mut copied = 0usize;
+    unsafe {
+        for entry in (*core::ptr::addr_of!(LINUX_FDS)).iter().copied() {
+            if entry.active && entry.owner_pid == parent_pid {
+                inherited[copied] = LinuxFdEntry {
+                    owner_pid: child_pid,
+                    ..entry
+                };
+                copied += 1;
+            }
+        }
+        let entries = core::ptr::addr_of_mut!(LINUX_FDS);
+        let mut installed = 0usize;
+        for entry in (*entries).iter_mut() {
+            if !entry.active {
+                *entry = inherited[installed];
+                installed += 1;
+                if installed == count {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// Move one capability from the current process into a live target process.
 ///
 /// The underlying VFS/resource reference is not retained a second time: this
@@ -1753,6 +2096,93 @@ pub(crate) fn write(handle: u64, buffer_address: u64, requested: u64) -> u64 {
         return ERR_BAD_FD;
     };
     bytes_written as u64
+}
+
+/// Seek a native file capability using Linux's `lseek` whence values. The
+/// Linux fd table translates the integer descriptor before calling this
+/// helper; the VFS continues to own the shared open-file offset.
+pub(crate) fn seek(handle: u64, offset: i64, whence: u64) -> u64 {
+    let Some((_, file)) = locate_entry(handle) else {
+        return ERR_BAD_FD;
+    };
+    if file.kind != KIND_FILE || !matches!(whence, 0..=2) {
+        return ERR_INVALID;
+    }
+    let Some((current, size)) = with_vfs(|vfs| {
+        Some((
+            vfs.position_at(file.mount_index, file.local_fd).ok()?,
+            vfs.size_at(file.mount_index, file.local_fd).ok()?,
+        ))
+    })
+    .flatten() else {
+        return ERR_BAD_FD;
+    };
+    let base = match whence {
+        0 => 0,
+        1 => current,
+        2 => size,
+        _ => return ERR_INVALID,
+    };
+    let position = if offset >= 0 {
+        base.checked_add(offset as u64)
+    } else {
+        base.checked_sub(offset.unsigned_abs())
+    };
+    let Some(position) = position else {
+        return ERR_INVALID;
+    };
+    if with_vfs(|vfs| {
+        vfs.seek_at(file.mount_index, file.local_fd, position)
+            .is_ok()
+    }) != Some(true)
+    {
+        return ERR_BAD_FD;
+    }
+    position
+}
+
+/// Read file bytes at an explicit offset without changing the Linux-visible
+/// file position.  This is the kernel side of file-backed `mmap`: VFS owns
+/// the actual filesystem cursor, while the Linux fd ABI requires `mmap` to
+/// leave the source descriptor's offset untouched.
+pub(crate) fn read_kernel_at(
+    handle: u64,
+    offset: u64,
+    destination: &mut [u8],
+) -> Result<usize, u64> {
+    let Some((_, file)) = locate_entry(handle) else {
+        return Err(ERR_BAD_FD);
+    };
+    if file.kind != KIND_FILE {
+        return Err(ERR_PERMISSION);
+    }
+    let result = with_vfs(|vfs| {
+        let current = vfs
+            .position_at(file.mount_index, file.local_fd)
+            .map_err(|_| ERR_BAD_FD)?;
+        vfs.seek_at(file.mount_index, file.local_fd, offset)
+            .map_err(|_| ERR_BAD_FD)?;
+        let result = vfs
+            .read_at(file.mount_index, file.local_fd, destination)
+            .map_err(|_| ERR_BAD_FD);
+        let _ = vfs.seek_at(file.mount_index, file.local_fd, current);
+        result
+    });
+    result.ok_or(ERR_BAD_FD)?
+}
+
+pub(crate) fn file_size(handle: u64) -> Result<u64, u64> {
+    let Some((_, file)) = locate_entry(handle) else {
+        return Err(ERR_BAD_FD);
+    };
+    if file.kind != KIND_FILE {
+        return Err(ERR_PERMISSION);
+    }
+    let result = with_vfs(|vfs| {
+        vfs.size_at(file.mount_index, file.local_fd)
+            .map_err(|_| ERR_BAD_FD)
+    });
+    result.ok_or(ERR_BAD_FD)?
 }
 
 fn read_pipe(pipe_slot: u8, buffer_address: u64, requested: usize) -> u64 {
@@ -1898,7 +2328,14 @@ fn release_resource(kind: u8, slot: u8) {
 }
 
 pub(crate) fn close(handle: u64) -> u64 {
-    let Some((storage_index, file)) = locate_entry(handle) else {
+    let Some(owner_pid) = task::resource_owner_pid() else {
+        return ERR_BAD_FD;
+    };
+    close_for_owner(owner_pid, handle)
+}
+
+fn close_for_owner(owner_pid: u64, handle: u64) -> u64 {
+    let Some((storage_index, file)) = locate_entry_for_owner(owner_pid, handle) else {
         return ERR_BAD_FD;
     };
     if file.kind == KIND_FILE {
@@ -1948,6 +2385,9 @@ pub(crate) fn close(handle: u64) -> u64 {
 /// handle value is preserved, while both rows point at the same VFS open-file
 /// description so the file offset follows the usual fork semantics.
 pub(crate) fn inherit_fds(parent_pid: u64, child_pid: u64) -> bool {
+    let Some(linux_count) = linux_inherit_capacity(parent_pid) else {
+        return false;
+    };
     let mut inherited = [OpenFile::EMPTY; MAX_OPEN_FILES];
     let mut inherited_count = 0usize;
     unsafe {
@@ -1985,6 +2425,7 @@ pub(crate) fn inherit_fds(parent_pid: u64, child_pid: u64) -> bool {
             }
         }
     }
+    linux_inherit_fds_unchecked(parent_pid, child_pid, linux_count);
     true
 }
 
@@ -2008,6 +2449,7 @@ pub(crate) fn inherit_terminal_handle(
 /// Roll back descriptor rows after a failed fork installation.
 pub(crate) fn drop_owner(owner_pid: u64) {
     cleanup_shared_mappings(owner_pid);
+    linux_drop_owner(owner_pid);
     let mut local_files = [(0usize, 0u32); MAX_OPEN_FILES];
     let mut local_count = 0usize;
     let mut resource_kinds = [KIND_FILE; MAX_OPEN_FILES];
@@ -2049,6 +2491,26 @@ pub(crate) fn drop_owner(owner_pid: u64) {
         if !still_open {
             let _ = with_vfs(|vfs| vfs.close_at(mount_index, local_fd));
         }
+    }
+}
+
+fn linux_drop_owner(owner_pid: u64) {
+    let mut native_handles = [0u64; MAX_LINUX_FDS_PER_PROCESS];
+    let mut native_count = 0usize;
+    unsafe {
+        for entry in (*core::ptr::addr_of_mut!(LINUX_FDS)).iter_mut() {
+            if !entry.active || entry.owner_pid != owner_pid {
+                continue;
+            }
+            if entry.stdio_fd == LINUX_STDIO_NONE && native_count < native_handles.len() {
+                native_handles[native_count] = entry.native_handle;
+                native_count += 1;
+            }
+            *entry = LinuxFdEntry::EMPTY;
+        }
+    }
+    for native_handle in native_handles.iter().copied().take(native_count) {
+        let _ = close_for_owner(owner_pid, native_handle);
     }
 }
 

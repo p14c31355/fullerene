@@ -302,7 +302,12 @@ fn main() {
         generate_solvent_linux(&manifest_dir, &out_dir);
         let child = build_aarch64_child(&manifest_dir, &out_dir);
         let launchd = build_aarch64_launchd(&manifest_dir, &out_dir, &child);
-        let initramfs = build_aarch64_initramfs(&out_dir, &child, &launchd);
+        let linux_smoke = if env::var_os("CARGO_FEATURE_AARCH64_LINUX_SMOKE").is_some() {
+            Some(build_aarch64_linux_smoke(&manifest_dir, &out_dir))
+        } else {
+            None
+        };
+        let initramfs = build_aarch64_initramfs(&out_dir, &child, &launchd, linux_smoke.as_deref());
         println!(
             "cargo:rustc-env=FULLERENE_LAUNCHD_IMAGE={}",
             launchd.display()
@@ -2072,6 +2077,17 @@ fn build_aarch64_launchd(manifest_dir: &Path, out_dir: &Path, child_image: &Path
     output
 }
 
+fn build_aarch64_linux_smoke(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
+    let source = manifest_dir.join("examples").join("linux_aarch64_smoke.rs");
+    let output = out_dir.join("linux_aarch64_smoke");
+    let linker = out_dir.join("aarch64-user-linker.ld");
+    println!("cargo:rerun-if-changed={}", source.display());
+    fs::write(&linker, aarch64_user_linker_script()).unwrap();
+
+    build_aarch64_user_payload(&source, &output, &linker, "linux-smoke", None);
+    output
+}
+
 fn build_aarch64_child(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
     let source = manifest_dir
         .join("examples")
@@ -2092,7 +2108,12 @@ fn build_aarch64_child(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
 /// Keeping the archive generation here makes the kernel image self-contained
 /// and leaves the OPEN/EXEC_PATH syscall boundary independent of the source of
 /// the files.
-fn build_aarch64_initramfs(out_dir: &Path, child: &Path, launchd: &Path) -> PathBuf {
+fn build_aarch64_initramfs(
+    out_dir: &Path,
+    child: &Path,
+    launchd: &Path,
+    linux_smoke: Option<&Path>,
+) -> PathBuf {
     let child_data = fs::read(child).unwrap_or_else(|error| {
         panic!(
             "cannot read AArch64 child payload {}: {error}",
@@ -2117,6 +2138,16 @@ fn build_aarch64_initramfs(out_dir: &Path, child: &Path, launchd: &Path) -> Path
     write_cpio_file(&mut archive, "etc/write-test", false, &[]);
     write_cpio_file(&mut archive, "bin/child", false, &child_data);
     write_cpio_file(&mut archive, "bin/launchd", false, &launchd_data);
+    if let Some(linux_smoke) = linux_smoke {
+        let linux_smoke_data = fs::read(linux_smoke).unwrap_or_else(|error| {
+            panic!(
+                "cannot read AArch64 Linux smoke payload {}: {error}",
+                linux_smoke.display()
+            )
+        });
+        write_cpio_file(&mut archive, "bin/linux-smoke", false, &linux_smoke_data);
+        println!("cargo:rerun-if-changed={}", linux_smoke.display());
+    }
     write_cpio_trailer(&mut archive);
 
     let output = out_dir.join("native_aarch64_initramfs.cpio");

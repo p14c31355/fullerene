@@ -8,7 +8,8 @@
 use fullerene_abi::SyscallNumber;
 
 use super::{
-    allocator, devices, exceptions::Aarch64TrapFrame, fs, task, timer, uart, user_memory, window,
+    allocator, devices, exceptions::Aarch64TrapFrame, fs, linux, task, timer, uart, user_memory,
+    window,
 };
 
 const ERR_NOT_SUPPORTED: u64 = (-(95i64)) as u64;
@@ -44,6 +45,9 @@ static mut IMAGE_STAGING: [u8; MAX_SPAWN_IMAGE] = [0; MAX_SPAWN_IMAGE];
 
 /// Dispatch one user-origin SVC and leave its return value in x0.
 pub(super) fn dispatch(frame: &mut Aarch64TrapFrame) -> bool {
+    if task::current_personality() == task::AbiPersonality::LinuxAarch64 {
+        return linux::dispatch(frame);
+    }
     let number = frame.x[8];
     let result = match SyscallNumber::try_from(number) {
         Ok(SyscallNumber::AbiQuery) if frame.x[0] == 0 && frame.x[1] == 0 => {
@@ -416,6 +420,123 @@ fn syscall_exec_path(frame: &mut Aarch64TrapFrame) -> u64 {
         uart::put_hex("aarch64 exec sp=", stack);
     }
     0
+}
+
+/// Linux `execve`/`execveat` entry for the AArch64 Linux personality.
+///
+/// It deliberately reuses the same checked pathname/VFS staging and atomic
+/// address-space replacement as the native `EXEC_PATH` syscall, then writes
+/// the Linux initial stack shape in the new address space. The loader still
+/// accepts only the bounded AArch64 ELF subset, so dynamically linked Android
+/// images remain gated by the interpreter/DSO work documented in the Linux
+/// boundary module.
+pub(super) fn linux_exec_path(
+    path_address: u64,
+    argv_address: u64,
+    envp_address: u64,
+    frame: &mut Aarch64TrapFrame,
+) -> u64 {
+    let mut argv = [ExecString::EMPTY; MAX_EXEC_ARGUMENTS];
+    let mut envp = [ExecString::EMPTY; MAX_EXEC_ARGUMENTS];
+    let argc = match copy_user_vector(argv_address, &mut argv) {
+        Ok(count) if count != 0 => count,
+        Ok(_) => return ERR_INVALID,
+        Err(error) => return error,
+    };
+    let envc = match copy_user_vector(envp_address, &mut envp) {
+        Ok(count) => count,
+        Err(error) => return error,
+    };
+    let image = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(IMAGE_STAGING).cast::<u8>(),
+            MAX_SPAWN_IMAGE,
+        )
+    };
+    let (image_length, name, name_length) = match fs::read_path(path_address, image) {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+    if image_length == 0 {
+        return ERR_INVALID;
+    }
+    match allocator::with_global(|frames| {
+        task::exec(frames, frame, &image[..image_length], &name[..name_length])
+    }) {
+        Some(Ok(())) => {}
+        Some(Err(error)) => return error,
+        None => return ERR_NOT_SUPPORTED,
+    }
+    if let Err(error) = install_linux_exec_stack(frame, &argv[..argc], &envp[..envc]) {
+        return error;
+    }
+    let result = fs::linux_close_on_exec();
+    if (result as i64) < 0 {
+        return result;
+    }
+    0
+}
+
+fn install_linux_exec_stack(
+    frame: &mut Aarch64TrapFrame,
+    argv: &[ExecString],
+    envp: &[ExecString],
+) -> Result<(), u64> {
+    let mut cursor = STACK_ADDRESS + PAGE_SIZE;
+    let mut argv_addresses = [0u64; MAX_EXEC_ARGUMENTS];
+    let mut env_addresses = [0u64; MAX_EXEC_ARGUMENTS];
+    for (index, value) in argv.iter().enumerate().rev() {
+        cursor = cursor
+            .checked_sub((value.length + 1) as u64)
+            .ok_or(ERR_OVERFLOW)?;
+        user_memory::copy_to_user(cursor, &value.bytes[..value.length]).map_err(|_| ERR_ADDRESS)?;
+        user_memory::copy_to_user(cursor + value.length as u64, &[0]).map_err(|_| ERR_ADDRESS)?;
+        argv_addresses[index] = cursor;
+    }
+    for (index, value) in envp.iter().enumerate().rev() {
+        cursor = cursor
+            .checked_sub((value.length + 1) as u64)
+            .ok_or(ERR_OVERFLOW)?;
+        user_memory::copy_to_user(cursor, &value.bytes[..value.length]).map_err(|_| ERR_ADDRESS)?;
+        user_memory::copy_to_user(cursor + value.length as u64, &[0]).map_err(|_| ERR_ADDRESS)?;
+        env_addresses[index] = cursor;
+    }
+    cursor &= !15;
+    let mut words = [0u64; 64];
+    let mut word_count = 0usize;
+    let mut push = |value: u64| {
+        words[word_count] = value;
+        word_count += 1;
+    };
+    push(argv.len() as u64);
+    for address in argv_addresses.iter().take(argv.len()).copied() {
+        push(address);
+    }
+    push(0);
+    for address in env_addresses.iter().take(envp.len()).copied() {
+        push(address);
+    }
+    push(0);
+    push(6); // AT_PAGESZ
+    push(PAGE_SIZE);
+    push(9); // AT_ENTRY
+    push(frame.elr_el1);
+    push(23); // AT_SECURE
+    push(0);
+    push(31); // AT_EXECFN
+    push(argv_addresses[0]);
+    push(0); // AT_NULL
+    push(0);
+    let bytes = word_count
+        .checked_mul(core::mem::size_of::<u64>())
+        .ok_or(ERR_OVERFLOW)?;
+    let stack_pointer = cursor.checked_sub(bytes as u64).ok_or(ERR_OVERFLOW)? & !15;
+    let stack_bytes = unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), bytes) };
+    user_memory::copy_to_user(stack_pointer, stack_bytes).map_err(|_| ERR_ADDRESS)?;
+    if !task::set_current_stack(frame, stack_pointer) {
+        return Err(ERR_NOT_SUPPORTED);
+    }
+    Ok(())
 }
 
 fn copy_user_vector(

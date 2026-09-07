@@ -8,7 +8,11 @@ use nusb::{
     descriptors::TransferType,
     transfer::{Bulk, Direction, In, Out},
 };
-use std::{fmt::Display, io, time::Duration};
+use std::{
+    fmt::Display,
+    io,
+    time::{Duration, Instant},
+};
 use tokio::runtime::Builder;
 
 const VENDOR_ID: u16 = 0x1234;
@@ -31,6 +35,44 @@ pub fn run(command: &str) -> io::Result<()> {
         .build()
         .map_err(other)?
         .block_on(async { run_async(command).await })
+}
+
+/// Wait until exactly one Fullerene vendor-bulk device is visible.
+///
+/// This deliberately only enumerates USB devices. It does not open an
+/// interface or send a request, so the caller can use it as the observation
+/// half of a boot-loop before deciding which diagnostic command to issue.
+pub fn wait_for_device(timeout: Duration) -> io::Result<()> {
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(other)?
+        .block_on(async move {
+            let deadline = Instant::now() + timeout;
+            loop {
+                let devices = nusb::list_devices().await.map_err(other)?;
+                let count = devices
+                    .filter(|device| {
+                        device.vendor_id() == VENDOR_ID && device.product_id() == PRODUCT_ID
+                    })
+                    .count();
+                match count {
+                    1 => return Ok(()),
+                    count if count > 1 => {
+                        return Err(other(format!(
+                            "refusing to observe {count} Fullerene debug devices"
+                        )));
+                    }
+                    _ => {}
+                }
+                if Instant::now() >= deadline {
+                    return Err(other(format!(
+                        "Fullerene debug device {VENDOR_ID:04x}:{PRODUCT_ID:04x} did not appear"
+                    )));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
 }
 
 async fn run_async(command: &str) -> io::Result<()> {

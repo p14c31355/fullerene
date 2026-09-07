@@ -1726,9 +1726,28 @@ by the corrected observer.
 - Verification passed: Genome `66 passed, 0 failed, 1 ignored`, ABI, Flasks, AArch64 user-launchd check, rustfmt, and `git diff --check`; Bramble opt-in build `/tmp/fullerene-bramble-f2fs-build.log` status `0`; ELF/Image/Image.lz4 SHA-256 values are recorded in `docs/CONTEXT_STATUS.md`; `.ufs_dma` remains `0x9000d000`/`0x43000`.
 - No physical F2FS header or `/data` mount has been observed. USB remains host-only `1234:0001`, ADB has missing udev permission, Fastboot is empty, and no image boot, Fastboot command, flash, erase, partition write, backup, analyzer, or user-data operation occurred. Physical UFS/PMIC/DMA proof, Android init/rootfs handoff, and the remaining Pixel drivers are still open.
 
+### 2026-09-07 — Non-persistent Bramble verification loop preparation
+
+- `flasks verify-loop` now provides a bounded host harness for repeated AArch64 Bramble bring-up: wait for Fastboot, issue the existing non-persistent `fastboot boot`, wait for Fullerene `1234:0001`, collect Rust `status`/`trace`, and request `return` before the next iteration. The last iteration remains running.
+- The harness has not been run against the handset. It performs no flash, erase, partition write, backup, or analyzer operation, and it stops if the reset does not produce a Fastboot device. This is a test-loop implementation, not physical boot evidence; Android init/ABI/SELinux and the hardware/UFS gates remain unchanged.
+
+### 2026-09-07 — Explicit Linux AArch64 personality and EL0 smoke payload
+
+- AArch64 tasks now carry an explicit Native or Linux personality. Linux AArch64 SVC numbers are dispatched only for Linux-personality tasks, preventing accidental fall-through into the overlapping Fullerene native syscall namespace.
+- The opt-in `aarch64-linux-smoke` build packages a freestanding Rust `/bin/linux-smoke` payload and starts it as PID 1 through the ordinary ELF loader, page tables, EL0 entry, exception vector, and SVC path. It exercises basic Linux `write`, identity, `prctl`, clock, `uname`, `brk`, anonymous `mmap`/`munmap`, and exit calls.
+- The normal `aarch64-user-launchd` artifact still starts the Native Fullerene launchd. The Linux payload is a bounded compatibility probe, not `/system/bin/init`; dynamic linker/Bionic, Linux descriptor and threading semantics, Android pseudo-filesystems/services/SELinux, and physical storage/driver handoff remain unimplemented.
+- AArch64 builds with and without the feature, Genome tests, formatting, and diff checks passed. No handset boot or Fastboot command was run; USB `1234:0001` remains host-side evidence only.
+
 ### 2026-09-07 — AArch64 user-window and PIE-loader prerequisite
 
 - The AArch64 user translation prototype now owns sixteen static L3 tables covering `0x40000000..0x42000000`. The dynamic mapping range remains below the reserved stack page at `0x41ff0000`; moving the stack fixed an existing overlap with launchd's read-only data page.
 - The bounded loader now supports eight `PT_LOAD` segments, 4096 mapped image pages, fixed-bias ET_DYN images, and only relative AArch64 RELA/RELR relocations. It rejects unsupported symbol relocations before EL0 entry.
 - The Bramble build and the AArch64 `aarch64-user-launchd` check passed, as did Genome's `66` passing tests (one ignored), formatting, and diff checks. The resulting ELF/Image/Image.lz4 hashes are `9d18fa88d32cea47f8ec00a072cc001f0970aa6b6e89fdb0b4c1f164e0d8efa9`, `6d8ab846289f728bb7448c6664b910191ec0b54811a56336ee43b75730a077fc`, and `6a48504950ee6f5a56c0d72e66f739343a7738c3876015ed187d0c36938758f8`.
 - This is a loader/address-space prerequisite only. No image was booted and no UFS command, physical filesystem read, Fastboot command, flash, erase, partition write, backup, analyzer, or user-data operation occurred. The remaining Android userspace and physical UFS/PMIC/DMA gates are unchanged.
+
+### 2026-09-07 — AArch64 Linux fd/mmap/exec boundary
+
+- The Linux personality now translates bounded integer fds `3..34` to native Fullerene file capabilities, including read-only `openat`, `read`, `write`, `close`, `dup`, `dup3`, `lseek`, and `fstat`. File-backed private `mmap` copies through a checked kernel buffer and publishes the requested final permissions with `mprotect`; shared write-back mappings remain rejected.
+- Linux initial stack construction now supplies `argc/argv/envp/auxv`; `execve`/`execveat` use checked pathname/VFS staging and the same address-space replacement path. `fork` and process-style `clone` inherit the fd table; thread-style shared address spaces remain unsupported.
+- Added the opt-in `aarch64-android-init` feature to select `/system/bin/init` after the guarded Bramble UFS/LP/filesystem mount. It is deliberately separate from the default `/bin/launchd` and has not been booted. Android init's remaining syscall, pseudo-filesystem, property, SELinux, service, and driver requirements are still open.
+- Linker scripts continue to be emitted by Rust `build.rs` generators into `OUT_DIR`; udev's host rule stays a `.rules` artifact because that is the format udev loads. No physical boot, UFS read, Fastboot command, flash, erase, partition write, backup, analyzer, or user-data operation occurred.

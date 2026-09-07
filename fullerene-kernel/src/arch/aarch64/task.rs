@@ -30,7 +30,22 @@ const DYNAMIC_MEMORY_START: u64 = 0x4002_0000;
 // the bounded user window, leaving the lower range available for mappings.
 const DYNAMIC_MEMORY_END: u64 = STACK_ADDRESS;
 const MAX_MEMORY_MAPPINGS: usize = 8;
-const MAX_MEMORY_PAGES: usize = 64;
+// Android's linker maps several ELF segments at once.  Keep the allocation
+// bounded, but do not cap a single Linux mapping at the 256 KiB prototype
+// limit; 4 MiB is enough for the early linker/DSO bring-up path.
+const MAX_MEMORY_PAGES: usize = 1024;
+
+/// ABI personality selected for an AArch64 user task.
+///
+/// Native Fullerene syscalls and the Linux AArch64 syscall table intentionally
+/// use different register-number namespaces but overlap numerically. The
+/// personality is therefore process state, not a heuristic based on the
+/// syscall number.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbiPersonality {
+    Native,
+    LinuxAarch64,
+}
 
 #[derive(Clone, Copy)]
 struct UserMapping {
@@ -71,6 +86,7 @@ struct TaskSlot {
     frame: Aarch64TrapFrame,
     pid: u64,
     address_space: usize,
+    personality: AbiPersonality,
     is_thread: bool,
     thread_detached: bool,
     name: [u8; MAX_TASK_NAME],
@@ -87,6 +103,7 @@ struct TaskSlot {
     process_controls: [ProcessControlEntry; MAX_PROCESS_CONTROLS],
     next_process_control_generation: u16,
     mappings: [UserMapping; MAX_MEMORY_MAPPINGS],
+    linux_brk: u64,
     state: TaskState,
 }
 
@@ -117,6 +134,7 @@ impl TaskSlot {
         },
         pid: 0,
         address_space: 0,
+        personality: AbiPersonality::Native,
         is_thread: false,
         thread_detached: false,
         name: [0; MAX_TASK_NAME],
@@ -133,6 +151,7 @@ impl TaskSlot {
         process_controls: [ProcessControlEntry::EMPTY; MAX_PROCESS_CONTROLS],
         next_process_control_generation: 1,
         mappings: [UserMapping::EMPTY; MAX_MEMORY_MAPPINGS],
+        linux_brk: 0,
         state: TaskState::Empty,
     };
 }
@@ -185,6 +204,7 @@ impl Aarch64TaskScheduler {
         slot.frame = frame;
         slot.pid = pid;
         slot.address_space = address_space;
+        slot.personality = AbiPersonality::Native;
         slot.is_thread = false;
         slot.thread_detached = false;
         slot.name = [0; MAX_TASK_NAME];
@@ -202,6 +222,7 @@ impl Aarch64TaskScheduler {
         slot.process_controls = [ProcessControlEntry::EMPTY; MAX_PROCESS_CONTROLS];
         slot.next_process_control_generation = 1;
         slot.mappings = [UserMapping::EMPTY; MAX_MEMORY_MAPPINGS];
+        slot.linux_brk = 0;
         slot.state = TaskState::Runnable;
         if pid >= self.next_pid_hint {
             self.next_pid_hint = pid.checked_add(1).unwrap_or(1);
@@ -219,6 +240,7 @@ impl Aarch64TaskScheduler {
         supervisor_pid: u64,
         terminal_handle: u64,
         frame: Aarch64TrapFrame,
+        personality: AbiPersonality,
     ) -> bool {
         if !self.install(index, pid, name, address_space, frame) {
             return false;
@@ -226,6 +248,7 @@ impl Aarch64TaskScheduler {
         self.slots[index].parent_pid = parent_pid;
         self.slots[index].supervisor_pid = supervisor_pid;
         self.slots[index].terminal_handle = terminal_handle;
+        self.slots[index].personality = personality;
         true
     }
 
@@ -249,6 +272,12 @@ impl Aarch64TaskScheduler {
             .find(|slot| slot.pid == owner_pid && !slot.is_thread)
             .map(|slot| slot.terminal_handle)
             .unwrap_or(0);
+        self.slots[index].personality = self
+            .slots
+            .iter()
+            .find(|slot| slot.pid == owner_pid && !slot.is_thread)
+            .map(|slot| slot.personality)
+            .unwrap_or(AbiPersonality::Native);
         true
     }
 
@@ -947,6 +976,7 @@ impl Aarch64TaskScheduler {
         let parent_pid = self.slots[parent_index].pid;
         let terminal_handle = self.slots[parent_index].terminal_handle;
         let address_space = self.slots[parent_index].address_space;
+        let personality = self.slots[parent_index].personality;
         let name = self.slots[parent_index].name;
         let name_len = self.slots[parent_index].name_len;
         let mappings = self.slots[parent_index].mappings;
@@ -989,6 +1019,7 @@ impl Aarch64TaskScheduler {
             parent_pid,
             terminal_handle,
             child_frame,
+            personality,
         ) {
             fs::drop_owner(child_pid);
             let _ =
@@ -1461,7 +1492,82 @@ pub(crate) fn install(
     address_space: usize,
     frame: Aarch64TrapFrame,
 ) -> bool {
-    unsafe { (*core::ptr::addr_of_mut!(SCHEDULER)).install(index, pid, name, address_space, frame) }
+    install_with_personality(
+        index,
+        pid,
+        name,
+        address_space,
+        frame,
+        AbiPersonality::Native,
+    )
+}
+
+pub(crate) fn install_with_personality(
+    index: usize,
+    pid: u64,
+    name: &[u8],
+    address_space: usize,
+    frame: Aarch64TrapFrame,
+    personality: AbiPersonality,
+) -> bool {
+    unsafe {
+        let scheduler = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+        if !scheduler.install(index, pid, name, address_space, frame) {
+            return false;
+        }
+        scheduler.slots[index].personality = personality;
+        true
+    }
+}
+
+pub(crate) fn current_personality() -> AbiPersonality {
+    unsafe {
+        (*core::ptr::addr_of!(SCHEDULER)).slots[(*core::ptr::addr_of!(SCHEDULER)).current]
+            .personality
+    }
+}
+
+pub(crate) fn current_parent_pid() -> Option<u64> {
+    unsafe {
+        let scheduler = &*core::ptr::addr_of!(SCHEDULER);
+        let slot = &scheduler.slots[scheduler.current];
+        (slot.state != TaskState::Empty).then_some(slot.parent_pid)
+    }
+}
+
+pub(crate) fn set_current_name(name: &[u8]) -> bool {
+    if name.is_empty() || name.len() > MAX_TASK_NAME {
+        return false;
+    }
+    unsafe {
+        let scheduler = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+        let slot = &mut scheduler.slots[scheduler.current];
+        if slot.state == TaskState::Empty {
+            return false;
+        }
+        slot.name = [0; MAX_TASK_NAME];
+        slot.name[..name.len()].copy_from_slice(name);
+        slot.name_len = name.len();
+        true
+    }
+}
+
+pub(crate) fn current_linux_brk() -> u64 {
+    unsafe {
+        (*core::ptr::addr_of!(SCHEDULER)).slots[(*core::ptr::addr_of!(SCHEDULER)).current].linux_brk
+    }
+}
+
+pub(crate) fn set_current_linux_brk(value: u64) -> bool {
+    unsafe {
+        let scheduler = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+        let slot = &mut scheduler.slots[scheduler.current];
+        if slot.state == TaskState::Empty {
+            return false;
+        }
+        slot.linux_brk = value;
+        true
+    }
 }
 
 /// Load and install one child ELF in its own bounded TTBR0 root.
@@ -1525,6 +1631,7 @@ pub(crate) fn spawn(
             .current_pid()
             .ok_or(ERR_NO_SUCH_PROCESS)?
     };
+    let personality = current_personality();
     let supervisor_pid = if requested_supervisor_pid == 0 {
         parent_pid
     } else {
@@ -1558,6 +1665,7 @@ pub(crate) fn spawn(
             supervisor_pid,
             child_terminal_handle,
             frame,
+            personality,
         )
     } {
         fs::drop_owner(pid);
