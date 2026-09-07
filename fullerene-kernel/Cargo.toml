@@ -77,6 +77,52 @@ test = false
 bench = false
 required-features = ["native-payload"]
 
+# The remaining files under examples/ are freestanding AArch64 payloads or
+# modules embedded by build.rs. Keep them out of the host test harness: the
+# payloads intentionally have no `main`, use AArch64 syscall registers, or
+# provide their own panic/entry contract.
+[[example]]
+name = "android_aarch64_init"
+test = false
+bench = false
+required-features = ["aarch64"]
+
+[[example]]
+name = "android_aarch64_service"
+test = false
+bench = false
+required-features = ["aarch64"]
+
+[[example]]
+name = "android_init_actions"
+test = false
+bench = false
+required-features = ["aarch64-android-init"]
+
+[[example]]
+name = "android_init_services"
+test = false
+bench = false
+required-features = ["aarch64-android-init"]
+
+[[example]]
+name = "linux_aarch64_smoke"
+test = false
+bench = false
+required-features = ["aarch64"]
+
+[[example]]
+name = "native_aarch64_child"
+test = false
+bench = false
+required-features = ["aarch64"]
+
+[[example]]
+name = "native_aarch64_launchd"
+test = false
+bench = false
+required-features = ["aarch64"]
+
 [target.'cfg(all(not(target_arch = "aarch64"), not(target_arch = "xtensa")))'.dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",

@@ -1,9 +1,12 @@
 //! Bounded read-only access to the EROFS core on-disk format.
 //!
 //! Android may store immutable logical partitions as EROFS instead of ext4.
-//! This module intentionally implements only the uncompressed core layouts
-//! (plain and tail-inline files).  Compressed, chunked, multi-device and
-//! 48-bit extensions are rejected at mount time instead of being guessed.
+//! This module implements the uncompressed core layouts (plain and
+//! tail-inline files) plus a bounded compressed-inode subset.  Compressed
+//! files are accepted only when they use the full (non-compact) index format,
+//! independent one-cluster pclusters, and LZ4/plain lclusters.  Chunked,
+//! multi-device, fragmented, compact-index, and 48-bit extensions are
+//! rejected at mount time instead of being guessed.
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -25,7 +28,25 @@ const EROFS_INODE_VERSION_MASK: u16 = 0x0001;
 const EROFS_INODE_DATALAYOUT_MASK: u16 = 0x000e;
 const EROFS_INODE_ALLOWED_BITS: u16 = 0x001f;
 const EROFS_INODE_FLAT_PLAIN: u8 = 0;
+const EROFS_INODE_COMPRESSED_FULL: u8 = 1;
 const EROFS_INODE_FLAT_INLINE: u8 = 2;
+const EROFS_INODE_COMPRESSED_COMPACT: u8 = 3;
+const EROFS_LCLUSTER_TYPE_PLAIN: u16 = 0;
+const EROFS_LCLUSTER_TYPE_HEAD1: u16 = 1;
+const EROFS_LCLUSTER_TYPE_NONHEAD: u16 = 2;
+const EROFS_LCLUSTER_TYPE_HEAD2: u16 = 3;
+const EROFS_LCLUSTER_TYPE_MASK: u16 = 0x0003;
+const EROFS_LI_PARTIAL_REF: u16 = 1 << 15;
+const EROFS_ADVISE_EXTENTS: u16 = 0x0001;
+const EROFS_ADVISE_BIG_PCLUSTER_1: u16 = 0x0002;
+const EROFS_ADVISE_BIG_PCLUSTER_2: u16 = 0x0004;
+const EROFS_ADVISE_INLINE_PCLUSTER: u16 = 0x0008;
+const EROFS_ADVISE_INTERLACED_PCLUSTER: u16 = 0x0010;
+const EROFS_ADVISE_FRAGMENT_PCLUSTER: u16 = 0x0020;
+const EROFS_FEATURE_INCOMPAT_LZ4_0PADDING: u32 = 0x0000_0001;
+const EROFS_FEATURE_INCOMPAT_COMPR_CFGS: u32 = 0x0000_0002;
+const EROFS_FEATURE_INCOMPAT_COMPR_HEAD2: u32 = 0x0000_0008;
+const EROFS_COMPRESSION_LZ4: u8 = 0;
 const EROFS_S_IFMT: u16 = 0xf000;
 const EROFS_S_IFREG: u16 = 0x8000;
 const EROFS_S_IFDIR: u16 = 0x4000;
@@ -52,6 +73,11 @@ struct ErofsInode {
     size: u64,
     layout: u8,
     start_block: u64,
+    compressed_blocks: u64,
+    compressed_index: u64,
+    compressed_cluster_size: u64,
+    compressed_algorithm: u8,
+    compressed_start_block: u64,
     inline_offset: u64,
 }
 
@@ -99,16 +125,25 @@ impl ErofsFileSystem {
             return Err(FsError::InvalidInput);
         }
 
-        // Any incompatible feature changes the address or inode mapping that
-        // this small reader understands.  Compression is separately encoded
-        // in the superblock even for otherwise core-compatible images.
-        if le_u32(&superblock, 0x50) != 0 {
+        // Keep the address/inode mapping and the compression subset bounded.
+        // Android's EROFS superblock advertises available algorithms at 0x54;
+        // bit zero is LZ4.  The LZ4 zero-padding, compression-config, and
+        // HEAD2 flags are safe for this reader, while chunked, big-pcluster,
+        // fragment, device-table, 48-bit, and other extensions are rejected.
+        let feature_incompat = le_u32(&superblock, 0x50);
+        if feature_incompat
+            & !(EROFS_FEATURE_INCOMPAT_LZ4_0PADDING
+                | EROFS_FEATURE_INCOMPAT_COMPR_CFGS
+                | EROFS_FEATURE_INCOMPAT_COMPR_HEAD2)
+            != 0
+        {
             return Err(FsError::NotSupported);
         }
-        if le_u16(&superblock, 0x54) != 0 {
+        let available_compression = le_u16(&superblock, 0x54);
+        if available_compression & !(1 << EROFS_COMPRESSION_LZ4) != 0 {
             return Err(FsError::NotSupported);
         }
-        if superblock[0x5a] != 0 {
+        if le_u16(&superblock, 0x56) != 0 || superblock[0x5a] != 0 {
             return Err(FsError::NotSupported);
         }
 
@@ -219,7 +254,16 @@ impl ErofsFileSystem {
             return Err(FsError::NotSupported);
         }
         let layout = ((format & EROFS_INODE_DATALAYOUT_MASK) >> 1) as u8;
-        if layout != EROFS_INODE_FLAT_PLAIN && layout != EROFS_INODE_FLAT_INLINE {
+        if !matches!(
+            layout,
+            EROFS_INODE_FLAT_PLAIN
+                | EROFS_INODE_COMPRESSED_FULL
+                | EROFS_INODE_FLAT_INLINE
+                | EROFS_INODE_COMPRESSED_COMPACT
+        ) {
+            return Err(FsError::NotSupported);
+        }
+        if layout == EROFS_INODE_COMPRESSED_COMPACT {
             return Err(FsError::NotSupported);
         }
         let inode_size = if format & EROFS_INODE_VERSION_MASK != 0 {
@@ -269,6 +313,98 @@ impl ErofsFileSystem {
             le_u16(&raw, 26) as u32
         };
         let start_block = le_u32(&raw, 16) as u64;
+        let (
+            compressed_blocks,
+            compressed_index,
+            compressed_cluster_size,
+            compressed_algorithm,
+            compressed_start_block,
+        ) = if layout == EROFS_INODE_COMPRESSED_FULL {
+            let header_offset = align8(
+                offset
+                    .checked_add(inode_size)
+                    .and_then(|value| value.checked_add(xattr_size))
+                    .ok_or(FsError::InvalidInput)?,
+            )?;
+            let mut header = [0u8; 8];
+            self.read_bytes(header_offset, &mut header)?;
+            let advise = le_u16(&header, 4);
+            if advise
+                & (EROFS_ADVISE_EXTENTS
+                    | EROFS_ADVISE_BIG_PCLUSTER_1
+                    | EROFS_ADVISE_BIG_PCLUSTER_2
+                    | EROFS_ADVISE_INLINE_PCLUSTER
+                    | EROFS_ADVISE_INTERLACED_PCLUSTER
+                    | EROFS_ADVISE_FRAGMENT_PCLUSTER)
+                != 0
+                || header[7] & 0x70 != 0
+                || header[7] & 0x80 != 0
+            {
+                return Err(FsError::NotSupported);
+            }
+            if advise & EROFS_ADVISE_EXTENTS != 0 || header[6] != EROFS_COMPRESSION_LZ4 {
+                return Err(FsError::NotSupported);
+            }
+            let algorithm = EROFS_COMPRESSION_LZ4;
+            let cluster_size = self
+                .block_size
+                .checked_shl((header[7] & 0x0f) as u32)
+                .ok_or(FsError::InvalidInput)?;
+            if cluster_size > 65_536 || !cluster_size.is_multiple_of(self.block_size) {
+                return Err(FsError::NotSupported);
+            }
+            let cluster_count = size
+                .checked_add(cluster_size - 1)
+                .ok_or(FsError::InvalidInput)?
+                / cluster_size;
+            let index_offset = header_offset.checked_add(8).ok_or(FsError::InvalidInput)?;
+            let index_end = index_offset
+                .checked_add(cluster_count.checked_mul(8).ok_or(FsError::InvalidInput)?)
+                .ok_or(FsError::InvalidInput)?;
+            let total_bytes = self
+                .total_blocks
+                .checked_mul(self.block_size)
+                .ok_or(FsError::InvalidInput)?;
+            if index_end > total_bytes {
+                return Err(FsError::UnexpectedEof);
+            }
+            let compressed_blocks = le_u32(&raw, 16) as u64;
+            let compressed_start_block = if cluster_count == 0 {
+                0
+            } else {
+                let mut index = [0u8; 8];
+                self.read_bytes(index_offset, &mut index)?;
+                let index_type = le_u16(&index, 0) & EROFS_LCLUSTER_TYPE_MASK;
+                if index_type == EROFS_LCLUSTER_TYPE_NONHEAD
+                    || le_u16(&index, 0) & EROFS_LI_PARTIAL_REF != 0
+                {
+                    return Err(FsError::NotSupported);
+                }
+                let start = le_u32(&index, 4) as u64;
+                if start == 0 {
+                    return Err(FsError::InvalidInput);
+                }
+                start
+            };
+            if cluster_count != 0 {
+                if compressed_blocks == 0
+                    || compressed_start_block
+                        .checked_add(compressed_blocks)
+                        .is_none_or(|end| end > self.total_blocks)
+                {
+                    return Err(FsError::InvalidInput);
+                }
+            }
+            (
+                compressed_blocks,
+                index_offset,
+                cluster_size,
+                algorithm,
+                compressed_start_block,
+            )
+        } else {
+            (0, 0, 0, 0, 0)
+        };
         let inode = ErofsInode {
             mode,
             uid,
@@ -276,16 +412,32 @@ impl ErofsFileSystem {
             size,
             layout,
             start_block,
+            compressed_blocks,
+            compressed_index,
+            compressed_cluster_size,
+            compressed_algorithm,
+            compressed_start_block,
             inline_offset,
         };
 
-        let inode_end = inline_offset
-            .checked_add(if layout == EROFS_INODE_FLAT_INLINE {
-                size.min(self.block_size)
-            } else {
-                0
-            })
-            .ok_or(FsError::InvalidInput)?;
+        let inode_end = if layout == EROFS_INODE_COMPRESSED_FULL {
+            compressed_index
+                .checked_add(
+                    size.checked_add(compressed_cluster_size - 1)
+                        .ok_or(FsError::InvalidInput)?
+                        / compressed_cluster_size
+                        * 8,
+                )
+                .ok_or(FsError::InvalidInput)?
+        } else {
+            inline_offset
+                .checked_add(if layout == EROFS_INODE_FLAT_INLINE {
+                    size.min(self.block_size)
+                } else {
+                    0
+                })
+                .ok_or(FsError::InvalidInput)?
+        };
         let total_bytes = self
             .total_blocks
             .checked_mul(self.block_size)
@@ -295,6 +447,8 @@ impl ErofsFileSystem {
         }
         let physical_blocks = if layout == EROFS_INODE_FLAT_INLINE {
             size / self.block_size
+        } else if layout == EROFS_INODE_COMPRESSED_FULL {
+            0
         } else {
             size.checked_add(self.block_size - 1)
                 .ok_or(FsError::InvalidInput)?
@@ -338,6 +492,137 @@ impl ErofsFileSystem {
         Ok(block)
     }
 
+    fn compressed_index(
+        &mut self,
+        inode: &ErofsInode,
+        cluster: u64,
+    ) -> Result<(u16, u16, u32), FsError> {
+        let cluster_count = inode
+            .size
+            .checked_add(inode.compressed_cluster_size - 1)
+            .ok_or(FsError::InvalidInput)?
+            / inode.compressed_cluster_size;
+        if cluster >= cluster_count {
+            return Err(FsError::UnexpectedEof);
+        }
+        let offset = inode
+            .compressed_index
+            .checked_add(cluster.checked_mul(8).ok_or(FsError::InvalidInput)?)
+            .ok_or(FsError::InvalidInput)?;
+        let mut index = [0u8; 8];
+        self.read_bytes(offset, &mut index)?;
+        Ok((le_u16(&index, 0), le_u16(&index, 2), le_u32(&index, 4)))
+    }
+
+    fn compressed_block_count(
+        &mut self,
+        inode: &ErofsInode,
+        cluster: u64,
+        current_block: u64,
+    ) -> Result<u64, FsError> {
+        let cluster_count = inode
+            .size
+            .checked_add(inode.compressed_cluster_size - 1)
+            .ok_or(FsError::InvalidInput)?
+            / inode.compressed_cluster_size;
+        let end_block = if cluster + 1 < cluster_count {
+            let (next_advise, _, next_block) = self.compressed_index(inode, cluster + 1)?;
+            if next_advise & EROFS_LCLUSTER_TYPE_MASK == EROFS_LCLUSTER_TYPE_NONHEAD
+                || next_advise & EROFS_LI_PARTIAL_REF != 0
+            {
+                return Err(FsError::NotSupported);
+            }
+            next_block as u64
+        } else {
+            inode
+                .compressed_start_block
+                .checked_add(inode.compressed_blocks)
+                .ok_or(FsError::InvalidInput)?
+        };
+        if end_block <= current_block || end_block > self.total_blocks {
+            return Err(FsError::InvalidInput);
+        }
+        Ok(end_block - current_block)
+    }
+
+    fn read_compressed_cluster(
+        &mut self,
+        inode: &ErofsInode,
+        cluster: u64,
+        output: &mut [u8],
+    ) -> Result<(), FsError> {
+        let (advise, cluster_offset, block_address) = self.compressed_index(inode, cluster)?;
+        let cluster_type = advise & EROFS_LCLUSTER_TYPE_MASK;
+        if cluster_offset != 0 || advise & EROFS_LI_PARTIAL_REF != 0 {
+            return Err(FsError::NotSupported);
+        }
+        let current_block = block_address as u64;
+        let block_count = self.compressed_block_count(inode, cluster, current_block)?;
+        let compressed_length = block_count
+            .checked_mul(self.block_size)
+            .ok_or(FsError::InvalidInput)? as usize;
+        let byte_offset = current_block
+            .checked_mul(self.block_size)
+            .ok_or(FsError::InvalidInput)?;
+
+        match cluster_type {
+            EROFS_LCLUSTER_TYPE_PLAIN => {
+                let expected = output.len() as u64;
+                let available = block_count
+                    .checked_mul(self.block_size)
+                    .ok_or(FsError::InvalidInput)?;
+                if expected > available {
+                    return Err(FsError::UnexpectedEof);
+                }
+                self.read_bytes(byte_offset, output)
+            }
+            EROFS_LCLUSTER_TYPE_HEAD1 | EROFS_LCLUSTER_TYPE_HEAD2 => {
+                if inode.compressed_algorithm != EROFS_COMPRESSION_LZ4 {
+                    return Err(FsError::NotSupported);
+                }
+                let mut compressed = vec![0u8; compressed_length];
+                self.read_bytes(byte_offset, &mut compressed)?;
+                let decoded = lz4_decompress(&compressed, output)?;
+                if decoded != output.len() {
+                    return Err(FsError::UnexpectedEof);
+                }
+                Ok(())
+            }
+            EROFS_LCLUSTER_TYPE_NONHEAD => Err(FsError::NotSupported),
+            _ => Err(FsError::InvalidInput),
+        }
+    }
+
+    fn read_compressed_inode_bytes(
+        &mut self,
+        inode: &ErofsInode,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, FsError> {
+        if offset >= inode.size || output.is_empty() {
+            return Ok(0);
+        }
+        let length = (inode.size - offset).min(output.len() as u64) as usize;
+        let cluster_size = inode.compressed_cluster_size as usize;
+        let mut done = 0usize;
+        while done < length {
+            let position = offset + done as u64;
+            let cluster = position / inode.compressed_cluster_size;
+            let within = position as usize % cluster_size;
+            let take = (cluster_size - within).min(length - done);
+            let cluster_start = cluster
+                .checked_mul(inode.compressed_cluster_size)
+                .ok_or(FsError::InvalidInput)?;
+            let cluster_length =
+                (inode.size - cluster_start).min(inode.compressed_cluster_size) as usize;
+            let mut decoded = vec![0u8; cluster_length];
+            self.read_compressed_cluster(inode, cluster, &mut decoded)?;
+            output[done..done + take].copy_from_slice(&decoded[within..within + take]);
+            done += take;
+        }
+        Ok(length)
+    }
+
     fn read_inode_bytes(
         &mut self,
         inode: &ErofsInode,
@@ -346,6 +631,9 @@ impl ErofsFileSystem {
     ) -> Result<usize, FsError> {
         if offset >= inode.size || output.is_empty() {
             return Ok(0);
+        }
+        if inode.layout == EROFS_INODE_COMPRESSED_FULL {
+            return self.read_compressed_inode_bytes(inode, offset, output);
         }
         let length = (inode.size - offset).min(output.len() as u64) as usize;
         let block_size = self.block_size as usize;
@@ -704,6 +992,90 @@ fn align4(value: u64) -> Result<u64, FsError> {
         .ok_or(FsError::InvalidInput)
 }
 
+fn align8(value: u64) -> Result<u64, FsError> {
+    value
+        .checked_add(7)
+        .map(|value| value & !7)
+        .ok_or(FsError::InvalidInput)
+}
+
+/// Decode one EROFS LZ4 physical cluster into a bounded output buffer.
+///
+/// EROFS stores compressed data in block-sized physical clusters.  The input
+/// therefore may contain zero padding after the LZ4 end-of-stream sequence;
+/// decoding stops as soon as the requested logical-cluster output is full.
+fn lz4_decompress(input: &[u8], output: &mut [u8]) -> Result<usize, FsError> {
+    let mut input_offset = 0usize;
+    let mut output_offset = 0usize;
+    while output_offset < output.len() {
+        let token = *input.get(input_offset).ok_or(FsError::UnexpectedEof)?;
+        input_offset += 1;
+        let mut literal_length = (token >> 4) as usize;
+        if literal_length == 15 {
+            loop {
+                let extension = *input.get(input_offset).ok_or(FsError::UnexpectedEof)?;
+                input_offset += 1;
+                literal_length = literal_length
+                    .checked_add(extension as usize)
+                    .ok_or(FsError::InvalidInput)?;
+                if extension != 255 {
+                    break;
+                }
+            }
+        }
+        let literal_end = input_offset
+            .checked_add(literal_length)
+            .ok_or(FsError::InvalidInput)?;
+        let output_end = output_offset
+            .checked_add(literal_length)
+            .ok_or(FsError::InvalidInput)?;
+        if literal_end > input.len() || output_end > output.len() {
+            return Err(FsError::UnexpectedEof);
+        }
+        output[output_offset..output_end].copy_from_slice(&input[input_offset..literal_end]);
+        input_offset = literal_end;
+        output_offset = output_end;
+        if output_offset == output.len() {
+            break;
+        }
+
+        let offset_end = input_offset.checked_add(2).ok_or(FsError::InvalidInput)?;
+        if offset_end > input.len() {
+            return Err(FsError::UnexpectedEof);
+        }
+        let match_offset =
+            u16::from_le_bytes([input[input_offset], input[input_offset + 1]]) as usize;
+        input_offset = offset_end;
+        if match_offset == 0 || match_offset > output_offset {
+            return Err(FsError::InvalidInput);
+        }
+        let mut match_length = (token & 0x0f) as usize + 4;
+        if (token & 0x0f) == 15 {
+            loop {
+                let extension = *input.get(input_offset).ok_or(FsError::UnexpectedEof)?;
+                input_offset += 1;
+                match_length = match_length
+                    .checked_add(extension as usize)
+                    .ok_or(FsError::InvalidInput)?;
+                if extension != 255 {
+                    break;
+                }
+            }
+        }
+        let match_end = output_offset
+            .checked_add(match_length)
+            .ok_or(FsError::InvalidInput)?;
+        if match_end > output.len() {
+            return Err(FsError::UnexpectedEof);
+        }
+        for index in 0..match_length {
+            output[output_offset + index] = output[output_offset + index - match_offset];
+        }
+        output_offset = match_end;
+    }
+    Ok(output_offset)
+}
+
 fn le_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
@@ -864,6 +1236,41 @@ mod tests {
         put_u16(file, 0, EROFS_INODE_FLAT_INLINE as u16 * 2);
         put_u32(file, 8, 5);
         image[2 * 1024 + 96..2 * 1024 + 101].copy_from_slice(b"world");
+
+        let device = Box::new(MemoryBlockDevice { data: image });
+        let mut fs = ErofsFileSystem::new(device).unwrap();
+        let descriptor = fs.open("/hello", 0).unwrap();
+        let mut output = [0u8; 5];
+        assert_eq!(fs.read(descriptor.fd, &mut output).unwrap(), 5);
+        assert_eq!(&output, b"world");
+    }
+
+    #[test]
+    fn reads_full_index_lz4_compressed_file() {
+        let mut image = make_image();
+        put_u32(
+            &mut image[1024..1152],
+            0x50,
+            EROFS_FEATURE_INCOMPAT_LZ4_0PADDING | EROFS_FEATURE_INCOMPAT_COMPR_CFGS,
+        );
+        put_u16(&mut image[1024..1152], 0x54, 1 << EROFS_COMPRESSION_LZ4);
+        let file = &mut image[2 * 1024 + 64..2 * 1024 + 96];
+        put_u16(file, 0, EROFS_INODE_COMPRESSED_FULL as u16 * 2);
+        put_u32(file, 8, 5);
+        put_u32(file, 16, 1);
+
+        // Full-index compressed inode: map header followed by one HEAD1
+        // logical cluster pointing at physical block five.  The LZ4 stream
+        // is a literal-only block and the rest of the physical block is
+        // padding, as it is on a block-addressed EROFS volume.
+        let header = &mut image[2 * 1024 + 96..2 * 1024 + 104];
+        header[6] = EROFS_COMPRESSION_LZ4;
+        header[7] = 0;
+        let index = &mut image[2 * 1024 + 104..2 * 1024 + 112];
+        put_u16(index, 0, EROFS_LCLUSTER_TYPE_HEAD1);
+        put_u16(index, 2, 0);
+        put_u32(index, 4, 5);
+        image[5 * 1024..5 * 1024 + 6].copy_from_slice(&[0x50, b'w', b'o', b'r', b'l', b'd']);
 
         let device = Box::new(MemoryBlockDevice { data: image });
         let mut fs = ErofsFileSystem::new(device).unwrap();

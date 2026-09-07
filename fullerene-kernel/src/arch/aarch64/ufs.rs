@@ -1498,7 +1498,22 @@ impl PlatformOps for BramblePlatformOps {
     }
 
     fn delay_us(&mut self, microseconds: u32) {
-        super::timer::delay_us(microseconds as u64);
+        // The Android-init composition can expose USB before the UFS
+        // transaction. Keep the DWC3 event ring serviced during every
+        // bounded UFS wait; otherwise the host's first descriptor/SETUP can
+        // arrive while PCS or UIC polling owns the CPU and the apparent USB
+        // handoff failure is only a scheduling artifact.
+        if super::usb::early_handoff_active() {
+            let mut remaining = microseconds as u64;
+            while remaining != 0 {
+                let slice = remaining.min(100);
+                super::timer::delay_us(slice);
+                super::usb::poll();
+                remaining -= slice;
+            }
+        } else {
+            super::timer::delay_us(microseconds as u64);
+        }
     }
 
     fn select_unipro_mode(&mut self) -> bool {
@@ -1517,9 +1532,12 @@ impl PlatformOps for BramblePlatformOps {
         unsafe {
             Self::write32(self.controller_base, LITO_UFS_HCE, hci::CONTROLLER_ENABLE);
             Self::barrier();
-            for _ in 0..500_000u32 {
+            for iteration in 0..500_000u32 {
                 if Self::read32(self.controller_base, LITO_UFS_HCE) & hci::CONTROLLER_ENABLE != 0 {
                     return true;
+                }
+                if iteration & 0x3ff == 0 && super::usb::early_handoff_active() {
+                    super::usb::poll();
                 }
                 core::hint::spin_loop();
             }

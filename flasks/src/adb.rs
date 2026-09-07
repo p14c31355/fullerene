@@ -12,7 +12,7 @@ use nusb::{
 };
 use std::{
     fmt::Display,
-    io,
+    fs, io,
     time::{Duration, Instant},
 };
 use tokio::runtime::Builder;
@@ -42,6 +42,8 @@ const ADB_SYNC_STAT: &[u8; 4] = b"STAT";
 const ADB_SYNC_DATA: &[u8; 4] = b"DATA";
 const ADB_SYNC_DONE: &[u8; 4] = b"DONE";
 const ADB_SYNC_FAIL: &[u8; 4] = b"FAIL";
+const ADB_SYNC_SEND: &[u8; 4] = b"SEND";
+const ADB_SYNC_MAX_PUSH_BYTES: usize = 4096;
 
 const COMMAND_STATUS: u16 = 1;
 const COMMAND_TRACE: u16 = 2;
@@ -65,6 +67,8 @@ pub fn run(command: &str) -> io::Result<()> {
 fn is_standard_adb_command(command: &str) -> bool {
     command == "reboot"
         || command.starts_with("reboot:")
+        || command == "root"
+        || command == "unroot"
         || command == "shell"
         || command.starts_with("shell:")
         || command.starts_with("sync:")
@@ -179,10 +183,10 @@ async fn run_async(command: &str) -> io::Result<()> {
 ///
 /// This is deliberately limited to the boot bring-up services. It is enough
 /// to make `flasks adb --adb-command reboot:bootloader` use the same CNXN/OPEN
-/// exchange as a normal ADB host. The bounded read-only `sync:stat:` and
-/// `sync:recv:` services use the same exchange for filesystem diagnostics;
-/// status/trace remain available through the deterministic FDBG diagnostics
-/// above.
+/// exchange as a normal ADB host. The bounded `sync:stat:`, `sync:recv:`, and
+/// RAM-only `sync:send:<local>:<remote>` services use the same exchange for
+/// filesystem diagnostics; status/trace remain available through the
+/// deterministic FDBG diagnostics above.
 async fn run_standard_async(command: &str) -> io::Result<()> {
     let devices = nusb::list_devices().await.map_err(other)?;
     let devices: Vec<_> = devices
@@ -257,8 +261,14 @@ async fn run_standard_async(command: &str) -> io::Result<()> {
         "shell,v2,raw:".to_owned()
     } else if let Some(shell) = command.strip_prefix("shell:") {
         format!("shell,v2,raw:{shell}")
+    } else if command == "root" {
+        "root:".to_owned()
+    } else if command == "unroot" {
+        "unroot:".to_owned()
     } else if command == "reboot" {
         "reboot".to_owned()
+    } else if command.starts_with("sync:") {
+        "sync:".to_owned()
     } else {
         command.to_owned()
     };
@@ -278,9 +288,24 @@ async fn run_standard_async(command: &str) -> io::Result<()> {
         return Ok(());
     }
 
+    if command == "root" || command == "unroot" {
+        return run_adb_control_stream(&mut endpoint_out, &mut endpoint_in, opened.2, opened.1)
+            .await;
+    }
+
     let local_id = opened.2;
     let remote_id = opened.1;
     if let Some(sync_command) = command.strip_prefix("sync:") {
+        if let Some(send_command) = sync_command.strip_prefix("send:") {
+            return run_sync_send_stream(
+                &mut endpoint_out,
+                &mut endpoint_in,
+                local_id,
+                remote_id,
+                send_command,
+            )
+            .await;
+        }
         return run_sync_stream(
             &mut endpoint_out,
             &mut endpoint_in,
@@ -327,6 +352,111 @@ async fn run_standard_async(command: &str) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+async fn run_sync_send_stream(
+    endpoint_out: &mut nusb::Endpoint<Bulk, Out>,
+    endpoint_in: &mut nusb::Endpoint<Bulk, In>,
+    local_id: u32,
+    remote_id: u32,
+    command: &str,
+) -> io::Result<()> {
+    let (local_path, remote_path) = command
+        .split_once(':')
+        .ok_or_else(|| other("sync send must be sync:send:<local>:<remote>"))?;
+    if local_path.is_empty()
+        || remote_path.is_empty()
+        || remote_path.len() > 256
+        || !remote_path.starts_with('/')
+    {
+        return Err(other(
+            "sync send requires a local path and an absolute remote path of at most 256 bytes",
+        ));
+    }
+    let data = fs::read(local_path)?;
+    if data.len() > ADB_SYNC_MAX_PUSH_BYTES {
+        return Err(other(format!(
+            "sync send is bounded to {ADB_SYNC_MAX_PUSH_BYTES} bytes"
+        )));
+    }
+
+    let mut destination = remote_path.as_bytes().to_vec();
+    destination.extend_from_slice(b",33188");
+    let request = encode_sync_request(ADB_SYNC_SEND, &destination)?;
+    send_adb_frame(endpoint_out, ADB_WRTE, local_id, remote_id, &request).await?;
+    expect_sync_ack(endpoint_in, local_id, remote_id, "SEND").await?;
+
+    for chunk in data.chunks(ADB_MAX_DATA - 8) {
+        let mut frame = Vec::with_capacity(8 + chunk.len());
+        frame.extend_from_slice(ADB_SYNC_DATA);
+        frame.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+        frame.extend_from_slice(chunk);
+        send_adb_frame(endpoint_out, ADB_WRTE, local_id, remote_id, &frame).await?;
+        expect_sync_ack(endpoint_in, local_id, remote_id, "DATA").await?;
+    }
+
+    let mut done = Vec::with_capacity(8);
+    done.extend_from_slice(ADB_SYNC_DONE);
+    done.extend_from_slice(&0u32.to_le_bytes());
+    send_adb_frame(endpoint_out, ADB_WRTE, local_id, remote_id, &done).await?;
+    expect_sync_ack(endpoint_in, local_id, remote_id, "DONE").await?;
+
+    let closed = receive_adb_frame(endpoint_in).await?;
+    if closed.0 != ADB_CLSE || closed.1 != remote_id || closed.2 != local_id {
+        return Err(other(format!(
+            "sync send was not closed: {}",
+            command_name(closed.0)
+        )));
+    }
+    send_adb_frame(endpoint_out, ADB_CLSE, local_id, remote_id, &[]).await?;
+    println!(
+        "sync send {local_path} -> {remote_path}: {} bytes",
+        data.len()
+    );
+    Ok(())
+}
+
+async fn expect_sync_ack(
+    endpoint_in: &mut nusb::Endpoint<Bulk, In>,
+    local_id: u32,
+    remote_id: u32,
+    operation: &str,
+) -> io::Result<()> {
+    let acknowledged = receive_adb_frame(endpoint_in).await?;
+    if acknowledged.0 != ADB_OKAY || acknowledged.1 != remote_id || acknowledged.2 != local_id {
+        return Err(other(format!(
+            "sync {operation} was not acknowledged: {}",
+            command_name(acknowledged.0)
+        )));
+    }
+    Ok(())
+}
+
+async fn run_adb_control_stream(
+    endpoint_out: &mut nusb::Endpoint<Bulk, Out>,
+    endpoint_in: &mut nusb::Endpoint<Bulk, In>,
+    local_id: u32,
+    remote_id: u32,
+) -> io::Result<()> {
+    loop {
+        let frame = receive_adb_frame(endpoint_in).await?;
+        match frame.0 {
+            ADB_WRTE => {
+                print!("{}", String::from_utf8_lossy(&frame.3));
+                send_adb_frame(endpoint_out, ADB_OKAY, local_id, remote_id, &[]).await?;
+            }
+            ADB_CLSE => {
+                send_adb_frame(endpoint_out, ADB_CLSE, local_id, remote_id, &[]).await?;
+                return Ok(());
+            }
+            _ => {
+                return Err(other(format!(
+                    "unexpected ADB control frame {}",
+                    command_name(frame.0)
+                )));
+            }
+        }
+    }
 }
 
 async fn run_sync_stream(
@@ -607,9 +737,9 @@ fn other(error: impl Display) -> io::Error {
 mod tests {
     use super::{
         ADB_CNXN, ADB_HEADER_BYTES, ADB_MAX_DATA, ADB_SHELL_V2_EXIT, ADB_SHELL_V2_STDOUT,
-        ADB_SYNC_DATA, ADB_SYNC_STAT, adb_checksum, encode_adb_frame,
-        encode_sync_request, parse_adb_frame, parse_shell_v2_frame, parse_sync_chunk,
-        parse_sync_stat,
+        ADB_SYNC_DATA, ADB_SYNC_SEND, ADB_SYNC_STAT, adb_checksum, encode_adb_frame,
+        encode_sync_request, is_standard_adb_command, parse_adb_frame, parse_shell_v2_frame,
+        parse_sync_chunk, parse_sync_stat,
     };
 
     #[test]
@@ -628,6 +758,14 @@ mod tests {
         let mut frame = encode_adb_frame(ADB_CNXN, 1, 2, b"banner\0");
         frame[16..20].copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(parse_adb_frame(&frame).unwrap().3, b"banner\0");
+    }
+
+    #[test]
+    fn root_and_unroot_use_standard_adb_transport() {
+        assert!(is_standard_adb_command("root"));
+        assert!(is_standard_adb_command("unroot"));
+        assert!(is_standard_adb_command("sync:send:/tmp/a:/tmp/b"));
+        assert!(!is_standard_adb_command("root:extra"));
     }
 
     #[test]
@@ -671,6 +809,14 @@ mod tests {
         response.extend_from_slice(&42u32.to_le_bytes());
         response.extend_from_slice(&7u32.to_le_bytes());
         assert_eq!(parse_sync_stat(&response).unwrap(), (0o100444, 42, 7));
+    }
+
+    #[test]
+    fn sync_send_request_preserves_remote_mode_suffix() {
+        let request = encode_sync_request(ADB_SYNC_SEND, b"/tmp/probe,33188").unwrap();
+        assert_eq!(&request[..4], ADB_SYNC_SEND);
+        assert_eq!(u32::from_le_bytes(request[4..8].try_into().unwrap()), 16);
+        assert_eq!(&request[8..], b"/tmp/probe,33188");
     }
 
     #[test]

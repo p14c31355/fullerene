@@ -193,6 +193,7 @@ fn main() {
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dwc31_dctl_only_reset)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_before_reset)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_clear_sleepm)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_phyif_16bit)");
     println!(
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_usbtrdtim, values(\"5\", \"6\", \"7\", \"8\", \"9\", \"10\", \"11\", \"12\", \"13\", \"14\", \"15\"))"
@@ -682,6 +683,9 @@ fn main() {
         }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_HSPHY_SOURCE_EXACT").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_HSPHY_CLEAR_SLEEPM").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_clear_sleepm");
         }
         if env::var_os("FULLERENE_AARCH64_USB_QMP_POLL_NOP_LOOP").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_qmp_poll_nop_loop");
@@ -1385,6 +1389,7 @@ fn main() {
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_HSPHY_SOURCE_EXACT"
         );
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_CLEAR_SLEEPM");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_QMP_POLL_NOP_LOOP");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_POR_DELAY_150");
         println!(

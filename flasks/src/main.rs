@@ -62,6 +62,11 @@ struct Args {
     #[arg(long)]
     boot_uncompressed: bool,
 
+    /// Use the Rust literal-only LZ4 frame for a compatibility A/B. The
+    /// default remains the stock-shaped lz4_flex frame.
+    #[arg(long)]
+    boot_literal_lz4: bool,
+
     /// Build the dependency-free AArch64 entry probe. If it reaches Rust,
     /// it resets through PSCI; on Bramble this should return to fastboot.
     #[arg(long)]
@@ -393,6 +398,11 @@ struct Args {
     /// USB2 handoff instead of the legacy helper's local RTUNE/delay steps.
     #[arg(long)]
     usb_gadget_handoff_hsphy_source_exact: bool,
+
+    /// Bramble PHY differential: clear the USB2 HS-PHY UTMI SLEEPM bit after
+    /// analog initialization, matching the active resume state.
+    #[arg(long)]
+    usb_gadget_handoff_hsphy_clear_sleepm: bool,
 
     /// Bramble physical control: force the historical HS-PHY tuning pairs
     /// 0x63/0x85; the qpr1 source-confirmed pairs remain the default.
@@ -924,8 +934,8 @@ struct Args {
     image: Option<PathBuf>,
 
     /// Command for Fullerene diagnostics or the standard ADB bring-up path.
-    /// `status`, `trace`, `help`, `return` use FDBG; `shell:*` and `reboot:*`
-    /// use standard ADB framing.
+    /// `status`, `trace`, `help`, `return` use FDBG; `shell:*`, `root`,
+    /// `unroot`, `sync:*`, and `reboot:*` use standard ADB framing.
     #[arg(long = "adb-command", default_value = "status", value_name = "COMMAND")]
     adb_command: String,
 
@@ -1242,6 +1252,23 @@ fn selected_aarch64_probe(args: &Args, target: Target) -> io::Result<Option<Aarc
         ));
     }
     Ok(Some(probe))
+}
+
+fn select_aarch64_kernel_artifact(
+    android_init: bool,
+    selected_probe: Option<Aarch64Probe>,
+    generic_kernel: bool,
+) -> &'static str {
+    if !android_init {
+        if let Some(probe) = selected_probe {
+            return probe.artifact;
+        }
+    }
+    if generic_kernel {
+        "fullerene-kernel"
+    } else {
+        Arch::Aarch64.kernel_artifact()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1620,6 +1647,18 @@ fn main() -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb-gadget-handoff-hsphy-source-exact requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
+        ));
+    }
+    if args.usb_gadget_handoff_hsphy_clear_sleepm
+        && (!args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-hsphy-clear-sleepm requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_legacy_fallback
@@ -2753,15 +2792,16 @@ fn main() -> io::Result<()> {
             run_aarch64_qemu_preflight(&workspace_root, profile, args.timeout.or(Some(10)))?;
         }
 
-        let kernel_artifact = selected_probe
-            .map(|probe| probe.artifact)
-            .unwrap_or_else(|| {
-                if env::var_os("FULLERENE_AARCH64_GENERIC_KERNEL").is_some() {
-                    "fullerene-kernel"
-                } else {
-                    target.arch.kernel_artifact()
-                }
-            });
+        // An Android-init image and a USB probe are composable build
+        // dimensions. The probe selector contributes its cfg/env wiring, but
+        // selecting the standalone probe artifact would discard the normal
+        // AArch64 `main.rs` path (including UFS, PID 1, and Android init).
+        // Keep the standalone artifact only for probe-only images.
+        let kernel_artifact = select_aarch64_kernel_artifact(
+            args.android_init,
+            selected_probe,
+            env::var_os("FULLERENE_AARCH64_GENERIC_KERNEL").is_some(),
+        );
         let kernel_path = build_aarch64_kernel(
             &workspace_root,
             profile,
@@ -2784,6 +2824,7 @@ fn main() -> io::Result<()> {
                 android_block_reset: args.usb_gadget_handoff_android_block_reset,
                 refresh_hsphy_power: args.usb_gadget_handoff_refresh_hsphy_power,
                 hsphy_source_exact: args.usb_gadget_handoff_hsphy_source_exact,
+                hsphy_clear_sleepm: args.usb_gadget_handoff_hsphy_clear_sleepm,
                 hsphy_legacy_fallback: args.usb_gadget_handoff_hsphy_legacy_fallback,
                 hsphy_before_reset: args.usb_gadget_handoff_hsphy_before_reset,
                 skip_usb2_phy_reset: args.usb_gadget_handoff_skip_usb2_phy_reset,
@@ -2970,7 +3011,7 @@ fn main() -> io::Result<()> {
         {
             let raw_kernel_path = build_aarch64_raw_kernel(&kernel_path)?;
             let image_path = build_aarch64_image(&raw_kernel_path)?;
-            let image_lz4_path = build_aarch64_lz4(&image_path)?;
+            let image_lz4_path = build_aarch64_lz4(&image_path, args.boot_literal_lz4)?;
             let template = args.boot_template.as_deref().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -2996,7 +3037,7 @@ fn main() -> io::Result<()> {
         if args.command == Action::Build {
             let raw_kernel_path = build_aarch64_raw_kernel(&kernel_path)?;
             let image_path = build_aarch64_image(&raw_kernel_path)?;
-            let image_lz4_path = build_aarch64_lz4(&image_path)?;
+            let image_lz4_path = build_aarch64_lz4(&image_path, args.boot_literal_lz4)?;
             if let Some(probe) = selected_probe {
                 println!(
                     "AArch64 {} built at {}",
@@ -3095,6 +3136,7 @@ struct Aarch64BuildConfig {
     android_block_reset: bool,
     refresh_hsphy_power: bool,
     hsphy_source_exact: bool,
+    hsphy_clear_sleepm: bool,
     hsphy_legacy_fallback: bool,
     hsphy_before_reset: bool,
     skip_usb2_phy_reset: bool,
@@ -3264,6 +3306,7 @@ fn build_aarch64_kernel(
         android_block_reset,
         refresh_hsphy_power,
         hsphy_source_exact,
+        hsphy_clear_sleepm,
         hsphy_legacy_fallback,
         hsphy_before_reset,
         skip_usb2_phy_reset,
@@ -3423,6 +3466,17 @@ fn build_aarch64_kernel(
         "FULLERENE_AARCH64_UFS_DMA_IDENTITY",
         "FULLERENE_AARCH64_UFS_DMA_ORIGIN",
         "FULLERENE_AARCH64_UFS_RATE_B",
+        // Keep the opt-in normal-path USB boundary in the cache key. The
+        // kernel consumes this with `option_env!`, so reusing a target
+        // directory from a default build would otherwise hide the boundary.
+        "FULLERENE_AARCH64_USB_EARLY_HANDOFF",
+        // The entry secure-WDT SMC is an independent physical A/B; include
+        // it in the cache key because the kernel consumes it via option_env!.
+        "FULLERENE_AARCH64_ENTRY_SECURE_WDT",
+        // The standalone probe's DT contract switches are consumed by the
+        // kernel build script as cfg flags; isolate their A/B artifacts too.
+        "FULLERENE_AARCH64_USB_PROBE_DT_QMP",
+        "FULLERENE_AARCH64_USB_PROBE_DT_RESOURCES",
     ] {
         if let Ok(value) = env::var(name) {
             push_env(name, value);
@@ -3533,6 +3587,9 @@ fn build_aarch64_kernel(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_HSPHY_SOURCE_EXACT",
             "1".to_owned(),
         );
+    }
+    if hsphy_clear_sleepm {
+        push_env("FULLERENE_AARCH64_USB_HSPHY_CLEAR_SLEEPM", "1".to_owned());
     }
     if hsphy_legacy_fallback {
         push_env(
@@ -4469,13 +4526,15 @@ fn make_aarch64_image(payload: &[u8]) -> Vec<u8> {
 /// a host lz4 executable.
 ///
 /// The stock Bramble `Image.lz4` is a modern LZ4 frame (magic `04 22 4d 18`),
-/// not the older legacy stream. Each block below is a valid literal-only LZ4
-/// block. It is intentionally simple, but uses a normal compressed block
-/// rather than the stored-block extension accepted by newer LZ4 readers; a
-/// few Android bootloaders only implement the former.
-fn build_aarch64_lz4(image: &Path) -> io::Result<PathBuf> {
+/// not the older legacy stream. Use independent 4 MiB blocks and a content
+/// checksum so the generated descriptor matches the stock boot path.
+fn build_aarch64_lz4(image: &Path, literal_only: bool) -> io::Result<PathBuf> {
     let payload = fs::read(image)?;
-    let compressed = make_lz4_frame(&payload);
+    let compressed = if literal_only {
+        make_literal_lz4_frame(&payload)
+    } else {
+        make_lz4_frame(&payload)
+    };
     let output = image.with_extension("Image.lz4");
     fs::write(&output, compressed)?;
     audit_lz4_frame(&output, image)?;
@@ -4596,7 +4655,7 @@ fn validate_bramble_lz4_frame(frame: &[u8]) -> io::Result<()> {
 
     let mut cursor = 7;
     loop {
-        let block_size = read_u32(frame, cursor)? as usize;
+        let block_size = (read_u32(frame, cursor)? & 0x7fff_ffff) as usize;
         cursor = cursor
             .checked_add(4)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "LZ4 cursor overflow"))?;
@@ -4609,39 +4668,7 @@ fn validate_bramble_lz4_frame(frame: &[u8]) -> io::Result<()> {
                 "LZ4 block exceeds the frame",
             ));
         }
-        let block = &frame[cursor..cursor + block_size];
         cursor += block_size;
-        let token = *block
-            .first()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty LZ4 block"))?;
-        if token & 0x0f != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Bramble only accepts literal-only LZ4 blocks",
-            ));
-        }
-        let mut block_cursor = 1;
-        let mut literal_len = (token >> 4) as usize;
-        if literal_len == 15 {
-            loop {
-                let extension = *block.get(block_cursor).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "truncated LZ4 literal length")
-                })?;
-                block_cursor += 1;
-                literal_len = literal_len.checked_add(extension as usize).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "LZ4 literal length overflow")
-                })?;
-                if extension != 255 {
-                    break;
-                }
-            }
-        }
-        if literal_len != block.len().saturating_sub(block_cursor) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "LZ4 literal block has an inconsistent length",
-            ));
-        }
     }
     if cursor.checked_add(4) != Some(frame.len()) {
         return Err(io::Error::new(
@@ -4652,102 +4679,25 @@ fn validate_bramble_lz4_frame(frame: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-fn decode_literal_lz4_frame(frame: &[u8]) -> io::Result<Vec<u8>> {
-    const LZ4_FRAME_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
+fn make_lz4_frame(payload: &[u8]) -> Vec<u8> {
+    let frame_info = lz4_flex::frame::FrameInfo::new()
+        .block_size(lz4_flex::frame::BlockSize::Max4MB)
+        .block_mode(lz4_flex::frame::BlockMode::Independent)
+        .content_checksum(true);
+    let mut encoder = lz4_flex::frame::FrameEncoder::with_frame_info(frame_info, Vec::new());
+    encoder
+        .write_all(payload)
+        .expect("writing to an in-memory LZ4 encoder cannot fail");
+    encoder
+        .finish()
+        .expect("finishing an in-memory LZ4 encoder cannot fail")
+}
+
+fn make_literal_lz4_frame(payload: &[u8]) -> Vec<u8> {
+    const LZ4_FRAME_MAGIC: u32 = 0x184d_2204;
     const FLG: u8 = 0x64;
     const BD: u8 = 0x70;
     const BLOCK_MAX: usize = 4 * 1024 * 1024;
-
-    if frame.len() < 11 || frame[..4] != LZ4_FRAME_MAGIC || frame[4] != FLG || frame[5] != BD {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unsupported or truncated LZ4 frame header",
-        ));
-    }
-    if frame[6] != (xxhash32(&frame[4..6], 0) >> 8) as u8 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "LZ4 frame descriptor checksum mismatch",
-        ));
-    }
-
-    let mut cursor = 7;
-    let mut decoded = Vec::new();
-    loop {
-        let block_size = read_u32(frame, cursor)? as usize;
-        cursor = cursor
-            .checked_add(4)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "LZ4 cursor overflow"))?;
-        if block_size == 0 {
-            break;
-        }
-        if block_size > BLOCK_MAX || block_size > frame.len().saturating_sub(cursor) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "LZ4 block exceeds the frame",
-            ));
-        }
-        let block = &frame[cursor..cursor + block_size];
-        cursor += block_size;
-        let token = *block
-            .first()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty LZ4 block"))?;
-        if token & 0x0f != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "LZ4 audit only accepts Fullerene literal-only blocks",
-            ));
-        }
-        let mut block_cursor = 1;
-        let mut literal_len = (token >> 4) as usize;
-        if literal_len == 15 {
-            loop {
-                let extension = *block.get(block_cursor).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "truncated LZ4 literal length")
-                })?;
-                block_cursor += 1;
-                literal_len = literal_len.checked_add(extension as usize).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "LZ4 literal length overflow")
-                })?;
-                if extension != 255 {
-                    break;
-                }
-            }
-        }
-        if literal_len != block.len().saturating_sub(block_cursor) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "LZ4 literal block has an inconsistent length",
-            ));
-        }
-        decoded.extend_from_slice(&block[block_cursor..]);
-    }
-    let checksum = read_u32(frame, cursor)?;
-    cursor += 4;
-    if cursor != frame.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "trailing bytes after LZ4 content checksum",
-        ));
-    }
-    if checksum != xxhash32(&decoded, 0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "LZ4 content checksum mismatch",
-        ));
-    }
-    Ok(decoded)
-}
-
-fn make_lz4_frame(payload: &[u8]) -> Vec<u8> {
-    const LZ4_FRAME_MAGIC: u32 = 0x184d_2204;
-    const FLG: u8 = 0x64; // version 01, independent blocks, content checksum
-    const BD: u8 = 0x70; // 4 MiB maximum block size
-    const BLOCK_MAX: usize = 4 * 1024 * 1024;
-    // Literal-only encoding adds one token byte and one length byte for each
-    // 255 bytes after the first 15. Keep the encoded block within the BD
-    // maximum instead of splitting the unencoded payload at that boundary.
     const PAYLOAD_MAX: usize = BLOCK_MAX - (2 + BLOCK_MAX / 255);
 
     let mut frame = Vec::with_capacity(4 + 3 + payload.len() + payload.len() / BLOCK_MAX * 4 + 8);
@@ -5913,13 +5863,17 @@ fn run_qemu(
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args, audit_aarch64_image_bytes,
-        audit_android_boot_image, audit_bramble_boot_image, decode_literal_lz4_frame,
+        Aarch64Probe, Action, Arch, Args, BuildProfile, Platform, aarch64_qemu_args,
+        audit_aarch64_image_bytes, audit_android_boot_image, audit_bramble_boot_image,
         esp32_parse_elf, make_aarch64_image, make_lz4_frame, patch_bramble_boot_image,
-        strip_avb_metadata, xxhash32,
+        select_aarch64_kernel_artifact, strip_avb_metadata, validate_bramble_lz4_frame, xxhash32,
     };
     use clap::Parser;
-    use std::{fs, path::Path};
+    use std::{
+        fs,
+        io::{Cursor, Read},
+        path::Path,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -6002,6 +5956,29 @@ mod tests {
     fn aarch64_uses_the_fullerene_kernel_arch_target() {
         assert_eq!(Arch::Aarch64.cargo_package(), "fullerene-kernel");
         assert_eq!(Arch::Aarch64.kernel_artifact(), "fullerene-kernel-aarch64");
+    }
+
+    #[test]
+    fn android_init_keeps_normal_kernel_when_a_probe_is_enabled() {
+        let probe = Aarch64Probe {
+            selected: true,
+            flag: "--usb-gadget-handoff-probe",
+            artifact: "fullerene-kernel-aarch64-usb-probe",
+            env: Some("FULLERENE_AARCH64_USB_GADGET_HANDOFF_PROBE"),
+            bramble_only: true,
+        };
+        assert_eq!(
+            select_aarch64_kernel_artifact(true, Some(probe), false),
+            "fullerene-kernel-aarch64"
+        );
+        assert_eq!(
+            select_aarch64_kernel_artifact(false, Some(probe), false),
+            "fullerene-kernel-aarch64-usb-probe"
+        );
+        assert_eq!(
+            select_aarch64_kernel_artifact(true, None, true),
+            "fullerene-kernel"
+        );
     }
 
     #[test]
@@ -6177,26 +6154,21 @@ mod tests {
     }
 
     #[test]
-    fn lz4_frame_uses_literal_blocks_and_checksums() {
+    fn lz4_frame_uses_bramble_descriptor_and_round_trips() {
         let payload = b"fullerene-aarch64";
         let frame = make_lz4_frame(payload);
         assert_eq!(&frame[0..4], &[0x04, 0x22, 0x4d, 0x18]);
         assert_eq!(&frame[4..6], &[0x64, 0x70]);
         assert_eq!(frame[6], (xxhash32(&frame[4..6], 0) >> 8) as u8);
-        let block_size = u32::from_le_bytes(frame[7..11].try_into().unwrap()) as usize;
-        assert_eq!(block_size, payload.len() + 2);
-        assert_eq!(frame[11] >> 4, 15);
-        assert_eq!(frame[12], (payload.len() - 15) as u8);
-        assert_eq!(&frame[13..13 + payload.len()], payload);
-        assert_eq!(
-            &frame[13 + payload.len()..17 + payload.len()],
-            &[0, 0, 0, 0]
-        );
-        assert_eq!(
-            &frame[17 + payload.len()..],
-            &xxhash32(payload, 0).to_le_bytes()
-        );
-        assert_eq!(decode_literal_lz4_frame(&frame).unwrap(), payload);
+        let block_size = u32::from_le_bytes(frame[7..11].try_into().unwrap()) & 0x7fff_ffff;
+        assert!(block_size > 0);
+        assert!(block_size <= 4 * 1024 * 1024);
+        validate_bramble_lz4_frame(&frame).unwrap();
+
+        let mut decoder = lz4_flex::frame::FrameDecoder::new(Cursor::new(&frame));
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, payload);
     }
 
     #[test]
@@ -6204,7 +6176,9 @@ mod tests {
         let mut frame = make_lz4_frame(b"fullerene-aarch64");
         let last = frame.len() - 1;
         frame[last] ^= 1;
-        assert!(decode_literal_lz4_frame(&frame).is_err());
+        let mut decoder = lz4_flex::frame::FrameDecoder::new(Cursor::new(&frame));
+        let mut decoded = Vec::new();
+        assert!(decoder.read_to_end(&mut decoded).is_err());
     }
 
     #[test]

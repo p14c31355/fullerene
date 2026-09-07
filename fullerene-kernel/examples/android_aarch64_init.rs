@@ -673,6 +673,8 @@ fn append_policy_allow_rule(
 fn build_bootstrap_selinux_policy(buffer: &mut [u8]) -> Option<usize> {
     static INIT: &[u8] = b"u:r:init:s0";
     static FULLERENED: &[u8] = b"u:r:fullerened:s0";
+    static ADBD: &[u8] = b"u:r:adbd:s0";
+    static SU: &[u8] = b"u:r:su:s0";
     static CURRENT: &[u8] = b"/proc/self/attr/current";
     static EXEC: &[u8] = b"/proc/self/attr/exec";
     static LOAD: &[u8] = b"/sys/fs/selinux/load";
@@ -684,9 +686,13 @@ fn build_bootstrap_selinux_policy(buffer: &mut [u8]) -> Option<usize> {
     let mut length = 0;
     // FSP2 is generated from Rust byte slices rather than a checked-in CIL or
     // policydb blob; the kernel parser remains deliberately bounded.
-    if !append_policy_bytes(buffer, &mut length, b"FSP2\x01\x00\x02\x00\x07\x00")
+    if !append_policy_bytes(buffer, &mut length, b"FSP2\x01\x00\x03\x00\x0b\x00")
         || !append_policy_context_rule(buffer, &mut length, INIT, INIT)
         || !append_policy_context_rule(buffer, &mut length, INIT, FULLERENED)
+        // Bounded userdebug equivalent: adb root changes the debug domain
+        // from adbd to su. The kernel still checks this rule at the ADB
+        // control boundary; this is not an AOSP policydb encoding.
+        || !append_policy_context_rule(buffer, &mut length, ADBD, SU)
         || !append_policy_allow_rule(buffer, &mut length, INIT, CURRENT, READ)
         || !append_policy_allow_rule(buffer, &mut length, INIT, EXEC, READ | WRITE)
         || !append_policy_allow_rule(buffer, &mut length, INIT, LOAD, WRITE)
@@ -694,6 +700,10 @@ fn build_bootstrap_selinux_policy(buffer: &mut [u8]) -> Option<usize> {
         || !append_policy_allow_rule(buffer, &mut length, INIT, USB_STATE, WRITE)
         || !append_policy_allow_rule(buffer, &mut length, INIT, HOSTNAME, WRITE)
         || !append_policy_allow_rule(buffer, &mut length, FULLERENED, CURRENT, READ)
+        || !append_policy_allow_rule(buffer, &mut length, ADBD, CURRENT, READ)
+        || !append_policy_allow_rule(buffer, &mut length, ADBD, EXEC, READ | WRITE)
+        || !append_policy_allow_rule(buffer, &mut length, SU, CURRENT, READ)
+        || !append_policy_allow_rule(buffer, &mut length, SU, EXEC, READ)
     {
         return None;
     }

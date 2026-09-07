@@ -453,6 +453,14 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             // It then gives the analog block another 20 us to settle.
             crate::timer::delay_us(20);
         }
+        #[cfg(fullerene_aarch64_usb_hsphy_clear_sleepm)]
+        {
+            // Keep the normal source-derived SLEEPM write unchanged. This
+            // explicit A/B models the active usb_phy_set_suspend(false)
+            // resume boundary after analog init, where the RX path must not
+            // remain in the PHY's sleep mode.
+            hsphy_update(HSPHY_UTMI_CTRL0, HSPHY_UTMI_SLEEPM, 0);
+        }
     }
 }
 

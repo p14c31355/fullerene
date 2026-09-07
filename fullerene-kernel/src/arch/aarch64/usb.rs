@@ -705,18 +705,39 @@ static mut RESUME_PENDING: bool = false;
 static mut USB_IN_P3: bool = false;
 static mut USB_RUNTIME_STATE: super::platform::bramble::UsbRuntimeState =
     super::platform::bramble::UsbRuntimeState::Off;
+// When the normal Android-init path takes the USB handoff before MMU/UFS
+// setup, the storage transaction must not starve the event-ring consumer.
+// This flag is set only after a successful early handoff; ordinary and
+// failed-handoff paths therefore keep their existing ownership rules.
+static mut EARLY_HANDOFF_ACTIVE: bool = false;
+// Keep a reset-safe diagnostic bit while the normal Rust entry path is
+// executing the Bramble handoff. If a secure-owned MMIO access raises a
+// synchronous exception in this window, the normal exception vector would
+// otherwise park forever at WFE and leave the phone on the Google logo.
+static mut EARLY_HANDOFF_IN_PROGRESS: bool = false;
 /// The gadget driver is deliberately independent of DWC3 registers.  The
 /// hardware UDC feeds it setup/complete callbacks, while the QEMU simulator
 /// uses the same request/state implementation directly.
 static mut GADGET: Ep0Simulator = Ep0Simulator::new();
 static mut UDC: UsbUdc = UsbUdc::new();
 
-/// Ask the boot chain for a normal system reset. This is deliberately kept
-/// separate from the diagnostic transport: the command is accepted only in a
-/// build with `FULLERENE_AARCH64_DEBUG_RETURN=1`, and no partition or boot
-/// metadata is written. Whether the platform returns to Fastboot or follows
-/// its ordinary boot target remains a firmware policy decision.
-pub(super) fn return_to_boot_chain() -> ! {
+#[cfg(fullerene_aarch64_bramble)]
+const IMEM_RESTART_REASON: usize = 0x146a_b65c;
+#[cfg(fullerene_aarch64_bramble)]
+const IMEM_BOOTLOADER_REASON: u32 = 0x7766_5500;
+
+/// Ask the boot chain for a non-persistent bootloader return. This is
+/// deliberately kept separate from the diagnostic transport: the command is
+/// accepted only in a build with `FULLERENE_AARCH64_DEBUG_RETURN=1`. The
+/// Qualcomm IMEM marker is volatile scratch state, not a partition or boot
+/// metadata write, and matches the marker used by the standalone probe to
+/// request the bootloader/Fastboot path after a reset.
+pub(crate) fn return_to_boot_chain() -> ! {
+    #[cfg(fullerene_aarch64_bramble)]
+    unsafe {
+        core::ptr::write_volatile(IMEM_RESTART_REASON as *mut u32, IMEM_BOOTLOADER_REASON);
+        core::arch::asm!("dsb sy", "isb", options(nostack));
+    }
     unsafe {
         core::arch::asm!(
             "mov w0, #9",
@@ -1857,6 +1878,34 @@ pub unsafe fn allocate_usb_dma(size: usize, alignment: usize) -> Option<*mut u8>
 /// diagnostic gadget, and that must not look like a hung probe.
 pub fn probe_ep0_progress() -> bool {
     unsafe { PROBE_EP0_PROGRESS }
+}
+
+/// Publish that the normal Bramble entry path owns a live early USB gadget.
+/// UFS uses this as a narrow cooperative-polling hook while its bounded
+/// controller waits run before the main USB loop is reached.
+pub fn set_early_handoff_active(active: bool) {
+    unsafe {
+        EARLY_HANDOFF_ACTIVE = active;
+    }
+}
+
+/// Mark the bounded Bramble handoff as in progress. This is only a
+/// diagnostic escape hatch: the exception path consumes it only in builds
+/// explicitly compiled with `FULLERENE_AARCH64_DEBUG_RETURN=1`.
+pub fn set_early_handoff_in_progress(active: bool) {
+    unsafe {
+        EARLY_HANDOFF_IN_PROGRESS = active;
+    }
+}
+
+#[inline]
+pub(crate) fn early_handoff_in_progress() -> bool {
+    unsafe { EARLY_HANDOFF_IN_PROGRESS }
+}
+
+#[inline]
+pub(crate) fn early_handoff_active() -> bool {
+    unsafe { EARLY_HANDOFF_ACTIVE }
 }
 
 fn note_probe_ep0_progress() {

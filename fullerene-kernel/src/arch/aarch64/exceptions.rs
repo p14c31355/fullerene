@@ -245,6 +245,16 @@ pub(crate) fn enter_user(frame: &Aarch64TrapFrame) -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_exception_sync(frame: *mut Aarch64TrapFrame) {
     let frame = unsafe { &mut *frame };
+    #[cfg(fullerene_aarch64_bramble)]
+    if super::usb::early_handoff_in_progress()
+        && option_env!("FULLERENE_AARCH64_DEBUG_RETURN") == Some("1")
+    {
+        // A synchronous abort during the early handoff must not fall into
+        // the normal WFE halt: that leaves a physical phone on the Google
+        // logo with no way to run the next RAM-only A/B. Return through the
+        // same volatile IMEM marker used by the explicit diagnostic command.
+        super::usb::return_to_boot_chain();
+    }
     if frame.from_user()
         && ((frame.esr_el1 >> 26) & 0x3f) == 0x15
         && super::syscall::dispatch(frame)

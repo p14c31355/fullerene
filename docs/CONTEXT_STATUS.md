@@ -4417,3 +4417,569 @@ the compact working memory; the ledgers remain the evidence archive.
   This remains bounded shell transport rather than complete `adbd`
   authentication/sync/forwarding/PTY behavior; no physical boot or persistent
   device operation was performed.
+
+### 2026-09-07 — Read-only ADB sync boundary and Fastboot observation
+
+- Added the standard ADB `sync:` service to the Rust USB transport and the
+  `flasks` host path. `sync:stat:<path>` and `sync:recv:<path>` expose only the
+  fixed Rust virtual-file snapshots; `sync:send` is rejected explicitly, so
+  this change adds no filesystem, UFS, partition, or userdata write path.
+- The bounded host/device protocol is covered by Flasks and kernel tests, the
+  AArch64 cross-check, formatting/diff checks, and a refreshed offline Bramble
+  v3 audit. The image is `/tmp/fullerene-rust-adb-sync.img` (`kernel=1,091,063`,
+  `ramdisk=2,045,806`), SHA-256
+  `0176454f76e92f193f3151cb145e7f85ce03e67da8f3424670b25afc4e7fa49a`.
+- The connected device was observed read-only in Fastboot as
+  `26191JECB00076`, with `product: bramble`. No Fastboot send, boot, flash,
+  erase, partition write, backup, or analyzer operation was performed.
+
+### 2026-09-07 — Bramble Fullerene boot-only LZ4 A/B boundary
+
+- Replaced the generated literal-only LZ4 payload with an `lz4_flex`
+  independent-block frame matching the stock Bramble descriptor
+  (`FLG=0x64`, `BD=0x70`, content checksum). The offline v3 audit passed for
+  `/tmp/fullerene-rust-adb-sync-real-lz4.img` (`kernel=349,209`,
+  `ramdisk=2,045,806`), SHA-256
+  `79721e2f07a15d8707ca99b968eb24311787229e4c034871b1229e2fcdc2a561`.
+- Three non-persistent `fastboot boot` boundaries were observed on serial
+  `26191JECB00076`: the earlier literal-only compressed image was accepted but
+  did not enumerate `1234:0001`; the uncompressed `Image` was rejected with
+  `Unsupported`; the real-compressed image was accepted but again did not
+  enumerate `1234:0001` within 20 seconds.
+- After the real-compressed trial, the handset disappeared from both Fastboot
+  and USB observation; no Fullerene ADB status/trace or sync request ran. No
+  `flash`, `erase`, partition write, backup, or analyzer operation was used.
+  The remaining physical boundary is therefore Rust entry/USB handoff after
+  bootloader acceptance, not only the LZ4 frame form.
+
+### 2026-09-07 — Bramble Rust entry-halt probe
+
+- Built the dependency-free `fullerene-kernel-aarch64-entry-halt-probe` and
+  patched it into `/tmp/fullerene-bramble-entry-halt.img`. The Bramble v3
+  audit passed (`kernel=384`, `ramdisk=2,045,806`), SHA-256
+  `2b91836cecba845a248c62aa4fe03313b768430288cdf263f6f185616817d941`.
+- `fastboot boot` accepted the image. During a 20-second observation window
+  the handset did not return to Fastboot and did not enumerate as USB; this is
+  consistent with the probe's Rust-entry halt, but is not by itself a
+  definitive entry trace because the halted image has no external signal.
+- A reset-on-entry probe is prepared at
+  `/tmp/fullerene-bramble-entry-reset.img` (SHA-256
+  `36aff8875e15259bacb2ab9bd5a961c98260889ed2b98c614911374d6101fd90`). The
+  handset currently needs a manual Fastboot return before that next
+  RAM-only boundary test. No persistent-device operation was performed.
+
+### 2026-09-07 — Bramble Rust reset-on-entry probe recovery boundary
+
+- After manual Fastboot recovery, `fastboot boot` accepted
+  `/tmp/fullerene-bramble-entry-reset.img` (kernel `408` bytes; the patched
+  image SHA-256 is `36aff8875e15259bacb2ab9bd5a961c98260889ed2b98c614911374d6101fd90`).
+- Fastboot did not return during the first 15-second window. The subsequent
+  recovery window observed stock Android USB `18d1:4ee7` and ADB serial
+  `26191JECB00076` again; read-only `adb shell id` returned the expected
+  `u:r:shell:s0`. No `1234:0001` Fullerene USB appeared.
+- This establishes bootloader acceptance followed by the normal stock-Android
+  recovery boundary, but does not prove Rust entry because the reset probe has
+  no external entry marker. No flash, erase, partition write, backup, or
+  analyzer operation was performed.
+
+### 2026-09-07 — Bramble minimal Rust main boundary
+
+- Built the normal AArch64 `main.rs` path with UFS execution and DMA identity
+  disabled, then patched it into `/tmp/fullerene-bramble-minimal-main.img`.
+  The offline Bramble v3 audit passed (`kernel=259,183`,
+  `ramdisk=2,045,806`), SHA-256
+  `1aa5d155c18e2b38b6af8ffe75644dce560561dba2afc49fafc18dbbe3c6498e`.
+- `fastboot boot` accepted the image after the device was returned to
+  Fastboot. During the 30-second boot window plus a 20-second recovery
+  observation, neither Fastboot nor stock USB nor `1234:0001` reappeared.
+- Removing Android init, UFS execution, and launchd therefore did not move
+  the external boundary. This is evidence against a userspace-only failure,
+  but does not distinguish boot-image entry from the earliest normal-main
+  stages. No flash, erase, partition write, backup, or analyzer operation was
+  performed.
+
+### 2026-09-07 — Bramble standalone USB probe boundary
+
+- Built the dependency-free Rust USB probe with the stock-shaped real LZ4
+  frame and patched it into `/tmp/fullerene-bramble-usb-probe-real-lz4.img`.
+  The offline Bramble v3 audit passed (`kernel=60,279`,
+  `ramdisk=2,045,806`), SHA-256
+  `af99273c9617dfecc88ec494f7c85b23a1fae75838ca18522c45c5b724cc184b`.
+- After manual Fastboot recovery, `fastboot boot` accepted the image. The
+  host observed no `1234:0001`, stock `18d1:4ee7`, or Fastboot reappearance
+  during 45 seconds.
+- This standalone path did not yield a host-visible USB attach, so the
+  bootloader-accepted image still has an unresolved entry/early USB boundary.
+  No flash, erase, partition write, backup, or analyzer operation was
+  performed.
+
+### 2026-09-07 — Bramble Rust entry probe with IMEM marker
+
+- Extended the non-halt Rust entry probe to write Qualcomm's volatile IMEM
+  restart-reason scratch (`0x146ab65c`) with the documented bootloader magic
+  `0x77665500`, followed by an arm64 `dsb sy`/`isb` and PSCI reset. This is a
+  transient diagnostic scratch write, not a partition or persistent image
+  write.
+- Built `/tmp/fullerene-bramble-entry-marker.img`; the offline Bramble v3
+  audit passed (`kernel=436`, `ramdisk=2,045,806`), SHA-256
+  `a115965587b3cbc80428838f2a783ec3e11cb08d7a65eeefa472d06bd5927725`.
+  `fastboot boot` accepted it.
+- The handset returned as stock Android after approximately 22 seconds. Both
+  read-only `ro.boot.bootreason` and `sys.boot.reason` reported `watchdog`,
+  not the expected bootloader marker. This does not prove Rust entry; it
+  leaves either entry-before-marker or marker/reset handling unresolved. No
+  flash, erase, partition write, backup, or analyzer operation was performed.
+
+### 2026-09-07 — Bramble IMEM marker with PSCI-first reset retake
+
+- Reordered the probe reset path so the IMEM marker is followed by PSCI
+  `SYSTEM_RESET` first; the Qualcomm PS_HOLD write is now only the fallback
+  if PSCI returns. The retake image is
+  `/tmp/fullerene-bramble-entry-marker-psci-first.img`, with the same
+  `kernel=436` / `ramdisk=2,045,806` audit and SHA-256
+  `c0af09ea8da2791d6dd77c7c5f721e9136c0e479ca5fc7b00dfcbd33ea0e4871`.
+- `fastboot boot` accepted the retake; stock Android returned after
+  approximately 23 seconds and both read-only boot-reason properties again
+  reported `watchdog`. Separating the reset order did not produce an external
+  Rust-entry marker. No flash, erase, partition write, backup, or analyzer
+  operation was performed.
+
+### 2026-09-07 — Bramble gadget handoff LZ4-format A/B
+
+- Added the explicit Rust-only `--boot-literal-lz4` diagnostic flag while
+  retaining the default stock-shaped `lz4_flex` frame. Both frames pass the
+  same Bramble v3 descriptor/round-trip audit.
+- The real-LZ4 `--usb-gadget-handoff-probe` image
+  `/tmp/fullerene-bramble-gadget-probe-real-lz4.img` (SHA-256
+  `bb0f93fd8e760d65a7104ebe6679add8f3cbf2a131181a0372e50d763d5bda10`)
+  was accepted by `fastboot boot` and returned to stock Android after about
+  56 seconds without `1234:0001` or a Fullerene HS attach.
+- The literal-only A/B image
+  `/tmp/fullerene-bramble-gadget-probe-literal-lz4.img` (SHA-256
+  `844537f5a1108ab33142896bbf1ce68e5d9063b0ca82c9b1b0de966cd7f57108`)
+  was likewise accepted and returned to stock Android after about 55 seconds
+  without `1234:0001` or a Fullerene HS attach. The current failure boundary
+  is therefore not explained by the LZ4 frame form alone. No flash, erase,
+  partition write, backup, or analyzer operation was performed.
+
+### 2026-09-07 — AArch64 QEMU launchd zero-FD fork fix
+
+- The AArch64 QEMU `aarch64-user-launchd` path previously reached dynamic
+  mapping and then panicked in `linux_inherit_fds_unchecked` when the native
+  launchd task had zero Linux-personality file descriptors. The bounded
+  inheritance array was still indexed as if at least one descriptor existed.
+- Added the zero-count return in
+  `fullerene-kernel/src/arch/aarch64/fs.rs`; the AArch64 panic handler now
+  reports file, line, and column in UART diagnostics. The corrected QEMU run
+  reached the dynamic/COW fork, exec, inherited-fd, shared-buffer, event,
+  channel, pipe, process-control, thread, terminal, device-inventory,
+  window, time, VFS-write, and `user-smoke: returned to EL1h` markers without
+  a kernel panic. Log: `/tmp/fullerene-qemu-launchd-fd-fix.log`.
+- The outer command returned status 1 only because Flasks intentionally
+  stopped QEMU at its ten-second timeout; the launchd self-test had already
+  completed. `cargo test -p flasks`, the AArch64 cross-check, formatting, and
+  diff checks passed.
+- Rebuilt the Android-init Bramble candidate after the fix at
+  `/tmp/fullerene-bramble-android-init-current-r2.img`, with
+  `kernel=357,514`, `ramdisk=2,045,806`, offline Bramble audit PASS, and
+  SHA-256
+  `83de875ae6b45a9bd46b41db78afab2bd2b620f6ac804930c561edc19e1cdeda`.
+  The device was not in Fastboot during this step, so the image was not sent;
+  no flash, erase, partition write, backup, or analyzer operation was
+  performed.
+
+### 2026-09-07 — Bramble normal-path early USB handoff and watchdog A/B
+
+- The normal AArch64 Bramble path now supports the explicit
+  `FULLERENE_AARCH64_USB_EARLY_HANDOFF=1` boundary before MMU/allocator/UFS
+  setup. Flasks includes the opt-in in its isolated AArch64 build-cache key.
+  The normal Bramble entry also now performs the same minimal secure-watchdog
+  disable/APSS watchdog extension used by the standalone USB probe.
+- QEMU launchd self-tests remained green through
+  `user-smoke: returned to EL1h`; `cargo test -p flasks`, the Bramble-feature
+  AArch64 check, formatting, and diff checks passed.
+- The watchdog A/B image
+  `/tmp/fullerene-bramble-android-init-early-usb-wdt.img` passed offline
+  Bramble v3 audit (`kernel=359,168`, `ramdisk=2,045,806`), SHA-256
+  `4d1fc4d39fe7952b587ec0ad54fab0cfcc398025116fa2b02253587b88e44eae`.
+  It is prepared for the next manual Fastboot run; no image was sent in this
+  A/B, and no flash, erase, partition write, backup, or analyzer operation
+  was performed.
+- Moved the same watchdog ownership to the first Bramble Rust-entry block so
+  the normal path protects DT/UFS probing as well as USB handoff. The rebuilt
+  normal-path candidate is
+  `/tmp/fullerene-bramble-android-init-normal-wdt-entry.img`, with
+  `kernel=358,575`, `ramdisk=2,045,806`, audit PASS, and SHA-256
+  `17647ad6aff3fdc6063e7d2287e76054dc167331d61a359b03aa88da7d2bbb77`.
+  Physical validation remains pending.
+- Combined both boundaries into one next-run candidate:
+  `/tmp/fullerene-bramble-android-init-early-usb-wdt-entry.img`, with
+  `kernel=359,031`, `ramdisk=2,045,806`, audit PASS, and SHA-256
+  `cbd47f3be1a15d8e5bd6e59a0f85bb08d2ad665e5ce4309f77f5fb794b11506e`.
+  `FULLERENE_AARCH64_USB_EARLY_HANDOFF=1` invokes the USB2 handoff before
+  MMU/allocator/UFS setup, while watchdog ownership begins at Rust entry.
+  The handset was still in stock Android during this build, so manual
+  Fastboot validation remains pending; no image was sent and no persistent
+  device operation was performed.
+
+### 2026-09-07 — ADB-to-Fastboot early-USB physical result
+
+- With one authorized stock Android device (`26191JECB00076`),
+  `adb reboot bootloader` entered Fastboot and `fastboot boot` accepted
+  `/tmp/fullerene-bramble-android-init-early-usb.img` (SHA-256
+  `10b7c4ad8393dd3c8e941a3d5d0603b9650d531c46b6f20e057fad0c3c0d2b31`).
+- During a 100-second host observation the device produced no `1234:0001`,
+  Fastboot, or stock Android enumeration. This distinguishes successful
+  Fastboot transfer from successful Fullerene USB handoff; the watchdog A/B
+  above adds the missing probe-entry watchdog step.
+- The later attach-baseline probe
+  `/tmp/fullerene-bramble-attach-baseline-current.img` was also accepted but
+  returned to stock Android `18d1:4ee7` after about 56 seconds without a
+  Fullerene attach. No flash, erase, partition write, backup, or analyzer
+  operation was performed.
+
+### 2026-09-07 — ADB-to-Fastboot combined early-USB/WDT physical result
+
+- Used the authorized stock ADB connection (`26191JECB00076`) to enter
+  Fastboot with `adb reboot bootloader`; no manual button operation was used.
+- `fastboot boot` accepted
+  `/tmp/fullerene-bramble-android-init-early-usb-wdt-entry.img` (SHA-256
+  `cbd47f3be1a15d8e5bd6e59a0f85bb08d2ad665e5ce4309f77f5fb794b11506e`).
+  The transfer and bootloader command both returned `OKAY`, but the handset
+  remained enumerated as Fastboot for 120 seconds. Neither Fullerene
+  `1234:0001` nor stock Android `18d1:4ee7` appeared during that window.
+- `fastboot reboot` returned the handset to stock Android and ADB without
+  physical intervention. This is a bootloader-accepted / no-kernel-USB
+  result, not evidence of Fullerene USB enumeration; no flash, erase,
+  partition write, backup, or analyzer operation was performed.
+
+### 2026-09-07 — ADB-to-Fastboot pre-MMU USB A/B without secure-WDT SMC
+
+- The stock boot image was used as a RAM-only control and returned to
+  `18d1:4ee7`/ADB through the same Fastboot path, so the bootloader and cable
+  path remained functional.
+- The secure-WDT SMC was then made an explicit opt-in and omitted from the
+  next candidate; APSS-WDT petting remained enabled. The candidate
+  `/tmp/fullerene-bramble-android-init-early-usb-apss-entry.img` (SHA-256
+  `e002341fb5c0c088e0303c2f8ce559e7badd68c5de4c2719b17c5f9af0285a87`)
+  passed the offline Bramble v3 audit (`kernel=358,691`,
+  `ramdisk=2,045,806`).
+- ADB-triggered Fastboot accepted the image. Fastboot then disappeared, but
+  no `1234:0001`, stock `18d1:4ee7`, Fastboot, or ADB enumeration returned
+  during approximately 150 seconds. This is a Google-logo-hang-equivalent
+  recovery boundary; physical recovery is required before another RAM-only
+  test. No flash, erase, partition write, backup, or analyzer operation was
+  performed.
+
+### 2026-09-07 — Bramble HS-PHY SLEEPM clear A/B
+
+- Added the opt-in Rust/Flasks flag
+  `--usb-gadget-handoff-hsphy-clear-sleepm`, which clears the USB2 HS-PHY
+  `UTMI_CTRL0.SLEEPM` bit only after the existing analog initialization. The
+  default source-derived sequence is unchanged; the build cfg, cache/env
+  wiring, and CLI validation are explicit.
+- The current DT split attach profile with this A/B built and passed the
+  Bramble audit: `/tmp/fullerene-bramble-usb-hsphy-clear-sleepm.img`,
+  `kernel=75,502`, `ramdisk=2,045,806`, SHA-256
+  `41d0b7ddfa697821ac877b51279d84589e9515e100221953a7380c7d9b21e6ac`.
+  ADB-triggered Fastboot accepted it; host logs showed HS attach at
+  `21:33:28`, `device descriptor read/64, error -110` at `21:33:33`, and
+  stock `18d1:4ee7`/ADB at `21:33:53`. No `1234:0001` enumeration occurred.
+- Clearing SLEEPM did not recover USB2 RX. The flag remains a source-aligned
+  diagnostic; the leading blocker stays at USB2 PHY RX/secure ownership or
+  a SuperSpeed-only handoff. RAM-only; no flash, erase, partition write,
+  backup, or analyzer operation.
+
+### 2026-09-07 — Bramble USB2 EP0 FIFO/descriptor A/B retakes
+
+- Rebuilt the current attach-reaching DT split profile with the existing EP0
+  TX FIFO repair (`--usb-gadget-handoff-ep0-txfifo-fix`). The audited image
+  `/tmp/fullerene-bramble-usb-ep0-txfifo.img` had `kernel=75,807`,
+  `ramdisk=2,045,806`, and SHA-256
+  `a65131bbfe5eeb362494406429c367517a1c3a091db99e39d2b245caba464725`.
+  ADB-triggered Fastboot accepted it; the host then saw HS attach followed by
+  `device descriptor read/64, error -110` and stock `18d1:4ee7`/ADB recovery.
+  No `1234:0001` enumeration occurred.
+- The short-first-device-descriptor A/B
+  `/tmp/fullerene-bramble-usb-ep0-short-desc.img` (`kernel=75,791`,
+  `ramdisk=2,045,806`, audit PASS, SHA-256
+  `049dacc4bdd9399c5beb136ad785f8b875601926bab9c1befa0ab2cb06e9e6a1`)
+  produced the same HS attach/`-110`/stock boundary.
+- The separate eight-byte SETUP-DMA-buffer A/B
+  `/tmp/fullerene-bramble-usb-separate-setup.img` (`kernel=75,658`,
+  `ramdisk=2,045,806`, audit PASS, SHA-256
+  `bd3654102910ea69b8112274697d40e20b52c703fd84606eef1ad73fa4ba9e3d`)
+  also produced the same boundary. These controls do not move the failure
+  before the first USB2 descriptor response; earlier SOF-liveness evidence
+  therefore keeps USB2 PHY RX/UTMI state as the leading blocker. All three
+  runs were RAM-only: no flash, erase, partition write, backup, or analyzer
+  operation was performed.
+
+### 2026-09-07 — Bramble UFS read-only physical boundary
+
+- Built the Bramble Android-init image with the explicit UFS DMA-identity
+  contract (`FULLERENE_AARCH64_UFS_DMA_IDENTITY=1`). The read-only UFS path
+  includes the Qualcomm platform sequence, UFSHCI link startup, NOP/query
+  descriptors, and bounded block-read plumbing; no write command is exposed.
+- ADB-triggered Fastboot accepted
+  `/tmp/fullerene-bramble-ufs-readonly-physical.img` (Bramble audit PASS,
+  `kernel=531,658`, `ramdisk=2,045,806`, SHA-256
+  `2daa71517ad9a76a2080723eec0c8a9d220e278aee9459ce77489a7f024438ea`).
+  The bootloader Fastboot interface disappeared at `21:41:36`; no Fullerene
+  USB, stock Android, ADB, or Fastboot enumeration returned for the following
+  observation window. This places the UFS transaction attempt before the
+  normal USB return boundary, but does not prove UFS link success.
+- A second candidate combining the same UFS contract with the pre-MMU USB
+  handoff is prepared at `/tmp/fullerene-bramble-ufs-early-usb-physical.img`
+  (audit PASS, `kernel=531,700`, `ramdisk=2,045,806`, SHA-256
+  `34f890bdd67e649df5d13ab3fc3949bba7143f29fccc275aa08bac79f08f75db`),
+  but was not booted because the handset reached the Google-logo-hang-equivalent
+  boundary and requires physical recovery. No flash, erase, partition write,
+  backup, analyzer, or user-data operation was performed.
+
+### 2026-09-07 — Flasks Android-init plus USB-probe composition correction
+
+- Found that selecting `--android-init` together with
+  `--usb-gadget-handoff-probe` still selected the standalone probe binary,
+  silently dropping the normal AArch64 `main.rs` path and therefore UFS/PID-1
+  execution. Flasks now keeps the probe's cfg/env wiring but selects
+  `fullerene-kernel-aarch64` whenever `--android-init` is present; probe-only
+  builds retain their dedicated artifact.
+- Added a unit test for both artifact-selection branches. The corrected
+  combined candidate `/tmp/fullerene-bramble-ufs-attach-profile-normal.img`
+  passed the Bramble audit with `kernel=527,375`, `ramdisk=2,045,806`, and
+  SHA-256 `352086d043a4ba2f43c91ef993072b008dd942a9d54518c02eca5b1ce9b07b1c`.
+  It includes the UFS identity-DMA gate, pre-MMU USB, and the known
+  attach-reaching probe/direct DT profile. It was then tested after manual
+  Fastboot recovery: `product=bramble`, `unlocked=yes`, and `current-slot=b`
+  were confirmed, and `fastboot boot` returned `OKAY` without writing storage.
+  Fastboot disconnected at `21:56:53`; no Fullerene USB, stock Android, ADB,
+  or Fastboot enumeration returned during the following observation window.
+  This still does not establish a physical boot or UFS success; no flash,
+  erase, partition write, backup, analyzer, or user-data operation was
+  performed.
+
+### 2026-09-07 — Early USB/UFS cooperative polling boundary
+
+- The corrected Android-init composition exposed a second ordering issue:
+  early USB could be live while the explicit UFS platform/link/query path
+  occupied the CPU in bounded waits, leaving the DWC3 event ring unserviced
+  during host enumeration. The Bramble UFS backend now polls DWC3 in 100-us
+  slices during its early-handoff waits and at the HCE readiness loop, but
+  only after the USB handoff has returned ready. Normal and failed-handoff
+  paths are unchanged.
+- The combined candidate
+  `/tmp/fullerene-bramble-ufs-usb-cooperative.img` passed the Bramble audit
+  (`kernel=527,512`, `ramdisk=2,045,806`) with SHA-256
+  `0978a15e088f62eef564e6c6c3560e2de1d932f886587031c35ed6106135a1b0`.
+  AArch64 cross-check, Flasks tests, rustfmt, and `git diff --check` passed.
+  The handset is currently not enumerated, so no image was sent and no
+  persistent-device operation was performed.
+
+### 2026-09-07 — ADB reboot-to-Fastboot return marker
+
+- The standard ADB transport already accepts `reboot:bootloader` and
+  `reboot:fastboot` behind Flasks' `--adb-return` gate. The Bramble return
+  path now writes the same volatile Qualcomm IMEM bootloader-reason marker
+  used by the standalone probe before issuing PSCI reset, so the reset has an
+  explicit bootloader/Fastboot intent without touching a partition or boot
+  metadata.
+- `/tmp/fullerene-bramble-ufs-usb-adb-return.img` passed the Bramble audit
+  (`kernel=527,139`, `ramdisk=2,045,806`) with SHA-256
+  `c57bfef1375b44bcc2443d4426fac0b20e95fdca6c45516f1f7f9d3ade28b997`.
+  The AArch64 cross-check, Flasks tests, rustfmt, and `git diff --check`
+  passed. The device is not currently enumerated, so this return path has
+  not yet been exercised on hardware.
+
+### 2026-09-07 — Normal-path Type-C SPMI skip and entry-WDT ordering
+
+- The normal Android-init handoff now honors the existing
+  `--usb-skip-typec-spmi` A/B and preserves the bootloader's Type-C session
+  instead of reopening the PMIC scan before DWC3 setup.
+- The resulting `/tmp/fullerene-bramble-ufs-usb-skip-typec.img` passed the
+  Bramble audit (`kernel=524,505`, `ramdisk=2,045,806`), SHA-256
+  `ab3dc083e8d6c35feeb389e46d9e56eab86fa0c1322f0402ae8fb97e335ecdaa`.
+  Manual Fastboot verified `bramble`, unlocked, slot `b`, and accepted
+  `fastboot boot`; it disconnected at `22:12:26` without HS attach, Fullerene
+  USB, stock Android, ADB, or Fastboot return. No persistent-device operation
+  was performed.
+- The secure-WDT ownership block was then moved to immediately after Rust
+  entry, before the large merged-DTB scan that precedes the early USB call.
+  The new candidate `/tmp/fullerene-bramble-ufs-usb-entry-wdt.img` passed
+  audit (`kernel=524,758`, `ramdisk=2,045,806`), SHA-256
+  `4950c28ab46224f3101501346310ce9e6a7a8db0e045e77ce8900eba985f09c0`.
+  AArch64 cross-check, Flasks tests, rustfmt, and `git diff --check` passed.
+  Manual Fastboot verified `bramble`, unlocked, slot `b`, and accepted
+  `fastboot boot`; Fastboot disconnected at `22:18:53` and no Fullerene HS/SS
+  USB, `1234:0001`, stock Android, ADB, or Fastboot return appeared during
+  the following observation window. The host kernel log was
+  `/tmp/fullerene-entry-wdt-kernel.uOlMpb.log`. No persistent-device
+  operation was performed.
+
+### 2026-09-07 — DTB-scan-before-USB ordering A/B
+
+- Added an opt-in boundary that runs the compiled Bramble USB handoff before
+  DTB discovery and the large merged-DTB resource scan. This mode deliberately
+  does not apply DT-derived USB overrides; it isolates ordering from resource
+  selection. The normal Android-init path remains unchanged unless the new
+  build gate is enabled.
+- `/tmp/fullerene-bramble-ufs-usb-before-dtb-scan.img` passed the Bramble
+  audit (`kernel=524,651`, `ramdisk=2,045,806`), SHA-256
+  `be1ce03905b268af766ffdd0466cca10f13563d10fe0effd330d356beb939412`.
+  The exact AArch64 cross-check, Flasks tests, rustfmt, and `git diff --check`
+  passed. Manual Fastboot verified `bramble`, unlocked, slot `b`, and accepted
+  `fastboot boot`; Fastboot disconnected at `22:24:16`, with no Fullerene
+  HS/SS attach, `1234:0001`, ADB, or Fullerene Fastboot return. Stock Fastboot
+  `18d1:4ee0` reappeared at `22:25:16`. The host kernel log was
+  `/tmp/fullerene-before-dtb-scan-kernel.rvOJQU.log`. No persistent-device
+  operation was performed.
+
+### 2026-09-07 — Normal-path synchronous-abort recovery guard
+
+- The normal Bramble handoff now marks its bounded USB-init window as in
+  progress. In builds explicitly gated with
+  `FULLERENE_AARCH64_DEBUG_RETURN=1`, the normal synchronous-exception vector
+  requests the same volatile IMEM bootloader return used by the ADB/Fastboot
+  diagnostic path instead of parking forever at WFE. This is a diagnostic
+  recovery boundary only; it does not write a partition, boot metadata, or
+  user data.
+- The new stage-1 candidate
+  `/tmp/fullerene-bramble-ufs-usb-normal-stage1-return.img` passed the Bramble
+  audit (`kernel=513,498`, `ramdisk=2,045,806`) with SHA-256
+  `dbae16d8e945376325979d7080ca9f6d83a2b2eb088cd79223aa2366d08de5b8`.
+  Rust formatting, Flasks tests, and `git diff --check` passed. The candidate
+  has not been sent: the handset is currently not visible to either
+  `fastboot` or `lsusb`, so physical recovery behavior remains unverified.
+
+### 2026-09-07 — Freestanding AArch64 example test-target hygiene
+
+- Cargo now marks the Rust Android/AArch64 payload examples and their
+  build.rs-embedded configuration modules as non-host-test targets with the
+  appropriate feature gates. This prevents `cargo test --workspace` from
+  trying to link no-std payloads as host binaries or treating module-only
+  files as standalone examples.
+- `cargo metadata --no-deps`, `cargo fmt --all -- --check`, `git diff --check`,
+  and `CARGO_NET_OFFLINE=true RUSTFLAGS=-Awarnings cargo test --workspace`
+  passed. This is build/test hygiene; it does not add physical boot evidence.
+
+### 2026-09-07 — Bramble-only USB guard compilation fix
+
+- The new early-handoff exception guard is now fully gated on the Bramble
+  platform cfg. Generic AArch64 Android-init builds no longer reference the
+  Bramble-only `usb` module, while the Bramble candidate retains the guard.
+- Generic AArch64 Android-init `cargo check`, the Bramble image build/audit,
+  workspace tests, formatting, and diff checks passed. The refreshed candidate
+  `/tmp/fullerene-bramble-ufs-usb-normal-stage1-return-v2.img` has the same
+  audited SHA-256 `dbae16d8e945376325979d7080ca9f6d83a2b2eb088cd79223aa2366d08de5b8`.
+
+### 2026-09-07 — Android-init QEMU regression pass
+
+- Re-ran `FULLERENE_ANDROID_INIT_SELFTEST=1` on the AArch64 QEMU Android-init
+  path. The log reached Rust PID 1, property protocol v2, SELinux policy and
+  attribute checks, service/action configuration, mount_all, metadata, and
+  fullerened start/stop/restart markers.
+- The command ended at the expected resident-process timeout (`8 seconds`);
+  no synchronous exception or build failure occurred. This strengthens the
+  software boundary only and does not substitute for a physical Bramble boot.
+
+### 2026-09-07 — Standard ADB root/unroot control services
+
+- Extended the Rust ADB transport with the standard `root:` and `unroot:`
+  services. The control response uses the normal `OPEN` → `OKAY` → `WRTE` →
+  `OKAY` → `CLSE` exchange, so host-side root transitions are no longer an
+  out-of-band Fullerene command. The initial debug transport state remains
+  root for compatibility with the existing Fullerene bring-up image; after
+  `unroot`, `adb shell id` reports the bounded shell UID/context, and a later
+  `root` restores the debug identity.
+- `flasks adb --adb-command root` and `unroot` now use the same standard ADB
+  framing as `shell` and `reboot`. AArch64 Android-init checking, Flasks
+  tests, formatting, and diff checks passed.
+- Rebuilt candidate `/tmp/fullerene-bramble-ufs-usb-normal-root-control.img`
+  passed the Bramble boot audit (`kernel=514,871`, `ramdisk=2,045,806`,
+  `tail=0`), SHA-256
+  `6b400089fa8d518df7e75872a32b0415c5f448b6b113cf65a94c6d1c1b26991e`.
+  The handset is not currently enumerated, so the new service has not yet
+  been exercised on hardware. No flash, erase, partition write, backup,
+  analyzer, or user-data operation was performed.
+
+### 2026-09-07 — Bounded compressed EROFS read path
+
+- Genome now reads the EROFS full-index compressed inode layout for the
+  bounded Android bring-up subset: independent logical clusters, plain
+  clusters, and LZ4-compressed clusters with block-sized physical input.
+  Compact indexes, big/interlaced/fragment pclusters, and other compression
+  algorithms are rejected explicitly rather than guessed at.
+- The LZ4 decoder is allocation-bounded by the requested logical cluster and
+  safely handles zero padding in a block-sized physical cluster. The new
+  full-index LZ4 fixture is covered by Genome tests; the complete offline
+  `cargo test --workspace` suite passed.
+- Rebuilt `/tmp/fullerene-bramble-ufs-usb-erofs-lz4.img` passed the Bramble
+  boot audit (`kernel=518,208`, `ramdisk=2,045,806`, `tail=0`), SHA-256
+  `cfdaf0175eccb62264dc85d7d5c0e7eb5f75f8b5b3005826cd01f7dcf5a61938`.
+  Fastboot had accepted the preceding candidate via RAM-only `fastboot boot`,
+  but the refreshed image was not resent after the host lost enumeration. No
+  flash, erase, partition write, backup, analyzer, or user-data operation was
+  performed.
+
+### 2026-09-07 — Bounded ADB sync push overlay
+
+- The host ADB path now opens the standard `sync:` service for all sync
+  commands. It supports `sync:stat:` and `sync:recv:` as before, plus
+  `sync:send:<local>:<remote>` using the standard `SEND`/`DATA`/`DONE`
+  sequence.
+- The device accepts pushed data only for `/tmp/` and `/data/local/tmp/`,
+  stores one file up to 4 KiB in volatile RAM, and exposes it through the
+  existing bounded sync reader. It never routes this diagnostic push through
+  UFS or a partition write.
+- Flasks tests, fullerene-kernel tests (98), AArch64 Android-init checking,
+  formatting, and `git diff --check` passed. The regenerated candidate
+  `/tmp/fullerene-bramble-ufs-usb-adb-sync-push.img` passed the Bramble audit
+  (`kernel=518,854`, `ramdisk=2,045,806`, `tail=0`), SHA-256
+  `ca3e16649e3aed79df7a200d68e6e52eb3ebb2bf4f1209d7c815b66976b71682`.
+  The handset is currently absent from `fastboot`, `adb`, and `lsusb`, so the
+  wire exchange remains hardware-pending. No persistent-device operation was
+  performed.
+
+### 2026-09-07 — Normal-path Bramble candidate without diagnostic stop gate
+
+- Rebuilt the current Bramble Android-init/UFS/USB/ADB candidate without the
+  diagnostic `--stop-after-stage 1` option. The generated image therefore
+  retains the normal post-handoff path instead of intentionally stopping at
+  the first USB stage.
+- `/tmp/fullerene-bramble-ufs-usb-adb-sync-push-normal.img` passed the Bramble
+  boot audit (`kernel=530,171`, `ramdisk=2,045,806`, `tail=0`), SHA-256
+  `c18f0cfb42c04be90a13801f5fa3805b59ee5cdd759b63dc85af68f7f0608072`.
+  Host-side tests and AArch64 checking remain green. The handset is not
+  currently visible to `fastboot`, `adb`, or `lsusb`, so this candidate has
+  not been sent and no persistent-device operation was performed.
+
+### 2026-09-07 — Normal-path candidate RAM-only Fastboot boot
+
+- With the handset manually in Fastboot (`26191JECB00076`, USB `18d1:4ee0`),
+  `fastboot boot /tmp/fullerene-bramble-ufs-usb-adb-sync-push-normal.img`
+  was accepted with `Sending ... OKAY` and `Booting ... OKAY`. The bootloader
+  printed only its `boot.img missing cmdline or OS version` warning.
+- During the following 24-second host observation window, no Fullerene
+  `1234:0001`, stock USB, ADB, or Fastboot device reappeared. This is a
+  negative RAM-only physical result: the normal candidate stops before a
+  host-visible USB return. No flash, erase, partition write, backup,
+  analyzer, or user-data operation was performed.
+
+### 2026-09-07 — Bounded userdebug `adbd→su` policy and UFS-off physical A/B
+
+- The Rust-generated FSP2 bootstrap policy now carries the bounded userdebug
+  domain transition `u:r:adbd:s0 → u:r:su:s0` and the corresponding bounded
+  attr access entries. The standard ADB `root:` control path checks that rule
+  before changing its debug identity; it no longer flips the root state
+  without consulting the loaded policy. This remains a named bring-up slice,
+  not AOSP policydb/CIL/AVC compatibility.
+- Workspace tests (including 98 kernel tests), formatting, diff checks, and
+  the AArch64 Android-init target check passed. Candidate
+  `/tmp/fullerene-bramble-android-init-adbd-su-no-ufs.img` passed the Bramble
+  audit (`kernel=355,330`, `ramdisk=2,045,806`, `tail=0`), SHA-256
+  `728f9e654f810274ef902e9f66c2c047ccb02e15b1437b820b2baf7dbdc3e010`.
+- With manual Fastboot (`26191JECB00076`, USB `18d1:4ee0`), RAM-only
+  `fastboot boot` returned `OKAY`. UFS execution was explicitly disabled for
+  this A/B. During the following 30-second observation, no Fullerene USB,
+  `1234:0001`, ADB, or Fastboot device reappeared. No flash, erase, partition
+  write, backup, analyzer, or user-data operation was performed.

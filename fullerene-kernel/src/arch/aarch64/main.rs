@@ -102,6 +102,27 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::init_at(early_uart_base as u64);
     }
     exceptions::install();
+    #[cfg(fullerene_aarch64_bramble)]
+    {
+        // XBL/ABL's secure watchdog can expire while the normal path is
+        // still walking the large merged DTB. Take the same ownership
+        // boundary as the standalone USB probe before any DT discovery or
+        // resource scan, so a later USB A/B measures the handoff itself.
+        let secure_wdt_disabled = if option_env!("FULLERENE_AARCH64_ENTRY_SECURE_WDT") == Some("1")
+        {
+            usb::secure_wdt_disable()
+        } else {
+            false
+        };
+        usb::wdt_pet();
+        uart::puts(if secure_wdt_disabled {
+            "platform: secure watchdog disabled at Rust entry\n"
+        } else if option_env!("FULLERENE_AARCH64_ENTRY_SECURE_WDT") == Some("1") {
+            "platform: secure watchdog entry disable unavailable; APSS watchdog extended\n"
+        } else {
+            "platform: secure watchdog entry SMC skipped; APSS watchdog extended\n"
+        });
+    }
     uart::puts("fullerene: entered Rust before DTB discovery\n");
     uart::put_hex("boot: x0=", fdt_address);
     uart::put_hex("boot: x1=", arg1);
@@ -109,6 +130,26 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     uart::put_hex("boot: x3=", arg3);
     uart::put_hex("boot: currentel=", boot.current_el as u64);
     uart::put_hex("boot: relocation_delta=", boot.relocation_delta as u64);
+
+    // Keep one stricter ordering A/B for a vendor handoff that may expire
+    // while the large merged DTB is being walked.  This mode intentionally
+    // uses the compiled Bramble USB contract: DT-derived overrides are not
+    // available until the scan below completes, so the result isolates the
+    // ordering boundary from DT resource selection.
+    let mut early_usb = false;
+    let mut usb_ready = true;
+    #[cfg(fullerene_aarch64_bramble)]
+    if option_env!("FULLERENE_AARCH64_USB_EARLY_BEFORE_DTB_SCAN") == Some("1") {
+        early_usb = true;
+        uart::puts("platform: bramble USB handoff before DTB scan: begin\n");
+        usb_ready = init_bramble_usb_handoff();
+        usb::set_early_handoff_active(usb_ready);
+        uart::puts(if usb_ready {
+            "platform: bramble USB handoff before DTB scan: ready\n"
+        } else {
+            "platform: bramble USB handoff before DTB scan: failed\n"
+        });
+    }
 
     // The architectural arm64 boot contract puts the physical DTB address in
     // x0 and requires x1..x3 to be zero.  A vendor fastboot path is allowed
@@ -536,6 +577,23 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         }) as u64,
     );
 
+    // Keep an opt-in early boundary for Bramble.  The standalone USB probe
+    // historically reached a host-visible HS attach before the normal
+    // Fullerene path had installed the MMU and allocator, so make that order
+    // directly testable without changing the default Android-init boot.
+    if bramble && !early_usb && option_env!("FULLERENE_AARCH64_USB_EARLY_HANDOFF") == Some("1") {
+        early_usb = true;
+        uart::puts("platform: bramble USB handoff before MMU: begin\n");
+        usb_ready = init_bramble_usb_handoff();
+        #[cfg(fullerene_aarch64_bramble)]
+        usb::set_early_handoff_active(usb_ready);
+        uart::puts(if usb_ready {
+            "platform: bramble USB handoff before MMU: ready\n"
+        } else {
+            "platform: bramble USB handoff before MMU: failed\n"
+        });
+    }
+
     if let Some(address) = dtb_address {
         if let Some(header) = fdt::inspect(address) {
             uart::put_hex("dtb: address=", header.address);
@@ -668,87 +726,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // Bring up the USB handoff before touching the GIC redistributor.  On a
     // phone boot path the redistributor may still be owned by firmware; USB
     // is polled during this early diagnostic phase and does not depend on it.
-    #[cfg(fullerene_aarch64_bramble)]
-    usb::dump_trace();
-    #[cfg(fullerene_aarch64_bramble)]
-    usb::clear_dma_memory();
-    #[cfg(fullerene_aarch64_bramble)]
-    usb::trace_marker(usb::TRACE_BOOT_USB_ENTRY, 0);
-    #[cfg(fullerene_aarch64_bramble)]
-    usb::trace_marker(usb::TRACE_TYPEC_BEGIN, 0);
-    #[cfg(fullerene_aarch64_bramble)]
-    usb::note_platform_powered();
-    #[cfg(fullerene_aarch64_bramble)]
-    if let Some(typec) = unsafe { platform::bramble::observe_usb_device_role() } {
-        usb::install_typec_state(typec);
-        usb::set_typec_orientation(typec.orientation_reverse);
-        usb::note_typec_attached(typec.attached);
-        // The PMIC child IRQ remains owned by the Fastboot handoff. Reusing
-        // its live parent/child session here would retrigger role teardown.
-        uart::puts("platform: Type-C state observed; handoff writes skipped\n");
-        usb::trace_marker(
-            usb::TRACE_TYPEC_DONE,
-            (typec.sink_mode_written as u32)
-                | ((typec.attached as u32) << 1)
-                | ((typec.attach_settled as u32) << 2)
-                | ((typec.misc_status as u32) << 8),
-        );
-        uart::put_hex("platform: PMIC arbiter=", typec.arbiter_version as u64);
-        uart::put_hex("platform: Type-C status=", typec.misc_status as u64);
-        uart::put_hex("platform: Type-C mode=", typec.mode as u64);
-        uart::put_hex(
-            "platform: Type-C orientation=",
-            typec.orientation_reverse as u64,
-        );
-        uart::put_hex("platform: Type-C attached=", typec.attached as u64);
-        uart::put_hex("platform: Type-C role=", typec.role as u64);
-        uart::put_hex(
-            "platform: Type-C attach-settled=",
-            typec.attach_settled as u64,
-        );
-        uart::put_hex("platform: Type-C phase=", typec.phase as u64);
-        if typec.sink_mode_written {
-            uart::puts("platform: Type-C sink-only selected\n");
-        }
-    } else {
-        usb::trace_marker(usb::TRACE_TYPEC_DONE, 0xffff_ffff);
-        uart::puts("platform: Type-C SPMI state unavailable\n");
-    }
-    #[cfg(fullerene_aarch64_bramble)]
-    usb::trace_marker(usb::TRACE_USB_HANDOFF_BEGIN, 0);
-    let mut usb_ready = true;
-    #[cfg(fullerene_aarch64_bramble)]
-    {
-        usb_ready = if usb::init_usb2_handoff() {
-            uart::puts("platform: bramble USB2 gadget handoff: ready\n");
-            true
-        } else {
-            uart::puts("platform: bramble USB2 gadget handoff: failed\n");
-            if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
-                // A post-Run/Stop event-DMA diagnostic must not be masked by the
-                // ordinary cold fallback: its host-visible attach would no longer
-                // identify the tested USB2 handoff result.
-                uart::puts("platform: post-Run/Stop DMA diagnostic: no cold fallback\n");
-                false
-            } else {
-                // `fastboot boot` may jump through a vendor trampoline that tears
-                // down the Fastboot controller before entering the image.  In
-                // that case preserving the bootloader's PHY state cannot work;
-                // retry with the complete Qualcomm USB2 platform sequence.
-                if usb::init_usb2_only() {
-                    uart::puts("platform: bramble USB2 cold fallback: ready\n");
-                    true
-                } else {
-                    uart::puts("platform: bramble USB2 cold fallback: failed\n");
-                    false
-                }
-            }
-        };
+    if bramble && !early_usb {
+        usb_ready = init_bramble_usb_handoff();
     }
     // USB setup itself remains trace-only; emit the compact ring after
     // controller initialization has returned and UART is safe to use again.
-    #[cfg(fullerene_aarch64_bramble)]
-    usb::dump_trace();
+    if bramble {
+        #[cfg(fullerene_aarch64_bramble)]
+        usb::dump_trace();
+    }
     #[cfg(feature = "aarch64-user-launchd")]
     devices::init(usb_ready, dtb_address);
     #[cfg(feature = "aarch64-user-launchd")]
@@ -782,8 +768,107 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     }
 }
 
+/// Run the bounded Bramble USB handoff sequence at the selected boot-order
+/// boundary.  This remains a no-op on QEMU so the normal software runtime has
+/// one shared call site without introducing a second platform implementation.
+fn init_bramble_usb_handoff() -> bool {
+    #[cfg(fullerene_aarch64_bramble)]
+    usb::set_early_handoff_in_progress(true);
+    #[cfg(not(fullerene_aarch64_bramble))]
+    {
+        true
+    }
+
+    #[cfg(fullerene_aarch64_bramble)]
+    {
+        usb::dump_trace();
+        usb::clear_dma_memory();
+        usb::trace_marker(usb::TRACE_BOOT_USB_ENTRY, 0);
+        usb::trace_marker(usb::TRACE_TYPEC_BEGIN, 0);
+        usb::note_platform_powered();
+        let typec = if option_env!("FULLERENE_USB_SKIP_TYPEC_SPMI") == Some("1") {
+            // Match the standalone probe's skip-Type-C A/B: Fastboot has
+            // already established the device session, so avoid reopening
+            // the PMIC/SPMI path before the early DWC3 handoff.
+            uart::puts("platform: Type-C SPMI observation skipped\n");
+            None
+        } else {
+            unsafe { platform::bramble::observe_usb_device_role() }
+        };
+        if let Some(typec) = typec {
+            usb::install_typec_state(typec);
+            usb::set_typec_orientation(typec.orientation_reverse);
+            usb::note_typec_attached(typec.attached);
+            // The PMIC child IRQ remains owned by the Fastboot handoff.
+            // Reusing its live parent/child session would retrigger role
+            // teardown before the new gadget is ready.
+            uart::puts("platform: Type-C state observed; handoff writes skipped\n");
+            usb::trace_marker(
+                usb::TRACE_TYPEC_DONE,
+                (typec.sink_mode_written as u32)
+                    | ((typec.attached as u32) << 1)
+                    | ((typec.attach_settled as u32) << 2)
+                    | ((typec.misc_status as u32) << 8),
+            );
+            uart::put_hex("platform: PMIC arbiter=", typec.arbiter_version as u64);
+            uart::put_hex("platform: Type-C status=", typec.misc_status as u64);
+            uart::put_hex("platform: Type-C mode=", typec.mode as u64);
+            uart::put_hex(
+                "platform: Type-C orientation=",
+                typec.orientation_reverse as u64,
+            );
+            uart::put_hex("platform: Type-C attached=", typec.attached as u64);
+            uart::put_hex("platform: Type-C role=", typec.role as u64);
+            uart::put_hex(
+                "platform: Type-C attach-settled=",
+                typec.attach_settled as u64,
+            );
+            uart::put_hex("platform: Type-C phase=", typec.phase as u64);
+            if typec.sink_mode_written {
+                uart::puts("platform: Type-C sink-only selected\n");
+            }
+        } else {
+            usb::trace_marker(usb::TRACE_TYPEC_DONE, 0xffff_ffff);
+            uart::puts("platform: Type-C SPMI state unavailable\n");
+        }
+        usb::trace_marker(usb::TRACE_USB_HANDOFF_BEGIN, 0);
+        if usb::init_usb2_handoff() {
+            uart::puts("platform: bramble USB2 gadget handoff: ready\n");
+            usb::set_early_handoff_in_progress(false);
+            true
+        } else {
+            uart::puts("platform: bramble USB2 gadget handoff: failed\n");
+            if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
+                // A post-Run/Stop event-DMA diagnostic must not be masked by
+                // the ordinary cold fallback: the attach would no longer
+                // identify the tested handoff result.
+                uart::puts("platform: post-Run/Stop DMA diagnostic: no cold fallback\n");
+                usb::set_early_handoff_in_progress(false);
+                false
+            } else if usb::init_usb2_only() {
+                // `fastboot boot` may jump through a vendor trampoline that
+                // tears down Fastboot before entering the image.  In that
+                // case preserving the handoff state cannot work.
+                uart::puts("platform: bramble USB2 cold fallback: ready\n");
+                usb::set_early_handoff_in_progress(false);
+                true
+            } else {
+                uart::puts("platform: bramble USB2 cold fallback: failed\n");
+                usb::set_early_handoff_in_progress(false);
+                false
+            }
+        }
+    }
+}
+
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     uart::puts("fullerene aarch64 panic\n");
+    if let Some(location) = info.location() {
+        uart::puts("panic: file=");
+        uart::puts(location.file());
+        uart::put_hex("panic: line=", location.line() as u64);
+        uart::put_hex("panic: column=", location.column() as u64);
+    }
     cpu::wait_forever();
 }

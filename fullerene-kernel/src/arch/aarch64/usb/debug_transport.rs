@@ -41,14 +41,19 @@ const ADB_SHELL_FOLLOWUP_OUTPUT: u8 = 1;
 const ADB_SHELL_COMMAND_CAPACITY: usize = 128;
 const ADB_STREAM_SHELL_V2: u8 = 3;
 const ADB_STREAM_SYNC: u8 = 4;
+const ADB_STREAM_CONTROL: u8 = 5;
 const ADB_SHELL_V2_STDOUT: u8 = 1;
 const ADB_SHELL_V2_EXIT: u8 = 3;
+const ADB_CONTROL_FOLLOWUP_NONE: u8 = 0;
+const ADB_CONTROL_FOLLOWUP_OUTPUT: u8 = 1;
+const ADB_CONTROL_RESPONSE_CAPACITY: usize = MAX_FRAME_BYTES - ADB_HEADER_BYTES;
 const ADB_SYNC_FOLLOWUP_NONE: u8 = 0;
 const ADB_SYNC_FOLLOWUP_RESPONSE: u8 = 1;
 const ADB_SYNC_FOLLOWUP_RECV: u8 = 2;
 const ADB_SYNC_RESPONSE_CAPACITY: usize = MAX_FRAME_BYTES - ADB_HEADER_BYTES;
 const ADB_SYNC_DATA_CAPACITY: usize = 1024;
 const ADB_SYNC_PATH_CAPACITY: usize = 256;
+const ADB_SYNC_SEND_DATA_CAPACITY: usize = 4096;
 
 #[repr(C, align(64))]
 struct ResponseBuffer([u8; MAX_FRAME_BYTES]);
@@ -69,6 +74,12 @@ static mut ADB_SHELL_V2: bool = false;
 static mut ADB_SHELL_EXIT_CODE: u32 = 0;
 static mut ADB_SHELL_COMMAND: [u8; ADB_SHELL_COMMAND_CAPACITY] = [0; ADB_SHELL_COMMAND_CAPACITY];
 static mut ADB_SHELL_COMMAND_LENGTH: usize = 0;
+static mut ADB_ROOT: bool = true;
+static mut ADB_CONTROL_FOLLOWUP: u8 = ADB_CONTROL_FOLLOWUP_NONE;
+static mut ADB_CONTROL_OUTPUT_SENT: bool = false;
+static mut ADB_CONTROL_RESPONSE: [u8; ADB_CONTROL_RESPONSE_CAPACITY] =
+    [0; ADB_CONTROL_RESPONSE_CAPACITY];
+static mut ADB_CONTROL_RESPONSE_LENGTH: usize = 0;
 static mut ADB_SYNC_FOLLOWUP: u8 = ADB_SYNC_FOLLOWUP_NONE;
 static mut ADB_SYNC_RESPONSE: [u8; ADB_SYNC_RESPONSE_CAPACITY] = [0; ADB_SYNC_RESPONSE_CAPACITY];
 static mut ADB_SYNC_RESPONSE_LENGTH: usize = 0;
@@ -77,6 +88,12 @@ static mut ADB_SYNC_RECV_LENGTH: usize = 0;
 static mut ADB_SYNC_RECV_OFFSET: usize = 0;
 static mut ADB_SYNC_RECV_DONE_SENT: bool = false;
 static mut ADB_SYNC_RECV_ACTIVE: bool = false;
+static mut ADB_SYNC_SEND_PATH: [u8; ADB_SYNC_PATH_CAPACITY] = [0; ADB_SYNC_PATH_CAPACITY];
+static mut ADB_SYNC_SEND_PATH_LENGTH: usize = 0;
+static mut ADB_SYNC_SEND_DATA: [u8; ADB_SYNC_SEND_DATA_CAPACITY] = [0; ADB_SYNC_SEND_DATA_CAPACITY];
+static mut ADB_SYNC_SEND_LENGTH: usize = 0;
+static mut ADB_SYNC_SEND_ACTIVE: bool = false;
+static mut ADB_SYNC_SEND_DONE_PENDING: bool = false;
 
 /// Handle one completed bulk OUT packet from EP2.
 pub(super) fn on_bulk_out(data: &[u8], error: bool) {
@@ -142,12 +159,25 @@ pub(super) fn on_bulk_out(data: &[u8], error: bool) {
 /// Handle completion of the response on EP3 IN.  Returning only after the
 /// response transfer has completed makes the host-side command observable.
 pub(super) fn on_bulk_in_complete(error: bool) {
-    let (send_shell_output, sync_followup, device_id, host_id, return_after, shell_v2) = unsafe {
+    let (
+        send_shell_output,
+        sync_followup,
+        control_followup,
+        device_id,
+        host_id,
+        return_after,
+        shell_v2,
+    ) = unsafe {
         let send_shell_output = !error && ADB_SHELL_FOLLOWUP == ADB_SHELL_FOLLOWUP_OUTPUT;
         let sync_followup = if error {
             ADB_SYNC_FOLLOWUP_NONE
         } else {
             ADB_SYNC_FOLLOWUP
+        };
+        let control_followup = if error {
+            ADB_CONTROL_FOLLOWUP_NONE
+        } else {
+            ADB_CONTROL_FOLLOWUP
         };
         let device_id = ADB_DEVICE_ID;
         let host_id = ADB_HOST_ID;
@@ -155,21 +185,29 @@ pub(super) fn on_bulk_in_complete(error: bool) {
         let shell_v2 = ADB_SHELL_V2;
         ADB_SHELL_FOLLOWUP = 0;
         ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_NONE;
+        ADB_CONTROL_FOLLOWUP = ADB_CONTROL_FOLLOWUP_NONE;
         RESPONSE_PENDING = false;
         if error {
             RETURN_AFTER_RESPONSE = false;
             ADB_SHELL_CLOSE_AFTER_OKAY = false;
             ADB_SHELL_V2_OUTPUT_SENT = false;
             ADB_SHELL_V2 = false;
+            ADB_CONTROL_OUTPUT_SENT = false;
+            ADB_CONTROL_RESPONSE_LENGTH = 0;
             ADB_SYNC_RESPONSE_LENGTH = 0;
             ADB_SYNC_RECV_LENGTH = 0;
             ADB_SYNC_RECV_OFFSET = 0;
             ADB_SYNC_RECV_DONE_SENT = false;
             ADB_SYNC_RECV_ACTIVE = false;
+            ADB_SYNC_SEND_PATH_LENGTH = 0;
+            ADB_SYNC_SEND_LENGTH = 0;
+            ADB_SYNC_SEND_ACTIVE = false;
+            ADB_SYNC_SEND_DONE_PENDING = false;
         }
         (
             send_shell_output,
             sync_followup,
+            control_followup,
             device_id,
             host_id,
             return_after,
@@ -218,6 +256,18 @@ pub(super) fn on_bulk_in_complete(error: bool) {
         _ => {}
     }
 
+    if control_followup == ADB_CONTROL_FOLLOWUP_OUTPUT {
+        let length = unsafe { ADB_CONTROL_RESPONSE_LENGTH };
+        let response = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::addr_of!(ADB_CONTROL_RESPONSE).cast::<u8>(),
+                length,
+            )
+        };
+        unsafe { ADB_CONTROL_OUTPUT_SENT = true };
+        queue_adb(ADB_WRTE, device_id, host_id, response, false);
+    }
+
     unsafe {
         if return_after {
             RETURN_AFTER_RESPONSE = false;
@@ -243,6 +293,11 @@ pub(super) fn reset() {
         ADB_SHELL_EXIT_CODE = 0;
         ADB_SHELL_COMMAND = [0; ADB_SHELL_COMMAND_CAPACITY];
         ADB_SHELL_COMMAND_LENGTH = 0;
+        ADB_ROOT = true;
+        ADB_CONTROL_FOLLOWUP = ADB_CONTROL_FOLLOWUP_NONE;
+        ADB_CONTROL_OUTPUT_SENT = false;
+        ADB_CONTROL_RESPONSE = [0; ADB_CONTROL_RESPONSE_CAPACITY];
+        ADB_CONTROL_RESPONSE_LENGTH = 0;
         ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_NONE;
         ADB_SYNC_RESPONSE = [0; ADB_SYNC_RESPONSE_CAPACITY];
         ADB_SYNC_RESPONSE_LENGTH = 0;
@@ -251,6 +306,12 @@ pub(super) fn reset() {
         ADB_SYNC_RECV_OFFSET = 0;
         ADB_SYNC_RECV_DONE_SENT = false;
         ADB_SYNC_RECV_ACTIVE = false;
+        ADB_SYNC_SEND_PATH = [0; ADB_SYNC_PATH_CAPACITY];
+        ADB_SYNC_SEND_PATH_LENGTH = 0;
+        ADB_SYNC_SEND_DATA = [0; ADB_SYNC_SEND_DATA_CAPACITY];
+        ADB_SYNC_SEND_LENGTH = 0;
+        ADB_SYNC_SEND_ACTIVE = false;
+        ADB_SYNC_SEND_DONE_PENDING = false;
     }
 }
 
@@ -371,6 +432,10 @@ fn handle_adb(command: u32, arg0: u32, arg1: u32, payload: &[u8]) {
                     ADB_SHELL_CLOSE_AFTER_OKAY = false;
                 }
                 queue_adb(ADB_OKAY, device_id, arg0, &[], false);
+            } else if service == b"root:" || service == b"unroot:" {
+                prepare_control_service(service);
+                unsafe { ADB_STREAM_KIND = ADB_STREAM_CONTROL };
+                queue_adb(ADB_OKAY, device_id, arg0, &[], false);
             } else if service == b"sync:" {
                 unsafe {
                     ADB_STREAM_KIND = ADB_STREAM_SYNC;
@@ -380,6 +445,10 @@ fn handle_adb(command: u32, arg0: u32, arg1: u32, payload: &[u8]) {
                     ADB_SYNC_RECV_OFFSET = 0;
                     ADB_SYNC_RECV_DONE_SENT = false;
                     ADB_SYNC_RECV_ACTIVE = false;
+                    ADB_SYNC_SEND_PATH_LENGTH = 0;
+                    ADB_SYNC_SEND_LENGTH = 0;
+                    ADB_SYNC_SEND_ACTIVE = false;
+                    ADB_SYNC_SEND_DONE_PENDING = false;
                 }
                 queue_adb(ADB_OKAY, device_id, arg0, &[], false);
             } else {
@@ -394,22 +463,30 @@ fn handle_adb(command: u32, arg0: u32, arg1: u32, payload: &[u8]) {
             if valid && command == ADB_WRTE {
                 let (device_id, host_id) = unsafe { (ADB_DEVICE_ID, ADB_HOST_ID) };
                 if unsafe { ADB_STREAM_KIND == ADB_STREAM_SYNC } {
-                    prepare_sync_request(payload);
+                    if unsafe { ADB_SYNC_SEND_ACTIVE } {
+                        prepare_sync_send_frame(payload);
+                    } else {
+                        prepare_sync_request(payload);
+                    }
                 }
                 queue_adb(ADB_OKAY, device_id, host_id, &[], false);
             } else if valid && command == ADB_OKAY {
+                let (device_id, host_id) = unsafe { (ADB_DEVICE_ID, ADB_HOST_ID) };
                 if unsafe { ADB_STREAM_KIND == ADB_STREAM_SYNC } {
                     sync_on_okay();
                     return;
                 }
-                let (close, v2_output_sent, device_id, host_id) = unsafe {
-                    (
-                        ADB_SHELL_CLOSE_AFTER_OKAY,
-                        ADB_SHELL_V2_OUTPUT_SENT,
-                        ADB_DEVICE_ID,
-                        ADB_HOST_ID,
-                    )
-                };
+                if unsafe { ADB_STREAM_KIND == ADB_STREAM_CONTROL && ADB_CONTROL_OUTPUT_SENT } {
+                    unsafe {
+                        ADB_CONTROL_OUTPUT_SENT = false;
+                        ADB_CONTROL_RESPONSE_LENGTH = 0;
+                        ADB_STREAM_KIND = ADB_STREAM_NONE;
+                    }
+                    queue_adb(ADB_CLSE, device_id, host_id, &[], false);
+                    return;
+                }
+                let (close, v2_output_sent) =
+                    unsafe { (ADB_SHELL_CLOSE_AFTER_OKAY, ADB_SHELL_V2_OUTPUT_SENT) };
                 if v2_output_sent {
                     unsafe { ADB_SHELL_V2_OUTPUT_SENT = false };
                     let mut exit = [ADB_SHELL_V2_EXIT, 0, 0, 0, 0];
@@ -435,6 +512,9 @@ fn handle_adb(command: u32, arg0: u32, arg1: u32, payload: &[u8]) {
                 ADB_SHELL_V2_OUTPUT_SENT = false;
                 ADB_SHELL_V2 = false;
                 ADB_SHELL_EXIT_CODE = 0;
+                ADB_CONTROL_FOLLOWUP = ADB_CONTROL_FOLLOWUP_NONE;
+                ADB_CONTROL_OUTPUT_SENT = false;
+                ADB_CONTROL_RESPONSE_LENGTH = 0;
                 ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_NONE;
                 ADB_SYNC_RESPONSE_LENGTH = 0;
                 ADB_SYNC_RECV_LENGTH = 0;
@@ -462,6 +542,37 @@ fn parse_shell_service(service: &[u8]) -> Option<(bool, &[u8])> {
         Some((true, command))
     } else {
         None
+    }
+}
+
+fn prepare_control_service(service: &[u8]) {
+    let response: &[u8] = if service == b"root:" {
+        unsafe {
+            if ADB_ROOT {
+                b"adbd is already running as root\n"
+            } else if !super::super::fs::debug_adbd_to_su_transition_allowed() {
+                b"adbd cannot run as root in the current SELinux policy\n"
+            } else {
+                ADB_ROOT = true;
+                b"restarting adbd as root\n"
+            }
+        }
+    } else {
+        unsafe {
+            if ADB_ROOT {
+                ADB_ROOT = false;
+                b"restarting adbd as non root\n"
+            } else {
+                b"adbd is already running as non root\n"
+            }
+        }
+    };
+    let length = response.len().min(ADB_CONTROL_RESPONSE_CAPACITY);
+    unsafe {
+        ADB_CONTROL_RESPONSE[..length].copy_from_slice(&response[..length]);
+        ADB_CONTROL_RESPONSE_LENGTH = length;
+        ADB_CONTROL_FOLLOWUP = ADB_CONTROL_FOLLOWUP_OUTPUT;
+        ADB_CONTROL_OUTPUT_SENT = false;
     }
 }
 
@@ -581,6 +692,10 @@ fn prepare_sync_request(payload: &[u8]) {
         ADB_SYNC_RECV_OFFSET = 0;
         ADB_SYNC_RECV_DONE_SENT = false;
         ADB_SYNC_RECV_ACTIVE = false;
+        ADB_SYNC_SEND_PATH_LENGTH = 0;
+        ADB_SYNC_SEND_LENGTH = 0;
+        ADB_SYNC_SEND_ACTIVE = false;
+        ADB_SYNC_SEND_DONE_PENDING = false;
     }
     if payload.len() < 8 {
         sync_fail(b"malformed sync request");
@@ -634,8 +749,95 @@ fn prepare_sync_request(payload: &[u8]) {
                 ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_RECV;
             }
         }
-        b"SEND" => sync_fail(b"read-only sync endpoint"),
+        b"SEND" => prepare_sync_send(path),
         _ => sync_fail(b"unsupported sync command"),
+    }
+}
+
+fn prepare_sync_send(path_with_mode: &[u8]) {
+    let path = path_with_mode
+        .split(|byte| *byte == b',')
+        .next()
+        .unwrap_or(path_with_mode);
+    if path.is_empty() || path.len() > ADB_SYNC_PATH_CAPACITY {
+        sync_fail(b"invalid sync destination");
+        return;
+    }
+    unsafe {
+        ADB_SYNC_SEND_PATH[..path.len()].copy_from_slice(path);
+        ADB_SYNC_SEND_PATH_LENGTH = path.len();
+        ADB_SYNC_SEND_LENGTH = 0;
+        ADB_SYNC_SEND_ACTIVE = true;
+        ADB_SYNC_SEND_DONE_PENDING = false;
+    }
+}
+
+fn prepare_sync_send_frame(payload: &[u8]) {
+    if payload.len() < 8 {
+        sync_fail(b"malformed sync data");
+        return;
+    }
+    let command = &payload[..4];
+    let declared = usize::try_from(u32::from_le_bytes(
+        payload[4..8].try_into().unwrap_or([0; 4]),
+    ))
+    .unwrap_or(usize::MAX);
+    match command {
+        b"DATA" => {
+            let Some(end) = 8usize.checked_add(declared) else {
+                sync_fail(b"sync data overflow");
+                return;
+            };
+            if end != payload.len() {
+                sync_fail(b"invalid sync data length");
+                return;
+            }
+            let current = unsafe { ADB_SYNC_SEND_LENGTH };
+            let Some(next) = current.checked_add(declared) else {
+                sync_fail(b"sync file too large");
+                return;
+            };
+            if next > ADB_SYNC_SEND_DATA_CAPACITY {
+                sync_fail(b"sync file too large");
+                return;
+            }
+            unsafe {
+                ADB_SYNC_SEND_DATA[current..next].copy_from_slice(&payload[8..end]);
+                ADB_SYNC_SEND_LENGTH = next;
+            }
+        }
+        b"DONE" => {
+            // The second word is the sender's mtime. The bounded overlay
+            // does not persist timestamps, but it must accept a real sync
+            // client's non-zero value.
+            if payload.len() != 8 {
+                sync_fail(b"invalid sync done");
+                return;
+            }
+            let (path_length, data_length) =
+                unsafe { (ADB_SYNC_SEND_PATH_LENGTH, ADB_SYNC_SEND_LENGTH) };
+            let path = unsafe {
+                core::slice::from_raw_parts(
+                    core::ptr::addr_of!(ADB_SYNC_SEND_PATH).cast::<u8>(),
+                    path_length,
+                )
+            };
+            let data = unsafe {
+                core::slice::from_raw_parts(
+                    core::ptr::addr_of!(ADB_SYNC_SEND_DATA).cast::<u8>(),
+                    data_length,
+                )
+            };
+            if !super::super::fs::debug_file_write(path, data) {
+                sync_fail(b"sync destination is not volatile temp storage");
+                return;
+            }
+            unsafe {
+                ADB_SYNC_SEND_ACTIVE = false;
+                ADB_SYNC_SEND_DONE_PENDING = true;
+            }
+        }
+        _ => sync_fail(b"unsupported sync send frame"),
     }
 }
 
@@ -649,6 +851,8 @@ fn sync_fail(message: &[u8]) {
         ADB_SYNC_RESPONSE[8..8 + length].copy_from_slice(&message[..length]);
         ADB_SYNC_RESPONSE_LENGTH = 8 + length;
         ADB_SYNC_FOLLOWUP = ADB_SYNC_FOLLOWUP_RESPONSE;
+        ADB_SYNC_SEND_ACTIVE = false;
+        ADB_SYNC_SEND_DONE_PENDING = false;
     }
 }
 
@@ -681,14 +885,25 @@ fn queue_sync_recv_chunk(device_id: u32, host_id: u32) {
 }
 
 fn sync_on_okay() {
-    let (device_id, host_id, active, done_sent) = unsafe {
+    let (device_id, host_id, active, done_sent, send_done_pending) = unsafe {
         (
             ADB_DEVICE_ID,
             ADB_HOST_ID,
             ADB_SYNC_RECV_ACTIVE,
             ADB_SYNC_RECV_DONE_SENT,
+            ADB_SYNC_SEND_DONE_PENDING,
         )
     };
+    if send_done_pending {
+        unsafe {
+            ADB_SYNC_SEND_DONE_PENDING = false;
+            ADB_SYNC_SEND_PATH_LENGTH = 0;
+            ADB_SYNC_SEND_LENGTH = 0;
+            ADB_STREAM_KIND = ADB_STREAM_NONE;
+        }
+        queue_adb(ADB_CLSE, device_id, host_id, &[], false);
+        return;
+    }
     if !active {
         return;
     }
@@ -726,7 +941,20 @@ fn shell_output(command: &[u8], destination: &mut [u8]) -> usize {
         return shell_mount_table(destination);
     }
     let output: &[u8] = match command {
-        b"" | b"id" => b"uid=0(root) gid=0(root) groups=0(root) context=u:r:su:s0\n",
+        b"" => {
+            if unsafe { ADB_ROOT } {
+                b"uid=0(root) gid=0(root) groups=0(root) context=u:r:su:s0\n"
+            } else {
+                b"uid=2000(shell) gid=2000(shell) groups=1004(input),2000(shell) context=u:r:shell:s0\n"
+            }
+        }
+        b"id" => {
+            if unsafe { ADB_ROOT } {
+                b"uid=0(root) gid=0(root) groups=0(root) context=u:r:su:s0\n"
+            } else {
+                b"uid=2000(shell) gid=2000(shell) groups=1004(input),2000(shell) context=u:r:shell:s0\n"
+            }
+        }
         b"uname" | b"uname -a" => b"Fullerene bramble 1.0.0 aarch64 GNU/Linux\n",
         b"status" => b"fullerene-debug/1\nreturn=enabled-or-build-gated\n",
         b"true" => b"",

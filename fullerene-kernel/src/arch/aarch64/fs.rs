@@ -64,6 +64,8 @@ const LINUX_FD_CLOEXEC: u32 = 0x80000;
 const MAX_HANDLE_SLOTS: usize = 16;
 const MAX_PATH: usize = 256;
 const MAX_READ: usize = 4096;
+const DEBUG_SYNC_FILE_PATH_CAPACITY: usize = 256;
+const DEBUG_SYNC_FILE_DATA_CAPACITY: usize = 4096;
 const PIPE_CAPACITY: usize = 4096;
 const MAX_PIPE_SLOTS: usize = 8;
 const CHANNEL_MESSAGE_CAPACITY: usize = 4096;
@@ -137,6 +139,16 @@ const SELINUX_ATTR_NONE: u8 = 0;
 const SELINUX_ATTR_CURRENT: u8 = 1;
 const SELINUX_ATTR_EXEC: u8 = 2;
 static INITRAMFS: &[u8] = include_bytes!(env!("FULLERENE_AARCH64_INITRAMFS"));
+
+// The bounded ADB sync endpoint needs one writable landing zone for bring-up
+// tools. Keep it explicitly in RAM and restrict it to diagnostic temp paths;
+// this must never turn an ADB push into an implicit UFS/partition write.
+static mut DEBUG_SYNC_FILE_PATH: [u8; DEBUG_SYNC_FILE_PATH_CAPACITY] =
+    [0; DEBUG_SYNC_FILE_PATH_CAPACITY];
+static mut DEBUG_SYNC_FILE_PATH_LENGTH: usize = 0;
+static mut DEBUG_SYNC_FILE_DATA: [u8; DEBUG_SYNC_FILE_DATA_CAPACITY] =
+    [0; DEBUG_SYNC_FILE_DATA_CAPACITY];
+static mut DEBUG_SYNC_FILE_DATA_LENGTH: usize = 0;
 
 #[derive(Clone, Copy)]
 struct OpenFile {
@@ -631,6 +643,13 @@ pub(super) fn debug_mount_table(destination: &mut [u8]) -> usize {
 /// expose through the bounded ADB sync reader. This deliberately avoids
 /// entering the VFS mutex from the USB completion path.
 pub(super) fn debug_file_snapshot(path: &[u8], destination: &mut [u8]) -> Option<usize> {
+    if debug_sync_file_matches(path) {
+        let length = unsafe { DEBUG_SYNC_FILE_DATA_LENGTH.min(destination.len()) };
+        unsafe {
+            destination[..length].copy_from_slice(&DEBUG_SYNC_FILE_DATA[..length]);
+        }
+        return Some(length);
+    }
     match path {
         b"/proc/mounts" => Some(debug_mount_table(destination)),
         b"/proc/cmdline" => Some(debug_copy_static(
@@ -651,6 +670,40 @@ pub(super) fn debug_file_snapshot(path: &[u8], destination: &mut [u8]) -> Option
         )),
         b"/sys/class/android_usb/state" => Some(debug_copy_static(destination, b"CONFIGURED\n")),
         _ => None,
+    }
+}
+
+/// Store one bounded ADB-pushed diagnostic file in volatile memory.
+///
+/// The sync transport is used before the full VFS/storage write path is
+/// trusted on Bramble. Accepting only temporary paths makes the feature useful
+/// for bring-up binaries and test vectors while preserving the no-partition-
+/// write invariant of the physical validation loop.
+pub(super) fn debug_file_write(path: &[u8], data: &[u8]) -> bool {
+    if !debug_sync_path_allowed(path)
+        || path.len() > DEBUG_SYNC_FILE_PATH_CAPACITY
+        || data.len() > DEBUG_SYNC_FILE_DATA_CAPACITY
+    {
+        return false;
+    }
+    unsafe {
+        DEBUG_SYNC_FILE_PATH[..path.len()].copy_from_slice(path);
+        DEBUG_SYNC_FILE_PATH_LENGTH = path.len();
+        DEBUG_SYNC_FILE_DATA[..data.len()].copy_from_slice(data);
+        DEBUG_SYNC_FILE_DATA_LENGTH = data.len();
+    }
+    true
+}
+
+fn debug_sync_path_allowed(path: &[u8]) -> bool {
+    path.starts_with(b"/tmp/") || path.starts_with(b"/data/local/tmp/")
+}
+
+fn debug_sync_file_matches(path: &[u8]) -> bool {
+    unsafe {
+        DEBUG_SYNC_FILE_PATH_LENGTH == path.len()
+            && DEBUG_SYNC_FILE_PATH_LENGTH != 0
+            && DEBUG_SYNC_FILE_PATH[..DEBUG_SYNC_FILE_PATH_LENGTH] == *path
     }
 }
 
@@ -1997,20 +2050,41 @@ impl FileSystem for SelinuxFs {
     }
 }
 
-fn selinux_transition_allowed(target: &[u8]) -> bool {
-    let policy = unsafe { *core::ptr::addr_of!(SELINUX_POLICY_STATE) };
+fn selinux_transition_allowed_in_policy(
+    policy: &SelinuxPolicyState,
+    source: &[u8],
+    target: &[u8],
+) -> bool {
     if !policy.enforcing || !policy.loaded {
         return true;
     }
-    let mut source = [0u8; MAX_SELINUX_CONTEXT];
-    let source_length = task::current_selinux_context(&mut source);
     policy.rules.iter().take(policy.rule_count).any(|rule| {
         rule.active
-            && rule.source_length == source_length
+            && rule.source_length == source.len()
             && rule.target_length == target.len()
-            && rule.source[..rule.source_length] == source[..source_length]
+            && rule.source[..rule.source_length] == source[..]
             && rule.target[..rule.target_length] == target[..]
     })
+}
+
+fn selinux_transition_allowed_from(source: &[u8], target: &[u8]) -> bool {
+    let policy = unsafe { *core::ptr::addr_of!(SELINUX_POLICY_STATE) };
+    selinux_transition_allowed_in_policy(&policy, source, target)
+}
+
+fn selinux_transition_allowed(target: &[u8]) -> bool {
+    let mut source = [0u8; MAX_SELINUX_CONTEXT];
+    let source_length = task::current_selinux_context(&mut source);
+    selinux_transition_allowed_from(&source[..source_length], target)
+}
+
+/// Check the bounded userdebug debug-domain transition used by `adb root`.
+///
+/// This is deliberately a named boundary instead of making the ADB transport
+/// reach into the policy table.  It models the exact contexts needed by the
+/// bring-up image (`adbd` -> `su`); it is not an AOSP policydb or AVC parser.
+pub(super) fn debug_adbd_to_su_transition_allowed() -> bool {
+    selinux_transition_allowed_from(b"u:r:adbd:s0", b"u:r:su:s0")
 }
 
 fn selinux_object_access_allowed(path: &str, requested: u8) -> bool {
@@ -6305,6 +6379,13 @@ fn linux_inherit_capacity(parent_pid: u64) -> Option<usize> {
 }
 
 fn linux_inherit_fds_unchecked(parent_pid: u64, child_pid: u64, count: usize) {
+    // A native Fullerene task may not own any Linux-personality descriptors.
+    // The caller has already proved capacity for `count`; when that count is
+    // zero there is nothing to copy, and entering the free-slot loop would
+    // install `inherited[0]` repeatedly until the bounded array panics.
+    if count == 0 {
+        return;
+    }
     let mut inherited = [LinuxFdEntry::EMPTY; MAX_LINUX_FDS_PER_PROCESS];
     let mut copied = 0usize;
     unsafe {
@@ -7805,6 +7886,31 @@ mod tests {
         filesystem.policy_buffer_length = policy.len();
         assert!(filesystem.parse_policy().is_err());
         assert!(!filesystem.policy_loaded);
+    }
+
+    #[test]
+    fn selinux_userdebug_adbd_to_su_transition_is_bounded() {
+        let mut policy = SelinuxPolicyState::EMPTY;
+        policy.enforcing = true;
+        policy.loaded = true;
+        policy.rule_count = 1;
+        let rule = &mut policy.rules[0];
+        rule.source[..11].copy_from_slice(b"u:r:adbd:s0");
+        rule.source_length = 11;
+        rule.target[..10].copy_from_slice(b"u:r:su:s0");
+        rule.target_length = 10;
+        rule.active = true;
+
+        assert!(selinux_transition_allowed_in_policy(
+            &policy,
+            b"u:r:adbd:s0",
+            b"u:r:su:s0"
+        ));
+        assert!(!selinux_transition_allowed_in_policy(
+            &policy,
+            b"u:r:shell:s0",
+            b"u:r:su:s0"
+        ));
     }
 }
 
