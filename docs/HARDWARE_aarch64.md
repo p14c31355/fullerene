@@ -3943,3 +3943,31 @@ classification is `usb-attach-or-descriptor-failure--110`, boot reason
 artifact's `manifest-correction.txt` records this and the harness now includes
 `dcfg-ignstrmpp=true` in new IDs. No flash, erase, partition operation, backup,
 analyzer, secure-debug, or user-data operation was used.
+
+Type-C SPMI skip A/B 2026-09-09: `tmp/fullerene-bramble-loop.2179479.0`
+used the current normal Android-init/direct-handoff profile with only
+`--skip-typec-spmi` added. QEMU and the Bramble image audit passed, and the
+RAM-only `fastboot boot` was accepted. The artifact SHA-256 is
+`42545efb2a7033733aef2d5dc21b422e275e63a00c2c4636a16bee7c2daa9c9a`.
+Fastboot disconnected at 07:07:57; the host observed no Fullerene attach,
+descriptor transaction, `1234:0001`, Android fallback, or Fastboot return
+during the bounded 180-second observation. The final state was
+`device-absent`, so no host command could perform an automatic reboot. The
+passive all-bus usbmon capture contains 13,238 records / 832,780 bytes and
+has SHA-256 `f65782d79f49e6794c74847d353aee2c56e13608a0734826817ac3a6ad1cff58`;
+the dirty-worktree fingerprint is
+`5bc8c93947b9423f6fdb0132cf7333d16b9ff0a3c305f3061394504539abbf48`.
+Classification is `google-logo-or-software-unrecoverable-suspected`.
+Only read-only preflight plus the allowed RAM-only boot path was used; no
+flash, erase, partition mutation, unlock, slot mutation, factory reset,
+configfs, or user-data operation was issued.
+
+Single-loop automatic Fastboot return 2026-09-09: `bramble-usb loop` now
+performs the same safe return after an Android fallback as the candidate
+parent already did. If the fallback exposes authorized ADB (`get-state` is
+`device`), it issues only `adb -s 26191JECB00076 reboot bootloader`, waits for
+Fastboot for the configured bounded interval, and records the transition in
+`transport-return.txt`; an already-visible Fastboot device is not rebooted.
+With `--no-adb-reboot-to-fastboot`, the loop records that the return was
+disabled and issues no reboot command. A true `device-absent` state remains
+physically unrecoverable from the host.

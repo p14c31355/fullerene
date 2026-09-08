@@ -7020,7 +7020,8 @@ full workspace tests, AArch64 `cargo check`, formatter check, and diff check
 all pass afterward (warnings only in the existing kernel code).
 
 Bounded post-recovery resume 2026-09-09: `bramble-usb candidates` now accepts
-`--recovery-wait-secs` (default `0`, capped at 900 seconds). After a terminal
+`--recovery-wait-secs` (default `900`, capped at 900 seconds; pass `0` for
+immediate stop). After a terminal
 candidate result leaves the host with no transport, the option performs only
 host-side ADB/Fastboot/USB observations and automatically resumes the safe
 candidate flow if Android ADB or Fastboot becomes visible; it never issues a
@@ -7071,3 +7072,49 @@ artifact exists under that run. The watcher was launched before the parent
 expiry-log correction, so its stale parent `next-experiment.txt` is preserved
 as historical evidence; the corrected behavior is represented by the newer
 one-second verification run `1999537.0` above.
+
+Automatic Fastboot return 2026-09-09: the candidate runner now defaults to the
+bounded 900-second recovery window; `--recovery-wait-secs 0` remains the
+explicit immediate-stop override. When Android ADB becomes visible, the
+existing safe `adb -s 26191JECB00076 reboot bootloader` path is used
+automatically; when Fastboot becomes visible, the candidate plan resumes
+without a manual relaunch. This cannot recover a handset while it is truly
+`device-absent`, because no host transport exists to carry the reboot command.
+The focused harness suite remains 17 passing tests, and the dry-run confirms
+the default `recovery-wait-secs=900`.
+
+Candidate hardware runs 2026-09-09: `tmp/fullerene-bramble-candidates.2123792.0`
+and `tmp/fullerene-bramble-candidates.2140837.0` both passed QEMU/image audit
+and received `Fastboot boot accepted: OKAY` for the exact tracked pre-DTB and
+post-DTB artifacts. Neither run observed `1234:0001`; the handset either
+remained absent or returned to Google Fastboot (`18d1:4ee0`). No flash, erase,
+partition read/write, unlock, slot mutation, factory reset, or Android
+configfs operation was issued.
+
+Type-C SPMI skip A/B 2026-09-09: `tmp/fullerene-bramble-loop.2179479.0`
+used the current normal Android-init/direct-handoff profile with only
+`--skip-typec-spmi` added. QEMU and the Bramble image audit passed, and the
+RAM-only `fastboot boot` was accepted. The artifact SHA-256 is
+`42545efb2a7033733aef2d5dc21b422e275e63a00c2c4636a16bee7c2daa9c9a`.
+Fastboot disconnected at 07:07:57; the host observed no Fullerene attach,
+descriptor transaction, `1234:0001`, Android fallback, or Fastboot return
+during the bounded 180-second observation. The final state was
+`device-absent`, so no host command could perform an automatic reboot. The
+passive all-bus usbmon capture contains 13,238 records / 832,780 bytes and
+has SHA-256 `f65782d79f49e6794c74847d353aee2c56e13608a0734826817ac3a6ad1cff58`;
+the dirty-worktree fingerprint is
+`5bc8c93947b9423f6fdb0132cf7333d16b9ff0a3c305f3061394504539abbf48`.
+Classification is `google-logo-or-software-unrecoverable-suspected`.
+Only read-only preflight plus the allowed RAM-only boot path was used; no
+flash, erase, partition mutation, unlock, slot mutation, factory reset,
+configfs, or user-data operation was issued.
+
+Single-loop automatic Fastboot return 2026-09-09: `bramble-usb loop` now
+performs the same safe return after an Android fallback as the candidate
+parent already did. If the fallback exposes authorized ADB (`get-state` is
+`device`), it issues only `adb -s 26191JECB00076 reboot bootloader`, waits for
+Fastboot for the configured bounded interval, and records the transition in
+`transport-return.txt`; an already-visible Fastboot device is not rebooted.
+With `--no-adb-reboot-to-fastboot`, the loop records that the return was
+disabled and issues no reboot command. A true `device-absent` state remains
+physically unrecoverable from the host.

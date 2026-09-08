@@ -1064,8 +1064,9 @@ struct CandidatesArgs {
     fastboot_wait: u64,
     /// After a device-absent result, keep polling host transports for this
     /// bounded interval and resume the candidate plan if physical recovery
-    /// makes Android ADB or Fastboot visible. Zero preserves immediate stop.
-    #[arg(long, default_value_t = 0)]
+    /// makes Android ADB or Fastboot visible. The default is the bounded
+    /// 900-second autonomous recovery window; pass 0 for immediate stop.
+    #[arg(long, default_value_t = MAX_CANDIDATE_RECOVERY_WAIT_SECS)]
     recovery_wait_secs: u64,
     #[arg(long)]
     usbmon: bool,
@@ -3943,12 +3944,41 @@ fn run_loop_with_named_dir(
             }
             thread::sleep(Duration::from_secs(2));
         }
+        if adb_reboot_to_fastboot {
+            match return_to_fastboot_from_adb(&args.serial, args.fastboot_wait, &run_dir) {
+                Ok(()) => {
+                    println!("Android fallback detected; Fastboot return completed automatically");
+                }
+                Err(error) => {
+                    eprintln!(
+                        "Android fallback detected; automatic Fastboot return failed: {error}"
+                    );
+                    fs::write(
+                        run_dir.join("fastboot-return-error.txt"),
+                        format!("{error}\n"),
+                    )?;
+                }
+            }
+        } else {
+            fs::write(
+                run_dir.join("transport-return.txt"),
+                "Automatic Android-to-Fastboot return disabled by --no-adb-reboot-to-fastboot; no reboot command issued.\n",
+            )?;
+        }
     }
     journal.save_final();
     let final_observation = observe_host(&args.serial)?;
     write_host_observation(&run_dir, "host-state-final", &final_observation)?;
     let kernel_log = fs::read_to_string(run_dir.join("kernel-final.log")).ok();
-    let classification = classify_postboot_result(&final_observation, kernel_log.as_deref(), None);
+    // Preserve the original Android fallback classification even when the
+    // safe host-side return has already put the handset back in Fastboot.
+    // Otherwise the final transport state would hide the post-boot failure
+    // that caused the return operation.
+    let classification = if android_fallback {
+        "android-fallback"
+    } else {
+        classify_postboot_result(&final_observation, kernel_log.as_deref(), None)
+    };
     write_classification(&run_dir, classification)?;
     let message = if android_fallback {
         format!(
@@ -4813,6 +4843,49 @@ fn ensure_fastboot_from_adb(serial: &str, timeout_secs: u64, run_dir: &Path) -> 
     wait_for_fastboot(serial, timeout_secs)
 }
 
+fn return_to_fastboot_from_adb(serial: &str, timeout_secs: u64, run_dir: &Path) -> io::Result<()> {
+    if fastboot_present(serial) {
+        fs::write(
+            run_dir.join("transport-return.txt"),
+            "Fastboot already present; adb reboot bootloader was not issued.\n",
+        )?;
+        return Ok(());
+    }
+
+    let state = capture_simple(
+        run_dir,
+        "adb-state-before-return",
+        "adb",
+        &["-s", serial, "get-state"],
+    )?;
+    let state_text = String::from_utf8_lossy(&state.stdout).trim().to_owned();
+    if !state.status.success() || state_text != "device" {
+        let detail = String::from_utf8_lossy(&state.stderr).trim().to_owned();
+        return Err(io::Error::other(format!(
+            "device {serial} is not ready in ADB for automatic Fastboot return (state={state_text:?}, detail={detail:?})"
+        )));
+    }
+
+    let reboot = capture_simple(
+        run_dir,
+        "adb-reboot-bootloader-return",
+        "adb",
+        &["-s", serial, "reboot", "bootloader"],
+    )?;
+    if !reboot.status.success() {
+        return Err(io::Error::other(format!(
+            "adb reboot bootloader failed for device {serial}"
+        )));
+    }
+    fs::write(
+        run_dir.join("transport-return.txt"),
+        format!(
+            "ADB state was device; issued adb -s {serial} reboot bootloader; waiting for Fastboot.\n"
+        ),
+    )?;
+    wait_for_fastboot(serial, timeout_secs)
+}
+
 fn fastboot_getvar(serial: &str, variable: &str) -> io::Result<String> {
     let output = fastboot_command(serial, &["getvar", variable]).output()?;
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -5071,6 +5144,7 @@ mod tests {
         normal_android_candidate_loop_args, parse_trace_header, tree_has_superspeed_link,
         usbmon_summary,
     };
+    use clap::Parser;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -5224,8 +5298,10 @@ mod tests {
     }
 
     #[test]
-    fn candidate_recovery_wait_defaults_to_stop_and_is_bounded() {
-        assert_eq!(CandidatesArgs::default().recovery_wait_secs, 0);
+    fn candidate_recovery_wait_defaults_to_bounded_autonomous_window() {
+        let args = CandidatesArgs::try_parse_from(["bramble-usb"])
+            .expect("candidate CLI defaults should parse");
+        assert_eq!(args.recovery_wait_secs, MAX_CANDIDATE_RECOVERY_WAIT_SECS);
         assert_eq!(900_u64.min(MAX_CANDIDATE_RECOVERY_WAIT_SECS), 900);
         assert_eq!(901_u64.min(MAX_CANDIDATE_RECOVERY_WAIT_SECS), 900);
     }
