@@ -2213,9 +2213,12 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
             let _ = platform::gicv3::init(
                 platform::bramble::GICD_BASE,
                 platform::bramble::GICR_BASE,
-                // Direct handoff owns the event ring from the polling loop;
-                // enabling the DWC3 SPI here would race that consumer.
-                if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+                // Direct handoff normally owns the event ring from the
+                // polling loop; the controller-route A/B deliberately moves
+                // that ownership to the DWC3 SPI consumer.
+                if cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
+                    && !cfg!(fullerene_aarch64_usb_probe_irq_controller)
+                {
                     None
                 } else {
                     Some(platform::bramble::USB_DWC3_IRQ)
@@ -2309,7 +2312,9 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
             let mut deadline =
                 probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
             let mut last_head = usb::trace_head();
-            if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
+                && !cfg!(fullerene_aarch64_usb_probe_irq_controller)
+            {
                 // Direct handoff uses polling to serialize USB RESET/first SETUP. Trace activity extends the
                 // deadline, but an absolute ceiling guarantees recovery if watchdogs are dead. Enumerating
                 // runs enter STAB and never see this bound.

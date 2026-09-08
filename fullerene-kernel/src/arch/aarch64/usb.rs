@@ -3001,6 +3001,38 @@ unsafe fn end_transfer(endpoint: usize) -> bool {
     }
 }
 
+/// Apply qpr1's active-transfer part of `dwc3_gadget_reset_interrupt()` to
+/// the control endpoint.  A bus reset terminates the wire transaction, but
+/// qpr1 still revokes the DWC3 transfer resource before clearing endpoint
+/// stalls.  Keep this opt-in because the normal handoff profile deliberately
+/// preserves its armed EP0 across reset; the source-order reset A/B uses the
+/// returned STARTTRANSFER resource index when it is available.
+unsafe fn stop_active_ep0_at_reset() -> bool {
+    unsafe {
+        let resource_index = EP0_RESOURCE_INDEX[0];
+        if resource_index == 0 {
+            return true;
+        }
+        let stopped = send_ep_command(
+            0,
+            DEPCMD_ENDTRANSFER
+                | DEPCMD_CMDIOC
+                | DEPCMD_HIPRI_FORCERM
+                | ((resource_index as u32) << DEPCMD_PARAM_SHIFT),
+            0,
+            0,
+            0,
+        );
+        EP0_RESOURCE_INDEX[0] = 0;
+        // qpr1 waits 100us after ENDTRANSFER on DWC_usb31 because the
+        // hardware cannot provide the older command-completion guarantee.
+        if read(GSNPSID) >> 16 == DWC31_IP {
+            crate::timer::delay_us(100);
+        }
+        stopped
+    }
+}
+
 /// Apply the hardware portion of the official Qualcomm DWC3 stop cleanup.
 ///
 /// `dwc3_gadget_run_stop(false, false)` acknowledges the GSI event buffers
@@ -3831,172 +3863,198 @@ unsafe fn restart_control_after_reset() {
         if EP0_STATE == Ep0State::Setup && EP0_SETUP_ARMED && ENDPOINTS_READY {
             #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)]
             {
-                // Android msm's dwc3_gadget_reset_interrupt() first notifies
-                // the gadget driver, then clears DCTL.TSTCTRL, and only then
-                // clears endpoint stalls. Keep the armed EP0 SETUP transfer
-                // and DMA addresses intact while reproducing that complete
-                // reset-time state order as one explicit hardware A/B.
+                // qpr1's dwc3_gadget_reset_interrupt() notifies the gadget,
+                // clears test mode, revokes active transfers, and clears
+                // endpoint stalls in that order. The ordinary Fullerene path
+                // intentionally preserves its armed control transfer; this
+                // source-order A/B follows qpr1 and lets the common re-arm
+                // tail below publish a fresh SETUP transfer.
                 GadgetDriver::reset(gadget_mut());
                 let dctl = read(DCTL);
                 write(DCTL, dctl & !DCTL_TSTCTRL_MASK);
+                let transfer_ok = stop_active_ep0_at_reset();
                 let out_ok = send_ep_command(0, DEPCMD_CLEARSTALL, 0, 0, 0);
                 let in_ok = send_ep_command(1, DEPCMD_CLEARSTALL, 0, 0, 0);
-                trace_event(
-                    TRACE_USB_RESET,
-                    0x41525354, // "ARST"
-                    out_ok as u32,
-                    in_ok as u32,
-                    dctl & DCTL_TSTCTRL_MASK,
-                    read(DSTS),
-                );
-            }
-            #[cfg(all(
-                fullerene_aarch64_usb_gadget_handoff_ep0_reset_callback_first,
-                not(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)
-            ))]
-            {
-                // Android msm calls usb_gadget_udc_reset() before its
-                // controller-side stop/clear-stall cleanup. Move only the
-                // existing gadget callback in this A/B; EP0 ownership and
-                // all controller commands remain otherwise unchanged.
-                GadgetDriver::reset(gadget_mut());
-                trace_event(
-                    TRACE_USB_RESET,
-                    0x52434246, // "RCBF"
-                    1,
-                    0,
-                    0,
-                    read(DSTS),
-                );
-            }
-            #[cfg(all(
-                fullerene_aarch64_usb_gadget_handoff_ep0_reset_clear_stall,
-                not(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)
-            ))]
-            {
-                // Android msm's dwc3_clear_stall_all_ep() clears EP0 OUT and
-                // IN after USB Reset without stopping or re-arming the
-                // preserved SETUP transfer. Keep this as an isolated A/B:
-                // the normal preserve path must not issue extra commands.
-                let out_ok = send_ep_command(0, DEPCMD_CLEARSTALL, 0, 0, 0);
-                let in_ok = send_ep_command(1, DEPCMD_CLEARSTALL, 0, 0, 0);
-                trace_event(
-                    TRACE_USB_RESET,
-                    0x5253544C, // "RSTL"
-                    out_ok as u32,
-                    in_ok as u32,
-                    0,
-                    read(DSTS),
-                );
-            }
-            #[cfg(all(
-                fullerene_aarch64_usb_gadget_handoff_ep0_reset_clear_test_mode,
-                not(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)
-            ))]
-            {
-                // Android msm clears DCTL.TSTCTRL in its bus-reset handler
-                // before preserving the EP0 SETUP transfer. Apply only that
-                // register correction in this A/B; Run/Stop and the EP0
-                // ownership boundary remain unchanged.
-                let dctl = read(DCTL);
-                write(DCTL, dctl & !DCTL_TSTCTRL_MASK);
-                trace_event(
-                    TRACE_USB_RESET,
-                    0x54455354, // "TEST"
-                    dctl & DCTL_TSTCTRL_MASK,
-                    0,
-                    0,
-                    read(DSTS),
-                );
-            }
-            if cfg!(fullerene_aarch64_usb_gadget_handoff_reset_resource) {
-                // This opt-in A/B deliberately tests the opposite hardware
-                // hypothesis from the Android-compatible preserve path: a
-                // bus reset may leave the EP0 contexts intact while losing
-                // their transfer-resource allocation. Re-issue only
-                // SETTRANSFRESOURCE and keep the armed SETUP TRB, endpoint
-                // ownership, and returned STARTTRANSFER indices unchanged.
-                let out_ok = set_transfer_resource(0);
-                let in_ok = set_transfer_resource(1);
-                trace_event(
-                    TRACE_USB_RESET,
-                    0x52535243, // "RSRC"
-                    out_ok as u32,
-                    in_ok as u32,
-                    1,
-                    read(DSTS),
-                );
-            }
-            let dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
-            write(DCFG, dcfg);
-            unbind_function();
-            teardown_data_endpoints();
-            reset_gsi_channels();
-            #[cfg(not(any(
-                fullerene_aarch64_usb_gadget_handoff_ep0_reset_callback_first,
-                fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order
-            )))]
-            GadgetDriver::reset(gadget_mut());
-            udc_mut().reset();
-            CONFIGURED = false;
-            DATA_ENDPOINTS_READY = false;
-            DATA_REQUEST_SLOTS = [usize::MAX; 2];
-            DATA_RESOURCE_INDEX = [0; 2];
-            GSI_GADGET_BOUND = false;
-            FUNCTION_BOUND = false;
-            CONTROL_IN = false;
-            CONTROL_HAS_DATA = false;
-            if cfg!(fullerene_aarch64_usb_gadget_handoff_reset_endpoints) {
-                // This broader opt-in A/B tests whether the endpoint context
-                // itself is lost across the bus reset. Unlike the normal
-                // Android-compatible preserve path, rebuild both EP0
-                // contexts, clear the old STARTTRANSFER resource indices,
-                // and let the ordinary post-reset arm retry at link ON.
-                let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
-                let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
-                write(DALEPENA, 0);
-                let rebuilt = send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0)
-                    && configure_endpoint(0, max_packet, false)
-                    && configure_endpoint(1, max_packet, false);
-                if rebuilt {
-                    let _ = udc_mut().configure_endpoint(0, max_packet as u16, false);
-                    let _ = udc_mut().configure_endpoint(1, max_packet as u16, false);
-                } else {
-                    log_puts("usb: EP0 reset endpoint rebuild failed\n");
-                }
-                ENDPOINTS_READY = rebuilt;
-                EP0_RESOURCE_INDEX = [0; 2];
                 EP0_SETUP_ARMED = false;
-                PENDING_SETUP_ARM = true;
-                write(DALEPENA, if rebuilt { 0b11 } else { 0 });
                 trace_event(
                     TRACE_USB_RESET,
-                    0x52455043, // "REPC"
-                    rebuilt as u32,
-                    max_packet,
+                    0x51525354, // "QRST": qpr1 reset sequence
+                    transfer_ok as u32,
+                    (out_ok as u32) | ((in_ok as u32) << 1),
+                    dctl & DCTL_TSTCTRL_MASK,
+                    read(DSTS),
+                );
+            }
+            if !cfg!(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order) {
+                #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)]
+                {
+                    // Android msm's dwc3_gadget_reset_interrupt() first notifies
+                    // the gadget driver, then clears DCTL.TSTCTRL, and only then
+                    // clears endpoint stalls. Keep the armed EP0 SETUP transfer
+                    // and DMA addresses intact while reproducing that complete
+                    // reset-time state order as one explicit hardware A/B.
+                    GadgetDriver::reset(gadget_mut());
+                    let dctl = read(DCTL);
+                    write(DCTL, dctl & !DCTL_TSTCTRL_MASK);
+                    let out_ok = send_ep_command(0, DEPCMD_CLEARSTALL, 0, 0, 0);
+                    let in_ok = send_ep_command(1, DEPCMD_CLEARSTALL, 0, 0, 0);
+                    trace_event(
+                        TRACE_USB_RESET,
+                        0x41525354, // "ARST"
+                        out_ok as u32,
+                        in_ok as u32,
+                        dctl & DCTL_TSTCTRL_MASK,
+                        read(DSTS),
+                    );
+                }
+                #[cfg(all(
+                    fullerene_aarch64_usb_gadget_handoff_ep0_reset_callback_first,
+                    not(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)
+                ))]
+                {
+                    // Android msm calls usb_gadget_udc_reset() before its
+                    // controller-side stop/clear-stall cleanup. Move only the
+                    // existing gadget callback in this A/B; EP0 ownership and
+                    // all controller commands remain otherwise unchanged.
+                    GadgetDriver::reset(gadget_mut());
+                    trace_event(
+                        TRACE_USB_RESET,
+                        0x52434246, // "RCBF"
+                        1,
+                        0,
+                        0,
+                        read(DSTS),
+                    );
+                }
+                #[cfg(all(
+                    fullerene_aarch64_usb_gadget_handoff_ep0_reset_clear_stall,
+                    not(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)
+                ))]
+                {
+                    // Android msm's dwc3_clear_stall_all_ep() clears EP0 OUT and
+                    // IN after USB Reset without stopping or re-arming the
+                    // preserved SETUP transfer. Keep this as an isolated A/B:
+                    // the normal preserve path must not issue extra commands.
+                    let out_ok = send_ep_command(0, DEPCMD_CLEARSTALL, 0, 0, 0);
+                    let in_ok = send_ep_command(1, DEPCMD_CLEARSTALL, 0, 0, 0);
+                    trace_event(
+                        TRACE_USB_RESET,
+                        0x5253544C, // "RSTL"
+                        out_ok as u32,
+                        in_ok as u32,
+                        0,
+                        read(DSTS),
+                    );
+                }
+                #[cfg(all(
+                    fullerene_aarch64_usb_gadget_handoff_ep0_reset_clear_test_mode,
+                    not(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order)
+                ))]
+                {
+                    // Android msm clears DCTL.TSTCTRL in its bus-reset handler
+                    // before preserving the EP0 SETUP transfer. Apply only that
+                    // register correction in this A/B; Run/Stop and the EP0
+                    // ownership boundary remain unchanged.
+                    let dctl = read(DCTL);
+                    write(DCTL, dctl & !DCTL_TSTCTRL_MASK);
+                    trace_event(
+                        TRACE_USB_RESET,
+                        0x54455354, // "TEST"
+                        dctl & DCTL_TSTCTRL_MASK,
+                        0,
+                        0,
+                        read(DSTS),
+                    );
+                }
+                if cfg!(fullerene_aarch64_usb_gadget_handoff_reset_resource) {
+                    // This opt-in A/B deliberately tests the opposite hardware
+                    // hypothesis from the Android-compatible preserve path: a
+                    // bus reset may leave the EP0 contexts intact while losing
+                    // their transfer-resource allocation. Re-issue only
+                    // SETTRANSFRESOURCE and keep the armed SETUP TRB, endpoint
+                    // ownership, and returned STARTTRANSFER indices unchanged.
+                    let out_ok = set_transfer_resource(0);
+                    let in_ok = set_transfer_resource(1);
+                    trace_event(
+                        TRACE_USB_RESET,
+                        0x52535243, // "RSRC"
+                        out_ok as u32,
+                        in_ok as u32,
+                        1,
+                        read(DSTS),
+                    );
+                }
+                let dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
+                write(DCFG, dcfg);
+                unbind_function();
+                teardown_data_endpoints();
+                reset_gsi_channels();
+                #[cfg(not(any(
+                    fullerene_aarch64_usb_gadget_handoff_ep0_reset_callback_first,
+                    fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order
+                )))]
+                GadgetDriver::reset(gadget_mut());
+                udc_mut().reset();
+                CONFIGURED = false;
+                DATA_ENDPOINTS_READY = false;
+                DATA_REQUEST_SLOTS = [usize::MAX; 2];
+                DATA_RESOURCE_INDEX = [0; 2];
+                GSI_GADGET_BOUND = false;
+                FUNCTION_BOUND = false;
+                CONTROL_IN = false;
+                CONTROL_HAS_DATA = false;
+                if cfg!(fullerene_aarch64_usb_gadget_handoff_reset_endpoints) {
+                    // This broader opt-in A/B tests whether the endpoint context
+                    // itself is lost across the bus reset. Unlike the normal
+                    // Android-compatible preserve path, rebuild both EP0
+                    // contexts, clear the old STARTTRANSFER resource indices,
+                    // and let the ordinary post-reset arm retry at link ON.
+                    let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
+                    let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
+                    write(DALEPENA, 0);
+                    let rebuilt = send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0)
+                        && configure_endpoint(0, max_packet, false)
+                        && configure_endpoint(1, max_packet, false);
+                    if rebuilt {
+                        let _ = udc_mut().configure_endpoint(0, max_packet as u16, false);
+                        let _ = udc_mut().configure_endpoint(1, max_packet as u16, false);
+                    } else {
+                        log_puts("usb: EP0 reset endpoint rebuild failed\n");
+                    }
+                    ENDPOINTS_READY = rebuilt;
+                    EP0_RESOURCE_INDEX = [0; 2];
+                    EP0_SETUP_ARMED = false;
+                    PENDING_SETUP_ARM = true;
+                    write(DALEPENA, if rebuilt { 0b11 } else { 0 });
+                    trace_event(
+                        TRACE_USB_RESET,
+                        0x52455043, // "REPC"
+                        rebuilt as u32,
+                        max_packet,
+                        0,
+                        read(DSTS),
+                    );
+                    let _ = try_arm_setup();
+                }
+                // In the default path EP0_STATE, EP0_SETUP_ARMED,
+                // EP0_RESOURCE_INDEX, ENDPOINTS_READY, DALEPENA, DCFG.speed, and
+                // the armed SETUP TRB are preserved. Android msm's
+                // dwc3_gadget_reset_interrupt() does not stop or re-arm EP0: the
+                // initial SETUP transfer remains owned by the core across USB
+                // reset, and Connect Done later MODIFYs the EP0 contexts for the
+                // negotiated speed. Issuing ENDTRANSFER or a second STARTTRANSFER
+                // here races the host's first post-reset SETUP token and loses
+                // the descriptor window.
+                trace_event(
+                    TRACE_USB_RESET,
+                    0x4B45_504B, // "KEEP"
+                    0,
+                    0,
                     0,
                     read(DSTS),
                 );
-                let _ = try_arm_setup();
+                return;
             }
-            // In the default path EP0_STATE, EP0_SETUP_ARMED,
-            // EP0_RESOURCE_INDEX, ENDPOINTS_READY, DALEPENA, DCFG.speed, and
-            // the armed SETUP TRB are preserved. Android msm's
-            // dwc3_gadget_reset_interrupt() does not stop or re-arm EP0: the
-            // initial SETUP transfer remains owned by the core across USB
-            // reset, and Connect Done later MODIFYs the EP0 contexts for the
-            // negotiated speed. Issuing ENDTRANSFER or a second STARTTRANSFER
-            // here races the host's first post-reset SETUP token and loses
-            // the descriptor window.
-            trace_event(
-                TRACE_USB_RESET,
-                0x4B45_504B, // "KEEP"
-                0,
-                0,
-                0,
-                read(DSTS),
-            );
-            return;
         }
         // A bus reset already flushed every in-flight EP0 transfer at the
         // wire level. Issuing ENDXFER here and then re-arming races the
@@ -4009,7 +4067,9 @@ unsafe fn restart_control_after_reset() {
         unbind_function();
         teardown_data_endpoints();
         reset_gsi_channels();
-        GadgetDriver::reset(gadget_mut());
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_ep0_reset_android_state_order) {
+            GadgetDriver::reset(gadget_mut());
+        }
         udc_mut().reset();
         CONFIGURED = false;
         DATA_ENDPOINTS_READY = false;
@@ -4420,6 +4480,18 @@ unsafe fn process_event(raw: u32) {
                     unsafe { qpr1_enable_eopf_on_connect_done() };
                 }
                 unsafe { configure_android_hs_connect_done_policy(speed) };
+                #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_conndone_clear_hird)]
+                if speed == DSTS_SUPERSPEED {
+                    // qpr1's dwc3_gadget_conndone_interrupt() clears the
+                    // HIRD threshold on the non-HS branch. The regular
+                    // handoff leaves XBL's pre-connect value in DCTL; keep
+                    // this source-aligned write isolated for an A/B.
+                    unsafe {
+                        let dctl = read(DCTL) & !DCTL_HIRD_THRES_MASK;
+                        write(DCTL, dctl);
+                        let _ = read(DCTL);
+                    }
+                }
                 unsafe {
                     CONNECT_TICK = arch_counter();
                     PENDING_SETUP_ARM = true;
@@ -6305,7 +6377,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
                 EP0_SETUP_ARMED = !defer_initial_setup;
             }
-            if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+            if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
+                || cfg!(fullerene_aarch64_usb_probe_irq_controller)
+            {
                 enable_gadget_controller_irq();
             }
             // Linux enables the DWC3 event interrupt immediately after arming the
@@ -6341,6 +6415,19 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         }
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_usb2_source_devten_before_runstop)]
+        {
+            // qpr1's __dwc3_gadget_start() enables DEVTEN immediately after
+            // arming the initial EP0 OUT SETUP transfer and before the final
+            // Run/Stop write. The attach-reaching `start-after-connect` A/B
+            // defers STARTTRANSFER, but must not silently defer the device
+            // event mask as well: USB Reset/Connect Done events are generated
+            // only while their DEVTEN bits are enabled. Keep this as one
+            // explicit ordering differential; the post-arm write below is
+            // retained so the selected mask is identical at both boundaries.
+            write(DEVTEN, direct_gadget_devten());
+            let _ = read(DEVTEN);
+        }
         // Bramble's DT declares maximum-speed = "super-speed". The Android
         // msm start path keeps that DCFG speed even when the negotiated link
         // later falls back to USB2; the EP0 context is changed to 64 bytes by
@@ -6795,7 +6882,9 @@ pub fn init_usb2_gadget_handoff() -> bool {
             log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
             return false;
         }
-        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
+            || cfg!(fullerene_aarch64_usb_probe_irq_controller)
+        {
             enable_gadget_controller_irq();
         }
         // Mirror Linux's post-ep0_out_start IRQ window before connecting the
@@ -7193,6 +7282,21 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 // retain only the DWC3-side handoff below.
                 trace_marker(TRACE_PROBE_WATCHDOG, 0x5150_5245); // "QPRE"
                 QMP_PHY_READY = true;
+                #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_android_dbm_reset)]
+                {
+                    // qpr1's dwc3_otg_start_peripheral() invokes
+                    // dwc3_msm_block_reset(false) even when the external PHY
+                    // is already trained. That call does not assert the
+                    // DWC3 core reset; it only resets/enables Qualcomm DBM
+                    // immediately before peripheral-mode startup. The
+                    // preserve-PHY path previously skipped this source-backed
+                    // controller ownership boundary because the selector was
+                    // nested only in the QMP reinitialization branch.
+                    if !super::platform::bramble::android_dbm_reset_and_enable() {
+                        log_puts("usb: Android DBM reset/enable failed\n");
+                        return false;
+                    }
+                }
                 #[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_core_clocks)]
                 {
                     // The preserve-phy branch skips the normal post-QMP
@@ -8132,7 +8236,9 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                 return true;
             }
         }
-        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+        if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
+            || cfg!(fullerene_aarch64_usb_probe_irq_controller)
+        {
             enable_gadget_controller_irq();
         }
         // Linux starts consuming DWC3 events as soon as the initial EP0 OUT
@@ -8862,6 +8968,16 @@ unsafe fn restart_gadget_at_runstop(super_speed: bool) -> bool {
             configure_gadget_speed(super_speed);
         }
         configure_gadget_start_defaults();
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_start_defaults_at_runstop)]
+        {
+            // On DWC_usb31 qpr1's __dwc3_gadget_start() also reapplies the
+            // revision-gated GUCTL/GSBUSCFG1 gadget-start deltas.  When the
+            // direct USB2 A/B performs device-core reset at this boundary,
+            // restore that source-owned state in the same reset-after-start
+            // epoch instead of carrying the pre-reset register values into
+            // the final endpoint commands.
+            apply_usb31_gadget_reference_deltas();
+        }
         write(DALEPENA, 0);
         ENDPOINTS_READY = false;
         EP0_SETUP_ARMED = false;
@@ -8892,17 +9008,20 @@ unsafe fn restart_gadget_at_runstop(super_speed: bool) -> bool {
         }
 
         // Android starts with the SuperSpeed EP0 descriptor and changes it
-        // to 64 bytes from Connect Done for a USB2 link. Keep that exact
-        // initial packet size so this A/B includes the endpoint-start state,
-        // while the existing event path remains responsible for the later
-        // speed-specific modification.
-        let epcfg0 = configure_endpoint_config(
-            0,
-            INITIAL_EP0_MAX_PACKET_SIZE,
-            DEPCFG_EP_TYPE_CONTROL,
-            false,
-            0,
-        );
+        // to 64 bytes from Connect Done for a USB2 link. When this helper is
+        // used for the USB2-only handoff, Connect Done is the first host
+        // boundary and may not reach the software event consumer before the
+        // first SETUP. Keep the existing A/B flag consistent across both
+        // endpoint-construction epochs: the explicit 512-byte experiment
+        // retains the source initial state, while the baseline USB2 restart
+        // publishes the post-Connect-Done 64-byte state directly.
+        let restart_ep0_packet_size = if cfg!(fullerene_aarch64_usb_ep0_initial_512) {
+            INITIAL_EP0_MAX_PACKET_SIZE
+        } else {
+            64
+        };
+        let epcfg0 =
+            configure_endpoint_config(0, restart_ep0_packet_size, DEPCFG_EP_TYPE_CONTROL, false, 0);
         if !epcfg0 {
             trace_event(
                 TRACE_SETUP_QUEUED,
@@ -8920,13 +9039,8 @@ unsafe fn restart_gadget_at_runstop(super_speed: bool) -> bool {
         // after EP0-IN configuration has completed.
         write(DALEPENA, read(DALEPENA) | (1 << 0));
         trace::live_dalepena_config(0, read(DALEPENA));
-        let epcfg1 = configure_endpoint_config(
-            1,
-            INITIAL_EP0_MAX_PACKET_SIZE,
-            DEPCFG_EP_TYPE_CONTROL,
-            false,
-            0,
-        );
+        let epcfg1 =
+            configure_endpoint_config(1, restart_ep0_packet_size, DEPCFG_EP_TYPE_CONTROL, false, 0);
         if !epcfg1 {
             trace_event(
                 TRACE_SETUP_QUEUED,
@@ -8941,8 +9055,8 @@ unsafe fn restart_gadget_at_runstop(super_speed: bool) -> bool {
         write(DALEPENA, read(DALEPENA) | (1 << 1));
         trace::live_dalepena_config(1, read(DALEPENA));
         ENDPOINTS_READY = true;
-        let _ = udc_mut().configure_endpoint(0, INITIAL_EP0_MAX_PACKET_SIZE as u16, false);
-        let _ = udc_mut().configure_endpoint(1, INITIAL_EP0_MAX_PACKET_SIZE as u16, false);
+        let _ = udc_mut().configure_endpoint(0, restart_ep0_packet_size as u16, false);
+        let _ = udc_mut().configure_endpoint(1, restart_ep0_packet_size as u16, false);
         // The canonical qpr1 path arms CONTROL_SETUP before Run/Stop. The
         // Bramble timing A/B can deliberately defer only this STARTTRANSFER
         // while retaining the Android endpoint/resource restart; the common

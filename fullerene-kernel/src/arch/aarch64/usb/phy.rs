@@ -352,6 +352,7 @@ pub(super) unsafe fn restore_suspend_n_selected_after_runstop() -> u32 {
 
 unsafe fn init_hsphy_inner(source_exact: bool) {
     unsafe {
+        let xbl_exact = cfg!(fullerene_aarch64_usb_hsphy_xbl_exact);
         hsphy_update(
             HSPHY_CFG0,
             HSPHY_CFG0_CMN_CTRL_OVERRIDE_EN,
@@ -365,16 +366,20 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             HSPHY_COMMON1_PLLBTUNE,
         );
         hsphy_update(HSPHY_REFCLK_CTRL, 0x3, 0x2);
-        hsphy_update(
-            HSPHY_COMMON1,
-            HSPHY_COMMON1_VBUSVLDEXTSEL0,
-            HSPHY_COMMON1_VBUSVLDEXTSEL0,
-        );
-        hsphy_update(
-            HSPHY_CTRL1,
-            HSPHY_CTRL1_VBUSVLDEXT0,
-            HSPHY_CTRL1_VBUSVLDEXT0,
-        );
+        if !xbl_exact {
+            // These two writes are part of qpr1 msm_hsphy_init(), but are not
+            // present in the same-build XBL usb_shared_hs_phy_init() body.
+            hsphy_update(
+                HSPHY_COMMON1,
+                HSPHY_COMMON1_VBUSVLDEXTSEL0,
+                HSPHY_COMMON1_VBUSVLDEXTSEL0,
+            );
+            hsphy_update(
+                HSPHY_CTRL1,
+                HSPHY_CTRL1_VBUSVLDEXT0,
+                HSPHY_CTRL1_VBUSVLDEXT0,
+            );
+        }
 
         // qcom,param-override-seq is encoded as (value, register offset).
         let mut hsphy_param_override =
@@ -438,7 +443,10 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             HSPHY_COMMON2_VREGBYPASS,
             HSPHY_COMMON2_VREGBYPASS,
         );
-        if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
+        if cfg!(any(
+            fullerene_aarch64_usb_abl_shared_hsphy,
+            fullerene_aarch64_usb_hsphy_xbl_exact
+        )) {
             hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_ATE_RESET, 0);
             hsphy_update(
                 HSPHY_TEST1,
@@ -469,13 +477,19 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             crate::timer::delay_us(150);
         }
         hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N_SEL, 0);
-        if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
+        if cfg!(any(
+            fullerene_aarch64_usb_abl_shared_hsphy,
+            fullerene_aarch64_usb_hsphy_xbl_exact
+        )) {
             // ABL waits after dropping SUSPEND_N_SEL before releasing the
             // common-control override.
             crate::timer::delay_us(20);
         }
         hsphy_update(HSPHY_CFG0, HSPHY_CFG0_CMN_CTRL_OVERRIDE_EN, 0);
-        if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
+        if cfg!(any(
+            fullerene_aarch64_usb_abl_shared_hsphy,
+            fullerene_aarch64_usb_hsphy_xbl_exact
+        )) {
             // It then gives the analog block another 20 us to settle.
             crate::timer::delay_us(20);
         }

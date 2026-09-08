@@ -781,8 +781,35 @@ fn init_bramble_usb_handoff() -> bool {
 
     #[cfg(fullerene_aarch64_bramble)]
     {
+        // The standalone probe pets the APSS watchdog immediately before
+        // entering the USB handoff.  The normal Android-init path may spend
+        // time walking the DTB and describing UFS between its entry pet and
+        // this point; refresh the same boundary so a post-DTB handoff does
+        // not measure watchdog age instead of USB ownership.
+        usb::wdt_pet();
         usb::dump_trace();
+        // The standalone gadget-handoff probe deliberately leaves the
+        // Fastboot-owned event ring and DMA objects intact until its
+        // stop/reset ownership boundary.  Clearing them here would erase the
+        // very handoff state that the attach-reaching probe reuses, while
+        // `init_usb2_gadget_reuse_fastboot_ep0()` clears the region after the
+        // controller has been stopped.  Keep the normal non-probe path's
+        // early clear, but make the Android-init probe entry match the known
+        // attach-reaching standalone ordering.
+        #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
         usb::clear_dma_memory();
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        // After the previous-record dump, initialize the retained trace
+        // before appending this boot's records. The probe path intentionally
+        // defers the DMA clear until after the Fastboot controller is
+        // stopped, so it cannot rely on clear_dma_memory() to seed the trace
+        // header here. Keep the standalone probe's reset ordering without
+        // touching any controller or DMA ownership state.
+        usb::trace_probe_begin();
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        uart::puts("platform: preserving Fastboot DMA until USB handoff reset\n");
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+        usb::trace_reset_head_for_boot();
         usb::trace_marker(usb::TRACE_BOOT_USB_ENTRY, 0);
         usb::trace_marker(usb::TRACE_TYPEC_BEGIN, 0);
         usb::note_platform_powered();
