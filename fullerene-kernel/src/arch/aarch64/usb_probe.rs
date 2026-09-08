@@ -53,6 +53,18 @@ mod fs {
         }
     }
 
+    // The standalone USB probe has no Android-init VFS or SELinux policy.
+    // Keep the shared ADB transport's control surface linkable, but reject
+    // root transitions and sync writes instead of pretending that this
+    // pre-MMU probe owns those services.
+    pub(crate) fn debug_adbd_to_su_transition_allowed() -> bool {
+        false
+    }
+
+    pub(crate) fn debug_file_write(_path: &[u8], _data: &[u8]) -> bool {
+        false
+    }
+
     fn debug_copy_static(destination: &mut [u8], source: &[u8]) -> usize {
         let length = source.len().min(destination.len());
         destination[..length].copy_from_slice(&source[..length]);
@@ -1326,6 +1338,25 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             }
             park_without_recovery_timer();
         }
+        if selector == "hsphy-valid" {
+            // `hsphy-valid` uses 1=missing and 2=present so that a valid
+            // zero-valued HS-PHY field cannot collapse into the no-record
+            // bucket. Publish that categorical result with the same bounded
+            // Run/Stop transport used by the protocol readout: one pair is
+            // missing, two pairs are present. This changes no PHY, TRB, or
+            // response-data state.
+            let code = usb::utmi_readout_code(selector).clamp(1, 2) as u64;
+            trace_gate(0x4853_5651 | ((code as u32) << 16)); // "HSVQ" + code
+            for _ in 0..code {
+                let _ = usb::gate_true_stop_device();
+                let dropped = probe_counter().saturating_add(frequency / 4);
+                poll_until_probe_ticks(frequency, dropped);
+                let _ = usb::gate_true_run_device();
+                let attached = probe_counter().saturating_add(frequency * 3 / 10);
+                poll_until_probe_ticks(frequency, attached);
+            }
+            park_without_recovery_timer();
+        }
         if selector == "protocol" {
             // Publish the retained EP0 command/SETUP classification through
             // the only signal channel that has been useful on this board:
@@ -2299,6 +2330,14 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
                     usb::wdt_pet();
                     usb::poll();
                     if unsafe { usb::gadget_handoff_post_init_stage_probe(27) } {
+                        reset_after_probe_failure();
+                    }
+                    #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+                    if usb::ep0_signal_early_drop_poll() {
+                        // The signal probe owns this intentional disconnect;
+                        // do not let the normal EP0-progress path turn it
+                        // into a stable-park success or issue another
+                        // transfer.
                         reset_after_probe_failure();
                     }
                     if usb::probe_ep0_progress() {

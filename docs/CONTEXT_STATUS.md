@@ -8,9 +8,221 @@ commands, timestamps, hashes, and per-run notes.
 
 | Goal | Success criterion | Current state |
 | --- | --- | --- |
-| Pixel 4a 5G (Bramble) USB handoff | Fullerene enumerates as `idVendor=1234`, `idProduct=0001` | Reached: host sees `1234:0001` |
+| Pixel 4a 5G (Bramble) USB handoff | Fullerene enumerates as `idVendor=1234`, `idProduct=0001` | Not reached: the only `1234:0001` observation came from a prohibited Android configfs rebind; Fullerene runs still end at HS attach → descriptor `-110/-71` |
 | FullereneOS AArch64 port | Boot the real FullereneOS runtime on Bramble | Early bring-up only: generic runtime not yet entered |
 | Recovery safety | Failed handoff returns to Android without flashing or erasing | Confirmed with `fastboot boot` runs |
+
+Latest safe continuation (2026-09-08): the EP0 signal-probe loop now honors
+the already-exposed `--observe-secs` build option; before this correction the
+kernel always used 20 seconds. QEMU/preflight and the Bramble boot-image audit
+passed for `tmp/fullerene-bramble-observe16.img` (SHA-256
+`bc0fa58ae38f97c0a6a9c981bc6652d9cf69e8ceee1291882ea4fd74485cf630`). The
+handset was Android during this continuation, so no reboot or physical
+`fastboot boot` was issued and the success criterion remains open.
+
+Physical diagnostic follow-up (2026-09-08) used the same bounded ADB→Fastboot
+baseline and changed only the signal probe: Run `700408.0` selected event
+delivery (`--signal-early-drop 1`) and still reached HS attach, zero-data
+descriptor `-2`/`-71`, and Android `18d1:4ee7` recovery. Controls
+`705432.0`/`709320.0` used unconditional early-drop code 9, first with the
+existing QSCRATCH/VBUS path and then with the VBUS-valid override; both still
+reached HS attach. The diagnostic drop helper was then extended with DCTL
+Run/Stop and retested in `714209.0` (16 s) and `720205.0` (60 s, past the
+~42 s HS attach delay); neither produced a host-visible disconnect. These
+drop-channel controls are therefore diagnostic-inconclusive, not evidence
+that event/SOF latches are clear. Artifacts and raw usbmon SHA-256 values are
+retained in the hardware ledger; all runs used RAM-only `fastboot boot` and
+returned to stock Android.
+
+The next one-variable control was `738778.0`: it removed only
+`--usb2-source-susphy` from the current qpr1-derived direct USB2 profile while
+retaining source-exact HS-PHY setup, the qpr1 device reset/command guard/
+Run-Stop controls, gadget restart, and the code-9 diagnostic path. QEMU,
+image audit, and RAM-only `fastboot boot` passed. The host saw Fullerene HS
+attach at `14:45:03`, the Device Descriptor timed out with `-110` at `14:45:08`,
+and Android `18d1:4ee7` returned at `14:45:29`; usbmon recorded one zero-data
+`-2` completion followed by three zero-data `-71` retries. Boot artifact
+SHA-256 is `d0d243c817d36522525b4d32a1e8d5ce4d676bdf796cca022bcecbed3cb3e584`;
+raw usbmon SHA-256 is
+`db4350ae4b9f93df0498d2dea16d1b7464bd12376d1deaf29718477b08dba204`.
+Removing USB2 `SUSPHY` retention did not move the pre-descriptor boundary; no
+`1234:0001` appeared and the handset recovered by watchdog. No flash, erase,
+partition operation, backup, analyzer, secure-debug, or user-data operation
+was used.
+
+The next diagnostic-gate A/B (`tmp/fullerene-bramble-loop.755754.0`) replaced
+the code-9/VBUS-clear early-drop actuator with the existing
+`--signal-cmd-gate sdis` parking path while retaining the current qpr1-derived
+direct USB2 profile. QEMU, image audit, and RAM-only `fastboot boot` passed.
+Fastboot disconnected at `14:56:43`, Fullerene HS attach appeared at `14:57:22`,
+the Device Descriptor timed out with `-110` at `14:57:28`, and Android
+`18d1:4ee7` returned at `14:57:48`; no `1234:0001` appeared. The only host
+disconnect was the Fastboot-to-RAM-only transition; `sdis` produced no second
+host-visible disconnect after Fullerene attach. usbmon recorded one zero-data
+`-2` completion followed by three zero-data `-71` retries. Boot artifact
+SHA-256 is
+`965f59287774bd7fb1ea4aac5461139516a90c5effbf799e07d6282c6729b49c`;
+raw usbmon SHA-256 is
+`ac3f9755c52c8e7b14f5c8d2762f80f7b9a229242738b76dfe786c2529cda20b`.
+This does not establish a host-visible stop/run channel; the next safe target
+remains raw/retained USB2 PHY RX/SOF instrumentation or a known-good source
+trace. The handset recovered by watchdog, with no flash, erase, partition
+operation, backup, analyzer, secure-debug, or user-data operation.
+
+The next source-directed timing A/B was Run `1003577.0`: add only the qpr1
+50 ms minimum stop-to-start interval immediately before the direct USB2
+reuse path's final Run/Stop. The build, QEMU USB preflight, boot-image audit,
+and RAM-only `fastboot boot` all passed. Artifact SHA-256 is
+`927fe4837914d2dc12b03af7eaade415add485276d154a54884b157fae7cd9d2`; the
+host reached the same Fullerene HS attach at `17:52:11`, timed out the Device
+Descriptor with `-110` at `17:52:16`, and returned to Android `18d1:4ee7` at
+`17:52:37`. usbmon SHA-256 is
+`ed7b6461e7f555c518939798a7f39c29753d6378dbb437e2d21d3c68d76e96fb`, with
+one zero-data `-2` completion and three zero-data `-71` retries. The timing
+interval is therefore negative and does not move the EP0 boundary; the next
+safe action is a primary-source/known-good USB2 PHY ownership and RX/SOF
+trace, not another downstream EP0/TRB permutation. No flash, erase, partition
+operation, backup, analyzer, secure-debug, or user-data operation was used.
+
+The next source-directed PHY A/B was Run `1042386.0`: retain the exact
+attach-reaching qpr1/source-exact direct USB2 profile and add only
+`--hsphy-restore-suspend-n-after-runstop`, which writes the raw HS-PHY
+`SUSPEND_N` bit to 1 immediately after the final Run/Stop; add the read-only
+`--utmi-postrun-readout hsphy-suspend-n-safe` discriminator. Build, QEMU
+preflight, image audit, and RAM-only `fastboot boot` passed. The image SHA-256
+is `d9b904cdd1466539a4cba8d944d267ecb75022bc06ab3006b322b088b8ea4e7f` and
+the dirty-diff SHA-256 is
+`94dc750b9b1376e086c5f2956ad1e56329d17637fbaf06aac8f304341c130838`.
+Fastboot disconnected at `18:19:09`, Fullerene HS attach appeared at
+`18:19:48`, and the Device Descriptor timed out with `-110` at `18:19:54`;
+Android `18d1:4ee7` returned at `18:20:14`, after 66 s. No `1234:0001`
+appeared. The attach remained in the known 39-second post-Run/Stop bucket,
+not the +4-second `SUSPEND_N=1` bucket observed by Run `1030600.0`, so the
+raw-bit-only write was not retained or not writable with `SUSPEND_N_SEL=0`.
+This A/B is a negative discriminator for the one-bit write, not evidence that
+the source-defined state is absent. The harness did not produce a usbmon file
+for this run; the host kernel log still records the complete attach/
+descriptor/recovery sequence. Classification is
+`usb-attach-or-descriptor-failure--110`, boot reason `watchdog`; no flash,
+erase, partition operation, backup, analyzer, secure-debug, or user-data
+operation was used. Next action: test the qpr1-exact selected write sequence
+(`SUSPEND_N_SEL | SUSPEND_N` set together, then `SUSPEND_N_SEL` cleared) as a
+single PHY ownership A/B before abandoning this branch.
+
+That selected-sequence A/B was Run `1051403.0`: the only change from the
+same attach-reaching profile was qpr1's exact selected write sequence after
+Run/Stop, with the same read-only post-Run/Stop `hsphy-suspend-n-safe`
+readout. Build, QEMU preflight, image audit, and RAM-only `fastboot boot`
+passed. The image SHA-256 is
+`11497b9e0a6017fa731c931034215750445803f90684dd9c1800a1a610f092ae`,
+usbmon-all SHA-256 is
+`02181c105407e05276ffb160af3f3d82af2a10d2010ca1086c417b4c5f78dfcf`, and
+the dirty-diff SHA-256 is
+`7032a65ccdaac5f7863726246b37d39481d172e09975a0b19d8b5ee464fad246`.
+Fastboot disconnected at `18:26:33`, Fullerene HS attach appeared at
+`18:27:12`, the Device Descriptor timed out with `-110` at `18:27:18`, and
+Android `18d1:4ee7` returned at `18:27:38`, after 67 s. No `1234:0001`
+appeared. usbmon recorded one zero-data `-2` completion followed by three
+zero-data `-71` retries, with no descriptor payload. The attach remained in
+the 39-second bucket, so the qpr1 selector sequence did not produce the
+expected +4-second `SUSPEND_N=1` discriminator either. The safe HS-PHY
+write-back branch is therefore closed: either this readback is not a
+writable ownership control at this boundary or restoring it is insufficient
+for USB2 RX. Classification is `usb-attach-or-descriptor-failure--110`, boot
+reason `watchdog`; no flash, erase, partition operation, backup, analyzer,
+secure-debug, or user-data operation was used. Next action is raw/retained
+USB2 PHY RX/SOF observation or a known-good source-path trace, not another
+HS-PHY bit-write or downstream EP0/TRB permutation.
+
+The qpr1 source audit after Run `1051403.0` found no separate live RX-status
+register in `phy-msm-snps-hs.c`: that Bramble driver exposes the control
+fields and write/readback path only. The `QUSB2PHY_PORT_UTMI_STATUS` register
+belongs to the different `phy-msm-qusb.c` driver and is not a valid Bramble
+mapping. Fullerene already samples DWC3 `DSTS.SOFFN` read-only; its bounded
+SOF gate produced no positive host-visible discriminator. This closes the
+available safe source-backed PHY status additions for now; further progress
+requires a retained trace or a known-good source-path observation.
+
+The follow-up SOF readout A/B (`tmp/fullerene-bramble-loop.763832.0`) changed
+only the diagnostic selector to `--signal-cmd-gate sof` on the same profile.
+QEMU, image audit, and RAM-only `fastboot boot` passed. Fastboot disconnected
+at `15:02:09`, Fullerene HS attach appeared at `15:02:48`, the Device
+Descriptor timed out with `-110` at `15:02:54`, and Android `18d1:4ee7`
+returned at `15:03:14`; no `1234:0001` appeared. The gate's discriminator was
+a second host disconnect if the DSTS SOF frame number changed during its 100 ms
+window; none appeared. usbmon again recorded one zero-data `-2` completion
+followed by three zero-data `-71` retries. This produces no SOF-positive host
+signal and cannot independently separate absent SOF from an ineffective stop
+path, but it adds no evidence for a downstream EP0/TRB fix. The current safe
+next step is a primary-source/known-good USB2 PHY ownership and RX-path trace,
+within the prohibited-operation limits. Boot artifact SHA-256 is
+`48e0f908ab07da66f9c23c21a3e4a963187b20e8a5ceeeaa6b08b17379dbc684`; raw
+usbmon SHA-256 is
+`3434341d3a8fe5c22e4adfe502fc60311736f7e397fcfe274081888a5882a0d5`.
+
+The corresponding qpr1 primary-source audit was also completed: Android's
+`phy-msm-snps-hs.c` `msm_hsphy_init()` sequence (rail enable, 19.2 MHz
+`ref_clk_src`, `qusb2phy_reset`, analog register sequence, and POR/
+`SUSPEND_N` release) and Bramble `qcom/lito-usb.dtsi` ownership/override data
+are already represented in the current direct USB2 path and have each had
+physical A/B coverage. `dwc3-msm.c`'s device-mode VBUS/PHY notification and
+qpr1 `gadget.c` Run/Stop ordering likewise have no untested, safe, source-backed
+delta at this boundary. No speculative register change is justified by the
+current evidence; the unresolved discriminator remains a retained/raw PHY RX
+or known-good-path trace.
+
+The gate-time DWC3 readout retake (`778063.0`) kept the same profile and again
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Fastboot
+disconnected at `15:12:33`, Fullerene HS attached at `15:13:13`, the descriptor
+timed out with `-110` at `15:13:18`, and Android `18d1:4ee7` returned at
+`15:13:39`. usbmon again showed one zero-data `-2` completion followed by
+three zero-data `-71` retries, with no extra attach/disconnect. The boot
+artifact SHA-256 is
+`f0efe58b90dc5a079ff7b00fd3f0f6e871fc409edbb8c7f4235df9694f921a34`; raw
+usbmon SHA-256 is
+`dd4d7b74706e59bda4d52ef925bef4a435a648299c798551ac1e1194d57f72e8`.
+Because the existing `327438.0`/`1753664.0` evidence already records
+`dwc3-state=0`, this is a duplicate diagnostic result and not a new raw
+register observation.
+
+A one-time retained-trace harvest (`782762.0`) then repeated the unchanged
+profile to test whether a prior snapshot affected the next attach timing.
+Fastboot disconnected at `15:15:24`, Fullerene HS attached at `15:16:03`, the
+descriptor timed out with `-110` at `15:16:09`, and Android returned at
+`15:16:29`; no timing discriminator or `1234:0001` appeared. Android recovery
+overwrote or did not preserve a usable `.usb_trace` value, so no raw DWC3 state
+is claimed. The boot artifact SHA-256 is the same
+`f0efe58b90dc5a079ff7b00fd3f0f6e871fc409edbb8c7f4235df9694f921a34`; raw
+usbmon SHA-256 is
+`df3105841659e00c776c67b0655dac22f992d1803aa04a1ba5e29e8591d5658f`.
+
+Read-only inspection of the recovered known-good Android state confirmed
+`ro.boot.hardware=bramble`, `ro.boot.dtbo_idx=17`, and the UDC symlink to
+`a600000.dwc3`; shell permissions prevented reading the UDC state attributes.
+This confirms the same DWC3 instance and DTBO identity but supplies no new
+safe Fullerene programming delta. The `dwc3-state` path is therefore closed;
+the next safe target remains a static primary-source/known-good trace or
+raw/retained USB2 PHY RX/SOF instrumentation.
+
+The source-correct Qualcomm DBM A/B (`807263.0`) reopened the previously
+invalidated `580103.0` experiment. Only `--usb2-android-dbm-reset` was added
+to the current attach-reaching USB2 profile; the helper now uses the corrected
+`dwc3_base + 0xf8000` DBM window and the separate QSCRATCH `+0xf8800` window,
+matching Android `dwc3_msm_block_reset(false)` rather than the old mistaken
+base. QEMU/preflight, image audit, and RAM-only `fastboot boot` passed. The
+host saw Fastboot disconnect at `15:33:44`, Fullerene high-speed attach at
+`15:34:24`, and `device descriptor read/64, error -110` at `15:34:29`;
+usbmon recorded one zero-data `-2` completion followed by three zero-data
+`-71` retries. Stock Android `18d1:4ee7` returned at `15:34:50`; no
+`1234:0001` appeared. Boot artifact SHA-256 is
+`ef7971e901ac961e9789d79d3e359a6c6a65dcd89efe6beb48f8631ab34bb766`; raw
+usbmon SHA-256 is
+`19070a2eb51c054200a3bffa69c1f2b5ec557787a76cc10d903db86d98588a2e`.
+The corrected DBM address/order is therefore negative for the pre-descriptor
+boundary, not evidence that the earlier incorrect-base run was valid. Next
+action remains a known-good source/retained PHY RX/SOF trace; no flash, erase,
+partition operation, backup, analyzer, secure-debug, or user-data operation
+was used.
 
 ## Observer-isolation follow-up
 
@@ -1139,6 +1351,49 @@ appeared on `usb 1-9` at `14:13:38`; the Device Descriptor timed out with
 The qpr1-derived HS-PHY ref-clock re-enable does not restore the first
 descriptor response. No analyzer, secure-debug capture, flash, or erase
 operation was used.
+
+The qpr1 gadget-start restart A/B (`tmp/fullerene-bramble-loop.523749.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--hsphy-before-reset --refresh-hsphy-power --hsphy-program-vdda-voltage
+--usb2-source-exact-devten --usb2-source-exact-runstop
+--usb2-qpr1-utmi-post-reset-only --gadget-restart-at-runstop --signal-probe
+--signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20 --usbmon`, artifact
+SHA-256 `ea7a102704c4705ed107efc0cf54be40cc3405288ef0fed9998fbad7a57d27bb`)
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Fastboot
+disconnected at `12:20:01`; Fullerene HS attach appeared at `12:20:41`; the
+Device Descriptor timed out with `-110` at `12:20:46`; Android SuperSpeed
+`18d1:4ee7` returned at `12:21:08`. Raw usbmon
+(`tmp/fullerene-bramble-loop.523749.0/usbmon-all.bin`, SHA-256
+`95da213627eb28bd0f60ca366cad4c61d7c2205f5741ad2c0df7979c5445f90c`) again
+recorded one `-2` and three `-71` address-0 descriptor completions, all with
+zero payload; the qpr1 final gadget-start restart did not move the boundary.
+
+The qpr1 core-reset A/B (`tmp/fullerene-bramble-loop.527645.0`, artifact
+SHA-256 `1c9256e323edd2b1f521f37f1a80d2a9cefa23ebae32ea1f1517bcb78b543a69`)
+added qpr1 raw `DCTL.CSFTRST`/50-ms device-core reset immediately before that
+restart. QEMU/preflight, image audit, and RAM-only `fastboot boot` passed.
+Fastboot disconnected at `12:22:20`; Fullerene HS attach appeared at
+`12:22:59`; the Device Descriptor timed out with `-110` at `12:23:04`; Android
+SuperSpeed `18d1:4ee7` returned at `12:23:25`. Raw usbmon
+(`tmp/fullerene-bramble-loop.527645.0/usbmon-all.bin`, SHA-256
+`b244cedfb1e62c0e1f8156614ed29b611e059610ace86181db3c86720d203e43`) again
+showed one `-2` and three `-71` zero-payload completions; the core reset did
+not move the boundary.
+
+The qpr1 full USB2 gadget-start A/B (`tmp/fullerene-bramble-loop.531621.0`,
+artifact SHA-256 `233526db8a85ec639a6e9b21a56c00f06b4fb479fb8c989ba0d9d336487bded3`)
+added only qpr1 USB2 `SUSPHY` retention to the source-exact Run/Stop, raw
+core-reset, gadget-restart, and post-reset-UTMI profile. QEMU/preflight, image
+audit, and RAM-only `fastboot boot` passed. Fastboot disconnected at `12:24:41`;
+Fullerene HS attach appeared at `12:25:21`; the Device Descriptor timed out
+with `-110` at `12:25:26`; Android SuperSpeed `18d1:4ee7` returned at
+`12:25:47`. Raw usbmon
+(`tmp/fullerene-bramble-loop.531621.0/usbmon-all.bin`, SHA-256
+`e17740d82a875b1ff0dc2d5ea42a97307141d7fc30ef20678868fad06cce3177`) recorded
+one `-2` and three `-71` address-0 completions, all zero payload; the complete
+qpr1 USB2 gadget-start contract did not move the pre-descriptor boundary. The
+handset returned to Android; no flash, erase, partition operation, backup,
+analyzer, secure-debug, or user-data operation was used.
 
 ### 2026-09-05 qpr1 USB2 HS-PHY ref-clock-after-GCTL A/B
 
@@ -4983,3 +5238,709 @@ the compact working memory; the ledgers remain the evidence archive.
   this A/B. During the following 30-second observation, no Fullerene USB,
   `1234:0001`, ADB, or Fastboot device reappeared. No flash, erase, partition
   write, backup, analyzer, or user-data operation was performed.
+
+### 2026-09-08 — Direct USB harness classification, source A/Bs, and EP0 diagnostics
+
+The Rust host loop was corrected to keep inherited `FULLERENE_*` build state
+from leaking between A/Bs, to default the direct enumeration observation to
+60 seconds, and to classify kernel `HS attach → descriptor -110/-71` evidence
+before the later Android recovery state. The raw artifacts remain the source
+of truth; old `classification.txt` files from runs made before this classifier
+change are not rewritten.
+
+The direct USB2 HIRD A/B (`tmp/fullerene-bramble-loop.38792.0`, image SHA
+`1c5ae4cdb6ea143478d93b5d2048b35d5dd7d326fa0f058df0f1afdb0be51f9`) changed
+only DCTL HIRD from XBL-shaped `7` to DT `0x10`. It still reached HS attach,
+then `device descriptor read/64, error -110`, and finally Android
+`18d1:4ee7`; no `1234:0001` appeared.
+
+The next single-variable A/B (`tmp/fullerene-bramble-loop.59753.0`, image SHA
+`cee6bc909fa8b0081acfd468f6c14b1366071bc7f65540c627b825bff62298dd`) replayed
+Linux/qpr1 non-endpoint gadget-start defaults immediately before Run/Stop.
+It reached HS attach at `07:15:34`, timed out at `07:15:39` with `-110`, and
+recovered to Android `18d1:4ee7` at `07:16:00`. This delta is negative for
+the EP0 boundary; the goal remains open because the host never saw a valid
+Fullerene descriptor or `1234:0001`.
+
+The source-directed `vdda18/vdda33` voltage A/B (`95139.0`) and the Android
+DT `qcom,set=3` sleep-plus-active HS-PHY rail A/B (`103651.0`) both preserved
+HS attach but ended at descriptor `-110`, followed by Android recovery. No
+Fullerene `1234:0001` appeared. Signal controls on the same fixed profile
+(`108443.0`, SETUP-payload latch; `112147.0`, EP0 SETUP-TRB retirement) did
+not trigger their bounded early-drop conditions, so the current evidence is
+consistent with the failure occurring before a retired EP0 SETUP TRB. This is
+diagnostic evidence only; it does not prove the USB event ring is the sole
+cause. All four runs used RAM-only `fastboot boot` and no persistent-device
+operation.
+
+The same-boot UTMI snapshot retake (`tmp/fullerene-bramble-loop.145908.0`,
+selector `utmi-valid`, artifact SHA-256
+`fa4d9b9ad938dc9ddfd8812b9ca86527c91da23fb7960305af3c048b3ffe05a`) kept the
+handoff fixed and exercised the read-only snapshot path. Fastboot disconnected
+at `08:10:25`, Fullerene reached HS attach at `08:11:05`, the Device Descriptor
+timed out with `-110` at `08:11:10`, and Android `18d1:4ee7` returned at
+`08:11:31`. Only one HS attach was present, so no diagnostic Run/Stop blip
+count was published; the harness did not persist an exact snapshot mask and no
+raw register value is claimed.
+
+The stage-5 USB2 timing retake (`tmp/fullerene-bramble-loop.154499.0`, selector
+`utmi-trdtim-stage5`, artifact SHA-256
+`f9c50554ce4140e908a7840903f984ef394da8c0f9b204e96ee876fd4bb2a426`) likewise
+used only the fixed source-exact direct USB2 profile. Fastboot disconnected at
+`08:16:24`, HS attach appeared at `08:17:03`, the descriptor timed out with
+`-110` at `08:17:09`, and Android `18d1:4ee7` returned at `08:17:30`; there was
+one HS attach and no `1234:0001`. The timing channel did not yield an
+independently decodable raw value in this artifact, so this is a negative
+diagnostic recheck, not evidence for a new register setting.
+
+The read-only EP0-arm boundary retake
+(`tmp/fullerene-bramble-loop.179885.0`, `--signal-cmd-gate ep0armed`, artifact
+SHA-256 `3c7327ec3ea8d95a1b2edacd3794f41b11bd3bd6bdc7b6362952649d2c953e4b`)
+kept the same direct USB2 PHY, event-ring, TRB, and response settings. Fastboot
+disconnected at `08:34:09`, HS attach appeared at `08:34:49`, the Device
+Descriptor timed out with `-110` at `08:34:54`, and Android `18d1:4ee7`
+returned at `08:35:15`. The EP0 arm gate produced no additional host-visible
+boundary and no `1234:0001`; this is a negative readout, not a new EP0/PHY A/B.
+The run used RAM-only `fastboot boot` and the watchdog returned the handset to
+Android.
+
+The source-directed EP0 stall-flush A/B
+(`tmp/fullerene-bramble-loop.188531.0`, `--ep0-stall-flush`, artifact SHA-256
+`9d90dcbaa1a505eeefbd2fe346b2644fcc12e877af8b4e3f9498bb9e68db5070`) issued
+only the Linux/qpr1-shaped EP0 `SETSTALL` at the prepared SETUP boundary; PHY,
+FIFO, DMA, SMMU, endpoint count, and descriptor payload were unchanged. Fastboot
+disconnected at `08:39:51`, HS attach appeared at `08:40:29`, the Device
+Descriptor timed out with `-110` at `08:40:34`, and Android `18d1:4ee7` returned
+at `08:40:56`. No Fullerene `1234:0001` appeared, so the stall flush did not
+move the EP0 response boundary. This remains a negative RAM-only A/B; no flash,
+erase, partition operation, backup, analyzer, or user-data operation was used.
+
+The follow-up qpr1 source audit found no new safe one-variable hardware delta.
+The normal Rust EP0 event-ring consumer matches qpr1's ownership order: read
+the pending count, mask the event interrupt, snapshot the DMA ring, publish the
+consumed count, then process cached events and unmask. The ABL-style consumer is
+kept as a separately named diagnostic path, so it is not evidence that the
+normal consumer is missing a qpr1 step. The qpr1 HS-PHY initialization,
+readback/barrier behavior, reset delay, reference-clock request, and Bramble
+rail contract likewise match the current Rust path; qpr1's optional
+`cfg_ahb_clk` is not present in the Bramble DT contract. The already exercised
+rail, voltage, reference-clock, PHY ordering, and EP0 controls remain negative.
+With the prior SOF gate showing no received SOF and the latest host boundary
+still HS attach followed by `-110`, another register-order variation would be a
+duplicate speculative A/B. No new physical boot was performed in this audit;
+the next safe work remains read-only source/known-good-path investigation or
+instrumentation that can expose the PHY RX/SOF boundary. The success condition
+is still unmet: the host has not seen Fullerene's own `1234:0001`.
+
+The bounded direct-path U0-arm status readout
+(`tmp/fullerene-bramble-loop.237957.0`, `--signal-probe
+--signal-cmd-gate u0-status8`, artifact SHA-256
+`16f9153286a4a6dad4258d62867f909144ce49fcf6b4ad1ef65820b271a50ed8`)
+kept the attach-reaching USB2 profile unchanged. Fastboot disconnected at
+`09:15:51`, HS attach appeared at `09:16:51`, the Device Descriptor timed out
+with `-110` at `09:16:57`, and Android `18d1:4ee7` returned at `09:17:17`; no
+`1234:0001` appeared. The U0-arm gate produced no host-visible success
+boundary, so it is a negative diagnostic readout, not a new PHY/EP0 A/B. The
+run used RAM-only `fastboot boot` and no flash, erase, partition operation,
+backup, analyzer, or user-data operation.
+
+The source-directed event-consumer ordering A/B
+(`tmp/fullerene-bramble-loop.250282.0`, artifact SHA-256
+`976fd5e8af6802f083621308a692aec696ec11a2ed55fe7f8ebe25506bf7f31d`)
+moved the normal Rust EP0 event-ring unmask until after cached event
+processing, matching qpr1 `dwc3_check_event_buf()`/
+`dwc3_process_event_buf()` ownership order. The fixed direct USB2 profile still
+produced HS attach at `09:24:15`, Device Descriptor `-110` at `09:24:21`, and
+Android `18d1:4ee7` at `09:24:41`; no `1234:0001` appeared. The correction did
+not move the EP0 response boundary. The run was RAM-only `fastboot boot` with
+no flash, erase, partition operation, backup, analyzer, or user-data operation.
+
+The qpr1 gadget-start ordering A/B
+(`tmp/fullerene-bramble-loop.264510.0`, artifact SHA-256
+`54dabfd679eb9e7ae1ddc87acd36bbaef39a46dd93efd8279db093e478a18da0`)
+moved normal direct-path `DEVTEN` publication until after EP0 OUT SETUP TRB
+preparation/arm decision but before Run/Stop. On the deferred profile it did
+not yet cover the actual U0-guarded STARTTRANSFER retry. XBL/ABL-specific masks
+and paths were left unchanged. The fixed profile still produced HS attach at
+`09:33:36`, Device Descriptor `-110` at `09:33:42`, and Android `18d1:4ee7` at
+`09:34:04`; no `1234:0001` appeared. This partial source-order correction did
+not move the EP0 response boundary. The run was RAM-only `fastboot boot` with
+no flash, erase, partition operation, backup, analyzer, or user-data operation.
+
+The corrected deferred-EP0 gadget-start ordering A/B
+(`tmp/fullerene-bramble-loop.277480.0`, artifact SHA-256
+`581db1b52b7ce9c807fd6472a801fe85cdff0ff2ec6bf8bdd239737495ceeb02`)
+kept `DEVTEN` unpublished until the `--start-after-connect` U0-guarded
+STARTTRANSFER retry had actually completed, then published the same selected
+mask. The probe build and QEMU preflight passed, and `fastboot boot` was
+accepted. The fixed profile still produced HS attach at `09:42:59`, Device
+Descriptor `-110` at `09:43:04`, and Android `18d1:4ee7` at `09:43:25`; no
+`1234:0001` appeared. This corrected source-order boundary also did not move
+the EP0 response boundary. The run was RAM-only `fastboot boot` with no flash,
+erase, partition operation, backup, analyzer, or user-data operation.
+
+The current-HEAD qpr1 exact device-event-mask retake
+(`tmp/fullerene-bramble-loop.282700.0`, artifact SHA-256
+`6e762999990c4b7235f5302ffde33fe20e74701ee3abea43ef27471cbab80088`)
+added only `--usb2-source-exact-devten` to the corrected deferred-EP0 profile.
+The source-derived qpr1 mask still produced HS attach at `09:46:56`, Device
+Descriptor `-110` at `09:47:01`, and Android `18d1:4ee7` at `09:47:22`; no
+`1234:0001` appeared. This closes the broad-mask versus qpr1-mask distinction
+on current HEAD. The run was RAM-only `fastboot boot` with no flash, erase,
+partition operation, backup, analyzer, or user-data operation.
+
+The remaining factory-DTB `qcom,dwc-usb3-msm-tx-fifo-size = 0x6c30` applies to
+non-EP0 endpoint FIFO resizing; the existing EP0 FIFO correction is already
+negative, and qpr1 reaches the non-EP0 resize only after a valid control path
+reaches later endpoint configuration. It is not a justified next change at
+the present pre-descriptor `-110` boundary. The next safe evidence target is
+the PHY RX/SOF transition or a retained source/known-good-path trace.
+
+The current-HEAD HS-PHY-before-reset retake
+(`tmp/fullerene-bramble-loop.301542.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--hsphy-before-reset --refresh-hsphy-power --usb2-source-exact-devten`,
+artifact SHA-256
+`9bc0797cb171943c9ddaee6c551d18c988d0b069569a3423e15e9b155168c85b`)
+completed QEMU/preflight and RAM-only `fastboot boot`. The host saw Fastboot
+disconnect at `09:56:20`, Fullerene HS attach at `09:56:58`, Device Descriptor
+`-110` at `09:57:03`, and Android `18d1:4ee7` at `09:57:24`; no `1234:0001`
+appeared. Moving the source-exact external HS-PHY reset/init before the DWC3
+device-core reset did not move the boundary on current HEAD, closing this
+qpr1 ordering A/B for the current DEVTEN/EP0 candidate. The handset returned
+to Android. No flash, erase, partition operation, backup, analyzer,
+secure-debug, or user-data operation was used.
+
+The current-HEAD SOF-liveness retake (`tmp/fullerene-bramble-loop.316467.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--refresh-hsphy-power --usb2-source-exact-devten --signal-probe
+--signal-early-drop 5`, artifact SHA-256
+`0ef6f981d1054e9a4291646399de6b9e93026bd448c424dec1728ebc065ad01b`)
+completed QEMU/preflight and RAM-only `fastboot boot`. The host saw Fastboot
+disconnect at `10:06:36`, Fullerene HS attach at `10:07:18`, Device Descriptor
+`-110` at `10:07:24`, and Android `18d1:4ee7` at `10:07:45`; no `1234:0001`
+appeared. The bounded 20-second code-5 readout produced no SOF-triggered early
+drop, so DSTS SOF liveness remained unproven and the host boundary did not move.
+This re-confirms that the current safe next target is PHY RX/SOF instrumentation
+or a retained source/known-good-path trace, not another downstream EP0/TRB A/B.
+The handset returned to Android. No flash, erase, partition operation, backup,
+analyzer, secure-debug, or user-data operation was used.
+
+The current-HEAD gate-time DWC3 boundary readout
+(`tmp/fullerene-bramble-loop.327438.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--refresh-hsphy-power --usb2-source-exact-devten --signal-probe
+--signal-cmd-gate dwc3-state --observe-secs 20`, artifact SHA-256
+`cb6dc2fac92ffda4690bca65eaafd25a0f0c7f3d8c6d29d2c2790753d8579b62`)
+completed QEMU/preflight and RAM-only `fastboot boot`. The host saw Fastboot
+disconnect at `10:14:09`, Fullerene HS attach at `10:14:49`, Device Descriptor
+`-110` at `10:14:54`, and Android `18d1:4ee7` at `10:15:15`; no `1234:0001`
+appeared. No additional HS stop/run pair appeared, matching `dwc3-state=0`:
+at gate evaluation there was no pending event FIFO count, nonzero SETUP payload,
+EP0 OUT SETUP TRB HWO, or latched DWC3 device-error. This is a direct readout
+of the current gate-time software state, not a wire-level analyzer result; the
+next safe evidence remains raw/retained PHY RX/SOF instrumentation or a
+known-good source trace. The handset returned to Android. No flash, erase,
+partition operation, backup, analyzer, secure-debug, or user-data operation was
+used.
+
+The current-HEAD HS-PHY POR readout
+(`tmp/fullerene-bramble-loop.334667.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--refresh-hsphy-power --usb2-source-exact-devten --signal-probe
+--signal-cmd-gate hsphy-por --observe-secs 20`, artifact SHA-256
+`8c611bf3ef067f7fd9ae309326358ffc4cb03aa71fc3aa2ab9ad07e80ce4c801`)
+completed QEMU/preflight and RAM-only `fastboot boot`. The host saw Fastboot
+disconnect at `10:19:07`, Fullerene HS attach at `10:19:46`, Device Descriptor
+`-110` at `10:19:52`, and Android `18d1:4ee7` at `10:20:13`; no `1234:0001`
+appeared. No additional host-visible stop/run pair appeared. The zero timing
+bucket is not independently distinguishable from an unavailable retained
+HS-PHY snapshot, so this run does not prove the POR bit state. The existing
+POR-clear-after-Run/Stop selector was not exercised because this readout did
+not justify clearing an asserted bit. The next safe evidence target remains
+raw/retained PHY RX/SOF instrumentation or a known-good source trace. The
+handset returned to Android. No flash, erase, partition operation, backup,
+analyzer, secure-debug, or user-data operation was used.
+
+The first HS-PHY snapshot-valid retake (`tmp/fullerene-bramble-loop.344666.0`,
+`--signal-probe --signal-cmd-gate hsphy-valid --observe-secs 20`, artifact
+SHA-256 `be76d39c856eb5fdd97f8a2ea50edb0a792088324769abcbe44f5a5b3fa612ad`)
+completed QEMU/preflight and RAM-only `fastboot boot`, but produced HS attach
+at `10:26:47`, descriptor `-110` at `10:26:52`, and Android `18d1:4ee7` at
+`10:27:13`; no `1234:0001`. The pre-zero-safe selector produced no
+host-visible stop/run pair, so it could not distinguish a missing HS-PHY trace
+group from a valid zero-valued field.
+
+The zero-safe `hsphy-valid` retake (`tmp/fullerene-bramble-loop.351892.0`,
+artifact SHA-256
+`2b7a0b4c4d6e1ae2a15059d32501077e2f40852e5a1435103eebe56b15237463`)
+encoded `1=missing` and `2=present`, but again produced HS attach at
+`10:31:29`, descriptor `-110` at `10:31:35`, and Android recovery at
+`10:31:56` with no host-visible diagnostic pair. The bounded-pair retake
+(`tmp/fullerene-bramble-loop.355874.0`, artifact SHA-256
+`628b6e92cd1669ebf4823b4672787035169f6cd468c37de1c9b33a0e21d79a5d`)
+assigned one/two Run/Stop pairs to those codes; neither count appeared in the
+host journal. The HS-PHY snapshot remains undecodable at this failed
+descriptor boundary, and no POR-clear A/B is justified. The handset returned
+to Android after each run. No flash, erase, partition operation, backup,
+analyzer, secure-debug, or user-data operation was used.
+
+The source-equivalent HS-PHY rail-voltage A/B
+(`tmp/fullerene-bramble-loop.367733.0`, artifact SHA-256
+`edc929fb1f5e4bde33a1dcdb5dd29d01ae2d976396cf4f7095c1d7f47d9a51cf`)
+added only `--hsphy-program-vdda-voltage` to the fixed attach-reaching profile.
+This issued the qpr1/Android regulator contract for `vdda18` (`1.704–1.800 V`)
+and `vdda33` (`3.050–3.300 V`) before their enable requests. QEMU/preflight
+passed and RAM-only `fastboot boot` was accepted. Fastboot disconnected at
+`10:42:07`, HS attach appeared at `10:42:45`, the Device Descriptor timed out
+with `-110` at `10:42:51`, and Android `18d1:4ee7` returned at `10:43:12`;
+no `1234:0001` appeared. The source-equivalent voltage requests did not move
+the first descriptor boundary. The handset returned to Android; no flash,
+erase, partition operation, backup, analyzer, secure-debug, or user-data
+operation was used.
+
+The extra HS-PHY reset negative control (`tmp/fullerene-bramble-loop.640899.0`,
+artifact SHA-256
+`612848fc1bbe05c346a2d1306a04c36c06abafeae2fe773eff355c346d4a1aaf`, raw
+usbmon SHA-256
+`44c4dce4d4f9c9c44c45b450bcf2ff53715e6b3e0fce3dbbbc5f635242d154c2`) passed
+QEMU/preflight, image audit, and RAM-only `fastboot boot`. Source inspection
+confirmed that qpr1's `dwc3_core_soft_reset()` calls `usb_phy_reset()`, but
+the Bramble legacy USB PHY leaves that callback unset; the effective reset is
+inside `msm_hsphy_init()`. This run therefore added one deliberately extra
+USB2 PHY reset to the source-exact pre-reset path as a negative control. The
+result was unchanged: Fullerene HS attach at `13:41:07 JST`, Device Descriptor
+`-110` at `13:41:13`, one usbmon `-2` completion followed by three `-71`
+retries with zero captured data, and stock Android `18d1:4ee7` at `13:41:33`.
+No `1234:0001` appeared. No flash, erase, partition operation, backup,
+analyzer, secure-debug, or user-data operation was used.
+
+The Rust usbmon-harness retake (`tmp/fullerene-bramble-loop.382718.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--hsphy-before-reset --refresh-hsphy-power --hsphy-program-vdda-voltage
+--usb2-source-exact-devten --usbmon`, artifact SHA-256
+`edc929fb1f5e4bde33a1dcdb5dd29d01ae2d976396cf4f7095c1d7f47d9a51cf`)
+added only passive host observation through `/dev/usbmon0`; the target image
+and USB handoff sequence were unchanged. QEMU/preflight passed and RAM-only
+`fastboot boot` was accepted. Fastboot disconnected at `10:52:41`, Fullerene
+HS attach appeared on `usb 1-9` at `10:53:19`, the host reported Device
+Descriptor `-110` at `10:53:24`, and Android `18d1:4ee7` returned at
+`10:53:45`; no `1234:0001` appeared. The raw capture
+(`tmp/fullerene-bramble-loop.382718.0/usbmon-all.bin`, SHA-256
+`1c24fa4af563deff9938b5a179b652bba1079a82179703dbe9f59eb06c47e4bc`) records
+the bus-1 address-0 `GET_DESCRIPTOR(Device)` submit, one `-2` completion, and
+three `-71` completions, all with `length=0`/`cap=0`; no descriptor bytes
+reached xHCI. The Rust harness now stores the raw capture, hash, source
+metadata, and an in-run descriptor summary for future attempts. This remains
+host usbmon evidence, not an external analyzer or wire-level CRC/bitstuff
+diagnosis. The handset returned to Android; no flash, erase, partition
+operation, backup, analyzer, secure-debug, or user-data operation was used.
+
+After Run 395540, the host usbmon summary parser was tightened so a
+descriptor URB record is retired on any bus-1/address-0 control completion,
+including completions whose setup bytes do not repeat the descriptor request.
+This prevents URB-ID reuse from associating a later completion with an older
+descriptor submit. A synthetic Rust regression test covers both matching and
+non-matching completion setup bytes; the raw `usbmon-all.bin` capture remains
+the authoritative evidence for the already-completed run.
+
+The bounded DWC3 gadget-LSP readout A/B (`tmp/fullerene-bramble-loop.395540.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--hsphy-before-reset --refresh-hsphy-power --hsphy-program-vdda-voltage
+--usb2-source-exact-devten --signal-probe
+--signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20 --usbmon`, artifact
+SHA-256
+`12012f0d23ab1ada2f6722679704262d653938ec5d2807a79a20617753225bdf`)
+added only the bounded Linux-source-aligned `GDBGLSPMUX` endpoint 0..15
+selection and `GDBGLSP` readback at existing DWC3 stage snapshots. QEMU/preflight
+passed and RAM-only `fastboot boot` was accepted. Fastboot disconnected at
+`11:02:38`, Fullerene HS attach appeared on `usb 1-9` at `11:03:17`, the host
+reported Device Descriptor `-110` at `11:03:23`, and Android `18d1:4ee7`
+returned at `11:03:43`; no `1234:0001` or additional host-visible diagnostic
+stop/run pair appeared. The bus-1 address-0 usbmon records
+(`tmp/fullerene-bramble-loop.395540.0/usbmon-all.bin`, SHA-256
+`8d018dbd0e72e29d6a87550e1d4f37625c3790c6fce8d2220b906e6cbc25e6a3`) again
+show one `-2` and three `-71` Device Descriptor completions, all with
+`length=0`/`cap=0`; no descriptor bytes reached xHCI. This closes the bounded
+LSP readout as a non-enumerating diagnostic on this profile; it does not claim
+a wire-level CRC/bitstuff result. The handset returned to Android; no flash,
+erase, partition operation, backup, analyzer, secure-debug, or user-data
+operation was used.
+
+The qpr1 DT-mode A/B (`tmp/fullerene-bramble-loop.454861.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--hsphy-before-reset --refresh-hsphy-power --usb2-source-exact-devten
+--usb2-preserve-phy-interface --signal-probe
+--signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20 --usbmon`, artifact
+SHA-256
+`5b03e1e1ad225d7f51da1f877db9b93b829c042a663a20d11f7af824c0a20961`)
+implemented the newly verified Bramble qpr1 distinction: the DWC3 node has no
+`phy_type` or `snps,hsphy_interface`, so Linux's `dwc3_phy_setup()` leaves
+USB2 `PHYIF`/`USBTRDTIM` untouched. The Rust A/B therefore skipped those writes
+while retaining qpr1's USB2 `SUSPHY` handling. QEMU/preflight and RAM-only
+`fastboot boot` passed. Fastboot disconnected at `11:36:45`, Fullerene HS
+attach appeared at `11:37:24`, the Device Descriptor timed out with `-110` at
+`11:37:30`, and Android `18d1:4ee7` returned at `11:37:50`; no `1234:0001`
+or additional host-visible diagnostic stop/run pair appeared. The raw capture
+(`tmp/fullerene-bramble-loop.454861.0/usbmon-all.bin`, SHA-256
+`72f5c33b9047097fa9e1472644a0d9e43e69c96ff5628d3b38d56cbea74786f5`) again
+contains one address-0 `GET_DESCRIPTOR(Device)` `-2` completion and three
+`-71` completions, all with `length=0`/`cap=0`; no descriptor bytes reached
+xHCI. This closes the qpr1 UNKNOWN PHYIF/TRDTIM A/B as negative without
+claiming a wire-level diagnosis. The handset returned to Android; no flash,
+erase, partition operation, backup, analyzer, secure-debug, or user-data
+operation was used.
+
+The qpr1 UTMI-order A/B (`tmp/fullerene-bramble-loop.478967.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--hsphy-before-reset --refresh-hsphy-power --hsphy-program-vdda-voltage
+--usb2-source-exact-devten --usb2-qpr1-utmi-post-reset-only --signal-probe
+--signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20 --usbmon`, artifact
+SHA-256 `a0d6452c939701f190f48ee5fc862bb1aea3b8f5a9b693736760e84389dc01b`)
+removed only the historical standalone 100-us UTMI/Pipe clock-source
+transition, retaining qpr1's short post-reset mux turn. QEMU/preflight and
+RAM-only `fastboot boot` passed. Fastboot disconnected at `11:51:06`, Fullerene
+HS attach appeared at `11:51:45`, the Device Descriptor timed out with `-110`
+at `11:51:50`, and Android `18d1:4ee7` returned at `11:52:11`; no `1234:0001`
+or diagnostic stop/run pair appeared. Raw bus-1 address-0 usbmon
+(`tmp/fullerene-bramble-loop.478967.0/usbmon-all.bin`, SHA-256
+`d028558bb83868fa3ca5dd53f1dd92dc7e961d30f81eeb1857311009971c1f8c`) shows one
+`-2` completion and three `-71` completions, all with `length=0`/`cap=0`; no
+descriptor bytes reached xHCI. This closes the qpr1 UTMI mux-order A/B as
+negative without claiming a wire-level diagnosis. The handset returned to
+Android; no flash, erase, partition operation, backup, analyzer, secure-debug,
+or user-data operation was used.
+
+The standard DWC3 low-speed A/B (`tmp/fullerene-bramble-loop.498434.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--hsphy-before-reset --refresh-hsphy-power --hsphy-program-vdda-voltage
+--usb2-source-exact-devten --usb2-qpr1-utmi-post-reset-only --dcfg-lowspeed
+--signal-probe --signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20
+--usbmon`, artifact SHA-256
+`71f90918501b16efa7d1ee1f32b79d333f87fb6d3d8452036d8d8f0fc7f99a4b`) passed
+QEMU/preflight, image audit, and RAM-only `fastboot boot`. Fastboot disconnected
+at `12:02:32`; no Fullerene USB attach or descriptor transaction appeared; stock
+Android SuperSpeed `18d1:4ee7` returned at `12:03:38`. The passive usbmon
+capture (`tmp/fullerene-bramble-loop.498434.0/usbmon-all.bin`, SHA-256
+`d366acf368853323ee86478d7601cf8d433f7750d1a12d55d74ec32080e4d2f9`) contains
+no Fullerene descriptor records. `DCFG.LOWSPEED` therefore suppresses the
+previous HS-attach boundary and does not provide an RX bypass. The handset
+returned to Android; no flash, erase, partition operation, backup, analyzer,
+secure-debug, or user-data operation was used. The original run classifier
+recorded `usb-attach-without-registered-descriptor` because it counted
+Android's generic SuperSpeed attach line; the preserved artifact review
+(`tmp/fullerene-bramble-loop.498434.0/classification-review.txt`) corrects this
+to `android-fallback-without-fullerene-attach`, and the Rust classifier now
+tracks the path through the Android VID/PID.
+
+The qpr1 source-exact Run/Stop retake (`tmp/fullerene-bramble-loop.514282.0`,
+`--direct-handoff --start-after-connect --no-smmu --hsphy-source-exact
+--hsphy-before-reset --refresh-hsphy-power --hsphy-program-vdda-voltage
+--usb2-source-exact-devten --usb2-source-exact-runstop
+--usb2-qpr1-utmi-post-reset-only --signal-probe
+--signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20 --usbmon`, artifact
+SHA-256 `4329266846e9a95b82e0aa297d11d47f80761ce9cdacca5757a9681e1537133f`)
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Fastboot
+disconnected at `12:13:43`; Fullerene HS attach appeared at `12:14:22`; the
+Device Descriptor timed out with `-110` at `12:14:28`; Android SuperSpeed
+`18d1:4ee7` returned at `12:14:49`. Raw usbmon
+(`tmp/fullerene-bramble-loop.514282.0/usbmon-all.bin`, SHA-256
+`bcf6b94d8b3c5720878391f92308f9f2a09bd602a50bfaaadcb9a38a18e8e4de`) recorded
+one `-2` and three `-71` address-0 descriptor completions, all with zero
+payload (`length=0`, `cap=0`); no descriptor bytes reached xHCI. Adding the
+qpr1 DCTL Run/Stop policy to the current post-reset UTMI profile therefore did
+not move the pre-descriptor boundary. The handset returned to Android; no
+flash, erase, partition operation, backup, analyzer, secure-debug, or user-data
+operation was used.
+
+The qpr1 USB3-PHY pre-reset A/B (`tmp/fullerene-bramble-loop.556761.0`,
+`--adb-reboot-to-fastboot --direct-handoff --start-after-connect --no-smmu
+--hsphy-source-exact --hsphy-before-reset --refresh-hsphy-power
+--hsphy-program-vdda-voltage --usb2-source-exact-devten
+--usb2-source-exact-runstop --usb2-qpr1-utmi-post-reset-only
+--gadget-restart-at-runstop --usb2-core-reset-at-runstop
+--usb2-source-exact-device-reset --usb2-source-susphy
+--usb2-source-phy-setup --signal-probe
+--signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20 --usbmon`, artifact
+SHA-256 `d0f26364f33cbf7e75d68a7be9722826044afb8b5f12df85ae1d864945573542`)
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Host usbmon
+recorded the address-0 `GET_DESCRIPTOR(Device)` submit at `12:41:54 JST`, a
+first completion with `-2` at `12:42:00`, and three immediate retry
+completions with `-71`; all four completions had `length=0`, `cap=0`, and no
+descriptor bytes. The handset returned via stock Android after 68 seconds;
+host state was `18d1:4ee7`, with no `1234:0001`. Raw usbmon
+(`tmp/fullerene-bramble-loop.556761.0/usbmon-all.bin`, SHA-256
+`38d29b19b87f069a7588e2c9a8ed0fae8b85d01605d78d32d8f5fab712fc1328`)
+therefore shows the same pre-descriptor boundary: applying qpr1's USB3
+`GUSB3PIPECTL` `UX_EXIT_PX` clear plus `SUSPHY` assertion before the USB2
+core reset did not produce a Fullerene descriptor. No flash, erase, partition
+operation, backup, analyzer, secure-debug, or user-data operation was used.
+
+The qpr1 per-command USB2 guard A/B (`tmp/fullerene-bramble-loop.568849.0`,
+`--adb-reboot-to-fastboot --direct-handoff --start-after-connect --no-smmu
+--hsphy-source-exact --hsphy-before-reset --refresh-hsphy-power
+--hsphy-program-vdda-voltage --usb2-source-exact-devten
+--usb2-source-exact-cmd-guard --usb2-source-exact-runstop
+--usb2-qpr1-utmi-post-reset-only --gadget-restart-at-runstop
+--usb2-core-reset-at-runstop --usb2-source-exact-device-reset
+--usb2-source-susphy --usb2-source-phy-setup --signal-probe
+--signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20 --usbmon`, artifact
+SHA-256 `940e809ee37669238093dab7bd393c0fe2fda02b30b94fee2f797a4062c41768`)
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Host usbmon
+recorded the address-0 `GET_DESCRIPTOR(Device)` submit at `12:50:21 JST`, a
+first completion with `-2` at `12:50:26`, and three retry completions with
+`-71` at `12:50:27`; all four completions had `length=0`, `cap=0`, and no
+descriptor bytes. The handset returned via stock Android after 67 seconds;
+host state was `18d1:4ee7`, with no `1234:0001`. Raw usbmon
+(`tmp/fullerene-bramble-loop.568849.0/usbmon-all.bin`, SHA-256
+`adebbce9ccf8380f0b99f769235c4d0dbda4ee96fd1d6398613d45eea75badb2`)
+shows that forcing qpr1's per-command `SUSPHY/ENBLSLPM` guard did not move the
+pre-descriptor boundary. No flash, erase, partition operation, backup,
+analyzer, secure-debug, or user-data operation was used.
+
+The qpr1 USB2 sleep-mode A/B (`tmp/fullerene-bramble-loop.573188.0`,
+`--adb-reboot-to-fastboot --direct-handoff --start-after-connect --no-smmu
+--hsphy-source-exact --hsphy-before-reset --refresh-hsphy-power
+--hsphy-program-vdda-voltage --usb2-source-exact-devten
+--usb2-source-exact-cmd-guard --usb2-source-exact-runstop
+--usb2-qpr1-utmi-post-reset-only --gadget-restart-at-runstop
+--usb2-core-reset-at-runstop --usb2-source-exact-device-reset
+--usb2-source-susphy --usb2-source-phy-setup --usb2-dis-sleep-mode
+--signal-probe --signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20
+--usbmon`, artifact SHA-256
+`b6b2ad62364b833e76d4f88419aed0e30d13f8dfbb9ae26e1a5df8e97ca2ddb3`)
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Host usbmon
+recorded the address-0 `GET_DESCRIPTOR(Device)` submit at `12:53:05 JST`, a
+first completion with `-2` at `12:53:10`, and three retry completions with
+`-71` at `12:53:10`; all four completions had `length=0`, `cap=0`, and no
+descriptor bytes. The handset returned via stock Android after 66 seconds;
+host state was `18d1:4ee7`, with no `1234:0001`. Raw usbmon
+(`tmp/fullerene-bramble-loop.573188.0/usbmon-all.bin`, SHA-256
+`2c6dcb3c07eae50aafcda60d8afb8b37c9583965094f6d8fddc89252617279e`)
+shows that clearing qpr1's DWC3 USB2 sleep-mode controls before the direct
+handoff did not move the pre-descriptor boundary. No flash, erase, partition
+operation, backup, analyzer, secure-debug, or user-data operation was used.
+
+The qpr1 USB2 Android DBM reset A/B (`tmp/fullerene-bramble-loop.580103.0`,
+`--adb-reboot-to-fastboot --direct-handoff --start-after-connect --no-smmu
+--hsphy-source-exact --hsphy-before-reset --refresh-hsphy-power
+--hsphy-program-vdda-voltage --usb2-source-exact-devten
+--usb2-source-exact-cmd-guard --usb2-source-exact-runstop
+--usb2-qpr1-utmi-post-reset-only --gadget-restart-at-runstop
+--usb2-core-reset-at-runstop --usb2-source-exact-device-reset
+--usb2-source-susphy --usb2-source-phy-setup --usb2-android-dbm-reset
+--signal-probe --signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20
+--usbmon`, artifact SHA-256
+`c4011cc83dd0432a345cb1d65029f0d41000d4fb76494e84b3981ae9cbbe3bd4`)
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Host usbmon
+recorded the address-0 `GET_DESCRIPTOR(Device)` submit at `12:57:47 JST`, a
+first completion with `-2` at `12:57:53`, and three retry completions with
+`-71` at `12:57:53`; all four completions had `length=0`, `cap=0`, and no
+descriptor bytes. The handset returned via stock Android after 67 seconds;
+host state was `18d1:4ee7`, with no `1234:0001`. Raw usbmon
+(`tmp/fullerene-bramble-loop.580103.0/usbmon-all.bin`, SHA-256
+`521c5981ba881227c7dda93f142c427e1a75f9463eec0c0b452a931b491d751f`)
+shows that replaying qpr1's Qualcomm DBM reset/enable before the direct USB2
+gadget start did not move the pre-descriptor boundary. No flash, erase,
+partition operation, backup, analyzer, secure-debug, or user-data operation
+was used.
+
+The Android controller block-reset A/B (`tmp/fullerene-bramble-loop.590260.0`,
+`--adb-reboot-to-fastboot --direct-handoff --start-after-connect --no-smmu
+--hsphy-source-exact --hsphy-before-reset --refresh-hsphy-power
+--hsphy-program-vdda-voltage --android-block-reset
+--usb2-source-exact-devten --usb2-source-exact-cmd-guard
+--usb2-source-exact-runstop --usb2-qpr1-utmi-post-reset-only
+--gadget-restart-at-runstop --usb2-core-reset-at-runstop
+--usb2-source-exact-device-reset --usb2-source-susphy
+--usb2-source-phy-setup --signal-probe
+--signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20 --usbmon`, artifact
+SHA-256 `2d8b4659ab79a2180b1eb65a9cf69f8083b89c9d5f04c723e1e3f1fe971ad888`)
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Host usbmon
+recorded the address-0 `GET_DESCRIPTOR(Device)` submit at `13:04:20 JST`, a
+first completion with `-2` at `13:04:25`, and three retry completions with
+`-71` at `13:04:25`; all four completions had `length=0`, `cap=0`, and no
+descriptor bytes. The handset returned via stock Android after 66 seconds;
+host state was `18d1:4ee7`, with no `1234:0001`. Raw usbmon
+(`tmp/fullerene-bramble-loop.590260.0/usbmon-all.bin`, SHA-256
+`26d05db6f6e7149932136c3a5914c965328e333c60ae53c3cd39dd6ede46d378`)
+shows that replaying qpr1's controller link-clock stop/reset/release sequence
+did not move the pre-descriptor boundary. No flash, erase, partition
+operation, backup, analyzer, secure-debug, or user-data operation was used.
+
+The Android HS-PHY all-regulator-sets A/B (`tmp/fullerene-bramble-loop.585543.0`,
+`--adb-reboot-to-fastboot --direct-handoff --start-after-connect --no-smmu
+--hsphy-source-exact --hsphy-before-reset --refresh-hsphy-power
+--hsphy-program-vdda-voltage --hsphy-all-regulator-sets
+--usb2-source-exact-devten --usb2-source-exact-cmd-guard
+--usb2-source-exact-runstop --usb2-qpr1-utmi-post-reset-only
+--gadget-restart-at-runstop --usb2-core-reset-at-runstop
+--usb2-source-exact-device-reset --usb2-source-susphy
+--usb2-source-phy-setup --signal-probe
+--signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20 --usbmon`, artifact
+SHA-256 `21dd875d4f9036aec8fc65e1e298aad882043a5e15159b42190a1644b0a4afc6`)
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Host usbmon
+recorded the address-0 `GET_DESCRIPTOR(Device)` submit at `13:01:20 JST`, a
+first completion with `-2` at `13:01:26`, and three retry completions with
+`-71` at `13:01:26`; all four completions had `length=0`, `cap=0`, and no
+descriptor bytes. The handset returned via stock Android after 67 seconds;
+host state was `18d1:4ee7`, with no `1234:0001`. Raw usbmon
+(`tmp/fullerene-bramble-loop.585543.0/usbmon-all.bin`, SHA-256
+`9fd8d119a3c6d603507c95ae50a984cb4b3380e3b6485d9544be9a1fdf303f69`)
+shows that sending the HS-PHY regulator requests through both qcom,set=3
+RPMh TCS families did not move the pre-descriptor boundary. No flash, erase,
+partition operation, backup, analyzer, secure-debug, or user-data operation
+was used.
+
+The qpr1 USB2 initial-EP0-MPS A/B (`tmp/fullerene-bramble-loop.603331.0`,
+`--adb-reboot-to-fastboot --direct-handoff --start-after-connect --no-smmu
+--hsphy-source-exact --hsphy-before-reset --refresh-hsphy-power
+--hsphy-program-vdda-voltage --usb2-source-exact-devten
+--usb2-source-exact-cmd-guard --usb2-source-exact-runstop
+--usb2-qpr1-utmi-post-reset-only --gadget-restart-at-runstop
+--usb2-core-reset-at-runstop --usb2-source-exact-device-reset
+--usb2-source-susphy --usb2-source-phy-setup --ep0-initial-512
+--signal-probe --signal-cmd-gate dwc3-debug-lsp-change --observe-secs 20
+--usbmon`, artifact SHA-256
+`c422dffbdf58deae3e7718846b3eca6f9ec4d43ec73324f2d40261087ff4f323`)
+passed QEMU/preflight, image audit, and RAM-only `fastboot boot`. Host usbmon
+recorded the address-0 `GET_DESCRIPTOR(Device)` submit at `13:13:40 JST`, a
+first completion with `-2` at `13:13:45`, and three retry completions with
+`-71` at `13:13:46`; all four completions had `length=0`, `cap=0`, and no
+descriptor bytes. The handset returned via stock Android after 68 seconds;
+host state was `18d1:4ee7`, with no `1234:0001`. Raw usbmon
+(`tmp/fullerene-bramble-loop.603331.0/usbmon-all.bin`, SHA-256
+`2cecf353b7c65731b59ac253ceead606f64fca7e365949ab54eaf2b746b7e5aa`)
+shows that starting EP0 with qpr1's 512-byte initial descriptor state did not
+move the pre-descriptor boundary. No flash, erase, partition operation,
+backup, analyzer, secure-debug, or user-data operation was used.
+
+The event-ring-at-runstop redundancy audit (`tmp/fullerene-bramble-loop.613327.0`,
+artifact SHA-256 `dde6cb59a118d593296974a9f0d9ba8c67cfa0abaa6e73414762aaeca11006be`,
+raw usbmon SHA-256
+`14a680f7b5cb19ded406d7b435e826bfe8a07c3fc4396ca74f20a57bdced5bb`) passed
+QEMU/preflight, image audit, and RAM-only `fastboot boot`. Adding only
+`--event-ring-at-runstop` produced the same Fullerene HS attach and address-0
+descriptor failure: one `-2` completion and three `-71` retries, each with
+`length=0`, `cap=0`, and no descriptor bytes; Android `18d1:4ee7` returned after
+67 seconds. The current `--gadget-restart-at-runstop` path already republishes
+the EP0 event ring, so this is retained as a redundancy audit rather than an
+independent causal A/B. No flash, erase, partition operation, backup, analyzer,
+secure-debug, or user-data operation was used.
+
+The current-HEAD ungated EP0-arm retake (`tmp/fullerene-bramble-loop.622786.0`,
+`--start-ungated`, artifact SHA-256
+`2e259aef57ca55f9144bc1fa2b51fb2270b454a3159b6316f5571b1eaf12f778`, raw
+usbmon SHA-256
+`c1c8529f8c766eb9a2f01a801ee13ccf68cdbd461ab6741f7e072ee6f7a52274`) passed
+QEMU/preflight, image audit, and RAM-only `fastboot boot`. Bypassing the
+deferred `DSTS.DEVCTRLHLT` gate did not change the boundary: Fullerene HS
+attach at `13:27:50 JST`, Device Descriptor `-110` at `13:27:56`, one usbmon
+`-2` completion followed by three `-71` retries with zero captured data, then
+stock Android `18d1:4ee7` at `13:28:17`. No `1234:0001` appeared. No flash,
+erase, partition operation, backup, analyzer, secure-debug, or user-data
+operation was used.
+
+The EUD-ownership release A/B (`tmp/fullerene-bramble-loop.847917.0`,
+`FULLERENE_AARCH64_USB_DISABLE_EUD=1`, with the same source-exact USB2/HS-PHY
+profile as the corrected DBM baseline) tested one variable: before the USB
+handoff, perform the normal Android-style EUD ownership release through the
+secure SCM write and clear `EUD_EN`, based on the Bramble DT `eud_enable_reg`
+resource and the local `disable_eud_for_usb_handoff()` helper. The expected
+discriminator was a valid address-0 Device Descriptor / `1234:0001`, or at
+least a change from the established `-110`/zero-data boundary. The build-child
+environment was verified to contain the A/B selector; the resulting artifact
+SHA-256 is
+`0081f28bd234a80759c8d424fa2b87de13ee317f505d085c3744758b09df46e6`.
+QEMU/preflight, image audit, and RAM-only `fastboot boot` passed. On the real
+Pixel 4a 5G, Fullerene HS attach was followed by Device Descriptor `-110`;
+raw usbmon (`tmp/fullerene-bramble-loop.847917.0/usbmon-all.bin`, SHA-256
+`9a3d9600b10242e1be59c74ad8afcf55e21ea772c814ad2e99968c94a64faed8`)
+recorded one `-2` completion and three `-71` retries, all with zero payload,
+and the handset returned to stock Android `18d1:4ee7`. No `1234:0001` appeared.
+The EUD ownership hypothesis is therefore negative and does not move the
+pre-descriptor boundary. This matches the primary Android Bramble USB DT
+(`qcom/lito-usb.dtsi`) and Qualcomm HS-PHY ownership path
+(`drivers/usb/phy/phy-msm-snps-hs.c`); the next safe discriminator is a
+primary-source/known-good audit of USB2 PHY RX/SOF behavior and host-side
+observation, not another EP0/TRB permutation. No flash, erase, partition
+operation, backup, analyzer, secure-debug, or user-data operation was used.
+
+The subsequent `--irq-route power` check (`tmp/fullerene-bramble-loop.881714.0`)
+was intended as one source-backed variable: enable the DT Qualcomm USB
+power-event GIC SPI route after the direct handoff. The harness initially
+omitted `FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES` from the isolated Cargo target
+hash; that bug was fixed in `flasks/src/main.rs` and the retake used a distinct
+route-specific target, with the child environment recorded as
+`FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES=power`. However, the emitted boot
+artifact still has the exact baseline SHA-256
+`ef7971e901ac961e9789d79d3e359a6c6a65dcd89efe6beb48f8631ab34bb766`, so the
+physical result is classified invalid as an A/B rather than as a causal
+negative. Host observation was unchanged: Fullerene HS attach, Device
+Descriptor `-110` at `16:26:13`, Android `18d1:4ee7` at `16:26:34`, and no
+`1234:0001`; passive usbmon SHA-256 is
+`d9e63cc745adb3b87580b6740d3fa37584de5785baef85fbcdbf57ec2bc60c91`, with
+one zero-data `-2` and three zero-data `-71` descriptor completions. Source
+audit also excludes `--irq-route pdc`: Android registers the PDC PHY lines
+with `IRQF_NO_AUTOEN` for host suspend/wakeup, while the live device-mode
+handoff intentionally leaves them unowned. Next action is static/source-level
+audit of the route cfg/build output and then the known-good USB2 PHY RX/SOF
+path, not a repeat of this physical run. No flash, erase, partition
+operation, backup, analyzer, secure-debug, or user-data operation was used.
+
+Static follow-up: with the full diagnostic profile including `--signal-probe
+--signal-cmd-gate dwc3-state`, the build script emitted
+`fullerene_aarch64_usb_probe_irq_power`, but final `usb_probe_entry` assembly
+and raw kernel SHA were identical with the route unset
+(`9bf194b65e1b6e7b181180030966d2f99279ed5eabc085f0bba8f4c3741b43e5`).
+Removing only that diagnostic gate produced a real image differential: route
+raw `251cb7b7e018eb91bbcf7444b5f43fde81ecf75c165c094d15017db541414650`
+versus no-route `1b23867ee88c8f7caafc56ea8bcf5c56b584be1879dd66c23388e541add21c70`.
+
+Run `916592.0` then tested exactly one variable, `--irq-route power`, on that
+no-gate source-exact USB2 profile. QEMU/preflight, image audit, and RAM-only
+`fastboot boot` passed; the child recorded
+`FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES=power`, artifact SHA
+`5d89fcd45d54b7ac9c15a254a298244c88a396526436b16ebe33bb887b8bb499`, and
+usbmon SHA `a57ff3472f0807669480da70b5afb598d5020406134d36ca50bd3d1b055ff921`.
+The host saw HS attach at `16:47:37 JST`, Device Descriptor `-110` at
+`16:47:43`, then stock Android `18d1:4ee7`; usbmon had one zero-data `-2`
+followed by three zero-data `-71` completions. This is a valid route-image
+A/B but a causal negative for the pre-descriptor boundary: no `1234:0001`, no
+descriptor payload, and no `-110/-71` improvement. The next safe action is
+primary-source/known-good USB2 PHY RX/SOF audit and retained observability,
+not another equivalent IRQ or EP0/TRB permutation. No flash, erase, partition
+operation, backup, analyzer, secure-debug, or user-data operation was used.
+
+Static qpr1 PHY callback audit: `msm_hsphy_notify_connect()` in
+`tmp/qpr1-msm/drivers/usb/phy/phy-msm-snps-hs.c` only sets
+`cable_connected`; it does not re-run the analog init or add a receive-path
+transition. The nearby `TERMSEL`/`XCVRSEL` pulse belongs to
+`msm_hsphy_drive_dp_pulse()`, the DPDM/charger-detection path, and is not a
+normal gadget-enumeration action. `msm_hsphy_set_suspend(..., 0)` only enables
+the DT-declared clocks; on Bramble the HS-PHY node has only `ref_clk_src` and
+the direct handoff already reasserts that RPMh clock at the qpr1 post-reset
+boundary. Adding either callback behavior would therefore be an unsupported
+downstream PHY mutation, not a source-backed new A/B. The evidence target
+remains a retained/raw USB2 PHY RX/SOF observation or a known-good Android
+register trace. No physical experiment was run for this audit; no flash,
+erase, partition operation, backup, analyzer, secure-debug, or user-data
+operation was used.
+
+2026-09-08 harness/host evidence update: every non-dry Rust loop now retains
+the stock boot-template SHA-256 and a SHA-256 fingerprint of the tracked dirty
+diff (`dirty-diff.patch`/`dirty-diff.sha256`), with the fingerprint repeated
+in `repo-state.txt`; the device-side operation remains RAM-only `fastboot
+boot`. A read-only host comparison showed the handset healthy as Android
+`18d1:4ee7` with a valid `lsusb -v` USB 3.20 descriptor/configuration and no
+Fastboot device. This validates the host/cable/stock control path and does not
+change the established Fullerene pre-descriptor boundary.
+
+2026-09-08 regression/autonomy update: the current-source rebuild of the
+known attach-reaching source-exact USB2 profile produced artifact
+`ef7971e901ac961e9789d79d3e359a6c6a65dcd89efe6beb48f8631ab34bb766`, exactly
+matching the known negative `807263.0` image, so no equivalent physical rerun
+was sent. The Rust harness now automatically uses the bounded authorized-ADB
+to-Fastboot transition by default; `--no-adb-reboot-to-fastboot` is the
+explicit passive override. This closes the autonomous-loop gap without
+changing the allowed device-side operation (`fastboot boot` only).

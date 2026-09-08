@@ -324,6 +324,32 @@ pub(super) unsafe fn init_hsphy_source_exact() {
     unsafe { init_hsphy_inner(true) }
 }
 
+/// Restore only the raw qpr1 HS-PHY SUSPEND_N bit after the DWC3 Run/Stop
+/// boundary. qpr1's init sequence asserts this bit before clearing only
+/// SUSPEND_N_SEL; the handoff readout showed the Bramble transition clearing
+/// the raw bit at that boundary. Keep this isolated from the normal path.
+pub(super) unsafe fn restore_suspend_n_after_runstop() -> u32 {
+    unsafe {
+        hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N, HSPHY_CTRL2_SUSPEND_N);
+        read_volatile(hsphy_reg(HSPHY_CTRL2))
+    }
+}
+
+/// Re-run qpr1's selected SUSPEND_N sequence after the DWC3 Run/Stop
+/// boundary. The selector is asserted together with SUSPEND_N, then cleared
+/// exactly as in msm_hsphy_init().
+pub(super) unsafe fn restore_suspend_n_selected_after_runstop() -> u32 {
+    unsafe {
+        hsphy_update(
+            HSPHY_CTRL2,
+            HSPHY_CTRL2_SUSPEND_N_SEL | HSPHY_CTRL2_SUSPEND_N,
+            HSPHY_CTRL2_SUSPEND_N_SEL | HSPHY_CTRL2_SUSPEND_N,
+        );
+        hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N_SEL, 0);
+        read_volatile(hsphy_reg(HSPHY_CTRL2))
+    }
+}
+
 unsafe fn init_hsphy_inner(source_exact: bool) {
     unsafe {
         hsphy_update(

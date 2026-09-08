@@ -3264,7 +3264,10 @@ unsafe fn send_usb_regulator_request(rail: UsbRailResource, enable: bool) -> boo
     }; 3];
     let count = if enable {
         let mut count = 0;
-        if rail.program_voltage {
+        if rail.program_voltage
+            || (cfg!(fullerene_aarch64_usb_hsphy_program_vdda_voltage)
+                && matches!(rail.name, "vdda18" | "vdda33"))
+        {
             commands[count] = RpmhBcmCommand {
                 address: address + RPMH_REGULATOR_VRM_VOLTAGE,
                 data: rail.min_uv / 1000,
@@ -3294,6 +3297,13 @@ unsafe fn send_usb_regulator_request(rail: UsbRailResource, enable: bool) -> boo
         };
         1
     };
+    let is_hs_phy_rail = matches!(rail.rpmh_resource_id, RPMH_LDOA5 | RPMH_LDOA12 | RPMH_LDOA2);
+    if cfg!(fullerene_aarch64_usb_hsphy_all_regulator_sets)
+        && is_hs_phy_rail
+        && !unsafe { send_rpmh_command_batch_in_set(&commands[..count], RpmhTcsSet::Sleep) }
+    {
+        return false;
+    }
     unsafe { send_rpmh_command_batch(&commands[..count]) }
 }
 

@@ -9,6 +9,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use nusb::transfer::{ControlIn, ControlType, Recipient};
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -19,7 +20,7 @@ use std::{
 use tokio::runtime::Builder;
 
 const DEFAULT_SERIAL: &str = "26191JECB00076";
-const DEFAULT_TEMPLATE: &str = "/tmp/fullerene-stock-template.Uvg3m2/boot.img";
+const DEFAULT_TEMPLATE: &str = "tmp/bramble-stock-boot.img";
 const BOOTLOADER_USB: &str = "18d1:4ee0";
 const ANDROID_FALLBACK_USB: &str = "18d1:4ee7";
 const FULLERENE_USB: &str = "1234:0001";
@@ -27,6 +28,42 @@ const FULLERENE_USB: &str = "1234:0001";
 // parks for 90 s before resetting, so the recovery wait must cover the park
 // plus the Android boot (well beyond 75 s).
 const RECOVERY_TIMEOUT_SECS: u64 = 150;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeviceState {
+    AndroidAdbAvailable,
+    FastbootAvailable,
+    FullereneUsbAvailable,
+    UnknownUsbState,
+    DeviceAbsent,
+    GoogleLogoSuspected,
+}
+
+impl DeviceState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AndroidAdbAvailable => "android-adb-available",
+            Self::FastbootAvailable => "fastboot-available",
+            Self::FullereneUsbAvailable => "fullerene-usb-1234:0001-available",
+            Self::UnknownUsbState => "unknown-usb-state",
+            Self::DeviceAbsent => "device-absent",
+            Self::GoogleLogoSuspected => "google-logo-or-software-unrecoverable-suspected",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HostObservation {
+    state: DeviceState,
+    adb_state: Option<String>,
+    adb_devices: String,
+    fastboot_devices: String,
+    lsusb: String,
+    fastboot: bool,
+    fullerene_usb: bool,
+    bootloader_usb: bool,
+    android_usb: bool,
+}
 
 #[derive(Parser, Debug)]
 #[command(about = "Run non-destructive Bramble USB handoff experiments")]
@@ -73,17 +110,29 @@ struct LoopArgs {
     serial: String,
     #[arg(long, default_value = DEFAULT_TEMPLATE)]
     template: PathBuf,
-    #[arg(long, default_value_t = 30)]
+    /// Allow the known direct USB2 handoff's bounded pre-attach work and the
+    /// first host descriptor attempt to complete before declaring no attach.
+    #[arg(long, default_value_t = 60)]
     enum_timeout: u64,
     #[arg(long, default_value_t = 30)]
     hold: u64,
     #[arg(long, default_value_t = 30)]
     fastboot_wait: u64,
-    /// If Fastboot is absent, verify this serial is an ADB device and issue
-    /// `adb reboot bootloader` before waiting for Fastboot. This is opt-in;
-    /// the image operation remains the non-destructive `fastboot boot`.
+    /// Capture the host's passive usbmon stream for the entire RAM-only boot
+    /// attempt. This is host observation only; it does not alter the target
+    /// image or USB traffic. usbmon0 records all USB buses, which avoids
+    /// assuming that the handset keeps the same Linux bus number.
+    #[arg(long)]
+    usbmon: bool,
+    /// Explicitly allow the selected ADB device to transition to Fastboot.
+    /// The safe ADB-to-Fastboot transition is enabled by default; use
+    /// --no-adb-reboot-to-fastboot for a passive Fastboot-only run.
     #[arg(long)]
     adb_reboot_to_fastboot: bool,
+    /// Do not issue the safe ADB-to-Fastboot transition when Android ADB is
+    /// the initial state; wait for Fastboot instead.
+    #[arg(long, conflicts_with = "adb_reboot_to_fastboot")]
+    no_adb_reboot_to_fastboot: bool,
     #[arg(long)]
     irq_route: Option<Route>,
     #[arg(long)]
@@ -149,6 +198,14 @@ struct LoopArgs {
     no_transfer_resource: bool,
     #[arg(long)]
     android_resource_order: bool,
+    /// Replay Linux's non-endpoint gadget-start defaults immediately before
+    /// the final Run/Stop boundary (single source-directed ordering A/B).
+    #[arg(long)]
+    gadget_start_defaults_at_runstop: bool,
+    /// Enforce qpr1's 50 ms minimum stop-to-start interval before the final
+    /// direct USB2 gadget Run/Stop transition (A/B).
+    #[arg(long)]
+    min_runstop_delay: bool,
     /// Re-enable Android msm's iface/core/sleep controller branches before
     /// the UTMI branch at the direct USB2 handoff boundary.
     #[arg(long)]
@@ -174,6 +231,14 @@ struct LoopArgs {
     /// the direct handoff reset/init boundary (A/B).
     #[arg(long)]
     refresh_hsphy_power: bool,
+    /// Program the Android msm_hsphy_init() vdda18/vdda33 voltage ranges
+    /// before enabling the refreshed HS-PHY rails (A/B).
+    #[arg(long)]
+    hsphy_program_vdda_voltage: bool,
+    /// Send HS-PHY regulator requests to both qcom,set=3 TCS families,
+    /// matching the Android RPMh regulator contract (A/B).
+    #[arg(long)]
+    hsphy_all_regulator_sets: bool,
     /// Skip the direct handoff's explicit QUSB2 PHY block-reset pulse (A/B).
     #[arg(long)]
     skip_usb2_phy_reset: bool,
@@ -298,6 +363,14 @@ struct LoopArgs {
     /// qpr1's msm_usb2_phy_probe() ownership order (A/B).
     #[arg(long)]
     hsphy_before_reset: bool,
+    /// Restore the qpr1 HS-PHY SUSPEND_N bit immediately after Run/Stop
+    /// (one-variable physical A/B; direct handoff only).
+    #[arg(long)]
+    hsphy_restore_suspend_n_after_runstop: bool,
+    /// Re-run qpr1's selected SUSPEND_N write sequence immediately after
+    /// Run/Stop: set SUSPEND_N_SEL|SUSPEND_N, then clear SUSPEND_N_SEL.
+    #[arg(long)]
+    hsphy_restore_suspend_n_selected_after_runstop: bool,
     /// Start EP0 with the Linux/Android 512-byte descriptor state.
     #[arg(long)]
     ep0_initial_512: bool,
@@ -326,6 +399,9 @@ struct LoopArgs {
     /// historical standalone 100-us clock-source transition (A/B).
     #[arg(long)]
     usb2_qpr1_utmi_post_reset_only: bool,
+    /// Do not write USB2 PHYIF/TRDTIM, matching qpr1's UNKNOWN DT mode (A/B).
+    #[arg(long)]
+    usb2_preserve_phy_interface: bool,
     /// Re-assert DWC3 GCTL device mode immediately before SS Run/Stop.
     #[arg(long)]
     ss_reassert_device_mode: bool,
@@ -477,6 +553,10 @@ struct LoopArgs {
     /// and change only the source-required RUN_STOP bit (A/B).
     #[arg(long)]
     usb2_source_exact_runstop: bool,
+    /// Apply qpr1 dwc3_phy_setup()'s USB3 PIPE setup before the USB2 core
+    /// reset: clear UX_EXIT_PX and assert USB3 SUSPHY (A/B).
+    #[arg(long)]
+    usb2_source_phy_setup: bool,
     /// Clear DWC3 USB2 sleep-mode bits before the direct gadget handoff,
     /// matching qpr1 dwc3_dis_sleep_mode() (A/B).
     #[arg(long)]
@@ -650,6 +730,12 @@ struct LoopArgs {
     /// Gate the attach on the previous attempt's STARTTRANSFER outcome.
     #[arg(long = "signal-cmd-gate", value_name = "WHEN")]
     signal_cmd_gate: Option<String>,
+    /// Publish a read-only live USB2/HS-PHY snapshot field before Run/Stop.
+    #[arg(long = "utmi-preconnect-readout", value_name = "SELECTOR")]
+    utmi_preconnect_readout: Option<String>,
+    /// Publish a read-only live USB2/HS-PHY snapshot field after Run/Stop.
+    #[arg(long = "utmi-postrun-readout", value_name = "SELECTOR")]
+    utmi_postrun_readout: Option<String>,
     /// Publish one PM8150 PON register through the attach-delay channel:
     /// seq (previous reset-reason bucket, the default), or a raw byte from
     /// wd2 (PMIC-watchdog enable/type), s1/s2 (watchdog timers), ctl, warm,
@@ -690,10 +776,12 @@ impl Default for LoopArgs {
         Self {
             serial: DEFAULT_SERIAL.to_owned(),
             template: PathBuf::from(DEFAULT_TEMPLATE),
-            enum_timeout: 30,
+            enum_timeout: 60,
             hold: 30,
             fastboot_wait: 30,
+            usbmon: false,
             adb_reboot_to_fastboot: false,
+            no_adb_reboot_to_fastboot: false,
             irq_route: None,
             super_speed: false,
             qmp_lane: None,
@@ -712,12 +800,16 @@ impl Default for LoopArgs {
             reuse_fastboot_dma: false,
             no_transfer_resource: false,
             android_resource_order: false,
+            gadget_start_defaults_at_runstop: false,
+            min_runstop_delay: false,
             clock_branches_rearm: false,
             usb_core_hs_clock: false,
             usb2_full_core_reset: false,
             clock_stable_delay_us: None,
             android_block_reset: false,
             refresh_hsphy_power: false,
+            hsphy_program_vdda_voltage: false,
+            hsphy_all_regulator_sets: false,
             skip_usb2_phy_reset: false,
             event_ring_size_4096: false,
             start_after_connect: false,
@@ -755,6 +847,8 @@ impl Default for LoopArgs {
             hsphy_source_exact: false,
             hsphy_legacy_fallback: false,
             hsphy_before_reset: false,
+            hsphy_restore_suspend_n_after_runstop: false,
+            hsphy_restore_suspend_n_selected_after_runstop: false,
             ep0_initial_512: false,
             dcfg_superspeed: false,
             dcfg_fullspeed: false,
@@ -763,6 +857,7 @@ impl Default for LoopArgs {
             usb2_core_reset_at_runstop: false,
             usb2_source_exact_device_reset: false,
             usb2_qpr1_utmi_post_reset_only: false,
+            usb2_preserve_phy_interface: false,
             ss_reassert_device_mode: false,
             ss_reassert_core_clocks: false,
             ss_reassert_core_clocks_after_runstop: false,
@@ -803,6 +898,7 @@ impl Default for LoopArgs {
             usb2_source_exact_devten: false,
             usb2_source_exact_cmd_guard: false,
             usb2_source_exact_runstop: false,
+            usb2_source_phy_setup: false,
             usb2_dis_sleep_mode: false,
             usb2_android_dbm_reset: false,
             ep0_stall_flush: false,
@@ -850,6 +946,8 @@ impl Default for LoopArgs {
             observe_secs: None,
             dma_origin: None,
             signal_cmd_gate: None,
+            utmi_preconnect_readout: None,
+            utmi_postrun_readout: None,
             pon_readout: None,
             signal_rsc_gate: None,
             signal_cfg_gate: None,
@@ -873,16 +971,19 @@ struct MatrixArgs {
     serial: String,
     #[arg(long, default_value = DEFAULT_TEMPLATE)]
     template: PathBuf,
-    #[arg(long, default_value_t = 30)]
+    #[arg(long, default_value_t = 60)]
     enum_timeout: u64,
     #[arg(long, default_value_t = 30)]
     hold: u64,
     #[arg(long, default_value_t = 30)]
     fastboot_wait: u64,
-    /// If Fastboot is absent, transition the selected ADB device into its
-    /// bootloader before each matrix route. This is opt-in.
+    /// Explicitly allow the selected ADB device to transition to Fastboot.
+    /// The safe transition is enabled by default for each matrix route.
     #[arg(long)]
     adb_reboot_to_fastboot: bool,
+    /// Keep the matrix passive when Android ADB is the initial state.
+    #[arg(long, conflicts_with = "adb_reboot_to_fastboot")]
+    no_adb_reboot_to_fastboot: bool,
     #[arg(long)]
     super_speed: bool,
     #[arg(long)]
@@ -903,10 +1004,380 @@ struct TraceArgs {
     timeout: u64,
 }
 
+fn command_output_text(program: &str, arguments: &[&str]) -> io::Result<(bool, String)> {
+    let output = Command::new(program).args(arguments).output()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok((output.status.success(), text))
+}
+
+fn adb_state_from_listing(serial: &str, listing: &str) -> Option<String> {
+    listing.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let found_serial = fields.next()?;
+        let state = fields.next()?;
+        (found_serial == serial).then(|| state.to_owned())
+    })
+}
+
+fn classify_device_state(
+    adb_state: Option<&str>,
+    fastboot: bool,
+    fullerene_usb: bool,
+    android_usb: bool,
+) -> DeviceState {
+    if fullerene_usb {
+        DeviceState::FullereneUsbAvailable
+    } else if fastboot {
+        DeviceState::FastbootAvailable
+    } else if adb_state == Some("device") {
+        DeviceState::AndroidAdbAvailable
+    } else if adb_state.is_some() || android_usb {
+        DeviceState::UnknownUsbState
+    } else {
+        DeviceState::DeviceAbsent
+    }
+}
+
+fn observe_host(serial: &str) -> io::Result<HostObservation> {
+    let (_, adb_devices) = command_output_text("adb", &["devices", "-l"])?;
+    let (_, fastboot_devices) = command_output_text("fastboot", &["devices", "-l"])?;
+    let (_, lsusb) = command_output_text("lsusb", &[])?;
+    let adb_state = adb_state_from_listing(serial, &adb_devices);
+    let fullerene_usb = lsusb.lines().any(|line| line.contains(FULLERENE_USB));
+    let bootloader_usb = lsusb.lines().any(|line| line.contains(BOOTLOADER_USB));
+    let android_usb = lsusb
+        .lines()
+        .any(|line| line.contains(ANDROID_FALLBACK_USB));
+    let fastboot = fastboot_devices
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some(serial));
+    let state = classify_device_state(
+        adb_state.as_deref(),
+        fastboot,
+        fullerene_usb,
+        android_usb || bootloader_usb,
+    );
+    Ok(HostObservation {
+        state,
+        adb_state,
+        adb_devices,
+        fastboot_devices,
+        lsusb,
+        fastboot,
+        fullerene_usb,
+        bootloader_usb,
+        android_usb,
+    })
+}
+
+fn write_host_observation(
+    run_dir: &Path,
+    label: &str,
+    observation: &HostObservation,
+) -> io::Result<()> {
+    let mut summary = String::new();
+    summary.push_str(&format!("state={}\n", observation.state.as_str()));
+    summary.push_str(&format!(
+        "adb_state={}\n",
+        observation.adb_state.as_deref().unwrap_or("absent")
+    ));
+    summary.push_str(&format!("fastboot_present={}\n", observation.fastboot));
+    summary.push_str(&format!(
+        "fullerene_usb_present={}\n",
+        observation.fullerene_usb
+    ));
+    summary.push_str(&format!(
+        "bootloader_usb_present={}\n",
+        observation.bootloader_usb
+    ));
+    summary.push_str(&format!(
+        "android_usb_present={}\n",
+        observation.android_usb
+    ));
+    fs::write(run_dir.join(format!("{label}-summary.txt")), summary)?;
+    fs::write(
+        run_dir.join(format!("{label}-adb-devices.txt")),
+        &observation.adb_devices,
+    )?;
+    fs::write(
+        run_dir.join(format!("{label}-fastboot-devices.txt")),
+        &observation.fastboot_devices,
+    )?;
+    fs::write(
+        run_dir.join(format!("{label}-lsusb.txt")),
+        &observation.lsusb,
+    )?;
+    Ok(())
+}
+
+fn append_host_timeline(
+    timeline: &mut File,
+    elapsed: Duration,
+    observation: &HostObservation,
+) -> io::Result<()> {
+    writeln!(
+        timeline,
+        "[{elapsed:?}] state={}",
+        observation.state.as_str()
+    )?;
+    writeln!(
+        timeline,
+        "adb_state={} fastboot={} fullerene={} bootloader_usb={} android_usb={}",
+        observation.adb_state.as_deref().unwrap_or("absent"),
+        observation.fastboot,
+        observation.fullerene_usb,
+        observation.bootloader_usb,
+        observation.android_usb,
+    )?;
+    timeline.write_all(observation.lsusb.as_bytes())?;
+    if !observation.lsusb.ends_with('\n') {
+        timeline.write_all(b"\n")?;
+    }
+    timeline.flush()
+}
+
+fn record_repo_state(workspace: &Path, run_dir: &Path) -> io::Result<()> {
+    let mut output = String::new();
+    for (label, arguments) in [
+        ("git-head", vec!["rev-parse", "HEAD"]),
+        ("git-branch", vec!["branch", "--show-current"]),
+        ("git-status", vec!["status", "--short", "--branch"]),
+        ("git-diff-stat", vec!["diff", "--stat", "--"]),
+    ] {
+        let command = Command::new("git")
+            .args(&arguments)
+            .current_dir(workspace)
+            .output()?;
+        let mut text = String::from_utf8_lossy(&command.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&command.stderr));
+        fs::write(run_dir.join(format!("{label}.txt")), &text)?;
+        output.push_str(&format!("[{label}]\n{text}\n"));
+    }
+    let dirty_diff = Command::new("git")
+        .args(["diff", "HEAD", "--binary", "--"])
+        .current_dir(workspace)
+        .output()?;
+    if !dirty_diff.status.success() {
+        return Err(io::Error::other(format!(
+            "git diff HEAD failed: {}",
+            String::from_utf8_lossy(&dirty_diff.stderr).trim()
+        )));
+    }
+    let dirty_diff_path = run_dir.join("dirty-diff.patch");
+    fs::write(&dirty_diff_path, &dirty_diff.stdout)?;
+    let dirty_diff_sha256 = sha256(&dirty_diff_path)?;
+    fs::write(
+        run_dir.join("dirty-diff.sha256"),
+        format!("{dirty_diff_sha256}  dirty-diff.patch\n"),
+    )?;
+    output.push_str(&format!("[dirty-diff-sha256]\n{dirty_diff_sha256}\n\n"));
+    fs::write(run_dir.join("repo-state.txt"), output)
+}
+
+fn record_boot_template(template: &Path, run_dir: &Path) -> io::Result<()> {
+    let template_sha256 = sha256(template)?;
+    fs::write(
+        run_dir.join("boot-template.sha256"),
+        format!("{template_sha256}  {}\n", template.display()),
+    )
+}
+
+fn record_fullerene_environment(run_dir: &Path, build: &CommandSpec) -> io::Result<()> {
+    let mut inherited = BTreeMap::new();
+    for (key, value) in std::env::vars() {
+        if key.starts_with("FULLERENE_") {
+            inherited.insert(key, value);
+        }
+    }
+    let mut text = String::from("inherited_from_harness_process:\n");
+    if inherited.is_empty() {
+        text.push_str("<none>\n");
+    } else {
+        for (key, value) in inherited {
+            text.push_str(&format!("{key}={value}\n"));
+        }
+    }
+    text.push_str("\neffective_build_child_environment:\n");
+    if build.envs.is_empty() {
+        text.push_str("<none>\n");
+    } else {
+        for (key, value) in &build.envs {
+            text.push_str(&format!("{key}={value}\n"));
+        }
+    }
+    text.push_str("\ninherited_fullerene_environment_sanitized=true\n");
+    fs::write(run_dir.join("fullerene-build-env.txt"), text)
+}
+
+fn record_command_spec(run_dir: &Path, label: &str, spec: &CommandSpec) -> io::Result<()> {
+    let mut text = format!(
+        "program={}\ncurrent_dir={}\n",
+        spec.program,
+        spec.current_dir.display()
+    );
+    for (index, argument) in spec.arguments.iter().enumerate() {
+        text.push_str(&format!("arg[{index}]={argument}\n"));
+    }
+    for (key, value) in &spec.envs {
+        text.push_str(&format!("env.{key}={value}\n"));
+    }
+    fs::write(run_dir.join(format!("{label}-command.txt")), text)
+}
+
+fn write_classification(run_dir: &Path, classification: &str) -> io::Result<()> {
+    fs::write(
+        run_dir.join("classification.txt"),
+        format!("classification={classification}\n"),
+    )
+}
+
+fn kernel_log_has_non_android_attach(log: &str) -> bool {
+    let mut pending: Option<(String, bool)> = None;
+    for line in log.lines() {
+        let Some(path_start) = line.find("usb ") else {
+            continue;
+        };
+        let path = line[path_start + 4..].split(':').next().unwrap_or_default();
+        if path.is_empty() {
+            continue;
+        }
+
+        let new_device = line.contains("new high-speed USB device")
+            || line.contains("new full-speed USB device")
+            || line.contains("new SuperSpeed USB device");
+        if new_device {
+            if let Some((_, non_android)) = pending.take() {
+                if non_android {
+                    return true;
+                }
+            }
+            pending = Some((path.to_owned(), true));
+            continue;
+        }
+
+        let Some((pending_path, non_android)) = pending.as_mut() else {
+            continue;
+        };
+        if pending_path != path {
+            continue;
+        }
+        if line.contains("idVendor=18d1,idProduct=4ee7")
+            || line.contains("idVendor=18d1, idProduct=4ee7")
+        {
+            *non_android = false;
+        }
+    }
+    pending.is_some_and(|(_, non_android)| non_android)
+}
+
+fn classify_postboot_result(
+    observation: &HostObservation,
+    kernel_log: Option<&str>,
+    descriptor_ok: Option<bool>,
+) -> &'static str {
+    if observation.fullerene_usb {
+        return match descriptor_ok {
+            Some(true) => "fullerene-usb-1234:0001-descriptor-read-success",
+            Some(false) => "fullerene-usb-present-descriptor-read-failure",
+            None => "fullerene-usb-present-descriptor-unverified",
+        };
+    }
+    // Prefer a host kernel boundary over the final recovery state. Android
+    // is expected to return after a failed probe, but that must not erase the
+    // evidence that the temporary image reached HS/SS attach or a descriptor
+    // error before recovery.
+    if let Some(log) = kernel_log {
+        if log.contains("error -110") {
+            return "usb-attach-or-descriptor-failure--110";
+        }
+        if log.contains("error -71") {
+            return "usb-attach-or-descriptor-failure--71";
+        }
+        if log.contains("error -62") {
+            return "usb-attach-or-descriptor-failure--62";
+        }
+        if kernel_log_has_non_android_attach(log) {
+            return "usb-attach-without-registered-descriptor";
+        }
+    }
+    if observation.android_usb || observation.adb_state.as_deref() == Some("device") {
+        return "android-fallback";
+    }
+    if observation.state == DeviceState::FastbootAvailable {
+        return "fastboot-fallback";
+    }
+    DeviceState::GoogleLogoSuspected.as_str()
+}
+
 struct JournalGuard {
     child: Option<Child>,
     run_dir: PathBuf,
     start_iso: String,
+}
+
+struct UsbmonGuard {
+    child: Option<Child>,
+    run_dir: PathBuf,
+    capture_path: PathBuf,
+}
+
+impl UsbmonGuard {
+    fn start(run_dir: &Path) -> io::Result<Self> {
+        let source = File::open("/dev/usbmon0").map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("cannot open passive usbmon source /dev/usbmon0: {error}"),
+            )
+        })?;
+        let capture_path = run_dir.join("usbmon-all.bin");
+        let output = File::create(&capture_path)?;
+        let child = Command::new("cat")
+            .stdin(Stdio::from(source))
+            .stdout(Stdio::from(output))
+            .stderr(Stdio::null())
+            .spawn()?;
+        fs::write(
+            run_dir.join("usbmon-source.txt"),
+            "source=/dev/usbmon0\nmode=all-usb-buses\nobservation=passive\n",
+        )?;
+        Ok(Self {
+            child: Some(child),
+            run_dir: run_dir.to_owned(),
+            capture_path,
+        })
+    }
+
+    fn stop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let kill_result = child.kill();
+        let wait_result = child.wait();
+        let mut status = String::from("source=/dev/usbmon0\n");
+        status.push_str("mode=all-usb-buses\nobservation=passive\n");
+        status.push_str(&format!("kill={kill_result:?}\nwait={wait_result:?}\n"));
+        if let Ok(metadata) = fs::metadata(&self.capture_path) {
+            status.push_str(&format!("bytes={}\n", metadata.len()));
+            if let Ok(sha) = sha256(&self.capture_path) {
+                status.push_str(&format!("sha256={sha}\n"));
+                let _ = fs::write(
+                    self.run_dir.join("usbmon-all.sha256"),
+                    format!("{sha}  {}\n", self.capture_path.display()),
+                );
+            }
+        }
+        if let Ok(summary) = usbmon_summary(&self.capture_path) {
+            let _ = fs::write(self.run_dir.join("usbmon-summary.txt"), summary);
+        }
+        let _ = fs::write(self.run_dir.join("usbmon-status.txt"), status);
+    }
+}
+
+impl Drop for UsbmonGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl JournalGuard {
@@ -1121,7 +1592,10 @@ fn trace_word(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
-fn run_matrix(workspace: &Path, args: MatrixArgs) -> io::Result<()> {
+fn run_matrix(workspace: &Path, mut args: MatrixArgs) -> io::Result<()> {
+    if args.template.is_relative() {
+        args.template = workspace.join(&args.template);
+    }
     let routes = if args.routes.is_empty() {
         vec![
             Route::Power,
@@ -1149,6 +1623,9 @@ fn run_matrix(workspace: &Path, args: MatrixArgs) -> io::Result<()> {
         return Ok(());
     }
 
+    let adb_reboot_to_fastboot =
+        adb_reboot_to_fastboot_enabled(args.adb_reboot_to_fastboot, args.no_adb_reboot_to_fastboot);
+
     let run_dir = create_run_dir(workspace, "fullerene-bramble-matrix")?;
     println!("Matrix logs: {}", run_dir.display());
     for route in routes {
@@ -1161,7 +1638,7 @@ fn run_matrix(workspace: &Path, args: MatrixArgs) -> io::Result<()> {
             }
             Err(error) => {
                 eprintln!("route {} failed: {error}", route.as_str());
-                let recovery = if args.adb_reboot_to_fastboot {
+                let recovery = if adb_reboot_to_fastboot {
                     ensure_fastboot_from_adb(&args.serial, args.fastboot_wait, &run_dir)
                 } else {
                     wait_for_fastboot(&args.serial, args.fastboot_wait)
@@ -1191,6 +1668,7 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         hold: args.hold,
         fastboot_wait: args.fastboot_wait,
         adb_reboot_to_fastboot: args.adb_reboot_to_fastboot,
+        no_adb_reboot_to_fastboot: args.no_adb_reboot_to_fastboot,
         irq_route: Some(route),
         super_speed: args.super_speed,
         no_smmu: args.no_smmu,
@@ -1199,7 +1677,10 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
     }
 }
 
-fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
+fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
+    if args.template.is_relative() {
+        args.template = workspace.join(&args.template);
+    }
     if args.normal
         && (args.super_speed
             || args.pullup_only
@@ -1640,6 +2121,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--hsphy-source-exact requires --direct-handoff",
         ));
     }
+    if args.hsphy_all_regulator_sets && (!args.direct_handoff || !args.refresh_hsphy_power) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-all-regulator-sets requires direct --refresh-hsphy-power",
+        ));
+    }
     if args.hsphy_legacy_fallback && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1652,6 +2139,18 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--hsphy-before-reset requires --direct-handoff",
         ));
     }
+    if args.hsphy_restore_suspend_n_after_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-restore-suspend-n-after-runstop requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_restore_suspend_n_selected_after_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-restore-suspend-n-selected-after-runstop requires --direct-handoff",
+        ));
+    }
     if args.ep0_initial_512 && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1662,6 +2161,18 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--clock-branches-rearm requires --direct-handoff",
+        ));
+    }
+    if args.gadget_start_defaults_at_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--gadget-start-defaults-at-runstop requires --direct-handoff",
+        ));
+    }
+    if args.min_runstop_delay && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--min-runstop-delay requires --direct-handoff",
         ));
     }
     if args.usb_core_hs_clock && !args.direct_handoff {
@@ -1748,6 +2259,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
             "--usb2-source-exact-runstop requires --direct-handoff",
         ));
     }
+    if args.usb2_source_phy_setup && (!args.direct_handoff || args.super_speed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-phy-setup requires direct USB2 handoff",
+        ));
+    }
     if args.usb2_dis_sleep_mode && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1770,6 +2287,12 @@ fn run_loop(workspace: &Path, args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb2-qpr1-utmi-post-reset-only requires direct USB2 handoff",
+        ));
+    }
+    if args.usb2_preserve_phy_interface && (!args.direct_handoff || args.super_speed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-preserve-phy-interface requires direct USB2 handoff",
         ));
     }
     if args.dcfg_lowspeed
@@ -2193,6 +2716,8 @@ fn run_loop_with_dir(
     args: LoopArgs,
     matrix_dir: Option<&Path>,
 ) -> io::Result<()> {
+    let adb_reboot_to_fastboot =
+        adb_reboot_to_fastboot_enabled(args.adb_reboot_to_fastboot, args.no_adb_reboot_to_fastboot);
     let run_dir = match matrix_dir {
         Some(matrix_dir) => {
             create_child_run_dir(matrix_dir, args.irq_route.map_or("loop", Route::as_str))?
@@ -2205,13 +2730,70 @@ fn run_loop_with_dir(
     println!("Boot artifact: {}", output.display());
     println!("Logs: {}", run_dir.display());
 
+    record_repo_state(workspace, &run_dir)?;
+    record_boot_template(&args.template, &run_dir)?;
+    fs::write(
+        run_dir.join("loop-args-debug.txt"),
+        format!("mode={}\n{args:#?}\n", mode_name(&args)),
+    )?;
+    let initial_observation = observe_host(&args.serial)?;
+    write_host_observation(&run_dir, "host-state-before", &initial_observation)?;
+    println!(
+        "Initial host state: {} (adb={}, fastboot={}, fullerene={}, android-usb={})",
+        initial_observation.state.as_str(),
+        initial_observation.adb_state.as_deref().unwrap_or("absent"),
+        initial_observation.fastboot,
+        initial_observation.fullerene_usb,
+        initial_observation.android_usb,
+    );
+
     // A previous probe normally recovers through Android before the next
-    // iteration. The default remains passive Fastboot waiting; the explicit
-    // opt-in can transition the selected ADB device into the bootloader.
-    if args.adb_reboot_to_fastboot {
-        ensure_fastboot_from_adb(&args.serial, args.fastboot_wait, &run_dir)?;
+    // iteration. The safe ADB-to-Fastboot transition is automatic for a
+    // selected, authorized ADB device; --no-adb-reboot-to-fastboot retains a
+    // passive Fastboot-only mode for diagnostic runs.
+    if initial_observation.state == DeviceState::FullereneUsbAvailable {
+        write_classification(&run_dir, DeviceState::FullereneUsbAvailable.as_str())?;
+        return Err(io::Error::other(format!(
+            "Fullerene USB is already present; refusing to issue fastboot boot; logs: {}",
+            run_dir.display()
+        )));
+    }
+    if initial_observation.state == DeviceState::AndroidAdbAvailable && !adb_reboot_to_fastboot {
+        write_classification(&run_dir, DeviceState::AndroidAdbAvailable.as_str())?;
+        return Err(io::Error::other(format!(
+            "Android ADB is available but --no-adb-reboot-to-fastboot was selected; logs: {}",
+            run_dir.display()
+        )));
+    }
+    let transport_result = if adb_reboot_to_fastboot {
+        ensure_fastboot_from_adb(&args.serial, args.fastboot_wait, &run_dir)
     } else {
-        wait_for_fastboot(&args.serial, args.fastboot_wait)?;
+        wait_for_fastboot(&args.serial, args.fastboot_wait)
+    };
+    if let Err(error) = transport_result {
+        let timeout_observation = observe_host(&args.serial)?;
+        write_host_observation(
+            &run_dir,
+            "host-state-transport-timeout",
+            &timeout_observation,
+        )?;
+        let classification = if timeout_observation.state == DeviceState::DeviceAbsent {
+            DeviceState::DeviceAbsent.as_str()
+        } else {
+            timeout_observation.state.as_str()
+        };
+        write_classification(&run_dir, classification)?;
+        return Err(error);
+    }
+    let preboot_observation = observe_host(&args.serial)?;
+    write_host_observation(&run_dir, "host-state-before-build", &preboot_observation)?;
+    if preboot_observation.state != DeviceState::FastbootAvailable {
+        write_classification(&run_dir, preboot_observation.state.as_str())?;
+        return Err(io::Error::other(format!(
+            "Fastboot did not become available after bounded wait; state={}; logs: {}",
+            preboot_observation.state.as_str(),
+            run_dir.display()
+        )));
     }
     let product = fastboot_getvar(&args.serial, "product")?;
     if !product
@@ -2233,10 +2815,18 @@ fn run_loop_with_dir(
     let _ = capture_simple(&run_dir, "fastboot-usb-tree", "lsusb", &["-t"]);
 
     let journal = JournalGuard::start(&run_dir)?;
+    let _usbmon = if args.usbmon {
+        Some(UsbmonGuard::start(&run_dir)?)
+    } else {
+        None
+    };
     let build = build_command(workspace, &args, &output);
+    record_command_spec(&run_dir, "build", &build)?;
+    record_fullerene_environment(&run_dir, &build)?;
     let build_output = run_capture(&run_dir.join("build.log"), &mut build_command_owned(build))?;
     if !build_output.status.success() || !output.is_file() {
         journal.save_final();
+        write_classification(&run_dir, "build-or-audit-failure")?;
         return Err(io::Error::other("build/audit failed"));
     }
     let sha = sha256(&output)?;
@@ -2246,10 +2836,23 @@ fn run_loop_with_dir(
     )?;
 
     let boot = boot_command(workspace, &output);
+    record_command_spec(&run_dir, "boot", &boot)?;
+    let before_boot = observe_host(&args.serial)?;
+    write_host_observation(&run_dir, "host-state-before-boot", &before_boot)?;
+    if before_boot.state != DeviceState::FastbootAvailable {
+        journal.save_final();
+        write_classification(&run_dir, before_boot.state.as_str())?;
+        return Err(io::Error::other(format!(
+            "Fastboot disappeared before fastboot boot; state={}; logs: {}",
+            before_boot.state.as_str(),
+            run_dir.display()
+        )));
+    }
     let boot_started = Instant::now();
     let boot_output = run_capture(&run_dir.join("boot.log"), &mut build_command_owned(boot))?;
     if !boot_output.status.success() {
         journal.save_final();
+        write_classification(&run_dir, "fastboot-boot-command-failed")?;
         return Err(io::Error::other("Fastboot boot failed"));
     }
 
@@ -2258,44 +2861,45 @@ fn run_loop_with_dir(
     let mut android_fallback = false;
     let mut timeline = File::create(run_dir.join("lsusb-timeline.txt"))?;
     while Instant::now() < deadline {
-        // Record the full lsusb picture every second: an addressed-but-
-        // unconfigured Fullerene device would still appear here with its
-        // VID:PID, which distinguishes "enumeration broke after the device
-        // descriptor read" from "the host never registered the device".
         let stamp =
             Instant::now().duration_since(deadline - Duration::from_secs(args.enum_timeout));
-        let listing = Command::new("lsusb").output();
-        if let Ok(output) = listing {
-            let _ = writeln!(timeline, "[{:?}]", stamp);
-            let _ = timeline.write_all(&output.stdout);
-            let _ = timeline.flush();
-        }
-        if usb_present(FULLERENE_USB) {
+        let observation = observe_host(&args.serial)?;
+        append_host_timeline(&mut timeline, stamp, &observation)?;
+        if observation.fullerene_usb {
             println!("Fullerene USB enumeration: PASS");
             let descriptor =
                 capture_simple(&run_dir, "lsusb-v", "lsusb", &["-d", FULLERENE_USB, "-v"])?;
             if !descriptor.status.success() {
                 journal.save_final();
+                write_host_observation(&run_dir, "host-state-fullerene", &observation)?;
+                write_classification(&run_dir, "fullerene-usb-present-descriptor-read-failure")?;
                 return Err(io::Error::other("Fullerene descriptor read failed"));
             }
+            write_host_observation(&run_dir, "host-state-fullerene", &observation)?;
             let _ = capture_simple(&run_dir, "lsusb-tree", "lsusb", &["-t"]);
             if args.super_speed && !has_superspeed_link(&run_dir)? {
                 journal.save_final();
+                write_classification(
+                    &run_dir,
+                    "fullerene-usb-present-without-required-superspeed",
+                )?;
                 return Err(io::Error::other("Fullerene USB has no SuperSpeed link"));
             }
             let hold_deadline = Instant::now() + Duration::from_secs(args.hold);
             while Instant::now() < hold_deadline {
                 if !usb_present(FULLERENE_USB) {
                     journal.save_final();
+                    write_classification(&run_dir, "fullerene-usb-disappeared-during-hold")?;
                     return Err(io::Error::other("Fullerene USB disappeared during hold"));
                 }
                 thread::sleep(Duration::from_secs(1));
             }
             journal.save_final();
+            write_classification(&run_dir, "fullerene-usb-1234:0001-descriptor-read-success")?;
             println!("Fullerene USB handoff and hold verification: PASS");
             return Ok(());
         }
-        if usb_present(ANDROID_FALLBACK_USB) {
+        if observation.android_usb {
             android_fallback = true;
             break;
         }
@@ -2321,13 +2925,21 @@ fn run_loop_with_dir(
             "adb",
             &["-s", &args.serial, "get-state"],
         );
+        write_host_observation(
+            &run_dir,
+            "host-state-android-fallback",
+            &observe_host(&args.serial)?,
+        )?;
     } else {
         println!(
             "Fullerene USB did not enumerate; waiting up to {RECOVERY_TIMEOUT_SECS}s for probe recovery"
         );
         let recovery_deadline = Instant::now() + Duration::from_secs(RECOVERY_TIMEOUT_SECS);
         while Instant::now() < recovery_deadline {
-            if usb_present(ANDROID_FALLBACK_USB) {
+            let observation = observe_host(&args.serial)?;
+            let stamp = boot_started.elapsed();
+            append_host_timeline(&mut timeline, stamp, &observation)?;
+            if observation.android_usb {
                 // Gate readout: the seconds since `fastboot boot` separate the
                 // buckets (gate fires ~10 s in; Android boot adds ~20 s):
                 // ~35-45 s no gate ran / early reset, ~85-95 s gate TRUE
@@ -2355,15 +2967,18 @@ fn run_loop_with_dir(
                     "adb",
                     &["-s", &args.serial, "get-state"],
                 );
+                write_host_observation(&run_dir, "host-state-android-fallback", &observation)?;
                 break;
             }
-            if usb_present(BOOTLOADER_USB) {
+            if observation.bootloader_usb {
                 if let Ok(output) = fastboot_command(&args.serial, &["getvar", "all"]).output() {
                     let mut file = File::create(run_dir.join("fastboot-getvar-after.txt"))?;
                     file.write_all(&output.stdout)?;
                     file.write_all(&output.stderr)?;
                 }
                 journal.save_final();
+                write_host_observation(&run_dir, "host-state-fastboot-fallback", &observation)?;
+                write_classification(&run_dir, "fastboot-fallback")?;
                 return Err(io::Error::other(format!(
                     "Fullerene USB enumeration timeout; probe recovered to Fastboot {BOOTLOADER_USB}; logs: {}",
                     run_dir.display()
@@ -2398,6 +3013,12 @@ fn run_loop_with_dir(
             thread::sleep(Duration::from_secs(2));
         }
     }
+    journal.save_final();
+    let final_observation = observe_host(&args.serial)?;
+    write_host_observation(&run_dir, "host-state-final", &final_observation)?;
+    let kernel_log = fs::read_to_string(run_dir.join("kernel-final.log")).ok();
+    let classification = classify_postboot_result(&final_observation, kernel_log.as_deref(), None);
+    write_classification(&run_dir, classification)?;
     let message = if android_fallback {
         format!(
             "Fullerene USB enumeration timeout; stock Android fallback {ANDROID_FALLBACK_USB} detected"
@@ -2422,17 +3043,24 @@ fn print_loop_command(args: &LoopArgs) {
     }
     println!(
         "adb-reboot-to-fastboot={}",
-        if args.adb_reboot_to_fastboot {
+        if adb_reboot_to_fastboot_enabled(
+            args.adb_reboot_to_fastboot,
+            args.no_adb_reboot_to_fastboot,
+        ) {
             "enabled"
         } else {
             "disabled"
         }
     );
-    if args.adb_reboot_to_fastboot {
+    if adb_reboot_to_fastboot_enabled(args.adb_reboot_to_fastboot, args.no_adb_reboot_to_fastboot) {
         println!("operation=adb reboot bootloader + fastboot boot only");
     } else {
         println!("operation=fastboot boot only");
     }
+}
+
+fn adb_reboot_to_fastboot_enabled(explicit: bool, disabled: bool) -> bool {
+    explicit || !disabled
 }
 
 fn mode_name(args: &LoopArgs) -> &'static str {
@@ -2521,6 +3149,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.android_resource_order {
         arguments.push("--usb-gadget-handoff-android-resource-order".to_owned());
     }
+    if args.gadget_start_defaults_at_runstop {
+        arguments.push("--usb-gadget-handoff-start-defaults-at-runstop".to_owned());
+    }
+    if args.min_runstop_delay {
+        arguments.push("--usb-gadget-handoff-min-runstop-delay".to_owned());
+    }
     if args.clock_branches_rearm {
         arguments.push("--usb-gadget-handoff-clock-branches-rearm".to_owned());
     }
@@ -2539,6 +3173,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.refresh_hsphy_power {
         arguments.push("--usb-gadget-handoff-refresh-hsphy-power".to_owned());
+    }
+    if args.hsphy_program_vdda_voltage {
+        arguments.push("--usb-gadget-handoff-hsphy-program-vdda-voltage".to_owned());
+    }
+    if args.hsphy_all_regulator_sets {
+        arguments.push("--usb-gadget-handoff-hsphy-all-regulator-sets".to_owned());
     }
     if args.skip_usb2_phy_reset {
         arguments.push("--usb-gadget-handoff-skip-usb2-phy-reset".to_owned());
@@ -2651,6 +3291,13 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.hsphy_before_reset {
         arguments.push("--usb-gadget-handoff-hsphy-before-reset".to_owned());
     }
+    if args.hsphy_restore_suspend_n_after_runstop {
+        arguments.push("--usb-gadget-handoff-hsphy-restore-suspend-n-after-runstop".to_owned());
+    }
+    if args.hsphy_restore_suspend_n_selected_after_runstop {
+        arguments
+            .push("--usb-gadget-handoff-hsphy-restore-suspend-n-selected-after-runstop".to_owned());
+    }
     if args.ep0_initial_512 {
         arguments.push("--usb-gadget-handoff-ep0-initial-512".to_owned());
     }
@@ -2674,6 +3321,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.usb2_qpr1_utmi_post_reset_only {
         arguments.push("--usb-gadget-handoff-usb2-qpr1-utmi-post-reset-only".to_owned());
+    }
+    if args.usb2_preserve_phy_interface {
+        arguments.push("--usb-gadget-handoff-usb2-preserve-phy-interface".to_owned());
     }
     if args.ss_reassert_device_mode {
         arguments.push("--usb-gadget-handoff-ss-reassert-device-mode".to_owned());
@@ -2791,6 +3441,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.usb2_source_exact_runstop {
         arguments.push("--usb-gadget-handoff-usb2-source-exact-runstop".to_owned());
+    }
+    if args.usb2_source_phy_setup {
+        arguments.push("--usb-gadget-handoff-usb2-source-phy-setup".to_owned());
     }
     if args.usb2_dis_sleep_mode {
         arguments.push("--usb-gadget-handoff-usb2-dis-sleep-mode".to_owned());
@@ -2939,6 +3592,14 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         arguments.push("--usb-signal-cmd-gate".to_owned());
         arguments.push(value.clone());
     }
+    if let Some(value) = &args.utmi_preconnect_readout {
+        arguments.push("--usb-utmi-preconnect-readout".to_owned());
+        arguments.push(value.clone());
+    }
+    if let Some(value) = &args.utmi_postrun_readout {
+        arguments.push("--usb-utmi-postrun-readout".to_owned());
+        arguments.push(value.clone());
+    }
     if let Some(value) = &args.pon_readout {
         arguments.push("--usb-pon-readout".to_owned());
         arguments.push(value.clone());
@@ -2973,6 +3634,13 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         arguments.push(stage.to_string());
     }
     let mut envs = Vec::new();
+    // Keep this explicitly selected secure-ownership A/B in the child build
+    // environment. `command_from_spec()` removes inherited FULLERENE_* vars
+    // so a direct harness export must be copied into the CommandSpec or the
+    // physical image silently becomes the baseline artifact.
+    if let Ok(value) = std::env::var("FULLERENE_AARCH64_USB_DISABLE_EUD") {
+        envs.push(("FULLERENE_AARCH64_USB_DISABLE_EUD".to_owned(), value));
+    }
     if let Some(route) = args.irq_route {
         envs.push((
             "FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES".to_owned(),
@@ -3054,6 +3722,14 @@ fn build_command_owned(spec: CommandSpec) -> Command {
 
 fn command_from_spec(spec: &CommandSpec) -> Command {
     let mut command = Command::new(&spec.program);
+    // A harness process often inherits experimental FULLERENE_* variables
+    // from the previous run. Remove them before applying the explicitly
+    // selected values so an A/B really changes one declared variable.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("FULLERENE_") {
+            command.env_remove(key);
+        }
+    }
     command
         .args(&spec.arguments)
         .envs(spec.envs.iter().map(|(key, value)| (key, value)))
@@ -3250,6 +3926,93 @@ fn sha256(path: &Path) -> io::Result<String> {
         .to_owned())
 }
 
+fn le_u16(bytes: &[u8]) -> u16 {
+    u16::from_le_bytes([bytes[0], bytes[1]])
+}
+
+fn le_u32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn le_u64(bytes: &[u8]) -> u64 {
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
+}
+
+fn le_i32(bytes: &[u8]) -> i32 {
+    i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn le_i64(bytes: &[u8]) -> i64 {
+    i64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
+}
+
+fn is_device_descriptor_get(setup: &[u8]) -> bool {
+    setup.len() >= 8
+        && setup[0] == 0x80
+        && setup[1] == 0x06
+        && setup[2] == 0x00
+        && setup[3] == 0x01
+        && setup[4] == 0x00
+        && setup[5] == 0x00
+}
+
+fn usbmon_summary(path: &Path) -> io::Result<String> {
+    let bytes = fs::read(path)?;
+    let mut offset = 0usize;
+    let mut records = 0usize;
+    let mut descriptor_ids = BTreeMap::new();
+    let mut lines = vec![format!("capture_bytes={}", bytes.len())];
+    while offset + 48 <= bytes.len() {
+        let header = &bytes[offset..offset + 48];
+        let id = le_u64(&header[0..8]);
+        let event = header[8];
+        let transfer_type = header[9];
+        let endpoint = header[10];
+        let device = header[11];
+        let bus = le_u16(&header[12..14]);
+        let seconds = le_i64(&header[16..24]);
+        let micros = le_i32(&header[24..28]);
+        let status = le_i32(&header[28..32]);
+        let length = le_u32(&header[32..36]);
+        let captured = le_u32(&header[36..40]) as usize;
+        let record_size = 48usize.saturating_add(captured);
+        if record_size < 48 || offset + record_size > bytes.len() {
+            lines.push(format!(
+                "truncated_record_offset={} captured={} remaining={}",
+                offset,
+                captured,
+                bytes.len().saturating_sub(offset + 48)
+            ));
+            break;
+        }
+        let setup = &header[40..48];
+        if bus == 1 && transfer_type == 2 && event == b'S' && is_device_descriptor_get(setup) {
+            descriptor_ids.insert(id, (seconds, micros, device, endpoint));
+            lines.push(format!(
+                "descriptor_submit id=0x{id:016x} ts={seconds}.{micros:06} dev={} ep=0x{endpoint:02x} status={} length={} cap={}",
+                device, status, length, captured
+            ));
+        } else if bus == 1 && transfer_type == 2 && event == b'C' && device == 0 {
+            if let Some((submit_seconds, submit_micros, submit_device, submit_endpoint)) =
+                descriptor_ids.remove(&id)
+            {
+                lines.push(format!(
+                    "descriptor_complete id=0x{id:016x} submit_ts={submit_seconds}.{submit_micros:06} ts={seconds}.{micros:06} dev={} ep=0x{endpoint:02x} status={} length={} cap={} submit_dev={} submit_ep=0x{submit_endpoint:02x}",
+                    device, status, length, captured, submit_device
+                ));
+            }
+        }
+        offset += record_size;
+        records += 1;
+    }
+    lines.insert(1, format!("records={} parsed_bytes={offset}", records));
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
 fn create_run_dir(workspace: &Path, prefix: &str) -> io::Result<PathBuf> {
     let base = workspace.join("tmp");
     fs::create_dir_all(&base)?;
@@ -3275,9 +4038,12 @@ fn create_child_run_dir(parent: &Path, name: &str) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        TRACE_HEADER_BYTES, TRACE_MAGIC, TRACE_VERSION, parse_trace_header,
-        tree_has_superspeed_link,
+        DeviceState, HostObservation, TRACE_HEADER_BYTES, TRACE_MAGIC, TRACE_VERSION,
+        adb_reboot_to_fastboot_enabled, adb_state_from_listing, classify_device_state,
+        classify_postboot_result, kernel_log_has_non_android_attach, parse_trace_header,
+        tree_has_superspeed_link, usbmon_summary,
     };
+    use std::{fs, path::PathBuf};
 
     #[test]
     fn trace_header_is_little_endian_and_bounded() {
@@ -3308,5 +4074,162 @@ mod tests {
                     |__ Port 1: Dev 7, If 0, Class=Vendor, 10000M\n";
         assert!(!tree_has_superspeed_link(tree, 1, 7));
         assert!(tree_has_superspeed_link(tree, 2, 7));
+    }
+
+    #[test]
+    fn usbmon_summary_handles_reused_descriptor_urb_ids() {
+        fn record(id: u64, event: u8, status: i32, setup: [u8; 8]) -> Vec<u8> {
+            let mut header = vec![0u8; 48];
+            header[0..8].copy_from_slice(&id.to_le_bytes());
+            header[8] = event;
+            header[9] = 2; // control transfer
+            header[10] = 0;
+            header[11] = 0; // address 0 during enumeration
+            header[12..14].copy_from_slice(&1u16.to_le_bytes());
+            header[16..24].copy_from_slice(&1i64.to_le_bytes());
+            header[24..28].copy_from_slice(&2i32.to_le_bytes());
+            header[28..32].copy_from_slice(&status.to_le_bytes());
+            header[32..36].copy_from_slice(&0u32.to_le_bytes());
+            header[36..40].copy_from_slice(&0u32.to_le_bytes());
+            header[40..48].copy_from_slice(&setup);
+            header
+        }
+
+        let descriptor_get = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x40, 0x00];
+        let path = PathBuf::from(std::env::temp_dir()).join(format!(
+            "fullerene-usbmon-summary-{}.bin",
+            std::process::id()
+        ));
+        let mut capture = record(0x41, b'S', -115, descriptor_get);
+        capture.extend(record(0x41, b'C', -2, descriptor_get));
+        capture.extend(record(0x41, b'S', -115, descriptor_get));
+        capture.extend(record(0x41, b'C', -71, [0; 8]));
+        fs::write(&path, capture).unwrap();
+        let summary = usbmon_summary(&path).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(summary.matches("descriptor_submit ").count(), 2);
+        assert_eq!(summary.matches("descriptor_complete ").count(), 2);
+        assert!(summary.contains("status=-2"));
+        assert!(summary.contains("status=-71"));
+    }
+
+    #[test]
+    fn device_state_prioritizes_fullerene_then_fastboot_then_adb() {
+        assert_eq!(
+            classify_device_state(Some("device"), true, true, true),
+            DeviceState::FullereneUsbAvailable
+        );
+        assert_eq!(
+            classify_device_state(Some("device"), true, false, true),
+            DeviceState::FastbootAvailable
+        );
+        assert_eq!(
+            classify_device_state(Some("device"), false, false, false),
+            DeviceState::AndroidAdbAvailable
+        );
+        assert_eq!(
+            classify_device_state(Some("unauthorized"), false, false, true),
+            DeviceState::UnknownUsbState
+        );
+        assert_eq!(
+            classify_device_state(None, false, false, false),
+            DeviceState::DeviceAbsent
+        );
+    }
+
+    #[test]
+    fn adb_listing_parser_ignores_header_and_other_serials() {
+        let listing =
+            "List of devices attached\nother device\n26191JECB00076 unauthorized usb:1-9\n";
+        assert_eq!(
+            adb_state_from_listing("26191JECB00076", listing).as_deref(),
+            Some("unauthorized")
+        );
+        assert_eq!(adb_state_from_listing("missing", listing), None);
+    }
+
+    #[test]
+    fn adb_to_fastboot_transition_is_autonomous_by_default() {
+        assert!(adb_reboot_to_fastboot_enabled(false, false));
+        assert!(adb_reboot_to_fastboot_enabled(true, false));
+        assert!(!adb_reboot_to_fastboot_enabled(false, true));
+    }
+
+    #[test]
+    fn postboot_classifier_distinguishes_descriptor_errors_from_absence() {
+        let absent = HostObservation {
+            state: DeviceState::DeviceAbsent,
+            adb_state: None,
+            adb_devices: String::new(),
+            fastboot_devices: String::new(),
+            lsusb: String::new(),
+            fastboot: false,
+            fullerene_usb: false,
+            bootloader_usb: false,
+            android_usb: false,
+        };
+        assert_eq!(
+            classify_postboot_result(&absent, Some("device descriptor read/64, error -110"), None),
+            "usb-attach-or-descriptor-failure--110"
+        );
+        assert_eq!(
+            classify_postboot_result(&absent, None, None),
+            "google-logo-or-software-unrecoverable-suspected"
+        );
+        let android = HostObservation {
+            state: DeviceState::AndroidAdbAvailable,
+            adb_state: Some("device".to_owned()),
+            adb_devices: String::new(),
+            fastboot_devices: String::new(),
+            lsusb: String::new(),
+            fastboot: false,
+            fullerene_usb: false,
+            bootloader_usb: false,
+            android_usb: true,
+        };
+        assert_eq!(
+            classify_postboot_result(
+                &android,
+                Some("new high-speed USB device; error -110"),
+                None
+            ),
+            "usb-attach-or-descriptor-failure--110"
+        );
+    }
+
+    #[test]
+    fn postboot_classifier_ignores_android_superspeed_fallback_attach() {
+        let android = HostObservation {
+            state: DeviceState::AndroidAdbAvailable,
+            adb_state: Some("device".to_owned()),
+            adb_devices: String::new(),
+            fastboot_devices: String::new(),
+            lsusb: String::new(),
+            fastboot: false,
+            fullerene_usb: false,
+            bootloader_usb: false,
+            android_usb: true,
+        };
+        let android_log = concat!(
+            "usb 2-1: new SuperSpeed USB device number 69 using xhci_hcd\n",
+            "usb 2-1: New USB device found, idVendor=18d1,idProduct=4ee7\n",
+        );
+        assert!(!kernel_log_has_non_android_attach(android_log));
+        assert_eq!(
+            classify_postboot_result(&android, Some(android_log), None),
+            "android-fallback"
+        );
+
+        let fullerene_log = concat!(
+            "usb 1-9: new high-speed USB device number 35 using xhci_hcd\n",
+            "usb 2-1: new SuperSpeed USB device number 69 using xhci_hcd\n",
+            "usb 2-1: New USB device found, idVendor=18d1,idProduct=4ee7\n",
+        );
+        assert!(kernel_log_has_non_android_attach(fullerene_log));
+        assert_eq!(
+            classify_postboot_result(&android, Some(fullerene_log), None),
+            "usb-attach-without-registered-descriptor"
+        );
     }
 }

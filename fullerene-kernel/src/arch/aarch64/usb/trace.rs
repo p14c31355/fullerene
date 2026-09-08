@@ -1120,8 +1120,24 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
             // group.
             return u32::from(seen[0]) | (u32::from(seen[2]) << 1) | (u32::from(seen[3]) << 2);
         }
+        if selector == "hsphy-suspend-n-safe" {
+            // Zero-safe transport for the HS-PHY RX/ownership boundary:
+            // 1 = no retained HS-PHY group, 2 = present with SUSPEND_N=0,
+            // 3 = present with SUSPEND_N=1. The direct-path readout maps
+            // these categorical values to separated attach-delay buckets.
+            return if seen[3] {
+                2 + ((hs_ctrl2 >> 2) & 1)
+            } else {
+                1
+            };
+        }
         if selector == "hsphy-valid" {
-            return u32::from(seen[3]);
+            // The generic UTMI gate uses zero as its no-delay bucket, so a
+            // raw presence bit would make "missing snapshot" indistinguish-
+            // able from a valid but zero-valued HS-PHY field. Reserve 1 for
+            // missing and 2 for present; this selector is a diagnostic
+            // transport code, not the raw register value.
+            return 1 + u32::from(seen[3]);
         }
         if seen[3] {
             let value = match selector {

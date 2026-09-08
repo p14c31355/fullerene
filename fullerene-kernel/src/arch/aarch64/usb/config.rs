@@ -336,6 +336,31 @@ pub(super) unsafe fn configure_usb31_phy_setup() {
     }
 }
 
+/// Apply only the USB3 side of qpr1's `dwc3_phy_setup()` before a USB2 core
+/// reset. The vendor core path performs this write even when the negotiated
+/// device will fall back to USB2; keep it as an isolated handoff A/B rather
+/// than changing the established default profile.
+#[inline]
+pub(super) unsafe fn configure_usb31_phy_setup_pre_reset() {
+    if !cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_phy_setup) {
+        return;
+    }
+    unsafe {
+        if read(GSNPSID) >> 16 != DWC31_IP {
+            return;
+        }
+        let revision = read(VER_NUMBER) | DWC3_REVISION_IS_DWC31;
+        if revision < DWC3_USB31_REVISION_170A {
+            return;
+        }
+        let mut pipe = read(GUSB3PIPECTL0);
+        pipe &= !GUSB3PIPECTL_UX_EXIT_PX;
+        pipe |= GUSB3PIPECTL_SUSPHY;
+        write(GUSB3PIPECTL0, pipe);
+        let _ = read(GUSB3PIPECTL0);
+    }
+}
+
 /// Reapply the DWC3-side USB2 interface contract after a controller reset.
 ///
 /// Linux's `dwc3_hs_phy_setup()` selects the UTMI interface and programs the
@@ -349,6 +374,14 @@ pub(super) unsafe fn configure_usb31_phy_setup() {
 pub(super) unsafe fn configure_usb2_phy_interface() {
     unsafe {
         let mut usb2 = read(GUSB2PHYCFG0);
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_preserve_phy_interface) {
+            // Bramble's qpr1 DWC3 node has neither `phy_type` nor
+            // `snps,hsphy_interface`; Linux therefore leaves PHYIF/TRDTIM
+            // untouched in dwc3_phy_setup(). Keep the direct handoff's
+            // post-reset path equally write-free for this source A/B.
+            live_utmi_write(usb2, usb2);
+            return;
+        }
         // Bramble's DWC3 node uses the default UTMI mode. Clear the ULPI
         // selector and choose the Linux UTMI 8-bit timing values; preserve
         // the power-management bits because their policy is handled by the
@@ -417,6 +450,16 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
 pub(super) unsafe fn configure_usb2_phy_interface_pre_reset() {
     unsafe {
         let mut usb2 = read(GUSB2PHYCFG0);
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_preserve_phy_interface) {
+            // qpr1 still asserts USB2 SUSPHY during dwc3_phy_setup(); only
+            // the PHYIF/TRDTIM selection is absent when the DT mode is
+            // UNKNOWN. Preserve the other interface bits exactly.
+            usb2 |= GUSB2PHYCFG_SUSPHY;
+            write(GUSB2PHYCFG0, usb2);
+            let readback = read(GUSB2PHYCFG0);
+            live_utmi_write(usb2, readback);
+            return;
+        }
         usb2 &= !(GUSB2PHYCFG_ULPI_UTMI | GUSB2PHYCFG_PHYIF_MASK | GUSB2PHYCFG_USBTRDTIM_MASK);
         let trdtim = match option_env!("FULLERENE_USB_USBTRDTIM") {
             Some("5") => 5,
