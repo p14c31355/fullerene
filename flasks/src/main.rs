@@ -3693,6 +3693,8 @@ fn build_aarch64_kernel(
         // The stricter pre-DTB USB ordering is a separate normal-path A/B and
         // must not reuse an image compiled without that option_env value.
         "FULLERENE_AARCH64_USB_EARLY_BEFORE_DTB_SCAN",
+        // Isolate the direct USB2 call path without changing MMIO policy.
+        "FULLERENE_AARCH64_USB_DIRECT_ONLY",
         // The entry secure-WDT SMC is an independent physical A/B; include
         // it in the cache key because the kernel consumes it via option_env!.
         "FULLERENE_AARCH64_ENTRY_SECURE_WDT",

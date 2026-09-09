@@ -2106,6 +2106,7 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
     )) {
         // Retry only ownership races; gate runs use one attempt so evaluation lands before watchdog bite.
         let attempt_limit = if option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1")
+            || option_env!("FULLERENE_AARCH64_USB_DIRECT_ONLY") == Some("1")
             || option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1")
         {
             1u32
@@ -2148,6 +2149,11 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
     } else {
         usb::init_usb2_handoff()
     };
+    // Preserve direct-only failure attribution: no signal rescue or bare
+    // pull-up publication after the selected initializer returned false.
+    if !gadget_ready && option_env!("FULLERENE_AARCH64_USB_DIRECT_ONLY") == Some("1") {
+        reset_after_probe_failure();
+    }
     // The signal channel owns only failed post-init timelines; successful enumeration must not be reset
     // by diagnostics.
     #[cfg(all(

@@ -16,6 +16,7 @@ fn main() {
     // target cache key so direct Cargo builds cannot reuse a stale image.
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EARLY_HANDOFF");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_EARLY_BEFORE_DTB_SCAN");
+    println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_DIRECT_ONLY");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_ENTRY_SECURE_WDT");
     println!("cargo:rerun-if-env-changed=FULLERENE_ANDROID_INIT_SELFTEST");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_DEBUG_RETURN");

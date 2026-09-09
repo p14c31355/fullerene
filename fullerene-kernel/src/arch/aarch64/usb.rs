@@ -5379,6 +5379,12 @@ pub fn init_usb2_handoff() -> bool {
         if init_usb2_gadget_handoff() {
             return true;
         }
+        // Attribution control: do not let another initializer turn a failed
+        // direct EP0 path into an indistinguishable physical attach. Unlike
+        // SINGLE_ATTEMPT, this policy does not skip Run/Stop readback.
+        if option_env!("FULLERENE_AARCH64_USB_DIRECT_ONLY") == Some("1") {
+            return false;
+        }
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
             // Keep the post-link DMA diagnostic one-shot. Falling through to

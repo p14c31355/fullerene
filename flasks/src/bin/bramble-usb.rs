@@ -192,6 +192,10 @@ struct LoopArgs {
     /// retained-trace watchdog and automatic recovery still enabled.
     #[arg(long)]
     direct_handoff: bool,
+    /// Isolate one direct USB2 initialization: no retry, cold fallback, or
+    /// diagnostic rescue after failure. Does not skip Run/Stop readback.
+    #[arg(long, requires = "direct_handoff", conflicts_with_all = ["normal", "android_init", "super_speed", "pullup_only", "bare_pullup", "stop_after_stage", "signal_cmd_gate"])]
+    direct_only: bool,
     #[arg(long)]
     pullup_only: bool,
     /// Run the minimal USB2 pull-up sequence without DWC3 reset, DMA, or EP0.
@@ -843,6 +847,7 @@ impl Default for LoopArgs {
             entry_secure_wdt: false,
             adb_return: false,
             direct_handoff: false,
+            direct_only: false,
             pullup_only: false,
             bare_pullup: false,
             bare_pullup_stop_after: None,
@@ -1524,6 +1529,9 @@ fn experiment_manifest(args: &LoopArgs) -> String {
     }
     if args.direct_handoff {
         variables.push("direct-handoff=true".to_owned());
+    }
+    if args.direct_only {
+        variables.push("direct-only=true".to_owned());
     }
     if args.no_smmu {
         variables.push("no-smmu=true".to_owned());
@@ -3970,14 +3978,11 @@ fn run_loop_with_named_dir(
     let final_observation = observe_host(&args.serial)?;
     write_host_observation(&run_dir, "host-state-final", &final_observation)?;
     let kernel_log = fs::read_to_string(run_dir.join("kernel-final.log")).ok();
-    // Preserve the original Android fallback classification even when the
-    // safe host-side return has already put the handset back in Fastboot.
-    // Otherwise the final transport state would hide the post-boot failure
-    // that caused the return operation.
-    let classification = if android_fallback {
+    let classification = classify_postboot_result(&final_observation, kernel_log.as_deref(), None);
+    let classification = if classification == "fastboot-fallback" && android_fallback {
         "android-fallback"
     } else {
-        classify_postboot_result(&final_observation, kernel_log.as_deref(), None)
+        classification
     };
     write_classification(&run_dir, classification)?;
     let message = if android_fallback {
@@ -4633,6 +4638,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         arguments.push(stage.to_string());
     }
     let mut envs = Vec::new();
+    if args.direct_only {
+        envs.push((
+            "FULLERENE_AARCH64_USB_DIRECT_ONLY".to_owned(),
+            "1".to_owned(),
+        ));
+    }
     // Keep this explicitly selected secure-ownership A/B in the child build
     // environment. `command_from_spec()` removes inherited FULLERENE_* vars
     // so a direct harness export must be copied into the CommandSpec or the
@@ -5160,6 +5171,40 @@ mod tests {
         let header = parse_trace_header(&response).unwrap();
         assert_eq!(header.head, 37);
         assert_eq!(header.valid, 37);
+    }
+
+    #[test]
+    fn direct_only_is_an_explicit_isolated_build_policy() {
+        let args = LoopArgs::try_parse_from(["loop", "--direct-handoff", "--direct-only"])
+            .expect("direct-only diagnostic must be selectable");
+        let build = build_command(Path::new("."), &args, Path::new("control.img"));
+        assert!(build.envs.contains(&(
+            "FULLERENE_AARCH64_USB_DIRECT_ONLY".to_owned(),
+            "1".to_owned(),
+        )));
+        assert!(
+            !build
+                .envs
+                .iter()
+                .any(|(key, _)| key.ends_with("SINGLE_ATTEMPT"))
+        );
+        let baseline = build_command(Path::new("."), &LoopArgs::default(), Path::new("base.img"));
+        assert!(
+            !baseline
+                .envs
+                .iter()
+                .any(|(key, _)| key.ends_with("DIRECT_ONLY"))
+        );
+        assert!(LoopArgs::try_parse_from(["loop", "--direct-only"]).is_err());
+        assert!(
+            LoopArgs::try_parse_from([
+                "loop",
+                "--direct-handoff",
+                "--direct-only",
+                "--android-init"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
