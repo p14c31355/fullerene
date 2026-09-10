@@ -17,8 +17,9 @@ use super::fdt;
 const HEAP_SIZE: usize = 512 * 1024;
 pub const PAGE_SIZE: u64 = 4096;
 const MAX_FRAME_RANGES: usize = 8;
-const MAX_RESERVED_RANGES: usize = 32;
-const MAX_RELEASED_FRAMES: usize = 1024;
+const FIXED_RESERVED_RANGES: usize = 4;
+const MAX_RESERVED_RANGES: usize = FIXED_RESERVED_RANGES + fdt::MAX_RESERVED_MEMORY_REGIONS + 1;
+pub(crate) const MAX_RELEASED_FRAMES: usize = 1024;
 const MAX_SHARED_FRAMES: usize = 1024;
 
 #[repr(align(16))]

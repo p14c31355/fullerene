@@ -2372,9 +2372,18 @@ fn futex(frame: &Aarch64TrapFrame) -> FutexAction {
     }
     let key = task::linux_futex_event_key(address);
     match operation {
-        FUTEX_WAKE | FUTEX_WAKE_BITSET => {
+        FUTEX_WAKE => {
             let maximum = usize::try_from(frame.x[2]).unwrap_or(usize::MAX);
             FutexAction::Return(task::wake_event_count(key, maximum) as u64)
+        }
+        FUTEX_WAKE_BITSET => {
+            if frame.x[5] == 0 {
+                FutexAction::Return(EINVAL)
+            } else {
+                // The bounded wait queue does not retain waiter bitsets, so
+                // waking a bitset subset cannot be implemented correctly yet.
+                FutexAction::Return(ENOSYS)
+            }
         }
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
             if operation == FUTEX_WAIT_BITSET && frame.x[5] == 0 {

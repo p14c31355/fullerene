@@ -7,6 +7,7 @@ const FDT_END_NODE: u32 = 2;
 const FDT_PROP: u32 = 3;
 const FDT_NOP: u32 = 4;
 const FDT_END: u32 = 9;
+pub(crate) const MAX_RESERVED_MEMORY_REGIONS: usize = 16 * 8;
 
 #[derive(Clone, Copy)]
 pub struct Header {
@@ -146,7 +147,7 @@ pub fn find_compatible_nth(address: u64, target: &[u8], index: usize) -> Option<
 pub fn find_memory_regions(address: u64, out: &mut [Region]) -> usize {
     let mut states = [MemoryNodeState::new(); 16];
     let mut count = 0usize;
-    let _ = walk_structure(address, |event| {
+    let walk_result = walk_structure(address, |event| {
         match event {
             StructureEvent::BeginNode {
                 depth,
@@ -196,18 +197,17 @@ pub fn find_memory_regions(address: u64, out: &mut [Region]) -> usize {
                 let state = states[depth];
                 if state.enabled && (state.is_memory_name || state.is_memory_type) {
                     for region in state.regions.into_iter().flatten() {
-                        if count >= out.len() {
-                            return false;
+                        if count < out.len() {
+                            out[count] = region;
+                            count += 1;
                         }
-                        out[count] = region;
-                        count += 1;
                     }
                 }
             }
         }
         true
     });
-    count
+    if walk_result.is_some() { count } else { 0 }
 }
 
 /// Collect fixed `reg` ranges below the DT `/reserved-memory` container.
@@ -220,7 +220,7 @@ pub fn find_memory_regions(address: u64, out: &mut [Region]) -> usize {
 pub fn find_reserved_memory_regions(address: u64, out: &mut [Region]) -> usize {
     let mut states = [ReservedMemoryNodeState::new(); 16];
     let mut count = 0usize;
-    let _ = walk_structure(address, |event| {
+    let walk_result = walk_structure(address, |event| {
         match event {
             StructureEvent::BeginNode {
                 depth,
@@ -268,18 +268,17 @@ pub fn find_reserved_memory_regions(address: u64, out: &mut [Region]) -> usize {
                 let state = states[depth];
                 if state.enabled && state.reserved_region {
                     for region in state.regions.into_iter().flatten() {
-                        if count >= out.len() {
-                            return false;
+                        if count < out.len() {
+                            out[count] = region;
+                            count += 1;
                         }
-                        out[count] = region;
-                        count += 1;
                     }
                 }
             }
         }
         true
     });
-    count
+    if walk_result.is_some() { count } else { 0 }
 }
 
 #[derive(Clone, Copy)]
@@ -395,7 +394,7 @@ where
                 }
             }
             FDT_NOP => {}
-            FDT_END => return None,
+            FDT_END => return (depth == 0).then_some(()),
             _ => return None,
         }
     }
@@ -1427,6 +1426,19 @@ mod tests {
         dtb
     }
 
+    fn without_fdt_end(mut dtb: Vec<u8>) -> Vec<u8> {
+        let structure_offset = u32::from_be_bytes(dtb[8..12].try_into().unwrap()) as usize;
+        let structure_size = u32::from_be_bytes(dtb[36..40].try_into().unwrap()) as usize;
+        let structure_end = structure_offset + structure_size;
+        dtb.drain(structure_end - 4..structure_end);
+        let strings_offset = u32::from_be_bytes(dtb[12..16].try_into().unwrap()) - 4;
+        let total_size = u32::from_be_bytes(dtb[4..8].try_into().unwrap()) - 4;
+        dtb[4..8].copy_from_slice(&total_size.to_be_bytes());
+        dtb[12..16].copy_from_slice(&strings_offset.to_be_bytes());
+        dtb[36..40].copy_from_slice(&(structure_size as u32 - 4).to_be_bytes());
+        dtb
+    }
+
     #[test]
     fn memory_node_with_64_bit_cells_is_collected() {
         let dtb = memory_dtb(false);
@@ -1460,6 +1472,29 @@ mod tests {
     fn disabled_reserved_memory_region_is_ignored() {
         let dtb = reserved_memory_dtb(true);
         let mut regions = [Region { base: 0, size: 0 }; 2];
+        assert_eq!(
+            super::find_reserved_memory_regions(dtb.as_ptr() as u64, &mut regions),
+            0
+        );
+    }
+
+    #[test]
+    fn truncated_memory_dtb_is_rejected_without_partial_results() {
+        let dtb = without_fdt_end(memory_dtb(false));
+        let mut regions = [Region {
+            base: u64::MAX,
+            size: u64::MAX,
+        }; 2];
+        assert_eq!(find_memory_regions(dtb.as_ptr() as u64, &mut regions), 0);
+    }
+
+    #[test]
+    fn truncated_reserved_memory_dtb_is_rejected_without_partial_results() {
+        let dtb = without_fdt_end(reserved_memory_dtb(false));
+        let mut regions = [Region {
+            base: u64::MAX,
+            size: u64::MAX,
+        }; 2];
         assert_eq!(
             super::find_reserved_memory_regions(dtb.as_ptr() as u64, &mut regions),
             0

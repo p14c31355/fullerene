@@ -11,7 +11,9 @@ use super::{allocator::PhysicalFrameAllocator, mmu};
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_LOAD_SEGMENTS: usize = 8;
-const MAX_IMAGE_PAGES: usize = 4096;
+// Rollback must be able to return every page allocated by one load to the
+// bounded allocator free list. Keep this cap tied to that list's capacity.
+const MAX_IMAGE_PAGES: usize = super::allocator::MAX_RELEASED_FRAMES;
 pub(crate) const MAX_INTERPRETER_PATH: usize = 128;
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
@@ -320,10 +322,16 @@ fn release_image_pages(
     pages: &[ImagePage; MAX_IMAGE_PAGES],
     page_count: usize,
 ) {
+    let mut physical_addresses = [0u64; MAX_IMAGE_PAGES];
+    let mut released_count = 0;
     for page in pages.iter().take(page_count) {
         if page.physical_address != 0 {
-            let _ = frames.release_frame(page.physical_address);
+            physical_addresses[released_count] = page.physical_address;
+            released_count += 1;
         }
+    }
+    if released_count != 0 {
+        assert!(frames.release_frames(&physical_addresses[..released_count]));
     }
 }
 
