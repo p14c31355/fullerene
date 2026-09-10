@@ -643,7 +643,13 @@ impl LinearBlockDevice {
         let mut extents = Vec::with_capacity(partition.num_extents as usize);
         let mut total_sectors = 0u64;
         for index in 0..partition.num_extents as usize {
-            let extent = metadata.extents[partition.first_extent_index as usize + index];
+            let extent_index = (partition.first_extent_index as usize)
+                .checked_add(index)
+                .ok_or(LpError::InvalidExtent)?;
+            let extent = *metadata
+                .extents
+                .get(extent_index)
+                .ok_or(LpError::InvalidExtent)?;
             if extent.target_type != TARGET_LINEAR || extent.target_source != 0 {
                 return Err(LpError::UnsupportedExtent);
             }

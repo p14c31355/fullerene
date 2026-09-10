@@ -2563,31 +2563,6 @@ unsafe fn gsi_ready_to_suspend() -> bool {
     false
 }
 
-/// True when the address lives in the Device-mapped 2 MiB block that holds
-/// the `.usb_dma`/`.usb_trace` sections: the CPU accesses it uncached, so the
-/// DC maintenance is unnecessary (and constrained-unpredictable on Device
-/// memory) — skip it.
-#[inline]
-fn in_uncached_dma_window(address: usize) -> bool {
-    let dma_start = addr_of!(__usb_dma_start) as usize;
-    let dma_end = addr_of!(__usb_dma_end) as usize;
-    let trace_start = addr_of!(__usb_trace_start) as usize;
-    let trace_end = addr_of!(__usb_trace_end) as usize;
-    let dma_valid = dma_start != 0 && dma_end > dma_start;
-    let trace_valid = trace_start != 0 && trace_end > trace_start;
-    let Some((section_start, section_end)) = (match (dma_valid, trace_valid) {
-        (true, true) => Some((dma_start.min(trace_start), dma_end.max(trace_end))),
-        (true, false) => Some((dma_start, dma_end)),
-        (false, true) => Some((trace_start, trace_end)),
-        (false, false) => None,
-    }) else {
-        return false;
-    };
-    let block_base = section_start & !0x1_fFFF;
-    let block_top = (section_end.saturating_sub(1) & !0x1_fFFF) + 0x20_0000;
-    address >= block_base && address < block_top
-}
-
 unsafe fn cache_clean(address: usize, length: usize) {
     // DWC3 and the Apps SMMU consume these objects by DMA.  The probe may be
     // entered with the bootloader's caches enabled, so a no-op here would
@@ -2596,10 +2571,6 @@ unsafe fn cache_clean(address: usize, length: usize) {
         .gsi
         .disable_io_coherency
     {
-        unsafe { core::arch::asm!("dsb sy", options(nostack)) };
-        return;
-    }
-    if in_uncached_dma_window(address) && !cfg!(fullerene_aarch64_usb_dma_cache_maintenance) {
         unsafe { core::arch::asm!("dsb sy", options(nostack)) };
         return;
     }
@@ -2618,10 +2589,6 @@ unsafe fn cache_invalidate(address: usize, length: usize) {
         .gsi
         .disable_io_coherency
     {
-        unsafe { core::arch::asm!("dsb sy", options(nostack)) };
-        return;
-    }
-    if in_uncached_dma_window(address) && !cfg!(fullerene_aarch64_usb_dma_cache_maintenance) {
         unsafe { core::arch::asm!("dsb sy", options(nostack)) };
         return;
     }

@@ -311,6 +311,9 @@ pub(crate) fn protect_user_page(
     writable: bool,
     executable: bool,
 ) -> bool {
+    if !readable && !writable && !executable {
+        return false;
+    }
     let Some((l1_index, l2_index, l3_index)) = user_indices(space_id, virtual_address) else {
         return false;
     };
@@ -886,6 +889,7 @@ fn is_mmio(physical: u64) -> bool {
         (0x17a0_0000, 0x17c1_ffff),
         (0x0a60_0000, 0x0a6f_ffff),
         (0x1500_0000, 0x153f_ffff),
+        (0x0c20_0000, 0x0c3f_ffff),
         (0x0c40_0000, 0x0e7f_ffff),
     ];
     let block_end = physical.saturating_add(BLOCK_SIZE - 1);

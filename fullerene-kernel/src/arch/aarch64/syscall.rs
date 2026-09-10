@@ -122,6 +122,7 @@ pub(super) fn dispatch(frame: &mut Aarch64TrapFrame) -> bool {
             task::process_control_assign(frame.x[0], frame.x[1]).unwrap_or_else(|error| error)
         }
         Ok(SyscallNumber::GetPid) => task::current_pid().unwrap_or(ERR_NOT_SUPPORTED),
+        Ok(SyscallNumber::GetParentPid) => task::current_parent_pid().unwrap_or(ERR_NOT_SUPPORTED),
         Ok(SyscallNumber::GetProcessName) => {
             let mut name = [0u8; 16];
             let name_length = task::current_name(&mut name);
@@ -413,7 +414,10 @@ fn syscall_exec_path(frame: &mut Aarch64TrapFrame) -> u64 {
     if replaced {
         let stack = match install_exec_stack(frame, &argv[..argc], &envp[..envc]) {
             Ok(stack) => stack,
-            Err(error) => return error,
+            Err(error) => {
+                let _ = task::exit_syscall(frame, error);
+                return error;
+            }
         };
         uart::put_hex("aarch64 exec argc=", argc as u64);
         uart::put_hex("aarch64 exec envc=", envc as u64);
@@ -468,6 +472,7 @@ pub(super) fn linux_exec_path(
         None => return ERR_NOT_SUPPORTED,
     };
     if let Err(error) = install_linux_exec_stack(frame, &argv[..argc], &envp[..envc], &image_info) {
+        let _ = task::exit_syscall(frame, error);
         return error;
     }
     let result = fs::linux_close_on_exec();

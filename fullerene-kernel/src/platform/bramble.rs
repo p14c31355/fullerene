@@ -3578,7 +3578,7 @@ mod tests {
             Some(*b"ldoc7\0\0\0")
         );
         assert_eq!(
-            rpmh_resource_id_from_regulator_name(b"pm8150_s4", 10),
+            rpmh_resource_id_from_regulator_name(b"pm8150_s4", 9),
             Some(*b"smpa4\0\0\0")
         );
         assert_eq!(rpmh_resource_id_from_regulator_name(b"pm8998_l5", 9), None);

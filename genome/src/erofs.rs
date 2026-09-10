@@ -1046,7 +1046,13 @@ fn lz4_decompress(input: &[u8], output: &mut [u8]) -> Result<usize, FsError> {
         let match_offset =
             u16::from_le_bytes([input[input_offset], input[input_offset + 1]]) as usize;
         input_offset = offset_end;
-        if match_offset == 0 || match_offset > output_offset {
+        if match_offset == 0 {
+            // A block-sized EROFS cluster may contain zero padding after a
+            // short final literal run. A zero offset there is truncated input,
+            // not a structurally valid LZ4 match.
+            return Err(FsError::UnexpectedEof);
+        }
+        if match_offset > output_offset {
             return Err(FsError::InvalidInput);
         }
         let mut match_length = (token & 0x0f) as usize + 4;
@@ -1108,6 +1114,16 @@ mod tests {
 
     struct MemoryBlockDevice {
         data: Vec<u8>,
+    }
+
+    #[test]
+    fn zero_lz4_offset_after_padded_literals_is_unexpected_eof() {
+        let input = [0x50, b'h', b'e', b'l', b'l', b'o', 0, 0];
+        let mut output = [0u8; 6];
+        assert_eq!(
+            lz4_decompress(&input, &mut output),
+            Err(FsError::UnexpectedEof)
+        );
     }
 
     impl BlockDevice for MemoryBlockDevice {

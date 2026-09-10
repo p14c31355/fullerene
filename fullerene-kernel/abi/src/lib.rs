@@ -31,6 +31,7 @@ pub enum SyscallNumber {
     Spawn = 23,
     Exec = 24,
     ExecPath = 25,
+    GetParentPid = 26,
     MapMemory = 30,
     UnmapMemory = 31,
     ProtectMemory = 32,
@@ -78,7 +79,7 @@ pub enum SyscallNumber {
 impl SyscallNumber {
     all_syscall! {
         AbiQuery, Exit, Fork, Read, Write, Open, Close, Wait,
-        GetPid, GetProcessName, Yield, Spawn, Exec, ExecPath,
+        GetPid, GetParentPid, GetProcessName, Yield, Spawn, Exec, ExecPath,
         MapMemory, UnmapMemory, ProtectMemory, QueryMemory,
         SharedBufferCreate, SharedBufferMap, SharedBufferUnmap,
         CreateEvent, WaitEvent, SignalEvent, SubscribeEvent,
@@ -104,7 +105,8 @@ impl TryFrom<u64> for SyscallNumber {
         macro_rules! match_num { ($($n:ident => $v:ident),* $(,)?) => { match value { $(syscall_numbers::$n => Ok(Self::$v),)* _ => Err(()) } }; }
         match_num! {
             ABI_QUERY => AbiQuery, EXIT => Exit, FORK => Fork, READ => Read, WRITE => Write,
-            OPEN => Open, CLOSE => Close, WAIT => Wait, GETPID => GetPid, GET_PROCESS_NAME => GetProcessName,
+            OPEN => Open, CLOSE => Close, WAIT => Wait, GETPID => GetPid, GET_PARENT_PID => GetParentPid,
+            GET_PROCESS_NAME => GetProcessName,
             YIELD => Yield, SPAWN => Spawn, EXEC => Exec, EXEC_PATH => ExecPath,
             MAP_MEMORY => MapMemory, UNMAP_MEMORY => UnmapMemory,
             PROTECT_MEMORY => ProtectMemory, QUERY_MEMORY => QueryMemory,
@@ -132,7 +134,8 @@ pub mod syscall_numbers {
     sc! {
         ABI_QUERY = AbiQuery, ABI_VERSION = AbiQuery,
         EXIT = Exit, FORK = Fork, READ = Read, WRITE = Write, OPEN = Open, CLOSE = Close, WAIT = Wait,
-        GETPID = GetPid, GET_PROCESS_NAME = GetProcessName, YIELD = Yield, SPAWN = Spawn,
+        GETPID = GetPid, GET_PARENT_PID = GetParentPid, GET_PROCESS_NAME = GetProcessName,
+        YIELD = Yield, SPAWN = Spawn,
         EXEC = Exec, EXEC_PATH = ExecPath,
         MAP_MEMORY = MapMemory, UNMAP_MEMORY = UnmapMemory, PROTECT_MEMORY = ProtectMemory, QUERY_MEMORY = QueryMemory,
         SHARED_BUFFER_CREATE = SharedBufferCreate, SHARED_BUFFER_MAP = SharedBufferMap,

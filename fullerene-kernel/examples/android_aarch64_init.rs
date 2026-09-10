@@ -60,6 +60,7 @@ const ERR_NO_ENTRY: u64 = (-2i64) as u64;
 
 const AF_UNIX: u64 = 1;
 const SOCK_STREAM: u64 = 1;
+const SOCK_NONBLOCK: u64 = 0x800;
 const SOCK_CLOEXEC: u64 = 0x80000;
 const AT_FDCWD: u64 = (-100i64) as u64;
 const PR_SET_NAME: u64 = 15;
@@ -154,7 +155,15 @@ pub extern "C" fn _start() -> ! {
         write(SUBREAPER_READY);
     }
 
-    let server = syscall(SYS_SOCKET, AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, 0, 0, 0);
+    let server = syscall(
+        SYS_SOCKET,
+        AF_UNIX,
+        SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
+        0,
+        0,
+        0,
+        0,
+    );
     if (server as i64) < 0 {
         write(SOCKET_FAILED);
         supervise(u64::MAX);

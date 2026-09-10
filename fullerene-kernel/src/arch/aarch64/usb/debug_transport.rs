@@ -74,7 +74,7 @@ static mut ADB_SHELL_V2: bool = false;
 static mut ADB_SHELL_EXIT_CODE: u32 = 0;
 static mut ADB_SHELL_COMMAND: [u8; ADB_SHELL_COMMAND_CAPACITY] = [0; ADB_SHELL_COMMAND_CAPACITY];
 static mut ADB_SHELL_COMMAND_LENGTH: usize = 0;
-static mut ADB_ROOT: bool = true;
+static mut ADB_ROOT: bool = false;
 static mut ADB_CONTROL_FOLLOWUP: u8 = ADB_CONTROL_FOLLOWUP_NONE;
 static mut ADB_CONTROL_OUTPUT_SENT: bool = false;
 static mut ADB_CONTROL_RESPONSE: [u8; ADB_CONTROL_RESPONSE_CAPACITY] =
@@ -293,7 +293,7 @@ pub(super) fn reset() {
         ADB_SHELL_EXIT_CODE = 0;
         ADB_SHELL_COMMAND = [0; ADB_SHELL_COMMAND_CAPACITY];
         ADB_SHELL_COMMAND_LENGTH = 0;
-        ADB_ROOT = true;
+        ADB_ROOT = false;
         ADB_CONTROL_FOLLOWUP = ADB_CONTROL_FOLLOWUP_NONE;
         ADB_CONTROL_OUTPUT_SENT = false;
         ADB_CONTROL_RESPONSE = [0; ADB_CONTROL_RESPONSE_CAPACITY];
@@ -365,6 +365,11 @@ fn adb_checksum(payload: &[u8]) -> u32 {
 }
 
 fn handle_adb(command: u32, arg0: u32, arg1: u32, payload: &[u8]) {
+    // ADB exposes a root shell and device-control services. It is a
+    // bring-up-only transport and must be absent from normal images.
+    if !adb_debug_enabled() {
+        return;
+    }
     match command {
         ADB_CNXN => {
             if arg0 < ADB_VERSION_ORIGINAL || arg1 == 0 {
@@ -609,6 +614,10 @@ fn queue_adb(command: u32, arg0: u32, arg1: u32, payload: &[u8], return_after: b
 }
 
 fn adb_return_enabled() -> bool {
+    adb_debug_enabled()
+}
+
+fn adb_debug_enabled() -> bool {
     option_env!("FULLERENE_AARCH64_DEBUG_RETURN") == Some("1")
 }
 

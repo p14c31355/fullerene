@@ -648,6 +648,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     mmu::init();
     uart::puts("mmu: identity map and caches ready\n");
 
+    #[cfg(feature = "aarch64-user-launchd")]
+    let mut allocator_ready = false;
     if let Some(mut frames) = allocator::PhysicalFrameAllocator::from_boot_info(&boot_info) {
         uart::put_hex(
             "memory: first free frame=",
@@ -659,6 +661,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         {
             allocator::install_global(frames);
             fs::init();
+            allocator_ready = true;
         }
         #[cfg(not(any(
             feature = "aarch64-user-smoke",
@@ -754,7 +757,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     timer::mark_irq_ready();
 
     #[cfg(feature = "aarch64-user-launchd")]
-    launchd::run();
+    if allocator_ready {
+        launchd::run();
+    } else {
+        uart::puts("launchd: allocator unavailable; refusing to start userspace\n");
+    }
 
     uart::puts("aarch64 early boot complete; waiting for timer irq / USB events\n");
     loop {

@@ -538,7 +538,7 @@ impl Ext4FileSystem {
         if inode.size > MAX_SYMLINK_BYTES {
             return Err(FsError::NotSupported);
         }
-        if inode.size <= inode.block.len() as u64 && inode.flags & EXT4_EXTENTS_FL == 0 {
+        if inode.size < inode.block.len() as u64 && inode.flags & EXT4_EXTENTS_FL == 0 {
             let bytes = &inode.block[..inode.size as usize];
             return core::str::from_utf8(bytes)
                 .map(String::from)

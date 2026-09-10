@@ -21,6 +21,9 @@ const IMEM_RESTART_REASON: usize = 0x146a_b65c;
 #[cfg(fullerene_aarch64_bramble)]
 const IMEM_BOOTLOADER_REASON: u32 = 0x7766_5500;
 
+#[cfg(fullerene_aarch64_bramble)]
+const PS_HOLD: usize = 0x0c26_4000;
+
 // This binary deliberately has no MMU, UART, allocator, or device-driver
 // dependency. Its only job is to prove that the Android arm64 Image header,
 // Bramble load address, EL transition, and Rust entry point agree. Reaching
@@ -123,7 +126,7 @@ extern "C" fn probe_entry() -> ! {
         // there when secure deassert-PS_HOLD is unavailable.
         #[cfg(fullerene_aarch64_bramble)]
         unsafe {
-            core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
+            core::ptr::write_volatile(PS_HOLD as *mut u32, 0);
         }
 
         // Neither reset path should return; keep the CPU parked rather than

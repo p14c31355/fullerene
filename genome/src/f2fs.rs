@@ -100,12 +100,13 @@ fn crc32(mut crc: u32, bytes: &[u8]) -> u32 {
     crc
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Checkpoint {
     version: u64,
     flags: u32,
     nat_bitmap_bytes: u32,
     nat_bitmap_offset: usize,
+    bytes: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -293,6 +294,7 @@ impl F2fsFileSystem {
                 flags: 0,
                 nat_bitmap_bytes: 0,
                 nat_bitmap_offset: 0,
+                bytes: Vec::new(),
             },
             handles: Vec::new(),
             next_fd: 1,
@@ -471,33 +473,19 @@ impl F2fsFileSystem {
             flags,
             nat_bitmap_bytes,
             nat_bitmap_offset,
+            bytes,
         })
     }
 
     fn nat_bitmap_bit(&mut self, block_offset: u64) -> Result<bool, FsError> {
-        let checkpoint_start = if self.checkpoint.version == 0 {
+        if self.checkpoint.version == 0 || self.checkpoint.bytes.is_empty() {
             return Err(FsError::InvalidInput);
-        } else {
-            // The selected pack is found again by version.  This keeps the
-            // filesystem state small while preserving the exact bitmap used
-            // for the NAT double-buffer selection.
-            let first = self.read_checkpoint_pack(self.cp_blkaddr)?;
-            let second = self.read_checkpoint_pack(
-                self.cp_blkaddr
-                    .checked_add(F2FS_BLOCKS_PER_SEGMENT)
-                    .ok_or(FsError::InvalidInput)?,
-            )?;
-            match (first, second) {
-                (Some(_first), Some(second)) if second.1 == self.checkpoint.version => second.0,
-                (Some(first), _) if first.1 == self.checkpoint.version => first.0,
-                (_, Some(second)) if second.1 == self.checkpoint.version => second.0,
-                _ => return Err(FsError::InvalidInput),
-            }
-        };
+        }
         if block_offset >= self.checkpoint.nat_bitmap_bytes as u64 * 8 {
             return Err(FsError::InvalidInput);
         }
-        let byte = checkpoint_start[self.checkpoint.nat_bitmap_offset + block_offset as usize / 8];
+        let byte =
+            self.checkpoint.bytes[self.checkpoint.nat_bitmap_offset + block_offset as usize / 8];
         Ok(byte & (0x80 >> (block_offset & 7)) != 0)
     }
 

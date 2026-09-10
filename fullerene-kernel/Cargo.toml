@@ -7,10 +7,13 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+autoexamples = false
 
 [[bin]]
 name = "fullerene-kernel"
 path = "src/main.rs"
+test = false
+bench = false
 
 [[bin]]
 name = "fullerene-kernel-esp32"
@@ -94,18 +97,6 @@ bench = false
 required-features = ["aarch64"]
 
 [[example]]
-name = "android_init_actions"
-test = false
-bench = false
-required-features = ["aarch64-android-init"]
-
-[[example]]
-name = "android_init_services"
-test = false
-bench = false
-required-features = ["aarch64-android-init"]
-
-[[example]]
 name = "linux_aarch64_smoke"
 test = false
 bench = false
@@ -122,6 +113,12 @@ name = "native_aarch64_launchd"
 test = false
 bench = false
 required-features = ["aarch64"]
+
+# The freestanding AArch64 boot binary is intentionally not a test harness,
+# but the allocation-free DTB parser can be tested on the host unchanged.
+[[test]]
+name = "aarch64_fdt"
+path = "tests/aarch64_fdt.rs"
 
 [target.'cfg(all(not(target_arch = "aarch64"), not(target_arch = "xtensa")))'.dependencies]
 x86_64 = { workspace = true, features = [

@@ -1303,6 +1303,7 @@ fn read_cells(pointer: *const u8, count: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{Region, find_memory_regions, inspect};
+    use alloc::vec::Vec;
 
     fn be32(value: u32, out: &mut Vec<u8>) {
         out.extend_from_slice(&value.to_be_bytes());
@@ -1402,7 +1403,6 @@ mod tests {
         if disabled {
             property(&mut structure, status, b"disabled\0");
         }
-        be32(2, &mut structure);
         be32(2, &mut structure);
         be32(2, &mut structure);
         be32(2, &mut structure);

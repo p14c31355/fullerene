@@ -113,7 +113,13 @@ pub fn parse(data: &[u8]) -> ActionTable<'_> {
             continue;
         };
         if directive == b"on" {
-            let trigger = trim(line.get(cursor..).unwrap_or_default());
+            let trigger = trim(
+                line.get(cursor..)
+                    .unwrap_or_default()
+                    .split(|byte| *byte == b'#')
+                    .next()
+                    .unwrap_or_default(),
+            );
             if trigger.is_empty() || table.len >= MAX_ACTIONS {
                 table.valid = false;
                 current = None;

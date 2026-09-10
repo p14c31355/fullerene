@@ -134,6 +134,7 @@ pub(crate) fn destroy(handle: u64) -> u64 {
         window.visible = false;
         window.redraw_pending = false;
     }
+    let _ = fs::close(handle);
     0
 }
 

@@ -99,7 +99,6 @@ const SYS_CAPSET: u64 = 91;
 const SYS_PERSONALITY: u64 = 92;
 const SYS_EXIT: u64 = 93;
 const SYS_EXIT_GROUP: u64 = 94;
-const SYS_FORK: u64 = 107;
 const SYS_SET_TID_ADDRESS: u64 = 96;
 const SYS_SET_ROBUST_LIST: u64 = 99;
 const SYS_NANOSLEEP: u64 = 101;
@@ -361,7 +360,6 @@ pub(super) fn dispatch(frame: &mut Aarch64TrapFrame) -> bool {
                 super::syscall::linux_exec_path(frame.x[1], frame.x[2], frame.x[3], frame)
             }
         }
-        SYS_FORK => fork(frame),
         SYS_CLONE => clone(frame),
         SYS_UNLINKAT => {
             if frame.x[0] as i64 != AT_FDCWD || frame.x[2] != 0 {
@@ -991,34 +989,10 @@ fn gettimeofday(frame: &Aarch64TrapFrame) -> u64 {
     }
 }
 
-fn getrandom(frame: &Aarch64TrapFrame) -> u64 {
-    const GRND_ALLOWED: u64 = 0x7;
-    let count = usize::try_from(frame.x[1]).unwrap_or(usize::MAX);
-    if frame.x[2] & !GRND_ALLOWED != 0 || count > 4096 {
-        return EINVAL;
-    }
-    if count == 0 {
-        return 0;
-    }
-    if frame.x[0] == 0 {
-        return EFAULT;
-    }
-    let mut state = timer::uptime_us() ^ frame.x[0].rotate_left(17) ^ frame.x[1];
-    let mut output = [0u8; 64];
-    let mut copied = 0usize;
-    while copied < count {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        let bytes = state.to_ne_bytes();
-        let chunk = (count - copied).min(bytes.len()).min(output.len());
-        output[..chunk].copy_from_slice(&bytes[..chunk]);
-        if user_memory::copy_to_user(frame.x[0] + copied as u64, &output[..chunk]).is_err() {
-            return if copied == 0 { EFAULT } else { copied as u64 };
-        }
-        copied += chunk;
-    }
-    copied as u64
+fn getrandom(_frame: &Aarch64TrapFrame) -> u64 {
+    // A timestamp-seeded xorshift is predictable and must not be exposed as
+    // Linux getrandom(). Keep the ABI honest until a CSPRNG is available.
+    ENOSYS
 }
 
 fn read(frame: &Aarch64TrapFrame) -> u64 {
@@ -1824,8 +1798,8 @@ fn write_statfs(destination: u64) -> u64 {
     stat[32..40].copy_from_slice(&(1u64 << 19).to_ne_bytes());
     stat[40..48].copy_from_slice(&(1u64 << 20).to_ne_bytes());
     stat[48..56].copy_from_slice(&(1u64 << 19).to_ne_bytes());
-    stat[64..68].copy_from_slice(&(255i32).to_ne_bytes());
-    stat[68..72].copy_from_slice(&(4096i32).to_ne_bytes());
+    stat[64..72].copy_from_slice(&(255u64).to_ne_bytes());
+    stat[72..80].copy_from_slice(&(4096u64).to_ne_bytes());
     if user_memory::copy_to_user(destination, &stat).is_err() {
         EFAULT
     } else {
@@ -2147,7 +2121,7 @@ fn getcwd(frame: &Aarch64TrapFrame) -> u64 {
     if user_memory::copy_to_user(frame.x[0], b"/\0").is_err() {
         EFAULT
     } else {
-        frame.x[0]
+        2
     }
 }
 
@@ -2403,7 +2377,7 @@ fn futex(frame: &Aarch64TrapFrame) -> FutexAction {
             FutexAction::Return(task::wake_event_count(key, maximum) as u64)
         }
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
-            if operation == FUTEX_WAIT_BITSET && frame.x[4] == 0 {
+            if operation == FUTEX_WAIT_BITSET && frame.x[5] == 0 {
                 return FutexAction::Return(EINVAL);
             }
             let mut value = [0u8; 4];

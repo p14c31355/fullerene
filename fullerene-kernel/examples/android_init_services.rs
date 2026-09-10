@@ -154,7 +154,7 @@ pub fn parse(data: &[u8]) -> ServiceTable<'_> {
             b"group" => {
                 let mut count = 0;
                 while let Some(value) = token(line, &mut cursor) {
-                    if count >= MAX_GROUPS {
+                    if count >= MAX_GROUPS + 1 {
                         table.valid = false;
                         break;
                     }
@@ -162,13 +162,17 @@ pub fn parse(data: &[u8]) -> ServiceTable<'_> {
                         table.valid = false;
                         break;
                     };
-                    spec.groups[count] = gid;
+                    if count == 0 {
+                        spec.gid = gid;
+                    } else {
+                        spec.groups[count - 1] = gid;
+                    }
                     count += 1;
                 }
                 if count == 0 {
                     table.valid = false;
                 }
-                spec.group_count = count;
+                spec.group_count = count.saturating_sub(1);
             }
             b"seclabel" => {
                 let Some(value) = token(line, &mut cursor) else {
@@ -211,8 +215,7 @@ pub fn self_test() -> bool {
         || spec.seclabel != b"u:r:fullerened:s0"
         || spec.uid != 0
         || spec.gid != 0
-        || spec.group_count != 1
-        || spec.groups[0] != 0
+        || spec.group_count != 0
         || spec.disabled
         || spec.oneshot
         || spec.critical
@@ -237,9 +240,9 @@ pub fn self_test() -> bool {
         && sample_spec.path == b"/bin/sample"
         && sample_spec.class == b"main"
         && sample_spec.uid == 2000
-        && sample_spec.group_count == 2
-        && sample_spec.groups[0] == 2000
-        && sample_spec.groups[1] == 1005
+        && sample_spec.gid == 2000
+        && sample_spec.group_count == 1
+        && sample_spec.groups[0] == 1005
         && sample_spec.disabled
         && sample_spec.oneshot
         && sample_spec.critical

@@ -17,7 +17,7 @@ use super::fdt;
 const HEAP_SIZE: usize = 512 * 1024;
 pub const PAGE_SIZE: u64 = 4096;
 const MAX_FRAME_RANGES: usize = 8;
-const MAX_RESERVED_RANGES: usize = 5;
+const MAX_RESERVED_RANGES: usize = 32;
 const MAX_RELEASED_FRAMES: usize = 1024;
 const MAX_SHARED_FRAMES: usize = 1024;
 
@@ -210,6 +210,16 @@ impl PhysicalFrameAllocator {
             core::ptr::addr_of!(__ufs_dma_start) as u64,
             core::ptr::addr_of!(__ufs_dma_end) as u64,
         ));
+        if info.fdt_address != 0 {
+            let mut reserved_regions = [fdt::Region { base: 0, size: 0 }; MAX_RESERVED_RANGES];
+            let reserved_count =
+                fdt::find_reserved_memory_regions(info.fdt_address, &mut reserved_regions);
+            for region in reserved_regions.iter().take(reserved_count) {
+                allocator.push_reserved(
+                    AddressRange::new(region.base, region.size).unwrap_or(AddressRange::EMPTY),
+                );
+            }
+        }
         if let Some(header) = fdt::inspect(info.fdt_address) {
             allocator.push_reserved(
                 AddressRange::new(info.fdt_address, header.total_size as u64)

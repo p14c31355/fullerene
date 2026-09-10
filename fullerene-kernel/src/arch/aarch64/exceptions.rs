@@ -24,6 +24,16 @@ pub(crate) struct Aarch64TrapFrame {
 impl Aarch64TrapFrame {
     pub(crate) const BYTE_SIZE: usize = core::mem::size_of::<Self>();
 
+    const LAYOUT_ASSERTIONS: () = {
+        assert!(Self::BYTE_SIZE == 304);
+        assert!(core::mem::offset_of!(Self, elr_el1) == 248);
+        assert!(core::mem::offset_of!(Self, spsr_el1) == 256);
+        assert!(core::mem::offset_of!(Self, sp_el0) == 264);
+        assert!(core::mem::offset_of!(Self, esr_el1) == 272);
+        assert!(core::mem::offset_of!(Self, far_el1) == 280);
+        assert!(core::mem::offset_of!(Self, tpidr_el0) == 288);
+    };
+
     #[inline]
     pub(crate) fn from_user(&self) -> bool {
         // PSTATE.M == EL0t when the exception came from an AArch64 user task.

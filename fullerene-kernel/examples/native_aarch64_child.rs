@@ -11,6 +11,8 @@ use core::arch::asm;
 const EXIT: u64 = 1;
 const FORK: u64 = 2;
 const WRITE: u64 = 4;
+const GET_PARENT_PID: u64 = 26;
+const YIELD: u64 = 22;
 
 static MESSAGE: &[u8] = b"child: spawned and running\n";
 static ORPHAN_MESSAGE: &[u8] = b"child: orphan adopted by init\n";
@@ -26,6 +28,11 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 pub extern "C" fn _start() -> ! {
     let fork_pid = unsafe { syscall(FORK, 0, 0, 0, 0, 0, 0) };
     if fork_pid == 0 {
+        // Do not report adoption until the original parent has exited and
+        // the scheduler has reparented this child to PID 1.
+        while unsafe { syscall(GET_PARENT_PID, 0, 0, 0, 0, 0, 0) } != 1 {
+            let _ = unsafe { syscall(YIELD, 0, 0, 0, 0, 0, 0) };
+        }
         let _ = unsafe {
             syscall(
                 WRITE,

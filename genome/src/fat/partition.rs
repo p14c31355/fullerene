@@ -9,6 +9,9 @@ use super::exfat::is_exfat;
 const EFI_SYSTEM_PARTITION_GUID: [u8; 16] = [
     0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
 ];
+const MICROSOFT_BASIC_DATA_PARTITION_GUID: [u8; 16] = [
+    0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7,
+];
 
 const MBR_SIGNATURE: u16 = 0xAA55;
 const PARTITION_FAT32: u8 = 0x0B;
@@ -118,6 +121,11 @@ fn find_gpt_fat_partition(device: &mut dyn BlockDevice) -> Option<PartitionInfo>
 
     let mut best: Option<PartitionInfo> = None;
     for partition in table.partitions {
+        let supported_type = partition.is_type(&EFI_SYSTEM_PARTITION_GUID)
+            || partition.is_type(&MICROSOFT_BASIC_DATA_PARTITION_GUID);
+        if !supported_type {
+            continue;
+        }
         if partition.is_type(&EFI_SYSTEM_PARTITION_GUID) {
             log::info!(
                 "FAT: probing GPT EFI System Partition at LBA {}",
@@ -135,11 +143,7 @@ fn find_gpt_fat_partition(device: &mut dyn BlockDevice) -> Option<PartitionInfo>
                 continue;
             }
         };
-        let is_fat = is_exfat(&boot)
-            || matches!(
-                u16::from_le_bytes([boot[11], boot[12]]),
-                512 | 1024 | 2048 | 4096
-            );
+        let is_fat = is_exfat(&boot) || is_fat_boot_sector(&boot);
         if is_fat
             && best.as_ref().is_none_or(|current| {
                 partition.last_lba - partition.first_lba + 1 > current.total_sectors
@@ -163,6 +167,16 @@ fn find_gpt_fat_partition(device: &mut dyn BlockDevice) -> Option<PartitionInfo>
         log::info!("FAT: GPT contains no FAT/exFAT volume");
         None
     }
+}
+
+fn is_fat_boot_sector(boot: &[u8]) -> bool {
+    if boot.len() < 0x200 {
+        return false;
+    }
+    if u16::from_le_bytes([boot[0x1fe], boot[0x1ff]]) != MBR_SIGNATURE {
+        return false;
+    }
+    boot[54..62] == *b"FAT12   " || boot[54..62] == *b"FAT16   " || boot[82..90] == *b"FAT32   "
 }
 
 pub struct PartitionBlockDevice {
@@ -357,16 +371,20 @@ mod tests {
         header[84..88].copy_from_slice(&128u32.to_le_bytes());
 
         let small = &mut disk.data[2 * 512..3 * 512];
-        small[..16].copy_from_slice(&[1; 16]);
+        small[..16].copy_from_slice(&EFI_SYSTEM_PARTITION_GUID);
         small[32..40].copy_from_slice(&100u64.to_le_bytes());
         small[40..48].copy_from_slice(&199u64.to_le_bytes());
         let large = &mut disk.data[2 * 512 + 128..3 * 512];
-        large[..16].copy_from_slice(&[2; 16]);
+        large[..16].copy_from_slice(&MICROSOFT_BASIC_DATA_PARTITION_GUID);
         large[32..40].copy_from_slice(&200u64.to_le_bytes());
         large[40..48].copy_from_slice(&499u64.to_le_bytes());
 
-        disk.data[100 * 512 + 11..100 * 512 + 13].copy_from_slice(&512u16.to_le_bytes());
-        disk.data[200 * 512 + 11..200 * 512 + 13].copy_from_slice(&512u16.to_le_bytes());
+        disk.data[100 * 512 + 54..100 * 512 + 62].copy_from_slice(b"FAT16   ");
+        disk.data[200 * 512 + 82..200 * 512 + 90].copy_from_slice(b"FAT32   ");
+        disk.data[100 * 512 + 0x1fe..100 * 512 + 0x200]
+            .copy_from_slice(&MBR_SIGNATURE.to_le_bytes());
+        disk.data[200 * 512 + 0x1fe..200 * 512 + 0x200]
+            .copy_from_slice(&MBR_SIGNATURE.to_le_bytes());
 
         let info = find_fat_partition(&mut disk).unwrap();
         assert_eq!(info.start_lba, 200);

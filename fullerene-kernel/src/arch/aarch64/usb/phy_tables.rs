@@ -170,7 +170,7 @@ pub(super) fn qmp_init_entry(index: usize, active: (usize, u32)) -> (usize, u32)
         93 => (0x1690, 0x2a),
         94 => (0x1694, 0x3f),
         95 => (0x16e4, 0x02),
-        _ => QMP_INIT[index],
+        _ => active,
     }
 }
 

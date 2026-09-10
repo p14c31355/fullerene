@@ -208,7 +208,7 @@ fn load_parsed_image(
         return None;
     }
 
-    for page in pages.iter_mut().take(page_count) {
+    for index in 0..page_count {
         let Some(physical_address) = frames.next_frame() else {
             release_image_pages(frames, &pages, page_count);
             return None;
@@ -216,7 +216,7 @@ fn load_parsed_image(
         unsafe {
             core::ptr::write_bytes(physical_address as *mut u8, 0, PAGE_SIZE as usize);
         }
-        page.physical_address = physical_address;
+        pages[index].physical_address = physical_address;
     }
 
     for segment in segments.iter().take(segment_count) {
@@ -290,7 +290,15 @@ fn load_parsed_image(
             {
                 let _ = frames.release_frame(remaining.physical_address);
             }
-            let _ = mmu::release_user_space(space_id, frames, &[]);
+            if mmu::active_user_space() == space_id {
+                for mapped in pages.iter().take(mapped_count) {
+                    if let Some(physical) = mmu::unmap_user_page(space_id, mapped.virtual_address) {
+                        let _ = frames.release_frame(physical);
+                    }
+                }
+            } else {
+                let _ = mmu::release_user_space(space_id, frames, &[]);
+            }
             return None;
         }
     }

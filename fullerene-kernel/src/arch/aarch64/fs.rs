@@ -43,6 +43,8 @@ const ERR_OUT_OF_MEMORY: u64 = (-(12i64)) as u64;
 const ERR_TOO_MANY_FILES: u64 = (-(24i64)) as u64;
 const ERR_IO: u64 = (-(5i64)) as u64;
 const ERR_BUSY: u64 = (-(16i64)) as u64;
+const CAP_CHOWN: u8 = 0;
+const CAP_FOWNER: u8 = 3;
 const ERR_NO_SPACE: u64 = (-(28i64)) as u64;
 const FILE_HANDLE_TAG: u64 = 1 << 62;
 const FILE_HANDLE_INDEX_BITS: u64 = 8;
@@ -5215,6 +5217,17 @@ pub(crate) fn linux_socket_connect(fd: u64, address: u64, length: u64) -> u64 {
         Ok(path) => path,
         Err(error) => return error,
     };
+    // The Android property service handles privileged ctl.* lifecycle
+    // commands. Restrict the socket boundary to root peers until the full
+    // SELinux peer-label plumbing is available; a non-root process must not
+    // be able to reach property_result at all.
+    if path_length == PROPERTY_SERVICE_PATH.len()
+        && path[..path_length] == *PROPERTY_SERVICE_PATH
+        && task::current_linux_credentials()
+            .is_none_or(|credentials| credentials.effective_uid != 0)
+    {
+        return ERR_PERMISSION;
+    }
     let server_slot = match linux_socket_find_bound(&path, path_length) {
         Some(slot) => slot,
         None => return ERR_NO_ENTRY,
@@ -6993,7 +7006,16 @@ pub(crate) fn linux_chmod(path_address: u64, mode: u64) -> u64 {
     if mode & !0o7777 != 0 {
         return ERR_INVALID;
     }
-    match with_vfs(|vfs| vfs.chmod(path, mode as u32)) {
+    let Some(credentials) = task::current_linux_credentials() else {
+        return ERR_PERMISSION;
+    };
+    match with_vfs(|vfs| {
+        let metadata = vfs.metadata(path)?;
+        if credentials.fsuid != metadata.uid && !has_capability(credentials, CAP_FOWNER) {
+            return Err(FsError::PermissionDenied);
+        }
+        vfs.chmod(path, mode as u32)
+    }) {
         Some(Ok(())) => 0,
         Some(Err(error)) => fs_error_to_errno(error),
         None => ERR_NO_ENTRY,
@@ -7015,11 +7037,24 @@ pub(crate) fn linux_chown(path_address: u64, uid: u64, gid: u64) -> u64 {
     let (Ok(uid), Ok(gid)) = (u32::try_from(uid), u32::try_from(gid)) else {
         return ERR_INVALID;
     };
-    match with_vfs(|vfs| vfs.chown(path, uid, gid)) {
+    let Some(credentials) = task::current_linux_credentials() else {
+        return ERR_PERMISSION;
+    };
+    if !has_capability(credentials, CAP_CHOWN) {
+        return ERR_PERMISSION;
+    }
+    match with_vfs(|vfs| {
+        let _ = vfs.metadata(path)?;
+        vfs.chown(path, uid, gid)
+    }) {
         Some(Ok(())) => 0,
         Some(Err(error)) => fs_error_to_errno(error),
         None => ERR_NO_ENTRY,
     }
+}
+
+fn has_capability(credentials: task::LinuxCredentials, capability: u8) -> bool {
+    credentials.cap_effective & (1u64 << capability) != 0
 }
 
 fn is_runtime_namespace_entry(path: &str) -> bool {
