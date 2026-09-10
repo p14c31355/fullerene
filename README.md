@@ -174,6 +174,7 @@ At runtime, installed packages use the shell commands `app list`, `app install <
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Current ownership and runtime architecture |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Toolchain, testing, rendering, and debugging |
 | [SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) | Current syscall, filesystem, driver, and port status |
+| [CONTEXT_STATUS.md](docs/CONTEXT_STATUS.md) | Compact LLM-facing Bramble status and evidence routing |
 | [HARDWARE.md](docs/HARDWARE.md) | Real-hardware compatibility notes |
 | [fullerene_todo.md](docs/fullerene_todo.md) | Prioritized development checklist |
 | [API documentation](docs/api) | Crate-level API notes |
