@@ -19,6 +19,9 @@ pub enum InodeType {
 struct Inode {
     name: String,
     kind: InodeType,
+    mode: u32,
+    uid: u32,
+    gid: u32,
     data: Vec<u8>,
     children: Vec<u64>,
     parent: u64,
@@ -28,9 +31,17 @@ struct Inode {
 
 impl Inode {
     fn new(name: &str, kind: InodeType, parent: u64) -> Self {
+        let mode = match kind {
+            InodeType::File => 0o100644,
+            InodeType::Directory => 0o040755,
+            InodeType::Symlink => 0o120777,
+        };
         Self {
             name: String::from(name),
             kind,
+            mode,
+            uid: 0,
+            gid: 0,
             data: Vec::new(),
             children: Vec::new(),
             parent,
@@ -53,6 +64,18 @@ pub struct VNode {
     pub name: String,
     pub size: u64,
     pub is_dir: bool,
+}
+
+/// Stable metadata exposed by a filesystem to the bounded Linux personality.
+/// The type bits in `mode` are filesystem-owned; chmod replaces only the
+/// permission/special bits, matching the Linux contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileMetadata {
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub kind: InodeType,
 }
 
 /// Operations and limits a mounted filesystem promises to support.
@@ -102,11 +125,37 @@ pub trait FileSystem: Send {
     fn size(&mut self, _fd: u32) -> Result<u64, FsError> {
         Err(FsError::NotSupported)
     }
+    fn metadata(&mut self, _path: &str) -> Result<FileMetadata, FsError> {
+        Err(FsError::NotSupported)
+    }
+    fn metadata_at(&mut self, _fd: u32) -> Result<FileMetadata, FsError> {
+        Err(FsError::NotSupported)
+    }
+    fn chmod(&mut self, _path: &str, _mode: u32) -> Result<(), FsError> {
+        Err(FsError::NotSupported)
+    }
+    fn chown(&mut self, _path: &str, _uid: u32, _gid: u32) -> Result<(), FsError> {
+        Err(FsError::NotSupported)
+    }
     fn create(&mut self, path: &str, kind: InodeType) -> Option<u64>;
     fn mkdir(&mut self, path: &str) -> Result<(), FsError>;
     fn unlink(&mut self, path: &str) -> Result<(), FsError>;
     fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError>;
+    /// Read the target of the final symlink without resolving that component.
+    /// Filesystems that do not expose symlink metadata retain the default
+    /// `NotSupported` result.
+    fn read_link(&mut self, _path: &str) -> Result<String, FsError> {
+        Err(FsError::NotSupported)
+    }
     fn exists(&mut self, path: &str) -> bool;
+    /// Identify a filesystem-provided Android property-area descriptor.
+    ///
+    /// This stays an opt-in capability so the kernel can give the property
+    /// bootstrap its narrow compatibility treatment without weakening the
+    /// semantics of ordinary files.
+    fn is_property_file(&mut self, _fd: u32) -> bool {
+        false
+    }
 }
 
 // ── MemFileSystem ─────────────────────────────────────────────
@@ -302,6 +351,52 @@ impl FileSystem for MemFileSystem {
             .ok_or(FsError::FileNotFound)
     }
 
+    fn metadata(&mut self, path: &str) -> Result<FileMetadata, FsError> {
+        let ino = self.lookup(path).ok_or(FsError::FileNotFound)?;
+        let inode = self.inodes.get(&ino).ok_or(FsError::FileNotFound)?;
+        Ok(FileMetadata {
+            mode: inode.mode,
+            uid: inode.uid,
+            gid: inode.gid,
+            size: inode.size,
+            kind: inode.kind,
+        })
+    }
+
+    fn metadata_at(&mut self, fd: u32) -> Result<FileMetadata, FsError> {
+        let descriptor = self.fds.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let inode = self
+            .inodes
+            .get(&descriptor.ino)
+            .ok_or(FsError::FileNotFound)?;
+        Ok(FileMetadata {
+            mode: inode.mode,
+            uid: inode.uid,
+            gid: inode.gid,
+            size: inode.size,
+            kind: inode.kind,
+        })
+    }
+
+    fn chmod(&mut self, path: &str, mode: u32) -> Result<(), FsError> {
+        let ino = self.lookup(path).ok_or(FsError::FileNotFound)?;
+        let inode = self.inodes.get_mut(&ino).ok_or(FsError::FileNotFound)?;
+        inode.mode = (inode.mode & 0o170000) | (mode & 0o7777);
+        Ok(())
+    }
+
+    fn chown(&mut self, path: &str, uid: u32, gid: u32) -> Result<(), FsError> {
+        let ino = self.lookup(path).ok_or(FsError::FileNotFound)?;
+        let inode = self.inodes.get_mut(&ino).ok_or(FsError::FileNotFound)?;
+        if uid != u32::MAX {
+            inode.uid = uid;
+        }
+        if gid != u32::MAX {
+            inode.gid = gid;
+        }
+        Ok(())
+    }
+
     fn create(&mut self, path: &str, kind: InodeType) -> Option<u64> {
         if self.lookup(path).is_some() {
             return None;
@@ -364,6 +459,18 @@ impl FileSystem for MemFileSystem {
             }
         }
         Ok(entries)
+    }
+
+    fn read_link(&mut self, path: &str) -> Result<String, FsError> {
+        let (parent_ino, name) = self.lookup_parent(path).ok_or(FsError::FileNotFound)?;
+        let ino = self
+            .lookup_child(parent_ino, &name)
+            .ok_or(FsError::FileNotFound)?;
+        let inode = self.inodes.get(&ino).ok_or(FsError::FileNotFound)?;
+        if inode.kind != InodeType::Symlink {
+            return Err(FsError::InvalidInput);
+        }
+        inode.target.clone().ok_or(FsError::InvalidInput)
     }
 
     fn exists(&mut self, path: &str) -> bool {
@@ -530,8 +637,16 @@ impl Vfs {
         f(fs, &p)
     }
 
+    pub fn open_with_mount(&mut self, path: &str, flags: u32) -> Option<(usize, FileDescriptor)> {
+        let absolute = self.resolve_path(path);
+        let index = self.find_fs_index_for_absolute_path(&absolute)?;
+        let remaining = relative_to_mount(&absolute, &self.mounts[index].mount_point)?.to_string();
+        let file = self.mounts.get_mut(index)?.fs.open(&remaining, flags)?;
+        Some((index, file))
+    }
+
     pub fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
-        self.with_fs(path, |fs, p| fs.open(p, flags))
+        self.open_with_mount(path, flags).map(|(_, file)| file)
     }
 
     pub fn read_at(&mut self, mount_idx: usize, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
@@ -558,6 +673,12 @@ impl Vfs {
             .close(fd)
     }
 
+    pub fn is_property_file_at(&mut self, mount_idx: usize, fd: u32) -> bool {
+        self.mounts
+            .get_mut(mount_idx)
+            .is_some_and(|mount| mount.fs.is_property_file(fd))
+    }
+
     pub fn seek_at(&mut self, mount_idx: usize, fd: u32, pos: u64) -> Result<(), FsError> {
         self.mounts
             .get_mut(mount_idx)
@@ -580,6 +701,26 @@ impl Vfs {
             .ok_or(FsError::InvalidFileDescriptor)?
             .fs
             .size(fd)
+    }
+
+    pub fn metadata(&mut self, path: &str) -> Result<FileMetadata, FsError> {
+        self.with_fs_result(path, |fs, p| fs.metadata(p))
+    }
+
+    pub fn metadata_at(&mut self, mount_idx: usize, fd: u32) -> Result<FileMetadata, FsError> {
+        self.mounts
+            .get_mut(mount_idx)
+            .ok_or(FsError::InvalidFileDescriptor)?
+            .fs
+            .metadata_at(fd)
+    }
+
+    pub fn chmod(&mut self, path: &str, mode: u32) -> Result<(), FsError> {
+        self.with_fs_result(path, |fs, p| fs.chmod(p, mode))
+    }
+
+    pub fn chown(&mut self, path: &str, uid: u32, gid: u32) -> Result<(), FsError> {
+        self.with_fs_result(path, |fs, p| fs.chown(p, uid, gid))
     }
 
     /// Open a file directly on the VFS and expose it as a Genome stream.
@@ -608,6 +749,13 @@ impl Vfs {
 
     pub fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
         self.with_fs_result(path, |fs, p| fs.readdir(p))
+    }
+
+    /// Read a final symlink target while preserving the normal mount routing
+    /// and working-directory rules. Unlike `open`, the final component is not
+    /// resolved before the filesystem receives the request.
+    pub fn read_link(&mut self, path: &str) -> Result<String, FsError> {
+        self.with_fs_result(path, |fs, p| fs.read_link(p))
     }
 
     pub fn exists(&mut self, path: &str) -> bool {
@@ -737,6 +885,38 @@ mod tests {
     }
 
     #[test]
+    fn memfs_updates_metadata_through_chmod_and_chown() {
+        let mut fs = MemFileSystem::new();
+        fs.create("/metadata", InodeType::File).unwrap();
+        assert_eq!(fs.metadata("/metadata").unwrap().mode, 0o100644);
+        fs.chmod("/metadata", 0o600).unwrap();
+        fs.chown("/metadata", 1000, 1001).unwrap();
+        assert_eq!(
+            fs.metadata("/metadata").unwrap(),
+            FileMetadata {
+                mode: 0o100600,
+                uid: 1000,
+                gid: 1001,
+                size: 0,
+                kind: InodeType::File,
+            }
+        );
+    }
+
+    #[test]
+    fn vfs_metadata_routes_to_the_mounted_filesystem() {
+        let mut root = MemFileSystem::new();
+        root.mkdir("/sys").unwrap();
+        let mut sys = MemFileSystem::new();
+        sys.create("/state", InodeType::File).unwrap();
+        let mut vfs = Vfs::new(Box::new(root));
+        vfs.mount("/sys", Box::new(sys)).unwrap();
+
+        vfs.chmod("/sys/state", 0o640).unwrap();
+        assert_eq!(vfs.metadata("/sys/state").unwrap().mode, 0o100640);
+    }
+
+    #[test]
     fn oversized_u64_offset_is_rejected_before_usize_conversion() {
         let mut fs = MemFileSystem::new();
         fs.create("/large", InodeType::File).unwrap();
@@ -791,6 +971,26 @@ mod tests {
         let (mounted_fs, relative_path) = vfs.find_fs("/mnt/inside").unwrap();
         assert_eq!(relative_path, "inside");
         assert!(mounted_fs.exists(&relative_path));
+    }
+
+    #[test]
+    fn open_with_mount_keeps_the_routed_filesystem_index() {
+        let mut root = MemFileSystem::new();
+        root.mkdir("/mnt").unwrap();
+        let mut mounted = MemFileSystem::new();
+        mounted.create("/hello", InodeType::File).unwrap();
+        let fd = mounted.open("/hello", 0).unwrap();
+        mounted.write(fd.fd, b"mounted").unwrap();
+        mounted.close(fd.fd).unwrap();
+
+        let mut vfs = Vfs::new(Box::new(root));
+        vfs.mount("/mnt", Box::new(mounted)).unwrap();
+
+        let (mount_index, fd) = vfs.open_with_mount("/mnt/hello", 0).unwrap();
+        let mut output = [0u8; 7];
+        assert_eq!(vfs.read_at(mount_index, fd.fd, &mut output), Ok(7));
+        assert_eq!(&output, b"mounted");
+        vfs.close_at(mount_index, fd.fd).unwrap();
     }
 
     #[test]

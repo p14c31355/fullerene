@@ -149,22 +149,181 @@ const QMP_INIT: [(usize, u32); 146] = [
     (0x1f38, 0x07), // USB3_DP_PCS_USB3_RXEQTRAINING_DFE_TIME_S2
 ];
 
-/// Active PHY tables. The compiled values are the Bramble fallback, while
-/// the DT path may replace them after validating the complete vendor
-/// property. Keeping the delay array separate preserves the compact static
-/// table and still executes the DT's third cell rather than silently dropping
-/// it.
+/// The exact 146-entry `ss_phy_cfg_addr`/`ss_phy_cfg_val` sequence from the
+/// same-build Factory XBL `xbl_config`. The production DT/Linux table above
+/// is identical except for the TXB entries: XBL writes the RX-detect entry
+/// first, then writes 0x1684 twice. Keep this as an opt-in differential rather
+/// than silently changing the normal DT-derived fallback.
+#[inline(always)]
+pub(super) fn qmp_init_entry(index: usize, active: (usize, u32)) -> (usize, u32) {
+    if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_qmp_table) {
+        return active;
+    }
+    match index {
+        86 => (0x16a4, 0x12),
+        87 => (0x1634, 0x00),
+        88 => (0x1638, 0x00),
+        89 => (0x163c, 0x16),
+        90 => (0x1640, 0x05),
+        91 => (0x1684, 0x55),
+        92 => (0x1684, 0x02),
+        93 => (0x1690, 0x2a),
+        94 => (0x1694, 0x3f),
+        95 => (0x16e4, 0x02),
+        _ => active,
+    }
+}
+
+/// Active PHY tables. The compiled values are the Bramble production
+/// fallback, while the DT path may replace them after validating the complete
+/// vendor property. Keeping the delay array separate preserves the compact
+/// static table and still executes the DT's third cell rather than silently
+/// dropping it.
 pub(super) static mut ACTIVE_QMP_INIT: [(usize, u32); 146] = QMP_INIT;
 pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
-pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] = [
-    // The stock lito-usb.dtsi (android-msm-bramble-4.19-android11-qpr1)
-    // qcom,param-override-seq: TUNE1 0x63, TUNE2 0x85, TUNE3 0x17. The
-    // earlier (0x67, 0xc8, no-TUNE3) web-sourced production table was never
-    // validated against this branch's own device tree.
-    (0x6c, 0x63),
-    (0x70, 0x85),
-    (0x74, 0x17),
-];
+// The compiled fallback matches the exact-build Bramble stock DTB extracted
+// from Google's UP1A.231105.001.B2 factory package:
+// qcom,param-override-seq = <0x63 0x6c 0x85 0x70 0x17 0x74>. The first cell
+// is the value and the second is the register offset; the writer below stores
+// the pair as (offset, value). This fallback is used when `fastboot boot`
+// supplies no usable property, so the exact stock package is the strongest
+// available board-specific source. The trailing sentinel keeps the fixed
+// table shape and is skipped by the writer.
+pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 4] =
+    [(0x6c, 0x63), (0x70, 0x85), (0x74, 0x17), (usize::MAX, 0)];
+
+/// Which table source the current boot is using. Recorded by
+/// `install_dt_phy_sequences()` and published through the retained-trace
+/// readout channel: 0 = compiled fallback (or no DT at all), 1 = a two-entry
+/// HS override from the DT, 2 = a three-entry HS override from the DT, 3 =
+/// the QMP table also installed from the DT. The fallback initial value is
+/// 0, which is the correct classification before any install attempt.
+pub(crate) static mut HSPHY_TABLE_SOURCE: u32 = 0;
+
+/// Observation of the DT `qcom,param-override-seq` property exactly as the
+/// FDT reader returned it, captured before any validation. The round-3
+/// packing collapsed (value, offset) pairs into one slot and conflated
+/// "property absent" with "property present but the first pair incomplete",
+/// so the fields below are kept separately:
+/// - `present` is set iff the property name was found on a matched,
+///   enabled hsphy node (regardless of its length).
+/// - `length_bytes` is the raw property byte length (0 when absent).
+/// - `cells` holds the six raw big-endian cells in property order; `None`
+///   means the cell was not present in the property.
+pub(crate) static mut HS_DT_PARAM_OVERRIDE: (bool, u32, [Option<u32>; 6]) = (false, 0, [None; 6]);
+
+/// Identity of the compatible HS-PHY node used for the observation. The
+/// ordinal is among enabled matching nodes; `reg_base` is the first `reg`
+/// tuple address.
+pub(crate) static mut HS_DT_NODE_IDENTITY: (bool, u32, u64) = (false, 0, 0);
+
+pub fn hsphy_table_source() -> u32 {
+    unsafe { HSPHY_TABLE_SOURCE }
+}
+
+/// Small identity readout codes. `ordinal` is capped for the four-bit timing
+/// channel; `reg-match` is 1 only for the qpr1 primary base 0x088e3000.
+pub fn hsphy_node_code(aspect: &str) -> u32 {
+    let (node_present, ordinal, reg_base) = unsafe { HS_DT_NODE_IDENTITY };
+    let (property_present, property_length, _) = unsafe { HS_DT_PARAM_OVERRIDE };
+    match aspect {
+        "ordinal" => node_present.then_some(ordinal.min(15)).unwrap_or(0),
+        "reg-match" => {
+            if !node_present {
+                0
+            } else if reg_base == 0x088e3000 {
+                1
+            } else {
+                2
+            }
+        }
+        // 1 = ordinal 0 + 0x088e3000 + property absent; 2/3/4 are
+        // the same identity with 8/16/24-byte properties; 5 is another
+        // length, 6 is another ordinal, and 7 is another base.
+        "proof" => {
+            if !node_present {
+                0
+            } else if ordinal != 0 {
+                6
+            } else if reg_base != 0x088e3000 {
+                7
+            } else if !property_present {
+                1
+            } else {
+                match property_length {
+                    8 => 2,
+                    16 => 3,
+                    24 => 4,
+                    _ => 5,
+                }
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Categorical readout of the DT observation, one small code per aspect:
+/// `0` = property absent, `1` = present with the given byte length
+/// (8/16/24 map to themselves, anything else reads as 4), so the timing
+/// channel never carries a huge raw value. `pair0/1/2` classify each
+/// (value, offset) entry: 0 = absent/incomplete, 1 = exactly the qpr1
+/// base value, 2 = the known alternate, 3 = other. Each code fits in the
+/// 4-bit attach-delay ladder without clipping.
+pub fn hsphy_prop_code(aspect: &str) -> u32 {
+    let (present, length, cells) = unsafe { HS_DT_PARAM_OVERRIDE };
+    match aspect {
+        "present" => u32::from(present),
+        "len" => match length {
+            0 => 0,
+            8 | 16 | 24 => length / 8,
+            _ => 4,
+        },
+        "pair0" | "pair1" | "pair2" => {
+            let index = aspect["pair".len()..].parse::<usize>().unwrap_or(3);
+            if index >= 3 {
+                return 0;
+            }
+            let (value, offset) = match (cells[index * 2], cells[index * 2 + 1]) {
+                (Some(value), Some(offset)) => (value, offset),
+                _ => return 0,
+            };
+            match (aspect, value, offset) {
+                ("pair0", 0x67, 0x6c) => 1,
+                ("pair1", 0xc8, 0x70) => 1,
+                ("pair0", 0x63, 0x6c) | ("pair1", 0x85, 0x70) => 2,
+                ("pair2", 0x17, 0x74) => 1,
+                _ => 3,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Record the DT observation from the install path. Called from main.rs
+/// while the DTB is live; later code reads it through `hsphy_prop_code()`.
+pub fn record_hs_dt_param_override_observation(
+    observation: Option<(bool, u32)>,
+    cells: [Option<u32>; 6],
+) {
+    let (present, length) = observation.unwrap_or((false, 0));
+    unsafe {
+        HS_DT_PARAM_OVERRIDE = (present, length, cells);
+    }
+}
+
+pub fn record_hs_dt_node_identity(observation: Option<(usize, Option<u64>)>) {
+    unsafe {
+        HS_DT_NODE_IDENTITY = observation
+            .map(|(ordinal, reg_base)| {
+                (
+                    true,
+                    ordinal.min(u32::MAX as usize) as u32,
+                    reg_base.unwrap_or(0),
+                )
+            })
+            .unwrap_or((false, 0, 0));
+    }
+}
 
 /// Install the complete PHY programming properties from the bootloader DTB.
 /// A partial or malformed property is rejected as a unit, leaving the known
@@ -173,16 +332,22 @@ pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 3] = [
 pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>; 441]) -> bool {
     let mut installed = false;
 
-    // The base Lito node has three QUSB2 override entries, but Google's
-    // Bramble/Barbet override replaces the property with only two entries:
-    // TUNE1 (0x6c) and TUNE2 (0x70); TUNE3 (0x74) is intentionally omitted.
-    // Accept either form so the two-entry production DT is not silently
-    // discarded in favour of the broader SoC fallback.
+    // The base Lito node has three QUSB2 override entries, and the Google
+    // qpr1 sources (lito-usb.dtsi and lito-qrd.dtsi) both keep three
+    // entries: TUNE1 (0x6c), TUNE2 (0x70), TUNE3 (0x74). Accept both the
+    // three-entry source form and the two-entry historical fallback so a
+    // shorter production DT is not silently discarded in favour of the
+    // broader SoC fallback.
     let hs_three = hs_raw.iter().all(Option::is_some);
     let hs_two = hs_raw[..4].iter().all(Option::is_some) && hs_raw[4..].iter().all(Option::is_none);
     if hs_three || hs_two {
         let count = if hs_two { 2 } else { 3 };
-        let mut entries = [(0usize, 0u32), (0usize, 0u32), (usize::MAX, 0u32)];
+        let mut entries = [
+            (0usize, 0u32),
+            (0usize, 0u32),
+            (usize::MAX, 0u32),
+            (usize::MAX, 0u32),
+        ];
         let mut valid = true;
         for index in 0..count {
             let value = hs_raw[index * 2].unwrap();
@@ -195,7 +360,13 @@ pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>;
             entries[index] = (offset as usize, value);
         }
         if valid {
-            unsafe { ACTIVE_HSPHY_PARAM_OVERRIDE = entries };
+            unsafe {
+                ACTIVE_HSPHY_PARAM_OVERRIDE = entries;
+                // 1 = two-entry production override, 2 = three-entry SoC
+                // override. Distinguish them so the retained-trace readout
+                // can prove which analog tuning the boot actually used.
+                HSPHY_TABLE_SOURCE = if hs_two { 1 } else { 2 };
+            }
             installed = true;
         }
     }
@@ -221,6 +392,10 @@ pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>;
             unsafe {
                 ACTIVE_QMP_INIT = entries;
                 ACTIVE_QMP_INIT_DELAY_US = delays;
+                // Bit 8 marks a fully DT-installed QMP table on top of the
+                // HS classification, so a fallback QMP table cannot be
+                // confused with a DT-supplied one in the readout.
+                HSPHY_TABLE_SOURCE |= 0x100;
             }
             installed = true;
         }

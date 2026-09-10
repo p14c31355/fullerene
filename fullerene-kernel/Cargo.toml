@@ -7,10 +7,13 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+autoexamples = false
 
 [[bin]]
 name = "fullerene-kernel"
 path = "src/main.rs"
+test = false
+bench = false
 
 [[bin]]
 name = "fullerene-kernel-esp32"
@@ -21,7 +24,7 @@ bench = false
 
 [[bin]]
 name = "fullerene-kernel-aarch64"
-path = "src/arch/aarch64/main.rs"
+path = "src/arch/aarch64/bin.rs"
 required-features = ["aarch64"]
 test = false
 bench = false
@@ -77,6 +80,46 @@ test = false
 bench = false
 required-features = ["native-payload"]
 
+# The remaining files under examples/ are freestanding AArch64 payloads or
+# modules embedded by build.rs. Keep them out of the host test harness: the
+# payloads intentionally have no `main`, use AArch64 syscall registers, or
+# provide their own panic/entry contract.
+[[example]]
+name = "android_aarch64_init"
+test = false
+bench = false
+required-features = ["aarch64"]
+
+[[example]]
+name = "android_aarch64_service"
+test = false
+bench = false
+required-features = ["aarch64"]
+
+[[example]]
+name = "linux_aarch64_smoke"
+test = false
+bench = false
+required-features = ["aarch64"]
+
+[[example]]
+name = "native_aarch64_child"
+test = false
+bench = false
+required-features = ["aarch64"]
+
+[[example]]
+name = "native_aarch64_launchd"
+test = false
+bench = false
+required-features = ["aarch64"]
+
+# The freestanding AArch64 boot binary is intentionally not a test harness,
+# but the allocation-free DTB parser can be tested on the host unchanged.
+[[test]]
+name = "aarch64_fdt"
+path = "tests/aarch64_fdt.rs"
+
 [target.'cfg(all(not(target_arch = "aarch64"), not(target_arch = "xtensa")))'.dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",
@@ -119,6 +162,8 @@ wasi_runtime = { path = "../solvent/wasi" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 fullerene-abi = { path = "abi" }
+genome = { path = "../genome" }
+spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 fullerene-abi = { path = "abi" }
@@ -136,6 +181,14 @@ busybox-build = { path = "../toluene/busybox-build" }
 [features]
 default = []
 aarch64 = []
+aarch64-user-smoke = []
+aarch64-user-fault-smoke = ["aarch64-user-smoke"]
+aarch64-user-launchd = []
+aarch64-linux-smoke = ["aarch64-user-launchd"]
+# Boot the read-only Android `/system/bin/init` through the same AArch64
+# user-task boundary. The feature is intentionally opt-in because it requires
+# a successful Bramble UFS/LP/filesystem mount at runtime.
+aarch64-android-init = ["aarch64-user-launchd"]
 esp32 = [
   "nitrogen/esp32",
   "genome/esp32",

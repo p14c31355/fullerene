@@ -6,8 +6,71 @@ use core::{
     panic::PanicInfo,
 };
 
+#[path = "fdt.rs"]
+mod fdt;
 #[path = "../../platform/mod.rs"]
 mod platform;
+mod fs {
+    pub(crate) fn debug_property_dump(destination: &mut [u8]) -> usize {
+        let output =
+            b"[ro.debuggable]: [1]\n[ro.hardware]: [bramble]\n[ro.property_service.version]: [2]\n";
+        let length = output.len().min(destination.len());
+        destination[..length].copy_from_slice(&output[..length]);
+        length
+    }
+
+    pub(crate) fn debug_property_value(name: &[u8], destination: &mut [u8]) -> Option<usize> {
+        let value = match name {
+            b"ro.debuggable" => b"1".as_slice(),
+            b"ro.hardware" => b"bramble".as_slice(),
+            b"ro.property_service.version" => b"2".as_slice(),
+            _ => return None,
+        };
+        let length = value.len().min(destination.len());
+        destination[..length].copy_from_slice(&value[..length]);
+        Some(length)
+    }
+
+    pub(crate) fn debug_mount_table(destination: &mut [u8]) -> usize {
+        let output = b"proc /proc proc ro 0 0\nsysfs /sys sysfs ro 0 0\n";
+        let length = output.len().min(destination.len());
+        destination[..length].copy_from_slice(&output[..length]);
+        length
+    }
+
+    pub(crate) fn debug_file_snapshot(path: &[u8], destination: &mut [u8]) -> Option<usize> {
+        match path {
+            b"/proc/mounts" => Some(debug_mount_table(destination)),
+            b"/proc/cmdline" => Some(debug_copy_static(
+                destination,
+                b"console=ttyMSM0 androidboot.hardware=bramble\n",
+            )),
+            b"/proc/version" => Some(debug_copy_static(
+                destination,
+                b"FullereneOS Linux compatibility boundary\n",
+            )),
+            _ => None,
+        }
+    }
+
+    // The standalone USB probe has no Android-init VFS or SELinux policy.
+    // Keep the shared ADB transport's control surface linkable, but reject
+    // root transitions and sync writes instead of pretending that this
+    // pre-MMU probe owns those services.
+    pub(crate) fn debug_adbd_to_su_transition_allowed() -> bool {
+        false
+    }
+
+    pub(crate) fn debug_file_write(_path: &[u8], _data: &[u8]) -> bool {
+        false
+    }
+
+    fn debug_copy_static(destination: &mut [u8], source: &[u8]) -> usize {
+        let length = source.len().min(destination.len());
+        destination[..length].copy_from_slice(&source[..length]);
+        length
+    }
+}
 mod timer;
 mod uart;
 mod usb;
@@ -121,11 +184,12 @@ global_asm!(
          .if {minimal}\n\
              adr x7, _start\n\
              sub sp, sp, #16\n\
-             str x0, [sp]\n\
+             stp x0, x2, [sp]\n\
              mov x0, x7\n\
              bl aarch64_usb_probe_apply_relocations\n\
-             ldr x0, [sp]\n\
+             ldp x0, x2, [sp]\n\
              add sp, sp, #16\n\
+             mov x1, x2\n\
              b usb_probe_entry\n\
          .endif\n\
       // Timer IRQ is the recovery net; gadget disables it after EP0 progress, pullup-only leaves it armed.
@@ -188,11 +252,12 @@ global_asm!(
          msr DAIFClr, #2\n\
          adr x7, _start\n\
          sub sp, sp, #16\n\
-         str x0, [sp]\n\
+         stp x0, x2, [sp]\n\
          mov x0, x7\n\
          bl aarch64_usb_probe_apply_relocations\n\
-         ldr x0, [sp]\n\
+         ldp x0, x2, [sp]\n\
          add sp, sp, #16\n\
+         mov x1, x2\n\
          b usb_probe_entry\n\
      .size usb_probe_el1_entry, . - usb_probe_el1_entry\n\
      .balign 4\n\
@@ -356,8 +421,8 @@ extern "C" fn usb_probe_irq() {
     let interrupt = interrupt_id as u32;
     // Handle timer PPI before platform IRQ filtering; otherwise a no-host probe can stay in WFE forever.
     if interrupt == timer::TIMER_PPI {
-        // One SDIS blip proves timer PPI delivery and handler execution on link-ON stall-map runs.
-        usb::sdisc_blips_link_on(1);
+        // One Run/Stop blip proves timer PPI delivery and handler execution on link-ON stall-map runs.
+        usb::runstop_blips_link_on(1);
         reset_after_probe_failure();
     }
     if platform::bramble::is_usb_irq(interrupt) {
@@ -422,6 +487,16 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("utmi-trdtim-stage5") => Some("utmi-trdtim-stage5"),
         Some("utmi-write-requested-trdtim") => Some("utmi-write-requested-trdtim"),
         Some("utmi-write-readback-trdtim") => Some("utmi-write-readback-trdtim"),
+        Some("hsphy-valid") => Some("hsphy-valid"),
+        Some("hsphy-sleepm") => Some("hsphy-sleepm"),
+        Some("hsphy-opmode") => Some("hsphy-opmode"),
+        Some("hsphy-termsel") => Some("hsphy-termsel"),
+        Some("hsphy-suspend-n") => Some("hsphy-suspend-n"),
+        Some("hsphy-suspend-n-sel") => Some("hsphy-suspend-n-sel"),
+        Some("hsphy-por") => Some("hsphy-por"),
+        Some("hsphy-por-clear-after-runstop") => Some("hsphy-por-clear-after-runstop"),
+        Some("hsphy-vbus-valid0") => Some("hsphy-vbus-valid0"),
+        Some("hsphy-vbus-valid1") => Some("hsphy-vbus-valid1"),
         Some("protocol") => Some("protocol"),
         Some("dwc3-state") => Some("dwc3-state"),
         Some("dwc3-event") => Some("dwc3-event"),
@@ -441,6 +516,86 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("dwc3-cmd0-act") => Some("dwc3-cmd0-act"),
         Some("dwc3-cmd1-act") => Some("dwc3-cmd1-act"),
         Some("dwc3-trb") => Some("dwc3-trb"),
+        Some("dwc3-debug-valid") => Some("dwc3-debug-valid"),
+        Some("dwc3-debug-txfifo") => Some("dwc3-debug-txfifo"),
+        Some("dwc3-debug-rxfifo") => Some("dwc3-debug-rxfifo"),
+        Some("dwc3-debug-txreq") => Some("dwc3-debug-txreq"),
+        Some("dwc3-debug-rxreq") => Some("dwc3-debug-rxreq"),
+        Some("dwc3-debug-rxinfo") => Some("dwc3-debug-rxinfo"),
+        Some("dwc3-debug-pstat") => Some("dwc3-debug-pstat"),
+        Some("dwc3-debug-descfetch") => Some("dwc3-debug-descfetch"),
+        Some("dwc3-debug-eventq") => Some("dwc3-debug-eventq"),
+        Some("dwc3-debug-queue-change") => Some("dwc3-debug-queue-change"),
+        Some("dwc3-debug-rxreq-change") => Some("dwc3-debug-rxreq-change"),
+        Some("dwc3-debug-rxinfo-change") => Some("dwc3-debug-rxinfo-change"),
+        Some("dwc3-debug-descfetch-change") => Some("dwc3-debug-descfetch-change"),
+        Some("dwc3-debug-eventq-change") => Some("dwc3-debug-eventq-change"),
+        Some("dwc3-debug-lsp-change") => Some("dwc3-debug-lsp-change"),
+        Some("dwc3-debug-epinfo") => Some("dwc3-debug-epinfo"),
+        Some("dwc3-free-entry-rxreq") => Some("dwc3-free-entry-rxreq"),
+        Some("dwc3-free-descriptor-window-rxreq") => Some("dwc3-free-descriptor-window-rxreq"),
+        Some("dwc3-free-descriptor-window-txfifo") => Some("dwc3-free-descriptor-window-txfifo"),
+        Some("dwc3-free-descriptor-window-rxfifo") => Some("dwc3-free-descriptor-window-rxfifo"),
+        Some("dwc3-free-descriptor-window-txreq") => Some("dwc3-free-descriptor-window-txreq"),
+        Some("dwc3-free-descriptor-window-rxinfo") => Some("dwc3-free-descriptor-window-rxinfo"),
+        Some("dwc3-free-descriptor-window-eventq") => Some("dwc3-free-descriptor-window-eventq"),
+        Some("dwc3-free-descriptor-window-pstat") => Some("dwc3-free-descriptor-window-pstat"),
+        Some("dwc3-free-descriptor-window-descfetch") => {
+            Some("dwc3-free-descriptor-window-descfetch")
+        }
+        Some("dwc3-free-entry-rxreq-wide") => Some("dwc3-free-entry-rxreq-wide"),
+        Some("dwc3-free-post-reset-rxreq") => Some("dwc3-free-post-reset-rxreq"),
+        Some("dwc3-free-endpoint-config-rxreq") => Some("dwc3-free-endpoint-config-rxreq"),
+        Some("dwc3-free-endpoint-config-txfifo") => Some("dwc3-free-endpoint-config-txfifo"),
+        Some("dwc3-free-endpoint-config-rxfifo") => Some("dwc3-free-endpoint-config-rxfifo"),
+        Some("dwc3-free-endpoint-config-txreq") => Some("dwc3-free-endpoint-config-txreq"),
+        Some("dwc3-free-endpoint-config-pstat") => Some("dwc3-free-endpoint-config-pstat"),
+        Some("dwc3-free-endpoint-config-descfetch") => Some("dwc3-free-endpoint-config-descfetch"),
+        Some("dwc3-free-pre-runstop-rxreq") => Some("dwc3-free-pre-runstop-rxreq"),
+        Some("dwc3-free-post-runstop-rxreq") => Some("dwc3-free-post-runstop-rxreq"),
+        Some("dwc3-free-rxreq-change") => Some("dwc3-free-rxreq-change"),
+        Some("dwc3-free-entry-rxinfo") => Some("dwc3-free-entry-rxinfo"),
+        Some("dwc3-free-post-reset-rxinfo") => Some("dwc3-free-post-reset-rxinfo"),
+        Some("dwc3-free-endpoint-config-rxinfo") => Some("dwc3-free-endpoint-config-rxinfo"),
+        Some("dwc3-free-pre-runstop-rxinfo") => Some("dwc3-free-pre-runstop-rxinfo"),
+        Some("dwc3-free-post-runstop-rxinfo") => Some("dwc3-free-post-runstop-rxinfo"),
+        Some("dwc3-free-rxinfo-change") => Some("dwc3-free-rxinfo-change"),
+        Some("dwc3-free-entry-eventq") => Some("dwc3-free-entry-eventq"),
+        Some("dwc3-free-post-reset-eventq") => Some("dwc3-free-post-reset-eventq"),
+        Some("dwc3-free-endpoint-config-eventq") => Some("dwc3-free-endpoint-config-eventq"),
+        Some("dwc3-free-pre-runstop-eventq") => Some("dwc3-free-pre-runstop-eventq"),
+        Some("dwc3-free-post-runstop-eventq") => Some("dwc3-free-post-runstop-eventq"),
+        Some("dwc3-free-eventq-change") => Some("dwc3-free-eventq-change"),
+        Some("dwc3-free-entry-txfifo") => Some("dwc3-free-entry-txfifo"),
+        Some("dwc3-free-post-reset-txfifo") => Some("dwc3-free-post-reset-txfifo"),
+        Some("dwc3-free-endpoint-config-txfifo") => Some("dwc3-free-endpoint-config-txfifo"),
+        Some("dwc3-free-pre-runstop-txfifo") => Some("dwc3-free-pre-runstop-txfifo"),
+        Some("dwc3-free-post-runstop-txfifo") => Some("dwc3-free-post-runstop-txfifo"),
+        Some("dwc3-free-txfifo-change") => Some("dwc3-free-txfifo-change"),
+        Some("dwc3-free-entry-rxfifo") => Some("dwc3-free-entry-rxfifo"),
+        Some("dwc3-free-post-reset-rxfifo") => Some("dwc3-free-post-reset-rxfifo"),
+        Some("dwc3-free-endpoint-config-rxfifo") => Some("dwc3-free-endpoint-config-rxfifo"),
+        Some("dwc3-free-pre-runstop-rxfifo") => Some("dwc3-free-pre-runstop-rxfifo"),
+        Some("dwc3-free-post-runstop-rxfifo") => Some("dwc3-free-post-runstop-rxfifo"),
+        Some("dwc3-free-rxfifo-change") => Some("dwc3-free-rxfifo-change"),
+        Some("dwc3-free-entry-txreq") => Some("dwc3-free-entry-txreq"),
+        Some("dwc3-free-post-reset-txreq") => Some("dwc3-free-post-reset-txreq"),
+        Some("dwc3-free-endpoint-config-txreq") => Some("dwc3-free-endpoint-config-txreq"),
+        Some("dwc3-free-pre-runstop-txreq") => Some("dwc3-free-pre-runstop-txreq"),
+        Some("dwc3-free-post-runstop-txreq") => Some("dwc3-free-post-runstop-txreq"),
+        Some("dwc3-free-txreq-change") => Some("dwc3-free-txreq-change"),
+        Some("dwc3-free-entry-pstat") => Some("dwc3-free-entry-pstat"),
+        Some("dwc3-free-post-reset-pstat") => Some("dwc3-free-post-reset-pstat"),
+        Some("dwc3-free-endpoint-config-pstat") => Some("dwc3-free-endpoint-config-pstat"),
+        Some("dwc3-free-pre-runstop-pstat") => Some("dwc3-free-pre-runstop-pstat"),
+        Some("dwc3-free-post-runstop-pstat") => Some("dwc3-free-post-runstop-pstat"),
+        Some("dwc3-free-pstat-change") => Some("dwc3-free-pstat-change"),
+        Some("dwc3-free-entry-descfetch") => Some("dwc3-free-entry-descfetch"),
+        Some("dwc3-free-post-reset-descfetch") => Some("dwc3-free-post-reset-descfetch"),
+        Some("dwc3-free-endpoint-config-descfetch") => Some("dwc3-free-endpoint-config-descfetch"),
+        Some("dwc3-free-pre-runstop-descfetch") => Some("dwc3-free-pre-runstop-descfetch"),
+        Some("dwc3-free-post-runstop-descfetch") => Some("dwc3-free-post-runstop-descfetch"),
+        Some("dwc3-free-descfetch-change") => Some("dwc3-free-descfetch-change"),
         Some("dwc3-first-event") => Some("dwc3-first-event"),
         Some("dwc3-bite") => Some("dwc3-bite"),
         Some("ss-speed") => Some("ss-speed"),
@@ -593,6 +748,12 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // Re-issue the Linux soft_connect tail after a failed handoff. Success enumerates; failure schedules
     // a status-coded APSS bite: 1=+2s, 4=+6s, 5/6=+10s, 0/8=Run/Stop reached with a host-visible blip if
     // available. T+37-39/-110 can also mean a secure/unwritable WDT.
+    // All DWC3 free-space selectors own the transport and must not inherit the
+    // legacy U0-arm marker, which can stop/start the core before the first
+    // attach becomes host-visible.
+    let free_gate = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE")
+        .filter(|value| value.starts_with("dwc3-free-"))
+        .is_some();
     // A SUCCESSFUL handoff must NOT be rescued: re-running the tail on a
     // live gadget wedges endpoint commands (CMDACT races on re-Run/Stop)
     // and the un-petted rescue time crosses the ~17 s unknown watchdog,
@@ -609,15 +770,17 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         5 | 6 => usb::u0_arm_wdt_bite(10),
         // A 0/8 blip proves a running core and U0; its presence/absence distinguishes dead EP0 from failed HS
         // training.
-        0 | 8 => usb::u0_arm_set_blips(1),
+        0 | 8 if !free_gate => usb::u0_arm_set_blips(1),
         _ => {}
     }
-    // Clear u0 blips for diag readouts so they own every SDIS pair.
+    // Clear queued transport blips for diag readouts so they own every
+    // Run/Stop pair.
     if cmd_gate_is("diag")
         || cmd_gate_is("lnk3")
         || cmd_gate_is("sof")
     // forcehs is an enumeration attempt; do not reset it with a blip.
         || cmd_gate_is("forcehs")
+        || free_gate
     {
         usb::u0_arm_set_blips(0);
     }
@@ -673,6 +836,9 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     loop {
         usb::wdt_pet();
         usb::poll();
+        if let Some(queue) = usb::dwc3_debug_window_queue() {
+            usb::trace_dwc3_debug_window_sample(queue);
+        }
         // `setup-cut` is a one-shot protocol-boundary probe. The latch is set
         // only after the EP0 setup TRB has been DMAed/parsed; stop immediately
         // so the host journal can distinguish "SETUP reached software" from
@@ -1172,6 +1338,25 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             }
             park_without_recovery_timer();
         }
+        if selector == "hsphy-valid" {
+            // `hsphy-valid` uses 1=missing and 2=present so that a valid
+            // zero-valued HS-PHY field cannot collapse into the no-record
+            // bucket. Publish that categorical result with the same bounded
+            // Run/Stop transport used by the protocol readout: one pair is
+            // missing, two pairs are present. This changes no PHY, TRB, or
+            // response-data state.
+            let code = usb::utmi_readout_code(selector).clamp(1, 2) as u64;
+            trace_gate(0x4853_5651 | ((code as u32) << 16)); // "HSVQ" + code
+            for _ in 0..code {
+                let _ = usb::gate_true_stop_device();
+                let dropped = probe_counter().saturating_add(frequency / 4);
+                poll_until_probe_ticks(frequency, dropped);
+                let _ = usb::gate_true_run_device();
+                let attached = probe_counter().saturating_add(frequency * 3 / 10);
+                poll_until_probe_ticks(frequency, attached);
+            }
+            park_without_recovery_timer();
+        }
         if selector == "protocol" {
             // Publish the retained EP0 command/SETUP classification through
             // the only signal channel that has been useful on this board:
@@ -1219,16 +1404,31 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
                 0x4457_4300 // "DWC0"
             };
             trace_gate(tag | (code & 0xff));
-            // Publish the four-bit boundary code as same-boot attach cycles;
-            // this avoids relying on warm-reset DRAM retention, which Android
-            // may overwrite before the next Fullerene image starts.
-            for _ in 0..code {
-                let _ = usb::gate_true_stop_device();
-                let dropped = probe_counter().saturating_add(frequency / 4);
-                poll_until_probe_ticks(frequency, dropped);
-                let _ = usb::gate_true_run_device();
-                let attached = probe_counter().saturating_add(frequency * 3 / 10);
-                poll_until_probe_ticks(frequency, attached);
+            // Publish the bounded readout as fast source-aligned Run/Stop
+            // pairs. Unlike the old timing bucket, host jitter is irrelevant:
+            // one completed stop/run pair is one host disconnect/re-attach
+            // observation. Code 6 is reserved for invalid/unavailable.
+            if selector.starts_with("dwc3-free-") {
+                let pairs = if selector.starts_with("dwc3-free-descriptor-window-") {
+                    match code {
+                        1 => 1,     // same as baseline
+                        2..=4 => 2, // changed: decreased/increased/both
+                        6 => 3,     // invalid/unavailable
+                        _ => 0,
+                    }
+                } else {
+                    code
+                };
+                usb::runstop_blips_fast(pairs);
+            } else {
+                for _ in 0..code {
+                    let _ = usb::gate_true_stop_device();
+                    let dropped = probe_counter().saturating_add(frequency / 4);
+                    poll_until_probe_ticks(frequency, dropped);
+                    let _ = usb::gate_true_run_device();
+                    let attached = probe_counter().saturating_add(frequency * 3 / 10);
+                    poll_until_probe_ticks(frequency, attached);
+                }
             }
             park_without_recovery_timer();
         }
@@ -1353,8 +1553,237 @@ extern "C" fn usb_probe_hyper_bare() -> ! {
     }
 }
 
+/// Install the USB PHY properties from the DTB supplied by the Android
+/// bootloader.  The standalone probe is a separate binary from the normal
+/// AArch64 kernel, so it cannot rely on `main.rs` having already discovered
+/// the vendor DTB and installed its Qualcomm PHY contract.
+///
+/// On Bramble, `fastboot boot` still boots with the handset's vendor_boot and
+/// selected DTBO state.  A factory `dtbo_idx=17` therefore has to reach this
+/// binary through the same x0 DTB handoff; otherwise the probe silently uses
+/// its compiled three-pair fallback even when the device selected the
+/// production two-pair PVT override.
+#[cfg(fullerene_aarch64_bramble)]
+fn install_bootloader_usb_dt(dtb_address: u64, fallback_dtb_address: u64) {
+    let Some(dtb_address) = [dtb_address, fallback_dtb_address]
+        .into_iter()
+        .filter(|address| *address != 0 && *address % 8 == 0)
+        .find(|address| fdt::inspect(*address).is_some())
+    else {
+        return;
+    };
+    let usb_node = b"qcom,dwc-usb3-msm";
+    let hs_node = b"qcom,usb-hsphy-snps-femto";
+    let qmp_node = b"qcom,usb-ssphy-qmp-dp-combo";
+    let Some(observation) = fdt::find_compatible_node_property_observation(
+        dtb_address,
+        hs_node,
+        b"qcom,param-override-seq",
+        0,
+    ) else {
+        return;
+    };
+
+    let mut qmp_init_seq = [None; 441];
+    for (index, cell) in qmp_init_seq.iter_mut().enumerate() {
+        *cell = fdt::find_compatible_property_u32(
+            dtb_address,
+            qmp_node,
+            b"qcom,qmp-phy-init-seq",
+            index,
+        );
+    }
+    #[cfg(fullerene_aarch64_usb_probe_dt_qmp)]
+    let _ = usb::install_dt_phy_sequences(observation.cells, qmp_init_seq);
+    #[cfg(not(fullerene_aarch64_usb_probe_dt_qmp))]
+    let _ = usb::install_dt_phy_sequences(observation.cells, [None; 441]);
+    usb::record_hs_dt_param_override_observation(
+        Some((observation.property_present, observation.property_length)),
+        observation.cells,
+    );
+    usb::record_hs_dt_node_identity(Some((observation.ordinal, observation.reg_base)));
+
+    #[cfg(fullerene_aarch64_usb_probe_dt_resources)]
+    {
+        // Keep the standalone probe's active resources aligned with the normal
+        // AArch64 entry path. The factory DTB is authoritative for address-bearing
+        // resources and Qualcomm glue-owned values; the compiled Bramble tables
+        // remain the validated fallback for provider-local clock/reset and RPMh
+        // supply mappings not needed by this early image.
+        let dwc3 = fdt::find_compatible(dtb_address, b"snps,dwc3")
+            .or_else(|| fdt::find_compatible(dtb_address, usb_node));
+        let hs_phy = fdt::find_compatible(dtb_address, hs_node);
+        let hs_phy_eud = fdt::find_compatible_nth(dtb_address, hs_node, 1);
+        let qmp_phy = fdt::find_compatible(dtb_address, qmp_node);
+        let gcc = fdt::find_compatible(dtb_address, b"qcom,gcc-lito");
+        let pdc = fdt::find_compatible(dtb_address, b"qcom,lito-pdc");
+        let usb_smmu_phandle =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"iommus", 0);
+        let apps_smmu = usb_smmu_phandle
+            .and_then(|phandle| fdt::find_phandle_region(dtb_address, phandle))
+            .or_else(|| fdt::find_compatible_nth(dtb_address, b"qcom,qsmmu-v500", 1))
+            .or_else(|| fdt::find_compatible(dtb_address, b"qcom,qsmmu-v500"));
+
+        let mut contract = platform::bramble::UsbDtContract::empty();
+        contract.dma_pool = match (
+            fdt::find_compatible_property_u32(
+                dtb_address,
+                usb_node,
+                b"qcom,iommu-dma-addr-pool",
+                0,
+            ),
+            fdt::find_compatible_property_u32(
+                dtb_address,
+                usb_node,
+                b"qcom,iommu-dma-addr-pool",
+                1,
+            ),
+        ) {
+            (Some(base), Some(size)) => Some((base as u64, size as u64)),
+            _ => None,
+        };
+        contract.stream_id = fdt::find_compatible_property_u32(dtb_address, usb_node, b"iommus", 1);
+        contract.smmu_use_3_level_tables = usb_smmu_phandle.and_then(|phandle| {
+            fdt::find_phandle_property_u32(dtb_address, phandle, b"qcom,use-3-lvl-tables", 0)
+                .map(|_| true)
+        });
+        if let Some(phandle) = usb_smmu_phandle {
+            contract.smmu_global_irq =
+                fdt::find_phandle_property_u32(dtb_address, phandle, b"interrupts", 0);
+            for index in 0..platform::bramble::SMMU_CONTEXT_IRQ_COUNT {
+                contract.smmu_context_irqs[index] = fdt::find_phandle_property_u32(
+                    dtb_address,
+                    phandle,
+                    b"interrupts",
+                    3 * (index + 1) + 1,
+                );
+            }
+        }
+        for (slot, cell) in contract.qmp_reg_offsets.iter_mut().zip(0..18) {
+            *slot = fdt::find_compatible_property_u32(
+                dtb_address,
+                qmp_node,
+                b"qcom,qmp-phy-reg-offset",
+                cell,
+            );
+        }
+        contract.core_clk_rate_hz =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,core-clk-rate", 0);
+        contract.core_clk_rate_hs_hz =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,core-clk-rate-hs", 0);
+        contract.gsi_event_buffer_count =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,num-gsi-evt-buffs", 0);
+        for (slot, cell) in contract.gsi_reg_offsets.iter_mut().zip(0..6) {
+            *slot = fdt::find_compatible_property_u32(
+                dtb_address,
+                usb_node,
+                b"qcom,gsi-reg-offset",
+                cell,
+            );
+        }
+        contract.gsi_disable_io_coherency = fdt::find_compatible_property_u32(
+            dtb_address,
+            usb_node,
+            b"qcom,gsi-disable-io-coherency",
+            0,
+        )
+        .is_some();
+        contract.pm_qos_latency_us =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,pm-qos-latency", 0);
+        contract.bus_mode_count =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,msm-bus,num-cases", 0);
+        contract.bus_path_count =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"qcom,msm-bus,num-paths", 0);
+        for flat in 0..12 {
+            for field in 0..4 {
+                contract.bus_vectors[flat][field] = fdt::find_compatible_property_u32(
+                    dtb_address,
+                    usb_node,
+                    b"qcom,msm-bus,vectors-KBps",
+                    flat * 4 + field,
+                );
+            }
+        }
+        contract.irq_numbers[0] =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 1);
+        contract.irq_numbers[1] =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 5);
+        contract.irq_numbers[2] =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 8);
+        contract.irq_numbers[3] =
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 11);
+        contract.irq_numbers[4] =
+            fdt::find_compatible_property_u32(dtb_address, b"snps,dwc3", b"interrupts", 1);
+        for index in 0..4 {
+            contract.typec_irq[index] =
+                fdt::find_named_property_u32(dtb_address, b"qcom,typec@1500", b"interrupts", index);
+        }
+        contract.spmi_parent_irq =
+            fdt::find_compatible_property_u32(dtb_address, b"qcom,spmi-pmic-arb", b"interrupts", 1);
+        contract.qmp_vbus_valid_override = Some(
+            fdt::find_compatible_property_u32(
+                dtb_address,
+                qmp_node,
+                b"qcom,vbus-valid-override",
+                0,
+            )
+            .is_some(),
+        );
+        contract.vbus_reg_base = fdt::find_compatible(dtb_address, b"qcom,pm8150b-vbus-reg")
+            .and_then(|region| (region.base <= u32::MAX as u64).then_some(region.base as u32));
+        contract.gdsc =
+            fdt::find_phandle_property_region(dtb_address, usb_node, b"USB3_GDSC-supply")
+                .map(|region| (region.base, region.size));
+
+        for (slot, cell) in contract.hs_vdd_voltage_level.iter_mut().zip(0..3) {
+            *slot = fdt::find_compatible_property_u32(
+                dtb_address,
+                hs_node,
+                b"qcom,vdd-voltage-level",
+                cell,
+            );
+        }
+        for (slot, cell) in contract.qmp_vdd_voltage_level.iter_mut().zip(0..3) {
+            *slot = fdt::find_compatible_property_u32(
+                dtb_address,
+                qmp_node,
+                b"qcom,vdd-voltage-level",
+                cell,
+            );
+        }
+        contract.qmp_vdd_max_load_ua =
+            fdt::find_compatible_property_u32(dtb_address, qmp_node, b"qcom,vdd-max-load-uA", 0);
+        for (slot, cell) in contract.qmp_core_voltage_level.iter_mut().zip(0..3) {
+            *slot = fdt::find_compatible_property_u32(
+                dtb_address,
+                qmp_node,
+                b"qcom,core-voltage-level",
+                cell,
+            );
+        }
+        contract.qmp_core_max_load_ua =
+            fdt::find_compatible_property_u32(dtb_address, qmp_node, b"qcom,core-max-load-uA", 0);
+
+        let _ = platform::bramble::install_usb_gcc_base(gcc.map(|region| region.base));
+        let _ = platform::bramble::install_usb_resource_contract(
+            dwc3.map(|region| (region.base, region.size)),
+            hs_phy.map(|region| (region.base, region.size)),
+            qmp_phy.map(|region| (region.base, region.size)),
+            apps_smmu.map(|region| (region.base, region.size)),
+            pdc.map(|region| (region.base, region.size)),
+            contract,
+        );
+        let _ =
+            platform::bramble::install_usb_hs_phy_eud_base(hs_phy_eud.map(|region| region.base));
+    }
+}
+
+#[cfg(not(fullerene_aarch64_bramble))]
+fn install_bootloader_usb_dt(_dtb_address: u64, _fallback_dtb_address: u64) {}
+
 #[unsafe(no_mangle)]
-extern "C" fn usb_probe_entry() -> ! {
+extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! {
+    install_bootloader_usb_dt(dtb_address, fallback_dtb_address);
     // Disable the secure WDT first; XBL/ABL leaves it biting ~17s and killing enumeration.
     // FULLERENE_USB_SWDD_SKIP=1 isolates the SMC cost and lets it remain armed.
     if option_env!("FULLERENE_USB_SWDD_SKIP").is_none() {
@@ -1384,8 +1813,9 @@ extern "C" fn usb_probe_entry() -> ! {
     }
     // Pet the apps watchdog next: it may also have been left counting.
     usb::wdt_pet();
-    // stall-map arms timer at entry+15s, after link ON. The handler SDIS blip proves PPI/handler; ~36s
-    // means SMC reset works, ~38s means SMC is dead or PS_HOLD stalled.
+    // stall-map arms timer at entry+15s, after link ON. The handler Run/Stop
+    // pair proves PPI/handler; ~36s means SMC reset works, ~38s means SMC is
+    // dead or PS_HOLD stalled.
     if option_env!("FULLERENE_USB_SIGNAL_CMD_GATE") == Some("stall-map") {
         timer::arm_ms(15_000);
     }
@@ -1397,6 +1827,12 @@ extern "C" fn usb_probe_entry() -> ! {
     // the PON code (+1 s per step) and is readable in the host journal's
     // attach timestamp.
     let prev_boot_code = usb::prev_boot_progress_code();
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    // Boundary readout: 4 = an EP0 SETUP STARTTRANSFER completed but no
+    // SETUP reached software; 5 = DWC3 Connect Done arrived but no SETUP
+    // reached software. These are intentionally separate from the ordinary
+    // progress ladder so the next boot can gate on one exact milestone.
+    let prev_boot_boundary_code = usb::prev_boot_boundary_code();
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     let prev_boot_qmp_phase = usb::prev_boot_qmp_phase_code().min(8);
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
@@ -1413,15 +1849,19 @@ extern "C" fn usb_probe_entry() -> ! {
     // Previous-boot trace gate: 1 = attach only when the previous boot's
     // trace reached a SETUP (code >= 2), 2 = attach only when it did not,
     // 3 = attach only when the previous trace was verifiable but held no
-    // SETUP (code == 1) - which separates a surviving trace from a lost or
-    // scribbled one. The suppressed path resets before any pull-up publish,
-    // so the host journal's attach-line presence is the one-bit readout -
-    // immune to the bootloader jitter that swamps the attach-delay ladder.
+    // SETUP (code == 1); 4 = attach only when the previous trace armed the
+    // EP0 SETUP transfer but received no SETUP; 5 = attach only when the
+    // previous trace observed Connect Done but received no SETUP. These
+    // exact gates separate the DWC3 command and event-ring boundaries. The
+    // suppressed path resets before any pull-up publish, so the host
+    // journal's attach-line presence is the one-bit readout.
     if let Some(mode) = option_env!("FULLERENE_USB_PREV_TRACE_GATE") {
         let attach_wanted = match mode {
             "1" => prev_boot_code >= 2,
             "2" => prev_boot_code < 2,
             "3" => prev_boot_code == 1,
+            "4" => prev_boot_boundary_code == 4,
+            "5" => prev_boot_boundary_code == 5,
             _ => true,
         };
         usb::trace_marker(
@@ -1666,6 +2106,7 @@ extern "C" fn usb_probe_entry() -> ! {
     )) {
         // Retry only ownership races; gate runs use one attempt so evaluation lands before watchdog bite.
         let attempt_limit = if option_env!("FULLERENE_USB_PROBE_SINGLE_ATTEMPT") == Some("1")
+            || option_env!("FULLERENE_AARCH64_USB_DIRECT_ONLY") == Some("1")
             || option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1")
         {
             1u32
@@ -1708,6 +2149,11 @@ extern "C" fn usb_probe_entry() -> ! {
     } else {
         usb::init_usb2_handoff()
     };
+    // Preserve direct-only failure attribution: no signal rescue or bare
+    // pull-up publication after the selected initializer returned false.
+    if !gadget_ready && option_env!("FULLERENE_AARCH64_USB_DIRECT_ONLY") == Some("1") {
+        reset_after_probe_failure();
+    }
     // The signal channel owns only failed post-init timelines; successful enumeration must not be reset
     // by diagnostics.
     #[cfg(all(
@@ -1773,9 +2219,12 @@ extern "C" fn usb_probe_entry() -> ! {
             let _ = platform::gicv3::init(
                 platform::bramble::GICD_BASE,
                 platform::bramble::GICR_BASE,
-                // Direct handoff owns the event ring from the polling loop;
-                // enabling the DWC3 SPI here would race that consumer.
-                if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+                // Direct handoff normally owns the event ring from the
+                // polling loop; the controller-route A/B deliberately moves
+                // that ownership to the DWC3 SPI consumer.
+                if cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
+                    && !cfg!(fullerene_aarch64_usb_probe_irq_controller)
+                {
                     None
                 } else {
                     Some(platform::bramble::USB_DWC3_IRQ)
@@ -1869,7 +2318,9 @@ extern "C" fn usb_probe_entry() -> ! {
             let mut deadline =
                 probe_counter().saturating_add(frequency.saturating_mul(timeout_secs));
             let mut last_head = usb::trace_head();
-            if cfg!(fullerene_aarch64_usb_gadget_handoff_direct) {
+            if cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
+                && !cfg!(fullerene_aarch64_usb_probe_irq_controller)
+            {
                 // Direct handoff uses polling to serialize USB RESET/first SETUP. Trace activity extends the
                 // deadline, but an absolute ceiling guarantees recovery if watchdogs are dead. Enumerating
                 // runs enter STAB and never see this bound.
@@ -1890,6 +2341,14 @@ extern "C" fn usb_probe_entry() -> ! {
                     usb::wdt_pet();
                     usb::poll();
                     if unsafe { usb::gadget_handoff_post_init_stage_probe(27) } {
+                        reset_after_probe_failure();
+                    }
+                    #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
+                    if usb::ep0_signal_early_drop_poll() {
+                        // The signal probe owns this intentional disconnect;
+                        // do not let the normal EP0-progress path turn it
+                        // into a stable-park success or issue another
+                        // transfer.
                         reset_after_probe_failure();
                     }
                     if usb::probe_ep0_progress() {

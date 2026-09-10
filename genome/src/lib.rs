@@ -1,10 +1,16 @@
 #![no_std]
 extern crate alloc;
 
+pub mod android_fs;
+pub mod android_lp;
 pub mod arch;
 pub mod block;
+pub mod erofs;
+pub mod ext4;
+pub mod f2fs;
 pub mod fat;
 pub mod fs;
+pub mod gpt;
 pub mod io;
 pub mod kind;
 pub mod vfs;

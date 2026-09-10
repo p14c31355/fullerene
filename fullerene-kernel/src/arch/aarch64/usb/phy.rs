@@ -5,7 +5,9 @@ use core::ptr::{read_volatile, write_volatile};
 use super::config::qscratch_set;
 use super::log::log_puts;
 use super::mmio::*;
-use super::phy_tables::{ACTIVE_HSPHY_PARAM_OVERRIDE, ACTIVE_QMP_INIT, ACTIVE_QMP_INIT_DELAY_US};
+use super::phy_tables::{
+    ACTIVE_HSPHY_PARAM_OVERRIDE, ACTIVE_QMP_INIT, ACTIVE_QMP_INIT_DELAY_US, qmp_init_entry,
+};
 use super::trace::{TRACE_PROBE_WATCHDOG, TRACE_UTMI_CLOCK, trace_event, trace_marker};
 
 /// Current-boot result for the optional QMP phase probe. This is deliberately
@@ -187,6 +189,7 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
             if index % 16 == 0 || index + 1 == qmp_init.len() {
                 trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_0000 | (index as u32 & 0xff));
             }
+            let (offset, value) = qmp_init_entry(index, (offset, value));
             write_volatile(qmp_reg(offset), value);
             if delay_us != 0 {
                 crate::timer::delay_us(delay_us as u64);
@@ -214,7 +217,7 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
         if qmp_phase_probe_stop(7) {
             return true;
         }
-        for _ in 0..1_000_000 {
+        for attempt in 0..1_000 {
             if read_volatile(qmp_reg(pcs_status)) & QMP_PHYSTATUS == 0 {
                 trace_marker(TRACE_PROBE_WATCHDOG, 0x514d_4f4b); // "QMOK"
                 if qmp_phase_probe_stop(8) {
@@ -222,7 +225,19 @@ pub(super) unsafe fn init_qmp_phy() -> bool {
                 }
                 return true;
             }
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+            // Android's msm_ssphy_qmp_init() waits usleep_range(1, 2) between
+            // PHYSTATUS samples, so the loop has real-time meaning: at most
+            // ~1 ms of settling, sampled every microsecond. A back-to-back
+            // MMIO loop is a different time base entirely, and the UTMI
+            // clock-source helper above already switched to
+            // crate::timer::delay_us() for the same reason. Keep the
+            // historical nop-loop behavior behind an opt-out A/B.
+            if cfg!(fullerene_aarch64_usb_qmp_poll_nop_loop) {
+                core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+            } else {
+                crate::timer::delay_us(1);
+            }
+            let _ = attempt;
         }
     }
     log_puts("usb: QMP PHY initialization timeout\n");
@@ -309,8 +324,35 @@ pub(super) unsafe fn init_hsphy_source_exact() {
     unsafe { init_hsphy_inner(true) }
 }
 
+/// Restore only the raw qpr1 HS-PHY SUSPEND_N bit after the DWC3 Run/Stop
+/// boundary. qpr1's init sequence asserts this bit before clearing only
+/// SUSPEND_N_SEL; the handoff readout showed the Bramble transition clearing
+/// the raw bit at that boundary. Keep this isolated from the normal path.
+pub(super) unsafe fn restore_suspend_n_after_runstop() -> u32 {
+    unsafe {
+        hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N, HSPHY_CTRL2_SUSPEND_N);
+        read_volatile(hsphy_reg(HSPHY_CTRL2))
+    }
+}
+
+/// Re-run qpr1's selected SUSPEND_N sequence after the DWC3 Run/Stop
+/// boundary. The selector is asserted together with SUSPEND_N, then cleared
+/// exactly as in msm_hsphy_init().
+pub(super) unsafe fn restore_suspend_n_selected_after_runstop() -> u32 {
+    unsafe {
+        hsphy_update(
+            HSPHY_CTRL2,
+            HSPHY_CTRL2_SUSPEND_N_SEL | HSPHY_CTRL2_SUSPEND_N,
+            HSPHY_CTRL2_SUSPEND_N_SEL | HSPHY_CTRL2_SUSPEND_N,
+        );
+        hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N_SEL, 0);
+        read_volatile(hsphy_reg(HSPHY_CTRL2))
+    }
+}
+
 unsafe fn init_hsphy_inner(source_exact: bool) {
     unsafe {
+        let xbl_exact = cfg!(fullerene_aarch64_usb_hsphy_xbl_exact);
         hsphy_update(
             HSPHY_CFG0,
             HSPHY_CFG0_CMN_CTRL_OVERRIDE_EN,
@@ -324,34 +366,69 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             HSPHY_COMMON1_PLLBTUNE,
         );
         hsphy_update(HSPHY_REFCLK_CTRL, 0x3, 0x2);
-        hsphy_update(
-            HSPHY_COMMON1,
-            HSPHY_COMMON1_VBUSVLDEXTSEL0,
-            HSPHY_COMMON1_VBUSVLDEXTSEL0,
-        );
-        hsphy_update(
-            HSPHY_CTRL1,
-            HSPHY_CTRL1_VBUSVLDEXT0,
-            HSPHY_CTRL1_VBUSVLDEXT0,
-        );
+        if !xbl_exact {
+            // These two writes are part of qpr1 msm_hsphy_init(), but are not
+            // present in the same-build XBL usb_shared_hs_phy_init() body.
+            hsphy_update(
+                HSPHY_COMMON1,
+                HSPHY_COMMON1_VBUSVLDEXTSEL0,
+                HSPHY_COMMON1_VBUSVLDEXTSEL0,
+            );
+            hsphy_update(
+                HSPHY_CTRL1,
+                HSPHY_CTRL1_VBUSVLDEXT0,
+                HSPHY_CTRL1_VBUSVLDEXT0,
+            );
+        }
 
         // qcom,param-override-seq is encoded as (value, register offset).
-        let hsphy_param_override =
+        let mut hsphy_param_override =
             core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_HSPHY_PARAM_OVERRIDE));
+        #[cfg(fullerene_aarch64_usb_hsphy_qrd_override)]
+        {
+            // Keep the QRD alternate explicit. The exact-build stock
+            // fallback uses 0x85 at 0x70; this flag changes only that pair.
+            hsphy_param_override[1] = (0x70, 0xc8);
+        }
+        #[cfg(fullerene_aarch64_usb_hsphy_dtbo_bramble_pvt)]
+        {
+            // Factory dtbo_idx=17 is the v2 Bramble PVT overlay. Its
+            // qcom,param-override-seq replaces the base three-pair property
+            // with exactly <0x67 0x6c 0xc8 0x70>; do not retain the base
+            // TUNE3 pair when forcing this overlay as an isolated A/B.
+            hsphy_param_override[0] = (0x6c, 0x67);
+            hsphy_param_override[1] = (0x70, 0xc8);
+            hsphy_param_override[2] = (usize::MAX, 0);
+        }
+        #[cfg(fullerene_aarch64_usb_hsphy_legacy_fallback)]
+        {
+            // Physical control only: retain the historical two-pair form and
+            // omit TUNE3. The exact-build stock three-pair form is the normal
+            // default after the factory-DTB extraction.
+            hsphy_param_override[0] = (0x6c, 0x63);
+            hsphy_param_override[1] = (0x70, 0x85);
+            hsphy_param_override[2] = (usize::MAX, 0);
+        }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_xbl_hsphy_table)]
+        {
+            // The same-build Factory XBL has a fourth valid HS-PHY property
+            // entry, 0x78 <- 0x03, after the three DT override pairs.
+            hsphy_param_override[3] = (0x78, 0x03);
+        }
         for &(offset, value) in hsphy_param_override.iter() {
-            // The production Bramble/Barbet table has only two QUSB2
-            // overrides. A trailing sentinel preserves the fixed table shape
-            // and must be skipped exactly like the DT's absent third entry.
+            // The fixed table may end in a sentinel for the historical
+            // two-pair A/B; skip it exactly like an absent DT entry.
             if offset == usize::MAX {
                 continue;
             }
             write_volatile(hsphy_reg(offset), value);
+            hsphy_write_barrier();
         }
 
         // The Bramble qpr1 `msm_hsphy_init()` body does not write RTUNE_SEL;
         // retain the old local write only for the pre-existing non-exact
         // helper paths.
-        if !source_exact {
+        if !source_exact || cfg!(fullerene_aarch64_usb_hsphy_rtune) {
             hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
         }
 
@@ -366,7 +443,10 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             HSPHY_COMMON2_VREGBYPASS,
             HSPHY_COMMON2_VREGBYPASS,
         );
-        if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
+        if cfg!(any(
+            fullerene_aarch64_usb_abl_shared_hsphy,
+            fullerene_aarch64_usb_hsphy_xbl_exact
+        )) {
             hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_ATE_RESET, 0);
             hsphy_update(
                 HSPHY_TEST1,
@@ -385,20 +465,41 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
         hsphy_update(HSPHY_UTMI_CTRL5, HSPHY_UTMI_POR, 0);
         // The official SNPS femto-PHY init has no delay at this boundary. The
         // old local helper's 150 us wait is retained only outside the exact
-        // source-confirmed A/B.
+        // source-confirmed A/B. The reviewer A/B restores it even in the
+        // source-exact path: Android's equivalent settling time lives in the
+        // external reset hold (msm_hsphy_reset's 100-150 us), so a handoff
+        // that pulses the BCR line may still owe the analog block settle time
+        // here that the official driver never needs at this exact spot.
+        #[cfg(fullerene_aarch64_usb_hsphy_por_delay_150)]
+        crate::timer::delay_us(150);
+        #[cfg(not(fullerene_aarch64_usb_hsphy_por_delay_150))]
         if !source_exact {
             crate::timer::delay_us(150);
         }
         hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N_SEL, 0);
-        if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
+        if cfg!(any(
+            fullerene_aarch64_usb_abl_shared_hsphy,
+            fullerene_aarch64_usb_hsphy_xbl_exact
+        )) {
             // ABL waits after dropping SUSPEND_N_SEL before releasing the
             // common-control override.
             crate::timer::delay_us(20);
         }
         hsphy_update(HSPHY_CFG0, HSPHY_CFG0_CMN_CTRL_OVERRIDE_EN, 0);
-        if cfg!(fullerene_aarch64_usb_abl_shared_hsphy) {
+        if cfg!(any(
+            fullerene_aarch64_usb_abl_shared_hsphy,
+            fullerene_aarch64_usb_hsphy_xbl_exact
+        )) {
             // It then gives the analog block another 20 us to settle.
             crate::timer::delay_us(20);
+        }
+        #[cfg(fullerene_aarch64_usb_hsphy_clear_sleepm)]
+        {
+            // Keep the normal source-derived SLEEPM write unchanged. This
+            // explicit A/B models the active usb_phy_set_suspend(false)
+            // resume boundary after analog init, where the RX path must not
+            // remain in the PHY's sleep mode.
+            hsphy_update(HSPHY_UTMI_CTRL0, HSPHY_UTMI_SLEEPM, 0);
         }
     }
 }
@@ -421,6 +522,27 @@ pub(super) unsafe fn select_utmi_pipe_clock() {
         write_qscratch(QSCRATCH_GENERAL_CFG, value);
     }
     trace_event(TRACE_UTMI_CLOCK, 1, 0, 0, 0, 0);
+}
+
+/// Reproduce qpr1's `DWC3_CONTROLLER_POST_RESET_EVENT` USB2-only mux turn.
+///
+/// The Qualcomm glue uses a much shorter 2--5 us interval in this callback
+/// than the standalone UTMI clock-source helper above. The distinction is
+/// important for the direct Fastboot handoff: qpr1 runs this immediately
+/// after `dwc3_core_init()` returns, before gadget endpoint state is built.
+/// Keep the three read-modify-write steps and the final clear separate so a
+/// retained trace can identify this post-reset boundary.
+pub(super) unsafe fn select_utmi_pipe_clock_post_reset() {
+    trace_event(TRACE_UTMI_CLOCK, 2, 0, 0, 0, 0);
+    unsafe {
+        qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_DIS);
+        crate::timer::delay_us(3);
+        qscratch_set(QSCRATCH_GENERAL_CFG, PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
+        crate::timer::delay_us(3);
+        let value = read_qscratch(QSCRATCH_GENERAL_CFG) & !PIPE_UTMI_CLK_DIS;
+        write_qscratch(QSCRATCH_GENERAL_CFG, value);
+    }
+    trace_event(TRACE_UTMI_CLOCK, 3, 0, 0, 0, 0);
 }
 
 /// Apply the historical controller reference-clock calibration retained by

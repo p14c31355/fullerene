@@ -15,6 +15,15 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 
 const STACK_SIZE: usize = 16 * 1024;
 
+#[cfg(fullerene_aarch64_bramble)]
+const IMEM_RESTART_REASON: usize = 0x146a_b65c;
+
+#[cfg(fullerene_aarch64_bramble)]
+const IMEM_BOOTLOADER_REASON: u32 = 0x7766_5500;
+
+#[cfg(fullerene_aarch64_bramble)]
+const PS_HOLD: usize = 0x0c26_4000;
+
 // This binary deliberately has no MMU, UART, allocator, or device-driver
 // dependency. Its only job is to prove that the Android arm64 Image header,
 // Bramble load address, EL transition, and Rust entry point agree. Reaching
@@ -85,17 +94,20 @@ extern "C" fn probe_entry() -> ! {
 
     #[cfg(not(fullerene_aarch64_entry_halt_probe))]
     {
-        // The Lito DT exposes Qualcomm's PS_HOLD restart register. The Linux
-        // restart driver writes zero there as its non-secure fallback when the
-        // secure deassert-PS-­HOLD call is unavailable. Use the same documented
-        // path on Bramble so this probe does not depend on the bootloader
-        // implementing PSCI SYSTEM_RESET for a fastboot-loaded image.
+        // Leave an external entry marker in Qualcomm's volatile IMEM restart
+        // reason before resetting.  0x77665500 is the same bootloader marker
+        // used by the Linux Qualcomm restart path; unlike a UART-only marker,
+        // XBL/ABL carries it into the next boot's mode/bootreason.  This is a
+        // scratch register, not a partition or persistent image write.
         #[cfg(fullerene_aarch64_bramble)]
         unsafe {
-            core::ptr::write_volatile(0x0c26_4000usize as *mut u32, 0);
+            core::ptr::write_volatile(IMEM_RESTART_REASON as *mut u32, IMEM_BOOTLOADER_REASON);
+            core::arch::asm!("dsb sy", "isb", options(nostack));
         }
 
-        // PSCI SYSTEM_RESET, SMC32 calling convention: 0x84000009.
+        // Try PSCI SYSTEM_RESET first. Keeping the marker write and reset call
+        // on this path makes the handoff result distinguishable from a
+        // Qualcomm watchdog bite.
         unsafe {
             asm!(
                 "mov w0, #9",
@@ -109,9 +121,16 @@ extern "C" fn probe_entry() -> ! {
             );
         }
 
-        // A conforming PSCI implementation does not return from SYSTEM_RESET.
-        // Keep the CPU parked if firmware rejects the call, rather than falling
-        // through into arbitrary memory.
+        // If firmware rejects PSCI, use the documented Qualcomm PS_HOLD
+        // fallback. The Lito DT exposes this register and Linux writes zero
+        // there when secure deassert-PS_HOLD is unavailable.
+        #[cfg(fullerene_aarch64_bramble)]
+        unsafe {
+            core::ptr::write_volatile(PS_HOLD as *mut u32, 0);
+        }
+
+        // Neither reset path should return; keep the CPU parked rather than
+        // falling through into arbitrary memory.
         loop {
             core::hint::spin_loop();
         }

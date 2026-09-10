@@ -1,12 +1,27 @@
 use core::arch::asm;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub const TIMER_PPI: u32 = 30;
+
+static IRQ_READY: AtomicBool = AtomicBool::new(false);
 
 pub fn init() -> bool {
     // CNTFRQ_EL0 is firmware-owned on this path. Do not accept an unset
     // counter frequency because all delay and deadline calculations depend
     // on it.
     frequency() != 0
+}
+
+/// Some platform boot paths issue syscalls before the GIC is enabled. Syscalls
+/// issued during that window cannot rely on a timer interrupt to wake a
+/// blocked task, so the sleep boundary uses a bounded counter fallback until
+/// this flag is published by the interrupt setup.
+pub fn mark_irq_ready() {
+    IRQ_READY.store(true, Ordering::Release);
+}
+
+pub fn irq_ready() -> bool {
+    IRQ_READY.load(Ordering::Acquire)
 }
 
 pub fn arm_ms(milliseconds: u64) {
@@ -24,10 +39,23 @@ pub fn counter() -> u64 {
     value
 }
 
-fn frequency() -> u64 {
+pub fn frequency() -> u64 {
     let value: u64;
     unsafe { asm!("mrs {value}, CNTFRQ_EL0", value = out(reg) value, options(nomem, nostack)) };
     value
+}
+
+/// Return the architectural counter in the native ABI's microsecond unit.
+///
+/// `CNTPCT_EL0` is an implementation-defined tick count, while the shared
+/// syscall ABI exposes elapsed time in microseconds. Keep the conversion in
+/// one place so UPTIME, CLOCK_GETTIME, and SLEEP cannot drift apart.
+pub fn uptime_us() -> u64 {
+    let frequency = frequency();
+    if frequency == 0 {
+        return 0;
+    }
+    ((counter() as u128 * 1_000_000) / frequency as u128).min(u64::MAX as u128) as u64
 }
 
 pub fn delay_ms(milliseconds: u64) {

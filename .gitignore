@@ -24,3 +24,6 @@ bellows/src/kernel.bin
 toluene/*/app.bin
 
 tmp/
+
+# Local one-off hardware bring-up builders; intentionally outside Git scope.
+/tools/

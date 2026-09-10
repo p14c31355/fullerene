@@ -4,7 +4,12 @@ use nusb::{
     transfer::{Buffer, In, Out},
     transfer::{Bulk, Direction},
 };
-use std::{fmt::Display, fs, io, path::Path, time::Duration};
+use std::{
+    fmt::Display,
+    fs, io,
+    path::Path,
+    time::{Duration, Instant},
+};
 use tokio::runtime::Builder;
 
 const EXPECTED_PRODUCT: &str = "bramble";
@@ -69,6 +74,38 @@ pub fn run_boot(image: &Path) -> io::Result<()> {
             drop(fastboot);
 
             send_boot_command(&info).await
+        })
+}
+
+/// Wait until exactly one Bramble Fastboot device is visible.
+///
+/// This is an observation-only helper used by the non-persistent verification
+/// loop. The existing `run_boot` path still performs the product/unlocked
+/// checks immediately before downloading the image.
+pub fn wait_for_device(timeout: Duration) -> io::Result<()> {
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(other)?
+        .block_on(async move {
+            let deadline = Instant::now() + timeout;
+            loop {
+                let devices = protocol_nusb::devices().await.map_err(other)?;
+                let count = devices.count();
+                match count {
+                    1 => return Ok(()),
+                    count if count > 1 => {
+                        return Err(other(format!(
+                            "refusing to boot with {count} USB Fastboot devices"
+                        )));
+                    }
+                    _ => {}
+                }
+                if Instant::now() >= deadline {
+                    return Err(other("USB Fastboot device did not appear"));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
         })
 }
 

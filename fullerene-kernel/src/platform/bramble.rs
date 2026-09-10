@@ -2,7 +2,10 @@
 pub mod usb_clock;
 pub mod usb_reset;
 
-#[cfg(fullerene_aarch64_usb_gadget_handoff_ss_reassert_link_clocks_after_runstop)]
+#[cfg(any(
+    fullerene_aarch64_usb_android_block_reset,
+    fullerene_aarch64_usb_gadget_handoff_ss_reassert_link_clocks_after_runstop,
+))]
 pub use usb_clock::android_controller_block_reset;
 pub use usb_clock::{
     android_dbm_reset_and_enable, configure_usb_clocks, configure_usb_controller_clocks,
@@ -1011,6 +1014,8 @@ const RPMH_LDOA12: [u8; 8] = rpmh_id(b"ldoa12");
 const RPMH_LDOA2: [u8; 8] = rpmh_id(b"ldoa2");
 const RPMH_LDOA9: [u8; 8] = rpmh_id(b"ldoa9");
 const RPMH_LDOA18: [u8; 8] = rpmh_id(b"ldoa18");
+const RPMH_LDOC7: [u8; 8] = rpmh_id(b"ldoc7");
+const RPMH_SMPA4: [u8; 8] = rpmh_id(b"smpa4");
 /// The `rpmh-regulator-cxlvl` resource consumed by the GCC block
 /// (`vdd_cx-supply`/`vdd_cx_ao-supply` on the `qcom,gcc@100000` node).  Every
 /// USB clock branch and the USB30 GDSC live inside the CX corner domain, so
@@ -1421,6 +1426,8 @@ pub fn rpmh_resource_id_from_regulator_name(bytes: &[u8], len: usize) -> Option<
         b"pm8150b_l12" => Some(rpmh_id(b"ldob12")),
         b"pm8150b_l2" => Some(rpmh_id(b"ldob2")),
         b"pm8150_l9" => Some(RPMH_LDOA9),
+        b"pm8150a_l7" => Some(RPMH_LDOC7),
+        b"pm8150_s4" => Some(RPMH_SMPA4),
         _ => None,
     }
 }
@@ -2981,6 +2988,20 @@ const RPMH_CMD_MSGID_WRITE: u32 = 1 << 16;
 const RPMH_CMD_STATUS_ISSUED: u32 = 1 << 8;
 const RPMH_CMD_STATUS_COMPLETE: u32 = 1 << 16;
 
+pub const RPMH_REGULATOR_SET_ACTIVE: u32 = 1;
+pub const RPMH_REGULATOR_SET_SLEEP: u32 = 2;
+pub const RPMH_REGULATOR_SET_ALL: u32 = RPMH_REGULATOR_SET_ACTIVE | RPMH_REGULATOR_SET_SLEEP;
+
+/// One Apps-RSC TCS family. Qualcomm's RPMh regulator `qcom,set` property
+/// selects these independently; an active request cannot stand in for the
+/// sleep-set request used after assisted power collapse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpmhTcsSet {
+    Active,
+    Sleep,
+    Wake,
+}
+
 #[inline]
 unsafe fn rpmh_reg(base: usize, offset: usize) -> *mut u32 {
     (base + offset) as *mut u32
@@ -2997,11 +3018,11 @@ unsafe fn rpmh_write_sync(base: usize, offset: usize, value: u32) -> bool {
     false
 }
 
-/// Submit a bounded batch of RPMh commands through an Apps-RSC active TCS.
+/// Submit a bounded batch of RPMh commands through one Apps-RSC TCS family.
 /// Both BCM interconnect votes and VRM regulator requests use this same
 /// ownership/trigger/completion protocol; keeping it shared prevents the
 /// regulator path from accidentally bypassing TCS arbitration.
-unsafe fn send_rpmh_command_batch(commands: &[RpmhBcmCommand]) -> bool {
+unsafe fn send_rpmh_command_batch_in_set(commands: &[RpmhBcmCommand], set: RpmhTcsSet) -> bool {
     if commands.is_empty() || commands.len() > 4 {
         return false;
     }
@@ -3011,8 +3032,13 @@ unsafe fn send_rpmh_command_batch(commands: &[RpmhBcmCommand]) -> bool {
         return false;
     };
     let tcs_base = resources.driver_base + resources.tcs_offset;
+    let (tcs_offset, tcs_count) = match set {
+        RpmhTcsSet::Active => (resources.active_tcs_offset, resources.active_tcs),
+        RpmhTcsSet::Sleep => (resources.sleep_tcs_offset, resources.sleep_tcs),
+        RpmhTcsSet::Wake => (resources.wake_tcs_offset, resources.wake_tcs),
+    };
     let mut selected = None;
-    for tcs in resources.active_tcs_offset..resources.active_tcs_offset + resources.active_tcs {
+    for tcs in tcs_offset..tcs_offset + tcs_count {
         let base = tcs_base + tcs as usize * layout.tcs_stride;
         let enabled = unsafe { core::ptr::read_volatile(rpmh_reg(base, layout.command_enable)) };
         if enabled == 0 {
@@ -3089,6 +3115,92 @@ unsafe fn send_rpmh_command_batch(commands: &[RpmhBcmCommand]) -> bool {
     complete && released
 }
 
+/// Preserve the existing active-only callers while making the TCS set
+/// explicit for new secure-resource clients.
+unsafe fn send_rpmh_command_batch(commands: &[RpmhBcmCommand]) -> bool {
+    unsafe { send_rpmh_command_batch_in_set(commands, RpmhTcsSet::Active) }
+}
+
+/// Send a PMIC VRM request to the set(s) selected by a Qualcomm `qcom,set`
+/// value. The command addresses are resolved from Command DB and the request
+/// is acknowledged independently in each selected TCS family.
+pub unsafe fn send_rpmh_regulator_request(
+    resource_id: &[u8; 8],
+    voltage_uv: Option<u32>,
+    mode: u32,
+    enabled: bool,
+    set_mask: u32,
+) -> bool {
+    if set_mask == 0 || set_mask & !(RPMH_REGULATOR_SET_ACTIVE | RPMH_REGULATOR_SET_SLEEP) != 0 {
+        return false;
+    }
+    let Some(address) = (unsafe { command_db_read_addr(resource_id) }) else {
+        return false;
+    };
+    let mut commands = [RpmhBcmCommand {
+        address: 0,
+        data: 0,
+    }; 3];
+    let mut count = 0;
+    if let Some(voltage_uv) = voltage_uv {
+        if voltage_uv == 0 {
+            return false;
+        }
+        commands[count] = RpmhBcmCommand {
+            address: address + RPMH_REGULATOR_VRM_VOLTAGE,
+            data: voltage_uv / 1000,
+        };
+        count += 1;
+    }
+    commands[count] = RpmhBcmCommand {
+        address: address + RPMH_REGULATOR_ENABLE,
+        data: u32::from(enabled),
+    };
+    count += 1;
+    commands[count] = RpmhBcmCommand {
+        address: address + RPMH_REGULATOR_MODE,
+        data: mode,
+    };
+    count += 1;
+
+    // Linux's RPMh aggregator programs the lower-power state before the
+    // immediate active state. Keep that order for qcom,set=3.
+    if set_mask & RPMH_REGULATOR_SET_SLEEP != 0
+        && !unsafe { send_rpmh_command_batch_in_set(&commands[..count], RpmhTcsSet::Sleep) }
+    {
+        return false;
+    }
+    if set_mask & RPMH_REGULATOR_SET_ACTIVE != 0
+        && !unsafe { send_rpmh_command_batch_in_set(&commands[..count], RpmhTcsSet::Active) }
+    {
+        return false;
+    }
+    true
+}
+
+/// Send one direct active-only RPMh command after resolving its Command DB
+/// resource name. Qualcomm PHY resources such as `qphy.lvl` are not VRM
+/// regulator subcommands and must be sent as the resource's raw ARC value;
+/// keeping this wrapper beside the TCS arbitration prevents UFS from
+/// reimplementing ownership and completion handling.
+pub unsafe fn send_rpmh_resource_value(resource: &[u8; 8], value: u32) -> bool {
+    let Some(address) = (unsafe { command_db_read_addr(resource) }) else {
+        return false;
+    };
+    let command = RpmhBcmCommand {
+        address,
+        data: value,
+    };
+    unsafe { send_rpmh_command_batch(core::slice::from_ref(&command)) }
+}
+
+/// Enable the Lito RPMh CXO ARC used by both the UFS controller `ref_clk`
+/// and the QMP PHY `ref_clk_src`. The value is the Android clock driver's
+/// active vote for `xo.lvl`; it is not a guessed MMIO write.
+pub unsafe fn enable_rpmh_xo_clock() -> bool {
+    unsafe { send_rpmh_resource_value(&RPMH_XO_LVL, RPMH_XO_LVL_ON) }
+}
+
 /// Send an already-resolved USB BCM vote through one free Apps-RSC active
 /// TCS. This mirrors the ordering in `rpmh_rsc_send_data()` and
 /// `__tcs_buffer_write()`: claim an idle TCS, program all commands, trigger
@@ -3152,7 +3264,10 @@ unsafe fn send_usb_regulator_request(rail: UsbRailResource, enable: bool) -> boo
     }; 3];
     let count = if enable {
         let mut count = 0;
-        if rail.program_voltage {
+        if rail.program_voltage
+            || (cfg!(fullerene_aarch64_usb_hsphy_program_vdda_voltage)
+                && matches!(rail.name, "vdda18" | "vdda33"))
+        {
             commands[count] = RpmhBcmCommand {
                 address: address + RPMH_REGULATOR_VRM_VOLTAGE,
                 data: rail.min_uv / 1000,
@@ -3166,7 +3281,9 @@ unsafe fn send_usb_regulator_request(rail: UsbRailResource, enable: bool) -> boo
         count += 1;
         commands[count] = RpmhBcmCommand {
             address: address + RPMH_REGULATOR_MODE,
-            data: if rail.max_load_ua != 0 {
+            data: if rail.max_load_ua != 0
+                && !(cfg!(fullerene_aarch64_usb_hsphy_vdd_lpm) && rail.name == "vdd")
+            {
                 RPMH_REGULATOR_MODE_HPM
             } else {
                 RPMH_REGULATOR_MODE_LPM
@@ -3180,6 +3297,13 @@ unsafe fn send_usb_regulator_request(rail: UsbRailResource, enable: bool) -> boo
         };
         1
     };
+    let is_hs_phy_rail = matches!(rail.rpmh_resource_id, RPMH_LDOA5 | RPMH_LDOA12 | RPMH_LDOA2);
+    if cfg!(fullerene_aarch64_usb_hsphy_all_regulator_sets)
+        && is_hs_phy_rail
+        && !unsafe { send_rpmh_command_batch_in_set(&commands[..count], RpmhTcsSet::Sleep) }
+    {
+        return false;
+    }
     unsafe { send_rpmh_command_batch(&commands[..count]) }
 }
 
@@ -3448,6 +3572,14 @@ mod tests {
         assert_eq!(
             rpmh_resource_id_from_regulator_name(b"pm8150_l18", 10),
             Some(*b"ldoa18\0\0")
+        );
+        assert_eq!(
+            rpmh_resource_id_from_regulator_name(b"pm8150a_l7", 10),
+            Some(*b"ldoc7\0\0\0")
+        );
+        assert_eq!(
+            rpmh_resource_id_from_regulator_name(b"pm8150_s4", 9),
+            Some(*b"smpa4\0\0\0")
         );
         assert_eq!(rpmh_resource_id_from_regulator_name(b"pm8998_l5", 9), None);
     }

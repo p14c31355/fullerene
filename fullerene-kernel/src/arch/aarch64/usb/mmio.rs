@@ -144,12 +144,41 @@ pub(crate) const GUCTL1: usize = 0xc11c;
 // msm-4.19 core.h: GUCTL3 sits in the 0xc600 block, not next to
 // GUCTL1; the 4.19 offset is 0xc60c.
 pub(crate) const GUCTL3: usize = 0xc60c;
+// Synopsys DWC3 debug queue/FIFO and logic-state registers. Linux exposes
+// these through debugfs as read-only diagnostics; do not use them for normal
+// gadget control. GDBGFIFOSPACE is selected by endpoint number and queue type
+// and returns SPACE_AVAILABLE in bits 31:16.
+pub(crate) const GDBGFIFOSPACE: usize = 0xc160;
+pub(crate) const GDBGLSPMUX: usize = 0xc170;
+pub(crate) const GDBGLSP: usize = 0xc174;
+pub(crate) const GDBGEPINFO0: usize = 0xc178;
+pub(crate) const GDBGEPINFO1: usize = 0xc17c;
+pub(crate) const GDBGFIFOSPACE_SPACE_SHIFT: u32 = 16;
+pub(crate) const GDBGFIFOSPACE_NUM_MASK: u32 = 0x1f;
+pub(crate) const GDBGFIFOSPACE_TYPE_SHIFT: u32 = 5;
+pub(crate) const GDBGFIFOSPACE_TYPE_MASK: u32 = 0x1e0;
+// Linux's DWC3 core.h names these results SPACE_AVAILABLE: they are free
+// entries/words, not queue occupancy. Keep the masks explicit so the probe
+// cannot accidentally interpret zero as "empty".
+pub(crate) const DWC3_DEBUG_QUEUE_COUNT: usize = 8;
+pub(crate) const DWC3_DEBUG_QUEUE_TXFIFO: usize = 0;
+pub(crate) const DWC3_DEBUG_QUEUE_RXFIFO: usize = 1;
+pub(crate) const DWC3_DEBUG_QUEUE_TXREQQ: usize = 2;
+pub(crate) const DWC3_DEBUG_QUEUE_RXREQQ: usize = 3;
+pub(crate) const DWC3_DEBUG_QUEUE_RXINFOQ: usize = 4;
+pub(crate) const DWC3_DEBUG_QUEUE_PSTATQ: usize = 5;
+pub(crate) const DWC3_DEBUG_QUEUE_DESCFETCHQ: usize = 6;
+pub(crate) const DWC3_DEBUG_QUEUE_EVENTQ: usize = 7;
+pub(crate) const DWC3_DEBUG_QUEUE_AUXEVENTQ: usize = 8;
+pub(crate) const GDBGLSPMUX_DEVSELECT_SHIFT: u32 = 4;
 pub(crate) const GSNPSID: usize = 0xc120;
 pub(crate) const GRXTHRCFG: usize = 0xc10c;
 pub(crate) const GSBUSCFG1: usize = 0xc104;
 pub(crate) const GHWPARAMS0: usize = 0xc140;
 pub(crate) const GHWPARAMS1: usize = 0xc144;
 pub(crate) const GHWPARAMS3: usize = 0xc14c;
+pub(crate) const GHWPARAMS3_NUM_EPS_SHIFT: u32 = 12;
+pub(crate) const GHWPARAMS3_NUM_EPS_MASK: u32 = 0x3f << GHWPARAMS3_NUM_EPS_SHIFT;
 pub(crate) const GHWPARAMS7: usize = 0xc15c;
 pub(crate) const GDBGLTSSM: usize = 0xc164;
 // DWC_usb31 uses a separate link-debug block.  msm-4.19 core.h selects this
@@ -222,13 +251,16 @@ pub(crate) const GUSB3PIPECTL_UX_EXIT_PX: u32 = 1 << 27;
 pub(crate) const GUSB3PIPECTL_PHYSOFTRST: u32 = 1 << 31;
 
 pub(crate) const DCTL_CSFTRST: u32 = 1 << 30;
-pub(crate) const DCTL_SDIS: u32 = 1 << 0;
 pub(crate) const DCTL_APPL1RES: u32 = 1 << 23;
 pub(crate) const DCTL_HIRD_THRES_MASK: u32 = 0x1f << 24;
 pub(crate) const DCTL_HIRD_THRES_LITO: u32 = 0x10 << 24;
 pub(crate) const DCTL_HIRD_THRES_XBL: u32 = 0x07 << 24;
 pub(crate) const DCTL_L1_HIBER_EN: u32 = 1 << 18;
 pub(crate) const DCTL_KEEP_CONNECT: u32 = 1 << 19;
+// gadget.c: DWC3_DCTL_LPM_ERRATA(n) = (n) << 20, mask 0xf << 20.  The Lito DT
+// supplies snps,has-lpm-erratum with the core.c default lpm_nyet_threshold
+// 0xf, so the platform value is 0xf << 20.
+pub(crate) const DCTL_LPM_ERRATA_LITO: u32 = 0xf << 20;
 pub(crate) const DCTL_TSTCTRL_MASK: u32 = 0xf << 1;
 pub(crate) const DCTL_TRGTULST_MASK: u32 = 0x0f << 17;
 pub(crate) const DCTL_TRGTULST_RX_DET: u32 = 5 << 17;
@@ -252,7 +284,11 @@ pub(crate) const DWC31_REVISION_190A: u32 = 0x3139_302a;
 pub(crate) const DWC3_REVISION_187A: u32 = 0x5533_187a;
 pub(crate) const DWC3_REVISION_190A: u32 = 0x5533_190a;
 pub(crate) const DWC3_REVISION_194A: u32 = 0x5533_194a;
+// gadget.c gates the DCTL.LPM_ERRATA write on revision >= 240A; a DWC_usb31
+// core carries the DWC3_REVISION_IS_DWC31 bit, so its revision always passes.
+pub(crate) const DWC3_REVISION_240A: u32 = 0x5533_240a;
 pub(crate) const DWC3_REVISION_220A: u32 = 0x5533_220a;
+pub(crate) const DWC3_REVISION_230A: u32 = 0x5533_230a;
 pub(crate) const DWC3_REVISION_250A: u32 = 0x5533_250a;
 pub(crate) const DWC3_REVISION_310A: u32 = 0x5533_310a;
 pub(crate) const DWC3_REVISION_270A: u32 = 0x5533_270a;
@@ -347,6 +383,12 @@ pub(super) fn hsphy_reg(offset: usize) -> *mut u32 {
     (hsphy_base() + offset) as *mut u32
 }
 
+#[inline(always)]
+pub(super) unsafe fn hsphy_write_barrier() {
+    #[cfg(fullerene_aarch64_usb_hsphy_write_barrier)]
+    core::arch::asm!("dsb st", options(nostack, preserves_flags));
+}
+
 #[inline]
 pub(super) fn qmp_reg(offset: usize) -> *mut u32 {
     (qmp_base() + offset) as *mut u32
@@ -396,6 +438,7 @@ pub(super) unsafe fn read_qscratch(offset: usize) -> u32 {
 #[inline]
 pub(super) unsafe fn write_qscratch(offset: usize, value: u32) {
     unsafe { write_volatile(qscratch_reg(offset), value) };
+    unsafe { hsphy_write_barrier() };
     let _ = unsafe { read_volatile(qscratch_reg(offset)) };
 }
 
@@ -403,6 +446,7 @@ pub(super) unsafe fn write_qscratch(offset: usize, value: u32) {
 pub(super) unsafe fn hsphy_update(offset: usize, mask: u32, value: u32) {
     let current = unsafe { read_volatile(hsphy_reg(offset)) };
     unsafe { write_volatile(hsphy_reg(offset), (current & !mask) | (value & mask)) };
+    unsafe { hsphy_write_barrier() };
     let _ = unsafe { read_volatile(hsphy_reg(offset)) };
 }
 
