@@ -5,10 +5,10 @@ investigation. It contains the current state, fixed safety boundary, and the
 next useful discriminator. Do not load the full ledgers unless a run or source
 detail is needed.
 
-Full evidence is preserved in the [status history](../evidence/bramble/CONTEXT_STATUS_FULL.md)
-and the [AArch64 hardware ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md).
+Full evidence is preserved in the compressed [status history](../evidence/bramble/CONTEXT_STATUS_FULL.md.gz)
+and the compressed [AArch64 hardware ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md.gz).
 Use the [small Run index](../evidence/bramble/RUN_INDEX.md) to select a
-targeted section before opening either archive.
+targeted section before decompressing either archive.
 
 ## Current goals
 
@@ -75,7 +75,7 @@ isolated A/B runs without moving the pre-descriptor boundary:
 - Factory XBL/ABL and Android-init profile replays
 
 The exact run-by-run evidence, commands, timestamps, artifact hashes, and
-negative results remain in the [full status history](../evidence/bramble/CONTEXT_STATUS_FULL.md).
+negative results remain in the [full status history](../evidence/bramble/CONTEXT_STATUS_FULL.md.gz).
 
 ## Next useful work
 

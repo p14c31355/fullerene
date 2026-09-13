@@ -2,7 +2,7 @@
 
 Read [CONTEXT_STATUS.md](CONTEXT_STATUS.md) first. This file is the compact
 hardware contract for the Pixel 4a 5G (Bramble); the complete historical
-ledger is preserved in the [full AArch64 ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md).
+ledger is preserved in the compressed [full AArch64 ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md.gz).
 
 ## Target and safety boundary
 
@@ -39,5 +39,5 @@ and packet-format changes are downstream of the observed boundary and remain
 deferred until a valid EP0 data stage exists.
 
 For exact ABL/XBL audits, physical A/B results, commands, timestamps, hashes,
-and source links, use the [full ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md)
+and source links, use the compressed [full ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md.gz)
 with a targeted topic or Run ID.

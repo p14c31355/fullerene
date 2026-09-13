@@ -3,7 +3,7 @@
 For a compact, context-efficient status of the active Bramble investigation,
 start with [CONTEXT_STATUS.md](CONTEXT_STATUS.md). The Bramble section below
 is a legacy cross-platform summary. The compact AArch64 contract is in
-[HARDWARE_aarch64.md](HARDWARE_aarch64.md); the complete [AArch64 ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md)
+[HARDWARE_aarch64.md](HARDWARE_aarch64.md); the complete [AArch64 ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md.gz)
 is preserved outside the default `docs/` context surface.
 
 ## ESP32-2432S028 / Sparkle IoT XH-32S (bring-up)
@@ -341,7 +341,7 @@ digitizer contact remains the left-button/tap path.
 For the current Bramble state and next investigation, read
 [CONTEXT_STATUS.md](CONTEXT_STATUS.md). This section is a compact
 cross-platform pointer; the historical Bramble table is preserved in the
-[full Bramble summary ledger](../evidence/bramble/HARDWARE_BRAMBLE_SUMMARY_FULL.md).
+[compressed full Bramble summary ledger](../evidence/bramble/HARDWARE_BRAMBLE_SUMMARY_FULL.md.gz).
 
 | Item | Current result | Status |
 | --- | --- | --- |

@@ -13,6 +13,6 @@ is a routing view, not a replacement for the exact evidence.
 | Candidate safety and recovery automation | `1941227.0`, `1967837.0`, `1999537.0`, `2179479.0` | Absent-device gates and RAM-only boot rules remain enforced |
 
 For exact commands, timestamps, artifact hashes, source comparisons, and all
-other runs, search [`CONTEXT_STATUS_FULL.md`](CONTEXT_STATUS_FULL.md) first;
-use [`HARDWARE_aarch64_FULL.md`](HARDWARE_aarch64_FULL.md) for DT, ABL/XBL,
+other runs, search [`CONTEXT_STATUS_FULL.md.gz`](CONTEXT_STATUS_FULL.md.gz) first;
+use [`HARDWARE_aarch64_FULL.md.gz`](HARDWARE_aarch64_FULL.md.gz) for DT, ABL/XBL,
 PHY, and hardware-ledger topics.
