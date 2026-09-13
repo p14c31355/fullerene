@@ -925,6 +925,9 @@ pub(super) fn dwc3_debug_readout_code(selector: &str) -> Option<u32> {
 /// its reset delay.  Values are taken from the newest complete snapshot that
 /// was appended by `trace_utmi_state()`; no register is written here.
 pub(super) fn utmi_readout_code(selector: &str) -> u32 {
+    if selector == "utmi-progress" {
+        return super::ep0_progress_mask();
+    }
     if let Some(code) = dwc3_debug_readout_code(selector) {
         return code;
     }
@@ -996,6 +999,8 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
         let mut hs_ctrl2 = 0u32;
         let mut hs_ctrl5 = 0u32;
         let mut hs_qscratch = 0u32;
+        let mut gdb_ltssm = 0u32;
+        let mut gdb_seen = false;
         let mut gusb2_by_stage = [0u32; 16];
         let mut seen = [false; 4];
         for offset in 0..valid {
@@ -1008,8 +1013,10 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
             if entry.event != TRACE_UTMI_STATE {
                 continue;
             }
-            let group = ((entry.request >> 24) & 0x3) as usize;
-            seen[group] = true;
+            let group = ((entry.request >> 24) & 0xf) as usize;
+            if group < seen.len() {
+                seen[group] = true;
+            }
             match group {
                 0 => {
                     gusb2 = entry.value;
@@ -1034,6 +1041,10 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
                     hs_ctrl2 = entry.index;
                     hs_ctrl5 = entry.length;
                     hs_qscratch = entry.status;
+                }
+                8 => {
+                    gdb_ltssm = entry.value & 0xf;
+                    gdb_seen = true;
                 }
                 _ => {}
             }
@@ -1120,6 +1131,11 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
             // group.
             return u32::from(seen[0]) | (u32::from(seen[2]) << 1) | (u32::from(seen[3]) << 2);
         }
+        if selector == "utmi-gdb-link" {
+            // The missing-snapshot sentinel is outside the DWC3 four-bit
+            // LINKSTATE field; valid raw states remain 0..=15.
+            return if gdb_seen { gdb_ltssm } else { 15 };
+        }
         if selector == "hsphy-suspend-n-safe" {
             // Zero-safe transport for the HS-PHY RX/ownership boundary:
             // 1 = no retained HS-PHY group, 2 = present with SUSPEND_N=0,
@@ -1141,6 +1157,14 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
         }
         if seen[3] {
             let value = match selector {
+                // Compact post-observation HS-PHY state: bit 0=SLEEPM,
+                // bit 1=SUSPEND_N, bit 2=SUSPEND_N_SEL, bit 3=UTMI POR.
+                "hsphy-state-mask" => {
+                    (hs_ctrl0 & 1)
+                        | (((hs_ctrl2 >> 2) & 1) << 1)
+                        | (((hs_ctrl2 >> 3) & 1) << 2)
+                        | (((hs_ctrl5 >> 1) & 1) << 3)
+                }
                 "hsphy-sleepm" => hs_ctrl0 & 1,
                 "hsphy-opmode" => (hs_ctrl0 >> 3) & 0x3,
                 "hsphy-termsel" => (hs_ctrl0 >> 5) & 1,

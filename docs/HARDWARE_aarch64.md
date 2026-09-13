@@ -34,9 +34,13 @@ requests the address-0 Device Descriptor but receives no descriptor bytes;
 the representative failures are `-110` timeout and zero-payload `-71`
 retries. No valid Fullerene identity has been observed.
 
-The next discriminator is USB2 PHY RX/SOF or DWC3 event ingress. Endpoint/TRB
-and packet-format changes are downstream of the observed boundary and remain
-deferred until a valid EP0 data stage exists.
+The decisive internal discriminator is already recorded: STARTTRANSFER and
+pre-Run/Stop event DMA succeed, but the SOF gate observes no SOF frames. The
+remaining blocker is the USB2 PHY HS receive/clock-recovery path (or an
+external/secure owner of it). Endpoint/TRB and packet-format changes are
+downstream of the observed boundary and remain deferred until a valid EP0 data
+stage exists; further progress needs a known-good comparison, USB analyzer, or
+permitted JTAG/secure-debug capture.
 
 For exact ABL/XBL audits, physical A/B results, commands, timestamps, hashes,
 and source links, use the compressed [full ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md.gz)

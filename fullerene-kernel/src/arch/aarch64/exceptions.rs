@@ -263,6 +263,10 @@ extern "C" fn aarch64_exception_sync(frame: *mut Aarch64TrapFrame) {
         // the normal WFE halt: that leaves a physical phone on the Google
         // logo with no way to run the next RAM-only A/B. Return through the
         // same volatile IMEM marker used by the explicit diagnostic command.
+        // Preserve the fault first: the SMC below resets the temporary image,
+        // so without this retained record the normal Android-init path gives
+        // no evidence that it failed inside USB MMIO ownership.
+        super::usb::trace_sync_exception(frame.esr_el1, frame.far_el1, frame.elr_el1);
         super::usb::return_to_boot_chain();
     }
     if frame.from_user()

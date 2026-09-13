@@ -478,7 +478,9 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("utmi-gusb2-lo") => Some("utmi-gusb2-lo"),
         Some("utmi-gusb2-hi") => Some("utmi-gusb2-hi"),
         Some("utmi-link") => Some("utmi-link"),
+        Some("utmi-gdb-link") => Some("utmi-gdb-link"),
         Some("utmi-halt") => Some("utmi-halt"),
+        Some("utmi-progress") => Some("utmi-progress"),
         Some("utmi-valid") => Some("utmi-valid"),
         Some("utmi-trdtim-stage1") => Some("utmi-trdtim-stage1"),
         Some("utmi-trdtim-stage2") => Some("utmi-trdtim-stage2"),
@@ -493,6 +495,7 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("hsphy-termsel") => Some("hsphy-termsel"),
         Some("hsphy-suspend-n") => Some("hsphy-suspend-n"),
         Some("hsphy-suspend-n-sel") => Some("hsphy-suspend-n-sel"),
+        Some("hsphy-state-mask") => Some("hsphy-state-mask"),
         Some("hsphy-por") => Some("hsphy-por"),
         Some("hsphy-por-clear-after-runstop") => Some("hsphy-por-clear-after-runstop"),
         Some("hsphy-vbus-valid0") => Some("hsphy-vbus-valid0"),
@@ -1321,6 +1324,13 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // while collecting the evidence.  Four-second buckets are wide enough
     // to separate from the normal Android recovery jitter.
     if let Some(selector) = utmi_gate_selector() {
+        if selector.starts_with("utmi-") || selector.starts_with("hsphy-") {
+            // Refresh after the host's descriptor window, not just at the
+            // Run/Stop boundary.  This makes utmi-link/utmi-halt and the
+            // HS-PHY selectors describe the state seen during the actual
+            // -110 failure rather than the pre-reset baseline.
+            usb::trace_utmi_state_for_readout();
+        }
         if selector == "post-code" {
             // Publish no-record as 9 and the recorded START/END/event bits as
             // bitmask+1. The code is deliberately emitted as same-boot

@@ -3705,6 +3705,7 @@ fn build_aarch64_kernel(
         // The EUD ownership A/B is consumed by fullerene-kernel/build.rs;
         // retain it in the isolated child Cargo environment and cache key.
         "FULLERENE_AARCH64_USB_DISABLE_EUD",
+        "FULLERENE_AARCH64_USB_HSPHY_IGNORE_EUD",
         // The standalone probe IRQ-route A/B is consumed by fullerene-kernel/build.rs
         // as a cfg flag; keep route-specific binaries out of the baseline target.
         "FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES",

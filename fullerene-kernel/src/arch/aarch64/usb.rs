@@ -948,7 +948,24 @@ unsafe fn trace_utmi_state(stage: u32) {
             read_volatile(hsphy_reg(HSPHY_UTMI_CTRL5)),
             read_qscratch(QSCRATCH_HS_PHY_CTRL),
         );
+        trace_event(
+            TRACE_UTMI_STATE,
+            stage | 0x0800_0000,
+            gdb_ltssm_link_state(),
+            0,
+            0,
+            0,
+        );
     }
+}
+
+/// Refresh the read-only UTMI/DWC3 snapshot immediately before a diagnostic
+/// readout publishes it.  The normal stage-5 record is captured at the
+/// Run/Stop boundary, before xHCI has necessarily issued its bus reset; a
+/// later signal-gate read therefore needs a same-boot sample from the end of
+/// the host observation window.
+pub fn trace_utmi_state_for_readout() {
+    unsafe { trace_utmi_state(5) }
 }
 
 #[inline]
@@ -1942,6 +1959,22 @@ pub fn set_early_handoff_in_progress(active: bool) {
     unsafe {
         EARLY_HANDOFF_IN_PROGRESS = active;
     }
+}
+
+/// Retain the architectural state of a synchronous abort before the
+/// debug-return path hands control back to the boot chain. The exception
+/// handler cannot safely format UART output while a USB MMIO access may have
+/// faulted, so keep the compact five-word payload in the existing trace ABI:
+/// ESR low/high, FAR low/high, and the low ELR word.
+pub(crate) fn trace_sync_exception(esr_el1: u64, far_el1: u64, elr_el1: u64) {
+    trace_event(
+        TRACE_EXCEPTION_SYNC,
+        esr_el1 as u32,
+        (esr_el1 >> 32) as u32,
+        far_el1 as u32,
+        (far_el1 >> 32) as u32,
+        elr_el1 as u32,
+    );
 }
 
 #[inline]
@@ -9293,10 +9326,29 @@ unsafe fn update_signal_latches() {
         }
         let setup = ep0_setup_data_ptr() as *const u8;
         cache_invalidate(setup as usize, 8);
-        for offset in 0..8 {
-            if read_volatile(setup.add(offset)) != 0 {
+        if setup == trb.cast::<u8>() {
+            // qpr1 deliberately aliases the eight-byte SETUP payload to the
+            // first EP0 TRB. Before a host packet arrives, the first two
+            // words therefore still contain the TRB's DMA destination. A
+            // simple "any non-zero byte" test would report a false SETUP on
+            // every armed transfer; compare the aliased words with the
+            // expected DMA address instead. A real GET_DESCRIPTOR SETUP
+            // overwrites them with the packet bytes.
+            let expected = dma_iova_for(setup as usize);
+            let current_low = read_volatile(setup.cast::<u32>());
+            let current_high = read_volatile(setup.add(4).cast::<u32>());
+            if current_low != expected as u32 || current_high != (expected >> 32) as u32 {
                 SIGNAL_SETUP_PACKET_RECEIVED = true;
-                break;
+            }
+        } else {
+            // The separate-buffer A/B is zeroed before arming, so any
+            // non-zero byte is a valid indication that the controller DMAed
+            // a SETUP packet into it.
+            for offset in 0..8 {
+                if read_volatile(setup.add(offset)) != 0 {
+                    SIGNAL_SETUP_PACKET_RECEIVED = true;
+                    break;
+                }
             }
         }
         // DSTS_HIGHSPEED is zero, so the link state cannot be read from
@@ -9316,7 +9368,7 @@ unsafe fn update_signal_latches() {
             0 => SIGNAL_LNKST_U0 = true,      // ON: link up at the detected speed
             5 => SIGNAL_LNKST_RXDET = true,   // RX.DETECT: core still waiting
             7 => SIGNAL_LNKST_POLLING = true, // POLLING: chirp phase observed
-            13 => SIGNAL_LNKST_RESET = true,  // RESET: bus reset observed
+            14 => SIGNAL_LNKST_RESET = true,  // RESET: bus reset observed
             _ => {}
         }
         if dsts & DSTS_DEVCTRLHLT != 0 || read(DCTL) & DCTL_RUN_STOP == 0 {
@@ -9370,6 +9422,22 @@ pub fn ep0_setup_packet_seen() -> bool {
 /// configuration.
 pub fn ep0_event_delivered() -> bool {
     unsafe { SIGNAL_EVENT_DELIVERED }
+}
+
+/// Compact same-boot progress mask for the read-only diagnostic channel:
+/// bit 0 = a DWC3 event reached the software consumer, bit 1 = the armed
+/// EP0 SETUP TRB retired, bit 2 = a non-zero SETUP payload was DMAed, and
+/// bit 3 = the DSTS SOF frame changed while polling. This combines latches
+/// from the whole descriptor window so one selector can distinguish
+/// link-up-without-RX from RX-without-event-DMA.
+pub fn ep0_progress_mask() -> u32 {
+    unsafe {
+        update_signal_latches();
+        u32::from(SIGNAL_EVENT_DELIVERED)
+            | (u32::from(SIGNAL_SETUP_TRB_RETIRED) << 1)
+            | (u32::from(SIGNAL_SETUP_PACKET_RECEIVED) << 2)
+            | (u32::from(SIGNAL_SOF_SEEN) << 3)
+    }
 }
 
 /// True once the DWC3 device-event stream delivered an ERRATIC_ERROR,

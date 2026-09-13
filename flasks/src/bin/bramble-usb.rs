@@ -397,6 +397,11 @@ struct LoopArgs {
     /// USB2 handoff instead of the legacy helper's local RTUNE/delay steps.
     #[arg(long)]
     hsphy_source_exact: bool,
+    /// Ignore the Android HS-PHY driver's EUD ownership early return for one
+    /// direct-handoff A/B. This only permits the source-exact analog sequence
+    /// to run; it does not write the EUD control block itself.
+    #[arg(long)]
+    hsphy_ignore_eud: bool,
     /// Use the exact same-build XBL usb_shared_hs_phy_init() sequence on the
     /// direct USB2 handoff: XBL's four tuning pairs and cleanup ordering,
     /// without qpr1-only VBUS override writes.
@@ -904,6 +909,7 @@ impl Default for LoopArgs {
             gadget_start_only_at_runstop: false,
             clear_gsi_after_reset: false,
             hsphy_source_exact: false,
+            hsphy_ignore_eud: false,
             hsphy_xbl_exact: false,
             hsphy_legacy_fallback: false,
             hsphy_before_reset: false,
@@ -1323,14 +1329,40 @@ fn record_command_spec(run_dir: &Path, label: &str, spec: &CommandSpec) -> io::R
     fs::write(run_dir.join(format!("{label}-command.txt")), text)
 }
 
+const PRE_DTB_CANDIDATE_SHA256: &str =
+    "f1d5c9687993f94c75e7cf4f895f8690e16331f93144ca37137cf979dac1a02f";
+const POST_DTB_CANDIDATE_SHA256: &str =
+    "6fc7c30b205f6e6c235087e4737c97d688ca252798a240feffb8edf90ea8d7e2";
+
+const DEVICE_ABSENT_NEXT_EXPERIMENT: &str = r#"manual-recovery-required: host cannot see a Bramble transport; recover the handset physically before another bounded run
+candidate-plan=normal-android-init-dma-cache-maintenance
+candidate-order=pre-dtb,post-dtb
+candidate-plan-command=cargo run -q -p flasks --bin bramble-usb -- candidates
+adb-reboot-to-fastboot=enabled-by-default
+allowed-device-operations=adb reboot bootloader; RAM-only fastboot boot
+forbidden-device-operations=flash; erase; readback; partition-write; unlock; slot-mutation; factory-reset; Android configfs
+candidate-common-loop-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --start-after-connect --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop
+candidate-profile-exclusions=--android-resource-order --signal-probe --signal-early-drop --skip-typec-spmi --observe-secs
+candidate.pre-dtb.artifact=tmp/fullerene-bramble-android-init-pre-dtb-cache-maintenance-trace-init.img
+candidate.pre-dtb.expected_sha256=f1d5c9687993f94c75e7cf4f895f8690e16331f93144ca37137cf979dac1a02f
+candidate.pre-dtb.changed_variable=normal Android-init USB handoff before DTB scan plus explicit DMA cache maintenance
+candidate.pre-dtb.extra-loop-flag=--early-usb-before-dtb-scan
+candidate.post-dtb.artifact=tmp/fullerene-bramble-android-init-post-dtb-cache-maintenance-trace-init.img
+candidate.post-dtb.expected_sha256=6fc7c30b205f6e6c235087e4737c97d688ca252798a240feffb8edf90ea8d7e2
+candidate.post-dtb.changed_variable=normal Android-init USB handoff after DTB scan plus explicit DMA cache maintenance
+candidate.post-dtb.extra-loop-flag=none
+action-after-recovery=invoke the Rust candidate plan in order with the exact common profile above; permit only ADB-to-Fastboot and RAM-only fastboot boot
+device-operation-while-absent=none"#;
+
 fn next_experiment_for_classification(classification: &str) -> &'static str {
+    if classification == "device-absent" {
+        return DEVICE_ABSENT_NEXT_EXPERIMENT;
+    }
     match classification {
         "fullerene-usb-1234:0001-descriptor-read-success" => {
             "none: Fullerene-owned 1234:0001 descriptor verified; preserve artifacts and repeat once for confirmation"
         }
-        "device-absent" => {
-            "manual-recovery-required: host cannot see a Bramble transport; recover the handset physically before another bounded run\ncandidate-plan=normal-android-init-dma-cache-maintenance\ncandidate-order=pre-dtb,post-dtb\ncandidate-plan-command=cargo run -q -p flasks --bin bramble-usb -- candidates\nadb-reboot-to-fastboot=enabled-by-default\nallowed-device-operations=adb reboot bootloader; RAM-only fastboot boot\nforbidden-device-operations=flash; erase; readback; partition-write; unlock; slot-mutation; factory-reset; Android configfs\ncandidate-common-loop-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --start-after-connect --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop\ncandidate-profile-exclusions=--android-resource-order --signal-probe --signal-early-drop --skip-typec-spmi --observe-secs\ncandidate.pre-dtb.artifact=tmp/fullerene-bramble-android-init-pre-dtb-cache-maintenance-trace-init.img\ncandidate.pre-dtb.expected_sha256=bf72b5bed84d198ab09a79e854e32fea2bb7180d971ccdf921f9bf8bd304c51b\ncandidate.pre-dtb.changed_variable=normal Android-init USB handoff before DTB scan plus explicit DMA cache maintenance\ncandidate.pre-dtb.extra-loop-flag=--early-usb-before-dtb-scan\ncandidate.post-dtb.artifact=tmp/fullerene-bramble-android-init-post-dtb-cache-maintenance-trace-init.img\ncandidate.post-dtb.expected_sha256=d0b8e42e774fa7bb0e0972b3cd4cf10bdda506e2d0baa151e49e08029421d5d0\ncandidate.post-dtb.changed_variable=normal Android-init USB handoff after DTB scan plus explicit DMA cache maintenance\ncandidate.post-dtb.extra-loop-flag=none\naction-after-recovery=invoke the Rust candidate plan in order with the exact common profile above; permit only ADB-to-Fastboot and RAM-only fastboot boot\ndevice-operation-while-absent=none"
-        }
+        "device-absent" => DEVICE_ABSENT_NEXT_EXPERIMENT,
         "google-logo-or-software-unrecoverable-suspected" => {
             "manual-recovery-required: host cannot see a Bramble transport; recover the handset physically before another bounded run"
         }
@@ -1385,13 +1417,13 @@ fn write_device_absent_recovery_plan(run_dir: &Path, workspace: &Path) -> io::Re
         (
             "pre-dtb",
             "tmp/fullerene-bramble-android-init-pre-dtb-cache-maintenance-trace-init.img",
-            "bf72b5bed84d198ab09a79e854e32fea2bb7180d971ccdf921f9bf8bd304c51b",
+            PRE_DTB_CANDIDATE_SHA256,
             "normal Android-init USB handoff before DTB scan plus explicit DMA cache maintenance",
         ),
         (
             "post-dtb",
             "tmp/fullerene-bramble-android-init-post-dtb-cache-maintenance-trace-init.img",
-            "d0b8e42e774fa7bb0e0972b3cd4cf10bdda506e2d0baa151e49e08029421d5d0",
+            POST_DTB_CANDIDATE_SHA256,
             "normal Android-init USB handoff after DTB scan plus explicit DMA cache maintenance",
         ),
     ];
@@ -1544,6 +1576,9 @@ fn experiment_manifest(args: &LoopArgs) -> String {
     }
     if args.hsphy_source_exact {
         variables.push("hsphy-source-exact=true".to_owned());
+    }
+    if args.hsphy_ignore_eud {
+        variables.push("hsphy-ignore-eud=true".to_owned());
     }
     if args.hsphy_xbl_exact {
         variables.push("hsphy-xbl-exact=true".to_owned());
@@ -1926,7 +1961,14 @@ fn wait_for_candidate_recovery(
             observation.fullerene_usb,
             observation.android_usb,
         )?;
-        if observation.state != DeviceState::DeviceAbsent {
+        // USB re-enumeration can expose a short mixed snapshot: one probe
+        // sees a bootloader node while the parallel ADB/USB probe still has
+        // the old topology. Treat that as transient during recovery rather
+        // than stopping before the next poll can observe stable Fastboot.
+        if !matches!(
+            observation.state,
+            DeviceState::DeviceAbsent | DeviceState::UnknownUsbState
+        ) {
             return Ok(observation);
         }
 
@@ -1947,16 +1989,8 @@ fn run_candidates(workspace: &Path, mut args: CandidatesArgs) -> io::Result<()> 
         args.template = workspace.join(&args.template);
     }
     let candidate_specs = [
-        (
-            "pre-dtb",
-            true,
-            "bf72b5bed84d198ab09a79e854e32fea2bb7180d971ccdf921f9bf8bd304c51b",
-        ),
-        (
-            "post-dtb",
-            false,
-            "d0b8e42e774fa7bb0e0972b3cd4cf10bdda506e2d0baa151e49e08029421d5d0",
-        ),
+        ("pre-dtb", true, PRE_DTB_CANDIDATE_SHA256),
+        ("post-dtb", false, POST_DTB_CANDIDATE_SHA256),
     ];
     if args.dry_run {
         println!("Bramble candidate plan (dry-run): pre-dtb -> post-dtb");
@@ -1987,12 +2021,12 @@ fn run_candidates(workspace: &Path, mut args: CandidatesArgs) -> io::Result<()> 
         .min(MAX_CANDIDATE_RECOVERY_WAIT_SECS);
     let run_dir = create_run_dir(workspace, "fullerene-bramble-candidates")?;
     println!("Candidate plan logs: {}", run_dir.display());
-    fs::write(
-        run_dir.join("candidate-plan.txt"),
-        format!(
-            "candidate-order=pre-dtb,post-dtb\nprofile=normal-android-init-dma-cache-maintenance\nadb-reboot-to-fastboot=enabled-by-default\nrecovery-wait-secs={recovery_wait_secs}\nallowed-device-operations=adb reboot bootloader; RAM-only fastboot boot\nforbidden-device-operations=flash; erase; readback; partition-write; unlock; slot-mutation; factory-reset; Android configfs\ncommon-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --start-after-connect --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop\npre-dtb-extra-flag=--early-usb-before-dtb-scan\npre-dtb-expected-sha256=bf72b5bed84d198ab09a79e854e32fea2bb7180d971ccdf921f9bf8bd304c51b\npost-dtb-extra-flag=none\npost-dtb-expected-sha256=d0b8e42e774fa7bb0e0972b3cd4cf10bdda506e2d0baa151e49e08029421d5d0\nsafety=ADB-to-Fastboot and RAM-only fastboot boot only; no flash, erase, readback, unlock, slot, reset, or Android configfs\n"
-        ),
-    )?;
+    let candidate_plan = format!(
+        "candidate-order=pre-dtb,post-dtb\nprofile=normal-android-init-dma-cache-maintenance\nadb-reboot-to-fastboot=enabled-by-default\nrecovery-wait-secs={recovery_wait_secs}\nallowed-device-operations=adb reboot bootloader; RAM-only fastboot boot\nforbidden-device-operations=flash; erase; readback; partition-write; unlock; slot-mutation; factory-reset; Android configfs\ncommon-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --start-after-connect --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop\npre-dtb-extra-flag=--early-usb-before-dtb-scan\npre-dtb-expected-sha256={pre_dtb_sha}\npost-dtb-extra-flag=none\npost-dtb-expected-sha256={post_dtb_sha}\nsafety=ADB-to-Fastboot and RAM-only fastboot boot only; no flash, erase, readback, unlock, slot, reset, or Android configfs\n",
+        pre_dtb_sha = PRE_DTB_CANDIDATE_SHA256,
+        post_dtb_sha = POST_DTB_CANDIDATE_SHA256,
+    );
+    fs::write(run_dir.join("candidate-plan.txt"), candidate_plan)?;
     fs::write(
         run_dir.join("candidate-ledger.tsv"),
         "step\tcandidate\tattempt\tclassification\tresult\n",
@@ -2966,6 +3000,12 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--hsphy-source-exact requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_ignore_eud && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-ignore-eud requires --direct-handoff",
         ));
     }
     if args.hsphy_xbl_exact && !args.direct_handoff {
@@ -4651,6 +4691,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if let Ok(value) = std::env::var("FULLERENE_AARCH64_USB_DISABLE_EUD") {
         envs.push(("FULLERENE_AARCH64_USB_DISABLE_EUD".to_owned(), value));
     }
+    if args.hsphy_ignore_eud {
+        envs.push((
+            "FULLERENE_AARCH64_USB_HSPHY_IGNORE_EUD".to_owned(),
+            "1".to_owned(),
+        ));
+    }
     if args.android_init {
         envs.push((
             "FULLERENE_AARCH64_UFS_EXECUTE".to_owned(),
@@ -5310,8 +5356,8 @@ mod tests {
             absent_plan.contains("candidate.pre-dtb.extra-loop-flag=--early-usb-before-dtb-scan")
         );
         assert!(absent_plan.contains("candidate.post-dtb.extra-loop-flag=none"));
-        assert!(absent_plan.contains("candidate.pre-dtb.expected_sha256=bf72b5"));
-        assert!(absent_plan.contains("candidate.post-dtb.expected_sha256=d0b8e4"));
+        assert!(absent_plan.contains("candidate.pre-dtb.expected_sha256=f1d5c968"));
+        assert!(absent_plan.contains("candidate.post-dtb.expected_sha256=6fc7c30b"));
         assert!(absent_plan.contains("device-operation-while-absent=none"));
         let mismatch_plan = next_experiment_for_classification("artifact-sha256-mismatch");
         assert!(mismatch_plan.contains("do not issue fastboot boot"));
