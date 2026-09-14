@@ -2599,10 +2599,15 @@ unsafe fn gsi_ready_to_suspend() -> bool {
 unsafe fn cache_clean(address: usize, length: usize) {
     // DWC3 and the Apps SMMU consume these objects by DMA.  The probe may be
     // entered with the bootloader's caches enabled, so a no-op here would
-    // leave the freshly written TRB/page table only in the CPU cache.
+    // leave the freshly written TRB/page table only in the CPU cache.  The
+    // explicit A/B must force the maintenance even when the DT describes a
+    // coherent GSI path; otherwise --dma-cache-maintenance silently compiles
+    // but is not an experiment at all.
+    let force_cache_maintenance = cfg!(fullerene_aarch64_usb_dma_cache_maintenance);
     if !super::platform::bramble::usb_resources()
         .gsi
         .disable_io_coherency
+        && !force_cache_maintenance
     {
         unsafe { core::arch::asm!("dsb sy", options(nostack)) };
         return;
@@ -2618,9 +2623,14 @@ unsafe fn cache_clean(address: usize, length: usize) {
 }
 
 unsafe fn cache_invalidate(address: usize, length: usize) {
+    // Keep the invalidate side of the explicit DMA A/B symmetrical with
+    // cache_clean(): observing controller-owned event/TRB writes also needs
+    // the cache-line operation when the DT path advertises I/O coherency.
+    let force_cache_maintenance = cfg!(fullerene_aarch64_usb_dma_cache_maintenance);
     if !super::platform::bramble::usb_resources()
         .gsi
         .disable_io_coherency
+        && !force_cache_maintenance
     {
         unsafe { core::arch::asm!("dsb sy", options(nostack)) };
         return;
@@ -5251,6 +5261,10 @@ pub fn runtime_suspend() -> bool {
             let _ = set_gsi_doorbell_blocked(false);
             return false;
         }
+        // Qualcomm enables pwr_event only as a low-power wake source. Mask it
+        // before collapsing the USB clock/power domain so a stale status bit
+        // cannot re-enter the active transition while the domain is closing.
+        let _ = super::platform::bramble::set_usb_power_event_irq_enabled(false);
         suspend_data_transfers();
         suspend_gsi_transfers();
         udc_mut().suspend();
@@ -5295,6 +5309,10 @@ pub fn runtime_resume() -> bool {
         ) {
             log_puts("usb: RPMh nominal vote unavailable\n");
         }
+        // The pwr_event line is the Qualcomm low-power wake/resume boundary;
+        // re-enable it only after the controller clocks and power domain are
+        // live again, matching the Android glue's resume order.
+        let _ = super::platform::bramble::set_usb_power_event_irq_enabled(true);
         qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
         qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
         enable_power_events();
@@ -10671,12 +10689,12 @@ unsafe fn enable_gadget_controller_irq() {}
 /// the early boot loop until the normal interrupt controller owns the device.
 pub fn poll() {
     unsafe {
-        link_on_sample();
         // Diagnostic quiet window (see mmio_quiet_active): after this many
         // seconds past the first Run/Stop, stop ALL controller MMIO access.
         if mmio_quiet_active() {
             return;
         }
+        link_on_sample();
         let runtime = USB_RUNTIME_STATE;
         // In the no-SMMU differential the whole point is to never touch the
         // Apps-SMMU: the stream is unmatched there and the (inactive, often
@@ -10742,6 +10760,25 @@ pub fn poll() {
         drain_gsi_event_buffers();
         let _ = try_arm_setup();
         try_u0_blip();
+    }
+}
+
+/// Service only the DWC3 event ring from the periodic timer interrupt.
+///
+/// Android-init enters user space through `launchd::run()` and does not return
+/// to the boot loop that normally calls `poll()`.  The controller SPI should
+/// deliver the same work through `aarch64_exception_irq`, but keeping this
+/// narrow timer fallback makes EP0 progress independent of a platform IRQ
+/// delivery quirk.  Do not run Type-C, power, SMMU, or diagnostic blip work
+/// here: those paths are deferred to the ordinary poll/IRQ context.
+pub fn poll_from_timer_irq() {
+    unsafe {
+        if !EARLY_HANDOFF_ACTIVE || mmio_quiet_active() {
+            return;
+        }
+        link_on_sample();
+        let _ = poll_ep0_event_ring();
+        let _ = try_arm_setup();
     }
 }
 

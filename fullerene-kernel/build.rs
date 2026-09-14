@@ -225,6 +225,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_lowspeed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_no_ss_vbus)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_usb2_core_reset_at_runstop)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_u2exit_lfps)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_usb2_source_exact_device_reset)");
     println!(
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_qpr1_utmi_post_reset_only)"
@@ -892,6 +893,9 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_USB2_CORE_RESET_AT_RUNSTOP").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_usb2_core_reset_at_runstop");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_U2EXIT_LFPS").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_u2exit_lfps");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_USB2_SOURCE_EXACT_DEVICE_RESET").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_usb2_source_exact_device_reset");
         }
@@ -1451,6 +1455,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_DCFG_LOWSPEED");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_NO_SS_VBUS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_USB2_CORE_RESET_AT_RUNSTOP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_U2EXIT_LFPS");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_USB2_SOURCE_EXACT_DEVICE_RESET");
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_CLEAR_GSI_AFTER_RESET"

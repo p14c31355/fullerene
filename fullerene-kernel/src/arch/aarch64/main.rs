@@ -731,6 +731,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // is polled during this early diagnostic phase and does not depend on it.
     if bramble && !early_usb {
         usb_ready = init_bramble_usb_handoff();
+        #[cfg(fullerene_aarch64_bramble)]
+        usb::set_early_handoff_active(usb_ready);
     }
     // USB setup itself remains trace-only; emit the compact ring after
     // controller initialization has returned and UART is safe to use again.

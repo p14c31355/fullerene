@@ -397,6 +397,10 @@ struct LoopArgs {
     /// USB2 handoff instead of the legacy helper's local RTUNE/delay steps.
     #[arg(long)]
     hsphy_source_exact: bool,
+    /// Select Bramble's private-DT qcom,param-override-seq HS-PHY pairs
+    /// (0x67/0x6c and 0xc8/0x70) for a controlled direct-handoff A/B.
+    #[arg(long)]
+    hsphy_dtbo_bramble_pvt: bool,
     /// Ignore the Android HS-PHY driver's EUD ownership early return for one
     /// direct-handoff A/B. This only permits the source-exact analog sequence
     /// to run; it does not write the EUD control block itself.
@@ -407,6 +411,10 @@ struct LoopArgs {
     /// without qpr1-only VBUS override writes.
     #[arg(long)]
     hsphy_xbl_exact: bool,
+    /// Clear the USB2 HS-PHY UTMI SLEEPM bit after analog initialization,
+    /// matching the active resume state (A/B).
+    #[arg(long)]
+    hsphy_clear_sleepm: bool,
     /// Force the historical Bramble HS-PHY tuning pairs 0x63/0x85 for a
     /// physical control run; the qpr1 source-confirmed pairs remain default.
     #[arg(long)]
@@ -443,6 +451,10 @@ struct LoopArgs {
     /// Run/Stop boundary, then rebuild EP0 state (A/B).
     #[arg(long)]
     usb2_core_reset_at_runstop: bool,
+    /// Retain GCTL.U2EXIT_LFPS. The Bramble qpr1 DT does not declare
+    /// snps,u2exit_lfps_quirk; the source-faithful default clears it (A/B).
+    #[arg(long)]
+    u2exit_lfps: bool,
     /// Match qpr1's device-core soft reset exactly: raw DCTL.CSFTRST,
     /// 1-ms polling, and the post-reset doorbell clear (A/B).
     #[arg(long)]
@@ -909,8 +921,10 @@ impl Default for LoopArgs {
             gadget_start_only_at_runstop: false,
             clear_gsi_after_reset: false,
             hsphy_source_exact: false,
+            hsphy_dtbo_bramble_pvt: false,
             hsphy_ignore_eud: false,
             hsphy_xbl_exact: false,
+            hsphy_clear_sleepm: false,
             hsphy_legacy_fallback: false,
             hsphy_before_reset: false,
             hsphy_restore_suspend_n_after_runstop: false,
@@ -921,6 +935,7 @@ impl Default for LoopArgs {
             dcfg_lowspeed: false,
             no_ss_vbus: false,
             usb2_core_reset_at_runstop: false,
+            u2exit_lfps: false,
             usb2_source_exact_device_reset: false,
             usb2_qpr1_utmi_post_reset_only: false,
             usb2_preserve_phy_interface: false,
@@ -1330,9 +1345,9 @@ fn record_command_spec(run_dir: &Path, label: &str, spec: &CommandSpec) -> io::R
 }
 
 const PRE_DTB_CANDIDATE_SHA256: &str =
-    "f1d5c9687993f94c75e7cf4f895f8690e16331f93144ca37137cf979dac1a02f";
+    "6d071ae308fb54a33b7dcc06aaed5270266f2ca75b3ba47da3e8631c247b5048";
 const POST_DTB_CANDIDATE_SHA256: &str =
-    "6fc7c30b205f6e6c235087e4737c97d688ca252798a240feffb8edf90ea8d7e2";
+    "5131d44b5c37ce7f6a45c6f05f591b368895b816524f33c4566fe239ee91d9cf";
 
 const DEVICE_ABSENT_NEXT_EXPERIMENT: &str = r#"manual-recovery-required: host cannot see a Bramble transport; recover the handset physically before another bounded run
 candidate-plan=normal-android-init-dma-cache-maintenance
@@ -1344,11 +1359,11 @@ forbidden-device-operations=flash; erase; readback; partition-write; unlock; slo
 candidate-common-loop-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --start-after-connect --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop
 candidate-profile-exclusions=--android-resource-order --signal-probe --signal-early-drop --skip-typec-spmi --observe-secs
 candidate.pre-dtb.artifact=tmp/fullerene-bramble-android-init-pre-dtb-cache-maintenance-trace-init.img
-candidate.pre-dtb.expected_sha256=f1d5c9687993f94c75e7cf4f895f8690e16331f93144ca37137cf979dac1a02f
+candidate.pre-dtb.expected_sha256=6d071ae308fb54a33b7dcc06aaed5270266f2ca75b3ba47da3e8631c247b5048
 candidate.pre-dtb.changed_variable=normal Android-init USB handoff before DTB scan plus explicit DMA cache maintenance
 candidate.pre-dtb.extra-loop-flag=--early-usb-before-dtb-scan
 candidate.post-dtb.artifact=tmp/fullerene-bramble-android-init-post-dtb-cache-maintenance-trace-init.img
-candidate.post-dtb.expected_sha256=6fc7c30b205f6e6c235087e4737c97d688ca252798a240feffb8edf90ea8d7e2
+candidate.post-dtb.expected_sha256=5131d44b5c37ce7f6a45c6f05f591b368895b816524f33c4566fe239ee91d9cf
 candidate.post-dtb.changed_variable=normal Android-init USB handoff after DTB scan plus explicit DMA cache maintenance
 candidate.post-dtb.extra-loop-flag=none
 action-after-recovery=invoke the Rust candidate plan in order with the exact common profile above; permit only ADB-to-Fastboot and RAM-only fastboot boot
@@ -1583,6 +1598,9 @@ fn experiment_manifest(args: &LoopArgs) -> String {
     if args.hsphy_xbl_exact {
         variables.push("hsphy-xbl-exact=true".to_owned());
     }
+    if args.hsphy_clear_sleepm {
+        variables.push("hsphy-clear-sleepm=true".to_owned());
+    }
     if args.xbl_hs_phy_table {
         variables.push("xbl-hs-phy-table=true".to_owned());
     }
@@ -1717,6 +1735,8 @@ fn kernel_log_has_non_android_attach(log: &str) -> bool {
         }
         if line.contains("idVendor=18d1,idProduct=4ee7")
             || line.contains("idVendor=18d1, idProduct=4ee7")
+            || line.contains("idVendor=18d1,idProduct=4ee0")
+            || line.contains("idVendor=18d1, idProduct=4ee0")
         {
             *non_android = false;
         }
@@ -3008,6 +3028,12 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             "--hsphy-ignore-eud requires --direct-handoff",
         ));
     }
+    if args.hsphy_dtbo_bramble_pvt && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-dtbo-bramble-pvt requires --direct-handoff",
+        ));
+    }
     if args.hsphy_xbl_exact && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3024,6 +3050,12 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--hsphy-xbl-exact requires --xbl-hs-phy-table",
+        ));
+    }
+    if args.hsphy_clear_sleepm && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-clear-sleepm requires --direct-handoff",
         ));
     }
     if args.hsphy_xbl_exact && args.abl_shared_hs_phy {
@@ -3078,6 +3110,12 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--gadget-start-defaults-at-runstop requires --direct-handoff or --super-speed",
+        ));
+    }
+    if args.u2exit_lfps && !args.direct_handoff && !args.super_speed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--u2exit-lfps requires --direct-handoff or --super-speed",
         ));
     }
     if args.min_runstop_delay && !args.direct_handoff && !args.super_speed {
@@ -3992,6 +4030,7 @@ fn run_loop_with_named_dir(
             }
             thread::sleep(Duration::from_secs(2));
         }
+        capture_android_usb_state(&run_dir, &args.serial)?;
         if adb_reboot_to_fastboot {
             match return_to_fastboot_from_adb(&args.serial, args.fastboot_wait, &run_dir) {
                 Ok(()) => {
@@ -4299,6 +4338,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.abl_event_consume {
         arguments.push("--usb-gadget-handoff-abl-event-consume".to_owned());
     }
+    if args.hsphy_clear_sleepm {
+        arguments.push("--usb-gadget-handoff-hsphy-clear-sleepm".to_owned());
+    }
     if args.xbl_direction_trb {
         arguments.push("--usb-gadget-handoff-xbl-direction-trb".to_owned());
     }
@@ -4322,6 +4364,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.hsphy_source_exact {
         arguments.push("--usb-gadget-handoff-hsphy-source-exact".to_owned());
+    }
+    if args.hsphy_dtbo_bramble_pvt {
+        arguments.push("--usb-gadget-handoff-hsphy-dtbo-bramble-pvt".to_owned());
     }
     if args.hsphy_xbl_exact {
         arguments.push("--usb-gadget-handoff-hsphy-xbl-exact".to_owned());
@@ -4356,6 +4401,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.usb2_core_reset_at_runstop {
         arguments.push("--usb-gadget-handoff-usb2-core-reset-at-runstop".to_owned());
+    }
+    if args.u2exit_lfps {
+        arguments.push("--usb-gadget-handoff-u2exit-lfps".to_owned());
     }
     if args.usb2_source_exact_device_reset {
         arguments.push("--usb-gadget-handoff-usb2-source-exact-device-reset".to_owned());
@@ -4974,6 +5022,39 @@ fn capture_simple(
     Ok(output)
 }
 
+/// Preserve the stock Android USB ownership/observability boundary without
+/// changing the handset. This deliberately avoids `adb root`, configfs,
+/// debugfs writes, and any USB role operation: the result is only a read-only
+/// comparison point for the Bramble PHY/RX investigation.
+fn capture_android_usb_state(run_dir: &Path, serial: &str) -> io::Result<()> {
+    let script = r#"set +e
+echo '=== usb properties ==='
+getprop | grep -i -E 'usb|udc|dwc|typec|bootreason'
+echo '=== UDC sysfs ==='
+ls -la /sys/class/udc
+for path in /sys/class/udc/*/uevent /sys/class/udc/*/state /sys/class/udc/*/current_speed /sys/class/udc/*/maximum_speed /sys/class/udc/*/function; do
+    if [ -e "$path" ]; then
+        echo "--- $path"
+        cat "$path"
+    fi
+done
+echo '=== USB debugfs visibility ==='
+for path in /sys/kernel/debug/usb /sys/kernel/debug/usb/dwc3 /sys/kernel/debug/usb/usbmon; do
+    echo "--- $path"
+    ls -la "$path" 2>&1
+done
+echo '=== USB-related interrupt counters ==='
+cat /proc/interrupts | grep -i -E 'usb|dwc|typec|eud|qusb'
+"#;
+    let _ = capture_simple(
+        run_dir,
+        "stock-android-usb-state",
+        "adb",
+        &["-s", serial, "shell", "sh", "-c", script],
+    )?;
+    Ok(())
+}
+
 fn fullerene_descriptor_text_is_self_identifying(text: &str) -> bool {
     let has_field_value = |field: &str, value: &str| {
         text.lines().any(|line| {
@@ -5356,8 +5437,8 @@ mod tests {
             absent_plan.contains("candidate.pre-dtb.extra-loop-flag=--early-usb-before-dtb-scan")
         );
         assert!(absent_plan.contains("candidate.post-dtb.extra-loop-flag=none"));
-        assert!(absent_plan.contains("candidate.pre-dtb.expected_sha256=f1d5c968"));
-        assert!(absent_plan.contains("candidate.post-dtb.expected_sha256=6fc7c30b"));
+        assert!(absent_plan.contains("candidate.pre-dtb.expected_sha256=6d071ae3"));
+        assert!(absent_plan.contains("candidate.post-dtb.expected_sha256=5131d44b"));
         assert!(absent_plan.contains("device-operation-while-absent=none"));
         let mismatch_plan = next_experiment_for_classification("artifact-sha256-mismatch");
         assert!(mismatch_plan.contains("do not issue fastboot boot"));
@@ -5636,6 +5717,12 @@ mod tests {
             classify_postboot_result(&android, Some(android_log), None),
             "android-fallback"
         );
+
+        let fastboot_log = concat!(
+            "usb 2-1: new SuperSpeed USB device number 70 using xhci_hcd\n",
+            "usb 2-1: New USB device found, idVendor=18d1,idProduct=4ee0\n",
+        );
+        assert!(!kernel_log_has_non_android_attach(fastboot_log));
 
         let fullerene_log = concat!(
             "usb 1-9: new high-speed USB device number 35 using xhci_hcd\n",

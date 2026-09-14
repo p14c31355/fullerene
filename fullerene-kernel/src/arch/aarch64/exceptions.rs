@@ -343,6 +343,8 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         super::timer::arm_ms(1);
         let _ = super::task::wake_event_timeouts(super::timer::uptime_us());
         super::fs::fire_timers(super::timer::uptime_us().saturating_mul(1_000));
+        #[cfg(all(fullerene_aarch64_bramble, feature = "aarch64-android-init"))]
+        super::usb::poll_from_timer_irq();
     }
     if frame.from_user() {
         super::task::deliver_pending_linux_signal(frame);

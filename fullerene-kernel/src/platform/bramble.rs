@@ -1916,6 +1916,24 @@ pub fn usb_power_event_irq() -> u32 {
     usb_resources().irqs[1].number
 }
 
+/// Match the Qualcomm glue's `pwr_event` IRQ lifetime. The Linux driver
+/// requests this line with `IRQ_NOAUTOEN`; it is enabled for the low-power
+/// wake/resume boundary and is not an always-on device-mode interrupt.
+pub fn set_usb_power_event_irq_enabled(enabled: bool) -> bool {
+    let gicd = unsafe { USB_GICD_BASE };
+    if gicd == 0 || !usb_resource_state().irq_routes_enabled {
+        return false;
+    }
+    unsafe {
+        if enabled {
+            super::gicv3::enable_spis(gicd, &[usb_power_event_irq()]);
+        } else {
+            super::gicv3::disable_spis(gicd, &[usb_power_event_irq()]);
+        }
+    }
+    true
+}
+
 pub fn usb_typec_parent_irq() -> u32 {
     usb_resources().spmi_parent_irq
 }
@@ -2838,9 +2856,10 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
     let gic_ready = super::gicv3::init(gicd, gicr, Some(usb_controller_irq()));
     unsafe {
         // DWC3 has five platform sources plus the Apps-SMMU global and up to
-        // 80 context-bank fault lines.  Keep the controller, power-event,
-        // and SMMU fault routes in the GIC setup pass; truncating the latter
-        // would make a DMA fault look like an unexplained EP0 timeout.
+        // 80 context-bank fault lines. Keep the controller and SMMU fault
+        // routes in the GIC setup pass; truncating the latter would make a
+        // DMA fault look like an unexplained EP0 timeout. The power-event
+        // route is deliberately held masked until runtime resume below.
         //
         // The three PDC PHY lines are deliberately absent here. Android's
         // dwc3-qcom registers them with IRQF_NO_AUTOEN and enables them only
@@ -2853,6 +2872,12 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
         for irq in resources.irqs {
             let parent = (irq.kind == UsbIrqKind::GicSpi).then_some(irq.number);
             if let Some(parent) = parent {
+                // Linux requests pwr_event with IRQ_NOAUTOEN and enables it
+                // only around low-power resume. Keep the initial gadget
+                // enumeration free of stale power-status IRQs.
+                if parent == usb_power_event_irq() {
+                    continue;
+                }
                 if parent != usb_controller_irq()
                     && !spis[..count].iter().any(|irq| *irq == parent)
                     && count < spis.len()
