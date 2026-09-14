@@ -324,6 +324,17 @@ pub(super) unsafe fn init_hsphy_source_exact() {
     unsafe { init_hsphy_inner(true) }
 }
 
+/// Match Qualcomm's EUD-owned device-mode branch: set PWRDOWN_B, retain the
+/// existing analog state, and wait for the source-defined 50 ms settle time.
+pub(super) unsafe fn enter_eud_device_mode() -> u32 {
+    unsafe {
+        hsphy_update(HSPHY_PWRDOWN_CTRL, HSPHY_PWRDOWN_B, HSPHY_PWRDOWN_B);
+        let readback = read_volatile(hsphy_reg(HSPHY_PWRDOWN_CTRL));
+        crate::timer::delay_ms(50);
+        readback
+    }
+}
+
 /// Restore only the raw qpr1 HS-PHY SUSPEND_N bit after the DWC3 Run/Stop
 /// boundary. qpr1's init sequence asserts this bit before clearing only
 /// SUSPEND_N_SEL; the handoff readout showed the Bramble transition clearing

@@ -24,6 +24,7 @@ const DEFAULT_TEMPLATE: &str = "tmp/bramble-stock-boot.img";
 const BOOTLOADER_USB: &str = "18d1:4ee0";
 const ANDROID_FALLBACK_USB: &str = "18d1:4ee7";
 const FULLERENE_USB: &str = "1234:0001";
+const ALLOWED_REPLAY_SAFETY: &str = "ADB-to-Fastboot and fastboot boot only; no flash, erase, readback, unlock, slot, reset, or Android configfs";
 // Gate runs read the gate bit from the handset's return timing: a false gate
 // parks for 90 s before resetting, so the recovery wait must cover the park
 // plus the Android boot (well beyond 75 s).
@@ -81,6 +82,9 @@ enum CommandKind {
     Matrix(MatrixArgs),
     /// Try the tracked normal Android-init DMA-cache candidates in sequence.
     Candidates(CandidatesArgs),
+    /// Replay every distinct historical safe loop condition with passive
+    /// usbmon/Tshark capture enabled.
+    Replay(ReplayArgs),
     /// Read the current host-visible Pixel transport state without changing it.
     Status(StatusArgs),
     /// Read the retained post-mortem USB trace from an enumerated Fullerene gadget.
@@ -133,6 +137,11 @@ struct LoopArgs {
     /// assuming that the handset keeps the same Linux bus number.
     #[arg(long)]
     usbmon: bool,
+    /// Capture a passive usbmon pcap with tshark from before the image build
+    /// and RAM-only fastboot boot. This requires the host's wireshark group;
+    /// if it cannot be started, no device-side boot operation is issued.
+    #[arg(long)]
+    tshark: bool,
     /// Explicitly allow the selected ADB device to transition to Fastboot.
     /// The safe ADB-to-Fastboot transition is enabled by default; use
     /// --no-adb-reboot-to-fastboot for a passive Fastboot-only run.
@@ -406,6 +415,11 @@ struct LoopArgs {
     /// to run; it does not write the EUD control block itself.
     #[arg(long)]
     hsphy_ignore_eud: bool,
+    /// Reproduce the Qualcomm EUD-owned device-mode HS-PHY branch: reassert
+    /// the USB2 PHY rails, set PWRDOWN_B, wait 50 ms, then preserve the PHY
+    /// state instead of running the normal analog init (A/B).
+    #[arg(long)]
+    hsphy_eud_device_mode: bool,
     /// Use the exact same-build XBL usb_shared_hs_phy_init() sequence on the
     /// direct USB2 handoff: XBL's four tuning pairs and cleanup ordering,
     /// without qpr1-only VBUS override writes.
@@ -848,6 +862,7 @@ impl Default for LoopArgs {
             hold: 30,
             fastboot_wait: 30,
             usbmon: false,
+            tshark: false,
             adb_reboot_to_fastboot: false,
             no_adb_reboot_to_fastboot: false,
             irq_route: None,
@@ -923,6 +938,7 @@ impl Default for LoopArgs {
             hsphy_source_exact: false,
             hsphy_dtbo_bramble_pvt: false,
             hsphy_ignore_eud: false,
+            hsphy_eud_device_mode: false,
             hsphy_xbl_exact: false,
             hsphy_clear_sleepm: false,
             hsphy_legacy_fallback: false,
@@ -1072,6 +1088,12 @@ struct MatrixArgs {
     no_smmu: bool,
     #[arg(long)]
     no_core_reset: bool,
+    /// Capture the host's passive usbmon stream for every matrix route.
+    #[arg(long)]
+    usbmon: bool,
+    /// Capture a passive usbmon pcap with tshark for every matrix route.
+    #[arg(long)]
+    tshark: bool,
     #[arg(long)]
     dry_run: bool,
 }
@@ -1096,6 +1118,10 @@ struct CandidatesArgs {
     recovery_wait_secs: u64,
     #[arg(long)]
     usbmon: bool,
+    /// Capture the same passive usbmon stream as a tshark pcap for every
+    /// candidate attempt, starting before build/boot.
+    #[arg(long)]
+    tshark: bool,
     /// Explicitly allow the selected ADB device to transition to Fastboot.
     /// This is enabled by default for the candidate plan.
     #[arg(long)]
@@ -1103,6 +1129,29 @@ struct CandidatesArgs {
     /// Keep the plan passive when Android ADB is the initial state.
     #[arg(long, conflicts_with = "adb_reboot_to_fastboot")]
     no_adb_reboot_to_fastboot: bool,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Parser, Debug)]
+struct ReplayArgs {
+    /// Root to scan recursively for historical experiment-manifest.txt files.
+    #[arg(long, default_value = "tmp")]
+    manifest_root: PathBuf,
+    #[arg(long, default_value = DEFAULT_SERIAL)]
+    serial: String,
+    #[arg(long, default_value = DEFAULT_TEMPLATE)]
+    template: PathBuf,
+    /// Bounded interval to wait for Fastboot/ADB recovery between historical
+    /// conditions after a transport disappears.
+    #[arg(long, default_value_t = MAX_CANDIDATE_RECOVERY_WAIT_SECS)]
+    recovery_wait_secs: u64,
+    /// Limit the number of runnable conditions; zero means all of them.
+    #[arg(long, default_value_t = 0)]
+    max_runs: usize,
+    /// Resume an existing replay ledger instead of creating a new queue.
+    #[arg(long)]
+    run_dir: Option<PathBuf>,
     #[arg(long)]
     dry_run: bool,
 }
@@ -1345,9 +1394,9 @@ fn record_command_spec(run_dir: &Path, label: &str, spec: &CommandSpec) -> io::R
 }
 
 const PRE_DTB_CANDIDATE_SHA256: &str =
-    "6d071ae308fb54a33b7dcc06aaed5270266f2ca75b3ba47da3e8631c247b5048";
+    "287bc17cbde1e2764f7381ff96452c8feaa1ca90e394789276a053b387170263";
 const POST_DTB_CANDIDATE_SHA256: &str =
-    "5131d44b5c37ce7f6a45c6f05f591b368895b816524f33c4566fe239ee91d9cf";
+    "e36d73a9c4413133279390772dcdae5dae935eb6f0b318258f901c788e023fb3";
 
 const DEVICE_ABSENT_NEXT_EXPERIMENT: &str = r#"manual-recovery-required: host cannot see a Bramble transport; recover the handset physically before another bounded run
 candidate-plan=normal-android-init-dma-cache-maintenance
@@ -1359,11 +1408,11 @@ forbidden-device-operations=flash; erase; readback; partition-write; unlock; slo
 candidate-common-loop-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --start-after-connect --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop
 candidate-profile-exclusions=--android-resource-order --signal-probe --signal-early-drop --skip-typec-spmi --observe-secs
 candidate.pre-dtb.artifact=tmp/fullerene-bramble-android-init-pre-dtb-cache-maintenance-trace-init.img
-candidate.pre-dtb.expected_sha256=6d071ae308fb54a33b7dcc06aaed5270266f2ca75b3ba47da3e8631c247b5048
+candidate.pre-dtb.expected_sha256=287bc17cbde1e2764f7381ff96452c8feaa1ca90e394789276a053b387170263
 candidate.pre-dtb.changed_variable=normal Android-init USB handoff before DTB scan plus explicit DMA cache maintenance
 candidate.pre-dtb.extra-loop-flag=--early-usb-before-dtb-scan
 candidate.post-dtb.artifact=tmp/fullerene-bramble-android-init-post-dtb-cache-maintenance-trace-init.img
-candidate.post-dtb.expected_sha256=5131d44b5c37ce7f6a45c6f05f591b368895b816524f33c4566fe239ee91d9cf
+candidate.post-dtb.expected_sha256=e36d73a9c4413133279390772dcdae5dae935eb6f0b318258f901c788e023fb3
 candidate.post-dtb.changed_variable=normal Android-init USB handoff after DTB scan plus explicit DMA cache maintenance
 candidate.post-dtb.extra-loop-flag=none
 action-after-recovery=invoke the Rust candidate plan in order with the exact common profile above; permit only ADB-to-Fastboot and RAM-only fastboot boot
@@ -1595,6 +1644,9 @@ fn experiment_manifest(args: &LoopArgs) -> String {
     if args.hsphy_ignore_eud {
         variables.push("hsphy-ignore-eud=true".to_owned());
     }
+    if args.hsphy_eud_device_mode {
+        variables.push("hsphy-eud-device-mode=true".to_owned());
+    }
     if args.hsphy_xbl_exact {
         variables.push("hsphy-xbl-exact=true".to_owned());
     }
@@ -1666,6 +1718,9 @@ fn experiment_manifest(args: &LoopArgs) -> String {
     }
     if args.usbmon {
         variables.push("usbmon=true".to_owned());
+    }
+    if args.tshark {
+        variables.push("tshark=true".to_owned());
     }
     // Keep the historical readable names above, but derive any newly added
     // LoopArgs fields from the actual/default Debug snapshots. This prevents
@@ -1795,6 +1850,12 @@ struct UsbmonGuard {
     capture_path: PathBuf,
 }
 
+struct TsharkGuard {
+    child: Option<Child>,
+    run_dir: PathBuf,
+    capture_path: PathBuf,
+}
+
 impl UsbmonGuard {
     fn start(run_dir: &Path) -> io::Result<Self> {
         let source = File::open("/dev/usbmon0").map_err(|error| {
@@ -1853,6 +1914,140 @@ impl Drop for UsbmonGuard {
     }
 }
 
+impl TsharkGuard {
+    fn start(run_dir: &Path) -> io::Result<Self> {
+        let probe = Command::new("sg")
+            .args(["wireshark", "-c", "tshark -D"])
+            .output()
+            .map_err(|error| {
+                io::Error::new(error.kind(), format!("cannot start sg for tshark: {error}"))
+            })?;
+        fs::write(
+            run_dir.join("tshark-devices.txt"),
+            [probe.stdout.as_slice(), probe.stderr.as_slice()].concat(),
+        )?;
+        if !probe.status.success() {
+            return Err(io::Error::other(
+                "tshark is unavailable through the wireshark group; refusing to issue fastboot boot",
+            ));
+        }
+
+        let capture_path = run_dir.join("tshark-usbmon-all.pcapng");
+        let quoted_path = shell_quote(&capture_path);
+        let command = format!("exec tshark -i usbmon0 -w {quoted_path}");
+        let mut child = Command::new("sg")
+            .args(["wireshark", "-c", command.as_str()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        thread::sleep(Duration::from_millis(100));
+        if let Some(status) = child.try_wait()? {
+            return Err(io::Error::other(format!(
+                "tshark capture exited before boot: {status}"
+            )));
+        }
+        fs::write(
+            run_dir.join("tshark-source.txt"),
+            format!(
+                "source=/dev/usbmon0\nmode=all-usb-buses\nobservation=passive\ncommand=sg wireshark -c {command}\n"
+            ),
+        )?;
+        Ok(Self {
+            child: Some(child),
+            run_dir: run_dir.to_owned(),
+            capture_path,
+        })
+    }
+
+    fn stop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let pid = child.id().to_string();
+        let descendants = || {
+            Command::new("pgrep")
+                .args(["-P", &pid])
+                .output()
+                .ok()
+                .map(|output| {
+                    String::from_utf8_lossy(&output.stdout)
+                        .split_whitespace()
+                        .filter_map(|value| value.parse::<u32>().ok())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        // `sg` remains the direct Child even though it launched tshark through
+        // its supplementary-group shell. Signal the capture child first;
+        // otherwise sg can wait forever while tshark keeps usbmon open.
+        let child_pids = descendants();
+        for descendant in &child_pids {
+            let _ = Command::new("kill")
+                .args(["-INT", &descendant.to_string()])
+                .status();
+        }
+        let interrupt = Command::new("kill").args(["-INT", &pid]).status();
+        let mut wait_result = None;
+        for _ in 0..100 {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    wait_result = Some(Ok(status));
+                    break;
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(100)),
+                Err(error) => {
+                    wait_result = Some(Err(error));
+                    break;
+                }
+            }
+        }
+        if wait_result.is_none() {
+            for descendant in descendants() {
+                let _ = Command::new("kill")
+                    .args(["-TERM", &descendant.to_string()])
+                    .status();
+            }
+            let _ = child.kill();
+            wait_result = Some(child.wait());
+        }
+        let mut status =
+            String::from("source=/dev/usbmon0\nmode=all-usb-buses\nobservation=passive\n");
+        status.push_str(&format!("interrupt={interrupt:?}\nwait={wait_result:?}\n"));
+        if let Ok(metadata) = fs::metadata(&self.capture_path) {
+            status.push_str(&format!("bytes={}\n", metadata.len()));
+            if let Ok(sha) = sha256(&self.capture_path) {
+                status.push_str(&format!("sha256={sha}\n"));
+                let _ = fs::write(
+                    self.run_dir.join("tshark-usbmon-all.sha256"),
+                    format!("{sha}  {}\n", self.capture_path.display()),
+                );
+            }
+            let quoted_path = shell_quote(&self.capture_path);
+            let command = format!("tshark -r {quoted_path} -q -z io,stat,0");
+            if let Ok(output) = Command::new("sg")
+                .args(["wireshark", "-c", command.as_str()])
+                .output()
+            {
+                let mut summary = output.stdout;
+                summary.extend_from_slice(&output.stderr);
+                let _ = fs::write(self.run_dir.join("tshark-summary.txt"), summary);
+            }
+        }
+        let _ = fs::write(self.run_dir.join("tshark-status.txt"), status);
+    }
+}
+
+impl Drop for TsharkGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn shell_quote(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 impl JournalGuard {
     fn start(run_dir: &Path) -> io::Result<Self> {
         let start_iso = command_text("date", &["--iso-8601=seconds"])?
@@ -1900,6 +2095,7 @@ fn main() -> io::Result<()> {
         CommandKind::Loop(args) => run_loop(&workspace, args),
         CommandKind::Matrix(args) => run_matrix(&workspace, args),
         CommandKind::Candidates(args) => run_candidates(&workspace, args),
+        CommandKind::Replay(args) => run_replay(&workspace, args),
         CommandKind::Status(args) => run_status(args),
         CommandKind::Trace(args) => run_trace(args),
     }
@@ -1928,6 +2124,7 @@ fn normal_android_candidate_loop_args(args: &CandidatesArgs, pre_dtb: bool) -> L
         hold: args.hold,
         fastboot_wait: args.fastboot_wait,
         usbmon: args.usbmon,
+        tshark: args.tshark,
         adb_reboot_to_fastboot: args.adb_reboot_to_fastboot,
         no_adb_reboot_to_fastboot: args.no_adb_reboot_to_fastboot,
         android_init: true,
@@ -2051,6 +2248,35 @@ fn run_candidates(workspace: &Path, mut args: CandidatesArgs) -> io::Result<()> 
         run_dir.join("candidate-ledger.tsv"),
         "step\tcandidate\tattempt\tclassification\tresult\n",
     )?;
+
+    // A previous RAM-only image can leave the handset between USB
+    // enumerations. Keep the candidate process alive across that transient
+    // instead of making the operator restart the harness; no device command
+    // is possible or attempted while the transport is absent.
+    let initial_observation = observe_host(&args.serial)?;
+    if initial_observation.state == DeviceState::DeviceAbsent && recovery_wait_secs > 0 {
+        eprintln!(
+            "candidate plan: device absent at start; waiting up to {recovery_wait_secs}s for host-visible recovery"
+        );
+        let recovered = wait_for_candidate_recovery(&args.serial, &run_dir, recovery_wait_secs)?;
+        if matches!(
+            recovered.state,
+            DeviceState::DeviceAbsent | DeviceState::UnknownUsbState
+        ) {
+            fs::write(
+                run_dir.join("next-experiment.txt"),
+                format!(
+                    "manual-recovery-required: candidate plan remained {} at startup after bounded recovery wait\nrecovery-wait-expired-secs={recovery_wait_secs}\ndevice-operation-while-absent=none\n",
+                    recovered.state.as_str()
+                ),
+            )?;
+            return Err(io::Error::other(format!(
+                "candidate plan could not observe a stable Bramble transport at startup; state={}; logs: {}",
+                recovered.state.as_str(),
+                run_dir.display()
+            )));
+        }
+    }
 
     let mut index = 0;
     let mut retry_counts = [0_usize; 2];
@@ -2192,6 +2418,393 @@ fn run_candidates(workspace: &Path, mut args: CandidatesArgs) -> io::Result<()> 
         "candidate plan exhausted without Fullerene USB; logs are under {}",
         run_dir.display()
     )))
+}
+
+#[derive(Debug)]
+struct ReplayCondition {
+    key: String,
+    source: PathBuf,
+    args: LoopArgs,
+}
+
+fn collect_experiment_manifests(root: &Path, manifests: &mut Vec<PathBuf>) -> io::Result<()> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_experiment_manifests(&path, manifests)?;
+        } else if path
+            .file_name()
+            .is_some_and(|name| name == "experiment-manifest.txt")
+        {
+            manifests.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn manifest_line<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        line.strip_prefix(name)
+            .and_then(|value| value.strip_prefix('='))
+    })
+}
+
+fn replay_profile_key(profile: &str) -> String {
+    let mut fields: Vec<_> = profile
+        .split(',')
+        .filter(|field| {
+            let key = field.split_once('=').map_or(*field, |(key, _)| key);
+            !matches!(key, "template" | "serial" | "usbmon" | "tshark")
+        })
+        .map(str::to_owned)
+        .collect();
+    fields.sort();
+    fields.join(",")
+}
+
+fn loop_args_from_replay_profile(
+    profile: &str,
+    serial: &str,
+    template: &Path,
+) -> Result<LoopArgs, String> {
+    let mut argv = vec!["historical-loop".to_owned()];
+    argv.extend(["--serial".to_owned(), serial.to_owned()]);
+    argv.extend([
+        "--template".to_owned(),
+        template.to_string_lossy().into_owned(),
+    ]);
+    for field in profile.split(',').filter(|field| !field.is_empty()) {
+        let Some((key, raw_value)) = field.split_once('=') else {
+            return Err(format!("profile field has no value: {field}"));
+        };
+        if matches!(key, "template" | "serial" | "usbmon" | "tshark") {
+            continue;
+        }
+        let value = manifest_value(raw_value);
+        if value == "false" {
+            continue;
+        }
+        argv.push(format!("--{key}"));
+        if value != "true" {
+            argv.push(value);
+        }
+    }
+    // A replay is only considered complete if the passive packet capture is
+    // present. Keep the legacy raw usbmon stream as a second, independent
+    // observation when the host permits it.
+    argv.extend(["--usbmon".to_owned(), "--tshark".to_owned()]);
+    LoopArgs::try_parse_from(argv).map_err(|error| error.to_string())
+}
+
+fn replay_safe_conditions(
+    manifest_root: &Path,
+    serial: &str,
+    template: &Path,
+) -> io::Result<(Vec<ReplayCondition>, Vec<String>)> {
+    let mut manifests = Vec::new();
+    collect_experiment_manifests(manifest_root, &mut manifests)?;
+    manifests.sort();
+
+    let mut conditions = Vec::new();
+    let mut rejected = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for manifest in manifests {
+        let text = fs::read_to_string(&manifest)?;
+        if manifest_line(&text, "safety") != Some(ALLOWED_REPLAY_SAFETY) {
+            continue;
+        }
+        let Some(profile) = manifest_line(&text, "profile") else {
+            rejected.push(format!("{}\tmissing-profile", manifest.display()));
+            continue;
+        };
+        let key = replay_profile_key(profile);
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        match loop_args_from_replay_profile(profile, serial, template) {
+            Ok(args) => conditions.push(ReplayCondition {
+                key,
+                source: manifest,
+                args,
+            }),
+            Err(error) => rejected.push(format!(
+                "{}\tunsupported-by-current-cli\t{}",
+                manifest.display(),
+                error.replace('\n', " ")
+            )),
+        }
+    }
+    Ok((conditions, rejected))
+}
+
+fn replay_ledger_line(value: &str) -> String {
+    value
+        .replace('\t', " ")
+        .replace('\n', " ")
+        .replace('\r', " ")
+}
+
+fn run_replay(workspace: &Path, mut args: ReplayArgs) -> io::Result<()> {
+    if args.manifest_root.is_relative() {
+        args.manifest_root = workspace.join(&args.manifest_root);
+    }
+    if args.template.is_relative() {
+        args.template = workspace.join(&args.template);
+    }
+    if !args.template.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("stock boot template not found: {}", args.template.display()),
+        ));
+    }
+
+    let (conditions, rejected) =
+        replay_safe_conditions(&args.manifest_root, &args.serial, &args.template)?;
+    let run_dir = match args.run_dir.take() {
+        Some(path) => {
+            let path = if path.is_relative() {
+                workspace.join(path)
+            } else {
+                path
+            };
+            if !path.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("replay run directory not found: {}", path.display()),
+                ));
+            }
+            path
+        }
+        None => create_run_dir(workspace, "fullerene-bramble-replay")?,
+    };
+    let completed = fs::read_to_string(run_dir.join("replay-ledger.tsv"))
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let step = fields.next()?.parse::<usize>().ok()?;
+            let condition = fields.next()?.to_owned();
+            // A device-absent preflight can create a ledger row without ever
+            // issuing fastboot boot. Only a child run with a recorded boot
+            // command is a completed hardware trial; such rows are skipped
+            // on resume, while transport-preflight failures are retried.
+            let prefix = format!("step-{step:03}");
+            let mut attempted = run_dir.join(&prefix).join("boot-command.txt").is_file();
+            if !attempted {
+                if let Ok(entries) = fs::read_dir(&run_dir) {
+                    attempted = entries.flatten().any(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(&format!("{prefix}-retry-"))
+                            && entry.path().join("boot-command.txt").is_file()
+                    });
+                }
+            }
+            attempted.then_some(condition)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let conditions: Vec<_> = conditions
+        .into_iter()
+        .filter(|condition| !completed.contains(&condition.key))
+        .collect();
+    println!(
+        "Historical safe conditions: {} pending, {} already complete, {} rejected; logs: {}",
+        conditions.len(),
+        completed.len(),
+        rejected.len(),
+        run_dir.display()
+    );
+    if !run_dir.join("replay-plan.txt").is_file() {
+        fs::write(
+            run_dir.join("replay-plan.txt"),
+            format!(
+                "source-root={}\nsafety={ALLOWED_REPLAY_SAFETY}\nserial={}\ntemplate={}\ntshark=required\nusbmon=required\nrunnable-conditions={}\nrejected-conditions={}\nrecovery-wait-secs={}\n",
+                args.manifest_root.display(),
+                args.serial,
+                args.template.display(),
+                completed.len() + conditions.len(),
+                rejected.len(),
+                args.recovery_wait_secs
+                    .min(MAX_CANDIDATE_RECOVERY_WAIT_SECS),
+            ),
+        )?;
+    }
+    if !run_dir.join("replay-ledger.tsv").is_file() {
+        fs::write(
+            run_dir.join("replay-ledger.tsv"),
+            "step\tcondition\tclassification\tresult\tsource\n",
+        )?;
+    }
+    if !run_dir.join("replay-rejected.tsv").is_file() {
+        fs::write(
+            run_dir.join("replay-rejected.tsv"),
+            if rejected.is_empty() {
+                "reason\n".to_owned()
+            } else {
+                format!("reason\n{}\n", rejected.join("\n"))
+            },
+        )?;
+    }
+    if args.dry_run {
+        for (index, condition) in conditions.iter().enumerate() {
+            println!(
+                "step={} condition={} source={}",
+                index + 1,
+                condition.key,
+                condition.source.display()
+            );
+            print_loop_command(&condition.args);
+        }
+        return Ok(());
+    }
+
+    let max_runs = if args.max_runs == 0 {
+        conditions.len()
+    } else {
+        args.max_runs.min(conditions.len())
+    };
+    let recovery_wait_secs = args
+        .recovery_wait_secs
+        .min(MAX_CANDIDATE_RECOVERY_WAIT_SECS);
+    let step_offset = completed.len();
+    for (index, condition) in conditions.into_iter().take(max_runs).enumerate() {
+        let step = step_offset + index + 1;
+        let base_child_name = format!("step-{step:03}");
+        let child_name = if !run_dir.join(&base_child_name).exists() {
+            base_child_name
+        } else {
+            (1_u64..)
+                .map(|retry| format!("{base_child_name}-retry-{retry}"))
+                .find(|name| !run_dir.join(name).exists())
+                .expect("unbounded replay retry name")
+        };
+        fs::write(
+            run_dir.join("next-experiment.txt"),
+            format!(
+                "step={step}\ncondition={}\nsource={}\noperation=build, audit, fastboot boot, tshark capture, host observe, classify\n",
+                condition.key,
+                condition.source.display()
+            ),
+        )?;
+        println!(
+            "=== replay {step}/{max_runs}: {} (source {}) ===",
+            condition.key,
+            condition.source.display()
+        );
+        let result = run_loop_with_named_dir(
+            workspace,
+            condition.args,
+            Some(&run_dir),
+            Some(&child_name),
+            None,
+        );
+        let child_dir = run_dir.join(&child_name);
+        let classification = fs::read_to_string(child_dir.join("classification.txt"))
+            .unwrap_or_else(|_| "classification=run-error\n".to_owned())
+            .trim()
+            .strip_prefix("classification=")
+            .unwrap_or("run-error")
+            .to_owned();
+        let result_text = if result.is_ok() { "pass" } else { "fail" };
+        let mut ledger = fs::OpenOptions::new()
+            .append(true)
+            .open(run_dir.join("replay-ledger.tsv"))?;
+        writeln!(
+            ledger,
+            "{}\t{}\t{}\t{}\t{}",
+            step,
+            replay_ledger_line(&condition.key),
+            replay_ledger_line(&classification),
+            result_text,
+            replay_ledger_line(&condition.source.display().to_string())
+        )?;
+        if result.is_ok() {
+            fs::write(
+                run_dir.join("next-experiment.txt"),
+                "none: Fullerene USB descriptor verification passed; preserve the successful run\n",
+            )?;
+            return Ok(());
+        }
+        if matches!(
+            classification.as_str(),
+            "build-or-audit-failure" | "artifact-sha256-mismatch"
+        ) {
+            eprintln!(
+                "replay step {step} stopped after {classification}; continue only after reviewing {}",
+                child_dir.display()
+            );
+            continue;
+        }
+        let mut observation = observe_host(&args.serial)?;
+        let mut recovery_windows = 0_u64;
+        while matches!(
+            observation.state,
+            DeviceState::DeviceAbsent | DeviceState::UnknownUsbState
+        ) && recovery_wait_secs > 0
+        {
+            recovery_windows += 1;
+            eprintln!(
+                "replay step {step}: transport {} ; waiting recovery window {recovery_windows} up to {recovery_wait_secs}s",
+                observation.state.as_str()
+            );
+            let mut windows = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(run_dir.join("replay-recovery-windows.tsv"))?;
+            writeln!(
+                windows,
+                "step={step}\twindow={recovery_windows}\tinitial-state={}",
+                observation.state.as_str()
+            )?;
+            observation = wait_for_candidate_recovery(&args.serial, &run_dir, recovery_wait_secs)?;
+            if !matches!(
+                observation.state,
+                DeviceState::DeviceAbsent | DeviceState::UnknownUsbState
+            ) {
+                writeln!(
+                    windows,
+                    "step={step}\twindow={recovery_windows}\tfinal-state={}",
+                    observation.state.as_str()
+                )?;
+            }
+        }
+        if observation.state == DeviceState::FullereneUsbAvailable {
+            fs::write(
+                run_dir.join("next-experiment.txt"),
+                "none: Fullerene USB descriptor appeared; preserve the successful run\n",
+            )?;
+            return Ok(());
+        }
+        if (observation.state == DeviceState::DeviceAbsent
+            || observation.state == DeviceState::UnknownUsbState)
+            && recovery_wait_secs == 0
+        {
+            fs::write(
+                run_dir.join("next-experiment.txt"),
+                format!(
+                    "manual-recovery-required: replay stopped at step {step} after bounded wait; state={}\nrecovery-wait-expired-secs={recovery_wait_secs}\ndevice-operation-while-absent=none\n",
+                    observation.state.as_str()
+                ),
+            )?;
+            return Err(io::Error::other(format!(
+                "historical replay stopped at step {step}; recovery state={}; logs: {}",
+                observation.state.as_str(),
+                run_dir.display()
+            )));
+        }
+    }
+    fs::write(
+        run_dir.join("next-experiment.txt"),
+        format!(
+            "none: replayed {max_runs} historical safe conditions; inspect replay-ledger.tsv and Tshark pcaps\n"
+        ),
+    )?;
+    Ok(())
 }
 
 fn run_trace(args: TraceArgs) -> io::Result<()> {
@@ -2567,6 +3180,8 @@ fn loop_args_for_route(args: &MatrixArgs, route: Route) -> LoopArgs {
         super_speed: args.super_speed,
         no_smmu: args.no_smmu,
         no_core_reset: args.no_core_reset,
+        usbmon: args.usbmon,
+        tshark: args.tshark,
         direct_handoff: matches!(route, Route::Controller),
         ..LoopArgs::default()
     }
@@ -3026,6 +3641,24 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--hsphy-ignore-eud requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_eud_device_mode && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-eud-device-mode requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_eud_device_mode && !args.hsphy_source_exact {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-eud-device-mode requires --hsphy-source-exact",
+        ));
+    }
+    if args.hsphy_eud_device_mode && args.hsphy_ignore_eud {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-eud-device-mode cannot be combined with --hsphy-ignore-eud",
         ));
     }
     if args.hsphy_dtbo_bramble_pvt && !args.direct_handoff {
@@ -3812,6 +4445,11 @@ fn run_loop_with_named_dir(
     let _ = capture_simple(&run_dir, "fastboot-usb-tree", "lsusb", &["-t"]);
 
     let journal = JournalGuard::start(&run_dir)?;
+    let _tshark = if args.tshark {
+        Some(TsharkGuard::start(&run_dir)?)
+    } else {
+        None
+    };
     let _usbmon = if args.usbmon {
         Some(UsbmonGuard::start(&run_dir)?)
     } else {
@@ -4365,6 +5003,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.hsphy_source_exact {
         arguments.push("--usb-gadget-handoff-hsphy-source-exact".to_owned());
     }
+    if args.hsphy_eud_device_mode {
+        arguments.push("--usb-gadget-handoff-hsphy-eud-device-mode".to_owned());
+    }
     if args.hsphy_dtbo_bramble_pvt {
         arguments.push("--usb-gadget-handoff-hsphy-dtbo-bramble-pvt".to_owned());
     }
@@ -4742,6 +5383,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.hsphy_ignore_eud {
         envs.push((
             "FULLERENE_AARCH64_USB_HSPHY_IGNORE_EUD".to_owned(),
+            "1".to_owned(),
+        ));
+    }
+    if args.hsphy_eud_device_mode {
+        envs.push((
+            "FULLERENE_AARCH64_USB_HSPHY_EUD_DEVICE_MODE".to_owned(),
             "1".to_owned(),
         ));
     }
@@ -5437,8 +6084,8 @@ mod tests {
             absent_plan.contains("candidate.pre-dtb.extra-loop-flag=--early-usb-before-dtb-scan")
         );
         assert!(absent_plan.contains("candidate.post-dtb.extra-loop-flag=none"));
-        assert!(absent_plan.contains("candidate.pre-dtb.expected_sha256=6d071ae3"));
-        assert!(absent_plan.contains("candidate.post-dtb.expected_sha256=5131d44b"));
+        assert!(absent_plan.contains("candidate.pre-dtb.expected_sha256=287bc17c"));
+        assert!(absent_plan.contains("candidate.post-dtb.expected_sha256=e36d73a9"));
         assert!(absent_plan.contains("device-operation-while-absent=none"));
         let mismatch_plan = next_experiment_for_classification("artifact-sha256-mismatch");
         assert!(mismatch_plan.contains("do not issue fastboot boot"));

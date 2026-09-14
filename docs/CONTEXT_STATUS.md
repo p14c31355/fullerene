@@ -18,7 +18,7 @@ targeted section before decompressing either archive.
 | FullereneOS AArch64 port | Boot the real FullereneOS runtime on Bramble | Early bring-up; generic runtime not yet entered |
 | Recovery safety | Failed handoff returns to Android without persistent writes | Confirmed for the recorded RAM-only runs |
 
-## Current state (last evidence update: 2026-09-14)
+## Current state (last evidence update: 2026-09-15)
 
 - The only `1234:0001` observation was produced by a prohibited Android
   configfs rebind. No Fullerene-owned descriptor success has been observed.
@@ -481,6 +481,82 @@ targeted section before decompressing either archive.
   The result remained unchanged: HS attach, address-0 `-110`, three
   zero-payload `-71` retries, no `1234:0001`, then automatic Android/Fastboot
   recovery.
+- Run `1343716.0` repeated the source-exact attach-reaching control from a
+  freshly booted stock Android state, with automatic ADB-to-Fastboot
+  transition, RAM-only `fastboot boot`, Fullerene usbmon capture, and automatic
+  Android-to-Fastboot recovery enabled. QEMU preflight, image audit, and
+  `fastboot boot` passed; artifact SHA-256 is
+  `d2ffd256f5208a5e5119fe26fdfa008b0602c341250b1b7edddc0e8626f21bbd`.
+  Fullerene HS attach occurred at `19:58:02 JST`; the host then submitted the
+  standard address-0 Device Descriptor request (`GET_DESCRIPTOR`, device,
+  `wLength=64`) but received no data: one `-110` timeout at `19:58:07`, then
+  three zero-payload `-71` completions at `19:58:07`. The independent Wireshark
+  capture is
+  `tmp/tshark-bramble-android-to-fastboot-20260914/usbmon-all.pcapng` with
+  SHA-256
+  `5d349bc8cfe4053c0fd13a6d659d9f05bc9112b7c37a137e706c04774154610e`.
+  Stock Android returned at `19:58:28`, and the runner restored Fastboot
+  automatically at `19:58:36`; no manual handset restart was needed. This
+  warm-Android A/B therefore does not resolve `-71` and confirms the failure is
+  pre-descriptor-response, not malformed Fullerene descriptor data.
+- Run `1358269.0` added the read-only `--signal-probe --signal-cmd-gate
+  always` flow-map instrumentation to the same attach-reaching profile. The
+  QEMU preflight, image audit, RAM-only `fastboot boot`, and automatic Android
+  to Fastboot recovery all completed. The host saw one Fullerene high-speed
+  attach, but no additional host-visible disconnect/re-enumeration beacon; the
+  independent tshark capture recorded three immediate zero-payload `-71`
+  descriptor completions, followed by a `-2` timeout and another two `-71`
+  retries. The run classified as `usb-attach-or-descriptor-failure--71`, with
+  artifact SHA-256
+  `8a9664a5e44d00c839618f1a1b66af75b3f9ea2f50d75d76ba7e5dd8018eda19` and
+  pcap SHA-256
+  `48fe1453568662044a164f1921633f7aaf783ec1837a4021a61cc111a3611a37`.
+  The flow-map did not yield a Fullerene descriptor or a stable re-enumeration;
+  it only confirms that host-visible `-71` timing is sensitive to the failed
+  handoff boundary.
+- Run `1363832.0` tested the remaining targeted HS-PHY POR recovery A/B:
+  `--signal-probe --signal-cmd-gate hsphy-por-clear-after-runstop` reapplied
+  the qpr1 POR-clear write immediately after the final Run/Stop. QEMU
+  preflight, image audit, RAM-only `fastboot boot`, and automatic Android to
+  Fastboot recovery passed. The host still reached HS attach followed by the
+  same zero-payload address-0 `-110` completion and three `-71` retries; no
+  `1234:0001` appeared. Artifact SHA-256 is
+  `fec41eed803f1e63fdfd719f4fa69403c73934797feb87e6deb548db7dd8fd7d`.
+  Reapplying POR after Run/Stop does not move the pre-descriptor boundary.
+- Run `1378512.0` exercised the current-HEAD normal Android-init pre-DTB
+  candidate after reproducing its build with the exact child environment. The
+  artifact SHA-256 was
+  `287bc17cbde1e2764f7381ff96452c8feaa1ca90e394789276a053b387170263`;
+  QEMU preflight and image audit passed and RAM-only `fastboot boot` was
+  accepted. After the Fastboot disconnect, the host saw no Fullerene,
+  Android, or bootloader transport and the bounded recovery window expired;
+  usbmon retained `918100` bytes with no usable Fullerene identity. The run
+  classified as `google-logo-or-software-unrecoverable-suspected`, so the
+  post-DTB candidate was not issued. This is the current-HEAD retake of the
+  older corrected candidates from `1131105.0`; it does not resolve the USB
+  boundary and requires physical recovery before another device operation.
+- Run `1396532.0` started the corrected candidate plan with the current-HEAD
+  SHA gates and `--recovery-wait-secs 900`. The initial host state was
+  `device-absent`; the runner polled all host transports for the full 900
+  seconds, recorded `device-absent` on every sample, issued no ADB, Fastboot,
+  build, or boot operation, and terminated with the same manual-recovery
+  requirement. This validates the autonomous recovery wait but provides no
+  new USB evidence; the pre-DTB candidate was not issued and post-DTB was not
+  considered.
+- Run `1729882.0` resumed from a manually recovered Fastboot handset and
+  issued both current-HEAD candidates. QEMU preflight, image audit, and
+  RAM-only `fastboot boot` acceptance passed for pre-DTB
+  (`287bc17c...`) and post-DTB (`e36d73a9...`), but neither produced
+  Fullerene USB; both classified as
+  `google-logo-or-software-unrecoverable-suspected`, and the final host state
+  had no ADB, Fastboot, or USB transport. The run is preserved at
+  `tmp/fullerene-bramble-candidates.1729882.0/` and does not resolve `-71`.
+- A separate passive Tshark capture for `1729882.0` was started after the
+  post-DTB device had already disappeared. Its pcap SHA-256 is
+  `5c77b6b7fb704232d4d0bfb0911b53f41927604f5fb857757ef7a67593e5768f` and it
+  contains only host/root-hub polling (`-115`/`-2`), not the Pixel's
+  descriptor request or `-71`; the earlier captures in `1343716.0` and
+  `1358269.0` remain the actual Tshark descriptor-error evidence.
 - The USB diagnostic quiet-window contract was tightened: both the ordinary
   poll loop and the Android-init timer fallback now check the quiet deadline
   before reading any DWC3 MMIO status. Formatting, diff checks, and the
@@ -497,9 +573,61 @@ targeted section before decompressing either archive.
 - When the handset is absent, no ADB, Fastboot, build, or boot operation is
   issued. The candidate runner records a bounded recovery wait and can resume
   the same candidate after Android/Fastboot becomes visible.
-- The candidate plan's SHA gate now tracks the corrected build-only hashes
-  above; the earlier `704579.0` image remains preserved as a separate safety
-  record and will not be reused for the corrected A/B.
+- The candidate plan's SHA gate now tracks the reproducible current-HEAD
+  hashes: pre-DTB
+  `287bc17cbde1e2764f7381ff96452c8feaa1ca90e394789276a053b387170263` and
+  post-DTB
+  `e36d73a9c4413133279390772dcdae5dae935eb6f0b318258f901c788e023fb3`.
+  The older exact artifacts from `1131105.0` remain preserved as separate
+  evidence and are not silently substituted. The earlier `704579.0` image
+  remains preserved as a separate safety record and will not be reused.
+- The Rust harness now accepts `--tshark` and starts a wireshark-group
+  Tshark usbmon capture before build/boot, writing the pcap, SHA-256, interface
+  list, and I/O summary. If Tshark cannot start, it refuses to issue
+  `fastboot boot`; the capture is passive and does not alter USB traffic.
+- The historical safe replay queue `1782267.0` was started with 155 safe
+  manifests deduplicated to 115 distinct current CLI conditions. Every replay
+  condition forces both `--tshark` and `--usbmon`; the queue skips no safe
+  condition, including the restored EUD device-mode branch. Step 1 passed
+  QEMU, audit, Tshark startup, and RAM-only `fastboot boot`, then classified
+  `google-logo-or-software-unrecoverable-suspected`. Its integrated Tshark
+  pcap has 725,498 frames, 127,461,532 bytes, and SHA-256
+  `c39e5fe5f4ee02ed03d5597de795e08fa735c47e133e78b6b30b2ff39989bb05`.
+  The queue initially waited for physical Fastboot/ADB recovery before step 2
+  and issues no device command while the transport is absent.
+- After Fastboot returned, replay step 3 (the historical `fastboot-wait=0`
+  Android-init/pre-DTB condition) completed its RAM-only boot and integrated
+  Tshark capture. It classified
+  `google-logo-or-software-unrecoverable-suspected`; the pcap contains
+  480,811 frames and 98,888,464 bytes with SHA-256
+  `48a200572de38926335189bcf842d3805cbc03c3f5f581f8de61ca6a0c0ca6b2`.
+  Tshark saw no Device Descriptor GET in that attempt. Its decoded USB status
+  histogram was `0` = 239,130, `-115` = 240,404, and `-2` = 1,277, with no
+  `-71`; the host journal recorded only the Fastboot disconnect
+  (`usb 2-1: USB disconnect, device number 52`) and no subsequent
+  `1234:0001` or Android/Fastboot re-enumeration. The replay returned to its
+  autonomous recovery window for the next condition; no device command is
+  issued while the transport is absent.
+- After the next Fastboot recovery, replay step 4 exercised the same
+  early-USB-before-DTB-scan profile with `no-adb-reboot-to-fastboot=true`.
+  RAM-only boot and integrated Tshark completed, but the result was again
+  `google-logo-or-software-unrecoverable-suspected`. The pcap contains
+  479,741 frames and 98,714,792 bytes with SHA-256
+  `67e19859f4c33626d69d076fafa68afac5c91f5c176d3e5c772e1233b64aa47d`.
+  Tshark saw no Device Descriptor GET; its status histogram was `0` =
+  238,565, `-115` = 239,870, and `-2` = 1,306, with no `-71`. The final
+  host state was device-absent with no Fullerene, Android, or Fastboot
+  identity, and the replay is now in the next autonomous recovery window.
+- After the next autonomous recovery, replay step 5 exercised the following
+  `hold=8`/power-refresh profile with the same integrated Tshark path. It was
+  again classified `google-logo-or-software-unrecoverable-suspected`. The
+  pcap contains 482,441 frames and 99,283,168 status bytes (summary
+  85,523,758 bytes) with SHA-256
+  `53fe2629f2a98984a8bf751df44397416d543fb1e7b789026f18a607ee76ba51`.
+  Tshark saw no Device Descriptor GET; its status histogram was `0` =
+  239,945, `-115` = 241,220, and `-2` = 1,276, with no `-71`. The final
+  host state was again device-absent with no Fullerene, Android, or Fastboot
+  identity, and the replay remains in its next autonomous recovery window.
 
 ## Fixed hardware and safety contract
 
@@ -554,9 +682,9 @@ negative results remain in the [full status history](../evidence/bramble/CONTEXT
    HS-PHY ordering, and the Android-init timer-IRQ/pwr-event/DT override
    candidate were hardware-tested without a Fullerene descriptor. Further
    progress requires external PHY RX/SOF or DWC3 event-ingress evidence.
-3. The handset is currently recovered in Fastboot (`26191JECB00076`); the
-   latest bounded run returned automatically after Android fallback. Keep the
-   Fastboot gate before another RAM-only run.
+3. The handset is currently not visible on any host transport during replay
+   `1782267.0`; physical recovery to Fastboot is required before the next
+   RAM-only condition. Keep the Fastboot gate before issuing any boot command.
 4. Do not add guessed EP0/TRB, packet-format, or register mutations while the
    host still receives no Fullerene descriptor payload.
 

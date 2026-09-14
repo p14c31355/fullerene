@@ -427,6 +427,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_hsphy_source_exact: bool,
 
+    /// Reproduce the Qualcomm EUD-owned device-mode HS-PHY branch: refresh
+    /// the rails, set PWRDOWN_B, wait 50 ms, and preserve the PHY state.
+    #[arg(long)]
+    usb_gadget_handoff_hsphy_eud_device_mode: bool,
+
     /// Select Bramble's private-DT qcom,param-override-seq HS-PHY pairs
     /// (0x67/0x6c and 0xc8/0x70) for a controlled direct-handoff A/B.
     #[arg(long)]
@@ -1773,6 +1778,19 @@ fn main() -> io::Result<()> {
             "--usb-gadget-handoff-hsphy-source-exact requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
+    if args.usb_gadget_handoff_hsphy_eud_device_mode
+        && (!args.usb_gadget_handoff_hsphy_source_exact
+            || !args.usb_gadget_handoff_probe
+            || !args.usb_gadget_handoff_direct
+            || target.arch != Arch::Aarch64
+            || target.platform != Platform::Bramble
+            || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-gadget-handoff-hsphy-eud-device-mode requires source-exact direct Bramble USB2 gadget handoff on AArch64 build/run/debug",
+        ));
+    }
     if args.usb_gadget_handoff_hsphy_dtbo_bramble_pvt
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
@@ -3027,6 +3045,7 @@ fn main() -> io::Result<()> {
                 hsphy_program_vdda_voltage: args.usb_gadget_handoff_hsphy_program_vdda_voltage,
                 hsphy_all_regulator_sets: args.usb_gadget_handoff_hsphy_all_regulator_sets,
                 hsphy_source_exact: args.usb_gadget_handoff_hsphy_source_exact,
+                hsphy_eud_device_mode: args.usb_gadget_handoff_hsphy_eud_device_mode,
                 hsphy_dtbo_bramble_pvt: args.usb_gadget_handoff_hsphy_dtbo_bramble_pvt,
                 hsphy_xbl_exact: args.usb_gadget_handoff_hsphy_xbl_exact,
                 hsphy_clear_sleepm: args.usb_gadget_handoff_hsphy_clear_sleepm,
@@ -3359,6 +3378,7 @@ struct Aarch64BuildConfig {
     hsphy_program_vdda_voltage: bool,
     hsphy_all_regulator_sets: bool,
     hsphy_source_exact: bool,
+    hsphy_eud_device_mode: bool,
     hsphy_dtbo_bramble_pvt: bool,
     hsphy_xbl_exact: bool,
     hsphy_clear_sleepm: bool,
@@ -3544,6 +3564,7 @@ fn build_aarch64_kernel(
         hsphy_program_vdda_voltage,
         hsphy_all_regulator_sets,
         hsphy_source_exact,
+        hsphy_eud_device_mode,
         hsphy_dtbo_bramble_pvt,
         hsphy_xbl_exact,
         hsphy_clear_sleepm,
@@ -3735,6 +3756,7 @@ fn build_aarch64_kernel(
         // retain it in the isolated child Cargo environment and cache key.
         "FULLERENE_AARCH64_USB_DISABLE_EUD",
         "FULLERENE_AARCH64_USB_HSPHY_IGNORE_EUD",
+        "FULLERENE_AARCH64_USB_HSPHY_EUD_DEVICE_MODE",
         // The standalone probe IRQ-route A/B is consumed by fullerene-kernel/build.rs
         // as a cfg flag; keep route-specific binaries out of the baseline target.
         "FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES",
@@ -3874,6 +3896,12 @@ fn build_aarch64_kernel(
     if hsphy_source_exact {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_HSPHY_SOURCE_EXACT",
+            "1".to_owned(),
+        );
+    }
+    if hsphy_eud_device_mode {
+        push_env(
+            "FULLERENE_AARCH64_USB_HSPHY_EUD_DEVICE_MODE",
             "1".to_owned(),
         );
     }

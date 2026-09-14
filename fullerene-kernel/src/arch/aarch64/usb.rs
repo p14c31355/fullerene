@@ -5805,6 +5805,20 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     if hsphy_eud_status && cfg!(fullerene_aarch64_usb_hsphy_ignore_eud) {
         log_puts("usb gadget handoff: HS PHY EUD gate overridden for A/B\n");
     }
+    #[cfg(fullerene_aarch64_usb_hsphy_eud_device_mode)]
+    if hsphy_eud_enabled {
+        // The official EUD-owned device branch refreshes the HS-PHY rails,
+        // sets PWRDOWN_B, waits 50 ms, and skips the normal analog init.
+        if unsafe { super::platform::bramble::refresh_usb_power(false) } {
+            let pwrdown = unsafe { phy::enter_eud_device_mode() };
+            log_hex(
+                "usb gadget handoff: EUD device-mode PWRDOWN_CTRL=",
+                u64::from(pwrdown),
+            );
+        } else {
+            log_puts("usb gadget handoff: EUD device-mode rail refresh failed\n");
+        }
+    }
     // Android's msm_hsphy_init() calls msm_hsphy_enable_power(true)
     // before enabling the 19.2 MHz ref clock, asserting PHY reset, and
     // programming the analog registers. The normal non-destructive path
