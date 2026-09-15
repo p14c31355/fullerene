@@ -292,7 +292,10 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
 #[inline]
 pub(super) unsafe fn configure_usb31_lfps_exit_timer() {
     unsafe {
-        if !cfg!(fullerene_aarch64_usb_gadget_handoff_ss_lfps_timer) {
+        if !cfg!(any(
+            fullerene_aarch64_usb_gadget_handoff_ss_lfps_timer,
+            fullerene_aarch64_usb_gadget_handoff_usb2_source_peripheral_start
+        )) {
             return;
         }
         if read(GSNPSID) >> 16 != DWC31_IP {

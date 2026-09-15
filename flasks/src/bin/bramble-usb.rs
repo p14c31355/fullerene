@@ -25,10 +25,12 @@ const BOOTLOADER_USB: &str = "18d1:4ee0";
 const ANDROID_FALLBACK_USB: &str = "18d1:4ee7";
 const FULLERENE_USB: &str = "1234:0001";
 const ALLOWED_REPLAY_SAFETY: &str = "ADB-to-Fastboot and fastboot boot only; no flash, erase, readback, unlock, slot, reset, or Android configfs";
-// Gate runs read the gate bit from the handset's return timing: a false gate
-// parks for 90 s before resetting, so the recovery wait must cover the park
-// plus the Android boot (well beyond 75 s).
-const RECOVERY_TIMEOUT_SECS: u64 = 150;
+// The replay recovery window covers the observed gate/Android return timing.
+// It is deliberately separate from the post-enumeration recovery grace:
+// USB captures must end with the enumeration observation, while the short
+// bounded grace gives the probe watchdog enough time to return to Android.
+const RECOVERY_WAIT_DEFAULT_SECS: u64 = 150;
+const POST_CAPTURE_RECOVERY_GRACE_SECS: u64 = 45;
 const MAX_CANDIDATE_RECOVERY_WAIT_SECS: u64 = 900;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,6 +133,11 @@ struct LoopArgs {
     hold: u64,
     #[arg(long, default_value_t = 30)]
     fastboot_wait: u64,
+    /// Keep observing the initial USB transport until ADB or Fastboot
+    /// appears. While absent, no device command is issued; once it returns,
+    /// continue through the normal safe ADB-to-Fastboot/RAM-only path.
+    #[arg(long)]
+    wait_for_transport: bool,
     /// Capture the host's passive usbmon stream for the entire RAM-only boot
     /// attempt. This is host observation only; it does not alter the target
     /// image or USB traffic. usbmon0 records all USB buses, which avoids
@@ -153,6 +160,11 @@ struct LoopArgs {
     no_adb_reboot_to_fastboot: bool,
     #[arg(long)]
     irq_route: Option<Route>,
+    /// Consume the DWC3 event ring from the 1 ms timer IRQ while leaving the
+    /// controller SPI disabled. This isolates GIC/controller-IRQ delivery
+    /// from USB2 receive and event generation without changing gadget setup.
+    #[arg(long, requires = "direct_handoff", conflicts_with = "irq_route")]
+    usb_event_timer_poll: bool,
     #[arg(long)]
     super_speed: bool,
     /// Force QMP's USB lane A or B without changing PMIC Type-C role state.
@@ -257,6 +269,14 @@ struct LoopArgs {
     /// the UTMI branch at the direct USB2 handoff boundary.
     #[arg(long)]
     clock_branches_rearm: bool,
+    /// Replay qpr1's initial resume clock ownership order (XO/domain, then
+    /// controller branches) before the direct USB2 device reset (A/B).
+    #[arg(long)]
+    usb2_source_resume_clocks: bool,
+    /// Add qpr1's GCC core-reset assert/deassert at the resume boundary,
+    /// after USB30_GDSC and before the controller clock branches (A/B).
+    #[arg(long)]
+    usb2_source_resume_core_reset: bool,
     /// Select Android msm's HS performance state for the DWC3 core clock
     /// (66.666667 MHz) at the direct USB2 handoff boundary.
     #[arg(long)]
@@ -278,6 +298,18 @@ struct LoopArgs {
     /// the direct handoff reset/init boundary (A/B).
     #[arg(long)]
     refresh_hsphy_power: bool,
+    /// Re-assert the Bramble USB2 HS-PHY ref clock after DWC3 global-control
+    /// setup, matching qpr1's usb_phy_set_suspend(usb2, 0) boundary (A/B).
+    #[arg(long)]
+    hsphy_ref_after_gctl: bool,
+    /// Re-assert the Bramble USB2 HS-PHY ref clock immediately after Run/Stop
+    /// (qpr1 resume-boundary A/B).
+    #[arg(long)]
+    hsphy_ref_after_runstop: bool,
+    /// Re-send the three qpr1 HS-PHY RPMh rail enables immediately after
+    /// Run/Stop, before the first host SETUP (A/B).
+    #[arg(long)]
+    hsphy_power_after_runstop: bool,
     /// Program the Android msm_hsphy_init() vdda18/vdda33 voltage ranges
     /// before enabling the refreshed HS-PHY rails (A/B).
     #[arg(long)]
@@ -286,6 +318,9 @@ struct LoopArgs {
     /// matching the Android RPMh regulator contract (A/B).
     #[arg(long)]
     hsphy_all_regulator_sets: bool,
+    /// Request LPM instead of HPM for the HS-PHY vdd rail (one-variable A/B).
+    #[arg(long)]
+    hsphy_vdd_lpm: bool,
     /// Skip the direct handoff's explicit QUSB2 PHY block-reset pulse (A/B).
     #[arg(long)]
     skip_usb2_phy_reset: bool,
@@ -296,6 +331,27 @@ struct LoopArgs {
     /// Arm EP0 STARTTRANSFER immediately after Run/Stop (Bramble A/B).
     #[arg(long)]
     start_after_connect: bool,
+    /// Keep retrying the deferred EP0 SETUP STARTTRANSFER for 5 seconds after
+    /// Run/Stop, covering the observed Bramble HS attach-to-descriptor gap.
+    #[arg(long)]
+    usb2_extended_setup_arm: bool,
+    /// Keep retrying the deferred EP0 SETUP STARTTRANSFER for 10 seconds
+    /// after Run/Stop, covering host debounce margin (A/B).
+    #[arg(long)]
+    usb2_long_setup_arm: bool,
+    /// After the deferred EP0 arm window fails, perform one device-core soft
+    /// reset and complete EP0 re-arm automatically (A/B).
+    #[arg(long)]
+    usb2_arm_window_recovery: bool,
+    /// Clear DWC3 USB2 SUSPHY immediately after the host USB Reset event (A/B).
+    #[arg(long)]
+    usb2_clear_susphy_after_reset: bool,
+    /// Start the source-defined QMP USB3 link-training workaround at USB Reset (A/B).
+    #[arg(long)]
+    usb3_link_training_after_reset: bool,
+    /// Clear DWC3 USB2 SUSPHY immediately after Run/Stop (source-order A/B).
+    #[arg(long)]
+    usb2_clear_susphy_after_runstop: bool,
     /// Historical XBL differential for EP0 request ownership. It is not the
     /// source-confirmed initial SETUP arm model; use only for reproduction.
     #[arg(long)]
@@ -429,6 +485,22 @@ struct LoopArgs {
     /// matching the active resume state (A/B).
     #[arg(long)]
     hsphy_clear_sleepm: bool,
+    /// Return the HS-PHY UTMI OPMODE to normal/driving operation after the
+    /// source-exact init (A/B for a Fastboot-owned RAM handoff).
+    #[arg(long)]
+    hsphy_normal_opmode: bool,
+    /// Clear the HS-PHY UTMI datapath override left by the qpr1 DP/DM
+    /// charger-detection regulator path (A/B).
+    #[arg(long)]
+    hsphy_clear_datapath_override: bool,
+    /// Clear HS-PHY PWRDOWN_B before publishing the gadget, matching the
+    /// qpr1 non-host disconnect/resume boundary (A/B).
+    #[arg(long)]
+    hsphy_clear_power_down: bool,
+    /// Add the legacy HS-PHY RTUNE_SEL write to the qpr1 source-exact
+    /// initialization sequence (one-variable physical A/B).
+    #[arg(long)]
+    hsphy_rtune: bool,
     /// Force the historical Bramble HS-PHY tuning pairs 0x63/0x85 for a
     /// physical control run; the qpr1 source-confirmed pairs remain default.
     #[arg(long)]
@@ -437,6 +509,25 @@ struct LoopArgs {
     /// qpr1's msm_usb2_phy_probe() ownership order (A/B).
     #[arg(long)]
     hsphy_before_reset: bool,
+    /// After a pre-reset HS-PHY init, resume its reference clock after DWC3
+    /// reset without replaying the analog init sequence (qpr1 A/B).
+    #[arg(long)]
+    hsphy_resume_clocks_after_reset: bool,
+    /// Add the msm_hsphy reset-to-analog-init 150 us settle delay (A/B).
+    #[arg(long)]
+    hsphy_por_delay_150: bool,
+    /// Hold the USB2 PHY reset asserted for the 150 us upper bound from
+    /// msm_hsphy_reset() (separate from the post-POR settle A/B).
+    #[arg(long)]
+    hsphy_reset_delay_150: bool,
+    /// Pulse the cable-connected HS-PHY auto-resume control for 750 us
+    /// before publishing the USB2 gadget (RX/SOF A/B).
+    #[arg(long)]
+    hsphy_auto_resume_pulse: bool,
+    /// Restore raw HS-PHY SUSPEND_N immediately after DWC3 CSFTRST, before
+    /// EP0 construction (one-variable physical A/B).
+    #[arg(long)]
+    hsphy_restore_suspend_n_after_reset: bool,
     /// Restore the qpr1 HS-PHY SUSPEND_N bit immediately after Run/Stop
     /// (one-variable physical A/B; direct handoff only).
     #[arg(long)]
@@ -454,6 +545,10 @@ struct LoopArgs {
     /// Force the direct USB2 handoff to DWC3.DCFG.FULLSPEED (A/B).
     #[arg(long)]
     dcfg_fullspeed: bool,
+    /// Restore DCTL.KEEP_CONNECT at gadget start when the DWC3 core advertises
+    /// hibernation support, matching qpr1's gadget_run_stop(true) (A/B).
+    #[arg(long)]
+    keep_connect_on_start: bool,
     /// Force the direct USB2 handoff to DWC3.DCFG.LOWSPEED (A/B).
     #[arg(long)]
     dcfg_lowspeed: bool,
@@ -639,14 +734,34 @@ struct LoopArgs {
     /// reset: clear UX_EXIT_PX and assert USB3 SUSPHY (A/B).
     #[arg(long)]
     usb2_source_phy_setup: bool,
+    /// Re-assert the active USB2 RPMh/GDSC/HS-PHY power contract every 500 ms
+    /// while the direct handoff is running (A/B).
+    #[arg(long)]
+    usb2_runtime_power_keepalive: bool,
     /// Clear DWC3 USB2 sleep-mode bits before the direct gadget handoff,
     /// matching qpr1 dwc3_dis_sleep_mode() (A/B).
     #[arg(long)]
     usb2_dis_sleep_mode: bool,
+    /// Replay qpr1's peripheral-start prefix before the device-core reset:
+    /// VBUS/session override, DEVICE port mode, and dis_sleep_mode (A/B).
+    #[arg(long)]
+    usb2_source_peripheral_start: bool,
+    /// Use qpr1's source VBUS override exactly: HS UTMI_OTG_VBUS_VALID only;
+    /// omit the legacy SW_SESSVLD_SEL bit from the HS scratch register (A/B).
+    #[arg(long)]
+    usb2_source_vbus_only: bool,
+    /// Match qpr1's initial PWR_EVENT mask and resolve simultaneous P3 bits
+    /// from the DWC3 link state instead of preserving the old state (A/B).
+    #[arg(long)]
+    usb2_source_power_events: bool,
     /// Replay qpr1 dwc3_msm_block_reset(false): reset and enable the
     /// Qualcomm DBM before the direct USB2 gadget start (A/B).
     #[arg(long)]
     usb2_android_dbm_reset: bool,
+    /// If the DWC3 event FIFO is empty, dispatch an EP0 transfer whose DMA TRB
+    /// is already retired. Read-first USB2 event-ingress fallback (A/B).
+    #[arg(long)]
+    ep0_trb_completion_fallback: bool,
     /// Issue the Linux dwc3_ep0_stall_and_restart() EP0 SETSTALL flush and
     /// arm the SETUP TRB at the halted pre-Run/Stop boundary (A/B).
     #[arg(long)]
@@ -861,11 +976,13 @@ impl Default for LoopArgs {
             enum_timeout: 60,
             hold: 30,
             fastboot_wait: 30,
+            wait_for_transport: false,
             usbmon: false,
             tshark: false,
             adb_reboot_to_fastboot: false,
             no_adb_reboot_to_fastboot: false,
             irq_route: None,
+            usb_event_timer_poll: false,
             super_speed: false,
             qmp_lane: None,
             xbl_qmp_table: false,
@@ -893,16 +1010,28 @@ impl Default for LoopArgs {
             gadget_start_defaults_at_runstop: false,
             min_runstop_delay: false,
             clock_branches_rearm: false,
+            usb2_source_resume_clocks: false,
+            usb2_source_resume_core_reset: false,
             usb_core_hs_clock: false,
             usb2_full_core_reset: false,
             clock_stable_delay_us: None,
             android_block_reset: false,
             refresh_hsphy_power: false,
+            hsphy_ref_after_gctl: false,
+            hsphy_ref_after_runstop: false,
+            hsphy_power_after_runstop: false,
             hsphy_program_vdda_voltage: false,
             hsphy_all_regulator_sets: false,
+            hsphy_vdd_lpm: false,
             skip_usb2_phy_reset: false,
             event_ring_size_4096: false,
             start_after_connect: false,
+            usb2_extended_setup_arm: false,
+            usb2_long_setup_arm: false,
+            usb2_arm_window_recovery: false,
+            usb2_clear_susphy_after_reset: false,
+            usb3_link_training_after_reset: false,
+            usb2_clear_susphy_after_runstop: false,
             xbl_deferred_setup: false,
             xbl_ep0_in_data: false,
             xbl_event_dma: false,
@@ -941,13 +1070,23 @@ impl Default for LoopArgs {
             hsphy_eud_device_mode: false,
             hsphy_xbl_exact: false,
             hsphy_clear_sleepm: false,
+            hsphy_normal_opmode: false,
+            hsphy_clear_datapath_override: false,
+            hsphy_clear_power_down: false,
+            hsphy_rtune: false,
             hsphy_legacy_fallback: false,
             hsphy_before_reset: false,
+            hsphy_resume_clocks_after_reset: false,
+            hsphy_por_delay_150: false,
+            hsphy_reset_delay_150: false,
+            hsphy_auto_resume_pulse: false,
+            hsphy_restore_suspend_n_after_reset: false,
             hsphy_restore_suspend_n_after_runstop: false,
             hsphy_restore_suspend_n_selected_after_runstop: false,
             ep0_initial_512: false,
             dcfg_superspeed: false,
             dcfg_fullspeed: false,
+            keep_connect_on_start: false,
             dcfg_lowspeed: false,
             no_ss_vbus: false,
             usb2_core_reset_at_runstop: false,
@@ -997,8 +1136,13 @@ impl Default for LoopArgs {
             usb2_source_exact_cmd_guard: false,
             usb2_source_exact_runstop: false,
             usb2_source_phy_setup: false,
+            usb2_runtime_power_keepalive: false,
             usb2_dis_sleep_mode: false,
+            usb2_source_peripheral_start: false,
+            usb2_source_vbus_only: false,
+            usb2_source_power_events: false,
             usb2_android_dbm_reset: false,
+            ep0_trb_completion_fallback: false,
             ep0_stall_flush: false,
             ep0_short_first_desc: false,
             ep0_txfifo_fix: false,
@@ -1113,8 +1257,8 @@ struct CandidatesArgs {
     /// After a device-absent result, keep polling host transports for this
     /// bounded interval and resume the candidate plan if physical recovery
     /// makes Android ADB or Fastboot visible. The default is the bounded
-    /// 900-second autonomous recovery window; pass 0 for immediate stop.
-    #[arg(long, default_value_t = MAX_CANDIDATE_RECOVERY_WAIT_SECS)]
+    /// 150-second recovery observation window; pass 0 for immediate stop.
+    #[arg(long, default_value_t = RECOVERY_WAIT_DEFAULT_SECS)]
     recovery_wait_secs: u64,
     #[arg(long)]
     usbmon: bool,
@@ -1122,6 +1266,26 @@ struct CandidatesArgs {
     /// candidate attempt, starting before build/boot.
     #[arg(long)]
     tshark: bool,
+    /// Resume directly with the post-DTB candidate after a preserved pre-DTB
+    /// failure; this does not re-run the already measured pre-DTB condition.
+    #[arg(long)]
+    post_dtb_only: bool,
+    /// Add one source-backed Run/Stop disconnect/re-attach pair after the
+    /// initial EP0 arm, preserving the same baseline and capture settings.
+    #[arg(long)]
+    arm_blip: bool,
+    /// Re-run the Android/qpr1 DWC3 event-buffer and EP0 gadget-start
+    /// sequence immediately before the final Run/Stop transition.
+    #[arg(long, conflicts_with = "arm_blip")]
+    gadget_restart_at_runstop: bool,
+    /// Move the DCFG speed write to after the restarted EP0 construction,
+    /// matching the source order inside Android qpr1's __dwc3_gadget_start.
+    #[arg(long, requires = "gadget_restart_at_runstop")]
+    gadget_start_only_at_runstop: bool,
+    /// Use qpr1's maximum-speed/EP0-start state with the restart A/B:
+    /// DCFG SuperSpeed and the initial 512-byte EP0 descriptor state.
+    #[arg(long, requires = "gadget_start_only_at_runstop")]
+    qpr1_gadget_speed_profile: bool,
     /// Explicitly allow the selected ADB device to transition to Fastboot.
     /// This is enabled by default for the candidate plan.
     #[arg(long)]
@@ -1133,7 +1297,7 @@ struct CandidatesArgs {
     dry_run: bool,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 struct ReplayArgs {
     /// Root to scan recursively for historical experiment-manifest.txt files.
     #[arg(long, default_value = "tmp")]
@@ -1143,8 +1307,10 @@ struct ReplayArgs {
     #[arg(long, default_value = DEFAULT_TEMPLATE)]
     template: PathBuf,
     /// Bounded interval to wait for Fastboot/ADB recovery between historical
-    /// conditions after a transport disappears.
-    #[arg(long, default_value_t = MAX_CANDIDATE_RECOVERY_WAIT_SECS)]
+    /// conditions after a transport disappears. The default covers the
+    /// observed Bramble gate/Android return window without leaving a replay
+    /// parked for the full candidate-wait maximum.
+    #[arg(long, default_value_t = RECOVERY_WAIT_DEFAULT_SECS)]
     recovery_wait_secs: u64,
     /// Limit the number of runnable conditions; zero means all of them.
     #[arg(long, default_value_t = 0)]
@@ -1152,6 +1318,14 @@ struct ReplayArgs {
     /// Resume an existing replay ledger instead of creating a new queue.
     #[arg(long)]
     run_dir: Option<PathBuf>,
+    /// Keep the replay queue alive and resume it whenever ADB or Fastboot
+    /// becomes visible again. This requires an existing --run-dir so every
+    /// retry shares the same ledger and never repeats a completed condition.
+    #[arg(long, requires = "run_dir")]
+    watch: bool,
+    /// Poll interval for --watch host-state observation.
+    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..=60))]
+    watch_poll_secs: u64,
     #[arg(long)]
     dry_run: bool,
 }
@@ -1394,25 +1568,77 @@ fn record_command_spec(run_dir: &Path, label: &str, spec: &CommandSpec) -> io::R
 }
 
 const PRE_DTB_CANDIDATE_SHA256: &str =
-    "287bc17cbde1e2764f7381ff96452c8feaa1ca90e394789276a053b387170263";
+    "9e3da64c1d61ca5cf7d4f0ebf3575169acaa0299cac4140867064f06ab0d8923";
 const POST_DTB_CANDIDATE_SHA256: &str =
-    "e36d73a9c4413133279390772dcdae5dae935eb6f0b318258f901c788e023fb3";
+    "6ff736b1444c921a2488678f6b83bd4ba2945b2997e025cd4d2d14c008e35790";
+const ARM_BLIP_PRE_DTB_CANDIDATE_SHA256: &str =
+    "86aafe408cd6bb32eaa28aadc220b57f3073412cf63856cfd891e3860855cbac";
+const ARM_BLIP_POST_DTB_CANDIDATE_SHA256: &str =
+    "98c8b530d3abfd0f20ad822fee9cd4745cadd00ebfa6d160d43a94807de1ba78";
+const GADGET_RESTART_PRE_DTB_CANDIDATE_SHA256: &str =
+    "739d617f8e49b5df3f43d9ebe2d6ce8e457a729e57bbe6d9e03dd2e925cf36b9";
+const GADGET_RESTART_POST_DTB_CANDIDATE_SHA256: &str =
+    "c2faf6c0a200f633cd41efae0c8a1e14a90adb6d6a2988519a13d277290b8af3";
+const GADGET_START_ONLY_PRE_DTB_CANDIDATE_SHA256: &str =
+    "460cc4c2a30b83ed5d7cf831fcbd7ee4a4a5c2d28fd86841f7db98ef23db5d9d";
+const GADGET_START_ONLY_POST_DTB_CANDIDATE_SHA256: &str =
+    "c7695d54d13c672ad6c8da23c99c0bef9b086611ed98589524b0e12c0911a14e";
+const QPR1_GADGET_SPEED_PRE_DTB_CANDIDATE_SHA256: &str =
+    "6c0ae1e3dd1e8b54d3c092f38607ad741418397d3d04631e3e9283a760d80d1f";
+const QPR1_GADGET_SPEED_POST_DTB_CANDIDATE_SHA256: &str =
+    "6b8d31a5f1b5266b172ffcd3bfba3ae70b17072fd8531431f33d648e269073f1";
+
+fn candidate_sha256(
+    pre_dtb: bool,
+    arm_blip: bool,
+    gadget_restart_at_runstop: bool,
+    gadget_start_only_at_runstop: bool,
+    qpr1_gadget_speed_profile: bool,
+) -> &'static str {
+    if qpr1_gadget_speed_profile {
+        return if pre_dtb {
+            QPR1_GADGET_SPEED_PRE_DTB_CANDIDATE_SHA256
+        } else {
+            QPR1_GADGET_SPEED_POST_DTB_CANDIDATE_SHA256
+        };
+    }
+    if gadget_start_only_at_runstop {
+        return if pre_dtb {
+            GADGET_START_ONLY_PRE_DTB_CANDIDATE_SHA256
+        } else {
+            GADGET_START_ONLY_POST_DTB_CANDIDATE_SHA256
+        };
+    }
+    if gadget_restart_at_runstop {
+        return if pre_dtb {
+            GADGET_RESTART_PRE_DTB_CANDIDATE_SHA256
+        } else {
+            GADGET_RESTART_POST_DTB_CANDIDATE_SHA256
+        };
+    }
+    match (pre_dtb, arm_blip) {
+        (true, false) => PRE_DTB_CANDIDATE_SHA256,
+        (false, false) => POST_DTB_CANDIDATE_SHA256,
+        (true, true) => ARM_BLIP_PRE_DTB_CANDIDATE_SHA256,
+        (false, true) => ARM_BLIP_POST_DTB_CANDIDATE_SHA256,
+    }
+}
 
 const DEVICE_ABSENT_NEXT_EXPERIMENT: &str = r#"manual-recovery-required: host cannot see a Bramble transport; recover the handset physically before another bounded run
-candidate-plan=normal-android-init-dma-cache-maintenance
+candidate-plan=normal-android-init-dma-cache-maintenance-preconnect-baseline
 candidate-order=pre-dtb,post-dtb
 candidate-plan-command=cargo run -q -p flasks --bin bramble-usb -- candidates
 adb-reboot-to-fastboot=enabled-by-default
 allowed-device-operations=adb reboot bootloader; RAM-only fastboot boot
 forbidden-device-operations=flash; erase; readback; partition-write; unlock; slot-mutation; factory-reset; Android configfs
-candidate-common-loop-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --start-after-connect --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop
+candidate-common-loop-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop
 candidate-profile-exclusions=--android-resource-order --signal-probe --signal-early-drop --skip-typec-spmi --observe-secs
 candidate.pre-dtb.artifact=tmp/fullerene-bramble-android-init-pre-dtb-cache-maintenance-trace-init.img
-candidate.pre-dtb.expected_sha256=287bc17cbde1e2764f7381ff96452c8feaa1ca90e394789276a053b387170263
+candidate.pre-dtb.expected_sha256=9e3da64c1d61ca5cf7d4f0ebf3575169acaa0299cac4140867064f06ab0d8923
 candidate.pre-dtb.changed_variable=normal Android-init USB handoff before DTB scan plus explicit DMA cache maintenance
 candidate.pre-dtb.extra-loop-flag=--early-usb-before-dtb-scan
 candidate.post-dtb.artifact=tmp/fullerene-bramble-android-init-post-dtb-cache-maintenance-trace-init.img
-candidate.post-dtb.expected_sha256=e36d73a9c4413133279390772dcdae5dae935eb6f0b318258f901c788e023fb3
+candidate.post-dtb.expected_sha256=6ff736b1444c921a2488678f6b83bd4ba2945b2997e025cd4d2d14c008e35790
 candidate.post-dtb.changed_variable=normal Android-init USB handoff after DTB scan plus explicit DMA cache maintenance
 candidate.post-dtb.extra-loop-flag=none
 action-after-recovery=invoke the Rust candidate plan in order with the exact common profile above; permit only ADB-to-Fastboot and RAM-only fastboot boot
@@ -1495,20 +1721,20 @@ fn write_device_absent_recovery_plan(run_dir: &Path, workspace: &Path) -> io::Re
         "manual-recovery-required: host sees no Bramble transport; after physical recovery, rerun the bounded Rust loop; no device-side operation was issued\n"
             .to_owned(),
     );
-    text.push_str("candidate-plan=normal-android-init-dma-cache-maintenance\n");
+    text.push_str("candidate-plan=normal-android-init-dma-cache-maintenance-preconnect-baseline\n");
     text.push_str("candidate-order=pre-dtb,post-dtb\n");
     text.push_str(
         "candidate-plan-command=cargo run -q -p flasks --bin bramble-usb -- candidates\n",
     );
     text.push_str(
-        "autonomous-resume-option=cargo run -q -p flasks --bin bramble-usb -- candidates --recovery-wait-secs 900\n",
+        "autonomous-resume-option=cargo run -q -p flasks --bin bramble-usb -- candidates --recovery-wait-secs 150\n",
     );
     text.push_str("adb-reboot-to-fastboot=enabled-by-default\n");
     text.push_str("allowed-device-operations=adb reboot bootloader; RAM-only fastboot boot\n");
     text.push_str(
         "forbidden-device-operations=flash; erase; readback; partition-write; unlock; slot-mutation; factory-reset; Android configfs\n",
     );
-    text.push_str("candidate-common-loop-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --start-after-connect --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop\n");
+    text.push_str("candidate-common-loop-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop\n");
     text.push_str("candidate-profile-exclusions=--android-resource-order --signal-probe --signal-early-drop --skip-typec-spmi --observe-secs\n");
     for (index, (name, relative_path, expected_sha256, changed_variable)) in
         candidates.iter().enumerate()
@@ -1647,11 +1873,29 @@ fn experiment_manifest(args: &LoopArgs) -> String {
     if args.hsphy_eud_device_mode {
         variables.push("hsphy-eud-device-mode=true".to_owned());
     }
+    if args.hsphy_resume_clocks_after_reset {
+        variables.push("hsphy-resume-clocks-after-reset=true".to_owned());
+    }
     if args.hsphy_xbl_exact {
         variables.push("hsphy-xbl-exact=true".to_owned());
     }
     if args.hsphy_clear_sleepm {
         variables.push("hsphy-clear-sleepm=true".to_owned());
+    }
+    if args.hsphy_normal_opmode {
+        variables.push("hsphy-normal-opmode=true".to_owned());
+    }
+    if args.hsphy_clear_datapath_override {
+        variables.push("hsphy-clear-datapath-override=true".to_owned());
+    }
+    if args.hsphy_clear_power_down {
+        variables.push("hsphy-clear-power-down=true".to_owned());
+    }
+    if args.keep_connect_on_start {
+        variables.push("keep-connect-on-start=true".to_owned());
+    }
+    if args.hsphy_rtune {
+        variables.push("hsphy-rtune=true".to_owned());
     }
     if args.xbl_hs_phy_table {
         variables.push("xbl-hs-phy-table=true".to_owned());
@@ -1674,14 +1918,35 @@ fn experiment_manifest(args: &LoopArgs) -> String {
     if args.usb2_source_phy_setup {
         variables.push("usb2-source-phy-setup=true".to_owned());
     }
+    if args.usb2_runtime_power_keepalive {
+        variables.push("usb2-runtime-power-keepalive=true".to_owned());
+    }
     if args.usb2_source_exact_device_reset {
         variables.push("usb2-source-exact-device-reset=true".to_owned());
+    }
+    if args.usb2_source_peripheral_start {
+        variables.push("usb2-source-peripheral-start=true".to_owned());
+    }
+    if args.usb2_source_vbus_only {
+        variables.push("usb2-source-vbus-only=true".to_owned());
+    }
+    if args.usb2_source_power_events {
+        variables.push("usb2-source-power-events=true".to_owned());
+    }
+    if args.usb2_source_resume_clocks {
+        variables.push("usb2-source-resume-clocks=true".to_owned());
+    }
+    if args.usb2_source_resume_core_reset {
+        variables.push("usb2-source-resume-core-reset=true".to_owned());
     }
     if args.usb2_qpr1_utmi_post_reset_only {
         variables.push("usb2-qpr1-utmi-post-reset-only=true".to_owned());
     }
     if args.usb2_android_dbm_reset {
         variables.push("usb2-android-dbm-reset=true".to_owned());
+    }
+    if args.ep0_trb_completion_fallback {
+        variables.push("ep0-trb-completion-fallback=true".to_owned());
     }
     if args.min_runstop_delay {
         variables.push("min-runstop-delay=true".to_owned());
@@ -1691,6 +1956,45 @@ fn experiment_manifest(args: &LoopArgs) -> String {
     }
     if args.start_after_connect {
         variables.push("start-after-connect=true".to_owned());
+    }
+    if args.usb2_extended_setup_arm {
+        variables.push("usb2-extended-setup-arm=true".to_owned());
+    }
+    if args.usb2_long_setup_arm {
+        variables.push("usb2-long-setup-arm=true".to_owned());
+    }
+    if args.usb2_arm_window_recovery {
+        variables.push("usb2-arm-window-recovery=true".to_owned());
+    }
+    if args.usb2_clear_susphy_after_reset {
+        variables.push("usb2-clear-susphy-after-reset=true".to_owned());
+    }
+    if args.usb3_link_training_after_reset {
+        variables.push("usb3-link-training-after-reset=true".to_owned());
+    }
+    if args.usb2_clear_susphy_after_runstop {
+        variables.push("usb2-clear-susphy-after-runstop=true".to_owned());
+    }
+    if args.hsphy_ref_after_runstop {
+        variables.push("hsphy-ref-after-runstop=true".to_owned());
+    }
+    if args.hsphy_power_after_runstop {
+        variables.push("hsphy-power-after-runstop=true".to_owned());
+    }
+    if args.hsphy_vdd_lpm {
+        variables.push("hsphy-vdd-lpm=true".to_owned());
+    }
+    if args.hsphy_por_delay_150 {
+        variables.push("hsphy-por-delay-150=true".to_owned());
+    }
+    if args.hsphy_reset_delay_150 {
+        variables.push("hsphy-reset-delay-150=true".to_owned());
+    }
+    if args.hsphy_auto_resume_pulse {
+        variables.push("hsphy-auto-resume-pulse=true".to_owned());
+    }
+    if args.hsphy_restore_suspend_n_after_reset {
+        variables.push("hsphy-restore-suspend-n-after-reset=true".to_owned());
     }
     if args.dcfg_ignstrmpp {
         variables.push("dcfg-ignstrmpp=true".to_owned());
@@ -2095,7 +2399,7 @@ fn main() -> io::Result<()> {
         CommandKind::Loop(args) => run_loop(&workspace, args),
         CommandKind::Matrix(args) => run_matrix(&workspace, args),
         CommandKind::Candidates(args) => run_candidates(&workspace, args),
-        CommandKind::Replay(args) => run_replay(&workspace, args),
+        CommandKind::Replay(args) => run_replay_command(&workspace, args),
         CommandKind::Status(args) => run_status(args),
         CommandKind::Trace(args) => run_trace(args),
     }
@@ -2136,7 +2440,17 @@ fn normal_android_candidate_loop_args(args: &CandidatesArgs, pre_dtb: bool) -> L
         no_smmu: true,
         dma_cache_maintenance: true,
         refresh_hsphy_power: true,
-        start_after_connect: true,
+        // The deferred start-ungated and Connect Done A/Bs both lost the
+        // host transport before any Device-Descriptor GET. Keep the known
+        // attach-reaching pre-connect STARTTRANSFER order as the baseline;
+        // the next variable must be PHY/RX/SOF or event ingress, not EP0
+        // timing.
+        start_at_connect_done: false,
+        arm_blip: args.arm_blip,
+        gadget_restart_at_runstop: args.gadget_restart_at_runstop,
+        gadget_start_only_at_runstop: args.gadget_start_only_at_runstop,
+        ep0_initial_512: args.qpr1_gadget_speed_profile,
+        dcfg_superspeed: args.qpr1_gadget_speed_profile,
         hsphy_source_exact: true,
         usb2_source_exact_device_reset: true,
         usb2_source_susphy: true,
@@ -2157,7 +2471,7 @@ fn wait_for_candidate_recovery(
     let mut timeline = File::create(run_dir.join("candidate-recovery-wait.tsv"))?;
     writeln!(
         timeline,
-        "requested_timeout_secs={requested_timeout_secs}\neffective_timeout_secs={timeout_secs}"
+        "requested_timeout_secs={requested_timeout_secs}\neffective_timeout_secs={timeout_secs}\nrecovery_mode=passive-host-observation\ndevice_commands_while_absent=none"
     )?;
     writeln!(
         timeline,
@@ -2205,17 +2519,69 @@ fn run_candidates(workspace: &Path, mut args: CandidatesArgs) -> io::Result<()> 
     if args.template.is_relative() {
         args.template = workspace.join(&args.template);
     }
-    let candidate_specs = [
-        ("pre-dtb", true, PRE_DTB_CANDIDATE_SHA256),
-        ("post-dtb", false, POST_DTB_CANDIDATE_SHA256),
-    ];
+    let candidate_specs = if args.post_dtb_only {
+        vec![(
+            "post-dtb",
+            false,
+            candidate_sha256(
+                false,
+                args.arm_blip,
+                args.gadget_restart_at_runstop,
+                args.gadget_start_only_at_runstop,
+                args.qpr1_gadget_speed_profile,
+            ),
+        )]
+    } else {
+        vec![
+            (
+                "pre-dtb",
+                true,
+                candidate_sha256(
+                    true,
+                    args.arm_blip,
+                    args.gadget_restart_at_runstop,
+                    args.gadget_start_only_at_runstop,
+                    args.qpr1_gadget_speed_profile,
+                ),
+            ),
+            (
+                "post-dtb",
+                false,
+                candidate_sha256(
+                    false,
+                    args.arm_blip,
+                    args.gadget_restart_at_runstop,
+                    args.gadget_start_only_at_runstop,
+                    args.qpr1_gadget_speed_profile,
+                ),
+            ),
+        ]
+    };
+    let candidate_order = if args.post_dtb_only {
+        "post-dtb"
+    } else {
+        "pre-dtb,post-dtb"
+    };
     if args.dry_run {
-        println!("Bramble candidate plan (dry-run): pre-dtb -> post-dtb");
+        println!("Bramble candidate plan (dry-run): {candidate_order}");
         println!(
             "recovery-wait-secs={} (max {})",
             args.recovery_wait_secs
                 .min(MAX_CANDIDATE_RECOVERY_WAIT_SECS),
             MAX_CANDIDATE_RECOVERY_WAIT_SECS
+        );
+        println!("arm-blip={}", args.arm_blip);
+        println!(
+            "gadget-restart-at-runstop={}",
+            args.gadget_restart_at_runstop
+        );
+        println!(
+            "gadget-start-only-at-runstop={}",
+            args.gadget_start_only_at_runstop
+        );
+        println!(
+            "qpr1-gadget-speed-profile={}",
+            args.qpr1_gadget_speed_profile
         );
         for (name, pre_dtb, expected_sha256) in candidate_specs {
             println!("=== candidate: {name} ===");
@@ -2238,10 +2604,49 @@ fn run_candidates(workspace: &Path, mut args: CandidatesArgs) -> io::Result<()> 
         .min(MAX_CANDIDATE_RECOVERY_WAIT_SECS);
     let run_dir = create_run_dir(workspace, "fullerene-bramble-candidates")?;
     println!("Candidate plan logs: {}", run_dir.display());
+    let arm_blip_flag = if args.arm_blip { " --arm-blip" } else { "" };
+    let gadget_restart_flag = if args.gadget_restart_at_runstop {
+        " --gadget-restart-at-runstop"
+    } else {
+        ""
+    };
+    let gadget_start_only_flag = if args.gadget_start_only_at_runstop {
+        " --gadget-start-only-at-runstop"
+    } else {
+        ""
+    };
+    let qpr1_gadget_speed_flag = if args.qpr1_gadget_speed_profile {
+        " --qpr1-gadget-speed-profile"
+    } else {
+        ""
+    };
+    let pre_dtb_sha = candidate_sha256(
+        true,
+        args.arm_blip,
+        args.gadget_restart_at_runstop,
+        args.gadget_start_only_at_runstop,
+        args.qpr1_gadget_speed_profile,
+    );
+    let post_dtb_sha = candidate_sha256(
+        false,
+        args.arm_blip,
+        args.gadget_restart_at_runstop,
+        args.gadget_start_only_at_runstop,
+        args.qpr1_gadget_speed_profile,
+    );
     let candidate_plan = format!(
-        "candidate-order=pre-dtb,post-dtb\nprofile=normal-android-init-dma-cache-maintenance\nadb-reboot-to-fastboot=enabled-by-default\nrecovery-wait-secs={recovery_wait_secs}\nallowed-device-operations=adb reboot bootloader; RAM-only fastboot boot\nforbidden-device-operations=flash; erase; readback; partition-write; unlock; slot-mutation; factory-reset; Android configfs\ncommon-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --start-after-connect --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop\npre-dtb-extra-flag=--early-usb-before-dtb-scan\npre-dtb-expected-sha256={pre_dtb_sha}\npost-dtb-extra-flag=none\npost-dtb-expected-sha256={post_dtb_sha}\nsafety=ADB-to-Fastboot and RAM-only fastboot boot only; no flash, erase, readback, unlock, slot, reset, or Android configfs\n",
-        pre_dtb_sha = PRE_DTB_CANDIDATE_SHA256,
-        post_dtb_sha = POST_DTB_CANDIDATE_SHA256,
+        "candidate-order={candidate_order}\nprofile=normal-android-init-dma-cache-maintenance-preconnect-baseline\nadb-reboot-to-fastboot=enabled-by-default\nrecovery-wait-secs={recovery_wait_secs}\narm-blip={}\ngadget-restart-at-runstop={}\ngadget-start-only-at-runstop={}\nqpr1-gadget-speed-profile={}\nallowed-device-operations=adb reboot bootloader; RAM-only fastboot boot\nforbidden-device-operations=flash; erase; readback; partition-write; unlock; slot-mutation; factory-reset; Android configfs\ncommon-flags=--android-init --adb-return --early-usb-handoff --entry-secure-wdt --direct-handoff --no-smmu --dma-cache-maintenance --refresh-hsphy-power --hsphy-source-exact --usb2-source-exact-device-reset --usb2-source-susphy --usb2-source-exact-devten --usb2-source-devten-before-runstop --usb2-source-exact-cmd-guard --usb2-source-exact-runstop{arm_blip_flag}{gadget_restart_flag}{gadget_start_only_flag}{qpr1_gadget_speed_flag}\npre-dtb-extra-flag=--early-usb-before-dtb-scan\npre-dtb-expected-sha256={pre_dtb_sha}\npost-dtb-extra-flag=none\npost-dtb-expected-sha256={post_dtb_sha}\nsafety=ADB-to-Fastboot and RAM-only fastboot boot only; no flash, erase, readback, unlock, slot, reset, or Android configfs\n",
+        args.arm_blip,
+        args.gadget_restart_at_runstop,
+        args.gadget_start_only_at_runstop,
+        args.qpr1_gadget_speed_profile,
+        arm_blip_flag = arm_blip_flag,
+        gadget_restart_flag = gadget_restart_flag,
+        gadget_start_only_flag = gadget_start_only_flag,
+        qpr1_gadget_speed_flag = qpr1_gadget_speed_flag,
+        candidate_order = candidate_order,
+        pre_dtb_sha = pre_dtb_sha,
+        post_dtb_sha = post_dtb_sha,
     );
     fs::write(run_dir.join("candidate-plan.txt"), candidate_plan)?;
     fs::write(
@@ -2547,6 +2952,64 @@ fn replay_ledger_line(value: &str) -> String {
         .replace('\r', " ")
 }
 
+fn run_replay_command(workspace: &Path, args: ReplayArgs) -> io::Result<()> {
+    if args.watch {
+        return run_replay_watch(workspace, args);
+    }
+    run_replay(workspace, args)
+}
+
+fn replay_transport_ready(state: DeviceState) -> bool {
+    matches!(
+        state,
+        DeviceState::AndroidAdbAvailable | DeviceState::FastbootAvailable
+    )
+}
+
+fn run_replay_watch(workspace: &Path, args: ReplayArgs) -> io::Result<()> {
+    let poll = Duration::from_secs(args.watch_poll_secs);
+    println!(
+        "Replay watcher: ledger={} poll_secs={} recovery_wait_secs={}",
+        args.run_dir
+            .as_deref()
+            .expect("--watch requires --run-dir")
+            .display(),
+        args.watch_poll_secs,
+        args.recovery_wait_secs
+            .min(MAX_CANDIDATE_RECOVERY_WAIT_SECS),
+    );
+
+    loop {
+        let observation = observe_host(&args.serial)?;
+        if !replay_transport_ready(observation.state) {
+            thread::sleep(poll);
+            continue;
+        }
+
+        println!(
+            "Replay watcher: transport={} ; resuming historical queue",
+            observation.state.as_str()
+        );
+        if let Err(error) = run_replay(workspace, args.clone()) {
+            eprintln!("Replay watcher: queue paused: {error}");
+        } else {
+            return Ok(());
+        }
+
+        // Do not immediately retry a failed hardware condition while its
+        // bootloader/ADB transport is still present. Waiting for a real
+        // transport transition prevents duplicate RAM-only boots and keeps
+        // one measured condition per ledger entry.
+        loop {
+            thread::sleep(poll);
+            let observation = observe_host(&args.serial)?;
+            if !replay_transport_ready(observation.state) {
+                break;
+            }
+        }
+    }
+}
+
 fn run_replay(workspace: &Path, mut args: ReplayArgs) -> io::Result<()> {
     if args.manifest_root.is_relative() {
         args.manifest_root = workspace.join(&args.manifest_root);
@@ -2742,14 +3205,18 @@ fn run_replay(workspace: &Path, mut args: ReplayArgs) -> io::Result<()> {
         }
         let mut observation = observe_host(&args.serial)?;
         let mut recovery_windows = 0_u64;
+        // One passive window is enough to catch a transport that is already
+        // returning. If it stays absent for the whole bounded window, stop
+        // and require physical recovery rather than repeating the same wait.
         while matches!(
             observation.state,
             DeviceState::DeviceAbsent | DeviceState::UnknownUsbState
         ) && recovery_wait_secs > 0
+            && recovery_windows == 0
         {
             recovery_windows += 1;
             eprintln!(
-                "replay step {step}: transport {} ; waiting recovery window {recovery_windows} up to {recovery_wait_secs}s",
+                "replay step {step}: transport {} ; passive recovery observation window {recovery_windows} up to {recovery_wait_secs}s (no device command while absent)",
                 observation.state.as_str()
             );
             let mut windows = fs::OpenOptions::new()
@@ -2758,7 +3225,7 @@ fn run_replay(workspace: &Path, mut args: ReplayArgs) -> io::Result<()> {
                 .open(run_dir.join("replay-recovery-windows.tsv"))?;
             writeln!(
                 windows,
-                "step={step}\twindow={recovery_windows}\tinitial-state={}",
+                "step={step}\twindow={recovery_windows}\tmode=passive-observation\tinitial-state={}",
                 observation.state.as_str()
             )?;
             observation = wait_for_candidate_recovery(&args.serial, &run_dir, recovery_wait_secs)?;
@@ -2768,7 +3235,7 @@ fn run_replay(workspace: &Path, mut args: ReplayArgs) -> io::Result<()> {
             ) {
                 writeln!(
                     windows,
-                    "step={step}\twindow={recovery_windows}\tfinal-state={}",
+                    "step={step}\twindow={recovery_windows}\tmode=passive-observation\tfinal-state={}",
                     observation.state.as_str()
                 )?;
             }
@@ -2780,14 +3247,13 @@ fn run_replay(workspace: &Path, mut args: ReplayArgs) -> io::Result<()> {
             )?;
             return Ok(());
         }
-        if (observation.state == DeviceState::DeviceAbsent
-            || observation.state == DeviceState::UnknownUsbState)
-            && recovery_wait_secs == 0
+        if observation.state == DeviceState::DeviceAbsent
+            || observation.state == DeviceState::UnknownUsbState
         {
             fs::write(
                 run_dir.join("next-experiment.txt"),
                 format!(
-                    "manual-recovery-required: replay stopped at step {step} after bounded wait; state={}\nrecovery-wait-expired-secs={recovery_wait_secs}\ndevice-operation-while-absent=none\n",
+                    "manual-recovery-required: replay stopped at step {step} after passive recovery observation; state={}\nrecovery-wait-expired-secs={recovery_wait_secs}\ndevice-operation-while-absent=none\nnext-condition-not-issued-without-transport=true\n",
                     observation.state.as_str()
                 ),
             )?;
@@ -3213,6 +3679,86 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--start-after-connect requires --direct-handoff",
+        ));
+    }
+    if args.usb2_extended_setup_arm && (!args.direct_handoff || !args.start_after_connect) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-extended-setup-arm requires --direct-handoff --start-after-connect",
+        ));
+    }
+    if args.usb2_long_setup_arm && (!args.direct_handoff || !args.start_after_connect) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-long-setup-arm requires --direct-handoff --start-after-connect",
+        ));
+    }
+    if args.usb2_arm_window_recovery && (!args.direct_handoff || !args.start_after_connect) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-arm-window-recovery requires --direct-handoff --start-after-connect",
+        ));
+    }
+    if args.usb2_clear_susphy_after_reset && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-clear-susphy-after-reset requires --direct-handoff",
+        ));
+    }
+    if args.usb3_link_training_after_reset && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb3-link-training-after-reset requires --direct-handoff",
+        ));
+    }
+    if args.usb2_clear_susphy_after_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-clear-susphy-after-runstop requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_ref_after_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-ref-after-runstop requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_power_after_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-power-after-runstop requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_por_delay_150 && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-por-delay-150 requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_reset_delay_150 && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-reset-delay-150 requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_auto_resume_pulse && (!args.direct_handoff || !args.hsphy_source_exact) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-auto-resume-pulse requires --direct-handoff --hsphy-source-exact",
+        ));
+    }
+    if args.hsphy_restore_suspend_n_after_reset
+        && (!args.direct_handoff || !args.hsphy_source_exact)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-restore-suspend-n-after-reset requires direct --hsphy-source-exact",
+        ));
+    }
+    if args.hsphy_rtune && (!args.direct_handoff || !args.hsphy_source_exact) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-rtune requires direct --hsphy-source-exact",
         ));
     }
     if args.event_ring_size_4096 && !args.direct_handoff {
@@ -3691,6 +4237,24 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             "--hsphy-clear-sleepm requires --direct-handoff",
         ));
     }
+    if args.hsphy_clear_datapath_override && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-clear-datapath-override requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_clear_power_down && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-clear-power-down requires --direct-handoff",
+        ));
+    }
+    if args.keep_connect_on_start && (!args.direct_handoff || args.super_speed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--keep-connect-on-start requires direct USB2 handoff",
+        ));
+    }
     if args.hsphy_xbl_exact && args.abl_shared_hs_phy {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3703,6 +4267,12 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             "--hsphy-all-regulator-sets requires direct --refresh-hsphy-power",
         ));
     }
+    if args.hsphy_vdd_lpm && (!args.direct_handoff || !args.refresh_hsphy_power) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-vdd-lpm requires direct --refresh-hsphy-power",
+        ));
+    }
     if args.hsphy_legacy_fallback && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3713,6 +4283,14 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--hsphy-before-reset requires --direct-handoff",
+        ));
+    }
+    if args.hsphy_resume_clocks_after_reset
+        && (!args.hsphy_before_reset || !args.direct_handoff || args.super_speed)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hsphy-resume-clocks-after-reset requires direct USB2 --hsphy-before-reset",
         ));
     }
     if args.hsphy_restore_suspend_n_after_runstop && !args.direct_handoff {
@@ -3737,6 +4315,18 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--clock-branches-rearm requires --direct-handoff",
+        ));
+    }
+    if args.usb2_source_resume_clocks && (!args.direct_handoff || args.super_speed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-resume-clocks requires direct USB2 handoff",
+        ));
+    }
+    if args.usb2_source_resume_core_reset && !args.usb2_source_resume_clocks {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-resume-core-reset requires --usb2-source-resume-clocks",
         ));
     }
     if args.gadget_start_defaults_at_runstop && !args.direct_handoff && !args.super_speed {
@@ -3853,16 +4443,46 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             "--usb2-source-phy-setup requires direct USB2 handoff",
         ));
     }
+    if args.usb2_runtime_power_keepalive && (!args.direct_handoff || args.super_speed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-runtime-power-keepalive requires direct USB2 handoff",
+        ));
+    }
     if args.usb2_dis_sleep_mode && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb2-dis-sleep-mode requires --direct-handoff",
         ));
     }
+    if args.usb2_source_peripheral_start && (!args.direct_handoff || args.super_speed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-peripheral-start requires direct USB2 handoff",
+        ));
+    }
+    if args.usb2_source_vbus_only && (!args.direct_handoff || args.super_speed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-vbus-only requires direct USB2 handoff",
+        ));
+    }
+    if args.usb2_source_power_events && (!args.direct_handoff || args.super_speed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-power-events requires direct USB2 handoff",
+        ));
+    }
     if args.usb2_android_dbm_reset && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb2-android-dbm-reset requires --direct-handoff",
+        ));
+    }
+    if args.ep0_trb_completion_fallback && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ep0-trb-completion-fallback requires --direct-handoff",
         ));
     }
     if args.usb2_source_exact_device_reset && (!args.direct_handoff || args.super_speed) {
@@ -4185,6 +4805,12 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             "--irq-route controller requires --direct-handoff",
         ));
     }
+    if args.usb_event_timer_poll && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb-event-timer-poll requires --direct-handoff",
+        ));
+    }
     if args.bare_pullup
         && (args.pullup_only
             || args.super_speed
@@ -4380,7 +5006,12 @@ fn run_loop_with_named_dir(
         )));
     }
     let transport_result = if adb_reboot_to_fastboot {
-        ensure_fastboot_from_adb(&args.serial, args.fastboot_wait, &run_dir)
+        wait_for_initial_transport(
+            &args.serial,
+            args.fastboot_wait,
+            args.wait_for_transport,
+            &run_dir,
+        )
     } else {
         wait_for_fastboot(&args.serial, args.fastboot_wait)
     };
@@ -4445,12 +5076,12 @@ fn run_loop_with_named_dir(
     let _ = capture_simple(&run_dir, "fastboot-usb-tree", "lsusb", &["-t"]);
 
     let journal = JournalGuard::start(&run_dir)?;
-    let _tshark = if args.tshark {
+    let tshark_guard = if args.tshark {
         Some(TsharkGuard::start(&run_dir)?)
     } else {
         None
     };
-    let _usbmon = if args.usbmon {
+    let usbmon_guard = if args.usbmon {
         Some(UsbmonGuard::start(&run_dir)?)
     } else {
         None
@@ -4562,6 +5193,20 @@ fn run_loop_with_named_dir(
         thread::sleep(Duration::from_secs(1));
     }
 
+    // Finalize passive USB evidence as soon as the enumeration window ends.
+    // A later recovery poll must not inflate the capture or make the bounded
+    // transport-recovery grace look like USB observation time. Candidate and
+    // replay commands own their longer passive recovery windows separately.
+    fs::write(
+        run_dir.join("capture-window.txt"),
+        format!(
+            "capture_stopped_after_boot_ms={}\nreason=enumeration-window-ended\nrecovery_capture=false\npost_capture_recovery_grace_secs={POST_CAPTURE_RECOVERY_GRACE_SECS}\n",
+            boot_started.elapsed().as_millis()
+        ),
+    )?;
+    drop(tshark_guard);
+    drop(usbmon_guard);
+
     if android_fallback {
         let _ = capture_simple(
             &run_dir,
@@ -4588,9 +5233,10 @@ fn run_loop_with_named_dir(
         )?;
     } else {
         println!(
-            "Fullerene USB did not enumerate; waiting up to {RECOVERY_TIMEOUT_SECS}s for probe recovery"
+            "Fullerene USB did not enumerate; passive recovery grace is {POST_CAPTURE_RECOVERY_GRACE_SECS}s"
         );
-        let recovery_deadline = Instant::now() + Duration::from_secs(RECOVERY_TIMEOUT_SECS);
+        let recovery_deadline =
+            Instant::now() + Duration::from_secs(POST_CAPTURE_RECOVERY_GRACE_SECS);
         while Instant::now() < recovery_deadline {
             let observation = observe_host(&args.serial)?;
             let stamp = boot_started.elapsed();
@@ -4730,6 +5376,8 @@ fn print_loop_command(args: &LoopArgs) {
     );
     println!("entry-secure-wdt={}", args.entry_secure_wdt);
     println!("adb-return={}", args.adb_return);
+    println!("wait-for-transport={}", args.wait_for_transport);
+    println!("usb-event-timer-poll={}", args.usb_event_timer_poll);
     if let Some(route) = args.irq_route {
         println!("irq-route={}", route.as_str());
     }
@@ -4870,6 +5518,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.clock_branches_rearm {
         arguments.push("--usb-gadget-handoff-clock-branches-rearm".to_owned());
     }
+    if args.usb2_source_resume_clocks {
+        arguments.push("--usb-gadget-handoff-usb2-source-resume-clocks".to_owned());
+    }
+    if args.usb2_source_resume_core_reset {
+        arguments.push("--usb-gadget-handoff-usb2-source-resume-core-reset".to_owned());
+    }
     if args.usb_core_hs_clock {
         arguments.push("--usb-gadget-handoff-core-hs-clock".to_owned());
     }
@@ -4886,11 +5540,23 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.refresh_hsphy_power {
         arguments.push("--usb-gadget-handoff-refresh-hsphy-power".to_owned());
     }
+    if args.hsphy_ref_after_gctl {
+        arguments.push("--usb-gadget-handoff-hsphy-ref-after-gctl".to_owned());
+    }
+    if args.hsphy_ref_after_runstop {
+        arguments.push("--usb-gadget-handoff-hsphy-ref-after-runstop".to_owned());
+    }
+    if args.hsphy_power_after_runstop {
+        arguments.push("--usb-gadget-handoff-hsphy-power-after-runstop".to_owned());
+    }
     if args.hsphy_program_vdda_voltage {
         arguments.push("--usb-gadget-handoff-hsphy-program-vdda-voltage".to_owned());
     }
     if args.hsphy_all_regulator_sets {
         arguments.push("--usb-gadget-handoff-hsphy-all-regulator-sets".to_owned());
+    }
+    if args.hsphy_vdd_lpm {
+        arguments.push("--usb-gadget-handoff-hsphy-vdd-lpm".to_owned());
     }
     if args.skip_usb2_phy_reset {
         arguments.push("--usb-gadget-handoff-skip-usb2-phy-reset".to_owned());
@@ -4900,6 +5566,24 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.start_after_connect {
         arguments.push("--usb-gadget-handoff-start-after-connect".to_owned());
+    }
+    if args.usb2_extended_setup_arm {
+        arguments.push("--usb-gadget-handoff-usb2-extended-setup-arm".to_owned());
+    }
+    if args.usb2_long_setup_arm {
+        arguments.push("--usb-gadget-handoff-usb2-long-setup-arm".to_owned());
+    }
+    if args.usb2_arm_window_recovery {
+        arguments.push("--usb-gadget-handoff-usb2-arm-window-recovery".to_owned());
+    }
+    if args.usb2_clear_susphy_after_reset {
+        arguments.push("--usb-gadget-handoff-usb2-clear-susphy-after-reset".to_owned());
+    }
+    if args.usb3_link_training_after_reset {
+        arguments.push("--usb-gadget-handoff-usb3-link-training-after-reset".to_owned());
+    }
+    if args.usb2_clear_susphy_after_runstop {
+        arguments.push("--usb-gadget-handoff-usb2-clear-susphy-after-runstop".to_owned());
     }
     if args.xbl_deferred_setup {
         arguments.push("--usb-gadget-handoff-xbl-deferred-setup".to_owned());
@@ -4979,6 +5663,15 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.hsphy_clear_sleepm {
         arguments.push("--usb-gadget-handoff-hsphy-clear-sleepm".to_owned());
     }
+    if args.hsphy_normal_opmode {
+        arguments.push("--usb-gadget-handoff-hsphy-normal-opmode".to_owned());
+    }
+    if args.hsphy_clear_datapath_override {
+        arguments.push("--usb-gadget-handoff-hsphy-clear-datapath-override".to_owned());
+    }
+    if args.hsphy_clear_power_down {
+        arguments.push("--usb-gadget-handoff-hsphy-clear-power-down".to_owned());
+    }
     if args.xbl_direction_trb {
         arguments.push("--usb-gadget-handoff-xbl-direction-trb".to_owned());
     }
@@ -5018,6 +5711,24 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.hsphy_before_reset {
         arguments.push("--usb-gadget-handoff-hsphy-before-reset".to_owned());
     }
+    if args.hsphy_resume_clocks_after_reset {
+        arguments.push("--usb-gadget-handoff-hsphy-resume-clocks-after-reset".to_owned());
+    }
+    if args.hsphy_por_delay_150 {
+        arguments.push("--usb-gadget-handoff-hsphy-por-delay-150".to_owned());
+    }
+    if args.hsphy_reset_delay_150 {
+        arguments.push("--usb-gadget-handoff-hsphy-reset-delay-150".to_owned());
+    }
+    if args.hsphy_auto_resume_pulse {
+        arguments.push("--usb-gadget-handoff-hsphy-auto-resume-pulse".to_owned());
+    }
+    if args.hsphy_restore_suspend_n_after_reset {
+        arguments.push("--usb-gadget-handoff-hsphy-restore-suspend-n-after-reset".to_owned());
+    }
+    if args.hsphy_rtune {
+        arguments.push("--usb-gadget-handoff-hsphy-rtune".to_owned());
+    }
     if args.hsphy_restore_suspend_n_after_runstop {
         arguments.push("--usb-gadget-handoff-hsphy-restore-suspend-n-after-runstop".to_owned());
     }
@@ -5033,6 +5744,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     }
     if args.dcfg_fullspeed {
         arguments.push("--usb-gadget-handoff-dcfg-fullspeed".to_owned());
+    }
+    if args.keep_connect_on_start {
+        arguments.push("--usb-gadget-handoff-keep-connect-on-start".to_owned());
     }
     if args.dcfg_lowspeed {
         arguments.push("--usb-gadget-handoff-dcfg-lowspeed".to_owned());
@@ -5178,11 +5892,26 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.usb2_source_phy_setup {
         arguments.push("--usb-gadget-handoff-usb2-source-phy-setup".to_owned());
     }
+    if args.usb2_runtime_power_keepalive {
+        arguments.push("--usb-gadget-handoff-usb2-runtime-power-keepalive".to_owned());
+    }
     if args.usb2_dis_sleep_mode {
         arguments.push("--usb-gadget-handoff-usb2-dis-sleep-mode".to_owned());
     }
+    if args.usb2_source_peripheral_start {
+        arguments.push("--usb-gadget-handoff-usb2-source-peripheral-start".to_owned());
+    }
+    if args.usb2_source_vbus_only {
+        arguments.push("--usb-gadget-handoff-usb2-source-vbus-only".to_owned());
+    }
+    if args.usb2_source_power_events {
+        arguments.push("--usb-gadget-handoff-usb2-source-power-events".to_owned());
+    }
     if args.usb2_android_dbm_reset {
         arguments.push("--usb-gadget-handoff-usb2-android-dbm-reset".to_owned());
+    }
+    if args.ep0_trb_completion_fallback {
+        arguments.push("--usb-gadget-handoff-ep0-trb-completion-fallback".to_owned());
     }
     if args.ep0_stall_flush {
         arguments.push("--usb-gadget-handoff-ep0-stall-flush".to_owned());
@@ -5427,6 +6156,12 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
             route.as_str().to_owned(),
         ));
     }
+    if args.usb_event_timer_poll {
+        envs.push((
+            "FULLERENE_AARCH64_USB_PROBE_TIMER_EVENT_POLL".to_owned(),
+            "1".to_owned(),
+        ));
+    }
     if let Some(stage) = args.bare_pullup_stop_after {
         if stage < 4 {
             envs.push((
@@ -5549,6 +6284,83 @@ fn wait_for_fastboot(serial: &str, timeout_secs: u64) -> io::Result<()> {
     }
     Err(io::Error::other(format!(
         "device {serial} is not available in Fastboot"
+    )))
+}
+
+/// Wait for the handset to expose either Fastboot or a usable ADB transport.
+///
+/// A physical Android boot can be visible on the handset while USB is still
+/// between disconnect and enumeration.  The old loop treated that short
+/// window as a fatal "neither Fastboot nor ADB" error, forcing the operator to
+/// restart the experiment manually.  Keep the wait bounded by the existing
+/// Fastboot timeout, and let the caller perform the only permitted transition
+/// (`adb reboot bootloader`) once ADB really is ready.
+fn wait_for_initial_transport(
+    serial: &str,
+    timeout_secs: u64,
+    wait_forever: bool,
+    run_dir: &Path,
+) -> io::Result<()> {
+    if fastboot_present(serial) {
+        fs::write(
+            run_dir.join("transport-preflight.txt"),
+            "Fastboot already present; adb reboot bootloader was not issued.\n",
+        )?;
+        return Ok(());
+    }
+
+    let deadline = (!wait_forever).then(|| Instant::now() + Duration::from_secs(timeout_secs));
+    let mut wait_log = File::create(run_dir.join("initial-transport-wait.tsv"))?;
+    writeln!(
+        wait_log,
+        "wait_forever={wait_forever}\ntimeout_secs={timeout_secs}\ndevice_commands_while_absent=none\nelapsed_secs\tadb_state\tfastboot"
+    )?;
+    let mut last_state = String::from("absent");
+    let started = Instant::now();
+    loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+        }
+        let fastboot = fastboot_present(serial);
+        if fastboot {
+            fs::write(
+                run_dir.join("transport-preflight.txt"),
+                "Fastboot appeared during initial transport wait; adb reboot bootloader was not issued.\n",
+            )?;
+            return Ok(());
+        }
+
+        let output = Command::new("adb")
+            .args(["-s", serial, "get-state"])
+            .output()?;
+        let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if output.status.success() && state == "device" {
+            return ensure_fastboot_from_adb(serial, timeout_secs, run_dir);
+        }
+        let normalized_state = if state.is_empty() {
+            "absent"
+        } else {
+            state.as_str()
+        };
+        writeln!(
+            wait_log,
+            "{}\t{}\t{}",
+            started.elapsed().as_secs(),
+            normalized_state,
+            fastboot,
+        )?;
+        if normalized_state != last_state {
+            eprintln!(
+                "waiting for Pixel transport: adb_state={}; Fastboot not present",
+                normalized_state
+            );
+            last_state = normalized_state.to_owned();
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+
+    Err(io::Error::other(format!(
+        "device {serial} did not expose Fastboot or usable ADB within {timeout_secs}s"
     )))
 }
 
@@ -5922,12 +6734,12 @@ fn create_child_run_dir(parent: &Path, name: &str) -> io::Result<PathBuf> {
 mod tests {
     use super::{
         CandidatesArgs, DeviceState, HostObservation, LoopArgs, MAX_CANDIDATE_RECOVERY_WAIT_SECS,
-        TRACE_HEADER_BYTES, TRACE_MAGIC, TRACE_VERSION, adb_reboot_to_fastboot_enabled,
-        adb_state_from_listing, build_command, classify_device_state, classify_postboot_result,
-        experiment_manifest, fullerene_descriptor_text_is_self_identifying,
-        kernel_log_has_non_android_attach, next_experiment_for_classification,
-        normal_android_candidate_loop_args, parse_trace_header, tree_has_superspeed_link,
-        usbmon_summary,
+        RECOVERY_WAIT_DEFAULT_SECS, ReplayArgs, TRACE_HEADER_BYTES, TRACE_MAGIC, TRACE_VERSION,
+        adb_reboot_to_fastboot_enabled, adb_state_from_listing, build_command, candidate_sha256,
+        classify_device_state, classify_postboot_result, experiment_manifest,
+        fullerene_descriptor_text_is_self_identifying, kernel_log_has_non_android_attach,
+        next_experiment_for_classification, normal_android_candidate_loop_args, parse_trace_header,
+        tree_has_superspeed_link, usbmon_summary,
     };
     use clap::Parser;
     use std::{
@@ -6084,8 +6896,8 @@ mod tests {
             absent_plan.contains("candidate.pre-dtb.extra-loop-flag=--early-usb-before-dtb-scan")
         );
         assert!(absent_plan.contains("candidate.post-dtb.extra-loop-flag=none"));
-        assert!(absent_plan.contains("candidate.pre-dtb.expected_sha256=287bc17c"));
-        assert!(absent_plan.contains("candidate.post-dtb.expected_sha256=e36d73a9"));
+        assert!(absent_plan.contains("candidate.pre-dtb.expected_sha256=9e3da64c"));
+        assert!(absent_plan.contains("candidate.post-dtb.expected_sha256=6ff736b1"));
         assert!(absent_plan.contains("device-operation-while-absent=none"));
         let mismatch_plan = next_experiment_for_classification("artifact-sha256-mismatch");
         assert!(mismatch_plan.contains("do not issue fastboot boot"));
@@ -6109,6 +6921,12 @@ mod tests {
         assert!(pre.dma_cache_maintenance);
         assert!(pre.early_usb_before_dtb_scan);
         assert!(!post.early_usb_before_dtb_scan);
+        assert!(!pre.start_at_connect_done);
+        assert!(!post.start_at_connect_done);
+        assert!(!pre.start_after_connect);
+        assert!(!pre.start_ungated);
+        assert!(!pre.arm_blip);
+        assert!(!post.arm_blip);
         assert_eq!(pre.android_init_ufs_execute, post.android_init_ufs_execute);
         assert_eq!(
             pre.usb2_source_exact_runstop,
@@ -6120,9 +6938,119 @@ mod tests {
     fn candidate_recovery_wait_defaults_to_bounded_autonomous_window() {
         let args = CandidatesArgs::try_parse_from(["bramble-usb"])
             .expect("candidate CLI defaults should parse");
-        assert_eq!(args.recovery_wait_secs, MAX_CANDIDATE_RECOVERY_WAIT_SECS);
+        assert_eq!(args.recovery_wait_secs, RECOVERY_WAIT_DEFAULT_SECS);
+        let resumed = CandidatesArgs::try_parse_from(["bramble-usb", "--post-dtb-only"])
+            .expect("post-DTB resume flag should parse");
+        assert!(resumed.post_dtb_only);
+        let arm_blip =
+            CandidatesArgs::try_parse_from(["bramble-usb", "--post-dtb-only", "--arm-blip"])
+                .expect("arm-blip candidate flag should parse");
+        assert!(arm_blip.post_dtb_only);
+        assert!(arm_blip.arm_blip);
+        assert!(normal_android_candidate_loop_args(&arm_blip, false).arm_blip);
+        let gadget_restart = CandidatesArgs::try_parse_from([
+            "bramble-usb",
+            "--post-dtb-only",
+            "--gadget-restart-at-runstop",
+        ])
+        .expect("gadget-restart candidate flag should parse");
+        assert!(gadget_restart.post_dtb_only);
+        assert!(gadget_restart.gadget_restart_at_runstop);
+        assert!(
+            normal_android_candidate_loop_args(&gadget_restart, false).gadget_restart_at_runstop
+        );
+        let gadget_start_only = CandidatesArgs::try_parse_from([
+            "bramble-usb",
+            "--post-dtb-only",
+            "--gadget-restart-at-runstop",
+            "--gadget-start-only-at-runstop",
+        ])
+        .expect("gadget-start-only candidate flag should parse");
+        assert!(gadget_start_only.gadget_start_only_at_runstop);
+        assert!(
+            normal_android_candidate_loop_args(&gadget_start_only, false)
+                .gadget_start_only_at_runstop
+        );
+        assert!(
+            CandidatesArgs::try_parse_from(["bramble-usb", "--gadget-start-only-at-runstop",])
+                .is_err()
+        );
+        let qpr1_speed = CandidatesArgs::try_parse_from([
+            "bramble-usb",
+            "--post-dtb-only",
+            "--gadget-restart-at-runstop",
+            "--gadget-start-only-at-runstop",
+            "--qpr1-gadget-speed-profile",
+        ])
+        .expect("qpr1 gadget speed profile should parse");
+        assert!(qpr1_speed.qpr1_gadget_speed_profile);
+        let qpr1_loop = normal_android_candidate_loop_args(&qpr1_speed, false);
+        assert!(qpr1_loop.ep0_initial_512);
+        assert!(qpr1_loop.dcfg_superspeed);
+        assert!(
+            CandidatesArgs::try_parse_from([
+                "bramble-usb",
+                "--arm-blip",
+                "--gadget-restart-at-runstop",
+            ])
+            .is_err()
+        );
         assert_eq!(900_u64.min(MAX_CANDIDATE_RECOVERY_WAIT_SECS), 900);
         assert_eq!(901_u64.min(MAX_CANDIDATE_RECOVERY_WAIT_SECS), 900);
+    }
+
+    #[test]
+    fn replay_watch_requires_a_persistent_run_directory() {
+        let args =
+            ReplayArgs::try_parse_from(["bramble-usb", "--watch", "--run-dir", "tmp/replay"])
+                .expect("watch mode should accept a persistent ledger");
+        assert!(args.watch);
+        assert_eq!(args.watch_poll_secs, 2);
+        assert!(ReplayArgs::try_parse_from(["bramble-usb", "--watch"]).is_err());
+    }
+
+    #[test]
+    fn candidate_sha256_is_separate_for_the_runstop_ab() {
+        assert_eq!(
+            candidate_sha256(true, false, false, false, false),
+            "9e3da64c1d61ca5cf7d4f0ebf3575169acaa0299cac4140867064f06ab0d8923"
+        );
+        assert_eq!(
+            candidate_sha256(false, false, false, false, false),
+            "6ff736b1444c921a2488678f6b83bd4ba2945b2997e025cd4d2d14c008e35790"
+        );
+        assert_eq!(
+            candidate_sha256(true, true, false, false, false),
+            "86aafe408cd6bb32eaa28aadc220b57f3073412cf63856cfd891e3860855cbac"
+        );
+        assert_eq!(
+            candidate_sha256(false, true, false, false, false),
+            "98c8b530d3abfd0f20ad822fee9cd4745cadd00ebfa6d160d43a94807de1ba78"
+        );
+        assert_eq!(
+            candidate_sha256(true, false, true, false, false),
+            "739d617f8e49b5df3f43d9ebe2d6ce8e457a729e57bbe6d9e03dd2e925cf36b9"
+        );
+        assert_eq!(
+            candidate_sha256(false, false, true, false, false),
+            "c2faf6c0a200f633cd41efae0c8a1e14a90adb6d6a2988519a13d277290b8af3"
+        );
+        assert_eq!(
+            candidate_sha256(true, false, true, true, false),
+            "460cc4c2a30b83ed5d7cf831fcbd7ee4a4a5c2d28fd86841f7db98ef23db5d9d"
+        );
+        assert_eq!(
+            candidate_sha256(false, false, true, true, false),
+            "c7695d54d13c672ad6c8da23c99c0bef9b086611ed98589524b0e12c0911a14e"
+        );
+        assert_eq!(
+            candidate_sha256(true, false, true, true, true),
+            "6c0ae1e3dd1e8b54d3c092f38607ad741418397d3d04631e3e9283a760d80d1f"
+        );
+        assert_eq!(
+            candidate_sha256(false, false, true, true, true),
+            "6b8d31a5f1b5266b172ffcd3bfba3ae70b17072fd8531431f33d648e269073f1"
+        );
     }
 
     #[test]
@@ -6141,7 +7069,6 @@ mod tests {
             "--usb-gadget-handoff-direct",
             "--usb-gadget-handoff-no-smmu",
             "--usb-gadget-handoff-dma-cache-maintenance",
-            "--usb-gadget-handoff-start-after-connect",
             "--usb-gadget-handoff-refresh-hsphy-power",
             "--usb-gadget-handoff-hsphy-source-exact",
             "--usb-gadget-handoff-usb2-source-exact-device-reset",
@@ -6157,6 +7084,12 @@ mod tests {
                 "missing {flag}"
             );
         }
+        assert!(
+            !spec
+                .arguments
+                .iter()
+                .any(|argument| argument == "--usb-gadget-handoff-start-at-connect-done")
+        );
         assert!(
             !spec
                 .arguments
@@ -6185,6 +7118,80 @@ mod tests {
             "FULLERENE_AARCH64_ENTRY_SECURE_WDT".to_owned(),
             "1".to_owned()
         )));
+
+        let arm_blip_args = CandidatesArgs {
+            arm_blip: true,
+            ..CandidatesArgs::default()
+        };
+        let arm_blip = normal_android_candidate_loop_args(&arm_blip_args, true);
+        let arm_blip_spec = build_command(
+            Path::new("/workspace"),
+            &arm_blip,
+            Path::new("/workspace/arm-blip.img"),
+        );
+        assert!(
+            arm_blip_spec
+                .arguments
+                .iter()
+                .any(|argument| argument == "--usb-arm-blip")
+        );
+
+        let gadget_restart_args = CandidatesArgs {
+            gadget_restart_at_runstop: true,
+            ..CandidatesArgs::default()
+        };
+        let gadget_restart = normal_android_candidate_loop_args(&gadget_restart_args, true);
+        let gadget_restart_spec = build_command(
+            Path::new("/workspace"),
+            &gadget_restart,
+            Path::new("/workspace/gadget-restart.img"),
+        );
+        assert!(
+            gadget_restart_spec
+                .arguments
+                .iter()
+                .any(|argument| argument == "--usb-gadget-handoff-gadget-restart-at-runstop")
+        );
+        let gadget_start_only_args = CandidatesArgs {
+            gadget_restart_at_runstop: true,
+            gadget_start_only_at_runstop: true,
+            ..CandidatesArgs::default()
+        };
+        let gadget_start_only = normal_android_candidate_loop_args(&gadget_start_only_args, true);
+        let gadget_start_only_spec = build_command(
+            Path::new("/workspace"),
+            &gadget_start_only,
+            Path::new("/workspace/gadget-start-only.img"),
+        );
+        assert!(
+            gadget_start_only_spec.arguments.iter().any(|argument| {
+                argument == "--usb-gadget-handoff-gadget-start-only-at-runstop"
+            })
+        );
+        let qpr1_speed_args = CandidatesArgs {
+            gadget_restart_at_runstop: true,
+            gadget_start_only_at_runstop: true,
+            qpr1_gadget_speed_profile: true,
+            ..CandidatesArgs::default()
+        };
+        let qpr1_speed = normal_android_candidate_loop_args(&qpr1_speed_args, true);
+        let qpr1_speed_spec = build_command(
+            Path::new("/workspace"),
+            &qpr1_speed,
+            Path::new("/workspace/qpr1-gadget-speed.img"),
+        );
+        assert!(
+            qpr1_speed_spec
+                .arguments
+                .iter()
+                .any(|argument| argument == "--usb-gadget-handoff-ep0-initial-512")
+        );
+        assert!(
+            qpr1_speed_spec
+                .arguments
+                .iter()
+                .any(|argument| argument == "--usb-gadget-handoff-dcfg-superspeed")
+        );
     }
 
     #[test]

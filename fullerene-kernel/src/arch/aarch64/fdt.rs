@@ -416,6 +416,21 @@ pub fn find_compatible_property_u32(
     find_compatible_nth_property_u32(address, target, property, index, 0)
 }
 
+/// Convert an ARM GIC device-tree SPI specifier to the INTID returned by
+/// `ICC_IAR1_EL1` and consumed by the GIC distributor registers.  DT uses
+/// SPI 0 for hardware INTID 32, while the early IRQ path intentionally deals
+/// in the latter (Linux's visible IRQ is the same value on this platform).
+pub const fn gic_spi_to_intid(spi: u32) -> Option<u32> {
+    let Some(intid) = spi.checked_add(32) else {
+        return None;
+    };
+    if intid >= 32 && intid < 1020 {
+        Some(intid)
+    } else {
+        None
+    }
+}
+
 /// Hash the complete byte payload of a property on the first enabled node
 /// matching `target`.  This is used for bounded DT string-list contracts:
 /// length alone cannot distinguish two provider bindings with the same number
@@ -1499,5 +1514,14 @@ mod tests {
             super::find_reserved_memory_regions(dtb.as_ptr() as u64, &mut regions),
             0
         );
+    }
+
+    #[test]
+    fn gic_spi_specifier_is_converted_to_intid() {
+        assert_eq!(super::gic_spi_to_intid(240), Some(272));
+        assert_eq!(super::gic_spi_to_intid(144), Some(176));
+        assert_eq!(super::gic_spi_to_intid(987), Some(1019));
+        assert_eq!(super::gic_spi_to_intid(988), None);
+        assert_eq!(super::gic_spi_to_intid(u32::MAX), None);
     }
 }

@@ -60,6 +60,9 @@ pub const DEPCMD_UPDATETRANSFER: u32 = 0x07;
 pub const DEPCMD_STARTTRANSFER: u32 = 0x06;
 pub const DEPCMD_CLEARSTALL: u32 = 0x05;
 pub const DEPCMD_SETSTALL: u32 = 0x04;
+// DWC3_DEPCMD_GETEPSTATE (0x03) on cores >= 1.94a. It is read-only with
+// respect to the live transfer and is useful for a command-completion DMA A/B.
+pub const DEPCMD_GETEPSTATE: u32 = 0x03;
 pub const DEPCMD_SETTRANSFRESOURCE: u32 = 0x02;
 pub const DEPCMD_SETEPCONFIG: u32 = 0x01;
 pub const DEPCMD_ACTION_MODIFY: u32 = 2 << 30;

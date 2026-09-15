@@ -251,13 +251,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             contract.irq_numbers[0] =
                 fdt::find_compatible_property_u32(address, usb_node, b"interrupts-extended", 1);
             contract.irq_numbers[1] =
-                fdt::find_compatible_property_u32(address, usb_node, b"interrupts-extended", 5);
+                fdt::find_compatible_property_u32(address, usb_node, b"interrupts-extended", 5)
+                    .and_then(fdt::gic_spi_to_intid);
             contract.irq_numbers[2] =
                 fdt::find_compatible_property_u32(address, usb_node, b"interrupts-extended", 8);
             contract.irq_numbers[3] =
                 fdt::find_compatible_property_u32(address, usb_node, b"interrupts-extended", 11);
             contract.irq_numbers[4] =
-                fdt::find_compatible_property_u32(address, b"snps,dwc3", b"interrupts", 1);
+                fdt::find_compatible_property_u32(address, b"snps,dwc3", b"interrupts", 1)
+                    .and_then(fdt::gic_spi_to_intid);
             // The PM8150B Type-C child has no compatible string in the
             // Android PMIC DT. Its first SPMI interrupt is the platform IRQ
             // consumed by qcom-pmic-typec; the SPMI arbiter exposes the
@@ -267,7 +269,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     fdt::find_named_property_u32(address, b"qcom,typec@1500", b"interrupts", index);
             }
             contract.spmi_parent_irq =
-                fdt::find_compatible_property_u32(address, b"qcom,spmi-pmic-arb", b"interrupts", 1);
+                fdt::find_compatible_property_u32(address, b"qcom,spmi-pmic-arb", b"interrupts", 1)
+                    .and_then(fdt::gic_spi_to_intid);
             for index in 0..18 {
                 contract.qmp_reg_offsets[index] = fdt::find_compatible_property_u32(
                     address,
@@ -767,11 +770,32 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
 
     uart::puts("aarch64 early boot complete; waiting for timer irq / USB events\n");
     loop {
-        #[cfg(fullerene_aarch64_bramble)]
+        // The controller-IRQ A/B gives the DWC3 SPI exclusive ownership of
+        // the event ring.  Its exception path calls usb::poll() after the
+        // GIC acknowledges that SPI; polling here as well would consume the
+        // same GEVNTCOUNT window from a second owner and make the IRQ-vs-poll
+        // discriminator meaningless.  The normal direct handoff keeps this
+        // polling fallback because firmware-owned GIC routing is not assumed.
+        #[cfg(all(
+            fullerene_aarch64_bramble,
+            not(any(
+                fullerene_aarch64_usb_probe_irq_controller,
+                fullerene_aarch64_usb_probe_timer_event_poll
+            ))
+        ))]
         usb::poll();
-        // Bramble keeps polling even if firmware-owned GIC state prevents
-        // installing the USB SPI route. QEMU has no hardware USB path here,
-        // so it can sleep on the timer as before.
+        // IRQ-owned and timer-owned A/B profiles both sleep here. Their
+        // selected interrupt path is the sole event-ring consumer.
+        #[cfg(all(
+            fullerene_aarch64_bramble,
+            any(
+                fullerene_aarch64_usb_probe_irq_controller,
+                fullerene_aarch64_usb_probe_timer_event_poll
+            )
+        ))]
+        cpu::wait_for_event();
+        // QEMU has no hardware USB path here, so it can sleep on the timer as
+        // before.
         #[cfg(not(fullerene_aarch64_bramble))]
         cpu::wait_for_event();
     }
@@ -871,6 +895,12 @@ fn init_bramble_usb_handoff() -> bool {
         if usb::init_usb2_handoff() {
             uart::puts("platform: bramble USB2 gadget handoff: ready\n");
             usb::set_early_handoff_in_progress(false);
+            // The standalone probe queues the optional host-visible
+            // Run/Stop differential after its initializer returns. Android-
+            // init enters through this path instead, so make the same
+            // source-backed A/B available here; the helper is a no-op unless
+            // FULLERENE_USB_ARM_BLIP was compiled into the image.
+            usb::arm_blip_queue();
             true
         } else {
             uart::puts("platform: bramble USB2 gadget handoff: failed\n");
@@ -886,6 +916,11 @@ fn init_bramble_usb_handoff() -> bool {
                 // tears down Fastboot before entering the image.  In that
                 // case preserving the handoff state cannot work.
                 uart::puts("platform: bramble USB2 cold fallback: ready\n");
+                // Keep the host-visible arm-stage diagnostic active for the
+                // cold fallback too. The fallback can be the path that
+                // actually publishes the HS pull-up when the preserved
+                // handoff rejects an endpoint command.
+                usb::arm_blip_queue();
                 usb::set_early_handoff_in_progress(false);
                 true
             } else {

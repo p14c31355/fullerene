@@ -95,6 +95,9 @@ pub unsafe fn pulse_usb2_phy_reset() -> bool {
         // instruction-count loop is CPU-frequency dependent and can be much
         // shorter or longer across boot stages, so use the architectural
         // counter just as the source driver does.
+        #[cfg(fullerene_aarch64_usb_hsphy_reset_delay_150)]
+        crate::timer::delay_us(150);
+        #[cfg(not(fullerene_aarch64_usb_hsphy_reset_delay_150))]
         crate::timer::delay_us(100);
         core::ptr::write_volatile(address, asserted & !1);
         let deassert_readback = core::ptr::read_volatile(address) & 1 == 0;

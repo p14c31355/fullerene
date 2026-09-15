@@ -797,7 +797,10 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         usb::TRACE_PROBE_WATCHDOG,
         0x5349_4700 | (signal_smmu_code & 0xff),
     );
-    if env_flag(option_env!("FULLERENE_USB_SIGNAL_EARLY_DROP")) {
+    // This option is normally a condition selector (1/2/3/5/9), not a
+    // boolean.  Only the legacy value `1` requests the pre-handoff drop;
+    // values such as `3` must remain available to the EP0 SETUP readout.
+    if option_env!("FULLERENE_USB_SIGNAL_EARLY_DROP") == Some("1") {
         // Early drop is owned by handoff; keep pull-up down and reset.
         usb::ep0_signal_drop_pullup();
         trace_gate(TRACE_WDT);
@@ -1717,19 +1720,22 @@ fn install_bootloader_usb_dt(dtb_address: u64, fallback_dtb_address: u64) {
         contract.irq_numbers[0] =
             fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 1);
         contract.irq_numbers[1] =
-            fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 5);
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 5)
+                .and_then(fdt::gic_spi_to_intid);
         contract.irq_numbers[2] =
             fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 8);
         contract.irq_numbers[3] =
             fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 11);
         contract.irq_numbers[4] =
-            fdt::find_compatible_property_u32(dtb_address, b"snps,dwc3", b"interrupts", 1);
+            fdt::find_compatible_property_u32(dtb_address, b"snps,dwc3", b"interrupts", 1)
+                .and_then(fdt::gic_spi_to_intid);
         for index in 0..4 {
             contract.typec_irq[index] =
                 fdt::find_named_property_u32(dtb_address, b"qcom,typec@1500", b"interrupts", index);
         }
         contract.spmi_parent_irq =
-            fdt::find_compatible_property_u32(dtb_address, b"qcom,spmi-pmic-arb", b"interrupts", 1);
+            fdt::find_compatible_property_u32(dtb_address, b"qcom,spmi-pmic-arb", b"interrupts", 1)
+                .and_then(fdt::gic_spi_to_intid);
         contract.qmp_vbus_valid_override = Some(
             fdt::find_compatible_property_u32(
                 dtb_address,

@@ -11,6 +11,7 @@ pub use usb_clock::{
     android_dbm_reset_and_enable, configure_usb_clocks, configure_usb_controller_clocks,
     disable_usb_clock_branches, enable_usb_clock_branches, enable_usb_qmp_clock_branches,
     enable_usb2_utmi_clock, rearm_usb_controller_clock_branches, rearm_usb2_android_clock_branches,
+    rearm_usb2_android_resume_clocks,
 };
 pub use usb_reset::{pulse_usb2_phy_reset, reset_qmp_phy_blocks, reset_usb_blocks};
 ///
@@ -19,10 +20,11 @@ pub use usb_reset::{pulse_usb2_phy_reset, reset_qmp_phy_blocks, reset_usb_blocks
 pub const UART_BASE: usize = 0x0098_8000;
 pub const GICD_BASE: usize = 0x17a0_0000;
 pub const GICR_BASE: usize = 0x17a6_0000;
-/// Android's Lito DT routes the primary DWC3 device event interrupt here.
-pub const USB_DWC3_IRQ: u32 = 240;
-/// Android's Lito DT routes the Qualcomm glue power-event interrupt here.
-pub const USB_PWR_EVENT_IRQ: u32 = 144;
+/// Android's Lito DT spells these as GIC SPI 240/144.  The early GIC path
+/// consumes the corresponding INTIDs (SPI + 32), as returned by
+/// `ICC_IAR1_EL1` and visible in Android's `/proc/interrupts`.
+pub const USB_DWC3_IRQ: u32 = 272;
+pub const USB_PWR_EVENT_IRQ: u32 = 176;
 /// PDC interrupt numbers used by the USB2/USB3 PHYs. These are PDC-local
 /// lines, not GIC SPI numbers; keeping the distinction explicit prevents
 /// accidentally programming them into GICD as if they were SPIs.
@@ -35,9 +37,11 @@ pub const USB_PDC_BASE: usize = 0x0b22_0000;
 /// onto its GIC parent.
 pub const USB_PDC_SPI_CFG_BASE: usize = 0x17c0_00f0;
 pub const USB_PDC_SPI_CFG_SIZE: usize = 0x60;
-pub const USB_PDC_DP_HS_PARENT_IRQ: u32 = 494;
-pub const USB_PDC_SS_PARENT_IRQ: u32 = 489;
-pub const USB_PDC_DM_HS_PARENT_IRQ: u32 = 495;
+/// DT parent SPIs 494/489/495 converted to the GIC INTIDs consumed by
+/// `enable_spis_with_triggers` and returned by `ICC_IAR1_EL1`.
+pub const USB_PDC_DP_HS_PARENT_IRQ: u32 = 526;
+pub const USB_PDC_SS_PARENT_IRQ: u32 = 521;
+pub const USB_PDC_DM_HS_PARENT_IRQ: u32 = 527;
 
 /// GCC register block and USB3 power-domain registers from the Lito DT.
 pub const GCC_BASE: usize = 0x0010_0000;
@@ -1312,8 +1316,9 @@ pub const BRAMBLE_USB_RESOURCES: UsbPlatformResources = UsbPlatformResources {
     power: BRAMBLE_USB_POWER,
     irqs: BRAMBLE_USB_IRQS,
     typec_irq: BRAMBLE_TYPEC_IRQ,
-    // qcom,spmi-pmic-arb's `periph_irq` summary line in Kona/Lito DT.
-    spmi_parent_irq: 481,
+    // qcom,spmi-pmic-arb's `periph_irq` summary line is DT SPI 481;
+    // the early GIC path consumes INTID 513.
+    spmi_parent_irq: 513,
     vbus_reg_base: None,
     dma_pool: DmaPoolResource {
         iova_base: 0x9000_0000,
@@ -1808,6 +1813,7 @@ const QPNPINT_POLARITY_HIGH: u16 = PM8150B_TYPEC_BASE + 0x12;
 const QPNPINT_POLARITY_LOW: u16 = PM8150B_TYPEC_BASE + 0x13;
 const QPNPINT_LATCHED_CLR: u16 = PM8150B_TYPEC_BASE + 0x14;
 const QPNPINT_EN_SET: u16 = PM8150B_TYPEC_BASE + 0x15;
+const QPNPINT_EN_CLR: u16 = PM8150B_TYPEC_BASE + 0x16;
 const SPMI_PIC_ACC_ENABLE: usize = 0x100;
 const SPMI_PIC_IRQ_CLEAR: usize = 0x108;
 const USB_VBUS_CMD_OTG: u16 = 0x40;
@@ -1849,31 +1855,32 @@ pub struct PdcPinRange {
 }
 
 // qcom,lito-pdc from the Android Lito DT. PDC output pins are translated to
-// GIC parent SPIs by these ranges before the GIC route is enabled.
+// GIC parent DT SPIs by these ranges, then represented as GIC INTIDs before
+// the GIC route is enabled.
 pub const LITO_PDC_RANGES: [PdcPinRange; 5] = [
     PdcPinRange {
         pin_base: 0,
-        parent_base: 480,
+        parent_base: 512,
         count: 42,
     },
     PdcPinRange {
         pin_base: 42,
-        parent_base: 612,
+        parent_base: 644,
         count: 28,
     },
     PdcPinRange {
         pin_base: 70,
-        parent_base: 63,
+        parent_base: 95,
         count: 1,
     },
     PdcPinRange {
         pin_base: 71,
-        parent_base: 640,
+        parent_base: 672,
         count: 15,
     },
     PdcPinRange {
         pin_base: 86,
-        parent_base: 522,
+        parent_base: 554,
         count: 52,
     },
 ];
@@ -2102,13 +2109,14 @@ pub unsafe fn configure_typec_irq(state: &TypecState) -> bool {
         return false;
     }
 
-    // qpnpint_irq_unmask() clears the PMIC latch before enabling the bit.
+    // Match the Linux irq-domain activation boundary: disable the child and
+    // clear its latch before exposing a new interrupt to the arbiter.
     let mut command = bit;
     if !unsafe {
         spmi_transfer(
             state.arbiter_version,
             state.apid,
-            QPNPINT_LATCHED_CLR,
+            QPNPINT_EN_CLR,
             &mut command,
             true,
         )
@@ -2116,7 +2124,7 @@ pub unsafe fn configure_typec_irq(state: &TypecState) -> bool {
         spmi_transfer(
             state.arbiter_version,
             state.apid,
-            QPNPINT_EN_SET,
+            QPNPINT_LATCHED_CLR,
             &mut command,
             true,
         )
@@ -2124,12 +2132,44 @@ pub unsafe fn configure_typec_irq(state: &TypecState) -> bool {
         return false;
     }
 
-    // pmic_arb_acc_enable_v5() and pmic_arb_irq_clear_v5() are in the write
-    // channel window, one 64-KiB APID window per peripheral.
+    // qpnpint_irq_unmask() first enables APID access, then atomically writes
+    // LATCHED_CLR and EN_SET when the child is not already enabled. The
+    // adjacent-byte write matters: it is one SPMI EXT_WRITEL transaction, not
+    // two independent PMIC state transitions.
     let offset = spmi_channel_offset(state.arbiter_version, state.apid, false);
     unsafe {
-        spmi_write(SPMI_CHANNELS, offset + SPMI_PIC_IRQ_CLEAR, bit as u32);
         spmi_write(SPMI_CHANNELS, offset + SPMI_PIC_ACC_ENABLE, 1);
+    }
+    let mut enabled = 0u8;
+    if !unsafe {
+        spmi_transfer(
+            state.arbiter_version,
+            state.apid,
+            QPNPINT_EN_SET,
+            &mut enabled,
+            false,
+        )
+    } {
+        return false;
+    }
+    if enabled & bit == 0
+        && !unsafe {
+            spmi_transfer_write_pair(
+                state.arbiter_version,
+                state.apid,
+                QPNPINT_LATCHED_CLR,
+                bit,
+                bit,
+            )
+        }
+    {
+        return false;
+    }
+    // pmic_arb_irq_clear_v5() is the parent-summary W1C in the write-channel
+    // window. Clear it after the child is ready, just as the Linux unmask path
+    // leaves no stale parent assertion for the first GIC delivery.
+    unsafe {
+        spmi_write(SPMI_CHANNELS, offset + SPMI_PIC_IRQ_CLEAR, bit as u32);
     }
     true
 }
@@ -2148,8 +2188,15 @@ pub unsafe fn acknowledge_typec_irq(state: &TypecState) -> bool {
         return false;
     }
     let bit = 1u8 << resource.irq;
+    let offset = spmi_channel_offset(state.arbiter_version, state.apid, false);
+    unsafe {
+        // Linux's qpnpint_irq_ack() clears the arbiter parent summary before
+        // clearing the PMIC child latch. Reversing these writes can cause a
+        // level/edge handoff to retrigger the parent with stale status.
+        spmi_write(SPMI_CHANNELS, offset + SPMI_PIC_IRQ_CLEAR, bit as u32);
+    }
     let mut command = bit;
-    if !unsafe {
+    unsafe {
         spmi_transfer(
             state.arbiter_version,
             state.apid,
@@ -2157,13 +2204,6 @@ pub unsafe fn acknowledge_typec_irq(state: &TypecState) -> bool {
             &mut command,
             true,
         )
-    } {
-        return false;
-    }
-    let offset = spmi_channel_offset(state.arbiter_version, state.apid, false);
-    unsafe {
-        spmi_write(SPMI_CHANNELS, offset + SPMI_PIC_IRQ_CLEAR, bit as u32);
-        spmi_read(SPMI_CHANNELS, offset + SPMI_PIC_IRQ_CLEAR) & bit as u32 == 0
     }
 }
 
@@ -2404,6 +2444,38 @@ unsafe fn spmi_transfer(
                     *value = spmi_read(SPMI_OBSERVER, offset + SPMI_RDATA0) as u8;
                 }
                 return true;
+            }
+            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        }
+    }
+    false
+}
+
+/// Issue the two-byte EXT_WRITEL used by Linux's qpnpint unmask path.
+/// `LATCHED_CLR` and `EN_SET` are adjacent PMIC registers, so the arbiter
+/// must receive both bytes in one transaction to preserve the driver's
+/// stale-latch ordering.
+unsafe fn spmi_transfer_write_pair(
+    version: u32,
+    apid: usize,
+    address: u16,
+    first: u8,
+    second: u8,
+) -> bool {
+    let offset = spmi_channel_offset(version, apid, false);
+    let command = (SPMI_OP_EXT_WRITEL << 27) | (((address & 0xff) as u32) << 4) | 1;
+    unsafe {
+        spmi_write(
+            SPMI_CHANNELS,
+            offset + SPMI_WDATA0,
+            u32::from(first) | (u32::from(second) << 8),
+        );
+        spmi_write(SPMI_CHANNELS, offset, command);
+        for _ in 0..1_000_000u32 {
+            let status = spmi_read(SPMI_CHANNELS, offset + SPMI_STATUS);
+            if status & SPMI_STATUS_DONE != 0 {
+                return status & (SPMI_STATUS_FAILURE | SPMI_STATUS_DENIED | SPMI_STATUS_DROPPED)
+                    == 0;
             }
             core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
         }
@@ -2853,7 +2925,14 @@ pub unsafe fn apply_usb_performance(vote: UsbBusVote) -> bool {
 pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usize>) {
     let gicd = gicd_base.unwrap_or(GICD_BASE);
     let gicr = gicr_base.unwrap_or(GICR_BASE);
-    let gic_ready = super::gicv3::init(gicd, gicr, Some(usb_controller_irq()));
+    // The timer-event A/B deliberately leaves the DWC3 controller SPI
+    // disabled; the 1 ms timer IRQ is its exclusive event-ring consumer.
+    let controller_irq = if cfg!(fullerene_aarch64_usb_probe_timer_event_poll) {
+        None
+    } else {
+        Some(usb_controller_irq())
+    };
+    let gic_ready = super::gicv3::init(gicd, gicr, controller_irq);
     unsafe {
         // DWC3 has five platform sources plus the Apps-SMMU global and up to
         // 80 context-bank fault lines. Keep the controller and SMMU fault
@@ -3283,6 +3362,41 @@ unsafe fn send_usb_regulator_request(rail: UsbRailResource, enable: bool) -> boo
     let Some(address) = (unsafe { command_db_read_addr(&rail.rpmh_resource_id) }) else {
         return false;
     };
+
+    // qpr1's msm_hsphy_enable_power() does not submit one combined VRM
+    // request for the HS-PHY rails.  It first enables vdd at its configured
+    // voltage, then requests HPM for vdda18/vdda33, programs each voltage,
+    // and finally enables that rail.  Keeping this ordering on the
+    // source-exact path matters for an analog RX bring-up: the mode and
+    // voltage transitions are observable by RPMh independently, so a single
+    // voltage->enable->mode batch is not equivalent to the Android sequence.
+    // The vdd rail is deliberately not given a mode request here; qpr1 never
+    // calls regulator_set_load(vdd).
+    if enable && cfg!(fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact) {
+        let send = |subaddress: u32, data: u32| unsafe {
+            send_rpmh_command_batch(core::slice::from_ref(&RpmhBcmCommand {
+                address: address + subaddress,
+                data,
+            }))
+        };
+
+        if rail.name == "vdd" {
+            return send(RPMH_REGULATOR_VRM_VOLTAGE, rail.min_uv / 1000)
+                && send(RPMH_REGULATOR_ENABLE, 1);
+        }
+
+        if matches!(rail.name, "vdda18" | "vdda33") {
+            let voltage = match rail.name {
+                "vdda18" => 1_704,
+                "vdda33" => 3_050,
+                _ => unreachable!(),
+            };
+            return send(RPMH_REGULATOR_MODE, RPMH_REGULATOR_MODE_HPM)
+                && send(RPMH_REGULATOR_VRM_VOLTAGE, voltage)
+                && send(RPMH_REGULATOR_ENABLE, 1);
+        }
+    }
+
     let mut commands = [RpmhBcmCommand {
         address: 0,
         data: 0,
@@ -3502,9 +3616,9 @@ mod tests {
         assert_eq!(resources.smmu_context_irqs[0], 97);
         assert_eq!(resources.smmu_context_irqs[79], 409);
         assert_eq!(resources.pdc_base, 0x0b22_0000);
-        assert_eq!(pdc_parent_irq(14), Some(494));
-        assert_eq!(pdc_parent_irq(9), Some(489));
-        assert_eq!(pdc_parent_irq(15), Some(495));
+        assert_eq!(pdc_parent_irq(14), Some(526));
+        assert_eq!(pdc_parent_irq(9), Some(521));
+        assert_eq!(pdc_parent_irq(15), Some(527));
         assert_eq!(resources.gdsc, 0x10f004);
         assert_eq!(resources.dma_pool.iova_base, 0x9000_0000);
         assert_eq!(resources.dma_pool.size, 0x6000_0000);
@@ -3688,7 +3802,7 @@ mod tests {
             irqs[1],
             IrqResource {
                 name: "pwr_event_irq",
-                number: 144,
+                number: 176,
                 kind: UsbIrqKind::GicSpi,
             }
         );
@@ -3696,9 +3810,9 @@ mod tests {
         assert_eq!(irqs[2].trigger, IrqTrigger::LevelHigh);
         assert_eq!(irqs[3].kind, UsbIrqKind::Pdc);
         assert_eq!(irqs[3].trigger, IrqTrigger::RisingEdge);
-        assert_eq!(irqs[4].number, 240);
+        assert_eq!(irqs[4].number, 272);
         assert_eq!(irqs[4].kind, UsbIrqKind::GicSpi);
-        assert_eq!(BRAMBLE_USB_RESOURCES.spmi_parent_irq, 481);
+        assert_eq!(BRAMBLE_USB_RESOURCES.spmi_parent_irq, 513);
         assert_eq!(BRAMBLE_USB_RESOURCES.typec_irq.sid, 2);
         assert_eq!(BRAMBLE_USB_RESOURCES.typec_irq.peripheral_id, 0x15);
         assert_eq!(BRAMBLE_USB_RESOURCES.typec_irq.irq, 0);
@@ -3730,7 +3844,7 @@ mod tests {
 
     #[test]
     fn typec_spmi_parent_is_a_usb_irq_and_polarity_matches_dt() {
-        assert!(is_usb_irq(481));
+        assert!(is_usb_irq(513));
         assert_eq!(spmi_irq_polarity(IrqTrigger::RisingEdge), (1, 1, 0));
         assert_eq!(spmi_irq_polarity(IrqTrigger::EdgeBoth), (1, 1, 1));
         assert_eq!(spmi_irq_polarity(IrqTrigger::LevelHigh), (0, 1, 0));

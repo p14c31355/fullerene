@@ -333,6 +333,16 @@ unsafe fn prepare_run_stop_device(is_on: bool) -> u32 {
                 // source-exact policy while changing no other DCTL fields.
                 if matches!(read(GSNPSID) >> 16, DWC31_IP | DWC32_IP) {
                     dctl &= !DCTL_KEEP_CONNECT;
+                    #[cfg(fullerene_aarch64_usb_gadget_handoff_keep_connect_on_start)]
+                    if read(GHWPARAMS1) & GHWPARAMS1_EN_PWROPT_MASK == GHWPARAMS1_EN_PWROPT_HIB {
+                        // qpr1's dwc3_gadget_run_stop(true) restores
+                        // KEEP_CONNECT after the revision-gated clear when
+                        // the core advertises hibernation. Keep this source
+                        // A/B inside the source-exact DCTL transition so the
+                        // attach/descriptor result is attributable to one
+                        // register difference.
+                        dctl |= DCTL_KEEP_CONNECT;
+                    }
                 }
                 dctl |= DCTL_RUN_STOP;
             } else {

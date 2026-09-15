@@ -316,6 +316,7 @@ pub(crate) const HSPHY_TEST0: usize = 0x80;
 pub(crate) const HSPHY_TEST1: usize = 0x84;
 
 pub(crate) const HSPHY_UTMI_SLEEPM: u32 = 1 << 0;
+pub(crate) const HSPHY_UTMI_OPMODE_MASK: u32 = 0x3 << 3;
 pub(crate) const HSPHY_UTMI_ATE_RESET: u32 = 1 << 0;
 pub(crate) const HSPHY_UTMI_POR: u32 = 1 << 1;
 pub(crate) const HSPHY_COMMON0_FSEL_MASK: u32 = 0x7 << 4;
@@ -326,8 +327,10 @@ pub(crate) const HSPHY_COMMON2_VREGBYPASS: u32 = 1 << 0;
 pub(crate) const HSPHY_CTRL1_VBUSVLDEXT0: u32 = 1 << 0;
 pub(crate) const HSPHY_CTRL2_SUSPEND_N: u32 = 1 << 2;
 pub(crate) const HSPHY_CTRL2_SUSPEND_N_SEL: u32 = 1 << 3;
+pub(crate) const HSPHY_CTRL2_AUTO_RESUME: u32 = 1 << 0;
 pub(crate) const HSPHY_PWRDOWN_B: u32 = 1 << 0;
 pub(crate) const HSPHY_CFG0_CMN_CTRL_OVERRIDE_EN: u32 = 1 << 1;
+pub(crate) const HSPHY_CFG0_UTMI_DATAPATH_CTRL_OVERRIDE_EN: u32 = 1 << 0;
 pub(crate) const HSPHY_TEST1_TESTDATAOUTSEL: u32 = 1 << 4;
 pub(crate) const HSPHY_TEST1_TOGGLE_2WR: u32 = 1 << 6;
 pub(crate) const HSPHY_TEST0_DATA_MASK: u32 = 0xff;
@@ -363,7 +366,10 @@ pub(crate) const QMP_PCS_CLAMP_ENABLE: usize = 0x1c8c;
 pub(crate) const QMP_PCS_POWER_DOWN_CONTROL: usize = 0x1c40;
 pub(crate) const QMP_PCS_SW_RESET: usize = 0x1c00;
 pub(crate) const QMP_PCS_START_CONTROL: usize = 0x1c44;
+pub(crate) const QMP_PCS_INSIG_SW_CTRL3: usize = 0x1c50;
+pub(crate) const QMP_PCS_INSIG_MX_CTRL3: usize = 0x1c70;
 pub(crate) const QMP_PHYSTATUS: u32 = 1 << 6;
+pub(crate) const QMP_RX_EQUALIZATION_IN_PROGRESS: u32 = 1 << 3;
 pub(crate) const QMP_ARCVR_DTCT_EN: u32 = 1 << 0;
 pub(crate) const QMP_ALFPS_DTCT_EN: u32 = 1 << 1;
 pub(crate) const QMP_ARCVR_DTCT_EVENT_SEL: u32 = 1 << 4;
@@ -439,6 +445,18 @@ pub(super) unsafe fn read_qscratch(offset: usize) -> u32 {
 
 #[inline]
 pub(super) unsafe fn write_qscratch(offset: usize, value: u32) {
+    // qpr1's dwc3_override_vbus_status() writes only UTMI_OTG_VBUS_VALID
+    // (HS PHY control bit 20). The legacy handoff also asserted
+    // SW_SESSVLD_SEL (bit 28); the source-only A/B removes that bit from
+    // every HS scratch write, including read-modify-write paths that could
+    // otherwise retain Fastboot's inherited value.
+    let value = if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_vbus_only)
+        && offset == QSCRATCH_HS_PHY_CTRL
+    {
+        value & !(1 << 28)
+    } else {
+        value
+    };
     unsafe { write_volatile(qscratch_reg(offset), value) };
     unsafe { hsphy_write_barrier() };
     let _ = unsafe { read_volatile(qscratch_reg(offset)) };

@@ -336,6 +336,7 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             // Auxiliary Qualcomm IRQs are platform notifications. Drain the
             // DWC3 event ring only for the controller SPI; deferred Type-C
             // work runs from the normal polling context after eret.
+            #[cfg(not(fullerene_aarch64_usb_probe_timer_event_poll))]
             super::usb::poll();
         }
     }
@@ -343,7 +344,13 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         super::timer::arm_ms(1);
         let _ = super::task::wake_event_timeouts(super::timer::uptime_us());
         super::fs::fire_timers(super::timer::uptime_us().saturating_mul(1_000));
-        #[cfg(all(fullerene_aarch64_bramble, feature = "aarch64-android-init"))]
+        #[cfg(all(
+            fullerene_aarch64_bramble,
+            any(
+                feature = "aarch64-android-init",
+                fullerene_aarch64_usb_probe_timer_event_poll
+            )
+        ))]
         super::usb::poll_from_timer_irq();
     }
     if frame.from_user() {

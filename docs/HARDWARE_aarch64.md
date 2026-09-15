@@ -39,7 +39,9 @@ pre-Run/Stop event DMA succeed, but the SOF gate observes no SOF frames. The
 remaining blocker is the USB2 PHY HS receive/clock-recovery path (or an
 external/secure owner of it). Endpoint/TRB and packet-format changes are
 downstream of the observed boundary and remain deferred until a valid EP0 data
-stage exists; further progress needs a known-good comparison, USB analyzer, or
+stage exists; the qpr1 `DCTL.KEEP_CONNECT` branch is also closed because the
+live `GHWPARAMS1` readout shows this DWC3 instance does not advertise
+hibernation. Further progress needs a known-good comparison, USB analyzer, or
 permitted JTAG/secure-debug capture.
 
 For exact ABL/XBL audits, physical A/B results, commands, timestamps, hashes,
