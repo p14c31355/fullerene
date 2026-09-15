@@ -722,6 +722,9 @@ struct LoopArgs {
     /// STARTTRANSFER is deferred (A/B).
     #[arg(long)]
     usb2_source_devten_before_runstop: bool,
+    /// Re-publish the qpr1 device-event mask immediately after Run/Stop (A/B).
+    #[arg(long)]
+    usb2_source_devten_after_runstop: bool,
     /// Force qpr1's USB2 SUSPHY/ENBLSLPM guard around every EP command;
     /// this avoids trusting a stale Fastboot DSTS speed value (A/B).
     #[arg(long)]
@@ -782,6 +785,18 @@ struct LoopArgs {
     /// Set GUSB2PHYCFG.U2_FREECLK_EXISTS after controller reset (A/B).
     #[arg(long)]
     u2_freeclk_set: bool,
+    /// Force-clear DWC3 GUCTL3.USB20_RETRY_DISABLE (STAR A/B).
+    #[arg(long)]
+    guctl3_retry_clear: bool,
+    /// Force-set DWC3 GUCTL3.USB20_RETRY_DISABLE (STAR A/B).
+    #[arg(long)]
+    guctl3_retry_set: bool,
+    /// Clear an inherited DWC3 GCTL.SOFITPSYNC bit in device mode (A/B).
+    #[arg(long)]
+    sofitpsync_clear: bool,
+    /// Force DWC3 GCTL.PWRDNSCALE to the historical Qualcomm value 2 (A/B).
+    #[arg(long)]
+    gctl_pwrdnscale_2: bool,
     /// Arm the initial EP0 SETUP only after the host USB Reset event.
     #[arg(long)]
     start_after_reset: bool,
@@ -1133,6 +1148,7 @@ impl Default for LoopArgs {
             usb2_source_susphy: false,
             usb2_source_exact_devten: false,
             usb2_source_devten_before_runstop: false,
+            usb2_source_devten_after_runstop: false,
             usb2_source_exact_cmd_guard: false,
             usb2_source_exact_runstop: false,
             usb2_source_phy_setup: false,
@@ -1148,6 +1164,10 @@ impl Default for LoopArgs {
             ep0_txfifo_fix: false,
             u2_freeclk_clear: false,
             u2_freeclk_set: false,
+            guctl3_retry_clear: false,
+            guctl3_retry_set: false,
+            sofitpsync_clear: false,
+            gctl_pwrdnscale_2: false,
             start_after_reset: false,
             start_at_connect_done: false,
             reset_resource: false,
@@ -1908,6 +1928,9 @@ fn experiment_manifest(args: &LoopArgs) -> String {
     }
     if args.usb2_source_devten_before_runstop {
         variables.push("usb2-source-devten-before-runstop=true".to_owned());
+    }
+    if args.usb2_source_devten_after_runstop {
+        variables.push("usb2-source-devten-after-runstop=true".to_owned());
     }
     if args.usb2_source_exact_cmd_guard {
         variables.push("usb2-source-exact-cmd-guard=true".to_owned());
@@ -4395,6 +4418,36 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             "--u2-freeclk-clear and --u2-freeclk-set are mutually exclusive",
         ));
     }
+    if args.guctl3_retry_clear && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--guctl3-retry-clear requires --direct-handoff",
+        ));
+    }
+    if args.guctl3_retry_set && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--guctl3-retry-set requires --direct-handoff",
+        ));
+    }
+    if args.guctl3_retry_clear && args.guctl3_retry_set {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--guctl3-retry-clear and --guctl3-retry-set are mutually exclusive",
+        ));
+    }
+    if args.sofitpsync_clear && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--sofitpsync-clear requires --direct-handoff",
+        ));
+    }
+    if args.gctl_pwrdnscale_2 && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--gctl-pwrdnscale-2 requires --direct-handoff",
+        ));
+    }
     if args.usb2_susphy && !args.direct_handoff {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -4423,6 +4476,12 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--usb2-source-devten-before-runstop requires --direct-handoff",
+        ));
+    }
+    if args.usb2_source_devten_after_runstop && !args.direct_handoff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--usb2-source-devten-after-runstop requires --direct-handoff",
         ));
     }
     if args.usb2_source_exact_cmd_guard && !args.direct_handoff {
@@ -5883,6 +5942,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.usb2_source_devten_before_runstop {
         arguments.push("--usb-gadget-handoff-usb2-source-devten-before-runstop".to_owned());
     }
+    if args.usb2_source_devten_after_runstop {
+        arguments.push("--usb-gadget-handoff-usb2-source-devten-after-runstop".to_owned());
+    }
     if args.usb2_source_exact_cmd_guard {
         arguments.push("--usb-gadget-handoff-usb2-cmd-guard".to_owned());
     }
@@ -6191,6 +6253,30 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.usb2_susphy_after_runstop {
         envs.push((
             "FULLERENE_AARCH64_USB_USB2_SUSPHY_AFTER_RUNSTOP".to_owned(),
+            "1".to_owned(),
+        ));
+    }
+    if args.guctl3_retry_clear {
+        envs.push((
+            "FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR".to_owned(),
+            "1".to_owned(),
+        ));
+    }
+    if args.guctl3_retry_set {
+        envs.push((
+            "FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET".to_owned(),
+            "1".to_owned(),
+        ));
+    }
+    if args.sofitpsync_clear {
+        envs.push((
+            "FULLERENE_AARCH64_USB_GCTL_SOFITPSYNC_CLEAR".to_owned(),
+            "1".to_owned(),
+        ));
+    }
+    if args.gctl_pwrdnscale_2 {
+        envs.push((
+            "FULLERENE_AARCH64_USB_GCTL_PWRDNSCALE_2".to_owned(),
             "1".to_owned(),
         ));
     }

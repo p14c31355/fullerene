@@ -267,6 +267,30 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
         gctl |= GCTL_PRTCAP_DEVICE;
         write(GCTL, gctl);
 
+        #[cfg(fullerene_aarch64_usb_gctl_pwrdnscale_2)]
+        {
+            // The historical Qualcomm path wrote PWRDNSCALE=2 at this
+            // device-mode boundary. Keep it isolated: qpr1's
+            // dwc3_set_prtcap() does not write the field, but a RAM-only
+            // handoff can otherwise retain Fastboot's previous value.
+            let mut gctl = read(GCTL);
+            gctl &= !GCTL_PWRDNSCALE_MASK;
+            gctl |= GCTL_PWRDNSCALE_2;
+            write(GCTL, gctl);
+            let _ = read(GCTL);
+        }
+
+        #[cfg(fullerene_aarch64_usb_gctl_sofitpsync_clear)]
+        {
+            // A RAM-only handoff inherits GCTL from Fastboot.  The official
+            // device-mode path does not enable the host/OTG SOF/ITP sync
+            // mode, so clear only this stale bit as a source-backed A/B.
+            let mut gctl = read(GCTL);
+            gctl &= !GCTL_SOFITPSYNC;
+            write(GCTL, gctl);
+            let _ = read(GCTL);
+        }
+
         // qpr1's dwc3_set_prtcap(DEVICE) writes only PRTCAPDIR. The other
         // global fields are owned by dwc3_core_setup_global_control(): on the
         // Bramble DWC31 revision it does not set U2RSTECN, and the DT has no

@@ -529,12 +529,12 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             hsphy_write_barrier();
         }
 
-        // The Bramble qpr1 `msm_hsphy_init()` body does not write RTUNE_SEL;
-        // retain the old local write only for the pre-existing non-exact
-        // helper paths, or for the isolated source-exact legacy A/B.
-        if !source_exact || cfg!(fullerene_aarch64_usb_hsphy_rtune) {
-            hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
-        }
+        // Bramble's lito-usb.dtsi has no qcom,rcal-mask/phy_rcal_reg entry.
+        // The official msm_hsphy_init() therefore takes its !rcal_code branch
+        // and selects the external resistor through RTUNE_SEL. Keep this
+        // write in the source-exact path as well; omitting it would only be
+        // correct for a board with a programmed RCAL efuse source.
+        hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
 
         // phy-msm-snps-hs.c continues with VREGBYPASS, the suspend-N hold,
         // SLEEPM, POR release, suspend-N select clear, and common-control

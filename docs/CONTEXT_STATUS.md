@@ -18,13 +18,20 @@ targeted section before decompressing either archive.
 | FullereneOS AArch64 port | Boot the real FullereneOS runtime on Bramble | Early bring-up; generic runtime not yet entered |
 | Recovery safety | Failed handoff returns to Android without persistent writes | Confirmed for the recorded RAM-only runs |
 
-## Current state (last evidence update: 2026-09-15)
+## Current state (last evidence update: 2026-09-16)
 
 - The only `1234:0001` observation was produced by a prohibited Android
   configfs rebind. No Fullerene-owned descriptor success has been observed.
 - The attach-reaching Fullerene USB2 path crosses HS attach, then fails at the
   address-0 Device Descriptor boundary with zero-payload `-110`/`-71`
   completions. This is a pre-descriptor / pre-USB2-RX-data failure.
+- The 2026-09-16 `event-cut` and 45-second `sof` gates produced no
+  host-visible boundary stop, while Tshark/usbmon repeatedly retained the
+  same HS attach and zero-payload descriptor failure. A bounded late EP0
+  recovery retry schedule and stop-before-rebuild A/B also did not move the
+  boundary. The remaining blocker is therefore outside the safe EP0/TRB and
+  Run/Stop repair space: HS-PHY RX/SOF ownership by secure firmware or the
+  board-level PHY/clock path remains unresolved.
 - The earlier DSB-corrected hardware record is the decisive internal
   discriminator: the event-DMA probe passed and `armstat=0` showed that
   STARTTRANSFER retired, while the SOF gate reported no SOF frames. The later
@@ -2219,6 +2226,437 @@ unmeasured HS path until a SuperSpeed-specific trace justifies it.
      Corrected PDC routing is not the boundary fix; the remaining target is
      USB2 HS-PHY RX/SOF or an upstream secure/external owner. No flash or
      configfs operation was used.
+
+107. The source-exact HS-PHY power sequence was corrected so the vdd rail also
+     receives qpr1's HPM request before its voltage and enable commands; the
+     vdda18/vdda33 HPM, voltage, and enable ordering remains source-directed.
+     Run `3986792.0` re-tested that change with the corrected normal Type-C
+     route and the complete attach-reaching USB2 profile. Tshark retained
+     4,734 frames / 2,422,385 bytes for 77.6 s (pcap SHA-256
+     `edc3efad081106ae59e81f75b4cea94ef22ced97c348ed706c0b5c82415c8134`),
+     and raw usbmon retained 4,743 records / 372,801 bytes (SHA-256
+     `30df541b30672123f18d665a79a4533c913fb46beaebcc7d292020f282883779`).
+     The host still reached USB2 HS attach, then one zero-payload descriptor
+     `-2` completion and three zero-payload `-71` retries; no `1234:0001`.
+     Automatic recovery completed to Fastboot. The vdd-HPM correction is not
+     the boundary fix; remaining work is HS-PHY RX/SOF or an upstream
+     secure/external owner. No flash or configfs operation was used.
+
+108. Run `3999370.0` removed only `--usb2-source-exact-runstop` from the
+     attach-reaching profile. This restored the Linux-style temporary
+     `GUSB2PHYCFG.SUSPHY/ENBLSLPM` clear around the DCTL.Run/Stop write while
+     retaining the corrected normal Type-C route, source-exact HS-PHY power,
+     automatic recovery, Tshark, and raw usbmon. Tshark retained 8,439 frames /
+     2,686,855 bytes for 90.0 s (pcap SHA-256
+     `53b385bba9a19919703c97af01f9bc9461651086305989c1ea18d23f1a07f`), and
+     raw usbmon retained 8,493 parsed records / 581,142 bytes (SHA-256
+     `72d9dc550c0cf4be0fc953680e1bb861fb5cd4ce717018ea5f9e4a80e18959d7`).
+     The host still reached USB2 HS attach, then one zero-payload descriptor
+     `-2` completion and three zero-payload `-71` retries; no `1234:0001`.
+     Android fallback and automatic Fastboot recovery completed. The Run/Stop
+     guard is non-discriminating; remaining work is HS-PHY RX/SOF or an
+     upstream secure/external owner. No flash or configfs operation was used.
+
+109. Run `4008010.0` added `--signal-probe --signal-early-drop 5
+     --observe-secs 25` to test whether DSTS SOF frames become visible before
+     the host's first descriptor response. The host log records USB2 HS attach
+     at `02:24:26` and the first zero-payload Device Descriptor timeout at
+     `02:24:31`, while the early signal gate did not fire. Because the
+     observation window ended before that attach, the result is timing-
+     inconclusive rather than proof of absent SOF. Tshark retained 3,711
+     frames / 2,354,667 bytes for 61.2 s (pcap SHA-256
+     `efa85bb5b72ca8c339b702ea4bb6be4aa3788cc6176967c098d0d4b3c3567038`),
+     and raw usbmon retained 3,774 parsed records / 324,099 bytes (SHA-256
+     `b3b3ed6dd91b53cc9f4a86d3f30aa791985b5e8de1bbc75216f712f2af09ad3`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed.
+     The next discriminating condition is a post-attach USB Reset/event-ring
+     gate, not another downstream EP0/TRB permutation. No flash or configfs
+     operation was used.
+
+110. Run `4017947.0` added the setup-ownership-gated
+     `--signal-probe --signal-early-drop 1 --observe-secs 60` probe for the
+     software-consumed host USB Reset event. The gate did not fire; the host
+     attached HS at `02:30:49`, then reached the zero-payload Device Descriptor
+     `-110` timeout at `02:30:55` and `-71` retries. Tshark retained 3,929
+     frames / 2,368,951 bytes for 71.5 s (pcap SHA-256
+     `01ad62a30db9e53a29764ef0b4a34610c688067f9296f081d53b86a2b5ba59b3`),
+     and raw usbmon retained 3,986 records / 334,623 bytes (SHA-256
+     `a64daea7f5ef478e3fc4d2eb15725f59d54c95bea1ec66ffd037100fda098251`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed.
+     This narrows the missing ingress to before the software-consumed USB
+     Reset event. No flash or configfs operation was used.
+
+111. Run `4028890.0` added selector `6`, a read-only raw
+     `DSTS.USBLNKST == RESET` transition gate, to the same attach-reaching
+     profile. The gate did not fire; HS attach at `02:38:20` was followed by
+     `-110` at `02:38:25` and three `-71` retries. Tshark retained 3,903
+     frames / 2,367,287 bytes for 70.6 s (pcap SHA-256
+     `48e7db4cb85e955ec38511185d6743d22b0e0f261851837362bcb1f35aa72d29`),
+     and raw usbmon retained 3,929 records / 331,815 bytes (SHA-256
+     `4ddabc6c6ae9c9d1e6d16a2759d3e1c8b3c25a9d4e2855e48f2c2a34466fae47`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed.
+
+112. Run `4032969.0` added selector `7`, a read-only raw
+     `DSTS.USBLNKST == POLLING` transition gate. The gate did not fire; HS
+     attach at `02:40:48` was followed by `-110` at `02:40:54` and three `-71`
+     retries. Tshark retained 3,963 frames / 2,371,159 bytes for 70.6 s (pcap
+     SHA-256 `62f06b544dad6afc9801e38758ee04fd7ddc2a25f8c9b9e46ad6685a2dd73284`),
+     and raw usbmon retained 4,006 records / 335,615 bytes (SHA-256
+     `225f2e98ea689ef018ae2ad0cdaa13c60dc4fa906c516e137c52d87de69cc59f`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed.
+
+113. Run `4038365.0` replayed Android qpr1's source order
+     `event_buffers_setup -> gadget_restart -> DCTL.RUN_STOP` at the final
+     direct USB2 boundary. HS attach at `02:44:23`, `-110` at `02:44:28`, and
+     the subsequent `-71` retries were unchanged. Tshark retained 3,963
+     frames / 2,371,159 bytes for 70.7 s (pcap SHA-256
+     `bb8eeff8b84798830e32948323a54c18a690a66dc191bee9b044c8e82730812b`),
+     and raw usbmon retained 3,963 records / 333,479 bytes (SHA-256
+     `dfde0afe7ce6faecdaa1859cfc0f32a910978fdcc075888052bfe3b38f6aa613`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed.
+
+114. Run `4044015.0` added `--gadget-start-only-at-runstop`, moving the DCFG
+     speed write after the restarted EP0 construction to match qpr1
+     `__dwc3_gadget_start()` ordering. HS attach at `02:48:17`, `-110` at
+     `02:48:22`, and three `-71` retries were unchanged. Tshark retained 3,918
+     frames / 2,368,231 bytes for 71.1 s (pcap SHA-256
+     `a2adb9f09c6ba096bed6df8687eaac749bea5bcde0e60780b4a1483e2d904b28`),
+     and raw usbmon retained 3,929 records / 331,815 bytes (SHA-256
+     `467e1c48d9ef389b4fe937b5ba0b5fe332a298d2c8c73e1c8527df726f357720`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed.
+
+115. Run `4047940.0` added `--gadget-start-defaults-at-runstop`, replaying
+     qpr1's non-endpoint gadget-start defaults at the final Run/Stop boundary
+     together with the restart and speed-order controls. HS attach at
+     `02:50:38`, `-110` at `02:50:43`, and three `-71` retries were unchanged.
+     Tshark retained 3,929 frames / 2,368,951 bytes for 71.1 s (pcap SHA-256
+     `ff31f434705348c65b8d866f2b4a02ff0e6e617e2a7e98678a16010dd23732f5`),
+     and raw usbmon retained 3,929 records / 331,815 bytes (SHA-256
+     `c702d6d22089613536381110da3679fd089e1b422f78bd6893343b5b6c0e5c39`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed.
+     The source-order DWC3 gadget-start candidates are non-discriminating at
+     this boundary. No flash or configfs operation was used.
+
+116. Run `4055520.0` removed only `--usb2-preserve-phy-interface`, forcing the
+     DWC3 UTMI 8-bit/`TRDTIM=9` programming on the corrected Type-C/IRQ
+     profile while retaining the source-order gadget restart, speed ordering,
+     and start-default controls. HS attach at `02:55:45` was followed by
+     `-110` at `02:55:51` and three `-71` retries. Tshark retained 3,963
+     frames / 2,371,159 bytes for 71.1 s (pcap SHA-256
+     `93e15973e9b3f1fd6925a8b5465102cf724a3baa06f06055022a08fba6b0cee9`),
+     and raw usbmon retained 3,963 records / 333,479 bytes (SHA-256
+     `de8ef346258fe2d977aa48f807e96fb8eb95013b6b8ec3bfa9753431c1616c54`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed.
+     DWC3 USB2 interface timing is non-discriminating at this boundary. No
+     flash or configfs operation was used.
+
+117. Run `4075005.0` added only `--no-core-reset` to the latest attach-reaching
+     source-order profile, preserving the DWC3 core across handoff while
+     retaining Tshark/usbmon and automatic recovery. HS attach at `03:09:02`
+     was followed by the zero-payload address-0 descriptor timeout `-110` at
+     `03:09:08` and three immediate zero-payload `-71` retries. Tshark
+     retained 3,569 frames / 2,337,359 bytes for 61.4 s (pcap SHA-256
+     `553458ac4f9547e884f31e5829f9b9cc43ca7142faea278d8e2f112f347a30d7`),
+     and raw usbmon retained 3,580 records / 306,527 bytes (SHA-256
+     `f95b45d6d5552a6eb80ae931cda731b8b9da19efe7ce0c37ea8ce36b28aa027d`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed and
+     final state was `fastboot-available`. Preserving the DWC3 core does not
+     move the attach/descriptor boundary. No flash or configfs operation was
+     used.
+
+118. Run `4079102.0` added `--preserve-fastboot-runstop` on top of
+     `--no-core-reset`, retaining Fastboot's Run/Stop and endpoint-advertisement
+     state across the handoff. HS attach at `03:11:42` was followed by the
+     zero-payload address-0 descriptor timeout `-110` at `03:11:48` and three
+     immediate zero-payload `-71` retries. Tshark retained 4,057 frames /
+     2,372,056 bytes for 61.2 s (pcap SHA-256
+     `f9fc7ade16cc658f0f7e24c6c9f5699e36d722fc370a0d22816ec18a731d38ec`),
+     and raw usbmon retained 4,057 parsed records / 332,872 bytes (SHA-256
+     `9682f68700e69f1c15438af7496a3e68aded2e7e344ac4b29e97fd4e515f00f5`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed and
+     final state was `fastboot-available`. Preserving the old Run/Stop state
+     also does not move the attach/descriptor boundary. No flash or configfs
+     operation was used.
+
+119. Run `4084169.0` replaced the Type-C IRQ route with
+     `--usb-event-timer-poll`, consuming the DWC3 event ring from the 1 ms
+     timer while keeping the corrected attach-reaching USB2/PHY/source-order
+     profile. HS attach at `03:15:10` was followed by the zero-payload address-0
+     descriptor timeout `-110` at `03:15:15` and three immediate zero-payload
+     `-71` retries. Tshark retained 3,929 frames / 2,364,855 bytes for 71.4 s
+     (pcap SHA-256
+     `24cb5dc61156098587702b78f1d78f0e05d58cae9a14e525a60f3cc8633bfacd`),
+     and raw usbmon retained 3,929 records / 327,719 bytes (SHA-256
+     `40222ba75e7b6fcea5c1dde444d3d1f4a7c32a013f56aff83f1f63f5360ca8ca`). No
+     `1234:0001` appeared; automatic Android/Fastboot recovery completed and
+     final state was `fastboot-available`. Timer consumption does not move the
+     boundary. No flash or configfs operation was used.
+
+120. Run `4090796.0` exercised the previously unrun `--reuse-fastboot-dma`
+     diagnostic with the required direct handoff and `--no-smmu`, reusing the
+     firmware-owned EP0/event DMA page instead of Fuller's linker-owned page.
+     This minimal condition did not reach Fullerene USB2 attach; the host saw
+     only automatic Android fallback (`18d1:4ee7` then `18d1:4ee0`). Tshark
+     retained 4,271 frames / 2,387,084 bytes for 71.3 s; raw usbmon retained
+     4,297 records / 345,724 bytes. No `1234:0001` appeared; automatic
+     recovery completed and final state was `fastboot-available`. This is a
+     negative control for the minimal DMA-reuse path, not evidence of a
+     descriptor fix. No flash or configfs operation was used.
+
+121. Matrix run `4096589.0/power` exercised the isolated `power` IRQ route
+     with `--no-smmu`, Tshark, and raw usbmon. It did not reach Fullerene USB2
+     attach; the host recovered stock Android SuperSpeed `18d1:4ee7` and then
+     Fastboot `18d1:4ee0`. Tshark retained 4,377 frames / 2,385,756 bytes for
+     73.5 s (pcap SHA-256
+     `0a0a1bf48c4fa58546948796fd6ad6b02c7134c601f86ac92673d239cfa676c5`),
+     and raw usbmon retained 4,377 records / 341,452 bytes (SHA-256
+     `486cb99fef30fb564780775e6f0ab78ebfbfc13c2655756245e3bbfd1534fb02`).
+     No `1234:0001` appeared; Android then Fastboot recovery completed
+     automatically. The route is non-discriminating at the current boundary.
+     No flash or configfs operation was used.
+
+122. Matrix run `4096589.0/smmu` exercised the isolated `smmu` IRQ route with
+     `--no-smmu`, Tshark, and raw usbmon. It did not reach Fullerene USB2
+     attach; the host recovered stock Android SuperSpeed `18d1:4ee7` and then
+     Fastboot `18d1:4ee0`. Tshark retained 4,639 frames / 2,402,796 bytes for
+     80.8 s (pcap SHA-256
+     `87f0dfba8c0d68b68651a531d57e8974bd76f6350afde71ecef2f3a346694645`),
+     and raw usbmon retained 4,680 records / 356,292 bytes (SHA-256
+     `5eba426d5c6c38d2ea0023e71f413945820464567ccbf5078ab115b32934078d`).
+     No `1234:0001` appeared; Android then Fastboot recovery completed
+     automatically. The route is non-discriminating at the current boundary.
+     No flash or configfs operation was used.
+
+123. Run `4108412.0` added `--hsphy-xbl-exact --xbl-hs-phy-table` to the
+     known attach-reaching source-exact profile. This uses the same-build XBL
+     HS-PHY cleanup and fourth tuning pair while retaining Tshark, raw usbmon,
+     and automatic recovery. HS attach at `03:30:12` was followed by the
+     zero-payload address-0 descriptor timeout `-110` at `03:30:17` and three
+     immediate zero-payload `-71` retries. Tshark retained 3,963 frames /
+     2,371,159 bytes for 70.8 s (pcap SHA-256
+     `f7e22551c5d661e7487bfaeca42150b5d8e8667b1d9d98ac24f3b7b0e56622bf`),
+     and raw usbmon retained 3,963 records / 333,479 bytes (SHA-256
+     `f7d187ba7a74b372fe83831bc43793e1d207f8b5527d9275e95625d7996c3b00`).
+     No `1234:0001` appeared; Android then Fastboot recovery completed
+     automatically. The XBL analog sequence does not move the boundary. No
+     flash or configfs operation was used.
+
+124. Run `4119498.0` exposed the existing DWC3 GUCTL3
+     `USB20_RETRY_DISABLE` cfg as `--guctl3-retry-clear` and ran it on the
+     same XBL/source-exact attach-reaching profile. The build environment
+     records `FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR=1`. HS attach
+     was followed by a zero-payload address-0 descriptor completion `-2`
+     after 5.4 s and three immediate zero-payload `-71` retries; the host
+     classification remained `usb-attach-or-descriptor-failure--110`. Tshark
+     retained 4,398 frames / 2,399,431 bytes for 84.2 s (pcap SHA-256
+     `ad792944d42b0c2ec72a5e8405fb21419d9eee84025bf736cccc03f32c7f8ea3`),
+     and raw usbmon retained 4,409 records / 355,335 bytes (SHA-256
+     `0250179cd81c5379caedac4cd76d899530914dece91b85f3ffc5c0b9e0782433`).
+     No `1234:0001` appeared; Android/Fastboot recovery completed
+     automatically. Clearing the STAR bit does not move the boundary. No
+     flash or configfs operation was used.
+
+125. Run `4124265.0` exposed the opposite GUCTL3 setting as
+     `--guctl3-retry-set`, with build environment
+     `FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET=1`, on the identical
+     profile. HS attach was followed by a zero-payload address-0 descriptor
+     completion `-2` after 5.1 s and three zero-payload `-71` retries; the
+     classification remained `usb-attach-or-descriptor-failure--110`. Tshark
+     retained 4,323 frames / 2,394,559 bytes for 80.3 s (pcap SHA-256
+     `05395fc1373290722daa835808c0d24f62b99a7e64569bba11542f7e34fcf495`),
+     and raw usbmon retained 4,323 records / 351,119 bytes (SHA-256
+     `7fc32763a2a5e4d40479746812a904afcc9a9b53b995a37c24e2d3ce8f72a9c9`).
+     No `1234:0001` appeared; Android/Fastboot recovery completed
+     automatically. Forcing the opposite STAR setting also does not move the
+     boundary. No flash or configfs operation was used.
+
+126. Run `4134258.0` added the source-backed `--sofitpsync-clear` A/B for the
+     stale Fastboot-inherited GCTL host/OTG SOF/ITP-sync bit, with build
+     environment `FULLERENE_AARCH64_USB_GCTL_SOFITPSYNC_CLEAR=1`, on the
+     identical profile. HS attach at `03:46:13` was followed by the
+     zero-payload address-0 descriptor timeout `-110` at `03:46:19`; usbmon
+     recorded a first descriptor completion `-2` after about 5.0 s and three
+     immediate zero-payload `-71` retries. Tshark retained 4,403 frames /
+     2,399,759 bytes for 82.4 s (pcap SHA-256
+     `5dced5fc07f70b099a2d15aaddc664cdd8397551765f6f0f6fca1e8955f9632d`),
+     and raw usbmon retained 4,403 records / 355,039 bytes (SHA-256
+     `e199183fba7196fe8e2e2eb263e05b47c8943a469be519863f6c8fe8635b9ae`).
+     No `1234:0001` appeared; Android/Fastboot recovery completed
+     automatically. Clearing SOFITPSYNC does not move the boundary. No flash
+     or configfs operation was used.
+
+127. Run `4146131.0` replaced the known attach-reaching
+     `--start-after-connect` timing with source-directed `--start-after-reset`,
+     retaining the same PHY/power/DEVTEN profile and Tshark/usbmon automation.
+     Fullerene did not reach HS attach; the host only observed automatic
+     Android `18d1:4ee7` then Fastboot `18d1:4ee0`. Tshark retained 4,297
+     frames / 2,392,844 bytes for 71.3 s (pcap SHA-256
+     `bb93d57caacb5ce301848e1e08bb2276711851833c20f9d7ffe28b4f4e0bb400`),
+     and raw usbmon retained 4,297 records / 349,820 bytes (SHA-256
+     `73c1633a0e82564f608e4118cfe06e49821e15213137f27dc7fa54b152286e7d`).
+     Waiting for the USB Reset boundary cannot be the initial arm fix;
+     recovery completed automatically.
+
+128. Run `4150606.0` added `--xbl-event-dma`, using the source-observed XBL
+     event-ring address while keeping Fullerene's normal EP0 TRBs. HS attach
+     at `03:56:22` was followed by the same zero-payload descriptor `-110` at
+     `03:56:27` and three zero-payload `-71` retries. Tshark retained 3,929
+     frames / 2,368,951 bytes for 71.1 s (pcap SHA-256
+     `3d3aa52c05977a33dca6c5dd0fb555c974521e52d88ae78e08d1fbf74070a77b`),
+     and raw usbmon retained 3,929 records / 331,815 bytes (SHA-256
+     `742043f1bf997ee371c5d89e614aebb82bb14f0e760b5101c7ae93671f4e03d0`).
+     The event-ring address alone does not move the boundary; recovery
+     completed automatically.
+
+129. Run `4153911.0` added `--xbl-stock-ep0-dma`, using the source-observed
+     XBL EP0 TRB/SETUP DMA address while retaining the normal linker event ring.
+     HS attach at `03:58:15` was followed by the same zero-payload descriptor
+     `-110` at `03:58:20` and three zero-payload `-71` retries. Tshark retained
+     3,929 frames / 2,368,951 bytes for 71.4 s (pcap SHA-256
+     `b701cb0d29eb75e488101a42fa7e7dc0be1eefa9e6c949b5c365d69f545cdfc9`),
+     and raw usbmon retained 3,929 records / 331,815 bytes (SHA-256
+     `79d74a10e9bd48bf3d56d06dba613f93b28b1bef77863ce5507b3aef88cebd39`).
+     The EP0 DMA address alone does not move the boundary; recovery completed
+     automatically.
+
+130. Run `4158630.0` replaced the 5 s `--usb2-extended-setup-arm` with the
+     10 s `--usb2-long-setup-arm` on the same attach-reaching profile. HS attach
+     at `04:01:12` was followed by the same zero-payload descriptor `-110` at
+     `04:01:18` and three zero-payload `-71` retries. Tshark retained 3,963
+     frames / 2,371,159 bytes for 70.5 s (pcap SHA-256
+     `fa70935046fafea321355a841e8dc452a97c655c66488ffe03c0d753a71e658d`),
+     and raw usbmon retained 3,963 records / 333,479 bytes (SHA-256
+     `be66cb2fd156af70a272e6502c25821ec418d4616eb4a7f0edd464028b2600b8`).
+     Extending the arm window does not move the boundary; recovery completed
+     automatically.
+
+131. Run `4168981.0` added the read-only signal probe (`--signal-probe
+     --signal-link-state --signal-early-drop 5 --observe-secs 10`) to the
+     attach-reaching profile. The host reached HS attach at `04:09:02`, then
+     timed out the zero-payload Device Descriptor with `-110` at `04:09:07`;
+     the probe produced no host-visible signal-cycle disconnect and no
+     `1234:0001`. Tshark retained 3,932 frames / 2,369,175 bytes for 71.1 s
+     (pcap SHA-256
+     `91e1142a4d67b76da24dffed650d348eb5a2c32a7fcac7c37cef6dffa88b289b`),
+     and raw usbmon retained 3,963 records / 333,479 bytes (SHA-256
+     `e3b8b175b905194cbb9d9bf9cb91351262e22832c1aadac3a3bcd565ffe76554`).
+     The signal observation is non-discriminating at this boundary; Android /
+     Fastboot recovery completed automatically.
+
+132. Run `4173847.0` isolated the qpr1 HS-PHY `vdda18`/`vdda33` voltage
+     programming (`--hsphy-program-vdda-voltage`) on the same profile. The
+     host reached HS attach at `04:11:52`, then timed out the zero-payload
+     Device Descriptor with `-110` at `04:11:58`, followed by three `-71`
+     retries; no `1234:0001` appeared. Tshark retained 3,643 frames /
+     2,350,359 bytes for 62.3 s (pcap SHA-256
+     `6f9754dd463b7d11b884e8b3a8e50ff09421525d198ad38258a05a22b4e5105e`),
+     and raw usbmon retained 3,643 records / 317,799 bytes (SHA-256
+     `409f1cb86b926fdfd495536abe80222dcc38d8bb90a9e1e695f7ce4a25e1c146`).
+     The isolated voltage programming does not move the boundary; Android /
+     Fastboot recovery completed automatically.
+
+133. Run `4187850.0` added the source-audited historical Qualcomm
+     `GCTL.PWRDNSCALE=2` write (`--gctl-pwrdnscale-2`) at the device-mode
+     boundary. The build manifest confirms
+     `FULLERENE_AARCH64_USB_GCTL_PWRDNSCALE_2=1`; the host reached HS attach
+     at `04:22:14`, then timed out the zero-payload Device Descriptor with
+     `-110` at `04:22:19`, followed by three immediate `-71` retries. Tshark
+     retained 4,523 frames / 2,407,559 bytes for 85.8 s (pcap SHA-256
+     `edd999711344540576917366be241526284ffa99c6ac0969659e1b760348cebf`),
+     and raw usbmon retained 4,523 records / 360,919 bytes (SHA-256
+     `e96349102f505ab11f38c18177522312d7327e2edbcb130380ac91406afa77ec`).
+     No `1234:0001` appeared; Android / Fastboot recovery completed
+     automatically. The PWRDNSCALE write does not move the boundary.
+
+134. Run `333.0` added the existing `--hsphy-por-delay-150` A/B, holding the
+     source-exact HS-PHY POR release for the 150 us external-reset settling
+     interval. The host reached HS attach at `04:25:48`, then timed out the
+     zero-payload Device Descriptor with `-110` at `04:25:54`, followed by
+     three immediate `-71` retries. Tshark retained 3,963 frames /
+     2,371,159 bytes for 71.0 s (pcap SHA-256
+     `617e3d5ddbd5a08cad5139cc3f765d79dd612d52ba6b6c0bd34a82e0748650e2`),
+     and raw usbmon retained 3,963 records / 333,479 bytes (SHA-256
+     `9c817e3a7cb28279d0c148378d3272c434f8d7eeb7501c4c65397f88e7394a70`).
+     No `1234:0001` appeared; Android / Fastboot recovery completed
+     automatically. The POR settling delay does not move the boundary.
+
+135. Run `5951.0` exercised the existing `--hsphy-legacy-fallback` negative
+     control while retaining the current attach-reaching profile. The host
+     reached HS attach at `04:28:56`, then timed out the zero-payload Device
+     Descriptor with `-110` at `04:29:01`, followed by three immediate `-71`
+     retries. Tshark retained 3,972 frames / 2,371,735 bytes for 71.3 s (pcap
+     SHA-256 `f66240325415efdc4b7a5a2568cf3d65bf5dba95778dc8481990c47a49496ddc`),
+     and raw usbmon retained 3,977 records / 334,151 bytes (SHA-256
+     `97a7524e0b79992ba4364eb5e994f3c32c51ed7dc234f100088dbb0b84f430f5`).
+     No `1234:0001` appeared; Android / Fastboot recovery completed
+     automatically. The legacy tuning negative control does not move the
+     boundary, so further guessed PHY tuning is stopped.
+
+136. Run `19777.0` added only `--usb2-source-devten-after-runstop`, rewriting
+     the qpr1 device-event mask immediately after the physical Run/Stop
+     transition. The host reached HS attach at `04:37:41`, then timed out the
+     zero-payload Device Descriptor with `-110` at `04:37:46`, followed by
+     three immediate `-71` retries. Tshark retained 4,045 frames / 2,376,490
+     bytes for 73.1 s (pcap SHA-256
+     `dffad77dbd19bf87f977e9b683241cbe4b3aecedde089aa70313c00275223c90`),
+     and raw usbmon retained 4,045 records / 337,498 bytes (SHA-256
+     `c34c33eace1f6ab6033dead82f2f8bef36f647b3f87f8756c4d74cb3250edf72`).
+     No `1234:0001` appeared; Android / Fastboot recovery completed
+     automatically. Republish timing for DEVTEN does not move the boundary.
+
+137. Run `25258.0` added the read-only raw-link signal gate
+     (`--signal-probe --signal-link-state --signal-raw-link
+     --signal-early-drop 6 --observe-secs 60`) to the current profile. The
+     DWC3 `USBLNKST == RESET` gate produced no host-visible drop; HS attach at
+     `04:41:06` was followed by zero-payload descriptor `-110` at `04:41:12`
+     and three `-71` retries. Tshark retained 3,932 frames / 2,369,175 bytes
+     for 71.2 s (pcap SHA-256
+     `3ee6db045b08e79277eb2386979f9ba243263ef15f109f340a2c9558965989f`),
+     and raw usbmon retained 3,963 records / 333,479 bytes (SHA-256
+     `cb230f098ed4c8e9bba06a3c9e352314459301438d5cb9c302898f79853b34ef`).
+     No `1234:0001` appeared; Android / Fastboot recovery completed
+     automatically. This leaves the next repair target at USB2 PHY RX/SOF or
+     an earlier DWC3 event-ingress boundary.
+
+138. Run `64275.0` repeated the current source-exact USB2 profile with
+     `--usb2-source-devten-after-runstop` and the integrated Tshark/usbmon
+     capture. HS attach was followed by the same zero-payload address-0
+     descriptor `-110` and three `-71` retries; `lnkraw` produced no
+     host-visible state-coded disconnect. Pcap SHA-256 is
+     `b94733e6f2ab4c545749bdc868c595f81b9ae15ce90147d42d77432eab1a788d`;
+     raw usbmon SHA-256 is
+     `33e58fd5a718eae07944d8730548066c0e0958f0b08997f1f9969229fd4d8cdf`.
+
+139. Run `69684.0` used `event-cut` with a 45-second observation window.
+     No controlled disconnect occurred before the descriptor timeout, so no
+     software-consumed DWC3 event was demonstrated at the host boundary.
+     Pcap SHA-256 is
+     `c9531df7f9eb4f4e0743c0f1747dbb4d32fc811cfe88ce72f32f0d469a4237c9`;
+     raw usbmon SHA-256 is
+     `ca24be68bb88c63f23137a0b2e0e90538e15a5b2386c5bbaf5bf09a5d8bbd669`.
+
+140. The late automatic EP0 recovery was changed from one attempt at 30 s
+     to a bounded six-attempt schedule at 4-second intervals, only while EP0
+     remained unarmed. Runs `75770.0` (normal) and `80289.0` (with
+     `--u0-arm-stop-first`) both preserved HS attach and the same descriptor
+     `-110`/`-71` boundary, so recovery timing and stop-before-rebuild are
+     rejected as the fix. Their pcap SHAs are
+     `a7e0ede26c67b316f77f33e7acbaf39abed1d9b2fa6d38eb4d05b01befa3fa3d` and
+     `81dccdfb710ea586e98466054a87a0eba42096ac372ab9ca5e8a12c406b6d754`;
+     raw usbmon SHAs are
+     `3393e9bf82d30346c3bdd9aeaced2b1b8b526d53c7b2c8a7eb5135ea89a3fd8b` and
+     `b42d94e98c9505b110a45893651603bd40bf508e81455a1026669d39e353e05a`.
+
+141. Run `84489.0` used the `sof` gate with the observation window aligned
+     to the HS attach/descriptor interval. It produced no host-visible
+     signal-cycle disconnect and retained the same zero-payload descriptor
+     timeout/retries. Pcap SHA-256 is
+     `6bbc04d477540d3c8d14487a2af0a4157a1206cee55d320a2d32660c93c78ea7`;
+     raw usbmon SHA-256 is
+     `8f85d21c862aa6c5354a68685da3b2298ea7c585c11bd3c4ec48de82aa258f3e`.
+     Together with the earlier source-exact PHY/clock/power and IRQ-route
+     matrix, this leaves HS-PHY/secure-firmware or board-level ownership as
+     the remaining external blocker; no configfs or persistent write was used.
 
 ## Loading policy
 

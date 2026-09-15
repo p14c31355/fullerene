@@ -435,12 +435,16 @@ static mut DATA_PHASE_PENDING_LEN: usize = 0;
 /// CNTPCT tick of the first successful post-connect Run/Stop (quiet-window
 /// reference; 0 = no start recorded yet).
 static mut RUN_STOP_TICK: u64 = 0;
-/// One-shot late recovery for the Bramble USB2 arm-window A/B. The host can
+/// Bounded late recovery for the Bramble USB2 arm-window A/B. The host can
 /// take tens of seconds to reach the HS attach after Run/Stop, so an init-time
 /// arm result alone is not enough to decide whether the controller needs a
-/// soft reset before the first descriptor request.
-static mut ARM_WINDOW_RECOVERY_DONE: bool = false;
+/// soft reset before the first descriptor request. A failed recovery is
+/// retried only while EP0 is still unarmed; a successful arm/configuration
+/// stops the sequence immediately.
+static mut ARM_WINDOW_RECOVERY_ATTEMPTS: u8 = 0;
 const ARM_WINDOW_RECOVERY_DELAY_SECS: u64 = 30;
+const ARM_WINDOW_RECOVERY_RETRY_SECS: u64 = 4;
+const ARM_WINDOW_RECOVERY_MAX_ATTEMPTS: u8 = 6;
 /// Connect-delay one-shot latch (see the delay block in
 /// `init_with_super_speed`). Only the first handoff attempt pays the delay
 /// so the retry loop stays inside the EL1 recovery-timer budget.
@@ -6995,7 +6999,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // waiting for a manual reboot or a host-side timeout.
                 log_puts("usb gadget handoff: automatic EP0 arm-window recovery\n");
                 let status = u0_arm_window_recovery();
-                ARM_WINDOW_RECOVERY_DONE = true;
                 U0_ARM_STATUS = status;
                 trace_event(
                     TRACE_SETUP_QUEUED,
@@ -9071,6 +9074,23 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             log_hex("usb: DWC3 remained halted, DSTS=", read(DSTS) as u64);
             return false;
         }
+        #[cfg(fullerene_aarch64_usb_gadget_handoff_usb2_source_devten_after_runstop)]
+        {
+            // Source-order qpr1 enables DEVTEN before Run/Stop, but this
+            // narrow A/B republishes the same mask at the first post-
+            // transition boundary. It changes only event ingress visibility;
+            // PHY, endpoint contexts, and EP0/TRB ownership are untouched.
+            write(DEVTEN, direct_gadget_devten());
+            let readback = read(DEVTEN);
+            trace_event(
+                TRACE_DWC3_BOUNDARY,
+                0x4456_4152, // "DVAR": DEVTEN after Run/Stop
+                readback,
+                read(DSTS),
+                read(DCTL),
+                0,
+            );
+        }
         #[cfg(fullerene_aarch64_usb_usb2_susphy_after_runstop)]
         {
             // A SuperSpeed-only handoff must not leave the USB2 pull-up
@@ -10021,6 +10041,8 @@ fn ep0_signal_pre_runstop_drop_check() {
 ///   2 = the armed EP0 SETUP TRB was retired (HWO cleared over DMA)
 ///   3 = the SETUP packet payload was DMAed into the setup buffer
 ///   5 = SOF frame numbers are changing (transaction-level RX alive)
+///   6 = raw DSTS USBLNKST entered RESET, without requiring an event record
+///   7 = raw DSTS USBLNKST entered POLLING, without requiring an event record
 #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
 fn ep0_signal_early_drop_check() {
     let condition = match option_env!("FULLERENE_USB_SIGNAL_EARLY_DROP") {
@@ -10028,6 +10050,8 @@ fn ep0_signal_early_drop_check() {
         Some("2") => 2,
         Some("3") => 3,
         Some("5") => 5,
+        Some("6") => 6,
+        Some("7") => 7,
         Some("9") => 9,
         _ => 0,
     };
@@ -10066,6 +10090,8 @@ fn ep0_signal_early_drop_check() {
                     2 if SIGNAL_SETUP_TRB_RETIRED => 2,
                     3 if SIGNAL_SETUP_PACKET_RECEIVED => 3,
                     5 if SIGNAL_SOF_SEEN => 5,
+                    6 if ((read(DSTS) >> 18) & 0xf) == 14 => 6,
+                    7 if ((read(DSTS) >> 18) & 0xf) == 7 => 7,
                     _ => 0,
                 };
                 if observed == condition {
@@ -10093,6 +10119,8 @@ pub fn ep0_signal_early_drop_poll() -> bool {
         Some("2") => 2,
         Some("3") => 3,
         Some("5") => 5,
+        Some("6") => 6,
+        Some("7") => 7,
         Some("9") => 9,
         _ => 0,
     };
@@ -10106,6 +10134,8 @@ pub fn ep0_signal_early_drop_poll() -> bool {
             2 if SIGNAL_SETUP_TRB_RETIRED => true,
             3 if SIGNAL_SETUP_PACKET_RECEIVED => true,
             5 if SIGNAL_SOF_SEEN => true,
+            6 if ((read(DSTS) >> 18) & 0xf) == 14 => true,
+            7 if ((read(DSTS) >> 18) & 0xf) == 7 => true,
             9 => true,
             _ => false,
         };
@@ -11213,30 +11243,38 @@ pub fn poll() {
             poll_typec_state(false);
         }
         #[cfg(fullerene_aarch64_usb_gadget_handoff_usb2_arm_window_recovery)]
-        if !ARM_WINDOW_RECOVERY_DONE
-            && RUN_STOP_TICK != 0
+        if RUN_STOP_TICK != 0
             && !CONFIGURED
             && EP0_STATE == Ep0State::Setup
+            && !EP0_SETUP_ARMED
+            && ARM_WINDOW_RECOVERY_ATTEMPTS < ARM_WINDOW_RECOVERY_MAX_ATTEMPTS
             && arch_counter_frequency() != 0
-            && arch_counter().saturating_sub(RUN_STOP_TICK)
-                >= arch_counter_frequency().saturating_mul(ARM_WINDOW_RECOVERY_DELAY_SECS)
         {
             // The direct path can publish the pull-up long before xHCI
-            // reaches the USB2 port. Repair the controller once in that late
-            // pre-enumeration interval, while the host's first descriptor
-            // request is still pending or has just begun retrying.
-            ARM_WINDOW_RECOVERY_DONE = true;
-            log_puts("usb gadget handoff: late automatic EP0 recovery\n");
-            let status = u0_arm_window_recovery();
-            U0_ARM_STATUS = status;
-            trace_event(
-                TRACE_SETUP_QUEUED,
-                0x5253_434C, // "RSCL": late arm-window recovery result
-                status,
-                EP0_SETUP_ARMED as u32,
-                0,
-                read(DSTS),
-            );
+            // reaches the USB2 port. The first recovery is intentionally
+            // late, and failed recoveries are retried at a bounded cadence:
+            // on this board HS attach is ~39 s after Run/Stop while the
+            // descriptor request arrives ~5 s later. Do not reset a live,
+            // already-armed gadget; the attempt counter advances only when
+            // the scheduled recovery is actually due.
+            let elapsed = arch_counter().saturating_sub(RUN_STOP_TICK);
+            let retry_after = ARM_WINDOW_RECOVERY_DELAY_SECS
+                + u64::from(ARM_WINDOW_RECOVERY_ATTEMPTS)
+                    .saturating_mul(ARM_WINDOW_RECOVERY_RETRY_SECS);
+            if elapsed >= arch_counter_frequency().saturating_mul(retry_after) {
+                ARM_WINDOW_RECOVERY_ATTEMPTS = ARM_WINDOW_RECOVERY_ATTEMPTS.saturating_add(1);
+                log_puts("usb gadget handoff: late automatic EP0 recovery\n");
+                let status = u0_arm_window_recovery();
+                U0_ARM_STATUS = status;
+                trace_event(
+                    TRACE_SETUP_QUEUED,
+                    0x5253_434C, // "RSCL": late arm-window recovery result
+                    status,
+                    EP0_SETUP_ARMED as u32,
+                    u32::from(ARM_WINDOW_RECOVERY_ATTEMPTS),
+                    read(DSTS),
+                );
+            }
         }
         let mut event_seen = poll_ep0_event_ring();
         // If the event FIFO is empty, give the opt-in DMA fallback one chance

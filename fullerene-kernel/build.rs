@@ -247,6 +247,8 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_u2_freeclk_clear)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_clear)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_set)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gctl_sofitpsync_clear)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gctl_pwrdnscale_2)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_initial_512)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_superspeed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_fullspeed)");
@@ -274,6 +276,9 @@ fn main() {
     );
     println!(
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_source_devten_before_runstop)"
+    );
+    println!(
+        "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_source_devten_after_runstop)"
     );
     println!(
         "cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_usb2_preserve_phy_interface)"
@@ -981,6 +986,12 @@ fn main() {
         if retry_set {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_guctl3_usb20_retry_set");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_GCTL_SOFITPSYNC_CLEAR").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gctl_sofitpsync_clear");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GCTL_PWRDNSCALE_2").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_gctl_pwrdnscale_2");
+        }
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_USBTRDTIM") {
             if let Ok(timing) = value.parse::<u32>() {
                 if (5..=15).contains(&timing) {
@@ -1062,6 +1073,13 @@ fn main() {
         {
             println!(
                 "cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_usb2_source_devten_before_runstop"
+            );
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_DEVTEN_AFTER_RUNSTOP")
+            .is_some()
+        {
+            println!(
+                "cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_usb2_source_devten_after_runstop"
             );
         }
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_PRESERVE_PHY_INTERFACE").is_some()
@@ -1559,6 +1577,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_U2_FREECLK_SET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GCTL_SOFITPSYNC_CLEAR");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_USBTRDTIM");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_UTMI_PRECONNECT_READOUT");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_UTMI_POSTRUN_READOUT");
@@ -1725,6 +1744,9 @@ fn main() {
         );
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_DEVTEN_BEFORE_RUNSTOP"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_DEVTEN_AFTER_RUNSTOP"
         );
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_PRESERVE_PHY_INTERFACE"

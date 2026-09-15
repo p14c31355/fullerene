@@ -1007,6 +1007,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_usb2_source_devten_before_runstop: bool,
 
+    /// Bramble differential: re-publish the qpr1 device-event mask
+    /// immediately after the final Run/Stop write.
+    #[arg(long)]
+    usb_gadget_handoff_usb2_source_devten_after_runstop: bool,
+
     /// Bramble differential: apply qpr1's USB2 gadget Run/Stop write, changing
     /// only the source-required DCTL.RUN_STOP bit.
     #[arg(long)]
@@ -3680,6 +3685,8 @@ fn main() -> io::Result<()> {
                     .usb_gadget_handoff_usb2_source_exact_devten,
                 gadget_handoff_usb2_source_devten_before_runstop: args
                     .usb_gadget_handoff_usb2_source_devten_before_runstop,
+                gadget_handoff_usb2_source_devten_after_runstop: args
+                    .usb_gadget_handoff_usb2_source_devten_after_runstop,
                 gadget_handoff_usb2_source_exact_runstop: args
                     .usb_gadget_handoff_usb2_source_exact_runstop,
                 gadget_handoff_usb2_dis_sleep_mode: args.usb_gadget_handoff_usb2_dis_sleep_mode,
@@ -4007,6 +4014,7 @@ struct Aarch64BuildConfig {
     gadget_handoff_usb2_cmd_guard: bool,
     gadget_handoff_usb2_source_exact_devten: bool,
     gadget_handoff_usb2_source_devten_before_runstop: bool,
+    gadget_handoff_usb2_source_devten_after_runstop: bool,
     gadget_handoff_usb2_source_exact_runstop: bool,
     gadget_handoff_usb2_dis_sleep_mode: bool,
     gadget_handoff_usb2_source_peripheral_start: bool,
@@ -4220,6 +4228,7 @@ fn build_aarch64_kernel(
         gadget_handoff_usb2_cmd_guard,
         gadget_handoff_usb2_source_exact_devten,
         gadget_handoff_usb2_source_devten_before_runstop,
+        gadget_handoff_usb2_source_devten_after_runstop,
         gadget_handoff_usb2_source_exact_runstop,
         gadget_handoff_usb2_dis_sleep_mode,
         gadget_handoff_usb2_source_peripheral_start,
@@ -4329,6 +4338,10 @@ fn build_aarch64_kernel(
         "FULLERENE_AARCH64_USB_UTMI_POSTRUN_READOUT",
         "FULLERENE_AARCH64_USB_HSPHY_RESTORE_SUSPEND_N_AFTER_RUNSTOP",
         "FULLERENE_AARCH64_USB_HSPHY_RESTORE_SUSPEND_N_SELECTED_AFTER_RUNSTOP",
+        "FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR",
+        "FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET",
+        "FULLERENE_AARCH64_USB_GCTL_SOFITPSYNC_CLEAR",
+        "FULLERENE_AARCH64_USB_GCTL_PWRDNSCALE_2",
     ] {
         if let Ok(value) = env::var(name) {
             push_env(name, value);
@@ -5103,6 +5116,12 @@ fn build_aarch64_kernel(
     if gadget_handoff_usb2_source_devten_before_runstop {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_DEVTEN_BEFORE_RUNSTOP",
+            "1".to_owned(),
+        );
+    }
+    if gadget_handoff_usb2_source_devten_after_runstop {
+        push_env(
+            "FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_SOURCE_DEVTEN_AFTER_RUNSTOP",
             "1".to_owned(),
         );
     }

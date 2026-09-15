@@ -3364,14 +3364,12 @@ unsafe fn send_usb_regulator_request(rail: UsbRailResource, enable: bool) -> boo
     };
 
     // qpr1's msm_hsphy_enable_power() does not submit one combined VRM
-    // request for the HS-PHY rails.  It first enables vdd at its configured
-    // voltage, then requests HPM for vdda18/vdda33, programs each voltage,
-    // and finally enables that rail.  Keeping this ordering on the
-    // source-exact path matters for an analog RX bring-up: the mode and
+    // request for the HS-PHY rails. It first requests HPM for vdd, programs
+    // its configured voltage, and enables it; then it repeats the mode,
+    // voltage, and enable sequence for vdda18/vdda33. Keeping this ordering
+    // on the source-exact path matters for analog RX bring-up: the mode and
     // voltage transitions are observable by RPMh independently, so a single
     // voltage->enable->mode batch is not equivalent to the Android sequence.
-    // The vdd rail is deliberately not given a mode request here; qpr1 never
-    // calls regulator_set_load(vdd).
     if enable && cfg!(fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact) {
         let send = |subaddress: u32, data: u32| unsafe {
             send_rpmh_command_batch(core::slice::from_ref(&RpmhBcmCommand {
@@ -3381,7 +3379,8 @@ unsafe fn send_usb_regulator_request(rail: UsbRailResource, enable: bool) -> boo
         };
 
         if rail.name == "vdd" {
-            return send(RPMH_REGULATOR_VRM_VOLTAGE, rail.min_uv / 1000)
+            return send(RPMH_REGULATOR_MODE, RPMH_REGULATOR_MODE_HPM)
+                && send(RPMH_REGULATOR_VRM_VOLTAGE, rail.min_uv / 1000)
                 && send(RPMH_REGULATOR_ENABLE, 1);
         }
 
