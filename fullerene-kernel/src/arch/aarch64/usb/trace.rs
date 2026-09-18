@@ -1133,8 +1133,9 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
         }
         if selector == "utmi-gdb-link" {
             // The missing-snapshot sentinel is outside the DWC3 four-bit
-            // LINKSTATE field; valid raw states remain 0..=15.
-            return if gdb_seen { gdb_ltssm } else { 15 };
+            // LINKSTATE field; valid raw states remain 0..=15 and 16 means
+            // no snapshot was seen.
+            return if gdb_seen { gdb_ltssm } else { 16 };
         }
         if selector == "hsphy-suspend-n-safe" {
             // Zero-safe transport for the HS-PHY RX/ownership boundary:

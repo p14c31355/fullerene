@@ -1,10 +1,71 @@
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
 
 use core::{
+    alloc::{GlobalAlloc, Layout},
     arch::{asm, global_asm},
     panic::PanicInfo,
+    sync::atomic::{AtomicUsize, Ordering},
 };
+
+const PROBE_HEAP_SIZE: usize = 512 * 1024;
+
+#[repr(align(16))]
+struct ProbeHeap([u8; PROBE_HEAP_SIZE]);
+
+static mut PROBE_HEAP: ProbeHeap = ProbeHeap([0; PROBE_HEAP_SIZE]);
+
+struct ProbeAllocator {
+    next: AtomicUsize,
+}
+
+unsafe impl Sync for ProbeAllocator {}
+
+unsafe impl GlobalAlloc for ProbeAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let base = unsafe { core::ptr::addr_of_mut!(PROBE_HEAP.0) as usize };
+        let align_mask = layout.align().saturating_sub(1);
+        let current = self.next.load(Ordering::Relaxed);
+        let Some(offset) = base
+            .saturating_add(current)
+            .checked_add(align_mask)
+            .map(|value| value & !align_mask)
+            .and_then(|aligned| aligned.checked_sub(base))
+        else {
+            return core::ptr::null_mut();
+        };
+        let Some(next) = offset.checked_add(layout.size()) else {
+            return core::ptr::null_mut();
+        };
+        if next > PROBE_HEAP_SIZE {
+            return core::ptr::null_mut();
+        }
+        if self
+            .next
+            .compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            (base + offset) as *mut u8
+        } else {
+            core::ptr::null_mut()
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+}
+
+#[global_allocator]
+static PROBE_ALLOCATOR: ProbeAllocator = ProbeAllocator {
+    next: AtomicUsize::new(0),
+};
+
+#[alloc_error_handler]
+fn alloc_error(_layout: Layout) -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
 
 #[path = "fdt.rs"]
 mod fdt;
@@ -87,8 +148,9 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 }
 
 // Keep this probe independent from the normal Fullerene bootstrap. In
-// particular, it does not enable the MMU or allocator before touching DWC3;
-// this isolates the Bramble USB handoff from unrelated architecture code.
+// particular, it does not enable the MMU or use the link-satisfying bump heap
+// before touching DWC3; this isolates the Bramble USB handoff from unrelated
+// architecture code.
 global_asm!(
     ".section .text.boot,\"ax\"\n\
      .balign 4\n\
@@ -1445,7 +1507,8 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             }
             park_without_recovery_timer();
         }
-        let code = usb::utmi_readout_code(selector).min(15);
+        let code =
+            usb::utmi_readout_code(selector).min(if selector == "utmi-gdb-link" { 16 } else { 15 });
         trace_gate(0x5554_4d49 | (code & 0xff)); // "UTMI" + nibble
         let _ = usb::gate_true_stop_device();
         usb::park_for_seconds(10 + u64::from(code) * 4);
@@ -1853,9 +1916,10 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
     let prev_boot_qmp_phase = usb::prev_boot_qmp_phase_code().min(8);
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     let prev_boot_utmi_code = utmi_gate_selector()
-        .map(usb::utmi_readout_code)
-        .unwrap_or(0)
-        .min(15);
+        .map(|selector| {
+            usb::utmi_readout_code(selector).min(if selector == "utmi-gdb-link" { 16 } else { 15 })
+        })
+        .unwrap_or(0);
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     usb::trace_probe_begin();
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]

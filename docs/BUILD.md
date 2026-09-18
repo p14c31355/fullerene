@@ -277,10 +277,12 @@ visible through the firmware-owned SMMU context.
 If the temporary boot falls back to Android, the harness recognizes the
 `18d1:4ee7` charging/debug identity immediately and saves its USB descriptor,
 ADB state, slot, build fingerprint, and kernel version. This is recorded as a
-stock fallback, not as Fullerene enumeration. With the default recovery option
-it then issues only `adb reboot bootloader` and waits for Fastboot before a
-subsequent probe. The only device-side image operation is `fastboot boot`, and
-partitions are left untouched.
+stock fallback, not as Fullerene enumeration. With the default recovery option,
+ADB-to-Fastboot is enabled by default because `adb_reboot_to_fastboot_enabled`
+returns true unless `--no-adb-reboot-to-fastboot` is supplied; that flag is the
+passive override. It then issues only `adb reboot bootloader` and waits for
+Fastboot before a subsequent probe. The only device-side image operation is
+`fastboot boot`, and partitions are left untouched.
 
 The `--stop-after-stage` probes publish the known physical USB2 pull-up after
 one handoff boundary and then let the watchdog recover. Stages 1--4 cover

@@ -297,8 +297,8 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
         // snps,u2exit_lfps_quirk. Keep the device-mode handoff at that exact
         // source boundary; the legacy extra bits remain opt-in below.
         if cfg!(fullerene_aarch64_usb_gadget_handoff_u2exit_lfps) {
-            gctl |= GCTL_U2EXIT_LFPS;
-            write(GCTL, gctl);
+            let value = read(GCTL) | GCTL_U2EXIT_LFPS;
+            write(GCTL, value);
         }
         // The historical Fullerene path also forced U2RSTECN and
         // PWRDNSCALE=2 here. Do not reproduce those writes in the canonical

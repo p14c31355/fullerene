@@ -21,7 +21,8 @@ Inspect without unpacking, for example:
 
 `gzip -dc evidence/bramble/CONTEXT_STATUS_FULL.md.gz | less`
 
-Restore a plaintext copy only when needed with `gzip -dk <archive>.gz`.
+Restore a plaintext copy only when needed with
+`gzip -dk evidence/bramble/CONTEXT_STATUS_FULL.md.gz`.
 
 Do not load the decompressed archive files wholesale into an LLM context. Retrieve a
 targeted Run ID, source-audit topic, or line range when exact evidence is

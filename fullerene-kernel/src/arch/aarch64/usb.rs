@@ -2781,7 +2781,9 @@ unsafe fn send_ep_command_result(
             let success = status & 0xf000 == 0;
             let resource_index = ((status >> DEPCMD_PARAM_SHIFT) & 0x7f) as u8;
             if endpoint == 0 && command & 0x0f == DEPCMD_STARTTRANSFER {
-                SETUP_ARM_LAST_COMMAND = status;
+                unsafe {
+                    SETUP_ARM_LAST_COMMAND = status;
+                }
             }
             if saved_usb2_config != 0 {
                 unsafe {
@@ -2802,7 +2804,9 @@ unsafe fn send_ep_command_result(
         unsafe { read(DSTS) },
     );
     if endpoint == 0 && command & 0x0f == DEPCMD_STARTTRANSFER {
-        SETUP_ARM_LAST_COMMAND = 0x8000_0000;
+        unsafe {
+            SETUP_ARM_LAST_COMMAND = 0x8000_0000;
+        }
     }
     if saved_usb2_config != 0 {
         unsafe {
@@ -5835,7 +5839,6 @@ unsafe fn gate_flow_blip() {
     }
 }
 
-#[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 #[inline(always)]
 unsafe fn set_direct_usb2_vbus_override() {
     // qpr1's dwc3_override_vbus_status(true) updates only
@@ -6805,7 +6808,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             // before the host can submit the first SETUP. This short delay
             // avoids the long post-readout park, which is truncated by the
             // handset's recovery watchdog on large selector values.
-            let code = utmi_readout_code(selector).min(15);
+            let code =
+                utmi_readout_code(selector).min(if selector == "utmi-gdb-link" { 16 } else { 15 });
             trace_event(TRACE_UTMI_STATE, 0x0400_0000 | code, code, 0, 0, 0);
             let delay_ms = if selector == "hsphy-suspend-n-safe" {
                 // 1 = missing, 2 = present/0, 3 = present/1.
@@ -6937,7 +6941,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             // is deliberately separate from the pre-connect readout so a
             // run without the guarded re-apply can show whether Run/Stop
             // itself cleared or altered the UTMI contract.
-            let code = utmi_readout_code(selector).min(15);
+            let code =
+                utmi_readout_code(selector).min(if selector == "utmi-gdb-link" { 16 } else { 15 });
             trace_event(TRACE_UTMI_STATE, 0x0500_0000 | code, code, 0, 0, 0);
             let delay_ms = if selector == "hsphy-suspend-n-safe" {
                 // 1 = missing, 2 = present/0, 3 = present/1.
@@ -9883,7 +9888,7 @@ unsafe fn update_signal_latches() {
 pub fn ep0_signal_code() -> u32 {
     unsafe {
         update_signal_latches();
-        if SIGNAL_EVENT_DELIVERED {
+        if SIGNAL_EVENT_DELIVERED && SIGNAL_USB_RESET_SEEN {
             return 1;
         }
         if SIGNAL_SETUP_TRB_RETIRED {

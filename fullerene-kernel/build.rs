@@ -1578,6 +1578,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GCTL_SOFITPSYNC_CLEAR");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GCTL_PWRDNSCALE_2");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_USBTRDTIM");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_UTMI_PRECONNECT_READOUT");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_UTMI_POSTRUN_READOUT");

@@ -427,7 +427,11 @@ pub(super) unsafe fn pulse_auto_resume() -> u32 {
             HSPHY_CTRL2_AUTO_RESUME,
         );
         crate::timer::delay_us(750);
-        hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_AUTO_RESUME, 0);
+        hsphy_update(
+            HSPHY_CTRL2,
+            HSPHY_CTRL2_AUTO_RESUME,
+            before & HSPHY_CTRL2_AUTO_RESUME,
+        );
         let after = read_volatile(hsphy_reg(HSPHY_CTRL2));
         (before & 0xffff) | ((after & 0xffff) << 16)
     }
