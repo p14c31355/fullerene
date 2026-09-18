@@ -263,6 +263,10 @@ extern "C" fn aarch64_exception_sync(frame: *mut Aarch64TrapFrame) {
         // the normal WFE halt: that leaves a physical phone on the Google
         // logo with no way to run the next RAM-only A/B. Return through the
         // same volatile IMEM marker used by the explicit diagnostic command.
+        // Preserve the fault first: the SMC below resets the temporary image,
+        // so without this retained record the normal Android-init path gives
+        // no evidence that it failed inside USB MMIO ownership.
+        super::usb::trace_sync_exception(frame.esr_el1, frame.far_el1, frame.elr_el1);
         super::usb::return_to_boot_chain();
     }
     if frame.from_user()
@@ -332,6 +336,7 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             // Auxiliary Qualcomm IRQs are platform notifications. Drain the
             // DWC3 event ring only for the controller SPI; deferred Type-C
             // work runs from the normal polling context after eret.
+            #[cfg(not(fullerene_aarch64_usb_probe_timer_event_poll))]
             super::usb::poll();
         }
     }
@@ -339,6 +344,14 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         super::timer::arm_ms(1);
         let _ = super::task::wake_event_timeouts(super::timer::uptime_us());
         super::fs::fire_timers(super::timer::uptime_us().saturating_mul(1_000));
+        #[cfg(all(
+            fullerene_aarch64_bramble,
+            any(
+                feature = "aarch64-android-init",
+                fullerene_aarch64_usb_probe_timer_event_poll
+            )
+        ))]
+        super::usb::poll_from_timer_irq();
     }
     if frame.from_user() {
         super::task::deliver_pending_linux_signal(frame);

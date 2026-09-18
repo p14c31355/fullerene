@@ -96,6 +96,48 @@ pub(super) unsafe fn qmp_status2_snapshot() -> u32 {
     read_volatile(qmp_reg(status2))
 }
 
+/// Start the source-defined QMP RX-equalization workaround used by
+/// `usb_phy_start_link_training()` at the Android DWC3 USB Reset boundary.
+///
+/// The Android driver only installs this callback for a PHY with the
+/// `qcom,link-training-reset` property, and the callback is a no-op unless
+/// PCS_STATUS2.RX_EQUALIZATION_IN_PROGRESS is set. Preserve that guard here:
+/// the USB2 handoff must not touch the retained QMP state when no training is
+/// active. The return value packs the initial and final STATUS2 low bytes and
+/// the two readbacks after the source's 0x08 pulse.
+pub(super) unsafe fn qmp_start_link_training() -> u32 {
+    let status2 = qmp_status2_snapshot();
+    if status2 & QMP_RX_EQUALIZATION_IN_PROGRESS == 0 {
+        return status2 & 0xff;
+    }
+
+    let status2_offset = qmp_contract_offset(15, QMP_PCS_STATUS2);
+    let sw_offset = qmp_contract_offset(16, QMP_PCS_INSIG_SW_CTRL3);
+    let mx_offset = qmp_contract_offset(17, QMP_PCS_INSIG_MX_CTRL3);
+    let mut status2_after = read_volatile(qmp_reg(status2_offset));
+    let mut timeout_us = 15_000;
+    while status2_after & QMP_RX_EQUALIZATION_IN_PROGRESS != 0 && timeout_us != 0 {
+        crate::timer::delay_us(500);
+        timeout_us -= 500;
+        status2_after = read_volatile(qmp_reg(status2_offset));
+    }
+
+    write_volatile(qmp_reg(sw_offset), 0x08);
+    write_volatile(qmp_reg(mx_offset), 0x08);
+    qmp_mb();
+    let sw_pulse = read_volatile(qmp_reg(sw_offset));
+    let mx_pulse = read_volatile(qmp_reg(mx_offset));
+    crate::timer::delay_us(1);
+    write_volatile(qmp_reg(sw_offset), 0);
+    write_volatile(qmp_reg(mx_offset), 0);
+    qmp_mb();
+
+    (status2 & 0xff)
+        | ((status2_after & 0xff) << 8)
+        | ((sw_pulse & 0xff) << 16)
+        | ((mx_pulse & 0xff) << 24)
+}
+
 /// Re-assert the Android QMP power-up writes without resetting the PHY or
 /// replaying its initialization table. This is an isolated ownership/power
 /// A/B for a no-core handoff where the controls read back as zero.
@@ -324,6 +366,28 @@ pub(super) unsafe fn init_hsphy_source_exact() {
     unsafe { init_hsphy_inner(true) }
 }
 
+/// Match Qualcomm's EUD-owned device-mode branch: set PWRDOWN_B, retain the
+/// existing analog state, and wait for the source-defined 50 ms settle time.
+pub(super) unsafe fn enter_eud_device_mode() -> u32 {
+    unsafe {
+        hsphy_update(HSPHY_PWRDOWN_CTRL, HSPHY_PWRDOWN_B, HSPHY_PWRDOWN_B);
+        let readback = read_volatile(hsphy_reg(HSPHY_PWRDOWN_CTRL));
+        crate::timer::delay_ms(50);
+        readback
+    }
+}
+
+/// Leave the HS-PHY power-down state used by qpr1's non-host disconnect path.
+/// Fastboot can skip that usb_phy_set_suspend() boundary during a RAM-only
+/// handoff, so keep this as an explicit one-bit A/B rather than folding it
+/// into the source-exact analog initialization sequence.
+pub(super) unsafe fn clear_power_down() -> u32 {
+    unsafe {
+        hsphy_update(HSPHY_PWRDOWN_CTRL, HSPHY_PWRDOWN_B, 0);
+        read_volatile(hsphy_reg(HSPHY_PWRDOWN_CTRL))
+    }
+}
+
 /// Restore only the raw qpr1 HS-PHY SUSPEND_N bit after the DWC3 Run/Stop
 /// boundary. qpr1's init sequence asserts this bit before clearing only
 /// SUSPEND_N_SEL; the handoff readout showed the Bramble transition clearing
@@ -347,6 +411,50 @@ pub(super) unsafe fn restore_suspend_n_selected_after_runstop() -> u32 {
         );
         hsphy_update(HSPHY_CTRL2, HSPHY_CTRL2_SUSPEND_N_SEL, 0);
         read_volatile(hsphy_reg(HSPHY_CTRL2))
+    }
+}
+
+/// Pulse the Qualcomm HS-PHY auto-resume control used by the Android
+/// `msm_hsphy_set_suspend()` cable-connected path. This is deliberately an
+/// opt-in RX/SOF A/B: it changes only CTRL2.AUTO_RESUME, holds it for the
+/// source driver's 500--1000 us interval, and then restores the prior state.
+pub(super) unsafe fn pulse_auto_resume() -> u32 {
+    unsafe {
+        let before = read_volatile(hsphy_reg(HSPHY_CTRL2));
+        hsphy_update(
+            HSPHY_CTRL2,
+            HSPHY_CTRL2_AUTO_RESUME,
+            HSPHY_CTRL2_AUTO_RESUME,
+        );
+        crate::timer::delay_us(750);
+        hsphy_update(
+            HSPHY_CTRL2,
+            HSPHY_CTRL2_AUTO_RESUME,
+            before & HSPHY_CTRL2_AUTO_RESUME,
+        );
+        let after = read_volatile(hsphy_reg(HSPHY_CTRL2));
+        (before & 0xffff) | ((after & 0xffff) << 16)
+    }
+}
+
+/// Return the Qualcomm HS-PHY UTMI datapath to normal (driving) operation.
+/// Fastboot/charger-detection ownership can leave OPMODE=1 (non-driving)
+/// across a RAM-only handoff; the qpr1 `msm_hsphy_init()` body does not touch
+/// this field because Linux normally owns the preceding state transition.
+pub(super) unsafe fn set_normal_opmode() -> u32 {
+    unsafe {
+        hsphy_update(HSPHY_UTMI_CTRL0, HSPHY_UTMI_OPMODE_MASK, 0);
+        read_volatile(hsphy_reg(HSPHY_UTMI_CTRL0))
+    }
+}
+
+/// Drop the HS-PHY UTMI datapath override used by the qpr1 DP/DM charger
+/// detection regulator path. Fastboot can leave that ownership bit latched
+/// across a RAM-only handoff even after OPMODE has been returned to driving.
+pub(super) unsafe fn clear_datapath_override() -> u32 {
+    unsafe {
+        hsphy_update(HSPHY_CFG0, HSPHY_CFG0_UTMI_DATAPATH_CTRL_OVERRIDE_EN, 0);
+        read_volatile(hsphy_reg(HSPHY_CFG0))
     }
 }
 
@@ -425,19 +533,18 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             hsphy_write_barrier();
         }
 
-        // The Bramble qpr1 `msm_hsphy_init()` body does not write RTUNE_SEL;
-        // retain the old local write only for the pre-existing non-exact
-        // helper paths.
-        if !source_exact || cfg!(fullerene_aarch64_usb_hsphy_rtune) {
-            hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
-        }
+        // Bramble's lito-usb.dtsi has no qcom,rcal-mask/phy_rcal_reg entry.
+        // The official msm_hsphy_init() therefore takes its !rcal_code branch
+        // and selects the external resistor through RTUNE_SEL. Keep this
+        // write in the source-exact path as well; omitting it would only be
+        // correct for a board with a programmed RCAL efuse source.
+        hsphy_update(HSPHY_RTUNE_SEL, 1, 1);
 
         // phy-msm-snps-hs.c continues with VREGBYPASS, the suspend-N hold,
         // SLEEPM, POR release, suspend-N select clear, and common-control
-        // override release. Factory ABL's usb_shared_hs_phy_init()
-        // additionally clears the old QUSB ATE/test state before releasing
-        // the PHY; keep that extra sequence opt-in so it remains an isolated
-        // A/B variable.
+        // override release. Keep the Android source order exact here; the
+        // ATE/test cleanup below belongs only to the separate Factory
+        // ABL/XBL differential.
         hsphy_update(
             HSPHY_COMMON2,
             HSPHY_COMMON2_VREGBYPASS,

@@ -123,6 +123,12 @@ pub unsafe fn disable_usb_clock_branches() -> bool {
 const GCC_CMD_UPDATE: u32 = 1 << 0;
 const GCC_CFG_SRC_DIV_MASK: u32 = 0xff;
 const GCC_CFG_SRC_SEL_MASK: u32 = 0x7 << 8;
+// qpr1's dwc3_msm_resume() calls clk_set_flags(core_clk,
+// CLKFLAG_RETAIN_MEM/CLKFLAG_RETAIN_PERIPH) immediately after re-enabling the
+// controller core clock. On Qualcomm GCC branch clocks these flags are the
+// two retention bits in the CBCR, not DWC3 register state.
+const GCC_BRANCH_RETAIN_PERIPH: u32 = 1 << 13;
+const GCC_BRANCH_RETAIN_MEM: u32 = 1 << 14;
 
 /// Raw GCC state used by the Bramble USB handoff diagnostics. Keeping this
 /// in the platform clock layer makes the register offsets DT/resource-owned,
@@ -329,6 +335,101 @@ pub unsafe fn rearm_usb2_android_clock_branches() -> bool {
             };
             if clock.provider != ClockProvider::Gcc {
                 return false;
+            }
+            let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
+            let mut value = core::ptr::read_volatile(address) | 1;
+            if name == "core" {
+                // The Fastboot-to-gadget handoff can inherit a collapsed or
+                // non-retained controller domain. Match qpr1's resume
+                // boundary after core_clk is enabled so DWC3 RAM and its
+                // peripheral state remain powered while the USB2 receiver
+                // waits for the host's first packet.
+                value |= GCC_BRANCH_RETAIN_PERIPH | GCC_BRANCH_RETAIN_MEM;
+            }
+            core::ptr::write_volatile(address, value);
+            ok &= wait_for_branch_state(address, true);
+        }
+        ok
+    }
+}
+
+/// Replay the clock-only prefix of Android msm's initial `dwc3_msm_resume()`
+/// sequence for a direct USB2 handoff.  qpr1 first votes the TCXO, then
+/// restores the USB domain and enables the controller clocks with the
+/// interface/interconnect/core/UTMI/bus dependency order.  The Fullerene
+/// handoff has already established the secure power contract before entering
+/// this helper, so this A/B reasserts the idempotent XO/GDSC state and branch
+/// order without asserting the GCC controller reset or touching EP0 state.
+pub unsafe fn rearm_usb2_android_resume_clocks(vote: UsbBusVote) -> bool {
+    unsafe {
+        // qpr1's dwc3_msm_resume() restores the interconnect vote before it
+        // votes TCXO or brings the USB domain/clocks back. The direct
+        // handoff already applies a performance vote at entry, but that is
+        // after clock programming; replay this resume-local ordering so a
+        // just-dropped Fastboot vote cannot leave the GCC/GDSC transition at
+        // the retention corner.
+        let bus_vote_ok = super::apply_usb_bus_vote(vote);
+        if !bus_vote_ok {
+            return false;
+        }
+        if !super::enable_usb_hs_phy_ref_clock() || !super::enable_usb30_gdsc() {
+            return false;
+        }
+        let resources = usb_resources();
+
+        // qpr1's power-collapse resume asserts and deasserts the Qualcomm
+        // DWC3 GCC core reset after USB30_GDSC is on and before the sleep/
+        // iface/core branches are enabled. Keep this separate from the older
+        // Android block-reset A/B, which disables the link branches first and
+        // therefore tests a different ownership boundary.
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_resume_core_reset) {
+            let reset = resources
+                .resets
+                .iter()
+                .find(|reset| reset.name == "core_reset")
+                .copied();
+            let Some(reset) = reset else {
+                return false;
+            };
+            let address = gcc_reg(reset.offset);
+            let asserted = core::ptr::read_volatile(address) | 1;
+            core::ptr::write_volatile(address, asserted);
+            if core::ptr::read_volatile(address) & 1 == 0 {
+                return false;
+            }
+            crate::timer::delay_us(1_000);
+            core::ptr::write_volatile(address, asserted & !1);
+            if core::ptr::read_volatile(address) & 1 != 0 {
+                return false;
+            }
+        }
+
+        let plan = usb_clock_plan(vote);
+        let mut ok = true;
+        // The Bramble DT has no separate noc_aggr_clk handle; bus_aggr is the
+        // available interconnect clock and is restored at qpr1's final bus
+        // boundary after the core and UTMI branches.
+        for name in ["sleep", "iface", "core", "utmi", "bus_aggr"] {
+            let Some(clock) = resources
+                .controller_clocks
+                .iter()
+                .find(|clock| clock.name == name)
+            else {
+                return false;
+            };
+            if clock.provider != ClockProvider::Gcc {
+                return false;
+            }
+            if name == "core" || name == "utmi" {
+                let (parent, divider) = if name == "core" {
+                    (plan.core_parent, plan.core_divider)
+                } else {
+                    (plan.utmi_parent, plan.utmi_divider)
+                };
+                if clock.source_offset == 0 || !configure_rcg(clock.source_offset, parent, divider)
+                {
+                    return false;
+                }
             }
             let address = (resources.gcc_base + clock.branch_offset) as *mut u32;
             let value = core::ptr::read_volatile(address) | 1;

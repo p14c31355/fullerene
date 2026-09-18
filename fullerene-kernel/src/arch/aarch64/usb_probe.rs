@@ -1,10 +1,71 @@
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
 
 use core::{
+    alloc::{GlobalAlloc, Layout},
     arch::{asm, global_asm},
     panic::PanicInfo,
+    sync::atomic::{AtomicUsize, Ordering},
 };
+
+const PROBE_HEAP_SIZE: usize = 512 * 1024;
+
+#[repr(align(16))]
+struct ProbeHeap([u8; PROBE_HEAP_SIZE]);
+
+static mut PROBE_HEAP: ProbeHeap = ProbeHeap([0; PROBE_HEAP_SIZE]);
+
+struct ProbeAllocator {
+    next: AtomicUsize,
+}
+
+unsafe impl Sync for ProbeAllocator {}
+
+unsafe impl GlobalAlloc for ProbeAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let base = unsafe { core::ptr::addr_of_mut!(PROBE_HEAP.0) as usize };
+        let align_mask = layout.align().saturating_sub(1);
+        let current = self.next.load(Ordering::Relaxed);
+        let Some(offset) = base
+            .saturating_add(current)
+            .checked_add(align_mask)
+            .map(|value| value & !align_mask)
+            .and_then(|aligned| aligned.checked_sub(base))
+        else {
+            return core::ptr::null_mut();
+        };
+        let Some(next) = offset.checked_add(layout.size()) else {
+            return core::ptr::null_mut();
+        };
+        if next > PROBE_HEAP_SIZE {
+            return core::ptr::null_mut();
+        }
+        if self
+            .next
+            .compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            (base + offset) as *mut u8
+        } else {
+            core::ptr::null_mut()
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+}
+
+#[global_allocator]
+static PROBE_ALLOCATOR: ProbeAllocator = ProbeAllocator {
+    next: AtomicUsize::new(0),
+};
+
+#[alloc_error_handler]
+fn alloc_error(_layout: Layout) -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
 
 #[path = "fdt.rs"]
 mod fdt;
@@ -87,8 +148,9 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 }
 
 // Keep this probe independent from the normal Fullerene bootstrap. In
-// particular, it does not enable the MMU or allocator before touching DWC3;
-// this isolates the Bramble USB handoff from unrelated architecture code.
+// particular, it does not enable the MMU or use the link-satisfying bump heap
+// before touching DWC3; this isolates the Bramble USB handoff from unrelated
+// architecture code.
 global_asm!(
     ".section .text.boot,\"ax\"\n\
      .balign 4\n\
@@ -478,7 +540,9 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("utmi-gusb2-lo") => Some("utmi-gusb2-lo"),
         Some("utmi-gusb2-hi") => Some("utmi-gusb2-hi"),
         Some("utmi-link") => Some("utmi-link"),
+        Some("utmi-gdb-link") => Some("utmi-gdb-link"),
         Some("utmi-halt") => Some("utmi-halt"),
+        Some("utmi-progress") => Some("utmi-progress"),
         Some("utmi-valid") => Some("utmi-valid"),
         Some("utmi-trdtim-stage1") => Some("utmi-trdtim-stage1"),
         Some("utmi-trdtim-stage2") => Some("utmi-trdtim-stage2"),
@@ -493,6 +557,7 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("hsphy-termsel") => Some("hsphy-termsel"),
         Some("hsphy-suspend-n") => Some("hsphy-suspend-n"),
         Some("hsphy-suspend-n-sel") => Some("hsphy-suspend-n-sel"),
+        Some("hsphy-state-mask") => Some("hsphy-state-mask"),
         Some("hsphy-por") => Some("hsphy-por"),
         Some("hsphy-por-clear-after-runstop") => Some("hsphy-por-clear-after-runstop"),
         Some("hsphy-vbus-valid0") => Some("hsphy-vbus-valid0"),
@@ -794,7 +859,10 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         usb::TRACE_PROBE_WATCHDOG,
         0x5349_4700 | (signal_smmu_code & 0xff),
     );
-    if env_flag(option_env!("FULLERENE_USB_SIGNAL_EARLY_DROP")) {
+    // This option is normally a condition selector (1/2/3/5/9), not a
+    // boolean.  Only the legacy value `1` requests the pre-handoff drop;
+    // values such as `3` must remain available to the EP0 SETUP readout.
+    if option_env!("FULLERENE_USB_SIGNAL_EARLY_DROP") == Some("1") {
         // Early drop is owned by handoff; keep pull-up down and reset.
         usb::ep0_signal_drop_pullup();
         trace_gate(TRACE_WDT);
@@ -1321,6 +1389,13 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // while collecting the evidence.  Four-second buckets are wide enough
     // to separate from the normal Android recovery jitter.
     if let Some(selector) = utmi_gate_selector() {
+        if selector.starts_with("utmi-") || selector.starts_with("hsphy-") {
+            // Refresh after the host's descriptor window, not just at the
+            // Run/Stop boundary.  This makes utmi-link/utmi-halt and the
+            // HS-PHY selectors describe the state seen during the actual
+            // -110 failure rather than the pre-reset baseline.
+            usb::trace_utmi_state_for_readout();
+        }
         if selector == "post-code" {
             // Publish no-record as 9 and the recorded START/END/event bits as
             // bitmask+1. The code is deliberately emitted as same-boot
@@ -1432,7 +1507,8 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             }
             park_without_recovery_timer();
         }
-        let code = usb::utmi_readout_code(selector).min(15);
+        let code =
+            usb::utmi_readout_code(selector).min(if selector == "utmi-gdb-link" { 16 } else { 15 });
         trace_gate(0x5554_4d49 | (code & 0xff)); // "UTMI" + nibble
         let _ = usb::gate_true_stop_device();
         usb::park_for_seconds(10 + u64::from(code) * 4);
@@ -1707,19 +1783,22 @@ fn install_bootloader_usb_dt(dtb_address: u64, fallback_dtb_address: u64) {
         contract.irq_numbers[0] =
             fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 1);
         contract.irq_numbers[1] =
-            fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 5);
+            fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 5)
+                .and_then(fdt::gic_spi_to_intid);
         contract.irq_numbers[2] =
             fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 8);
         contract.irq_numbers[3] =
             fdt::find_compatible_property_u32(dtb_address, usb_node, b"interrupts-extended", 11);
         contract.irq_numbers[4] =
-            fdt::find_compatible_property_u32(dtb_address, b"snps,dwc3", b"interrupts", 1);
+            fdt::find_compatible_property_u32(dtb_address, b"snps,dwc3", b"interrupts", 1)
+                .and_then(fdt::gic_spi_to_intid);
         for index in 0..4 {
             contract.typec_irq[index] =
                 fdt::find_named_property_u32(dtb_address, b"qcom,typec@1500", b"interrupts", index);
         }
         contract.spmi_parent_irq =
-            fdt::find_compatible_property_u32(dtb_address, b"qcom,spmi-pmic-arb", b"interrupts", 1);
+            fdt::find_compatible_property_u32(dtb_address, b"qcom,spmi-pmic-arb", b"interrupts", 1)
+                .and_then(fdt::gic_spi_to_intid);
         contract.qmp_vbus_valid_override = Some(
             fdt::find_compatible_property_u32(
                 dtb_address,
@@ -1837,9 +1916,10 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
     let prev_boot_qmp_phase = usb::prev_boot_qmp_phase_code().min(8);
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     let prev_boot_utmi_code = utmi_gate_selector()
-        .map(usb::utmi_readout_code)
-        .unwrap_or(0)
-        .min(15);
+        .map(|selector| {
+            usb::utmi_readout_code(selector).min(if selector == "utmi-gdb-link" { 16 } else { 15 })
+        })
+        .unwrap_or(0);
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
     usb::trace_probe_begin();
     #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]

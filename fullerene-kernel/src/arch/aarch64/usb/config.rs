@@ -267,13 +267,42 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
         gctl |= GCTL_PRTCAP_DEVICE;
         write(GCTL, gctl);
 
-        // Match Android msm's dwc3_set_mode(...DEVICE) second write. The
-        // source sets U2RSTECN for every mode, clears SOFITPSYNC, programs
-        // PWRDNSCALE=2, and enables U2EXIT_LFPS.
-        gctl |= GCTL_U2RSTECN | GCTL_U2EXIT_LFPS;
-        gctl &= !(GCTL_SOFITPSYNC | GCTL_PWRDNSCALE_MASK);
-        gctl |= GCTL_PWRDNSCALE_2;
-        write(GCTL, gctl);
+        #[cfg(fullerene_aarch64_usb_gctl_pwrdnscale_2)]
+        {
+            // The historical Qualcomm path wrote PWRDNSCALE=2 at this
+            // device-mode boundary. Keep it isolated: qpr1's
+            // dwc3_set_prtcap() does not write the field, but a RAM-only
+            // handoff can otherwise retain Fastboot's previous value.
+            let mut gctl = read(GCTL);
+            gctl &= !GCTL_PWRDNSCALE_MASK;
+            gctl |= GCTL_PWRDNSCALE_2;
+            write(GCTL, gctl);
+            let _ = read(GCTL);
+        }
+
+        #[cfg(fullerene_aarch64_usb_gctl_sofitpsync_clear)]
+        {
+            // A RAM-only handoff inherits GCTL from Fastboot.  The official
+            // device-mode path does not enable the host/OTG SOF/ITP sync
+            // mode, so clear only this stale bit as a source-backed A/B.
+            let mut gctl = read(GCTL);
+            gctl &= !GCTL_SOFITPSYNC;
+            write(GCTL, gctl);
+            let _ = read(GCTL);
+        }
+
+        // qpr1's dwc3_set_prtcap(DEVICE) writes only PRTCAPDIR. The other
+        // global fields are owned by dwc3_core_setup_global_control(): on the
+        // Bramble DWC31 revision it does not set U2RSTECN, and the DT has no
+        // snps,u2exit_lfps_quirk. Keep the device-mode handoff at that exact
+        // source boundary; the legacy extra bits remain opt-in below.
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_u2exit_lfps) {
+            let value = read(GCTL) | GCTL_U2EXIT_LFPS;
+            write(GCTL, value);
+        }
+        // The historical Fullerene path also forced U2RSTECN and
+        // PWRDNSCALE=2 here. Do not reproduce those writes in the canonical
+        // source-exact path: qpr1 does not make them at this boundary.
         let _ = read(GCTL);
     }
 }
@@ -287,7 +316,10 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
 #[inline]
 pub(super) unsafe fn configure_usb31_lfps_exit_timer() {
     unsafe {
-        if !cfg!(fullerene_aarch64_usb_gadget_handoff_ss_lfps_timer) {
+        if !cfg!(any(
+            fullerene_aarch64_usb_gadget_handoff_ss_lfps_timer,
+            fullerene_aarch64_usb_gadget_handoff_usb2_source_peripheral_start
+        )) {
             return;
         }
         if read(GSNPSID) >> 16 != DWC31_IP {
@@ -378,8 +410,28 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
             // Bramble's qpr1 DWC3 node has neither `phy_type` nor
             // `snps,hsphy_interface`; Linux therefore leaves PHYIF/TRDTIM
             // untouched in dwc3_phy_setup(). Keep the direct handoff's
-            // post-reset path equally write-free for this source A/B.
-            live_utmi_write(usb2, usb2);
+            // post-reset path equally write-free for the interface fields.
+            // The free-clock capability knobs are a separate explicit A/B,
+            // however, and must remain effective even on this source-exact
+            // preserve path.
+            #[cfg(fullerene_aarch64_usb_u2_freeclk_clear)]
+            {
+                usb2 &= !GUSB2PHYCFG_U2_FREECLK_EXISTS;
+            }
+            #[cfg(fullerene_aarch64_usb_u2_freeclk_set)]
+            {
+                usb2 |= GUSB2PHYCFG_U2_FREECLK_EXISTS;
+            }
+            if cfg!(any(
+                fullerene_aarch64_usb_u2_freeclk_clear,
+                fullerene_aarch64_usb_u2_freeclk_set
+            )) {
+                write(GUSB2PHYCFG0, usb2);
+                let readback = read(GUSB2PHYCFG0);
+                live_utmi_write(usb2, readback);
+            } else {
+                live_utmi_write(usb2, usb2);
+            }
             return;
         }
         // Bramble's DWC3 node uses the default UTMI mode. Clear the ULPI

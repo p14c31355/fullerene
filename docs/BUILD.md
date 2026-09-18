@@ -261,9 +261,12 @@ and relies on Fastboot's existing physical=IOVA bypass as a hardware
 differential. `--no-core-reset` keeps the halted-controller handoff but omits
 the DWC3 device soft reset, isolating whether CSFTRST destroys the inherited
 PHY/session state. Neither mode flashes, erases, or reboots a partition. After an
-enumeration timeout the harness waits up to 150 seconds for the probe watchdog
-to return to Fastboot. A probe image built before the watchdog fix can still
-leave the phone with no USB device and require manual recovery.
+enumeration timeout the per-attempt loop closes the capture and waits up to 45
+seconds for the probe watchdog to return to Android or Fastboot. Android is
+then recognized over ADB and, when enabled, returned to Fastboot automatically.
+Candidate/replay queues retain their separate 150-second passive recovery
+window. A probe image built before the watchdog fix can still leave the phone
+with no USB device and require manual recovery.
 
 `--reuse-fastboot-dma` is restricted to `--no-smmu` and reuses the event-ring
 page that Fastboot had already exposed to DWC3 for the EP0 event ring, setup
@@ -274,9 +277,11 @@ visible through the firmware-owned SMMU context.
 If the temporary boot falls back to Android, the harness recognizes the
 `18d1:4ee7` charging/debug identity immediately and saves its USB descriptor,
 ADB state, slot, build fingerprint, and kernel version. This is recorded as a
-stock fallback, not as Fullerene enumeration. The harness does not reboot the
-phone or issue any other recovery command; it waits for host-visible Fastboot
-to return before a subsequent probe. The only device-side image operation is
+stock fallback, not as Fullerene enumeration. With the default recovery option,
+ADB-to-Fastboot is enabled by default because `adb_reboot_to_fastboot_enabled`
+returns true unless `--no-adb-reboot-to-fastboot` is supplied; that flag is the
+passive override. It then issues only `adb reboot bootloader` and waits for
+Fastboot before a subsequent probe. The only device-side image operation is
 `fastboot boot`, and partitions are left untouched.
 
 The `--stop-after-stage` probes publish the known physical USB2 pull-up after
