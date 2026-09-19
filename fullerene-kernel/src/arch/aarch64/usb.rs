@@ -414,6 +414,34 @@ static mut SETUP_ARM_LAST_COMMAND: u32 = 0xffff_ffff;
 static mut POST_RUNSTOP_PROBE_PENDING: bool = false;
 static mut POST_RUNSTOP_PROBE_NOT_BEFORE: u64 = 0;
 const POST_RUNSTOP_PROBE_DELAY_SECS: u64 = 8;
+
+/// Selector for the deferred attach-time one-bit readout.
+///
+/// The immediate `--utmi-postrun-readout` dispatch runs *inside* the handoff,
+/// i.e. before the host attaches and before the handoff's own `DEVTEN` publish
+/// (both live in `init_usb2_gadget_reuse_fastboot_ep0()`, the publish ~180 lines
+/// after the dispatch). Readings taken there therefore cannot answer anything
+/// about the state the host actually sees - run `307410.0` ("the event ring is
+/// untouched") and runs `326253.0`/`329043.0` ("`DEVTEN == 0`") were all taken at
+/// that early point, which is why the first was retracted and the second proved
+/// not to matter (a plain run without any readout fails identically,
+/// `334730.0`). This deferred point runs in the polling owner
+/// `POST_RUNSTOP_PROBE_DELAY_SECS` after the handoff - after the attach and after
+/// the bus reset - and publishes one bit over the same CCS channel.
+///
+/// 0 = none, 1 = event ring memory non-zero, 2 = `DEVTEN != 0`.
+static mut DEFERRED_READOUT_KIND: u32 = 0;
+/// One-shot guard for the `"DEFR"` retained-trace marker in the deferred block.
+static mut DEFR_MARKED: bool = false;
+
+/// Last `DSTS.SOFFN` seen by the polling owner, used as the attach detector for
+/// the deferred readout: the frame number only advances once the host is really
+/// driving the bus (see the deferred block in `poll()`).
+static mut LAST_DEFERRED_SOFFN: u32 = 0xffff_ffff;
+
+/// True once the deferred trigger has been armed with the frame number observed
+/// at the first poll after the handoff; only then does a change fire the action.
+static mut DEFERRED_SOFFN_ARMED: bool = false;
 /// Set by the USB Reset / Connect Done handlers: the host is present and the
 /// link is coming up, so the guard should arm the SETUP TRB (retrying with a
 /// small cooldown until the link reaches ON). Arming is deliberately NOT
@@ -586,6 +614,18 @@ unsafe fn ep0_trb_ptr(index: usize) -> *mut Trb {
 #[inline]
 unsafe fn ep0_setup_data_ptr() -> *mut u8 {
     unsafe {
+        // `usb2-live-setup-inpage`: the handoff adopts exactly ONE SMMU page and
+        // that page is the one holding the firmware's EP0 TRB ring
+        // (`usb2-live-dma-window`, run `291878.0`: pulse 1 present, pulse 2
+        // absent, pulse 3 absent). `dma_iova_for()` is a linear offset from that
+        // page, so it is only valid inside it, and the linker-allocated
+        // `EP0_SETUP_BUFFER` is outside - which is why the controller could
+        // report `SETUP_PENDING` (`278916.0`) with the software's buffer empty
+        // (`280408.0`). Use the second TRB slot: inside the adopted page, and
+        // the handoff already cleans two TRB slots (`usb.rs:6553-6557`).
+        if option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") == Some("usb2-live-setup-inpage") {
+            return ep0_trb_ptr(1).cast::<u8>();
+        }
         if cfg!(fullerene_aarch64_usb_gadget_handoff_ss_separate_setup_buffer)
             && !cfg!(fullerene_aarch64_usb_abl_setup_trb_buffer)
             && !DMA_ADOPTED
@@ -1033,6 +1073,40 @@ pub fn window_deadline_ticks(secs: u64) -> u64 {
     arch_counter().saturating_add(frequency.saturating_mul(secs))
 }
 
+/// Bounded readout delay that keeps the USB core domain alive.
+///
+/// The readout sites encode a register value in the delay that follows them,
+/// so the delay must not outlive the domain: RPMh collapses the restored USB
+/// domain after a few seconds without activity, and a plain spin there makes
+/// the following pull-up never become host-visible (run `181751.0` lost its
+/// Fullerene attach entirely behind a 15 s plain-spin readout delay). Re-assert
+/// the same CX/interconnect/rail votes and the USB30 GDSC that
+/// `park_for_seconds()` uses, at the same 0.5 s cadence, and touch nothing else:
+/// no reset line, no controller register, no endpoint state.
+pub fn readout_keepalive_delay_ms(milliseconds: u64) {
+    let frequency = arch_counter_frequency();
+    if frequency == 0 {
+        return;
+    }
+    let deadline =
+        arch_counter().saturating_add(frequency.saturating_mul(milliseconds) / 1_000);
+    let period = frequency.saturating_div(2);
+    let mut next_keepalive = arch_counter().saturating_add(period);
+    while arch_counter() < deadline {
+        if arch_counter() >= next_keepalive {
+            unsafe {
+                let _ = super::platform::bramble::refresh_usb_domain_votes(
+                    super::platform::bramble::UsbBusVote::Nominal,
+                    true,
+                );
+                let _ = super::platform::bramble::force_enable_usb30_gdsc();
+            }
+            next_keepalive = arch_counter().saturating_add(period);
+        }
+        core::hint::spin_loop();
+    }
+}
+
 #[inline]
 fn arch_counter() -> u64 {
     let value: u64;
@@ -1414,6 +1488,47 @@ unsafe fn capture_ss_state_snapshot() {
     }
 }
 
+/// Compute one of the live, read-only 4-bit USB2 controller words.
+///
+/// `domain` reuses the exact field extraction of `capture_ss_state_snapshot()`
+/// (core IP answered, USB30 GDSC powered, core clock branch, mock-UTMI branch).
+/// `blockers` encodes the three states the vendor DWC3 source names as stopping
+/// device-event generation while the controller still retires endpoint
+/// commands: DCTL.CSFTRST still asserted (gadget.c:2109-2119), GCTL.
+/// CORESOFTRESET still asserted (dwc3-msm.c:2028-2030), and DEVTEN never
+/// programmed (dwc3_gadget_enable_irq(), gadget.c:2324-2343). Unknown names
+/// return 15 so a typo cannot masquerade as a valid zero word.
+unsafe fn usb2_live_word(word: &str) -> u32 {
+    unsafe {
+        let snpsid = read(GSNPSID);
+        match word {
+            "domain" => {
+                let gdsc = core::ptr::read_volatile(
+                    super::platform::bramble::usb_resources().gdsc as *const u32,
+                );
+                let clocks = super::platform::bramble::usb_clock::read_usb_clock_register_state();
+                u32::from(known_dwc_core_ip(snpsid))
+                    | (u32::from(gdsc & (1 << 31) != 0) << 1)
+                    | (u32::from(
+                        clocks.controller_branches[0] & 1 != 0
+                            && clocks.controller_branches[0] & (1 << 31) == 0,
+                    ) << 2)
+                    | (u32::from(
+                        clocks.controller_branches[3] & 1 != 0
+                            && clocks.controller_branches[3] & (1 << 31) == 0,
+                    ) << 3)
+            }
+            "blockers" => {
+                u32::from(known_dwc_core_ip(snpsid))
+                    | (u32::from(read(DCTL) & DCTL_CSFTRST != 0) << 1)
+                    | (u32::from(read(GCTL) & GCTL_CORESOFTRESET != 0) << 2)
+                    | (u32::from(read(DEVTEN) != 0) << 3)
+            }
+            _ => 15,
+        }
+    }
+}
+
 pub fn utmi_readout_code(selector: &str) -> u32 {
     if selector == "protocol" {
         return protocol_readout_code();
@@ -1450,6 +1565,20 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
         // Identity codes are categorical; never send a raw 0x088e3000 value
         // through the four-bit attach-delay channel.
         return phy_tables::hsphy_node_code(aspect);
+    }
+    if let Some(rest) = selector.strip_prefix("usb2-live-") {
+        // Live, read-only 4-bit controller words for the USB2-only handoff.
+        // The `ss-domain-*` selectors replay the SuperSpeed snapshot, which a
+        // direct USB2 run never captures; these words are sampled at the
+        // readout site itself. An optional transport prefix selects the
+        // post-Run/Stop variant: `park-` publishes through the probe's own
+        // PSCI reset time, `blip-` through a fresh stop/run pair; the bare
+        // form is the pre-connect (attach-delay) transport.
+        let word = rest
+            .strip_prefix("park-")
+            .or_else(|| rest.strip_prefix("blip-"))
+            .unwrap_or(rest);
+        return unsafe { usb2_live_word(word) };
     }
     if selector.starts_with("ss-") {
         // A failed handoff can enter the generic signal path and publish the
@@ -4368,6 +4497,47 @@ unsafe fn stall_control(endpoint: usize) {
     }
 }
 
+/// Answer a host SETUP that arrived without a device event.
+///
+/// `handle_setup()` already latches the packet out of the EP0 SETUP DMA buffer
+/// and zeroes that buffer, so a non-zero buffer is a fresh packet. The event
+/// path is the normal trigger, but on this handoff `GEVNTCOUNT0` stays 0 even
+/// though the host's traffic reaches the controller, so polling the buffer is
+/// the only way left to answer the host's `GET_DESCRIPTOR`. Selected with
+/// `--utmi-postrun-readout usb2-live-setup-poll`; it is a no-op otherwise.
+unsafe fn poll_setup_buffer() -> bool {
+    // `usb2-live-force-endpoints` and `usb2-live-rearm-loop` bundle this path:
+    // those selectors exist to answer the host with no device events at all,
+    // which is exactly when this eventless SETUP reader is needed.
+    let selector = option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT");
+    if selector != Some("usb2-live-setup-poll")
+        && selector != Some("usb2-live-force-endpoints")
+        && selector != Some("usb2-live-rearm-loop")
+        && selector != Some("usb2-live-ep0-eventless")
+        && selector != Some("usb2-live-ep0-release")
+        && selector != Some("usb2-live-setup-trb")
+        && selector != Some("usb2-live-setup-inpage")
+    {
+        return false;
+    }
+    unsafe {
+        let setup = ep0_setup_data_ptr();
+        cache_invalidate(setup as usize, 8);
+        let mut fresh = false;
+        for offset in 0..8 {
+            if read_volatile(setup.add(offset)) != 0 {
+                fresh = true;
+                break;
+            }
+        }
+        if fresh {
+            trace_marker(TRACE_SETUP_RECEIVED, 0x5345_5450); // "SETP"
+            handle_setup();
+        }
+        fresh
+    }
+}
+
 unsafe fn setup_request() -> [u8; 8] {
     let mut packet = [0; 8];
     unsafe {
@@ -6811,7 +6981,25 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             let code =
                 utmi_readout_code(selector).min(if selector == "utmi-gdb-link" { 16 } else { 15 });
             trace_event(TRACE_UTMI_STATE, 0x0400_0000 | code, code, 0, 0, 0);
-            let delay_ms = if selector == "hsphy-suspend-n-safe" {
+            let delay_ms = if selector == "soffn-control" {
+                // Control for the `usb2-live-soffn-count` RX claim: sample
+                // DSTS.SOFFN twice while the pull-up is still down, i.e. with no
+                // host traffic at all. A free-running counter advances here; a
+                // received-SOF latch does not. The answer rides the attach
+                // latency, which is the one channel that works before the
+                // pull-up (1 s = static, 4 s = advanced).
+                const SOFFN_MASK: u32 = 0x3fff;
+                let before = read(DSTS) & SOFFN_MASK;
+                readout_keepalive_delay_ms(500);
+                let after = read(DSTS) & SOFFN_MASK;
+                log_hex("usb gadget handoff: pre-attach SOFFN before=", u64::from(before));
+                log_hex("usb gadget handoff: pre-attach SOFFN after=", u64::from(after));
+                if after != before {
+                    4_000
+                } else {
+                    1_000
+                }
+            } else if selector == "hsphy-suspend-n-safe" {
                 // 1 = missing, 2 = present/0, 3 = present/1.
                 match code {
                     2 => 0,
@@ -6821,7 +7009,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             } else {
                 u64::from(code) * 1_000
             };
-            super::timer::delay_ms(delay_ms);
+            readout_keepalive_delay_ms(delay_ms);
         }
         trace::live_dalepena_before_dctl(read(DALEPENA));
         #[cfg(fullerene_aarch64_usb_gadget_handoff_min_runstop_delay)]
@@ -6944,17 +7132,1234 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             let code =
                 utmi_readout_code(selector).min(if selector == "utmi-gdb-link" { 16 } else { 15 });
             trace_event(TRACE_UTMI_STATE, 0x0500_0000 | code, code, 0, 0, 0);
-            let delay_ms = if selector == "hsphy-suspend-n-safe" {
-                // 1 = missing, 2 = present/0, 3 = present/1.
-                match code {
-                    2 => 0,
-                    3 => 4_000,
-                    _ => 8_000,
+            if selector == "usb2-live-park-calib" {
+                // Transport calibration: park a fixed 60 s and let the host read
+                // the Android-return time. A return near the natural ~26 s after
+                // the attach means the park was preempted or the path was not
+                // reached; a return near park + Android boot means the park
+                // channel can carry a post-Run/Stop word.
+                park_for_seconds(60);
+            } else if selector.starts_with("usb2-live-park-") {
+                // Publish the word through the probe's own PSCI reset time:
+                // the value rides as (10 + code*8) seconds of park, and the
+                // host reads it from the Android-return time. This transport
+                // needs nothing from the DWC3, so it still works when the
+                // controller cannot drive a pull-up transition at all - which
+                // is the state run `188479.0` showed, where the coded
+                // stop/run pairs produced no second host attach.
+                park_for_seconds(12 + u64::from(code) * 6);
+            } else if selector.starts_with("usb2-live-blip-") {
+                // The pull-up is already asserted at this point, so a delay
+                // here cannot move any host timestamp: run `178863.0` used the
+                // 0/4/8 s `hsphy-suspend-n-safe` delay at this site and the
+                // attach, the address-0 timeout, and the Android return were
+                // all unchanged. Publish the value through a fresh stop/run
+                // pair instead: the host sees a new high-speed attach whose
+                // latency carries the code. Two pairs are emitted so a missing
+                // second attach is interpretable - the fixed marker pair first
+                // (mechanism/self-test), then the coded pair. A zero-pair
+                // result is itself the readout: the controller could not drive
+                // the transition, which is the dead-core signature.
+                let _ = unsafe { run_stop_device(false) };
+                readout_keepalive_delay_ms(300);
+                let _ = unsafe { run_stop_device(true) };
+                readout_keepalive_delay_ms(1_000);
+                let _ = unsafe { run_stop_device(false) };
+                readout_keepalive_delay_ms(300 + u64::from(code) * 1_000);
+                let _ = unsafe { run_stop_device(true) };
+            } else if selector == "usb2-live-speed-hs" {
+                // Two bits about the controller's own view of the link, sampled
+                // after the host's port reset (the marker is the delay).
+                //   pulse 1: DSTS.USBLNKST == 0 ("On"). For a USB 2.0 device the
+                //            core decodes tokens only in the On state; the probe
+                //            has recorded non-On states (4/6/7/10/12/13) while
+                //            the host was already issuing tokens, and run
+                //            `261322.0` showed the core never hands a SETUP to
+                //            the EP0 buffer at all.
+                //   pulse 2: DSTS.CONNECTSPD == 0 (high speed). The speed is
+                //            latched during a USB reset, so this says whether
+                //            the core observed the host's reset.
+                // Field positions are the vendor's (core.h):
+                //   DWC3_DSTS_USBLNKST_MASK = 0x0f << 18
+                //   DWC3_DSTS_CONNECTSPD    = 7 << 0
+                unsafe { ccs_pulse(1_000) };
+                let dsts = read(DSTS);
+                if (dsts >> 18) & 0x0f == 0 {
+                    unsafe { ccs_pulse(300) };
                 }
+                if dsts & DSTS_CONNECTSPD_MASK == 0 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-ep0-armed" {
+                // Is the EP0 OUT endpoint actually armed? Run `264554.0`
+                // established that the core is in the normal link state
+                // (DSTS.USBLNKST == 0, "On") and latched high speed, i.e. it did
+                // observe the host's reset - yet it never hands the host's SETUP
+                // to the EP0 buffer (`261322.0`). If no transfer TRB is queued on
+                // EP0 OUT the core has nowhere to put the packet, which would
+                // explain both the empty buffer and the empty event ring.
+                //   pulse 1: EP0_SETUP_ARMED (the handoff's Start Transfer on
+                //            EP0 OUT succeeded).
+                //   pulse 2: ENDPOINTS_READY (the endpoint configuration phase
+                //            completed, without which `try_arm_setup` returns
+                //            early and never arms anything).
+                unsafe { ccs_pulse(1_000) };
+                if EP0_SETUP_ARMED {
+                    unsafe { ccs_pulse(300) };
+                }
+                if ENDPOINTS_READY {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-force-endpoints" {
+                // RE-ENUMERATION ATTEMPT with the root cause addressed.
+                // Run `266423.0` measured ENDPOINTS_READY == false at about
+                // attach + 1.2 s, i.e. while the host was already asking for the
+                // device descriptor. `ENDPOINTS_READY = true` and
+                // `DALEPENA = 0b11` are set in exactly one place - the "Connect
+                // Done" event handler (`usb.rs:4790-4800`) - so with no device
+                // events the core never gets an enabled control endpoint, and a
+                // disabled EP0 explains every observation at once: the host's
+                // SETUP is not accepted, nothing is written into the EP0 buffer
+                // (`261322.0`) and no event is posted (`225813.0`).
+                // So configure the control endpoints here, with the controller
+                // stopped, in Linux's own order (`dwc3_gadget_start` issues its
+                // endpoint commands before `DCTL.RUN_STOP`), then run.
+                // The bundled `poll_setup_buffer()` (see its selector check)
+                // answers the host without waiting for an event.
+                unsafe {
+                    let _ = run_stop_device(false);
+                    let ok = configure_endpoint(0, 64, false) && configure_endpoint(1, 64, false);
+                    if ok {
+                        ENDPOINTS_READY = true;
+                        write(DALEPENA, 0b11);
+                    }
+                    let _ = run_stop_device(true);
+                    // Run `268613.0` (configuration only) moved the host boundary
+                    // from a 5.2 s silence (`-110`) to an immediate protocol
+                    // error (`-71`): the core now decodes the SETUP and stalls it,
+                    // which is what an enabled EP0 with no queued transfer TRB
+                    // does. Run `270244.0` showed that calling `try_arm_setup()`
+                    // here is the wrong way to fix that - it blocked for longer
+                    // than the 5.9 s host reset in its retry loop, losing the
+                    // carrier pulses and reverting the boundary to `-110`.
+                    // The handoff's own arm window already knows how to arm EP0;
+                    // it only skips the work because `EP0_SETUP_ARMED` is still
+                    // set from before the reconfiguration and `try_arm_setup`
+                    // returns early on that flag. So just clear it and let the
+                    // existing arm window do the arming.
+                    EP0_SETUP_ARMED = false;
+                    EP0_STATE = Ep0State::Setup;
+                    ccs_pulse(1_000);
+                    if ok {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-rearm-loop" {
+                // Eventless EP0 bring-up that mirrors Linux's own arming
+                // lifecycle. Vendor facts (qpr1):
+                //   * `dwc3_gadget_start` enables EP0/EP1 and immediately calls
+                //     `dwc3_ep0_out_start()` (`gadget.c:2505-2520`);
+                //   * every EP0 transfer completion re-arms it
+                //     (`ep0.c:1003-1004`: `dwc->ep0state = EP0_SETUP_PHASE;
+                //     dwc3_ep0_out_start(dwc);`);
+                //   * `dwc3_ep0_out_start` refuses to arm while `softconnect` is
+                //     false (`ep0.c:300-301`).
+                // A pending transfer is flushed by the host's bus reset, so
+                // arming once before that reset - which is what the handoff's
+                // 400 ms arm window does, because its loop stops on
+                // `EP0_SETUP_ARMED` - leaves EP0 OUT with no TRB when the host's
+                // SETUP arrives ~60 ms later. That is exactly the `-71` stall
+                // measured in runs `268613.0`/`271489.0`.
+                // So: configure the control endpoints, then keep re-arming until
+                // the deadline, answering every SETUP straight out of the EP0
+                // buffer with no device event involved. `try_arm_setup` itself
+                // skips the arm once the state machine leaves the Setup phase, so
+                // this cannot fight the response path.
+                unsafe {
+                    let _ = run_stop_device(false);
+                    let ok = configure_endpoint(0, 64, false) && configure_endpoint(1, 64, false);
+                    if ok {
+                        ENDPOINTS_READY = true;
+                        write(DALEPENA, 0b11);
+                    }
+                    let _ = run_stop_device(true);
+                    EP0_STATE = Ep0State::Setup;
+                    let deadline = arch_counter().saturating_add(
+                        arch_counter_frequency().saturating_mul(2_500) / 1_000,
+                    );
+                    let mut answered = 0u32;
+                    while arch_counter() < deadline {
+                        EP0_SETUP_ARMED = false;
+                        ARM_COOLDOWN = 0;
+                        let _ = try_arm_setup();
+                        poll_ep0_event_ring();
+                        if poll_setup_buffer() {
+                            answered = answered.saturating_add(1);
+                        }
+                        super::timer::delay_us(20_000);
+                    }
+                    ccs_pulse(1_000);
+                    if ok {
+                        ccs_pulse(300);
+                    }
+                    if answered != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-dma-addr" {
+                // Address-type audit for the DMA programming.
+                // `--no-smmu` deliberately keeps Fastboot's SMMU stream mapping
+                // (the harness flag description and `usb.rs:6012-6016` say so), so
+                // the controller's DMA is *translated*. But `dma_iova_for()`
+                // returns an IOVA only when `DMA_ADOPTED` is set and otherwise
+                // returns the raw CPU address, which is identity-mapped physical
+                // memory. A physical address programmed into the event ring or
+                // the EP0 buffers while the SMMU translates would send the
+                // core's writes elsewhere (or fault), which is exactly the shape
+                // of the empty event ring (`225813.0`) and the empty SETUP
+                // buffer (`261322.0`).
+                //   pulse 1: DMA_ADOPTED - the handoff adopted a Fastboot IOVA window
+                //   pulse 2: programmed GEVNTADR0 equals ep0_event_dma_base()
+                //   pulse 3: dma_iova_for(EP0 SETUP buffer) equals the raw pointer
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if DMA_ADOPTED {
+                        ccs_pulse(300);
+                    }
+                    let programmed =
+                        ((read(GEVNTADRHI0) as u64) << 32) | u64::from(read(GEVNTADRLO0));
+                    if programmed == ep0_event_dma_base() as u64 {
+                        ccs_pulse(300);
+                    }
+                    let setup = ep0_setup_data_ptr() as usize;
+                    if dma_iova_for(setup) == setup as u64 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-trb-hwo" {
+                // Where does the EP0 OUT transfer actually break? Vendor layout
+                // (`core.h:829-836`): the TRB's `size` field carries the transfer
+                // status in bits 31:28 (`DWC3_TRB_SIZE_TRBSTS`), with
+                // `DWC3_TRBSTS_SETUP_PENDING = 2`; `ctrl` bit 0 is `HWO`.
+                //   pulse 1: TRB.ctrl still has HWO - the controller never
+                //            consumed the transfer TRB.
+                //   pulse 2: TRBSTS == 2 - the controller received a SETUP into
+                //            this TRB (so the arm and the address are right and
+                //            the data must be in the TRB's buffer).
+                //   pulse 3: TRBSTS == 0 - the transfer completed cleanly.
+                // Sampled about a second after attach, i.e. after the host's
+                // first GET_DESCRIPTOR has been answered or stalled.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let trb = ep0_trb_ptr(0);
+                    cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                    let ctrl = read_volatile(addr_of!((*trb).ctrl));
+                    let size = read_volatile(addr_of!((*trb).size));
+                    let trbsts = (size >> 28) & 0x0f;
+                    if ctrl & TRB_HWO != 0 {
+                        ccs_pulse(300);
+                    }
+                    if trbsts == 2 {
+                        ccs_pulse(300);
+                    }
+                    if trbsts == 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-trb-buf" {
+                // The controller reports SETUP_PENDING (`usb2-live-trb-hwo`,
+                // run `278916.0`), so the host's SETUP did reach the EP0 OUT
+                // transfer - yet `poll_setup_buffer()` never saw a non-zero
+                // packet. That leaves exactly one question: does the armed TRB
+                // point at the buffer the software reads?
+                //   pulse 1: TRB.bpl/bph equals dma_iova_for(ep0_setup_data_ptr())
+                //            - i.e. the core was told to deposit the SETUP where
+                //            the software looks.
+                //   pulse 2: the first byte of that buffer is non-zero *when read
+                //            here*, which also tests the cache maintenance path
+                //            (`cache_invalidate`) the poll uses.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let trb = ep0_trb_ptr(0);
+                    cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                    let bpl = u64::from(read_volatile(addr_of!((*trb).bpl)));
+                    let bph = u64::from(read_volatile(addr_of!((*trb).bph)));
+                    let trb_buffer = (bph << 32) | bpl;
+                    let setup = ep0_setup_data_ptr();
+                    if trb_buffer == dma_iova_for(setup as usize) {
+                        ccs_pulse(300);
+                    }
+                    cache_invalidate(setup as usize, 8);
+                    if read_volatile(setup) != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-ep0-eventless" {
+                // The complete eventless EP0 control loop, now that the causal
+                // chain is measured:
+                //   * run `278916.0`: the core reports `TRBSTS == 2`
+                //     (`SETUP_PENDING`) with `HWO` still set - it received the
+                //     host's SETUP and is holding it;
+                //   * run `280408.0`: the armed TRB points exactly at
+                //     `ep0_setup_data_ptr()` (pulse 1), yet that buffer is still
+                //     zero (pulse 2) - so the packet is *not* deposited until
+                //     software acts;
+                //   * vendor: `dwc3_ep0_out_start()` is called on the
+                //     transfer-completion path (`ep0.c:1003-1004`) and from the
+                //     reset path (`ep0.c:265`), i.e. a fresh Start Transfer is
+                //     how Linux makes the core release the pending SETUP.
+                // So: configure the control endpoints, arm once, then poll the
+                // TRB's own status word (`core.h:832`: bits 31:28) as the
+                // eventless equivalent of the completion event, re-arming when
+                // the core reports a pending SETUP - and rate-limiting the
+                // "transfer completed" re-arm, because the earlier unbounded
+                // loop (`274800.0`) wedged the endpoint by hammering Start
+                // Transfer.
+                unsafe {
+                    let _ = run_stop_device(false);
+                    let ok = configure_endpoint(0, 64, false) && configure_endpoint(1, 64, false);
+                    if ok {
+                        ENDPOINTS_READY = true;
+                        write(DALEPENA, 0b11);
+                    }
+                    let _ = run_stop_device(true);
+                    EP0_STATE = Ep0State::Setup;
+                    EP0_SETUP_ARMED = false;
+                    ARM_COOLDOWN = 0;
+                    let _ = try_arm_setup();
+                    let frequency = arch_counter_frequency();
+                    let deadline = arch_counter().saturating_add(frequency.saturating_mul(4_000) / 1_000);
+                    let mut last_arm = arch_counter();
+                    let mut pending_seen = 0u32;
+                    let mut answered = 0u32;
+                    while arch_counter() < deadline {
+                        let now = arch_counter();
+                        let trb = ep0_trb_ptr(0);
+                        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                        let size = read_volatile(addr_of!((*trb).size));
+                        let trbsts = (size >> 28) & 0x0f;
+                        if trbsts == 2 {
+                            pending_seen = pending_seen.saturating_add(1);
+                        }
+                        // A pending SETUP needs software action immediately; a
+                        // retired transfer is re-armed at a bounded rate so the
+                        // endpoint is ready for the next control request.
+                        let retired = trbsts == 0 && now.saturating_sub(last_arm)
+                            >= frequency.saturating_mul(50) / 1_000;
+                        if trbsts == 2 || retired {
+                            EP0_SETUP_ARMED = false;
+                            ARM_COOLDOWN = 0;
+                            let _ = try_arm_setup();
+                            last_arm = now;
+                            if poll_setup_buffer() {
+                                answered = answered.saturating_add(1);
+                            }
+                        }
+                        poll_ep0_event_ring();
+                        super::timer::delay_us(1_000);
+                    }
+                    ccs_pulse(1_000);
+                    if ok {
+                        ccs_pulse(300);
+                    }
+                    if pending_seen != 0 {
+                        ccs_pulse(300);
+                    }
+                    if answered != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-ep0-release" {
+                // Minimal eventless control loop - change NOTHING about the
+                // handoff's own configuration. Runs `268613.0`/`271489.0` showed
+                // a stop/reconfigure/run cycle makes EP0's Start Transfer time
+                // out afterwards (`281888.0`: four seconds of loop, no carrier
+                // pulses, `-110`), and the handoff's own arm is already good:
+                // `278916.0` measured `TRBSTS == 2` (`SETUP_PENDING`) with `HWO`
+                // set, i.e. the controller received the host's SETUP and is
+                // holding it, waiting for software.
+                // Vendor: Linux releases a pending SETUP by re-issuing Start
+                // Transfer (`dwc3_ep0_out_start`, `ep0.c:1003-1004`), and it
+                // guards re-issuing with `DWC3_EP_TRANSFER_STARTED`, so one
+                // re-arm per observed pending SETUP is the faithful equivalent.
+                unsafe {
+                    let frequency = arch_counter_frequency();
+                    let deadline =
+                        arch_counter().saturating_add(frequency.saturating_mul(2_500) / 1_000);
+                    let mut arms = 0u32;
+                    let mut pending_seen = 0u32;
+                    let mut answered = 0u32;
+                    let mut last_status = 0xffu32;
+                    while arch_counter() < deadline {
+                        let trb = ep0_trb_ptr(0);
+                        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                        let size = read_volatile(addr_of!((*trb).size));
+                        let trbsts = (size >> 28) & 0x0f;
+                        if trbsts == 2 {
+                            pending_seen = pending_seen.saturating_add(1);
+                            if last_status != 2 && arms < 8 {
+                                EP0_SETUP_ARMED = false;
+                                ARM_COOLDOWN = 0;
+                                let _ = try_arm_setup();
+                                arms = arms.saturating_add(1);
+                            }
+                        }
+                        if poll_setup_buffer() {
+                            answered = answered.saturating_add(1);
+                        }
+                        poll_ep0_event_ring();
+                        last_status = trbsts;
+                        super::timer::delay_us(1_000);
+                    }
+                    ccs_pulse(1_000);
+                    if pending_seen != 0 {
+                        ccs_pulse(300);
+                    }
+                    if answered != 0 {
+                        ccs_pulse(300);
+                    }
+                    if arms != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-setup-trb" {
+                // Vendor fact that explains the empty buffer: Linux reads the
+                // SETUP packet straight out of the TRB memory -
+                // `dwc3_ep0_inspect_setup()`: `struct usb_ctrlrequest *ctrl =
+                // (void *) dwc->ep0_trb;` (`ep0.c:866`) - and prepares its SETUP
+                // TRB with `dwc3_ep0_prepare_one_trb(dep, dwc->ep0_trb_addr, 8,
+                // ...)` (`ep0.c:304`). The controller therefore deposits the
+                // 8-byte packet over the TRB, while this handoff points its TRB
+                // at a separate buffer and reads *that* (`ep0_setup_data_ptr()`).
+                // That is why run `280408.0` found the TRB pointing exactly at
+                // the software's buffer yet empty, even though `278916.0`
+                // measured `TRBSTS == 2` (`SETUP_PENDING`): the packet is sitting
+                // in the TRB, not in the buffer.
+                // Bridge it: when the TRB holds a plausible SETUP, copy those 8
+                // bytes into the buffer the existing control state machine reads
+                // and let `handle_setup()` answer the host. No reconfiguration,
+                // no re-arm - both of those were shown to wedge EP0.
+                // Counters go out as one pulse per unit so they stay readable.
+                unsafe {
+                    let frequency = arch_counter_frequency();
+                    let deadline =
+                        arch_counter().saturating_add(frequency.saturating_mul(2_500) / 1_000);
+                    let mut seen = 0u32;
+                    let mut answered = 0u32;
+                    while arch_counter() < deadline {
+                        let trb = ep0_trb_ptr(0);
+                        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                        let size = read_volatile(addr_of!((*trb).size));
+                        let trbsts = (size >> 28) & 0x0f;
+                        if trbsts == 2 || trbsts == 0 {
+                            let packet = trb.cast::<u8>();
+                            if read_volatile(packet) != 0 {
+                                seen = seen.saturating_add(1);
+                                let setup = ep0_setup_data_ptr();
+                                if setup != packet {
+                                    core::ptr::copy_nonoverlapping(packet, setup, 8);
+                                    cache_clean(setup as usize, 8);
+                                }
+                                if poll_setup_buffer() {
+                                    answered = answered.saturating_add(1);
+                                }
+                            }
+                        }
+                        poll_ep0_event_ring();
+                        super::timer::delay_us(1_000);
+                    }
+                    // ONE bit only. While EP0 is in this state each ccs_pulse
+                    // takes over a second (runs `283357.0`/`285720.0` produced
+                    // 2.5-2.9 s wide pulses instead of 300 ms), so counts and
+                    // widths are not readable - but the *presence* of a pulse
+                    // is. A pulse here means the TRB held a non-zero packet,
+                    // i.e. the controller really did deposit the host's SETUP
+                    // over the TRB as `ep0.c:866` implies.
+                    if seen != 0 {
+                        ccs_pulse(300);
+                    }
+                    let _ = answered;
+                }
+            } else if selector == "usb2-live-ep0-restart" {
+                // Linux's recipe for a control endpoint holding a pending SETUP
+                // is `dwc3_ep0_stall_and_restart()` (`ep0.c:243-266`): stall EP0,
+                // which retires the pending transfer, reset the state to the
+                // setup phase, then `dwc3_ep0_out_start()` to re-arm.
+                // Runs `283357.0`/`285720.0` failed because they re-armed
+                // *without* retiring the pending transfer - a busy EP0 rejects
+                // Start Transfer, so each arm burned its timeout, the loops
+                // overshot and nothing was delivered. Run `287333.0` then showed
+                // the packet is not waiting in the TRB either, so retiring the
+                // pending transfer first is the step that was missing.
+                unsafe {
+                    let frequency = arch_counter_frequency();
+                    let deadline =
+                        arch_counter().saturating_add(frequency.saturating_mul(2_000) / 1_000);
+                    let mut restarts = 0u32;
+                    let mut answered = 0u32;
+                    while arch_counter() < deadline {
+                        let trb = ep0_trb_ptr(0);
+                        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                        let size = read_volatile(addr_of!((*trb).size));
+                        let ctrl = read_volatile(addr_of!((*trb).ctrl));
+                        let trbsts = (size >> 28) & 0x0f;
+                        let pending = trbsts == 2 || ctrl & TRB_HWO != 0;
+                        if pending && restarts < 8 {
+                            // The vendor's restart also re-establishes the
+                            // endpoint-enable bookkeeping on both directions
+                            // (`dep->flags = DWC3_EP_ENABLED`), which in this
+                            // kernel is `ENDPOINTS_READY` plus `DALEPENA`.
+                            // Run `266423.0` measured `ENDPOINTS_READY == false`
+                            // in the handoff, so that part of the recipe was
+                            // never satisfied.
+                            ENDPOINTS_READY = true;
+                            write(DALEPENA, 0b11);
+                            // 1. stall EP0 so the controller retires the pending SETUP
+                            let _ = send_ep_command(0, DEPCMD_SETSTALL, 0, 0, 0);
+                            // 2. back to the setup phase, then re-arm (vendor order)
+                            EP0_SETUP_ARMED = false;
+                            ARM_COOLDOWN = 0;
+                            EP0_STATE = Ep0State::Setup;
+                            let _ = try_arm_setup();
+                            restarts = restarts.saturating_add(1);
+                            // 3. and now look for the packet
+                            if poll_setup_buffer() {
+                                answered = answered.saturating_add(1);
+                            }
+                        }
+                        poll_ep0_event_ring();
+                        super::timer::delay_us(1_000);
+                    }
+                    // ONE bit per run: a pulse means at least one SETUP was answered.
+                    if answered != 0 {
+                        ccs_pulse(300);
+                    }
+                    let _ = restarts;
+                }
+            } else if selector == "usb2-live-dma-window" {
+                // Is the DMA address translation valid for the *software's own*
+                // buffers? `adopt_smmu_dma_mapping()` (`smmu.rs:334-374`) adopts
+                // exactly ONE live SMMU page (`DMA_ADOPTED_CPU` physical,
+                // `DMA_ADOPTED_IOVA` its IOVA), and `dma_iova_for(cpu)` then
+                // computes `DMA_ADOPTED_IOVA + (cpu - DMA_ADOPTED_CPU)`.
+                // Any buffer outside that single page therefore gets a
+                // linearly-offset address that the SMMU does not map - so the
+                // controller's DMA for it lands somewhere else (or faults).
+                // The event ring is fine, because its address came from the
+                // firmware and *is* inside the adopted page; the EP0 SETUP buffer,
+                // the EP0 TRBs and the response buffer are linker objects and are
+                // not. That would explain a received SETUP whose payload appears
+                // nowhere the software can read.
+                //   pulse 1: EP0 TRB pointer lies within the adopted page
+                //   pulse 2: EP0 SETUP buffer lies within the adopted page
+                //   pulse 3: DMA_ADOPTED_IOVA == DMA_ADOPTED_CPU (identity)
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let page = DMA_ADOPTED_CPU & !0xfff;
+                    let inside = |p: usize| p >= page && p < page + 0x1000;
+                    if inside(ep0_trb_ptr(0) as usize) {
+                        ccs_pulse(300);
+                    }
+                    if inside(ep0_setup_data_ptr() as usize) {
+                        ccs_pulse(300);
+                    }
+                    if DMA_ADOPTED_IOVA == DMA_ADOPTED_CPU as u64 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-setup-inpage" {
+                // THE FIX TEST. `ep0_setup_data_ptr()` now returns
+                // `ep0_trb_ptr(1)` (inside the one adopted SMMU page) instead of
+                // the linker-allocated `EP0_SETUP_BUFFER` (outside it), so
+                // `prepare_ep0_setup_trb()` points the controller at mapped
+                // memory. The TRB must be re-prepared for the new pointer, and
+                // the pending transfer must be retired first or Start Transfer
+                // times out (`283357.0`/`285720.0`) - hence the vendor's
+                // stall-then-re-arm order (`ep0.c:243-266`).
+                // ONE bit: a pulse means the SETUP was read from the in-page
+                // buffer and answered.
+                unsafe {
+                    let frequency = arch_counter_frequency();
+                    let deadline =
+                        arch_counter().saturating_add(frequency.saturating_mul(2_000) / 1_000);
+                    let mut answered = 0u32;
+                    while arch_counter() < deadline {
+                        let trb = ep0_trb_ptr(0);
+                        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                        let ctrl = read_volatile(addr_of!((*trb).ctrl));
+                        let size = read_volatile(addr_of!((*trb).size));
+                        let pending = ((size >> 28) & 0x0f) == 2 || ctrl & TRB_HWO != 0;
+                        if pending {
+                            let _ = send_ep_command(0, DEPCMD_SETSTALL, 0, 0, 0);
+                            EP0_SETUP_ARMED = false;
+                            ARM_COOLDOWN = 0;
+                            EP0_STATE = Ep0State::Setup;
+                            let _ = try_arm_setup();
+                        }
+                        if poll_setup_buffer() {
+                            answered = answered.saturating_add(1);
+                        }
+                        poll_ep0_event_ring();
+                        super::timer::delay_us(1_000);
+                    }
+                    if answered != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-adopted" {
+                // ONE question, ONE bit - no width or count coding, because the
+                // multi-predicate words are ambiguous: a single pulse cannot say
+                // *which* predicate fired (`usb2-live-dma-window` in `291878.0`
+                // produced one pulse, and that is consistent with three different
+                // readings). This matters because the whole address hypothesis
+                // hinges on whether `adopt_smmu_dma_mapping()` actually ran:
+                // with `DMA_ADOPTED == true` the SETUP buffer is `ep0_trb_ptr(0)`
+                // and every address is already in the mapped page, while with
+                // `DMA_ADOPTED == false` `dma_iova_for()` is the identity and the
+                // linker buffers are correct as they are. Either way the
+                // "outside the page" story needs re-testing, not assuming.
+                // A pulse means `DMA_ADOPTED == true`.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if DMA_ADOPTED {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-trbsts-pending" {
+                // ONE question, ONE bit: is the EP0 OUT transfer sitting in
+                // `SETUP_PENDING` (`TRBSTS == 2`)? This is the fact the whole
+                // diagnosis turns on, and the earlier three-predicate word
+                // (`usb2-live-trb-hwo`, run `278916.0`) could not establish it:
+                // with `TRBSTS == 0` and `TRBSTS == 2` mutually exclusive, two
+                // pulses there were consistent with {HWO, pending} *or*
+                // {HWO, completed} - and "completed" would mean the controller
+                // already handed the packet over. A pulse here means
+                // `TRBSTS == 2`.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let trb = ep0_trb_ptr(0);
+                    cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                    let size = read_volatile(addr_of!((*trb).size));
+                    if (size >> 28) & 0x0f == 2 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-trbsts-ok" {
+                // ONE question, ONE bit: did the EP0 OUT transfer complete
+                // cleanly (`TRBSTS == 0`)? `297671.0` ruled out `SETUP_PENDING`,
+                // so this is the other candidate value and it decides whether the
+                // controller already consumed the host's SETUP - in which case
+                // the packet must be sitting somewhere the software can read, and
+                // the fault is purely in the software side of the exchange.
+                // A pulse means `TRBSTS == 0`.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let trb = ep0_trb_ptr(0);
+                    cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                    let size = read_volatile(addr_of!((*trb).size));
+                    if (size >> 28) & 0x0f == 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-setup-nonzero" {
+                // ONE question, ONE bit, and it splits the last two
+                // possibilities. `297671.0` + `299272.0` established that the EP0
+                // OUT transfer completes cleanly (`TRBSTS != 2`, `TRBSTS == 0`),
+                // so the controller did process the host's SETUP. Either the
+                // packet is in the buffer the software reads and the reading path
+                // is at fault, or the packet never landed there.
+                // A pulse means the first byte of `ep0_setup_data_ptr()` is
+                // non-zero.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let setup = ep0_setup_data_ptr();
+                    cache_invalidate(setup as usize, 8);
+                    if read_volatile(setup) != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-hwo-bit" {
+                // ONE question, ONE bit, and it is the cleanest discriminator
+                // left. `297671.0`/`299272.0`/`300738.0` established that the
+                // EP0 OUT TRB holds status 0 and the SETUP buffer is empty - but
+                // `TRBSTS == 0` is also the *untouched default*, so the honest
+                // reading is "the controller never used this TRB". `HWO` decides
+                // between the two remaining cases:
+                //   pulse present = HWO still set: the TRB is armed and the
+                //     controller is waiting for a SETUP that never arrives.
+                //   no pulse = HWO cleared: the controller consumed the TRB.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let trb = ep0_trb_ptr(0);
+                    cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+                    if read_volatile(addr_of!((*trb).ctrl)) & TRB_HWO != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-dalepena0" {
+                // ONE question, ONE bit: is EP0 OUT enabled in `DALEPENA`?
+                // `302214.0` showed the EP0 OUT TRB armed with `HWO` set while the
+                // controller never consumes it (`TRBSTS` default, buffer empty, no
+                // event), so the break is upstream of the transfer - an endpoint
+                // that is not enabled would produce exactly that. `ENDPOINTS_READY
+                // == false` was suggested by `266423.0`, but that reading came
+                // from a two-predicate word and is therefore unproven (entry 159).
+                // A pulse means `DALEPENA` bit 0 is set.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if read(DALEPENA) & 1 != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-usblnkst-on" {
+                // ONE question, ONE bit: is the core's USB link state the "On"
+                // state (`DSTS.USBLNKST == 0`, bits 21:18 - the vendor's
+                // `DWC3_DSTS_USBLNKST_MASK = 0x0f << 18`, `core.h:483`), i.e. the
+                // state in which a USB 2.0 device accepts and decodes tokens?
+                // `264554.0` reported On, but it was a two-predicate word and is
+                // therefore unproven (entry 159). With every software state now
+                // measured good (`302214.0` armed, `303830.0` enabled) this is the
+                // first candidate for "the controller does not take the SETUP".
+                // A pulse means `USBLNKST == 0`.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let dsts = read(DSTS);
+                    if (dsts >> 18) & 0x0f == 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-evring-nonzero" {
+                // ONE question, ONE bit: has the core ever written an event into
+                // the ring? Reading `GEVNTCOUNT0` cannot answer this, because the
+                // handoff acknowledges the count (so "0" is consistent both with
+                // "never posted" and with "posted and acknowledged"). The ring
+                // *memory* keeps whatever the core wrote, so scan the first 64
+                // bytes of the event ring for any non-zero word.
+                // Caveat to carry with the result: a non-zero value could be stale
+                // firmware data left in the reused ring, so a *zero* result is the
+                // strong one - it means the core has written nothing at all.
+                // A pulse means some word in the first 64 bytes is non-zero.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let base = ep0_event_dma_base();
+                    cache_invalidate(base, 64);
+                    let mut found = false;
+                    for offset in 0..16 {
+                        let word = (base as *const u32).add(offset);
+                        if read_volatile(word) != 0 {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if found {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-devctrlhlt" {
+                // ONE question, ONE bit: is the device controller actually
+                // running, or is `DSTS.DEVCTRLHLT` (bit 22, vendor
+                // `DWC3_DSTS_DEVCTRLHLT`, `core.h:480`) set?
+                // Run `307410.0` established that the event ring memory is
+                // completely untouched - the core has never posted a single event
+                // - while `305671.0` shows it reports the accepting link state,
+                // `303830.0` shows EP0 enabled and `302214.0` shows the TRB armed
+                // yet never consumed. A device controller that is halted would
+                // explain all of that at once, and `DEVCTRLHLT` is the register
+                // that says so. (`248672.0` reported it clear, but that reading
+                // came from a count-coded word and is unproven.)
+                // A pulse means `DEVCTRLHLT` is SET (the controller is halted).
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if read(DSTS) & DSTS_DEVCTRLHLT != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-prtcapdir-dev" {
+                // ONE question, ONE bit: is the core in DEVICE mode?
+                // Vendor: `DWC3_GCTL_PRTCAPDIR(n) = ((n) << 12)` and
+                // `PRTCAP_HOST = 1`, **`PRTCAP_DEVICE = 2`**, `PRTCAP_OTG = 3`
+                // (`core.h:248-251` - note DEVICE is 2, not 0).
+                // A core in host or OTG mode reports a link state and has
+                // endpoints enabled while never processing device tokens, which
+                // is exactly the symptom set measured in `307410.0`/`308901.0`.
+                // A pulse means `(GCTL >> 12) & 3 == 2` (device mode).
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if (read(GCTL) >> 12) & 0x3 == 2 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-utmi-sel" {
+                // ONE question, ONE bit: is the USB2 PHY interface set to UTMI+
+                // (`GUSB2PHYCFG0.ULPI_UTMI` = bit 4 clear, `core.h:287`) rather
+                // than ULPI? A core configured for ULPI would not process the
+                // internal UTMI traffic of this PHY.
+                // A pulse means bit 4 is clear (UTMI+ selected).
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if read(GUSB2PHYCFG0) & (1 << 4) == 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-csftrst-clear" {
+                // ONE question, ONE bit: is `DCTL.CSFTRST` (bit 30,
+                // `core.h:412`) clear? A core held in soft reset would have
+                // running-looking registers but no device operation.
+                // A pulse means CSFTRST is clear.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if read(DCTL) & (1 << 30) == 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-coresoftreset-clear" {
+                // ONE question, ONE bit: is `GCTL.CORESOFTRESET` (bit 11,
+                // `core.h:253`) clear? Linux leaves this set only during its own
+                // reset sequence; a core still held there would look alive in
+                // DSTS while doing nothing.
+                // A pulse means CORESOFTRESET is clear.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if read(GCTL) & (1 << 11) == 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-evaddr-match" {
+                // ONE question, ONE bit: does the address the core was given for
+                // event buffer 0 (`GEVNTADRHI0:LO0`) equal the base the software
+                // reads events from (`ep0_event_dma_base()`)?
+                // This matters because run `307410.0` showed the ring memory the
+                // software reads is completely untouched - and if the core is
+                // posting to a *different* address, that is exactly what one would
+                // see, while a fix would be purely software-side. `276604.0`
+                // suggested they matched, but that came from a multi-predicate
+                // word and is unproven (entry 159).
+                // A pulse means the programmed address equals the software's base.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    let programmed =
+                        ((read(GEVNTADRHI0) as u64) << 32) | u64::from(read(GEVNTADRLO0));
+                    if programmed == ep0_event_dma_base() as u64 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-opmode0" {
+                // ONE question, ONE bit: is the HS-PHY UTMI datapath driving
+                // (`UTMI_CTRL0.OPMODE == 0`)? `phy.rs:440-448` documents that
+                // Fastboot/charger-detection ownership can leave OPMODE=1, i.e. a
+                // non-driving datapath, across a RAM-only handoff. Such a PHY
+                // still reports a valid line state (so `DSTS.USBLNKST` reads "On",
+                // run `305671.0`) while never passing received data up - which is
+                // precisely the state after 13 one-bit measurements: everything
+                // readable is correct and the controller never consumes the TRB.
+                // A pulse means OPMODE is 0 (driving).
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if phy::utmi_opmode_is_normal() {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-dpath-ovr-clear" {
+                // ONE question, ONE bit: is the charger-detection datapath
+                // override dropped (`HSPHY_CFG0.UTMI_DATAPATH_CTRL_OVERRIDE_EN ==
+                // 0`)? `phy.rs:451-459` documents that Fastboot can leave that
+                // ownership bit latched even after OPMODE is returned to driving,
+                // and it too would hold the DP/DM datapath away from the normal
+                // UTMI path.
+                // A pulse means the override bit is clear.
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if phy::datapath_override_cleared() {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-susphy-set" {
+                // ONE question, ONE bit: is the core keeping the HS-PHY UTMI clock
+                // suspended (`GUSB2PHYCFG0.SUSPHY`, vendor `core.h:286` `BIT(6)`)?
+                //
+                // NEW SOURCE DISTINCTION for reopening the SUSPHY family: the
+                // previously closed `SUSPHY` work was an A/B that *cleared* the bit
+                // once at init. This is a *runtime read* of the state that holds at
+                // the moment the host's SETUP arrives - a different question, and
+                // the host kernel log of run `321645.0` gives it a new signature to
+                // explain:
+                //   "usb 1-1: new high-speed USB device number 79 using xhci_hcd"
+                //   "usb 1-1: device descriptor read/64, error -71"
+                // The host reaches HIGH SPEED, so the analog chirp/handshake and
+                // squelch path work; but no packet is ever received. A PHY whose
+                // UTMI *digital* path has no clock (SUSPHY held set) loses exactly
+                // the packets while keeping the analog link - and a SUSPHY bit that
+                // something re-asserts after the init-time clear would never have
+                // been caught by the A/B.
+                // A pulse means SUSPHY is set (UTMI clock held suspended).
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if read(GUSB2PHYCFG0) & (1 << 6) != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-suspendn-set" {
+                // ONE question, ONE bit: is the HS-PHY `CTRL2.SUSPEND_N` asserted
+                // (PHY not suspended) at the moment the host's SETUP arrives?
+                //
+                // NEW SOURCE DISTINCTION for reopening the SUSPEND_N family: the
+                // closed work (`3046227.0`, `3137358.0`, the `hsphy-suspend-n-safe`
+                // encoding) was A/B *writes* at selected boundaries. This is the
+                // runtime *read*. `phy.rs:391-397` states outright that the Bramble
+                // transition was observed *clearing* this bit across the DWC3
+                // Run/Stop boundary - and run `321645.0`'s host log now gives that a
+                // signature to explain:
+                //   "usb 1-1: new high-speed USB device number 79 using xhci_hcd"
+                //   "usb 1-1: device descriptor read/64, error -71"
+                // A suspended PHY keeps the analog link (the host reaches high
+                // speed) while its UTMI digital receive path is off, so no packet is
+                // ever delivered - exactly this signature.
+                // A pulse means SUSPEND_N is asserted (PHY not suspended).
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if phy::suspend_n_asserted() {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-devten-set" {
+                // ONE question, ONE bit: is `DEVTEN` (device event enable)
+                // programmed at all at runtime?
+                //
+                // Why this is the decisive gap: every "the TRB is armed" reading
+                // (`302214.0` `HWO`) was taken ~1 s after the handoff, while the bus
+                // reset lands at attach + 6.2 s. The DWC3 *flushes* EP0's transfer
+                // state on a bus reset, and the vendor re-arms EP0 from the reset
+                // event handler (`dwc3_gadget_reset_interrupt` -> `dwc3_ep0_out_start`).
+                // So what matters is whether EP0 is armed *after* the reset - and
+                // the software only re-arms on events, while run `307410.0` showed
+                // the event ring memory is *never written at all*.
+                // The "Device Reset" event is generated by the core's own state
+                // machine, with no host packet needed - so if the core is running
+                // (`308901.0`, `DEVCTRLHLT` clear) yet posts nothing at all, the
+                // prime suspect is that events are not *enabled*: `DEVTEN` left at 0
+                // would suppress every event, which in turn starves the re-arm and
+                // produces exactly the observed host-side silence.
+                // A pulse means `DEVTEN` is non-zero (events enabled).
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if read(DEVTEN) != 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-deferred-evring" {
+                // ONE question, ONE bit, asked at the *right* time: is the event
+                // ring memory non-zero after the host attached and the bus reset
+                // landed? The immediate readout cannot answer it (see
+                // DEFERRED_READOUT_KIND) - which is why run `307410.0`'s
+                // "the core never posts an event" had to be retracted. The bit is
+                // published 8 s later, from the polling owner.
+                //
+                // Bisection aid: also emit a marker *here*, at handoff time. A
+                // marker at ~1 s proves this branch ran and that the CCS channel
+                // works then; the absence of the ~8 s marker then isolates the
+                // failure to the polling-owner side rather than to this dispatch.
+                unsafe {
+                    ccs_pulse(1_000);
+                    ccs_pulse(300);
+                }
+                DEFERRED_READOUT_KIND = 1;
+                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
+                    arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
+                );
+            } else if selector == "usb2-live-deferred-devten" {
+                // ONE question, ONE bit, asked at attach time: is `DEVTEN`
+                // published at the moment the host is talking to us? The
+                // immediate readout sees the pre-publish state. Same bisection
+                // marker as the evring selector above.
+                unsafe {
+                    ccs_pulse(1_000);
+                    ccs_pulse(300);
+                }
+                DEFERRED_READOUT_KIND = 2;
+                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
+                    arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
+                );
+            } else if selector == "usb2-live-deferred-devaddr" {
+                // ONE question, ONE bit, asked at attach time: is `DCFG.DEVADDR`
+                // zero when the host is talking to us? A stale non-zero address
+                // makes the core ignore the host's address-0 SETUP - the hazard the
+                // code itself names at `usb.rs:12150`.
+                unsafe {
+                    ccs_pulse(1_000);
+                    ccs_pulse(300);
+                }
+                DEFERRED_READOUT_KIND = 3;
+                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
+                    arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
+                );
+            } else if selector == "usb2-live-deferred-recover" {
+                // Not a measurement but a *fix candidate*: at attach time (8 s
+                // after the handoff, i.e. after the bus reset), run the bus-reset
+                // recovery that the event path would have run. `usb.rs:168` records
+                // that `restart_control_after_reset()` is reachable only through
+                // `match device_event`, so if the core posts no events the handler
+                // never runs - DEVADDR is not cleared, EP0 is not reconfigured and
+                // the SETUP is never accepted. The host retries GET_DESCRIPTOR
+                // (baseline: one -110 then three immediate -71s), so a recovery
+                // forced at this point has later attempts to catch.
+                unsafe {
+                    ccs_pulse(1_000);
+                    ccs_pulse(300);
+                }
+                DEFERRED_READOUT_KIND = 4;
+                // Arm the trigger with the *current* frame number, so the action
+                // fires on the next change - i.e. when the host actually starts
+                // driving the bus - and not on the first poll after the handoff.
+                LAST_DEFERRED_SOFFN = read(DSTS) & (0x3fff << 3);
+                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
+                    arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
+                );
+            } else if selector == "usb2-live-gate-diag" {
+                // Publish `diag_readout_code()` at attach time over the ONLY channel
+                // that survives the failure: DCTL Run/Stop cycles, decoded by the
+                // host as extra "new high-speed USB device" lines. The code names
+                // how far the first enumeration window got (1 = no SETUP reached
+                // DRAM ... 6 = XferNotReady on the data phase) - see
+                // `usb_probe.rs:1362-1372`, which uses the same encoding for the
+                // `dstat` gate.
+                DEFERRED_READOUT_KIND = 7;
+                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
+                    arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
+                );
+            } else if selector == "usb2-live-gate-ep0armed" {
+                // ONE decisive bit at attach time: was EP0's SETUP transfer actually
+                // armed by whatever ran after the handoff? `usb.rs:10909-10915`
+                // shows the handoff itself does not arm it when
+                // `--start-after-connect` is set (it only sets
+                // `PENDING_SETUP_ARM`), and entry 176 shows the synchronous variant
+                // suppresses the attach entirely - so the arm must come from the
+                // post-handoff owner, and this is the direct check.
+                // One extra attach line = armed, no extra line = not armed.
+                DEFERRED_READOUT_KIND = 8;
+                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
+                    arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
+                );
+            } else if selector == "usb2-live-gate-probe"
+                || selector == "usb2-live-gate-probe6"
+                || selector == "usb2-live-gate-probe7"
+            {
+                // POSITIVE CONTROL for the Run/Stop-cycle channel: publish two
+                // cycles unconditionally. Two extra "new high-speed USB device"
+                // lines prove the channel works at that point in the boot, which is
+                // what makes the `usb2-live-gate-ep0armed` result interpretable.
+                //
+                // Timing matters more than anything else here. The handset
+                // self-resets 5.5-8 s *after the attach* (`usb_probe.rs:1331`), so
+                // the kernel is alive throughout the host's 588 ms enumeration
+                // window but dead at +8 s. The host attaches ~6.2 s after the
+                // handoff, so a 2 s action fires before the host is listening and
+                // an 8 s action fires after the kernel is gone; both produce zero
+                // extra lines and prove nothing. 6 s and 7 s bracket the attach.
+                DEFERRED_READOUT_KIND = 9;
+                let secs = match selector {
+                    "usb2-live-gate-probe6" => 6,
+                    "usb2-live-gate-probe7" => 7,
+                    _ => 2,
+                };
+                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter()
+                    .saturating_add(arch_counter_frequency().saturating_mul(secs));
+            } else if selector == "usb2-live-deferred-early" {
+                // BISECTION, not a data measurement: fire the deferred block only
+                // ~2 s after the handoff - while the CCS channel is still known to
+                // work (the handoff marker at ~1 s always appears) - to determine
+                // whether the polling owner is running at all. If the marker shows
+                // up at ~2 s, `poll()` runs and the *late* failures (no pulses at
+                // ~6 s, no re-attach) are a channel/timing problem; if it does not,
+                // `poll()` itself is not running after the handoff.
+                DEFERRED_READOUT_KIND = 6;
+                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter()
+                    .saturating_add(arch_counter_frequency().saturating_mul(2));
+            } else if selector == "usb2-live-reattach" {
+                // Fix candidate, not a measurement: let the host's first attempt
+                // fail (it gives up within ~600 ms of attaching - entry 171), then
+                // *deliberately* re-attach with EP0 fully prepared. If the real
+                // problem is only that the host arrives before the device is
+                // ready, this gives it a clean second chance - and the observable
+                // is the host kernel log (a new attach followed by a successful
+                // descriptor read), which does not need the CCS channel that is
+                // unusable after the first failure.
+                unsafe {
+                    ccs_pulse(1_000);
+                    ccs_pulse(300);
+                }
+                DEFERRED_READOUT_KIND = 5;
+                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
+                    arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
+                );
+            } else if selector == "usb2-live-disscramble-clear" {
+                // ONE question, ONE bit: is `GCTL.DISSCRAMBLE` (BIT(3)) clear, i.e.
+                // is USB2 packet scrambling ENABLED on the device side?
+                //
+                // Why this is a prime candidate, from the primary source:
+                // vendor `core.c:783-786` does
+                //     if (dwc->disable_scramble_quirk && dwc->is_fpga)
+                //         reg |= DWC3_GCTL_DISSCRAMBLE;
+                //     else
+                //         reg &= ~DWC3_GCTL_DISSCRAMBLE;
+                // i.e. on real silicon (Bramble is not an FPGA) the vendor
+                // *always clears* the bit, so scrambling is on. Fullerene's GCTL
+                // writes only OR in the device-mode and clock-gating bits
+                // (`gctl |= GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG`) and never clear
+                // DISSCRAMBLE, so a value left set by Fastboot/XBL would survive
+                // the handoff.
+                // That failure mode matches the measured signature exactly: the
+                // chirp/handshake is not scrambled, so the host still reaches
+                // HIGH SPEED (`321645.0`), while every scrambled packet arrives as
+                // garbage, so the core never accepts a SETUP and the host times
+                // out - with EP0 enabled, the TRB armed and every readable state
+                // correct (entries 160-164).
+                // `DISSCRAMBLE` had never been examined in this project before.
+                // A pulse means the bit is clear (scrambling enabled = vendor
+                // behaviour on silicon).
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if read(GCTL) & (1 << 3) == 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-phyif-zero" {
+                // ONE question, ONE bit: is `GUSB2PHYCFG0.PHYIF` zero, i.e. is the
+                // core using the 8-bit UTMI+ interface?
+                // Vendor `core.h:289-290`: `GUSB2PHYCFG_PHYIF(n) = (n << 3)`.
+                // Fullerene forces the field clear at `config.rs:441`
+                // (`usb2 &= !(ULPI_UTMI | PHYIF_MASK | USBTRDTIM_MASK)`), while the
+                // comment at `config.rs:411` notes that Linux instead follows the
+                // DT's `snps,hsphy_interface` and therefore *leaves* PHYIF/TRDTIM
+                // alone. The Bramble DT does not appear to set that property (only
+                // the binding mentions it), so both should end up 8-bit - but a
+                // width mismatch between core and PHY would break exactly the data
+                // path while leaving line-state and the analog chirp intact, which
+                // is this failure's signature. Verify rather than assume.
+                // A pulse means PHYIF is 0 (8-bit).
+                unsafe { ccs_pulse(1_000) };
+                unsafe {
+                    if read(GUSB2PHYCFG0) & GUSB2PHYCFG_PHYIF_MASK == 0 {
+                        ccs_pulse(300);
+                    }
+                }
+            } else if selector == "usb2-live-evbuf-presence" {
+                // One pulse iff the event buffer size is programmed. `GEVNTCOUNT0`
+                // reads 0 in every run, which is consistent both with "the core
+                // posted nothing" and with "the ring has no space to post into".
+                // `GEVNTSIZ0` distinguishes them, and a zero size would explain
+                // zero events while the receive path demonstrably works (SOFFN
+                // advanced in `255232.0`).
+                unsafe { ccs_pulse(1_000) };
+                let size = read(GEVNTSIZ0) & GEVNTSIZ_SIZE_MASK;
+                if size != 0 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-soffn-count" {
+                // Direct RX-liveness readout: DSTS.SOFFN is the frame number of
+                // the last SOF the device controller received. In high speed the
+                // host sends an SOF every 125 us once the link is operational, so
+                // a SOFFN that advances between two samples proves the PHY-to-core
+                // receive path carries host traffic; a static SOFFN means it does
+                // not. Two 300 ms pulses = advanced, one = static, after the
+                // marker. This is the cleanest available test of the receive
+                // direction, which every other measurement has now isolated.
+                unsafe { ccs_pulse(1_000) };
+                // DSTS bits 13:0 are SOFFN (frame number of the last received
+                // SOF); the field has no shared constant in this tree.
+                const SOFFN_MASK: u32 = 0x3fff;
+                let before = read(DSTS) & SOFFN_MASK;
+                // Keep the whole branch short (marker + 300 ms + 1-2 pulses, so
+                // about 2.4 s): a long branch lets the signal-probe's own blip
+                // publisher overlap the CCS channel. In high speed the host sends
+                // an SOF every 125 us and SOFFN counts 1 ms frames, so 300 ms is
+                // already ~300 frames of margin.
+                readout_keepalive_delay_ms(300);
+                let after = read(DSTS) & SOFFN_MASK;
+                let advanced = after != before;
+                log_hex("usb gadget handoff: SOFFN before=", u64::from(before));
+                log_hex("usb gadget handoff: SOFFN after=", u64::from(after));
+                let count = if advanced { 2 } else { 1 };
+                for _ in 0..count {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-halted-count" {
+                // Pulse-count readout: robust to the width distortion seen in
+                // `247041.0`, where a requested 150 ms pulse measured 62 ms.
+                // Three 300 ms pulses = DSTS.DEVCTRLHLT set, one = clear, after
+                // the usual marker. This is the fact the probe's own "RUN/STOP
+                // readback timed out; continuing" path has never published.
+                unsafe { ccs_pulse(1_000) };
+                let halted = read(DSTS) & DSTS_DEVCTRLHLT != 0;
+                let count = if halted { 3 } else { 1 };
+                for _ in 0..count {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-halted" || selector == "usb2-live-runstop-bit" {
+                // Single-bit, wide-pulse readouts. The width-coded words drift
+                // by ~80 ms through run_stop_device, so a one-bit word uses two
+                // widths that cannot be confused: 700 ms = bit set, 150 ms =
+                // clear, after the usual 1000 ms marker.
+                //   usb2-live-halted      -> DSTS.DEVCTRLHLT after the Run/Stop
+                //                            write (1 = the device controller
+                //                            never left the halted state)
+                //   usb2-live-runstop-bit -> DCTL.RUN_STOP as read back
+                // These are the two facts the probe's own "RUN/STOP readback
+                // timed out; continuing" path has never been able to publish.
+                unsafe { ccs_pulse(1_000) };
+                let set = if selector == "usb2-live-halted" {
+                    read(DSTS) & DSTS_DEVCTRLHLT != 0
+                } else {
+                    read(DCTL) & DCTL_RUN_STOP != 0
+                };
+                unsafe { ccs_pulse(if set { 700 } else { 150 }) };
+            } else if selector == "usb2-live-susphy-active" {
+                // Primary-source correction. The vendor dwc3_gadget_run_stop()
+                // never touches DWC3_GUSB2PHYCFG (tmp/qpr1-msm/drivers/usb/dwc3/
+                // gadget.c:2136-2200); the save/clear/restore of
+                // GUSB2PHYCFG.SUSPHY|ENBLSLPM lives in dwc3_gadget_ep_cmd
+                // (gadget.c:387-410) and is gated on gadget.speed <= HIGH.
+                // Fullerene mirrors that pattern in prepare_run_stop_device and
+                // both Run/Stop callers restore the saved bits afterwards, so if
+                // the Fastboot handoff left SUSPHY set the PHY is re-suspended
+                // immediately after the pull-up rises - which is exactly the
+                // state that would produce "first attach, then nothing": the
+                // analog pull-up is a resistor and survives, while the UTMI data
+                // path that would deliver events does not.
+                // Clear both bits and leave them cleared, then publish the
+                // pre-clear state so the run still says whether the PHY had been
+                // suspended at all: bit0 = SUSPHY was set, bit1 = ENBLSLPM was.
+                let gusb2 = read(GUSB2PHYCFG0);
+                write(
+                    GUSB2PHYCFG0,
+                    gusb2 & !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM),
+                );
+                EVENT_DROP_ARMED = true;
+                unsafe {
+                    publish_ccs_word(
+                        u32::from(gusb2 & GUSB2PHYCFG_SUSPHY != 0)
+                            | (u32::from(gusb2 & GUSB2PHYCFG_ENBLSLPM != 0) << 1),
+                    )
+                };
+            } else if let Some(word) = selector.strip_prefix("usb2-live-ccs-") {
+                // Publish a live controller word over the pull-up (CCS) channel
+                // instead of a timestamp. See publish_ccs_word for the encoding
+                // and tools/bramble_port_ccs.py for the host-side decoder. This
+                // is the first carrier that survives past Run/Stop, because the
+                // root hub keeps reporting the pull-up to the host.
+                unsafe { publish_ccs_word(usb2_live_word(word)) };
             } else {
-                u64::from(code) * 1_000
-            };
-            super::timer::delay_ms(delay_ms);
+                let delay_ms = if selector == "hsphy-suspend-n-safe" {
+                    // 1 = missing, 2 = present/0, 3 = present/1.
+                    match code {
+                        2 => 0,
+                        3 => 4_000,
+                        _ => 8_000,
+                    }
+                } else {
+                    u64::from(code) * 1_000
+                };
+                readout_keepalive_delay_ms(delay_ms);
+            }
         }
         if !start_readback_ok {
             // Some Fastboot/DWC3 handoffs keep DSTS.DEVCTRLHLT stale even
@@ -6986,6 +8391,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             while arch_counter() < arm_deadline && !EP0_SETUP_ARMED {
                 let _ = try_arm_setup();
                 poll_ep0_event_ring();
+                let _ = unsafe { poll_setup_buffer() };
                 super::timer::delay_us(200);
             }
             // Keep the arm-status readout meaningful on the direct reuse
@@ -7430,7 +8836,18 @@ unsafe fn reassert_ss_controller_domain() -> bool {
 #[cfg(fullerene_aarch64_usb_gadget_handoff_usb2_runtime_power_keepalive)]
 unsafe fn service_usb2_runtime_power_keepalive() {
     unsafe {
-        if QMP_PHY_READY || RUN_STOP_TICK == 0 || read(DCTL) & DCTL_RUN_STOP == 0 {
+        // Only "no Run/Stop has happened yet" is a real precondition: before the
+        // handoff there is nothing to keep alive.
+        //
+        // The previous guard also bailed out when the core was *stopped*
+        // (`DCTL.RUN_STOP == 0`) or when `QMP_PHY_READY` was set. That is backwards
+        // for a keepalive: a stopped controller is exactly when RPMh is most likely
+        // to have collapsed the domain, and the body below only re-votes the rails,
+        // the GDSC and the clock branches - the function's own contract says it
+        // "does not retune DWC3 clocks, reset the controller, or touch QMP state".
+        // So it is safe with the core halted, and with the old guard the keepalive
+        // could be skipped for the whole window in which it was needed.
+        if RUN_STOP_TICK == 0 {
             return;
         }
         let frequency = arch_counter_frequency();
@@ -9598,6 +11015,130 @@ unsafe fn restart_gadget_at_runstop(super_speed: bool) -> bool {
     }
 }
 
+/// Publish a 4-bit word from a live controller register as pull-up pulses.
+///
+/// This is the readout that the attach-latency carriers could not provide: a
+/// post-Run/Stop word needs a channel that is still observable after the
+/// pull-up has risen, and the host-side CCS bit is exactly that - the root
+/// hub's own class `GetPortStatus` traffic reports it every time it changes
+/// (see `tools/bramble_port_ccs.py`). `RUN_STOP` reaches the PHY only on the
+/// `run_stop_device_no_readback` path, i.e. in gate runs, so this publisher is
+/// a no-op unless the run used `--signal-cmd-gate`.
+///
+/// Encoding: a 1000 ms marker pulse, then one pulse per bit with a width that
+/// carries the value - bit b set is 200 + 200*b ms (200/400/600/800), bit b
+/// clear is a 50 ms blip. Five pulses fit in the ~5.7 s window with margin.
+///
+/// The pulse uses `run_stop_device`, not `run_stop_device_no_readback`, and
+/// that is not incidental: `prepare_run_stop_device` saves and clears
+/// `GUSB2PHYCFG0.SUSPHY | ENBLSLPM` and both callers restore them afterwards,
+/// so the no-readback variant re-suspends the PHY immediately after the
+/// `DCTL` write. A start takes effect before that restore (the handoff's own
+/// pull-up rises this way), but a stop needs the halt handshake to run first -
+/// which is exactly what `wait_device_state` provides. Run `232050.0` proved
+/// the difference: the same publisher emitted no pulse at all through the
+/// no-readback variant, while the blip branch, which uses `run_stop_device`,
+/// produced clean pulses in `219752.0` / `221600.0`.
+unsafe fn ccs_pulse(stop_ms: u64) {
+    let _ = unsafe { run_stop_device(false) };
+    readout_keepalive_delay_ms(stop_ms);
+    let _ = unsafe { run_stop_device(true) };
+    readout_keepalive_delay_ms(200);
+}
+
+/// The same CCS pulse, but through the *no-readback* Run/Stop gate.
+///
+/// `ep0_signal_drop_pullup()` records the reason this exists
+/// (`usb.rs:12011-12017`): on Bramble the host-visible pull-up is owned by DCTL
+/// Run/Stop, not by the Qualcomm session/VBUS glue, and
+/// `run_stop_device_no_readback` is "the proven host-visible gate" - it
+/// deliberately skips the halt readback so a wedged or busy core cannot hide the
+/// transition. The plain `ccs_pulse` above waits on that readback (up to 2 s per
+/// call), which is why pulses issued *after* the host has started enumerating
+/// never reached the host (runs `336520.0` and `350817.0`: no pulses at all in
+/// the CCS timeline, while the same channel works fine before the attach). Use
+/// this variant for any readout that must run at attach time.
+unsafe fn ccs_pulse_no_readback(stop_ms: u64) {
+    let _ = unsafe { run_stop_device_no_readback(false) };
+    readout_keepalive_delay_ms(stop_ms);
+    let _ = unsafe { run_stop_device_no_readback(true) };
+    readout_keepalive_delay_ms(200);
+}
+
+/// Publish a small count as *host-visible attach lines* by cycling DCTL Run/Stop.
+///
+/// This is the only readout channel that works after the attach. The reason is
+/// recorded in `usb_probe.rs:1331-1372`: the QSCRATCH, DCTL and VBUSVLDEXT0
+/// pull-up *drop* primitives are electrically inert on this revision, so
+/// `ccs_pulse`-style pulses are invisible - but "DCTL Run/Stop is the one
+/// disconnect primitive the host actually sees", and each stop/run cycle makes
+/// the host print one "new high-speed USB device" line. The host-side decoder is
+/// therefore: attach-line count minus the first attach equals the published
+/// count.
+///
+/// The handset also self-resets ~5.5-8 s after the attach, so the cycles have to
+/// happen before that; ~8 s after the handoff is still inside the window.
+unsafe fn gate_cycle_publish(count: u32) {
+    for _ in 0..count.min(8) {
+        let _ = unsafe { gate_true_stop_device() };
+        readout_keepalive_delay_ms(250);
+        let _ = unsafe { gate_true_run_device() };
+        readout_keepalive_delay_ms(300);
+    }
+}
+
+unsafe fn publish_ccs_word(code: u32) {
+    unsafe {
+        ccs_pulse(1_000);
+        for bit in 0..4u64 {
+            let value = (code >> bit) & 1;
+            if value != 0 {
+                ccs_pulse(200 + 200 * bit);
+            } else {
+                ccs_pulse(50);
+            }
+        }
+    }
+}
+
+/// One-shot "did the core receive anything at all" readout.
+///
+/// The host-side CCS bit (the root hub's class `GetPortStatus`, decoded by
+/// `tools/bramble_port_ccs.py`) is a working device-to-host channel whenever
+/// the handoff took the `run_stop_device_no_readback` path - i.e. in gate runs.
+/// Dropping the pull-up once, at the first consumed device event, therefore
+/// publishes a single bit that no register readout can: the core saw host
+/// traffic (USB Reset, Connect Done, the first SETUP) or it saw nothing.
+/// Selected with `--utmi-postrun-readout usb2-live-eventdrop`; it is a no-op
+/// for every other selector, so it cannot perturb an existing run.
+static mut EVENT_DROP_DONE: bool = false;
+/// Set by the `usb2-live-susphy-active` selector once it has cleared
+/// `GUSB2PHYCFG0.SUSPHY`, so the same run also reports whether any device event
+/// arrives *after* the PHY is no longer suspended. That combination is the one
+/// measurement the earlier eventdrop runs could not make: `224475.0` and
+/// `225813.0` both ran with the PHY still suspended, so their "zero events"
+/// result could not distinguish "the PHY blocks the data path" from "the core
+/// never receives anything".
+static mut EVENT_DROP_ARMED: bool = false;
+
+unsafe fn publish_first_event_drop() {
+    unsafe {
+        if !EVENT_DROP_ARMED
+            && option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") != Some("usb2-live-eventdrop")
+        {
+            return;
+        }
+        if EVENT_DROP_DONE {
+            return;
+        }
+        EVENT_DROP_DONE = true;
+        // Only the no-readback Run/Stop reaches the PHY's pull-up switch (see
+        // the gate-path note on `run_stop_device`), and the drop must be long
+        // enough for the root hub's status URB to complete on the host.
+        ccs_pulse(300);
+    }
+}
+
 unsafe fn poll_ep0_event_ring() -> bool {
     if cfg!(fullerene_aarch64_usb_abl_event_consume) {
         return poll_ep0_event_ring_abl_style();
@@ -9722,6 +11263,7 @@ unsafe fn poll_ep0_event_ring() -> bool {
         write(GEVNTSIZ0, event_size as u32 & GEVNTSIZ_SIZE_MASK);
         core::arch::asm!("dsb sy", options(nostack));
     }
+    unsafe { publish_first_event_drop() };
     true
 }
 
@@ -11209,6 +12751,11 @@ pub fn poll() {
         if mmio_quiet_active() {
             return;
         }
+        // Eventless SETUP path: `GEVNTCOUNT0` stays 0 on this handoff even
+        // though the host's traffic reaches the controller, so the EP0 SETUP
+        // buffer is polled directly to answer the host's GET_DESCRIPTOR.
+        // A no-op unless `--utmi-postrun-readout usb2-live-setup-poll`.
+        let _ = poll_setup_buffer();
         link_on_sample();
         let runtime = USB_RUNTIME_STATE;
         // In the no-SMMU differential the whole point is to never touch the
@@ -11307,6 +12854,135 @@ pub fn poll() {
             // read-only command.
             POST_RUNSTOP_PROBE_PENDING = false;
             let _ = post_runstop_event_dma_probe();
+        }
+        // Attach-time one-bit readout (see `DEFERRED_READOUT_KIND`). This runs
+        // here, in the polling owner, rather than inside the handoff, so the
+        // reading reflects the state the host actually attached to and reset -
+        // which is the only point at which questions about the event machinery
+        // can be answered at all.
+        if DEFERRED_READOUT_KIND != 0 {
+            // Trigger on the host actually driving the bus, not on a fixed delay.
+            // Measured timing (`354670.0`, host kernel log): the host detects the
+            // attach at ~6.2 s (its debounce), logs "new high-speed USB device
+            // number N", and fails the descriptor read only 588 ms later - so the
+            // whole host-visible window is ~0.6 s, and the old fixed 8 s delay
+            // (`POST_RUNSTOP_PROBE_DELAY_SECS`) fired *after* the host had already
+            // given up. `DSTS.USBLNKST` cannot be the trigger because it reads
+            // "On" from the very start (`305671.0`), but `DSTS.SOFFN` only
+            // advances once the host is sending SOFs, i.e. once it is really
+            // talking to us - the first SOF arrives within milliseconds of the
+            // reset that precedes the SETUP.
+            //
+            // The first poll after the handoff only *arms* the trigger with the
+            // current frame number; the action fires on the next change. Arming
+            // inside the branches would be easy to forget, and run `358131.0`
+            // showed what happens without it: with a sentinel initial value the
+            // condition was true immediately, so the action ran ~1 s after the
+            // handoff, before the host had attached.
+            const SOFFN_MASK_POLL: u32 = 0x3fff << 3;
+            let soffn = unsafe { read(DSTS) } & SOFFN_MASK_POLL;
+            let kind_now = unsafe { DEFERRED_READOUT_KIND };
+            // Retained-trace marker: the only instrument left that can prove the
+            // deferred block ran at all. The host-visible channels are exhausted -
+            // CCS pulses use primitives that are inert on this revision
+            // (`usb_probe.rs:1331`) and the Run/Stop gates emit nothing while the
+            // device is stuck pre-configuration. This lands in `USB_TRACE` in DRAM,
+            // which a later boot can read back through `prev_boot_*`. One-shot: this
+            // block is evaluated on every poll, so an unguarded marker would flood
+            // the ring and erase the events that explain the handoff.
+            if !unsafe { DEFR_MARKED } {
+                unsafe {
+                    DEFR_MARKED = true;
+                    trace_event(
+                        TRACE_PROBE_WATCHDOG,
+                        0x4445_4652, // "DEFR": the deferred block is being evaluated
+                        kind_now,
+                        u32::from(arch_counter() >= POST_RUNSTOP_PROBE_NOT_BEFORE),
+                        0,
+                        read(DSTS),
+                    );
+                }
+            }
+            // Kind 5 (deliberate re-attach) wants to run *after* the host has
+            // given up, so it uses the time delay; the readout kinds wait for the
+            // host to actually drive the bus.
+            let fire = if kind_now >= 5 {
+                unsafe { arch_counter() >= POST_RUNSTOP_PROBE_NOT_BEFORE }
+            } else if !DEFERRED_SOFFN_ARMED {
+                DEFERRED_SOFFN_ARMED = true;
+                LAST_DEFERRED_SOFFN = soffn;
+                false
+            } else {
+                soffn != LAST_DEFERRED_SOFFN
+            };
+            if fire {
+                LAST_DEFERRED_SOFFN = soffn;
+                let kind = DEFERRED_READOUT_KIND;
+                DEFERRED_READOUT_KIND = 0;
+                if kind == 4 {
+                    // Fix candidate: run the event-path bus-reset recovery while
+                    // the host is still retrying, instead of never (nothing else
+                    // can reach it when the core posts no events - `usb.rs:168`).
+                    unsafe { restart_control_after_reset() };
+                }
+                if kind == 5 {
+                    // Deliberate re-attach: the host's first attempt has already
+                    // failed (it gives up ~600 ms after attaching - entry 171), so
+                    // drop the pull-up, fully rebuild EP0, then re-publish. The
+                    // observable is the host kernel log: a second attach followed
+                    // by a successful descriptor read needs no CCS channel.
+                    unsafe {
+                        ep0_signal_drop_pullup();
+                        readout_keepalive_delay_ms(400);
+                        let _ = u0_arm_window_recovery();
+                        readout_keepalive_delay_ms(200);
+                        ep0_signal_publish_pullup();
+                    }
+                }
+                if kind == 9 {
+                    // Positive control: two unconditional cycles.
+                    unsafe { gate_cycle_publish(2) };
+                }
+                if kind == 7 {
+                    // Publish `diag_readout_code()` as extra attach lines.
+                    unsafe { gate_cycle_publish(diag_readout_code().clamp(1, 6)) };
+                }
+                if kind == 8 {
+                    // One extra attach line iff EP0's SETUP transfer is armed.
+                    if unsafe { EP0_SETUP_ARMED } {
+                        unsafe { gate_cycle_publish(1) };
+                    }
+                }
+                // The CCS pulse channel is skipped for the gate kinds: the pull-up
+                // drop primitives are inert on this revision, so a pulse would be
+                // invisible and only waste the window before the handset collapses.
+                if kind <= 4 {
+                    // Must use the no-readback gate: the plain `ccs_pulse` waits on
+                    // the Run/Stop halt readback, which is exactly what stops pulses
+                    // reaching the host once enumeration has started (`336520.0`,
+                    // `350817.0`).
+                    unsafe { ccs_pulse_no_readback(1_000) };
+                    let bit = unsafe {
+                        match kind {
+                            1 => {
+                                // Is the event ring memory non-zero? The ring retains
+                                // what the core wrote, so this distinguishes "the core
+                                // never posted" from "posted and consumed".
+                                let base = ep0_event_dma_base();
+                                cache_invalidate(base, 64);
+                                let words = core::slice::from_raw_parts(base as *const u32, 16);
+                                words.iter().any(|word| *word != 0)
+                            }
+                            2 => read(DEVTEN) != 0,
+                            3 => read(DCFG) & DCFG_DEVADDR_MASK == 0,
+                            _ => false,
+                        }
+                    };
+                    if bit {
+                        unsafe { ccs_pulse_no_readback(300) };
+                    }
+                }
+            }
         }
         if !event_seen {
             drain_gsi_event_buffers();

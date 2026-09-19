@@ -2382,7 +2382,7 @@ impl JournalGuard {
             .to_owned();
         let log = File::create(run_dir.join("kernel.log"))?;
         let child = Command::new("journalctl")
-            .args(["-kf", "-o", "short-iso", "--since", "now", "--no-pager"])
+            .args(["-kf", "-o", "short-precise", "--since", "now", "--no-pager"])
             .stdout(Stdio::from(log))
             .stderr(Stdio::null())
             .spawn()?;
@@ -2395,7 +2395,14 @@ impl JournalGuard {
 
     fn save_final(&self) {
         let output = Command::new("journalctl")
-            .args(["-k", "--since", &self.start_iso, "--no-pager"])
+            .args([
+                "-k",
+                "-o",
+                "short-precise",
+                "--since",
+                &self.start_iso,
+                "--no-pager",
+            ])
             .output();
         if let Ok(output) = output {
             let _ = fs::write(self.run_dir.join("kernel-final.log"), output.stdout);

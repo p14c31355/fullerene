@@ -889,6 +889,31 @@ fn main() {
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_HSPHY_RESUME_CLOCKS_AFTER_RESET"
         );
+        // Every env var this script *reads* must also be declared with
+        // `rerun-if-env-changed`, otherwise Cargo reuses the cached build-script
+        // output when only that variable changes and the A/B flag silently does
+        // nothing: the handset boots the previous kernel and the run is reported
+        // as a negative result. That failure mode cost a whole A/B campaign on
+        // 2026-09-20, so the selectors that were missing the declaration are
+        // listed here and `audit_env_rerun_declarations()` keeps the file honest.
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_TRB_COMPLETION_FALLBACK");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_GADGET_START_ONLY_AT_RUNSTOP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_MODERN_DCTL_PRESERVE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_CLEAR_USB3_SUSPHY_AFTER_RUNSTOP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_CONNDONE_CLEAR_HIRD");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_CORE_RESET_AT_RUNSTOP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_ARM_WINDOW_RECOVERY");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_CLEAR_SUSPHY_AFTER_RESET");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_CLEAR_SUSPHY_AFTER_RUNSTOP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_EXTENDED_SETUP_ARM");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_QPR1_UTMI_POST_RESET_ONLY");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB3_LINK_TRAINING_AFTER_RESET");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_ALL_REGULATOR_SETS");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_CLEAR_DATAPATH_OVERRIDE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_CLEAR_POWER_DOWN");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_NORMAL_OPMODE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_POWER_AFTER_RUNSTOP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_RESET_DELAY_150");
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_RESTORE_SUSPEND_N_AFTER_RUNSTOP").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_restore_suspend_n_after_runstop");
         }
@@ -2221,6 +2246,48 @@ fn main() {
         "Emulsion",
     ) {
         println!("cargo:rustc-cfg=have_emulsion_wasm");
+    }
+    audit_env_rerun_declarations();
+}
+
+/// Warn, at build time, about any `FULLERENE_*` variable this script reads
+/// without also declaring `rerun-if-env-changed`.
+///
+/// Cargo caches build-script output. When only an undeclared variable changes the
+/// script is not re-run, `rustc-env` keeps its previous value, and an A/B flag
+/// silently does nothing - the board boots the *previous* kernel and the run is
+/// recorded as a negative result. That is exactly what invalidated the whole A/B
+/// campaign on 2026-09-20, so the invariant is now checked mechanically. It is a
+/// warning rather than a panic so a false positive can never block a build.
+fn audit_env_rerun_declarations() {
+    let Ok(source) = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs")) else {
+        return;
+    };
+    let mut declared = std::collections::BTreeSet::new();
+    let mut read = std::collections::BTreeSet::new();
+    for line in source.lines() {
+        if let Some(rest) = line.split("rerun-if-env-changed=").nth(1) {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_uppercase() || *c == '_' || c.is_ascii_digit())
+                .collect();
+            if !name.is_empty() {
+                declared.insert(name);
+            }
+        }
+        for marker in ["env::var(\"", "env::var_os(\""] {
+            if let Some(rest) = line.split(marker).nth(1) {
+                let name: String = rest.chars().take_while(|c| *c != '"').collect();
+                if name.starts_with("FULLERENE_") {
+                    read.insert(name);
+                }
+            }
+        }
+    }
+    for name in read.difference(&declared) {
+        println!(
+            "cargo:warning=build.rs reads {name} without a matching rerun-if-env-changed, so changing it alone would not rebuild the kernel"
+        );
     }
 }
 

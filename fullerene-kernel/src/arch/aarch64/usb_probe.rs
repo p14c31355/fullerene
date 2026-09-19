@@ -900,6 +900,8 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // 0.5 s cadence so the SETUP window and the parks that follow it run
     // inside a live core.
     let mut next_keepalive = probe_counter().saturating_add(frequency / 2);
+    // `cyclestorm` channel test: next Run/Stop cycle deadline.
+    let mut next_cycle = 0u64;
     // lnk-nib was sampled at entry, before the re-reset.
     loop {
         usb::wdt_pet();
@@ -937,7 +939,16 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             trace_gate(0x4445_5600 | u32::from(stopped));
             usb::park_for_seconds(30);
         }
-        if probe_counter() >= next_keepalive {
+        // `nokeepalive` is the NEGATIVE arm of the domain-collapse test: skip the
+        // 500 ms rail/GDSC re-vote entirely, leaving the domain with no software
+        // keepalive at all (the kernel-side one is compiled out unless
+        // `--usb2-runtime-power-keepalive` is passed, and the gate arms below do
+        // not pass it). If RPMh really collapses the USB2 domain while the host is
+        // enumerating, this arm must fail *differently* from the baseline - no
+        // attach at all, a different error, or a much shorter attach-to-error
+        // delta. If the two arms are indistinguishable, the collapse hypothesis is
+        // dead and the fault is inside the core/PHY rather than in platform power.
+        if !cmd_gate_is("nokeepalive") && probe_counter() >= next_keepalive {
             let _ = unsafe {
                 platform::bramble::refresh_usb_domain_votes(
                     platform::bramble::UsbBusVote::Nominal,
@@ -946,6 +957,25 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             };
             let _ = unsafe { platform::bramble::force_enable_usb30_gdsc() };
             next_keepalive = probe_counter().saturating_add(frequency / 2);
+        }
+        // `cyclestorm` is a CHANNEL TEST, not a measurement: drive Run/Stop cycles
+        // repeatedly across the host's attach window. The host prints one "new
+        // high-speed USB device" line per re-attach, so a channel that works shows
+        // more than the single baseline line. Timing is the whole point - the host
+        // attaches ~6.2 s after the handoff and the handset self-resets 5.5-8 s
+        // after the attach, so the cycles must land in that middle window; a single
+        // action at +2 s (before the host listens) or +8 s (after the kernel is
+        // gone) proves nothing. Start at 4 s and cycle every 400 ms until the loop
+        // exits, so part of the storm is guaranteed to overlap the window.
+        if cmd_gate_is("cyclestorm") && probe_counter() >= frequency.saturating_mul(4) {
+            let now = probe_counter();
+            if now >= next_cycle {
+                let _ = usb::gate_true_stop_device_fast();
+                usb::poll();
+                let _ = usb::gate_true_run_device();
+                usb::poll();
+                next_cycle = now.saturating_add(frequency.saturating_mul(2) / 5);
+            }
         }
         if (usb::probe_ep0_progress() || u0_armed) && !gate_active {
             // Enumeration succeeded: stop signaling and enter the stable poll loop.

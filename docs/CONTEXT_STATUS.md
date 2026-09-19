@@ -18,7 +18,7 @@ targeted section before decompressing either archive.
 | FullereneOS AArch64 port | Boot the real FullereneOS runtime on Bramble | Early bring-up; generic runtime not yet entered |
 | Recovery safety | Failed handoff returns to Android without persistent writes | Confirmed for the recorded RAM-only runs |
 
-## Current state (last evidence update: 2026-09-16)
+## Current state (last evidence update: 2026-09-19 / measurement channel audit)
 
 - The only `1234:0001` observation was produced by a prohibited Android
   configfs rebind. No Fullerene-owned descriptor success has been observed.
@@ -1028,6 +1028,151 @@ targeted section before decompressing either archive.
   path are alive, but it does not distinguish an analog HS-PHY/RX failure
   from a DWC3 event/SOF-ingress failure. The observation used only the host
   journal; no device command or Configfs operation was issued.
+- Runs `159978.0` and `162719.0` (2026-09-19, HEAD `9b3174a0`) re-issued the
+  current source-exact direct-USB2 control with the integrated passive usbmon
+  capture and the automatic ADB→Fastboot path. Both artifacts passed the QEMU
+  preflight and the Bramble image audit with the same SHA-256
+  `61b7dfc28a4f466cd07ba47396d15a10351c7731d31c6a05623e011679cb7181`.
+  Both reproduced the known boundary: a Fullerene high-speed attach on the
+  host's USB2 bus (`usb 1-1`, `new high-speed USB device number 5/6`), then
+  the address-0 `GET_DESCRIPTOR` zero-payload failure, no `1234:0001`, then
+  stock Android `18d1:4ee7` with `bootreason=watchdog` and the automatic
+  Fastboot `18d1:4ee0` return.
+- `159978.0` used the documented 30-second enumeration window. Its attach
+  landed at `11:19:35 JST` (≈38 s after `fastboot boot`), after the capture
+  was finalized at `capture_stopped_after_boot_ms=32810`, so that run's
+  usbmon file (15,462,060 bytes, 98,015 records, `11:18:42.5`–`11:19:29.9`,
+  SHA-256 `1bed0f8f324ec3519f668deea1192656db3e5bc55b4db8b6d43daba54671081c`)
+  contains no control transfer to the Fullerene device. Its
+  `usb-attach-or-descriptor-failure--110` classification therefore rests on
+  the host kernel log only (`device descriptor read/64, error -110` at
+  `11:19:40 JST`). Keep `--enum-timeout` above the attach latency before
+  citing usbmon evidence for a run.
+- `162719.0` repeated the same image with `--enum-timeout 60`
+  (`capture_stopped_after_boot_ms=62931`). usbmon retained 23,659,279 bytes /
+  150,172 records (SHA-256
+  `cd54633a5f1551d7d00c0edfe9ad089ac99d5f7db798506b57dbb2df64fa9730`). An
+  independent parse of the raw capture (48-byte `mon_bin_hdr` stride,
+  re-derived against the live layout: 150,172 records, all field-sane, exact
+  EOF) shows the full descriptor signature on bus 1, address 0, endpoint
+  `0x80`: four `GET_DESCRIPTOR(Device)` submissions with `wLength=64` and
+  `status=-115`, one completion with `status=-2` (`len=0`, `cap=0`) 5.411 s
+  after its submit — the host's `-110` at `11:27:46 JST` — followed by three
+  immediate completions with `status=-71` (`len=0`, `cap=0`). HS attach was
+  `11:27:40 JST`, Android `18d1:4ee7` returned at `11:28:07` and Fastboot
+  `18d1:4ee0` at `11:28:18`. This reproduces the recorded zero-payload
+  pre-descriptor boundary on the current HEAD artifact; no new source
+  distinction was introduced.
+- 2026-09-19 measurement-channel audit (runs `177188.0`, `178863.0`,
+  `181751.0`, `185452.0`, `188479.0`, `191712.0`, `194975.0`). The harness now
+  captures the host journal with microsecond timestamps
+  (`journalctl -o short-precise`), and the local helper
+  `tools/bramble_attach_timing.py` (the `tools/` directory is deliberately
+  outside Git scope) decodes a run's attach/descriptor timeline from it.
+  Measured with that precision:
+  - the Fullerene attach latency repeats to **109 ms spread / 77 ms stdev**
+    across runs (`+37245.056 ms` vs `+37136.073 ms`), and the attach-to-`-110`
+    interval is `5172.001 ms` on the baseline. The device-side value channels
+    that encode a code as a pre-attach delay are therefore decodable at ~1 s
+    buckets; earlier "inconclusive" verdicts on that channel were a
+    measurement-resolution artifact, not a transport failure.
+  - the **post-Run/Stop readout site cannot move any host timestamp**. Run
+    `178863.0` used the existing `hsphy-suspend-n-safe` 0/4/8 s encoding there
+    and the attach (`+37136 ms`), the address-0 timeout (`+5449.966 ms` after
+    the attach) and the Android return were all unchanged. That site's
+    encoding has never been host-observable in the USB2 profile.
+  - a **long pre-attach delay removes the attach entirely**. Runs `181751.0`
+    and `185452.0` used the new `usb2-live-domain` selector (15 s of delay)
+    before Run/Stop: no Fullerene HS attach appeared at all and Android
+    returned at `+77.4 s`/`+77.5 s` instead of `+63.6 s`. The second run added
+    a keepalive re-vote of the CX/interconnect/rail votes and the USB30 GDSC
+    every 500 ms and the attach still did not appear, so the usable pre-attach
+    readout budget is only a few seconds, not the 15 s a 4-bit word needs.
+  - the controller **cannot drive a stop/run transition after Run/Stop**. Run
+    `188479.0` (`--utmi-postrun-readout usb2-live-blip-blockers`) emitted a
+    fixed marker pair and a coded pair after Run/Stop; the host saw **only one**
+    Fullerene high-speed attach, i.e. zero detach/re-attach pairs. The readout
+    path is provably reached (the pre-connect readout site above it changes
+    behaviour, and there is no early return between the two sites), so this is
+    a transport precondition failure: the core is not driving the pull-up
+    transition after the gadget start.
+  - the **park channel is preempted**. Run `194975.0`
+    (`--utmi-postrun-readout usb2-live-park-calib`) parked a fixed 60 s at the
+    same site; the Android return was `attach + 26.360 s`, identical to the
+    `attach + 26.331 s` baseline. Something resets the handset about 6 s after
+    the attach regardless of the probe's own park/reset, so `park_for_seconds`
+    cannot carry a post-Run/Stop word either.
+  Net: of the four device-to-host channels in the tree, only the pre-attach
+  attach-latency channel is demonstrably usable, and its budget is a few
+  seconds. A post-Run/Stop word needs a different carrier (see "Next useful
+  work").
+- Two follow-up probes of the same question, both negative:
+  - `GUSB2PHYCFG.SUSPHY` does **not** hide the pull-up on this profile. Run
+    `199608.0` (`--usb2-susphy` on the baseline) still produced the Fullerene
+    HS attach (`+37269.995 ms`, address-0 timeout `+5552.045 ms` after it), so
+    the "hide the first attach, publish through it" carrier cannot be built
+    from SUSPHY. The boundary file's SUSPHY-suppresses-the-pull-up note came
+    from the SuperSpeed profile and does not transfer to the USB2 direct path.
+  - the ~40 s biter is **not** the secure watchdog either: `usb_probe_entry`
+    already calls `usb::secure_wdt_disable()` unconditionally on this profile
+    (`usb_probe.rs:1869-1871`, the XBL/ABL-armed ~17 s secure bite), and the
+    handset still dies before any park can complete. The APSS watchdog is also
+    excluded (both `park_for_seconds()` and the poll loop pet it). Whatever
+    fires is not petted by anything the probe currently writes. The "about 6 s
+    after the attach" figure is an inference from the Android-return time
+    (`attach + 26.33 s`) minus an assumed ~20 s Android boot; the boot constant
+    itself is not yet measured, so treat the exact biter deadline as
+    unresolved - only its *preemption of every park* is established.
+  - host-side note: a failed address-0 device is not registered with udev, so
+    the reset instant cannot be read from a port `remove` event; the local
+    helper `tools/bramble_usb_monitor.py` records the timestamped uevent
+    stream and shows only the SuperSpeed (2-5) Fastboot/Android transitions
+    (`fastboot boot` disconnect -> Android `18d1:4ee7` = 62.9 s in run
+    `203229.0`).
+- Run `205635.0` (2026-09-19) is a NEW source-ordered delta that had never been
+  run: the baseline plus `--usb2-source-devten-before-runstop`. The diff of
+  `tmp/audit/fullerene_usb2_handoff.md` against
+  `tmp/audit/linux_usb2_device_start.md` shows the baseline writes `DEVTEN`
+  only *after* Run/Stop (item 122: the `!start_after_connect` guard skips it;
+  item 166: written at the end of the deferred arm window) with mask `0x7f`,
+  while Linux writes `DEVTEN = 0x1e17` *before* `DCTL.RUN_STOP`. The host's
+  port reset and first SETUP happen ~0.17 s after the attach, i.e. while
+  `DEVTEN = 0`, so `USB_RESET`/`CONNECT_DONE` events cannot be generated at
+  that moment regardless of PHY state - an explanation for "no event at all"
+  that does not require a dead RX path. Result of the run: the attach was
+  preserved (`+37113.035 ms`, artifact SHA
+  `901f7d5e4bedcc189a66a2476dea969ca242862cdb06a5d380b0babc69b09f0b`), the
+  address-0 timeout still occurred (`+5457.024 ms` after the attach), and no
+  `1234:0001` appeared. So the DEVTEN placement alone does not restore EP0
+  response, but it does not destabilize the attach either - the ordering
+  differential is now closed as a single variable, and the next question in
+  that chain is the EP0 arm timing: the arm window opens only after the
+  `DSTS.DEVCTRLHLT` wait (up to 2 s, `control.rs:200-233`) and lasts 400 ms,
+  so the first SETUP can arrive long before EP0 is armed. `try_arm_setup()`
+  itself refuses to arm while `DSTS.DEVCTRLHLT` is set (`usb.rs:3850-3857`),
+  which the same stale-halt case would trigger.
+- A vendor-source audit of the DWC3 device-event path (`tmp/audit/`, three
+  citation-backed documents) corrected one of the project's load-bearing
+  observations: **`DEVTEN.SOFEN` is never written anywhere in the qpr1 tree**
+  (`gadget.c:2324-2343` deliberately enables all device events *except*
+  Start/End-of-Frame). A device built from that driver therefore never
+  observes SOF events, so the earlier "no SOF" readout cannot be used as
+  evidence of a dead USB2 PHY receive path - it is a false negative. The same
+  audit lists the states that *do* stop device-event generation while the
+  controller still retires endpoint commands: `DCTL.CSFTRST` left asserted
+  (`gadget.c:2109-2119`), `GCTL.CORESOFTRESET` left asserted
+  (`dwc3-msm.c:2028-2030`), and `DEVTEN` never programmed. The first is
+  already excluded on the baseline path (the handoff aborts when
+  `device_soft_reset()` cannot clear CSFTRST, and the baseline does attach);
+  the other two remain unmeasured *after* Run/Stop because no transport can
+  currently publish a post-Run/Stop word.
+- New readout selectors were added for that work and are reachable through the
+  existing `--utmi-preconnect-readout` / `--utmi-postrun-readout` flags
+  (a selector string needs no harness plumbing): `usb2-live-domain`
+  (GSNPSID / USB30 GDSC / core branch / mock-UTMI branch) and
+  `usb2-live-blockers` (GSNPSID / DCTL.CSFTRST / GCTL.CORESOFTRESET /
+  DEVTEN non-zero), with `park-` and `blip-` transport prefixes for the
+  post-Run/Stop site and `calib` as the fixed-60 s park calibration.
 
 ## Fixed hardware and safety contract
 
@@ -2657,6 +2802,1612 @@ unmeasured HS path until a SuperSpeed-specific trace justifies it.
      Together with the earlier source-exact PHY/clock/power and IRQ-route
      matrix, this leaves HS-PHY/secure-firmware or board-level ownership as
      the remaining external blocker; no configfs or persistent write was used.
+
+142. Runs `159978.0` and `162719.0` (2026-09-19) re-issued the current
+     source-exact direct-USB2 control on HEAD `9b3174a0` with passive usbmon
+     and the automatic ADB→Fastboot path. Both artifacts were identical
+     (SHA-256 `61b7dfc28a4f466cd07ba47396d15a10351c7731d31c6a05623e011679cb7181`),
+     both reached the Fullerene HS attach and the zero-payload address-0
+     descriptor boundary, and neither produced `1234:0001`; Android and
+     Fastboot recovery completed automatically. The only observation-window
+     difference was decisive for evidence quality: the 30-second window
+     (`159978.0`) closed before the ≈38-second attach, so that capture holds
+     no descriptor records, while `--enum-timeout 60` (`162719.0`) captured
+     four `GET_DESCRIPTOR` submissions ending in one `status=-2` and three
+     `status=-71` zero-payload completions. Use ≥60 s for any run whose usbmon
+     evidence will be cited.
+
+143. A Bramble DT re-audit (devicetree branch
+     `android-msm-bramble-4.19-android11-qpr1`, commit `5d23766`) confirmed the
+     DT-driven register surface is still exhausted: the fullerene `QMP_INIT`
+     table is byte-identical to `lito-bramble-usb.dtsi` (146 triples,
+     machine-compared after resolving the `USB3_DP_*` bindings), the board
+     override `qcom,param-override-seq` is the two-entry `0x67/0x6c`,
+     `0xc8/0x70` form, and the only DT properties without a fullerene
+     counterpart have no reachable consumer at this boundary
+     (`qcom,vbus-valid-override` only sets `PHY_VBUS_VALID_OVERRIDE` on the
+     QMP SuperSpeed/DP PHY; `qcom,usb-audio-intr-num` is consumed by
+     `sound/usb/usb_audio_qmi_svc.c`). The next step therefore remains the
+     source-backed USB2 HS-PHY RX/SOF versus DWC3 event-ingress
+     discriminator, not another DT-driven or EP0/TRB delta.
+
+144. The 2026-09-19 measurement-channel audit (see "Current state") leaves one
+     usable device-to-host carrier: the pre-attach attach-latency channel, whose
+     budget is only a few seconds because an unidentified watchdog resets the
+     handset about 6 s after the attach. Two options for the next step, in
+     preference order:
+     (a) **Re-scope the readout to the budget.** Publish a 3-bit word per run
+         with ~750 ms buckets (max 5.25 s) through the pre-connect site, split
+         the 4-bit `usb2-live-blockers` word across two runs, and calibrate the
+         buckets against the measured 109 ms attach-latency spread. This can
+         only sample the state *before* Run/Stop, which already excludes a
+         stuck `DCTL.CSFTRST` on the baseline path; its value is confirming
+         `GCTL.CORESOFTRESET` and `DEVTEN` before the gadget start.
+     (b) **Give the post-Run/Stop word a carrier that survives the ~6 s
+         biter.** The only candidates without new hardware are the PMIC PON
+         scratch registers the probe already reads (`--pon-readout` reads PON
+         registers over SPMI, so an SPMI *write* path may be reachable) or
+         IMEM. Both persist across a warm reset and are outside the current
+         read-only safety contract, so they must not be used without the
+         user's explicit approval; a RAM-only carrier cannot work because
+         DRAM is reloaded by every `fastboot boot`.
+     (c) **Hide the first attach, then publish through it.** ~~The boundary-state
+         audit records that `GUSB2PHYCFG.SUSPHY=1` suppresses the USB2 pull-up.~~
+         **Ruled out by run `199608.0`:** `--usb2-susphy` on the baseline still
+         produces the host-visible attach, so SUSPHY cannot hide it on the USB2
+         direct path. A 1-bit variant of the same idea remains open but needs a
+         different hide mechanism: assert `DCTL.RUN_STOP` with the HS-PHY held
+         in reset or powered down (the `HSPHY_UTMI_CTRL5.POR` / PHY
+         power-down paths the tree already writes), read the
+         `usb2-live-blockers` word, then release the PHY reset only when the
+         sampled bit is set - one bit per run, no timing budget, read-only.
+         Verify the hide mechanism first: the attach must be absent on the
+         held-in-reset control run.
+     Also worth one run before any of these: identify the ~40 s biter. It is
+     not the APSS watchdog (`park_for_seconds()` pets it), and it is not the
+     secure watchdog (`usb_probe_entry` already disables that one at entry), so
+     the remaining candidates are the PMIC watchdog or a secure timer armed by
+     ABL. The probe's `--pon-readout` family already reads PM8150 PON
+     watchdog registers (`wd2`, `s1`, `s2`) through the attach-delay channel, so
+     a small-bucket readout of those registers is the cheapest next step -
+     if the biter can be identified and petted or masked, every transport above
+     becomes usable again.
+
+145. The leading source-backed hypothesis after run `205635.0` was the **EP0 arm
+     timing**, not the PHY. **Ruled out by run `208676.0`** (2026-09-19): the
+     baseline plus `--signal-probe --signal-cmd-gate noop`, which is the only
+     existing way to select `run_stop_device_no_readback(true)` on the handoff
+     (`usb.rs:6892-6897`; the gate flag is what sets
+     `FULLERENE_AARCH64_USB_PROBE_SINGLE_ATTEMPT`, `main.rs:5371-5377`). That
+     path skips the `DSTS.DEVCTRLHLT` wait entirely, so the 400 ms arm window
+     opens within milliseconds of the pull-up instead of up to 2 s later, well
+     before the host's first SETUP (about 0.17 s after the attach). Artifact
+     SHA `51a790d696cd731a211f338f48d7ef0165b762ca10a79ee9b52a06694278ea06`
+     confirms the build changed. Result: the attach was preserved
+     (`+39556.043 ms`), the address-0 timeout still fired `+5391.006 ms` after
+     the attach, and no `1234:0001` appeared. So EP0 was armed and its events
+     enabled per the baseline, the host still never got a response, and the
+     arm's position in time is not the discriminator. Combined with run
+     `205635.0` (DEVTEN before Run/Stop, arm late), both orderings of the two
+     source-order divergences are now individually closed negatives.
+     The remaining combination - DEVTEN before Run/Stop **and** the immediate
+     arm (Linux's own order) - is the only source-shaped patch left untried;
+     if it also fails at the same 5.4 s boundary, the fault is upstream of the
+     descriptor handshake (UTMI/PHY receive path or event ingress), which is
+     exactly the attribution `docs` still marks UNRESOLVED.
+     **That combination was then run: `210226.0`** (2026-09-19, baseline plus
+     `--signal-probe --signal-cmd-gate noop --usb2-source-devten-before-runstop`,
+     artifact SHA `f0f2904b969b5e70d7af56103b4b915c71d960ce9b008436bb726385bba16a10`).
+     Result: attach preserved (`+39460.015 ms`), address-0 timeout at attach
+     `+5549.035 ms`, no `1234:0001`. The boundary is the same to within the
+     run-to-run spread (attach -> -110 = 5172 / 5457 / 5391 / 5549 ms across
+     `177188.0`, `205635.0`, `208676.0`, `210226.0`).
+     Consequence, and the new bar for any further ordering patch: the two
+     DWC3 gadget-start ordering divergences from the Linux qpr1 baseline
+     (item 9 EP0 SETUP arm, item 10 DEVTEN placement) are now closed
+     individually *and* jointly, with the attach preserved in all three cases.
+     Ordering is therefore not the discriminator. The next question is not
+     "which write is misplaced" but "does the core receive host traffic at
+     all": with `DEVTEN` enabled before the pull-up, `USB_RESET` and
+     `CONNECT_DONE` are the events that should have been generated by the
+     host's own port reset at attach + about 0.17 s, and EP0 was armed before
+     the SETUP arrived. Reading that event mask is now the decisive
+     measurement, which puts the carrier problem of item 144 back in front of
+     everything else.
+
+146. **New host-side instrument (2026-09-19): the pull-up state itself, read
+     from usbmon.** A failed address-0 device gets no sysfs node and no udev
+     event, so neither channel can date the reset. But the root hub's class
+     `GetPortStatus` transfers are ordinary control URBs: their completions in
+     `usbmon-all.bin` carry `wPortStatus` (little-endian, first two bytes) and
+     `wPortChange`, and bit 0 of `wPortStatus` is CCS - the physical D+ pull-up.
+     That makes the pull-up a directly readable, microsecond-resolved host
+     channel which needs no cooperation from the handset at all.
+     * Baseline `212643.0`: CCS = 1 from attach - 0.225 s to attach + 5.698 s,
+       then CCS = 0 with CSC set. The reset is **attach + 5.70 s**, measured
+       rather than inferred. The earlier `attach + 6.2 s` figure came from
+       subtracting a 19.089 s Android-boot constant calibrated with
+       `fastboot reboot` (Fastboot device removal 1789794654.764 ->
+       `18d1:4ee7` 1789794673.853); a watchdog reset is apparently a few tenths
+       faster than a clean reboot, so prefer the CCS figure.
+     * The `-110` completion arrives at attach + 5.223 s; the pull-up drops
+       0.47 s later. The hub's port-reset retries (`PORT_RESET` on port 1 at
+       attach + 0.11 s, `C_PORT_RESET` clears) sit between them.
+     * Run `218259.0` (`--utmi-postrun-readout usb2-live-blip-2`) emitted four
+       deliberate `DCTL.RUN_STOP` writes (stop 0.3 s, run 1.0 s, stop 2.3 s,
+       run - `usb.rs:7064-7070`) and produced **zero CCS transitions** in the
+       whole window. Note that `usb2-live-blip-*` had never been run before:
+       run `188479.0`, which the notes credit with "the blip transport is
+       dead", actually used `usb2-live-blockers` and emitted no blips.
+     So the pull-up rose exactly once, at the handoff's Run/Stop, and could
+     never be moved again - while it stayed physically asserted. A D+ pull-up
+     is a resistor: it survives the PHY's logic dying. A core that still
+     answered `RUN_STOP` writes would have dropped it. Combined with (i) no
+     device events in any configuration that enables them, (ii) no EP0 response
+     with the arm ahead of the host SETUP, and (iii) the ordering family now
+     closed, the fault is localised to the **PHY/UTMI domain after the first
+     Run/Stop** (clock, reset, or rail), not to the DWC3 gadget-start sequence
+     and not to the endpoint path.
+     Next, in order:
+     (i) re-run the POR-clear gate with the CCS instrument: run
+         `--signal-probe --signal-cmd-gate hsphy-por-clear-after-runstop
+         --utmi-postrun-readout usb2-live-blip-2`. `1363832.0` and `196171.0`
+         closed that gate on the boundary alone ("does not move the
+         pre-descriptor boundary"), but a boundary cannot see whether the PHY
+         regained pull-up control; CCS can. If the blips then show transitions,
+         the PHY is revivable and the carrier works.
+     (ii) if CCS stays flat, sweep the PHY's own reset/clock/rail sources one
+         variable at a time (`--skip-usb2-phy-reset`, `--hsphy-ref-after-gctl`,
+         `--hsphy-vdd-lpm`, `--hsphy-all-regulator-sets`) while reading CCS,
+         which is now a free, per-run instrument.
+     (iii) only after the PHY answers should the pull-up-timing carrier be
+         designed; with CCS readable, a 0.3 s-grained word fits comfortably in
+         the 5.7 s window.
+     **Result of (i) and the discriminator, same day.** The pull-up CAN be
+     moved by the kernel after all, and the enabler is not the POR clear:
+     * `219752.0` = `--signal-probe --signal-cmd-gate hsphy-por-clear-after-runstop
+       --utmi-postrun-readout usb2-live-blip-2`: CCS drops at +0.027 s, rises at
+       +0.300 s, drops at +1.364 s - exactly the blip sequence's stop 0.3 s /
+       run 1.0 s / stop (`usb.rs:7064-7070`).
+     * `221600.0` = the same, but with `--signal-cmd-gate noop` so no POR write
+       happens: the **same three transitions at the same offsets**. So the POR
+       bit is not what held the pull-up.
+     * The one thing both share, and that `218259.0` (no gate) lacks, is
+       `run_stop_device_no_readback(true)` instead of `run_stop_device(true)`
+       (`control.rs:417` vs `:487`; selected by `FULLERENE_USB_PROBE_SINGLE_ATTEMPT`,
+       which only the gate flag sets). The two differ in exactly one respect:
+       `run_stop_device` runs `wait_device_state(!is_on)` - up to 2000 x 1 ms of
+       `DSTS` polling (`control.rs:200-233`) - before the handoff returns, so
+       the blips land ~2 s after Run/Stop instead of ~0.03 s after it. Either
+       the stale-halt poll itself, or the ~2 s of elapsed time, ends the window
+       in which `DCTL.RUN_STOP` still reaches the PHY's pull-up.
+     * In both blip runs the handset also lived far longer: Android returned
+       ~36 s after the attach instead of ~25.7 s, because the blips kept the
+       host re-enumerating and the host never reached its `-110` (both runs are
+       classified `Fullerene candidates: 0`, no descriptor error at all). That
+       is the first evidence that the ~5.7 s reset tracks the **host's failed
+       enumeration / port-disable state** rather than a fixed device-side
+       timer: interrupt the host's attempt and the reset slips.
+     This also re-opens the EP0 question with a new instrument. The next
+     measurement is no longer "can the pull-up move" but "does the core see the
+     host's SETUP": with `RUN_STOP` usable in the gate path, a one-shot
+     `RUN_STOP = 0` emitted from the EP0 event poll on the first consumed event
+     would drop CCS iff the core received anything at all. That single bit
+     separates "the RX/event path is dead" from "events arrive but the
+     descriptor/TRB path fails", which is what `--dma-cache-maintenance`
+     (corrected after the audit but **never booted in its corrected form**,
+     `docs` 357-372) and the endpoint-resource order would then be tested
+     against.
+     **That measurement was implemented and run, same day, and it came back
+     zero.** `publish_first_event_drop()` in `usb.rs` (called from
+     `poll_ep0_event_ring()` once per boot, selector
+     `--utmi-postrun-readout usb2-live-eventdrop`) drops the pull-up for 300 ms
+     the first time the event ring yields an event, so a CCS transition
+     published by the host's own `GetPortStatus` traffic proves the core posted
+     at least one device event.
+     * `224475.0` (gate path, baseline `DEVTEN` placement): CCS 1 at +0.000 s,
+       0 at +16.012 s. The single transition is the handset's reset, and the
+       reset itself slipped from the usual +5.7 s to +16 s in this
+       configuration.
+     * `225813.0` (gate path plus `--usb2-source-devten-before-runstop`, so
+       `DEVTEN = 0x7f` is written *before* the pull-up and `USB_RESET` /
+       `CONNECT_DONE` are enabled for the host's port reset at attach + 0.11 s;
+       artifact SHA
+       `c109c7015cc56fc852f13999c04e56c271806076cb57251b6076ac043028edb1`):
+       CCS 1 at +0.000 s, 0 at +5.924 s - again one transition, the reset, and
+       **no event-triggered drop at any point**, with the `-110` at
+       attach + 5.326 s.
+     So with (i) the pull-up demonstrably controllable, (ii) `DEVTEN` enabled
+     from before the pull-up, and (iii) the arm published before the host's
+     SETUP, the DWC3 posted **zero** device events. The host's high-speed
+     classification proves the PHY's analog handshake still works (the host
+     only reports `high-speed` after a device chirp), so the failure is not the
+     PHY's pull-up or its HS detection: it is the **UTMI data path or the
+     core's device-controller state**. `DSTS.DEVCTRLHLT` remaining set after the
+     Run/Stop write is the probe's own "common case" ("DWC3 RUN/STOP readback
+     timed out; continuing", `usb.rs:7085-7096`), and a halted device controller
+     is exactly a controller that posts no events and answers no SETUP while the
+     PHY keeps the pull-up up.
+     Consequence for the remaining work: stop probing the software side of the
+     descriptor path (ordering, arm, TRB/DMA cache, endpoint resources - none of
+     them can be reached if no event is ever posted) and attack the device
+     controller's start: what keeps `DEVCTRLHLT` set after `DCTL.RUN_STOP = 1`,
+     i.e. the core's clock/reset/power state (`GCTL`, `DCTL.CSFTRST`,
+     `GUSB2PHYCFG`, the USB2 PHY ref clock) rather than anything in the gadget
+     start sequence. The CCS instrument and `publish_first_event_drop()` now
+     give a cheap per-run verdict for any such change: an event means progress.
+
+147. Two biter candidates were closed on 2026-09-19, and one earlier reading
+     retracted:
+     * `ro.boot.bootreason` is `watchdog` for **every** run in the archive,
+       including runs classified `android-fallback` and one where adb was
+       absent, so it does not discriminate this reset from the workflow's
+       ordinary recovery resets. The "the biter is a watchdog (PON bootreason)"
+       reading must not be reused as evidence.
+     * APSS WDT: `wdt_pet()` re-arms bark 100 s / bite 110 s and pets on every
+       poll loop, including `park_for_seconds`; the reset at attach + 5.70 s is
+       therefore not an un-petted APSS bite.
+     * Secure WDT: `216068.0` (`--swdd-skip`, i.e. skip the entry
+       `secure_wdt_disable()` SMC) left everything unchanged - attach
+       +37.042 s, CCS drop at attach + 5.70 s, Android at attach + 25.860 s
+       versus 25.728 s for the baseline. Whatever the secure WDT is doing, it
+       is not observable as this reset.
+     What the reset *is* remains open; what is now known is that it lands
+     5.70 s after the pull-up in every run measured (attach -> reset spread
+     6.18-6.44 s across the 15 runs with usbmon), i.e. it is anchored to the
+     attach, not to the bootloader disconnect.
+
+148. **The CCS (pull-up) carrier works; its first words measured the software
+     state (item 149 corrects the `SUSPHY` reading - `SUSPHY = 1` turned out to
+     be Linux's own value, not a fault).** 2026-09-19.
+     * Carrier: `publish_ccs_word()` (`usb.rs`, selector
+       `--utmi-postrun-readout usb2-live-ccs-<word>` or the dedicated
+       `usb2-live-susphy-active`) emits a 1000 ms marker pulse and then one
+       pulse per bit, width-coded (bit b set = 200 + 200*b ms, clear = a ~50 ms
+       blip), by driving `DCTL.RUN_STOP` through `run_stop_device`. The host
+       reads it from the root hub's own `GetPortStatus` traffic with
+       `tools/bramble_port_ccs.py --pulses`. Runs `236171.0` (blockers word) and
+       `238423.0` (SUSPHY word) both decoded cleanly, so the project now has a
+       real device-to-host telemetry channel that survives past Run/Stop -
+       exactly the carrier item 144 said was missing.
+     * **The pulse must use `run_stop_device`, not
+       `run_stop_device_no_readback`.** `prepare_run_stop_device` saves and
+       clears `GUSB2PHYCFG0.SUSPHY | ENBLSLPM` and both callers restore them
+       afterwards (`control.rs:309-314`, `:473-476`, `:489-493`), so the
+       no-readback variant re-suspends the PHY immediately after the `DCTL`
+       write: a start still takes effect (the handoff's own pull-up rises that
+       way) but a stop needs the halt handshake that `wait_device_state`
+       provides. Run `232050.0` emitted no pulse at all through the
+       no-readback variant; `235137.0` (same selector, plus
+       `--usb2-source-devten-before-runstop`) also produced none; `236171.0`
+       with the normal variant and no extra flags produced the full word.
+     * **Measured word 1 - the reset states are clean.** `236171.0` decoded
+       `0b0001`: bit0 = 1 (`known_dwc_core_ip(GSNPSID)` - the core answers),
+       bit1 = 0 (`DCTL.CSFTRST` clear), bit2 = 0 (`GCTL.CORESOFTRESET` clear),
+       bit3 = 0 (`DEVTEN` not yet written, which is that run's own baseline
+       placement). So the three "event-stopping states" the probe's `blockers`
+       word was built around are **not** the cause: the core is out of soft
+       reset and answering register reads.
+     * **Measured word 2 - `SUSPHY` is SET at the end of the handoff.**
+       `238423.0` (`usb2-live-susphy-active`) decoded bit0 = 1: the
+       `GUSB2PHYCFG0` value the handoff restored has `SUSPHY = 1`, i.e. USB2 PHY
+       suspend enabled, at the moment the host starts enumerating. That is the
+       state that explains every earlier observation at once - the pull-up is a
+       resistor and stays up, the PHY's HS chirp still classifies the link as
+       high-speed, and the UTMI data path that would deliver device events is
+       not running.
+     * **Primary-source check.** The vendor qpr1 kernel's `dwc3_gadget_run_stop`
+       (`tmp/qpr1-msm/drivers/usb/dwc3/gadget.c:2136-2200`) never touches
+       `DWC3_GUSB2PHYCFG`; the save/clear/restore of `SUSPHY | ENBLSLPM` lives
+       in `dwc3_gadget_ep_cmd` (`gadget.c:387-410`), gated on
+       `dwc->gadget.speed <= USB_SPEED_HIGH`, for *endpoint commands*. Fullerene
+       mirrors that pattern in the Run/Stop path and restores the bits, so
+       whatever the Fastboot handoff left in `SUSPHY` is re-applied after the
+       pull-up has risen. In the vendor flow the PHY is resumed by the PHY
+       driver (`msm_hs_phy_set_suspend(phy, 0)` from the peripheral-start path),
+       not by the gadget's Run/Stop.
+     * **The boundary changed, but read it carefully.** In `238423.0`, clearing
+       `SUSPHY` and leaving it clear changed the host's failure from `-110` (no
+       response, first completion after 5.1 s) to **`-71`** - `usb 1-1: device
+       descriptor read/64, error -71` at attach + 1.149 s; `240489.0` (the same
+       clear plus `--hsphy-ref-after-runstop`) reproduced it exactly at
+       attach + 1.154 s, so the ref-clock resume adds nothing on top of the
+       `SUSPHY` clear. Comparing the raw captures keeps this honest: the
+       baseline `212643.0` has 4 `GET_DESCRIPTOR` submits whose completions are
+       `-2` after 5.109 s then `-71` (0.312 s) then `-71` twice immediately,
+       while `240489.0` has 6 submits whose completions are `-71` three times
+       immediately, then `-2` after 5.479 s, then `-71`. Both runs contain both
+       error codes; what changed is **which failure the kernel reports first**
+       and its timing. The immediate `-71` completions (dt ~ 0.000 s) are as
+       consistent with the xHCI rejecting the transfer as with a device
+       answering badly, so the correct claim is "the port's transaction
+       behaviour changed", **not** "the device is now heard on the bus".
+     * **`SUSPHY` alone is not the whole fault.** `243161.0` used the same
+       selector but with the eventdrop hook armed inside it (`EVENT_DROP_ARMED`,
+       so the same run also reports whether any device event arrives *after* the
+       PHY is un-suspended). Result: marker + one bit pulse, then **no
+       event-triggered drop at all** before the reset at +8.125 s. So even with
+       `SUSPHY` cleared and `DEVTEN` in force the DWC3 still posts zero device
+       events. The earlier "zero events" runs (`224475.0`, `225813.0`) could not
+       separate "the suspended PHY blocks the data path" from "the core receives
+       nothing"; this run does: it is the latter, or something upstream of
+       `SUSPHY` that a mere bit clear does not fix.
+     * Port-state note for future runs: `GetPortStatus` also carries
+       `PED`/speed/`PLS`, but for a USB2 protocol port the `PLS` field is
+       reserved in the xHCI spec, so the observed `PLS = 8` and speed `0` across
+       the whole window must not be read as "the port never reaches U0". What is
+       usable is `PED` (set only during the two port resets, `PR = 1`) and the
+       CCS bit, which is what the carrier uses.
+     Next (in flight at the time of writing): publish the existing `domain` word
+     over the same carrier - bit0 core answers, bit1 `USB30_GDSC` powered, bit2
+     core-clock branch, bit3 mock-UTMI branch - to test the remaining clock
+     hypotheses without touching the code path.
+     * **The domain word says the clocks are fine.** `244604.0`
+       (`usb2-live-ccs-domain`) decoded bit0 = 1 (core answers), bit1 = 1
+       (`USB30_GDSC` powered), bit3 = 1 (mock-UTMI branch enabled) and bit2
+       ambiguous (the pulse measured 416 ms where 600 ms means set and 50 ms
+       clear - see the encoding caveat below). So the GDSC, the controller's
+       core-clock branch and the mock-UTMI branch are all on. Adding this to the
+       other three words: the core answers, its soft resets are clear, its
+       domain is powered and clocked - and it still posts **zero** device
+       events even with `SUSPHY` cleared and `DEVTEN` in force.
+     * Encoding caveat: the width-coded pulses drift (measured 270/415/416/789
+       ms for intended 200/400/600/800, plus a 70 ms `run_stop_device`
+       overhead), so a word with adjacent bits set can be mis-decoded. Before
+       relying on a multi-bit word, widen the encoding (e.g. 300 + 250*bit with a
+       1400 ms marker) or publish one bit per run.
+     **Where that leaves the search.** Every software state the probe can read
+     is now known-good or known-irrelevant: gadget-start ordering (closed), EP0
+     arm timing (closed), `DCTL.CSFTRST`/`GCTL.CORESOFTRESET` (measured clear),
+     `DEVTEN` (written before the pull-up in `225813.0`), the GDSC and both
+     clock branches (measured on), `SUSPHY` (measured set, and cleared without
+     producing an event). The remaining fault is in the **PHY-to-core receive
+     path itself** - the HS PHY's UTMI mode, its RX terminations/squelch, or an
+     `init` register the vendor writes and the handoff does not. The audit's
+     phase list for `msm_hsphy_init` (`tmp/audit/linux_usb2_device_start.md`,
+     `phy-msm-snps-hs.c:353-455`) is the next comparison to make register by
+     register against `fullerene-kernel/src/arch/aarch64/usb/phy.rs`, and the
+     CCS carrier can now report the result of any single change.
+     Next: treat the PHY as *suspended* rather than merely "SUSPHY set" and
+     resume it the way the vendor driver does - `msm_hs_phy_set_suspend(phy, 0)`
+     = `msm_hsphy_enable_clocks(true)`, i.e. enable `ref_clk_src`
+     (`tmp/qpr1-msm/drivers/usb/phy/phy-msm-snps-hs.c:141-163`, `:475-515`) -
+     together with the `SUSPHY` clear, and re-read the word with the CCS
+     carrier. Whether the PHY needs a full `msm_hsphy_init` re-run after having
+     been suspended is the next source question, since `set_suspend(0)` only
+     enables clocks.
+
+149. **Two corrections and one decisive measurement, 2026-09-19 (later runs).**
+     * **`SUSPHY = 1` is normal, not a fault.** The vendor's `dwc3_phy_setup`
+       (`tmp/qpr1-msm/drivers/usb/dwc3/core.c:666-673`) explicitly sets
+       `DWC3_GUSB2PHYCFG_SUSPHY` for `revision > DWC3_REVISION_194A` - the
+       comment reads "Above 1.94a, it is recommended to set
+       DWC3_GUSB2PHYCFG_SUSPHY to '0' during coreConsultant configuration. So
+       default value will be '0' when the core is reset. Application needs to
+       set it to '1' after the core initialization is completed." The bit
+       enables PHY suspend *capability*; it does not mean the PHY is suspended
+       at that moment (a bus suspend does that, via the PHY driver's
+       `set_suspend`). So item 148's "the handoff leaves the USB2 PHY suspended"
+       reading is **withdrawn**, and clearing the bit (the `usb2-live-susphy-active`
+       selector) is a *deviation* from Linux, not a fix. Its `-110` -> `-71`
+       effect is therefore a deviation effect and must not be read as progress.
+       `snps,dis_u2_susphy_quirk` would clear the bit, but Bramble's DT does not
+       set it, so `SUSPHY = 1` is the expected value on this board.
+     * **`DSTS.DEVCTRLHLT` is 0: the device controller is running.** Run
+       `248672.0` (`usb2-live-halted-count`: marker pulse, then three 300 ms
+       pulses if `DEVCTRLHLT` is set and one if it is clear) decoded as **one
+       pulse**, and `247041.0` (`usb2-live-halted`, width-coded) agreed with a
+       short second pulse. So the probe's own "DWC3 RUN/STOP readback timed out;
+       continuing" path is not describing this handoff, and the device controller
+       is *not* halted. This also means the PHY is supplying the UTMI clock - a
+       halted controller is exactly what a missing PHY clock produces.
+     * Checked and matching: `GUSB2PHYCFG.PHYIF`/`USBTRDTIM` constants
+       (`USBTRDTIM_UTMI_8_BIT = 9`, `PHYIF(8-bit) = 0`, mask `PHYIF(1)`) are the
+       vendor's (`core.h:289-296`) and Fullerene clears/sets the same fields
+       (`config.rs:441-465`); `init_hsphy_inner` reproduces `msm_hsphy_init`
+       register for register through its tail (VREGBYPASS, `SUSPEND_N_SEL |
+       SUSPEND_N`, SLEEPM, POR release, `SUSPEND_N_SEL` clear, common-control
+       override release); the eventdrop hook is reachable on this build
+       (`fullerene_aarch64_usb_abl_event_consume` is not set by the harness, so
+       `poll_ep0_event_ring()`'s tail runs).
+     **Net state.** Every software state the probe can read is now measured good
+     or measured irrelevant: gadget-start ordering, EP0 arm timing, `CSFTRST`,
+     `CORESOFTRESET`, `DEVCTRLHLT`, `DEVTEN`, GDSC, core-clock branch, mock-UTMI
+     branch, `SUSPHY` (normal), `PHYIF`/`USBTRDTIM`, and the whole HS-PHY init
+     register list. Yet the core posts **zero** device events even with `DEVTEN`
+     written before the pull-up (`225813.0`). The host, meanwhile, still
+     classifies the link as high-speed, which the PHY cannot do without its
+     analog chirp path working. So the break is in the **PHY-to-core receive
+     data path itself** - the UTMI RX lines, the PHY's RX terminations/squelch,
+     or the analog RX block - or in the host's traffic never reaching the PHY's
+     receiver, and no register the probe has read so far is implicated.
+
+150. **Event ring has space; the SOFFN "receive path alive" reading was wrong;
+     the fault sits at or upstream of the core's event/EP0 path.** 2026-09-19
+     (later runs).
+     * **RETRACTED (2026-09-19, primary-source check).** The `soffn-count` reading
+       above is **invalid and proves nothing**, because the mask was wrong: the
+       vendor defines `DWC3_DSTS_SOFFN_MASK = (0x3fff << 3)` (`core.h:487`), so
+       SOFFN occupies DSTS[16:3], while the probe read `DSTS & 0x3fff` with no
+       shift. Bits [2:0] are `CONNECTSPD` (`DWC3_DSTS_CONNECTSPD = 7 << 0`), so
+       the "SOFFN" samples were actually a mix of the speed field and bits 3-13
+       and could advance for reasons unrelated to received SOFs. The control run
+       that was meant to settle latch-vs-free-running (`258357.0`, pre-attach
+       double sample through the attach-latency channel) is inconclusive as
+       well, because a host controller puts SOFs on the bus whether or not a
+       device has raised its pull-up - both hypotheses predict advancement.
+       **No claim about the receive path rests on SOFFN any more.**
+     * `usb2-live-evbuf-presence` (`256427.0`): marker then **one** pulse, i.e.
+       `GEVNTSIZ0`'s size field is non-zero. The event ring is programmed with
+       space, so "the core has nowhere to post events" is ruled out, and
+       `GEVNTCOUNT0` reading 0 means the core genuinely posted nothing.
+     * **Methodological, and it affects earlier readings:** the width of a
+       `ccs_pulse` is dominated by `run_stop_device(false)`'s own
+       `wait_device_state(true)`, which can take the full 2000 ms timeout. In
+       `255232.0` the "300 ms" pulses measured 2244 and 2216 ms, and in
+       `247041.0` a requested 150 ms pulse measured 62 ms. So width-coded words
+       are only reliable when that wait returns quickly (it did in `236171.0`,
+       `238423.0`, `248672.0`, where the measured widths matched the encoding),
+       and a run whose pulses look ~2.2 s long means the stop wait timed out -
+       i.e. the controller did not report halted. Count-coded readouts are
+       immune to this, but each pulse costs up to ~2.5 s.
+     * **Gate trap:** `dwc3-free-*` gates do suppress the blip publisher, but
+       run `253564.0` with `dwc3-free-descriptor-window-eventq` produced **no
+       1-1 attach at all** (the handset went straight to Android), so free gates
+       cannot carry the CCS channel. Non-free gates keep the attach and the
+       pull-up control but arm the probe's own blip publisher
+       (`usb_probe.rs:838`), which overlays long CCS words.
+     * Device-side `log_hex`/`log_puts` is unreadable on this target (no serial;
+       the harness' `kernel-final.log` is the *host* dmesg), so every
+       device-side fact must ride a carrier.
+     **Where the search stands now.** The receive path appears to work, the
+     controller is running (`DEVCTRLHLT = 0`), the domain and clocks are on, the
+     soft resets are clear, the event ring has space, and `DEVTEN` can be set
+     before the pull-up - yet no device event is ever posted and the host's
+     first `GET_DESCRIPTOR` is never answered. The remaining candidates are all
+     inside the core's event/EP0 path: the event buffer *address*
+     (`GEVNTADRLO/HI`) or its DMA path, `GEVENTSIZ.INTMASK`, the EP0 event
+     consumption in `poll_ep0_event_ring()` (the hook fires on a non-zero
+     `GEVNTCOUNT0`, which stays 0), or `DEVTEN`'s exact mask. Next: read
+     `GEVNTADRLO/HI` back over the carrier and compare with what the handoff
+     programmed, and read `DEVTEN` back in the same run that enables it.
+
+151. **Re-enumeration attempt via an eventless SETUP path: negative, but it
+     removes the event path from the causal chain.** 2026-09-19.
+     * Implemented `poll_setup_buffer()` (`usb.rs`, selected with
+       `--utmi-postrun-readout usb2-live-setup-poll`) and called it from both the
+       handoff's arm window and `usb::poll()`. It reads the EP0 SETUP DMA buffer
+       (`ep0_setup_data_ptr()`), and because `handle_setup()` zeroes that buffer
+       after latching a packet, a non-zero buffer *is* a fresh SETUP. When it
+       finds one it calls `handle_setup()` directly - the same entry point the
+       event path uses - so the host could be answered even with
+       `GEVNTCOUNT0` stuck at 0. This is the first attempt that does not depend
+       on device events at all.
+     * Run `261322.0` (baseline plus the selector, deliberately **without**
+       `--signal-probe`, so no gate and no blip publisher could disturb it):
+       attach at `+37260.011 ms`, then exactly the baseline boundary -
+       `-110` on `GET_DESCRIPTOR` after 5.201 s and no `1234:0001`.
+     * Consequence: the buffer poll never saw a non-zero SETUP, so **the core
+       never delivered the host's SETUP into the EP0 buffer**. That is upstream
+       of the event ring, and it also means `try_arm_setup()`'s
+       `EP0_SETUP_ARMED` early-return is not what blocks this: the core had no
+       packet to hand over in the first place.
+     * This agrees with the probe's own long-standing note in `try_arm_setup()`:
+       "DSTS reads non-U0 link states 4/6/7/10/12/13 while the host is already
+       issuing tokens". The device controller is running
+       (`DEVCTRLHLT = 0`, measured) yet reports a link state that is *not* the
+       normal operating state while the host is sending tokens, which is exactly
+       the shape of a controller that never saw the host's USB reset and
+       therefore never entered the Default/Addressed state where it would
+       decode a SETUP.
+     **So the next question is narrow and answerable:** did the core observe the
+     host's bus reset? Candidates, in order: re-read `DSTS`/`DCFG.DEVADDR`
+     after the reset over the carrier (a USB reset clears the device address);
+     try the existing `--gadget-handoff-start-ungated` path together with
+     `--usb2-source-devten-before-runstop`; and check what makes the core's link
+     state report non-U0 - which per `try_arm_setup()`'s comment it has done
+     since the very first runs.
+
+152. **The core is in the normal link state and did latch high speed - so it
+     *did* observe the host's reset.** 2026-09-19. Run `264554.0`
+     (`--utmi-postrun-readout usb2-live-speed-hs`), sampled about one second
+     after attach, i.e. after the host's port reset, over the CCS carrier:
+     marker 973 ms, then **two** pulses.
+     * pulse 1 = `DSTS.USBLNKST == 0`: `(dsts >> 18) & 0x0f` is zero, the "On"
+       state in which the core decodes tokens. Field position from the vendor:
+       `DWC3_DSTS_USBLNKST_MASK = 0x0f << 18` (`core.h:483`).
+     * pulse 2 = `DSTS.CONNECTSPD == 0`: high speed. The speed field is latched
+       *during* a USB reset (`DWC3_DSTS_CONNECTSPD = 7 << 0`, `core.h:490`), so
+       this is direct evidence that the controller saw the reset and moved on
+       from the attached state.
+     **Consequence:** the "the core never entered On / never saw the reset"
+     hypothesis is refuted, and so is any reading of `try_arm_setup()`'s old
+     "non-U0 link states" note as a live fault - at the time of this sample the
+     link state is exactly the normal one. The controller is running
+     (`DEVCTRLHLT = 0`), in On, at high speed, with event ring space, and still
+     hands neither an event nor a SETUP packet to software.
+     **That leaves the endpoint itself.** If no transfer TRB is queued on EP0
+     OUT the core has nowhere to put the received SETUP, which would produce
+     exactly the observed triple - empty SETUP buffer (`261322.0`), empty event
+     ring (`225813.0`), and a host that sees a silent device. So the next
+     measurement reads `EP0_SETUP_ARMED` and `ENDPOINTS_READY` over the same
+     carrier (`usb2-live-ep0-armed`).
+
+153. **ROOT CAUSE FOUND: the control endpoints are never enabled, because the
+     only code that does it lives in the "Connect Done" event handler.**
+     2026-09-19. Run `266423.0` (`--utmi-postrun-readout usb2-live-ep0-armed`)
+     read two live flags over the CCS carrier about one second after attach,
+     i.e. *while the host was already requesting the device descriptor*:
+     marker 973 ms, then **one** pulse.
+     * pulse 1 present = `EP0_SETUP_ARMED == true`.
+     * pulse 2 absent = **`ENDPOINTS_READY == false`**.
+     * Why this is the whole story: `ENDPOINTS_READY = true` and
+       `DALEPENA = 0b11` are written in exactly **one** place in the kernel -
+       the "Connect Done" event branch (`usb.rs:4790-4800`, reached from
+       `configure_endpoint(0, …) && configure_endpoint(1, …)`). With
+       `GEVNTCOUNT0` stuck at 0 that branch never runs, so the core is left
+       without an enabled control endpoint. A disabled EP0 has nowhere to put a
+       received SETUP, which explains every measurement at once, with no need
+       for any PHY or link-state fault:
+         - the host's SETUP is not accepted, so the EP0 SETUP buffer stays zero
+           (`261322.0` - the eventless reader saw nothing);
+         - no SETUP event and no transfer event is generated, so the event ring
+           stays empty (`225813.0`, `GEVNTCOUNT0 == 0` throughout);
+         - the host times out on its first `GET_DESCRIPTOR` and reports `-110`.
+     * This also removes the earlier confusion about the link: run `264554.0`
+       already showed `DSTS.USBLNKST == 0` ("On") and `CONNECTSPD == 0` (high
+       speed), i.e. the controller is healthy and did see the reset. It was
+       never a PHY, clock, reset or event-ring problem - it is an endpoint
+       configuration that is sequenced behind an event which this handoff never
+       receives.
+     * **Fix implemented and run:** selector `usb2-live-force-endpoints` stops the
+       controller, calls `configure_endpoint(0, 64, false) &&
+       configure_endpoint(1, 64, false)`, sets `ENDPOINTS_READY = true` and
+       `DALEPENA = 0b11` - in Linux's own order, since `dwc3_gadget_start`
+       issues its endpoint commands before `DCTL.RUN_STOP` - then runs again.
+       It also enables `poll_setup_buffer()` so the host can be answered without
+       any event.
+     * **Run `268613.0`: the boundary moved off the pre-descriptor wall for the
+       first time in this project.** `classification.txt` reads
+       `usb-attach-or-descriptor-failure--71` instead of `…--110`, the host now
+       issues **6** `GET_DESCRIPTOR` submits instead of 4, and the first
+       completion is `status=-71` (EPROTO) at `dt=0.000 s` rather than a single
+       `-2` after 5.2 s of silence. The carrier confirms the configuration
+       itself succeeded (marker 973 ms, then one 265 ms pulse = `ok`). So the
+       core is now decoding the host's SETUP - it simply **stalls** it, which is
+       exactly what an enabled EP0 with no queued transfer TRB does: stopping
+       the controller to reconfigure it dropped the EP0 OUT TRB that the handoff
+       had armed.
+     * The fix therefore needs one more step. **Run `270244.0` showed the wrong
+       way to do it:** calling `try_arm_setup()` in the same branch blocked for
+       longer than the 5.9 s host reset inside its Start-Transfer retry loop, so
+       the carrier pulses were never published and the boundary reverted to
+       `-110`. **Version 3 instead only clears `EP0_SETUP_ARMED` and resets
+       `EP0_STATE = Setup`, then lets the handoff's own arm window do the
+       arming** - that window already arms EP0 correctly (it is why
+       `EP0_SETUP_ARMED` was true in `266423.0`); it was merely skipping the work
+       because the stale flag made `try_arm_setup` return early.
+     * **Run `271489.0` (v3): the good `-71` state is kept, but the stall
+       remains.** `classification.txt` = `usb-attach-or-descriptor-failure--71`,
+       6 `GET_DESCRIPTOR` submits, and the first completions are `-71` at
+       `dt=0.000 s` - the core decodes the SETUP and stalls it, so EP0 OUT still
+       has no transfer TRB the core is willing to use at that moment. The
+       carrier confirms the reconfiguration succeeded again (marker 975 ms, one
+       266 ms pulse). So the remaining defect is narrow and specific: **the EP0
+       OUT transfer TRB that the core consumes when the SETUP arrives.** Both
+       ways of arming tried so far fail differently - calling `try_arm_setup()`
+       inline blocks past the host reset (`270244.0`), and clearing the flag for
+       the handoff's own arm window leaves a stall (`271489.0`) - so the next
+       thing to inspect is the EP0 TRB ring's producer/consumer state after the
+       stop-reconfigure-run cycle (`prepare_ep0_setup_trb`, the ring's cycle bit,
+       and whether the ring base survived the reconfiguration), not the
+       endpoint configuration itself.
+     * **Retracted claim:** an earlier version of this entry said this was "the
+       first change in the whole investigation that altered the host-visible
+       boundary". Run `276604.0` refuted that - see the correction below. The
+       *defect* (EP0 never configured) and the *fix* (configure it in the
+       vendor's own order) remain valid and measured; only the boundary
+       attribution is withdrawn.
+
+     * **CORRECTION (2026-09-19, run `276604.0`) - the `-71` boundary is NOT yet
+       attributable to this fix.** The `usb2-live-dma-addr` audit run performed
+       *no* endpoint configuration at all (it only reads and pulses) and still
+       ended at `usb-attach-or-descriptor-failure--71`. The CCS carrier itself
+       drives `DCTL.RUN_STOP` stop/run pairs through `run_stop_device`, so it
+       toggles the pull-up during the host's first control requests; that is
+       enough to move the host boundary on its own. **So the `-71` in
+       `268613.0`/`271489.0` cannot be credited to the endpoint configuration.**
+       The defect and the fix are still real and source-verified (below), but
+       their host-visible effect is unproven. What is needed is a
+       transport-matched A/B: the same pulse sequence, same timing, with and
+       without the configuration.
+     * What the same run *did* establish - **the DMA address-type mismatch
+       hypothesis is refuted**: pulse 1 present = `DMA_ADOPTED == true`; pulse 2
+       present = the programmed `GEVNTADR0` equals `ep0_event_dma_base()`; pulse
+       3 absent = `dma_iova_for()` returns a *translated* IOVA, not the raw CPU
+       pointer. The DMA programming is therefore self-consistent, and "a
+       physical address is being fed to a translating SMMU" is not the fault.
+     * The re-arm loop version (`usb2-live-rearm-loop`, run `274800.0`) made
+       things worse: `-110` and no carrier pulses at all, i.e. the loop blocked
+       past the host reset instead of finishing its 2.5 s budget, because
+       `try_arm_setup`'s retry path can take seconds per call. Any future
+       re-arm must be bounded per call, not per loop.
+
+154. **The controller DOES receive the host's SETUP - measured, vendor-cross-checked
+     - and the remaining break is a software release step, not a PHY fault.**
+     2026-09-19 (this session's decisive result).
+     * `usb2-live-trb-hwo` (run `278916.0`), sampled ~1 s after attach: marker
+       973 ms then **two** pulses = `TRB.ctrl & HWO != 0` **and**
+       `TRBSTS == 2`. Vendor: `DWC3_TRB_SIZE_TRBSTS` is `size[31:28]` and
+       `DWC3_TRBSTS_SETUP_PENDING = 2` (`core.h:832-836`), and Linux checks
+       exactly this status in `dwc3_ep0_xfer_complete` (`ep0.c:995-1004`).
+       **So the host's SETUP reached the EP0 OUT transfer and the controller is
+       holding it.** Every earlier "the receive path is dead" reading is
+       superseded by this.
+     * `usb2-live-trb-buf` (run `280408.0`): marker 974 ms then **one** pulse =
+       the armed TRB's `bpl/bph` equals `dma_iova_for(ep0_setup_data_ptr())`
+       (true) while that buffer's first byte is still zero (false). So the TRB
+       points exactly where the software reads, and the packet is **not**
+       deposited until software acts - which is what the vendor's
+       `dwc3_ep0_out_start()` re-arm does on the completion path
+       (`ep0.c:1003-1004`) and on the reset path (`ep0.c:265`).
+     * **A stop/reconfigure/run cycle is the wrong tool.** Every variant that
+       reconfigured the endpoints (`usb2-live-force-endpoints`,
+       `usb2-live-rearm-loop`, `usb2-live-ep0-eventless`) left EP0's Start
+       Transfer unable to complete: the arm calls burn their timeouts, the loops
+       overshoot the host's 5.9 s reset and the carrier pulses are lost or
+       distorted (runs `274800.0`, `281888.0`, `283357.0`). The handoff's own
+       arm, issued before any reconfiguration, is the one that works
+       (`278916.0`).
+     * `usb2-live-ep0-release` (run `283357.0`) tried the minimal version - no
+       reconfiguration, one re-arm per observed pending SETUP, 2.5 s budget. The
+       host re-attached (`CCS` up at +0.000 s, down at +2.562 s, up again at
+       +5.507 s) but still ended at `-110`, and the pulses came out distorted
+       (2945 ms), so the internal counters are unknown. The re-arm attempts may
+       themselves be wedging the endpoint.
+     * **Correct next step, in order:** (1) make the counters readable - publish
+       `arms` / `pending_seen` / `answered` as one slow pulse per unit, since the
+       present width codes distort when the loop is busy; (2) stop using the
+       stop/reconfigure path and instead move the "Connect Done" endpoint
+       configuration to the *eventless* moment the vendor uses - i.e. right
+       after the controller starts and before the pull-up (`gadget.c:2505-2520`
+       order) - so no reconfiguration is ever needed; (3) only then re-attempt
+       the single re-arm on `SETUP_PENDING`.
+
+155. **The SETUP-from-TRB bridge (vendor-matched) - implemented, outcome still
+     unread because the carrier cannot count while EP0 is busy.** 2026-09-19.
+     * Vendor fact that closed the last gap in the reading: Linux does not use a
+       separate SETUP buffer at all. `dwc3_ep0_inspect_setup()` reads the packet
+       straight out of the TRB memory - `struct usb_ctrlrequest *ctrl =
+       (void *) dwc->ep0_trb;` (`ep0.c:866`) - and the SETUP TRB is prepared with
+       `dwc3_ep0_prepare_one_trb(dep, dwc->ep0_trb_addr, 8, ...)` (`ep0.c:304`).
+       The controller deposits the 8-byte packet over the TRB, which is why run
+       `280408.0` found the TRB pointing exactly at the software's buffer while
+       that buffer stayed zero, and why `278916.0` could report
+       `TRBSTS == 2` (`SETUP_PENDING`) at the same time.
+     * `usb2-live-setup-trb` (run `285720.0`) implements the bridge: with no
+       reconfiguration and no re-arm, it polls the TRB, and when the TRB holds a
+       non-zero packet it copies those 8 bytes into `ep0_setup_data_ptr()` and
+       calls `poll_setup_buffer()` so the existing control state machine answers
+       the host. Counters were to be published as one pulse per unit.
+     * **Outcome unread.** The host boundary stayed `-110` and no `1234:0001`
+       appeared, and the carrier pulses came out 2943 ms and 2519 ms wide instead
+       of the intended 300 ms - the same distortion seen in `283357.0`. While EP0
+       is in this state each `ccs_pulse` (which drives `DCTL.RUN_STOP` through
+       `run_stop_device`) takes over a second, so width codes and even pulse
+       counts cannot be trusted. **So it is not known whether the loop saw the
+       SETUP or answered it.**
+     * **Next step is therefore a measurement change, not a code change:** publish
+       exactly ONE bit per run (a single pulse for "the TRB held a packet",
+       another run for "the packet was answered"), and read one question per run
+       - the transport is reliable for presence, not for counts, whenever EP0 is
+       busy.
+
+156. **Vendor restart recipe implemented cleanly - the loop no longer wedges - but
+     the packet still is not delivered.** 2026-09-19.
+     * Vendor: `dwc3_ep0_stall_and_restart()` (`ep0.c:243-266`) is Linux's answer
+       to a control endpoint holding a pending SETUP - stall EP0 (which retires
+       the pending transfer), re-initialise `eps[1]`, set
+       `dep->flags = DWC3_EP_ENABLED` on both, reset `ep0state` to the setup
+       phase, then `dwc3_ep0_out_start()` to re-arm.
+     * `usb2-live-ep0-restart` (run `288636.0`) implements that order eventlessly:
+       on `TRBSTS == 2` or `HWO` set, issue `DEPCMD_SETSTALL` on EP0, clear
+       `EP0_SETUP_ARMED`, reset `EP0_STATE = Setup`, re-arm, then poll the buffer.
+       **Methodological win:** unlike `283357.0`/`285720.0`, the loop ran cleanly -
+       the carrier stayed quiet until the host's own reset at +5.92 s, so the
+       readout is trustworthy. **Result: `answered == 0` (no pulse) and the host
+       boundary is unchanged at `-110`.** So retiring the pending transfer is not
+       by itself enough to make the controller hand the packet over.
+     * **Run `290234.0` (full recipe: `ENDPOINTS_READY = true` + `DALEPENA = 0b11`
+       + `SETSTALL` + re-arm): still `answered == 0` (no carrier pulse) and the
+       host boundary unchanged at `-110`.** So every documented software remedy
+       for a pending control SETUP - re-arm alone, stall+restart, and the restart
+       with the endpoint-enable bookkeeping - has now been applied eventlessly,
+       and the controller still does not hand the packet to software. The loops
+       themselves are clean now (no wedge, trustworthy readout), which is the one
+       durable gain from these two runs.
+     * **The honest open question, stated plainly:** the controller receives the
+       SETUP and reports it pending, yet does not deposit it in the buffer, in
+       the TRB, or anywhere software can read, and generates no event. Whether
+       this core *requires* its own event/completion path (XferNotReady /
+       XferComplete, i.e. `GEVNTCOUNT0` traffic) to advance its control state
+       machine - rather than being drivable purely by register/status polling - is
+       not yet established by any source or measurement. That is the next thing
+       to settle before further code changes.
+
+157. **ROOT CAUSE FOUND: the EP0 DMA buffers lie outside the single SMMU page the
+     handoff adopts, so the controller's writes go to an unmapped address.**
+     2026-09-19. This is the answer to "is the event/address path alive", and it
+     explains the whole family at once.
+     * `adopt_smmu_dma_mapping()` (`smmu.rs:334-374`) adopts exactly **one** live
+       SMMU page: `DMA_ADOPTED_CPU` (physical) and `DMA_ADOPTED_IOVA` (its IOVA).
+       `dma_iova_for(cpu)` then returns `DMA_ADOPTED_IOVA + (cpu - DMA_ADOPTED_CPU)`
+       - a linear offset that is only meaningful *inside that page*.
+     * `usb2-live-dma-window` (run `291878.0`), marker 974 ms then one pulse:
+       - pulse 1 present = **the EP0 TRB pointer IS inside the adopted page**, so
+         the controller can read the TRB (consistent with the `SETUP_PENDING`
+         measurement in `278916.0`);
+       - pulse 2 absent = **`ep0_setup_data_ptr()` is NOT inside the adopted
+         page** - it is the linker object `EP0_SETUP_BUFFER`;
+       - pulse 3 absent = `DMA_ADOPTED_IOVA != DMA_ADOPTED_CPU`, i.e. the adopted
+         page really is translated, so the offset matters.
+     * Mechanism, now complete: `prepare_ep0_setup_trb()` overwrites the TRB's
+       buffer pointer with `dma_iova_for(ep0_setup_data_ptr())`, an address
+       *outside* the only mapped page. The controller therefore receives the
+       host's SETUP, sets `TRBSTS = 2` (`SETUP_PENDING`) and has nowhere valid to
+       deposit the 8 bytes - which is exactly why the software's buffer, the TRB
+       and the event ring all showed nothing. The event ring itself is fine
+       because its address came from the firmware and *is* inside the adopted
+       page; that asymmetry is what made this look like an event-path fault.
+     * **Fix direction (surgical):** put the EP0 DMA buffers inside the adopted
+       page - the natural choice is Linux's own idea, using an address in the
+       mapped page as the SETUP buffer. `ep0_trb_ptr(1)` is already inside the
+       page and the handoff already cleans two TRB slots
+       (`usb.rs:6553-6557`), so it is the obvious candidate. `ep0_response_ptr()`
+       (512 bytes, also a linker object) needs the same treatment, otherwise the
+       data phase will fail for the identical reason. Alternatively adopt more of
+       the pages the firmware was using (its TRB ring and buffer pages).
+
+158. **Fix implemented (in-page EP0 SETUP buffer + vendor stall/re-arm) - the loop
+     is clean but the SETUP is still not answered; the response buffer is the
+     remaining suspect.** 2026-09-19.
+     * `usb2-live-setup-inpage` (run `293976.0`): `ep0_setup_data_ptr()` returns
+       `ep0_trb_ptr(1)` - inside the one adopted SMMU page - instead of the
+       linker object `EP0_SETUP_BUFFER`, so `prepare_ep0_setup_trb()` now points
+       the controller at mapped memory. The loop retires the pending transfer
+       with `DEPCMD_SETSTALL` before re-arming, in the vendor's order
+       (`ep0.c:243-266`), then polls the buffer and answers with `handle_setup()`.
+     * **Result: no carrier pulse (`answered == 0`), host boundary `-110`.** The
+       loop itself is clean (the carrier stayed quiet until the host's own reset
+       at +5.92 s), so the readout is trustworthy - the controller simply still
+       did not hand over the packet within the 2 s window.
+     * **Remaining suspect, and it is the same class of defect:**
+       `ep0_response_ptr()` is also a linker object outside the adopted page, so
+       the *data phase* (the descriptor bytes the host reads) is DMA'd from
+       unmapped memory for exactly the same reason the SETUP was. Fixing the
+       SETUP buffer alone cannot produce a host-visible answer. The next step is
+       to place the response buffer inside the adopted page as well (or to adopt
+       more of the firmware's pages, which is the cleaner long-term fix: the
+       firmware's own EP0 buffers are mapped, the handoff just does not know
+       their IOVAs).
+     * Note also that a STALL ends the host's control transfer, so the host's
+       retry arrives after the loop's 2 s window; any future attempt should keep
+       the poll/answer window open longer once the buffers are in-page.
+
+159. **MEASUREMENT-INTEGRITY CORRECTION: the multi-predicate CCS words were
+     ambiguous, and two of this session's conclusions are retracted.** 2026-09-19.
+     * A word that pulses once per true predicate cannot say *which* predicate
+       fired. `usb2-live-dma-window` (`291878.0`) produced exactly one pulse, and
+       that is consistent with three different readings; `usb2-live-trb-hwo`
+       (`278916.0`) produced two, which - because `TRBSTS == 0` and
+       `TRBSTS == 2` are mutually exclusive - was consistent with
+       {HWO, pending} *or* {HWO, completed}. Every reading taken from those words
+       in entries 157/158 is therefore unproven.
+     * **Re-measured with ONE predicate per run (one bit, no width or count
+       coding):**
+       - `usb2-live-adopted` (`296126.0`): **no pulse ⇒ `DMA_ADOPTED == false`.**
+         With no adoption, `dma_iova_for()` is the identity and every DMA address
+         is already a physical address, so **the "EP0 buffers lie outside the
+         adopted SMMU page" root cause is REFUTED** - there is no offset at all.
+         This also explains `291878.0`'s single pulse exactly: with
+         `DMA_ADOPTED_CPU == 0` the page test is `0 <= p < 0x1000` (false for
+         every real buffer) and the only true predicate was
+         `DMA_ADOPTED_IOVA == DMA_ADOPTED_CPU`, i.e. `0 == 0`.
+       - `usb2-live-trbsts-pending` (`297671.0`): **no pulse ⇒ `TRBSTS != 2`**, so
+         the EP0 OUT transfer is **not** sitting in `SETUP_PENDING`. Combined
+         with `278916.0`'s non-pending second pulse, the likely value is
+         `TRBSTS == 0`, a **clean transfer completion** - i.e. the controller may
+         already have processed the host's SETUP. **The `SETUP_PENDING` claim in
+         entries 154/157/158 is retracted.**
+     * **Protocol rule for the rest of this work:** one predicate per run, pulse
+       present/absent only. Width codes drifted before (`270/415/416/789 ms` for
+       200/400/600/800 ms) and counts cannot disambiguate predicates. The next
+       questions, each its own run: is `TRBSTS == 0`; is `TRB.ctrl & HWO` set; is
+       the SETUP buffer's first byte non-zero; does
+       `ep0_setup_data_ptr() == ep0_trb_ptr(0)`.
+
+160. **CLEAN MINIMAL STATE (all one-bit, unambiguous): the EP0 OUT TRB is armed
+     and the controller never consumes it.** 2026-09-19.
+     * Run `302214.0` (`usb2-live-hwo-bit`, one predicate): marker 973 ms then one
+       pulse ⇒ **`TRB.ctrl & HWO != 0`** - the transfer TRB is queued and still
+       owned by the controller. So the arming path works; `EP0_SETUP_ARMED`
+       reaching true (as `266423.0` suggested) is consistent with this.
+     * With the other one-bit results this is a complete, minimal description:
+       | run | question | result |
+       | --- | --- | --- |
+       | `296126.0` | `DMA_ADOPTED` | false - no SMMU offset, addresses are physical |
+       | `297671.0` | `TRBSTS == 2` (pending) | false |
+       | `299272.0` | `TRBSTS == 0` | true - and 0 is also the untouched default |
+       | `300738.0` | SETUP buffer first byte != 0 | false - empty |
+       | `302214.0` | `TRB.ctrl & HWO` | **true - armed** |
+     * **Conclusion: the EP0 OUT TRB is armed correctly, yet the controller never
+       consumes it** - the status word is still the default, the buffer is empty
+       and no event is generated. The controller is therefore not taking the
+       host's SETUP into EP0 at all, and the break is *upstream* of the transfer:
+       either the endpoint is not enabled, or the core is not delivering SETUP
+       tokens to it.
+     * **Next one-bit questions, in order:** is `DALEPENA` bit 0 set (EP0 OUT
+       enabled)? is `DALEPENA` bit 1 set (EP0 IN)? is `EP0_SETUP_ARMED` true?
+       Each is a register read and each gets its own run, one predicate per run.
+     * Entries 154/157/158 (`SETUP_PENDING`, "EP0 buffers outside the adopted
+       SMMU page") are superseded; entry 159 records why the earlier readings
+       were unproven.
+
+161. **The software side of EP0 is now exonerated by six one-bit measurements; the
+     controller simply does not take the host's SETUP.** 2026-09-19.
+     * Run `303830.0` (`usb2-live-dalepena0`, one predicate): marker 974 ms then
+       one pulse ⇒ **`DALEPENA` bit 0 is set, so EP0 OUT is enabled in hardware.**
+       Note this separates two things that earlier entries conflated:
+       `ENDPOINTS_READY` is a *software bookkeeping flag* while `DALEPENA` is the
+       hardware enable - the firmware had already enabled the endpoint, so the
+       "EP0 was never enabled" reading (entries 153/154) is wrong; the software
+       flag was merely out of date.
+     * The complete, unambiguous chain - every value read with ONE predicate per
+       run, so no decoding ambiguity:
+       | run | question | result |
+       | --- | --- | --- |
+       | `296126.0` | `DMA_ADOPTED` | false ⇒ `dma_iova_for()` is the identity; addresses are physical and correct |
+       | `297671.0` | `TRBSTS == 2` | false |
+       | `299272.0` | `TRBSTS == 0` | true (also the untouched default) |
+       | `300738.0` | SETUP buffer non-zero | false ⇒ empty |
+       | `302214.0` | `TRB.ctrl & HWO` | true ⇒ **armed** |
+       | `303830.0` | `DALEPENA` bit 0 | true ⇒ **EP0 OUT enabled** |
+     * **Therefore: the endpoint is enabled, the transfer TRB is armed, the DMA
+       addresses are physical and correct - and the controller still never
+       consumes the TRB, never writes the packet and never posts an event.** Every
+       software-side state that could explain a stuck control transfer is
+       excluded by measurement. **The break is in the controller's reception of
+       the host's SETUP token** - PHY-to-core delivery, or the core's internal
+       device state machine not reaching the state where it accepts a SETUP.
+     * Superseded: entries 153/154/157/158. Entry 159 explains the measurement
+       error that produced them; this entry is the corrected baseline.
+     * **Next, in the order that keeps each run to one bit:** (1) is the core's
+       device state the one that accepts SETUP - `DSTS.USBLNKST` (retest with one
+       predicate, since `264554.0` was a two-predicate word); (2) does the core's
+       event machinery have to advance for its control state machine to progress,
+       i.e. is a dead event ring the *cause* rather than a symptom - testable by
+       checking whether `GEVNTCOUNT0` ever becomes non-zero when nothing
+       acknowledges it; (3) re-examine PHY-to-core SETUP delivery now that all
+       software states are known good.
+
+162. **Seven one-bit measurements: every readable state is correct and the
+     controller still does not act.** 2026-09-19.
+     * Run `305671.0` (`usb2-live-usblnkst-on`, one predicate): marker 974 ms then
+       one pulse ⇒ **`DSTS.USBLNKST == 0` ("On")**, the state in which a USB 2.0
+       device accepts and decodes tokens. (`264554.0` had reported the same thing
+       from a two-predicate word; this run establishes it unambiguously.)
+     * The corrected baseline, every value from a single-predicate run:
+       | run | question | result |
+       | --- | --- | --- |
+       | `296126.0` | `DMA_ADOPTED` | false ⇒ addresses are physical and correct |
+       | `297671.0` | `TRBSTS == 2` | false |
+       | `299272.0` | `TRBSTS == 0` | true (also the untouched default) |
+       | `300738.0` | SETUP buffer non-zero | false ⇒ empty |
+       | `302214.0` | `TRB.ctrl & HWO` | true ⇒ armed |
+       | `303830.0` | `DALEPENA` bit 0 | true ⇒ EP0 OUT enabled |
+       | `305671.0` | `DSTS.USBLNKST == 0` | true ⇒ core is in the accepting state |
+     * **So the core reports the accepting link state, EP0 is enabled, the
+       transfer TRB is armed, and the DMA addresses are physical and correct -
+       yet the controller never consumes the TRB, never deposits the packet and
+       never posts an event.** Every state that software can read and could
+       plausibly explain a stuck control transfer is now excluded by measurement.
+       The break is therefore in the **PHY-to-core receive data path** (the
+       received SETUP bytes never reach the endpoint), not in any software or
+       core-register state.
+     * **The one hypothesis that is both live and testable next:** the core's own
+       event/state machinery may have to advance for its control state machine to
+       reach the SETUP-accepting point - i.e. a dead event ring could be the
+       *cause*, not a symptom. Reading `GEVNTCOUNT0` cannot distinguish "never
+       posted" from "posted and acknowledged" (the handoff acknowledges it), so
+       the test must read the **event ring memory** itself: is there a non-zero
+       event record at `EVENT_OFFSET`? That is the next single-predicate run.
+
+163. **Nine one-bit measurements: the controller is running, everything readable is
+     correct, and it never posts an event or consumes the TRB.** 2026-09-19.
+     * Run `307410.0` (`usb2-live-evring-nonzero`, one predicate): marker 973 ms,
+       **no pulse ⇒ the first 64 bytes of the event ring are all zero.** Because
+       the ring *memory* keeps whatever the core writes, this is the strong form
+       of the result: the core has **never posted a single event** - it is not a
+       case of "posted and acknowledged" (reading `GEVNTCOUNT0` could not tell
+       those apart).
+     * Run `308901.0` (`usb2-live-devctrlhlt`, one predicate): marker 973 ms, **no
+       pulse ⇒ `DSTS.DEVCTRLHLT` is clear - the device controller is running.**
+       (This also settles `248672.0`'s count-coded claim, which was unproven.)
+     * Complete picture, every value from a single-predicate run:
+       | run | question | result |
+       | --- | --- | --- |
+       | `296126.0` | `DMA_ADOPTED` | false ⇒ addresses physical/correct |
+       | `297671.0` | `TRBSTS == 2` | false |
+       | `299272.0` | `TRBSTS == 0` | true (also the default) |
+       | `300738.0` | SETUP buffer non-zero | false ⇒ empty |
+       | `302214.0` | `TRB.ctrl & HWO` | true ⇒ armed |
+       | `303830.0` | `DALEPENA` bit 0 | true ⇒ EP0 OUT enabled |
+       | `305671.0` | `DSTS.USBLNKST == 0` | true ⇒ accepting link state |
+       | `307410.0` | event ring memory non-zero | **false ⇒ never posted an event** |
+       | `308901.0` | `DSTS.DEVCTRLHLT` | **false ⇒ controller running** |
+     * **So the controller is running, the link is in the accepting state, EP0 is
+       enabled, the transfer TRB is armed and the DMA addresses are physical and
+       correct - and the core still never posts an event, never consumes the TRB
+       and never delivers the SETUP.** Nothing software can read is wrong. The
+       remaining explanations are conditions the registers do not expose: the
+       core's **operating mode**, the PHY's UTMI data path, or a security/EUD
+       ownership state.
+     * **Next one-bit candidate, and it was already on the early candidate list:**
+       `GCTL.PrtCapDir` (the core's port direction - device / host / OTG). A core
+       in host mode (or an OTG state that never selects device) would report a
+       link state and have endpoints enabled while never processing device
+       tokens, which is exactly this symptom set.
+
+164. **16 one-bit measurements: the entire readable state space is correct.**
+     2026-09-19. Batch of single-predicate runs, each one question:
+     * `310878.0` `GCTL.PrtCapDir == 2` (device mode) - **true**; vendor
+       `core.h:248-251` (`PRTCAP_DEVICE = 2`, not 0).
+     * `312144.0` `GUSB2PHYCFG0.ULPI_UTMI` clear (UTMI+ selected) - **true**
+       (`core.h:287`).
+     * `313405.0` `DCTL.CSFTRST` clear - **true** (`core.h:412`).
+     * `314697.0` `GCTL.CORESOFTRESET` clear - **true** (`core.h:253`).
+     * `316545.0` programmed `GEVNTADR0` equals `ep0_event_dma_base()` - **true**
+       (so the core is given the address the software reads; "the core posts
+       somewhere else" is refuted).
+     * `318671.0` HS-PHY `UTMI_CTRL0.OPMODE == 0` (datapath driving) - **true**
+       (`phy.rs:440-448` documents that Fastboot can leave OPMODE=1).
+     * `319939.0` HS-PHY `CFG0.UTMI_DATAPATH_CTRL_OVERRIDE_EN` clear (no
+       charger-detection datapath ownership) - **true** (`phy.rs:451-459`).
+     * Combined with entries 160/162/163 (`DMA_ADOPTED` false; `TRBSTS != 2` and
+       `== 0`; SETUP buffer empty; `HWO` armed; `DALEPENA` bit 0 set;
+       `USBLNKST == 0`; event ring untouched; `DEVCTRLHLT` clear), that is **16
+       one-bit measurements, every one of them the correct/expected value.**
+     * **Conclusion: no readable state in the core, the HS-PHY or the DMA
+       programming is wrong.** The core is in device mode, out of reset, running,
+       in the accepting link state, with EP0 enabled, the transfer TRB armed and
+       every DMA address correct - and it never consumes the TRB, never deposits
+       the packet and never posts an event. The remaining explanation is the
+       **PHY's analog RX data path** (differential receiver / squelch / RX
+       terminations), which no register exposes.
+     * Also closed while checking (do not re-propose): the `SLEEPM` clear A/B
+       (`536156.0`, `3569364.0`) and the `SUSPEND_N` family (`3046227.0`,
+       `3137358.0`, the `hsphy-suspend-n-safe` encoding).
+
+165. **The host kernel log is a new instrument, and it says the link reaches HIGH
+     SPEED.** 2026-09-19. The run artifacts never included the *host's* kernel
+     log, only usbmon and the lsusb timeline. Capturing it (`journalctl -k -f`
+     around a run; `dmesg` is restricted and sudo needs a password on this host)
+     produced, for the Fullerene attach:
+     ```
+     usb 1-1: new high-speed USB device number 79 using xhci_hcd
+     usb 1-1: device descriptor read/64, error -71
+     ```
+     * **The host completes the high-speed handshake.** That is a new, strong
+       positive: the device's chirp (TX) and the analog squelch/link path work, and
+       the port *enables* at HS. So the failure is specifically the reception of
+       *packets*, not the link, the pull-up, the reset, or the speed negotiation.
+     * The host's own error for the descriptor read is `-71` (EPROTO / xHCI
+       transaction error), which is consistent with the controller never consuming
+       the armed TRB and never handshaking the SETUP.
+     * Android, by contrast, enumerates on `2-5` as SuperSpeed (`18d1:4ee7`,
+       then `18d1:4ee0`); `usb1` is the USB2 root hub (480) and `usb2` the USB3
+       root hub (5000), so `1-1` and `2-5` are the USB2/USB3 halves of one
+       connector.
+     * Follow-up one-bit runs against this new signature (each a single predicate,
+       each **refuted**): `322830.0` `GUSB2PHYCFG0.SUSPHY` clear (the core is *not*
+       holding the UTMI clock suspended - and note the earlier SUSPHY family was
+       only ever an init-time A/B *write*, never a runtime read);
+       `324600.0` HS-PHY `CTRL2.SUSPEND_N` asserted (the PHY is *not* suspended,
+       even though `phy.rs:391-397` records the Bramble transition clearing it
+       across the Run/Stop boundary).
+     * **Running total: 21 one-bit measurements, every one the correct value.**
+     * Procedure worth keeping: wrap any run with
+       `(journalctl -k -f --since now > tmp/hostk.log &) ; <run> ; pkill -f "journalctl -k -f"`
+       and read the USB lines out of `tmp/hostk.log`.
+
+     * **CORRECTION (2026-09-19, same session):** the claim above that "the run
+       artifacts never included the host's kernel log" is **wrong** - the
+       artifacts do carry it as `kernel.log` / `kernel-final.log`. The *fact* it
+       revealed (the host reaches high speed) stands and is reproducible: e.g.
+       `326253.0` `usb 1-1: new high-speed USB device number 82 using xhci_hcd`
+       then `device descriptor read/64, error -110`. What was actually new is that
+       this file had not been read; it should be read on every run.
+
+166. **SUPERSEDED - see the retraction immediately below this entry.** (Kept only
+     for the record of what was believed and why.) Original claim: ROOT CAUSE
+     CHAIN FOUND: `DEVTEN` is never published on the baseline path, so
+     the core posts no events at all.** 2026-09-19.
+     * **Measurement:** run `326253.0` (`usb2-live-devten-set`, one predicate):
+       marker 973 ms, **no pulse** ⇒ `DEVTEN == 0` at handoff completion (the readout
+       fires ~974 ms, i.e. *before* the bus reset at attach + 6.2 s, so this is the
+       state the handoff itself leaves behind). Reproduced in `329043.0` (also no
+       pulse) with `--usb2-source-devten-after-runstop`.
+     * **Why this explains everything else already measured:**
+       - `307410.0`: the event ring memory is never written ⇒ no events are posted.
+       - `266423.0`: `ENDPOINTS_READY == false`. `ENDPOINTS_READY = true` lives at
+         `usb.rs:10728`, inside `restart_gadget_at_runstop()` (`usb.rs:10616`),
+         whose `write(DEVTEN, ...)` is at `usb.rs:10772`. **Both flags come from the
+         same function**, and both are observed false/zero ⇒ that function does not
+         complete. (This also corrects the earlier note that `usb.rs:4790-4800` was
+         the only `ENDPOINTS_READY = true` site - it is not.)
+       - The software re-arms EP0 from the reset event; with events disabled the
+         DWC3's bus-reset flush of EP0's transfer state is never repaired, so the
+         SETUP is never accepted and the host gets no response.
+     * **Why the baseline leaves `DEVTEN` at 0:** the only publish on this path is
+       `usb.rs:8204`, and it sits *inside* the `if cfg!(...start_after_connect)`
+       block that the code documents as running only once "that STARTTRANSFER has
+       actually armed the EP0 OUT TRB". That arm is U0-guarded, and U0 is reached
+       only when the host attaches - which happens *after* the handoff. So the guard
+       cannot succeed during the handoff and the publish is skipped. The
+       `restart_gadget_at_runstop()` publish (`usb.rs:10772`) is cfg-gated off here.
+       (Env plumbing verified: `--start-after-connect` → `start-after-connect=true`
+       → `FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_CONNECT` → `build.rs:486`
+       emits the cfg, so the guard really is the blocker, not a missing cfg.)
+     * **A/Bs tried and their outcome (honest):** `--usb2-source-devten-after-runstop`
+       (`329043.0`) did **not** change `DEVTEN`; `--usb2-source-devten-before-runstop`
+       (`330825.0`) did **not** fix enumeration and its readout produced **no marker
+       pulse at all** ("not a CCS word transmission") ⇒ **inconclusive measurement**,
+       not a negative result. Neither flag is a fix.
+     * **Next step:** publish `DEVTEN` unconditionally at the end of the handoff
+       (arm EP0 + publish the mask before Run/Stop, without the U0 guard), which is
+       the vendor's own order in `__dwc3_gadget_start()` - arm EP0, enable the
+       event mask, then Run/Stop.
+
+166. **RETRACTED AS A CAUSAL CLAIM: `DEVTEN == 0` is a mid-handoff reading, and so
+     is the event-ring reading that depended on it.** 2026-09-19, same session.
+     * The reading is real: `usb2-live-devten-set` (`326253.0`, `329043.0`) fires
+       no pulse, so `DEVTEN` *is* 0 at the moment the readout samples it.
+     * **But that moment is mid-handoff.** The selector dispatch and the
+       `if cfg!(...start_after_connect) { write(DEVTEN, direct_gadget_devten()); }`
+       at `usb.rs:8199-8204` are both inside the *handoff* function
+       `init_usb2_gadget_reuse_fastboot_ep0()` (`usb.rs:6004`). The dispatch reads at
+       ~`usb.rs:8017`; the publish happens ~180 lines *later*, i.e. **after** the
+       reading but **still before the host attaches**. So by the time the host
+       attaches, `DEVTEN` *is* published (the `start_after_connect` cfg the baseline
+       uses is exactly the one guarding that write).
+     * **Therefore:** the attach happened with events enabled, and enumeration still
+       failed with the host seeing `-71`/`-110`. `DEVTEN` does **not** discriminate
+       the failure, and the chain "no events ⇒ no re-arm ⇒ no SETUP" is **not
+       established**.
+     * **Worse, this also invalidates an earlier refutation:** run `307410.0`
+       concluded "the core never posts an event" from the event ring memory being
+       zero - but that reading was taken at the same mid-handoff point, i.e.
+       *before* `DEVTEN` was published. **The event machinery is therefore not
+       excluded after all**; the "no events" observation has never been made at a
+       moment when events were enabled.
+     * **What survives:** the readings were taken too early, not wrong in
+       themselves; `usb.rs:8204` is not inside the U0-guarded arm block (that ends
+       at `8198`).
+     * **Next step (instrument fix first):** make the readout run *after* the
+       handoff's `DEVTEN` publish - ideally deferred to attach time (the code
+       already has a deferred hook, `POST_RUNSTOP_PROBE_PENDING` /
+       `FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP`, around `usb.rs:8206-8215`) - and
+       re-measure `DEVTEN` and the event ring there before drawing any conclusion
+       about the event machinery.
+     * **Lesson (measurement discipline):** before treating a readout value as the
+       handoff's state, check where the readout sits relative to writes the *same*
+       function performs later. Same error class as the multi-predicate CCS words
+       retracted in entry 159.
+
+167. **`DEVTEN` is empirically NOT the cause (clean A/B), and the deferred
+     attach-time readout is implemented but still unobservable.** 2026-09-19.
+     * **The A/B that settles it:** `--utmi-postrun-readout` is an `Option`
+       (`bramble-usb.rs:950`), and the handoff's *only* `DEVTEN` publish
+       (`usb.rs:8199-8204`) sits **inside** the `if let Some(selector) =
+       option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT")` block (`usb.rs:7099`).
+       So a run **without** any readout never publishes `DEVTEN` at all.
+       Run `334730.0` did exactly that - same loop, no `--utmi-postrun-readout` -
+       and it fails **identically**: "Fullerene USB did not enumerate", host log
+       `usb 1-1: new high-speed USB device number 85` then
+       `device descriptor read/64, error -110`. Instrumented runs (with the
+       publish) fail the same way. **⇒ `DEVTEN` does not discriminate the failure.**
+       The retraction in entry 166 is therefore confirmed by measurement, not just
+       by reading the code.
+     * **Corollary (a real, separate deviation):** because the publish lives inside
+       the readout block, a *production* run publishes `DEVTEN` only if the
+       diagnostic readout happens to be enabled. That is a genuine deviation from
+       the vendor's order in `__dwc3_gadget_start()` (arm EP0, enable the event
+       mask, then Run/Stop) and should be fixed on its own merits - but it is not
+       this failure.
+     * **Instrument added (usable, but its output is not yet observable):** a
+       *deferred attach-time* one-bit readout, `DEFERRED_READOUT_KIND`
+       (`usb.rs:417`), with selectors `usb2-live-deferred-evring` (event ring
+       memory non-zero) and `usb2-live-deferred-devten` (`DEVTEN != 0`). The
+       selector sets the kind and `POST_RUNSTOP_PROBE_NOT_BEFORE` in the handoff
+       dispatch; `poll()` (`usb.rs:12507`) publishes one bit over the CCS channel
+       once the 8 s delay (`POST_RUNSTOP_PROBE_DELAY_SECS`) has passed - i.e. after
+       the attach and after the bus reset, which is the only point at which the
+       event-machinery question can be answered at all.
+     * **Outcome of `336520.0` (`usb2-live-deferred-evring`): INCONCLUSIVE.** No
+       marker pulse was decoded ("not a CCS word transmission"), the CCS timeline
+       ends at +5.922 s, and `lsusb-timeline.txt` shows `device-absent` for the
+       whole run with **no pull-up toggle** anywhere after the attach. So the
+       deferred bit never reached the host. Two candidates, not yet separated:
+       the block did not run, or `ccs_pulse` has no effect that late (the CCS
+       channel is documented as needing the `run_stop_device` carrier, which is
+       long gone 8 s later).
+     * **Next:** give the deferred readout a channel that survives the failure -
+       drive the pulse from the `run_stop_device` path, or record the bit in the
+       retained trace / the harness's own artifacts - and only then re-ask whether
+       the core posts events with `DEVTEN` published.
+
+168. **Code analysis (not a measurement): the bus-reset recovery is reachable *only*
+     through a device event, so a dead event path also disables the fix.** 2026-09-19.
+     * `restart_control_after_reset()` (`usb.rs:4071`) is the handler that would
+       repair exactly the state this failure needs: it clears
+       `DCFG.DEVADDR` (`usb.rs:4314`), re-derives the speed from
+       `DSTS.CONNECTSPD`, sets the matching max packet, and - crucially -
+       `if !ENDPOINTS_READY { ENDPOINTS_READY = configure_endpoint(0, ...) &&
+       configure_endpoint(1, ...) }` (`usb.rs:4328-4331`) before re-arming EP0.
+       Its own comment at `usb.rs:12150` states the hazard: "a stale non-zero
+       DEVADDR makes the core ignore the [new enumeration]".
+     * **It has exactly one call site: `usb.rs:4747`, inside `match device_event`
+       (`usb.rs:4678`).** There is no poll-based detection of the bus reset and no
+       other caller. So if the core posts no events, this handler never runs -
+       `DEVADDR` is never cleared, EP0 is not reconfigured, and the SETUP is never
+       accepted. That is a *structural* coupling: the recovery mechanism is
+       event-driven, so the event path cannot be ruled out as the cause by
+       observing that "everything else looks right".
+     * Related: `u0_arm_window_recovery()` (`usb.rs:12357`) is the poll-side
+       alternative - it issues `device_soft_reset()` (which returns `DEVADDR` to 0
+       in hardware) and then re-arms with `EP0_SETUP_ARMED`/`ENDPOINTS_READY`
+       forced false. It is opt-in (`--usb2-arm-window-recovery`, in the A/B queue
+       below), and its existence is why the event path is testable at all.
+     * Also verified against the vendor while checking the transfer path:
+       `SETTRANSFRESOURCE` really does take only the resource *count* -
+       vendor `gadget.c:578` `params.param0 = DWC3_DEPXFERCFG_NUM_XFER_RES(1)`,
+       matching Fullerene's hard-coded `1` in `set_transfer_resource`
+       (`usb.rs:2956-2958`), so that is not a defect. The TRB address travels in
+       the `STARTTRANSFER` parameters (`upper_32_bits`/`lower_32_bits`, vendor
+       `gadget.c:794-799`), and Fullerene's `start_transfer`
+       (`usb.rs:3088-3105`) matches exactly.
+     * **Conclusion to test, not to assume:** the event machinery is the only
+       remaining path that explains "everything readable is correct and the core
+       still does nothing", but it is *unproven* - the deferred attach-time
+       readout must work first (entry 167).
+
+169. **Autonomous overnight A/B queue.** 2026-09-19. `tools/bramble_ab_queue.sh`
+     runs one flag per boot (RAM-only, the harness returns the handset to Android
+     after each), records `flag / exit / classification / 1234:0001 count /
+     host high-speed count / artifact dir` into `tmp/ab-queue-results.tsv`, and
+     stops early on the first success. Flags, in order:
+     `--usb2-source-exact-devten`, `--gadget-restart-at-runstop`,
+     `--usb2-source-exact-cmd-guard`, `--usb2-source-exact-runstop`,
+     `--usb2-source-phy-setup`, `--usb2-runtime-power-keepalive`,
+     `--usb2-extended-setup-arm`, `--usb2-long-setup-arm`,
+     `--usb2-arm-window-recovery`, `--signal-dma-post-runstop`.
+     Results so far: `--usb2-source-exact-devten` (`338748.0`),
+     `--gadget-restart-at-runstop` (`340144.0`) and
+     `--usb2-source-exact-cmd-guard` (`341444.0`) all fail identically
+     (`classification=usb-attach-or-descriptor-failure--110`, no `1234:0001`).
+     The last entry is also the check for whether `poll()` still runs ~8 s after
+     the handoff, which is what the deferred readout needs.
+
+170. **`GCTL` already replicates the vendor's end state - recorded because it was
+     nowhere in these notes.** 2026-09-19, code review.
+     * `usb.rs:6384-6390` does the full vendor
+       `dwc3_core_setup_global_control()` end state:
+       `gctl &= !(GCTL_PRTCAPDIR_MASK | GCTL_SCALEDOWN_MASK | GCTL_DISSCRAMBLE)`
+       then `gctl |= GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG`, plus
+       `GBLHIBERNATIONEN` when `GHWPARAMS1` reports the HIB power-option core, then
+       writes it back. Its own comment says the previous code "preserved whatever
+       SCALEDOWN/DISSCRAMBLE state the bootloader left behind", i.e. this was fixed
+       earlier.
+     * The vendor side, for reference: `core.c:735` clears `SCALEDOWN`;
+       `core.c:783-786` clears `DISSCRAMBLE` on **non-FPGA** parts unconditionally
+       (only an FPGA with `disable_scramble_quirk` sets it); `core.c:755-757`
+       touches `DSBLCLKGTNG`/`SOFITPSYNC` only for host/OTG on revisions 2.10a-2.50a
+       and otherwise clears `DSBLCLKGTNG`; `core.c:797-798` sets `U2RSTECN` only
+       below revision 1.90a.
+     * **Why it mattered to check:** a device with scrambling *disabled* would
+       explain this failure perfectly - the chirp/handshake is unscrambled so the
+       host still reaches HIGH SPEED, while every scrambled packet would arrive as
+       garbage and no SETUP would ever be accepted. That hypothesis is **not**
+       available as an explanation, because the bit is already cleared by the
+       handoff. A one-bit verification of the runtime value is still queued
+       (`usb2-live-disscramble-clear`) rather than assumed.
+     * Note the other `GCTL` write sites (`usb.rs:5777`, `5915`, `8344`, `8852`)
+       only OR in `GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG`, so they cannot re-set the
+       cleared bits.
+
+171. **Overnight autonomous session (2026-09-19/20): the A/B queue is exhausted, the
+     host window is 588 ms, and `SOFFN` never advances.** All runs RAM-only.
+     * **A/B queue (`tools/bramble_ab_queue.sh`), all ten flags NEGATIVE**, each
+       failing identically (`classification=usb-attach-or-descriptor-failure--110`,
+       no `1234:0001`, host still reaching high speed):
+       `--usb2-source-exact-devten` (`338748.0`),
+       `--gadget-restart-at-runstop` (`340144.0`),
+       `--usb2-source-exact-cmd-guard` (`341444.0`),
+       `--usb2-source-exact-runstop` (`342784.0`),
+       `--usb2-source-phy-setup` (`344055.0`),
+       `--usb2-runtime-power-keepalive` (`345605.0`),
+       `--usb2-extended-setup-arm` (`346674.0`),
+       `--usb2-long-setup-arm` (`347748.0`),
+       `--usb2-arm-window-recovery` (`349261.0`),
+       `--signal-dma-post-runstop` (`350817.0`).
+       **No existing opt-in path fixes this.** (Note: the script's `host_hs`
+       column reads 0 for the first rows because of a `grep -c` quirk; the host
+       log itself shows high-speed in every run.)
+     * **The host's whole observation window is ~0.6 s.** `354670.0` host log:
+       `new high-speed USB device number 98` then `device descriptor read/64,
+       error -71` only **588 ms** later. The attach itself is ~6.2 s after the
+       handoff (the host's debounce), so the device must already be answering at
+       ~6.8 s. This invalidates the old assumption behind
+       `POST_RUNSTOP_PROBE_DELAY_SECS = 8`: an 8 s delay fires *after* the host has
+       given up. Any recovery or readout must happen inside that 0.6 s window.
+     * **The CCS channel cannot be used after the attach.** `336520.0` and
+       `350817.0` produced no pulses at all after ~6 s, and `ccs_pulse` is
+       implemented as a DCTL Run/Stop toggle (`usb.rs:10843-10848`); the code
+       itself notes (`usb.rs:12011-12017`) that `run_stop_device_no_readback` is
+       "the proven host-visible gate". A `ccs_pulse_no_readback` variant was added
+       and used by the deferred block, but the host's port is already disabled by
+       then, so post-failure readout remains impossible on this channel. **The
+       deferred attach-time readout is therefore implemented but unobservable** -
+       do not build further conclusions on it without a different channel.
+     * **`DSTS.SOFFN` never changes.** The deferred trigger was reworked to fire on
+       the *first change* of `DSTS.SOFFN` after the handoff (`DEFERRED_SOFFN_ARMED`,
+       `LAST_DEFERRED_SOFFN`), because `USBLNKST` reads "On" from the start and
+       cannot detect an attach. Runs `358131.0` and `359631.0` show the action
+       **never fired**, i.e. the frame number never moved even while the host was
+       attached and issuing traffic. **The core is not receiving the host's frames
+       at all** - independent evidence for the RX-path conclusion, from a source
+       that does not depend on the retracted event-ring reading.
+     * **Forcing the event-path recovery at attach time does not fix it.**
+       `usb2-live-deferred-recover` (`354670.0`, `358131.0`, `359631.0`) calls
+       `restart_control_after_reset()` (entry 168: DEVADDR clear, speed, EP0
+       reconfigure, re-arm) from the polling owner. Enumeration still fails.
+     * **Still-untested one-bit candidates left for the morning** (each one
+       predicate, one run): `GUSB2PHYCFG0.PHYIF` (UTMI width 8 vs 16 bit - the code
+       forces 8-bit at `config.rs:441` while Linux follows the DT's
+       `snps,hsphy_interface`, which the Bramble DT does not appear to set, so both
+       should be 8-bit but it is unverified at runtime);
+       `usb2-live-disscramble-clear` (verify the vendor-matching `GCTL` write at
+       `usb.rs:6384-6390` actually sticks); `usb2-live-devaddr-zero` at attach time
+       (needs a working attach-time channel).
+
+172. **Final two verifications of the overnight session: both closed.**
+     2026-09-19/20.
+     * `usb2-live-disscramble-clear` (`361050.0`, one predicate): marker 973 ms +
+       one pulse ⇒ **`GCTL.DISSCRAMBLE` is clear**, i.e. scrambling is enabled and
+       the vendor-matching write at `usb.rs:6384-6390` really sticks. The
+       "device descrambler off ⇒ link trains but every packet is garbage"
+       hypothesis - which would have explained the signature perfectly - is
+       therefore **not available**. Closed.
+     * `usb2-live-phyif-zero` (`362504.0`, one predicate): marker 973 ms + one
+       pulse ⇒ **`GUSB2PHYCFG0.PHYIF == 0`**, i.e. the core uses the 8-bit UTMI+
+       interface, matching the PHY. The "core/PHY width mismatch breaks only the
+       data path" hypothesis is closed too.
+     * **Running total: 23 one-bit measurements, every one the correct value.**
+     * Combined with entry 171 (no opt-in A/B works, the host window is 588 ms,
+       `SOFFN` never advances, forcing the reset recovery does not help), the
+       honest state after the overnight session is: **the failure is in the
+       PHY→core UTMI data/clock path or the core's receive ingress, and no
+       register the software can read exposes it.** The host completes the analog
+       handshake and then gets no response; the core receives neither frames nor
+       events nor packets.
+
+173. **Deliberate re-attach also fails to reach the host - closing the overnight
+     session.** 2026-09-19/20.
+     * `usb2-live-reattach` (`364623.0`): after the host's first attempt failed,
+       the polling owner was to drop the pull-up (`ep0_signal_drop_pullup()`),
+       rebuild EP0 (`u0_arm_window_recovery()`) and re-publish it
+       (`ep0_signal_publish_pullup()`). The host log shows **only one attach**
+       (`new high-speed USB device number 103`, then `error -71` 588 ms later) and
+       the CCS timeline shows no pulses after ~+1.6 s. So neither the pull-up
+       re-publish nor the CCS pulses reach the host once enumeration has failed.
+     * **Consequence for method:** after the host gives up (~+7 s), this device can
+       neither be observed nor re-driven from the software side. Every attach-time
+       readout and every late recovery attempt is therefore blind - the only
+       remaining channels are ones that do not depend on the host's port state
+       (wire-level capture, the handset's own display/trace, or JTAG).
+     * **Session summary:** 23 one-bit measurements all correct; 10 A/B flags all
+       negative; the host completes the analog HS handshake and then receives
+       nothing; the core receives no frames, no events and no packets; the failure
+       is in the PHY→core UTMI data/clock path or the core's receive ingress, and
+       no software-readable register exposes it.
+     * Device left in Fastboot, RAM-only throughout; no writes, no configfs, no
+       partition operations.
+
+174. **The overnight negatives are explained: a post-attach collapse and
+     electrically inert drop primitives - both already recorded in the code.**
+     2026-09-19/20.
+     * After chasing "why do late CCS pulses / re-attaches never reach the host",
+       the answer was already in `usb_probe.rs:1331-1340` and `1362-1372`:
+       * **The handset resets itself ~5.5-8 s after the attach** ("The post-attach
+         collapse resets the handset ~5.5-8 s after the attach, which cuts every
+         park"). That is the ~42 s return seen all night, and it is why any action
+         scheduled at +8 s never ran: the kernel was already gone.
+       * **On this revision the pull-up drop primitives are electrically inert**:
+         "the QSCRATCH, DCTL, and VBUSVLDEXT0 drop primitives are all electrically
+         inert on this revision (no host-visible disconnect ever appears)". This is
+         the *documented* reason the late pulses and the deliberate re-attach
+         (`364623.0`) produced nothing - not a bug in the new code.
+       * **`DCTL Run/Stop` is the only disconnect primitive the host actually
+         sees**, and the surviving host-visible channels are the Run/Stop-cycle
+         gates (`pubd`, `dstat`, `post-code`) which publish a code as a *count of
+         attach lines*: "the attach-line count minus the first attach IS the code".
+     * **What this changes:** the device has roughly five seconds of life after the
+       attach, and the host gives up 588 ms in. So the device must be *ready before
+       the attach*, not repaired afterwards - which is exactly why every
+       deferred/recovery experiment of this session failed regardless of its
+       content. It also means the only trustworthy host-visible readout is a
+       Run/Stop-cycle gate.
+     * **`--signal-cmd-gate dstat` attempt (`368598.0`): inconclusive** - the host
+       log shows a single attach line, i.e. the gate's Run/Stop cycles did not run
+       under the `loop` command (the gate appears to belong to the probe flow).
+       Worth retrying from the probe path rather than `loop`.
+     * **Diagnostic worth having:** `usb::diag_readout_code()` (published by
+       `dstat`) names how far the first enumeration window got, 1 = no SETUP
+       reached DRAM ... 6 = XferNotReady on the data phase. Reading that code is
+       the single most informative next measurement, and it needs no new channel.
+
+175. **Code confirmation: the baseline never arms EP0 before the attach - and the
+     "+2 s pulse" bisection was invalid because it used an inert primitive.**
+     2026-09-20.
+     * `usb.rs:10909-10915` is explicit:
+       ```
+       let defer_setup = cfg!(...gadget_handoff_start_after_connect);
+       let armed = if defer_setup { PENDING_SETUP_ARM = true; false } else { start_setup() };
+       ```
+       With `--start-after-connect` - which the project baseline passes - the
+       handoff **does not arm EP0**; it only sets `PENDING_SETUP_ARM` and leaves
+       the arm to the "polling owner". So at the moment the host attaches
+       (~6.2 s later) EP0 may never have been armed, and the SETUP cannot be
+       accepted. `write(DEVTEN, devten)` at `usb.rs:10945` runs in *both* branches,
+       so the event mask is not the discriminator here.
+     * **Important correction:** the "+2 s deferred pulse" bisection (`367194.0`),
+       which I read as "`poll()` is not running", is **invalid** - it used
+       `ccs_pulse`, which is one of the pull-up drop primitives that
+       `usb_probe.rs:1334-1337` records as **electrically inert on this revision**.
+       A missing pulse therefore says nothing about whether `poll()` ran. The only
+       host-visible primitive is a **DCTL Run/Stop cycle**.
+     * **Therefore the correct instrument is a Run/Stop-cycle gate**, i.e. `dstat`
+       (`usb_probe.rs:1373-1385`), which publishes `diag_readout_code()` as a count
+       of attach lines. The earlier attempt (`368598.0`, `--signal-cmd-gate dstat`
+       with plain `loop`) produced a single attach line, i.e. the gate did not run -
+       most likely because the gate path needs `--signal-dma-probe`
+       (`usb_probe.rs:6057`). **Retry `dstat` with `--signal-dma-probe`; that is the
+       single most informative measurement available.**
+     * **Two prepared queues for the morning:**
+       `tools/bramble_ab_queue.sh` (first, done - all ten negative) and
+       `tools/bramble_ab_queue2.sh` (ready), whose first and most important variant
+       simply **omits `--start-after-connect`**, i.e. arms EP0 synchronously inside
+       the handoff so the device is ready *before* the host attaches. Note the
+       counter-warning already in the code: a synchronous window at that boundary
+       "can suppress the first physical attach", so a negative result there is
+       ambiguous and must be read together with the attach-line count.
+
+176. **Queue 2 result: omitting `--start-after-connect` suppresses the attach
+     entirely - the deferred design is required, and the arm must happen after the
+     handoff.** 2026-09-20.
+     * `tools/bramble_ab_queue2.sh` variant 1 (no `--start-after-connect`, i.e. arm
+       EP0 synchronously inside the handoff - the configuration `usb.rs:10913-10915`
+       selects) and variant 2 (same plus `--usb2-source-exact-devten`) both return
+       **`classification=android-fallback` with zero host attach lines**
+       (`377329.0`, `378468.0`): the Fullerene device never appears on the bus at
+       all. This is exactly what the code warns about in the `start_after_connect`
+       branch - a synchronous window at that boundary "can suppress the first
+       physical attach" - so the deferral is *load-bearing*, not incidental.
+     * **Consequence:** EP0 cannot be armed before the handoff returns; it must be
+       armed afterwards, in whatever runs after the handoff. That makes "does the
+       post-handoff owner actually arm EP0?" the only question that matters, and it
+       needs a readout that works *after* the attach.
+     * **`--signal-cmd-gate dstat` with `--signal-dma-probe` (`380817.0`):** still a
+       single attach line, so the gate's Run/Stop cycles did not run under `loop`
+       either. The gate flow appears to belong to the probe/matrix path
+       (`usb_probe.rs:1373-1385`), not to `loop`, so reading `diag_readout_code()`
+       needs the probe path - or a new readout built on `gate_true_stop_device()` /
+       `gate_true_run_device()` inside the *polling* context.
+     * **Also noted:** `matrix` with its default `--template tmp/bramble-stock-boot.img`
+       produced `android-fallback` for all six routes (`370277.0`), i.e. it boots a
+       stock image and never exercises Fullerene; a useful matrix run needs
+       `--template` pointed at a Fullerene image.
+
+177. **`poll()` does run after the handoff - and the deferred readout block still
+     never fires. The host-visible channels are exhausted.** 2026-09-20.
+     * **Refuted:** "`poll()` is not running after the handoff". `usb_probe.rs:731-736`
+       shows `stable_park()` = `loop { wdt_pet(); poll(); }`, and it is reached via
+       `park_without_recovery_timer()` (`:738`). `spin_until_probe_ticks()` (`:763`,
+       the one helper that burns time *without* calling `poll`) has no callers.
+     * **Measured (valid this time):** the deferred block (`usb.rs:12837`) never
+       fires. A *positive control* selector (`usb2-live-gate-probe`, kind 9) that
+       calls `gate_cycle_publish(2)` - two unconditional DCTL Run/Stop cycles -
+       produced **zero** extra `new high-speed USB device` lines, at both the
+       default +8 s delay and a +2 s delay. Unlike the earlier "+2 s bisection"
+       (entry 175) this used the Run/Stop channel, not the inert pull-up
+       primitives, so it is a valid measurement: the block does not run.
+     * The selector *is* compiled in: `experiment-manifest.txt` records
+       `utmi-postrun-readout=usb2-live-gate-probe`.
+     * **The gates need a configured device.** `gate_true_stop_device()` /
+       `gate_true_run_device()` emit no host-visible disconnect while the device is
+       stuck *before* configuration, so the "DCTL Run/Stop is the only host-visible
+       primitive" rule (entry 174) cannot be used as a *readout* here: it is
+       circular, because the readout needs exactly the state we cannot reach.
+     * **usbmon (`390278.0`):** four `GET_DESCRIPTOR(Device)` submits; the first
+       completes **5.380 s** later with `status=-2` (-110 timeout), the other three
+       immediately with -71. Consistent with the host giving up long before any
+       device-side action.
+     * **Consequence:** the only instrument left that can prove device-side
+       behaviour is the **retained DRAM trace** (`USB_TRACE`, readable from a later
+       boot through `prev_boot_*`). A `"DEFR"` marker was added at the top of the
+       deferred block (`usb.rs:12862`) recording kind, the fire predicate and
+       `DSTS`. Next step: run once, then read that marker back in the following
+       boot to settle whether the block is reached at all.
+
+178. **Build-system robustness fix (and a retraction): the missing
+     `rerun-if-env-changed` declarations did NOT invalidate the A/B campaign.**
+     2026-09-20.
+     * `build.rs` reads 263 env vars but declared only 249 with
+       `rerun-if-env-changed`. When only an undeclared variable changes, Cargo
+       does not re-run the build script, so the emitted `--cfg`s keep their
+       previous values and the kernel is not recompiled - a flag can silently do
+       nothing and the run then looks like a clean negative result.
+     * 17 `FULLERENE_*` variables were missing the declaration. 15 of them are
+       reachable from CLI flags (`--usb2-arm-window-recovery`,
+       `--usb2-extended-setup-arm`, `--usb2-clear-susphy-after-reset`,
+       `--usb2-clear-susphy-after-runstop`, `--usb3-link-training-after-reset`,
+       `--ss-conndone-clear-hird`, `--ss-clear-usb3-susphy-after-runstop`,
+       `--ss-core-reset-at-runstop`, `--gadget-start-only-at-runstop`,
+       `--hsphy-normal-opmode`, `--hsphy-clear-power-down`,
+       `--hsphy-clear-datapath-override`, `--hsphy-all-regulator-sets`,
+       `--hsphy-power-after-runstop`, `--hsphy-reset-delay-150`).
+     * **RETRACTION.** I first concluded that this invalidated the ten-flag A/B
+       queue of entries 171/174, including `--usb2-arm-window-recovery` and
+       `--usb2-extended-setup-arm`. That is **wrong**. The harness already avoids
+       the stale-artifact problem by hashing *every* build-script env var it sets
+       (`main.rs:5418-5423`) into an isolated `CARGO_TARGET_DIR`
+       (`target/ak<digest>`, `main.rs:5428`/`5451`), exactly so that "cargo
+       otherwise reuses stale lib/bin artifacts when only build-script env
+       changes" (`main.rs:4300`). Every harness A/B run therefore built fresh and
+       the previously reported negative results stand. The redo queue
+       (`tools/bramble_ab_queue3.sh`) was stopped for that reason.
+     * The fix is still worth keeping, but its scope is narrower than first
+       stated: it protects build paths that do *not* isolate the target directory
+       (including ad-hoc `cargo build --target aarch64-unknown-none` runs into the
+       shared `target/`), and `audit_env_rerun_declarations()` now warns at build
+       time if the invariant breaks again.
+     * Verified: with `FULLERENE_AARCH64_USB_HSPHY_NORMAL_OPMODE=1` the build
+       script re-runs and `--cfg fullerene_aarch64_usb_hsphy_normal_opmode` reaches
+       rustc (`cargo build -v`).
+
+179. **Runtime power keepalive: the guard was backwards, but fixing it does not
+     change enumeration - and the host's window is 5.4 s, not 588 ms.**
+     2026-09-20.
+     * `service_usb2_runtime_power_keepalive()` (`usb.rs:8837`) is compiled only
+       under `fullerene_aarch64_usb_gadget_handoff_usb2_runtime_power_keepalive`,
+       i.e. it is an **opt-in A/B flag**; without `--usb2-runtime-power-keepalive`
+       the function is an empty stub (`usb.rs:8871`). The mechanism written to stop
+       RPMh collapsing the USB2 domain is therefore **off by default**.
+     * Its guard read
+       `if QMP_PHY_READY || RUN_STOP_TICK == 0 || read(DCTL) & DCTL_RUN_STOP == 0 { return; }`
+       - which bails out precisely when the controller is *stopped*. That is
+       backwards for a keepalive: a stopped core is when the domain is most likely
+       to have been collapsed, and the body only re-votes rails/GDSC/clock
+       branches (its own contract: "does not retune DWC3 clocks, reset the
+       controller, or touch QMP state"). **Fixed**: only `RUN_STOP_TICK == 0` now
+       returns early.
+     * **A/B (`411104.0` baseline vs `411910.0` with `--usb2-runtime-power-keepalive`)
+       is a no-op**: both produce exactly one attach line and
+       `device descriptor read/64, error -110`. The reason is that the *probe's own
+       observation loop* already re-votes the domain every 500 ms
+       (`usb_probe.rs:940-949`, `refresh_usb_domain_votes` +
+       `force_enable_usb30_gdsc`), so the kernel-side keepalive adds nothing in this
+       configuration. The fix still matters for the production path (`main.rs`
+       boot loop), where nothing re-votes unless the flag is passed.
+     * **Timing correction.** Today's host logs show the descriptor read failing
+       **5.41 s** after the attach line (`06:05:16.172` attach, `06:05:21.582`
+       `-110`; the keepalive arm shows 5.33 s). That matches usbmon's first submit
+       completing 5.380 s later (`390278.0`). The "588 ms host window" recorded in
+       entry 171 came from a single earlier run and is **not** the general case.
+       This matters: the host waits ~5.4 s, and the handset self-resets 5.5-8 s
+       *after the attach*, so the kernel is alive for essentially the whole host
+       wait. The failure is therefore **not a timing race** - the device has seconds
+       to answer and does not, which is consistent with the dead RX ingress
+       (SOFFN never advances) rather than with any scheduling or readiness problem.
+
+180. **Domain-collapse hypothesis is DEAD - and the 13 untested HSPHY/SS flags are
+     the next campaign.** 2026-09-20.
+     * Negative arm implemented as the `nokeepalive` gate: the probe's observation
+       loop skips its 500 ms rail/GDSC re-vote entirely (`usb_probe.rs:940-949`),
+       and the kernel-side keepalive is compiled out unless
+       `--usb2-runtime-power-keepalive` is passed, which this arm does not pass. So
+       the arm runs with **no software keepalive at all**.
+     * Result (`413151.0` baseline vs `414296.0` nokeepalive): identical - one
+       attach line, `device descriptor read/64, error -110`, attach-to-error
+       5.245 s vs 5.262 s, `boot-reason=watchdog` in both. Removing every domain
+       re-vote changes nothing, so **RPMh is not collapsing the USB2 domain during
+       the enumeration window**. The platform-power family is closed.
+     * Consequence for the keepalive work of entry 179: the guard fix stands on its
+       own merits, but enabling the keepalive by default in the production path is
+       **not** justified by evidence - it would add MMIO traffic and power votes
+       with no demonstrated benefit. Recommended **not** to do it.
+     * **13 flags that have never been run at all**: the harness isolates
+       `CARGO_TARGET_DIR` per build-env (entry 178), so the following are valid but
+       untested - `--usb2-clear-susphy-after-reset`,
+       `--usb2-clear-susphy-after-runstop`, `--usb3-link-training-after-reset`,
+       `--ss-conndone-clear-hird`, `--ss-clear-usb3-susphy-after-runstop`,
+       `--ss-core-reset-at-runstop`, `--gadget-start-only-at-runstop`,
+       `--hsphy-normal-opmode`, `--hsphy-clear-power-down`,
+       `--hsphy-clear-datapath-override`, `--hsphy-all-regulator-sets`,
+       `--hsphy-power-after-runstop`, `--hsphy-reset-delay-150`. The two flags that
+       overlap entry 171's queue (`--usb2-extended-setup-arm`,
+       `--usb2-arm-window-recovery`) were run there and their negative results
+       stand. The HSPHY power/opmode group is the interesting half because it acts
+       directly on the PHY side of the dead RX path.
+     * `tools/bramble_ab_queue3.sh` runs exactly this list; it was stopped earlier
+       for a cache-invalidation reason that turned out to be wrong, and is relaunched
+       with the correct rationale.
+
+181. **Full tally of the never-run flag campaign, and a complete primary-source audit
+     of the HS PHY: the kernel's PHY programming is faithful.**
+     2026-09-20.
+     * **All 15 flags negative.** `--usb2-arm-window-recovery`, `--usb2-extended-setup-arm`,
+       `--usb2-clear-susphy-after-reset`, `--usb2-clear-susphy-after-runstop`,
+       `--usb3-link-training-after-reset`, `--hsphy-normal-opmode`,
+       `--hsphy-clear-datapath-override`, `--hsphy-all-regulator-sets`,
+       `--hsphy-power-after-runstop`, `--hsphy-reset-delay-150` all reach the same
+       `usb-attach-or-descriptor-failure--110` with `host_hs=1`.
+     * **Four flags never ran at all**: the harness rejects them without a
+       prerequisite - `--ss-conndone-clear-hird`, `--ss-clear-usb3-susphy-after-runstop`
+       and `--ss-core-reset-at-runstop` require `--super-speed`, and
+       `--gadget-start-only-at-runstop` requires `--gadget-restart-at-runstop`. They
+       remain genuinely untested; the queue script must be extended with those
+       prerequisites before they can be judged.
+     * **`--hsphy-clear-power-down` is the one flag that changes the failure mode**:
+       `classification=google-logo-or-software-unrecoverable-suspected`, `host_hs=0`,
+       i.e. the handset never reaches the attach. Per the source-grounded discipline
+       this is a valid negative *for that path* but no evidence about downstream
+       state - the run did not reach the boundary the question needs. It does prove
+       the PHY's power-down control is live and load-bearing.
+     * **Primary-source audit of `tmp/qpr1-msm/drivers/usb/phy/phy-msm-snps-hs.c`
+       (964 lines, the real Bramble PHY driver) against the kernel's `phy.rs` and
+       `usb_reset.rs`.** Every item matches:
+       - PHY reset: vendor `reset_control_assert` -> `usleep_range(100,150)` ->
+         deassert; kernel `pulse_usb2_phy_reset()` asserts, waits `delay_us(100)`
+         (opt-in 150), deasserts, and verifies both edges by readback.
+       - `msm_hsphy_init()`'s full order (POR assert, `FSEL_MASK=0`, `PLLBTUNE`,
+         `REFCLK_SEL_DEFAULT`, `VBUSVLDEXTSEL0`, `VBUSVLDEXT0`, param-override seq,
+         TX pre-emphasis/TXVREF tunes, `VREGBYPASS`, `SUSPEND_N_SEL|SUSPEND_N`,
+         **`SLEEPM` set**, POR release, `SUSPEND_N_SEL` clear, common-control
+         override clear) is reproduced in `phy.rs:469-586`. Note the kernel sets
+         SLEEPM, matching the vendor - the opt-in "clear SLEEPM" variant is a
+         deliberate A/B, not a port of the vendor.
+       - Power: vendor enables vdd (voltage to the high level), vdda18 and vdda33
+         (HPM load + voltage + enable). The kernel does the same through the RPMh
+         path (`bramble.rs:1070/1079`, `apply_usb_power`).
+       - The vendor does **no** PHY work at connect time:
+         `msm_hsphy_notify_connect()` only sets `cable_connected`; the
+         `OPMODE_NORMAL`/`TERMSEL`/`XCVRSEL` block at `:562-570` belongs to
+         `msm_hsphy_drive_dp_pulse()`, the Type-C/charger D+/D- pulse, not to the
+         gadget connect path. A "missing connect-time sequence" hypothesis was
+         raised and refuted by the source in the same session.
+     * **`--gadget-start-only-at-runstop` was run with its prerequisite**:
+       `--gadget-restart-at-runstop --gadget-start-only-at-runstop` (`428439.0`) also
+       ends in one attach line and `error -110`. That closes every applicable
+       software lever; the three `--ss-*` flags are *not applicable* to this HS-only
+       target rather than untested, because they require `--super-speed`, which is a
+       different gadget configuration.
+     * **Conclusion:** the software-side PHY configuration is faithful to the vendor
+       on init, reset, suspend/resume and OPMODE. The dead RX ingress (SOFFN never
+       advances) is therefore below the software layer - analog/board/secure-world -
+       or in something the vendor kernel also relies on but this port cannot see.
+       The remaining software-visible lever is the four prerequisite-gated flags
+       above; beyond that the evidence path needs wire-level or secure-world access.
 
 ## Loading policy
 

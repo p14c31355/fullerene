@@ -611,6 +611,51 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
     }
 }
 
+/// Read-only observation of the HS-PHY UTMI datapath mode.
+///
+/// `OPMODE != 0` means the PHY's UTMI datapath is in a non-driving state - the
+/// charger-detection mode Fastboot can leave latched across a RAM-only handoff.
+/// A PHY in that state still reports a valid line state to the controller (so
+/// `DSTS.USBLNKST` reads "On") while never passing received data up, which is
+/// exactly the symptom set measured on 2026-09-19: EP0 enabled, TRB armed,
+/// addresses correct, and the controller never consumes the TRB or posts an
+/// event.
+pub(super) unsafe fn utmi_ctrl0() -> u32 {
+    unsafe { read_volatile(hsphy_reg(HSPHY_UTMI_CTRL0)) }
+}
+
+/// Read-only observation of the HS-PHY charger-detection datapath override.
+///
+/// `HSPHY_CFG0.UTMI_DATAPATH_CTRL_OVERRIDE_EN` set means the DP/DM charger
+/// detection regulator path still owns the datapath; qpr1 clears it in
+/// `msm_hsphy_init()`, and Fastboot can leave it latched.
+pub(super) unsafe fn cfg0() -> u32 {
+    unsafe { read_volatile(hsphy_reg(HSPHY_CFG0)) }
+}
+
+/// One predicate: is the HS-PHY UTMI datapath in the driving mode
+/// (`UTMI_CTRL0.OPMODE == 0`)? A non-driving PHY would still report a valid line
+/// state while never passing received data up.
+pub(super) unsafe fn utmi_opmode_is_normal() -> bool {
+    unsafe { utmi_ctrl0() & HSPHY_UTMI_OPMODE_MASK == 0 }
+}
+
+/// One predicate: is the charger-detection datapath override dropped
+/// (`HSPHY_CFG0.UTMI_DATAPATH_CTRL_OVERRIDE_EN == 0`)?
+pub(super) unsafe fn datapath_override_cleared() -> bool {
+    unsafe { cfg0() & HSPHY_CFG0_UTMI_DATAPATH_CTRL_OVERRIDE_EN == 0 }
+}
+
+/// One predicate: is the HS-PHY's `CTRL2.SUSPEND_N` asserted (bit set = the PHY
+/// is NOT suspended)? `phy.rs:391-397` records that the Bramble transition
+/// *clears* this bit across the DWC3 Run/Stop boundary, i.e. leaves the PHY
+/// suspended. A suspended PHY keeps the analog link alive (the host still
+/// reaches high speed, `321645.0`) while its UTMI digital path is off, so no
+/// packet is ever received - the exact signature measured on 2026-09-19.
+pub(super) unsafe fn suspend_n_asserted() -> bool {
+    unsafe { read_volatile(hsphy_reg(HSPHY_CTRL2)) & HSPHY_CTRL2_SUSPEND_N != 0 }
+}
+
 pub(super) unsafe fn select_utmi_pipe_clock() {
     // This is the Qualcomm glue sequence used when DWC3 operates without a
     // SuperSpeed PHY. It prevents the absent QMP PIPE clock from holding the
