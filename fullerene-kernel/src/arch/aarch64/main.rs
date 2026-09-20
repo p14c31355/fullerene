@@ -22,6 +22,8 @@ pub(crate) mod timer;
 mod uart;
 mod ufs;
 #[cfg(fullerene_aarch64_bramble)]
+mod display;
+#[cfg(fullerene_aarch64_bramble)]
 mod usb;
 #[cfg(fullerene_aarch64_qemu_usb_sim)]
 mod usb_dwc3_sim;

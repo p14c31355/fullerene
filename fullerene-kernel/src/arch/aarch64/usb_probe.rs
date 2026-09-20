@@ -134,6 +134,7 @@ mod fs {
 }
 mod timer;
 mod uart;
+mod display;
 mod usb;
 mod usb_protocol;
 mod usb_regs;
@@ -1542,6 +1543,111 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         trace_gate(0x5554_4d49 | (code & 0xff)); // "UTMI" + nibble
         let _ = usb::gate_true_stop_device();
         usb::park_for_seconds(10 + u64::from(code) * 4);
+    }
+    // `paint` is a DISPLAY-CHANNEL PROBE, not a USB measurement: fill the
+    // bootloader's reserved display region with a solid colour and park, so a human
+    // watching the handset can say whether the panel is live.
+    //
+    // Why this exists: the decisive measurement still open (the "post-attach
+    // event-gate probe") needs a readout of device-side state, and every
+    // host-visible channel is dead - inert CCS pulses, Run/Stop cycles that produce
+    // no re-attach, park-duration gates dominated by the harness, `trace` requiring
+    // an enumeration, and no display backend in the kernel at all
+    // (`arch/aarch64/window.rs`). The bootloader image declares
+    // `0xA0000000, 0x02400000, "Display Reserved"` and contains BootDisplay.c /
+    // MDPLib display code, but it also sets `EnableEarlySplashScreen = 0x0`, so
+    // whether the panel is initialised is unknown. A *solid* fill sidesteps stride
+    // and pixel-format questions entirely: if the screen changes colour the region
+    // is live and a real readout channel exists; if it stays dark the panel is not
+    // initialised and a full MDSS/DSI backend would be needed.
+    if cmd_gate_is("paint") {
+        const DISPLAY_BASE: usize = 0xa000_0000;
+        const DISPLAY_BYTES: usize = 0x0240_0000;
+        const MDSS_BASE: usize = 0x0ae0_0000;
+        const SSPP_FIRST: usize = 0x1400;
+        const SSPP_STRIDE: usize = 0x200;
+        const SSPP_SRC0_ADDR: usize = 0x14;
+        const FILL_BYTES: usize = 0x0040_0000;
+
+        let mut paint = |address: usize, bytes: usize| {
+            let base = address as *mut u32;
+            for index in 0..(bytes / 4) {
+                unsafe { core::ptr::write_volatile(base.add(index), 0x00ff_00ff) };
+            }
+            // The panel scans out of *physical* DRAM, so the stores must actually
+            // reach the point of coherency. Without this the pixels can sit in L1/L2,
+            // the fill runs to completion, and the screen still does not change -
+            // which is one of the ways this probe can read as a false negative.
+            unsafe {
+                let mut line = address;
+                let end = address + bytes;
+                while line < end {
+                    core::arch::asm!("dc cvac, {address}", address = in(reg) line, options(nostack));
+                    line += 64;
+                }
+                core::arch::asm!("dsb sy", options(nostack));
+            }
+        };
+
+        // Candidate 1: the bootloader's declared "Display Reserved" region.
+        paint(DISPLAY_BASE, DISPLAY_BYTES);
+        // Candidate 2..: whatever the DPU's per-pipe source-address register says the
+        // panel is actually scanning out. The vendor catalog places the SSPP blocks at
+        // MDSS + 0x1400, 0x1600, ... with stride 0x200 and SRC0_ADDR at offset 0x14.
+        // The kernel's own image is skipped using the bootloader's map.
+        for pipe in 0..8 {
+            let register = MDSS_BASE + SSPP_FIRST + pipe * SSPP_STRIDE + SSPP_SRC0_ADDR;
+            let candidate = unsafe { core::ptr::read_volatile(register as *const u32) } as usize;
+            if !(0x8000_0000..0xf000_0000).contains(&candidate) || candidate & 0xfff != 0 {
+                continue;
+            }
+            if (0xa7e0_0000..0xb7e0_0000).contains(&candidate) {
+                continue;
+            }
+            paint(candidate, FILL_BYTES);
+        }
+        trace_gate(0x5041_4e54); // "PANT": the paint probe ran to completion
+        usb::park_for_seconds(30);
+    }
+    // `paint2` is the PRECISE version of the display probe. The DPU's per-pipe source
+    // address register (`SSPP_SRC0_ADDR`, offset 0x14 inside each SSPP block; the
+    // vendor catalog places those blocks at MDSS + 0x1400, 0x1600, ... with stride
+    // 0x200) holds the address the panel is actually scanning out. Read every pipe's
+    // register and fill each plausible DRAM address with magenta, cleaning to PoC
+    // because the panel reads physical memory. The kernel's own image is skipped
+    // using the bootloader's own map ("Kernel" 0xA7E00000 + 0x8000000, "Kernel
+    // Expanded" 0xAFE00000 + 0x8000000).
+    if cmd_gate_is("paint2") {
+        const MDSS_BASE: usize = 0x0ae0_0000;
+        const SSPP_FIRST: usize = 0x1400;
+        const SSPP_STRIDE: usize = 0x200;
+        const SSPP_SRC0_ADDR: usize = 0x14;
+        const FILL_BYTES: usize = 0x0040_0000;
+        for pipe in 0..8 {
+            let register = MDSS_BASE + SSPP_FIRST + pipe * SSPP_STRIDE + SSPP_SRC0_ADDR;
+            let candidate = unsafe { core::ptr::read_volatile(register as *const u32) } as usize;
+            if !(0x8000_0000..0xf000_0000).contains(&candidate) || candidate & 0xfff != 0 {
+                continue;
+            }
+            if (0xa7e0_0000..0xb7e0_0000).contains(&candidate) {
+                continue;
+            }
+            let base = candidate as *mut u32;
+            for index in 0..(FILL_BYTES / 4) {
+                unsafe { core::ptr::write_volatile(base.add(index), 0x00ff_00ff) };
+            }
+            unsafe {
+                let mut line = candidate;
+                let end = candidate + FILL_BYTES;
+                while line < end {
+                    core::arch::asm!("dc cvac, {address}", address = in(reg) line, options(nostack));
+                    line += 64;
+                }
+                core::arch::asm!("dsb sy", options(nostack));
+            }
+        }
+        trace_gate(0x5041_4e55); // "PANU": the register-directed paint ran
+        usb::park_for_seconds(30);
     }
     if let Some(met) = usb::cmd_gate_condition_met() {
         trace_gate(0x4741_5445 | (met as u32 & 0xff));

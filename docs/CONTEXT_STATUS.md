@@ -4409,6 +4409,274 @@ unmeasured HS path until a SuperSpeed-specific trace justifies it.
        The remaining software-visible lever is the four prerequisite-gated flags
        above; beyond that the evidence path needs wire-level or secure-world access.
 
+182. **The evidence archive already contained the answer: read `boundary-state.md`
+     and `evidence/bramble/` before proposing any campaign.** 2026-09-20.
+     * `evidence/bramble/` holds the compressed full history:
+       `CONTEXT_STATUS_FULL.md.gz` (7120 lines), `HARDWARE_BRAMBLE_SUMMARY_FULL.md.gz`,
+       `HARDWARE_aarch64_FULL.md.gz`, and `RUN_INDEX.md` (108 KB). The skill also
+       carries `references/boundary-state.md`, a state snapshot as of 2026-09-09.
+     * That snapshot already recorded, before this session re-derived it:
+       - the host's descriptor read times out **after 5 seconds** (`-2`/`-110`),
+         then three zero-length `-71` retries - so the "588 ms host window" in
+         entry 171 was the anomaly, and the ~5.4 s measured today simply agrees
+         with the historical record;
+       - the PHY completes the chirp handshake (autonomous, no PLL lock needed)
+         but cannot recover the HS clock / receive data;
+       - `fullerene-kernel/src/arch/aarch64/usb_linux_host_enum.rs` drives the
+         kernel's `Ep0Simulator` with the exact Linux v6.6 usbcore sequence and
+         reaches `1234:0001`, i.e. **software-side enumeration is complete and must
+         not be re-tested**;
+       - ~40 exhausted source-confirmed A/B families, with an explicit "do not add"
+         list (guessed ENDTRANSFER indices, UTMI/PHY register mutations, packet
+         wrapping, the destabilizing post-Run/Stop GCC link-clock reset);
+       - the fastboot-boot DTB carries **no** `qcom,param-override-seq` on the hsphy
+         node, so analog tuning is symmetrically closed;
+       - Bramble is DWC_usb31 (`GSNPSID 0x3331`); predicates for `0x5532`/`0x5533`
+         produce false negatives.
+     * **Verified today**: `cargo test --bin fullerene-kernel` -> **98 passed**,
+       including the four Linux-faithful host-enumeration tests
+       (`gadget_recovers_enumerability_after_a_usb_reset`,
+       `exact_length_config_read_terminates_cleanly`, and the two scheme tests).
+       The Sep-04 proof is still green.
+     * **Honest assessment of this session**: the flag campaign of entries 180/181
+       re-tested several families the archive had already closed. The genuinely new
+       contributions are narrow: the `service_usb2_runtime_power_keepalive()` guard
+       fix, the `build.rs` env-declaration fix plus its build-time audit, the
+       `nokeepalive` negative (the domain-collapse hypothesis is closed), and the
+       confirmation that every host-visible readout channel is dead in the `loop`
+       configuration. The boundary itself did not move.
+     * **Process fix**: `references/session-2026-09-20.md` in the
+       `fullerene-bramble-usb` skill now opens with "READ
+       `references/boundary-state.md` FIRST", so a future session starts from the
+       snapshot instead of re-deriving it.
+
+183. **Hardware-free "next evidence" started: secure-firmware (XBL) analysis. First
+     result is a bounded negative.** 2026-09-20.
+     * The archive's third "next evidence" item - TrustZone/secure-firmware (XBL)
+       interaction analysis - needs no hardware, and the firmware images are already
+       on disk: `tmp/bramble-factory-xbl_a.elf` (ELF64/AArch64, 3.5 MB),
+       `xbl-core.elf`, `xbl-sbl1.elf`, and `abl.elf` (ELF32/ARM). The AArch64
+       binutils disassembles the XBL images directly; `aarch64-linux-gnu-objdump`
+       also accepts the ARM32 ABL, so no extra toolchain is needed.
+     * Method that works: the firmware accesses MMIO through base addresses held in
+       **data tables**, not as code immediates, so `objdump -d | grep 0x0a600000`
+       finds nothing while a raw byte search in the file does.
+     * Found in `xbl_a.elf` at file offset `0x353fee`: a **43-entry table of 8-byte
+       records `(physical base, tag 0x00008076)`**, embedded directly in the middle
+       of AArch64 code. Entries include `0x098c0000`, `0x09a80000`, `0x09c40000`,
+       `0x09e00000`, `0x0a880000` (twice), **`0x0a600000` (the DWC3 wrapper)**,
+       `0x09f80000`, `0x0a300000`, `0x0a480000`, `0x0a780000`, then the
+       `0x108c0000`-`0x11f80000` cluster. The entry immediately before the table is
+       `(0x00010000, 0x00080000)`.
+     * **Negative result**: the table contains **no address in the `0x088e_xxxx`
+       range**, i.e. neither XBL nor ABL references the USB2 HS-PHY base
+       `0x088e3000` anywhere in their images. A direct byte search for `0x088e3000`
+       and `0x088e8000` across all four firmware ELFs also finds nothing (the only
+       hits for other addresses are ELF-header coincidences). So the "XBL left the
+       HS-PHY in a bad state" hypothesis is negative *at the base-address level* -
+       the bootloaders do not program that block, which is consistent with the
+       kernel's own comment that the direct handoff "preserves Fastboot's PHY
+       ownership".
+     * **Scope of this negative**: it does not exclude the bootloaders touching the
+       PHY through an alias or via the DWC3's own `GUSB2PHYCFG`/`GUSB2PHYACC` window
+       instead of a direct base, and it says nothing about XPU/secure permissions on
+       those blocks. Deeper work would mean a full XBL disassembly of its USB/charger
+       code and an analysis of the `0x00008076` tag, which is a large task with
+       uncertain payoff given the archive's conclusion that the decisive evidence
+       needs JTAG/analyzer/secure-debug access.
+
+184. **MAJOR CORRECTION from the archive: the hardware RX path is NOT dead - Android's
+     own gadget stack enumerates on this handset.** 2026-09-20, found by reading
+     `evidence/bramble/HARDWARE_aarch64_FULL.md.gz` (`:1116`).
+     * The 2026-09-06 entry "same-build minimal userdebug policy corrected physical
+       A/B: `1234:0001` success" is **not** a Fullerene result. What actually
+       happened: a transient boot image with `/force_debuggable`, `/adb_debug.prop`
+       and a matching minimal userdebug SELinux policy (`plat_sepolicy.cil` base plus
+       `adbd` self-`setcurrent`, `adbd -> su` `dyntransition`, `(typepermissive su)`)
+       booted stock Android with root. Then, **through Android's own configfs**, the
+       initial `0x18d1/0x4ee7` gadget was unbound, `0x1234/0x0001` was written, and
+       the same UDC was rebound. udev then reported `PRODUCT=1234/1/440` and lsusb
+       `ID 1234:0001 Brain Actuated Technologies Pixel 4a (5G)`.
+     * That path is **explicitly forbidden by this project's own fixed contract**
+       ("Fullerene identity ... only valid when returned by Fullerene's own USB
+       stack"; forbidden operations include "configfs rebind"), and it does not
+       exercise Fullerene's USB stack at all. It must never be cited as a Fullerene
+       success. The tooling survives in `tools/build_bramble_force_debuggable_policy_boot.py`
+       and friends; the `/tmp` evidence directories are gone, so the docs record is
+       the evidence.
+     * **What it *does* prove, and why it matters:** a USB gadget that enumerates has
+       necessarily **received the host's SETUP tokens**. So on this exact handset,
+       with this exact host and cable, the DWC3 controller and the USB2 PHY **can**
+       receive host traffic - when Android's own kernel owns and initializes them
+       across a full boot. The standing conclusion in `boundary-state.md` ("the
+       failure is exclusively the sub-EP0 USB2 PHY RX boundary", i.e. read as dead
+       silicon) is therefore **too strong**: the silicon demonstrably works. What
+       differs is the **state** the USB path is in when Fullerene takes it over - a
+       gadget-only handoff that inherits Fastboot's PHY ownership and re-programs a
+       subset of the vendor sequence.
+     * **Consequence for the plan.** The failure is a *software/state* difference, not
+       dead hardware, and the decisive comparison is therefore reachable without
+       buying anything: reproduce, on this handset, the *complete* Android USB2
+       bring-up order (role/Type-C and charger path, regulator/clock votes, full PHY
+       reset+init, DWC3 start) instead of the inherited Fastboot state, and check
+       whether the inherited-state subset is what breaks RX. Individual PHY/register
+       variants are already closed (entry 181 and `boundary-state.md`), so the new
+       experiment must differ in *completeness and ordering*, not in one more bit.
+     * **Caveat to keep honest:** the 2026-09-06 run used a *different* boot path
+       (Android first, then a configfs rebind), not a Fullerene handoff, so it does
+       not by itself say which step of Android's bring-up Fullerene is missing. It
+       only establishes that the missing step exists and is software-visible.
+
+185. **Archive audit complete: 184 families, none Pending - and step 1's experiment
+     was already run.** 2026-09-20.
+     * `evidence/bramble/RUN_INDEX.md` (196 lines, 184 table rows, one row per
+       family) plus the two `HARDWARE_*_FULL.md.gz` files and
+       `CONTEXT_STATUS_FULL.md.gz` were read as the second half of the
+       hardware-free plan.
+     * **The proposed "complete Android bring-up order" experiment (entry 184) is
+       already closed.** `--android-resource-order` (allocate transfer resources for
+       every advertised endpoint right after `DEPSTARTCFG`, before EP0
+       `SETEPCONFIG`, as qpr1 does) was combined with `--start-after-connect
+       --start-ungated` in `1968411.0`, `1979839.0`, `1989813.0`, `1997970.0`,
+       `2011364.0`, `2118093.0`, `2157665.0` and `436035.0` - all negative, all
+       reaching the same HS attach / zero-payload `-110` / Android recovery. The
+       pre-Run/Stop eager arm and the all-endpoint resource preallocation have been
+       run *together*, not only separately.
+     * Also already closed and matching hypotheses raised today: "qpr1 HS-PHY
+       active/Sleep RPMh TCS A/B" (the TCS-set gap of entry 181),
+       "qpr1 HS-PHY vdd LPM A/B", "qpr1 HS-PHY active-resume/SLEEPM A/B",
+       "HS-PHY POR-settle-delay A/B" (`--hsphy-reset-delay-150`), "qpr1 source-exact
+       HS-PHY initialization A/B" (`--hsphy-source-exact`), "qpr1 source-exact
+       pre-reset HS-PHY ordering A/B", "qpr1 post-Run/Stop DWC3 SUSPHY-clear A/B",
+       "USB2 SUSPHY reset-boundary A/B", and the whole "USB2 runtime power
+       keepalive" set (families 56-61).
+     * **"Warm Android / Wireshark A/B" is family 16** - the "boot Android first,
+       then hand over" idea was tried too.
+     * **No family is marked Pending.** The only inconclusive entries are explicitly
+       superseded or flagged "do not repeat" (the invalid shell-env ref-clock
+       attempt, the invalid post-Run/Stop event-DMA probe, the perturbative Type-C
+       parent-IRQ route, and the condition-3 readout that was mistakenly treated as
+       a boolean).
+     * **One legitimately open item remains, and the archive names it itself:**
+       run `4008010.0` ("USB2 SOF signal-gate timing probe") is recorded as
+       "inconclusive and superseded by a post-attach event-gate probe". That is
+       precisely what this session tried to build - and the reason it is still open
+       is the finding of entries 180/182: every host-visible readout channel is dead
+       in the `loop` configuration (inert CCS pulses, Run/Stop cycles that produce no
+       re-attach, park-duration gates dominated by the harness, `trace` requiring an
+       enumeration).
+     * **Conclusion:** the software-side hypothesis space is exhausted by the
+       archive, and the single remaining measurement needs a *working* post-attach
+       readout. Everything tried for that today is dead - and so is the last idea,
+       the handset's own screen: `fullerene-kernel/src/arch/aarch64/window.rs`
+       states "The current AArch64 bring-up has **no display controller backend**",
+       so the kernel renders nothing on the panel and there is no on-screen readout
+       to photograph.
+     * **Final state of the hardware-free plan.** Items 1 and 3 of the archive's
+       "next evidence" list are done: (1) JTAG/secure-debug needs hardware; (2) a
+       wire analyzer needs hardware and is forbidden by the fixed contract; (3) the
+       XBL/secure-firmware analysis was performed and returned a bounded negative
+       (entry 183). The two unread archives were read and the proposed experiments
+       they inspired were all already closed (this entry). There is no remaining
+       hardware-free experiment that the archive does not already contain, and the
+       decisive measurement needs a physical probe.
+
+186. **Display-channel probe implemented and run: can the bootloader's reserved
+     display region give us the missing readout?** 2026-09-20.
+     * Motivation: the one measurement the archive still lists as open (the
+       "post-attach event-gate probe", entry 185) needs a readout of device-side
+       state, and every host-visible channel is dead. The kernel has no display
+       backend at all (`arch/aarch64/window.rs`: "no display controller backend"), so
+       the device-side state cannot be read by any existing means.
+     * Evidence that a cheap display path might exist: strings in
+       `tmp/bramble-factory-bootloader-b5-0.6-10489838.img` declare
+       `0xA0000000, 0x02400000, "Display Reserved"` (a 36 MB framebuffer region),
+       `0x0AE00000, 0x00200000, "MDSS"`, `0x0B2A0000, 0x00010000, "PDC_DISPLAY"`,
+       plus `BootDisplay.c` and `MDPLib: MDPPlatformSetMdssBase()`. But the same
+       image sets `EnableEarlySplashScreen = 0x0` and
+       `EnableSecurityHoleForSplashPartition = 0x0`, so whether the panel is
+       actually initialised is unknown.
+     * Probe: a `paint` gate (`--signal-cmd-gate paint`) fills the whole 36 MB
+       region with a solid magenta `0x00ff00ff` and parks 30 s. A *solid* fill makes
+       stride and pixel format irrelevant, so the result is a clean yes/no that a
+       human can read off the panel. Run `445831.0` completed normally (handoff, then
+       Android recovery, `boot-reason=watchdog`, `classification=...--110`).
+     * **Interpretation is pending human observation** of the handset screen during
+       the run. Magenta on the panel => the bootloader left the panel live and the
+       reserved region is a usable readout channel, which would unblock the open
+       measurement. No change => the panel is not initialised and a full MDSS/DSI
+       backend would be required before any on-device readout exists.
+     * Note for the record: framebuffer output is **not** a prerequisite for gadget
+       enumeration - the display cannot change the USB path. It is only the readout.
+
+187. **Display probe round 2: cache-clean variant and a register-directed variant.**
+     2026-09-20. Human observation is the readout for both.
+     * Observation of round 1 (`445831.0`): the panel showed **only the Google logo**,
+       no magenta. That is informative by itself - a live logo means the panel, its
+       DSI link and the display pipeline were left running by the bootloader, so an
+       active framebuffer *does* exist; the fill simply did not land in it.
+     * Two candidate explanations were then attacked:
+       1. **Cache.** The panel scans out of physical DRAM, so a cached mapping can
+          leave the pixels in L1/L2 and the screen unchanged even though the fill
+          ran. The `paint` gate now cleans every 64-byte line to PoC with `dc cvac`
+          and issues `dsb sy` before parking. Run `447811.0` completed normally.
+       2. **Wrong address.** A solid fill of the whole "Display Reserved" region
+          (36 MB) should have covered any offset inside it, so the live buffer is
+          probably elsewhere. `paint2` reads the DPU's per-pipe source-address
+          register directly - `SSPP_SRC0_ADDR` (offset 0x14 within each SSPP block;
+          the vendor catalog puts the blocks at MDSS + 0x1400, 0x1600, ... with
+          stride 0x200) - and fills every candidate DRAM address it finds there,
+          skipping the kernel's own image using the bootloader's map ("Kernel"
+          0xA7E00000 + 0x8000000, "Kernel Expanded" 0xAFE00000 + 0x8000000). Run
+          `448822.0` completed normally with `boot-reason=watchdog`, i.e. no crash.
+     * Bootloader map facts recovered from
+       `tmp/bramble-factory-bootloader-b5-0.6-10489838.img` strings, useful for any
+       future display or memory work: `0xA0000000 + 0x02400000 "Display Reserved"`,
+       `0xA2400000 + 0x04600000 "DXE Heap"`, `0xA7E00000 + 0x08000000 "Kernel"`,
+       `0xAFE00000 + 0x08000000 "Kernel Expanded"`, `0x0AE00000 + 0x00200000 "MDSS"`,
+       `0x0B2A0000 + 0x00010000 "PDC_DISPLAY"`, `0x80900000 + 0x00200000 "SMEM"`,
+       `0x86000000 + 0x15800000 "PIL Reserved"`. The image also contains
+       `BootDisplay.c` and `MDPLib: MDPPlatformSetMdssBase()`, and sets
+       `EnableEarlySplashScreen = 0x0`.
+     * **Interpretation pending human observation of runs `447811.0` and `448822.0`.**
+       Magenta => a usable on-device readout channel exists and the device-side state
+       (trace, `EP0_SETUP_ARMED`, `SETUP_ARM_FAILURE_STAGE`, `SOFFN`, event ring) can
+       finally be printed and read, which unblocks the one measurement the archive
+       still lists as open. No change => the bootloader's pipeline is not scanning out
+       of anything the kernel can reach, and a real MDSS/DSI backend would be needed
+       first.
+
+188. **Display probe round 3 - DEFINITIVE NEGATIVE: the bootloader's display pipeline
+     is not scanning out, so there is no cheap on-device readout.** 2026-09-20.
+     * Run `451168.0` combined every candidate in one probe, with `--observe-secs 2`
+       so the paint lands ~2 s in and stays visible for ~10 s:
+       - a solid magenta fill of the whole "Display Reserved" region
+         (`0xA0000000`, 36 MB) **plus** a `dc cvac` clean of every 64-byte line to
+         point-of-coherency and a `dsb sy` (the panel reads physical DRAM, so cached
+         pixels would never show);
+       - the same treatment applied to every plausible DRAM address read back from
+         the DPU's per-pipe source register (`SSPP_SRC0_ADDR`, MDSS + 0x1400 +
+         pipe*0x200 + 0x14), skipping the kernel's own image.
+     * **Observed: the panel still shows only the Google logo. No magenta.**
+     * Interpretation, and it is decisive: a 36 MB solid fill covers *every* offset
+       inside the bootloader's declared display region, so if the DPU were scanning
+       out of that region at all the screen would have changed. It did not. The
+       display pipeline is therefore **stopped**, and the panel is holding its last
+       frame - consistent with the bootloader's `EnableEarlySplashScreen = 0x0`. The
+       logo persists because the panel latches the last image, not because anything
+       is refreshing it.
+     * **Consequence for the strategy.** The plan "make the screen work, then print
+       the device-side state to it" is correct in principle but **not cheap**: there
+       is no bootloader framebuffer to reuse, so the kernel would have to bring the
+       display up itself - DSI PHY PLL, DSI controller timing (from the panel node in
+       the vendor DT), and DPU layer-mixer/SSPP scanout. That is a real driver port
+       of a few hundred lines, not a probe. Until then there is **no on-device
+       readout**, and the one measurement the archive still lists as open (the
+       post-attach event-gate probe) remains blocked.
+     * No crash in any of the three probe runs (`boot-reason=watchdog`, normal
+       Android recovery), so the writes landed somewhere mapped - they simply were
+       not the live scanout buffer.
+
 ## Loading policy
 
 | Task | Read by default | Read only when needed |
