@@ -804,6 +804,386 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         let stage = usb::gadget_handoff_failure_stage().clamp(1, 12) as u64;
         usb::park_for_seconds(stage * 15);
     }
+    // `dsi` gate: the display bring-up runs in this pre-gate path, whose timing the
+    // host CAN see, rather than in the post-handoff gates (whose parks read 67 s
+    // regardless - see `docs/DISPLAY_BRINGUP.md`). The display stage code is
+    // published through the Android return time: 1 -> +8 s, 5 -> +40 s on top of
+    // the handoff-stage park above.
+    if let Some(rest) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE").and_then(|g| g.strip_prefix("dsidb")) {
+        // `dsidb<octet><bit>` - e.g. `dsidb05` = octet 0, bit 5. 32 combinations,
+        // parsed from the gate name so the whole 4-byte response can be swept
+        // without 32 separate predicates.
+        //
+        // Needed because octet 0 came back 0xFF (all eight bits set): the panel *did*
+        // answer - `dsiid` only parks when the word is neither 0 nor 0xffffffff - so
+        // the real bytes must sit in a different octet, and the vendor's reverse-order
+        // copy (`vq_dsi_host.c:1337`) is the reason to doubt the obvious position.
+        let bytes = rest.as_bytes();
+        if bytes.len() == 2 && bytes[0].is_ascii_digit() && bytes[1].is_ascii_digit() {
+            let octet = (bytes[0] - b'0') as u32;
+            let bit = (bytes[1] - b'0') as u32;
+            if octet < 4 && bit < 8 {
+                let _ = display::bring_up_reuse();
+                let value = unsafe { display::dsi_ctrl::hw::cmd_rx(0x04) };
+                let byte = match value {
+                    Some(v) => ((v >> (8 * (3 - octet))) & 0xff) as u32,
+                    None => 0,
+                };
+                if byte & (1 << bit) != 0 {
+                    usb::park_for_seconds(6 * 15);
+                }
+                panic!("dsidb{}{}: bit clear (octet={:#04x})", octet, bit, byte);
+            }
+        }
+    }
+    if cmd_gate_is("dsidbit0") || cmd_gate_is("dsidbit1") || cmd_gate_is("dsidbit2") || cmd_gate_is("dsidbit3")
+        || cmd_gate_is("dsidbit4") || cmd_gate_is("dsidbit5") || cmd_gate_is("dsidbit6") || cmd_gate_is("dsidbit7")
+    {
+        // Binary-search a byte over the genuine 1-bit channel: 8 runs give byte 0 of
+        // the DDB exactly, with no vendor table needed.
+        //
+        // bit set   => park => boot-reason "watchdog"
+        // bit clear => panic => any other boot-reason
+        //
+        // (The earlier `dsiddb*` gates tried to publish a *value* through the harness's
+        // Android-return time. That channel does not exist - see the retraction in
+        // docs/DISPLAY_BRINGUP.md - so only this bit-at-a-time form is trustworthy.)
+        let bit: u32 = if cmd_gate_is("dsidbit0") {
+            0
+        } else if cmd_gate_is("dsidbit1") {
+            1
+        } else if cmd_gate_is("dsidbit2") {
+            2
+        } else if cmd_gate_is("dsidbit3") {
+            3
+        } else if cmd_gate_is("dsidbit4") {
+            4
+        } else if cmd_gate_is("dsidbit5") {
+            5
+        } else if cmd_gate_is("dsidbit6") {
+            6
+        } else {
+            7
+        };
+        let _ = display::bring_up_reuse();
+        let value = unsafe { display::dsi_ctrl::hw::cmd_rx(0x04) };
+        let byte = match value {
+            Some(v) => ((v >> 24) & 0xff) as u32,
+            None => 0,
+        };
+        if byte & (1 << bit) != 0 {
+            usb::park_for_seconds(6 * 15);
+        }
+        panic!("dsidbit{}: bit clear (byte={:#04x})", bit, byte);
+    }
+    if cmd_gate_is("dsiddbq") {
+        // Robust two-level read: a 25 s separation swamps the harness's +-1-2 s
+        // noise, so this settles the one question that matters first - does a DCS
+        // read return *any* panel data at all?
+        //
+        // 30 s park  => the panel answered (non-zero, non-0xffffffff)
+        //  5 s park  => nothing came back
+        let _ = display::bring_up_reuse();
+        let value = unsafe { display::dsi_ctrl::hw::cmd_rx(0x04) };
+        let answered = matches!(value, Some(v) if v != 0 && v != 0xffff_ffff);
+        usb::park_for_seconds(if answered { 30 } else { 5 });
+        panic!("dsiddbq: value={:?} answered={}", value, answered);
+    }
+    if cmd_gate_is("dsiddb0") || cmd_gate_is("dsiddb1") || cmd_gate_is("dsiddb2") || cmd_gate_is("dsiddb3") {
+        // Read DCS 0x04 and publish ONE octet of the returned word, so the four
+        // runs together show where the panel's bytes actually land. The vendor's
+        // copy order is easy to get wrong: `dsi_cmd_dma_rx` fills its temp array in
+        // *descending* register order (`for (i = cnt - 1; i >= 0; i--)`,
+        // `vq_dsi_host.c:1337`) and then copies from index 0 upward, so the first
+        // panel byte is not necessarily the word's high octet.
+        let octet: u32 = if cmd_gate_is("dsiddb0") {
+            0
+        } else if cmd_gate_is("dsiddb1") {
+            1
+        } else if cmd_gate_is("dsiddb2") {
+            2
+        } else {
+            3
+        };
+        let _ = display::bring_up_reuse();
+        let value = unsafe { display::dsi_ctrl::hw::cmd_rx(0x04) };
+        let byte = match value {
+            Some(v) => ((v >> (8 * (3 - octet))) & 0xff) as u64,
+            None => 0xff,
+        };
+        let extra = 1 + byte / 4;
+        usb::park_for_seconds(extra);
+        panic!("dsiddb{}: byte={} (encoded as +{}s)", octet, byte, extra);
+    }
+    if cmd_gate_is("dsiddb") {
+        // Publish an actual value through the harness's recorded return time.
+        //
+        // The baseline: a run that parks for the usual 90 s returns via Android at
+        // roughly 67 s (observed), because the harness's own grace drives the
+        // fallback. Parking for `value` extra seconds shifts that number, so
+        // reading the run's "handset returned via Android after N s" line gives the
+        // value directly (N - baseline). This lifts the channel from one bit to a
+        // whole byte for the cost of a single run.
+        //
+        // Reads DCS 0x04, DDB byte 0 - the manufacturer byte.
+        let _ = display::bring_up_reuse();
+        let value = unsafe { display::dsi_ctrl::hw::cmd_rx(0x04) };
+        let byte = match value {
+            Some(v) => ((v >> 24) & 0xff) as u64,
+            None => 0xff,
+        };
+        // Fourth-of-a-second-per-unit is invisible to the harness's whole-second
+        // reporting (baseline 66-67 s wobbles by a second), so scale the value up:
+        // byte/4 seconds keeps a byte in 0..64 s of extra park, which clears the
+        // noise comfortably. Add 1 so a byte of 0 is still distinguishable.
+        let extra = 1 + byte / 4;
+        usb::park_for_seconds(extra);
+        panic!("dsiddb: ddbyte0={} (encoded as +{}s)", byte, extra);
+    }
+    if cmd_gate_is("dpupaint") {
+        // No channel, no reporting: act, and let the observer's eyes be the instrument.
+        //
+        // Read the SSPP layer the bootloader's scanout is fetching from, then paint
+        // that buffer white *in place*. If a live scanout is reading it, the panel
+        // turns white. If no plausible layer is found, nothing can happen - and that
+        // is itself informative (the DPU is not scanning).
+        let painted = unsafe { display::dpu::paint_active_framebuffer_white() };
+        if painted.is_none() {
+            // Also try the panel-init path first in case the panel is asleep.
+            let _ = display::bring_up_reuse();
+        }
+        usb::park_for_seconds(6 * 15);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    if cmd_gate_is("cchan3") || cmd_gate_is("cchan7") {
+        // CALIBRATE the attach-cycle channel before trusting it for anything.
+        //
+        // `usb_probe.rs:1809` calls this "the only signal channel that has been
+        // useful on this board": cycle the device's presence N times and let the
+        // HOST count the attaches in its own logs. This is host-side evidence, so it
+        // does not depend on the kernel reporting anything about itself.
+        //
+        // `cchan3` publishes 3 cycles and `cchan7` publishes 7; the host log must
+        // show exactly that many for the channel to be usable.
+        let n: u64 = if cmd_gate_is("cchan3") { 3 } else { 7 };
+        trace_gate(0x4343_484E | ((n as u32) << 16)); // "CCHN" + count
+        for _ in 0..n {
+            let _ = usb::gate_true_stop_device();
+            usb::park_for_seconds(1);
+            let _ = usb::gate_true_run_device();
+            usb::park_for_seconds(1);
+        }
+        park_without_recovery_timer();
+    }
+    if cmd_gate_is("chan2") {
+        // CALIBRATION (polarity corrected once more). The working example from the
+        // archive is `gadget_handoff_failure_stage() * 15`: parking 1 -> ~35 s,
+        // 4 -> ~80 s, 7 -> ~125 s. So the *park duration itself* is what the harness
+        // records - and my earlier attempt to read a value this way failed only
+        // because every gate appended a `panic!` (or a hang) that then dominated.
+        //
+        // Publish 30 s the correct way: park, then settle - nothing after the park.
+        usb::park_for_seconds(30);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    if cmd_gate_is("chan3") {
+        // The other half: publish 5 s. Must be ~25 s shorter than `chan2`.
+        usb::park_for_seconds(5);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    if cmd_gate_is("chan4") {
+        // A third level, to rule out a one-off: publish 60 s.
+        usb::park_for_seconds(60);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    if cmd_gate_is("chan0") {
+        // CHANNEL CALIBRATION (no park at all): panic immediately.
+        //
+        // If this run also reports `boot-reason = watchdog`, then the readback channel
+        // cannot distinguish "parked" from "panicked at once" - and every bit result
+        // gathered with it is meaningless. `chan1` is the other half (park, then
+        // panic) and the two must differ.
+        panic!("chan0: immediate panic, no park");
+    }
+    if cmd_gate_is("chan1") {
+        // CHANNEL CALIBRATION (other half): park first, then panic.
+        usb::park_for_seconds(6 * 15);
+        panic!("chan1: parked, then panic");
+    }
+    if cmd_gate_is("dsireuse00") {
+        // The untested combination: no re-initialisation *and* the panel the dev
+        // overlay actually names. `lito-bramble.dtsi` defaults to sofef01 but
+        // `lito-bramble-dev.dtsi:23` overrides it to sofef00, and sofef00's own
+        // geometry is 2160 rows. Each half was tested alone (both blank); this is
+        // the pairing that has never run.
+        let stage = display::bring_up_reuse_variant(display::panel::Variant::Sofef00);
+        if stage == display::Stage::CmdTxFailed {
+            panic!("dsireuse00: panel command rejected");
+        }
+        let rows = display::panel::SOFEF00_HEIGHT as u16;
+        let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 200);
+        usb::park_for_seconds(6 * 15);
+        panic!("dsireuse00: reuse+sofef00 fill completed (stage {:?})", stage);
+    }
+    if cmd_gate_is("dsipix2") {
+        // Same area as a large fill but sent in small pieces, so the only variable
+        // is the chunk size: 200 rows x 1080 px, 200 pixels (600 bytes) per RAMWR.
+        // If this shows white while the 16368-byte chunks do not, the payload size
+        // is what the panel's receive path rejects.
+        let _ = display::bring_up_reuse();
+        let rows = 200u16;
+        let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 200);
+        usb::park_for_seconds(6 * 15);
+        panic!("dsipix2: small-chunk large-area fill completed");
+    }
+    if cmd_gate_is("dsipix") {
+        // Separate "the RAMWR payload is too large" from "pixels never work".
+        // The panel already reports display-on/normal (dsiid2) over a link that
+        // carries traffic both ways (dsiid), yet a full-screen fill of 16368-byte
+        // chunks shows nothing. A 10-row band with 200-pixel chunks is the smallest
+        // visible test: if a thin white line appears, the chunk size was the fault.
+        let _ = display::bring_up_reuse();
+        let rows = 10u16;
+        let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 200);
+        usb::park_for_seconds(6 * 15);
+        panic!("dsipix: small-chunk fill completed");
+    }
+    if cmd_gate_is("dsiid2") {
+        // Ask the panel about its own state. DCS 0x0A (read power mode) returns a
+        // byte whose bit 2 means "display on" and bit 3 "normal mode"
+        // (MIPI DCS spec); the vendor stores the response big-endian in RDBK_DATA0
+        // (`vq_dsi_host.c:1339` does ntohl then copies from the top), so the first
+        // panel byte is the word's high byte.
+        //
+        // One bit: panel says it is on and normal => park => watchdog; anything else
+        // => panic.
+        let _ = display::bring_up_reuse();
+        let value = unsafe { display::dsi_ctrl::hw::cmd_rx(0x0A) };
+        match value {
+            Some(v) => {
+                let status = ((v >> 24) & 0xff) as u8;
+                if status & 0x0C == 0x0C {
+                    usb::park_for_seconds(6 * 15);
+                }
+                panic!("dsiid2: panel power mode {:#04x} is not on+normal", status);
+            }
+            None => panic!("dsiid2: read transfer not accepted"),
+        }
+    }
+    if cmd_gate_is("dsiid") {
+        // The decisive test: ask the panel for data. Wake it first via the reuse
+        // path, then issue a DCS read (0x04 = read DDB start, where the panel ID
+        // lives) and look at REG_DSI_RDBK_DATA0.
+        //
+        // One bit, published as usual: data coming back => park => boot-reason
+        // "watchdog"; no data => panic => any other boot-reason.
+        let _ = display::bring_up_reuse();
+        let value = unsafe { display::dsi_ctrl::hw::cmd_rx(0x04) };
+        match value {
+            Some(v) if v != 0 && v != 0xffff_ffff => {
+                // The panel answered: the link carries traffic both ways.
+                usb::park_for_seconds(6 * 15);
+            }
+            other => {
+                panic!("dsiid: panel returned no data (rdbk0={:?})", other);
+            }
+        }
+        panic!("dsiid: read completed without a response marker");
+    }
+    if cmd_gate_is("dsireuse") {
+        // Reuse-only: no clock, PLL, PHY or controller programming at all. Sends the
+        // panel sequence through whatever XBL left live, then fills white. XBL
+        // initialises MDSS and DISPCC (both present in xbl_a.elf) but never touches
+        // the DSI ctrl/PHY base addresses, so its link state is the one that works.
+        let stage = display::bring_up_reuse();
+        let code = match stage {
+            display::Stage::CmdTxFailed => 5u64,
+            display::Stage::PanelInitSent => 6,
+            display::Stage::Done => 7,
+            _ => 3,
+        };
+        if stage == display::Stage::CmdTxFailed {
+            panic!("dsireuse: panel command rejected by XBL's controller");
+        }
+        let rows = display::panel::PANEL_HEIGHT as u16;
+        let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 5456);
+        usb::park_for_seconds(6 * 15);
+        panic!("dsireuse: stage code {} - reuse path completed", code);
+    }
+    if cmd_gate_is("dsi") || cmd_gate_is("dsi00") {
+        // `dsi00` runs the sofef00 candidate's sequence and geometry; `dsi` keeps
+        // sofef01. The DT marks sofef01 only as the *default*, and a wrong pick
+        // explains all five bisection positives with a blank panel.
+        let variant = if cmd_gate_is("dsi00") {
+            display::panel::Variant::Sofef00
+        } else {
+            display::panel::Variant::Sofef01
+        };
+        let stage = display::bring_up_variant(variant);
+        let code = match stage {
+            display::Stage::PlbLockFailed => 1u64,
+            display::Stage::PhyEnabled => 2,
+            display::Stage::CtrlConfigured => 3,
+            display::Stage::PanelResetFailed => 4,
+            display::Stage::CmdTxFailed => 5,
+            display::Stage::PanelInitSent => 6,
+            display::Stage::Done => 7,
+        };
+        // Bisection step 0: did the PM8150L GPIO reset of the panel work? This also
+        // answers "does the SPMI slave write path work".
+        if stage == display::Stage::PanelResetFailed {
+            panic!("panel reset via pm8150l gpio8 failed");
+        }
+        // Bisection step 3: did the command engine accept the panel-init transfers?
+        // A panic here means `TRIG_DMA` never cleared, i.e. the command path is dead.
+        if stage == display::Stage::CmdTxFailed {
+            panic!("dsi command engine never accepted a transfer");
+        }
+        if stage == display::Stage::Done {
+            // Self-report through the host, not the panel: read back the controller
+            // state we just wrote. If the DSI block is dead or unclocked the write
+            // will not have stuck, and that difference is published by panicking -
+            // which the harness records in `boot-reason.txt`. This is the one
+            // readout that works even when the panel shows nothing.
+            //
+            // RESULT (run 514590.0): boot-reason stayed `watchdog`, i.e. no panic -
+            // the CTRL/CLK_CTRL readbacks matched, so the controller block is alive,
+            // clocked and out of reset. The channel works, so it now drives a
+            // bisection: one boolean per run, read back from boot-reason.
+            let ctrl = display::dsi_ctrl::hw::read_ctrl();
+            let clk = display::dsi_ctrl::hw::read_clk_ctrl();
+            if ctrl & 0x1 == 0 || clk & 0x1 == 0 {
+                panic!("dsi ctrl readback dead: ctrl={:#x} clk={:#x}", ctrl, clk);
+            }
+            // Bisection step 1: did the PHY PLL lock? `pll_start` already returns
+            // that, so a panic here means the PLL never reported lock - which would
+            // make every downstream clock and lane setting meaningless.
+            if !display::dsi_phy::hw::pll_locked() {
+                panic!("dsi pll not locked");
+            }
+            // Bisection step 4: do the lanes report any state at all?
+            let (lane0, lane1) = display::dsi_phy::hw::lane_status();
+            if lane0 == 0 && lane1 == 0 {
+                panic!("dsi lanes report nothing: status0={:#x} status1={:#x}", lane0, lane1);
+            }
+            // Full-screen fill: the strongest visible test, and it also removes any
+            // doubt about the band window. WHITE, because the observer's handset is
+            // on Android's dark theme - a black screen is indistinguishable from the
+            // dark background, but white is unmistakable.
+            let rows = display::panel::PANEL_HEIGHT as u16;
+            let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 5456);
+        }
+        // Publish the stage through the Android return time (see above).
+        usb::park_for_seconds(code * 8);
+    }
     // Re-run the GIC sweep: this polling branch bypasses the success-path sweep, and stray ABL IRQs
     // would reboot mid-observation.
     let _ = platform::gicv3::init(
@@ -1543,6 +1923,42 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         trace_gate(0x5554_4d49 | (code & 0xff)); // "UTMI" + nibble
         let _ = usb::gate_true_stop_device();
         usb::park_for_seconds(10 + u64::from(code) * 4);
+    }
+    // `dsi` is the REAL display bring-up, as opposed to the `paint` probes above.
+    //
+    // Those probes proved the bootloader's framebuffer cannot be reused: the DPU is
+    // stopped and the panel merely holds its last frame (filling all 36 MB changed
+    // nothing, run 451168.0). This gate therefore re-establishes the DSI link and
+    // pushes pixels straight into the panel's own frame memory with RAMWR, which
+    // works because `sofef01` is a command-mode panel - no DPU port is needed to
+    // get a first visible result.
+    //
+    // Every register value and sequence here is ported from primary sources; see
+    // `docs/DISPLAY_BRINGUP.md` and `docs/DISPLAY_REGISTERS.md`. The stage code is
+    // published as a trace marker so a run can be classified even if the screen
+    // stays dark.
+    // `dsi-off` is the CHEAPEST possible link test, and the one a human observer can
+    // judge unambiguously: send only DCS 0x28 (display off) over the DSI command
+    // path. A black screen proves the link works end to end and that everything
+    // after it is a pixel-data problem; the bootloader's held logo staying put
+    // proves nothing is reaching the panel at all. Much sharper than a colour fill,
+    // which also depends on CASET/PASET and the pixel format being right.
+    if cmd_gate_is("dsi-off") {
+        let stage = display::bring_up();
+        let code = match stage {
+            display::Stage::PlbLockFailed => 1u64,
+            display::Stage::PhyEnabled => 2,
+            display::Stage::CtrlConfigured => 3,
+            display::Stage::PanelResetFailed => 4,
+            display::Stage::CmdTxFailed => 5,
+            display::Stage::PanelInitSent => 6,
+            display::Stage::Done => 7,
+        };
+        if stage == display::Stage::Done {
+            // DCS 0x28: display off. The panel's own OFF sequence uses it first.
+            let _ = display::dsi_ctrl::hw::cmd_tx_raw(0x05, 0, &[0x28]);
+        }
+        usb::park_for_seconds(code * 5);
     }
     // `paint` is a DISPLAY-CHANNEL PROBE, not a USB measurement: fill the
     // bootloader's reserved display region with a solid colour and park, so a human

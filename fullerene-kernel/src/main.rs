@@ -6,6 +6,9 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "arch/aarch64/display/mod.rs"]
+mod display;
+#[cfg(test)]
 #[path = "arch/aarch64/usb_dwc3_sim.rs"]
 mod usb_dwc3_sim;
 #[cfg(test)]

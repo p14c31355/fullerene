@@ -4677,6 +4677,44 @@ unmeasured HS path until a SuperSpeed-specific trace justifies it.
        Android recovery), so the writes landed somewhere mapped - they simply were
        not the live scanout buffer.
 
+189. **`matrix` re-run with a *Fullerene* template - the archive's last runnable avenue -
+     and it closes too.** 2026-09-20.
+     The archive itself notes the fix for the earlier all-negative matrix: the default
+     `--template` is `tmp/bramble-stock-boot.img` (a *stock Android* image), so those
+     runs never booted the Fullerene kernel. Re-ran with
+     `--template tmp/fullerene-bramble-loop.597007.0/fullerene-bramble-boot.img` over
+     all six routes (`controller`, `power`, `typec`, `typec-role`, `pdc`, `smmu`).
+     * Ledger (`tmp/fullerene-bramble-matrix.<id>.0/matrix-ledger.tsv`) and the
+       per-route subdirectories agree: **every route = `classification=android-fallback`
+       with `result=fail`, and host attach lines = 0.**
+     * `attach = 0` is the informative part. A plain `loop` run *does* attach (host logs
+       `new high-speed USB device number N`, then `-110`). Under `matrix` no route
+       attaches at all, so the route mechanism suppresses the handoff attach itself
+       rather than changing anything downstream of it. The routes cannot discriminate
+       the boundary question as built - in particular the `controller` route (hand the
+       DWC3 device-event SPI to the probe's IRQ consumer) is not usable this way.
+     * Note for future runs: `matrix` writes `tmp/fullerene-bramble-matrix.<id>.0/`
+       (not `loop.*`), and the authoritative result is `matrix-ledger.tsv`.
+     Script: `tools/matrix_fullerene.sh`.
+     **Net: with this, every runnable avenue in the archive is closed.** The boundary is
+     unchanged: hardware-complete HS attach, all readable software state correct, zero
+     controller reception. The next real step still needs JTAG, a wire-level analyzer,
+     or secure-debug capture.
+
+   **Same-day negatives that also close an avenue (2026-09-20 display session):**
+   XBL/TrustZone analysis found no USB-specific lock - `xbl_a` references `0xA600000`
+   only inside its physical-address table (`0x8076`-tagged 8-byte entries), never
+   touches the HS PHY (`0x088e3000` appears in no firmware image), and does ordinary
+   GCC USB-clock bring-up (the `0x001f0000` GCC page, exactly where this kernel's USB
+   clock branches live). Scripts: `tools/xbl_usb_survey.py`, `tools/xbl_ref_classify.py`,
+   `tools/xbl_dwc3_context.py`.
+   That session also re-derived two things the archive already recorded, at the cost of
+   several runs: (a) entry 188's conclusion that the bootloader's display pipeline is
+   not scanning out (its `dpupaint` in-place frame-buffer paint changed nothing), and
+   (b) that the park-duration and `boot-reason` channels are dead - all three of which
+   `references/boundary-state.md` and `references/session-2026-09-20.md` already state.
+   **Read the boundary snapshot before proposing or re-running anything.**
+
 ## Loading policy
 
 | Task | Read by default | Read only when needed |

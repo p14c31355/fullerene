@@ -2872,6 +2872,65 @@ pub unsafe fn apply_usb_cx_vote(vote: UsbBusVote) -> bool {
     unsafe { send_rpmh_command_batch(core::slice::from_ref(&command)) }
 }
 
+/// Reset the panel via PM8150L GPIO 8, the way the bootloader did.
+///
+/// Sources: `lito-bramble-display.dtsi:24` names `pm8150l_gpios 8` as the panel
+/// reset; `dsi-panel-sofef01-1080p-cmd.dtsi:43` gives the sequence `<0 10>, <1 10>`
+/// (low 10 ms, high 10 ms). The PM8150L is SID 4 (`pm8150l@4`, `reg = <0x4
+/// SPMI_USID>`) and its GPIO block is `pinctrl@c000` with `reg = <0xc000 0xc00>`;
+/// `pinctrl-spmi-gpio.c` uses a `0x100` per-pin stride (`PMIC_GPIO_ADDRESS_RANGE`,
+/// `pad->base = start + i*0x100`), so GPIO 8 lives at `0xc700` with `MODE_CTL` 0x40,
+/// `DIG_OUT_CTL` 0x45 and `EN_CTL` 0x46.
+///
+/// The ppid is derived from the SPMI address format, `(sid << 8) | (addr >> 8)`.
+///
+/// Returns `Ok((mode, en, out))` with the pre-toggle register values so a caller can
+/// publish them through the readback channel, or an error string naming the step
+/// that failed.
+pub unsafe fn reset_panel_gpio8() -> Result<(u8, u8, u8), &'static str> {
+    const GPIO8_BASE: u16 = 0xc700;
+    const MODE_CTL: u16 = GPIO8_BASE + 0x40;
+    const DIG_OUT_CTL: u16 = GPIO8_BASE + 0x45;
+    const EN_CTL: u16 = GPIO8_BASE + 0x46;
+
+    let version = unsafe { spmi_read(SPMI_CORE, SPMI_VERSION) };
+    let Some((apid, _)) = find_spmi_apid(version, 0x4c0) else {
+        return Err("pm8150l gpio apid not found");
+    };
+
+    let read = |address: u16| -> Option<u8> {
+        let mut value = 0u8;
+        if unsafe { spmi_transfer(version, apid, address, &mut value, false) } {
+            Some(value)
+        } else {
+            None
+        }
+    };
+    let write = |address: u16, value: u8| -> bool {
+        let mut v = value;
+        unsafe { spmi_transfer(version, apid, address, &mut v, true) }
+    };
+
+    // Liveness: a readable EN_CTL proves the transport works.
+    let Some(en) = read(EN_CTL) else {
+        return Err("pm8150l gpio en_ctl unreadable");
+    };
+    let mode = read(MODE_CTL).unwrap_or(0);
+    let out_before = read(DIG_OUT_CTL).unwrap_or(0);
+
+    // Drive low, hold 10 ms, drive high, hold 10 ms - the DT's reset sequence.
+    if !write(DIG_OUT_CTL, out_before & !1) {
+        return Err("pm8150l gpio drive low failed");
+    }
+    crate::timer::delay_us(10_000);
+    if !write(DIG_OUT_CTL, out_before | 1) {
+        return Err("pm8150l gpio drive high failed");
+    }
+    crate::timer::delay_us(10_000);
+
+    Ok((mode, en, out_before))
+}
+
 /// Enable the dedicated USB2 PHY reference clock consumed by the Android
 /// `qcom,usb-hsphy-snps-femto` node. Linux implements the DT
 /// `<&rpmhcc RPMH_CXO_CLK>` handle as the Lito RPMh ARC resource `xo.lvl`,

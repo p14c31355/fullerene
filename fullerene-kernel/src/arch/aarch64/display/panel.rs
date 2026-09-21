@@ -65,6 +65,51 @@ pub const PHY_TIMINGS: [u8; 14] = [
 ///   none, 0x39 DCS long write.
 /// * `last` - 1 marks the final command of a sequence.
 /// * `wait` - delay in milliseconds after the command completes.
+/// Per-lane configuration from the vendor DT
+/// (`qcom,platform-lane-config`, `lito-sde.dtsi:655-659`). Each entry is
+/// `[CFG0, CFG1, CFG2, TX_DCTRL]`; lanes 0-3 are data, lane 4 is the clock.
+pub const LANE_CONFIG: [[u8; 4]; 5] = [
+    [0x00, 0x00, 0x0a, 0x0a],
+    [0x00, 0x00, 0x0a, 0x0a],
+    [0x00, 0x00, 0x0a, 0x0a],
+    [0x00, 0x00, 0x0a, 0x0a],
+    [0x00, 0x00, 0x8a, 0x8a],
+];
+
+/// Panel variant selector. The DT carries three candidates and marks `sofef01` only
+/// as the *default*; the vendor driver picks by reading the panel ID. Since a wrong
+/// pick leaves every SoC-side block healthy and the glass blank, the variant is a
+/// runtime choice here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
+    Sofef01,
+    Sofef00,
+}
+
+/// sofef00 geometry: same width and porches, but 2160 rows instead of 2340, so its
+/// v_total and derived bit rate differ (`dsi-panel-sofef00-1080p-cmd.dtsi:62-71`).
+pub const SOFEF00_WIDTH: u32 = 1080;
+pub const SOFEF00_HEIGHT: u32 = 2160;
+pub const SOFEF00_V_TOTAL: u32 = SOFEF00_HEIGHT + V_BACK_PORCH + V_FRONT_PORCH + V_PULSE_WIDTH;
+
+/// sofef00 power-on sequence (`dsi-panel-sofef00-1080p-cmd.dtsi:76-84`). Note it has
+/// no CASET and a shorter manufacturer sequence than sofef01.
+pub const PANEL_ON_SOFEF00: &[DsiCommand] = &[
+    // Sleep out, wait 10 ms.
+    DsiCommand { kind: 0x05, last: false, wait_ms: 10, payload: &[0x11] },
+    // Tear signal on.
+    DsiCommand { kind: 0x15, last: false, wait_ms: 0, payload: &[0x35, 0x00] },
+    // Page address set: 0..0x86F (2159), i.e. 2160 rows.
+    DsiCommand { kind: 0x39, last: false, wait_ms: 0, payload: &[0x2B, 0x00, 0x00, 0x08, 0x6F] },
+    // Manufacturer command set lock (F0 A5 A5).
+    DsiCommand { kind: 0x39, last: false, wait_ms: 0, payload: &[0xF0, 0xA5, 0xA5] },
+    // Brightness, then wait 110 ms.
+    DsiCommand { kind: 0x15, last: false, wait_ms: 110, payload: &[0x53, 0x20] },
+    // Display on.
+    DsiCommand { kind: 0x05, last: true, wait_ms: 0, payload: &[0x29] },
+];
+
+/// DSI command format descriptor: `type last vc ack wait_ms dlen payload`.
 pub struct DsiCommand {
     pub kind: u8,
     pub last: bool,
