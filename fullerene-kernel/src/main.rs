@@ -8,17 +8,32 @@ extern crate alloc;
 #[cfg(test)]
 #[path = "arch/aarch64/display/mod.rs"]
 mod display;
+// ── Why these USB modules are declared here (crate root), not under a `usb` mod
+//
+// `usb_protocol`, `usb_regs`, `usb_dwc3_sim` and `usb_linux_host_enum` are
+// compiled by *two* crate roots — this host/test crate and the aarch64 kernel —
+// and they reach each other through `super::` (e.g. `usb_linux_host_enum.rs`
+// uses `super::usb_protocol::{…}`). `super::` resolves against whichever crate
+// included the file, so they must all sit at the *same module level* in every
+// crate that compiles them. That is why they are siblings here rather than
+// children of a `usb` module: a `usb` parent would require compiling
+// `usb/mod.rs` for the host, and that file needs `super::platform` /
+// `super::timer`, which do not exist at this crate root.
+//
+// Their *files* live under `arch/aarch64/usb/` (with explicit `#[path]`) and
+// keep these module names. Reorganising them into real submodules means fixing
+// those `super::` references and giving the host a test-only `usb` wrapper.
 #[cfg(test)]
-#[path = "arch/aarch64/usb_dwc3_sim.rs"]
+#[path = "arch/aarch64/usb/usb_dwc3_sim.rs"]
 mod usb_dwc3_sim;
 #[cfg(test)]
-#[path = "arch/aarch64/usb_linux_host_enum.rs"]
+#[path = "arch/aarch64/usb/usb_linux_host_enum.rs"]
 mod usb_linux_host_enum;
 #[cfg(test)]
-#[path = "arch/aarch64/usb_protocol.rs"]
+#[path = "arch/aarch64/usb/usb_protocol.rs"]
 mod usb_protocol;
 #[cfg(test)]
-#[path = "arch/aarch64/usb_regs.rs"]
+#[path = "arch/aarch64/usb/usb_regs.rs"]
 mod usb_regs;
 
 // ── Panic-screen framebuffer drawing (no alloc, no locks) ─────────────

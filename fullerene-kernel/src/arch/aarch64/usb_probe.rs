@@ -136,7 +136,12 @@ mod timer;
 mod uart;
 mod display;
 mod usb;
+// Same reasoning as arch/aarch64/main.rs: these stay siblings of `usb` because
+// they use `super::` to reach each other, and this file is a crate root, so
+// `super::` here is the crate root in every build that includes them.
+#[path = "usb/usb_protocol.rs"]
 mod usb_protocol;
+#[path = "usb/usb_regs.rs"]
 mod usb_regs;
 
 const STACK_SIZE: usize = 16 * 1024;
