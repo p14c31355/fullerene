@@ -119,24 +119,40 @@ unsafe fn qpr1_gadget_devten() -> u32 {
 /// Keep this selection independent of the publication point: the deferred
 /// Bramble profile publishes the same value only after its U0-guarded
 /// STARTTRANSFER retry has actually armed EP0.
+///
+/// # Audit (2026-09-24): the unsourced "broad" default was retired
+///
+/// The default used to be a *broad* mask while the source-exact mask was
+/// opt-in behind `..._usb2_source_exact_devten`. Auditing qpr1
+/// `dwc3_gadget_enable_irq()` (`gadget.c:2324-2343`) against this tree settled
+/// the question the refactor raised - the broad mask was not merely different,
+/// it was wrong in two ways relative to the source:
+///
+/// * it enabled `SUSPEND`/`EOPF` (bit 6). The vendor deliberately omits the
+///   end-of-periodic-frame bit from the gadget-start mask and adds it only
+///   after Connect Done, on revisions >= 2.30a (see
+///   `qpr1_enable_eopf_on_connect_done()` below).
+/// * it omitted `VENDOR_EVENT` (bit 12), which the vendor does enable.
+///
+/// It also disagreed with *itself*: the four `write(DEVTEN, ...)` sites each
+/// spelled out ten flags while this selector returned seven, so the effective
+/// controller-event mask depended on which code path published last. The
+/// vendor's value on this core is `0x1e17`, which an independent audit of the
+/// Linux path also recorded (`DEVTEN` written before `DCTL.RUN_STOP`).
+///
+/// The source-exact mask is therefore now the default *and* the only value
+/// published, and the four write sites call this selector instead of carrying
+/// their own copies.
 #[inline]
 unsafe fn direct_gadget_devten() -> u32 {
     unsafe {
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_exact_devten) {
-            qpr1_gadget_devten()
-        } else if cfg!(any(
+        if cfg!(any(
             fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
             fullerene_aarch64_usb_abl_devten
         )) {
             DEVTEN_DISCONNECT | DEVTEN_USB_RESET | DEVTEN_CONNECT_DONE | DEVTEN_SUSPEND
         } else {
-            DEVTEN_DISCONNECT
-                | DEVTEN_USB_RESET
-                | DEVTEN_CONNECT_DONE
-                | DEVTEN_LINK_STATUS_CHANGE
-                | DEVTEN_WAKEUP
-                | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND
+            qpr1_gadget_devten()
         }
     }
 }
@@ -8625,19 +8641,7 @@ pub fn init_usb2_gadget_handoff() -> bool {
         );
         configure_gadget_start_defaults();
         write(DALEPENA, 0);
-        write(
-            DEVTEN,
-            DEVTEN_DISCONNECT
-                | DEVTEN_USB_RESET
-                | DEVTEN_CONNECT_DONE
-                | DEVTEN_LINK_STATUS_CHANGE
-                | DEVTEN_WAKEUP
-                | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND
-                | DEVTEN_ERRATIC_ERROR
-                | DEVTEN_CMD_COMPLETE
-                | DEVTEN_OVERFLOW,
-        );
+        write(DEVTEN, direct_gadget_devten());
 
         // Drain any power event latched by the Fastboot teardown BEFORE the
         // endpoint commands: a pending PWR event keeps the core's clock/RAM
@@ -9842,19 +9846,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
         let _ = udc_mut().configure_endpoint(0, ep0_packet_size as u16, false);
         let _ = udc_mut().configure_endpoint(1, ep0_packet_size as u16, false);
         write(DALEPENA, 0b11);
-        write(
-            DEVTEN,
-            DEVTEN_DISCONNECT
-                | DEVTEN_USB_RESET
-                | DEVTEN_CONNECT_DONE
-                | DEVTEN_LINK_STATUS_CHANGE
-                | DEVTEN_WAKEUP
-                | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND
-                | DEVTEN_ERRATIC_ERROR
-                | DEVTEN_CMD_COMPLETE
-                | DEVTEN_OVERFLOW,
-        );
+        write(DEVTEN, direct_gadget_devten());
         trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, read(DSTS));
 
         // Stage 18 stops after the endpoint contexts, DALEPENA, and DEVTEN
@@ -10990,21 +10982,7 @@ unsafe fn restart_gadget_at_runstop(super_speed: bool) -> bool {
         // arming EP0. The direct path polls the same ring, but a core reset at
         // this boundary still clears DEVTEN, so publish the selected qpr1 or
         // broad controller-event set before Run/Stop.
-        let devten = if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_exact_devten) {
-            qpr1_gadget_devten()
-        } else {
-            DEVTEN_DISCONNECT
-                | DEVTEN_USB_RESET
-                | DEVTEN_CONNECT_DONE
-                | DEVTEN_LINK_STATUS_CHANGE
-                | DEVTEN_WAKEUP
-                | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND
-                | DEVTEN_ERRATIC_ERROR
-                | DEVTEN_CMD_COMPLETE
-                | DEVTEN_OVERFLOW
-        };
-        write(DEVTEN, devten);
+        write(DEVTEN, direct_gadget_devten());
         if cfg!(any(
             fullerene_aarch64_usb_gadget_handoff_gadget_start_only_at_runstop,
             fullerene_aarch64_usb_gadget_handoff_gadget_speed_after_restart
@@ -12471,19 +12449,7 @@ pub fn u0_arm_recovery() -> u32 {
         }
         ENDPOINTS_READY = true;
         write(DALEPENA, 0b11);
-        write(
-            DEVTEN,
-            DEVTEN_DISCONNECT
-                | DEVTEN_USB_RESET
-                | DEVTEN_CONNECT_DONE
-                | DEVTEN_LINK_STATUS_CHANGE
-                | DEVTEN_WAKEUP
-                | DEVTEN_HIBERNATION_REQUEST
-                | DEVTEN_SUSPEND
-                | DEVTEN_ERRATIC_ERROR
-                | DEVTEN_CMD_COMPLETE
-                | DEVTEN_OVERFLOW,
-        );
+        write(DEVTEN, direct_gadget_devten());
         // Prepare the EP0 OUT SETUP TRB now. The STARTTRANSFER decision is
         // bramble-specific: see the start-after-connect note below.
         prepare_ep0_setup_trb();

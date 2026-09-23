@@ -4269,7 +4269,7 @@ fn linux_fd_install_at(
     stdio_fd: u32,
     flags: u64,
 ) -> Result<u64, u64> {
-    let index = or_return!(reserve_linux_fd(owner_pid, fd));
+    let index = reserve_linux_fd(owner_pid, fd)?;
     unsafe {
         (*core::ptr::addr_of_mut!(LINUX_FDS))[index] = LinuxFdEntry {
             owner_pid,
@@ -4291,7 +4291,7 @@ fn linux_fd_install_socket_at(
     socket_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    let index = or_return!(reserve_linux_fd(owner_pid, fd));
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_socket_retain(socket_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4316,7 +4316,7 @@ fn linux_fd_install_epoll_at(
     epoll_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    let index = or_return!(reserve_linux_fd(owner_pid, fd));
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_epoll_retain(epoll_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4341,7 +4341,7 @@ fn linux_fd_install_eventfd_at(
     eventfd_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    let index = or_return!(reserve_linux_fd(owner_pid, fd));
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_eventfd_retain(eventfd_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4366,7 +4366,7 @@ fn linux_fd_install_inotify_at(
     inotify_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    let index = or_return!(reserve_linux_fd(owner_pid, fd));
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_inotify_retain(inotify_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4391,7 +4391,7 @@ fn linux_fd_install_signalfd_at(
     signalfd_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    let index = or_return!(reserve_linux_fd(owner_pid, fd));
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_signalfd_retain(signalfd_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4438,7 +4438,6 @@ fn reserve_linux_fd(owner_pid: u64, fd: u32) -> Result<usize, u64> {
     Ok(index)
 }
 
-fn linux_socket_retain(socket_slot: u8) -> bool {
 fn linux_socket_retain(socket_slot: u8) -> bool {
     unsafe {
         let Some(socket) =
