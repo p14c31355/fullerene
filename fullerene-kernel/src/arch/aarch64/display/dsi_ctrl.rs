@@ -42,7 +42,7 @@ pub mod bits {
     pub const CTRL_LANE0: u32 = 0x0000_0010;
     pub const CLK_CTRL_ENABLE_CLKS: u32 = 0x0000_003f;
     pub const CMD_DMA_CTRL_LOW_POWER: u32 = 0x0400_0000;
-    pub const CMD_DMA_CTRL_FROM_FRAME_BUFFER: u32 = 0x0200_0000;
+    pub const CMD_DMA_CTRL_FROM_FRAME_BUFFER: u32 = 0x1000_0000;
     pub const TRIG_CTRL_TE: u32 = 0x8000_0000;
     pub const TRIG_CTRL_BLOCK_DMA_WITHIN_FRAME: u32 = 0x0000_1000;
     pub const CMD_CFG1_INSERT_DCS_COMMAND: u32 = 0x0001_0000;
@@ -305,6 +305,35 @@ pub mod hw {
         cmd_rx_len(dcs_command, 1)
     }
 
+    /// Clean the data cache for `[address, address + length)` to the point of
+    /// coherency, then a full `dsb sy`.
+    ///
+    /// The DSI controller fetches command and pixel data by *physical* address, so
+    /// anything still sitting dirty in the CPU cache is invisible to it - it reads
+    /// whatever stale bytes happen to be in DRAM. This is the exact failure mode the
+    /// display workstream already recorded for the framebuffer
+    /// (`docs/CONTEXT_STATUS.md` entries 186-187: "the panel reads physical DRAM, so
+    /// cached pixels would never show"). Linux gets this from the DMA API
+    /// (`dma_sync_single_for_device`); this port writes the packet with plain stores,
+    /// so it has to do the clean itself.
+    ///
+    /// Same shape as `usb::cache_clean`, which is private to that module.
+    unsafe fn clean_to_dram(address: usize, length: usize) {
+        const LINE: usize = 64;
+        let start = address & !(LINE - 1);
+        let end = address.saturating_add(length).saturating_add(LINE - 1) & !(LINE - 1);
+        let mut line = start;
+        while line < end {
+            unsafe {
+                core::arch::asm!("dc cvac, {a}", a = in(reg) line, options(nostack));
+            }
+            line += LINE;
+        }
+        unsafe {
+            core::arch::asm!("dsb sy", options(nostack));
+        }
+    }
+
     /// Same as `cmd_tx` but from a borrowed payload, so callers can stream pixel
     /// data without leaking a buffer.
     pub fn cmd_tx_raw(dtype: u8, vc: u8, payload: &[u8]) -> bool {
@@ -343,6 +372,10 @@ pub mod hw {
         let addr = unsafe { core::ptr::addr_of!(TX_BUF.0) as usize };
         wr(reg::DMA_BASE, addr as u32);
         wr(reg::DMA_LEN, len as u32);
+        // The controller reads this buffer by physical address; the packet was just
+        // written with plain stores and may still be dirty in cache. Clean it out to
+        // DRAM before the engine is told to fetch it.
+        unsafe { clean_to_dram(addr, len) };
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         wr(reg::TRIG_DMA, 1);
         // The command engine clears TRIG_DMA when the transfer is accepted. Report

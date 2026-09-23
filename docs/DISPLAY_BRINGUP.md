@@ -1494,6 +1494,102 @@ documented - hardware-complete HS attach, correct software state, no controller
 reception - and the next real step still needs JTAG, a wire-level analyzer, or
 secure-debug, none of which is available.
 
+### A REAL BUG found by auditing every constant against the vendor header
+
+Comparing each constant in `dsi_ctrl.rs` with the vendor's generated register header
+(`tmp/display-src/dsi.xml.h`, the authority for this block) turned up one wrong value -
+exactly the failure mode this workstream's "source before hypothesis" rule exists to
+catch:
+
+```
+impl  CMD_DMA_CTRL_FROM_FRAME_BUFFER = 0x0200_0000   <- no such value in the vendor map
+hdr   DSI_CMD_DMA_CTRL_FROM_FRAME_BUFFER = 0x10000000
+```
+
+The wrong bit was being written into `CMD_DMA_CTRL` - the register that configures the
+*command DMA path itself* - on every controller init. Fixed to the vendor value.
+
+The audit is automated now (`tools/dsi_const_audit.py`) and re-run clean:
+
+```
+一致           : 29
+不一致（要修正）: 0
+ヘッダに無い   : 6   (all legitimate: DSI_CTRL_BASE from the DT, MIPI DCS type codes,
+                      a composed CLK_CTRL mask)
+```
+
+So the wrong bit was the *only* divergence in this block, and it sat in the one
+register that gates the path every pixel experiment uses.
+
+Vendor facts recovered alongside it (from `vq_dsi_host.c:872-874`): the vendor's own
+`dsi_ctrl_init` writes `CMD_DMA_CTRL = FROM_FRAME_BUFFER | LOW_POWER`, i.e. the
+controller is normally configured to read command/pixel data *from DRAM* via
+`REG_DSI_DMA_BASE` (0x44) / `REG_DSI_DMA_LEN` (0x48), not from the CPU staging
+registers that `fill_band` uses.
+
+### DEFINITIVE: under the `loop` path there is no device-to-host channel at all
+
+Four independent attempts, all negative, plus the code's own record:
+
+| Attempt | Result |
+| --- | --- |
+| `boot-reason` = watchdog vs other | identical for park and panic (`chan0`/`chan1`) |
+| Android-return time vs park length | flat at 67 s for 5/30/60 s parks (`chan2`/`chan3`/`chan4`) |
+| Attach cycles as a count (`cchan3`/`cchan7`) | 1 attach line for both |
+| The archive's own `pubd` gate | 2 attach lines, same as baseline - no extra lines |
+
+And `usb_probe.rs:1742-1751` states the reason outright:
+
+```rust
+// A/B result: the QSCRATCH, DCTL, and VBUSVLDEXT0 drop primitives are all
+// electrically inert on this revision (no host-visible disconnect ever
+// appears), so the cycle count cannot be read. The gate stays as a record of
+// that negative result.
+```
+
+**So on this handset, in a `loop` run, the kernel cannot report anything to the
+host.** The only observations available are:
+
+* **the panel**, read by a human (and it never changes);
+* **coarse host-side facts**: an attach happened or not, and the errno the host
+  ended with.
+
+**Consequence for the display work: every experiment is blind.** A DSI register can be
+wrong and there is no way to find out except "the panel still shows the logo" - which
+is what ~32 runs have said through several structurally different approaches (full
+re-init, reuse-only, both panel variants, small and large payloads, corrected
+`CMD_DMA_CTRL`, DMA cache clean).
+
+The display is therefore blocked on *observability*, exactly like the USB workstream.
+Progress needs either a channel that works in this path (none found, four tries) or a
+different observer (wire capture / JTAG - no hardware).
+
+### Evidence-integrity check on the display campaign (no runs)
+
+Because two runs earlier in the session silently never booted (build failures that my
+ad-hoc build check reported as clean, caught only by reading the harness's own build
+log), the whole run history was audited for evidence validity - from host-side
+artifacts only, no new runs:
+
+```
+loop run dirs total      : 2030
+  booted + attached      : 1614   <- usable as evidence
+  build failure, never ran: 18    <- no evidence either way
+  no attach              : 398
+```
+
+For this session's display gates specifically, every *valid* run (the `dsi`,
+`dpupaint`, `cchan3`/`cchan7` runs and their siblings) shows `attach=2`, i.e. the
+Fullerene kernel did boot and the host did attach - so the "the panel never changes"
+negatives rest on runs that actually executed.
+
+The runs that did not boot (`dsireuse` 533687.0, `dsiid` 537731.0, `cchan3` 591953.0,
+and the `chan2`/`chan3` pair) were all detected at the time through the harness build
+log and re-run, so no conclusion depends on them.
+
+**Conclusion: the display campaign's negatives are sound.** The blocker is
+observability, not bad evidence.
+
 ## Rules for this port
 
 * Source before hypothesis: every register sequence comes from the vendor/upstream
