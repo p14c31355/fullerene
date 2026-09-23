@@ -727,6 +727,23 @@ fn trace_gate(code: u32) {
     usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, code);
 }
 
+/// One DWC3 Run/Stop cycle with this file's usual settle delays.
+///
+/// Five gates spelled this sequence out inline, six lines each: stop the device,
+/// wait a quarter of a probe-counter second, run it again, wait three tenths.
+/// The helper performs the identical calls in the identical order with the
+/// identical delays, so the gate timing that those experiments depend on is
+/// unchanged - it is only written once, and each gate now reads as a short list
+/// of what it does rather than a wall of counter arithmetic.
+fn stop_run_cycle(frequency: u64) {
+    let _ = usb::gate_true_stop_device();
+    let dropped = probe_counter().saturating_add(frequency / 4);
+    poll_until_probe_ticks(frequency, dropped);
+    let _ = usb::gate_true_run_device();
+    let attached = probe_counter().saturating_add(frequency * 3 / 10);
+    poll_until_probe_ticks(frequency, attached);
+}
+
 const TRACE_WDT: u32 = 0x574454; // "WDT"
 const TRACE_STAB: u32 = 0x5354_4142; // "STAB"
 
@@ -1790,12 +1807,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         let code = usb::diag_readout_code().clamp(1, 6) as u64;
         trace_gate(0x4453_5441 | ((code & 0xff) as u32)); // "DSTA" + code
         for _ in 0..code {
-            let _ = usb::gate_true_stop_device();
-            let dropped = probe_counter().saturating_add(frequency / 4);
-            poll_until_probe_ticks(frequency, dropped);
-            let _ = usb::gate_true_run_device();
-            let attached = probe_counter().saturating_add(frequency * 3 / 10);
-            poll_until_probe_ticks(frequency, attached);
+            stop_run_cycle(frequency);
         }
         park_without_recovery_timer();
     }
@@ -1820,12 +1832,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             let code = usb::post_event_dma_readout_code().min(9) as u64;
             trace_gate(0x504F_5354 | ((code as u32) << 16)); // "POST" + code
             for _ in 0..code {
-                let _ = usb::gate_true_stop_device();
-                let dropped = probe_counter().saturating_add(frequency / 4);
-                poll_until_probe_ticks(frequency, dropped);
-                let _ = usb::gate_true_run_device();
-                let attached = probe_counter().saturating_add(frequency * 3 / 10);
-                poll_until_probe_ticks(frequency, attached);
+                stop_run_cycle(frequency);
             }
             park_without_recovery_timer();
         }
@@ -1839,12 +1846,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             let code = usb::utmi_readout_code(selector).clamp(1, 2) as u64;
             trace_gate(0x4853_5651 | ((code as u32) << 16)); // "HSVQ" + code
             for _ in 0..code {
-                let _ = usb::gate_true_stop_device();
-                let dropped = probe_counter().saturating_add(frequency / 4);
-                poll_until_probe_ticks(frequency, dropped);
-                let _ = usb::gate_true_run_device();
-                let attached = probe_counter().saturating_add(frequency * 3 / 10);
-                poll_until_probe_ticks(frequency, attached);
+                stop_run_cycle(frequency);
             }
             park_without_recovery_timer();
         }
@@ -1858,12 +1860,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             let code = usb::protocol_readout_code().min(5) as u64;
             trace_gate(0x5052_4F54 | ((code as u32) << 16)); // "PROT" + code
             for _ in 0..code.saturating_add(1) {
-                let _ = usb::gate_true_stop_device();
-                let dropped = probe_counter().saturating_add(frequency / 4);
-                poll_until_probe_ticks(frequency, dropped);
-                let _ = usb::gate_true_run_device();
-                let attached = probe_counter().saturating_add(frequency * 3 / 10);
-                poll_until_probe_ticks(frequency, attached);
+                stop_run_cycle(frequency);
             }
             park_without_recovery_timer();
         }
@@ -1913,12 +1910,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
                 usb::runstop_blips_fast(pairs);
             } else {
                 for _ in 0..code {
-                    let _ = usb::gate_true_stop_device();
-                    let dropped = probe_counter().saturating_add(frequency / 4);
-                    poll_until_probe_ticks(frequency, dropped);
-                    let _ = usb::gate_true_run_device();
-                    let attached = probe_counter().saturating_add(frequency * 3 / 10);
-                    poll_until_probe_ticks(frequency, attached);
+                    stop_run_cycle(frequency);
                 }
             }
             park_without_recovery_timer();
