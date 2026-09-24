@@ -183,14 +183,36 @@ pub(super) static mut ACTIVE_QMP_INIT: [(usize, u32); 146] = QMP_INIT;
 pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
 // The compiled fallback matches the exact-build Bramble stock DTB extracted
 // from Google's UP1A.231105.001.B2 factory package:
-// qcom,param-override-seq = <0x63 0x6c 0x85 0x70 0x17 0x74>. The first cell
-// is the value and the second is the register offset; the writer below stores
-// the pair as (offset, value). This fallback is used when `fastboot boot`
-// supplies no usable property, so the exact stock package is the strongest
-// available board-specific source. The trailing sentinel keeps the fixed
-// table shape and is skipped by the writer.
+// Board-correct values for THIS device. The device is `bramble` (Pixel 4a 5G,
+// `ro.product.device = bramble`), whose board overlay overrides the SoC-generic
+// lito tuning:
+//
+//   tmp/qpr1-msm/arch/arm64/boot/dts/google/lito-bramble-usb.dtsi:60-64
+//     &usb2_phy0 {
+//         qcom,param-override-seq = <0x67 0x6C
+//                                    0xc8 0x70>;
+//     };
+//
+// and the generic SoC file it overrides is
+// `tmp/msm-extra-devicetree-qpr1/qcom/lito-usb.dtsi:116-118`:
+//     qcom,param-override-seq = <0x63 0x6c>, <0x85 0x70>, <0x17 0x74>;
+//
+// The property is (value, offset) per cell pair; the writer below stores
+// (offset, value). PREVIOUSLY this fallback carried the *generic lito* triple
+// while citing "the exact stock package" - but the board overlay replaces those
+// values and drops the third pair entirely, so every hardware run has been
+// programming this board's analog HS-PHY tuning with another board's numbers.
+// That is squarely in the PHY analog domain the readable register space does not
+// cover, which is why no software-side A/B could see it. Three variants exist
+// (`lito-usb` generic, `lito-bramble-usb`, `lito-bramble_m-usb` = <0x27 0x6C,
+// 0xCC 0x70>); `bramble` is the one matching this handset.
+//
+// This fallback is what actually runs on this path: the fastboot-supplied DTB
+// carries no usable `qcom,param-override-seq` on the matched hsphy node
+// (`hsphy-prop-present = 0`), so `install_dt_phy_sequences()` keeps the compiled
+// table. The trailing sentinel keeps the fixed table shape and is skipped.
 pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 4] =
-    [(0x6c, 0x63), (0x70, 0x85), (0x74, 0x17), (usize::MAX, 0)];
+    [(0x6c, 0x67), (0x70, 0xc8), (usize::MAX, 0), (usize::MAX, 0)];
 
 /// Which table source the current boot is using. Recorded by
 /// `install_dt_phy_sequences()` and published through the retained-trace

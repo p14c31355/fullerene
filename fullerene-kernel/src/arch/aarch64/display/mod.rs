@@ -207,7 +207,7 @@ pub fn bring_up_reuse_variant(variant: panel::Variant) -> Stage {
         panel::Variant::Sofef00 => panel::PANEL_ON_SOFEF00,
     };
     unsafe {
-        let _ = crate::platform::bramble::reset_panel_gpio8();
+        let _ = super::platform::bramble::reset_panel_gpio8();
     }
     let sent = send_sequence(sequence);
     if sent < sequence.len() {
@@ -252,7 +252,7 @@ pub fn bring_up_variant(variant: panel::Variant) -> Stage {
     // Reset the panel before opening a new DSI session: a panel that went through the
     // bootloader's session can ignore a second one until it is reset. Uses PM8150L
     // GPIO 8 (the DT's reset line) via the SPMI transport.
-    let panel_reset = unsafe { crate::platform::bramble::reset_panel_gpio8() };
+    let panel_reset = unsafe { super::platform::bramble::reset_panel_gpio8() };
     if panel_reset.is_err() {
         return Stage::PanelResetFailed;
     }

@@ -3412,6 +3412,8 @@ pub unsafe fn update_gsi_transfer(endpoint: usize, event_buffer: u32) -> bool {
         for trb_index in shape.first_buffer_trb..shape.first_buffer_trb + shape.data_trbs {
             let mut ctrl = read_volatile(addr_of!((*ring.add(trb_index)).ctrl));
             ctrl |= TRB_HWO;
+            // Publish HWO behind a write barrier, as the shipped gadget.c does.
+            trb_publish_barrier();
             write_volatile(addr_of_mut!((*ring.add(trb_index)).ctrl), ctrl);
         }
         cache_clean(ring as usize, shape.num_trbs * core::mem::size_of::<Trb>());
@@ -3730,6 +3732,8 @@ unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32)
         write_volatile(addr_of_mut!((*trb).bpl), address as u32);
         write_volatile(addr_of_mut!((*trb).bph), (address >> 32) as u32);
         write_volatile(addr_of_mut!((*trb).size), length as u32);
+        // The fourth DWORD carries HWO; publish it last behind a write barrier.
+        trb_publish_barrier();
         write_volatile(addr_of_mut!((*trb).ctrl), kind | flags);
         cache_clean(trb as usize, core::mem::size_of::<Trb>());
     }
@@ -3753,12 +3757,38 @@ unsafe fn prepare_ep0_setup_trb() {
     }
 }
 
+/// Write Memory Barrier for TRB publication, matching the SHIPPED kernel.
+///
+/// The shipped `__dwc3_prepare_one_trb()` (`gadget.c`) replaced a plain `mb()`
+/// with `wmb()` immediately before setting `DWC3_TRB_CTRL_HWO`, with this
+/// comment:
+///
+/// > As per data book 4.2.3.2 TRB Control Bit Rules section: The controller
+/// > autonomously checks the HWO field of a TRB to determine if the entire TRB
+/// > is valid. Therefore, software must ensure that the rest of the TRB is
+/// > valid before setting the HWO field to '1'. ... However there is a
+/// > possibility of CPU re-ordering here which can cause controller to observe
+/// > the HWO bit set prematurely. Add a write memory barrier to prevent CPU
+/// > re-ordering.
+///
+/// On arm64 Linux `wmb()` is `dsb st`. `write_volatile` orders nothing by
+/// itself, and `cache_clean()` is a no-op unless the DT describes a
+/// non-coherent path (see `cache_clean`), so without this the core can observe
+/// HWO before `bpl`/`bph`/`size` have landed - which is one way the core ends
+/// up never consuming the TRB.
+#[inline]
+unsafe fn trb_publish_barrier() {
+    unsafe { core::arch::asm!("dsb st", options(nostack, preserves_flags)) };
+}
+
 unsafe fn prepare_trb_at(trb: *mut Trb, buffer: *const u8, length: usize, kind: u32) {
     let address = unsafe { dma_iova_for(buffer as usize) };
     unsafe {
         write_volatile(addr_of_mut!((*trb).bpl), address as u32);
         write_volatile(addr_of_mut!((*trb).bph), (address >> 32) as u32);
         write_volatile(addr_of_mut!((*trb).size), length as u32);
+        // The fourth DWORD carries HWO and must be published last.
+        trb_publish_barrier();
         write_volatile(
             addr_of_mut!((*trb).ctrl),
             kind | TRB_HWO | TRB_LST | TRB_IOC | TRB_ISP_IMI,
