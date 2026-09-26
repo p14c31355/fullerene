@@ -608,6 +608,20 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             // remain in the PHY's sleep mode.
             hsphy_update(HSPHY_UTMI_CTRL0, HSPHY_UTMI_SLEEPM, 0);
         }
+        // FSEL nature probe. `COMMON0.FSEL` (bits 6:4) reads 1 on this board
+        // while the host trains a high-speed link, so the field disagrees with
+        // the link. This explicit write, placed last in init, distinguishes an
+        // *input* (the value sticks, so the driver chose it) from an *output*
+        // (the PHY overwrites it with its own detected speed). Read back over
+        // the CCS channel as `usb2-live-ccs-common0hi`.
+        #[cfg(fullerene_aarch64_usb_hsphy_fsel_write0)]
+        {
+            hsphy_update(HSPHY_COMMON0, HSPHY_COMMON0_FSEL_MASK, 0);
+        }
+        #[cfg(fullerene_aarch64_usb_hsphy_fsel_write3)]
+        {
+            hsphy_update(HSPHY_COMMON0, HSPHY_COMMON0_FSEL_MASK, 0x3 << 4);
+        }
     }
 }
 

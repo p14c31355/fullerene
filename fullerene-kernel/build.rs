@@ -468,6 +468,17 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_no_smmu");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_HSPHY_FSEL_WRITE0").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_fsel_write0");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_HSPHY_FSEL_WRITE3").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_fsel_write3");
+        }
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_FSEL_WRITE0");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_FSEL_WRITE3");
+        if env::var_os("FULLERENE_AARCH64_USB_FORCE_EP0_ARMED").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_force_ep0_armed");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_DMA_CACHE_MAINTENANCE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_dma_cache_maintenance");
         }

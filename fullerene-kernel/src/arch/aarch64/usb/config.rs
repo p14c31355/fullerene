@@ -252,6 +252,11 @@ pub(super) unsafe fn configure_dwc3_global_control() {
     }
 }
 
+/// Proof-of-execution probe for the DEVICE-mode write, read out over CCS.
+/// See the comment at the write site for the bit layout.
+pub(super) static DEVICE_MODE_WRITE_PROBE: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
 /// Apply the device-mode tail of Android msm's `dwc3_set_mode()`.
 ///
 /// The direct handoff previously selected `PRTCAPDIR=DEVICE` but omitted the
@@ -266,6 +271,25 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
         gctl &= !GCTL_PRTCAPDIR_MASK;
         gctl |= GCTL_PRTCAP_DEVICE;
         write(GCTL, gctl);
+
+        // Proof-of-execution probe. `GCTL.PRTCAPDIR` reads HOST (1) on this board
+        // even though this function writes DEVICE (2) and runs on both branch
+        // profiles, so record (a) that the write happened, (b) what was written
+        // and (c) what the field reads straight back. The three values are
+        // stashed where the CCS readout can publish them without another run:
+        // bit 0 = the write landed (readback equals what we wrote),
+        // bits 15:8 = the field value we wrote, bits 23:16 = the field value read
+        // back. A readback of `2` with a later field value of `1` means something
+        // downstream overwrites it; a readback of `1` means the write itself is
+        // discarded.
+        let readback = read(GCTL) & GCTL_PRTCAPDIR_MASK;
+        let wrote = gctl & GCTL_PRTCAPDIR_MASK;
+        DEVICE_MODE_WRITE_PROBE.store(
+            u32::from(readback == wrote)
+                | ((wrote >> 12) << 8)
+                | ((readback >> 12) << 16),
+            core::sync::atomic::Ordering::Relaxed,
+        );
 
         #[cfg(fullerene_aarch64_usb_gctl_pwrdnscale_2)]
         {

@@ -350,6 +350,11 @@ struct Args {
     #[arg(long)]
     usb_gadget_handoff_no_smmu: bool,
 
+    /// EXPERIMENT: if the deferred arm window leaves EP0 unarmed, re-issue the
+    /// SETUP TRB and STARTTRANSFER directly and force `EP0_SETUP_ARMED`.
+    #[arg(long)]
+    usb_force_ep0_armed: bool,
+
     /// Force cache clean/invalidate operations for the standalone Bramble USB
     /// probe's DMA window instead of its no-MMU uncached fast path (A/B).
     #[arg(long)]
@@ -2867,6 +2872,7 @@ fn main() -> io::Result<()> {
                 adb_return: args.adb_return,
                 probe_env: selected_probe.and_then(|probe| probe.env),
                 gadget_handoff_no_smmu: args.usb_gadget_handoff_no_smmu,
+            usb_force_ep0_armed: args.usb_force_ep0_armed,
                 gadget_handoff_dma_cache_maintenance: args.usb_gadget_handoff_dma_cache_maintenance,
                 gadget_handoff_reuse_fastboot_dma: args.usb_gadget_handoff_reuse_fastboot_dma,
                 gadget_handoff_no_transfer_resource: args.usb_gadget_handoff_no_transfer_resource,
@@ -3245,6 +3251,7 @@ struct Aarch64BuildConfig {
     adb_return: bool,
     probe_env: Option<&'static str>,
     gadget_handoff_no_smmu: bool,
+    usb_force_ep0_armed: bool,
     gadget_handoff_dma_cache_maintenance: bool,
     gadget_handoff_reuse_fastboot_dma: bool,
     gadget_handoff_no_transfer_resource: bool,
@@ -3459,6 +3466,7 @@ fn build_aarch64_kernel(
         adb_return,
         probe_env,
         gadget_handoff_no_smmu,
+        usb_force_ep0_armed,
         gadget_handoff_dma_cache_maintenance,
         gadget_handoff_reuse_fastboot_dma,
         gadget_handoff_no_transfer_resource,
@@ -3756,6 +3764,9 @@ fn build_aarch64_kernel(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU",
             "1".to_owned(),
         );
+    }
+    if usb_force_ep0_armed {
+        push_env("FULLERENE_AARCH64_USB_FORCE_EP0_ARMED", "1".to_owned());
     }
     if gadget_handoff_dma_cache_maintenance {
         push_env(

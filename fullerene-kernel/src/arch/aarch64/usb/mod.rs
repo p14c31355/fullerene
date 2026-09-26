@@ -11,6 +11,7 @@
 use config::{
     apply_usb31_gadget_reference_deltas, configure_android_hs_connect_done_policy,
     configure_dwc3_device_mode, configure_dwc3_global_control, configure_gadget_speed,
+    DEVICE_MODE_WRITE_PROBE,
     configure_gadget_start_defaults, configure_usb2_phy_interface, configure_usb31_lfps_exit_timer,
     configure_usb31_phy_setup, configure_usb31_phy_setup_pre_reset, enable_gadget_susphy,
     enable_usb2_gadget_susphy, qscratch_set, run_stop_value,
@@ -690,6 +691,73 @@ static mut CONFIGURED: bool = false;
 // SET_CONFIGURATION while EP0 is nevertheless healthy.
 static mut PROBE_EP0_PROGRESS: bool = false;
 static mut ENDPOINTS_READY: bool = false;
+/// Set at the instant the endpoint-config block publishes `ENDPOINTS_READY = true`.
+/// Read only by the `usb2-live-ep0-armed-order` readout, which compares it with the
+/// live value to tell "the block never ran" apart from "it ran and something cleared
+/// the flag". A pulse cannot be used for the first half: that code runs while the
+/// controller is still halted, and the pulse channel needs a live port.
+static mut ENDPOINT_CONFIG_BLOCK_REACHED: bool = false;
+/// Bit 1 of the same two-bit readout: set just before the gadget-start branch, so a
+/// single run separates "this epoch was never reached" from "it was reached and the
+/// false branch was taken". Recorded, not pulsed, for the same reason as above.
+static mut ENDPOINT_CONFIG_EPOCH_REACHED: bool = false;
+/// Monotone milestone index for the endpoint-publication region of
+/// `init_usb2_gadget_reuse_fastboot_ep0`. Published one bit at a time as
+/// ">= k" through the `usb2-live-milestone-ge-*` selectors, never as a count.
+///
+/// The region between `ENDPOINTS_READY = false` and `ENDPOINTS_READY = true`
+/// contains eight early exits. The recorded failure stage is 0, which rules out
+/// every `gadget_handoff_fail(n)`, so the exit is one of the stage-probe checks.
+///   1 = just after ENDPOINTS_READY = false
+///   2 = past stage-4 probe
+///   3 = past stage-9 probe
+///   4 = past stage-10 probe
+///   5 = past stage-8 probe
+///   6 = past the EP0-IN configure
+///   7 = reached ENDPOINTS_READY = true
+static mut HANDOFF_MILESTONE: u8 = 0;
+/// How many event words `process_event` has consumed this boot, saturating.
+/// Published one bit at a time ("at least N") by `usb2-live-events-ge-*`.
+static mut EVENTS_CONSUMED: u16 = 0;
+/// Set if any consumed event decoded as a device event of kind 0 (Disconnect),
+/// i.e. the branch that clears `ENDPOINTS_READY` (`mod.rs:4813`).
+static mut DISCONNECT_SEEN: bool = false;
+/// The raw word of the first event that decoded as Disconnect, for decoding
+/// against the vendor's `core.h` layout.
+static mut DISCONNECT_RAW: u32 = 0;
+/// Set if a Type-C `DetachDetected` event was applied. That branch
+/// (`mod.rs:5446`) is the only remaining unconditional clear of `ENDPOINTS_READY`
+/// reachable on this profile once `process_event` is ruled out (no events are
+/// consumed at all).
+static mut TYPEC_DETACH_SEEN: bool = false;
+/// Monotone progress index for the USB2 handoff entry point, published only by
+/// `usb2-live-handoff-progress`. It exists to answer one question in a single run:
+/// *where* does `init_usb2_gadget_reuse_fastboot_ep0` leave early?
+///
+/// This is deliberately a progress *index*, not a set of predicates: the value is
+/// written by straight-line code at each milestone, never rewound, and read exactly
+/// once. So "N pulses = milestone N was the last one reached" has one reading and no
+/// ordering ambiguity - unlike the assign-and-retract predicate encodings this skill
+/// retired. Do not reuse the pattern for anything non-monotone.
+///
+/// Milestones: 0 entry, 1 smmu bypass, 2 stage-1 probe, 3 bare pull-up,
+/// 4 controller block reset, 5 core reset, 6 SMMU ready, 7 stage-3 probe,
+/// 8 configure_gadget_start_defaults, 9 ENDPOINTS_READY = true.
+static mut HANDOFF_PROGRESS: u8 = 0;
+/// One bit: was `init_usb2_gadget_reuse_fastboot_ep0` entered at all? Published by
+/// `usb2-live-handoff-progress`. This is the only question that readout answers now -
+/// the multi-pulse progress version was retracted once `usb2-live-pulse-calibration`
+/// showed four pulses produce a single attach line (see the retraction entry in the
+/// skill). Everything finer has to be bisected, one bit and one run at a time.
+static mut HANDOFF_ENTERED: bool = false;
+
+/// Record the last handoff milestone reached. Unconditional and cheap - only
+/// `usb2-live-handoff-progress` ever publishes the value, so for every other build
+/// this is one store with no observable effect.
+#[inline]
+fn handoff_progress(milestone: u8) {
+    unsafe { HANDOFF_PROGRESS = milestone };
+}
 static mut DATA_ENDPOINTS_READY: bool = false;
 static mut DATA_REQUEST_SLOTS: [usize; 2] = [usize::MAX; 2];
 /// DWC3 returns a resource index for every STARTTRANSFER, including normal
@@ -1539,6 +1607,122 @@ unsafe fn usb2_live_word(word: &str) -> u32 {
                     | (u32::from(read(DCTL) & DCTL_CSFTRST != 0) << 1)
                     | (u32::from(read(GCTL) & GCTL_CORESOFTRESET != 0) << 2)
                     | (u32::from(read(DEVTEN) != 0) << 3)
+            }
+            "runstop" => {
+                // Is DCTL.RUN_STOP actually asserted? The handoff's own
+                // "RUN/STOP readback timed out" path has never been able to
+                // publish this.
+                u32::from(read(DCTL) & DCTL_RUN_STOP != 0)
+            }
+            "conspd" => {
+                // What speed does the *controller* believe the link is at?
+                // DSTS.CONNECTSPD is bits 2:0 (0=HS, 1=FS, 2=LS, 3=SS).
+                read(DSTS) & 0x7
+            }
+            "evtcount" => {
+                // Has anything landed in the EP0 event ring? Saturate at 3 so
+                // the word stays readable on a 4-bit channel.
+                (read(GEVNTCOUNT0) & GEVNTCOUNT_MASK).min(3)
+            }
+            // Shift the field down: the CCS channel carries only 4 bits, and a raw
+            // mask leaves PRTCAPDIR (bits 13:12) at 0x2000 for DEVICE, which
+            // truncates to zero pulses and reads exactly like "no capability
+            // set at all". Measured wrong once; keep the shift.
+            "prtcap" => (read(GCTL) & GCTL_PRTCAPDIR_MASK) >> 12,
+            // Who wrote GCTL last? `mmio::write()` is `#[track_caller]`, so this
+            // names the source line of the most recent GCTL write without that
+            // site knowing anything about it. Three nibbles: `gctlw` = line
+            // bits 3:0, `gctlw2` = line bits 7:4, `gctlw3` = the PRTCAPDIR field
+            // that was written (0=OTG, 1=HOST, 2=DEVICE) plus bit3 = "source
+            // line exceeded 8 bits". 0xf in any of the first two means the
+            // packed value has not been stored (no GCTL write yet).
+            "gctlw" => {
+                let v = mmio::GCTL_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed);
+                if v == u32::MAX { 0xf } else { v & 0xf }
+            }
+            "gctlw2" => {
+                let v = mmio::GCTL_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed);
+                if v == u32::MAX { 0xf } else { (v >> 4) & 0xf }
+            }
+            "gctlw3" => {
+                let v = mmio::GCTL_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed);
+                // NOTE: the store packs the field into bits 17:16, so the reader
+                // must mask 0x3. A wider mask pulls in bit 18, which is bit 2 of
+                // the line number - the two widths must match.
+                if v == u32::MAX { 0xf } else { (v >> 16) & 0x3 }
+            }
+            // Full 8-bit low byte of the last GCTL writer's source line, in ONE
+            // run. Deliberately a single word: splitting it across runs cannot
+            // work, because each run is a separate boot with its own "last
+            // writer" (see the history-probe note). `0xff` = no GCTL write yet.
+            "gctlline" => {
+                let v = mmio::GCTL_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed);
+                if v == u32::MAX { 0xff } else { v & 0xff }
+            }
+            // Same value, shifted down by 8, for lines beyond 255.
+            "gctlline2" => {
+                let v = mmio::GCTL_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed);
+                if v == u32::MAX { 0xff } else { (v >> 8) & 0xff }
+            }
+            // Saturating GCTL write counter, low nibble.
+            // Byte-wide so a count above 15 is distinguishable, and so the same
+            // readout path as `gctlline` is exercised (a control for whether the
+            // byte-wide branch is reached at all).
+            "gctlwc" => mmio::GCTL_WRITE_COUNT
+                .load(core::sync::atomic::Ordering::Relaxed)
+                .min(0xff),
+            // Proof-of-execution for the DEVICE-mode write, published in two
+            // words so 4 bits are enough: `devmode` = (landed, wrote) and
+            // `devmode2` = the field value read back at the write site.
+            // `devmode`: bit0 = the readback matched what was written,
+            // bits 3:1 = the value written (2 = DEVICE).
+            "devmode" => {
+                let probe = DEVICE_MODE_WRITE_PROBE.load(core::sync::atomic::Ordering::Relaxed);
+                if probe == u32::MAX {
+                    0xf // never executed
+                } else {
+                    (probe & 1) | (((probe >> 8) & 0x7) << 1)
+                }
+            }
+            // `devmode2`: bits 3:0 = the field value read back immediately.
+            "devmode2" => {
+                let probe = DEVICE_MODE_WRITE_PROBE.load(core::sync::atomic::Ordering::Relaxed);
+                if probe == u32::MAX {
+                    0xf
+                } else {
+                    (probe >> 16) & 0xf
+                }
+            }
+            "dctlrs" => u32::from(read(DCTL) & DCTL_RUN_STOP != 0),
+            "gctl_lo" => read(GCTL) & 0xf,
+            "runstop_and_speed" => {
+                // Pack both halves of the chirp question into one word:
+                // bit0 = RUN_STOP asserted, bits 2:1 = CONNECTSPD (0=HS,1=FS,2=LS).
+                u32::from(read(DCTL) & DCTL_RUN_STOP != 0) | ((read(DSTS) & 0x3) << 1)
+            }
+            "utmic0lo" => unsafe { phy::utmi_ctrl0() & 0xf },
+            "utmic0hi" => unsafe { (phy::utmi_ctrl0() >> 4) & 0xf },
+            "cfg0lo" => unsafe { phy::cfg0() & 0xf },
+            "cfg0hi" => unsafe { (phy::cfg0() >> 4) & 0xf },
+            "suspn" => u32::from(unsafe { phy::suspend_n_asserted() }),
+            "common0hi" => unsafe { (read_volatile(hsphy_reg(HSPHY_COMMON0)) >> 4) & 0xf },
+            "cfg0hi" => unsafe { (phy::cfg0() >> 4) & 0xf },
+            "gphycfg_lo" => unsafe { read(GUSB2PHYCFG0) & 0xf },
+            "gphycfg_hi" => unsafe { (read(GUSB2PHYCFG0) >> 4) & 0xf },
+            "lnkst" => {
+                // DSTS.USBLNKST - what link state does the controller think it
+                // is in? The phy.rs comment predicts a bogus "On" is possible.
+                (read(DSTS) >> 22) & 0xf
+            }
+            "susphy" => {
+                // GUSB2PHYCFG.SUSPHY - is the PHY being told to suspend, which
+                // would stop the parallel receive path while USB2 PHY clocks
+                // keep running?
+                u32::from(read(GUSB2PHYCFG0) & GUSB2PHYCFG_SUSPHY != 0)
+            }
+            "halted" => {
+                // DSTS.DEVCTRLHLT - did the controller leave the halted state?
+                u32::from(read(DSTS) & DSTS_DEVCTRLHLT != 0)
             }
             _ => 15,
         }
@@ -4726,6 +4910,7 @@ unsafe fn handle_setup() {
 }
 
 unsafe fn process_event(raw: u32) {
+    EVENTS_CONSUMED = EVENTS_CONSUMED.saturating_add(1);
     let endpoint_event = (raw & 1) == 0;
     if !endpoint_event {
         // DWC3's device event layout is: one_bit[0], device_event[1:7],
@@ -4737,6 +4922,10 @@ unsafe fn process_event(raw: u32) {
                 // Disconnect invalidates the active control transfer and the
                 // device address. Do not rearm until Connect Done establishes
                 // a fresh link, exactly as the Linux gadget lifecycle does.
+                DISCONNECT_SEEN = true;
+                if DISCONNECT_RAW == 0 {
+                    DISCONNECT_RAW = raw;
+                }
                 unsafe {
                     for endpoint in 0..2 {
                         if EP0_RESOURCE_INDEX[endpoint] != 0 {
@@ -5371,6 +5560,7 @@ unsafe fn apply_typec_event(event: super::platform::bramble::TypecEvent) {
             // Linux's role-switch callback stops advertising before it tears
             // down the UDC queues. Do not issue endpoint commands after the
             // PMIC has removed the cable.
+            TYPEC_DETACH_SEEN = true;
             unbind_function();
             teardown_data_endpoints();
             reset_gsi_channels();
@@ -6076,6 +6266,7 @@ unsafe fn set_direct_usb2_vbus_override() {
 
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
+    HANDOFF_ENTERED = true;
     // Re-establish the Qualcomm PHY/session state without asserting the
     // pull-up yet.  EP0 must be fully configured, its event ring published,
     // and the first SETUP TRB armed before Run/Stop is allowed to advertise
@@ -6085,6 +6276,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // explicit SMMU-disable differential here before publishing any new EP0
     // DMA object. Previously `--smmu-disable` was ignored on this path.
     if !prepare_smmu_dma_bypass() {
+        handoff_progress(1);
         return false;
     }
     // Snapshot the Fastboot-owned clock/PHY state before the handoff starts
@@ -6096,6 +6288,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // Stage 1 is deliberately before even the initial stop/readback: it is
     // the control experiment against the already-proven bare pull-up path.
     if unsafe { stop_after_gadget_handoff_stage(1) } {
+        handoff_progress(2);
         return true;
     }
     unsafe { gate_flow_blip() }; // flow-map B1: reuse entry
@@ -6124,6 +6317,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 0,
                 read(DSTS),
             );
+            handoff_progress(3);
             return gadget_handoff_fail(1);
         }
         FASTBOOT_EVENT_DMA_BASE = event_address;
@@ -6222,6 +6416,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     #[cfg(fullerene_aarch64_usb_android_block_reset)]
     if !unsafe { super::platform::bramble::android_controller_block_reset() } {
         log_puts("usb gadget handoff: Android controller block reset failed\n");
+        handoff_progress(4);
         return gadget_handoff_fail(2);
     }
     #[cfg(fullerene_aarch64_usb_android_block_reset)]
@@ -6359,6 +6554,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         };
         if !reset_ok {
             log_puts("usb gadget handoff: DWC3 device reset failed\n");
+            handoff_progress(5);
             return gadget_handoff_fail(2); // core reset
         }
     } else {
@@ -6621,10 +6817,12 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     };
     if !smmu_ready {
         log_puts("usb gadget handoff: DWC3 SMMU pool map unavailable\n");
+        handoff_progress(7);
         return gadget_handoff_fail(3); // SMMU
     }
     unsafe { gate_flow_blip() }; // flow-map B3: SMMU ready
     if unsafe { stop_after_gadget_handoff_stage(3) } {
+        handoff_progress(8);
         return false;
     }
 
@@ -6709,6 +6907,16 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             },
         );
         configure_gadget_start_defaults();
+        if option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT")
+            == Some("usb2-live-ep0-armed-order")
+        {
+            // Bit 1 of 2. Recorded just *before* the gadget-start branch, so the
+            // readout can tell "never reached this epoch" apart from "reached it
+            // and took the false branch". See `ENDPOINT_CONFIG_BLOCK_REACHED` for
+            // bit 2 and for why these are recorded rather than pulsed here.
+            ENDPOINT_CONFIG_EPOCH_REACHED = true;
+            handoff_progress(9);
+        }
         if cfg!(fullerene_aarch64_usb_gadget_handoff_gadget_start_only_at_runstop) {
             // qpr1's dwc3_gadget_run_stop(true) performs __dwc3_gadget_start
             // only inside the final start boundary. Leave the initial
@@ -6811,16 +7019,20 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 }
                 EP0_SETUP_ARMED = true;
             }
+            HANDOFF_MILESTONE = 1;
             // Stage 8 isolates the first SETEPCONFIG/SETTRANSFRESOURCE pair from
             // the corresponding EP0 IN pair. It is intentionally appended to the
             // original 1..7 sequence so existing stage numbers remain stable.
+            HANDOFF_MILESTONE = 4;
             if stop_after_gadget_handoff_stage(8) {
                 return false;
             }
+            HANDOFF_MILESTONE = 5;
             if !configure_endpoint(1, ep0_packet_size, false) {
                 log_puts("usb gadget handoff: USB2 EP0 configure failed\n");
                 return gadget_handoff_fail(5); // EP0 config
             }
+            HANDOFF_MILESTONE = 6;
             // XBL's DwcConfigureEP publishes the corresponding DALEPENA bit
             // after each SETEPCONFIG -> SETTRANSFRESOURCE pair. Keep the two
             // physical EP0 directions on the same per-direction boundary.
@@ -6839,6 +7051,28 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 apply_usb31_gadget_reference_deltas();
             }
             ENDPOINTS_READY = true;
+            HANDOFF_MILESTONE = 7;
+            handoff_progress(10);
+            // ORDERED ONE-BIT DISAMBIGUATION (see the ledger's OPEN CONTRADICTION
+            // entry): publish one pulse the instant this assignment executes, so a
+            // single run can separate three cases that `usb2-live-ep0-armed` alone
+            // cannot - "this else branch was entered", "it was entered and the flag
+            // survived", and "it was entered but something cleared it before the
+            // readout". The matching second pulse is in the
+            // `usb2-live-ep0-armed-order` selector. Inert for every other build, so
+            // it cannot perturb an existing run.
+            if option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT")
+                == Some("usb2-live-ep0-armed-order")
+            {
+                // Record, do not pulse. A pulse here would be unobservable: this
+                // runs while the controller is still halted, and the pulse channel
+                // works by cycling DCTL Run/Stop so the host re-logs the attach -
+                // which only produces a line once the port is live. Publish both
+                // bits together at the readout instead (ordered, one run).
+                ENDPOINT_CONFIG_BLOCK_REACHED = true;
+            }
+            HANDOFF_MILESTONE = 11;
+            HANDOFF_MILESTONE = 16;
             let _ = udc_mut().configure_endpoint(0, 64, false);
             let _ = udc_mut().configure_endpoint(1, 64, false);
             // Both EP0 directions, their resources, and DALEPENA have now been
@@ -6877,6 +7111,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     read(DSTS),
                 );
             }
+            HANDOFF_MILESTONE = 12;
             apply_ep0_txfifo_fix();
             // Stage 11 isolates the cache-cleaned SETUP buffer/TRB publication
             // from the DWC3 STARTTRANSFER command itself. The old stage 6
@@ -6890,6 +7125,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             // SETTRANSFRESOURCE returned index 1. The timing A/Bs move this
             // exact command across the Run/Stop/link boundary; the default keeps
             // the historical pre-connect command for comparison.
+            HANDOFF_MILESTONE = 13;
             let defer_initial_setup = cfg!(any(
                 fullerene_aarch64_usb_gadget_handoff_start_after_connect,
                 fullerene_aarch64_usb_gadget_handoff_start_after_reset,
@@ -6903,6 +7139,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
                 return gadget_handoff_fail(12); // STARTTRANSFER
             }
+            HANDOFF_MILESTONE = 15;
             // Record the armed SETUP TRB so the USB-reset handler takes the
             // Linux-equivalent keep-the-TRB path instead of tearing it down and
             // racing the host's first post-reset SETUP token.
@@ -7034,10 +7271,15 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // received-SOF latch does not. The answer rides the attach
                 // latency, which is the one channel that works before the
                 // pull-up (1 s = static, 4 s = advanced).
-                const SOFFN_MASK: u32 = 0x3fff;
-                let before = read(DSTS) & SOFFN_MASK;
+                // `DSTS.SOFFN` is bits 16:3 - the vendor's
+                // `DWC3_DSTS_SOFFN_MASK` (`0x3fff << 3`, `core.h:487`). An
+                // earlier version of this control masked `0x3fff` (bits 13:0),
+                // which overlaps CONNECTSPD and the bits below the field, so
+                // its "advanced/static" verdict was not about SOFFN at all.
+                const SOFFN_MASK: u32 = 0x3fff << 3;
+                let before = (read(DSTS) & SOFFN_MASK) >> 3;
                 readout_keepalive_delay_ms(500);
-                let after = read(DSTS) & SOFFN_MASK;
+                let after = (read(DSTS) & SOFFN_MASK) >> 3;
                 log_hex("usb gadget handoff: pre-attach SOFFN before=", u64::from(before));
                 log_hex("usb gadget handoff: pre-attach SOFFN after=", u64::from(after));
                 if after != before {
@@ -7228,7 +7470,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // Field positions are the vendor's (core.h):
                 //   DWC3_DSTS_USBLNKST_MASK = 0x0f << 18
                 //   DWC3_DSTS_CONNECTSPD    = 7 << 0
-                unsafe { ccs_pulse(1_000) };
                 let dsts = read(DSTS);
                 if (dsts >> 18) & 0x0f == 0 {
                     unsafe { ccs_pulse(300) };
@@ -7249,13 +7490,138 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 //   pulse 2: ENDPOINTS_READY (the endpoint configuration phase
                 //            completed, without which `try_arm_setup` returns
                 //            early and never arms anything).
-                unsafe { ccs_pulse(1_000) };
+                // Settle first: a pulse issued before the wait produces no host
+                // line at all (measured - see the note below the second pulse).
+                readout_keepalive_delay_ms(500);
                 if EP0_SETUP_ARMED {
+                    unsafe { ccs_pulse(300) };
+                }
+                // PRECONDITION, measured: the pulse only reaches the host when it
+                // is preceded by a settle wait. `soffn-count` (delay 500 ms, then
+                // pulse) gives 2 lines; `delay-only` (delay, no pulse) and
+                // `ep0-armed` (pulse, no delay) both give 1. So the wait is not
+                // decoration - without it the Run/Stop cycle produces nothing.
+                readout_keepalive_delay_ms(500);
+                if ENDPOINTS_READY {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-endpoints-ready" {
+                // ONE predicate only, so the count is unambiguous even if two
+                // closely-spaced pulses merge into one host line.
+                //   1 line  = ENDPOINTS_READY is FALSE
+                //   2 lines = ENDPOINTS_READY is TRUE
+                readout_keepalive_delay_ms(500);
+                if ENDPOINTS_READY {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-ms-ge-11" {
+                readout_keepalive_delay_ms(500);
+                if unsafe { HANDOFF_MILESTONE } >= 11 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-ms-ge-13" {
+                readout_keepalive_delay_ms(500);
+                if unsafe { HANDOFF_MILESTONE } >= 13 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-ms-ge-15" {
+                readout_keepalive_delay_ms(500);
+                if unsafe { HANDOFF_MILESTONE } >= 15 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-ms-ge-16" {
+                readout_keepalive_delay_ms(500);
+                if unsafe { HANDOFF_MILESTONE } >= 16 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-ms-ge-14" {
+                readout_keepalive_delay_ms(500);
+                if unsafe { HANDOFF_MILESTONE } >= 14 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-arm-attempted" {
+                // ONE predicate: did `try_arm_setup` get past its guards at all?
+                // `SETUP_ARM_FAILURE_STAGE` (`mod.rs:422`) starts at 4 and is set to
+                // 1 only when the DSTS halt check rejects the arm, and to 0 on a
+                // successful `start_transfer`. So `!= 4` means the function was
+                // entered past the guards; combined with `EP0_SETUP_ARMED == false`
+                // it would mean `start_transfer` itself failed.
+                //   2 lines = the guards were passed, 1 line = never reached
+                readout_keepalive_delay_ms(500);
+                if unsafe { SETUP_ARM_FAILURE_STAGE } != 4 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-arm-halted" {
+                // ONE predicate: was the arm refused by the DSTS halt check
+                // (`SETUP_ARM_FAILURE_STAGE == 1`)?
+                readout_keepalive_delay_ms(500);
+                if unsafe { SETUP_ARM_FAILURE_STAGE } == 1 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-ep0state-setup" {
+                // ONE predicate: is EP0_STATE the Setup state the arm requires?
+                // `try_arm_setup` (`mod.rs:3986`) early-returns unless
+                // `EP0_STATE == Ep0State::Setup`, so this is the last remaining
+                // guard that can stop the deferred arm once ENDPOINTS_READY is true.
+                //   2 lines = Setup, 1 line = something else
+                readout_keepalive_delay_ms(500);
+                if EP0_STATE == Ep0State::Setup {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-armed-only" {
+                // The mirror control: one predicate, EP0_SETUP_ARMED.
+                readout_keepalive_delay_ms(500);
+                if EP0_SETUP_ARMED {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-ep0-armed-order" {
+                // Both bits, published together at a moment when the port is live,
+                // in order. The first half is recorded rather than pulsed at the
+                // point of truth (see `ENDPOINT_CONFIG_BLOCK_REACHED`) because a
+                // pulse there would be invisible.
+                //   2 pulses = the config block ran AND ENDPOINTS_READY survived
+                //   1 pulse  = the config block ran, then something cleared the flag
+                //   0 pulses = the config block was never entered
+                if unsafe { ENDPOINT_CONFIG_EPOCH_REACHED } {
+                    unsafe { ccs_pulse(300) };
+                }
+                if unsafe { ENDPOINT_CONFIG_BLOCK_REACHED } {
                     unsafe { ccs_pulse(300) };
                 }
                 if ENDPOINTS_READY {
                     unsafe { ccs_pulse(300) };
                 }
+            } else if selector == "usb2-live-handoff-progress" {
+                // SINGLE BIT ONLY. The multi-pulse version of this readout was
+                // retracted: `usb2-live-pulse-calibration` showed four pulses produce
+                // one attach line, so counts are not readable on this channel.
+                //
+                // So this publishes exactly one pulse, and only for the one question
+                // worth one run: **was `init_usb2_gadget_reuse_fastboot_ep0` entered
+                // at all?** Everything else about the route has to be bisected one
+                // bit per run (see the retraction entry in the skill).
+                if unsafe { HANDOFF_ENTERED } {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-pulse-calibration" {
+                // CALIBRATION of the channel itself, one pulse only.
+                //
+                // History: the SOFFN work established the channel with a *single*
+                // pulse and A/B/B/A. A later four-pulse version of this selector
+                // produced ONE attach line, which at first looked like "multi-pulse is
+                // broken". But the one-bit `usb2-live-handoff-progress` run also
+                // produced one line while the source says that function must be
+                // entered - so the more likely reading is that *nothing* is being
+                // published at this moment, and the four-pulse result was a red
+                // herring.
+                //
+                // So issue exactly ONE unconditional pulse here. Expected: 2 attach
+                // lines (1 boot attach + 1 pulse).
+                //   2 lines => the channel works and the 0-pulse readings are evidence
+                //   1 line  => nothing is published from this point; every zero-count
+                //              reading this session is void, including "both flags
+                //              false" and "the function was not entered"
+                unsafe { ccs_pulse(300) };
             } else if selector == "usb2-live-force-endpoints" {
                 // RE-ENUMERATION ATTEMPT with the root cause addressed.
                 // Run `266423.0` measured ENDPOINTS_READY == false at about
@@ -7295,7 +7661,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     // existing arm window do the arming.
                     EP0_SETUP_ARMED = false;
                     EP0_STATE = Ep0State::Setup;
-                    ccs_pulse(1_000);
                     if ok {
                         ccs_pulse(300);
                     }
@@ -7344,7 +7709,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                         }
                         super::timer::delay_us(20_000);
                     }
-                    ccs_pulse(1_000);
                     if ok {
                         ccs_pulse(300);
                     }
@@ -7367,7 +7731,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 //   pulse 1: DMA_ADOPTED - the handoff adopted a Fastboot IOVA window
                 //   pulse 2: programmed GEVNTADR0 equals ep0_event_dma_base()
                 //   pulse 3: dma_iova_for(EP0 SETUP buffer) equals the raw pointer
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if DMA_ADOPTED {
                         ccs_pulse(300);
@@ -7395,7 +7758,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 //   pulse 3: TRBSTS == 0 - the transfer completed cleanly.
                 // Sampled about a second after attach, i.e. after the host's
                 // first GET_DESCRIPTOR has been answered or stalled.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let trb = ep0_trb_ptr(0);
                     cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
@@ -7424,7 +7786,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 //   pulse 2: the first byte of that buffer is non-zero *when read
                 //            here*, which also tests the cache maintenance path
                 //            (`cache_invalidate`) the poll uses.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let trb = ep0_trb_ptr(0);
                     cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
@@ -7504,7 +7865,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                         poll_ep0_event_ring();
                         super::timer::delay_us(1_000);
                     }
-                    ccs_pulse(1_000);
                     if ok {
                         ccs_pulse(300);
                     }
@@ -7557,7 +7917,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                         last_status = trbsts;
                         super::timer::delay_us(1_000);
                     }
-                    ccs_pulse(1_000);
                     if pending_seen != 0 {
                         ccs_pulse(300);
                     }
@@ -7699,7 +8058,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 //   pulse 1: EP0 TRB pointer lies within the adopted page
                 //   pulse 2: EP0 SETUP buffer lies within the adopted page
                 //   pulse 3: DMA_ADOPTED_IOVA == DMA_ADOPTED_CPU (identity)
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let page = DMA_ADOPTED_CPU & !0xfff;
                     let inside = |p: usize| p >= page && p < page + 0x1000;
@@ -7765,7 +8123,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // linker buffers are correct as they are. Either way the
                 // "outside the page" story needs re-testing, not assuming.
                 // A pulse means `DMA_ADOPTED == true`.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if DMA_ADOPTED {
                         ccs_pulse(300);
@@ -7781,7 +8138,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // {HWO, completed} - and "completed" would mean the controller
                 // already handed the packet over. A pulse here means
                 // `TRBSTS == 2`.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let trb = ep0_trb_ptr(0);
                     cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
@@ -7798,7 +8154,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // the packet must be sitting somewhere the software can read, and
                 // the fault is purely in the software side of the exchange.
                 // A pulse means `TRBSTS == 0`.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let trb = ep0_trb_ptr(0);
                     cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
@@ -7816,7 +8171,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // is at fault, or the packet never landed there.
                 // A pulse means the first byte of `ep0_setup_data_ptr()` is
                 // non-zero.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let setup = ep0_setup_data_ptr();
                     cache_invalidate(setup as usize, 8);
@@ -7834,7 +8188,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 //   pulse present = HWO still set: the TRB is armed and the
                 //     controller is waiting for a SETUP that never arrives.
                 //   no pulse = HWO cleared: the controller consumed the TRB.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let trb = ep0_trb_ptr(0);
                     cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
@@ -7851,7 +8204,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // == false` was suggested by `266423.0`, but that reading came
                 // from a two-predicate word and is therefore unproven (entry 159).
                 // A pulse means `DALEPENA` bit 0 is set.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if read(DALEPENA) & 1 != 0 {
                         ccs_pulse(300);
@@ -7867,7 +8219,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // measured good (`302214.0` armed, `303830.0` enabled) this is the
                 // first candidate for "the controller does not take the SETUP".
                 // A pulse means `USBLNKST == 0`.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let dsts = read(DSTS);
                     if (dsts >> 18) & 0x0f == 0 {
@@ -7885,7 +8236,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // firmware data left in the reused ring, so a *zero* result is the
                 // strong one - it means the core has written nothing at all.
                 // A pulse means some word in the first 64 bytes is non-zero.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let base = ep0_event_dma_base();
                     cache_invalidate(base, 64);
@@ -7914,7 +8264,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // that says so. (`248672.0` reported it clear, but that reading
                 // came from a count-coded word and is unproven.)
                 // A pulse means `DEVCTRLHLT` is SET (the controller is halted).
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if read(DSTS) & DSTS_DEVCTRLHLT != 0 {
                         ccs_pulse(300);
@@ -7929,7 +8278,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // endpoints enabled while never processing device tokens, which
                 // is exactly the symptom set measured in `307410.0`/`308901.0`.
                 // A pulse means `(GCTL >> 12) & 3 == 2` (device mode).
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if (read(GCTL) >> 12) & 0x3 == 2 {
                         ccs_pulse(300);
@@ -7941,7 +8289,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // than ULPI? A core configured for ULPI would not process the
                 // internal UTMI traffic of this PHY.
                 // A pulse means bit 4 is clear (UTMI+ selected).
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if read(GUSB2PHYCFG0) & (1 << 4) == 0 {
                         ccs_pulse(300);
@@ -7952,7 +8299,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // `core.h:412`) clear? A core held in soft reset would have
                 // running-looking registers but no device operation.
                 // A pulse means CSFTRST is clear.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if read(DCTL) & (1 << 30) == 0 {
                         ccs_pulse(300);
@@ -7964,7 +8310,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // reset sequence; a core still held there would look alive in
                 // DSTS while doing nothing.
                 // A pulse means CORESOFTRESET is clear.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if read(GCTL) & (1 << 11) == 0 {
                         ccs_pulse(300);
@@ -7981,7 +8326,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // suggested they matched, but that came from a multi-predicate
                 // word and is unproven (entry 159).
                 // A pulse means the programmed address equals the software's base.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     let programmed =
                         ((read(GEVNTADRHI0) as u64) << 32) | u64::from(read(GEVNTADRLO0));
@@ -7990,6 +8334,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     }
                 }
             } else if selector == "usb2-live-opmode0" {
+                // Calibrated-channel requirement: a pulse only reaches the host
+                // when a ~500 ms settle precedes it (see the calibration note).
+                readout_keepalive_delay_ms(500);
                 // ONE question, ONE bit: is the HS-PHY UTMI datapath driving
                 // (`UTMI_CTRL0.OPMODE == 0`)? `phy.rs:440-448` documents that
                 // Fastboot/charger-detection ownership can leave OPMODE=1, i.e. a
@@ -7999,13 +8346,13 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // precisely the state after 13 one-bit measurements: everything
                 // readable is correct and the controller never consumes the TRB.
                 // A pulse means OPMODE is 0 (driving).
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if phy::utmi_opmode_is_normal() {
                         ccs_pulse(300);
                     }
                 }
             } else if selector == "usb2-live-dpath-ovr-clear" {
+                readout_keepalive_delay_ms(500);
                 // ONE question, ONE bit: is the charger-detection datapath
                 // override dropped (`HSPHY_CFG0.UTMI_DATAPATH_CTRL_OVERRIDE_EN ==
                 // 0`)? `phy.rs:451-459` documents that Fastboot can leave that
@@ -8013,7 +8360,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // and it too would hold the DP/DM datapath away from the normal
                 // UTMI path.
                 // A pulse means the override bit is clear.
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if phy::datapath_override_cleared() {
                         ccs_pulse(300);
@@ -8038,7 +8384,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // something re-asserts after the init-time clear would never have
                 // been caught by the A/B.
                 // A pulse means SUSPHY is set (UTMI clock held suspended).
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if read(GUSB2PHYCFG0) & (1 << 6) != 0 {
                         ccs_pulse(300);
@@ -8061,7 +8406,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // speed) while its UTMI digital receive path is off, so no packet is
                 // ever delivered - exactly this signature.
                 // A pulse means SUSPEND_N is asserted (PHY not suspended).
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if phy::suspend_n_asserted() {
                         ccs_pulse(300);
@@ -8086,7 +8430,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // would suppress every event, which in turn starves the re-arm and
                 // produces exactly the observed host-side silence.
                 // A pulse means `DEVTEN` is non-zero (events enabled).
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if read(DEVTEN) != 0 {
                         ccs_pulse(300);
@@ -8105,7 +8448,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // works then; the absence of the ~8 s marker then isolates the
                 // failure to the polling-owner side rather than to this dispatch.
                 unsafe {
-                    ccs_pulse(1_000);
                     ccs_pulse(300);
                 }
                 DEFERRED_READOUT_KIND = 1;
@@ -8118,7 +8460,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // immediate readout sees the pre-publish state. Same bisection
                 // marker as the evring selector above.
                 unsafe {
-                    ccs_pulse(1_000);
                     ccs_pulse(300);
                 }
                 DEFERRED_READOUT_KIND = 2;
@@ -8131,7 +8472,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // makes the core ignore the host's address-0 SETUP - the hazard the
                 // code itself names at `usb.rs:12150`.
                 unsafe {
-                    ccs_pulse(1_000);
                     ccs_pulse(300);
                 }
                 DEFERRED_READOUT_KIND = 3;
@@ -8149,7 +8489,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // (baseline: one -110 then three immediate -71s), so a recovery
                 // forced at this point has later attempts to catch.
                 unsafe {
-                    ccs_pulse(1_000);
                     ccs_pulse(300);
                 }
                 DEFERRED_READOUT_KIND = 4;
@@ -8185,6 +8524,19 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
                     arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
                 );
+            } else if selector == "usb2-live-deferred-endpoints" {
+                // ONE bit at attach time: did anything actually publish
+                // `ENDPOINTS_READY = true`?
+                //
+                // Same shape and same deferred placement as
+                // `usb2-live-gate-ep0armed` (kind 8). A pulse published from inside
+                // the handoff cannot reach the host - the host must already have
+                // logged the attach, and DCTL Run/Stop must be cycling. Kind 8 asks
+                // whether EP0's SETUP transfer is armed; this asks whether the
+                // endpoint epoch was published at all, which separates "the config
+                // branch never ran" from "it ran and the arm still did not happen".
+                // Positive control in this same placement: `usb2-live-gate-probe6`.
+                DEFERRED_READOUT_KIND = 10;
             } else if selector == "usb2-live-gate-probe"
                 || selector == "usb2-live-gate-probe6"
                 || selector == "usb2-live-gate-probe7"
@@ -8230,7 +8582,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // descriptor read), which does not need the CCS channel that is
                 // unusable after the first failure.
                 unsafe {
-                    ccs_pulse(1_000);
                     ccs_pulse(300);
                 }
                 DEFERRED_READOUT_KIND = 5;
@@ -8262,7 +8613,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // `DISSCRAMBLE` had never been examined in this project before.
                 // A pulse means the bit is clear (scrambling enabled = vendor
                 // behaviour on silicon).
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if read(GCTL) & (1 << 3) == 0 {
                         ccs_pulse(300);
@@ -8282,7 +8632,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // path while leaving line-state and the analog chirp intact, which
                 // is this failure's signature. Verify rather than assume.
                 // A pulse means PHYIF is 0 (8-bit).
-                unsafe { ccs_pulse(1_000) };
                 unsafe {
                     if read(GUSB2PHYCFG0) & GUSB2PHYCFG_PHYIF_MASK == 0 {
                         ccs_pulse(300);
@@ -8293,39 +8642,138 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // reads 0 in every run, which is consistent both with "the core
                 // posted nothing" and with "the ring has no space to post into".
                 // `GEVNTSIZ0` distinguishes them, and a zero size would explain
-                // zero events while the receive path demonstrably works (SOFFN
-                // advanced in `255232.0`).
-                unsafe { ccs_pulse(1_000) };
+                // zero events. (An earlier note here cited `255232.0` as evidence
+                // that SOFFN advanced; that run predates the SOFFN mask fix, so
+                // the reference is void - do not lean on it.)
                 let size = read(GEVNTSIZ0) & GEVNTSIZ_SIZE_MASK;
                 if size != 0 {
                     unsafe { ccs_pulse(300) };
                 }
+            } else if selector == "usb2-live-fail-stage" {
+                // ONE bit: did the handoff record a failure at all?
+                //
+                // `gadget_handoff_failure_stage()` (`mod.rs:756`) is set by every
+                // `gadget_handoff_fail(n)` return. The measured fact this serves is
+                // that `EP0_SETUP_ARMED` is TRUE while `ENDPOINTS_READY` is FALSE,
+                // and `ENDPOINTS_READY = true` (mod.rs:~6897) is unconditional - so
+                // something returns before it. This bit says whether the early exit
+                // was a *recorded* failure at all.
+                //   0 pulses => the handoff did not record a failure (a plain
+                //               `return false` path, or a different route)
+                //   1 pulse  => a failure WAS recorded; bisect with the
+                //               `usb2-live-fail-ge-*` selectors for which stage
+                readout_keepalive_delay_ms(500);
+                if gadget_handoff_failure_stage() != 0 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-fail-ge-5" {
+                // Bisect: was the recorded failure stage >= 5?
+                // Stage 5 is the EP0 `configure_endpoint(1, ...)` pair
+                // (mod.rs:~6875), which sits immediately *before* the
+                // unconditional `ENDPOINTS_READY = true`.
+                readout_keepalive_delay_ms(500);
+                if gadget_handoff_failure_stage() >= 5 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-fail-eq-5" {
+                // Was the recorded failure exactly stage 5?
+                readout_keepalive_delay_ms(500);
+                if gadget_handoff_failure_stage() == 5 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-fail-eq-12" {
+                // Was the recorded failure exactly stage 12 (XBL inter-pair
+                // SETUP STARTTRANSFER, mod.rs:~6856)?
+                readout_keepalive_delay_ms(500);
+                if gadget_handoff_failure_stage() == 12 {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-entered" {
+                // ONE bit, with the settle wait: was
+                // `init_usb2_gadget_reuse_fastboot_ep0` entered at all?
+                // The cfg expansion proves the call site exists, so a 0 here means
+                // the route takes the other branch and the whole entry point -
+                // including its unconditional `ENDPOINTS_READY = true` - never runs.
+                readout_keepalive_delay_ms(500);
+                if unsafe { HANDOFF_ENTERED } {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-typec-detach-seen" {
+                // ONE bit: did a Type-C DetachDetected event get applied? That is
+                // the clear that survives once process_event is ruled out.
+                readout_keepalive_delay_ms(500);
+                if unsafe { TYPEC_DETACH_SEEN } {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-disconnect-seen" {
+                // ONE bit: did a Disconnect event ever decode? This is the branch
+                // that clears ENDPOINTS_READY after the handoff publishes it.
+                readout_keepalive_delay_ms(500);
+                if unsafe { DISCONNECT_SEEN } {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector.starts_with("usb2-live-events-ge-") {
+                // ONE bit: were at least N event words consumed at all?
+                let k: u16 = selector["usb2-live-events-ge-".len()..]
+                    .parse()
+                    .unwrap_or(u16::MAX);
+                readout_keepalive_delay_ms(500);
+                if unsafe { EVENTS_CONSUMED } >= k {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector.starts_with("usb2-live-milestone-ge-") {
+                // Bisect the endpoint-publication region one bit per run.
+                // Value = the `>= k` suffix. One pulse iff the milestone index is
+                // at least k, so each run answers exactly one yes/no question.
+                let k: u8 = selector["usb2-live-milestone-ge-".len()..]
+                    .parse()
+                    .unwrap_or(255);
+                readout_keepalive_delay_ms(500);
+                if unsafe { HANDOFF_MILESTONE } >= k {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if selector == "usb2-live-delay-only" {
+                // CROSS-CHECK for the `soffn-count` result. That selector publishes
+                // one pulse iff SOFFN advanced, and produced 2 attach lines twice in
+                // a row - but the two lines are 2.606 s apart, and its own stop
+                // delay is only 500 ms. So the second line is probably the host
+                // retrying by itself, not the pulse.
+                //
+                // This control does *only* the wait, with no pulse at all:
+                //   2 attach lines => the extra line is the delay/host-retry, and
+                //                     `soffn-count`'s two lines prove nothing about RX
+                //   1 attach line  => the delay alone is not enough, and the pulse
+                //                     really is what makes the second line
+                readout_keepalive_delay_ms(500);
             } else if selector == "usb2-live-soffn-count" {
                 // Direct RX-liveness readout: DSTS.SOFFN is the frame number of
                 // the last SOF the device controller received. In high speed the
                 // host sends an SOF every 125 us once the link is operational, so
                 // a SOFFN that advances between two samples proves the PHY-to-core
                 // receive path carries host traffic; a static SOFFN means it does
-                // not. Two 300 ms pulses = advanced, one = static, after the
-                // marker. This is the cleanest available test of the receive
-                // direction, which every other measurement has now isolated.
-                unsafe { ccs_pulse(1_000) };
-                // DSTS bits 13:0 are SOFFN (frame number of the last received
-                // SOF); the field has no shared constant in this tree.
-                const SOFFN_MASK: u32 = 0x3fff;
-                let before = read(DSTS) & SOFFN_MASK;
-                // Keep the whole branch short (marker + 300 ms + 1-2 pulses, so
-                // about 2.4 s): a long branch lets the signal-probe's own blip
-                // publisher overlap the CCS channel. In high speed the host sends
-                // an SOF every 125 us and SOFFN counts 1 ms frames, so 300 ms is
-                // already ~300 frames of margin.
+                // not. THE TEST IS: exactly one pulse iff SOFFN advanced, no
+                // marker, so 1 attach line on the host = static and 2 = advanced.
+                // This is the cleanest available test of the receive direction,
+                // which every other measurement has now isolated.
+                // NO MARKER. The channel rule is "one predicate per run, pulse
+                // present/absent only", and a marker pulse makes the count
+                // ambiguous: `1 + 2 (advanced)` and `1 + 1 (marker) + 1 (static)`
+                // are the same three attach lines on the host. So publish exactly
+                // one pulse iff `SOFFN` advanced, nothing otherwise:
+                //   1 attach line (baseline) = static, 2 = advanced.
+                // This is the test the earlier attempts never actually ran.
+                const SOFFN_MASK: u32 = 0x3fff << 3;
+                let before = (read(DSTS) & SOFFN_MASK) >> 3;
+                // Keep the whole branch short: a long branch lets the signal-probe's
+                // own blip publisher overlap the CCS channel. In high speed the host
+                // sends an SOF every 125 us and SOFFN counts 1 ms frames, so 300 ms
+                // is already ~300 frames of margin.
                 readout_keepalive_delay_ms(300);
-                let after = read(DSTS) & SOFFN_MASK;
+                let after = (read(DSTS) & SOFFN_MASK) >> 3;
                 let advanced = after != before;
                 log_hex("usb gadget handoff: SOFFN before=", u64::from(before));
                 log_hex("usb gadget handoff: SOFFN after=", u64::from(after));
-                let count = if advanced { 2 } else { 1 };
-                for _ in 0..count {
+                if advanced {
                     unsafe { ccs_pulse(300) };
                 }
             } else if selector == "usb2-live-halted-count" {
@@ -8334,7 +8782,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // Three 300 ms pulses = DSTS.DEVCTRLHLT set, one = clear, after
                 // the usual marker. This is the fact the probe's own "RUN/STOP
                 // readback timed out; continuing" path has never published.
-                unsafe { ccs_pulse(1_000) };
                 let halted = read(DSTS) & DSTS_DEVCTRLHLT != 0;
                 let count = if halted { 3 } else { 1 };
                 for _ in 0..count {
@@ -8351,7 +8798,6 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 //   usb2-live-runstop-bit -> DCTL.RUN_STOP as read back
                 // These are the two facts the probe's own "RUN/STOP readback
                 // timed out; continuing" path has never been able to publish.
-                unsafe { ccs_pulse(1_000) };
                 let set = if selector == "usb2-live-halted" {
                     read(DSTS) & DSTS_DEVCTRLHLT != 0
                 } else {
@@ -8392,7 +8838,12 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // and tools/bramble_port_ccs.py for the host-side decoder. This
                 // is the first carrier that survives past Run/Stop, because the
                 // root hub keeps reporting the pull-up to the host.
-                unsafe { publish_ccs_word(usb2_live_word(word)) };
+                let value = usb2_live_word(word);
+                if word == "gctlline" || word == "gctlline2" || word == "gctlwc" {
+                    unsafe { publish_ccs_word_byte(value) };
+                } else {
+                    unsafe { publish_ccs_word(value) };
+                }
             } else {
                 let delay_ms = if selector == "hsphy-suspend-n-safe" {
                     // 1 = missing, 2 = present/0, 3 = present/1.
@@ -8405,6 +8856,25 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     u64::from(code) * 1_000
                 };
                 readout_keepalive_delay_ms(delay_ms);
+            }
+        }
+        HANDOFF_MILESTONE = 14;
+        // EXPERIMENT: if the deferred arm window did not leave EP0 armed, force the
+        // flag and re-issue the STARTTRANSFER directly. Every guard that can stop
+        // `try_arm_setup` has been measured false (ENDPOINTS_READY true, EP0_STATE
+        // Setup, stage != 1, failure stage 4 = never called), so the only remaining
+        // question is whether an arm at this exact point changes host behaviour.
+        #[cfg(fullerene_aarch64_usb_force_ep0_armed)]
+        unsafe {
+            if !EP0_SETUP_ARMED {
+                log_puts("usb gadget handoff: forcing EP0 SETUP arm\n");
+                prepare_ep0_setup_trb();
+                if start_transfer(0, ep0_trb_ptr(0)) {
+                    EP0_SETUP_ARMED = true;
+                    log_puts("usb gadget handoff: forced arm succeeded\n");
+                } else {
+                    log_puts("usb gadget handoff: forced arm failed\n");
+                }
             }
         }
         if !start_readback_ok {
@@ -8518,6 +8988,29 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
 /// usable as a standalone probe.
 pub fn init_usb2_gadget_handoff() -> bool {
     unsafe {
+        // OUTER CALIBRATION, deliberately placed *outside* the handoff entry point.
+        // Every other `usb2-live-*` readout lives inside
+        // `init_usb2_gadget_reuse_fastboot_ep0`, so if that function is never called
+        // its readout cannot run - which makes a zero-pulse reading there circular
+        // evidence. This one sits in the caller, which must run for any handoff at
+        // all, and issues ONE unconditional pulse.
+        //
+        //   2 attach lines => the channel works from here, so a zero-pulse reading
+        //                     inside the entry point really does mean "not entered"
+        //   1 attach line  => nothing is published even here; the channel is dead on
+        //                     this route and every pulse reading this session is void
+        if option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") == Some("usb2-live-outer-calibration") {
+            // stop_ms = 500 to match `usb2-live-soffn-count` exactly. The SOFFN
+            // sequence is the only one on this channel that ever produced extra
+            // attach lines, and it used 500; a 300 ms variant produced none, which
+            // may simply have been too short for the host to re-log the attach.
+            // Settle FIRST - a pulse issued before the wait produces no host line
+            // (measured). This is the outermost probe in the handoff, so it answers
+            // whether `init_usb2_gadget_handoff` is reached at all, which nothing
+            // inside the entry point can answer.
+            readout_keepalive_delay_ms(500);
+            ccs_pulse(500);
+        }
         #[cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)]
         // Keep the CLI's --no-core-reset differential effective for the
         // SuperSpeed handoff too.  Before this propagation the SS entry point
@@ -11054,6 +11547,49 @@ unsafe fn ccs_pulse(stop_ms: u64) {
     readout_keepalive_delay_ms(200);
 }
 
+/// Publish ONE predicate as ONE pulse. **This is the only readout encoding.**
+///
+/// The channel is DCTL Run/Stop cycling: every pulse makes the host print one
+/// more `new high-speed USB device` line, so
+///
+/// ```text
+/// attach lines - 1 (the boot's own attach) = the number of TRUE predicates,
+///                                            in source order
+/// ```
+///
+/// is the whole decoder, and it is the *same* decoder for every selector.
+///
+/// This function exists because the previous encoding was not uniform, and that
+/// is what made this project assign a meaning to a measurement and then retract
+/// it. Of the 49 readout selectors measured on 2026-09-26, 24 used a counted
+/// number of pulses, 18 used width-coded pulses, 7 emitted none, and **none**
+/// used the one-predicate-one-pulse form. Each encoding had to be decoded by
+/// reading its own implementation, so an off-by-one detail in that reading
+/// produced a confident wrong answer twice for SOFFN alone. Two specific
+/// hazards, both removed here:
+///
+/// * a leading `ccs_pulse(1_000)` **marker** made the count ambiguous - one
+///   boot attach plus two counted pulses and one boot attach plus a marker plus
+///   one counted pulse are the *same three lines* on the host;
+/// * width codes drift (`200/400/600/800 ms` measured as `270/415/416/789`).
+///
+/// So: fixed 300 ms, no marker, one call per predicate, order = source order.
+/// Never add a second encoding; if a predicate needs transmitting, give it its
+/// own `readout_bit()` call in the order it should be read.
+unsafe fn readout_bit(truth: bool) {
+    if truth {
+        // MUST use the no-readback gate. The post-Run/Stop readout block
+        // (`mod.rs:7298-8724`) runs after the host has started enumerating, and
+        // the plain `ccs_pulse` waits on the Run/Stop halt readback - which is
+        // exactly what stops pulses reaching the host from that point on
+        // (runs `336520.0` and `350817.0`: no pulses at all in the CCS
+        // timeline, while the same channel works fine before the attach).
+        // `ccs_pulse_no_readback` is the variant the source says to use
+        // "for any readout that must run at attach time".
+        unsafe { ccs_pulse_no_readback(300) };
+    }
+}
+
 /// The same CCS pulse, but through the *no-readback* Run/Stop gate.
 ///
 /// `ep0_signal_drop_pullup()` records the reason this exists
@@ -11095,17 +11631,32 @@ unsafe fn gate_cycle_publish(count: u32) {
     }
 }
 
+/// Publish a 4-bit word as four predicates, in bit order, with the uniform
+/// encoding: bit 0 first, then bit 1, and so on, each TRUE bit contributing one
+/// 300 ms pulse and each FALSE bit contributing nothing.
+///
+/// The decoder is the same one every other selector uses:
+/// `attach lines - 1 = number of TRUE bits`, read in order.
+///
+/// This used to emit a `1_000` ms marker followed by *width-coded* pulses
+/// (`200 + 200 * bit` for a set bit, `50` ms for a clear one). Two reasons it
+/// went: the marker made the total attach count ambiguous, and the widths are
+/// documented to drift (`200/400/600/800 ms` measured as `270/415/416/789`), so
+/// the decoder had to guess. The information carried is unchanged - four bits,
+/// in a fixed order - only the delivery is now the common one.
 unsafe fn publish_ccs_word(code: u32) {
-    unsafe {
-        ccs_pulse(1_000);
-        for bit in 0..4u64 {
-            let value = (code >> bit) & 1;
-            if value != 0 {
-                ccs_pulse(200 + 200 * bit);
-            } else {
-                ccs_pulse(50);
-            }
-        }
+    for bit in 0..4u32 {
+        unsafe { readout_bit((code >> bit) & 1 != 0) };
+    }
+}
+
+/// Eight-bit variant of [`publish_ccs_word`], for values that do not fit four
+/// bits (the writer-attribution line number). Same encoding rule - one pulse per
+/// SET bit, bit order from bit 0 - just twice as wide, so the decoder counts
+/// pulses the same way. Kept separate so the four-bit path is untouched.
+unsafe fn publish_ccs_word_byte(code: u32) {
+    for bit in 0..8u32 {
+        unsafe { readout_bit((code >> bit) & 1 != 0) };
     }
 }
 
@@ -12946,6 +13497,14 @@ pub fn poll() {
                 if kind == 8 {
                     // One extra attach line iff EP0's SETUP transfer is armed.
                     if unsafe { EP0_SETUP_ARMED } {
+                        unsafe { gate_cycle_publish(1) };
+                    }
+                }
+                if kind == 10 {
+                    // One extra attach line iff the endpoint epoch was published.
+                    // `gate_cycle_publish`, not `ccs_pulse`: this is the point where
+                    // the plain `ccs_pulse` stops reaching the host.
+                    if unsafe { ENDPOINTS_READY } {
                         unsafe { gate_cycle_publish(1) };
                     }
                 }

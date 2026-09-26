@@ -480,8 +480,29 @@ pub(super) unsafe fn read(offset: usize) -> u32 {
     unsafe { read_volatile(reg(offset)) }
 }
 
+/// Last `GCTL` write observed by `write()`, for the PRTCAPDIR overwrite hunt.
+///
+/// Packed as: bits 15:0 = the calling source line, bits 31:16 = the PRTCAPDIR
+/// field value that was written. `u32::MAX` means "no `GCTL` write yet".
+/// `#[track_caller]` on `write()` gives the *actual* call site, so one
+/// instrumented function names every writer without touching any of them.
+pub(crate) static GCTL_LAST_WRITER: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Count of `GCTL` writes, saturating. Distinguishes "never wrote" from
+/// "wrote zero" when checked alongside `GCTL_LAST_WRITER`.
+pub(crate) static GCTL_WRITE_COUNT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 #[inline]
+#[track_caller]
 pub(super) unsafe fn write(offset: usize, value: u32) {
+    if offset == GCTL {
+        use core::sync::atomic::Ordering;
+        let line = core::panic::Location::caller().line() as u32;
+        GCTL_LAST_WRITER.store((((value >> 12) & 0x3) << 16) | (line & 0xffff), Ordering::Relaxed);
+        let _ = GCTL_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
     unsafe { write_volatile(reg(offset), value) }
     // Match Linux's writel() ordering barrier.  Without a DSB the CPU can
     // reorder a subsequent read (e.g. a DALEPENA readback) ahead of the
