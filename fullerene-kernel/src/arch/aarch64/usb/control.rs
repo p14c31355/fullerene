@@ -138,6 +138,7 @@ pub(super) unsafe fn core_soft_reset(super_speed: bool) -> bool {
 
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 |= GUSB2PHYCFG_PHYSOFTRST;
+        mark_g2w_site(3001);
         write(GUSB2PHYCFG0, usb2);
         if super_speed {
             let mut usb3 = read(GUSB3PIPECTL0);
@@ -151,6 +152,7 @@ pub(super) unsafe fn core_soft_reset(super_speed: bool) -> bool {
         crate::timer::delay_ms(100);
 
         usb2 = read(GUSB2PHYCFG0) & !GUSB2PHYCFG_PHYSOFTRST;
+        mark_g2w_site(3002);
         write(GUSB2PHYCFG0, usb2);
         if super_speed {
             let mut usb3 = read(GUSB3PIPECTL0);
@@ -310,6 +312,7 @@ unsafe fn prepare_run_stop_device(is_on: bool) -> u32 {
         let saved_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
         if saved_config != 0 {
             usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+            mark_g2w_site(3003);
             write(GUSB2PHYCFG0, usb2);
         }
 
@@ -472,6 +475,7 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
         }
         if saved_config != 0 {
             let current = read(GUSB2PHYCFG0);
+            mark_g2w_site(3004);
             write(GUSB2PHYCFG0, current | saved_config);
         }
         complete
@@ -517,6 +521,7 @@ pub(super) unsafe fn run_stop_device_no_readback(is_on: bool) -> bool {
         let saved_config = prepare_run_stop_device(is_on);
         if saved_config != 0 {
             let current = read(GUSB2PHYCFG0);
+            mark_g2w_site(3005);
             write(GUSB2PHYCFG0, current | saved_config);
         }
         true

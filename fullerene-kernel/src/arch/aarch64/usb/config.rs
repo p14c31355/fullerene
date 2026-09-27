@@ -115,6 +115,7 @@ pub(super) unsafe fn enable_gadget_susphy() {
     unsafe {
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 |= GUSB2PHYCFG_SUSPHY;
+        mark_g2w_site(2001);
         write(GUSB2PHYCFG0, usb2);
 
         let mut usb3 = read(GUSB3PIPECTL0);
@@ -134,6 +135,7 @@ pub(super) unsafe fn enable_usb2_gadget_susphy() {
     unsafe {
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 |= GUSB2PHYCFG_SUSPHY;
+        mark_g2w_site(2002);
         write(GUSB2PHYCFG0, usb2);
     }
 }
@@ -482,6 +484,7 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
                 fullerene_aarch64_usb_u2_freeclk_clear,
                 fullerene_aarch64_usb_u2_freeclk_set
             )) {
+                mark_g2w_site(2003);
                 write(GUSB2PHYCFG0, usb2);
                 let readback = read(GUSB2PHYCFG0);
                 live_utmi_write(usb2, readback);
@@ -542,6 +545,7 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
             // value as an explicit diagnostic A/B as well.
             usb2 |= GUSB2PHYCFG_U2_FREECLK_EXISTS;
         }
+        mark_g2w_site(2004);
         write(GUSB2PHYCFG0, usb2);
         let readback = read(GUSB2PHYCFG0);
         live_utmi_write(usb2, readback);
@@ -563,6 +567,7 @@ pub(super) unsafe fn configure_usb2_phy_interface_pre_reset() {
             // the PHYIF/TRDTIM selection is absent when the DT mode is
             // UNKNOWN. Preserve the other interface bits exactly.
             usb2 |= GUSB2PHYCFG_SUSPHY;
+            mark_g2w_site(2005);
             write(GUSB2PHYCFG0, usb2);
             let readback = read(GUSB2PHYCFG0);
             live_utmi_write(usb2, readback);
@@ -594,6 +599,7 @@ pub(super) unsafe fn configure_usb2_phy_interface_pre_reset() {
         // configuration for revisions newer than 1.94a. Bramble's DWC31
         // revision is in that range.
         usb2 |= GUSB2PHYCFG_SUSPHY;
+        mark_g2w_site(2006);
         write(GUSB2PHYCFG0, usb2);
         let _ = read(GUSB2PHYCFG0);
     }

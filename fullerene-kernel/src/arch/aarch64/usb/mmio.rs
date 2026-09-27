@@ -475,9 +475,70 @@ pub(super) unsafe fn dep_reg(endpoint: usize, offset: usize) -> usize {
     DEP_BASE + endpoint * 0x10 + offset
 }
 
+/// The last value `read(GUSB2PHYCFG0)` returned, verbatim.
+///
+/// This exists to separate two explanations for `g2wsusphy` = FALSE that the
+/// write-side instrumentation cannot tell apart:
+///
+///   A. a site read the register with SUSPHY **set** and then wrote
+///      `value & !SUSPHY` - a real, deliberate clear; or
+///   B. a site read the register and got a value with SUSPHY **already clear**
+///      (stale read, wrong clock domain, whatever), then wrote that value back
+///      with a `& !ENBLSLPM` mask that never touched SUSPHY - nobody cleared
+///      anything, the bit simply was not there to begin with.
+///
+/// Compare this with `GUSB2PHYCFG_LAST_WRITER`'s SUSPHY bit:
+///   read has it + write lacks it  => A (an active clear)
+///   read lacks it + write lacks it => B (a read-modify-write of a stale value)
+///
+/// The write-side counters added earlier could not make this distinction and
+/// over-counted (see the ledger's withdrawal entry); this is the replacement.
+/// Which call site performed the last `GUSB2PHYCFG0` write.
+///
+/// `Location::caller()` through `#[inline]` recorded 0 for the line, and three
+/// proxy predicates ("latest read", "read before the write", "value lacks the
+/// bit") all failed to answer the question actually being asked. This is the
+/// last instrument available: every `write(GUSB2PHYCFG0, ...)` site carries an
+/// explicit integer id, recorded immediately before the write.
+///
+/// Ids: 1xxx = `mod.rs`, 2xxx = `config.rs`, 3xxx = `control.rs`, low digits =
+/// order of appearance in that file.
+pub(crate) static G2W_SITE: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// Record which call site is about to write `GUSB2PHYCFG0`.
 #[inline]
+pub(super) fn mark_g2w_site(id: u32) {
+    G2W_SITE.store(id, core::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) static GUSB2PHYCFG_LAST_READ: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Count of `read(GUSB2PHYCFG0)` calls, saturating.
+pub(crate) static GUSB2PHYCFG_READ_COUNT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// The value of `GUSB2PHYCFG_LAST_READ` **at the moment of the last write**.
+///
+/// `GUSB2PHYCFG_LAST_READ` on its own does not answer the A/B question: it is the
+/// *latest* read, which may have happened after the last write and therefore
+/// says nothing about what the writing site read. Copying it inside `write()`
+/// captures the read that actually preceded that write, which is the predicate
+/// the A/B distinction needs.
+pub(crate) static GUSB2PHYCFG_READ_BEFORE_LAST_WRITE: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+#[inline]
+#[track_caller]
 pub(super) unsafe fn read(offset: usize) -> u32 {
-    unsafe { read_volatile(reg(offset)) }
+    let value = unsafe { read_volatile(reg(offset)) };
+    if offset == GUSB2PHYCFG0 {
+        use core::sync::atomic::Ordering;
+        GUSB2PHYCFG_LAST_READ.store(value, Ordering::Relaxed);
+        let _ = GUSB2PHYCFG_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    value
 }
 
 /// Last `GCTL` write observed by `write()`, for the PRTCAPDIR overwrite hunt.
@@ -545,6 +606,8 @@ pub(super) unsafe fn write(offset: usize, value: u32) {
             flags |= 2;
         }
         GUSB2PHYCFG_LAST_WRITER.store((flags << 16) | (line & 0xffff), Ordering::Relaxed);
+        GUSB2PHYCFG_READ_BEFORE_LAST_WRITE
+            .store(GUSB2PHYCFG_LAST_READ.load(Ordering::Relaxed), Ordering::Relaxed);
         let _ = GUSB2PHYCFG_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
         if value & GUSB2PHYCFG_SUSPHY != 0 {
             let _ = GUSB2PHYCFG_SET_COUNT.fetch_add(1, Ordering::Relaxed);

@@ -1602,6 +1602,26 @@ unsafe fn capture_ss_state_snapshot() {
 /// programmed (dwc3_gadget_enable_irq(), gadget.c:2324-2343). Unknown names
 /// return 15 so a typo cannot masquerade as a valid zero word.
 unsafe fn usb2_live_word(word: &str) -> u32 {
+    // ---- Which GUSB2PHYCFG0 call site ran last? ----
+    // Explicit tags, because `Location::caller()` recorded 0 through `#[inline]`
+    // and every proxy predicate tried before this one answered a different
+    // question. Ids: 1xxx = mod.rs, 2xxx = config.rs, 3xxx = control.rs.
+    //
+    //   g2wtag-eq-<id>  : the last writer was exactly this id
+    //   g2wtag-ge-<id>  : the last writer's id is >= this (bisect within a file)
+    //   g2wtag-file     : 0 = none yet, 1 = mod.rs, 2 = config.rs, 3 = control.rs
+    if let Some(rest) = word.strip_prefix("g2wtag-eq-") {
+        let id: u32 = rest.parse().unwrap_or(u32::MAX);
+        return u32::from(G2W_SITE.load(core::sync::atomic::Ordering::Relaxed) == id);
+    }
+    if let Some(rest) = word.strip_prefix("g2wtag-ge-") {
+        let id: u32 = rest.parse().unwrap_or(u32::MAX);
+        let seen = G2W_SITE.load(core::sync::atomic::Ordering::Relaxed);
+        return u32::from(seen != 0 && seen >= id);
+    }
+    if word == "g2wtag-file" {
+        return G2W_SITE.load(core::sync::atomic::Ordering::Relaxed) / 1000;
+    }
     unsafe {
         let snpsid = read(GSNPSID);
         match word {
@@ -1882,6 +1902,42 @@ unsafe fn usb2_live_word(word: &str) -> u32 {
             //   g2wclr  = at least one write cleared SUSPHY
             // If set and clr are both 1 and susphy is 0, a clear provably ran
             // after the last set.
+            // ---- A vs B: was SUSPHY present in the last READ? ----
+            //   g2r_susphy  = the last read(GUSB2PHYCFG0) returned SUSPHY set
+            //   g2rknown    = a read was recorded at all (not u32::MAX)
+            // With g2wsusphy = FALSE:
+            //   g2r_susphy = TRUE  -> an active clear (A)
+            //   g2r_susphy = FALSE -> a read-modify-write of a value that was
+            //                        already missing the bit (B)
+            // The read that actually PRECEDED the last write. This is the
+            // predicate the A/B question needs; `g2r_susphy` alone is only the
+            // latest read and may postdate the write.
+            //   g2rw_susphy = TRUE  + g2wsusphy = FALSE -> an active clear (A)
+            //   g2rw_susphy = FALSE + g2wsusphy = FALSE -> a stale read was
+            //                                             written back (B)
+            "g2rw_susphy" => u32::from(
+                (unsafe {
+                    mmio::GUSB2PHYCFG_READ_BEFORE_LAST_WRITE.load(core::sync::atomic::Ordering::Relaxed)
+                } & mmio::GUSB2PHYCFG_SUSPHY)
+                    != 0,
+            ),
+            "g2rwknown" => u32::from(
+                unsafe {
+                    mmio::GUSB2PHYCFG_READ_BEFORE_LAST_WRITE.load(core::sync::atomic::Ordering::Relaxed)
+                } != u32::MAX,
+            ),
+            "g2r_susphy" => u32::from(
+                (unsafe { mmio::GUSB2PHYCFG_LAST_READ.load(core::sync::atomic::Ordering::Relaxed) }
+                    & mmio::GUSB2PHYCFG_SUSPHY)
+                    != 0,
+            ),
+            "g2rknown" => u32::from(
+                unsafe { mmio::GUSB2PHYCFG_LAST_READ.load(core::sync::atomic::Ordering::Relaxed) }
+                    != u32::MAX,
+            ),
+            "g2rge10" => u32::from(
+                unsafe { mmio::GUSB2PHYCFG_READ_COUNT.load(core::sync::atomic::Ordering::Relaxed) } >= 10,
+            ),
             "g2wset" => u32::from(unsafe { mmio::GUSB2PHYCFG_SET_COUNT.load(core::sync::atomic::Ordering::Relaxed) } >= 1),
             "g2wclr" => u32::from(unsafe { mmio::GUSB2PHYCFG_CLEAR_COUNT.load(core::sync::atomic::Ordering::Relaxed) } >= 1),
             // Saturation markers so "how many" is distinguishable from "at least
@@ -3423,6 +3479,7 @@ unsafe fn cache_invalidate(address: usize, length: usize) {
 unsafe fn restore_usb2_command_guard(saved_usb2_config: u32) {
     if saved_usb2_config != 0 {
         let usb2 = read(GUSB2PHYCFG0);
+        mark_g2w_site(1001);
         write(GUSB2PHYCFG0, usb2 | saved_usb2_config);
     }
 }
@@ -3457,6 +3514,7 @@ unsafe fn send_ep_command_result(
             saved_usb2_config = usb2 & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
             if saved_usb2_config != 0 {
                 usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+                mark_g2w_site(1002);
                 write(GUSB2PHYCFG0, usb2);
                 let _ = read(GUSB2PHYCFG0);
                 CMD_GUARD_ENGAGED = true;
@@ -5387,6 +5445,7 @@ unsafe fn process_event(raw: u32) {
                     // existing Run/Stop A/B so a reset-time PHY wake can be
                     // tested without changing the initial handoff.
                     let before = read(GUSB2PHYCFG0);
+                    mark_g2w_site(1003);
                     write(GUSB2PHYCFG0, before & !GUSB2PHYCFG_SUSPHY);
                     let after = read(GUSB2PHYCFG0);
                     trace_event(
@@ -6076,6 +6135,7 @@ unsafe fn prepare_usb2_suspend() -> bool {
         );
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 |= GUSB2PHYCFG_ENBLSLPM | GUSB2PHYCFG_SUSPHY;
+        mark_g2w_site(1004);
         write(GUSB2PHYCFG0, usb2);
         let _ = read(GUSB2PHYCFG0);
 
@@ -6287,6 +6347,7 @@ pub fn runtime_resume() -> bool {
         }
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        mark_g2w_site(1005);
         write(GUSB2PHYCFG0, usb2);
         let _ = read(GUSB2PHYCFG0);
         let _ = set_gsi_doorbell_blocked(false);
@@ -6461,6 +6522,7 @@ pub fn init_usb2_pullup_handoff() -> bool {
 
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        mark_g2w_site(1006);
         write(GUSB2PHYCFG0, usb2);
         let mut usb3 = read(GUSB3PIPECTL0);
         usb3 |= GUSB3PIPECTL_SUSPHY;
@@ -6531,6 +6593,7 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
         // required before DCTL.Run/Stop can produce a new pull-up.
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        mark_g2w_site(1007);
         write(GUSB2PHYCFG0, usb2);
         let _ = read(GUSB2PHYCFG0);
         let mut usb3 = read(GUSB3PIPECTL0);
@@ -6926,6 +6989,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     {
         configure_dwc3_device_mode();
         let usb2 = read(GUSB2PHYCFG0);
+        mark_g2w_site(1008);
         write(GUSB2PHYCFG0, usb2 & !GUSB2PHYCFG_ENBLSLPM);
         let guctl1 = read(GUCTL1);
         write(GUCTL1, guctl1 & !GUCTL1_L1_SUSP_THRLD_EN_FOR_HOST);
@@ -7077,6 +7141,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         update_dwc3_ref_clock();
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        mark_g2w_site(1009);
         write(GUSB2PHYCFG0, usb2);
         let mut usb3 = read(GUSB3PIPECTL0);
         usb3 |= GUSB3PIPECTL_SUSPHY;
@@ -7200,6 +7265,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // source, so it also tells us whether the read path returns anything at
         // all.
         SUSPHY_RAW_BEFORE = usb2;
+        mark_g2w_site(1010);
         write(GUSB2PHYCFG0, usb2 | GUSB2PHYCFG_SUSPHY);
         // Line 7158 already read the register back and threw the value away.
         // Keep it instead: if the readback does not show SUSPHY set immediately
@@ -7222,6 +7288,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // clears them transiently around endpoint commands; keep this exact
         // pre-reset boundary as an explicit USB2 A/B.
         let usb2 = read(GUSB2PHYCFG0);
+        mark_g2w_site(1011);
         write(GUSB2PHYCFG0, usb2 & !GUSB2PHYCFG_ENBLSLPM);
         let guctl1 = read(GUCTL1);
         write(GUCTL1, guctl1 & !GUCTL1_L1_SUSP_THRLD_EN_FOR_HOST);
@@ -7765,6 +7832,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             log_puts("usb gadget handoff: clearing USB2 SUSPHY after Run/Stop\n");
             let usb2 = unsafe { read(GUSB2PHYCFG0) & !GUSB2PHYCFG_SUSPHY };
             unsafe {
+                mark_g2w_site(1012);
                 write(GUSB2PHYCFG0, usb2);
                 let _ = read(GUSB2PHYCFG0);
             }
@@ -9534,6 +9602,7 @@ pub fn init_usb2_gadget_handoff() -> bool {
         qscratch_set(QSCRATCH_GENERAL_CFG, QSCRATCH_GENERAL_CFG_XHCI_REV);
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        mark_g2w_site(1013);
         write(GUSB2PHYCFG0, usb2);
         let mut usb3 = read(GUSB3PIPECTL0);
         usb3 |= GUSB3PIPECTL_SUSPHY;
@@ -10185,6 +10254,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                     let _ = read(GUSB3PIPECTL0);
                     let mut usb2 = read(GUSB2PHYCFG0);
                     usb2 |= GUSB2PHYCFG_SUSPHY;
+                    mark_g2w_site(1014);
                     write(GUSB2PHYCFG0, usb2);
                     let _ = read(GUSB2PHYCFG0);
                     if !super::platform::bramble::pulse_usb2_phy_reset() {
@@ -10243,6 +10313,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
                     configure_usb2_phy_interface();
                     let mut usb2 = read(GUSB2PHYCFG0);
                     usb2 |= GUSB2PHYCFG_SUSPHY;
+                    mark_g2w_site(1015);
                     write(GUSB2PHYCFG0, usb2);
                     let _ = read(GUSB2PHYCFG0);
                 }
@@ -10453,6 +10524,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             // later, after SMMU setup; this opt-in isolates only that order.
             let mut usb2 = read(GUSB2PHYCFG0);
             usb2 &= !GUSB2PHYCFG_ENBLSLPM;
+            mark_g2w_site(1016);
             write(GUSB2PHYCFG0, usb2);
             let guctl1 = read(GUCTL1);
             write(GUCTL1, guctl1 & !GUCTL1_L1_SUSP_THRLD_EN_FOR_HOST);
@@ -10638,6 +10710,7 @@ fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bo
             // restores this state afterward.
             usb2 |= GUSB2PHYCFG_SUSPHY;
         }
+        mark_g2w_site(1017);
         write(GUSB2PHYCFG0, usb2);
         // Match dwc3_dis_sleep_mode(): the host-side L1 threshold helper is
         // independent of the USB2 PHY sleep bit and can survive a Fastboot
@@ -13566,6 +13639,7 @@ pub fn phy_retry_after_link() -> bool {
         // Clear SUSPHY and ENBLSLPM after PHY re-init
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
+        mark_g2w_site(1018);
         write(GUSB2PHYCFG0, usb2);
         true
     }
