@@ -5548,6 +5548,22 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
             "1".to_owned(),
         ));
     }
+    // Push the arm-blip A/B straight into the child build environment.
+    //
+    // `--arm-blip` is forwarded as `--usb-arm-blip` on the child `flasks build`
+    // command line (see `arguments.push` below), which is the same route every
+    // other A/B takes. Measured, that route left
+    // `effective_build_child_environment: <none>` in the rundir and produced
+    // zero blips on the host - i.e. the image was the baseline artifact and
+    // `arm_blip_queue`'s `option_env!` returned early. Pushing it here as well
+    // removes the CLI round-trip from the experiment, so the flag cannot be
+    // silently dropped between the two processes.
+    if args.arm_blip {
+        envs.push((
+            "FULLERENE_AARCH64_USB_ARM_BLIP".to_owned(),
+            "1".to_owned(),
+        ));
+    }
     if args.hsphy_eud_device_mode {
         envs.push((
             "FULLERENE_AARCH64_USB_HSPHY_EUD_DEVICE_MODE".to_owned(),

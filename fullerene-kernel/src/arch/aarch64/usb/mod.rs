@@ -750,6 +750,20 @@ static mut HANDOFF_PROGRESS: u8 = 0;
 /// showed four pulses produce a single attach line (see the retraction entry in the
 /// skill). Everything finer has to be bisected, one bit and one run at a time.
 static mut HANDOFF_ENTERED: bool = false;
+/// Set at the one place the direct Fastboot-reuse path asserts
+/// `GUSB2PHYCFG0.SUSPHY` (mod.rs:7139). `HANDOFF_MILESTONE >= 1` proves execution
+/// reaches 7359, which is *after* 7139, so this bit should be TRUE - if it is
+/// FALSE the milestone reading and the register reading disagree.
+static mut SUSPHY_SET_IN_HANDOFF: bool = false;
+/// Raw `GUSB2PHYCFG0` as read *before* the SUSPHY write at the handoff site.
+static mut SUSPHY_RAW_BEFORE: u32 = 0;
+/// Raw `GUSB2PHYCFG0` as read back *immediately after* that write. If this does
+/// not have SUSPHY set, the register's readback path is the problem.
+static mut SUSPHY_RAW_AFTER: u32 = 0;
+/// Set when `send_ep_command_result` actually clears `SUSPHY`/`ENBLSLPM` for a
+/// command, i.e. when `saved_usb2_config != 0`. If this is FALSE the guard never
+/// engaged and there was never anything for the restore to put back.
+static mut CMD_GUARD_ENGAGED: bool = false;
 
 /// Record the last handoff milestone reached. Unconditional and cheap - only
 /// `usb2-live-handoff-progress` ever publishes the value, so for every other build
@@ -804,6 +818,11 @@ static mut U0_BLIP_PENDING: u32 = 0;
 /// emitted synchronously may be invisible to usbmon. After this deadline the
 /// categorical marker is emitted even if the core never reports U0.
 static mut ARM_BLIP_FORCE_DEADLINE: u64 = 0;
+/// Set once `arm_blip_queue` passes its compile-time gate. Distinguishes "the
+/// A/B was not compiled in" from "it was compiled in but never called".
+static mut ARM_BLIP_QUEUED: bool = false;
+/// Set once `runstop_blips` actually toggled Run/Stop for this A/B.
+static mut ARM_BLIP_DONE: bool = false;
 // Set by link_on_sample (called from poll) once the core's own link FSM
 // reads U0 (USBLNKST == 0 on a running, unhalted core), for the
 // "lnk-ever-on" gate: distinguishes a persistent link-FSM desync from a
@@ -1664,6 +1683,296 @@ unsafe fn usb2_live_word(word: &str) -> u32 {
                 let v = mmio::GCTL_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed);
                 if v == u32::MAX { 0xff } else { (v >> 8) & 0xff }
             }
+            // Four-bit halves of the writer line. The byte-wide `gctlline` emits
+            // up to eight pulses, and each pulse is a host re-attach - which
+            // breaks the "exactly one baseline attach" validity rule that all
+            // the other selectors rely on (three consecutive 8-bit runs were
+            // rejected on that rule). A nibble is at most four pulses, so the
+            // existing rule applies unchanged. The two halves come from
+            // different boots, so this is only sound if the write sequence is
+            // deterministic - take each half twice and cross-check.
+            // Sentinel: 0xf means "no GCTL write yet" in both halves.
+            "gctllinelo" => {
+                let v = mmio::GCTL_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed);
+                if v == u32::MAX { 0xf } else { v & 0xf }
+            }
+            "gctllinehi" => {
+                let v = mmio::GCTL_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed);
+                if v == u32::MAX { 0xf } else { (v >> 4) & 0xf }
+            }
+            // Same-boot PRTCAPDIR transition test. One pulse per predicate, so
+            // the pulse count is the count of true statements:
+            //   bit0: the early sample (right after the DEVICE write) was DEVICE
+            //   bit1: the current field value is DEVICE  (i.e. it did NOT revert)
+            //   bit2: the two differ            (the hardware changed it on its own)
+            //   bit3: the early sample was never taken
+            "prtcapx" => {
+                let early = config::EARLY_PRTCAPDIR.load(core::sync::atomic::Ordering::Relaxed);
+                let now = (read(GCTL) & GCTL_PRTCAPDIR_MASK) >> 12;
+                let early_dev = early == 2;
+                let now_dev = now == 2;
+                let differs = early != u32::MAX && early != now;
+                u32::from(early_dev)
+                    | (u32::from(now_dev) << 1)
+                    | (u32::from(differs) << 2)
+                    | (u32::from(early == u32::MAX) << 3)
+            }
+            // Single-predicate variants of `prtcapx`, one bit each, so a run
+            // answers exactly one yes/no question (the house rule). `prtcapx`
+            // packed four predicates and returned two true, which left three
+            // possible combinations - a word that cannot be interpreted is not
+            // a measurement.
+            //   prtcapx0: the DEVICE write was reached and captured DEVICE
+            //   prtcapx1: the field is DEVICE *now*
+            //   prtcapx2: early and now differ (the hardware changed it)
+            //   prtcapx3: the early sample was never taken
+            // Phase-timing ladder: "the readout happens this many ms after the
+            // DEVICE-mode write". One predicate per run, per the house rule -
+            // `dtim16` = "delta < 16 ms", `dtim64` = "< 64 ms", `dtim256` =
+            // "< 256 ms". A true reading is one pulse. Together they bracket how
+            // long the handoff spends before the controller is running, inside
+            // the host's ~588 ms descriptor-read window.
+            // The other leg: how long after the *pull-up* (i.e. after the handset
+            // presented itself, which is when the host starts its enumeration
+            // attempt) does the DEVICE-mode write happen? One predicate per run:
+            // `dtimr64` = "pull-up -> DEVICE write < 64 ms", `dtimr256` = "< 256 ms",
+            // `dtimr1000` = "< 1000 ms".
+            // Sanity predicate for the leg above. If the pull-up tick is *later*
+            // than the DEVICE write tick - i.e. the latch fired on a pull-up that
+            // happens after configuration - then `wrapping_sub` produces a huge
+            // u32 and every `dtimr*` bound reads FALSE for the wrong reason.
+            // "pullup before write" must be TRUE for any dtimr* reading to mean
+            // anything.
+            "dtimr_ok" => {
+                let start = control::PULLUP_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                let early = config::EARLY_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                u32::from(
+                    start != u32::MAX && early != u32::MAX && start <= early,
+                )
+            }
+            // Same guard for the write->readout leg.
+            "dtim_ok" => {
+                let early = config::EARLY_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                let freq = crate::timer::frequency();
+                if early == u32::MAX || freq == 0 {
+                    0
+                } else {
+                    let now = (crate::timer::counter() / (freq / 1000) as u64) as u32;
+                    u32::from(early <= now)
+                }
+            }
+            // The leg the earlier attempt got wrong: handoff entry -> DEVICE write.
+            // Guarded by `dtimh_ok` (entry <= write) so an underflow cannot be
+            // mistaken for a long interval again.
+            "dtimh64" | "dtimh256" | "dtimh1000" => {
+                let start = HANDOFF_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                let early = config::EARLY_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                let limit = match word {
+                    "dtimh64" => 64u32,
+                    "dtimh256" => 256,
+                    _ => 1000,
+                };
+                if start == u32::MAX || early == u32::MAX || start > early {
+                    0
+                } else {
+                    u32::from(early.wrapping_sub(start) < limit)
+                }
+            }
+            // Sign guard for the leg above: entry latch exists, write latch exists,
+            // and entry <= write. Must be TRUE for any dtimh* reading to mean anything.
+            // The real blocker candidate: `try_arm_setup` early-returns forever
+            // unless `ENDPOINTS_READY` is set, and the ledger (written when it had
+            // far fewer assignment sites) says it is only set in the Connect Done
+            // branch - which never runs with GEVNTCOUNT0 == 0. There are now many
+            // assignment sites including several in the deferred readout block, so
+            // *measure* whether any of them ran rather than trusting the note.
+            // One predicate per run, counted as bits:
+            //   bit0 = ENDPOINTS_READY          bit1 = EP0_SETUP_ARMED
+            //   bit2 = EP0_STATE == Setup       bit3 = DALEPENA bit0
+            "endpoints" => {
+                u32::from(ENDPOINTS_READY)
+                    | (u32::from(EP0_SETUP_ARMED) << 1)
+                    | (u32::from(EP0_STATE == Ep0State::Setup) << 2)
+                    | (u32::from(read(DALEPENA) & 1 != 0) << 3)
+            }
+            // Branch-free probes: report what the selector string actually IS at
+            // the moment the readout runs. `word == "armd"` did not fire even
+            // though the code sits inside the right block and other words resolve
+            // fine, so read the string itself instead of reasoning about a branch.
+            //   word_len  = byte length of the suffix (saturating at 15)
+            //   word_b0   = first byte & 0xf
+            //   word_b1   = second byte & 0xf
+            // For "armd": len 4, b0 = 'a' (0x61) & 0xf = 1, b1 = 'r' (0x72) & 0xf = 2.
+            // NOTE: these take the suffix as an argument, so they must be evaluated
+            // in the same scope `word` is bound in - hence they are plain matches
+            // here rather than a helper that re-derives the selector.
+            "word_len" => (word.len().min(15)) as u32,
+            "word_b0" => u32::from(word.as_bytes().first().copied().unwrap_or(0) & 0xf),
+            "word_b1" => u32::from(word.as_bytes().get(1).copied().unwrap_or(0) & 0xf),
+            "armd" => DEFERRED_ARM_RESULT.load(core::sync::atomic::Ordering::Relaxed) & 1,
+            "armd_res" => (DEFERRED_ARM_RESULT.load(core::sync::atomic::Ordering::Relaxed) >> 1) & 1,
+            "ep_ready" => u32::from(ENDPOINTS_READY),
+            "ep_armed" => u32::from(EP0_SETUP_ARMED),
+            "ep_state" => u32::from(EP0_STATE == Ep0State::Setup),
+            "ep_dalep" => u32::from(read(DALEPENA) & 1 != 0),
+            // Is the arm-blip A/B actually compiled into this image?
+            //
+            // The rundir reports `effective_build_child_environment:
+            // FULLERENE_AARCH64_USB_ARM_BLIP=1`, yet `arm_blip_queue` produced
+            // no host blip even with a 75 s hold (well past its 30 s fallback).
+            // `arm_blip_queue` gates on `option_env!("FULLERENE_USB_ARM_BLIP")`,
+            // a COMPILE-TIME constant, so the child environment reaching the
+            // build script is not the same claim as that constant being
+            // `Some("1")` in the compiled kernel. Publish the constant itself.
+            "blipenv" => u32::from(option_env!("FULLERENE_USB_ARM_BLIP").is_some()),
+            // Did a SETUP packet actually arrive? `EP0_SETUP_ARMED` is cleared
+            // by the EP0 XferComplete handler when the armed transfer is
+            // *consumed* (mod.rs:5468-5479), so its false value at readout is
+            // the signature of a completed transfer, not a missing one. These
+            // two words test the thing that actually matters: whether the host's
+            // SETUP reached the device at all.
+            "ep0seen" => u32::from(ep0_setup_packet_seen()),
+            "setupdr" => u32::from(TRACE_HARVEST_SETUP > 0),
+            // Which arm window is compiled in? `mod.rs:9177-9188` picks
+            // 10_000 / 5_000 / 400 ms from cfg!()s, and the A/B that widened it
+            // (`--usb2-long-setup-arm`) produced an identical host failure. That
+            // only refutes the window if the window actually changed, so publish
+            // the compiled-in selection itself rather than inferring it from
+            // `effective_build_child_environment`, which records only the
+            // harness process's env and never the `cargo_envs` this flag rides.
+            "armwin_long" => u32::from(cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_long_setup_arm)),
+            // Which SUSPHY A/B is compiled in? There are TWO env names and two
+            // cfgs (build.rs:1100-1105):
+            //   ..._USB2_SUSPHY        -> cfg(...usb2_susphy)         (--usb2-susphy)
+            //   ..._USB2_SOURCE_SUSPHY -> cfg(...usb2_source_susphy)  (--usb2-source-susphy)
+            // SUSPHY is SET in exactly two places (mod.rs:7116 behind
+            // usb2_source_susphy, mod.rs:10522 inside init_with_super_speed)
+            // and CLEARED in four (5301, 7665 A/Bs; 9418 behind
+            // not(handoff_probe); 13450 unreachable unless the link reaches U0).
+            // Measured: `susphy` reads 0 even WITH --usb2-source-susphy, so
+            // publish which cfg is actually compiled in rather than assuming.
+            "cfgsus" => u32::from(cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_susphy)),
+            // The two halves of the SUSPHY contradiction, each one bit:
+            //   atsusphy = line 7139 asserted GUSB2PHYCFG0.SUSPHY
+            //   guardeng = send_ep_command_result actually cleared it for a command
+            // ge-1 = TRUE says the milestone at 7359 was reached (after 7139) while
+            // `susphy` reads 0; these two bits separate "the guard never engaged"
+            // from "7139 never ran".
+            // Value read back from GUSB2PHYCFG0 *immediately after* writing
+            // SUSPHY - not at the post-run readout. If this is 0 while the
+            // post-run `susphy` is also 0, the readback path is broken rather
+            // than the bit being cleared later.
+            "atsusphy" => u32::from(unsafe { SUSPHY_SET_IN_HANDOFF }),
+            "rawbef" => u32::from((unsafe { SUSPHY_RAW_BEFORE } & GUSB2PHYCFG_SUSPHY) != 0),
+            // ---- Who wrote GUSB2PHYCFG0 last? ----
+            // `write()` is `#[track_caller]` and records the calling source line
+            // plus the SUSPHY/ENBLSLPM bits of the written value for this
+            // register, the same way GCTL_LAST_WRITER does for GCTL. One
+            // instrumented function names every writer without touching any of
+            // them, which is what the four refutations of the read-only
+            // exclusion list were asking for.
+            //
+            //   g2wsusphy = the LAST write had SUSPHY set
+            //   g2wenbl   = the LAST write had ENBLSLPM set
+            //   g2wline_ge_<k> = that write's source line is >= k (bisect)
+            //   g2wcount_ge_<k> = at least k writes to the register happened
+            "g2wsusphy" => u32::from(unsafe { mmio::GUSB2PHYCFG_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed) } >> 16 & 1 != 0),
+            // Counted behaviour, independent of the (broken) line readback:
+            //   g2wset  = at least one write set SUSPHY
+            //   g2wclr  = at least one write cleared SUSPHY
+            // If set and clr are both 1 and susphy is 0, a clear provably ran
+            // after the last set.
+            "g2wset" => u32::from(unsafe { mmio::GUSB2PHYCFG_SET_COUNT.load(core::sync::atomic::Ordering::Relaxed) } >= 1),
+            "g2wclr" => u32::from(unsafe { mmio::GUSB2PHYCFG_CLEAR_COUNT.load(core::sync::atomic::Ordering::Relaxed) } >= 1),
+            // Saturation markers so "how many" is distinguishable from "at least
+            // one" without a multi-bit readout.
+            "g2wclr10" => u32::from(unsafe { mmio::GUSB2PHYCFG_CLEAR_COUNT.load(core::sync::atomic::Ordering::Relaxed) } >= 10),
+            "g2wclr100" => u32::from(unsafe { mmio::GUSB2PHYCFG_CLEAR_COUNT.load(core::sync::atomic::Ordering::Relaxed) } >= 100),
+            "g2wenbl" => u32::from(unsafe { mmio::GUSB2PHYCFG_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed) } >> 17 & 1 != 0),
+            "rawaft" => u32::from((unsafe { SUSPHY_RAW_AFTER } & GUSB2PHYCFG_SUSPHY) != 0),
+            // Low nibble of the raw readback, so a non-zero raw value that
+            // happens to lack the SUSPHY bit is still distinguishable from an
+            // all-zero readback. Multi-bit: pulse count is the popcount, so read
+            // it as "0 = nothing came back" only.
+            "rawbeflo" => (unsafe { SUSPHY_RAW_BEFORE } & 0xf),
+            "rawaftlo" => (unsafe { SUSPHY_RAW_AFTER } & 0xf),
+            "guardeng" => u32::from(unsafe { CMD_GUARD_ENGAGED }),
+            "cfgsus2" => u32::from(cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_susphy)),
+            "armwin_ext" => u32::from(cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_extended_setup_arm)),
+            // Did `arm_blip_queue` ever reach the point after the gate?
+            "blipq" => u32::from(ARM_BLIP_QUEUED),
+            // Was a blip ever emitted?
+            "blipdone" => u32::from(ARM_BLIP_DONE),
+            "dtimh_ok" => {
+                let start = HANDOFF_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                let early = config::EARLY_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                u32::from(start != u32::MAX && early != u32::MAX && start <= early)
+            }
+            "dtimr64" | "dtimr256" | "dtimr1000" => {
+                let start = control::PULLUP_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                let early = config::EARLY_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                let limit = match word {
+                    "dtimr64" => 64u32,
+                    "dtimr256" => 256,
+                    _ => 1000,
+                };
+                if start == u32::MAX || early == u32::MAX {
+                    0
+                } else {
+                    u32::from(early.wrapping_sub(start) < limit)
+                }
+            }
+            "dtim16" | "dtim64" | "dtim256" => {
+                let early = config::EARLY_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+                let now = if crate::timer::frequency() == 0 {
+                    u32::MAX
+                } else {
+                    (crate::timer::counter() / (crate::timer::frequency() / 1000) as u64) as u32
+                };
+                let limit = match word {
+                    "dtim16" => 16u32,
+                    "dtim64" => 64,
+                    _ => 256,
+                };
+                if early == u32::MAX || now == u32::MAX {
+                    0
+                } else {
+                    u32::from(now.wrapping_sub(early) < limit)
+                }
+            }
+            "prtcapx0" => {
+                let e = config::EARLY_PRTCAPDIR.load(core::sync::atomic::Ordering::Relaxed);
+                u32::from(e == 2)
+            }
+            "prtcapx1" => u32::from(((read(GCTL) & GCTL_PRTCAPDIR_MASK) >> 12) == 2),
+            "prtcapx2" => {
+                let e = config::EARLY_PRTCAPDIR.load(core::sync::atomic::Ordering::Relaxed);
+                let n = (read(GCTL) & GCTL_PRTCAPDIR_MASK) >> 12;
+                u32::from(e != u32::MAX && e != n)
+            }
+            "prtcapx3" => {
+                let e = config::EARLY_PRTCAPDIR.load(core::sync::atomic::Ordering::Relaxed);
+                u32::from(e == u32::MAX)
+            }
+            // Writer identity AND the write count in ONE four-bit word, so a
+            // single valid run is self-contained.
+            //
+            // The nibble split above assumed the last GCTL writer's line is the
+            // same on every boot, and it is not: `gctllinelo` read 0x1 while
+            // `gctllinehi` read 0x0, and no write site has low byte 0x01. Both
+            // runs were valid, so both readings are real - the line varies.
+            // Combining halves from different boots is therefore unsound, and
+            // this word exists to stop doing it.
+            //
+            // Layout: bits 1:0 = (line & 0xf), bits 3:2 = the writer count saturating
+            // at 3. Read it as: how many GCTL writes happened, and what does the
+            // most recent one's line look like, *in the same boot*.
+            "gctlwho" => {
+                let v = mmio::GCTL_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed);
+                let n = mmio::GCTL_WRITE_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                let lo = if v == u32::MAX { 0xf } else { v & 0xf };
+                (lo & 0x3) | ((n.min(3) & 0x3) << 2)
+            }
             // Saturating GCTL write counter, low nibble.
             // Byte-wide so a count above 15 is distinguishable, and so the same
             // readout path as `gctlline` is exercised (a control for whether the
@@ -1778,6 +2087,55 @@ pub fn utmi_readout_code(selector: &str) -> u32 {
             .strip_prefix("park-")
             .or_else(|| rest.strip_prefix("blip-"))
             .unwrap_or(rest);
+        // The `ccs-` transport prefix is part of the selector, not the word name.
+        // Without this strip, `usb2-live-ccs-armd` arrives as `ccs-armd`, matches
+        // no arm in `usb2_live_word`'s match, and falls through to the default -
+        // which is why every word added here silently published a constant while
+        // the readout block at `mod.rs:9104` (which *does* strip "usb2-live-ccs-")
+        // was never reached. Measured: `word_len` published 1, not 8.
+        let word = word.strip_prefix("ccs-").unwrap_or(word);
+        // A/B: arm EP0 synchronously here, in the scope that actually executes.
+        //
+        // An earlier attempt put this gate in the readout block's
+        // `strip_prefix("usb2-live-ccs-")` scope, which is *dead* - `usb2-live-`
+        // above matches first, so that branch (and its `usb2_live_word(word)`
+        // call at ~9104) is never reached. Measured: the gate never fired and the
+        // log marker stayed at zero. This is the live scope; the same `word` that
+        // `usb2_live_word` receives is the one tested here.
+        //
+        // Rationale for the arm itself: on valid plain-profile runs
+        // `ENDPOINTS_READY` is true and `EP0_STATE == Setup`, yet
+        // `EP0_SETUP_ARMED` is false - every `try_arm_setup` guard is false, so the
+        // function would proceed if called, and none of its sixteen call sites is
+        // in the handoff path. Arming here removes the dependence on
+        // poll()/timer-IRQ timing beating the host's first SETUP token.
+        if word == "armd" {
+            let armed = unsafe { try_arm_setup() };
+            DEFERRED_ARM_RESULT.store(
+                1 | (u32::from(armed) << 1),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            log_hex("usb deferred: arm attempted=", u64::from(armed));
+        }
+        // Read the arm result at the one point this profile is known to reach.
+        //
+        // `arm_blip_queue` is called only from `main.rs:930/950` (the normal
+        // handoff entry) and `usb_probe.rs:2826` (behind `gadget_ready`). The
+        // `--direct-handoff` profile reaches neither, which is why `blipq`
+        // published FALSE while `blipenv` published TRUE - the A/B is compiled
+        // in but never queued. Call it here, gated on the selector so ordinary
+        // readouts are untouched:
+        //
+        //   --utmi-postrun-readout usb2-live-ccs-blipq    -> queue reached?
+        //   --utmi-postrun-readout usb2-live-ccs-blipdone -> blip emitted?
+        //
+        // `arm_blip_queue` ends in `runstop_blips`, which toggles Run/Stop, and
+        // handoff-path Run/Stop is measured destructive to the attach. Read
+        // `blipq`/`blipdone` together with the attach count, not the attach
+        // count alone.
+        if word == "blipq" || word == "blipdone" {
+            unsafe { arm_blip_queue() };
+        }
         return unsafe { usb2_live_word(word) };
     }
     if selector.starts_with("ss-") {
@@ -2326,6 +2684,29 @@ pub fn probe_ep0_progress() -> bool {
 /// Publish that the normal Bramble entry path owns a live early USB gadget.
 /// UFS uses this as a narrow cooperative-polling hook while its bounded
 /// controller waits run before the main USB loop is reached.
+/// Millisecond timestamp of the *handoff entry*. Provably earlier than the
+/// DEVICE-mode write, so `dtimh*` cannot underflow the way `dtimr*` did.
+/// Did the deferred-site arm run this boot, and did it report success?
+/// Packed: bit0 = called, bit1 = returned true. Published over CCS because
+/// `trace_event` writes to the retained `.usb_trace` region, which the harness
+/// does not export into the run directory.
+pub(crate) static DEFERRED_ARM_RESULT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+pub(crate) static HANDOFF_TICK_MS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Shared millisecond counter for the timing latches. `u32::MAX` when CNTFRQ is
+/// unset, so callers can treat it as "unavailable" rather than as a time.
+pub(crate) fn now_ms_for_timing() -> u32 {
+    let freq = super::timer::frequency();
+    if freq == 0 {
+        u32::MAX
+    } else {
+        (super::timer::counter() / (freq / 1000) as u64) as u32
+    }
+}
+
 pub fn set_early_handoff_active(active: bool) {
     unsafe {
         EARLY_HANDOFF_ACTIVE = active;
@@ -3025,6 +3406,27 @@ unsafe fn cache_invalidate(address: usize, length: usize) {
     unsafe { core::arch::asm!("dsb sy", options(nostack)) };
 }
 
+/// Restore the `GUSB2PHYCFG0` bits that `send_ep_command_result` cleared for the
+/// duration of an endpoint command.
+///
+/// Linux performs this restore immediately before `return` in
+/// `dwc3_send_gadget_ep_cmd()` (`gadget.c:501-503`), so it runs on EVERY exit -
+/// success, timeout and error alike. Fullerene had it on the timeout path only,
+/// which left `SUSPHY` and `ENBLSLPM` cleared after the *successful* endpoint
+/// commands the handoff actually issues. Measured: `GUSB2PHYCFG0.SUSPHY` read 0
+/// at the post-run readout, after all EP0 traffic had finished - and the source
+/// order in `init_usb2_gadget_reuse_fastboot_ep0` sets it at 7122, after every
+/// other writer. One helper for both exits, so the two paths cannot drift apart
+/// again the way they did between the original success-only bug and today's
+/// timeout-only fix.
+#[inline]
+unsafe fn restore_usb2_command_guard(saved_usb2_config: u32) {
+    if saved_usb2_config != 0 {
+        let usb2 = read(GUSB2PHYCFG0);
+        write(GUSB2PHYCFG0, usb2 | saved_usb2_config);
+    }
+}
+
 unsafe fn send_ep_command_result(
     endpoint: usize,
     command: u32,
@@ -3057,6 +3459,7 @@ unsafe fn send_ep_command_result(
                 usb2 &= !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
                 write(GUSB2PHYCFG0, usb2);
                 let _ = read(GUSB2PHYCFG0);
+                CMD_GUARD_ENGAGED = true;
             }
         }
         // The DWC3 register names are counter-intuitive: PAR2 is at +0x00,
@@ -3114,16 +3517,27 @@ unsafe fn send_ep_command_result(
                     SETUP_ARM_LAST_COMMAND = status;
                 }
             }
-            if saved_usb2_config != 0 {
-                unsafe {
-                    let usb2 = read(GUSB2PHYCFG0);
-                    write(GUSB2PHYCFG0, usb2 | saved_usb2_config);
-                }
-            }
+            restore_usb2_command_guard(saved_usb2_config);
             return success.then_some(resource_index);
         }
         unsafe { core::arch::asm!("nop", options(nomem, nostack, preserves_flags)) };
     }
+    // Restore on the TIMEOUT path too.
+    //
+    // Linux puts this restore immediately before `return` in
+    // `dwc3_send_gadget_ep_cmd()` (`gadget.c:501-503`), i.e. on EVERY exit -
+    // timeout, error and success alike. Fullerene had it inside the success
+    // branch only, so a timed-out endpoint command left GUSB2PHYCFG with
+    // SUSPHY and ENBLSLPM still cleared. Measured: the `susphy` CCS word reads
+    // 0 at the post-run readout, after all EP0 traffic has finished, which is
+    // exactly this bug showing itself.
+    //
+    // The DWC3 programming guide (3.30a / 3.31a section 3.2.2) requires both
+    // bits clear *while issuing* the command and restored afterwards; leaving
+    // SUSPHY clear parks the USB2 PHY in its suspend configuration, where the
+    // parallel receive path can stop - a candidate mechanism for a device that
+    // attaches and then receives nothing.
+    restore_usb2_command_guard(saved_usb2_config);
     trace_event(
         TRACE_EP_COMMAND_TIMEOUT,
         command,
@@ -3135,12 +3549,6 @@ unsafe fn send_ep_command_result(
     if endpoint == 0 && command & 0x0f == DEPCMD_STARTTRANSFER {
         unsafe {
             SETUP_ARM_LAST_COMMAND = 0x8000_0000;
-        }
-    }
-    if saved_usb2_config != 0 {
-        unsafe {
-            let usb2 = read(GUSB2PHYCFG0);
-            write(GUSB2PHYCFG0, usb2 | saved_usb2_config);
         }
     }
     log_puts("usb: DWC3 endpoint command timeout\n");
@@ -6267,6 +6675,12 @@ unsafe fn set_direct_usb2_vbus_override() {
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     HANDOFF_ENTERED = true;
+    // Timing latch at the handoff entry. This boundary is *provably earlier*
+    // than the DEVICE-mode write, unlike `run_stop_device_no_readback` (which
+    // runs after it and whose `wrapping_sub` therefore underflowed and made the
+    // whole `dtimr*` ladder read FALSE for the wrong reason). What this measures
+    // is "how long from entering the handoff to reaching the DEVICE write".
+    HANDOFF_TICK_MS.store(now_ms_for_timing(), core::sync::atomic::Ordering::Relaxed);
     // Re-establish the Qualcomm PHY/session state without asserting the
     // pull-up yet.  EP0 must be fully configured, its event ring published,
     // and the first SETUP TRB armed before Run/Stop is allowed to advertise
@@ -6782,8 +7196,20 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // direct Fastboot-reuse path (the regular init_with_super_speed path
         // already has this A/B).
         let usb2 = read(GUSB2PHYCFG0);
+        // Snapshot the register *before* the write; `usb2` is the read-modify
+        // source, so it also tells us whether the read path returns anything at
+        // all.
+        SUSPHY_RAW_BEFORE = usb2;
         write(GUSB2PHYCFG0, usb2 | GUSB2PHYCFG_SUSPHY);
-        let _ = read(GUSB2PHYCFG0);
+        // Line 7158 already read the register back and threw the value away.
+        // Keep it instead: if the readback does not show SUSPHY set immediately
+        // after the write, then every `GUSB2PHYCFG0`-derived CCS word in this
+        // project (`susphy`, `gphycfg_lo`, `gphycfg_hi`) is reading a broken
+        // path rather than reporting a state - and the "SUSPHY is 0" finding is
+        // an instrumentation defect, not a hardware fact.
+        let after = read(GUSB2PHYCFG0);
+        SUSPHY_RAW_AFTER = after;
+        SUSPHY_SET_IN_HANDOFF = after & GUSB2PHYCFG_SUSPHY != 0;
     }
     #[cfg(all(
         fullerene_aarch64_usb_gadget_handoff_usb2_dis_sleep_mode,
@@ -8719,6 +9145,24 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     .unwrap_or(u16::MAX);
                 readout_keepalive_delay_ms(500);
                 if unsafe { EVENTS_CONSUMED } >= k {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if let Some(rest) = selector.strip_prefix("usb2-live-g2wline-ge-") {
+                // Bisect the source line of the last GUSB2PHYCFG0 write. The
+                // candidate clearing sites are ordered by line number, so a
+                // handful of these runs brackets the offender to one site.
+                let k: u32 = rest.parse().unwrap_or(u32::MAX);
+                readout_keepalive_delay_ms(500);
+                let packed =
+                    unsafe { mmio::GUSB2PHYCFG_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed) };
+                if packed != u32::MAX && (packed & 0xffff) >= k {
+                    unsafe { ccs_pulse(300) };
+                }
+            } else if let Some(rest) = selector.strip_prefix("usb2-live-g2wcount-ge-") {
+                // Did the register get written at all, and how many times?
+                let k: u32 = rest.parse().unwrap_or(u32::MAX);
+                readout_keepalive_delay_ms(500);
+                if unsafe { mmio::GUSB2PHYCFG_WRITE_COUNT.load(core::sync::atomic::Ordering::Relaxed) } >= k {
                     unsafe { ccs_pulse(300) };
                 }
             } else if selector.starts_with("usb2-live-milestone-ge-") {
@@ -13196,6 +13640,7 @@ pub fn arm_blip_queue() {
         } else {
             U0_BLIP_PENDING = U0_BLIP_PENDING.max(count);
         }
+        ARM_BLIP_QUEUED = true;
         ARM_BLIP_FORCE_DEADLINE =
             arch_counter().saturating_add(arch_counter_frequency().saturating_mul(30));
         try_u0_blip();
@@ -13218,6 +13663,7 @@ unsafe fn try_u0_blip() {
         let count = U0_BLIP_PENDING;
         U0_BLIP_PENDING = 0;
         ARM_BLIP_FORCE_DEADLINE = 0;
+        ARM_BLIP_DONE = true;
         runstop_blips(count);
     }
 }

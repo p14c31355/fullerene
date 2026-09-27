@@ -484,8 +484,36 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
 /// "RUN/STOP readback timed out; continuing" case) is the handoff's slowest
 /// bounded wait. The physical pull-up transition is identical to
 /// `run_stop_device(true)`; only the status wait is skipped.
+/// Millisecond timestamp of the *pull-up assert* - the moment the handset
+/// presents itself to the host, which is the start of the host's enumeration
+/// attempt. `u32::MAX` = never asserted.
+///
+/// This exists to measure the one interval software has not yet put a number on:
+/// host bus reset -> the DEVICE-mode write. `dtim16` (write -> readout) came back
+/// TRUE, so that leg is under 16 ms; this latch closes the other leg.
+pub(super) static PULLUP_TICK_MS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+#[inline]
+fn now_ms() -> u32 {
+    let freq = crate::timer::frequency();
+    if freq == 0 {
+        u32::MAX
+    } else {
+        (crate::timer::counter() / (freq / 1000) as u64) as u32
+    }
+}
+
 pub(super) unsafe fn run_stop_device_no_readback(is_on: bool) -> bool {
     unsafe {
+        if is_on {
+            let _ = PULLUP_TICK_MS.compare_exchange(
+                u32::MAX,
+                now_ms(),
+                core::sync::atomic::Ordering::Relaxed,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+        }
         let saved_config = prepare_run_stop_device(is_on);
         if saved_config != 0 {
             let current = read(GUSB2PHYCFG0);

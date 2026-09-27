@@ -494,6 +494,38 @@ pub(crate) static GCTL_LAST_WRITER: core::sync::atomic::AtomicU32 =
 pub(crate) static GCTL_WRITE_COUNT: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
 
+/// Last `GUSB2PHYCFG0` write observed by `write()`, for the SUSPHY hunt.
+///
+/// Packed the same way as `GCTL_LAST_WRITER`: bits 15:0 = the calling source
+/// line, bits 31:16 = bit0 set iff the written value had `SUSPHY`, bit1 set iff
+/// it had `ENBLSLPM`. `u32::MAX` means "no `GUSB2PHYCFG0` write yet".
+///
+/// This exists because the SUSPHY family was closed four times by *reading* the
+/// source (the ten clear sites) and reopened four times by *measurement*. Rather
+/// than bisect an exclusion list built from source order, name the last writer
+/// directly: `write()` is already `#[track_caller]`, so one instrumented
+/// function reports every writer without touching any of them.
+pub(crate) static GUSB2PHYCFG_LAST_WRITER: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Count of `GUSB2PHYCFG0` writes, saturating. Distinguishes "never wrote" from
+/// "wrote zero" when checked alongside `GUSB2PHYCFG_LAST_WRITER`.
+pub(crate) static GUSB2PHYCFG_WRITE_COUNT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// How many `GUSB2PHYCFG0` writes *cleared* SUSPHY while it had been set, and
+/// how many *set* it. Deliberately not line-based: `Location::caller()` returned
+/// 0 here (see the ledger), so identity has to come from counted behaviour until
+/// explicit tags are added at each call site.
+///
+/// These make "a clear ran after the last set" a measurement instead of an
+/// inference: if `set >= 1`, then `clear >= 1`, and the last write still has the
+/// flag clear, the ordering is settled without naming the site.
+pub(crate) static GUSB2PHYCFG_SET_COUNT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+pub(crate) static GUSB2PHYCFG_CLEAR_COUNT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 #[inline]
 #[track_caller]
 pub(super) unsafe fn write(offset: usize, value: u32) {
@@ -502,6 +534,23 @@ pub(super) unsafe fn write(offset: usize, value: u32) {
         let line = core::panic::Location::caller().line() as u32;
         GCTL_LAST_WRITER.store((((value >> 12) & 0x3) << 16) | (line & 0xffff), Ordering::Relaxed);
         let _ = GCTL_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+    } else if offset == GUSB2PHYCFG0 {
+        use core::sync::atomic::Ordering;
+        let line = core::panic::Location::caller().line() as u32;
+        let mut flags = 0u32;
+        if value & GUSB2PHYCFG_SUSPHY != 0 {
+            flags |= 1;
+        }
+        if value & GUSB2PHYCFG_ENBLSLPM != 0 {
+            flags |= 2;
+        }
+        GUSB2PHYCFG_LAST_WRITER.store((flags << 16) | (line & 0xffff), Ordering::Relaxed);
+        let _ = GUSB2PHYCFG_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+        if value & GUSB2PHYCFG_SUSPHY != 0 {
+            let _ = GUSB2PHYCFG_SET_COUNT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            let _ = GUSB2PHYCFG_CLEAR_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
     }
     unsafe { write_volatile(reg(offset), value) }
     // Match Linux's writel() ordering barrier.  Without a DSB the CPU can

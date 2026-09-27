@@ -199,6 +199,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_eud_device_mode)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_xbl_exact)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_arm_in_deferred_block)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_qmp_poll_nop_loop)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_por_delay_150)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_reset_delay_150)");
@@ -828,6 +829,9 @@ fn main() {
         }
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_EUD_DEVICE_MODE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_eud_device_mode");
+        }
+        if env::var_os("FULLERENE_USB_ARM_IN_DEFERRED_BLOCK").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_arm_in_deferred_block");
         }
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_XBL_EXACT").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_xbl_exact");
@@ -1708,6 +1712,7 @@ fn main() {
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_HSPHY_SOURCE_EXACT"
         );
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_XBL_EXACT");
+        println!("cargo:rerun-if-env-changed=FULLERENE_USB_ARM_IN_DEFERRED_BLOCK");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_CLEAR_SLEEPM");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_QMP_POLL_NOP_LOOP");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_POR_DELAY_150");

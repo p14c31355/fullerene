@@ -254,6 +254,16 @@ pub(super) unsafe fn configure_dwc3_global_control() {
 
 /// Proof-of-execution probe for the DEVICE-mode write, read out over CCS.
 /// See the comment at the write site for the bit layout.
+/// PRTCAPDIR field value captured immediately after the DEVICE-mode write.
+/// `u32::MAX` = the write site was never reached.
+/// Millisecond timestamp latched at the DEVICE-mode write, for the phase-timing
+/// test. `u32::MAX` = the write site was never reached (or CNTFRQ was unset).
+pub(super) static EARLY_TICK_MS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+pub(super) static EARLY_PRTCAPDIR: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
 pub(super) static DEVICE_MODE_WRITE_PROBE: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(u32::MAX);
 
@@ -282,6 +292,28 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
         // back. A readback of `2` with a later field value of `1` means something
         // downstream overwrites it; a readback of `1` means the write itself is
         // discarded.
+        // Early sample for the PRTCAPDIR transition test: remember the field
+        // value right after this write, so a later readout in the same boot can
+        // report whether the hardware changed it on its own. `devmode`/`devmode2`
+        // showed DEVICE immediately after the write and `prtcap` showed HOST at
+        // readout time, but those were *different boots*. This makes the
+        // comparison same-boot.
+        // Phase-timing latch. The only software-reachable lever left is *when*
+        // the controller is running relative to the host's bus reset, so record
+        // the architectural counter at this boundary. `timer::counter()` /
+        // `timer::frequency()` already exist and read CNTPCT_EL0 / CNTFRQ_EL0.
+        EARLY_TICK_MS.store(
+            if crate::timer::frequency() == 0 {
+                u32::MAX
+            } else {
+                (crate::timer::counter() / (crate::timer::frequency() / 1000) as u64) as u32
+            },
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        EARLY_PRTCAPDIR.store(
+            (read(GCTL) & GCTL_PRTCAPDIR_MASK) >> 12,
+            core::sync::atomic::Ordering::Relaxed,
+        );
         let readback = read(GCTL) & GCTL_PRTCAPDIR_MASK;
         let wrote = gctl & GCTL_PRTCAPDIR_MASK;
         DEVICE_MODE_WRITE_PROBE.store(
