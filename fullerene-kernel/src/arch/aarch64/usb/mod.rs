@@ -475,6 +475,9 @@ static mut ARM_COOLDOWN: u32 = 0;
 /// transfer immediately when the gadget queues the response. This flag is
 /// set only if that initial STARTTRANSFER fails; a later
 /// XferNotReady(CONTROL_DATA) event then provides a bounded retry point.
+/// Which `ControlAction` `GadgetDriver::on_setup` returned, latched by `handle_setup()`.
+/// 0 = never written. See usb/README.md §3.7.
+static mut LAST_CONTROL_ACTION: u8 = 0;
 static mut DATA_PHASE_PENDING_START: bool = false;
 static mut DATA_PHASE_PENDING_LEN: usize = 0;
 /// CNTPCT tick of the first successful post-connect Run/Stop (quiet-window
@@ -499,9 +502,16 @@ static mut SIGNAL_CONNECT_DELAYED: bool = false;
 /// the EP0 DMA objects are relocated into a page that context already maps:
 /// the CPU addresses the page at `DMA_ADOPTED_CPU` while DWC3 is published
 /// the corresponding IOVA in `DMA_ADOPTED_IOVA`.
-static mut DMA_ADOPTED: bool = false;
-static mut DMA_ADOPTED_CPU: usize = 0;
-static mut DMA_ADOPTED_IOVA: u64 = 0;
+// CRATE-SHARED, not plain `static mut`: an address-selecting static must not exist twice.
+// `usb_probe.rs` compiles `usb/` a second time, and `DMA_ADOPTED` decides whether
+// `ep0_setup_data_ptr()` returns the linker's `EP0_SETUP_BUFFER` or `ep0_trb_ptr(0)` inside
+// the adopted SMMU page. Two copies meant the handoff set it in the probe crate while the
+// kernel crate's copy stayed false, so the two crates read different physical memory.
+// See usb/README.md §1.2.
+use self::trace::{
+    SHARED_DMA_ADOPTED as DMA_ADOPTED, SHARED_DMA_ADOPTED_CPU as DMA_ADOPTED_CPU,
+    SHARED_DMA_ADOPTED_IOVA as DMA_ADOPTED_IOVA,
+};
 
 #[inline]
 fn dma_mapping_adopted() -> bool {
@@ -628,9 +638,131 @@ unsafe fn ep0_trb_ptr(index: usize) -> *mut Trb {
 /// use the same DMA object. The separate-buffer branch is retained only as an
 /// explicit non-source diagnostic, while adopted/reused Fastboot pages keep
 /// their firmware-owned layout.
+/// Short host-visible pulse: 50 ms stop + 50 ms run.
+///
+/// A full `ccs_pulse(300)` costs ~500 ms (stop, 300 ms, run, 200 ms) and the EP0 arm window is
+/// 400 ms, so a breadcrumb placed inside that window changes the timing of the code it measures.
+/// That is why the level-9 and level-10 readings disagreed. 100 ms is still host-visible - the
+/// `usb2-live-halted` selector uses a 150 ms variant - and perturbs five times less.
+/// See usb/README.md §3.29.
+macro_rules! bcp_short {
+    ($slot:expr) => {
+        if matches!(
+            option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+            Some("11") | Some("4")
+        ) {
+            let bcp_slot = $slot as usize;
+            if bcp_slot < 24 && unsafe { !trace::BC_ONCE[bcp_slot] } {
+                unsafe {
+                    trace::BC_ONCE[bcp_slot] = true;
+                    let _ = run_stop_device(false);
+                    readout_keepalive_delay_ms(50);
+                    let _ = run_stop_device(true);
+                    readout_keepalive_delay_ms(50);
+                }
+            }
+        }
+    };
+}
+
+/// Pull-up marker, delayed: wait `delay_ms`, then emit `edges` as `pullup_mark` would.
+///
+/// Why this exists: `pullup_mark` holds each state 150 ms, so `pullup_mark(2)` is 600 ms of
+/// attempts and `pullup_mark(8)` is 2.4 s. That makes a longer train test two things at once - elapsed
+/// time AND eight connect/disconnect cycles, which the host may not report at all. Measured
+/// 2026-09-29 ~11:25: eight edges at an unconditional site gave rows=2/pulses=0 (3/3) while two
+/// edges microseconds away gave rows=4/pulses=1 (4/4), so the train's length, not its position,
+/// changed the answer. This variant separates them - the edge count stays the same and only the
+/// start time moves.
+pub fn pullup_mark_after(delay_ms: u64, edges: u32) {
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    {
+        if delay_ms != 0 {
+            super::timer::delay_ms(delay_ms);
+        }
+        pullup_mark(edges);
+    }
+    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
+    {
+        let _ = (delay_ms, edges);
+    }
+}
+
+/// Screen-marker helper for the probe: alternate the panel between white and black.
+///
+/// The probe has no UART - `usb/log.rs` compiles its logging out entirely under
+/// `fullerene_aarch64_usb_gadget_handoff_probe` - and the USB pull-up does not rise until the
+/// handoff reaches its Run/Stop, so between `fastboot boot` and the attach there is no channel the
+/// host can see. The panel is the exception: `display::dpu` can paint the active scanout buffer in
+/// place, so a colour change is an observable timestamp.
+///
+/// Call this at each checkpoint. With a webcam recording the handset, the interval between two
+/// flips is the time spent between them, which is the measurement that has been missing: measured
+/// 2026-09-29, `fastboot boot` -> attach is 40 s against a ~25 s budget, so ~15 s has to be found
+/// in the probe's own startup. See usb/README.md §3.31.
+/// Pull-up marker: raise and drop the D+/D- pull-up `edges` times so the host records each one.
+///
+/// The panel turned out not to be a channel: `dpupaint` paints the active scanout buffer and parks
+/// 90 s (`usb_probe.rs:1006-1022`), yet 120 frames of 2 fps capture at 1920x1080 showed the screen
+/// never left ambient brightness (YAVG 55-81, zero frames above 180). `active_layer()` returns
+/// `None` under the probe, which is what `usb_probe.rs:1980` already warned about.
+///
+/// The pull-up is the one output already known to reach the host: a `USB2EXT` run produced exactly
+/// `09:06:06.314 new high-speed USB device` and nothing else, one edge. `run_stop_device` is defined
+/// at `control.rs:420` and mod.rs already toggles it in trains (`:8228-8234` etc.) - but none of
+/// those trains has ever been observed at the host. This helper makes a train observable on demand,
+/// at a place of the caller's choosing, so the question "is `:8228` reached?" becomes "did an edge
+/// appear, and when?".
+///
+/// Each state is held for `USB_PULLUP_MARK_HOLD_MS`. That is deliberately far longer than the host
+/// needs to notice an electrical change, because the host is running a five-second enumeration
+/// timeout per attach and a train that is too fast would collapse into a single edge and be
+/// indistinguishable from no train at all.
+///
+/// Callers should treat the edge count, not the return value, as the measurement: `run_stop_device`
+/// returning true says the register write was issued, not that the host saw anything.
+pub fn pullup_mark(edges: u32) {
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    {
+        const USB_PULLUP_MARK_HOLD_MS: u64 = 150;
+        let mut n = 0;
+        while n < edges {
+            let _ = unsafe { control::run_stop_device(false) };
+            super::timer::delay_ms(USB_PULLUP_MARK_HOLD_MS);
+            let _ = unsafe { control::run_stop_device(true) };
+            super::timer::delay_ms(USB_PULLUP_MARK_HOLD_MS);
+            n += 1;
+        }
+    }
+    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
+    {
+        let _ = edges;
+    }
+}
+
+pub fn screen_mark(slot: u32) {
+    #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
+    unsafe {
+        // Even slots white, odd slots black: the sequence of transitions is monotone, so a missed
+        // frame in the recording cannot produce a false count.
+        let fill = if slot % 2 == 0 { 0xffff_ffff } else { 0x0000_0000 };
+        let _ = crate::display::dpu::paint_active_framebuffer(fill);
+    }
+    #[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
+    {
+        let _ = slot;
+    }
+}
+
 #[inline]
 unsafe fn ep0_setup_data_ptr() -> *mut u8 {
     unsafe {
+    // INSIDE THE POINTER HELPER (level 11). Short pulses: a full `ccs_pulse(300)` costs ~500 ms
+    // against a 400 ms arm window, so observing the handoff changed the handoff - which is what
+    // made level 9 and level 10 disagree. A 50 ms stop + 50 ms run is still host-visible (the
+    // 150 ms variant is used by `usb2-live-halted`) and perturbs five times less.
+    // See usb/README.md §3.29.
+    bcp_short!(20);
         // `usb2-live-setup-inpage`: the handoff adopts exactly ONE SMMU page and
         // that page is the one holding the firmware's EP0 TRB ring
         // (`usb2-live-dma-window`, run `291878.0`: pulse 1 present, pulse 2
@@ -643,7 +775,10 @@ unsafe fn ep0_setup_data_ptr() -> *mut u8 {
         if option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") == Some("usb2-live-setup-inpage") {
             return ep0_trb_ptr(1).cast::<u8>();
         }
-        if cfg!(fullerene_aarch64_usb_gadget_handoff_ss_separate_setup_buffer)
+    bcp_short!(21);
+        // The `if`/`else` is lifted into a binding so the short pulse can sit between the buffer
+        // selection and the return without turning the enclosing block's value into `()`.
+        let buffer = if cfg!(fullerene_aarch64_usb_gadget_handoff_ss_separate_setup_buffer)
             && !cfg!(fullerene_aarch64_usb_abl_setup_trb_buffer)
             && !DMA_ADOPTED
             && !(cfg!(fullerene_aarch64_usb_gadget_handoff_reuse_fastboot_dma)
@@ -652,7 +787,12 @@ unsafe fn ep0_setup_data_ptr() -> *mut u8 {
             addr_of_mut!(EP0_SETUP_BUFFER.0).cast::<u8>()
         } else {
             ep0_trb_ptr(0).cast::<u8>()
-        }
+        };
+    bcp_short!(22);
+        // `bcp_short!(23)` belongs *inside* the `unsafe` block: leaving it after the closing
+        // brace made the function's tail expression `()` instead of the pointer.
+        bcp_short!(23);
+        buffer
     }
 }
 
@@ -771,6 +911,11 @@ static mut CMD_GUARD_ENGAGED: bool = false;
 #[inline]
 fn handoff_progress(milestone: u8) {
     unsafe { HANDOFF_PROGRESS = milestone };
+    // ALSO publish into the retained DRAM trace so it can be read crate-independently:
+    // `HANDOFF_PROGRESS` is a `static mut` in `usb/`, and `usb_probe.rs` compiles `usb/`
+    // again, so a reader there sees a different copy. "HOP" + milestone, so the decoder can
+    // report the HIGHEST milestone reached rather than just the last one written.
+    trace_marker(TRACE_PROBE_WATCHDOG, 0x484F_5000 | u32::from(milestone));
 }
 static mut DATA_ENDPOINTS_READY: bool = false;
 static mut DATA_REQUEST_SLOTS: [usize; 2] = [usize::MAX; 2];
@@ -1196,6 +1341,13 @@ pub fn readout_keepalive_delay_ms(milliseconds: u64) {
     let period = frequency.saturating_div(2);
     let mut next_keepalive = arch_counter().saturating_add(period);
     while arch_counter() < deadline {
+        // PET THE WATCHDOG. This helper keeps the USB domain powered across a readout wait,
+        // and every caller assumes the wait is survivable - but until 2026-09-28 it did
+        // not pet, and `init_usb2_gadget_reuse_fastboot_ep0` (which calls it in more than
+        // twenty places, with no `wdt_pet()` of its own anywhere) was killed mid-handoff by
+        // the apps watchdog. Measured: `hd_entered` TRUE / `hd_returned` FALSE with
+        // `boot-reason=watchdog`. See usb/README.md §1.5.
+        watchdog::wdt_pet();
         if arch_counter() >= next_keepalive {
             unsafe {
                 let _ = super::platform::bramble::refresh_usb_domain_votes(
@@ -1601,6 +1753,27 @@ unsafe fn capture_ss_state_snapshot() {
 /// CORESOFTRESET still asserted (dwc3-msm.c:2028-2030), and DEVTEN never
 /// programmed (dwc3_gadget_enable_irq(), gadget.c:2324-2343). Unknown names
 /// return 15 so a typo cannot masquerade as a valid zero word.
+/// Capture the DWC3 core id into the crate-shared retained region, once.
+///
+/// Safe to call at any point where the controller answers: it no-ops after the first
+/// successful read. Called from the handoff's power re-assert, which is the last moment the
+/// aperture is known-good before the readout path runs.
+pub fn latch_snpsid() {
+    unsafe {
+        if trace::SHARED_SNPSID == 0 {
+            trace::SHARED_SNPSID = read(GSNPSID);
+        }
+    }
+}
+
+#[inline]
+fn cached_snpsid() -> u32 {
+    // Never touch the controller from here: measured to hang when the USB clock branch has
+    // collapsed. A zero cache means the latch never ran, which is a *diagnostic* result, not
+    // a reason to go reading MMIO. See usb/README.md §1.6.
+    unsafe { trace::SHARED_SNPSID }
+}
+
 unsafe fn usb2_live_word(word: &str) -> u32 {
     // ---- Which GUSB2PHYCFG0 call site ran last? ----
     // Explicit tags, because `Location::caller()` recorded 0 through `#[inline]`
@@ -1622,8 +1795,25 @@ unsafe fn usb2_live_word(word: &str) -> u32 {
     if word == "g2wtag-file" {
         return G2W_SITE.load(core::sync::atomic::Ordering::Relaxed) / 1000;
     }
+    // Route every `dwc3-*` word onto the proven CCS carrier.
+    // See usb/README.md §3.9.
+    if word.starts_with("dwc3-") {
+        trace_dwc3_boundary();
+        if word.starts_with("dwc3-debug-") || word.starts_with("dwc3-free-") {
+            for _ in 0..6 {
+                trace_dwc3_debug_sample();
+                readout_keepalive_delay_ms(50);
+            }
+        }
+        return trace::utmi_readout_code(word);
+    }
+    // "WENT" - the lookup body was entered. `usb2_live_word` runs TWICE per pass for a
+    // `usb2-live-ccs-<word>` selector: once at :2275 via `utmi_readout_code`, once at :9441.
+    // "WBFR" being present only proves the FIRST one finished. This marker separates entry
+    // from the arm dispatch. See usb/README.md §3.17.
+    trace_marker(TRACE_PROBE_WATCHDOG, 0x5745_4E54); // "WENT"
     unsafe {
-        let snpsid = read(GSNPSID);
+        let snpsid = cached_snpsid();
         match word {
             "domain" => {
                 let gdsc = core::ptr::read_volatile(
@@ -1831,6 +2021,81 @@ unsafe fn usb2_live_word(word: &str) -> u32 {
             "word_b1" => u32::from(word.as_bytes().get(1).copied().unwrap_or(0) & 0xf),
             "armd" => DEFERRED_ARM_RESULT.load(core::sync::atomic::Ordering::Relaxed) & 1,
             "armd_res" => (DEFERRED_ARM_RESULT.load(core::sync::atomic::Ordering::Relaxed) >> 1) & 1,
+            // Crate-independent probe progress, read from the retained trace.
+            "probe_reach" => u32::from(prev_boot_probe_reach_code() >= 6),
+            "probe_stage" => prev_boot_probe_reach_code(),
+            "probe_s1" => u32::from(prev_boot_probe_reach_code() >= 2),
+            "probe_s2" => u32::from(prev_boot_probe_reach_code() >= 3),
+            "probe_s3" => u32::from(prev_boot_probe_reach_code() >= 4),
+            "probe_s4" => u32::from(prev_boot_probe_reach_code() >= 5),
+            "hop_any" => u32::from(prev_boot_probe_reach_code() >= 100),
+            "hop_ge1" => u32::from(prev_boot_probe_reach_code() >= 101),
+            "hop_ge2" => u32::from(prev_boot_probe_reach_code() >= 102),
+            "hop_ge3" => u32::from(prev_boot_probe_reach_code() >= 103),
+            "hop_ge4" => u32::from(prev_boot_probe_reach_code() >= 104),
+            "hop_ge5" => u32::from(prev_boot_probe_reach_code() >= 105),
+            "hop_ge6" => u32::from(prev_boot_probe_reach_code() >= 106),
+            "hop_ge7" => u32::from(prev_boot_probe_reach_code() >= 107),
+            "hop_ge8" => u32::from(prev_boot_probe_reach_code() >= 108),
+            "hop_ge9" => u32::from(prev_boot_probe_reach_code() >= 109),
+            "act_known" => u32::from(unsafe { LAST_CONTROL_ACTION } != 0),
+            "act_datain" => u32::from(unsafe { LAST_CONTROL_ACTION } == 1),
+            "act_statusin" => u32::from(unsafe { LAST_CONTROL_ACTION } == 2),
+            "act_stall" => u32::from(unsafe { LAST_CONTROL_ACTION } == 7),
+            "act_other" => {
+                let a = unsafe { LAST_CONTROL_ACTION };
+                u32::from(a >= 3 && a <= 6)
+            }
+            "ph_pending" => u32::from(unsafe { DATA_PHASE_PENDING_START }),
+            "ph_len" => u32::from(unsafe { DATA_PHASE_PENDING_LEN } != 0),
+            "ep0_data" => u32::from(EP0_STATE == Ep0State::Data),
+            "ep0_status" => u32::from(EP0_STATE == Ep0State::Status),
+            // "POL1" at the top of `poll()`. Distinguishes "the driver loop never ran"
+            // from "it ran and still saw nothing" - crate-independent, same retained trace
+            // as `probe_reach`. See usb/README.md §3.12.
+            "poll_ran" => u32::from(prev_boot_poll_ran()),
+            // 1 word, 1 predicate: "SIG" alone, no HOP fold. See usb/README.md §3.13.
+            "sig_only" => u32::from(prev_boot_sig_only()),
+            // Brackets the handoff call itself. See usb/README.md §3.14.
+            "hd_entered" => u32::from(prev_boot_handoff_entered()),
+            // Did a synchronous abort fire at all this boot? See usb/README.md §3.15.
+            "exc_seen" => u32::from(prev_boot_sync_exception()),
+            // UPSTREAM markers only. `selx` is kept: it is written at :9504, AFTER the whole
+            // readout block, so a reader inside the block is upstream of it and the reading is
+            // meaningful. "wbef"/"waft"/"wstall"/"went" were removed as tautologies.
+            // See usb/README.md §3.17.
+            "selx" => u32::from(prev_boot_marker_eq(0x5345_4C58)), // "SELX"
+            "m15d" => u32::from(prev_boot_marker_eq(0x4D31_3544)), // "M15D", set at :7757+
+            // CHAIN BISECT. These are written by the *condition expressions* of the POSTRUN
+            // readout chain, which Rust evaluates in order, so each one marks a real position
+            // in the chain. All four are upstream of the reader at :9489, which is why - unlike
+            // every marker tried before - these are not tautologies. See usb/README.md §3.18.
+            "md1" => u32::from(prev_boot_marker_eq(0x4D44_3141)), // branch at :8140
+            "md2" => u32::from(prev_boot_marker_eq(0x4D44_3241)), // branch at :8611
+            "md3" => u32::from(prev_boot_marker_eq(0x4D44_3341)), // branch at :9061
+            "md4" => u32::from(prev_boot_marker_eq(0x4D44_3441)), // branch at :9431
+            // Bisect the span between milestone 15 (:7772) and the pre-readout boundary. This was
+            // the last un-instrumented region; the readout block itself was exonerated by running
+            // with `--utmi-postrun-readout` omitted (host still times out at ~5.5 s). All four
+            // writers are upstream of the reader at the readout, so these are real predicates.
+            "ma1" => u32::from(prev_boot_marker_eq(0x4D41_3141)),
+            "ma2" => u32::from(prev_boot_marker_eq(0x4D41_3241)),
+            "ma3" => u32::from(prev_boot_marker_eq(0x4D41_3341)),
+            "ma4" => u32::from(prev_boot_marker_eq(0x4D41_3441)),
+            // PREVIOUS-BOOT far-side probes. Read from the retained slot, not the ring, so these
+            // are the first words that can see past the readout block. See usb/README.md §3.20.
+            "ph20" => u32::from(unsafe { trace::SHARED_POST_HANDOFF } >= 20),
+            "ph21" => u32::from(unsafe { trace::SHARED_POST_HANDOFF } >= 21),
+            "ph22" => u32::from(unsafe { trace::SHARED_POST_HANDOFF } >= 22),
+            // Proves the slot survives a boot; written at the top of init_usb2_handoff().
+            "ph99" => u32::from(unsafe { trace::SHARED_POST_HANDOFF } >= 99),
+            "hd_returned" => u32::from(prev_boot_handoff_returned()),
+            // PSTA ladder, one bit each, HOP-free. See usb/README.md §3.13.
+            "psta1" => u32::from(prev_boot_psta_only(0x01)),
+            "psta2" => u32::from(prev_boot_psta_only(0x02)),
+            "psta12" => u32::from(prev_boot_psta_only(0x12)),
+            "psta3" => u32::from(prev_boot_psta_only(0x03)),
+            "psta4" => u32::from(prev_boot_psta_only(0x04)),
             "ep_ready" => u32::from(ENDPOINTS_READY),
             "ep_armed" => u32::from(EP0_SETUP_ARMED),
             "ep_state" => u32::from(EP0_STATE == Ep0State::Setup),
@@ -5205,20 +5470,36 @@ unsafe fn poll_setup_buffer() -> bool {
     // `usb2-live-force-endpoints` and `usb2-live-rearm-loop` bundle this path:
     // those selectors exist to answer the host with no device events at all,
     // which is exactly when this eventless SETUP reader is needed.
-    let selector = option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT");
-    if selector != Some("usb2-live-setup-poll")
-        && selector != Some("usb2-live-force-endpoints")
-        && selector != Some("usb2-live-rearm-loop")
-        && selector != Some("usb2-live-ep0-eventless")
-        && selector != Some("usb2-live-ep0-release")
-        && selector != Some("usb2-live-setup-trb")
-        && selector != Some("usb2-live-setup-inpage")
-    {
-        return false;
-    }
+    // NO GATE: answering the host must not depend on a diagnostic selector being passed.
+    // In every ordinary run this returned false immediately, `handle_setup()` never ran, and
+    // the host's GET_DESCRIPTOR went unanswered. See usb/README.md §2 (defect 6).
+    // Cost when idle: one `cache_invalidate` and eight `read_volatile`s per pass, and
+    // `handle_setup()` only when the buffer is non-zero.
     unsafe {
+    // POLL-SETUP-BUFFER BREADCRUMBS (level 9). `bc3!(1)` fires and `bc3!(2)` does not, with only
+    // this call between them, and `bc8!(8)` shows `handle_setup()` was never entered - so the block
+    // is one of the three DRAM-side steps below. None of them is MMIO, so whichever it is needs a
+    // specific explanation (cache maintenance on a bad address, or a read that resolves through a
+    // mapping that never completes). See usb/README.md §3.27.
+    macro_rules! bc9 {
+        ($i:expr) => {
+            if matches!(
+                option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+                Some("9") | Some("10") | Some("4")
+            ) && unsafe { !trace::BC_ONCE[$i] }
+            {
+                unsafe {
+                    trace::BC_ONCE[$i] = true;
+                    ccs_pulse(300);
+                }
+            }
+        };
+    }
+    bc9!(16); // poll_setup_buffer entered
         let setup = ep0_setup_data_ptr();
+        bc9!(17); // ep0_setup_data_ptr() returned
         cache_invalidate(setup as usize, 8);
+        bc9!(18); // cache_invalidate returned
         let mut fresh = false;
         for offset in 0..8 {
             if read_volatile(setup.add(offset)) != 0 {
@@ -5226,6 +5507,7 @@ unsafe fn poll_setup_buffer() -> bool {
                 break;
             }
         }
+        bc9!(19); // the eight-byte DRAM probe returned
         if fresh {
             trace_marker(TRACE_SETUP_RECEIVED, 0x5345_5450); // "SETP"
             handle_setup();
@@ -5246,6 +5528,26 @@ unsafe fn setup_request() -> [u8; 8] {
 
 unsafe fn handle_setup() {
     let packet = unsafe { setup_request() };
+    // HANDLE-SETUP BREADCRUMBS (level 8). `poll_setup_buffer()` is DRAM-only and cannot block, yet
+    // it never returns after `bc3!(1)`. That leaves `handle_setup()` - reached only when the SETUP
+    // buffer holds non-zero bytes, which means the host's SETUP really did arrive - and its last
+    // two stages touch the controller. These four pulses say which stage does not return.
+    // See usb/README.md §3.26.
+    macro_rules! bc8 {
+        ($i:expr) => {
+            if matches!(
+                option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+                Some("8") | Some("4")
+            ) && unsafe { !trace::BC_ONCE[$i] }
+            {
+                unsafe {
+                    trace::BC_ONCE[$i] = true;
+                    ccs_pulse(300);
+                }
+            }
+        };
+    }
+    bc8!(8); // handle_setup() entered
     #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
     unsafe {
         // The SETUP buffer is cleared immediately below so a later poll can
@@ -5254,6 +5556,7 @@ unsafe fn handle_setup() {
         // a real DMA delivery between two 1 ms samples.
         SIGNAL_SETUP_PACKET_RECEIVED = true;
     }
+    bc8!(9); // setup_request() + the DRAM-only packet parse returned
     // Zero the DMA buffer after latching the packet: a later non-zero
     // buffer then proves the core delivered a NEW SETUP packet, even while
     // the software state machine was still in the Data/Status phase (the
@@ -5279,6 +5582,7 @@ unsafe fn handle_setup() {
         unsafe { read(DSTS) },
     );
     unsafe {
+    bc8!(10); // trace_event(..., read(DSTS)) returned
         // Record the Connect Done -> first SETUP delay (seconds) so the
         // harvest gates can tell whether the control pipeline ran inside the
         // host's enumeration window or long after the host gave up.
@@ -5310,6 +5614,21 @@ unsafe fn handle_setup() {
             GadgetDriver::on_setup(gadget_mut(), packet, response)
         }
     };
+    // Latch which action the callback returned: the response-phase words all read their
+    bc8!(11); // GadgetDriver::on_setup() returned
+    // initial values when no reply is built, so this is the one remaining unknown.
+    // See usb/README.md §3.7.
+    unsafe {
+        LAST_CONTROL_ACTION = match action {
+            ControlAction::DataIn(_) => 1,
+            ControlAction::StatusIn => 2,
+            ControlAction::StatusOut => 3,
+            ControlAction::SetHalt(_) => 4,
+            ControlAction::ClearHalt(_) => 5,
+            ControlAction::Setup => 6,
+            ControlAction::Stall => 7,
+        };
+    }
     match action {
         ControlAction::DataIn(mut length) => unsafe {
             #[cfg(fullerene_aarch64_usb_gadget_handoff_ep0_short_first_desc)]
@@ -6379,6 +6698,10 @@ pub fn runtime_resume() -> bool {
 /// blocks during a `fastboot boot` handoff can remove the Type-C pull-up before
 /// the new gadget has a chance to enumerate.
 pub fn init_usb2_handoff() -> bool {
+    screen_mark(0); // handoff entered - first screen timestamp of the run
+    // pullup_mark(2) was here and produced no host edges (2026-09-29 09:10): at handoff entry the
+    // DWC3 does not yet accept a run/stop. Removed so its 600 ms does not perturb the run; the
+    // negative result is recorded in usb/README.md and the boundary-state ledger.
     // The first attempt must preserve Fastboot's secure-owned rails, clocks,
     // RPMh vote, and Type-C session. Reprogramming those resources underneath
     // the vendor controller can remove the pull-up before EP0 is ready.
@@ -6404,6 +6727,8 @@ pub fn init_usb2_handoff() -> bool {
         let _ = super::platform::bramble::enable_usb30_gdsc();
         let _ = super::platform::bramble::apply_usb_performance(performance.vote);
         let _ = super::platform::bramble::usb_bus_vectors(performance.vote);
+        // Latch the core id now, while the aperture answers, so no readout ever has to.
+        latch_snpsid();
     }
 
     #[cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)]
@@ -6570,6 +6895,8 @@ fn bare_pullup_stop_after() -> Option<u32> {
 
 unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
     unsafe {
+        // Bisection: a mark at the top of this body was SILENT 2/2 (2026-09-29 ~11:55), so the
+        // transition is later in the function. The next mark is in the middle of the glue writes.
         // Match dwc3_qcom_vbus_override_enable(). qpr1 writes the
         // SuperSpeed lane power-present vote only when maximum_speed is at
         // least USB_SPEED_SUPER; the DCFG_FULLSPEED A/B is the corresponding
@@ -6586,6 +6913,8 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
             (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
         );
         qscratch_set(QSCRATCH_CGCTL, 0x18);
+        // Bisection: a mark immediately before enable_power_events() was SILENT 3/3 (2026-09-29
+        // ~12:10), as was the top of the body. The transition is later in the function.
         enable_power_events();
         // Fastboot may leave the core in the USB2 suspended state when it
         // tears down its gadget just before jumping to the temporary image.
@@ -6627,15 +6956,30 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
             }
         }
 
+        // Bisection: a mark immediately before the GCTL device-mode write was SILENT 3/3
+        // (2026-09-29 ~12:25). The transition is later in the function.
         let gctl = read(GCTL);
         write(
             GCTL,
             (gctl & !GCTL_PRTCAPDIR_MASK) | GCTL_PRTCAP_DEVICE | GCTL_DSBLCLKGTNG,
         );
         let _ = read(GCTL);
+        // Bisection: a mark immediately after the GCTL PRTCAPDIR -> DEVICE write was SILENT 3/3
+        // (2026-09-29 ~13:10), so the device-mode write is not the transition after all. Window is
+        // now (:6971, :6992).
         configure_dwc3_global_control();
+        // Final split (2026-09-29): between configure_dwc3_global_control() and the DCFG speed write
+        // - the last two candidates. Silent here means the DCFG write is the transition; audible
+        // means configure_dwc3_global_control() is. Gated on !connect for the :7167 caller.
+        if !connect {
+            pullup_mark(2);
+        }
         write(DCFG, DCFG_HIGHSPEED);
         let _ = read(DCFG);
+        // Bisection: a mark immediately after the DCFG speed write was AUDIBLE 3/3 (2026-09-29
+        // ~13:25). Window is now (:6971, :6976) - configure_dwc3_global_control() and the DCFG
+        // write, five lines. The mark moves between them for the final split.
+
         // Linux disables endpoint advertising before stopping the device
         // controller. In the ABL Stop() differential, the controller remains
         // live, so leave its endpoint advertisement untouched until the
@@ -6654,6 +6998,8 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
             }
         }
 
+        // Bisection: a mark immediately before this glue re-assert was AUDIBLE 3/3 (2026-09-29
+        // ~12:55). Window is now (:6963, :6992), and it contains the GCTL device-mode write.
         // Qualcomm's glue reasserts the VBUS override immediately before
         // enabling RUN_STOP so a stale Fastboot session cannot suppress the
         // connect-done transition.
@@ -6668,6 +7014,8 @@ unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool {
             QSCRATCH_HS_PHY_CTRL,
             (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
         );
+        // Bisection: a mark immediately before this block was AUDIBLE 3/3 (2026-09-29 ~12:40), so
+        // the transition is earlier in the function - window is now (:6963, :7008).
         // A gadget handoff uses the same proven PHY/session preparation but
         // keeps Run/Stop clear until its event ring and EP0 commands are
         // ready. The standalone bare probe requests the pull-up immediately.
@@ -6758,6 +7106,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     }
     // Snapshot the Fastboot-owned clock/PHY state before the handoff starts
     // changing the controller-side USB2 session.
+    // Bisection: pullup_mark(2) here was SILENT (2 of 2 valid runs; a third run failed to decode).
+    // Window is now (:7067, :7316).
     trace_utmi_state(1);
     // Linux calls GDBGFIFOSPACE's returned field SPACE_AVAILABLE. Capture the
     // inherited free-space vector explicitly; zero is not queue occupancy.
@@ -6814,6 +7164,16 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // Capture the working Fastboot RAM clock selection before the reuse
     // helper stops the old session or the device soft reset clears GCTL.
     // Zero is a valid RAMCLKSEL value, so validity is tracked separately.
+    // Bisection (valid rungs only): pullup_mark(2) here was SILENT 4/4, while :7067 below is silent
+    // and :7213 above is audible (4/4) - and the code between all three is microseconds, so those
+    // results are consistent only if the marks are timing elapsed time rather than locating a step.
+    // Eight edges instead of two: 2.4 s of attempts at the same unconditional site. A temporal
+    // threshold lets the later edges through; if it stays silent, position or state is what matters.
+    // pullup_mark_after(2000, 2) was tried here (2026-09-29 ~11:30) and gave rows=2/pulses=0. That
+    // result is not usable as a test of a time threshold: the 2 s delay_ms is a busy wait that
+    // re-asserts no RPMh vote, so it may itself kill the controller. Removed. This site is silent
+    // with two plain edges (4/4), and :7213 above is audible (4/4), so the transition is inside
+    // init_usb2_bare_pullup_handoff_inner(false) at :7167 - which is where the next mark goes.
     unsafe {
         RAMCLK_CAPTURE = gctl_ramclksel(read(GCTL));
         RAMCLK_CAPTURE_VALID = true;
@@ -6904,6 +7264,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // `init_with_super_speed` path; this direct Fastboot-reuse path is the
     // attach-reaching USB2 path used by the current probe.  Keep the ordering
     // opt-in and preserve the EUD ownership early return.
+    // Bisection: pullup_mark(2) here was AUDIBLE 4/4 (2026-09-29 ~11:05). Window is now
+    // (:7067, :7213), 146 lines.
     let hsphy_before_core_reset = cfg!(fullerene_aarch64_usb_hsphy_before_reset)
         && !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core);
     // qpr1 calls dwc3_phy_setup() before dwc3_core_soft_reset(). Preserve its
@@ -7007,6 +7369,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // retaining the preceding halted-controller boundary; this tests whether
     // the reset itself destroys the live Qualcomm PHY/session handoff.
     if !cfg!(fullerene_aarch64_usb_gadget_handoff_preserve_core) {
+        // Bisection: pullup_mark(2) here was AUDIBLE 3/3 (2026-09-29 ~10:35), so the transition is
+        // earlier still, above the reset branch. Window is now (handoff entry, here).
         let reset_ok = if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_full_core_reset) {
             // This is a broader Fullerene controller-domain reset A/B than
             // the ordinary DCTL.CSFTRST handoff reset: after the device-core
@@ -7015,6 +7379,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             // Keep this boundary isolated from the normal reuse path so its
             // marker and host result can be compared without changing the
             // endpoint or descriptor state.
+            // Bisection point 2 (2026-09-29 09:16): pullup_mark(2) here was SILENT - two CCS rows
+            // only, the working Run/Stop. Together with milestone 11 being audible, the window is
+            // now bracketed to (:7323, :7874). Bisection point 3 moves to :7608, inside it.
             log_puts("usb gadget handoff: using full USB2 DWC3 core reset\n");
             trace_marker(TRACE_DWC3_RESET_BEGIN, 0x4643_5253); // "FCRS"
             let ok = unsafe { core_soft_reset(false) };
@@ -7063,6 +7430,10 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     {
         log_puts("usb gadget handoff: Android controller clock branch rearm failed\n");
     }
+    // Bisection: pullup_mark(2) here was AUDIBLE 3/3 (2026-09-29 ~10:25). Window is now
+    // (device soft reset, here). The earlier rung at :7323 was invalid: it sat in the untaken
+    // branch of `if cfg!(...usb2_full_core_reset)` (flag false), so it never executed. Re-placed
+    // below, immediately before that runtime branch, where it runs unconditionally.
     if !unsafe { super::platform::bramble::enable_usb_hs_phy_ref_clock() } {
         log_puts("usb gadget handoff: RPMh HS PHY ref clock enable failed\n");
     }
@@ -7171,6 +7542,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // `snps_hsphy_init`; pulse the USB2-only line here, before the pull-up
     // is asserted, so the host port stays unattached throughout.
     if hsphy_eud_enabled {
+        // Bisection point 4 (2026-09-29 09:22): pullup_mark(2) here was SILENT - one CCS pair only.
+        // Window tightened from (:7323, :7613) to (:7481, :7614), 133 lines. Bisection point 5 moves
+        // to just before phy::set_normal_opmode(), which is the leading candidate for the transition.
         log_puts("usb gadget handoff: HS PHY EUD enabled; preserving PHY state\n");
     } else if hsphy_before_core_reset {
         log_puts("usb gadget handoff: HS PHY reset/init already performed before DWC3 reset\n");
@@ -7207,6 +7581,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     }
     #[cfg(fullerene_aarch64_usb_hsphy_normal_opmode)]
     unsafe {
+        // Bisection point 5 (2026-09-29 09:24): pullup_mark(2) here was SILENT. Window tightened
+        // from (:7481, :7614) to (:7522, :7619), 97 lines. Bisection point 6 moves just before
+        // phy::clear_datapath_override(), splitting what is left.
         let opmode = phy::set_normal_opmode();
         log_hex(
             "usb gadget handoff: HS PHY normal OPMODE=",
@@ -7225,6 +7602,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     }
     #[cfg(fullerene_aarch64_usb_hsphy_clear_datapath_override)]
     unsafe {
+        // Bisection point 6 (2026-09-29 09:26): pullup_mark(2) here was SILENT. Window tightened
+        // to (:7542, :7621), 79 lines, leaving three candidates. Bisection point 7 goes just before
+        // pulse_auto_resume().
         let cfg0 = phy::clear_datapath_override();
         log_hex(
             "usb gadget handoff: HS PHY datapath override cleared, CFG0=",
@@ -7238,6 +7618,8 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // this RX/SOF candidate after the final HS-PHY init and before the
         // USB2 controller contract/pull-up, where it cannot be masked by a
         // later reset epoch.
+        // Bisection point 7 (2026-09-29 09:28): pullup_mark(2) here was SILENT. Window tightened
+        // to (:7558, :7624), 66 lines, two candidates. Bisection point 8 goes between them.
         let state = phy::pulse_auto_resume();
         log_hex(
             "usb gadget handoff: HS PHY auto-resume pulse CTRL2=",
@@ -7251,6 +7633,9 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // otherwise the source-level TRDTIM=9 write made before init_hsphy() is
     // absent from the actual stage-3 readback and the core advertises a
     // pull-up without a usable USB2 transaction interface.
+    // Bisection (executed rungs only). pullup_mark(2) here was AUDIBLE 3/3 (2026-09-29 ~10:15), so
+    // the window is now (:7481, :7572) and would have been (:7481, :7658) before. Bisection moves up
+    // into the DWC3 core reset / clock region, which is the only substantive code in the bracket.
     unsafe { configure_usb2_phy_interface() };
     #[cfg(fullerene_aarch64_usb_gadget_handoff_usb2_source_susphy)]
     unsafe {
@@ -7267,6 +7652,13 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         SUSPHY_RAW_BEFORE = usb2;
         mark_g2w_site(1010);
         write(GUSB2PHYCFG0, usb2 | GUSB2PHYCFG_SUSPHY);
+        // Bisection point 8 (2026-09-29 09:31): pullup_mark(2) here was SILENT. Window tightened
+        // to (:7589, :7624), 35 lines. Neither pulse_auto_resume nor the SUSPHY read-modify-write
+        // is the transition. Bisection point 9 goes just before the SMMU decision at :7621.
+        // Bisection point 8's site, run three times consecutively (2026-09-29 ~09:39): rows=2,
+        // pulses=0 on all three. Stable, not a coin flip - so the transition above is deterministic
+        // and the "time only" reading was too strong. Bisection point 10 now isolates the last two
+        // candidates by marking immediately after the GUSB2PHYCFG0 read.
         // Line 7158 already read the register back and threw the value away.
         // Keep it instead: if the readback does not show SUSPHY set immediately
         // after the write, then every `GUSB2PHYCFG0`-derived CCS word in this
@@ -7276,6 +7668,32 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         let after = read(GUSB2PHYCFG0);
         SUSPHY_RAW_AFTER = after;
         SUSPHY_SET_IN_HANDOFF = after & GUSB2PHYCFG_SUSPHY != 0;
+        // Bisection point 10 (2026-09-29 09:42): pullup_mark(2) here was SILENT, and so was the
+        // rung at :7594 three times over. Both are silent while :7623 is audible, yet no compiled
+        // code lies between them - the usb2_dis_sleep_mode block in between is cfg-disabled.
+        //
+        // The resolution is that pullup_mark itself costs time. Each edge is a drop held 150 ms
+        // followed by a rise held 150 ms, so pullup_mark(2) spans 600 ms of attempts. That makes
+        // the three failing/succeeding marks a stopwatch rather than three code positions:
+        //
+        //     :7594   attempts from ~0 ms to ~600 ms after the SUSPHY write   all lost
+        //     :7607   attempts from ~600 ms to ~1200 ms                       all lost
+        //     :7623   attempts from ~1200 ms to ~1800 ms                      these reach the host
+        //
+        // Marks tried at this exact site, 2026-09-29:
+        //   pullup_mark(2)   -> rows=2, pulses=0   (three consecutive runs, all silent)
+        //   pullup_mark(8)   -> rows=2, pulses=0   (2.4 s of attempts, nothing reported)
+        // With a second mark placed at :7651 (after the cfg block) the pair produced rows=4, i.e.
+        // exactly one of the two fired. An 8-edge train that is silent while a 2-edge train 600 ms
+        // later is audible does NOT fit a settling-time story - a settling delay would have been
+        // crossed partway through the long train. It fits a host-side one instead: xhci/the hub
+        // debounce or lock out a port after several connect/disconnect cycles in quick succession,
+        // so edges issued in a burst may simply never be reported.
+        //
+        // That matters for every rung of this bisection. A silent rung may mean "the controller
+        // could not raise a pull-up" OR "the host did not report it", and this instrument cannot
+        // tell those apart on its own. The ladder below is therefore conditional on the host having
+        // reported the edge - it is not yet a proven statement about the controller.
     }
     #[cfg(all(
         fullerene_aarch64_usb_gadget_handoff_usb2_dis_sleep_mode,
@@ -7298,11 +7716,28 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
     // intentionally identity-addressed in the 0x9b800000 DMA section.  Keep
     // the proven PHY/pull-up transition first, then install the identity map
     // before handing any new DMA object to DWC3.
+    // Bisection point 9 (2026-09-29 09:33) placed a mark here and it WAS audible, once. Repeating
+    // that position three times on 2026-09-29 ~09:50 gave rows=2/pulses=0 every time, and the mark
+    // inside the unsafe block just above (:7620) is also silent 3/3. The only difference between
+    // the two sites is the cfg-gated block between them, which is disabled in these runs - so the
+    // two positions should be identical at runtime. This call re-tests point 9's exact position
+    // with the other mark still in place, so one run decides it: four CCS rows means both fired
+    // (the block is irrelevant and the earlier audible result was an outlier), two rows means only
+    // this one fired (something about the position does matter).
+    // CFG AUDIT (2026-09-29 10:05): the 34-line bracket recorded earlier was an artifact. Rungs sat
+    // inside #[cfg] blocks disabled in these builds (usb_hsphy_normal_opmode,
+    // usb_hsphy_clear_datapath_override, usb_hsphy_auto_resume_pulse, usb2_source_susphy), so those
+    // marks were never compiled in and their silence meant nothing. Rungs that genuinely executed:
+    // :6679 silent, :7323 silent, :7481 silent, :7658 audible (here), :7889 audible. The real window
+    // is (:7481, :7658), about 177 lines. See the ledger.
     let smmu_ready = if cfg!(fullerene_aarch64_usb_gadget_handoff_no_smmu) {
         // Differential mode for a Fastboot-owned bypass: do not even read
         // the Apps-SMMU registers. The DMA section remains fixed inside the
         // declared Bramble pool, so this mode is valid only when firmware
         // leaves the DWC3 stream in physical=IOVA bypass.
+        // Bisection point 3 (2026-09-29 09:19): pullup_mark(2) here WAS audible - four CCS rows,
+        // the mark's own pair 0.265 s apart on top of the working Run/Stop. Window tightened from
+        // (:7323, :7874) to (:7323, :7613). Bisection point 4 moves to :7468, inside that.
         log_puts("usb gadget handoff: Apps SMMU untouched\n");
         true
     } else {
@@ -7565,6 +8000,11 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 ENDPOINT_CONFIG_BLOCK_REACHED = true;
             }
             HANDOFF_MILESTONE = 11;
+            // Bisection point 1 (2026-09-29 09:14): pullup_mark(2) here WAS audible - usbmon
+            // recorded four CCS rows, two of them the mark's own edges 0.273 s apart (the 150 ms
+            // holds), while dmesg showed only one attach line because a 0.17 s connection never
+            // enumerates. So the window is already open at milestone 11, and it is closed at
+            // handoff entry. Bisection point 2 moves to the DWC3 core reset, in between.
             HANDOFF_MILESTONE = 16;
             let _ = udc_mut().configure_endpoint(0, 64, false);
             let _ = udc_mut().configure_endpoint(1, 64, false);
@@ -7633,6 +8073,14 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 return gadget_handoff_fail(12); // STARTTRANSFER
             }
             HANDOFF_MILESTONE = 15;
+            // "M15D" - UPSTREAM of every reader. `HANDOFF_MILESTONE` itself is a `static mut`
+            // and therefore exists twice across the two `usb/` compilations, so a readout that
+            // wants to know "did 15 execute" cannot trust the variable; this goes to the
+            // retained trace, which both crates read. Placed here (not near the readout) so
+            // that a reader inside the readout block is *downstream* of it. See usb/README.md
+            // §3.17.
+            trace_marker(TRACE_PROBE_WATCHDOG, 0x4D31_3544); // "M15D"
+            screen_mark(2); // milestone 15
             // Record the armed SETUP TRB so the USB-reset handler takes the
             // Linux-equivalent keep-the-TRB path instead of tearing it down and
             // racing the host's first post-reset SETUP token.
@@ -7792,6 +8240,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             };
             readout_keepalive_delay_ms(delay_ms);
         }
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x4D41_3141); // "MA1" - before the DALEPENA read
         trace::live_dalepena_before_dctl(read(DALEPENA));
         #[cfg(fullerene_aarch64_usb_gadget_handoff_min_runstop_delay)]
         {
@@ -7803,11 +8252,14 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             log_puts("usb gadget handoff: qpr1 minimum Run/Stop delay 50ms\n");
             super::timer::delay_ms(50);
         }
+        screen_mark(4); // about to run the Run/Stop that raises the pull-up
         let start_readback_ok = if gate_run {
             unsafe { run_stop_device_no_readback(true) }
         } else {
             unsafe { run_stop_device(true) }
         };
+        screen_mark(6); // Run/Stop returned (the host now sees the attach)
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x4D41_3241); // "MA2" - Run/Stop returned
         #[cfg(fullerene_aarch64_usb_hsphy_power_after_runstop)]
         {
             // The normal rail refresh belongs to the PHY reset/init epoch.
@@ -7848,6 +8300,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             let value = unsafe { phy::restore_suspend_n_after_runstop() };
             trace_event(TRACE_UTMI_STATE, 0x0600_0000, value, 0, 0, 0);
         }
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x4D41_3341); // "MA3" - PHY rails restored
         #[cfg(fullerene_aarch64_usb_hsphy_restore_suspend_n_selected_after_runstop)]
         {
             // qpr1's init uses the selector while asserting SUSPEND_N, then
@@ -7906,6 +8359,17 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         }
         trace_utmi_state(5);
         trace_dwc3_debug_stage(4);
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x4D41_3441); // "MA4" - pre-readout boundary
+        // POSITIVE CONTROL for the pulse breadcrumbs. `ma4` reads TRUE in every readout run, so
+        // this site is known to be reached; if this pulse does not appear on the host then the
+        // breadcrumb encoding itself is broken (wrong Run/Stop variant, or the env never reached
+        // build.rs) and a zero count further down means nothing. Always read the control first.
+        if matches!(
+            option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+            Some("2") | Some("4")
+        ) {
+            unsafe { ccs_pulse(300) };
+        }
         if let Some(selector) = option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") {
             // Encode the post-Run/Stop stage in the attach timestamp. This
             // is deliberately separate from the pre-connect readout so a
@@ -8008,7 +8472,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 if ENDPOINTS_READY {
                     unsafe { ccs_pulse(300) };
                 }
-            } else if selector == "usb2-live-ms-ge-11" {
+            } else if { trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3141); selector == "usb2-live-ms-ge-11" } {
                 readout_keepalive_delay_ms(500);
                 if unsafe { HANDOFF_MILESTONE } >= 11 {
                     unsafe { ccs_pulse(300) };
@@ -8479,7 +8943,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     }
                     let _ = answered;
                 }
-            } else if selector == "usb2-live-ep0-restart" {
+            } else if { trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3241); selector == "usb2-live-ep0-restart" } {
                 // Linux's recipe for a control endpoint holding a pending SETUP
                 // is `dwc3_ep0_stall_and_restart()` (`ep0.c:243-266`): stall EP0,
                 // which retires the pending transfer, reset the state to the
@@ -8905,7 +9369,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                         ccs_pulse(300);
                     }
                 }
-            } else if selector == "usb2-live-devten-set" {
+            } else if { trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3341); selector == "usb2-live-devten-set" } {
                 // ONE question, ONE bit: is `DEVTEN` (device event enable)
                 // programmed at all at runtime?
                 //
@@ -9299,7 +9763,7 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 for _ in 0..count {
                     unsafe { ccs_pulse(300) };
                 }
-            } else if selector == "usb2-live-halted" || selector == "usb2-live-runstop-bit" {
+            } else if { trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3441); selector == "usb2-live-halted" } || selector == "usb2-live-runstop-bit" {
                 // Single-bit, wide-pulse readouts. The width-coded words drift
                 // by ~80 ms through run_stop_device, so a one-bit word uses two
                 // widths that cannot be confused: 700 ms = bit set, 150 ms =
@@ -9350,6 +9814,13 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // and tools/bramble_port_ccs.py for the host-side decoder. This
                 // is the first carrier that survives past Run/Stop, because the
                 // root hub keeps reporting the pull-up to the host.
+                // NO MARKERS HERE. The first version of this probe wrote "WBFR" immediately
+                // before this line and "WAFT" immediately after - and both were TAUTOLOGIES:
+                // the reader runs *inside* the statement between them, so a scan for "WBFR"
+                // always found the marker it had just written, and a scan for "WAFT" never
+                // found a marker that had not been written yet. Measured 3 runs that appeared
+                // to prove the lookup stalls; they proved nothing. The predicate a marker
+                // encodes must be upstream of the code that reads it. See usb/README.md §3.17.
                 let value = usb2_live_word(word);
                 if word == "gctlline" || word == "gctlline2" || word == "gctlwc" {
                     unsafe { publish_ccs_word_byte(value) };
@@ -9370,7 +9841,41 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 readout_keepalive_delay_ms(delay_ms);
             }
         }
+        // Reached only if the whole POSTRUN readout block above completed.
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x5345_4C58); // "SELX"
         HANDOFF_MILESTONE = 14;
+        // "M20D" / milestone 20 - the POSTRUN readout block is behind us. Everything
+        // before this point is exonerated by the `md1..md4` chain markers (all TRUE) plus
+        // the pulse that `publish_ccs_word` emits, so the remaining span is :9520 to the
+        // end of the function. `HANDOFF_MILESTONE` is read directly by the
+        // `usb2-live-milestone-ge-*` selectors - the one carrier that does not go through
+        // `usb2_live_word`, and therefore is not blind here. See usb/README.md §3.19.
+        // PULSE BREADCRUMB - the only marker that is not blind.
+        //
+        // Every on-device reader (`usb2_live_word`) runs at one point inside the handoff, so it can
+        // never observe anything written after that point; the retained `.usb_trace` section
+        // cannot help either because a full Android boot runs between two of our runs and
+        // overwrites it. What IS immune to both is the host: each DCTL Run/Stop cycle makes the
+        // root hub print one more `new high-speed USB device` line. So a pulse dropped at a
+        // candidate site is a breadcrumb the host can count. Run this WITHOUT
+        // `--utmi-postrun-readout` so the readout contributes zero pulses and every attach line
+        // after the first one is a breadcrumb. Three sites, one pulse each: count = how many were
+        // reached. See usb/README.md §3.22.
+        if matches!(
+            option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+            Some("1") | Some("4")
+        ) {
+            // Use the PLAIN `ccs_pulse`, not `readout_bit`. The comment at :12235 records that
+            // the same publisher emitted *no* host-visible pulse through
+            // `ccs_pulse_no_readback` (run 232050.0) while plain `ccs_pulse` did, and these sites
+            // run after the host has begun enumerating - exactly the case that comment describes.
+            // If a site is still silent after this change, the site was not reached rather than
+            // mis-encoded.
+            unsafe { ccs_pulse(300) };
+        }
+        HANDOFF_MILESTONE = 20;
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x4D32_3044); // "M20D"
+        unsafe { trace::SHARED_POST_HANDOFF = 20 };
         // EXPERIMENT: if the deferred arm window did not leave EP0 armed, force the
         // flag and re-issue the STARTTRANSFER directly. Every guard that can stop
         // `try_arm_setup` has been measured false (ENDPOINTS_READY true, EP0_STATE
@@ -9416,12 +9921,72 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             };
             let arm_deadline = arch_counter()
                 .saturating_add(arch_counter_frequency().saturating_mul(arm_window_ms) / 1_000);
+            // ARM-WINDOW BREADCRUMBS (level 3). Three once-only pulses that separate the three
+            // candidates inside the window: did the loop start, did `try_arm_setup()` return, did
+            // `poll_ep0_event_ring()` return. Decoded from CCS in usbmon, never from dmesg lines.
+            // See usb/README.md §3.23.
+            // PER-ITERATION indices. The earlier boolean guard made the markers blind to
+            // everything after the first iteration: `bc3!(1)` fires once, so a later iteration
+            // blocking inside `try_arm_setup()` is indistinguishable from the first iteration
+            // proceeding. Index = iteration * 4 + step, covering three iterations (0..11).
+            // See usb/README.md §3.28.
+            macro_rules! bc3it {
+                ($iter:expr, $step:expr) => {
+                    if matches!(
+                        option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+                        Some("3") | Some("10") | Some("4")
+                    ) {
+                        let bc3_slot = ($iter * 4 + $step) as usize;
+                        // 16 is BC_ONCE's length; `.len()` would take a reference to a mutable
+                        // static, which is not allowed.
+                        if bc3_slot < 16 && unsafe { !trace::BC_ONCE[bc3_slot] } {
+                            unsafe {
+                                trace::BC_ONCE[bc3_slot] = true;
+                                ccs_pulse(300);
+                            }
+                        }
+                    }
+                };
+            }
+            let mut bc3_iter: u32 = 0;
+            screen_mark(8); // EP0 arm window entered
+            bc3it!(0, 0); // the loop is about to be entered
             while arch_counter() < arm_deadline && !EP0_SETUP_ARMED {
                 let _ = try_arm_setup();
-                poll_ep0_event_ring();
+                bc3it!(bc3_iter, 1); // try_arm_setup() returned on this iteration
+                // EXPERIMENT 2026-09-29: the event-ring drain is REMOVED from this loop.
+                //
+                // Measured: `poll_ep0_event_ring()` never returns, and the instruction that blocks
+                // is its first controller access, `read(GEVNTCOUNT0)` at :12502. The level-7
+                // discriminator put an ordinary `read(DCTL)` immediately before it and that read
+                // completed (pulse counted), so the controller aperture is alive - this is not the
+                // clock-collapse failure mode the comment at :6520 describes, and re-asserting the
+                // power vote would not address it.
+                //
+                // The count read is only used to decide whether there is an event to drain, and this
+                // loop's own condition already tests `!EP0_SETUP_ARMED`. The drain is therefore an
+                // optimisation rather than a requirement for arming EP0, and removing it is the
+                // minimal change that takes the blocking access off the path. `poll_setup_buffer()`
+                // below still runs and is what consumes the host's SETUP. If this changes host
+                // behaviour the drain is load-bearing and has to be reinstated behind a gated read.
                 let _ = unsafe { poll_setup_buffer() };
-                super::timer::delay_us(200);
+                bc3it!(bc3_iter, 2); // poll_setup_buffer() returned on this iteration
+                // EXPERIMENT 2026-09-29: re-assert the USB power/clock vote during the arm window.
+                //
+                // Measured: widening this window from 400 ms to 5 s (--usb2-extended-setup-arm) made
+                // the handoff get *less* far, not more - `try_arm_setup()` stopped returning. That is
+                // only possible if controller access degrades with elapsed time, i.e. the RPMh vote
+                // inherited from Fastboot is draining. `readout_keepalive_delay_ms` already
+                // re-asserts exactly that vote (`refresh_usb_domain_votes` + `force_enable_usb30_gdsc`)
+                // and pets the watchdog, but this loop called `delay_us`, a busy wait, so the window
+                // ran with no vote refresh at all. Same period, same effect on the deadline, plus the
+                // keepalive. See usb/README.md §3.30.
+                readout_keepalive_delay_ms(200);
+                if bc3_iter < 2 {
+                    bc3_iter += 1;
+                }
             }
+            bc3it!(3, 3); // the loop exited (slot 15)
             // Keep the arm-status readout meaningful on the direct reuse
             // path as well as on the fallback recovery path.  The latter
             // already records 0/8 in u0_arm_recovery(), but direct handoff
@@ -9456,6 +10021,33 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 write(DEVTEN, direct_gadget_devten());
             }
         }
+        // "M21D" / milestone 21 - the EP0 arm window (400 ms default) completed.
+        // PULSE BREADCRUMB - the only marker that is not blind.
+        //
+        // Every on-device reader (`usb2_live_word`) runs at one point inside the handoff, so it can
+        // never observe anything written after that point; the retained `.usb_trace` section
+        // cannot help either because a full Android boot runs between two of our runs and
+        // overwrites it. What IS immune to both is the host: each DCTL Run/Stop cycle makes the
+        // root hub print one more `new high-speed USB device` line. So a pulse dropped at a
+        // candidate site is a breadcrumb the host can count. Run this WITHOUT
+        // `--utmi-postrun-readout` so the readout contributes zero pulses and every attach line
+        // after the first one is a breadcrumb. Three sites, one pulse each: count = how many were
+        // reached. See usb/README.md §3.22.
+        if matches!(
+            option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+            Some("2") | Some("4")
+        ) {
+            // Use the PLAIN `ccs_pulse`, not `readout_bit`. The comment at :12235 records that
+            // the same publisher emitted *no* host-visible pulse through
+            // `ccs_pulse_no_readback` (run 232050.0) while plain `ccs_pulse` did, and these sites
+            // run after the host has begun enumerating - exactly the case that comment describes.
+            // If a site is still silent after this change, the site was not reached rather than
+            // mis-encoded.
+            unsafe { ccs_pulse(300) };
+        }
+        HANDOFF_MILESTONE = 21;
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x4D32_3144); // "M21D"
+        unsafe { trace::SHARED_POST_HANDOFF = 21 };
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
             // Run/Stop returns before the host's attach debounce reaches U0.
@@ -9465,6 +10057,30 @@ unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter().saturating_add(
                 arch_counter_frequency().saturating_mul(POST_RUNSTOP_PROBE_DELAY_SECS),
             );
+        }
+        unsafe { trace::SHARED_POST_HANDOFF = 22 };
+        // PULSE BREADCRUMB - the only marker that is not blind.
+        //
+        // Every on-device reader (`usb2_live_word`) runs at one point inside the handoff, so it can
+        // never observe anything written after that point; the retained `.usb_trace` section
+        // cannot help either because a full Android boot runs between two of our runs and
+        // overwrites it. What IS immune to both is the host: each DCTL Run/Stop cycle makes the
+        // root hub print one more `new high-speed USB device` line. So a pulse dropped at a
+        // candidate site is a breadcrumb the host can count. Run this WITHOUT
+        // `--utmi-postrun-readout` so the readout contributes zero pulses and every attach line
+        // after the first one is a breadcrumb. Three sites, one pulse each: count = how many were
+        // reached. See usb/README.md §3.22.
+        if matches!(
+            option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+            Some("2") | Some("4")
+        ) {
+            // Use the PLAIN `ccs_pulse`, not `readout_bit`. The comment at :12235 records that
+            // the same publisher emitted *no* host-visible pulse through
+            // `ccs_pulse_no_readback` (run 232050.0) while plain `ccs_pulse` did, and these sites
+            // run after the host has begun enumerating - exactly the case that comment describes.
+            // If a site is still silent after this change, the site was not reached rather than
+            // mis-encoded.
+            unsafe { ccs_pulse(300) };
         }
         unsafe { gate_flow_blip() }; // flow-map B4: final Run/Stop readback done
         if stop_after_gadget_handoff_stage(7) {
@@ -12219,7 +12835,54 @@ unsafe fn poll_ep0_event_ring() -> bool {
     if cfg!(fullerene_aarch64_usb_abl_event_consume) {
         return poll_ep0_event_ring_abl_style();
     }
+    // STEP BREADCRUMBS (level 5). One once-only pulse after each controller access inside the
+    // event-ring drain, so a single run says which access does not return. `try_arm_setup()` did
+    // controller MMIO successfully microseconds earlier (bc3!(1) fired), so the clock had not
+    // collapsed yet - the stall is at a specific access, not a dead aperture. See usb/README.md §3.24.
+    macro_rules! bc5 {
+        ($i:expr) => {
+            if matches!(
+                option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+                Some("5") | Some("4")
+            ) && unsafe { !trace::BC_ONCE[$i] }
+            {
+                unsafe {
+                    trace::BC_ONCE[$i] = true;
+                    ccs_pulse(300);
+                }
+            }
+        };
+    }
+    // DISCRIMINATOR (level 7): is the aperture dead, or is this one register special?
+    // An ordinary controller read is performed immediately before the event-count read, with a
+    // pulse after each. `bc3!(1)` proved `try_arm_setup()` did controller MMIO and returned, so if
+    // even this DCTL read fails to complete then the clock branch died between two adjacent calls;
+    // if DCTL completes and GEVNTCOUNT0 does not, the stall is specific to that access.
+    // See usb/README.md §3.25.
+    let bc7_dctl = unsafe { read(DCTL) };
+    if matches!(
+        option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+        Some("7") | Some("4")
+    ) && unsafe { !trace::BC_ONCE[6] }
+    {
+        unsafe {
+            trace::BC_ONCE[6] = true;
+            ccs_pulse(300);
+        }
+    }
+    let _ = bc7_dctl;
     let count_register = unsafe { read(GEVNTCOUNT0) };
+    if matches!(
+        option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
+        Some("7") | Some("4")
+    ) && unsafe { !trace::BC_ONCE[7] }
+    {
+        unsafe {
+            trace::BC_ONCE[7] = true;
+            ccs_pulse(300);
+        }
+    }
+    bc5!(0); // read(GEVNTCOUNT0) returned with count != 0
     let count = count_register & GEVNTCOUNT_MASK;
     if count == 0 {
         return false;
@@ -12236,6 +12899,7 @@ unsafe fn poll_ep0_event_ring() -> bool {
             GEVNTSIZ_INTMASK | (event_size as u32 & GEVNTSIZ_SIZE_MASK),
         );
     }
+    bc5!(1); // write(GEVNTSIZ0) returned
     // Snapshot the producer-owned ring before acknowledging it. This is the
     // same ownership transition as Linux's evt->cache copy in
     // dwc3_check_event_buf(); process_event() must consume this stable copy.
@@ -12248,6 +12912,7 @@ unsafe fn poll_ep0_event_ring() -> bool {
     // trace without changing the live event handling.
     let first_offset = start_offset % event_size;
     unsafe { cache_invalidate(event_base + first_offset, 4) };
+    bc5!(2); // cache_invalidate returned
     let first_event = (event_base as *const u8).wrapping_add(first_offset);
     let first_word = unsafe {
         u32::from_le_bytes([
@@ -12257,7 +12922,9 @@ unsafe fn poll_ep0_event_ring() -> bool {
             read_volatile(first_event.add(3)),
         ])
     };
+    bc5!(3); // the four read_volatile() event bytes returned
     let first_dsts = unsafe { read(DSTS) };
+    bc5!(4); // read(DSTS) returned
     let first_dctl = unsafe { read(DCTL) };
     if trace::live_dwc3_first_event(
         count_register,
@@ -13813,6 +14480,19 @@ unsafe fn enable_gadget_controller_irq() {}
 /// the early boot loop until the normal interrupt controller owns the device.
 pub fn poll() {
     unsafe {
+        // Proof that the driver loop ran, written where every crate can read it. There is
+        // no other crate-independent way to say "poll() executed": a `static mut` is
+        // duplicated by the second `usb/` compilation.
+        //
+        // NOT latched, deliberately. The first version guarded this with a `static mut
+        // bool` and it read false on a second run: `.bss` is not guaranteed to be cleared
+        // between `fastboot boot` attempts the way the retained region is not either, and
+        // a latch that starts true can never write its marker. Writing every pass instead
+        // is safe here because the ring is 256 entries and `prev_boot_poll_ran()` asks
+        // "is there a POL1 anywhere in the ring" - a marker repeated every pass survives
+        // even a full wrap, and a marker that is never written stays absent.
+        // See usb/README.md §3.12.
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x504F_4C31); // "POL1"
         // Diagnostic quiet window (see mmio_quiet_active): after this many
         // seconds past the first Run/Stop, stop ALL controller MMIO access.
         if mmio_quiet_active() {

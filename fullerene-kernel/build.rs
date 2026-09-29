@@ -246,6 +246,7 @@ fn main() {
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_enblslpm)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_u2_freeclk_clear)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_park_poll)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_clear)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_set)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gctl_sofitpsync_clear)");
@@ -1013,6 +1014,9 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_U2_FREECLK_SET").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_u2_freeclk_set");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_PARK_POLL").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_park_poll");
+        }
         let retry_clear = env::var_os("FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR").is_some();
         let retry_set = env::var_os("FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET").is_some();
         if retry_clear && retry_set {
@@ -1044,6 +1048,13 @@ fn main() {
         }
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_UTMI_POSTRUN_READOUT") {
             println!("cargo:rustc-env=FULLERENE_USB_UTMI_POSTRUN_READOUT={value}");
+        }
+        // Pulse breadcrumbs: emit one host-visible DCTL Run/Stop pulse at each candidate site
+        // after the POSTRUN readout. The host counts attach lines, so this observes code the
+        // readout path cannot (every `usb2_live_word` reader sits before those sites, and the
+        // retained trace section does not survive the Android boot between two runs).
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_PULSE_BREADCRUMB") {
+            println!("cargo:rustc-env=FULLERENE_USB_PULSE_BREADCRUMB={value}");
         }
         if env::var_os("FULLERENE_AARCH64_USB_EP0_INITIAL_512").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_initial_512");
@@ -1615,6 +1626,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SKIP_USB2_PHY_RESET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_U2_FREECLK_CLEAR");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_U2_FREECLK_SET");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PARK_POLL");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GCTL_SOFITPSYNC_CLEAR");

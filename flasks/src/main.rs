@@ -278,6 +278,15 @@ struct Args {
     #[arg(long = "usb-utmi-postrun-readout", value_name = "SELECTOR")]
     usb_utmi_postrun_readout: Option<String>,
 
+    /// Emit one host-visible DCTL Run/Stop pulse at each site the handoff reaches AFTER the
+    /// POSTRUN readout. Run with `--usb-utmi-postrun-readout` omitted so the readout contributes
+    /// no pulses; then the host's `new high-speed USB device` line count minus one is exactly the
+    /// number of breadcrumb sites reached. Every on-device reader is blind past the readout block
+    /// (it runs at a single point inside the handoff) and the retained trace section does not
+    /// survive the Android boot between runs, so the host is the only place this is observable.
+    #[arg(long = "usb-pulse-breadcrumb", value_name = "LEVEL")]
+    usb_pulse_breadcrumb: Option<String>,
+
     /// Publish one PM8150 PON register through the attach-delay channel:
     /// seq (previous reset-reason bucket, the default), or a raw byte from
     /// wd2 (PMIC-watchdog enable/type), s1/s2 (watchdog timers), ctl, warm,
@@ -1080,6 +1089,8 @@ struct Args {
     /// controller reset, matching the Linux default when no DT quirk applies.
     #[arg(long)]
     usb_gadget_handoff_u2_freeclk_set: bool,
+    #[arg(long)]
+    usb_gadget_handoff_park_poll: bool,
 
     /// Bramble differential: wait for the host USB Reset event before
     /// arming the initial EP0 SETUP transfer.
@@ -3074,6 +3085,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_ep0_txfifo_fix: args.usb_gadget_handoff_ep0_txfifo_fix,
                 gadget_handoff_u2_freeclk_clear: args.usb_gadget_handoff_u2_freeclk_clear,
                 gadget_handoff_u2_freeclk_set: args.usb_gadget_handoff_u2_freeclk_set,
+                gadget_handoff_park_poll: args.usb_gadget_handoff_park_poll,
                 gadget_handoff_start_after_reset: args.usb_gadget_handoff_start_after_reset,
                 gadget_handoff_start_at_connect_done: args.usb_gadget_handoff_start_at_connect_done,
                 gadget_handoff_reset_resource: args.usb_gadget_handoff_reset_resource,
@@ -3115,6 +3127,7 @@ fn main() -> io::Result<()> {
                 signal_cmd_gate: args.usb_signal_cmd_gate.clone(),
                 utmi_preconnect_readout: args.usb_utmi_preconnect_readout.clone(),
                 utmi_postrun_readout: args.usb_utmi_postrun_readout.clone(),
+                pulse_breadcrumb: args.usb_pulse_breadcrumb.clone(),
                 pon_readout: args.usb_pon_readout.clone(),
                 signal_rsc_gate: args.usb_signal_rsc_gate.clone(),
                 signal_cfg_gate: args.usb_signal_cfg_gate.clone(),
@@ -3398,6 +3411,7 @@ struct Aarch64BuildConfig {
     gadget_handoff_ep0_txfifo_fix: bool,
     gadget_handoff_u2_freeclk_clear: bool,
     gadget_handoff_u2_freeclk_set: bool,
+    gadget_handoff_park_poll: bool,
     gadget_handoff_start_after_reset: bool,
     gadget_handoff_start_at_connect_done: bool,
     gadget_handoff_reset_resource: bool,
@@ -3436,6 +3450,7 @@ struct Aarch64BuildConfig {
     signal_cmd_gate: Option<String>,
     utmi_preconnect_readout: Option<String>,
     utmi_postrun_readout: Option<String>,
+    pulse_breadcrumb: Option<String>,
     pon_readout: Option<String>,
     signal_rsc_gate: Option<String>,
     signal_cfg_gate: Option<String>,
@@ -3613,6 +3628,7 @@ fn build_aarch64_kernel(
         gadget_handoff_ep0_txfifo_fix,
         gadget_handoff_u2_freeclk_clear,
         gadget_handoff_u2_freeclk_set,
+        gadget_handoff_park_poll,
         gadget_handoff_start_after_reset,
         gadget_handoff_start_at_connect_done,
         gadget_handoff_reset_resource,
@@ -3651,6 +3667,7 @@ fn build_aarch64_kernel(
         signal_cmd_gate,
         utmi_preconnect_readout,
         utmi_postrun_readout,
+        pulse_breadcrumb,
         pon_readout,
         signal_rsc_gate,
         signal_cfg_gate,
@@ -3708,6 +3725,8 @@ fn build_aarch64_kernel(
         "FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES",
         "FULLERENE_AARCH64_USB_UTMI_PRECONNECT_READOUT",
         "FULLERENE_AARCH64_USB_UTMI_POSTRUN_READOUT",
+        // Consumed by fullerene-kernel/build.rs; must survive into the child Cargo env.
+        "FULLERENE_AARCH64_USB_PULSE_BREADCRUMB",
         "FULLERENE_AARCH64_USB_HSPHY_RESTORE_SUSPEND_N_AFTER_RUNSTOP",
         "FULLERENE_AARCH64_USB_HSPHY_RESTORE_SUSPEND_N_SELECTED_AFTER_RUNSTOP",
         "FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR",
@@ -4566,6 +4585,9 @@ fn build_aarch64_kernel(
     if gadget_handoff_u2_freeclk_set {
         push_env("FULLERENE_AARCH64_USB_U2_FREECLK_SET", "1".to_owned());
     }
+    if gadget_handoff_park_poll {
+        push_env("FULLERENE_AARCH64_USB_PARK_POLL", "1".to_owned());
+    }
     if gadget_handoff_start_after_reset {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_RESET",
@@ -4753,6 +4775,9 @@ fn build_aarch64_kernel(
     }
     if let Some(value) = utmi_postrun_readout {
         push_env("FULLERENE_AARCH64_USB_UTMI_POSTRUN_READOUT", value);
+    }
+    if let Some(value) = pulse_breadcrumb {
+        push_env("FULLERENE_AARCH64_USB_PULSE_BREADCRUMB", value);
     }
     if let Some(value) = pon_readout {
         push_env("FULLERENE_AARCH64_USB_PON_READOUT", value);

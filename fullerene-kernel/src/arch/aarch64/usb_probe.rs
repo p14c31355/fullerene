@@ -588,6 +588,7 @@ fn utmi_gate_selector() -> Option<&'static str> {
         Some("dwc3-cmd1-act") => Some("dwc3-cmd1-act"),
         Some("dwc3-trb") => Some("dwc3-trb"),
         Some("dwc3-debug-valid") => Some("dwc3-debug-valid"),
+        Some("dwc3-gate-probe") => Some("dwc3-gate-probe"),
         Some("dwc3-debug-txfifo") => Some("dwc3-debug-txfifo"),
         Some("dwc3-debug-rxfifo") => Some("dwc3-debug-rxfifo"),
         Some("dwc3-debug-txreq") => Some("dwc3-debug-txreq"),
@@ -797,14 +798,43 @@ fn env_seconds(value: Option<&'static str>, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-#[cfg(all(
-    fullerene_aarch64_usb_ep0_signal_probe,
-    fullerene_aarch64_usb_gadget_handoff_probe
-))]
+// This is the device's driver loop, not a diagnostic: it owns the only
+// `loop { usb::poll(); }`, and `usb::poll()` is what reads the host's SETUP. It used
+// to be `#[cfg(all(ep0_signal_probe, gadget_handoff_probe))]` and was therefore
+// compiled out of the profile that runs. See usb/README.md §2 (defect 2).
 fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_ready: bool) -> ! {
-    // lnk-nib entry check: early return proves entry; T+37-39 means gate/cfg missed.
-    if cmd_gate_is("lnk-nib") {
-        usb::park_for_seconds(0);
+    // Entry marker, first statement: a marker below the parks cannot tell "never
+    // called" from "called and parked". Read back crate-independently via the retained
+    // trace. See usb/README.md §3.1, §3.3.
+    usb::trace_marker(
+        usb::TRACE_PROBE_WATCHDOG,
+        0x5349_4700 | (signal_smmu_code & 0xff),
+    );
+
+    // Drive first, before any gate: see usb/README.md §2 (diagnostics must observe,
+    // never control, whether the driver runs). `usb::poll()` -> `poll_setup_buffer()`
+    // -> `handle_setup()`, so one pass consumes a SETUP the core already DMAed.
+    //
+    // TWO PASSES WERE NOT ENOUGH, and the reason is measurable: on a *successful*
+    // handoff the bounded loop at :846 is skipped (`!gadget_ready` is false) and the
+    // real loop at :1341 sits behind the ~500 diagnostic lines between here and there,
+    // so this window was the entire pass budget. The host attaches, sends the
+    // descriptor request and times out ~6 s later (attach 09:48:09.786, `-110` at
+    // 09:48:15.398); two passes complete in microseconds. Measured on 2026-09-28:
+    // `dwc3-setupnz` TRUE (the SETUP IS in the adopted page) while `setupdr` FALSE
+    // (nothing read it). Cover the host's timeout instead.
+    //
+    // See usb/README.md §1.3 and §2.
+    let drive_secs = env_seconds(option_env!("FULLERENE_USB_PROBE_DRIVE_SECS"), 10);
+    let drive_frequency = probe_counter_frequency();
+    let drive_until =
+        probe_counter().saturating_add(drive_frequency.saturating_mul(drive_secs));
+    while drive_frequency != 0 && probe_counter() < drive_until {
+        usb::wdt_pet();
+        usb::poll();
+        if let Some(queue) = usb::dwc3_debug_window_queue() {
+            usb::trace_dwc3_debug_window_sample(queue);
+        }
     }
     // Disarm assembly recovery; trace-quiet watchdog owns recovery here.
     unsafe {
@@ -824,7 +854,18 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // which handoff stage failed (1->~35 s, 4->~80 s, 7->~125 s).
     if !gadget_ready {
         let stage = usb::gadget_handoff_failure_stage().clamp(1, 12) as u64;
-        usb::park_for_seconds(stage * 15);
+        // Same window as `park_for_seconds(stage * 15)`, but polling inside it: a wait
+        // that never drives means the host goes unanswered for 15-180 s.
+        // See usb/README.md §1.3 and §2 (defect 4).
+        let frequency = probe_counter_frequency();
+        let deadline = probe_counter().saturating_add(frequency.saturating_mul(stage * 15));
+        while frequency != 0 && probe_counter() < deadline {
+            usb::wdt_pet();
+            usb::poll();
+            if let Some(queue) = usb::dwc3_debug_window_queue() {
+                usb::trace_dwc3_debug_window_sample(queue);
+            }
+        }
     }
     // `dsi` gate: the display bring-up runs in this pre-gate path, whose timing the
     // host CAN see, rather than in the post-handoff gates (whose parks read 67 s
@@ -1885,6 +1926,19 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             // makes the result readable even when Android overwrites the
             // retained trace during recovery.
             usb::trace_dwc3_boundary();
+            // The probe binary is a SECOND compilation of `usb/` (usb_probe.rs is a
+            // crate root that does `mod usb;`), so every `static mut` in `usb/` exists
+            // twice - once in the kernel crate, once here. `LIVE_DWC3_DEBUG_VALID` and
+            // the queue min/max vectors therefore belong to this crate, and the kernel's
+            // handoff stages (which call `trace_dwc3_debug_stage`) fill the OTHER copy.
+            // Without this call the `dwc3-debug-*` selectors read this crate's copy,
+            // find `VALID == false`, and every one of them returns 0 - which reads as
+            // "the DWC3 debug queues are empty" but is only "this crate never sampled".
+            // Measured: `--utmi-postrun-readout dwc3-debug-valid` returned FALSE, both
+            // before the call existed and when it sat after this block's park (1918).
+            // Sampling is read-only (GDBGFIFOSPACE takes a queue selector on write and
+            // returns SPACE_AVAILABLE on read): no events consumed, no endpoint state.
+            usb::trace_dwc3_debug_sample();
             let code = usb::utmi_readout_code(selector).min(15);
             let tag = if selector.starts_with("ss-") {
                 0x5353_0000 // "SS"
@@ -2729,6 +2783,11 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
             }
         }
     }
+    // "INB4"/"INAF": did the handoff call RETURN? Its own milestone can be 15 and the
+    // function can still never come back if the watchdog bites inside one of its
+    // un-petted waits. One marker either side of the call answers that directly.
+    // See usb/README.md §3.14.
+    usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x494E_4234); // "INB4"
     let gadget_ready = if cfg!(any(
         fullerene_aarch64_usb_gadget_handoff_probe,
         fullerene_aarch64_usb_pullup_probe
@@ -2778,18 +2837,43 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
     } else {
         usb::init_usb2_handoff()
     };
+    usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x494E_4146); // "INAF"
     // Preserve direct-only failure attribution: no signal rescue or bare
     // pull-up publication after the selected initializer returned false.
-    if !gadget_ready && option_env!("FULLERENE_AARCH64_USB_DIRECT_ONLY") == Some("1") {
-        reset_after_probe_failure();
+    // "PSTA" stage markers into the retained trace so they are crate-independent.
+    // Low byte of `status`: 0x01 init returned; 0x02/0x12 gadget_ready true/false;
+    // 0x03 survived the reset check; 0x04 entered the block calling the probe.
+    // See usb/README.md §3.1.
+    usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5053_5400 | 0x01);
+    if !gadget_ready {
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5053_5400 | 0x12);
+    } else {
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5053_5400 | 0x02);
     }
+    // No reset here: `DIRECT_ONLY` + `!gadget_ready` used to reset the handset *before*
+    // `run_ep0_signal_probe` was called, so a failure was indistinguishable from a probe
+    // that never started. `run_ep0_signal_probe` publishes the failure stage itself.
+    // See usb/README.md §2 (defect 3).
+    usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5053_5400 | 0x03);
     // The signal channel owns only failed post-init timelines; successful enumeration must not be reset
     // by diagnostics.
-    #[cfg(all(
-        fullerene_aarch64_usb_ep0_signal_probe,
-        fullerene_aarch64_usb_gadget_handoff_probe
-    ))]
+    // NOT behind a diagnostic cfg. This used to be
+    // `#[cfg(all(ep0_signal_probe, gadget_handoff_probe))]`, and that is the whole bug:
+    // `run_ep0_signal_probe` owns the ONLY `loop { usb::poll(); }` in the probe binary
+    // (:1310-1312), `usb::poll()` is what calls `poll_setup_buffer()` and `handle_setup()`,
+    // and the reproduced profile deliberately does not pass `--usb-ep0-signal-probe`
+    // (pinned by the `candidate_build_command_matches_the_reproduced_profile` test at
+    // bramble-usb.rs:6601). So the call, the loop and the reader were all compiled out of
+    // every run this session, and the host's GET_DESCRIPTOR was never answered.
+    //
+    // Measured: `dwc3-setupnz` true (the core DMAed the SETUP into the EP0 buffer) while
+    // a retained-trace marker written as the FIRST STATEMENT of `run_ep0_signal_probe`
+    // never appeared, and `setupdr` (`TRACE_HARVEST_SETUP`, also from the retained trace,
+    // so crate-independent) read false.
+    //
+    // The consumer is not a diagnostic. Driving `usb::poll()` is what the device does.
     {
+        usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x5053_5400 | 0x04);
         // Failed handoff or diagnostic gate: observe the bounded window, then continue/park as decided.
         let gate_active = signal_cmd_gate_active();
         // PROBE-CHECK: early park proves cfg block reached; ~37-39 means absent or unreached. stall-map
@@ -2799,9 +2883,11 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
         {
             usb::park_for_seconds(0);
         }
-        if !gadget_ready || gate_active {
-            run_ep0_signal_probe(_signal_smmu_code, _signal_link_state, gadget_ready);
-        }
+        // Unconditional: `run_ep0_signal_probe` handles `gadget_ready` itself, and
+        // gating the call on `!gadget_ready` meant a SUCCESSFUL handoff started no
+        // consumer at all. See usb/README.md §2 (defect 1).
+        let _ = gate_active;
+        run_ep0_signal_probe(_signal_smmu_code, _signal_link_state, gadget_ready);
     }
     if gadget_ready {
         // lnk-nib success-path readout: settle 1s, bucket raw USBLNKST/halt/runstop, then reset 1s per

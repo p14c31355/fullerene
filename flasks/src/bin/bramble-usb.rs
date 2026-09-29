@@ -785,6 +785,14 @@ struct LoopArgs {
     /// Set GUSB2PHYCFG.U2_FREECLK_EXISTS after controller reset (A/B).
     #[arg(long)]
     u2_freeclk_set: bool,
+    /// Drain the DWC3 event ring inside `park_for_seconds()` (A/B).
+    ///
+    /// A failed handoff parks in a pure spin that never called `poll()`, so
+    /// Connect Done, USB Reset and SETUP were discarded for the whole wait
+    /// while the pull-up stayed advertised. Enabling this makes the park
+    /// consume the ring, so events arriving during it can still be seen.
+    #[arg(long)]
+    park_poll: bool,
     /// Force-clear DWC3 GUCTL3.USB20_RETRY_DISABLE (STAR A/B).
     #[arg(long)]
     guctl3_retry_clear: bool,
@@ -948,6 +956,19 @@ struct LoopArgs {
     /// Publish a read-only live USB2/HS-PHY snapshot field after Run/Stop.
     #[arg(long = "utmi-postrun-readout", value_name = "SELECTOR")]
     utmi_postrun_readout: Option<String>,
+    /// Emit one host-visible DCTL Run/Stop pulse at each post-readout site the handoff reaches.
+    /// The host prints one `new high-speed USB device` line per pulse, so with `--utmi-postrun-readout`
+    /// omitted the line count minus one is the number of breadcrumb sites reached. Every on-device
+    /// reader is blind past the readout block, and the retained `.usb_trace` section does not
+    /// survive the Android boot between runs, so the host is the only place this is observable.
+    /// See usb/README.md §3.22.
+    #[arg(
+        long = "pulse-breadcrumb",
+        value_name = "LEVEL",
+        num_args = 0..=1,
+        default_missing_value = "4"
+    )]
+    pulse_breadcrumb: Option<String>,
     /// Publish one PM8150 PON register through the attach-delay channel:
     /// seq (previous reset-reason bucket, the default), or a raw byte from
     /// wd2 (PMIC-watchdog enable/type), s1/s2 (watchdog timers), ctl, warm,
@@ -1164,6 +1185,7 @@ impl Default for LoopArgs {
             ep0_txfifo_fix: false,
             u2_freeclk_clear: false,
             u2_freeclk_set: false,
+            park_poll: false,
             guctl3_retry_clear: false,
             guctl3_retry_set: false,
             sofitpsync_clear: false,
@@ -1210,6 +1232,7 @@ impl Default for LoopArgs {
             signal_cmd_gate: None,
             utmi_preconnect_readout: None,
             utmi_postrun_readout: None,
+            pulse_breadcrumb: None,
             pon_readout: None,
             signal_rsc_gate: None,
             signal_cfg_gate: None,
@@ -5361,6 +5384,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.u2_freeclk_set {
         arguments.push("--usb-gadget-handoff-u2-freeclk-set".to_owned());
     }
+        if args.park_poll {
+            arguments.push("--usb-gadget-handoff-park-poll".to_owned());
+        }
     if args.reset_resource {
         arguments.push("--usb-gadget-handoff-reset-resource".to_owned());
     }
@@ -5490,6 +5516,10 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if let Some(value) = &args.utmi_preconnect_readout {
         arguments.push("--usb-utmi-preconnect-readout".to_owned());
         arguments.push(value.clone());
+    }
+    if let Some(level) = &args.pulse_breadcrumb {
+        arguments.push("--usb-pulse-breadcrumb".to_owned());
+        arguments.push(level.clone());
     }
     if let Some(value) = &args.utmi_postrun_readout {
         arguments.push("--usb-utmi-postrun-readout".to_owned());

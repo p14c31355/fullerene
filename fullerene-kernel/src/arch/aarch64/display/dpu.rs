@@ -63,6 +63,21 @@ pub unsafe fn active_layer() -> Option<(usize, usize)> {
 ///
 /// Returns the number of 32-bit words written, or `None` if no active layer was found.
 pub unsafe fn paint_active_framebuffer_white() -> Option<usize> {
+    unsafe { paint_active_framebuffer(0xffff_ffff) }
+}
+
+/// Paint the active scanout buffer a solid colour, in place.
+///
+/// Generalised from `paint_active_framebuffer_white` so a caller can alternate between two colours.
+/// That turns the panel into a host-visible *clock*: the screen is the only channel that exists
+/// before the USB pull-up rises, and the probe has no UART - `usb/log.rs` compiles its logging out
+/// entirely under `fullerene_aarch64_usb_gadget_handoff_probe`. With a webcam pointed at the
+/// handset, each colour change is a timestamp and the interval between two of them is exactly what
+/// has never been measurable: the time the probe spends before it reaches the attach.
+///
+/// Measured 2026-09-29: `fastboot boot` -> attach is 40 s while the budget inherited from Fastboot is
+/// ~25 s, so ~15 s has to be found inside the probe's own startup. See usb/README.md §3.31.
+pub unsafe fn paint_active_framebuffer(fill: u32) -> Option<usize> {
     let (_block, addr) = unsafe { active_layer() }?;
     // The DT's "Display Reserved" region is 0xA0000000 + 0x0240_0000 (36 MiB), so a
     // full-size buffer fits. Stay conservative: paint 1080 * 2340 pixels.
@@ -70,7 +85,7 @@ pub unsafe fn paint_active_framebuffer_white() -> Option<usize> {
     let dst = addr as *mut u32;
     for i in 0..words {
         unsafe {
-            core::ptr::write_volatile(dst.add(i), 0xffff_ffff);
+            core::ptr::write_volatile(dst.add(i), fill);
         }
     }
     Some(words)
