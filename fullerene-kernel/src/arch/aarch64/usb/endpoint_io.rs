@@ -910,15 +910,17 @@ pub(super) unsafe fn teardown_data_endpoints() {
 /// Cancel outstanding ordinary requests at the runtime-PM boundary while
 /// retaining endpoint configuration for resume. DWC3 must no longer own a
 /// TRB when the UDC is marked suspended.
-pub(super) unsafe fn suspend_data_transfers() {
+pub(super) unsafe fn suspend_data_transfers() -> bool {
     unsafe {
         if !DATA_ENDPOINTS_READY {
-            return;
+            return true;
         }
         for endpoint in 2..=3 {
             let index = endpoint - 2;
             if DATA_RESOURCE_INDEX[index] != 0 {
-                let _ = end_transfer(endpoint);
+                if !end_transfer(endpoint) {
+                    return false;
+                }
             }
             let address = if endpoint == 3 { 0x83 } else { 0x02 };
             let slot = DATA_REQUEST_SLOTS[index];
@@ -935,13 +937,14 @@ pub(super) unsafe fn suspend_data_transfers() {
             DATA_RESOURCE_INDEX[index] = 0;
             DATA_REQUEST_SLOTS[index] = usize::MAX;
         }
+        true
     }
 }
 
 /// Cancel live GSI requests without discarding their registered rings or
 /// client doorbells. The function receives an explicit suspend callback and
 /// can requeue after resume; no request is silently left owned by DWC3.
-pub(super) unsafe fn suspend_gsi_transfers() {
+pub(super) unsafe fn suspend_gsi_transfers() -> bool {
     unsafe {
         for index in 0..3 {
             if !GSI_CHANNEL_READY[index] {
@@ -949,11 +952,13 @@ pub(super) unsafe fn suspend_gsi_transfers() {
             }
             let endpoint = GSI_CHANNEL_ENDPOINT[index];
             let event_buffer = (index + 1) as u32;
+            let slot = GSI_REQUEST_SLOTS[index];
             if GSI_RING_ACTIVE[index] {
-                let _ = end_gsi_transfer(endpoint, event_buffer);
+                if !end_gsi_transfer(endpoint, event_buffer) {
+                    return false;
+                }
             }
             let address = endpoint as u8 | if endpoint & 1 != 0 { 0x80 } else { 0 };
-            let slot = GSI_REQUEST_SLOTS[index];
             if slot != usize::MAX {
                 GadgetDriver::on_gsi_data_complete(gadget_mut(), address, 0, true);
                 let _ = udc_mut().release(address, slot);
@@ -966,6 +971,7 @@ pub(super) unsafe fn suspend_gsi_transfers() {
         if GSI_GADGET_BOUND {
             GadgetDriver::on_gsi_channel_suspend(gadget_mut());
         }
+        true
     }
 }
 

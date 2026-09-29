@@ -1,9 +1,24 @@
 #![cfg_attr(any(target_os = "none", target_os = "uefi"), no_std)]
 #![cfg_attr(any(target_os = "none", target_os = "uefi"), no_main)]
 #![feature(abi_x86_interrupt)]
+#![cfg_attr(target_os = "uefi", feature(f128))]
 #![cfg_attr(not(test), feature(alloc_error_handler))]
 #![allow(unused_features)]
 extern crate alloc;
+
+// Newer nightly compiler-builtins lowers the software f128 FMA intrinsic to
+// the C `fmal` symbol on UEFI, where there is no C math library. Forward that
+// intrinsic to compiler-builtins' own IEEE-754 implementation instead.
+#[cfg(target_os = "uefi")]
+#[unsafe(no_mangle)]
+pub extern "C" fn fmal(x: f128, y: f128, z: f128) -> f128 {
+    unsafe extern "C" {
+        fn fmaf128(x: f128, y: f128, z: f128) -> f128;
+    }
+
+    // SAFETY: compiler-builtins exports this function with the matching C ABI.
+    unsafe { fmaf128(x, y, z) }
+}
 
 #[cfg(test)]
 #[path = "arch/aarch64/display/mod.rs"]

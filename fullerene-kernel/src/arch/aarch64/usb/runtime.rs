@@ -133,54 +133,56 @@ pub(super) fn note_runtime_event(event: super::super::platform::bramble::UsbRunt
 }
 
 unsafe fn apply_typec_event(event: super::super::platform::bramble::TypecEvent) {
-    trace_event(TRACE_TYPEC_EVENT, event as u32, 0, 0, 0, 0);
-    match event {
-        super::super::platform::bramble::TypecEvent::DetachDetected => {
-            // Linux's role-switch callback stops advertising before it tears
-            // down the UDC queues. Do not issue endpoint commands after the
-            // PMIC has removed the cable.
-            TYPEC_DETACH_SEEN = true;
-            unbind_function();
-            teardown_data_endpoints();
-            reset_gsi_channels();
-            write(DALEPENA, 0);
-            let _ = run_stop_device(false);
-            ENDPOINTS_READY = false;
-            CONFIGURED = false;
-            DATA_ENDPOINTS_READY = false;
-            DATA_REQUEST_SLOTS = [usize::MAX; 2];
-            DATA_RESOURCE_INDEX = [0; 2];
-            GadgetDriver::reset(gadget_mut());
-            udc_mut().reset();
-            note_runtime_event(super::super::platform::bramble::UsbRuntimeEvent::Disconnect);
+    unsafe {
+        trace_event(TRACE_TYPEC_EVENT, event as u32, 0, 0, 0, 0);
+        match event {
+            super::super::platform::bramble::TypecEvent::DetachDetected => {
+                // Linux's role-switch callback stops advertising before it tears
+                // down the UDC queues. Do not issue endpoint commands after the
+                // PMIC has removed the cable.
+                TYPEC_DETACH_SEEN = true;
+                unbind_function();
+                teardown_data_endpoints();
+                reset_gsi_channels();
+                write(DALEPENA, 0);
+                let _ = run_stop_device(false);
+                ENDPOINTS_READY = false;
+                CONFIGURED = false;
+                DATA_ENDPOINTS_READY = false;
+                DATA_REQUEST_SLOTS = [usize::MAX; 2];
+                DATA_RESOURCE_INDEX = [0; 2];
+                GadgetDriver::reset(gadget_mut());
+                udc_mut().reset();
+                note_runtime_event(super::super::platform::bramble::UsbRuntimeEvent::Disconnect);
+            }
+            super::super::platform::bramble::TypecEvent::HostDetected => {
+                // The PMIC role-switch may move directly from device to source
+                // when another Type-C partner is attached. A source/host role
+                // must never leave the old gadget pull-up or DMA request live.
+                unbind_function();
+                teardown_data_endpoints();
+                reset_gsi_channels();
+                write(DALEPENA, 0);
+                let _ = run_stop_device(false);
+                ENDPOINTS_READY = false;
+                CONFIGURED = false;
+                DATA_ENDPOINTS_READY = false;
+                DATA_REQUEST_SLOTS = [usize::MAX; 2];
+                DATA_RESOURCE_INDEX = [0; 2];
+                GadgetDriver::reset(gadget_mut());
+                udc_mut().reset();
+                note_runtime_event(super::super::platform::bramble::UsbRuntimeEvent::Disconnect);
+            }
+            super::super::platform::bramble::TypecEvent::AttachDetected => {
+                // Attach is the prerequisite for the Qualcomm VBUS/session
+                // override. Connect Done will reconfigure EP0 and rearm SETUP
+                // when the host starts the new USB session.
+                note_runtime_event(super::super::platform::bramble::UsbRuntimeEvent::TypecAttached);
+                qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
+                qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
+            }
+            _ => {}
         }
-        super::super::platform::bramble::TypecEvent::HostDetected => {
-            // The PMIC role-switch may move directly from device to source
-            // when another Type-C partner is attached. A source/host role
-            // must never leave the old gadget pull-up or DMA request live.
-            unbind_function();
-            teardown_data_endpoints();
-            reset_gsi_channels();
-            write(DALEPENA, 0);
-            let _ = run_stop_device(false);
-            ENDPOINTS_READY = false;
-            CONFIGURED = false;
-            DATA_ENDPOINTS_READY = false;
-            DATA_REQUEST_SLOTS = [usize::MAX; 2];
-            DATA_RESOURCE_INDEX = [0; 2];
-            GadgetDriver::reset(gadget_mut());
-            udc_mut().reset();
-            note_runtime_event(super::super::platform::bramble::UsbRuntimeEvent::Disconnect);
-        }
-        super::super::platform::bramble::TypecEvent::AttachDetected => {
-            // Attach is the prerequisite for the Qualcomm VBUS/session
-            // override. Connect Done will reconfigure EP0 and rearm SETUP
-            // when the host starts the new USB session.
-            note_runtime_event(super::super::platform::bramble::UsbRuntimeEvent::TypecAttached);
-            qscratch_set(QSCRATCH_SS_PHY_CTRL, 1 << 24);
-            qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
-        }
-        _ => {}
     }
 }
 
@@ -219,17 +221,21 @@ pub(super) const fn power_event_requests_resume(status: u32) -> bool {
 /// qpr1 resolves that ambiguity from the DWC3 link state.
 #[inline]
 unsafe fn update_p3_state(status: u32) {
-    let p3_in = status & PWR_EVENT_POWERDOWN_IN_P3 != 0;
-    let p3_out = status & PWR_EVENT_POWERDOWN_OUT_P3 != 0;
-    if p3_in && !p3_out {
-        USB_IN_P3 = true;
-    } else if p3_out && !p3_in {
-        USB_IN_P3 = false;
-    } else if p3_in && p3_out && cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_power_events)
-    {
-        // DWC_usb31 encodes U3 as 0x03 in the link-state field, matching the
-        // source driver's DWC3_LINK_STATE_U3 test.
-        USB_IN_P3 = gdb_ltssm_link_state() == 0x03;
+    unsafe {
+        let p3_in = status & PWR_EVENT_POWERDOWN_IN_P3 != 0;
+        let p3_out = status & PWR_EVENT_POWERDOWN_OUT_P3 != 0;
+        if p3_in && !p3_out {
+            USB_IN_P3 = true;
+        } else if p3_out && !p3_in {
+            USB_IN_P3 = false;
+        } else if p3_in
+            && p3_out
+            && cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_power_events)
+        {
+            // DWC_usb31 encodes U3 as 0x03 in the link-state field, matching the
+            // source driver's DWC3_LINK_STATE_U3 test.
+            USB_IN_P3 = gdb_ltssm_link_state() == 0x03;
+        }
     }
 }
 
@@ -327,26 +333,27 @@ pub(super) unsafe fn service_power_event() {
 /// before a stable GIC owner exists; the IRQ path calls the same operation
 /// immediately for USB-related parent interrupts.
 pub(super) unsafe fn poll_typec_state(force: bool) {
-    if !TYPEC_STATE_VALID {
-        return;
-    }
-    // Before the GIC/PMIC child IRQ route is live, bounded polling bridges
-    // the handoff gap. Once Linux's normal role-change interrupt boundary is
-    // installed, keep the PMIC read on that IRQ path only; polling every USB
-    // event can sample a transient CC state and falsely apply detach to a
-    // live gadget.
-    if super::super::platform::bramble::usb_resource_state().irq_routes_enabled {
-        return;
-    }
-    TYPEC_POLL_TICKS = TYPEC_POLL_TICKS.wrapping_add(1);
-    if !force && TYPEC_POLL_TICKS & 0x3fff != 0 {
-        return;
-    }
-    let state = unsafe { &mut *addr_of_mut!(TYPEC_STATE) };
-    if let Some(event) = unsafe { super::super::platform::bramble::refresh_usb_device_role(state) }
-    {
-        TYPEC_LANE_B = state.orientation_reverse;
-        unsafe { apply_typec_event(event) };
+    unsafe {
+        if !TYPEC_STATE_VALID {
+            return;
+        }
+        // Before the GIC/PMIC child IRQ route is live, bounded polling bridges
+        // the handoff gap. Once Linux's normal role-change interrupt boundary is
+        // installed, keep the PMIC read on that IRQ path only; polling every USB
+        // event can sample a transient CC state and falsely apply detach to a
+        // live gadget.
+        if super::super::platform::bramble::usb_resource_state().irq_routes_enabled {
+            return;
+        }
+        TYPEC_POLL_TICKS = TYPEC_POLL_TICKS.wrapping_add(1);
+        if !force && TYPEC_POLL_TICKS & 0x3fff != 0 {
+            return;
+        }
+        let state = &mut *addr_of_mut!(TYPEC_STATE);
+        if let Some(event) = super::super::platform::bramble::refresh_usb_device_role(state) {
+            TYPEC_LANE_B = state.orientation_reverse;
+            apply_typec_event(event);
+        }
     }
 }
 
@@ -389,6 +396,7 @@ pub fn runtime_suspend() -> bool {
             let _ = set_gsi_doorbell_blocked(false);
             return false;
         }
+        let usb2_suspend_config = read(GUSB2PHYCFG0) & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM);
         let _ = prepare_usb2_suspend();
         if QMP_PHY_READY {
             // The QMP driver keeps the connected SuperSpeed PHY powered and
@@ -397,6 +405,14 @@ pub fn runtime_suspend() -> bool {
             qmp_set_autonomous_mode(true);
         }
         if !run_stop_device(false) {
+            if QMP_PHY_READY {
+                qmp_set_autonomous_mode(false);
+            }
+            let usb2 = read(GUSB2PHYCFG0);
+            write(
+                GUSB2PHYCFG0,
+                (usb2 & !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM)) | usb2_suspend_config,
+            );
             let _ = set_gsi_doorbell_blocked(false);
             return false;
         }
@@ -404,8 +420,20 @@ pub fn runtime_suspend() -> bool {
         // before collapsing the USB clock/power domain so a stale status bit
         // cannot re-enter the active transition while the domain is closing.
         let _ = super::super::platform::bramble::set_usb_power_event_irq_enabled(false);
-        suspend_data_transfers();
-        suspend_gsi_transfers();
+        if !suspend_data_transfers() || !suspend_gsi_transfers() {
+            if QMP_PHY_READY {
+                qmp_set_autonomous_mode(false);
+            }
+            let usb2 = read(GUSB2PHYCFG0);
+            write(
+                GUSB2PHYCFG0,
+                (usb2 & !(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM)) | usb2_suspend_config,
+            );
+            let _ = run_stop_device(true);
+            let _ = super::super::platform::bramble::set_usb_power_event_irq_enabled(true);
+            let _ = set_gsi_doorbell_blocked(false);
+            return false;
+        }
         udc_mut().suspend();
         note_runtime_event(super::super::platform::bramble::UsbRuntimeEvent::Suspend);
         if !super::super::platform::bramble::apply_usb_performance(

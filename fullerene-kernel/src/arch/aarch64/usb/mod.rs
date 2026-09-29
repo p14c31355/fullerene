@@ -1587,6 +1587,10 @@ fn note_probe_ep0_progress() {
 pub fn gadget_handoff_failure_stage() -> u32 {
     unsafe { GADGET_HANDOFF_FAILURE_STAGE }
 }
+#[cfg(not(fullerene_aarch64_usb_gadget_handoff_probe))]
+pub fn gadget_handoff_failure_stage() -> u32 {
+    0
+}
 
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 pub fn gadget_handoff_stage_probe_enabled() -> bool {

@@ -8,6 +8,11 @@ use super::*;
 /// because the trace survives the in-boot DMA-region clear.
 pub(super) unsafe fn harvest_trace_outcome() {
     unsafe {
+        TRACE_HARVEST = 0xFFFF_FFFF;
+        TRACE_HARVEST_LAST = 0xFFFF_FFFF;
+        TRACE_HARVEST_EP1 = 0xFFFF_FFFF;
+        TRACE_HARVEST_RSC = 0xFFFF_FFFF;
+        TRACE_HARVEST_CFG = 0xFFFF_FFFF;
         let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
         let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
         if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION {
@@ -348,9 +353,7 @@ pub(super) unsafe fn capture_ss_state_snapshot() {
 /// aperture is known-good before the readout path runs.
 pub fn latch_snpsid() {
     unsafe {
-        if trace::SHARED_SNPSID == 0 {
-            trace::SHARED_SNPSID = read(GSNPSID);
-        }
+        trace::SHARED_SNPSID = read(GSNPSID);
     }
 }
 
@@ -968,7 +971,7 @@ pub(super) unsafe fn usb2_live_word(word: &str) -> u32 {
             "lnkst" => {
                 // DSTS.USBLNKST - what link state does the controller think it
                 // is in? The phy.rs comment predicts a bogus "On" is possible.
-                (read(DSTS) >> 22) & 0xf
+                (read(DSTS) >> 18) & 0xf
             }
             "susphy" => {
                 // GUSB2PHYCFG.SUSPHY - is the PHY being told to suspend, which
@@ -1527,16 +1530,7 @@ pub fn rescue_read64() -> u32 {
         if dsts & DSTS_DEVCTRLHLT != 0 || (dsts >> 18) & 0xf != 0 {
             return 0;
         }
-        let setup = ep0_setup_data_ptr();
-        cache_invalidate(setup as usize, 8);
-        let mut latched = false;
-        for offset in 0..8 {
-            if read_volatile(setup.add(offset)) != 0 {
-                latched = true;
-                break;
-            }
-        }
-        if latched {
+        if setup_packet_pending() {
             // Mirror the fresh_setup path: the latched SETUP overrides any
             // stale phase.
             EP0_STATE = Ep0State::Setup;

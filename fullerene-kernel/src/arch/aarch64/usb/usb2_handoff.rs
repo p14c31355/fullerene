@@ -174,7 +174,7 @@ pub fn init_usb2_pullup_handoff() -> bool {
             QSCRATCH_HS_PHY_CTRL,
             (1 << 20) | (1 << 28), // UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL
         );
-        if unsafe { run_stop_device(true) } {
+        if run_stop_device(true) {
             log_puts("usb pullup: DWC3 RUN/STOP active\n");
             return true;
         }
@@ -381,14 +381,16 @@ pub(super) unsafe fn set_direct_usb2_vbus_override() {
     // override rather than part of the qpr1 peripheral-start contract.
     // When the source-vbus-only A/B is selected, clear that inherited bit
     // explicitly: qscratch_set() is an OR helper and cannot remove it.
-    if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_vbus_only) {
-        let mut value = read_qscratch(QSCRATCH_HS_PHY_CTRL);
-        value &= !(1 << 28);
-        value |= 1 << 20;
-        write_qscratch(QSCRATCH_HS_PHY_CTRL, value);
-        let _ = read_qscratch(QSCRATCH_HS_PHY_CTRL);
-    } else {
-        qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
+    unsafe {
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_source_vbus_only) {
+            let mut value = read_qscratch(QSCRATCH_HS_PHY_CTRL);
+            value &= !(1 << 28);
+            value |= 1 << 20;
+            write_qscratch(QSCRATCH_HS_PHY_CTRL, value);
+            let _ = read_qscratch(QSCRATCH_HS_PHY_CTRL);
+        } else {
+            qscratch_set(QSCRATCH_HS_PHY_CTRL, (1 << 20) | (1 << 28));
+        }
     }
 }
 

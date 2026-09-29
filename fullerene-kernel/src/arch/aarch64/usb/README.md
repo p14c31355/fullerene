@@ -58,6 +58,12 @@ the linker script places that section once (`build.rs:2489`,
 (`allocator.rs:193-208`). `SHARED_DMA_ADOPTED` and its two companions now live there
 too. No linker-script or allocator change was needed — the section already existed.
 
+### 1.3 A `-> !` function is a one-way door into the diagnostics
+
+`run_ep0_signal_probe` is `-> !`. Anything below a `park_for_seconds` in it is
+unreachable for as long as that park lasts. The failed-handoff park alone is
+`stage * 15` seconds — up to 180.
+
 ### 1.4 The one-way door had a second lock: the pass budget
 
 Section 1.3 says a `-> !` function is a one-way door into the diagnostics. On 2026-09-28 the
@@ -98,11 +104,12 @@ downstream gates depend on. Moving it is the refactor attempted and reverted ear
 (see the file-splitting notes): a bounded window in front is the change that leaves everything else
 alone.
 
-### 1.3 A `-> !` function is a one-way door into the diagnostics
+### 1.6 Cache the controller identity at handoff
 
-`run_ep0_signal_probe` is `-> !`. Anything below a `park_for_seconds` in it is
-unreachable for as long as that park lasts. The failed-handoff park alone is
-`stage * 15` seconds — up to 180.
+`GSNPSID` is read while the controller aperture is known to be powered. The
+handoff refreshes the retained `SHARED_SNPSID` value on every attempt so later
+readouts use the current controller identity without touching a possibly gated
+register window.
 
 ---
 
@@ -178,25 +185,6 @@ different buffers" (§1.2).
   only differences survive.
 
 ---
-
-## 3.13 A ladder word is not a predicate word
-
-`prev_boot_probe_reach_code()` returns a *ladder*: it scans the retained trace and folds several
-independent markers into one number, including `HOP` as `100 + milestone`. Words built on it
-(`probe_reach`, `probe_s1..s4`, `probe_stage`) therefore answer "how far did the boot get overall",
-not "did this particular function run".
-
-That distinction cost a session. `probe_reach` was added to answer "was `run_ep0_signal_probe`
-entered", and it reads TRUE whenever the handoff progressed at all — HOP is written by
-`handoff_progress()` *inside* `init_usb2_gadget_reuse_fastboot_ep0`, strictly upstream of the probe.
-Measured 2026-09-28: `hop_ge1` TRUE in one run and `poll_ran` FALSE in another, which the ladder
-cannot explain except by being satisfied by HOP alone.
-
-**⇒ Rule: if the question is one predicate, the instrument must be one predicate.** `sig_only`
-exists for this: it scans for the "SIG" marker with no fold and no participation from any other
-marker. Do not extend the ladder to cover a new question — add a decoder that answers only it. The
-ladder also reports different values in different runs (`probe_stage` read 3 while `hop_ge1` read
-TRUE), so cross-run ladder comparison is invalid for the same reason.
 
 ## 4. Hardware facts established by measurement
 
@@ -420,6 +408,69 @@ read entirely on the readout side separates the two cases:
                                                    genuinely never ran
 
 ---
+
+
+## 3.12 Emit the polling marker once
+
+The retained `POL1` marker proves that the USB polling loop ran. Write it once
+per boot so repeated polling does not consume the trace ring or evict useful
+diagnostic records.
+
+## 3.13 A ladder word is not a predicate word
+
+
+`prev_boot_probe_reach_code()` returns a *ladder*: it scans the retained trace and folds several
+independent markers into one number, including `HOP` as `100 + milestone`. Words built on it
+(`probe_reach`, `probe_s1..s4`, `probe_stage`) therefore answer "how far did the boot get overall",
+not "did this particular function run".
+
+That distinction cost a session. `probe_reach` was added to answer "was `run_ep0_signal_probe`
+entered", and it reads TRUE whenever the handoff progressed at all — HOP is written by
+`handoff_progress()` *inside* `init_usb2_gadget_reuse_fastboot_ep0`, strictly upstream of the probe.
+Measured 2026-09-28: `hop_ge1` TRUE in one run and `poll_ran` FALSE in another, which the ladder
+cannot explain except by being satisfied by HOP alone.
+
+**⇒ Rule: if the question is one predicate, the instrument must be one predicate.** `sig_only`
+exists for this: it scans for the "SIG" marker with no fold and no participation from any other
+marker. Do not extend the ladder to cover a new question — add a decoder that answers only it. The
+ladder also reports different values in different runs (`probe_stage` read 3 while `hop_ge1` read
+TRUE), so cross-run ladder comparison is invalid for the same reason.
+
+## 3.14 Bracket the handoff call
+
+`INB4` and `INAF` are retained markers immediately before and after the handoff
+call. Together they distinguish a call that was never entered from one that did
+not return.
+
+## 3.15 Record synchronous exceptions
+
+The synchronous exception handler writes a retained marker before diagnostics
+or UART output. The readout can therefore distinguish a controller hang from
+an exception followed by an unavailable console.
+
+## 3.16 Bracket the readout publication
+
+`WBFR`, `WAFT`, and `SELX` mark entry to the USB live-word lookup, return from
+that lookup, and completion of the POSTRUN publication block. The readers
+validate and scan the same retained trace sequence.
+
+## 3.17 Keep setup detection layout-aware
+
+When SETUP data aliases TRB0, its idle marker is the TRB DMA address. A fresh
+packet is detected by a changed address pair; a separate SETUP buffer instead
+uses its nonzero payload as the marker.
+
+## 3.20 Read link state from the DWC3 field
+
+For this DWC3 core, `DSTS.USBLNKST` occupies bits 21:18. Link-state gates and
+readouts must use that four-bit field consistently.
+
+## 3.22 Pulse breadcrumbs
+
+`--pulse-breadcrumb` selects a one-shot host-visible Run/Stop pulse at a chosen
+diagnostic site. The selector is passed to the build script and must trigger a
+rebuild whenever it changes.
+
 
 ## 4.2 Speed sampling across the readout window
 

@@ -198,21 +198,18 @@ pub(super) static mut ACTIVE_QMP_INIT_DELAY_US: [u32; 146] = [0; 146];
 //     qcom,param-override-seq = <0x63 0x6c>, <0x85 0x70>, <0x17 0x74>;
 //
 // The property is (value, offset) per cell pair; the writer below stores
-// (offset, value). PREVIOUSLY this fallback carried the *generic lito* triple
-// while citing "the exact stock package" - but the board overlay replaces those
-// values and drops the third pair entirely, so every hardware run has been
-// programming this board's analog HS-PHY tuning with another board's numbers.
-// That is squarely in the PHY analog domain the readable register space does not
-// cover, which is why no software-side A/B could see it. Three variants exist
-// (`lito-usb` generic, `lito-bramble-usb`, `lito-bramble_m-usb` = <0x27 0x6C,
-// 0xCC 0x70>); `bramble` is the one matching this handset.
+// (offset, value). Keep the generic Lito triple as the control arm so the
+// Bramble PVT and QRD overrides remain meaningful A/B selectors. The Bramble
+// board DT contains its own two-entry tuning; it is applied when that overlay
+// is explicitly selected.
 //
-// This fallback is what actually runs on this path: the fastboot-supplied DTB
+// Use the generic Lito triple as the fallback. This keeps the Bramble PVT
+// overlay and QRD override distinct A/B selectors. The fastboot-supplied DTB
 // carries no usable `qcom,param-override-seq` on the matched hsphy node
-// (`hsphy-prop-present = 0`), so `install_dt_phy_sequences()` keeps the compiled
-// table. The trailing sentinel keeps the fixed table shape and is skipped.
+// (`hsphy-prop-present = 0`), so `install_dt_phy_sequences()` keeps this table.
+// The trailing sentinel keeps the fixed table shape and is skipped.
 pub(super) static mut ACTIVE_HSPHY_PARAM_OVERRIDE: [(usize, u32); 4] =
-    [(0x6c, 0x67), (0x70, 0xc8), (usize::MAX, 0), (usize::MAX, 0)];
+    [(0x6c, 0x63), (0x70, 0x85), (0x74, 0x17), (usize::MAX, 0)];
 
 /// Which table source the current boot is using. Recorded by
 /// `install_dt_phy_sequences()` and published through the retained-trace
@@ -359,7 +356,7 @@ pub fn install_dt_phy_sequences(hs_raw: [Option<u32>; 6], qmp_raw: [Option<u32>;
     // entries: TUNE1 (0x6c), TUNE2 (0x70), TUNE3 (0x74). Accept both the
     // three-entry source form and the two-entry historical fallback so a
     // shorter production DT is not silently discarded in favour of the
-    // broader SoC fallback.
+    // compiled generic Lito fallback.
     let hs_three = hs_raw.iter().all(Option::is_some);
     let hs_two = hs_raw[..4].iter().all(Option::is_some) && hs_raw[4..].iter().all(Option::is_none);
     if hs_three || hs_two {

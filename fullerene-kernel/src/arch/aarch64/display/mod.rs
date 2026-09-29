@@ -113,50 +113,57 @@ impl Rgb {
 /// Returns the number of chunks successfully transferred.
 #[cfg(target_arch = "aarch64")]
 pub fn fill_band(first_row: u16, rows: u16, color: Rgb, chunk_pixels: usize) -> usize {
+    if rows == 0 || chunk_pixels == 0 {
+        return 0;
+    }
     let mut ok = 0usize;
     let x1: u16 = (panel::PANEL_WIDTH - 1) as u16;
     let y0 = first_row;
     let y1 = first_row + rows - 1;
-    let caset = [0u8, 0, (x1 >> 8) as u8, (x1 & 0xff) as u8];
+    let caset = [
+        DCS_SET_COLUMN_ADDRESS,
+        0,
+        0,
+        (x1 >> 8) as u8,
+        (x1 & 0xff) as u8,
+    ];
     let paset = [
+        DCS_SET_PAGE_ADDRESS,
         (y0 >> 8) as u8,
         (y0 & 0xff) as u8,
         (y1 >> 8) as u8,
         (y1 & 0xff) as u8,
     ];
-    if dsi_ctrl::hw::cmd_tx_raw(DCS_SET_COLUMN_ADDRESS, 0, &caset) {
+    if dsi_ctrl::hw::cmd_tx_raw(0x39, 0, &caset) {
         ok += 1;
     }
-    if dsi_ctrl::hw::cmd_tx_raw(DCS_SET_PAGE_ADDRESS, 0, &paset) {
+    if dsi_ctrl::hw::cmd_tx_raw(0x39, 0, &paset) {
         ok += 1;
     }
 
-    // Pixel payload, one long write at a time. The staging buffer is 1 KiB, so a
-    // chunk carries at most ~338 RGB pixels.
+    // Pixel payload, one long write at a time. Bound stack usage and leave
+    // room for the DCS command byte and DSI framing.
+    let mut payload = [0u8; 1024];
     let total_pixels = panel::PANEL_WIDTH as usize * rows as usize;
     let mut done = 0usize;
     let mut first = true;
     while done < total_pixels {
-        let n = core::cmp::min(chunk_pixels, total_pixels - done);
-        let mut buf = [0u8; 16368];
+        let n = core::cmp::min(core::cmp::min(chunk_pixels, total_pixels - done), 341);
         let bytes = n * 3;
-        if bytes > buf.len() {
-            break;
-        }
         let mut i = 0;
         while i + 2 < bytes {
-            buf[i] = color.r;
-            buf[i + 1] = color.g;
-            buf[i + 2] = color.b;
+            payload[i + 1] = color.r;
+            payload[i + 2] = color.g;
+            payload[i + 3] = color.b;
             i += 3;
         }
-        let dtype = if first {
+        payload[0] = if first {
             first = false;
             DCS_WRITE_MEMORY_START
         } else {
             DCS_WRITE_MEMORY_CONTINUE
         };
-        if dsi_ctrl::hw::cmd_tx_raw(dtype, 0, &buf[..bytes]) {
+        if dsi_ctrl::hw::cmd_tx_raw(0x39, 0, &payload[..1 + bytes]) {
             ok += 1;
         }
         done += n;

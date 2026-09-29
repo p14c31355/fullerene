@@ -653,10 +653,10 @@ pub fn cmd_gate_condition_met() -> Option<bool> {
             // (latched in link_on_sample), even if it dropped again before
             // this gate's evaluation?
             "lnk-ever-on" => LNK_EVER_ON,
-            "lnk-reset" => (read(DSTS) >> 18) & 0xf == 1,
+            "lnk-reset" => (read(DSTS) >> 18) & 0xf == 0x0e,
             "lnk-suspend" => {
                 let lnkst = (read(DSTS) >> 18) & 0xf;
-                lnkst >= 5 && lnkst != 0xf
+                lnkst == 0x03
             }
             "halt" => read(DSTS) & DSTS_DEVCTRLHLT != 0,
             "epready" => ENDPOINTS_READY,

@@ -208,9 +208,9 @@ pub mod hw {
         wr(reg::CLKOUT_TIMING_CTRL, clkout);
 
         let eot = if cfg.eot_packet {
-            0
-        } else {
             bits::EOT_PACKET_CTRL_TX_EOT_APPEND
+        } else {
+            0
         };
         wr(reg::EOT_PACKET_CTRL, eot);
 

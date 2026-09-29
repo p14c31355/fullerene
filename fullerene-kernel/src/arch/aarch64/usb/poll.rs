@@ -10,15 +10,10 @@ pub fn poll() {
         // no other crate-independent way to say "poll() executed": a `static mut` is
         // duplicated by the second `usb/` compilation.
         //
-        // NOT latched, deliberately. The first version guarded this with a `static mut
-        // bool` and it read false on a second run: `.bss` is not guaranteed to be cleared
-        // between `fastboot boot` attempts the way the retained region is not either, and
-        // a latch that starts true can never write its marker. Writing every pass instead
-        // is safe here because the ring is 256 entries and `prev_boot_poll_ran()` asks
-        // "is there a POL1 anywhere in the ring" - a marker repeated every pass survives
-        // even a full wrap, and a marker that is never written stays absent.
-        // See usb/README.md §3.12.
-        trace_marker(TRACE_PROBE_WATCHDOG, 0x504F_4C31); // "POL1"
+        if !trace::POLL_MARKED {
+            trace_marker(TRACE_PROBE_WATCHDOG, 0x504F_4C31); // "POL1"
+            trace::POLL_MARKED = true;
+        }
         // Diagnostic quiet window (see mmio_quiet_active): after this many
         // seconds past the first Run/Stop, stop ALL controller MMIO access.
         if mmio_quiet_active() {

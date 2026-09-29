@@ -191,8 +191,7 @@ pub fn gate_true_run_device() -> bool {
 pub fn core_attach_delay_code() -> u32 {
     unsafe {
         let gdscr = core::ptr::read_volatile(
-            &super::super::platform::bramble::usb_resources().gdsc as *const usize as *const u8
-                as *const u32,
+            super::super::platform::bramble::usb_resources().gdsc as *const u32,
         );
         let snpsid = read(GSNPSID);
         let dsts = read(DSTS);
@@ -214,8 +213,7 @@ pub fn core_power_recovery_code() -> u32 {
         let votes = super::super::platform::bramble::apply_usb_power(true, false);
         let gdsc_on = super::super::platform::bramble::force_enable_usb30_gdsc();
         let gdscr = core::ptr::read_volatile(
-            &super::super::platform::bramble::usb_resources().gdsc as *const usize as *const u8
-                as *const u32,
+            super::super::platform::bramble::usb_resources().gdsc as *const u32,
         );
         let collapse_cleared = (gdscr & 1 == 0) as u32;
         let snpsid = read(GSNPSID);
@@ -434,8 +432,10 @@ pub fn u0_arm_recovery() -> u32 {
 pub fn phy_retry_after_link() -> bool {
     unsafe {
         // Wait for link ON (USBLNKST == 0 in DSTS)
-        let deadline = super::super::timer::counter() + 5_000_000_000; // 5s in timer ticks
+        let frequency = super::super::timer::frequency();
+        let deadline = super::super::timer::counter().saturating_add(frequency.saturating_mul(5));
         while super::super::timer::counter() < deadline {
+            wdt_pet();
             let dsts = read(DSTS);
             if (dsts >> 18) & 0xf == 0 && dsts & DSTS_DEVCTRLHLT == 0 {
                 break;

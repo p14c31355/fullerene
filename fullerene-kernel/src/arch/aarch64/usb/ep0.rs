@@ -47,6 +47,36 @@ pub(super) unsafe fn prepare_ep0_setup_trb() {
     }
 }
 
+/// Return whether the controller replaced the idle marker with a fresh SETUP.
+pub(super) unsafe fn setup_packet_pending() -> bool {
+    unsafe {
+        let setup = ep0_setup_data_ptr();
+        cache_invalidate(setup as usize, 8);
+        if setup == ep0_trb_ptr(0).cast::<u8>() {
+            let expected = dma_iova_for(setup as usize);
+            read_volatile(setup.cast::<u32>()) != expected as u32
+                || read_volatile(setup.add(4).cast::<u32>()) != (expected >> 32) as u32
+        } else {
+            (0..8).any(|offset| read_volatile(setup.add(offset)) != 0)
+        }
+    }
+}
+
+/// Clear the SETUP payload while preserving the aliased TRB0 idle DMA marker.
+pub(super) unsafe fn clear_setup_packet() {
+    unsafe {
+        let setup = ep0_setup_data_ptr();
+        if setup == ep0_trb_ptr(0).cast::<u8>() {
+            let expected = dma_iova_for(setup as usize);
+            write_volatile(setup.cast::<u32>(), expected as u32);
+            write_volatile(setup.add(4).cast::<u32>(), (expected >> 32) as u32);
+        } else {
+            core::ptr::write_bytes(setup, 0, 8);
+        }
+        cache_clean(setup as usize, 8);
+    }
+}
+
 /// Write Memory Barrier for TRB publication, matching the SHIPPED kernel.
 ///
 /// The shipped `__dwc3_prepare_one_trb()` (`gadget.c`) replaced a plain `mb()`
@@ -310,22 +340,7 @@ pub(super) unsafe fn poll_ep0_trb_completion_fallback() -> bool {
         // their response buffer has no equivalent packet marker.
         let mut setup_received = false;
         if EP0_STATE == Ep0State::Setup {
-            let setup = ep0_setup_data_ptr();
-            cache_invalidate(setup as usize, 8);
-            if setup == trb.cast::<u8>() {
-                let expected = dma_iova_for(setup as usize);
-                let current_low = read_volatile(setup.cast::<u32>());
-                let current_high = read_volatile(setup.add(4).cast::<u32>());
-                setup_received =
-                    current_low != expected as u32 || current_high != (expected >> 32) as u32;
-            } else {
-                for offset in 0..8 {
-                    if read_volatile(setup.add(offset)) != 0 {
-                        setup_received = true;
-                        break;
-                    }
-                }
-            }
+            setup_received = setup_packet_pending();
         }
         if (EP0_STATE == Ep0State::Setup && !setup_received)
             || (EP0_STATE != Ep0State::Setup && ctrl & TRB_HWO != 0)
@@ -875,13 +890,7 @@ pub(super) unsafe fn poll_setup_buffer() -> bool {
         bc9!(17); // ep0_setup_data_ptr() returned
         cache_invalidate(setup as usize, 8);
         bc9!(18); // cache_invalidate returned
-        let mut fresh = false;
-        for offset in 0..8 {
-            if read_volatile(setup.add(offset)) != 0 {
-                fresh = true;
-                break;
-            }
-        }
+        let fresh = setup_packet_pending();
         bc9!(19); // the eight-byte DRAM probe returned
         if fresh {
             trace_marker(TRACE_SETUP_RECEIVED, 0x5345_5450); // "SETP"
@@ -937,11 +946,7 @@ pub(super) unsafe fn handle_setup() {
     // the software state machine was still in the Data/Status phase (the
     // host aborts in-flight control transfers with a new SETUP - Linux
     // handles this via its setup_packet_pending logic).
-    unsafe {
-        let setup = ep0_setup_data_ptr();
-        core::ptr::write_bytes(setup, 0, 8);
-        cache_clean(setup as usize, 8);
-    }
+    unsafe { clear_setup_packet() };
     let request_type = packet[0];
     let request = packet[1];
     let value = u16::from_le_bytes([packet[2], packet[3]]);
@@ -1342,29 +1347,7 @@ pub(super) unsafe fn process_event(raw: u32) {
             // Linux recovers via setup_packet_pending; without this the new
             // SETUP is dispatched into the stale Data/Status handler and the
             // request is silently lost (the mid-enumeration death).
-            let setup = ep0_setup_data_ptr();
-            cache_invalidate(setup as usize, 8);
-            // The source-aligned Bramble path aliases the SETUP payload to
-            // TRB0.  In that layout the idle TRB already contains its DMA
-            // address, so an "any non-zero byte" test reports a fresh SETUP
-            // on every completed transfer and feeds TRB metadata back into
-            // handle_setup().  Treat a changed bpl/bph pair as the payload
-            // marker, matching the retained-trace and DMA fallback tests.
-            let fresh_setup = if setup == ep0_trb_ptr(0).cast::<u8>() {
-                let expected = dma_iova_for(setup as usize);
-                let current_low = read_volatile(setup.cast::<u32>());
-                let current_high = read_volatile(setup.add(4).cast::<u32>());
-                current_low != expected as u32 || current_high != (expected >> 32) as u32
-            } else {
-                let mut received = false;
-                for offset in 0..8 {
-                    if read_volatile(setup.add(offset)) != 0 {
-                        received = true;
-                        break;
-                    }
-                }
-                received
-            };
+            let fresh_setup = setup_packet_pending();
             if fresh_setup {
                 EP0_STATE = Ep0State::Setup;
                 handle_setup();

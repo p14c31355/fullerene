@@ -7,6 +7,7 @@ use std::process::Command;
 use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_glibc_x86_64_elf};
 
 fn main() {
+    audit_env_rerun_declarations();
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_EXECUTE");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_IDENTITY");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_ORIGIN");
@@ -198,6 +199,9 @@ fn main() {
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_eud_device_mode)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_fsel_write0)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_fsel_write3)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_force_ep0_armed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_xbl_exact)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_arm_in_deferred_block)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_qmp_poll_nop_loop)");
@@ -481,6 +485,7 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_FORCE_EP0_ARMED").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_force_ep0_armed");
         }
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_FORCE_EP0_ARMED");
         if env::var_os("FULLERENE_AARCH64_USB_DMA_CACHE_MAINTENANCE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_dma_cache_maintenance");
         }
@@ -1080,6 +1085,7 @@ fn main() {
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_PULSE_BREADCRUMB") {
             println!("cargo:rustc-env=FULLERENE_USB_PULSE_BREADCRUMB={value}");
         }
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PULSE_BREADCRUMB");
         if env::var_os("FULLERENE_AARCH64_USB_EP0_INITIAL_512").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_initial_512");
         }
@@ -2299,7 +2305,6 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=have_emulsion_wasm");
     }
-    audit_env_rerun_declarations();
 }
 
 /// Warn, at build time, about any `FULLERENE_*` variable this script reads

@@ -494,8 +494,8 @@ unsafe fn init_hsphy_inner(source_exact: bool) {
             core::ptr::read_volatile(core::ptr::addr_of!(ACTIVE_HSPHY_PARAM_OVERRIDE));
         #[cfg(fullerene_aarch64_usb_hsphy_qrd_override)]
         {
-            // Keep the QRD alternate explicit. The exact-build stock
-            // fallback uses 0x85 at 0x70; this flag changes only that pair.
+            // Keep the QRD alternate explicit. The generic Lito fallback uses
+            // 0x85 at 0x70; this flag changes only that pair.
             hsphy_param_override[1] = (0x70, 0xc8);
         }
         #[cfg(fullerene_aarch64_usb_hsphy_dtbo_bramble_pvt)]
