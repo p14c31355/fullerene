@@ -1,6 +1,14 @@
 //! EP0 TRB preparation, setup handling, and control-transfer events.
 
+use super::super::usb_protocol::{dwc3_endpoint_number, dwc3_setup_trb_complete};
 use super::*;
+
+// A resource index of zero is valid for physical EP0, so it cannot double as
+// an active-transfer flag. Keep STATUS ownership explicit to avoid rewriting
+// a live TRB on repeated XferNotReady notifications.
+static mut EP0_STATUS_STARTED: bool = false;
+static mut EP0_SETUP_PENDING: bool = false;
+static mut EP0_POLLED_SETUP_EVENT: bool = false;
 
 unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32) {
     let address = unsafe { dma_iova_for(buffer as usize) };
@@ -50,6 +58,17 @@ pub(super) unsafe fn prepare_ep0_setup_trb() {
 /// Return whether the controller replaced the idle marker with a fresh SETUP.
 pub(super) unsafe fn setup_packet_pending() -> bool {
     unsafe {
+        if EP0_STATE != Ep0State::Setup || !EP0_SETUP_ARMED {
+            return false;
+        }
+        let trb = ep0_trb_ptr(0);
+        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+        if !dwc3_setup_trb_complete(
+            read_volatile(addr_of!((*trb).ctrl)),
+            read_volatile(addr_of!((*trb).size)),
+        ) {
+            return false;
+        }
         let setup = ep0_setup_data_ptr();
         cache_invalidate(setup as usize, 8);
         if setup == ep0_trb_ptr(0).cast::<u8>() {
@@ -120,6 +139,8 @@ pub(super) unsafe fn prepare_trb_at(trb: *mut Trb, buffer: *const u8, length: us
 pub(super) unsafe fn start_setup() -> bool {
     trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, unsafe { read(DSTS) });
     unsafe {
+        EP0_STATUS_STARTED = false;
+        EP0_SETUP_PENDING = false;
         if cfg!(any(
             fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
             fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
@@ -432,6 +453,9 @@ pub(super) unsafe fn reset_gsi_channels() {
 /// which is indistinguishable from a dead gadget to the host.
 pub(super) unsafe fn restart_control_after_reset() {
     unsafe {
+        EP0_STATUS_STARTED = false;
+        EP0_SETUP_PENDING = false;
+        EP0_POLLED_SETUP_EVENT = false;
         // qpr1 leaves GCTL.RAMCLKSEL at the reset value after the host's bus
         // USB reset; reapply_ramclksel() is a disabled-by-default legacy A/B.
         reapply_ramclksel();
@@ -748,8 +772,8 @@ pub(super) unsafe fn restart_control_after_reset() {
 }
 
 /// Reflect gadget-core state into the two pieces of DWC3 device state that
-/// are committed only after a successful control status stage.  Linux does
-/// not apply SET_ADDRESS or SET_CONFIGURATION at SETUP reception time.
+/// are committed in software after a successful control status stage. DCFG
+/// is also written at SET_ADDRESS reception, as required by DWC3.
 unsafe fn sync_gadget_state() {
     unsafe {
         let address = gadget_ref().address() as u32;
@@ -819,6 +843,9 @@ unsafe fn sync_gadget_state() {
 }
 
 pub(super) unsafe fn start_status(endpoint: usize) -> bool {
+    if unsafe { EP0_STATUS_STARTED } {
+        return true;
+    }
     let kind = if unsafe { CONTROL_HAS_DATA } {
         TRB_CONTROL_STATUS3
     } else {
@@ -833,18 +860,29 @@ pub(super) unsafe fn start_status(endpoint: usize) -> bool {
         // Same flaky Start Transfer window as the data phase: retry the
         // command instead of failing the status stage (SET_ADDRESS and
         // SET_CONFIGURATION become visible only after this ZLP completes).
-        retry_start_transfer(endpoint, ep0_trb_ptr(trb_index), 2500)
+        let started = retry_start_transfer(endpoint, ep0_trb_ptr(trb_index), 2500);
+        EP0_STATUS_STARTED = started;
+        started
     }
 }
 
-unsafe fn stall_control(endpoint: usize) {
+unsafe fn stall_control(_endpoint: usize) {
     // Linux's gadget core responds to an unsupported control request with a
     // real EP0 STALL. Leaving the endpoint idle is not equivalent: hosts may
     // keep waiting for the missing handshake and never issue the next SETUP.
-    let _ = unsafe { send_ep_command(endpoint, DEPCMD_SETSTALL, 0, 0, 0) };
+    // DWC3's control pipe is stalled on physical EP0 regardless of direction
+    // (Linux dwc3_ep0_stall_and_restart()).
+    let _ = unsafe { send_ep_command(0, DEPCMD_SETSTALL, 0, 0, 0) };
     unsafe {
+        gadget_mut().abort_control();
         EP0_STATE = Ep0State::Setup;
         DATA_PHASE_PENDING_START = false;
+        EP0_STATUS_STARTED = false;
+        EP0_SETUP_PENDING = false;
+        EP0_SETUP_ARMED = false;
+        if ENDPOINTS_READY {
+            let _ = rearm_setup();
+        }
     }
 }
 
@@ -894,7 +932,12 @@ pub(super) unsafe fn poll_setup_buffer() -> bool {
         bc9!(19); // the eight-byte DRAM probe returned
         if fresh {
             trace_marker(TRACE_SETUP_RECEIVED, 0x5345_5450); // "SETP"
-            handle_setup();
+            // Retire software ownership through the ordinary completion
+            // path before the shared TRB is reused for the response.
+            process_event((1 << 6) | (0x8 << 12));
+            // The event ring can lag the TRB writeback. Consume its matching
+            // OUT completion once without advancing the new DATA/STATUS stage.
+            EP0_POLLED_SETUP_EVENT = true;
         }
         fresh
     }
@@ -912,6 +955,11 @@ unsafe fn setup_request() -> [u8; 8] {
 
 pub(super) unsafe fn handle_setup() {
     let packet = unsafe { setup_request() };
+    unsafe {
+        EP0_STATUS_STARTED = false;
+        EP0_SETUP_PENDING = false;
+        DATA_PHASE_PENDING_START = false;
+    }
     // HANDLE-SETUP BREADCRUMBS (level 8). `poll_setup_buffer()` is DRAM-only and cannot block, yet
     // it never returns after `bc3!(1)`. That leaves `handle_setup()` - reached only when the SETUP
     // buffer holds non-zero bytes, which means the host's SETUP really did arrive - and its last
@@ -941,11 +989,9 @@ pub(super) unsafe fn handle_setup() {
         SIGNAL_SETUP_PACKET_RECEIVED = true;
     }
     bc8!(9); // setup_request() + the DRAM-only packet parse returned
-    // Zero the DMA buffer after latching the packet: a later non-zero
-    // buffer then proves the core delivered a NEW SETUP packet, even while
-    // the software state machine was still in the Data/Status phase (the
-    // host aborts in-flight control transfers with a new SETUP - Linux
-    // handles this via its setup_packet_pending logic).
+    // Restore the idle marker after copying the eight bytes. Buffer contents
+    // alone never establish ownership: polling also requires a retired SETUP
+    // TRB, and DATA/STATUS interruption comes from TRBSTS_SETUP_PENDING.
     unsafe { clear_setup_packet() };
     let request_type = packet[0];
     let request = packet[1];
@@ -983,9 +1029,13 @@ pub(super) unsafe fn handle_setup() {
             // Keep trace reads outside the gadget function callback: this is
             // a diagnostic transport over the same EP0 path and must not
             // alter address/configuration state.
-            fill_trace_control_response(response, requested_length, value)
+            let action = fill_trace_control_response(response, requested_length, value)
                 .map(ControlAction::DataIn)
-                .unwrap_or(ControlAction::Stall)
+                .unwrap_or(ControlAction::Stall);
+            if matches!(action, ControlAction::DataIn(_)) {
+                gadget_mut().begin_external_data_in();
+            }
+            action
         } else {
             // Keep the trace transport in the ordinary EP0 path: a host request
             // for string descriptor 3 can observe the retained cursor even when
@@ -1054,6 +1104,13 @@ pub(super) unsafe fn handle_setup() {
             }
         },
         ControlAction::StatusIn => unsafe {
+            if request_type == 0 && request == 5 {
+                // DWC3 latches the new address for the end of this transfer.
+                // Match Linux dwc3_ep0_set_address(): program DCFG before
+                // queuing STATUS, while the protocol commits after completion.
+                let dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
+                write(DCFG, dcfg | ((value as u32) << 3));
+            }
             EP0_STATE = Ep0State::Status;
             // The status phase suffers the same XferNotReady boundary as the
             // data phase: an immediate start_status(1) retires cleanly and is
@@ -1108,6 +1165,9 @@ pub(super) unsafe fn process_event(raw: u32) {
                     DATA_RESOURCE_INDEX = [0; 2];
                     EP0_RESOURCE_INDEX = [0; 2];
                     EP0_SETUP_ARMED = false;
+                    EP0_STATUS_STARTED = false;
+                    EP0_SETUP_PENDING = false;
+                    EP0_POLLED_SETUP_EVENT = false;
                     EP0_STATE = Ep0State::Setup;
                     CONTROL_IN = false;
                     CONTROL_HAS_DATA = false;
@@ -1324,35 +1384,46 @@ pub(super) unsafe fn process_event(raw: u32) {
             unsafe { complete_bulk_transfer(endpoint, status, raw) };
             return;
         }
-        // Linux's dwc3_ep0_xfer_complete() does NOT look at the event status
-        // at all: XferComplete status bits on EP0 carry LST/IOC-style flags
-        // (our SETUP TRB sets LST, so a healthy completion reports 0x8), and
-        // the dispatch is purely by ep0state. Routing non-zero statuses into
-        // the recovery path would eat every healthy SETUP completion.
-        unsafe {
-            EP0_RESOURCE_INDEX[endpoint] = 0;
-            // The previously armed SETUP/DATA/STATUS transfer is consumed;
-            // the poll-loop guard re-arms the SETUP TRB once EP0 returns to
-            // the Setup state.
-            EP0_SETUP_ARMED = false;
-            if EP0_STATE == Ep0State::Setup {
-                // EP0 XferComplete status 0x8 is the normal LST indication,
-                // not an error. The request carries the same successful
-                // setup completion in the XBL path.
-                complete_xbl_setup_request(false);
-            }
-            // A freshly DMAed SETUP packet overrides any in-flight phase:
-            // hosts abort stalled control transfers by sending a new SETUP,
-            // and the completion event for the OLD transfer carries it.
-            // Linux recovers via setup_packet_pending; without this the new
-            // SETUP is dispatched into the stale Data/Status handler and the
-            // request is silently lost (the mid-enumeration death).
-            let fresh_setup = setup_packet_pending();
-            if fresh_setup {
-                EP0_STATE = Ep0State::Setup;
-                handle_setup();
-                return;
-            }
+        if endpoint == 0 && EP0_POLLED_SETUP_EVENT {
+            EP0_POLLED_SETUP_EVENT = false;
+            return;
+        }
+        // Event status contains LST/IOC flags, not the transfer result. The
+        // result lives in the retired TRB's size word (Linux ep0.c).
+        let trb = ep0_trb_ptr(ep0_trb_index(endpoint));
+        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+        let trb_control = read_volatile(addr_of!((*trb).ctrl));
+        let trb_size = read_volatile(addr_of!((*trb).size));
+        let trb_status = trb_size >> 28;
+        trace_event(
+            TRACE_TRANSFER_COMPLETE,
+            0x5452_4243, // "TRBC": raw retirement evidence, before TRB reuse
+            endpoint as u32,
+            trb_control,
+            trb_size,
+            raw,
+        );
+        let expected_endpoint = match EP0_STATE {
+            Ep0State::Setup => 0,
+            Ep0State::Data => usize::from(CONTROL_IN),
+            Ep0State::Status => usize::from(!(CONTROL_HAS_DATA && CONTROL_IN)),
+        };
+        if endpoint != expected_endpoint || trb_control & TRB_HWO != 0 {
+            return;
+        }
+        // A real SETUP XferComplete is authoritative, as in Linux. The
+        // stricter residual/type test is only for eventless buffer polling.
+        EP0_RESOURCE_INDEX[endpoint] = 0;
+        EP0_SETUP_ARMED = false;
+        if EP0_STATE == Ep0State::Setup {
+            complete_xbl_setup_request(false);
+        } else if trb_status == 2 {
+            // A new SETUP interrupted this request. DWC3 requires the old
+            // STATUS phase to retire before another CONTROL_SETUP is posted.
+            EP0_SETUP_PENDING = true;
+        } else if trb_status != 0 {
+            recover_control_transfer(endpoint, trb_status, raw);
+            return;
         }
         trace_event(
             TRACE_TRANSFER_COMPLETE,
@@ -1366,21 +1437,25 @@ pub(super) unsafe fn process_event(raw: u32) {
             match EP0_STATE {
                 Ep0State::Setup => handle_setup(),
                 Ep0State::Data if endpoint == 0 || endpoint == 1 => {
-                    let action = GadgetDriver::on_transfer_complete(gadget_mut());
-                    EP0_STATE = Ep0State::Status;
-                    match action {
-                        ControlAction::StatusOut => {
-                            if !start_status(0) {
-                                stall_control(0);
-                            }
+                    if !EP0_SETUP_PENDING {
+                        let action = GadgetDriver::on_transfer_complete(gadget_mut());
+                        if !matches!(action, ControlAction::StatusOut | ControlAction::StatusIn) {
+                            stall_control(endpoint);
+                            return;
                         }
-                        ControlAction::StatusIn => {
-                            if !start_status(1) {
-                                stall_control(1);
-                            }
-                        }
-                        _ => stall_control(if CONTROL_IN { 1 } else { 0 }),
                     }
+                    DATA_PHASE_PENDING_START = false;
+                    EP0_STATE = Ep0State::Status;
+                    // STATUS is on-demand: only XferNotReady(CONTROL_STATUS)
+                    // may publish its TRB, including SETUP_PENDING recovery.
+                }
+                Ep0State::Status if EP0_SETUP_PENDING => {
+                    gadget_mut().abort_control();
+                    let dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
+                    write(DCFG, dcfg | ((gadget_ref().address() as u32) << 3));
+                    EP0_STATE = Ep0State::Setup;
+                    EP0_STATUS_STARTED = false;
+                    rearm_setup();
                 }
                 Ep0State::Status => match GadgetDriver::on_transfer_complete(gadget_mut()) {
                     ControlAction::Setup => {
@@ -1389,7 +1464,7 @@ pub(super) unsafe fn process_event(raw: u32) {
                         rearm_setup();
                     }
                     ControlAction::SetHalt(address) => {
-                        let endpoint = (address & 0x7f) as usize;
+                        let endpoint = dwc3_endpoint_number(address);
                         if send_ep_command(endpoint, DEPCMD_SETSTALL, 0, 0, 0)
                             && udc_mut().set_halt(address, true)
                         {
@@ -1401,7 +1476,7 @@ pub(super) unsafe fn process_event(raw: u32) {
                         }
                     }
                     ControlAction::ClearHalt(address) => {
-                        let endpoint = (address & 0x7f) as usize;
+                        let endpoint = dwc3_endpoint_number(address);
                         if send_ep_command(endpoint, DEPCMD_CLEARSTALL, 0, 0, 0)
                             && udc_mut().set_halt(address, false)
                         {
@@ -1495,7 +1570,12 @@ unsafe fn recover_control_transfer(endpoint: usize, status: u32, raw: u32) {
         let _ = end_transfer(endpoint);
         EP0_RESOURCE_INDEX[endpoint] = 0;
     }
+    gadget_mut().abort_control();
     EP0_STATE = Ep0State::Setup;
+    EP0_SETUP_ARMED = false;
+    EP0_STATUS_STARTED = false;
+    EP0_SETUP_PENDING = false;
+    DATA_PHASE_PENDING_START = false;
     CONTROL_IN = false;
     CONTROL_HAS_DATA = false;
     if ENDPOINTS_READY {

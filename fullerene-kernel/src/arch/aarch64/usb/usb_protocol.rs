@@ -63,6 +63,21 @@ pub enum ControlAction {
     Stall,
 }
 
+/// A polled SETUP buffer is CPU-owned only after the controller retires its
+/// SETUP TRB. EP0 reuses the same TRB for DATA and STATUS, so its address
+/// fields alone cannot distinguish a received packet from the next stage.
+pub const fn dwc3_setup_trb_complete(control: u32, size: u32) -> bool {
+    control & 1 == 0 // HWO cleared
+        && (control >> 4) & 0x3f == 2 // CONTROL_SETUP
+        && size & 0x00ff_ffff == 0 // all eight bytes received
+        && size >> 28 == 0 // TRBSTS_OK
+}
+
+/// Convert the USB descriptor's endpoint address to a DWC3 physical endpoint.
+pub const fn dwc3_endpoint_number(address: u8) -> usize {
+    ((address & 0x0f) as usize) * 2 + ((address >> 7) as usize)
+}
+
 /// The small interface shared by the hardware UDC and the no-hardware
 /// simulator.  This is the early-boot equivalent of the Linux gadget core:
 /// the controller owns TRBs and endpoint commands, while the gadget owns USB
@@ -615,10 +630,28 @@ impl Ep0Simulator {
         self.configured
     }
 
+    /// Cancel an interrupted control request without resetting the device's
+    /// committed address or configuration. A new SETUP aborts the old request.
+    pub fn abort_control(&mut self) {
+        self.state = Ep0State::Setup;
+        self.pending_address = None;
+        self.pending_configured = None;
+        self.pending_halt = None;
+        self.control_in = false;
+        self.control_has_data = false;
+    }
+
+    /// Let the controller's diagnostic response share the normal completion
+    /// lifecycle even though its payload is assembled outside this module.
+    pub fn begin_external_data_in(&mut self) {
+        self.abort_control();
+        self.state = Ep0State::Data;
+        self.control_in = true;
+        self.control_has_data = true;
+    }
+
     pub fn on_setup(&mut self, packet: [u8; 8], response: &mut [u8]) -> ControlAction {
-        if self.state != Ep0State::Setup {
-            return ControlAction::Stall;
-        }
+        self.abort_control();
 
         let request_type = packet[0];
         let request = packet[1];
@@ -679,7 +712,12 @@ impl Ep0Simulator {
             return ControlAction::DataIn(length);
         }
 
-        if request_type == 0 && request == 5 && value <= 0x7f && index == 0 && requested_length == 0
+        if request_type == 0
+            && request == 5
+            && value <= 0x7f
+            && index == 0
+            && requested_length == 0
+            && !self.configured
         {
             self.pending_address = Some(value as u8);
             self.control_has_data = false;
@@ -805,6 +843,57 @@ mod tests {
         GsiRingShape, MANUFACTURER_DESCRIPTOR, PRODUCT_DESCRIPTOR, TRACE_DESCRIPTOR,
         gsi_ring_shape,
     };
+
+    #[test]
+    fn polled_setup_requires_retired_successful_setup_trb() {
+        use super::dwc3_setup_trb_complete as complete;
+        assert!(complete(2 << 4, 0));
+        assert!(!complete((2 << 4) | 1, 0)); // still controller-owned
+        assert!(!complete(2 << 4, 8)); // no packet received
+        assert!(!complete(2 << 4, 2 << 28)); // interrupted
+        assert!(!complete(5 << 4, 0)); // old DATA address is not SETUP
+        assert!(!complete(4 << 4, 0)); // old STATUS address is not SETUP
+    }
+
+    #[test]
+    fn new_setup_aborts_uncommitted_address_and_configuration() {
+        let mut ep0 = Ep0Simulator::new();
+        let mut response = [0; 512];
+        assert_eq!(
+            ep0.on_setup([0, 5, 42, 0, 0, 0, 0, 0], &mut response),
+            ControlAction::StatusIn
+        );
+        assert_eq!(
+            ep0.on_setup([0x80, 6, 0, 1, 0, 0, 18, 0], &mut response),
+            ControlAction::DataIn(18)
+        );
+        assert_eq!(ep0.on_transfer_complete(), ControlAction::StatusOut);
+        assert_eq!(ep0.on_transfer_complete(), ControlAction::Setup);
+        assert_eq!(ep0.address(), 0);
+        assert_eq!(
+            ep0.on_setup([0, 9, 1, 0, 0, 0, 0, 0], &mut response),
+            ControlAction::StatusIn
+        );
+        ep0.abort_control();
+        assert_eq!(ep0.on_transfer_complete(), ControlAction::Setup);
+        assert!(!ep0.configured());
+    }
+
+    #[test]
+    fn external_trace_response_has_real_status_lifecycle() {
+        let mut ep0 = Ep0Simulator::new();
+        ep0.begin_external_data_in();
+        assert_eq!(ep0.on_transfer_complete(), ControlAction::StatusOut);
+        assert_eq!(ep0.on_transfer_complete(), ControlAction::Setup);
+    }
+
+    #[test]
+    fn endpoint_addresses_include_direction_in_physical_index() {
+        assert_eq!(super::dwc3_endpoint_number(0), 0);
+        assert_eq!(super::dwc3_endpoint_number(0x80), 1);
+        assert_eq!(super::dwc3_endpoint_number(0x02), 4);
+        assert_eq!(super::dwc3_endpoint_number(0x83), 7);
+    }
 
     #[test]
     fn descriptor_lengths_match_their_headers() {

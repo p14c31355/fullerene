@@ -2063,6 +2063,16 @@ unsafe fn poll_ep0_event_ring() -> bool {
     // even this DCTL read fails to complete then the clock branch died between two adjacent calls;
     // if DCTL completes and GEVNTCOUNT0 does not, the stall is specific to that access.
     // See usb/README.md §3.25.
+    // One-shot RAM witnesses bracket the first MMIO reads. Unlike a Run/Stop
+    // pulse these do not disconnect the device or consume the arm deadline.
+    // A debugger can distinguish entry, DCTL returned, and count returned even
+    // if the following access never completes. They are not host-visible proof.
+    static mut FIRST_COUNT_PROBED: bool = false;
+    let first_count_probe = unsafe { !FIRST_COUNT_PROBED };
+    if first_count_probe {
+        unsafe { FIRST_COUNT_PROBED = true };
+        trace_marker(TRACE_PROBE_WATCHDOG, 0x4244_4354); // "BDCT"
+    }
     let bc7_dctl = unsafe { read(DCTL) };
     if matches!(
         option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
@@ -2075,7 +2085,13 @@ unsafe fn poll_ep0_event_ring() -> bool {
         }
     }
     let _ = bc7_dctl;
+    if first_count_probe {
+        trace_event(TRACE_PROBE_WATCHDOG, 0x4243_4e54, bc7_dctl, 0, 0, 0); // "BCNT"
+    }
     let count_register = unsafe { read(GEVNTCOUNT0) };
+    if first_count_probe {
+        trace_event(TRACE_PROBE_WATCHDOG, 0x4143_4e54, count_register, 0, 0, 0); // "ACNT"
+    }
     if matches!(
         option_env!("FULLERENE_USB_PULSE_BREADCRUMB"),
         Some("7") | Some("4")

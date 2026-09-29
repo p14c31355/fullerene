@@ -277,18 +277,11 @@ pub(super) unsafe fn init_usb2_bare_pullup_handoff_inner(connect: bool) -> bool 
         // (2026-09-29 ~13:10), so the device-mode write is not the transition after all. Window is
         // now (:6971, :6992).
         configure_dwc3_global_control();
-        // Final split (2026-09-29): between configure_dwc3_global_control() and the DCFG speed write
-        // - the last two candidates. Silent here means the DCFG write is the transition; audible
-        // means configure_dwc3_global_control() is. Gated on !connect for the :7167 caller.
-        if !connect {
-            pullup_mark(2);
-        }
+        // Keep the handoff disconnected until reset, DMA and EP0 are ready.
+        // An unconditional bisection pulse here used to toggle Run/Stop before
+        // those ownership boundaries, creating an EP0-less enumeration window.
         write(DCFG, DCFG_HIGHSPEED);
         let _ = read(DCFG);
-        // Bisection: a mark immediately after the DCFG speed write was AUDIBLE 3/3 (2026-09-29
-        // ~13:25). Window is now (:6971, :6976) - configure_dwc3_global_control() and the DCFG
-        // write, five lines. The mark moves between them for the final split.
-
         // Linux disables endpoint advertising before stopping the device
         // controller. In the ABL Stop() differential, the controller remains
         // live, so leave its endpoint advertisement untouched until the
