@@ -503,8 +503,7 @@ pub(super) unsafe fn dep_reg(endpoint: usize, offset: usize) -> usize {
 ///
 /// Ids: 1xxx = `mod.rs`, 2xxx = `config.rs`, 3xxx = `control.rs`, low digits =
 /// order of appearance in that file.
-pub(crate) static G2W_SITE: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
+pub(crate) static G2W_SITE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Record which call site is about to write `GUSB2PHYCFG0`.
 #[inline]
@@ -593,7 +592,10 @@ pub(super) unsafe fn write(offset: usize, value: u32) {
     if offset == GCTL {
         use core::sync::atomic::Ordering;
         let line = core::panic::Location::caller().line() as u32;
-        GCTL_LAST_WRITER.store((((value >> 12) & 0x3) << 16) | (line & 0xffff), Ordering::Relaxed);
+        GCTL_LAST_WRITER.store(
+            (((value >> 12) & 0x3) << 16) | (line & 0xffff),
+            Ordering::Relaxed,
+        );
         let _ = GCTL_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
     } else if offset == GUSB2PHYCFG0 {
         use core::sync::atomic::Ordering;
@@ -606,8 +608,10 @@ pub(super) unsafe fn write(offset: usize, value: u32) {
             flags |= 2;
         }
         GUSB2PHYCFG_LAST_WRITER.store((flags << 16) | (line & 0xffff), Ordering::Relaxed);
-        GUSB2PHYCFG_READ_BEFORE_LAST_WRITE
-            .store(GUSB2PHYCFG_LAST_READ.load(Ordering::Relaxed), Ordering::Relaxed);
+        GUSB2PHYCFG_READ_BEFORE_LAST_WRITE.store(
+            GUSB2PHYCFG_LAST_READ.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
         let _ = GUSB2PHYCFG_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
         if value & GUSB2PHYCFG_SUSPHY != 0 {
             let _ = GUSB2PHYCFG_SET_COUNT.fetch_add(1, Ordering::Relaxed);

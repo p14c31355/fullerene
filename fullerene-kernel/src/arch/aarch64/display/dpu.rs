@@ -46,8 +46,8 @@ fn looks_like_framebuffer(candidate: usize) -> bool {
 pub unsafe fn active_layer() -> Option<(usize, usize)> {
     for layer in 0..8 {
         let block = MDSS_BASE + SSPP_FIRST + layer * SSPP_STRIDE;
-        let addr = unsafe { core::ptr::read_volatile((block + SSPP_SRC0_ADDR) as *const u32) }
-            as usize;
+        let addr =
+            unsafe { core::ptr::read_volatile((block + SSPP_SRC0_ADDR) as *const u32) } as usize;
         if looks_like_framebuffer(addr) {
             return Some((SSPP_FIRST + layer * SSPP_STRIDE, addr));
         }

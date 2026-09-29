@@ -68,7 +68,6 @@ pub mod lane {
     pub const TX_DCTRL: usize = 0x0c;
 }
 
-
 /// `DSI_7nm_PHY_PLL` offsets (`dsi_phy_7nm.xml`, domain `DSI_7nm_PHY_PLL`).
 pub mod pll {
     pub const ANALOG_CONTROLS_TWO: usize = 0x004;
@@ -172,11 +171,7 @@ pub fn pll_hzindep_values(vco_rate: u64) -> (u32, u32) {
 /// `(n + d - 1) / d` for positive operands, which is what the callers use.
 #[inline]
 pub const fn s_div_round_up(n: i64, d: i64) -> i64 {
-    if n >= 0 {
-        (n + d - 1) / d
-    } else {
-        n / d
-    }
+    if n >= 0 { (n + d - 1) / d } else { n / d }
 }
 
 /// `linear_inter()` (`dsi_phy.c:17-28`).
@@ -290,7 +285,7 @@ pub fn dphy_timing_calc_v4(bitclk_rate: u64, escclk_rate: u64) -> Option<DphyTim
 /// host-testable.
 #[cfg(target_arch = "aarch64")]
 pub mod hw {
-    use super::{cmn, lane, pll, DphyTiming, PllDividers};
+    use super::{DphyTiming, PllDividers, cmn, lane, pll};
 
     #[inline]
     fn wr(base: usize, off: usize, value: u32) {
@@ -325,8 +320,16 @@ pub mod hw {
         wr(p, pll::CORE_INPUT_OVERRIDE, 0x12);
         wr(p, pll::DECIMAL_DIV_START_1, d.dec as u32);
         wr(p, pll::FRAC_DIV_START_LOW_1, (d.frac & 0xff) as u32);
-        wr(p, pll::FRAC_DIV_START_MID_1, ((d.frac & 0xff00) >> 8) as u32);
-        wr(p, pll::FRAC_DIV_START_HIGH_1, ((d.frac & 0x3_0000) >> 16) as u32);
+        wr(
+            p,
+            pll::FRAC_DIV_START_MID_1,
+            ((d.frac & 0xff00) >> 8) as u32,
+        );
+        wr(
+            p,
+            pll::FRAC_DIV_START_HIGH_1,
+            ((d.frac & 0x3_0000) >> 16) as u32,
+        );
         wr(p, pll::PLL_LOCKDET_RATE_1, 0x40);
         wr(p, pll::PLL_LOCK_DELAY, 0x06);
         wr(p, pll::CMODE_1, 0x10); // D-PHY
@@ -540,8 +543,10 @@ mod tests {
     /// and this port are right, the computed values must reappear in that table.
     #[test]
     fn v4_timing_reproduces_panel_dt_table() {
-        let bit = (panel::H_TOTAL as u64) * (panel::V_TOTAL as u64)
-            * (panel::PANEL_FRAMERATE_HZ as u64) * (panel::PANEL_BPP as u64)
+        let bit = (panel::H_TOTAL as u64)
+            * (panel::V_TOTAL as u64)
+            * (panel::PANEL_FRAMERATE_HZ as u64)
+            * (panel::PANEL_BPP as u64)
             / (panel::DSI_LANES as u64);
         assert_eq!(bit, 1_053_861_840, "per-lane bit rate for sofef01");
 
@@ -565,5 +570,3 @@ mod tests {
         assert!(dphy_timing_calc_v4(1_053_861_840, 0).is_none());
     }
 }
-
-

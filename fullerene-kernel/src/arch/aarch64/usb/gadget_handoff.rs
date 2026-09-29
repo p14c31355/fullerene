@@ -754,9 +754,7 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             },
         );
         configure_gadget_start_defaults();
-        if option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT")
-            == Some("usb2-live-ep0-armed-order")
-        {
+        if option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") == Some("usb2-live-ep0-armed-order") {
             // Bit 1 of 2. Recorded just *before* the gadget-start branch, so the
             // readout can tell "never reached this epoch" apart from "reached it
             // and took the false branch". See `ENDPOINT_CONFIG_BLOCK_REACHED` for
@@ -1140,13 +1138,15 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 let before = (read(DSTS) & SOFFN_MASK) >> 3;
                 readout_keepalive_delay_ms(500);
                 let after = (read(DSTS) & SOFFN_MASK) >> 3;
-                log_hex("usb gadget handoff: pre-attach SOFFN before=", u64::from(before));
-                log_hex("usb gadget handoff: pre-attach SOFFN after=", u64::from(after));
-                if after != before {
-                    4_000
-                } else {
-                    1_000
-                }
+                log_hex(
+                    "usb gadget handoff: pre-attach SOFFN before=",
+                    u64::from(before),
+                );
+                log_hex(
+                    "usb gadget handoff: pre-attach SOFFN after=",
+                    u64::from(after),
+                );
+                if after != before { 4_000 } else { 1_000 }
             } else if selector == "hsphy-suspend-n-safe" {
                 // 1 = missing, 2 = present/0, 3 = present/1.
                 match code {
@@ -1390,7 +1390,10 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 if ENDPOINTS_READY {
                     unsafe { ccs_pulse(300) };
                 }
-            } else if { trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3141); selector == "usb2-live-ms-ge-11" } {
+            } else if {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3141);
+                selector == "usb2-live-ms-ge-11"
+            } {
                 readout_keepalive_delay_ms(500);
                 if unsafe { HANDOFF_MILESTONE } >= 11 {
                     unsafe { ccs_pulse(300) };
@@ -1568,9 +1571,8 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     }
                     let _ = run_stop_device(true);
                     EP0_STATE = Ep0State::Setup;
-                    let deadline = arch_counter().saturating_add(
-                        arch_counter_frequency().saturating_mul(2_500) / 1_000,
-                    );
+                    let deadline = arch_counter()
+                        .saturating_add(arch_counter_frequency().saturating_mul(2_500) / 1_000);
                     let mut answered = 0u32;
                     while arch_counter() < deadline {
                         EP0_SETUP_ARMED = false;
@@ -1708,7 +1710,8 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     ARM_COOLDOWN = 0;
                     let _ = try_arm_setup();
                     let frequency = arch_counter_frequency();
-                    let deadline = arch_counter().saturating_add(frequency.saturating_mul(4_000) / 1_000);
+                    let deadline =
+                        arch_counter().saturating_add(frequency.saturating_mul(4_000) / 1_000);
                     let mut last_arm = arch_counter();
                     let mut pending_seen = 0u32;
                     let mut answered = 0u32;
@@ -1724,8 +1727,8 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                         // A pending SETUP needs software action immediately; a
                         // retired transfer is re-armed at a bounded rate so the
                         // endpoint is ready for the next control request.
-                        let retired = trbsts == 0 && now.saturating_sub(last_arm)
-                            >= frequency.saturating_mul(50) / 1_000;
+                        let retired = trbsts == 0
+                            && now.saturating_sub(last_arm) >= frequency.saturating_mul(50) / 1_000;
                         if trbsts == 2 || retired {
                             EP0_SETUP_ARMED = false;
                             ARM_COOLDOWN = 0;
@@ -1858,7 +1861,10 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     }
                     let _ = answered;
                 }
-            } else if { trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3241); selector == "usb2-live-ep0-restart" } {
+            } else if {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3241);
+                selector == "usb2-live-ep0-restart"
+            } {
                 // Linux's recipe for a control endpoint holding a pending SETUP
                 // is `dwc3_ep0_stall_and_restart()` (`ep0.c:243-266`): stall EP0,
                 // which retires the pending transfer, reset the state to the
@@ -2284,7 +2290,10 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                         ccs_pulse(300);
                     }
                 }
-            } else if { trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3341); selector == "usb2-live-devten-set" } {
+            } else if {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3341);
+                selector == "usb2-live-devten-set"
+            } {
                 // ONE question, ONE bit: is `DEVTEN` (device event enable)
                 // programmed at all at runtime?
                 //
@@ -2432,8 +2441,8 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                     "usb2-live-gate-probe7" => 7,
                     _ => 2,
                 };
-                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter()
-                    .saturating_add(arch_counter_frequency().saturating_mul(secs));
+                POST_RUNSTOP_PROBE_NOT_BEFORE =
+                    arch_counter().saturating_add(arch_counter_frequency().saturating_mul(secs));
             } else if selector == "usb2-live-deferred-early" {
                 // BISECTION, not a data measurement: fire the deferred block only
                 // ~2 s after the handoff - while the CCS channel is still known to
@@ -2443,8 +2452,8 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // ~6 s, no re-attach) are a channel/timing problem; if it does not,
                 // `poll()` itself is not running after the handoff.
                 DEFERRED_READOUT_KIND = 6;
-                POST_RUNSTOP_PROBE_NOT_BEFORE = arch_counter()
-                    .saturating_add(arch_counter_frequency().saturating_mul(2));
+                POST_RUNSTOP_PROBE_NOT_BEFORE =
+                    arch_counter().saturating_add(arch_counter_frequency().saturating_mul(2));
             } else if selector == "usb2-live-reattach" {
                 // Fix candidate, not a measurement: let the host's first attempt
                 // fail (it gives up within ~600 ms of attaching - entry 171), then
@@ -2595,8 +2604,9 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // handful of these runs brackets the offender to one site.
                 let k: u32 = rest.parse().unwrap_or(u32::MAX);
                 readout_keepalive_delay_ms(500);
-                let packed =
-                    unsafe { mmio::GUSB2PHYCFG_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed) };
+                let packed = unsafe {
+                    mmio::GUSB2PHYCFG_LAST_WRITER.load(core::sync::atomic::Ordering::Relaxed)
+                };
                 if packed != u32::MAX && (packed & 0xffff) >= k {
                     unsafe { ccs_pulse(300) };
                 }
@@ -2604,7 +2614,10 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // Did the register get written at all, and how many times?
                 let k: u32 = rest.parse().unwrap_or(u32::MAX);
                 readout_keepalive_delay_ms(500);
-                if unsafe { mmio::GUSB2PHYCFG_WRITE_COUNT.load(core::sync::atomic::Ordering::Relaxed) } >= k {
+                if unsafe {
+                    mmio::GUSB2PHYCFG_WRITE_COUNT.load(core::sync::atomic::Ordering::Relaxed)
+                } >= k
+                {
                     unsafe { ccs_pulse(300) };
                 }
             } else if selector.starts_with("usb2-live-milestone-ge-") {
@@ -2673,7 +2686,11 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 for _ in 0..count {
                     unsafe { ccs_pulse(300) };
                 }
-            } else if { trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3441); selector == "usb2-live-halted" } || selector == "usb2-live-runstop-bit" {
+            } else if {
+                trace_marker(TRACE_PROBE_WATCHDOG, 0x4D44_3441);
+                selector == "usb2-live-halted"
+            } || selector == "usb2-live-runstop-bit"
+            {
                 // Single-bit, wide-pulse readouts. The width-coded words drift
                 // by ~80 ms through run_stop_device, so a one-bit word uses two
                 // widths that cannot be confused: 700 ms = bit set, 150 ms =
@@ -2994,4 +3011,3 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         return true;
     }
 }
-

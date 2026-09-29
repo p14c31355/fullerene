@@ -319,9 +319,7 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
         let readback = read(GCTL) & GCTL_PRTCAPDIR_MASK;
         let wrote = gctl & GCTL_PRTCAPDIR_MASK;
         DEVICE_MODE_WRITE_PROBE.store(
-            u32::from(readback == wrote)
-                | ((wrote >> 12) << 8)
-                | ((readback >> 12) << 16),
+            u32::from(readback == wrote) | ((wrote >> 12) << 8) | ((readback >> 12) << 16),
             core::sync::atomic::Ordering::Relaxed,
         );
 

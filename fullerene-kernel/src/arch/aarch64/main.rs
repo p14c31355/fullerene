@@ -5,6 +5,8 @@ use fullerene_abi::boot::{self, BootArchitecture, BootInfo, BootPlatform};
 mod allocator;
 mod cpu;
 mod devices;
+#[cfg(fullerene_aarch64_bramble)]
+mod display;
 mod elf;
 mod entry;
 mod exceptions;
@@ -21,8 +23,6 @@ mod task;
 pub(crate) mod timer;
 mod uart;
 mod ufs;
-#[cfg(fullerene_aarch64_bramble)]
-mod display;
 // ── Why the USB test/simulation modules are *siblings* of `usb`, not inside it
 //
 // `usb_protocol`, `usb_regs`, `usb_dwc3_sim`, `usb_qemu_sim` and

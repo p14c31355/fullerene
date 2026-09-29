@@ -91,7 +91,7 @@ pub const NEEDED: &[(&str, usize)] = &[
 
 #[cfg(target_arch = "aarch64")]
 pub mod hw {
-    use super::{branch, DISP_CC_BASE};
+    use super::{DISP_CC_BASE, branch};
 
     #[inline]
     fn rd(off: usize) -> u32 {

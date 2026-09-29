@@ -132,9 +132,9 @@ mod fs {
         length
     }
 }
+mod display;
 mod timer;
 mod uart;
-mod display;
 mod usb;
 // Same reasoning as arch/aarch64/main.rs: these stay siblings of `usb` because
 // they use `super::` to reach each other, and this file is a crate root, so
@@ -827,8 +827,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // See usb/README.md §1.3 and §2.
     let drive_secs = env_seconds(option_env!("FULLERENE_USB_PROBE_DRIVE_SECS"), 10);
     let drive_frequency = probe_counter_frequency();
-    let drive_until =
-        probe_counter().saturating_add(drive_frequency.saturating_mul(drive_secs));
+    let drive_until = probe_counter().saturating_add(drive_frequency.saturating_mul(drive_secs));
     while drive_frequency != 0 && probe_counter() < drive_until {
         usb::wdt_pet();
         usb::poll();
@@ -872,7 +871,9 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     // regardless - see `docs/DISPLAY_BRINGUP.md`). The display stage code is
     // published through the Android return time: 1 -> +8 s, 5 -> +40 s on top of
     // the handoff-stage park above.
-    if let Some(rest) = option_env!("FULLERENE_USB_SIGNAL_CMD_GATE").and_then(|g| g.strip_prefix("dsidb")) {
+    if let Some(rest) =
+        option_env!("FULLERENE_USB_SIGNAL_CMD_GATE").and_then(|g| g.strip_prefix("dsidb"))
+    {
         // `dsidb<octet><bit>` - e.g. `dsidb05` = octet 0, bit 5. 32 combinations,
         // parsed from the gate name so the whole 4-byte response can be swept
         // without 32 separate predicates.
@@ -899,8 +900,14 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             }
         }
     }
-    if cmd_gate_is("dsidbit0") || cmd_gate_is("dsidbit1") || cmd_gate_is("dsidbit2") || cmd_gate_is("dsidbit3")
-        || cmd_gate_is("dsidbit4") || cmd_gate_is("dsidbit5") || cmd_gate_is("dsidbit6") || cmd_gate_is("dsidbit7")
+    if cmd_gate_is("dsidbit0")
+        || cmd_gate_is("dsidbit1")
+        || cmd_gate_is("dsidbit2")
+        || cmd_gate_is("dsidbit3")
+        || cmd_gate_is("dsidbit4")
+        || cmd_gate_is("dsidbit5")
+        || cmd_gate_is("dsidbit6")
+        || cmd_gate_is("dsidbit7")
     {
         // Binary-search a byte over the genuine 1-bit channel: 8 runs give byte 0 of
         // the DDB exactly, with no vendor table needed.
@@ -952,7 +959,11 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         usb::park_for_seconds(if answered { 30 } else { 5 });
         panic!("dsiddbq: value={:?} answered={}", value, answered);
     }
-    if cmd_gate_is("dsiddb0") || cmd_gate_is("dsiddb1") || cmd_gate_is("dsiddb2") || cmd_gate_is("dsiddb3") {
+    if cmd_gate_is("dsiddb0")
+        || cmd_gate_is("dsiddb1")
+        || cmd_gate_is("dsiddb2")
+        || cmd_gate_is("dsiddb3")
+    {
         // Read DCS 0x04 and publish ONE octet of the returned word, so the four
         // runs together show where the panel's bytes actually land. The vendor's
         // copy order is easy to get wrong: `dsi_cmd_dma_rx` fills its temp array in
@@ -1092,9 +1103,21 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             panic!("dsireuse00: panel command rejected");
         }
         let rows = display::panel::SOFEF00_HEIGHT as u16;
-        let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 200);
+        let _ = display::fill_band(
+            0,
+            rows,
+            display::Rgb {
+                r: 0xff,
+                g: 0xff,
+                b: 0xff,
+            },
+            200,
+        );
         usb::park_for_seconds(6 * 15);
-        panic!("dsireuse00: reuse+sofef00 fill completed (stage {:?})", stage);
+        panic!(
+            "dsireuse00: reuse+sofef00 fill completed (stage {:?})",
+            stage
+        );
     }
     if cmd_gate_is("dsipix2") {
         // Same area as a large fill but sent in small pieces, so the only variable
@@ -1103,7 +1126,16 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         // is what the panel's receive path rejects.
         let _ = display::bring_up_reuse();
         let rows = 200u16;
-        let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 200);
+        let _ = display::fill_band(
+            0,
+            rows,
+            display::Rgb {
+                r: 0xff,
+                g: 0xff,
+                b: 0xff,
+            },
+            200,
+        );
         usb::park_for_seconds(6 * 15);
         panic!("dsipix2: small-chunk large-area fill completed");
     }
@@ -1115,7 +1147,16 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
         // visible test: if a thin white line appears, the chunk size was the fault.
         let _ = display::bring_up_reuse();
         let rows = 10u16;
-        let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 200);
+        let _ = display::fill_band(
+            0,
+            rows,
+            display::Rgb {
+                r: 0xff,
+                g: 0xff,
+                b: 0xff,
+            },
+            200,
+        );
         usb::park_for_seconds(6 * 15);
         panic!("dsipix: small-chunk fill completed");
     }
@@ -1177,7 +1218,16 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             panic!("dsireuse: panel command rejected by XBL's controller");
         }
         let rows = display::panel::PANEL_HEIGHT as u16;
-        let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 5456);
+        let _ = display::fill_band(
+            0,
+            rows,
+            display::Rgb {
+                r: 0xff,
+                g: 0xff,
+                b: 0xff,
+            },
+            5456,
+        );
         usb::park_for_seconds(6 * 15);
         panic!("dsireuse: stage code {} - reuse path completed", code);
     }
@@ -1235,14 +1285,26 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
             // Bisection step 4: do the lanes report any state at all?
             let (lane0, lane1) = display::dsi_phy::hw::lane_status();
             if lane0 == 0 && lane1 == 0 {
-                panic!("dsi lanes report nothing: status0={:#x} status1={:#x}", lane0, lane1);
+                panic!(
+                    "dsi lanes report nothing: status0={:#x} status1={:#x}",
+                    lane0, lane1
+                );
             }
             // Full-screen fill: the strongest visible test, and it also removes any
             // doubt about the band window. WHITE, because the observer's handset is
             // on Android's dark theme - a black screen is indistinguishable from the
             // dark background, but white is unmistakable.
             let rows = display::panel::PANEL_HEIGHT as u16;
-            let _ = display::fill_band(0, rows, display::Rgb { r: 0xff, g: 0xff, b: 0xff }, 5456);
+            let _ = display::fill_band(
+                0,
+                rows,
+                display::Rgb {
+                    r: 0xff,
+                    g: 0xff,
+                    b: 0xff,
+                },
+                5456,
+            );
         }
         // Publish the stage through the Android return time (see above).
         usb::park_for_seconds(code * 8);

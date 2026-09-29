@@ -111,12 +111,7 @@ impl Packet {
         } else {
             let d0 = self.payload.first().copied().unwrap_or(0);
             let d1 = self.payload.get(1).copied().unwrap_or(0);
-            (
-                (self.dtype as u16) | ((self.vc as u16) << 6),
-                d0,
-                d1,
-                4,
-            )
+            ((self.dtype as u16) | ((self.vc as u16) << 6), d0, d1, 4)
         };
         let len = (size + 3) & !0x3;
         if out.len() < len {
@@ -142,7 +137,7 @@ impl Packet {
 
 #[cfg(target_arch = "aarch64")]
 pub mod hw {
-    use super::{bits, reg, CtrlConfig, Packet, DCS_WRITE_MEMORY_CONTINUE, DCS_WRITE_MEMORY_START};
+    use super::{CtrlConfig, DCS_WRITE_MEMORY_CONTINUE, DCS_WRITE_MEMORY_START, Packet, bits, reg};
 
     /// Command/DMA staging buffer. Identity-mapped, so its address is the
     /// physical address the DSI DMA engine needs. 16 KiB keeps a full-screen

@@ -2,7 +2,11 @@
 
 use super::*;
 
-pub(super) fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_platform: bool) -> bool {
+pub(super) fn init_with_super_speed(
+    super_speed: bool,
+    reset_core: bool,
+    reset_platform: bool,
+) -> bool {
     unsafe {
         QMP_PHY_READY = false;
         // The DWC3 stream is unattributed at the Apps-SMMU (ladder 252), and
@@ -518,7 +522,10 @@ pub(super) fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_p
         // gated even though the USB2 PHY can still answer the host's chirp.
         // Bring up that branch after the direct handoff reset, matching the
         // Qualcomm resume order before issuing any DWC3 endpoint command.
-        if !super_speed && !reset_platform && !super::super::platform::bramble::enable_usb2_utmi_clock() {
+        if !super_speed
+            && !reset_platform
+            && !super::super::platform::bramble::enable_usb2_utmi_clock()
+        {
             log_puts("usb: GCC mock UTMI clock enable failed\n");
             trace_event(TRACE_GCC_UTMI_CLOCK, 0, 0, 0, 0, read(DSTS));
         }
@@ -740,9 +747,15 @@ pub(super) fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_p
             TRACE_SMMU_HANDOFF,
             smmu_ready as u32,
             reset_platform as u32,
-            super::super::platform::bramble::usb_resources().dma_pool.stream_id,
-            super::super::platform::bramble::usb_resources().dma_pool.iova_base as u32,
-            super::super::platform::bramble::usb_resources().dma_pool.size as u32,
+            super::super::platform::bramble::usb_resources()
+                .dma_pool
+                .stream_id,
+            super::super::platform::bramble::usb_resources()
+                .dma_pool
+                .iova_base as u32,
+            super::super::platform::bramble::usb_resources()
+                .dma_pool
+                .size as u32,
         );
         if smmu_ready {
             log_puts("usb: DWC3 SMMU DMA-pool map ready\n");
@@ -1871,4 +1884,3 @@ pub(super) fn init_with_super_speed(super_speed: bool, reset_core: bool, reset_p
     }
     true
 }
-

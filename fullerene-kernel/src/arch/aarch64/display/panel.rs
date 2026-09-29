@@ -96,17 +96,47 @@ pub const SOFEF00_V_TOTAL: u32 = SOFEF00_HEIGHT + V_BACK_PORCH + V_FRONT_PORCH +
 /// no CASET and a shorter manufacturer sequence than sofef01.
 pub const PANEL_ON_SOFEF00: &[DsiCommand] = &[
     // Sleep out, wait 10 ms.
-    DsiCommand { kind: 0x05, last: false, wait_ms: 10, payload: &[0x11] },
+    DsiCommand {
+        kind: 0x05,
+        last: false,
+        wait_ms: 10,
+        payload: &[0x11],
+    },
     // Tear signal on.
-    DsiCommand { kind: 0x15, last: false, wait_ms: 0, payload: &[0x35, 0x00] },
+    DsiCommand {
+        kind: 0x15,
+        last: false,
+        wait_ms: 0,
+        payload: &[0x35, 0x00],
+    },
     // Page address set: 0..0x86F (2159), i.e. 2160 rows.
-    DsiCommand { kind: 0x39, last: false, wait_ms: 0, payload: &[0x2B, 0x00, 0x00, 0x08, 0x6F] },
+    DsiCommand {
+        kind: 0x39,
+        last: false,
+        wait_ms: 0,
+        payload: &[0x2B, 0x00, 0x00, 0x08, 0x6F],
+    },
     // Manufacturer command set lock (F0 A5 A5).
-    DsiCommand { kind: 0x39, last: false, wait_ms: 0, payload: &[0xF0, 0xA5, 0xA5] },
+    DsiCommand {
+        kind: 0x39,
+        last: false,
+        wait_ms: 0,
+        payload: &[0xF0, 0xA5, 0xA5],
+    },
     // Brightness, then wait 110 ms.
-    DsiCommand { kind: 0x15, last: false, wait_ms: 110, payload: &[0x53, 0x20] },
+    DsiCommand {
+        kind: 0x15,
+        last: false,
+        wait_ms: 110,
+        payload: &[0x53, 0x20],
+    },
     // Display on.
-    DsiCommand { kind: 0x05, last: true, wait_ms: 0, payload: &[0x29] },
+    DsiCommand {
+        kind: 0x05,
+        last: true,
+        wait_ms: 0,
+        payload: &[0x29],
+    },
 ];
 
 /// DSI command format descriptor: `type last vc ack wait_ms dlen payload`.
