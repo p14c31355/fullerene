@@ -115,6 +115,7 @@ pub(super) unsafe fn enable_gadget_susphy() {
     unsafe {
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 |= GUSB2PHYCFG_SUSPHY;
+        mark_g2w_site(2001);
         write(GUSB2PHYCFG0, usb2);
 
         let mut usb3 = read(GUSB3PIPECTL0);
@@ -134,6 +135,7 @@ pub(super) unsafe fn enable_usb2_gadget_susphy() {
     unsafe {
         let mut usb2 = read(GUSB2PHYCFG0);
         usb2 |= GUSB2PHYCFG_SUSPHY;
+        mark_g2w_site(2002);
         write(GUSB2PHYCFG0, usb2);
     }
 }
@@ -252,6 +254,21 @@ pub(super) unsafe fn configure_dwc3_global_control() {
     }
 }
 
+/// Proof-of-execution probe for the DEVICE-mode write, read out over CCS.
+/// See the comment at the write site for the bit layout.
+/// PRTCAPDIR field value captured immediately after the DEVICE-mode write.
+/// `u32::MAX` = the write site was never reached.
+/// Millisecond timestamp latched at the DEVICE-mode write, for the phase-timing
+/// test. `u32::MAX` = the write site was never reached (or CNTFRQ was unset).
+pub(super) static EARLY_TICK_MS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+pub(super) static EARLY_PRTCAPDIR: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+pub(super) static DEVICE_MODE_WRITE_PROBE: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
 /// Apply the device-mode tail of Android msm's `dwc3_set_mode()`.
 ///
 /// The direct handoff previously selected `PRTCAPDIR=DEVICE` but omitted the
@@ -266,6 +283,45 @@ pub(super) unsafe fn configure_dwc3_device_mode() {
         gctl &= !GCTL_PRTCAPDIR_MASK;
         gctl |= GCTL_PRTCAP_DEVICE;
         write(GCTL, gctl);
+
+        // Proof-of-execution probe. `GCTL.PRTCAPDIR` reads HOST (1) on this board
+        // even though this function writes DEVICE (2) and runs on both branch
+        // profiles, so record (a) that the write happened, (b) what was written
+        // and (c) what the field reads straight back. The three values are
+        // stashed where the CCS readout can publish them without another run:
+        // bit 0 = the write landed (readback equals what we wrote),
+        // bits 15:8 = the field value we wrote, bits 23:16 = the field value read
+        // back. A readback of `2` with a later field value of `1` means something
+        // downstream overwrites it; a readback of `1` means the write itself is
+        // discarded.
+        // Early sample for the PRTCAPDIR transition test: remember the field
+        // value right after this write, so a later readout in the same boot can
+        // report whether the hardware changed it on its own. `devmode`/`devmode2`
+        // showed DEVICE immediately after the write and `prtcap` showed HOST at
+        // readout time, but those were *different boots*. This makes the
+        // comparison same-boot.
+        // Phase-timing latch. The only software-reachable lever left is *when*
+        // the controller is running relative to the host's bus reset, so record
+        // the architectural counter at this boundary. `timer::counter()` /
+        // `timer::frequency()` already exist and read CNTPCT_EL0 / CNTFRQ_EL0.
+        EARLY_TICK_MS.store(
+            if crate::timer::frequency() == 0 {
+                u32::MAX
+            } else {
+                (crate::timer::counter() / (crate::timer::frequency() / 1000) as u64) as u32
+            },
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        EARLY_PRTCAPDIR.store(
+            (read(GCTL) & GCTL_PRTCAPDIR_MASK) >> 12,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        let readback = read(GCTL) & GCTL_PRTCAPDIR_MASK;
+        let wrote = gctl & GCTL_PRTCAPDIR_MASK;
+        DEVICE_MODE_WRITE_PROBE.store(
+            u32::from(readback == wrote) | ((wrote >> 12) << 8) | ((readback >> 12) << 16),
+            core::sync::atomic::Ordering::Relaxed,
+        );
 
         #[cfg(fullerene_aarch64_usb_gctl_pwrdnscale_2)]
         {
@@ -426,6 +482,7 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
                 fullerene_aarch64_usb_u2_freeclk_clear,
                 fullerene_aarch64_usb_u2_freeclk_set
             )) {
+                mark_g2w_site(2003);
                 write(GUSB2PHYCFG0, usb2);
                 let readback = read(GUSB2PHYCFG0);
                 live_utmi_write(usb2, readback);
@@ -486,6 +543,7 @@ pub(super) unsafe fn configure_usb2_phy_interface() {
             // value as an explicit diagnostic A/B as well.
             usb2 |= GUSB2PHYCFG_U2_FREECLK_EXISTS;
         }
+        mark_g2w_site(2004);
         write(GUSB2PHYCFG0, usb2);
         let readback = read(GUSB2PHYCFG0);
         live_utmi_write(usb2, readback);
@@ -507,6 +565,7 @@ pub(super) unsafe fn configure_usb2_phy_interface_pre_reset() {
             // the PHYIF/TRDTIM selection is absent when the DT mode is
             // UNKNOWN. Preserve the other interface bits exactly.
             usb2 |= GUSB2PHYCFG_SUSPHY;
+            mark_g2w_site(2005);
             write(GUSB2PHYCFG0, usb2);
             let readback = read(GUSB2PHYCFG0);
             live_utmi_write(usb2, readback);
@@ -538,6 +597,7 @@ pub(super) unsafe fn configure_usb2_phy_interface_pre_reset() {
         // configuration for revisions newer than 1.94a. Bramble's DWC31
         // revision is in that range.
         usb2 |= GUSB2PHYCFG_SUSPHY;
+        mark_g2w_site(2006);
         write(GUSB2PHYCFG0, usb2);
         let _ = read(GUSB2PHYCFG0);
     }

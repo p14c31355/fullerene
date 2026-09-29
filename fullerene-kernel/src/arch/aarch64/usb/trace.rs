@@ -11,6 +11,10 @@ use super::{
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
 pub(crate) const USB_TRACE_CAPACITY: usize = 256;
+/// Once-only guards for the arm-window breadcrumbs. The arm window is a loop, so an unguarded pulse
+/// inside it would fire hundreds of times and the count would be useless. Plain BSS: they must NOT
+/// persist across boots, because each run needs them clear.
+pub static mut BC_ONCE: [bool; 24] = [false; 24];
 
 // Numeric events keep the early USB path independent of UART, locks, and
 // formatting. The buffer is CPU-owned; it is placed beside the DMA objects so
@@ -117,6 +121,41 @@ pub(crate) static mut USB_TRACE: UsbTraceBuffer = UsbTraceBuffer {
     reserved: 0,
     entries: [EMPTY_USB_TRACE; USB_TRACE_CAPACITY],
 };
+
+// Crate-shared state. `usb_probe.rs` compiles `usb/` a second time, so every
+// `static mut` here exists twice; an address-selecting one then makes the two
+// crates read different memory. The `.usb_trace` section is placed once by the
+// linker script and excluded by the allocator, so both crates resolve these to the
+// same address. See usb/README.md §1.2.
+#[unsafe(link_section = ".usb_trace")]
+pub(crate) static mut SHARED_DMA_ADOPTED: bool = false;
+#[unsafe(link_section = ".usb_trace")]
+pub(crate) static mut SHARED_DMA_ADOPTED_CPU: usize = 0;
+#[unsafe(link_section = ".usb_trace")]
+pub(crate) static mut SHARED_DMA_ADOPTED_IOVA: u64 = 0;
+/// The DWC3 core id, latched once while the controller aperture is known-good.
+///
+/// `usb2_live_word` used to do `let snpsid = read(GSNPSID);` on *every* word, before any
+/// dispatch. Measured 2026-09-28: the handoff reaches the readout block, enters
+/// `usb2_live_word`, and never returns (`wstall` TRUE - "WBFR" present, "WAFT" absent in one
+/// run). The value cannot change during a boot, so reading it in the readout path buys
+/// nothing and costs a controller access at exactly the moment the USB clock branch is known
+/// to be collapsing (`mod.rs:6480-6486`). See usb/README.md §1.6.
+#[unsafe(link_section = ".usb_trace")]
+pub(crate) static mut SHARED_SNPSID: u32 = 0;
+pub(crate) static mut POLL_MARKED: bool = false;
+/// How far the *previous* boot's handoff got, in the region after the POSTRUN readout.
+///
+/// This exists because every `usb2_live_word` probe is blind to its own future: the reader runs
+/// at a single point inside the handoff, so it can only observe markers written strictly before
+/// it. `hd_returned`, `selx` and `usb2-live-milestone-ge-<20+>` are all tautologies for that
+/// reason (see references/boundary-state.md, "EVERY usb2_live_word PROBE IS BLIND TO ITS OWN
+/// FUTURE"). The `.usb_trace` section is NOT cleared between `fastboot boot` cycles - only the
+/// ring head is - so a value parked here is readable by the *next* boot's readout, which is the
+/// only way to see the far side of the readout block. Deliberately never cleared: the previous
+/// boot's furthest milestone is exactly the reading wanted. See usb/README.md §3.20.
+#[unsafe(link_section = ".usb_trace")]
+pub(crate) static mut SHARED_POST_HANDOFF: u32 = 0;
 
 // The retained trace can be scribbled by the stock Android takeover before a
 // later boot reads it. Keep a current-boot copy for the UTMI readout gate so
@@ -269,6 +308,7 @@ pub fn trace_probe_begin() {
 pub fn trace_reset_head_for_boot() {
     unsafe {
         write_volatile(addr_of_mut!(USB_TRACE).cast::<u32>().add(2), 0);
+        POLL_MARKED = false;
         LIVE_UTMI_VALID = 0;
         LIVE_UTMI_WRITE_VALID = false;
         LIVE_DALEPENA_VALID = false;
@@ -624,29 +664,256 @@ pub fn prev_boot_boundary_code() -> u32 {
 ///   6 = first PCS status read (`QMSR`)
 ///   7 = status poll (`QMPL`)
 ///   8 = PHY ready (`QMOK`)
-pub fn prev_boot_qmp_phase_code() -> u32 {
+/// Validate and scan the retained trace with one consistent validity rule.
+fn prev_boot_any(mut predicate: impl FnMut(u32, u32) -> bool) -> Option<bool> {
     unsafe {
-        let magic = read_volatile(addr_of!(USB_TRACE).cast::<u32>());
-        let version = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(1));
-        if magic != USB_TRACE_MAGIC || version != USB_TRACE_VERSION {
-            return 0;
+        let base = addr_of!(USB_TRACE).cast::<u32>();
+        if read_volatile(base) != USB_TRACE_MAGIC || read_volatile(base.add(1)) != USB_TRACE_VERSION
+        {
+            return None;
         }
-        let head = read_volatile(addr_of!(USB_TRACE).cast::<u32>().add(2));
-        if head == 0 || head as usize > USB_TRACE_CAPACITY {
-            return 0;
+        let head = read_volatile(base.add(2)) as usize;
+        if head == 0 || head > USB_TRACE_CAPACITY {
+            return None;
         }
-        let mut phase = 0u32;
-        for index in 0..head as usize {
+        for index in 0..head {
             let entry = addr_of!(USB_TRACE.entries)
                 .cast::<UsbTraceEntry>()
                 .add(index);
             if read_volatile(addr_of!((*entry).sequence)) != (index + 1) as u32 {
-                return 0;
+                return None;
             }
-            if read_volatile(addr_of!((*entry).event)) != TRACE_PROBE_WATCHDOG {
-                continue;
+        }
+        for index in 0..head {
+            let entry = addr_of!(USB_TRACE.entries)
+                .cast::<UsbTraceEntry>()
+                .add(index);
+            if predicate(
+                read_volatile(addr_of!((*entry).event)),
+                read_volatile(addr_of!((*entry).status)),
+            ) {
+                return Some(true);
             }
-            let marker = read_volatile(addr_of!((*entry).status));
+        }
+        Some(false)
+    }
+}
+
+/// The lookup body was entered.
+pub fn prev_boot_word_entered() -> u32 {
+    u32::from(
+        prev_boot_any(|event, status| event == TRACE_PROBE_WATCHDOG && status == 0x5745_4E54)
+            .unwrap_or(false),
+    )
+}
+
+/// TRUE iff "WBFR" is present AND "WAFT" is absent, in ONE reading.
+///
+/// `wbef` and `waft` are separate runs, so "wbef TRUE, waft FALSE" could mean either
+/// "the lookup hung" or "the two runs took different trajectories". This collapses both
+/// into a single bit that one run can answer: 1 = the lookup was entered and never
+/// returned, 0 = anything else (including both present or neither present).
+/// See usb/README.md §3.16.
+pub fn prev_boot_word_lookup_stalled() -> u32 {
+    let mut before = false;
+    let mut after = false;
+    let valid = prev_boot_any(|event, status| {
+        if event == TRACE_PROBE_WATCHDOG {
+            match status {
+                0x5742_4652 => before = true,
+                0x5741_4654 => after = true,
+                _ => {}
+            }
+        }
+        false
+    });
+    if valid.is_none() {
+        return 0;
+    }
+    u32::from(before && !after)
+}
+
+/// One of the three handoff-completion markers: "WBFR" (before `usb2_live_word`), "WAFT"
+/// (after it), "SELX" (after the whole POSTRUN readout block, immediately before
+/// `HANDOFF_MILESTONE = 14`). Taking them together locates whether the stop is inside the
+/// word lookup, inside `publish_ccs_word`, or between them. See usb/README.md §3.16.
+pub fn prev_boot_marker_eq(want: u32) -> u32 {
+    u32::from(
+        prev_boot_any(|event, status| event == TRACE_PROBE_WATCHDOG && status == want)
+            .unwrap_or(false),
+    )
+}
+
+/// Did a synchronous exception fire during this boot?
+///
+/// The exception handler writes `TRACE_EXCEPTION_SYNC` unconditionally on Bramble
+/// (`exceptions.rs:286`), before it reaches `dump_trace()` / `uart::puts()` / `halt()` - and
+/// on a unit with no reachable UART, `halt()` is an infinite hang that the apps watchdog
+/// eventually resets. That is a candidate explanation for "the handoff is entered, reaches
+/// milestone 15, records no failure, and never returns", so the marker needs a reader.
+/// See usb/README.md §3.15.
+pub fn prev_boot_sync_exception() -> u32 {
+    u32::from(prev_boot_any(|event, _| event == TRACE_EXCEPTION_SYNC).unwrap_or(false))
+}
+
+/// Did the handoff *call itself* return? `HANDOFF_MILESTONE` can reach 15 and the function
+/// can still never come back - an un-petted wait inside it lets the apps watchdog bite, and
+/// the handset resets before the caller resumes. These two markers bracket the call:
+/// "INB4" before it, "INAF" after. `INAF` present is the only thing that proves the
+/// handoff returned. See usb/README.md §3.14.
+pub fn prev_boot_handoff_returned() -> u32 {
+    u32::from(
+        prev_boot_any(|event, status| event == TRACE_PROBE_WATCHDOG && status == 0x494E_4146)
+            .unwrap_or(false),
+    )
+}
+
+/// Was the handoff *entered* (the call site reached)? Companion to
+/// `prev_boot_handoff_returned()`. See usb/README.md §3.14.
+pub fn prev_boot_handoff_entered() -> u32 {
+    u32::from(
+        prev_boot_any(|event, status| event == TRACE_PROBE_WATCHDOG && status == 0x494E_4234)
+            .unwrap_or(false),
+    )
+}
+
+/// Was a specific `PSTA` stage marker written? `stage` is the low byte 0x01/0x02/0x12/0x03/0x04.
+///
+/// Same reasoning as `prev_boot_sig_only()`: the ladder folds HOP in, so `probe_s1..s4` cannot
+/// say which PSTA marker exists. These markers come from consecutive lines of one function
+/// (usb_probe.rs:2841, 2843/2845, 2851, 2870) with nothing but comments between them, so the
+/// running order is fixed and the highest one present locates the stop line exactly.
+/// See usb/README.md §3.13.
+pub fn prev_boot_psta_only(stage: u8) -> u32 {
+    u32::from(
+        prev_boot_any(|event, marker| {
+            event == TRACE_PROBE_WATCHDOG
+                && marker & 0xffff_ff00 == 0x5053_5400
+                && (marker & 0xff) as u8 == stage
+        })
+        .unwrap_or(false),
+    )
+}
+
+/// Was `run_ep0_signal_probe` entered? Answers ONLY that, with no HOP fold.
+///
+/// `prev_boot_probe_reach_code()` cannot answer it: it folds `HOP` in as `100 + milestone`
+/// at the end of its scan, and `HOP` is written by `handoff_progress()` *inside*
+/// `init_usb2_gadget_reuse_fastboot_ep0` - strictly upstream of the probe function. Every
+/// `probe_reach`/`probe_s*` word built on it is therefore TRUE whenever the handoff made
+/// any progress, whether or not the probe ran. Measured 2026-09-28: `hop_ge1` TRUE while
+/// `poll_ran` FALSE in a separate run, which is only possible if the ladder is being
+/// satisfied by HOP alone.
+///
+/// This scans for the "SIG" marker with no fold and no other participation. `SIG` is the
+/// first statement of `run_ep0_signal_probe` (usb_probe.rs:809), so it is exactly the
+/// predicate the question needs. See usb/README.md §3.13.
+pub fn prev_boot_sig_only() -> u32 {
+    u32::from(
+        prev_boot_any(|event, status| {
+            event == TRACE_PROBE_WATCHDOG && status & 0xffff_ff00 == 0x5349_4700
+        })
+        .unwrap_or(false),
+    )
+}
+
+/// Did `poll()` — the DWC3 driver loop — run at all in the previous boot?
+///
+/// `probe_reach` answers "was `run_ep0_signal_probe` entered", which is a *different*
+/// question: that function's first statement writes "SIG", but everything `poll()` does
+/// could still have been skipped. On 2026-09-28 a 10 s drive window was placed ahead of
+/// the diagnostics and `setupdr` still read false, so the next question is whether
+/// `poll()` itself ever executes in the probe crate — the crate that owns the SETUP
+/// reader. A `static mut` cannot answer it (the second `usb/` compilation gets its own
+/// copy), so the answer is published to the retained trace as "POL1", written once.
+///
+/// Read back the same way as `probe_reach`: 1 = `poll()` ran, 0 = it never did.
+pub fn prev_boot_poll_ran() -> u32 {
+    u32::from(
+        prev_boot_any(|event, marker| event == TRACE_PROBE_WATCHDOG && marker == 0x504F_4C31)
+            .unwrap_or(false),
+    )
+}
+
+/// Did the PROBE crate reach its poll loop? Crate-independent, unlike every
+/// `static mut` in `usb/`.
+///
+/// The measurements that were supposed to verify the two fixes (`poll_called`, `act_known`,
+/// `ph_len`, `ep0_data`, `ep0_status`) are all `static mut`s in `usb/`, and `usb_probe.rs` is
+/// a second crate root - so a reader in `usb2_live_word` (kernel crate) sees a *different copy*
+/// than the code under test (probe crate). `setupdr` settled the first half of that question
+/// the hard way: it reads the retained DRAM trace (`TRACE_HARVEST_SETUP`, filled from
+/// `TRACE_SETUP_RECEIVED` = "SETP" written at mod.rs:5452 by `handle_setup`), and it came back
+/// **false** with `dwc3-setupnz` true. So the core DMAed the SETUP and no crate consumed it.
+///
+/// This decodes the probe's own retained-trace markers to say HOW FAR it got:
+///
+/// ```text
+///   0 = no marker at all
+///   1 = "SIG" only           -> entered run_ep0_signal_probe (but no stage marker seen)
+///   2 = "PSTA" 0x01          -> the handoff initializer returned
+///   3 = "PSTA" 0x02 / 0x12   -> gadget_ready true / false
+///   4 = "PSTA" 0x03          -> survived the DIRECT_ONLY reset check
+///   5 = "PSTA" 0x04          -> entered the un-gated block that calls run_ep0_signal_probe
+///   6 = "SIG" / "GATE"       -> inside run_ep0_signal_probe / its `always` gate
+/// ```
+///
+
+/// `SIG` is written unconditionally at :1262, immediately before the keepalive bookkeeping
+/// and the `loop { usb::poll(); }` at :1310-1312. So 1 already proves the poll loop was
+/// reachable; 0 means `run_ep0_signal_probe` was never called and the fix did not take.
+pub fn prev_boot_probe_reach_code() -> u32 {
+    let mut reach = 0u32;
+    let mut hop = 0u32;
+    let valid = prev_boot_any(|event, marker| {
+        if event == TRACE_PROBE_WATCHDOG {
+            // "SIG" + a byte, usb_probe.rs:1262.
+            if marker & 0xffff_ff00 == 0x5349_4700 {
+                reach = reach.max(1);
+            }
+            // "GATE" + 1, usb_probe.rs:1284, only on the `always` gate.
+            if marker == 0x4741_5445 | 1 {
+                reach = reach.max(2);
+            }
+            // "HOP" + milestone: the highest handoff stage reached, from
+            // `handoff_progress()` (mod.rs:829). Crate-independent because it goes through the
+            // retained trace rather than the `HANDOFF_PROGRESS` static.
+            if marker & 0xffff_ff00 == 0x484F_5000 {
+                hop = hop.max(marker & 0xff);
+            }
+            // "PSTA" + stage, the top-level sequence markers added at usb_probe.rs:~2820.
+            // --- 3: init returned
+            //     0x12: gadget_ready == false      (0x02 would be the true case)
+            // --- 4: survived the DIRECT_ONLY reset check
+            // --- 5: entered the block that calls run_ep0_signal_probe
+            if marker & 0xffff_ff00 == 0x5053_5400 {
+                match marker & 0xff {
+                    0x01 => reach = reach.max(2),
+                    0x02 => reach = reach.max(3),
+                    0x12 => reach = reach.max(3), // reached, but gadget_ready was false
+                    0x03 => reach = reach.max(4),
+                    0x04 => reach = reach.max(5),
+                    _ => {}
+                }
+            }
+        }
+        false
+    });
+    if valid.is_none() {
+        return 0;
+    }
+    // Fold the highest handoff milestone in: 100 + milestone, so a caller can tell
+    // "no stage marker" (0) from "stage 0 reached" (100).
+    if hop > 0 {
+        reach = reach.max(100 + hop);
+    }
+    reach
+}
+
+pub fn prev_boot_qmp_phase_code() -> u32 {
+    let mut phase = 0u32;
+    let valid = prev_boot_any(|event, marker| {
+        if event == TRACE_PROBE_WATCHDOG {
             phase = phase.max(match marker {
                 0x514d_5042 => 1, // QMPB
                 0x514d_4350 => 2, // QMCP
@@ -660,8 +927,9 @@ pub fn prev_boot_qmp_phase_code() -> u32 {
                 _ => 0,
             });
         }
-        phase
-    }
+        false
+    });
+    if valid.is_none() { 0 } else { phase }
 }
 
 /// Add a marker without touching the controller. This is used around PMIC
@@ -928,6 +1196,17 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
     if selector == "utmi-progress" {
         return super::ep0_progress_mask();
     }
+    // TEMPORARY DISCRIMINATOR. Returns a fixed nonzero code with no dependency on
+    // any sampled state. `dwc3-debug-valid` reads LIVE_DWC3_DEBUG_VALID, which can
+    // be false for two different reasons, so a zero there cannot tell "the gate
+    // readout block never ran" apart from "it ran but nothing was sampled". Code 6
+    // is deliberate: the dstat transport (usb_probe.rs:1800-1805) prints one host
+    // attach line per code, so 7 attach lines means the block ran and its transport
+    // is host-visible - after which a zero from dwc3-debug-valid means VALID, not
+    // reachability.
+    if selector == "dwc3-gate-probe" {
+        return 6;
+    }
     if let Some(code) = dwc3_debug_readout_code(selector) {
         return code;
     }
@@ -1121,6 +1400,20 @@ pub(super) fn utmi_readout_code(selector: &str) -> u32 {
                 "dwc3-cmd0-act" => (depcmd0 >> 10) & 1,
                 "dwc3-cmd1-act" => (depcmd1 >> 10) & 1,
                 "dwc3-trb" => (trb0 & 1) | ((trb1 & 1) << 1),
+                // One-bit words for the same facts. `dwc3-trb` packs two HWO bits into
+                // one value, and the CCS carrier encodes a value by pulse count, so
+                // its popcount cannot tell {TRB0 only} from {TRB1 only} - both read as
+                // one pulse. Each of these is 0 or 1, so one pulse means exactly true.
+                //   trb0hwo : EP0 OUT TRB still owned by the core (transfer not retired)
+                //   trb1hwo : second TRB likewise
+                //   setupnz : the 8-byte SETUP payload is non-zero
+                //   evtfifo : the event FIFO is non-empty
+                //   deverr  : a DWC3 device-error event was observed
+                "dwc3-trb0hwo" => trb0 & 1,
+                "dwc3-trb1hwo" => trb1 & 1,
+                "dwc3-setupnz" => (compact >> 1) & 1,
+                "dwc3-evtfifo" => compact & 1,
+                "dwc3-deverr" => (compact >> 3) & 1,
                 _ => 0,
             };
         }

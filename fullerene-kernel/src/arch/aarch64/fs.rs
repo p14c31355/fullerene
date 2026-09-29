@@ -7,6 +7,30 @@
 //! initramfs/FAT mount without changing OPEN/READ/CLOSE dispatch.
 
 use alloc::boxed::Box;
+
+/// Unwrap a `Result` or return its error directly from the enclosing function.
+///
+/// The syscall handlers in this module return `u64` errno-style, so `?` is not
+/// available to them. Thirty sites therefore spelled the same match out by hand,
+/// four lines at a time:
+///
+/// ```ignore
+/// let path_storage = match copy_path(path_address) {
+///     Ok(path) => path,
+///     Err(error) => return error,
+/// };
+/// ```
+///
+/// The macro keeps the control flow identical while collapsing each site to one
+/// line, so the error returns line up in a column and a *missing* one is visible.
+macro_rules! or_return {
+    ($expression:expr) => {
+        match $expression {
+            Ok(value) => value,
+            Err(error) => return error,
+        }
+    };
+}
 #[cfg(fullerene_aarch64_bramble)]
 use alloc::string::String;
 #[cfg(fullerene_aarch64_bramble)]
@@ -3061,14 +3085,8 @@ fn retain_resource(kind: u8, slot: u8) -> bool {
 }
 
 pub(crate) fn open(path_address: u64, flags: u64, _mode: u64) -> u64 {
-    let path_storage = match copy_path(path_address) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-    let path = match path_storage.as_str() {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
+    let path_storage = or_return!(copy_path(path_address));
+    let path = or_return!(path_storage.as_str());
     let requested_access = match flags & 0x3 {
         0 => SELINUX_ACCESS_READ,
         1 => SELINUX_ACCESS_WRITE,
@@ -3857,10 +3875,7 @@ pub(crate) fn shared_buffer_map(handle: u64, addr_hint: u64, requested_flags: u6
         return ERR_OUT_OF_MEMORY;
     }
     let protection = (rights & 0x3) as u64;
-    let address = match task::reserve_shared_mapping(addr_hint, length, protection) {
-        Ok(address) => address,
-        Err(error) => return error,
-    };
+    let address = or_return!(task::reserve_shared_mapping(addr_hint, length, protection));
     let Some(space_id) = task::current_address_space() else {
         let _ = task::release_shared_mapping(address, length);
         return ERR_BAD_FD;
@@ -4254,18 +4269,7 @@ fn linux_fd_install_at(
     stdio_fd: u32,
     flags: u64,
 ) -> Result<u64, u64> {
-    if owner_pid == 0 || !(LINUX_FD_MIN..=LINUX_FD_MAX).contains(&fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    if linux_fd_in_use(owner_pid, fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    let Some(index) = (unsafe { *core::ptr::addr_of!(LINUX_FDS) })
-        .iter()
-        .position(|entry| !entry.active)
-    else {
-        return Err(ERR_OUT_OF_MEMORY);
-    };
+    let index = reserve_linux_fd(owner_pid, fd)?;
     unsafe {
         (*core::ptr::addr_of_mut!(LINUX_FDS))[index] = LinuxFdEntry {
             owner_pid,
@@ -4287,18 +4291,7 @@ fn linux_fd_install_socket_at(
     socket_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    if owner_pid == 0 || !(LINUX_FD_MIN..=LINUX_FD_MAX).contains(&fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    if linux_fd_in_use(owner_pid, fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    let Some(index) = (unsafe { *core::ptr::addr_of!(LINUX_FDS) })
-        .iter()
-        .position(|entry| !entry.active)
-    else {
-        return Err(ERR_OUT_OF_MEMORY);
-    };
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_socket_retain(socket_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4323,18 +4316,7 @@ fn linux_fd_install_epoll_at(
     epoll_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    if owner_pid == 0 || !(LINUX_FD_MIN..=LINUX_FD_MAX).contains(&fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    if linux_fd_in_use(owner_pid, fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    let Some(index) = (unsafe { *core::ptr::addr_of!(LINUX_FDS) })
-        .iter()
-        .position(|entry| !entry.active)
-    else {
-        return Err(ERR_OUT_OF_MEMORY);
-    };
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_epoll_retain(epoll_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4359,18 +4341,7 @@ fn linux_fd_install_eventfd_at(
     eventfd_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    if owner_pid == 0 || !(LINUX_FD_MIN..=LINUX_FD_MAX).contains(&fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    if linux_fd_in_use(owner_pid, fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    let Some(index) = (unsafe { *core::ptr::addr_of!(LINUX_FDS) })
-        .iter()
-        .position(|entry| !entry.active)
-    else {
-        return Err(ERR_OUT_OF_MEMORY);
-    };
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_eventfd_retain(eventfd_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4395,18 +4366,7 @@ fn linux_fd_install_inotify_at(
     inotify_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    if owner_pid == 0 || !(LINUX_FD_MIN..=LINUX_FD_MAX).contains(&fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    if linux_fd_in_use(owner_pid, fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    let Some(index) = (unsafe { *core::ptr::addr_of!(LINUX_FDS) })
-        .iter()
-        .position(|entry| !entry.active)
-    else {
-        return Err(ERR_OUT_OF_MEMORY);
-    };
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_inotify_retain(inotify_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4431,18 +4391,7 @@ fn linux_fd_install_signalfd_at(
     signalfd_slot: u8,
     flags: u64,
 ) -> Result<u64, u64> {
-    if owner_pid == 0 || !(LINUX_FD_MIN..=LINUX_FD_MAX).contains(&fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    if linux_fd_in_use(owner_pid, fd) {
-        return Err(ERR_TOO_MANY_FILES);
-    }
-    let Some(index) = (unsafe { *core::ptr::addr_of!(LINUX_FDS) })
-        .iter()
-        .position(|entry| !entry.active)
-    else {
-        return Err(ERR_OUT_OF_MEMORY);
-    };
+    let index = reserve_linux_fd(owner_pid, fd)?;
     if !linux_signalfd_retain(signalfd_slot) {
         return Err(ERR_BAD_FD);
     }
@@ -4463,6 +4412,30 @@ fn linux_fd_install_signalfd_at(
 
 fn linux_next_fd(owner_pid: u64) -> Option<u32> {
     (LINUX_FD_MIN..=LINUX_FD_MAX).find(|&fd| !linux_fd_in_use(owner_pid, fd))
+}
+
+/// Claim a free linux-fd slot for `(owner_pid, fd)`, returning its index.
+///
+/// Six descriptor-creation paths (open, socket, epoll, and their siblings)
+/// repeated the same twelve lines: reject a zero owner or an out-of-range
+/// descriptor, refuse one already in use, then scan `LINUX_FDS` for a free
+/// entry. The helper keeps the identical checks in the identical order and
+/// returns the same errno values, so callers keep their `u64` contract and use
+/// `or_return!` to collapse the block to one line.
+fn reserve_linux_fd(owner_pid: u64, fd: u32) -> Result<usize, u64> {
+    if owner_pid == 0 || !(LINUX_FD_MIN..=LINUX_FD_MAX).contains(&fd) {
+        return Err(ERR_TOO_MANY_FILES);
+    }
+    if linux_fd_in_use(owner_pid, fd) {
+        return Err(ERR_TOO_MANY_FILES);
+    }
+    let Some(index) = (unsafe { *core::ptr::addr_of!(LINUX_FDS) })
+        .iter()
+        .position(|entry| !entry.active)
+    else {
+        return Err(ERR_OUT_OF_MEMORY);
+    };
+    Ok(index)
 }
 
 fn linux_socket_retain(socket_slot: u8) -> bool {
@@ -5054,10 +5027,7 @@ pub(crate) fn linux_socket_read(fd: u64, buffer_address: u64, requested: u64) ->
     if count == 0 {
         return 0;
     }
-    let socket_slot = match linux_socket_slot_for_fd(fd) {
-        Ok(slot) => slot,
-        Err(error) => return error,
-    };
+    let socket_slot = or_return!(linux_socket_slot_for_fd(fd));
     let mut buffer = [0u8; MAX_READ];
     let result = socket_read_slot(socket_slot, &mut buffer[..count]);
     if (result as i64) < 0 {
@@ -5079,10 +5049,7 @@ pub(crate) fn linux_socket_write(fd: u64, buffer_address: u64, requested: u64) -
     if count == 0 {
         return 0;
     }
-    let socket_slot = match linux_socket_slot_for_fd(fd) {
-        Ok(slot) => slot,
-        Err(error) => return error,
-    };
+    let socket_slot = or_return!(linux_socket_slot_for_fd(fd));
     let mut buffer = [0u8; MAX_READ];
     if user_memory::copy_from_user(buffer_address, &mut buffer[..count]).is_err() {
         return ERR_ADDRESS;
@@ -5163,10 +5130,7 @@ pub(crate) fn linux_socketpair(
 }
 
 pub(crate) fn linux_socket_bind(fd: u64, address: u64, length: u64) -> u64 {
-    let socket_slot = match linux_socket_slot_for_fd(fd) {
-        Ok(slot) => slot,
-        Err(error) => return error,
-    };
+    let socket_slot = or_return!(linux_socket_slot_for_fd(fd));
     let (path, path_length) = match linux_socket_path(address, length) {
         Ok(path) => path,
         Err(error) => return error,
@@ -5190,10 +5154,7 @@ pub(crate) fn linux_socket_bind(fd: u64, address: u64, length: u64) -> u64 {
 }
 
 pub(crate) fn linux_socket_listen(fd: u64, _backlog: u64) -> u64 {
-    let socket_slot = match linux_socket_slot_for_fd(fd) {
-        Ok(slot) => slot,
-        Err(error) => return error,
-    };
+    let socket_slot = or_return!(linux_socket_slot_for_fd(fd));
     unsafe {
         let Some(socket) =
             (*core::ptr::addr_of_mut!(LINUX_SOCKET_SLOTS)).get_mut(socket_slot as usize)
@@ -5209,10 +5170,7 @@ pub(crate) fn linux_socket_listen(fd: u64, _backlog: u64) -> u64 {
 }
 
 pub(crate) fn linux_socket_connect(fd: u64, address: u64, length: u64) -> u64 {
-    let client_slot = match linux_socket_slot_for_fd(fd) {
-        Ok(slot) => slot,
-        Err(error) => return error,
-    };
+    let client_slot = or_return!(linux_socket_slot_for_fd(fd));
     let (path, path_length) = match linux_socket_path(address, length) {
         Ok(path) => path,
         Err(error) => return error,
@@ -5263,10 +5221,7 @@ pub(crate) fn linux_socket_accept4(fd: u64, flags: u64) -> u64 {
     if flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
         return ERR_INVALID;
     }
-    let listener_slot = match linux_socket_slot_for_fd(fd) {
-        Ok(slot) => slot,
-        Err(error) => return error,
-    };
+    let listener_slot = or_return!(linux_socket_slot_for_fd(fd));
     let (connection_slot, passcred) = unsafe {
         let Some(listener) =
             (*core::ptr::addr_of_mut!(LINUX_SOCKET_SLOTS)).get_mut(listener_slot as usize)
@@ -5305,10 +5260,7 @@ pub(crate) fn linux_socket_recvfrom(fd: u64, buffer_address: u64, length: u64) -
 }
 
 pub(crate) fn linux_socket_shutdown(fd: u64) -> u64 {
-    let socket_slot = match linux_socket_slot_for_fd(fd) {
-        Ok(slot) => slot,
-        Err(error) => return error,
-    };
+    let socket_slot = or_return!(linux_socket_slot_for_fd(fd));
     let peer = unsafe {
         (*core::ptr::addr_of!(LINUX_SOCKET_SLOTS))
             .get(socket_slot as usize)
@@ -5342,10 +5294,7 @@ pub(crate) fn linux_socket_setsockopt(
     value_address: u64,
     value_length: u64,
 ) -> u64 {
-    let socket_slot = match linux_socket_slot_for_fd(fd) {
-        Ok(slot) => slot,
-        Err(error) => return error,
-    };
+    let socket_slot = or_return!(linux_socket_slot_for_fd(fd));
     if level != SOL_SOCKET
         || !matches!(
             option,
@@ -5407,10 +5356,7 @@ pub(crate) fn linux_socket_getsockopt(
     value_address: u64,
     length_address: u64,
 ) -> u64 {
-    let socket_slot = match linux_socket_slot_for_fd(fd) {
-        Ok(slot) => slot,
-        Err(error) => return error,
-    };
+    let socket_slot = or_return!(linux_socket_slot_for_fd(fd));
     if level != SOL_SOCKET || value_address == 0 || length_address == 0 {
         return ERR_INVALID;
     }
@@ -6992,14 +6938,8 @@ fn fs_error_to_errno(error: FsError) -> u64 {
 }
 
 pub(crate) fn linux_chmod(path_address: u64, mode: u64) -> u64 {
-    let path_storage = match copy_path(path_address) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-    let path = match path_storage.as_str() {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
+    let path_storage = or_return!(copy_path(path_address));
+    let path = or_return!(path_storage.as_str());
     if !is_writable_virtual_path_string(path) {
         return ERR_PERMISSION;
     }
@@ -7023,14 +6963,8 @@ pub(crate) fn linux_chmod(path_address: u64, mode: u64) -> u64 {
 }
 
 pub(crate) fn linux_chown(path_address: u64, uid: u64, gid: u64) -> u64 {
-    let path_storage = match copy_path(path_address) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-    let path = match path_storage.as_str() {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
+    let path_storage = or_return!(copy_path(path_address));
+    let path = or_return!(path_storage.as_str());
     if !is_writable_virtual_path_string(path) {
         return ERR_PERMISSION;
     }
@@ -7064,14 +6998,8 @@ fn is_runtime_namespace_entry(path: &str) -> bool {
 }
 
 pub(crate) fn linux_mkdirat(path_address: u64) -> u64 {
-    let path_storage = match copy_path(path_address) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-    let path = match path_storage.as_str() {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
+    let path_storage = or_return!(copy_path(path_address));
+    let path = or_return!(path_storage.as_str());
     if is_runtime_socket_path(path) || is_virtual_namespace_path(path) {
         0
     } else {
@@ -7080,14 +7008,8 @@ pub(crate) fn linux_mkdirat(path_address: u64) -> u64 {
 }
 
 pub(crate) fn linux_unlinkat(path_address: u64) -> u64 {
-    let path_storage = match copy_path(path_address) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-    let path = match path_storage.as_str() {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
+    let path_storage = or_return!(copy_path(path_address));
+    let path = or_return!(path_storage.as_str());
     if !is_runtime_namespace_entry(path) || path == "/dev/socket" {
         return (-(30i64)) as u64;
     }
@@ -7118,31 +7040,13 @@ pub(crate) fn linux_mount(
     flags: u64,
     _data_address: u64,
 ) -> u64 {
-    let path_storage = match copy_path(target_address) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-    let path = match path_storage.as_str() {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
+    let path_storage = or_return!(copy_path(target_address));
+    let path = or_return!(path_storage.as_str());
     if is_android_filesystem_mount_target(path) {
-        let source_storage = match copy_path(source_address) {
-            Ok(source) => source,
-            Err(error) => return error,
-        };
-        let source = match source_storage.as_str() {
-            Ok(source) => source,
-            Err(error) => return error,
-        };
-        let filesystem_storage = match copy_path(filesystem_address) {
-            Ok(filesystem) => filesystem,
-            Err(error) => return error,
-        };
-        let filesystem = match filesystem_storage.as_str() {
-            Ok(filesystem) => filesystem,
-            Err(error) => return error,
-        };
+        let source_storage = or_return!(copy_path(source_address));
+        let source = or_return!(source_storage.as_str());
+        let filesystem_storage = or_return!(copy_path(filesystem_address));
+        let filesystem = or_return!(filesystem_storage.as_str());
         if !android_mount_request_supported(path, source, filesystem, flags) {
             return ERR_INVALID;
         }
@@ -7159,14 +7063,8 @@ pub(crate) fn linux_mount(
 }
 
 pub(crate) fn linux_umount2(target_address: u64) -> u64 {
-    let path_storage = match copy_path(target_address) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-    let path = match path_storage.as_str() {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
+    let path_storage = or_return!(copy_path(target_address));
+    let path = or_return!(path_storage.as_str());
     if is_virtual_namespace_path(path) || is_android_filesystem_mount_target(path) {
         0
     } else {
@@ -7175,14 +7073,8 @@ pub(crate) fn linux_umount2(target_address: u64) -> u64 {
 }
 
 pub(crate) fn linux_mknodat(path_address: u64) -> u64 {
-    let path_storage = match copy_path(path_address) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-    let path = match path_storage.as_str() {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
+    let path_storage = or_return!(copy_path(path_address));
+    let path = or_return!(path_storage.as_str());
     if path.starts_with("/dev/") {
         0
     } else {

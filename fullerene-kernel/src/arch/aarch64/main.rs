@@ -5,6 +5,8 @@ use fullerene_abi::boot::{self, BootArchitecture, BootInfo, BootPlatform};
 mod allocator;
 mod cpu;
 mod devices;
+#[cfg(fullerene_aarch64_bramble)]
+mod display;
 mod elf;
 mod entry;
 mod exceptions;
@@ -21,15 +23,40 @@ mod task;
 pub(crate) mod timer;
 mod uart;
 mod ufs;
+// ── Why the USB test/simulation modules are *siblings* of `usb`, not inside it
+//
+// `usb_protocol`, `usb_regs`, `usb_dwc3_sim`, `usb_qemu_sim` and
+// `usb_linux_host_enum` reference each other through `super::` (for example
+// `usb_qemu_sim.rs` does `use super::{uart, usb_dwc3_sim::…, usb_protocol::…,
+// usb_regs::…}`). An `#[path]`-included module resolves `super::` against the
+// crate that included it, and these same files are compiled by *two* different
+// roots: this one (`arch::aarch64`) and the host test crate (`src/main.rs`,
+// under `cfg(test)`). For `super::X` to name a sibling in both, they must all be
+// declared at the *same module level* in each crate.
+//
+// Making them submodules of `usb` would break that: the host test crate would
+// then need a `usb` parent module, which means compiling `usb/mod.rs` for the
+// host — and that file depends on `super::platform` and `super::timer`
+// (218 references), neither of which exists at the host crate root.
+//
+// So they stay siblings; only their *file* location differs (they live under
+// `usb/` with explicit `#[path]`). Keep the names and the module level intact
+// when reorganising. `usb`'s own submodules (trace, config, phy, …) are a
+// different case: Rust requires a module's children to live in the directory
+// named after it, which is why `usb/` exists at all.
 #[cfg(fullerene_aarch64_bramble)]
 mod usb;
 #[cfg(fullerene_aarch64_qemu_usb_sim)]
+#[path = "usb/usb_dwc3_sim.rs"]
 mod usb_dwc3_sim;
 #[cfg(any(fullerene_aarch64_bramble, fullerene_aarch64_qemu_usb_sim))]
+#[path = "usb/usb_protocol.rs"]
 mod usb_protocol;
 #[cfg(fullerene_aarch64_qemu_usb_sim)]
+#[path = "usb/usb_qemu_sim.rs"]
 mod usb_qemu_sim;
 #[cfg(any(fullerene_aarch64_bramble, fullerene_aarch64_qemu_usb_sim))]
+#[path = "usb/usb_regs.rs"]
 mod usb_regs;
 mod user_memory;
 #[cfg(any(feature = "aarch64-user-smoke", feature = "aarch64-user-fault-smoke"))]

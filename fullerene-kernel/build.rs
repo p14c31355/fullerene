@@ -7,6 +7,7 @@ use std::process::Command;
 use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_glibc_x86_64_elf};
 
 fn main() {
+    audit_env_rerun_declarations();
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_EXECUTE");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_IDENTITY");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_ORIGIN");
@@ -198,7 +199,11 @@ fn main() {
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_hsphy_source_exact)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_eud_device_mode)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_fsel_write0)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_fsel_write3)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_force_ep0_armed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_xbl_exact)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_arm_in_deferred_block)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_qmp_poll_nop_loop)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_por_delay_150)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_hsphy_reset_delay_150)");
@@ -245,6 +250,7 @@ fn main() {
     );
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_enblslpm)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_u2_freeclk_clear)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_park_poll)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_clear)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_guctl3_usb20_retry_set)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gctl_sofitpsync_clear)");
@@ -468,6 +474,18 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_gadget_handoff_no_smmu");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_HSPHY_FSEL_WRITE0").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_fsel_write0");
+        }
+        if env::var_os("FULLERENE_AARCH64_USB_HSPHY_FSEL_WRITE3").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_fsel_write3");
+        }
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_FSEL_WRITE0");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_FSEL_WRITE3");
+        if env::var_os("FULLERENE_AARCH64_USB_FORCE_EP0_ARMED").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_force_ep0_armed");
+        }
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_FORCE_EP0_ARMED");
         if env::var_os("FULLERENE_AARCH64_USB_DMA_CACHE_MAINTENANCE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_dma_cache_maintenance");
         }
@@ -818,6 +836,9 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_EUD_DEVICE_MODE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_eud_device_mode");
         }
+        if env::var_os("FULLERENE_USB_ARM_IN_DEFERRED_BLOCK").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_arm_in_deferred_block");
+        }
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_XBL_EXACT").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_xbl_exact");
         }
@@ -889,6 +910,55 @@ fn main() {
         println!(
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_HSPHY_RESUME_CLOCKS_AFTER_RESET"
         );
+        // Every env var this script *reads* must also be declared with
+        // `rerun-if-env-changed`, otherwise Cargo reuses the cached build-script
+        // output when only that variable changes and the A/B flag silently does
+        // nothing: the handset boots the previous kernel and the run is reported
+        // as a negative result. That failure mode cost a whole A/B campaign on
+        // 2026-09-20, so the selectors that were missing the declaration are
+        // listed here and `audit_env_rerun_declarations()` keeps the file honest.
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_EP0_TRB_COMPLETION_FALLBACK"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_GADGET_START_ONLY_AT_RUNSTOP"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_MODERN_DCTL_PRESERVE"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_CLEAR_USB3_SUSPHY_AFTER_RUNSTOP"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_CONNDONE_CLEAR_HIRD"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_SS_CORE_RESET_AT_RUNSTOP"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_ARM_WINDOW_RECOVERY"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_CLEAR_SUSPHY_AFTER_RESET"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_CLEAR_SUSPHY_AFTER_RUNSTOP"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_EXTENDED_SETUP_ARM"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB2_QPR1_UTMI_POST_RESET_ONLY"
+        );
+        println!(
+            "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_USB3_LINK_TRAINING_AFTER_RESET"
+        );
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_ALL_REGULATOR_SETS");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_CLEAR_DATAPATH_OVERRIDE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_CLEAR_POWER_DOWN");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_NORMAL_OPMODE");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_POWER_AFTER_RUNSTOP");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_RESET_DELAY_150");
         if env::var_os("FULLERENE_AARCH64_USB_HSPHY_RESTORE_SUSPEND_N_AFTER_RUNSTOP").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_hsphy_restore_suspend_n_after_runstop");
         }
@@ -973,6 +1043,9 @@ fn main() {
         if env::var_os("FULLERENE_AARCH64_USB_U2_FREECLK_SET").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_u2_freeclk_set");
         }
+        if env::var_os("FULLERENE_AARCH64_USB_PARK_POLL").is_some() {
+            println!("cargo:rustc-cfg=fullerene_aarch64_usb_park_poll");
+        }
         let retry_clear = env::var_os("FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR").is_some();
         let retry_set = env::var_os("FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET").is_some();
         if retry_clear && retry_set {
@@ -1005,6 +1078,14 @@ fn main() {
         if let Ok(value) = env::var("FULLERENE_AARCH64_USB_UTMI_POSTRUN_READOUT") {
             println!("cargo:rustc-env=FULLERENE_USB_UTMI_POSTRUN_READOUT={value}");
         }
+        // Pulse breadcrumbs: emit one host-visible DCTL Run/Stop pulse at each candidate site
+        // after the POSTRUN readout. The host counts attach lines, so this observes code the
+        // readout path cannot (every `usb2_live_word` reader sits before those sites, and the
+        // retained trace section does not survive the Android boot between two runs).
+        if let Ok(value) = env::var("FULLERENE_AARCH64_USB_PULSE_BREADCRUMB") {
+            println!("cargo:rustc-env=FULLERENE_USB_PULSE_BREADCRUMB={value}");
+        }
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PULSE_BREADCRUMB");
         if env::var_os("FULLERENE_AARCH64_USB_EP0_INITIAL_512").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_ep0_initial_512");
         }
@@ -1575,6 +1656,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_SKIP_USB2_PHY_RESET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_U2_FREECLK_CLEAR");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_U2_FREECLK_SET");
+        println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_PARK_POLL");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_SET");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GCTL_SOFITPSYNC_CLEAR");
@@ -1672,6 +1754,7 @@ fn main() {
             "cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_GADGET_HANDOFF_HSPHY_SOURCE_EXACT"
         );
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_XBL_EXACT");
+        println!("cargo:rerun-if-env-changed=FULLERENE_USB_ARM_IN_DEFERRED_BLOCK");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_CLEAR_SLEEPM");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_QMP_POLL_NOP_LOOP");
         println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_USB_HSPHY_POR_DELAY_150");
@@ -2221,6 +2304,47 @@ fn main() {
         "Emulsion",
     ) {
         println!("cargo:rustc-cfg=have_emulsion_wasm");
+    }
+}
+
+/// Warn, at build time, about any `FULLERENE_*` variable this script reads
+/// without also declaring `rerun-if-env-changed`.
+///
+/// Cargo caches build-script output. When only an undeclared variable changes the
+/// script is not re-run, `rustc-env` keeps its previous value, and an A/B flag
+/// silently does nothing - the board boots the *previous* kernel and the run is
+/// recorded as a negative result. That is exactly what invalidated the whole A/B
+/// campaign on 2026-09-20, so the invariant is now checked mechanically. It is a
+/// warning rather than a panic so a false positive can never block a build.
+fn audit_env_rerun_declarations() {
+    let Ok(source) = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs")) else {
+        return;
+    };
+    let mut declared = std::collections::BTreeSet::new();
+    let mut read = std::collections::BTreeSet::new();
+    for line in source.lines() {
+        if let Some(rest) = line.split("rerun-if-env-changed=").nth(1) {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_uppercase() || *c == '_' || c.is_ascii_digit())
+                .collect();
+            if !name.is_empty() {
+                declared.insert(name);
+            }
+        }
+        for marker in ["env::var(\"", "env::var_os(\""] {
+            if let Some(rest) = line.split(marker).nth(1) {
+                let name: String = rest.chars().take_while(|c| *c != '"').collect();
+                if name.starts_with("FULLERENE_") {
+                    read.insert(name);
+                }
+            }
+        }
+    }
+    for name in read.difference(&declared) {
+        println!(
+            "cargo:warning=build.rs reads {name} without a matching rerun-if-env-changed, so changing it alone would not rebuild the kernel"
+        );
     }
 }
 

@@ -278,6 +278,15 @@ struct Args {
     #[arg(long = "usb-utmi-postrun-readout", value_name = "SELECTOR")]
     usb_utmi_postrun_readout: Option<String>,
 
+    /// Emit one host-visible DCTL Run/Stop pulse at each site the handoff reaches AFTER the
+    /// POSTRUN readout. Run with `--usb-utmi-postrun-readout` omitted so the readout contributes
+    /// no pulses; then the host's `new high-speed USB device` line count minus one is exactly the
+    /// number of breadcrumb sites reached. Every on-device reader is blind past the readout block
+    /// (it runs at a single point inside the handoff) and the retained trace section does not
+    /// survive the Android boot between runs, so the host is the only place this is observable.
+    #[arg(long = "usb-pulse-breadcrumb", value_name = "LEVEL")]
+    usb_pulse_breadcrumb: Option<String>,
+
     /// Publish one PM8150 PON register through the attach-delay channel:
     /// seq (previous reset-reason bucket, the default), or a raw byte from
     /// wd2 (PMIC-watchdog enable/type), s1/s2 (watchdog timers), ctl, warm,
@@ -349,6 +358,11 @@ struct Args {
     /// SMMU. This is a hardware differential for a Fastboot-owned bypass.
     #[arg(long)]
     usb_gadget_handoff_no_smmu: bool,
+
+    /// EXPERIMENT: if the deferred arm window leaves EP0 unarmed, re-issue the
+    /// SETUP TRB and STARTTRANSFER directly and force `EP0_SETUP_ARMED`.
+    #[arg(long)]
+    usb_force_ep0_armed: bool,
 
     /// Force cache clean/invalidate operations for the standalone Bramble USB
     /// probe's DMA window instead of its no-MMU uncached fast path (A/B).
@@ -1075,6 +1089,8 @@ struct Args {
     /// controller reset, matching the Linux default when no DT quirk applies.
     #[arg(long)]
     usb_gadget_handoff_u2_freeclk_set: bool,
+    #[arg(long)]
+    usb_gadget_handoff_park_poll: bool,
 
     /// Bramble differential: wait for the host USB Reset event before
     /// arming the initial EP0 SETUP transfer.
@@ -1298,10 +1314,10 @@ impl Platform {
                 | (Arch::Xtensa, Self::Esp32Xh32S)
         );
         if !valid_pair {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("platform {:?} is not available for {:?}", self, arch),
-            ));
+            return Err(flasks::invalid_input(format!(
+                "platform {:?} is not available for {:?}",
+                self, arch
+            )));
         }
         Ok(())
     }
@@ -1322,14 +1338,12 @@ impl Platform {
         if matches!(action, Action::Boot | Action::VerifyLoop)
             && (arch != Arch::Aarch64 || self != Self::Bramble)
         {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
+            return Err(flasks::unsupported(
                 "boot and verify-loop require the AArch64 bramble platform",
             ));
         }
         if action == Action::Adb && (arch != Arch::Aarch64 || self != Self::Bramble) {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
+            return Err(flasks::unsupported(
                 "adb currently requires the AArch64 bramble platform",
             ));
         }
@@ -1344,6 +1358,17 @@ struct Target {
 }
 
 impl Target {
+    /// Whether this target is the AArch64 Bramble platform.
+    ///
+    /// The argument guards in this file reject a flag whose prerequisites are not
+    /// met. Almost every one of them spelled this pair out as two negated lines
+    /// (`|| target.arch != Arch::AArch64` / `|| target.platform != Platform::Bramble`),
+    /// 140 times over, which buried the rest of each condition. One predicate keeps
+    /// the guards readable and stops the two halves from drifting apart.
+    fn is_aarch64_bramble(self) -> bool {
+        self.arch == Arch::Aarch64 && self.platform == Platform::Bramble
+    }
+
     fn from_args(args: &Args) -> io::Result<Self> {
         let platform = args
             .platform
@@ -1441,8 +1466,7 @@ fn selected_aarch64_probe(args: &Args, target: Target) -> io::Result<Option<Aarc
         .filter(|probe| probe.selected)
         .collect();
     if selected.len() > 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "AArch64 probe modes are mutually exclusive",
         ));
     }
@@ -1554,8 +1578,7 @@ fn main() -> io::Result<()> {
     let args = Args::parse();
     if args.command == Action::UdevRules {
         if args.image.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(flasks::invalid_input(
                 "udev-rules does not accept an image path",
             ));
         }
@@ -1569,8 +1592,7 @@ fn main() -> io::Result<()> {
     }
     if args.command == Action::Device {
         if args.image.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(flasks::invalid_input(
                 "device does not accept an image path",
             ));
         }
@@ -1578,15 +1600,11 @@ fn main() -> io::Result<()> {
     }
     if args.command == Action::Adb {
         if args.image.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "adb does not accept an image path",
-            ));
+            return Err(flasks::invalid_input("adb does not accept an image path"));
         }
         let target = Target::from_args(&args)?;
         if target.arch != Arch::Aarch64 || target.platform != Platform::Bramble {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
+            return Err(flasks::unsupported(
                 "adb currently requires the AArch64 bramble platform",
             ));
         }
@@ -1594,28 +1612,24 @@ fn main() -> io::Result<()> {
     }
     if matches!(args.command, Action::Boot | Action::VerifyLoop) {
         if args.image.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(flasks::invalid_input(
                 "boot and verify-loop require an Android boot image path",
             ));
         }
     } else if args.image.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "an image path is only valid with the boot or verify-loop action",
         ));
     }
     let target = Target::from_args(&args)?;
     if args.command == Action::VerifyLoop {
         if target.arch != Arch::Aarch64 || target.platform != Platform::Bramble {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
+            return Err(flasks::unsupported(
                 "verify-loop requires the AArch64 bramble platform",
             ));
         }
         if args.iterations == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(flasks::invalid_input(
                 "verify-loop requires --iterations >= 1",
             ));
         }
@@ -1637,28 +1651,24 @@ fn main() -> io::Result<()> {
     if args.boot_template.is_some()
         && (target.arch != Arch::Aarch64 || target.platform != Platform::Bramble)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--boot-template is only available for the AArch64 bramble platform",
         ));
     }
     if args.boot_template.is_none() && args.boot_output.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--boot-output requires --boot-template",
         ));
     }
     if args.boot_template.is_none() && args.boot_uncompressed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--boot-uncompressed requires --boot-template",
         ));
     }
     if args.boot_template.is_some()
         && !matches!(args.command, Action::Build | Action::Run | Action::Debug)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--boot-template is only available with build, run, or debug",
         ));
     }
@@ -1666,8 +1676,7 @@ fn main() -> io::Result<()> {
         && matches!(args.command, Action::Run | Action::Debug)
         && args.boot_template.is_none()
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "Bramble run/debug requires --boot-template pointing to a stock Android boot.img",
         ));
     }
@@ -1676,8 +1685,7 @@ fn main() -> io::Result<()> {
             || target.platform != Platform::QemuVirt
             || !matches!(args.command, Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--qemu-usb-sim requires AArch64 QEMU virt run/debug",
         ));
     }
@@ -1686,158 +1694,131 @@ fn main() -> io::Result<()> {
             || target.platform != Platform::Bramble
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--qemu-preflight requires AArch64 Bramble build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_no_smmu
         && (!args.usb_gadget_handoff_probe && !args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-no-smmu requires a Bramble gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_dma_cache_maintenance
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-dma-cache-maintenance requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_direct
         && (!args.usb_gadget_handoff_probe && !args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-direct requires the Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_qmp_lane.is_some()
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-qmp-lane requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_xbl_qmp_table
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-xbl-qmp-table requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_xbl_hs_phy_table
         && (!(args.usb_gadget_handoff_super_speed_probe
             || (args.usb_gadget_handoff_probe && args.usb_gadget_handoff_direct))
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-xbl-hs-phy-table requires the Bramble direct USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_qmp_phase_stop.is_some()
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug)
             || args.stop_after_stage.is_some())
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-qmp-phase-stop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug and cannot be combined with --stop-after-stage",
         ));
     }
     if args.usb_gadget_handoff_reuse_fastboot_dma
         && (!(args.usb_gadget_handoff_probe || args.usb_gadget_handoff_super_speed_probe)
             || !args.usb_gadget_handoff_no_smmu
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-reuse-fastboot-dma requires the Bramble USB2 gadget handoff probe with --usb-gadget-handoff-no-smmu on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_no_transfer_resource
         && (!args.usb_gadget_handoff_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-no-transfer-resource requires the Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_android_resource_order
         && (!args.usb_gadget_handoff_probe && !args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-android-resource-order requires the Bramble gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_start_defaults_at_runstop
         && (!args.usb_gadget_handoff_probe && !args.usb_gadget_handoff_super_speed_probe
             || (!args.usb_gadget_handoff_direct && !args.usb_gadget_handoff_super_speed_probe)
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-start-defaults-at-runstop requires the direct Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_min_runstop_delay
         && ((!args.usb_gadget_handoff_probe && !args.usb_gadget_handoff_super_speed_probe)
             || (!args.usb_gadget_handoff_direct && !args.usb_gadget_handoff_super_speed_probe)
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-min-runstop-delay requires the direct Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_clock_branches_rearm
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-clock-branches-rearm requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -1845,92 +1826,77 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-resume-clocks requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_usb2_source_resume_core_reset
         && !args.usb_gadget_handoff_usb2_source_resume_clocks
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-resume-core-reset requires --usb-gadget-handoff-usb2-source-resume-clocks",
         ));
     }
     if args.usb_gadget_handoff_clock_stable_delay_us.is_some()
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-clock-stable-delay-us requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_android_block_reset
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-android-block-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_refresh_hsphy_power
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-refresh-hsphy-power requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_ref_after_gctl
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-ref-after-gctl requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_ref_after_runstop
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-ref-after-runstop requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_power_after_runstop
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-power-after-runstop requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -1938,12 +1904,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_refresh_hsphy_power
             || !args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-program-vdda-voltage requires --usb-gadget-handoff-refresh-hsphy-power with the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -1951,12 +1915,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_refresh_hsphy_power
             || !args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-all-regulator-sets requires --usb-gadget-handoff-refresh-hsphy-power with the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -1964,24 +1926,20 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_refresh_hsphy_power
             || !args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-vdd-lpm requires --usb-gadget-handoff-refresh-hsphy-power with the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_source_exact
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-source-exact requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -1989,84 +1947,70 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_hsphy_source_exact
             || !args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-eud-device-mode requires source-exact direct Bramble USB2 gadget handoff on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_dtbo_bramble_pvt
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-dtbo-bramble-pvt requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_xbl_exact
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-xbl-exact requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_clear_sleepm
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-clear-sleepm requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_normal_opmode
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-normal-opmode requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_clear_datapath_override
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-clear-datapath-override requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_clear_power_down
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-clear-power-down requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2074,24 +2018,20 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || !args.usb_gadget_handoff_hsphy_source_exact
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-rtune requires direct source-exact Bramble USB2 gadget handoff on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_hsphy_legacy_fallback
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-legacy-fallback requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2099,12 +2039,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-before-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2113,12 +2051,10 @@ fn main() -> io::Result<()> {
             || !args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-resume-clocks-after-reset requires direct Bramble USB2 handoff with --usb-gadget-handoff-hsphy-before-reset",
         ));
     }
@@ -2126,12 +2062,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-por-delay-150 requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2139,12 +2073,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-reset-delay-150 requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2152,12 +2084,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-auto-resume-pulse requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2165,12 +2095,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || !args.usb_gadget_handoff_hsphy_source_exact
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-hsphy-restore-suspend-n-after-reset requires direct source-exact Bramble USB2 gadget handoff on AArch64 build/run/debug",
         ));
     }
@@ -2178,231 +2106,193 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-full-core-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_skip_usb2_phy_reset
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-skip-usb2-phy-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_event_ring_size_4096
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-event-ring-size-4096 requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_start_after_connect
         && (!(args.usb_gadget_handoff_probe || args.usb_gadget_handoff_super_speed_probe)
             || (!args.usb_gadget_handoff_direct && !args.usb_gadget_handoff_super_speed_probe)
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-start-after-connect requires the direct Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_usb2_extended_setup_arm
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug)
             || !args.usb_gadget_handoff_start_after_connect)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-extended-setup-arm requires the direct Bramble USB2 gadget handoff probe with --usb-gadget-handoff-start-after-connect on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_usb2_long_setup_arm
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug)
             || !args.usb_gadget_handoff_start_after_connect)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-long-setup-arm requires the direct Bramble USB2 gadget handoff probe with --usb-gadget-handoff-start-after-connect on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_usb2_arm_window_recovery
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug)
             || !args.usb_gadget_handoff_start_after_connect)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-arm-window-recovery requires the direct Bramble USB2 gadget handoff probe with --usb-gadget-handoff-start-after-connect on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_usb2_clear_susphy_after_reset
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-clear-susphy-after-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_usb3_link_training_after_reset
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb3-link-training-after-reset requires the direct Bramble USB gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_usb2_clear_susphy_after_runstop
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-clear-susphy-after-runstop requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_xbl_deferred_setup
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-xbl-deferred-setup requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_xbl_trb_chain
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-xbl-trb-chain requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_abl_trb_flags
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-abl-trb-flags requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_abl_setup_trb_buffer
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-abl-setup-trb-buffer requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_abl_event_consume
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-abl-event-consume requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_dt_hird_threshold
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-dt-hird-threshold requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_start_ungated
         && (!(args.usb_gadget_handoff_probe || args.usb_gadget_handoff_super_speed_probe)
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-start-ungated requires the direct Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_event_ring_at_runstop
         && (!(args.usb_gadget_handoff_probe || args.usb_gadget_handoff_super_speed_probe)
             || (!args.usb_gadget_handoff_direct && !args.usb_gadget_handoff_super_speed_probe)
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-event-ring-at-runstop requires the direct Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_gadget_restart_at_runstop
         && (!(args.usb_gadget_handoff_probe || args.usb_gadget_handoff_super_speed_probe)
             || (!args.usb_gadget_handoff_direct && !args.usb_gadget_handoff_super_speed_probe)
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-gadget-restart-at-runstop requires the Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2411,488 +2301,400 @@ fn main() -> io::Result<()> {
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
             || !args.usb_gadget_handoff_gadget_restart_at_runstop
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-gadget-start-only-at-runstop requires direct USB2 gadget restart at Run/Stop on AArch64 Bramble build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_clear_gsi_after_reset
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-clear-gsi-after-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_source_exact_runstop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-source-exact-runstop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_runstop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-runstop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_hold_runstop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-hold-runstop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_retry_setup
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-retry-setup requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_eager_setup
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-eager-setup requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_source_susphy
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-source-susphy requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_conndone_clear_hird
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-conndone-clear-hird requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_device_mode
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-device-mode requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_core_clocks
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-core-clocks requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_core_clocks_after_runstop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-core-clocks-after-runstop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_domain_after_runstop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-domain-after-runstop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_link_clocks_after_runstop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-link-clocks-after-runstop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_android_dbm_reset
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-android-dbm-reset requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_qmp_power
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-qmp-power requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_qmp_power_after_gctl
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-qmp-power-after-gctl requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reinit_hs_phy
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reinit-hs-phy requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_pre_qmp_phy_setup
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-pre-qmp-phy-setup requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_clear_qmp_autonomous
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-clear-qmp-autonomous requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_qmp_clocks
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-qmp-clocks requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_qmp_clocks_after_gctl
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-qmp-clocks-after-gctl requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_reassert_hs_phy_ref_after_gctl
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-reassert-hs-phy-ref-after-gctl requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_dis_sleep_mode_before_gadget
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-dis-sleep-mode-before-gadget requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_clear_qmp_autonomous_exact
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-clear-qmp-autonomous-exact requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_qmp_resume_wmb
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-qmp-resume-wmb requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_qmp_lfps_clear_wmb
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-qmp-lfps-clear-wmb requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_qmp_notify_disconnect
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-qmp-notify-disconnect requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_clear_vbus_override_before_qmp
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-clear-vbus-override-before-qmp requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_clear_keep_connect_before_stop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-clear-keep-connect-before-stop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_clear_usb3_susphy_before_qmp
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-clear-usb3-susphy-before-qmp requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_clear_usb3_susphy_before_runstop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-clear-usb3-susphy-before-runstop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_clear_usb3_susphy_after_runstop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-clear-usb3-susphy-after-runstop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_core_reset_at_runstop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-core-reset-at-runstop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_separate_setup_buffer
         && (!args.usb_gadget_handoff_super_speed_probe && !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-separate-setup-buffer requires the Bramble direct or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_disable_gadget_irq_before_stop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-disable-gadget-irq-before-stop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_disable_ep0_before_stop
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-disable-ep0-before-stop requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_clear_gsi_stop_state
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-clear-gsi-stop-state requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_lfps_timer
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-lfps-timer requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_clear_ux_exit_px
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-clear-ux-exit-px requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_preserve_ref_clock_state
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-preserve-ref-clock-state requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ss_preserve_phy_state
         && (!args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ss-preserve-phy-state requires the Bramble SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ep0_initial_512
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ep0-initial-512 requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_dcfg_superspeed
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-dcfg-superspeed requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2901,12 +2703,10 @@ fn main() -> io::Result<()> {
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
             || args.usb_gadget_handoff_dcfg_superspeed
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-dcfg-fullspeed requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug and cannot be combined with SuperSpeed",
         ));
     }
@@ -2914,12 +2714,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-keep-connect-on-start requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug and cannot be combined with SuperSpeed",
         ));
     }
@@ -2929,12 +2727,10 @@ fn main() -> io::Result<()> {
             || args.usb_gadget_handoff_super_speed_probe
             || args.usb_gadget_handoff_dcfg_superspeed
             || args.usb_gadget_handoff_dcfg_fullspeed
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-dcfg-lowspeed requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug and cannot be combined with SuperSpeed or DCFG full-speed",
         ));
     }
@@ -2944,12 +2740,10 @@ fn main() -> io::Result<()> {
             || args.usb_gadget_handoff_super_speed_probe
             || args.usb_gadget_handoff_dcfg_superspeed
             || args.usb_gadget_handoff_dcfg_fullspeed
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-no-ss-vbus requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug and cannot be combined with SuperSpeed or DCFG full-speed",
         ));
     }
@@ -2957,12 +2751,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-core-reset-at-runstop requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2970,12 +2762,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-exact-device-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2983,12 +2773,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-qpr1-utmi-post-reset-only requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -2996,12 +2784,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-preserve-phy-interface requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3009,12 +2795,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-phy-setup requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3022,78 +2806,65 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-runtime-power-keepalive requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_dcfg_ignstrmpp
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-dcfg-ignstrmpp requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_u2_freeclk_clear
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-u2-freeclk-clear requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_u2_freeclk_set
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-u2-freeclk-set requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_u2_freeclk_clear && args.usb_gadget_handoff_u2_freeclk_set {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-u2-freeclk-clear and --usb-gadget-handoff-u2-freeclk-set are mutually exclusive",
         ));
     }
     if args.usb_gadget_handoff_usb2_susphy
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-susphy requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_usb2_source_susphy
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-susphy requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3101,12 +2872,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-cmd-guard requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3114,12 +2883,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-exact-devten requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3127,12 +2894,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-devten-before-runstop requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3140,12 +2905,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-exact-runstop requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3153,12 +2916,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-dis-sleep-mode requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3166,12 +2927,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-peripheral-start requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3179,12 +2938,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-vbus-only requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3192,12 +2949,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-source-power-events requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3205,12 +2960,10 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-usb2-android-dbm-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3218,144 +2971,120 @@ fn main() -> io::Result<()> {
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
             || args.usb_gadget_handoff_super_speed_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ep0-trb-completion-fallback requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ep0_stall_flush
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ep0-stall-flush requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ep0_short_first_desc
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ep0-short-first-desc requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ep0_txfifo_fix
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ep0-txfifo-fix requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_start_after_reset
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-start-after-reset requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_start_at_connect_done
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-start-at-connect-done requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_reset_resource
         && (!(args.usb_gadget_handoff_probe || args.usb_gadget_handoff_super_speed_probe)
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-reset-resource requires the direct Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_reset_endpoints
         && (!(args.usb_gadget_handoff_probe || args.usb_gadget_handoff_super_speed_probe)
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-reset-endpoints requires the direct Bramble USB2 or SuperSpeed gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ep0_reset_clear_stall
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ep0-reset-clear-stall requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ep0_reset_clear_test_mode
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ep0-reset-clear-test-mode requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ep0_reset_callback_first
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ep0-reset-callback-first requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
     if args.usb_gadget_handoff_ep0_reset_android_state_order
         && (!args.usb_gadget_handoff_probe
             || !args.usb_gadget_handoff_direct
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-gadget-handoff-ep0-reset-android-state-order requires the direct Bramble USB2 gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3364,8 +3093,7 @@ fn main() -> io::Result<()> {
         + args.usb_gadget_handoff_start_at_connect_done as u8)
         > 1
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "the Bramble EP0 timing differentials are mutually exclusive",
         ));
     }
@@ -3374,30 +3102,25 @@ fn main() -> io::Result<()> {
         (args.usb_gadget_handoff_probe && args.usb_gadget_handoff_direct) || ss_signal_probe;
     if args.usb_ep0_signal_probe
         && (!signal_probe_handoff
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-ep0-signal-probe requires the direct Bramble USB2 handoff or a SuperSpeed handoff on AArch64 build/run/debug",
         ));
     }
     if args.usb_ep0_signal_smmu_state && !args.usb_ep0_signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-ep0-signal-smmu-state requires --usb-ep0-signal-probe",
         ));
     }
     if args.usb_ep0_signal_link_state && !args.usb_ep0_signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-ep0-signal-link-state requires --usb-ep0-signal-probe",
         ));
     }
     if args.usb_ep0_signal_raw_link && !args.usb_ep0_signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-ep0-signal-raw-link requires --usb-ep0-signal-probe",
         ));
     }
@@ -3405,12 +3128,10 @@ fn main() -> io::Result<()> {
         matches!(args.stop_after_stage, Some(13..=29)) && args.usb_gadget_handoff_super_speed_probe;
     if args.stop_after_stage.is_some()
         && (!args.usb_gadget_handoff_probe && !ss_qmp_stage_probe
-            || target.arch != Arch::Aarch64
-            || target.platform != Platform::Bramble
+            || !target.is_aarch64_bramble()
             || !matches!(args.command, Action::Build | Action::Run | Action::Debug))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--stop-after-stage requires a Bramble USB gadget handoff probe on AArch64 build/run/debug",
         ));
     }
@@ -3418,8 +3139,7 @@ fn main() -> io::Result<()> {
 
     if target.arch == Arch::Xtensa {
         if args.clone_ovmf || args.iso_only {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(flasks::invalid_input(
                 "OVMF and ISO options are not available for ESP32",
             ));
         }
@@ -3450,8 +3170,7 @@ fn main() -> io::Result<()> {
                 esp32_monitor(Some(device), args.baud)?;
             }
             _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
+                return Err(flasks::invalid_input(
                     "ESP32 supports build, flash, run, and monitor",
                 ));
             }
@@ -3461,16 +3180,14 @@ fn main() -> io::Result<()> {
 
     if target.arch == Arch::Aarch64 {
         if args.clone_ovmf || args.iso_only {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(flasks::invalid_input(
                 "OVMF and ISO options are only available for the x86_64 pc-uefi platform",
             ));
         }
 
         if args.command == Action::Boot {
             if target.platform != Platform::Bramble {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
+                return Err(flasks::invalid_input(
                     "boot currently requires --platform bramble",
                 ));
             }
@@ -3503,6 +3220,7 @@ fn main() -> io::Result<()> {
                 adb_return: args.adb_return,
                 probe_env: selected_probe.and_then(|probe| probe.env),
                 gadget_handoff_no_smmu: args.usb_gadget_handoff_no_smmu,
+                usb_force_ep0_armed: args.usb_force_ep0_armed,
                 gadget_handoff_dma_cache_maintenance: args.usb_gadget_handoff_dma_cache_maintenance,
                 gadget_handoff_reuse_fastboot_dma: args.usb_gadget_handoff_reuse_fastboot_dma,
                 gadget_handoff_no_transfer_resource: args.usb_gadget_handoff_no_transfer_resource,
@@ -3704,6 +3422,7 @@ fn main() -> io::Result<()> {
                 gadget_handoff_ep0_txfifo_fix: args.usb_gadget_handoff_ep0_txfifo_fix,
                 gadget_handoff_u2_freeclk_clear: args.usb_gadget_handoff_u2_freeclk_clear,
                 gadget_handoff_u2_freeclk_set: args.usb_gadget_handoff_u2_freeclk_set,
+                gadget_handoff_park_poll: args.usb_gadget_handoff_park_poll,
                 gadget_handoff_start_after_reset: args.usb_gadget_handoff_start_after_reset,
                 gadget_handoff_start_at_connect_done: args.usb_gadget_handoff_start_at_connect_done,
                 gadget_handoff_reset_resource: args.usb_gadget_handoff_reset_resource,
@@ -3745,6 +3464,7 @@ fn main() -> io::Result<()> {
                 signal_cmd_gate: args.usb_signal_cmd_gate.clone(),
                 utmi_preconnect_readout: args.usb_utmi_preconnect_readout.clone(),
                 utmi_postrun_readout: args.usb_utmi_postrun_readout.clone(),
+                pulse_breadcrumb: args.usb_pulse_breadcrumb.clone(),
                 pon_readout: args.usb_pon_readout.clone(),
                 signal_rsc_gate: args.usb_signal_rsc_gate.clone(),
                 signal_cfg_gate: args.usb_signal_cfg_gate.clone(),
@@ -3881,6 +3601,7 @@ struct Aarch64BuildConfig {
     adb_return: bool,
     probe_env: Option<&'static str>,
     gadget_handoff_no_smmu: bool,
+    usb_force_ep0_armed: bool,
     gadget_handoff_dma_cache_maintenance: bool,
     gadget_handoff_reuse_fastboot_dma: bool,
     gadget_handoff_no_transfer_resource: bool,
@@ -4027,6 +3748,7 @@ struct Aarch64BuildConfig {
     gadget_handoff_ep0_txfifo_fix: bool,
     gadget_handoff_u2_freeclk_clear: bool,
     gadget_handoff_u2_freeclk_set: bool,
+    gadget_handoff_park_poll: bool,
     gadget_handoff_start_after_reset: bool,
     gadget_handoff_start_at_connect_done: bool,
     gadget_handoff_reset_resource: bool,
@@ -4065,6 +3787,7 @@ struct Aarch64BuildConfig {
     signal_cmd_gate: Option<String>,
     utmi_preconnect_readout: Option<String>,
     utmi_postrun_readout: Option<String>,
+    pulse_breadcrumb: Option<String>,
     pon_readout: Option<String>,
     signal_rsc_gate: Option<String>,
     signal_cfg_gate: Option<String>,
@@ -4095,6 +3818,7 @@ fn build_aarch64_kernel(
         adb_return,
         probe_env,
         gadget_handoff_no_smmu,
+        usb_force_ep0_armed,
         gadget_handoff_dma_cache_maintenance,
         gadget_handoff_reuse_fastboot_dma,
         gadget_handoff_no_transfer_resource,
@@ -4241,6 +3965,7 @@ fn build_aarch64_kernel(
         gadget_handoff_ep0_txfifo_fix,
         gadget_handoff_u2_freeclk_clear,
         gadget_handoff_u2_freeclk_set,
+        gadget_handoff_park_poll,
         gadget_handoff_start_after_reset,
         gadget_handoff_start_at_connect_done,
         gadget_handoff_reset_resource,
@@ -4279,6 +4004,7 @@ fn build_aarch64_kernel(
         signal_cmd_gate,
         utmi_preconnect_readout,
         utmi_postrun_readout,
+        pulse_breadcrumb,
         pon_readout,
         signal_rsc_gate,
         signal_cfg_gate,
@@ -4336,6 +4062,8 @@ fn build_aarch64_kernel(
         "FULLERENE_AARCH64_USB_PROBE_IRQ_ROUTES",
         "FULLERENE_AARCH64_USB_UTMI_PRECONNECT_READOUT",
         "FULLERENE_AARCH64_USB_UTMI_POSTRUN_READOUT",
+        // Consumed by fullerene-kernel/build.rs; must survive into the child Cargo env.
+        "FULLERENE_AARCH64_USB_PULSE_BREADCRUMB",
         "FULLERENE_AARCH64_USB_HSPHY_RESTORE_SUSPEND_N_AFTER_RUNSTOP",
         "FULLERENE_AARCH64_USB_HSPHY_RESTORE_SUSPEND_N_SELECTED_AFTER_RUNSTOP",
         "FULLERENE_AARCH64_USB_GUCTL3_USB20_RETRY_CLEAR",
@@ -4392,6 +4120,9 @@ fn build_aarch64_kernel(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_NO_SMMU",
             "1".to_owned(),
         );
+    }
+    if usb_force_ep0_armed {
+        push_env("FULLERENE_AARCH64_USB_FORCE_EP0_ARMED", "1".to_owned());
     }
     if gadget_handoff_dma_cache_maintenance {
         push_env(
@@ -5191,6 +4922,9 @@ fn build_aarch64_kernel(
     if gadget_handoff_u2_freeclk_set {
         push_env("FULLERENE_AARCH64_USB_U2_FREECLK_SET", "1".to_owned());
     }
+    if gadget_handoff_park_poll {
+        push_env("FULLERENE_AARCH64_USB_PARK_POLL", "1".to_owned());
+    }
     if gadget_handoff_start_after_reset {
         push_env(
             "FULLERENE_AARCH64_USB_GADGET_HANDOFF_START_AFTER_RESET",
@@ -5379,6 +5113,9 @@ fn build_aarch64_kernel(
     if let Some(value) = utmi_postrun_readout {
         push_env("FULLERENE_AARCH64_USB_UTMI_POSTRUN_READOUT", value);
     }
+    if let Some(value) = pulse_breadcrumb {
+        push_env("FULLERENE_AARCH64_USB_PULSE_BREADCRUMB", value);
+    }
     if let Some(value) = pon_readout {
         push_env("FULLERENE_AARCH64_USB_PON_READOUT", value);
     }
@@ -5529,8 +5266,7 @@ fn build_aarch64_raw_kernel(elf: &Path) -> io::Result<PathBuf> {
     }
 
     if failures.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
+        return Err(flasks::not_found(
             "no objcopy was found for AArch64 raw output; install llvm-tools-preview or binutils for AArch64",
         ));
     }
@@ -5678,14 +5414,12 @@ fn audit_aarch64_image_bytes(image: &[u8], raw: &[u8]) -> io::Result<()> {
         ));
     }
     if read_u32(image, 0)? != 0x1400_0010 || read_u32(image, 4)? != 0xd503_201f {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "Image entry header is not the Fullerene branch/NOP pair",
         ));
     }
     if read_u64(image, 8)? != AARCH64_IMAGE_TEXT_OFFSET {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "Image text offset does not target the Bramble load contract",
         ));
     }
@@ -5703,14 +5437,12 @@ fn audit_aarch64_image_bytes(image: &[u8], raw: &[u8]) -> io::Result<()> {
         || read_u32(image, 56)? != AARCH64_IMAGE_MAGIC
         || read_u32(image, 60)? != 0
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "Image flags, magic, or reserved field is invalid",
         ));
     }
     if &image[AARCH64_IMAGE_HEADER_SIZE..] != raw {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "Image payload differs from the raw AArch64 kernel",
         ));
     }
@@ -5746,14 +5478,12 @@ fn validate_bramble_lz4_frame(frame: &[u8]) -> io::Result<()> {
     const BLOCK_MAX: usize = 4 * 1024 * 1024;
 
     if frame.len() < 11 || frame[..4] != LZ4_FRAME_MAGIC || frame[4] != FLG || frame[5] != BD {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "Bramble requires an independent, checksummed 4 MiB LZ4 frame",
         ));
     }
     if frame[6] != (xxhash32(&frame[4..6], 0) >> 8) as u8 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "LZ4 frame descriptor checksum mismatch",
         ));
     }
@@ -5768,16 +5498,12 @@ fn validate_bramble_lz4_frame(frame: &[u8]) -> io::Result<()> {
             break;
         }
         if block_size > BLOCK_MAX || block_size > frame.len().saturating_sub(cursor) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "LZ4 block exceeds the frame",
-            ));
+            return Err(flasks::invalid_data("LZ4 block exceeds the frame"));
         }
         cursor += block_size;
     }
     if cursor.checked_add(4) != Some(frame.len()) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "trailing bytes after LZ4 content checksum",
         ));
     }
@@ -5914,14 +5640,12 @@ fn patch_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
 
     let template_bytes = fs::read(template)?;
     if template == output {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "boot template and output path must be different",
         ));
     }
     if template_bytes.len() < PAGE_SIZE || &template_bytes[..8] != b"ANDROID!" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "Bramble boot template is not an Android boot image",
         ));
     }
@@ -5936,10 +5660,9 @@ fn patch_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
     }
     let header_size = read_le_u32(&template_bytes, HEADER_SIZE_OFFSET)? as usize;
     if header_size == 0 || header_size > PAGE_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid Android v3 boot header size {header_size}"),
-        ));
+        return Err(flasks::invalid_data(format!(
+            "invalid Android v3 boot header size {header_size}"
+        )));
     }
     // A factory boot partition image commonly ends with an AVB vbmeta block
     // and a 64-byte AVB footer. The temporary `fastboot boot` path is intended
@@ -5947,8 +5670,7 @@ fn patch_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
     // kernel. Keep only the original Android boot image before the AVB block.
     let template_bytes = strip_avb_metadata(&template_bytes)?;
     if template_bytes.len() < PAGE_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "AVB-stripped boot template is smaller than one Android page",
         ));
     }
@@ -5975,8 +5697,7 @@ fn patch_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
             .checked_add(ramdisk_size)
             .is_none_or(|end| end > template_bytes.len())
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot template has truncated kernel or ramdisk payload",
         ));
     }
@@ -6019,8 +5740,7 @@ fn audit_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
         || &template_bytes[..8] != b"ANDROID!"
         || &output_bytes[..8] != b"ANDROID!"
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit found a missing Android header",
         ));
     }
@@ -6029,8 +5749,7 @@ fn audit_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
         || read_le_u32(&output_bytes, HEADER_SIZE_OFFSET)? == 0
         || read_le_u32(&output_bytes, HEADER_SIZE_OFFSET)? as usize > PAGE_SIZE
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit requires an Android v3 header within the first page",
         ));
     }
@@ -6048,10 +5767,7 @@ fn audit_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
         ));
     }
     if read_le_u32(&output_bytes, RAMDISK_SIZE_OFFSET)? as usize != ramdisk_size {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "boot audit changed the ramdisk size",
-        ));
+        return Err(flasks::invalid_data("boot audit changed the ramdisk size"));
     }
     let mut expected_header = template_bytes[..PAGE_SIZE].to_vec();
     write_le_u32(
@@ -6062,8 +5778,7 @@ fn audit_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
         })?,
     )?;
     if output_bytes[..PAGE_SIZE] != expected_header {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit header differs from the template outside kernel size",
         ));
     }
@@ -6086,8 +5801,7 @@ fn audit_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
     if old_tail_offset > template_bytes.len()
         || old_ramdisk_offset + ramdisk_size > template_bytes.len()
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit template payload is truncated",
         ));
     }
@@ -6108,14 +5822,12 @@ fn audit_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
         || PAGE_SIZE + kernel_bytes.len() > output_bytes.len()
         || new_ramdisk_offset + ramdisk_size > output_bytes.len()
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit output payload is truncated",
         ));
     }
     if &output_bytes[PAGE_SIZE..PAGE_SIZE + kernel_bytes.len()] != kernel_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit kernel payload differs from the generated payload",
         ));
     }
@@ -6123,16 +5835,14 @@ fn audit_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
         .iter()
         .any(|byte| *byte != 0)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit found non-zero kernel alignment padding",
         ));
     }
     if &output_bytes[new_ramdisk_offset..new_ramdisk_offset + ramdisk_size]
         != &template_bytes[old_ramdisk_offset..old_ramdisk_offset + ramdisk_size]
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit ramdisk differs from the stock template",
         ));
     }
@@ -6140,14 +5850,12 @@ fn audit_bramble_boot_image(template: &Path, kernel: &Path, output: &Path) -> io
         .iter()
         .any(|byte| *byte != 0)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit found non-zero ramdisk alignment padding",
         ));
     }
     if &output_bytes[new_tail_offset..] != &template_bytes[old_tail_offset..] {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "boot audit tail differs from the stock template",
         ));
     }
@@ -6170,21 +5878,18 @@ fn audit_android_boot_image(image: &Path) -> io::Result<()> {
     let storage = fs::read(image)?;
     let bytes = strip_avb_metadata(&storage)?;
     if bytes.len() < PAGE_SIZE || &bytes[..8] != b"ANDROID!" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "Fastboot image audit: missing Android boot header",
         ));
     }
     if read_le_u32(bytes, HEADER_VERSION_OFFSET)? != 3 {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
+        return Err(flasks::unsupported(
             "Fastboot image audit: only Android boot header v3 is supported",
         ));
     }
     let header_size = read_le_u32(bytes, HEADER_SIZE_OFFSET)? as usize;
     if header_size == 0 || header_size > PAGE_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "Fastboot image audit: invalid v3 header size",
         ));
     }
@@ -6203,8 +5908,7 @@ fn audit_android_boot_image(image: &Path) -> io::Result<()> {
         PAGE_SIZE,
     )?;
     if tail_offset > bytes.len() || ramdisk_offset + ramdisk_size > bytes.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "Fastboot image audit: kernel or ramdisk exceeds image",
         ));
     }
@@ -6229,10 +5933,9 @@ fn strip_avb_metadata(image: &[u8]) -> io::Result<&[u8]> {
     let version_major = u32::from_be_bytes(footer[4..8].try_into().unwrap());
     let version_minor = u32::from_be_bytes(footer[8..12].try_into().unwrap());
     if version_major != 1 || version_minor != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("unsupported AVB footer version {version_major}.{version_minor}"),
-        ));
+        return Err(flasks::unsupported(format!(
+            "unsupported AVB footer version {version_major}.{version_minor}"
+        )));
     }
     let original_image_size = u64::from_be_bytes(footer[12..20].try_into().unwrap());
     let vbmeta_offset = u64::from_be_bytes(footer[20..28].try_into().unwrap());
@@ -6258,8 +5961,7 @@ fn strip_avb_metadata(image: &[u8]) -> io::Result<&[u8]> {
         || vbmeta_size > footer_offset - vbmeta_offset
         || vbmeta_offset + vbmeta_size > footer_offset
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "AVB footer points outside the boot image",
         ));
     }
@@ -6396,10 +6098,9 @@ fn run_aarch64_qemu(
                 }
                 None if std::time::Instant::now() >= deadline => {
                     child.kill()?;
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!("AArch64 QEMU timed out after {timeout_secs} seconds"),
-                    ));
+                    return Err(flasks::timed_out(format!(
+                        "AArch64 QEMU timed out after {timeout_secs} seconds"
+                    )));
                 }
                 None => std::thread::sleep(std::time::Duration::from_millis(100)),
             }
@@ -6453,10 +6154,10 @@ impl TemporaryQemuDtb {
         }
         let size = fs::metadata(&path)?.len();
         if size < 40 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("QEMU generated an invalid DTB at {}", path.display()),
-            ));
+            return Err(flasks::invalid_data(format!(
+                "QEMU generated an invalid DTB at {}",
+                path.display()
+            )));
         }
         Ok(Self { path })
     }
@@ -6538,8 +6239,7 @@ fn setup_ovmf(workspace_root: &PathBuf) -> io::Result<()> {
     let src_code = PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd");
     let src_vars = PathBuf::from("/usr/share/OVMF/OVMF_VARS.fd");
     if !src_code.exists() || !src_vars.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
+        return Err(flasks::not_found(
             "OVMF binaries not found in /usr/share/OVMF/. Please install the 'ovmf' package manually (e.g., 'sudo apt-get install -y ovmf' on Debian/Ubuntu).",
         ));
     }
@@ -7327,8 +7027,7 @@ struct Esp32Segment {
 
 fn esp32_parse_elf(data: &[u8]) -> io::Result<Vec<Esp32Segment>> {
     if data.len() < 52 || &data[..4] != b"\x7fELF" || data[4] != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "ESP32 firmware must be a 32-bit Xtensa ELF",
         ));
     }
@@ -7337,10 +7036,7 @@ fn esp32_parse_elf(data: &[u8]) -> io::Result<Vec<Esp32Segment>> {
     let phentsize = u16::from_le_bytes([data[42], data[43]]) as usize;
     let phnum = u16::from_le_bytes([data[44], data[45]]) as usize;
     if entry == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "ESP32 ELF has no entry point",
-        ));
+        return Err(flasks::invalid_data("ESP32 ELF has no entry point"));
     }
     let mut segments = Vec::new();
     for index in 0..phnum {
@@ -7355,10 +7051,7 @@ fn esp32_parse_elf(data: &[u8]) -> io::Result<Vec<Esp32Segment>> {
             io::Error::new(io::ErrorKind::InvalidData, "invalid ELF program header")
         })?;
         if end > data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "truncated ELF program header",
-            ));
+            return Err(flasks::invalid_data("truncated ELF program header"));
         }
         let kind = u32::from_le_bytes([
             data[start],
@@ -7394,10 +7087,7 @@ fn esp32_parse_elf(data: &[u8]) -> io::Result<Vec<Esp32Segment>> {
             data[start + 23],
         ]);
         if file_size > memory_size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "ELF filesz exceeds memsz",
-            ));
+            return Err(flasks::invalid_data("ELF filesz exceeds memsz"));
         }
         if file_size > 0 {
             // Rust may end the IRAM text segment on a non-word boundary.
@@ -7414,10 +7104,7 @@ fn esp32_parse_elf(data: &[u8]) -> io::Result<Vec<Esp32Segment>> {
         }
     }
     if segments.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "ESP32 ELF has no loadable segments",
-        ));
+        return Err(flasks::invalid_data("ESP32 ELF has no loadable segments"));
     }
     Ok(segments)
 }
@@ -7427,8 +7114,7 @@ fn build_esp32_image(kernel: &Path) -> io::Result<PathBuf> {
     let entry = esp32_elf_entry(&data)?;
     let segments = esp32_parse_elf(&data)?;
     if segments.len() > u8::MAX as usize {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "ESP32 firmware exceeds the image segment limit",
         ));
     }
@@ -7460,10 +7146,7 @@ fn build_esp32_image(kernel: &Path) -> io::Result<PathBuf> {
                 io::Error::new(io::ErrorKind::InvalidData, "ELF segment size overflow")
             })?;
         if end > data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "ELF segment extends beyond file",
-            ));
+            return Err(flasks::invalid_data("ELF segment extends beyond file"));
         }
         let file_contents = &data[start..end];
         let zero_fill = (segment.memory_size - segment.file_size) as usize;
@@ -7489,8 +7172,7 @@ fn build_esp32_image(kernel: &Path) -> io::Result<PathBuf> {
 fn esp32_elf_entry(data: &[u8]) -> io::Result<u32> {
     if data.len() < 28 || data[..4] != *b"\x7fELF" || data[4] != 1 || data[5] != 1 || data[18] != 94
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(flasks::invalid_data(
             "ESP32 firmware must be a 32-bit little-endian Xtensa ELF",
         ));
     }
@@ -7503,8 +7185,7 @@ fn espflash_environment() -> io::Result<(PathBuf, Vec<(String, String)>)> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
     let toolchain = home.join(".rustup/toolchains/esp");
     if !toolchain.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
+        return Err(flasks::not_found(
             "ESP Rust toolchain not found; install it with: espup install",
         ));
     }
@@ -7558,10 +7239,7 @@ fn build_esp32_kernel(workspace_root: &Path, profile: BuildProfile) -> io::Resul
     }
     let status = cargo.status()?;
     if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "ESP32 Rust build failed",
-        ));
+        return Err(flasks::other("ESP32 Rust build failed"));
     }
     let target_dir = workspace_root
         .join("target")
@@ -7596,10 +7274,7 @@ fn espflash_run(image: &Path, serial: Option<&str>, baud: u32) -> io::Result<()>
 fn espflash_write(image: &Path, serial: Option<&str>, baud: u32) -> io::Result<()> {
     let status = espflash_command("write-bin", image, serial, baud)?.status()?;
     if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "espflash write-bin failed",
-        ));
+        return Err(flasks::other("espflash write-bin failed"));
     }
     Ok(())
 }
@@ -7612,10 +7287,7 @@ fn esp32_monitor(device: Option<&str>, baud: u32) -> io::Result<()> {
     }
     let status = command.status()?;
     if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "espflash monitor failed",
-        ));
+        return Err(flasks::other("espflash monitor failed"));
     }
     Ok(())
 }

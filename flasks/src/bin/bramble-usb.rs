@@ -785,6 +785,14 @@ struct LoopArgs {
     /// Set GUSB2PHYCFG.U2_FREECLK_EXISTS after controller reset (A/B).
     #[arg(long)]
     u2_freeclk_set: bool,
+    /// Drain the DWC3 event ring inside `park_for_seconds()` (A/B).
+    ///
+    /// A failed handoff parks in a pure spin that never called `poll()`, so
+    /// Connect Done, USB Reset and SETUP were discarded for the whole wait
+    /// while the pull-up stayed advertised. Enabling this makes the park
+    /// consume the ring, so events arriving during it can still be seen.
+    #[arg(long)]
+    park_poll: bool,
     /// Force-clear DWC3 GUCTL3.USB20_RETRY_DISABLE (STAR A/B).
     #[arg(long)]
     guctl3_retry_clear: bool,
@@ -948,6 +956,19 @@ struct LoopArgs {
     /// Publish a read-only live USB2/HS-PHY snapshot field after Run/Stop.
     #[arg(long = "utmi-postrun-readout", value_name = "SELECTOR")]
     utmi_postrun_readout: Option<String>,
+    /// Emit one host-visible DCTL Run/Stop pulse at each post-readout site the handoff reaches.
+    /// The host prints one `new high-speed USB device` line per pulse, so with `--utmi-postrun-readout`
+    /// omitted the line count minus one is the number of breadcrumb sites reached. Every on-device
+    /// reader is blind past the readout block, and the retained `.usb_trace` section does not
+    /// survive the Android boot between runs, so the host is the only place this is observable.
+    /// See usb/README.md §3.22.
+    #[arg(
+        long = "pulse-breadcrumb",
+        value_name = "LEVEL",
+        num_args = 0..=1,
+        default_missing_value = "4"
+    )]
+    pulse_breadcrumb: Option<String>,
     /// Publish one PM8150 PON register through the attach-delay channel:
     /// seq (previous reset-reason bucket, the default), or a raw byte from
     /// wd2 (PMIC-watchdog enable/type), s1/s2 (watchdog timers), ctl, warm,
@@ -1164,6 +1185,7 @@ impl Default for LoopArgs {
             ep0_txfifo_fix: false,
             u2_freeclk_clear: false,
             u2_freeclk_set: false,
+            park_poll: false,
             guctl3_retry_clear: false,
             guctl3_retry_set: false,
             sofitpsync_clear: false,
@@ -1210,6 +1232,7 @@ impl Default for LoopArgs {
             signal_cmd_gate: None,
             utmi_preconnect_readout: None,
             utmi_postrun_readout: None,
+            pulse_breadcrumb: None,
             pon_readout: None,
             signal_rsc_gate: None,
             signal_cfg_gate: None,
@@ -2382,7 +2405,7 @@ impl JournalGuard {
             .to_owned();
         let log = File::create(run_dir.join("kernel.log"))?;
         let child = Command::new("journalctl")
-            .args(["-kf", "-o", "short-iso", "--since", "now", "--no-pager"])
+            .args(["-kf", "-o", "short-precise", "--since", "now", "--no-pager"])
             .stdout(Stdio::from(log))
             .stderr(Stdio::null())
             .spawn()?;
@@ -2395,7 +2418,14 @@ impl JournalGuard {
 
     fn save_final(&self) {
         let output = Command::new("journalctl")
-            .args(["-k", "--since", &self.start_iso, "--no-pager"])
+            .args([
+                "-k",
+                "-o",
+                "short-precise",
+                "--since",
+                &self.start_iso,
+                "--no-pager",
+            ])
             .output();
         if let Ok(output) = output {
             let _ = fs::write(self.run_dir.join("kernel-final.log"), output.stdout);
@@ -2614,10 +2644,10 @@ fn run_candidates(workspace: &Path, mut args: CandidatesArgs) -> io::Result<()> 
         return Ok(());
     }
     if !args.template.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("stock boot template not found: {}", args.template.display()),
-        ));
+        return Err(flasks::not_found(format!(
+            "stock boot template not found: {}",
+            args.template.display()
+        )));
     }
 
     let adb_reboot_to_fastboot =
@@ -3041,10 +3071,10 @@ fn run_replay(workspace: &Path, mut args: ReplayArgs) -> io::Result<()> {
         args.template = workspace.join(&args.template);
     }
     if !args.template.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("stock boot template not found: {}", args.template.display()),
-        ));
+        return Err(flasks::not_found(format!(
+            "stock boot template not found: {}",
+            args.template.display()
+        )));
     }
 
     let (conditions, rejected) =
@@ -3057,10 +3087,10 @@ fn run_replay(workspace: &Path, mut args: ReplayArgs) -> io::Result<()> {
                 path
             };
             if !path.is_dir() {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("replay run directory not found: {}", path.display()),
-                ));
+                return Err(flasks::not_found(format!(
+                    "replay run directory not found: {}",
+                    path.display()
+                )));
             }
             path
         }
@@ -3298,10 +3328,7 @@ fn run_replay(workspace: &Path, mut args: ReplayArgs) -> io::Result<()> {
 
 fn run_trace(args: TraceArgs) -> io::Result<()> {
     if args.timeout == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--timeout must be greater than zero",
-        ));
+        return Err(flasks::invalid_input("--timeout must be greater than zero"));
     }
     Builder::new_current_thread()
         .enable_all()
@@ -3687,1127 +3714,942 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             || args.stop_after_stage.is_some()
             || args.direct_handoff)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--normal cannot be combined with --super-speed, --pullup-only, --bare-pullup, --stop-after-stage, or --direct-handoff",
         ));
     }
     if args.direct_handoff && (args.pullup_only || args.bare_pullup) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--direct-handoff cannot be combined with --pullup-only or --bare-pullup",
         ));
     }
     if args.start_after_connect && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--start-after-connect requires --direct-handoff",
         ));
     }
     if args.usb2_extended_setup_arm && (!args.direct_handoff || !args.start_after_connect) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-extended-setup-arm requires --direct-handoff --start-after-connect",
         ));
     }
     if args.usb2_long_setup_arm && (!args.direct_handoff || !args.start_after_connect) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-long-setup-arm requires --direct-handoff --start-after-connect",
         ));
     }
     if args.usb2_arm_window_recovery && (!args.direct_handoff || !args.start_after_connect) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-arm-window-recovery requires --direct-handoff --start-after-connect",
         ));
     }
     if args.usb2_clear_susphy_after_reset && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-clear-susphy-after-reset requires --direct-handoff",
         ));
     }
     if args.usb3_link_training_after_reset && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb3-link-training-after-reset requires --direct-handoff",
         ));
     }
     if args.usb2_clear_susphy_after_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-clear-susphy-after-runstop requires --direct-handoff",
         ));
     }
     if args.hsphy_ref_after_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-ref-after-runstop requires --direct-handoff",
         ));
     }
     if args.hsphy_power_after_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-power-after-runstop requires --direct-handoff",
         ));
     }
     if args.hsphy_por_delay_150 && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-por-delay-150 requires --direct-handoff",
         ));
     }
     if args.hsphy_reset_delay_150 && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-reset-delay-150 requires --direct-handoff",
         ));
     }
     if args.hsphy_auto_resume_pulse && (!args.direct_handoff || !args.hsphy_source_exact) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-auto-resume-pulse requires --direct-handoff --hsphy-source-exact",
         ));
     }
     if args.hsphy_restore_suspend_n_after_reset
         && (!args.direct_handoff || !args.hsphy_source_exact)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-restore-suspend-n-after-reset requires direct --hsphy-source-exact",
         ));
     }
     if args.hsphy_rtune && (!args.direct_handoff || !args.hsphy_source_exact) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-rtune requires direct --hsphy-source-exact",
         ));
     }
     if args.event_ring_size_4096 && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--event-ring-size-4096 requires --direct-handoff",
         ));
     }
     if args.xbl_deferred_setup && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-deferred-setup requires --direct-handoff",
         ));
     }
     if args.xbl_ep0_in_data && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-ep0-in-data requires --direct-handoff",
         ));
     }
     if args.xbl_event_dma && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-event-dma requires --direct-handoff",
         ));
     }
     if args.xbl_ep0_config && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-ep0-config requires --direct-handoff",
         ));
     }
     if args.xbl_between_ep0 && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-between-ep0 requires --direct-handoff",
         ));
     }
     if args.xbl_post_endpoint_global && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-post-endpoint-global requires --direct-handoff",
         ));
     }
     if args.xbl_stock_ep0_dma && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-stock-ep0-dma requires --direct-handoff",
         ));
     }
     if args.xbl_raw_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-raw-runstop requires --direct-handoff",
         ));
     }
     if args.source_exact_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--source-exact-runstop requires --super-speed",
         ));
     }
     if args.ss_reassert_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-runstop requires --super-speed",
         ));
     }
     if args.ss_hold_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-hold-runstop requires --super-speed",
         ));
     }
     if args.ss_retry_setup && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-retry-setup requires --super-speed",
         ));
     }
     if args.ss_eager_setup && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-eager-setup requires --super-speed",
         ));
     }
     if args.ss_source_susphy && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-source-susphy requires --super-speed",
         ));
     }
     if args.ss_conndone_clear_hird && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-conndone-clear-hird requires --super-speed",
         ));
     }
     if args.ss_reassert_device_mode && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-device-mode requires --super-speed",
         ));
     }
     if args.ss_reassert_core_clocks && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-core-clocks requires --super-speed",
         ));
     }
     if args.ss_reassert_core_clocks_after_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-core-clocks-after-runstop requires --super-speed",
         ));
     }
     if args.ss_reassert_domain_after_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-domain-after-runstop requires --super-speed",
         ));
     }
     if args.ss_reassert_link_clocks_after_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-link-clocks-after-runstop requires --super-speed",
         ));
     }
     if args.ss_android_dbm_reset && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-android-dbm-reset requires --super-speed",
         ));
     }
     if args.ss_reassert_qmp_power && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-qmp-power requires --super-speed",
         ));
     }
     if args.ss_reassert_qmp_power_after_gctl && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-qmp-power-after-gctl requires --super-speed",
         ));
     }
     if args.ss_reinit_hs_phy && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reinit-hs-phy requires --super-speed",
         ));
     }
     if args.ss_pre_qmp_phy_setup && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-pre-qmp-phy-setup requires --super-speed",
         ));
     }
     if args.ss_clear_qmp_autonomous && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-clear-qmp-autonomous requires --super-speed",
         ));
     }
     if args.ss_reassert_qmp_clocks && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-qmp-clocks requires --super-speed",
         ));
     }
     if args.ss_reassert_qmp_clocks_after_gctl && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-qmp-clocks-after-gctl requires --super-speed",
         ));
     }
     if args.ss_reassert_hs_phy_ref_after_gctl && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-reassert-hs-phy-ref-after-gctl requires --super-speed",
         ));
     }
     if args.ss_dis_sleep_mode_before_gadget && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-dis-sleep-mode-before-gadget requires --super-speed",
         ));
     }
     if args.ss_clear_qmp_autonomous_exact && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-clear-qmp-autonomous-exact requires --super-speed",
         ));
     }
     if args.ss_qmp_resume_wmb && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-qmp-resume-wmb requires --super-speed",
         ));
     }
     if args.ss_qmp_lfps_clear_wmb && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-qmp-lfps-clear-wmb requires --super-speed",
         ));
     }
     if args.ss_qmp_notify_disconnect && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-qmp-notify-disconnect requires --super-speed",
         ));
     }
     if args.ss_clear_vbus_override_before_qmp && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-clear-vbus-override-before-qmp requires --super-speed",
         ));
     }
     if args.ss_clear_keep_connect_before_stop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-clear-keep-connect-before-stop requires --super-speed",
         ));
     }
     if args.ss_clear_usb3_susphy_before_qmp && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-clear-usb3-susphy-before-qmp requires --super-speed",
         ));
     }
     if args.ss_clear_usb3_susphy_before_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-clear-usb3-susphy-before-runstop requires --super-speed",
         ));
     }
     if args.ss_clear_usb3_susphy_after_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-clear-usb3-susphy-after-runstop requires --super-speed",
         ));
     }
     if args.ss_core_reset_at_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-core-reset-at-runstop requires --super-speed",
         ));
     }
     if args.ss_separate_setup_buffer && !args.super_speed && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-separate-setup-buffer requires --direct-handoff or --super-speed",
         ));
     }
     if args.ss_disable_gadget_irq_before_stop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-disable-gadget-irq-before-stop requires --super-speed",
         ));
     }
     if args.ss_disable_ep0_before_stop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-disable-ep0-before-stop requires --super-speed",
         ));
     }
     if args.ss_clear_gsi_stop_state && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-clear-gsi-stop-state requires --super-speed",
         ));
     }
     if args.ss_lfps_timer && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-lfps-timer requires --super-speed",
         ));
     }
     if args.ss_clear_ux_exit_px && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-clear-ux-exit-px requires --super-speed",
         ));
     }
     if args.ss_preserve_ref_clock_state && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-preserve-ref-clock-state requires --super-speed",
         ));
     }
     if args.ss_preserve_phy_state && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ss-preserve-phy-state requires --super-speed",
         ));
     }
     if args.dt_hird_threshold && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--dt-hird-threshold requires --direct-handoff",
         ));
     }
     if args.android_hs_lpm && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--android-hs-lpm requires --direct-handoff",
         ));
     }
     if args.android_lpm_errata && !args.android_hs_lpm {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--android-lpm-errata requires --android-hs-lpm",
         ));
     }
     if args.abl_shared_hs_phy && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--abl-shared-hs-phy requires --direct-handoff",
         ));
     }
     if args.abl_ep_config && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--abl-ep-config requires --direct-handoff",
         ));
     }
     if args.abl_command_params && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--abl-command-params requires --direct-handoff",
         ));
     }
     if args.abl_trb_flags && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--abl-trb-flags requires --direct-handoff",
         ));
     }
     if args.abl_setup_trb_buffer && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--abl-setup-trb-buffer requires --direct-handoff",
         ));
     }
     if args.abl_event_consume && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--abl-event-consume requires --direct-handoff",
         ));
     }
     if args.xbl_direction_trb && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-direction-trb requires --direct-handoff",
         ));
     }
     if args.xbl_trb_chain && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-trb-chain requires --direct-handoff",
         ));
     }
     if args.ep0_reset_clear_stall && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ep0-reset-clear-stall requires --direct-handoff",
         ));
     }
     if args.ep0_reset_clear_test_mode && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ep0-reset-clear-test-mode requires --direct-handoff",
         ));
     }
     if args.ep0_reset_callback_first && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ep0-reset-callback-first requires --direct-handoff",
         ));
     }
     if args.ep0_reset_android_state_order && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ep0-reset-android-state-order requires --direct-handoff",
         ));
     }
     if args.start_ungated && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--start-ungated requires --direct-handoff",
         ));
     }
     if args.event_ring_at_runstop && !args.direct_handoff && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--event-ring-at-runstop requires --direct-handoff with USB2 or SuperSpeed",
         ));
     }
     if args.gadget_restart_at_runstop && !args.direct_handoff && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--gadget-restart-at-runstop requires --direct-handoff or --super-speed",
         ));
     }
     if args.gadget_start_only_at_runstop
         && (!args.direct_handoff || !args.gadget_restart_at_runstop || args.super_speed)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--gadget-start-only-at-runstop requires direct USB2 --gadget-restart-at-runstop",
         ));
     }
     if args.clear_gsi_after_reset && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--clear-gsi-after-reset requires --direct-handoff",
         ));
     }
     if args.hsphy_source_exact && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-source-exact requires --direct-handoff",
         ));
     }
     if args.hsphy_ignore_eud && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-ignore-eud requires --direct-handoff",
         ));
     }
     if args.hsphy_eud_device_mode && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-eud-device-mode requires --direct-handoff",
         ));
     }
     if args.hsphy_eud_device_mode && !args.hsphy_source_exact {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-eud-device-mode requires --hsphy-source-exact",
         ));
     }
     if args.hsphy_eud_device_mode && args.hsphy_ignore_eud {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-eud-device-mode cannot be combined with --hsphy-ignore-eud",
         ));
     }
     if args.hsphy_dtbo_bramble_pvt && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-dtbo-bramble-pvt requires --direct-handoff",
         ));
     }
     if args.hsphy_xbl_exact && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-xbl-exact requires --direct-handoff",
         ));
     }
     if args.hsphy_xbl_exact && !args.hsphy_source_exact {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-xbl-exact requires --hsphy-source-exact",
         ));
     }
     if args.hsphy_xbl_exact && !args.xbl_hs_phy_table {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-xbl-exact requires --xbl-hs-phy-table",
         ));
     }
     if args.hsphy_clear_sleepm && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-clear-sleepm requires --direct-handoff",
         ));
     }
     if args.hsphy_clear_datapath_override && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-clear-datapath-override requires --direct-handoff",
         ));
     }
     if args.hsphy_clear_power_down && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-clear-power-down requires --direct-handoff",
         ));
     }
     if args.keep_connect_on_start && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--keep-connect-on-start requires direct USB2 handoff",
         ));
     }
     if args.hsphy_xbl_exact && args.abl_shared_hs_phy {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-xbl-exact cannot be combined with --abl-shared-hs-phy",
         ));
     }
     if args.hsphy_all_regulator_sets && (!args.direct_handoff || !args.refresh_hsphy_power) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-all-regulator-sets requires direct --refresh-hsphy-power",
         ));
     }
     if args.hsphy_vdd_lpm && (!args.direct_handoff || !args.refresh_hsphy_power) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-vdd-lpm requires direct --refresh-hsphy-power",
         ));
     }
     if args.hsphy_legacy_fallback && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-legacy-fallback requires --direct-handoff",
         ));
     }
     if args.hsphy_before_reset && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-before-reset requires --direct-handoff",
         ));
     }
     if args.hsphy_resume_clocks_after_reset
         && (!args.hsphy_before_reset || !args.direct_handoff || args.super_speed)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-resume-clocks-after-reset requires direct USB2 --hsphy-before-reset",
         ));
     }
     if args.hsphy_restore_suspend_n_after_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-restore-suspend-n-after-runstop requires --direct-handoff",
         ));
     }
     if args.hsphy_restore_suspend_n_selected_after_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--hsphy-restore-suspend-n-selected-after-runstop requires --direct-handoff",
         ));
     }
     if args.ep0_initial_512 && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ep0-initial-512 requires --direct-handoff",
         ));
     }
     if args.clock_branches_rearm && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--clock-branches-rearm requires --direct-handoff",
         ));
     }
     if args.usb2_source_resume_clocks && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-resume-clocks requires direct USB2 handoff",
         ));
     }
     if args.usb2_source_resume_core_reset && !args.usb2_source_resume_clocks {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-resume-core-reset requires --usb2-source-resume-clocks",
         ));
     }
     if args.gadget_start_defaults_at_runstop && !args.direct_handoff && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--gadget-start-defaults-at-runstop requires --direct-handoff or --super-speed",
         ));
     }
     if args.u2exit_lfps && !args.direct_handoff && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--u2exit-lfps requires --direct-handoff or --super-speed",
         ));
     }
     if args.min_runstop_delay && !args.direct_handoff && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--min-runstop-delay requires --direct-handoff or --super-speed",
         ));
     }
     if args.usb_core_hs_clock && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-core-hs-clock requires --direct-handoff",
         ));
     }
     if args.clock_stable_delay_us.is_some() && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--clock-stable-delay-us requires --direct-handoff",
         ));
     }
     if args.android_block_reset && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--android-block-reset requires --direct-handoff",
         ));
     }
     if args.skip_usb2_phy_reset && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--skip-usb2-phy-reset requires --direct-handoff",
         ));
     }
     if args.dcfg_ignstrmpp && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--dcfg-ignstrmpp requires --direct-handoff",
         ));
     }
     if args.u2_freeclk_clear && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--u2-freeclk-clear requires --direct-handoff",
         ));
     }
     if args.u2_freeclk_set && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--u2-freeclk-set requires --direct-handoff",
         ));
     }
     if args.u2_freeclk_clear && args.u2_freeclk_set {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--u2-freeclk-clear and --u2-freeclk-set are mutually exclusive",
         ));
     }
     if args.guctl3_retry_clear && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--guctl3-retry-clear requires --direct-handoff",
         ));
     }
     if args.guctl3_retry_set && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--guctl3-retry-set requires --direct-handoff",
         ));
     }
     if args.guctl3_retry_clear && args.guctl3_retry_set {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--guctl3-retry-clear and --guctl3-retry-set are mutually exclusive",
         ));
     }
     if args.sofitpsync_clear && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--sofitpsync-clear requires --direct-handoff",
         ));
     }
     if args.gctl_pwrdnscale_2 && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--gctl-pwrdnscale-2 requires --direct-handoff",
         ));
     }
     if args.usb2_susphy && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-susphy requires --direct-handoff",
         ));
     }
     if args.usb2_susphy_after_runstop && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-susphy-after-runstop requires --super-speed",
         ));
     }
     if args.usb2_source_susphy && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-susphy requires --direct-handoff",
         ));
     }
     if args.usb2_source_exact_devten && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-exact-devten requires --direct-handoff",
         ));
     }
     if args.usb2_source_devten_before_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-devten-before-runstop requires --direct-handoff",
         ));
     }
     if args.usb2_source_devten_after_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-devten-after-runstop requires --direct-handoff",
         ));
     }
     if args.usb2_source_exact_cmd_guard && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-exact-cmd-guard requires --direct-handoff",
         ));
     }
     if args.usb2_source_exact_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-exact-runstop requires --direct-handoff",
         ));
     }
     if args.usb2_source_phy_setup && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-phy-setup requires direct USB2 handoff",
         ));
     }
     if args.usb2_runtime_power_keepalive && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-runtime-power-keepalive requires direct USB2 handoff",
         ));
     }
     if args.usb2_dis_sleep_mode && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-dis-sleep-mode requires --direct-handoff",
         ));
     }
     if args.usb2_source_peripheral_start && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-peripheral-start requires direct USB2 handoff",
         ));
     }
     if args.usb2_source_vbus_only && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-vbus-only requires direct USB2 handoff",
         ));
     }
     if args.usb2_source_power_events && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-power-events requires direct USB2 handoff",
         ));
     }
     if args.usb2_android_dbm_reset && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-android-dbm-reset requires --direct-handoff",
         ));
     }
     if args.ep0_trb_completion_fallback && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ep0-trb-completion-fallback requires --direct-handoff",
         ));
     }
     if args.usb2_source_exact_device_reset && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-source-exact-device-reset requires direct USB2 handoff",
         ));
     }
     if args.usb2_qpr1_utmi_post_reset_only && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-qpr1-utmi-post-reset-only requires direct USB2 handoff",
         ));
     }
     if args.usb2_preserve_phy_interface && (!args.direct_handoff || args.super_speed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb2-preserve-phy-interface requires direct USB2 handoff",
         ));
     }
     if args.dcfg_lowspeed
         && (!args.direct_handoff || args.super_speed || args.dcfg_fullspeed || args.dcfg_superspeed)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--dcfg-lowspeed requires direct USB2 handoff and cannot be combined with full-speed or SuperSpeed",
         ));
     }
     if args.ep0_stall_flush && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ep0-stall-flush requires --direct-handoff",
         ));
     }
     if args.ep0_short_first_desc && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ep0-short-first-desc requires --direct-handoff",
         ));
     }
     if args.ep0_txfifo_fix && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--ep0-txfifo-fix requires --direct-handoff",
         ));
     }
     if args.start_after_reset && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--start-after-reset requires --direct-handoff",
         ));
     }
     if args.start_at_connect_done && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--start-at-connect-done requires --direct-handoff",
         ));
     }
     if args.reset_resource && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--reset-resource requires --direct-handoff",
         ));
     }
     if args.reset_endpoints && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--reset-endpoints requires --direct-handoff",
         ));
     }
     let ss_signal_stage = args.super_speed && matches!(args.stop_after_stage, Some(13..=29));
     let ss_full_signal_probe = args.super_speed;
     if args.signal_probe && !args.direct_handoff && !ss_full_signal_probe && !ss_signal_stage {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-probe requires --direct-handoff, or a SuperSpeed handoff",
         ));
     }
     if args.signal_smmu_state && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-smmu-state requires --signal-probe",
         ));
     }
     if args.signal_link_state && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-link-state requires --signal-probe",
         ));
     }
     if args.signal_raw_link && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-raw-link requires --signal-probe",
         ));
     }
     if args.signal_early_drop.is_some() && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-early-drop requires --signal-probe",
         ));
     }
     if args.signal_pre_drop && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-pre-drop requires --signal-probe",
         ));
     }
     if args.signal_heartbeat && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-heartbeat requires --signal-probe",
         ));
     }
     if args.dma_adopt_smmu && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--dma-adopt-smmu requires --direct-handoff",
         ));
     }
     if args.smmu_gate.is_some() && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--smmu-gate requires --direct-handoff",
         ));
     }
     if args.signal_drop_vbusvld && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-drop-vbusvld requires --signal-probe",
         ));
     }
     if args.connect_delay.is_some() && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--connect-delay requires --signal-probe",
         ));
     }
     if args.smmu_install_bypass && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--smmu-install-bypass requires --direct-handoff",
         ));
     }
     if args.smmu_install_all && !args.smmu_install_bypass {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--smmu-install-all requires --smmu-install-bypass",
         ));
     }
     if args.signal_fsr_gate.is_some() && !args.signal_dma_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-fsr-gate requires --signal-dma-probe",
         ));
     }
     if args.signal_prev_trace_gate.is_some()
         && !matches!(args.signal_prev_trace_gate, Some(1 | 2 | 3 | 4 | 5))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-prev-trace-gate must be 1 through 5",
         ));
     }
     if args.signal_prev_qmp_gate.is_some() && !matches!(args.signal_prev_qmp_gate, Some(1..=8)) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-prev-qmp-gate must be 1 through 8",
         ));
     }
     if args.signal_ram_gate && !args.signal_dma_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-ram-gate requires --signal-dma-probe",
         ));
     }
     if args.u0_arm_probe && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--u0-arm-probe requires --signal-probe",
         ));
     }
     if args.wdt_bite_control && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--wdt-bite-control requires --signal-probe",
         ));
     }
     if let Some(value) = &args.swdd_fnid {
         let hex = value.trim_start_matches("0x");
         if u32::from_str_radix(hex, 16).is_err() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("--swdd-fnid must be a 32-bit hex value, got {value}"),
-            ));
+            return Err(flasks::invalid_input(format!(
+                "--swdd-fnid must be a 32-bit hex value, got {value}"
+            )));
         }
     }
     if args.arm_blip && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--arm-blip requires --direct-handoff",
         ));
     }
     if args.signal_diag_publish && !args.signal_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-diag-publish requires --signal-probe",
         ));
     }
     if args.quiet_after.is_some() && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--quiet-after requires --direct-handoff",
         ));
     }
     if args.dma_origin.is_some() && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--dma-origin requires --direct-handoff",
         ));
     }
     if args.signal_cmd_gate.is_some() && !args.direct_handoff && !ss_signal_stage {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-cmd-gate requires --direct-handoff, or a SuperSpeed stage probe",
         ));
     }
     if args.signal_rsc_gate.is_some() && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-rsc-gate requires --direct-handoff",
         ));
     }
     if args.signal_cfg_gate.is_some() && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-cfg-gate requires --direct-handoff",
         ));
     }
     if args.signal_ramclk_gate.is_some() && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-ramclk-gate requires --direct-handoff",
         ));
     }
     if args.smmu_disable && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--smmu-disable requires --direct-handoff",
         ));
     }
     if args.signal_evt_data_gate.is_some() && !args.signal_dma_probe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-evt-data-gate requires --signal-dma-probe",
         ));
     }
     if args.signal_dma_probe && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-dma-probe requires --direct-handoff",
         ));
     }
     if args.signal_dma_post_runstop && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--signal-dma-post-runstop requires --direct-handoff",
         ));
     }
@@ -4816,22 +4658,19 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
         + args.start_at_connect_done as u8)
         > 1
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "the EP0 timing differentials are mutually exclusive",
         ));
     }
     if args.xbl_deferred_setup
         && (args.start_after_connect || args.start_after_reset || args.start_at_connect_done)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-deferred-setup is mutually exclusive with the EP0 timing differentials",
         ));
     }
     if args.xbl_ep0_in_data && args.xbl_deferred_setup {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-ep0-in-data is mutually exclusive with --xbl-deferred-setup",
         ));
     }
@@ -4841,32 +4680,27 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             || args.start_after_reset
             || args.start_at_connect_done)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-between-ep0 is mutually exclusive with deferred or post-link EP0 arming",
         ));
     }
     if args.xbl_post_endpoint_global && args.xbl_deferred_setup {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-post-endpoint-global is mutually exclusive with --xbl-deferred-setup",
         ));
     }
     if args.pullup_only && (args.no_smmu || args.no_core_reset || args.irq_route.is_some()) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--pullup-only cannot be combined with IRQ, SMMU, or core-reset differentials",
         ));
     }
     if matches!(args.irq_route, Some(Route::Controller)) && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--irq-route controller requires --direct-handoff",
         ));
     }
     if args.usb_event_timer_poll && !args.direct_handoff {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--usb-event-timer-poll requires --direct-handoff",
         ));
     }
@@ -4877,30 +4711,24 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             || args.no_core_reset
             || args.irq_route.is_some())
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--bare-pullup cannot be combined with another USB differential",
         ));
     }
     if let Some(stage) = args.bare_pullup_stop_after {
         if !args.bare_pullup {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(flasks::invalid_input(
                 "--bare-pullup-stop-after requires --bare-pullup",
             ));
         }
         if !(1..=4).contains(&stage) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("--bare-pullup-stop-after must be 1..=4, got {stage}"),
-            ));
+            return Err(flasks::invalid_input(format!(
+                "--bare-pullup-stop-after must be 1..=4, got {stage}"
+            )));
         }
     }
     if args.hyper_bare && !args.bare_pullup {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--hyper-bare requires --bare-pullup",
-        ));
+        return Err(flasks::invalid_input("--hyper-bare requires --bare-pullup"));
     }
     if args.reuse_fastboot_dma
         && (args.normal
@@ -4911,8 +4739,7 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             || args.irq_route.is_some()
             || !args.no_smmu)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--reuse-fastboot-dma requires the USB2 gadget handoff with --no-smmu and cannot be combined with another differential",
         ));
     }
@@ -4924,64 +4751,53 @@ fn run_loop(workspace: &Path, mut args: LoopArgs) -> io::Result<()> {
             || args.irq_route.is_some())
         && !matches!(args.stop_after_stage, Some(13..=29))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--stop-after-stage cannot be combined with another USB differential",
         ));
     }
     if (args.no_smmu || args.no_transfer_resource) && args.normal {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "SMMU/resource differentials require the gadget handoff probe",
         ));
     }
     if args.no_core_reset && args.normal {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--no-core-reset requires the gadget handoff probe",
         ));
     }
     if args.preserve_fastboot_runstop && (!args.direct_handoff || !args.no_core_reset) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--preserve-fastboot-runstop requires --direct-handoff and --no-core-reset",
         ));
     }
     if args.qmp_lane.is_some() && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--qmp-lane requires --super-speed",
-        ));
+        return Err(flasks::invalid_input("--qmp-lane requires --super-speed"));
     }
     if args.xbl_qmp_table && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-qmp-table requires --super-speed",
         ));
     }
     if args.xbl_hs_phy_table && !(args.super_speed || args.direct_handoff) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--xbl-hs-phy-table requires --super-speed or --direct-handoff",
         ));
     }
     if args.qmp_phase_stop.is_some() && !args.super_speed {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--qmp-phase-stop requires --super-speed",
         ));
     }
     if args.qmp_phase_stop.is_some() && args.stop_after_stage.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        return Err(flasks::invalid_input(
             "--qmp-phase-stop cannot be combined with --stop-after-stage",
         ));
     }
     if !args.template.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("stock boot template not found: {}", args.template.display()),
-        ));
+        return Err(flasks::not_found(format!(
+            "stock boot template not found: {}",
+            args.template.display()
+        )));
     }
     if args.dry_run {
         print_loop_command(&args);
@@ -5990,6 +5806,9 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
     if args.u2_freeclk_set {
         arguments.push("--usb-gadget-handoff-u2-freeclk-set".to_owned());
     }
+    if args.park_poll {
+        arguments.push("--usb-gadget-handoff-park-poll".to_owned());
+    }
     if args.reset_resource {
         arguments.push("--usb-gadget-handoff-reset-resource".to_owned());
     }
@@ -6120,6 +5939,10 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
         arguments.push("--usb-utmi-preconnect-readout".to_owned());
         arguments.push(value.clone());
     }
+    if let Some(level) = &args.pulse_breadcrumb {
+        arguments.push("--usb-pulse-breadcrumb".to_owned());
+        arguments.push(level.clone());
+    }
     if let Some(value) = &args.utmi_postrun_readout {
         arguments.push("--usb-utmi-postrun-readout".to_owned());
         arguments.push(value.clone());
@@ -6176,6 +5999,19 @@ fn build_command(workspace: &Path, args: &LoopArgs, output: &Path) -> CommandSpe
             "FULLERENE_AARCH64_USB_HSPHY_IGNORE_EUD".to_owned(),
             "1".to_owned(),
         ));
+    }
+    // Push the arm-blip A/B straight into the child build environment.
+    //
+    // `--arm-blip` is forwarded as `--usb-arm-blip` on the child `flasks build`
+    // command line (see `arguments.push` below), which is the same route every
+    // other A/B takes. Measured, that route left
+    // `effective_build_child_environment: <none>` in the rundir and produced
+    // zero blips on the host - i.e. the image was the baseline artifact and
+    // `arm_blip_queue`'s `option_env!` returned early. Pushing it here as well
+    // removes the CLI round-trip from the experiment, so the flag cannot be
+    // silently dropped between the two processes.
+    if args.arm_blip {
+        envs.push(("FULLERENE_AARCH64_USB_ARM_BLIP".to_owned(), "1".to_owned()));
     }
     if args.hsphy_eud_device_mode {
         envs.push((
