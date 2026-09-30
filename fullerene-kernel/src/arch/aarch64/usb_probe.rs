@@ -8,6 +8,8 @@
 // and the harness reports the whole run as `build-or-audit-failure`.
 #[path = "../../adb_wire.rs"]
 mod adb_wire;
+#[path = "../../cdc_acm.rs"]
+mod cdc_acm;
 #[path = "../../blackbox.rs"]
 mod blackbox;
 

@@ -738,33 +738,9 @@ pub fn publish_console() {
     if !primary && !alt {
         return;
     }
-    let written = written_total();
-    let capacity = capacity();
-    let first = written.saturating_sub(capacity);
     let mut data = [0u8; 768];
-    let mut cursor = 0usize;
-    cursor += write_text(&mut data, cursor, b"====0.0\n");
-    cursor += write_text(&mut data, cursor, b"FULLERENE-BLACKBOX\n");
-    cursor += write_text(&mut data, cursor, b"Fullerene black box: ");
-    cursor += write_number(&mut data, cursor, boots());
-    cursor += write_text(&mut data, cursor, b" boot(s), ");
-    cursor += write_number(&mut data, cursor, written);
-    cursor += write_text(&mut data, cursor, b" record(s) written\n");
-    let mut index = first;
-    while index < written && cursor + 64 < data.len() {
-        if let Some(entry) = read(index) {
-            cursor += write_text(&mut data, cursor, b"seq ");
-            cursor += write_number(&mut data, cursor, entry.seq);
-            cursor += write_text(&mut data, cursor, b" code ");
-            cursor += write_number(&mut data, cursor, entry.code);
-            cursor += write_text(&mut data, cursor, b" a0 ");
-            cursor += write_number(&mut data, cursor, entry.arg0 as u32);
-            cursor += write_text(&mut data, cursor, b" a1 ");
-            cursor += write_number(&mut data, cursor, entry.arg1 as u32);
-            cursor += write_text(&mut data, cursor, b"\n");
-        }
-        index += 1;
-    }
+    let mut cursor = write_text(&mut data, 0, b"====0.0\n");
+    cursor += dump_into(&mut data[cursor..]);
     if primary {
         write_pstore_zone(
             (unsafe { PSTORE_BASE }) + CONSOLE_ZONE_OFFSET,
@@ -1072,6 +1048,43 @@ fn write_pstore_zone(zone: u64, data: &[u8]) {
     }
 }
 
+/// Render the black box as text, for whichever channel is carrying it to a host.
+///
+/// Two channels share this now: the pstore console mirror (Android's, root-only on this device) and
+/// the CDC-ACM serial port Linux binds to `/dev/ttyACM0`. One renderer means the two cannot
+/// disagree about what the box contains, and it is pure enough to be reasoned about off the device.
+///
+/// Returns the number of bytes written, and 0 when the ring was never claimed - there is nothing to
+/// say then, and an empty body would read as "no events happened".
+pub fn dump_into(out: &mut [u8]) -> usize {
+    let written = written_total();
+    let capacity = capacity();
+    let first = written.saturating_sub(capacity);
+    let mut cursor = 0usize;
+    cursor += write_text(out, cursor, b"FULLERENE-BLACKBOX\n");
+    cursor += write_text(out, cursor, b"Fullerene black box: ");
+    cursor += write_number(out, cursor, boots());
+    cursor += write_text(out, cursor, b" boot(s), ");
+    cursor += write_number(out, cursor, written);
+    cursor += write_text(out, cursor, b" record(s) written\n");
+    let mut index = first;
+    while index < written && cursor + 64 < out.len() {
+        if let Some(entry) = read(index) {
+            cursor += write_text(out, cursor, b"seq ");
+            cursor += write_number(out, cursor, entry.seq);
+            cursor += write_text(out, cursor, b" code ");
+            cursor += write_number(out, cursor, entry.code);
+            cursor += write_text(out, cursor, b" a0 ");
+            cursor += write_number(out, cursor, entry.arg0 as u32);
+            cursor += write_text(out, cursor, b" a1 ");
+            cursor += write_number(out, cursor, entry.arg1 as u32);
+            cursor += write_text(out, cursor, b"\n");
+        }
+        index += 1;
+    }
+    cursor
+}
+
 fn write_text(out: &mut [u8], mut cursor: usize, text: &[u8]) -> usize {
     let start = cursor;
     for byte in text {
@@ -1357,6 +1370,7 @@ mod tests {
 
     use super::{
         code_letter, letter_code, previous_segment_range, segment_count, segment_record_bytes,
+        write_number, write_text,
     };
 
     /// The previous segment's record bytes, copied into a fixed array: this crate is no_std,
@@ -1370,6 +1384,26 @@ mod tests {
             len += 1;
         }
         (out, len)
+    }
+
+    #[test]
+    fn write_number_renders_decimal_and_refuses_to_overrun() {
+        let mut out = [0u8; 24];
+        assert_eq!(write_number(&mut out, 0, 0), 1);
+        assert_eq!(&out[..1], b"0");
+        assert_eq!(write_number(&mut out, 0, 4242), 4);
+        assert_eq!(&out[..4], b"4242");
+        assert!(write_number(&mut out, 0, u32::MAX) <= 10, "ten-digit cap");
+        let mut tiny = [0u8; 2];
+        assert_eq!(write_number(&mut tiny, 0, 12345), 2, "truncates, never panics");
+    }
+
+    #[test]
+    fn write_text_truncates_at_the_end_of_the_buffer() {
+        let mut out = [0u8; 4];
+        assert_eq!(write_text(&mut out, 0, b"abcdef"), 4);
+        assert_eq!(&out, b"abcd");
+        assert_eq!(write_text(&mut out, 3, b"xy"), 1);
     }
 
     #[test]

@@ -470,25 +470,50 @@ pub const TRACE_CONTROL_PAGE_ENTRIES: usize = 15;
 /// One ADB-class-compatible bulk function with a bulk IN/OUT pair. The
 /// transport accepts the bounded ADB framing and the legacy FDBG diagnostic
 /// framing without changing the UDC/EP0 lifecycle.
+/// One CDC-ACM function: a communications interface with its notification endpoint, and a data
+/// interface carrying the bulk pair the `FDBG` transport already uses.
+///
+/// The class changed from the Android ADB interface to CDC-ACM because Linux has a driver for the
+/// latter and none for the former: the device appears as `/dev/ttyACM0` and `cat` is the whole host
+/// side, with no root, no `adb` and no Android in the path. The bulk endpoints and the VID/PID are
+/// unchanged, so the existing host tooling still finds the same device.
+///
+/// The bytes after the configuration header are copied from `crate::cdc_acm::FUNCTION_DESCRIPTOR`,
+/// and a test below compares them to it: two copies of a descriptor set is exactly the kind of drift
+/// that produces a device the host enumerates and then refuses.
 #[cfg(not(fullerene_aarch64_usb_gadget_handoff_super_speed))]
-pub const CONFIG_DESCRIPTOR: [u8; 32] = [
-    9, 2, 32, 0, 1, 1, 0, 0x80, 50, // configuration
-    9, 4, 0, 0, 2, 0xff, 0x42, 0x01, 0, // Android ADB interface
-    7, 5, 0x83, 2, 0, 2, 0, // bulk IN, EP3
-    7, 5, 0x02, 2, 0, 2, 0, // bulk OUT, EP2
+pub const CONFIG_DESCRIPTOR: [u8; 67] = [
+    9, 2, 67, 0, 2, 1, 0, 0x80, 50, // configuration: two interfaces, 67 bytes
+    9, 4, 0, 0, 1, 0x02, 0x02, 0x01, 0, // communications interface, ACM
+    5, 0x24, 0x00, 0x10, 0x01, // header functional descriptor, bcdCDC 1.10
+    5, 0x24, 0x01, 0x00, 1, // call management, data interface 1
+    4, 0x24, 0x02, 0x02, // ACM capabilities
+    5, 0x24, 0x06, 0, 1, // union: interface 0 master, interface 1 slave
+    7, 5, 0x81, 3, 0x08, 0x00, 0x10, // notification, interrupt IN, 8 bytes
+    9, 4, 1, 0, 2, 0x0a, 0, 0, 0, // data interface
+    7, 5, 0x02, 2, 0x40, 0x00, 0, // bulk OUT, EP2
+    7, 5, 0x83, 2, 0x40, 0x00, 0, // bulk IN, EP3
 ];
 
 // The Bramble handoff reaches the host as SuperSpeed when Fastboot leaves the
 // combo PHY active. A SuperSpeed configuration needs an SS companion for each
 // bulk endpoint; advertising USB2-only endpoint descriptors makes the host
 // reject the configuration after EP0 enumeration.
+/// The same CDC-ACM function for a SuperSpeed link. Only the *bulk* endpoints need a companion
+/// descriptor; the notification endpoint is interrupt, which does not.
 #[cfg(fullerene_aarch64_usb_gadget_handoff_super_speed)]
-pub const CONFIG_DESCRIPTOR: [u8; 44] = [
-    9, 2, 44, 0, 1, 1, 0, 0x80, 50, // configuration
-    9, 4, 0, 0, 2, 0xff, 0x42, 0x01, 0, // Android ADB interface
-    7, 5, 0x83, 2, 0, 2, 0, // bulk IN, EP3
+pub const CONFIG_DESCRIPTOR: [u8; 79] = [
+    9, 2, 79, 0, 2, 1, 0, 0x80, 50, // configuration: two interfaces, 79 bytes
+    9, 4, 0, 0, 1, 0x02, 0x02, 0x01, 0, // communications interface, ACM
+    5, 0x24, 0x00, 0x10, 0x01, // header functional descriptor, bcdCDC 1.10
+    5, 0x24, 0x01, 0x00, 1, // call management, data interface 1
+    4, 0x24, 0x02, 0x02, // ACM capabilities
+    5, 0x24, 0x06, 0, 1, // union: interface 0 master, interface 1 slave
+    7, 5, 0x81, 3, 0x08, 0x00, 0x10, // notification, interrupt IN, 8 bytes
+    9, 4, 1, 0, 2, 0x0a, 0, 0, 0, // data interface
+    7, 5, 0x02, 2, 0x40, 0x00, 0, // bulk OUT, EP2
     6, 0x30, 0, 0, 0, 0, // SS endpoint companion
-    7, 5, 0x02, 2, 0, 2, 0, // bulk OUT, EP2
+    7, 5, 0x83, 2, 0x40, 0x00, 0, // bulk IN, EP3
     6, 0x30, 0, 0, 0, 0, // SS endpoint companion
 ];
 
@@ -692,7 +717,11 @@ impl Ep0Simulator {
         if request_type == 0x82 && request == 0 && requested_length == 2 {
             let endpoint = index as u8;
             if response.len() >= 2
-                && (endpoint == 0 || endpoint == 0x80 || endpoint == 0x02 || endpoint == 0x83)
+                && (endpoint == 0
+                    || endpoint == 0x80
+                    || endpoint == 0x02
+                    || endpoint == 0x83
+                    || endpoint == 0x81)
             {
                 response[..2].fill(0);
                 if self.halted_endpoints & (1 << (endpoint & 0x0f)) != 0 {
@@ -761,7 +790,7 @@ impl Ep0Simulator {
             && self.configured
             && value == 0
             && requested_length == 0
-            && matches!(index as u8, 0x02 | 0x83)
+            && matches!(index as u8, 0x02 | 0x83 | 0x81)
         {
             let endpoint = index as u8;
             self.pending_halt = Some((endpoint, request == 3));
@@ -910,9 +939,20 @@ mod tests {
             u16::from_le_bytes([CONFIG_DESCRIPTOR[2], CONFIG_DESCRIPTOR[3]]),
             32
         );
-        assert_eq!(CONFIG_DESCRIPTOR.len(), 32);
-        assert_eq!(CONFIG_DESCRIPTOR[13], 2);
-        assert_eq!(&CONFIG_DESCRIPTOR[14..17], &[0xff, 0x42, 0x01]);
+        // The configuration now carries the CDC-ACM function: the class bytes are the
+        // communications/ACM/AT triple, and the bytes after the configuration header must equal
+        // `cdc_acm::FUNCTION_DESCRIPTOR` byte for byte. Two written-out copies of a descriptor set
+        // is precisely the drift that yields a device the host enumerates and then refuses, so it is
+        // asserted rather than trusted.
+        assert_eq!(CONFIG_DESCRIPTOR[4], 2, "two interfaces");
+        assert_eq!(&CONFIG_DESCRIPTOR[14..17], &[0x02, 0x02, 0x01]);
+        assert_eq!(CONFIG_DESCRIPTOR.len(), 9 + crate::cdc_acm::FUNCTION_DESCRIPTOR.len());
+        assert_eq!(
+            &CONFIG_DESCRIPTOR[9..],
+            &crate::cdc_acm::FUNCTION_DESCRIPTOR[..],
+            "the configuration must carry the tested descriptor set verbatim"
+        );
+        assert_eq!(CONFIG_DESCRIPTOR[13], 1, "one notification endpoint");
         assert_eq!(CONFIG_DESCRIPTOR[18], 7);
         assert_eq!(CONFIG_DESCRIPTOR[19], 5);
         assert_eq!(CONFIG_DESCRIPTOR[20], 0x83);
