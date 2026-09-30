@@ -94,6 +94,37 @@ pub fn probe_bracket_mark(stage: u8) {
 /// should not use this path.
 pub const DRIVE_FIRST_SECS: u64 = 50;
 
+/// Carry a probe's outcome into the durable log, where the *next* boot can read it.
+///
+/// The probes' own fields cannot be read in the boot that runs them: their action is at 2.5 s and
+/// a field published after it is outside the run window (measured twice as runs with no fields at
+/// all), while a field published before it samples the "not attempted" zero. So the outcome is
+/// recorded as codes and answered from the previous boot's segment by
+/// `usb2-live-blackbox-prev-probe-retired` and `-prev-probe-trb`.
+fn record_probe_outcome(retired: bool) {
+    let hwo = unsafe { super::DATA_PHASE_TRB_AFTER[0] } & TRB_HWO != 0;
+    crate::blackbox::record(
+        if retired {
+            crate::blackbox::CODE_PROBE_RETIRED
+        } else {
+            crate::blackbox::CODE_PROBE_NOT_RETIRED
+        },
+        0,
+        0,
+        0,
+    );
+    crate::blackbox::record(
+        if hwo {
+            crate::blackbox::CODE_PROBE_TRB_STILL_OWNED
+        } else {
+            crate::blackbox::CODE_PROBE_TRB_CONSUMED
+        },
+        0,
+        0,
+        0,
+    );
+}
+
 pub fn drive_polling_owner(seconds: u64) {
     // SETUP-FIRST DRIVE, variant B: arm once per *consumed* SETUP.
     //
@@ -146,6 +177,10 @@ pub fn drive_polling_owner(seconds: u64) {
     // costs ~2.2 s here (measured with `usb2-live-clock-check`), and the board's
     // usable window is only a few seconds.
     let consume_late = matches!(word, Some("usb2-live-consume-late"));
+    // The probe outcomes are answered by the *next* boot, out of the durable log: a probe's own
+    // fields cannot be read in the boot that runs it (see the note in live_digit_words.rs).
+    let prev_probe_retired = matches!(word, Some("usb2-live-blackbox-prev-probe-retired"));
+    let prev_probe_trb = matches!(word, Some("usb2-live-blackbox-prev-probe-trb"));
     // `usb2-live-clock-check`: nothing but two delayed pulses, to calibrate the
     // time base and confirm that a delayed mark is audible at all. Both have been
     // inferred rather than measured, and every other reading depends on them.
@@ -556,6 +591,11 @@ pub fn drive_polling_owner(seconds: u64) {
     let prev_boot = matches!(word, Some("usb2-live-blackbox-prev-boot"));
     let prev_region = matches!(word, Some("usb2-live-blackbox-prev-region"));
     let prev_stage = matches!(word, Some("usb2-live-blackbox-prev-stage"));
+    // The probe outcomes, answered by the *next* boot: 1 = the last probe's command retired,
+    // 2 = it did not, 3 = the previous boot ran no probe. The second word asks the same of the
+    // TRB the controller was handed: 1 = it consumed it (HWO cleared), 2 = it still owns it.
+    let prev_probe_retired = matches!(word, Some("usb2-live-blackbox-prev-probe-retired"));
+    let prev_probe_trb = matches!(word, Some("usb2-live-blackbox-prev-probe-trb"));
 
     // `usb2-live-depcmd-state`: was the controller still busy with the *setup* phase's
     // command when the data phase issued its own? Five fields, from the snapshot:
@@ -636,6 +676,8 @@ pub fn drive_polling_owner(seconds: u64) {
         Some("usb2-live-blackbox-prev-boot") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-blackbox-prev-region") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-blackbox-prev-stage") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-blackbox-prev-probe-retired") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-blackbox-prev-probe-trb") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-depcmd-state") => DEPCMD_STATE_WINDOW_SECS,
         Some(_) => return,
     };
@@ -848,6 +890,8 @@ pub fn drive_polling_owner(seconds: u64) {
         && !prev_boot
         && !prev_region
         && !prev_stage
+        && !prev_probe_retired
+        && !prev_probe_trb
         && !depcmd_state
         && !ack_event
         && !single_try
@@ -982,6 +1026,8 @@ pub fn drive_polling_owner(seconds: u64) {
     let mut prev_boot_field = 0u32;
     let mut prev_region_field = 0u32;
     let mut prev_stage_field = 0u32;
+    let mut prev_probe_retired_field = 0u32;
+    let mut prev_probe_trb_field = 0u32;
     let mut data_persist_field = 0u32;
     let mut data_late_field = 0u32;
     let mut data_alt_field = 0u32;
@@ -1314,7 +1360,8 @@ pub fn drive_polling_owner(seconds: u64) {
                 )
         {
             status_try_done = true;
-            let _ = unsafe { super::ep0::try_status_only() };
+            let retired = unsafe { super::ep0::try_status_only() };
+            record_probe_outcome(retired);
         }
 
         if data_zero
@@ -1327,7 +1374,8 @@ pub fn drive_polling_owner(seconds: u64) {
                 )
         {
             data_zero_done = true;
-            let _ = unsafe { super::ep0::try_data_zero() };
+            let retired = unsafe { super::ep0::try_data_zero() };
+            record_probe_outcome(retired);
         }
 
         if data_alt
@@ -1340,7 +1388,8 @@ pub fn drive_polling_owner(seconds: u64) {
                 )
         {
             data_alt_done = true;
-            let _ = unsafe { super::ep0::try_data_alt_buffer() };
+            let retired = unsafe { super::ep0::try_data_alt_buffer() };
+            record_probe_outcome(retired);
         }
 
         if data_late
@@ -1353,7 +1402,8 @@ pub fn drive_polling_owner(seconds: u64) {
                 )
         {
             data_late_done = true;
-            let _ = unsafe { super::ep0::retry_data_late() };
+            let retired = unsafe { super::ep0::retry_data_late() };
+            record_probe_outcome(retired);
         }
 
         if data_persist
@@ -1371,7 +1421,8 @@ pub fn drive_polling_owner(seconds: u64) {
             // stops early as soon as one retires. (This comment used to claim three attempts of
             // 1200 ms starting at 1.5 s, which matched neither the call nor the constant; the
             // result field is published after 4.8 s so it cannot be sampled before the loop ends.)
-            let _ = unsafe { super::ep0::retry_data_until_retired(2, 0) };
+            let retired = unsafe { super::ep0::retry_data_until_retired(2, 0) } > 0;
+            record_probe_outcome(retired);
         }
 
         if status_try {
@@ -1452,7 +1503,8 @@ pub fn drive_polling_owner(seconds: u64) {
                 )
         {
             data_status_done = true;
-            let _ = unsafe { super::ep0::data_then_status() };
+            let result = unsafe { super::ep0::data_then_status() };
+            record_probe_outcome(result & 1 != 0);
         }
 
         if data_status {
@@ -1541,6 +1593,16 @@ pub fn drive_polling_owner(seconds: u64) {
                 entry,
                 frequency,
             );
+        }
+
+        if prev_probe_retired {
+            super::live_digit_words::publish("prev_probe_retired", &mut prev_probe_retired_field,
+                BLACKBOX_FIRST_MS, BLACKBOX_STEP_MS, entry, frequency);
+        }
+
+        if prev_probe_trb {
+            super::live_digit_words::publish("prev_probe_trb", &mut prev_probe_trb_field,
+                BLACKBOX_FIRST_MS, BLACKBOX_STEP_MS, entry, frequency);
         }
 
         if prev_stage {
@@ -1898,6 +1960,8 @@ pub fn drive_polling_owner(seconds: u64) {
         && !prev_boot
         && !prev_region
         && !prev_stage
+        && !prev_probe_retired
+        && !prev_probe_trb
         && !depcmd_state
         && !ack_event
         && !single_try

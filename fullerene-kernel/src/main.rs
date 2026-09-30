@@ -227,6 +227,7 @@ pub(crate) use aarch64_runtime::timer;
 // an explicit cache clean on aarch64 and a region the caller has verified. The
 // aarch64 module tree refers to it as `crate::blackbox`, so it has to be declared
 // in every crate root that pulls that tree in.
+pub mod adb_wire;
 pub mod blackbox;
 
 // Module declarations

@@ -201,6 +201,16 @@ pub const CODE_USB_DATA_CMD: u32 = 22;
 pub const CODE_USB_DATA_TIMEOUT: u32 = 23;
 pub const CODE_USB_POLL_TIMEOUT: u32 = 24;
 
+// Probe outcomes. These exist because a probe's result cannot be read inside the boot that runs
+// it: its field would have to be published after the action at 2.5 s, which is already outside
+// the run window (measured twice, as runs that produced no fields at all), and publishing before
+// it samples the "not attempted" zero. Carrying the outcome through the durable log and reading
+// it in the next boot is the only reading that works, and it is what these codes are for.
+pub const CODE_PROBE_RETIRED: u32 = 40;
+pub const CODE_PROBE_NOT_RETIRED: u32 = 41;
+pub const CODE_PROBE_TRB_CONSUMED: u32 = 42;
+pub const CODE_PROBE_TRB_STILL_OWNED: u32 = 43;
+
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Record {
@@ -892,6 +902,20 @@ pub fn previous_segment_byte(index: u32) -> u32 {
     0
 }
 
+/// Whether the previous boot's segment contains a record with this code.
+///
+/// The single-field reader words are built on this: "did the probe retire" is answered once the
+/// outcome is carried across a boot, which is the only way it can be answered at all here.
+pub fn previous_segment_contains(code: u32) -> bool {
+    let Some(data) = text_log_data() else {
+        return false;
+    };
+    let Some((start, end)) = previous_segment_range(data) else {
+        return false;
+    };
+    segment_record_bytes(&data[start..end]).any(|byte| letter_code(byte) == code)
+}
+
 /// How many record bytes the previous boot's segment holds, or 0 when there is none.
 pub fn previous_segment_len() -> u32 {
     let Some(data) = text_log_data() else {
@@ -1300,6 +1324,10 @@ fn code_letter(code: u32) -> u8 {
         1 => b'b',
         2 => b'r',
         16..=24 => b'0' + (code - 16) as u8,
+        40 => b'R',
+        41 => b'F',
+        42 => b'C',
+        43 => b'H',
         _ => b'z',
     }
 }
@@ -1310,6 +1338,10 @@ fn letter_code(letter: u8) -> u32 {
         b'b' => 1,
         b'r' => 2,
         b'0'..=b'8' => 16 + (letter - b'0') as u32,
+        b'R' => 40,
+        b'F' => 41,
+        b'C' => 42,
+        b'H' => 43,
         _ => 0,
     }
 }
@@ -1378,7 +1410,7 @@ mod tests {
 
     #[test]
     fn codes_round_trip_through_the_letters() {
-        for code in [1u32, 2, 16, 17, 21, 24] {
+        for code in [1u32, 2, 16, 17, 21, 24, 40, 41, 42, 43] {
             assert_eq!(letter_code(code_letter(code)), code, "code {code}");
         }
     }

@@ -84,6 +84,8 @@ fn field_count(name: &str) -> u32 {
         "prev_boot" => 1,
         "prev_region" => 1,
         "prev_stage" => 1,
+        "prev_probe_retired" => 1,
+        "prev_probe_trb" => 1,
         "fresh_gates" => 7,
         "setup_buffer_word" => 5,
         "response_bytes_word" => 6,
@@ -175,6 +177,31 @@ fn digit_of(name: &str, field: u32) -> u32 {
                 1
             } else {
                 2
+            }
+        }
+        // The probe outcomes, carried across a boot in the durable log. These are the words that
+        // can actually answer what the probe words cannot: they read the *previous* boot's
+        // segment, so the value was written by a boot whose run window had already ended.
+        "prev_probe_retired" => {
+            if crate::blackbox::previous_segment_contains(crate::blackbox::CODE_PROBE_RETIRED) {
+                1
+            } else if crate::blackbox::previous_segment_contains(
+                crate::blackbox::CODE_PROBE_NOT_RETIRED,
+            ) {
+                2
+            } else {
+                3
+            }
+        }
+        "prev_probe_trb" => {
+            if crate::blackbox::previous_segment_contains(crate::blackbox::CODE_PROBE_TRB_CONSUMED) {
+                1
+            } else if crate::blackbox::previous_segment_contains(
+                crate::blackbox::CODE_PROBE_TRB_STILL_OWNED,
+            ) {
+                2
+            } else {
+                3
             }
         }
         "prev_stage" => {

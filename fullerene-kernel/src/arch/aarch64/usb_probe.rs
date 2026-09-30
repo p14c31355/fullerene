@@ -6,6 +6,8 @@
 // the usb tree in has to declare it. This probe binary is one of them; without
 // this line the probe build fails with "cannot find `blackbox` in the crate root"
 // and the harness reports the whole run as `build-or-audit-failure`.
+#[path = "../../adb_wire.rs"]
+mod adb_wire;
 #[path = "../../blackbox.rs"]
 mod blackbox;
 
