@@ -289,6 +289,97 @@ struct StructureProperty {
     value_end: *const u8,
     length: usize,
 }
+/// Compare a NUL-terminated DT string against a byte prefix.
+fn c_string_starts_with(name: *const u8, end: *const u8, prefix: &[u8]) -> bool {
+    let length = (end as usize).saturating_sub(name as usize);
+    if length < prefix.len() {
+        return false;
+    }
+    for (offset, expected) in prefix.iter().enumerate() {
+        let observed = unsafe { core::ptr::read_volatile(name.add(offset)) };
+        if observed != *expected {
+            return false;
+        }
+    }
+    true
+}
+
+/// Find the fixed `reg` range of a `/reserved-memory` child whose node name
+/// begins with `prefix`.
+///
+/// The same walker and the same discipline as `find_reserved_memory_regions()`
+/// - an enabled child of the container that carries a `reg` - plus a name match.
+/// The black box needs that match rather than any reserved range: this device's
+/// `/reserved-memory` also carries modem, PIL and CDSP windows, and being handed
+/// one of those instead of the ramoops region would corrupt memory another
+/// firmware component owns. The stock DTBOs pulled from the phone name the
+/// region `ramoops_region@B7E41000`, so the address is parsed out of the tree the
+/// bootloader handed us instead of being taken from a DTS revision.
+pub fn find_reserved_region_named(address: u64, prefix: &[u8], out: &mut [Region]) -> usize {
+    let mut states = [ReservedMemoryNodeState::new(); 16];
+    let mut named = [false; 16];
+    let mut count = 0usize;
+    let walk_result = walk_structure(address, |event| {
+        match event {
+            StructureEvent::BeginNode {
+                depth,
+                name,
+                name_end,
+            } => {
+                let parent = states[depth - 1];
+                states[depth] = ReservedMemoryNodeState {
+                    address_cells: parent.child_address_cells,
+                    size_cells: parent.child_size_cells,
+                    child_address_cells: parent.child_address_cells,
+                    child_size_cells: parent.child_size_cells,
+                    enabled: true,
+                    reserved_container: c_string_eq(name, name_end, b"reserved-memory"),
+                    reserved_region: parent.reserved_container,
+                    regions: [None; 8],
+                };
+                named[depth] = c_string_starts_with(name, name_end, prefix);
+            }
+            StructureEvent::Property {
+                depth,
+                property: item,
+            } => {
+                let state = &mut states[depth];
+                if c_string_eq(item.name, item.name_end, b"#address-cells") && item.length >= 4 {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_address_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"#size-cells") && item.length >= 4
+                {
+                    if let Some(value) = read_be32(item.value, 0) {
+                        state.child_size_cells = value as u8;
+                    }
+                } else if c_string_eq(item.name, item.name_end, b"status") {
+                    state.enabled = !c_string_eq(item.value, item.value_end, b"disabled");
+                } else if c_string_eq(item.name, item.name_end, b"reg") {
+                    state.regions = read_regions_bounded(
+                        item.value,
+                        item.length,
+                        state.address_cells,
+                        state.size_cells,
+                    );
+                }
+            }
+            StructureEvent::EndNode { depth } => {
+                let state = states[depth];
+                if state.enabled && state.reserved_region && named[depth] {
+                    for region in state.regions.into_iter().flatten() {
+                        if count < out.len() {
+                            out[count] = region;
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    });
+    if walk_result.is_some() { count } else { 0 }
+}
 
 #[derive(Clone, Copy)]
 enum StructureEvent {

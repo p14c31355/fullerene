@@ -283,6 +283,16 @@ extern "C" fn aarch64_exception_sync(frame: *mut Aarch64TrapFrame) {
         return;
     }
     #[cfg(fullerene_aarch64_bramble)]
+    // Bracket stage 12 (selector `usb2-live-pollbracket`): a synchronous
+    // exception was taken. Emitted before the retained-trace marker, before the
+    // UART dump and before `halt()` - all three of which can consume the rest of
+    // the boot without ever returning (there is no reachable UART on this unit,
+    // so the dump path parks and the apps watchdog resets the handset). A fired
+    // stage 12 therefore means the handoff's stop was an exception, not a wait,
+    // and the faulting access is what the handoff's own markers cannot see. See
+    // the bracket contract in `usb/poll.rs`.
+    super::usb::probe_bracket_mark(12);
+    #[cfg(fullerene_aarch64_bramble)]
     super::usb::trace_marker(super::usb::TRACE_EXCEPTION_SYNC, 0);
     #[cfg(fullerene_aarch64_bramble)]
     super::usb::dump_trace();

@@ -36,6 +36,7 @@ mod debug_transport;
 mod endpoint_io;
 mod ep0;
 mod link_recovery;
+mod live_digit_words;
 mod poll;
 mod readout;
 mod runtime;
@@ -518,6 +519,36 @@ static mut ARM_COOLDOWN: u32 = 0;
 static mut LAST_CONTROL_ACTION: u8 = 0;
 static mut DATA_PHASE_PENDING_START: bool = false;
 static mut DATA_PHASE_PENDING_LEN: usize = 0;
+/// Raw DEPCMD word from the *data* phase's STARTTRANSFER (endpoint 1), which the
+/// EP0-only `SETUP_ARM_LAST_COMMAND` latch never sees. `0x8000_0000` means the
+/// command never retired (the bounded poll ran out); otherwise bits 15:12 hold the
+/// command status, and a non-zero status is the controller refusing the transfer -
+/// "no resource" is the fast-fail this project has already seen.
+static mut DATA_PHASE_LAST_COMMAND: u32 = 0xffff_ffff;
+/// Controller state captured at the instant the data phase's STARTTRANSFER is
+/// attempted: (DCTL, DSTS, EP0_SETUP_ARMED, resource index 0, resource index 1,
+/// EP0 DEPCMD, EP1 DEPCMD).
+///
+/// The last two matter most: if EP0's command register still has CMDACT set when the
+/// data phase issues its own command, the controller is still busy with the *setup*
+/// phase's STARTTRANSFER, and a second command cannot be accepted - which is a
+/// self-consistent explanation for a CMDACT that never clears in the second one.
+///
+/// Read *inside* the response path on purpose. Every other reading in this file is
+/// taken later, from the drive, by which time the controller may have moved on - so
+/// they describe a state after the failure rather than the state that caused it.
+static mut DATA_PHASE_SNAPSHOT: [u32; 7] = [0; 7];
+/// The data phase's TRB address under attempt, and the TRB's own words captured at
+/// the moment the command gives up.
+///
+/// The controller writes a status code into the TRB's TRBSTS field when it processes
+/// it (`DWC3_TRB_SIZE_TRBSTS`, bits 31:28 of the size word). Reading that is the only
+/// way to hear the controller say *why* it will not retire the STARTTRANSFER: 4 is a
+/// data buffer error, 5 a transaction error, and so on. It has to be captured inside
+/// the give-up path, because that path is where execution is blocked - nothing after
+/// it ever runs, which is what made this stay invisible.
+static mut DATA_PHASE_TRB_PTR: usize = 0;
+static mut DATA_PHASE_TRB_AFTER: [u32; 2] = [0; 2];
 /// CNTPCT tick of the first successful post-connect Run/Stop (quiet-window
 /// reference; 0 = no start recorded yet).
 static mut RUN_STOP_TICK: u64 = 0;
@@ -848,6 +879,23 @@ fn ep0_trb_index(endpoint: usize) -> usize {
 }
 
 #[inline]
+/// The last control-response bytes, as the controller would have DMA'd them.
+///
+/// The response buffer is a static region, so a late read shows the most recent
+/// response the gadget built - which is the one thing never yet checked: whether
+/// the bytes the device *would* send are the descriptor it should send. Used by
+/// `usb2-live-response-bytes`, which only compares fields, because the readout
+/// transport carries digits, not bytes.
+pub(super) unsafe fn response_bytes() -> [u8; 12] {
+    unsafe {
+        let ptr = ep0_response_ptr();
+        cache_invalidate(ptr as usize, 12);
+        let mut out = [0u8; 12];
+        core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 12);
+        out
+    }
+}
+
 unsafe fn ep0_response_ptr() -> *mut u8 {
     unsafe {
         if DMA_ADOPTED {
@@ -1373,6 +1421,80 @@ pub fn window_deadline_ticks(secs: u64) -> u64 {
 /// the same CX/interconnect/rail votes and the USB30 GDSC that
 /// `park_for_seconds()` uses, at the same 0.5 s cadence, and touch nothing else:
 /// no reset line, no controller register, no endpoint state.
+/// Keep the USB domain powered without spending a delay.
+///
+/// `readout_keepalive_delay_ms` does exactly these two things on every period
+/// while it waits; a polling loop that never calls it (the drive in `poll.rs`)
+/// leaves the controller unpowered after a second or so, which is the shape of
+/// the measured arming failures: an arm issued 600 ms after the pull-up returned
+/// (run 537442) while the same arm at 1.8 s never came back at all (runs 604159
+/// and 610135 both stopped exactly at arm-time + 5.9 s, the watchdog after the
+/// last pet). Exposed so a tight polling loop can stay alive without the delay.
+/// A *short* Run/Stop mark: about 0.27 s low instead of `ccs_pulse`'s 2.2 s.
+///
+/// Measured 2026-09-29: `ccs_pulse(300)` holds Run/Stop low for ~2.24 s because
+/// `readout_keepalive_delay_ms` spends far longer than the milliseconds it is
+/// asked for, so only two marks fit inside a run. The same primitive with a 50 ms
+/// request holds low for ~0.27 s (this is what `bcp_short!` uses), which makes
+/// four or five fields readable in one run. The marks keep the domain alive as
+/// they go, so the run outlives the watchdog while it publishes.
+/// A *medium* Run/Stop mark: ~0.6 s low, distinct from both `short_mark()`'s
+/// ~0.27 s and `ccs_pulse`'s ~2.2 s.
+///
+/// Used as a field terminator when several digits are published in one run: a run
+/// of short marks then a medium one is self-delimiting, which matters because all
+/// marks are ~0.6 s apart otherwise and the fields cannot be told apart afterwards.
+pub(super) unsafe fn medium_mark() {
+    unsafe {
+        let _ = run_stop_device(false);
+        readout_keepalive_delay_ms(120);
+        let _ = run_stop_device(true);
+        readout_keepalive_delay_ms(50);
+    }
+}
+
+pub(super) unsafe fn short_mark() {
+    unsafe {
+        let _ = run_stop_device(false);
+        readout_keepalive_delay_ms(50);
+        let _ = run_stop_device(true);
+        readout_keepalive_delay_ms(50);
+    }
+}
+
+/// The gates `try_arm_setup()` consults before it will issue any command.
+///
+/// Every one of them can make that function return `false` without touching
+/// `SETUP_ARM_FAILURE_STAGE`, which is why an arm can refuse with no recorded
+/// reason: `EP0_STATE != Setup`, `!ENDPOINTS_READY` and `ARM_COOLDOWN != 0` all
+/// return early. Read together they say which one closed the door.
+pub(super) unsafe fn arm_preconditions() -> (u32, bool, bool, u32, u32) {
+    unsafe {
+        let state = match EP0_STATE {
+            Ep0State::Setup => 0,
+            Ep0State::Data => 1,
+            Ep0State::Status => 2,
+        };
+        (
+            state,
+            ENDPOINTS_READY,
+            EP0_SETUP_ARMED,
+            ARM_COOLDOWN,
+            SETUP_ARM_FAILURE_STAGE,
+        )
+    }
+}
+
+pub(super) fn usb_domain_keepalive() {
+    unsafe {
+        let _ = super::platform::bramble::refresh_usb_domain_votes(
+            super::platform::bramble::UsbBusVote::Nominal,
+            true,
+        );
+        let _ = super::platform::bramble::force_enable_usb30_gdsc();
+    }
+}
+
 pub fn readout_keepalive_delay_ms(milliseconds: u64) {
     let frequency = arch_counter_frequency();
     if frequency == 0 {

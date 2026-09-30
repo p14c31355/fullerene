@@ -437,13 +437,13 @@ unsafe fn send_ep_command_result(
     param1: u32,
     param2: u32,
 ) -> Option<u8> {
-    trace_event(
-        TRACE_EP_COMMAND_ISSUE,
-        command,
-        endpoint as u32,
-        param0,
-        param1,
-        param2,
+    // Filled in by the caller's command word below; kept as a single record so a
+    // log read after a reset carries the command that never retired.
+    crate::blackbox::record(
+        crate::blackbox::CODE_USB_DATA_CMD,
+        super::arch_counter(),
+        0,
+        0,
     );
     let mut saved_usb2_config = 0;
     unsafe {
@@ -452,6 +452,40 @@ unsafe fn send_ep_command_result(
         // this in dwc3_send_gadget_ep_cmd(); a Fastboot handoff commonly
         // leaves one or both bits set after tearing down its gadget.
         let command_kind = command & 0x0f;
+        // ENDPOINT NUMBERING, and the A/B that tests it.
+        //
+        // This project numbers endpoints the way the gadget side does, `ep * 2 + dir`,
+        // so EP0-IN is 1. On the controller that is not EP0 at all: DWC3 has a single
+        // physical command block for EP0, number 0 (`DWC3_DEP_BASE(n) = 0xc800 + n*0x10`
+        // in core.h line 151, which is exactly what `dep_reg()` computes), so number 1
+        // is a different endpoint's block entirely. Linux issues *all three* control
+        // phases - setup, data and status - on `dwc->eps[0]`
+        // (`dwc3_ep0_start_trans()` calls `dwc3_send_gadget_ep_cmd(dep, ...)` with the
+        // EP0 dep).
+        //
+        // `usb2-live-ep0-physical` routes EP0's IN-side control-phase commands to
+        // physical endpoint 0 so the two explanations can be told apart; the default
+        // is unchanged. If the data phase's refused STARTTRANSFER is this collision,
+        // the command starts completing here.
+        //
+        // 2026-09-30 06:40 (analysis): the same routing now also applies to
+        // `usb2-live-data-cmd` runs. The blind ep0-physical samples were host-side
+        // only (`-110` twice) and cannot say whether the routed command completed;
+        // the data-cmd word can (its latch + pending flags). Queue labels for the
+        // routed runs are `fix-data-cmd*` / `fix-dirtrb-data-cmd*`; the five earlier
+        // `data-cmd` samples (05:29-06:24) are the no-fix control family.
+        let endpoint = if endpoint == 1
+            && (command_kind == DEPCMD_STARTTRANSFER || command_kind == DEPCMD_ENDTRANSFER)
+            && matches!(
+                option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT"),
+                Some("usb2-live-ep0-physical")
+                    | Some("usb2-live-data-cmd")
+                    | Some("usb2-live-trb-after-ep0")
+            ) {
+            0
+        } else {
+            endpoint
+        };
         if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_cmd_guard)
             || command_kind == DEPCMD_ENDTRANSFER
             || read(DSTS) & DSTS_CONNECTSPD_MASK != DSTS_SUPERSPEED
@@ -521,6 +555,13 @@ unsafe fn send_ep_command_result(
                     SETUP_ARM_LAST_COMMAND = status;
                 }
             }
+            // The data phase runs on endpoint 1, so the EP0 latch above cannot
+            // record why its STARTTRANSFER was refused. Keep that reason here.
+            if endpoint == 1 && command & 0x0f == DEPCMD_STARTTRANSFER {
+                unsafe {
+                    DATA_PHASE_LAST_COMMAND = status;
+                }
+            }
             restore_usb2_command_guard(saved_usb2_config);
             return success.then_some(resource_index);
         }
@@ -553,6 +594,28 @@ unsafe fn send_ep_command_result(
     if endpoint == 0 && command & 0x0f == DEPCMD_STARTTRANSFER {
         unsafe {
             SETUP_ARM_LAST_COMMAND = 0x8000_0000;
+        }
+    }
+    // A timed-out *data-phase* start must be recorded on its own latch. This
+    // `endpoint == 1` test was nested inside the `endpoint == 0` one above, so
+    // it could never run: an EP1 STARTTRANSFER that times out left
+    // `DATA_PHASE_LAST_COMMAND` at `0xffff_ffff` and `usb2-live-data-cmd` would
+    // report "never recorded" for exactly the case the latch exists to name.
+    if endpoint == 1 && command & 0x0f == DEPCMD_STARTTRANSFER {
+        unsafe {
+            DATA_PHASE_LAST_COMMAND = 0x8000_0000;
+            // And capture the TRB's own words here, before anything overwrites them.
+            // The TRBSTS field inside `size` (bits 31:28) is the controller's error code
+            // for the transfer - 4 a data buffer error, 5 a transaction error - and this
+            // give-up path is the only point where the TRB is still intact, because
+            // execution is blocked here and nothing later ever runs.
+            let ptr = DATA_PHASE_TRB_PTR as *const u32;
+            if ptr as usize != 0 {
+                DATA_PHASE_TRB_AFTER = [
+                    core::ptr::read_volatile(ptr.add(3)),
+                    core::ptr::read_volatile(ptr.add(2)),
+                ];
+            }
         }
     }
     log_puts("usb: DWC3 endpoint command timeout\n");
@@ -709,6 +772,13 @@ pub(super) unsafe fn apply_ep0_txfifo_fix() {
 }
 
 pub(super) unsafe fn start_transfer(endpoint: usize, trb: *const Trb) -> bool {
+    // Black box: which endpoint and which TRB the transfer is being started on.
+    crate::blackbox::record(
+        crate::blackbox::CODE_USB_DATA_CMD,
+        super::arch_counter(),
+        endpoint as u64,
+        trb as u64,
+    );
     let address = unsafe { dma_iova_for(trb as usize) };
     unsafe {
         // DWC3's STARTTRANSFER parameters are PAR0=address[63:32] and

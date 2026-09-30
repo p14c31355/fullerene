@@ -981,13 +981,28 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 fullerene_aarch64_usb_gadget_handoff_start_after_reset,
                 fullerene_aarch64_usb_gadget_handoff_start_at_connect_done
             ));
+            // Source order is to arm this TRB *before* `DCTL.RUN_STOP`:
+            // dwc3_gadget_run_stop() -> dwc3_event_buffers_setup() ->
+            // __dwc3_gadget_start() -> dwc3_ep0_out_start() (STARTTRANSFER) ->
+            // DCFG -> DCTL. Keep that order, but record the result instead of
+            // aborting the handoff on failure. Measured 2026-09-29
+            // (`tmp/fullerene-bramble-loop.239624.0`): the abort returned
+            // `fail(12)` before the Run/Stop, so the host saw no attach at all,
+            // which made a failed pre-connect arm indistinguishable from a
+            // handoff that never ran. The post-Run/Stop window issues this same
+            // command, so a failure here now degrades to the deferred profile
+            // instead of taking the device off the bus.
+            let mut pre_connect_armed = true;
             if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
                 // The inter-pair XBL differential armed the setup TRB above.
             } else if defer_initial_setup {
                 PENDING_SETUP_ARM = true;
+                pre_connect_armed = false;
             } else if !start_transfer(0, ep0_trb_ptr(0)) {
-                log_puts("usb gadget handoff: SETUP STARTTRANSFER failed\n");
-                return gadget_handoff_fail(12); // STARTTRANSFER
+                log_puts(
+                    "usb gadget handoff: SETUP STARTTRANSFER failed; the post-Run/Stop arm window will retry\n",
+                );
+                pre_connect_armed = false;
             }
             HANDOFF_MILESTONE = 15;
             // "M15D" - UPSTREAM of every reader. `HANDOFF_MILESTONE` itself is a `static mut`
@@ -1002,7 +1017,10 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             // Linux-equivalent keep-the-TRB path instead of tearing it down and
             // racing the host's first post-reset SETUP token.
             if !cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0) {
-                EP0_SETUP_ARMED = !defer_initial_setup;
+                // Records what the pre-connect STARTTRANSFER above actually did,
+                // so a failed arm leaves the endpoint for the post-Run/Stop
+                // window to retry instead of claiming a live TRB.
+                EP0_SETUP_ARMED = pre_connect_armed;
             }
             if !cfg!(fullerene_aarch64_usb_gadget_handoff_direct)
                 || cfg!(fullerene_aarch64_usb_probe_irq_controller)
@@ -1179,6 +1197,17 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         };
         screen_mark(6); // Run/Stop returned (the host now sees the attach)
         trace_marker(TRACE_PROBE_WATCHDOG, 0x4D41_3241); // "MA2" - Run/Stop returned
+        // DRIVE FIRST. The pull-up is up as of the Run/Stop above, so the host
+        // can start talking at any moment, and `poll()` is the only thing that
+        // consumes the EP0 SETUP buffer or arms EP0 again. Driving the polling
+        // owner here - rather than after this function returns - is what makes
+        // the consumer independent of everything below: measured 2026-09-29, the
+        // handoff does not return at all on this profile (selector
+        // `usb2-live-pollbracket`, stage 8 silent), so nothing after it ever
+        // ran. See `poll.rs` for the window and its cost.
+        if cfg!(fullerene_aarch64_usb_gadget_handoff_start_after_connect) {
+            drive_polling_owner(DRIVE_FIRST_SECS);
+        }
         #[cfg(fullerene_aarch64_usb_hsphy_power_after_runstop)]
         {
             // The normal rail refresh belongs to the PHY reset/init epoch.
@@ -2675,6 +2704,28 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 if advanced {
                     unsafe { ccs_pulse(300) };
                 }
+            } else if selector == "usb2-live-arm-late" {
+                // SILENT ARM. The reading is published by the drive itself, which
+                // runs before this chain: mark A one second after the pull-up,
+                // then a delayed `try_arm_setup()`, then mark B (1 pulse accepted,
+                // 2 refused). This arm only defines the word's behaviour so it
+                // does not fall through to the generic word lookup.
+                let _ = selector;
+            } else if selector == "usb2-live-soffn-after-drive" {
+                // SILENT ARM. The reading is published by the drive itself (it
+                // runs before this chain): one pulse if DSTS SOFFN advanced across
+                // its window, two if it never moved. This arm exists only so the
+                // word's behaviour is defined rather than falling through to the
+                // generic word lookup.
+                let _ = selector;
+            } else if selector == "usb2-live-pollbracket" {
+                // SILENT ARM. The bracket's stages and the drive's own
+                // self-diagnosis all publish on the same CCS channel, so this
+                // selector must not add pulses of its own: with the arm silent,
+                // every pulse in the run is attributable to exactly one bracket
+                // stage or to one drive marker. See `usb/poll.rs`
+                // (`drive_polling_owner`, `probe_bracket_mark`).
+                let _ = selector;
             } else if selector == "usb2-live-halted-count" {
                 // Pulse-count readout: robust to the width distortion seen in
                 // `247041.0`, where a requested 150 ms pulse measured 62 ms.
@@ -2833,6 +2884,15 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // to first-descriptor gap (~5 s). A rejected Start Transfer while
         // the link is not ON is retryable, not a wedge.
         {
+            // MEASURED 2026-09-29: skipping this window for the
+            // `--start-after-connect` profile (which the tail comment of this
+            // function says should return immediately and leave the arm to the
+            // polling owner) moved the handoff's stop from inside
+            // `try_arm_setup()` to just after the deferred DEVTEN write, but the
+            // handoff still never returned and the host's `-110` was unchanged.
+            // The skip is therefore NOT a fix and the window is kept as it was.
+            // The window is instrumented, not skipped: see the bracket stages in
+            // `usb/poll.rs`.
             let arm_window_ms = if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_long_setup_arm) {
                 10_000
             } else if cfg!(fullerene_aarch64_usb_gadget_handoff_usb2_extended_setup_arm) {
@@ -2873,6 +2933,10 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             let mut bc3_iter: u32 = 0;
             screen_mark(8); // EP0 arm window entered
             bc3it!(0, 0); // the loop is about to be entered
+            // Bracket stage 1: the arm window is about to run. A silent stage 1
+            // means the handoff stopped before the loop - in the readout dispatch
+            // above or in the Run/Stop readback.
+            probe_bracket_mark(1);
             while arch_counter() < arm_deadline && !EP0_SETUP_ARMED {
                 let _ = try_arm_setup();
                 bc3it!(bc3_iter, 1); // try_arm_setup() returned on this iteration
@@ -2911,6 +2975,11 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 }
             }
             bc3it!(3, 3); // the loop exited (slot 15)
+            // Bracket stage 2: the arm window exited. The statements inside the
+            // window are deliberately not instrumented in this chain (their own
+            // result is in the evidence ledger); add marks there, renumbered,
+            // to bisect the window itself.
+            probe_bracket_mark(2);
             // Keep the arm-status readout meaningful on the direct reuse
             // path as well as on the fallback recovery path.  The latter
             // already records 0/8 in u0_arm_recovery(), but direct handoff
@@ -2943,6 +3012,9 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
                 // publish device-event interrupts before that STARTTRANSFER
                 // has actually armed the EP0 OUT TRB.
                 write(DEVTEN, direct_gadget_devten());
+                // Bracket stage 3: the deferred DEVTEN write returned. A silent
+                // stage 3 with stage 2 fired puts the stop on that MMIO write.
+                probe_bracket_mark(3);
             }
         }
         // "M21D" / milestone 21 - the EP0 arm window (400 ms default) completed.
@@ -2961,6 +3033,8 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         HANDOFF_MILESTONE = 21;
         trace_marker(TRACE_PROBE_WATCHDOG, 0x4D32_3144); // "M21D"
         unsafe { trace::SHARED_POST_HANDOFF = 21 };
+        // Bracket stage 4: milestone 21 and its retained-trace marker returned.
+        probe_bracket_mark(4);
         #[cfg(fullerene_aarch64_usb_ep0_signal_probe)]
         if option_env!("FULLERENE_USB_SIGNAL_DMA_POST_RUNSTOP") == Some("1") {
             // Run/Stop returns before the host's attach debounce reaches U0.
@@ -2972,6 +3046,8 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             );
         }
         unsafe { trace::SHARED_POST_HANDOFF = 22 };
+        // Bracket stage 5: the post-runstop signal block returned.
+        probe_bracket_mark(5);
         // Final boundary marker; like the other CCS breadcrumbs it is a Run/Stop actuator.
         // Count only usbmon CCS transitions with valid rows and a same-regime control; attach-log
         // lines do not count individual pulses once enumeration starts. A silent pulse remains
@@ -2985,6 +3061,8 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             unsafe { ccs_pulse(300) };
         }
         unsafe { gate_flow_blip() }; // flow-map B4: final Run/Stop readback done
+        // Bracket stage 6: `gate_flow_blip()` returned.
+        probe_bracket_mark(6);
         if stop_after_gadget_handoff_stage(7) {
             return false;
         }
@@ -3008,6 +3086,10 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
         // this is intentionally a no-op in the state machine, but it must
         // not block EP0 testing.
         note_runtime_event(super::super::platform::bramble::UsbRuntimeEvent::ControllerStarted);
+        // Bracket stage 7: the handoff is about to return. This is the only
+        // statement that proves the call *returns*; `HANDOFF_MILESTONE` can read
+        // 21 while an un-petted wait inside never comes back.
+        probe_bracket_mark(7);
         return true;
     }
 }

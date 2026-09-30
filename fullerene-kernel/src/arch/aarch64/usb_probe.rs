@@ -1,6 +1,13 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+// The black box lives at the package's `src/` root and is referred to from
+// `usb/live_digit_words.rs` as `crate::blackbox`, so every crate root that pulls
+// the usb tree in has to declare it. This probe binary is one of them; without
+// this line the probe build fails with "cannot find `blackbox` in the crate root"
+// and the harness reports the whole run as `build-or-audit-failure`.
+#[path = "../../blackbox.rs"]
+mod blackbox;
 
 use core::{
     alloc::{GlobalAlloc, Layout},
@@ -2900,6 +2907,12 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
         usb::init_usb2_handoff()
     };
     usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x494E_4146); // "INAF"
+    // Bracket stage 8 (selector `usb2-live-pollbracket`): the handoff call
+    // returned. Emitted before every gate between here and
+    // `run_ep0_signal_probe`, so a silent stage 8 (with stage 7 fired inside the
+    // handoff) means the call never came back. The bracket contract lives in
+    // `usb/poll.rs`.
+    usb::probe_bracket_mark(8);
     // Preserve direct-only failure attribution: no signal rescue or bare
     // pull-up publication after the selected initializer returned false.
     // "PSTA" stage markers into the retained trace so they are crate-independent.

@@ -9,3 +9,4 @@ extern crate alloc;
 
 #[cfg(all(target_arch = "xtensa", feature = "esp32"))]
 pub mod arch;
+pub mod blackbox;

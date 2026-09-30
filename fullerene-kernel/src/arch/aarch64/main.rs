@@ -98,7 +98,102 @@ fn make_boot_info(platform: BootPlatform, dtb_address: Option<u64>) -> BootInfo 
                 info.memory_map_size = (count * core::mem::size_of::<fdt::Region>()) as u64;
                 info.memory_map_descriptor_size = core::mem::size_of::<fdt::Region>() as u64;
             }
+
+            // Claim the black box region for this boot.
+            //
+            // Base and length come from the tree the bootloader actually handed
+            // us, matched by node name, and are never assumed: the box writes
+            // across a reboot, and this device's `/reserved-memory` also holds
+            // modem, PIL and CDSP windows, so being handed the wrong range would
+            // be a silent corruption of memory another component owns. If the
+            // name is absent the box simply stays disabled - its readout word
+            // reports that, rather than reporting a zero that would read as
+            // "nothing was recorded".
+            let mut reserved = [fdt::Region { base: 0, size: 0 }; 8];
+            // The ring's home is `ramoops_meta_region`, and it is deliberately a
+            // *within-boot* instrument: this region does not keep its contents across a
+            // reboot. The cross-boot copy of the sequence is the durable text log in the
+            // ramoops pmsg zone, which is where the measurement said persistence actually
+            // is.
+            let found = unsafe {
+                fdt::find_reserved_region_named(
+                    address,
+                    b"ramoops_meta_region",
+                    core::slice::from_raw_parts_mut(reserved.as_mut_ptr(), reserved.len()),
+                )
+            };
+            for region in reserved[..found.min(reserved.len())].iter() {
+                // The ring needs the header plus at least one record; asking for 4 KiB beyond
+                // the offset was wrong and rejected the very region it is pinned to (the meta
+                // region is exactly 0x1000, so `0x100 + 4096` never passed). The requirement
+                // lives in the module so the two cannot drift apart again.
+                if region.base == 0 || region.size < crate::blackbox::RING_MIN_BYTES {
+                    continue;
+                }
+                if crate::blackbox::init(region.base, region.size) {
+                    // arg0 carries the boot number this record belongs to, so a
+                    // *later* boot can read the ring and tell "this one is mine"
+                    // from "this one is the previous boot's". Without that, a
+                    // record that survived and a record written twice inside one
+                    // boot look identical - which is exactly the confusion the
+                    // first device run produced.
+                    crate::blackbox::record(
+                        crate::blackbox::CODE_BOOT,
+                        0,
+                        crate::blackbox::boots() as u64,
+                        region.base,
+                    );
+                    crate::blackbox::record(
+                        crate::blackbox::CODE_DT_RESERVED_REGION,
+                        0,
+                        region.size,
+                        found as u64,
+                    );
+                    // Only stop once a region has actually been claimed. The lookup is a prefix
+                    // match on the node name, so it returns every candidate and `init` rejects
+                    // the ones whose address is not the one this build was told about.
+                    break;
+                }
+            }
         }
+
+        // Arm the Android-readable mirror.
+        //
+        // Same discipline as the ring: the names are looked up in the tree the bootloader
+        // handed us and the base each resolves to is checked against the address this
+        // device's memory DTBO documents, so a renamed or moved region disables the mirror
+        // instead of writing into memory another component owns. Note that
+        // `alt_ramoops_region` contains `ramoops_region` as a substring, so both lookups can
+        // return the same region; the address check is what keeps them apart.
+        //
+        // This is the route that makes the box readable. The ramoops console zone is memory
+        // Android's own pstore driver reads after the next boot and presents as a file, and
+        // `adb` can read that file. Getting our records out through someone else's reader is
+        // what "readable" turned out to mean on this device, since our own ring does not
+        // survive the reboot.
+        let mut ramoops = [fdt::Region { base: 0, size: 0 }; 4];
+        let primary_found = unsafe {
+            fdt::find_reserved_region_named(
+                address,
+                b"ramoops_region",
+                core::slice::from_raw_parts_mut(ramoops.as_mut_ptr(), ramoops.len()),
+            )
+        };
+        for region in ramoops[..primary_found.min(ramoops.len())].iter() {
+            crate::blackbox::init_pstore(region.base, region.size);
+        }
+        let mut alternate = [fdt::Region { base: 0, size: 0 }; 4];
+        let alt_found = unsafe {
+            fdt::find_reserved_region_named(
+                address,
+                b"alt_ramoops_region",
+                core::slice::from_raw_parts_mut(alternate.as_mut_ptr(), alternate.len()),
+            )
+        };
+        for region in alternate[..alt_found.min(alternate.len())].iter() {
+            crate::blackbox::init_pstore_alt(region.base, region.size);
+        }
+        crate::blackbox::publish_console();
     }
     info
 }
