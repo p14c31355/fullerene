@@ -1240,6 +1240,10 @@ enum Platform {
     QemuVirt,
     #[value(name = "bramble")]
     Bramble,
+    /// Huawei P20 Lite (ANE-LX2J, Kirin 659): a real handset whose loader
+    /// consumes an Android v0 boot image and hands over its own device tree.
+    #[value(name = "ane")]
+    AneLx2j,
     #[value(name = "esp32-xh32s")]
     Esp32Xh32S,
 }
@@ -1282,7 +1286,10 @@ impl Platform {
     fn qemu_binary(self) -> &'static str {
         match self {
             Self::PcUefi => "qemu-system-x86_64",
-            Self::QemuVirt | Self::Bramble => "qemu-system-aarch64",
+            // ANE is real hardware; these three helpers only matter if someone
+            // asks for a QEMU run anyway, in which case the generic ARM virt
+            // machine is the least surprising target.
+            Self::QemuVirt | Self::Bramble | Self::AneLx2j => "qemu-system-aarch64",
             Self::Esp32Xh32S => "",
         }
     }
@@ -1290,7 +1297,7 @@ impl Platform {
     fn qemu_machine(self) -> &'static str {
         match self {
             Self::PcUefi => "q35,usb=off,pcspk-audiodev=speaker",
-            Self::QemuVirt => "virt,gic-version=3",
+            Self::QemuVirt | Self::AneLx2j => "virt,gic-version=3",
             Self::Bramble => "bramble",
             Self::Esp32Xh32S => "esp32",
         }
@@ -1299,8 +1306,7 @@ impl Platform {
     fn qemu_cpu(self) -> &'static str {
         match self {
             Self::PcUefi => "qemu64,+smap,+invtsc",
-            Self::QemuVirt => "cortex-a72",
-            Self::Bramble => "cortex-a72",
+            Self::QemuVirt | Self::Bramble | Self::AneLx2j => "cortex-a72",
             Self::Esp32Xh32S => "esp32",
         }
     }
@@ -1311,6 +1317,7 @@ impl Platform {
             (Arch::X86_64, Self::PcUefi)
                 | (Arch::Aarch64, Self::QemuVirt)
                 | (Arch::Aarch64, Self::Bramble)
+                | (Arch::Aarch64, Self::AneLx2j)
                 | (Arch::Xtensa, Self::Esp32Xh32S)
         );
         if !valid_pair {
@@ -4104,6 +4111,7 @@ fn build_aarch64_kernel(
         match platform {
             Platform::Bramble => "bramble",
             Platform::QemuVirt => "qemu-virt",
+            Platform::AneLx2j => "ane",
             Platform::Esp32Xh32S => "esp32-xh32s",
             Platform::PcUefi => "pc-uefi",
         }

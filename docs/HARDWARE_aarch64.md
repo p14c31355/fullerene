@@ -9,6 +9,9 @@ bootloader unlocked in software on 2026-10-02. The unlock procedure and the boot
 contract that device exposes are documented separately:
 [ANE-LX2J bootloader unlock](ANE_LX2J_BOOTLOADER_UNLOCK_20261002.md) ·
 [日本語版](ANE_LX2J_BOOTLOADER_UNLOCK_20261002.ja.md).
+The port built on top of it (platform `ane`, the ramoops observation window, the
+boot ladder and the device scripts) is in [ANE-LX2J port](ANE_LX2J_PORT.md) ·
+[日本語版](ANE_LX2J_PORT.ja.md).
 
 ## Target and safety boundary
 

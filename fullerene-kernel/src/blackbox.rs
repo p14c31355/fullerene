@@ -83,7 +83,16 @@ pub const BLACKBOX_OFFSET: u64 = 0x100;
 pub const RING_MIN_BYTES: u64 = BLACKBOX_OFFSET + HEADER_BYTES as u64 + RECORD_BYTES as u64;
 
 /// Base of the ramoops region, which is where the console mirror goes.
+///
+/// Bramble's value is from its memory DTBO (`ramoops_region@B7E41000`). The
+/// ANE-LX2J is a different board whose tree carries a ramoops node of its own:
+/// `/ramoops` over `/reserved-memory/pstore-mem @ 0x34800000`, size 0x100000,
+/// with `record-size = 0x20000`, `console-size = 0x80000`, `pmsg-size = 0x20000`.
+#[cfg(not(fullerene_aarch64_ane))]
 pub const RAMOOPS_REGION_BASE: u64 = 0xb7e4_1000;
+/// See the pair above; the ANE-LX2J window comes from its own device tree.
+#[cfg(fullerene_aarch64_ane)]
+pub const RAMOOPS_REGION_BASE: u64 = 0x3480_0000;
 
 /// Base of the alternate ramoops region (`alt_ramoops_region@B8241000` in this device's
 /// memory DTBO, size 0x400000). Android's ramoops can be switched to it at runtime with the
@@ -97,7 +106,13 @@ pub const RAMOOPS_ALT_REGION_BASE: u64 = 0xb824_1000;
 /// console zone starts at 20 x 0x20000 = 0x280000. Kept separate from
 /// `BLACKBOX_OFFSET` because they serve different readers: the record ring is for
 /// our own dump path, this one is what Android's pstore will show.
+#[cfg(not(fullerene_aarch64_ane))]
 pub const CONSOLE_ZONE_OFFSET: u64 = 0x28_0000;
+/// ANE-LX2J: the same formula over its tree's sizes gives
+/// `dump_mem_sz = 0x100000 - 0x80000 - 0 - 0x20000 = 0x60000`, i.e. three
+/// record slots of 0x20000 precede the console zone.
+#[cfg(fullerene_aarch64_ane)]
+pub const CONSOLE_ZONE_OFFSET: u64 = 0x6_0000;
 
 /// Linux's `struct persistent_ram_buffer` header: `sig`, `start`, `size`, then
 /// data (`fs/pstore/ram_core.c:32-37`). The zone's validity condition is
@@ -112,9 +127,17 @@ const CONSOLE_ZONE_SIG: u32 = PRZ_SIG_XOR;
 /// `lito-redbull-common.dtsi`). A region is only mirrored if it can hold the whole
 /// zone: `dump_mem_sz = size - console_size - ftrace_size - pmsg_size` puts the
 /// console zone at 0x280000, so the region must be at least 0x380000 long.
+#[cfg(not(fullerene_aarch64_ane))]
 const CONSOLE_ZONE_BYTES: u64 = 0x10_0000;
+/// ANE-LX2J: `console-size = <0x80000>` in its tree.
+#[cfg(fullerene_aarch64_ane)]
+const CONSOLE_ZONE_BYTES: u64 = 0x8_0000;
 /// Bytes of the pmsg zone, from this device's DT (`pmsg-size = <0x80000>`).
+#[cfg(not(fullerene_aarch64_ane))]
 const PMSG_ZONE_BYTES: u64 = 0x8_0000;
+/// ANE-LX2J: `pmsg-size = <0x20000>` in its tree.
+#[cfg(fullerene_aarch64_ane)]
+const PMSG_ZONE_BYTES: u64 = 0x2_0000;
 
 /// The smallest region this module may be handed: it must contain the *whole* pmsg zone,
 /// because the durable log is appended through `PMSG_ZONE_OFFSET + PMSG_ZONE_BYTES`. The
@@ -191,6 +214,11 @@ const CACHE_LINE: usize = 64;
 /// Event codes. Keep them stable: a recorded log outlives the code that wrote it.
 pub const CODE_BOOT: u32 = 1;
 pub const CODE_DT_RESERVED_REGION: u32 = 2;
+/// The ANE-LX2J's first record of a boot, written by `mark_entry` before the
+/// console exists. Its letter is 'E': seeing it in the durable log is what
+/// separates "the loader entered us and the early bring-up died" from "the
+/// loader never entered us", which nothing else on that board can report.
+pub const CODE_ANE_ENTRY: u32 = 64;
 pub const CODE_USB_STAGE: u32 = 16;
 pub const CODE_USB_PHY_ENTER: u32 = 17;
 pub const CODE_USB_PHY_LEAVE: u32 = 18;
@@ -876,7 +904,12 @@ const TEXT_LOG_MAX: u32 = 0x7_0000;
 /// nothing on either side writes it during an ordinary boot (it is a channel for userspace,
 /// `/dev/pmsg0`, and Android's ramoops only reads it), so our bytes are not overwritten by
 /// someone else's.
+#[cfg(not(fullerene_aarch64_ane))]
 pub const PMSG_ZONE_OFFSET: u64 = 0x38_0000;
+/// ANE-LX2J: the console zone (0x60000) plus its size (0x80000). The zone is
+/// again the last in the window, and again 0x100000 - 0xE0000 = 0x20000 wide.
+#[cfg(fullerene_aarch64_ane)]
+pub const PMSG_ZONE_OFFSET: u64 = 0xE_0000;
 
 /// Append one record to the durable text log, and keep the zone header consistent with it.
 ///
@@ -925,6 +958,29 @@ pub fn open_text_segment() -> u32 {
         append_text_byte(zone, b':');
     }
     ordinal
+}
+
+/// The ANE-LX2J pstore window as its device tree declares it: three dmesg
+/// record slots of 0x20000, a 0x80000 console zone and a 0x20000 pmsg zone,
+/// end to end inside the 0x100000 reservation.
+#[cfg(fullerene_aarch64_ane)]
+const ANE_PSTORE_WINDOW: u64 = 0x10_0000;
+
+/// The ANE-LX2J's first durable mark of a boot, written before any device
+/// register is touched.
+///
+/// It takes the compiled-in window rather than a tree lookup on purpose: this
+/// runs before the DTB is parsed, so a boot that dies during early bring-up -
+/// the first UART write is the first device access of the whole boot - still
+/// leaves an entry record behind for the next boot to read. `init_pstore`
+/// still enforces the window, so a build for another board cannot write here
+/// by accident.
+#[cfg(fullerene_aarch64_ane)]
+pub fn mark_entry() {
+    if init_pstore(RAMOOPS_REGION_BASE, ANE_PSTORE_WINDOW) {
+        open_text_segment();
+        append_text_log(CODE_ANE_ENTRY);
+    }
 }
 
 /// The durable log's bytes, or `None` when the zone is not armed or its length is nonsense.
@@ -1119,10 +1175,19 @@ pub fn pmsg_probe_digits() -> [u32; 4] {
 /// Header last, so a reader that arrives mid-write sees either the previous consistent
 /// state or this one, never a `size` that points at bytes not yet written. `size` is the
 /// byte count of the text and `start` stays 0, which satisfies the validity test the
-/// driver applies (`size <= zone_size && start <= size`, `ram_core.c:556-566`); the stored
+/// driver applies (`size <= buffer_size && start <= size`, where `buffer_size` is the
+/// zone's size minus the header - `ram_core.c:521,562-563`); the stored
 /// signature is the value the driver passes for these zones, 0, xored with
 /// `PERSISTENT_RAM_SIG` (`ram_core.c:553`, `ram.c:1067`).
 fn write_pstore_zone(zone: u64, data: &[u8]) {
+    // The mirror is held to the same capacity bound as the durable log, so the two writers
+    // cannot drift apart: `size` counts data bytes and must not exceed the zone's capacity,
+    // or the driver calls the zone invalid and zaps it (`ram_core.c:562-563`). Every caller
+    // today passes a buffer far smaller than a zone, which is exactly why the check belongs
+    // here rather than in the caller's arithmetic.
+    if data.len() as u64 + PRZ_HEADER_BYTES as u64 > CONSOLE_ZONE_BYTES {
+        return;
+    }
     unsafe {
         for (offset, byte) in data.iter().enumerate() {
             core::ptr::write_volatile(
@@ -1377,17 +1442,38 @@ pub fn previous_boot_status() -> u32 {
     }
 }
 
+/// The largest `size` a pmsg zone of `zone_bytes` may hold: its data capacity,
+/// `zone_size - sizeof(struct persistent_ram_buffer)` (`fs/pstore/ram_core.c:521`),
+/// with `TEXT_LOG_MAX` as the tighter cap on Bramble's larger zone.
+///
+/// Named so both geometries can be tested from one host build: this build's own
+/// constants bind on the device, and the *other* platform's zone size can be
+/// passed in a unit test even though only one set of constants is compiled.
+const fn text_log_capacity(zone_bytes: u64) -> u32 {
+    let capacity = zone_bytes - PRZ_HEADER_BYTES as u64;
+    if capacity < TEXT_LOG_MAX as u64 {
+        capacity as u32
+    } else {
+        TEXT_LOG_MAX
+    }
+}
+
 /// Append one byte to the log and keep the zone's Linux header consistent with it.
 ///
 /// The zone's `size` is the length of this log and `start` stays 0, so the driver's validity
-/// tests (`size <= zone_size`, `start <= limit`) hold at every point and Android's ramoops
+/// tests hold at every point (`size <= buffer_size` and `start <= size`, where `buffer_size` is
+/// the zone's size minus the header - `fs/pstore/ram_core.c:521,562-563`) and Android's ramoops
 /// keeps the zone instead of re-initialising it - which is what the earlier attempt got wrong
 /// when it wrote the ring here without a valid header.
 fn append_text_byte(zone: u64, byte: u8) {
     let size = read_u32(zone + 8);
-    // Bounded by the zone's own size, which `init_pstore` refuses to accept unless the region
-    // covers all of it, and by TEXT_LOG_MAX which is smaller still.
-    if size >= TEXT_LOG_MAX || (PMSG_ZONE_BYTES as u32) < size + 1 {
+    // The bound that matters is the zone's *data capacity*, not its nominal size: the append
+    // writes at `header + size`, and Linux calls the buffer invalid as soon as `size` exceeds
+    // `zone_size - sizeof(struct persistent_ram_buffer)` (`ram_core.c:521`, checked at
+    // `:562-563`). Twelve bytes past that the write both leaves the zone - and the pmsg zone is
+    // the *last* one in the window, so it would leave the reserved region itself - and reads as
+    // invalid to Android, which zaps precisely the log this exists to preserve.
+    if size >= text_log_capacity(PMSG_ZONE_BYTES) {
         return;
     }
     unsafe {
@@ -1430,6 +1516,7 @@ fn code_letter(code: u32) -> u8 {
         41 => b'F',
         42 => b'C',
         43 => b'H',
+        64 => b'E',
         _ => b'z',
     }
 }
@@ -1444,6 +1531,7 @@ fn letter_code(letter: u8) -> u32 {
         b'F' => 41,
         b'C' => 42,
         b'H' => 43,
+        b'E' => 64,
         _ => 0,
     }
 }
@@ -1458,8 +1546,9 @@ mod tests {
     //! cases that were ambiguous on the device can be asserted here instead.
 
     use super::{
-        code_letter, letter_code, previous_segment_range, segment_count, segment_record_bytes,
-        stamp_prefix, write_number, write_text,
+        append_text_byte, code_letter, letter_code, previous_segment_range, read_u32,
+        segment_count, segment_record_bytes, stamp_prefix, text_log_capacity, write_number,
+        write_text, write_u32, PMSG_ZONE_BYTES, PRZ_HEADER_BYTES, TEXT_LOG_MAX,
     };
 
     /// The previous segment's record bytes, copied into a fixed array: this crate is no_std,
@@ -1507,6 +1596,63 @@ mod tests {
         assert_eq!(write_text(&mut out, 0, b"abcdef"), 4);
         assert_eq!(&out, b"abcd");
         assert_eq!(write_text(&mut out, 3, b"xy"), 1);
+    }
+
+    /// The capacity each platform's pmsg zone gets, checked from one host build.
+    #[test]
+    fn the_text_log_capacity_matches_each_platform_zone() {
+        // The ANE-LX2J's `/ramoops` pmsg-size is 0x20000, well under TEXT_LOG_MAX, so the zone's
+        // own capacity is what binds there.
+        assert_eq!(
+            text_log_capacity(0x2_0000),
+            0x2_0000 - PRZ_HEADER_BYTES as u32,
+            "ANE-LX2J pmsg zone"
+        );
+        // Bramble's is 0x80000, where TEXT_LOG_MAX is the tighter cap.
+        assert_eq!(text_log_capacity(0x8_0000), TEXT_LOG_MAX, "Bramble pmsg zone");
+    }
+
+    /// `append_text_byte` must refuse to grow the log past the zone's data capacity.
+    ///
+    /// The driver's validity test is `size <= buffer_size` where `buffer_size` is the zone's
+    /// size minus the header (`fs/pstore/ram_core.c:521`, checked at `:562-563`). A size past
+    /// that is declared invalid and the zone is zapped, and because the append writes at
+    /// `header + size`, it also leaves the zone - the last one in the window, so it would leave
+    /// the reserved region.
+    #[test]
+    fn the_append_stops_at_the_pmsg_zone_capacity() {
+        // The zone header is read and written as u32s, so the mock buffer has to be at least
+        // 4-byte aligned - a plain `[u8; N]` static is 1-byte aligned and the volatile writes
+        // would violate their alignment precondition (measured: the test aborted).
+        #[repr(align(8))]
+        struct AlignedZone([u8; PMSG_ZONE_BYTES as usize]);
+        static mut ZONE: AlignedZone = AlignedZone([0; PMSG_ZONE_BYTES as usize]);
+        let zone = unsafe { core::ptr::addr_of_mut!(ZONE.0) } as u64;
+        let cap = text_log_capacity(PMSG_ZONE_BYTES);
+        let last = zone + PRZ_HEADER_BYTES as u64 + cap as u64 - 1;
+
+        // One byte below the cap: the append is taken and lands on the last usable byte.
+        write_u32(zone + 8, cap - 1);
+        append_text_byte(zone, b'x');
+        unsafe {
+            assert_eq!(read_u32(zone + 8), cap, "a byte of room must be used");
+            assert_eq!(
+                core::ptr::read_volatile(last as *const u8),
+                b'x',
+                "the byte lands on the last usable byte"
+            );
+        }
+
+        // At the cap: refused, and nothing moves.
+        append_text_byte(zone, b'y');
+        unsafe {
+            assert_eq!(read_u32(zone + 8), cap, "a full zone must not grow");
+            assert_eq!(
+                core::ptr::read_volatile(last as *const u8),
+                b'x',
+                "the refused byte must not have landed"
+            );
+        }
     }
 
     #[test]

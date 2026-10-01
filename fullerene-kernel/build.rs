@@ -381,6 +381,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_pdc)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_smmu)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_bramble)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_ane)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_entry_halt_probe)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_pullup_probe)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_halt_probe)");
@@ -439,6 +440,9 @@ fn main() {
         fs::write(&linker_script, aarch64_linker_script(&platform)).unwrap();
         if platform == "bramble" {
             println!("cargo:rustc-cfg=fullerene_aarch64_bramble");
+        }
+        if platform == "ane" {
+            println!("cargo:rustc-cfg=fullerene_aarch64_ane");
         }
         if env::var_os("FULLERENE_AARCH64_USB_PULLUP_PROBE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_pullup_probe");
@@ -2358,6 +2362,15 @@ fn aarch64_linker_script(platform: &str) -> String {
         // text offset is 0x80000, and the generated 64-byte Image header is
         // immediately before the Rust payload.
         "0x80080040"
+    } else if platform == "ane" {
+        // ANE-LX2J (Kirin 659): the LK's Android boot image header says
+        // `kernel_addr = 0x00480000`, i.e. the decompressed Image is placed
+        // there and entered at its first byte. The generated 64-byte header
+        // occupies 0x00480000..0x00480040, so the Rust payload links at
+        // 0x00480040. The image stays position independent; this value only
+        // has to match what the entry stub computes the relocation delta
+        // against (see `entry::LINK_ENTRY`).
+        "0x00480040"
     } else {
         "0x42000040"
     };

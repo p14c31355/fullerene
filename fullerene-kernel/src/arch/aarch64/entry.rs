@@ -140,7 +140,9 @@ fn zero_bss() {
 
 #[cfg(fullerene_aarch64_bramble)]
 const LINK_ENTRY: usize = 0x8008_0040;
-#[cfg(not(fullerene_aarch64_bramble))]
+#[cfg(fullerene_aarch64_ane)]
+const LINK_ENTRY: usize = 0x0048_0040;
+#[cfg(not(any(fullerene_aarch64_bramble, fullerene_aarch64_ane)))]
 const LINK_ENTRY: usize = 0x4200_0040;
 
 /// Apply the small relocation set emitted by the static-PIE linker.

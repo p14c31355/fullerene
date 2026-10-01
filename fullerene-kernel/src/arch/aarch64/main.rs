@@ -172,10 +172,21 @@ fn make_boot_info(platform: BootPlatform, dtb_address: Option<u64>) -> BootInfo 
         // what "readable" turned out to mean on this device, since our own ring does not
         // survive the reboot.
         let mut ramoops = [fdt::Region { base: 0, size: 0 }; 4];
+        // The reserved-memory node carrying the ramoops window is named per
+        // platform: Bramble's trees call it `ramoops_region`, while the
+        // ANE-LX2J tree calls it `pstore-mem` and points at it from its
+        // `/ramoops` node by phandle. The address check inside `init_pstore`
+        // is what still decides whether the region found is the one this
+        // build was told about.
+        let primary_name: &[u8] = if cfg!(fullerene_aarch64_ane) {
+            b"pstore-mem"
+        } else {
+            b"ramoops_region"
+        };
         let primary_found = unsafe {
             fdt::find_reserved_region_named(
                 address,
-                b"ramoops_region",
+                primary_name,
                 core::slice::from_raw_parts_mut(ramoops.as_mut_ptr(), ramoops.len()),
             )
         };
@@ -208,13 +219,27 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     let fdt_arg2 = boot.x2 as u64;
     let arg3 = boot.x3 as u64;
 
+    // First durable mark, ahead of every device access this boot performs.
+    //
+    // The ANE-LX2J has no console an outside observer can read, so the only
+    // channel a failed bring-up leaves behind is reserved RAM (its device tree
+    // carries a ramoops window; see `crate::blackbox`). Writing the mark before
+    // the UART - the first register write of the whole boot - is what lets a
+    // later boot tell "the loader entered us and the early bring-up died" from
+    // "the loader never entered us": an entry record exists, or nothing does.
+    #[cfg(fullerene_aarch64_ane)]
+    crate::blackbox::mark_entry();
+
     // Establish a compiled-in console before looking at any bootloader
     // pointer. A vendor trampoline can hand us an invalid or absent DTB;
     // touching that address before VBAR and UART are ready turns a useful
     // handoff failure into an invisible synchronous abort.
     let compiled_bramble = cfg!(fullerene_aarch64_bramble);
+    let compiled_ane = cfg!(fullerene_aarch64_ane);
     let early_uart_base = if compiled_bramble {
         platform::bramble::UART_BASE
+    } else if compiled_ane {
+        platform::ane::UART_BASE
     } else {
         platform::qemu_virt::UART_BASE
     };
@@ -286,7 +311,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         .into_iter()
         .filter(|address| *address != 0 && *address % 8 == 0)
         .find(|address| fdt::inspect(*address).is_some())
-        .or_else(|| (!compiled_bramble).then_some(platform::qemu_virt::DTB_BASE));
+        // A compiled-in fallback exists only for QEMU virt, which places the
+        // DTB at a fixed address on its direct `-kernel` path. Bramble and the
+        // ANE-LX2J LK both supply theirs in x0, and on those a fallback would
+        // point into unrelated peripheral space rather than RAM.
+        .or_else(|| (!compiled_bramble && !compiled_ane).then_some(platform::qemu_virt::DTB_BASE));
     let qcom_uart = dtb_address.and_then(|address| {
         fdt::find_compatible(address, b"qcom,geni-debug-uart")
             .or_else(|| fdt::find_compatible(address, b"qcom,geni-uart"))
