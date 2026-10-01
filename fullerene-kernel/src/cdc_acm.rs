@@ -139,6 +139,56 @@ pub fn line_coding_rate(payload: &[u8]) -> Option<u32> {
     Some(u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]))
 }
 
+/// What the caller should do with a setup packet, in terms the EP0 path already speaks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Send `length` bytes that have been written into the response buffer.
+    DataIn(usize),
+    /// Ours, but not answerable yet: `SET_LINE_CODING` carries a host-to-device data stage that no
+    /// path here can arm. Stalling is the honest failure; see `handle` for why silence is worse.
+    Unsupported,
+    /// Set (or clear) DTR. The caller latches it; the port being open is what it means.
+    Dtr(bool),
+    /// Not a CDC-ACM request; let the ordinary path have it.
+    NotOurs,
+}
+
+/// Handle one setup packet for this function, writing any reply into `response`.
+///
+/// This is the whole class-request surface in one place: three requests, and getting any of them
+/// wrong makes the host's `open()` fail *after* it has already enumerated us successfully, which is
+/// the least debuggable place to fail. So it is a pure function of the packet, with tests.
+///
+/// `packet` is the eight setup bytes as they arrive: bmRequestType, bRequest, wValue (little
+/// endian), wIndex, wLength (little endian).
+pub fn handle(packet: &[u8; 8], response: &mut [u8]) -> Action {
+    let request_type = packet[0];
+    let request = packet[1];
+    let value = u16::from_le_bytes([packet[2], packet[3]]);
+    let requested = u16::from_le_bytes([packet[6], packet[7]]) as usize;
+    // Only interface-targeted class requests belong here. A request to the device or to another
+    // interface is somebody else's, and answering it would be worse than ignoring it.
+    if packet[4] != CONTROL_INTERFACE {
+        return Action::NotOurs;
+    }
+    match classify_with_value(request_type, request, value) {
+        ClassRequest::GetLineCoding => {
+            if requested == 0 {
+                return Action::NotOurs;
+            }
+            let length = LINE_CODING.len().min(requested).min(response.len());
+            response[..length].copy_from_slice(&LINE_CODING[..length]);
+            Action::DataIn(length)
+        }
+        // Not answered on purpose. The seven bytes the host sends must be consumed by an OUT data
+        // stage before a status stage is legal, and no path in this crate arms one for EP0 yet.
+        // Returning "accepted" here would leave the host mid-transfer with its bytes unread.
+        ClassRequest::SetLineCoding => Action::Unsupported,
+        ClassRequest::SetControlLineState { dtr, .. } => Action::Dtr(dtr),
+        ClassRequest::Other => Action::NotOurs,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! The descriptor set is asserted field by field rather than as a blob: a blob test would pass
@@ -283,6 +333,62 @@ mod tests {
         assert_eq!(
             classify_with_value(0x21, SET_CONTROL_LINE_STATE, 0x0000),
             ClassRequest::SetControlLineState { dtr: false, rts: false }
+        );
+    }
+
+    /// Build a setup packet the way the wire carries it.
+    fn setup(request_type: u8, request: u8, value: u16, index: u8, length: u16) -> [u8; 8] {
+        let v = value.to_le_bytes();
+        let l = length.to_le_bytes();
+        [request_type, request, v[0], v[1], index, 0, l[0], l[1]]
+    }
+
+    #[test]
+    fn get_line_coding_answers_with_seven_bytes() {
+        let mut response = [0u8; 64];
+        let packet = setup(0xa1, GET_LINE_CODING, 0, CONTROL_INTERFACE, 7);
+        assert_eq!(handle(&packet, &mut response), Action::DataIn(7));
+        assert_eq!(&response[..7], &LINE_CODING);
+        // A shorter request must be answered with a shorter reply, not with seven bytes.
+        let packet = setup(0xa1, GET_LINE_CODING, 0, CONTROL_INTERFACE, 4);
+        assert_eq!(handle(&packet, &mut response), Action::DataIn(4));
+    }
+
+    #[test]
+    fn set_line_coding_and_control_line_state_are_accepted() {
+        let mut response = [0u8; 64];
+        // `SET_LINE_CODING` is deliberately unsupported until an OUT data stage can be armed: the
+        // assertion pins that decision so it cannot drift into a silent "accepted".
+        assert_eq!(
+            handle(&setup(0x21, SET_LINE_CODING, 0, CONTROL_INTERFACE, 7), &mut response),
+            Action::Unsupported
+        );
+        assert_eq!(
+            handle(&setup(0x21, SET_CONTROL_LINE_STATE, 1, CONTROL_INTERFACE, 0), &mut response),
+            Action::Dtr(true)
+        );
+        assert_eq!(
+            handle(&setup(0x21, SET_CONTROL_LINE_STATE, 0, CONTROL_INTERFACE, 0), &mut response),
+            Action::Dtr(false)
+        );
+    }
+
+    #[test]
+    fn requests_for_other_interfaces_or_other_classes_are_left_alone() {
+        let mut response = [0u8; 64];
+        // Another interface number: not this function's request.
+        assert_eq!(
+            handle(&setup(0xa1, GET_LINE_CODING, 0, 9, 7), &mut response),
+            Action::NotOurs
+        );
+        // A standard request, and an unknown class request.
+        assert_eq!(
+            handle(&setup(0x80, 6, 0x0100, CONTROL_INTERFACE, 18), &mut response),
+            Action::NotOurs
+        );
+        assert_eq!(
+            handle(&setup(0x21, 0x23, 0, CONTROL_INTERFACE, 0), &mut response),
+            Action::NotOurs
         );
     }
 

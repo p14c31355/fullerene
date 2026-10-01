@@ -923,6 +923,12 @@ pub(super) unsafe fn init_usb2_gadget_reuse_fastboot_ep0() -> bool {
             // enumerates. So the window is already open at milestone 11, and it is closed at
             // handoff entry. Bisection point 2 moves to the DWC3 core reset, in between.
             HANDOFF_MILESTONE = 16;
+            // Clear Event Handler Busy before EP0 is published. Linux does this unconditionally when
+            // the gadget starts (`__dwc3_gadget_start`, gadget.c:2679); this driver has never written
+            // it. Leaving it set is why the controller delivers exactly one setup packet and then
+            // stops advancing its EP0 state machine - measured: 26 to 54 host attempts per run, one
+            // setup delivered, three runs out of three.
+            unsafe { super::control::clear_event_handler_busy() };
             let _ = udc_mut().configure_endpoint(0, 64, false);
             let _ = udc_mut().configure_endpoint(1, 64, false);
             // Both EP0 directions, their resources, and DALEPENA have now been

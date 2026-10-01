@@ -200,6 +200,13 @@ pub const CODE_USB_EP0_SETUP_DONE: u32 = 21;
 pub const CODE_USB_DATA_CMD: u32 = 22;
 pub const CODE_USB_DATA_TIMEOUT: u32 = 23;
 pub const CODE_USB_POLL_TIMEOUT: u32 = 24;
+/// Written where the production data stage's own Start Transfer is issued, on endpoint 1.
+///
+/// `CODE_USB_DATA_CMD` cannot answer "when was the data stage issued": it is recorded by every
+/// endpoint command, including the EP0 setup commands that run *before* the pull-up, so its first
+/// occurrence has no timestamp at all. This code exists so the question has one writer and one
+/// meaning.
+pub const CODE_USB_DATA_STAGE_START: u32 = 25;
 
 // Probe outcomes. These exist because a probe's result cannot be read inside the boot that runs
 // it: its field would have to be published after the action at 2.5 s, which is already outside
@@ -487,8 +494,36 @@ pub fn count() -> u32 {
     written_total().min(capacity())
 }
 
+pub fn stamp_of_code(code: u32) -> Option<u64> {
+    if !usable() {
+        return None;
+    }
+    let capacity = capacity();
+    if capacity == 0 {
+        return None;
+    }
+    let written = written_total();
+    let first = written.saturating_sub(capacity);
+    let mut index = first;
+    while index < written {
+        let address = record_address(index % capacity);
+        let entry_code = read_u32(address + 4);
+        if entry_code == code {
+            return Some(read_u64(address + 8));
+        }
+        index += 1;
+    }
+    None
+}
+
 /// Append one record. Cheap and allocation-free, so it is usable from early
 /// boot and from interrupt context.
+/// The stamp of the first record carrying `code`, if this boot wrote one.
+///
+/// The ring is this boot's instrument and does not survive a reset, but it is a *timeline*: every
+/// record now carries when it happened, so asking one code for its stamp turns "where did it stop"
+/// into "when did each step happen". The first occurrence is the interesting one for a stage that
+/// runs once; a code that repeats (a timeout) is better asked for with its own word.
 pub fn record(code: u32, stamp: u64, arg0: u64, arg1: u64) -> u32 {
     if !usable() {
         return 0;
@@ -500,6 +535,15 @@ pub fn record(code: u32, stamp: u64, arg0: u64, arg1: u64) -> u32 {
     let index = written_total();
     let slot = index % capacity;
     let address = record_address(slot);
+    // Every record carries when it happened, on the one clock the host shares with us. Callers pass
+    // 0 because none of them can read that clock; filling it here means the timeline is a property
+    // of the log rather than something each call site has to remember. `0` is not a meaningful
+    // stamp for any caller today (all of them pass 0 and none distinguishes it from "unset").
+    let stamp = if stamp == 0 {
+        elapsed_since_connect().map(|ms| ms as u64).unwrap_or(0)
+    } else {
+        stamp
+    };
     let entry = Record {
         seq: index,
         code,
@@ -716,6 +760,51 @@ pub fn first_index() -> u32 {
 /// from paths that can run thousands of times (the EP0 command poll), and a
 /// 1 KiB rewrite per record would change the timing of the very thing being
 /// measured.
+/// The clock the device and the host share, installed by the arch layer.
+///
+/// The host's own timeline starts when it sees the pull-up, so "milliseconds since that pull-up" is
+/// the one axis both sides can be plotted on. Without it, a host capture and a device record can
+/// only be read side by side and guessed at; with it, "the host gave up 775 ms in" and "the device
+/// answered at 1020 ms" are directly comparable.
+///
+/// A hook rather than a call into the arch layer, because this file is shared with x86_64 and must
+/// not name aarch64 items. `None` before it is installed, which renders as time zero.
+static mut CLOCK_HOOK: Option<fn() -> Option<u32>> = None;
+
+/// Install the shared clock. Called by the arch layer when the pull-up goes out.
+pub fn install_clock(hook: fn() -> Option<u32>) {
+    unsafe { CLOCK_HOOK = Some(hook) };
+}
+
+/// Milliseconds since the pull-up, or `None` when no clock has been installed yet.
+fn elapsed_since_connect() -> Option<u32> {
+    unsafe { CLOCK_HOOK.map(|hook| hook()).flatten() }
+}
+
+/// The pstore dmesg prefix for a stamp in milliseconds: `====<sec>.<nsec>`.
+///
+/// The zone's reader parses this line and the log appended to is the same zone, so the prefix has to
+/// keep its shape - and it has to carry the stamp. The seconds field alone would quantise a
+/// sub-second timeline into uselessness, which is exactly the range this instrument exists for.
+pub fn stamp_prefix(elapsed: Option<u32>, out: &mut [u8]) -> usize {
+    let mut cursor = write_text(out, 0, b"====");
+    let milliseconds = elapsed.unwrap_or(0);
+    cursor += write_number(out, cursor, milliseconds / 1000);
+    cursor += write_text(out, cursor, b".");
+    let fraction = (milliseconds % 1000) * 1_000_000;
+    // Fixed width: a reader splitting on '.' must not have to guess where the fraction starts.
+    let mut digits = [b'0'; 9];
+    let mut value = fraction;
+    let mut index = 9;
+    while index > 0 {
+        index -= 1;
+        digits[index] = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+    cursor += write_text(out, cursor, &digits);
+    cursor + write_text(out, cursor, b"\n")
+}
+
 pub fn publish_console() {
     // `armed()`, not `usable()`: this runs from the boot path before anything is claimed on
     // machines whose tree has no matching node, and `usable()` answers by reading the header
@@ -739,7 +828,7 @@ pub fn publish_console() {
         return;
     }
     let mut data = [0u8; 768];
-    let mut cursor = write_text(&mut data, 0, b"====0.0\n");
+    let mut cursor = stamp_prefix(elapsed_since_connect(), &mut data);
     cursor += dump_into(&mut data[cursor..]);
     if primary {
         write_pstore_zone(
@@ -1370,7 +1459,7 @@ mod tests {
 
     use super::{
         code_letter, letter_code, previous_segment_range, segment_count, segment_record_bytes,
-        write_number, write_text,
+        stamp_prefix, write_number, write_text,
     };
 
     /// The previous segment's record bytes, copied into a fixed array: this crate is no_std,
@@ -1396,6 +1485,20 @@ mod tests {
         assert!(write_number(&mut out, 0, u32::MAX) <= 10, "ten-digit cap");
         let mut tiny = [0u8; 2];
         assert_eq!(write_number(&mut tiny, 0, 12345), 2, "truncates, never panics");
+    }
+
+    #[test]
+    fn the_stamp_prefix_keeps_the_pstore_shape_and_carries_milliseconds() {
+        let mut out = [0u8; 32];
+        let length = stamp_prefix(Some(1234), &mut out);
+        assert_eq!(&out[..length], b"====1.234000000\n");
+        let length = stamp_prefix(Some(7), &mut out);
+        assert_eq!(&out[..length], b"====0.007000000\n");
+        let length = stamp_prefix(None, &mut out);
+        assert_eq!(&out[..length], b"====0.000000000\n");
+        let mut small = [0u8; 8];
+        let length = stamp_prefix(Some(600000), &mut small);
+        assert!(length <= small.len(), "must truncate, never overrun");
     }
 
     #[test]

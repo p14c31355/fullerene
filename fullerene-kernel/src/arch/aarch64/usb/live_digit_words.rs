@@ -59,6 +59,20 @@ fn field_count(name: &str) -> u32 {
         "blackbox" => 4,
         "blackbox_read" => 3,
         "blackbox_stage" => 4,
+        "blackbox_times" => 2,
+        "setup_bytes" => 2,
+        "dtrb_addr" => 2,
+        "dtrb_size" => 2,
+        "ep0_context" => 2,
+        "dtrb_ctrl" => 2,
+        "setup_count" => 1,
+        "gvnt0" => 2,
+        "setup_late" => 2,
+        "events_acked" => 1,
+        "rearm_stage" => 1,
+        "arm_rounds" => 1,
+        "susphy" => 2,
+        "susphy_test" => 1,
         "blackbox_recent" => 4,
         "blackbox_state" => 4,
         "blackbox_count" => 4,
@@ -108,6 +122,20 @@ fn digit_of(name: &str, field: u32) -> u32 {
         "blackbox" => blackbox_digit(field),
         "blackbox_read" => blackbox_read_digit(field),
         "blackbox_stage" => blackbox_stage_digit(field),
+        "blackbox_times" => blackbox_times_digit(field),
+        "setup_bytes" => setup_bytes_digit(field),
+        "dtrb_addr" => dtrb_addr_digit(field),
+        "dtrb_size" => dtrb_size_digit(field),
+        "ep0_context" => ep0_context_digit(field),
+        "dtrb_ctrl" => dtrb_ctrl_digit(field),
+        "setup_count" => setup_count_digit(field),
+        "gvnt0" => gvnt0_digit(field),
+        "setup_late" => setup_late_digit(field),
+        "events_acked" => events_acked_digit(field),
+        "rearm_stage" => rearm_stage_digit(field),
+        "arm_rounds" => arm_rounds_digit(field),
+        "susphy" => susphy_digit(field),
+        "susphy_test" => susphy_test_digit(field),
         "blackbox_recent" => blackbox_recent_digit(field),
         "blackbox_state" => crate::blackbox::state_digits()[field.min(3) as usize],
         "blackbox_count" => crate::blackbox::count_thresholds()[field.min(3) as usize],
@@ -950,6 +978,367 @@ fn blackbox_read_digit(field: u32) -> u32 {
             }
         }
     }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/// `susphy_test`: clear `GUSB2PHYCFG.SUSPHY` and report how many SETUPs the controller then delivers.
+///
+/// The reading of `susphy` says the bit is *set* on this board, and the two authorities disagree
+/// about what that means: the DWC3 databook says SUSPHY=1 suspends the USB2 PHY, while this driver's
+/// own comment says the opposite polarity ("leaving SUSPHY clear parks the USB2 PHY"). The only way
+/// to settle it is to flip the bit and watch the delivery count that `arm_rounds` already measures.
+///
+/// The bit is cleared here, in the publish path, so it is cleared while the host is still retrying -
+/// the drive publishes once per step across its window. The write preserves every other bit of the
+/// register. One digit: 1 = still a single delivery (SUSPHY was not the blocker),
+/// 2 = two to three, 3 = four to seven, 4 = eight or more (clearing it unblocked the receive path).
+fn susphy_test_digit(field: u32) -> u32 {
+    if field != 0 {
+        return 0;
+    }
+    unsafe {
+        let usb2 = super::read(super::GUSB2PHYCFG0);
+        super::write(super::GUSB2PHYCFG0, usb2 & !super::GUSB2PHYCFG_SUSPHY);
+        core::arch::asm!("dsb sy", options(nostack));
+    }
+    match super::ep0::arm_rounds() {
+        0 | 1 => 1,
+        2..=3 => 2,
+        4..=7 => 3,
+        _ => 4,
+    }
+}
+
+/// Digits for `susphy`: the USB2 PHY's suspend state, read from the drive's own window.
+///
+/// The driver's own comment names this as a candidate for exactly our symptom: "leaving SUSPHY clear
+/// parks the USB2 PHY in its suspend configuration, where the parallel receive path can stop - a
+/// candidate mechanism for a device that" stops answering. The point of reading it *from the drive*
+/// is that the EP0 command path clears these bits while issuing a command and restores them
+/// afterwards, so the state that matters is the one between commands, not at either end.
+/// Field 1: 1 = SUSPHY is set (the PHY is in its suspend configuration - the receive path may be
+/// parked), 2 = SUSPHY is clear. Field 2: the same for ENBLSLPM (1 = set, 2 = clear).
+fn susphy_digit(field: u32) -> u32 {
+    let usb2 = unsafe { super::read(super::GUSB2PHYCFG0) };
+    match field {
+        0 => {
+            if usb2 & super::GUSB2PHYCFG_SUSPHY != 0 {
+                1
+            } else {
+                2
+            }
+        }
+        1 => {
+            if usb2 & (1 << 7) != 0 {
+                1
+            } else {
+                2
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Digit for `arm_rounds`: how many times EP0's setup TRB was successfully armed this boot, as a
+/// threshold ladder. The drive arms once per consumed SETUP, so this is a delivery count that does
+/// not depend on the setup buffer's contents (the host repeats the same request every attempt).
+/// 1 = once only (the controller delivered one SETUP and stopped), 2 = two or three,
+/// 3 = four to seven, 4 = eight to thirty-one, 5 = thirty-two or more (every host attempt delivered).
+fn arm_rounds_digit(field: u32) -> u32 {
+    if field != 0 {
+        return 0;
+    }
+    match super::ep0::arm_rounds() {
+        0 => 0,
+        1 => 1,
+        2..=3 => 2,
+        4..=7 => 3,
+        8..=31 => 4,
+        _ => 5,
+    }
+}
+
+/// Digit for `rearm_stage`: why the most recent `try_arm_setup()` stopped, read from the drive.
+/// 1 = it succeeded, 2 = the DSTS halt gate refused, 3 = the command errored, 4 = the command timed
+/// out, 5 = never attempted. The multi-field word that carried this as its fifth field executes
+/// before the arm loop, so its reading is a pre-loop snapshot; this one is published from the drive's
+/// own window, after the pull-up, which is where a re-arm after a consumed setup actually happens.
+fn rearm_stage_digit(field: u32) -> u32 {
+    if field != 0 {
+        return 0;
+    }
+    unsafe { super::ep0::arm_failure_stage() }.min(4) + 1
+}
+
+/// Digit for `events_acked`: how many event bytes this boot has acknowledged, as a threshold ladder.
+/// 1 = none (the acknowledgement never happened or there was nothing to acknowledge), 2 = exactly
+/// four (one event), 3 = five to fifteen, 4 = sixteen to sixty-three, 5 = sixty-four or more.
+fn events_acked_digit(field: u32) -> u32 {
+    if field != 0 {
+        return 0;
+    }
+    match super::control::events_acked() {
+        0 => 1,
+        4..=4 => 2,
+        5..=15 => 3,
+        16..=63 => 4,
+        _ => 5,
+    }
+}
+
+/// Digits for `setup_late`: what the setup buffer holds *now*, compared with what the handler first
+/// received, sampled once per published field.
+///
+/// The handler saw exactly one setup in three runs out of three while the host re-tried 26 to 54
+/// times, which reads as "the controller stopped delivering". But that count comes from the *polled*
+/// path, and a poll that never notices a refresh would look the same. The host's later attempts are
+/// SET_ADDRESS requests (bmRequestType 0x00, bRequest 0x05) once the first descriptor read is
+/// abandoned, so if the buffer ever changes, delivery is happening and the poll is what is blind.
+///
+/// 1 = the live request byte still equals the first one, 2 = it changed (delivery is happening),
+/// 3 = nothing has been recorded as the first, 4 = the live byte is zero (an empty buffer).
+fn setup_late_digit(field: u32) -> u32 {
+    if field > 1 {
+        return 0;
+    }
+    let first = super::ep0::first_setup_bytes();
+    let live = unsafe { super::ep0::setup_bytes() };
+    match first {
+        None => 3,
+        Some((_, first_request)) => {
+            if live[1] == 0 {
+                4
+            } else if live[1] == first_request {
+                1
+            } else {
+                2
+            }
+        }
+    }
+}
+
+/// Digits for `gvnt0`: what reading `GEVNTCOUNT0` back after the EHB write returned.
+/// Field 1: 0 = the write never ran, 1 = the read returned zero, 2 = it returned a non-zero count with
+/// the EHB bit clear, 3 = the EHB bit is still set (the write did not land), 4 = something else.
+/// Field 2: 1 = the EHB bit is clear, 2 = it is set, 0 = the write never ran.
+fn gvnt0_digit(field: u32) -> u32 {
+    let value = super::control::gvnt0_after_ehb();
+    if value == u32::MAX {
+        return 0;
+    }
+    let ehb = value & 0x8000_0000 != 0;
+    let count = value & 0x0fff_ffff;
+    match field {
+        0 => {
+            if ehb {
+                3
+            } else if count == 0 {
+                1
+            } else {
+                2
+            }
+        }
+        1 => {
+            if ehb {
+                2
+            } else {
+                1
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Digit for `setup_count`: how many setup packets this boot's handler saw, as a threshold ladder.
+/// 1 = exactly one (the state machine is stuck after the first), 2 = two or three, 3 = four to seven,
+/// 4 = eight to fifteen, 5 = sixteen to thirty-one, 6 = thirty-two or more (the host's own retry
+/// behaviour, i.e. the device is answering each attempt).
+fn setup_count_digit(field: u32) -> u32 {
+    if field != 0 {
+        return 0;
+    }
+    match super::ep0::setup_count() {
+        0 => 0,
+        1 => 1,
+        2..=3 => 2,
+        4..=7 => 3,
+        8..=15 => 4,
+        16..=31 => 5,
+        _ => 6,
+    }
+}
+
+/// Digits for `dtrb_ctrl`: the production data TRB's control word.
+/// Field 1: 1 = the type nibble is 5 (CONTROL_DATA), 2 = it is something else, 3 = it is zero.
+/// Field 2: 1 = HWO is still set (the controller has not retired it), 2 = it is clear.
+fn dtrb_ctrl_digit(field: u32) -> u32 {
+    let (type_nibble, hwo) = unsafe { super::ep0::data_trb_ctrl() };
+    match field {
+        0 => {
+            if type_nibble == 5 {
+                1
+            } else if type_nibble == 0 {
+                3
+            } else {
+                2
+            }
+        }
+        1 => {
+            if hwo {
+                1
+            } else {
+                2
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Digits for `ep0_context`: the EP0 packet size the code programmed and the link speed it read.
+/// Field 1: 1 = 64 bytes (the high-speed value, which is what a high-speed host needs), 2 = 512
+/// (the SuperSpeed default - wrong on a USB2 link, and a babble on the wire), 3 = something else.
+/// Field 2: 1 = the code read high-speed, 2 = SuperSpeed, 0 = never programmed.
+fn ep0_context_digit(field: u32) -> u32 {
+    let (max_packet, speed_class) = super::ep0::ep0_context();
+    match field {
+        0 => match max_packet {
+            64 => 1,
+            512 => 2,
+            0 => 0,
+            _ => 3,
+        },
+        1 => speed_class,
+        _ => 0,
+    }
+}
+
+/// Digits for `dtrb_size`: the production data TRB's length field.
+/// Field 1: 1 = the field holds 18 (the descriptor's own size), 2 = it holds zero, 3 = another value
+/// below 18, 4 = above 18. Field 2: 1 = the field is exactly 18.
+fn dtrb_size_digit(field: u32) -> u32 {
+    let (size, is_eighteen) = unsafe { super::ep0::data_trb_size() };
+    match field {
+        0 => {
+            if size == 18 {
+                1
+            } else if size == 0 {
+                2
+            } else if size < 18 {
+                3
+            } else {
+                4
+            }
+        }
+        1 => {
+            if is_eighteen {
+                1
+            } else {
+                2
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Digits for `dtrb_addr`: whether the data TRB's buffer address is usable as a 32-bit physical
+/// address. Field 1: 1 = the address fits in the low 4 GiB, 2 = it does not (the controller would
+/// need 64-bit addressing), 3 = it does not and the upper word is set, which means the address was
+/// never meant to be 32-bit. Field 2: 1 = the upper word is zero, 2 = it is not.
+fn dtrb_addr_digit(field: u32) -> u32 {
+    let (fits_low, high_zero) = unsafe { super::ep0::data_trb_address_shape() };
+    match field {
+        0 => {
+            if fits_low {
+                1
+            } else if high_zero {
+                2
+            } else {
+                3
+            }
+        }
+        1 => {
+            if high_zero {
+                1
+            } else {
+                2
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Digits for `setup_bytes`: what the first setup packet of this boot actually contained.
+///
+/// Field 1 is the request class, and the classes are the ones that matter for "does the host see us
+/// at all": 0 = no setup arrived, 1 = GET_DESCRIPTOR (bRequest 0x06), 2 = SET_ADDRESS (0x05),
+/// 3 = SET_CONFIGURATION (0x09), 4 = anything else, 5 = the request byte was zero, which is not a
+/// valid request at all and means the buffer was not what it claimed to be.
+/// Field 2 is the direction nibble of bmRequestType: 8 for a device-to-host request, 0 for host to
+/// device, 6 for something unexpected.
+fn setup_bytes_digit(field: u32) -> u32 {
+    let Some((request_type, request)) = super::ep0::first_setup_bytes() else {
+        return 0;
+    };
+    match field {
+        0 => match request {
+            0x06 => 1u32,
+            0x05 => 2,
+            0x09 => 3,
+            0x00 => 5,
+            _ => 4,
+        },
+        // The direction nibble is 8 or 0, and the transport cannot carry a digit above 6, so it is
+        // encoded as a class: 1 = device to host (0x8_), 2 = host to device (0x0_), 3 = other.
+        1 => match (request_type >> 4) & 0xf {
+            0x8 => 1u32,
+            0x0 => 2,
+            _ => 3,
+        },
+        _ => 0,
+    }
+}
+
+/// Digits for `blackbox_times`: when four stages happened, in milliseconds since the pull-up.
+///
+/// This is the timeline that can be laid against a host capture: the host's own clock also starts
+/// when it sees that pull-up, so "the first request was aborted at 775 ms" and "the data stage was
+/// issued at 820 ms" become the same axis instead of two stories. Four values, four digits each
+/// (0-9999 ms, most significant first); anything that never happened reads as zero, which is why
+/// each stage also has its own record to look for.
+fn blackbox_times_digit(field: u32) -> u32 {
+    // Two stages, three digits each, in units of 10 ms: 0-9990 ms covers every window this device
+    // has, and the question being asked lives at the 100 ms scale. Three digits rather than four is
+    // not cosmetic - each digit costs about a second of readout, and a sixteen-field version ran out
+    // of run before it finished.
+    let codes = [
+        crate::blackbox::CODE_USB_EP0_SETUP_DONE,
+        crate::blackbox::CODE_USB_DATA_STAGE_START,
+    ];
+    let index = field as usize;
+    if index >= codes.len() {
+        return 0;
+    }
+    // One digit per value, in units of 100 ms, saturating at 9: a run reads about one field before
+    // its window closes (measured over the evening's runs - the median readout is a single digit),
+    // so what fits is the *class* of the time, not the time. Three digits were already one run too
+    // many. The value's identity is the field's; its answer is "how many hundreds of ms in".
+    // Six, not nine: the transport caps a digit at six blips (`runstop_blips_fast(digit.min(6))`),
+    // so a value of 7, 8 or 9 would be sent as six and lie. The usable range is therefore 0-699 ms,
+    // and a stage later than that reads as six - "past 600 ms" is what that digit means.
+    (crate::blackbox::stamp_of_code(codes[index]).unwrap_or(0) / 100).min(6) as u32
 }
 
 /// Digits for `blackbox_stage`: the last few stage codes, newest first.

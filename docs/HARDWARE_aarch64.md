@@ -4,6 +4,12 @@ Read [CONTEXT_STATUS.md](CONTEXT_STATUS.md) first. This file is the compact
 hardware contract for the Pixel 4a 5G (Bramble); the complete historical
 ledger is preserved in the compressed [full AArch64 ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md.gz).
 
+The second AArch64 target, Huawei P20 Lite (ANE-LX2J, Kirin 659 / hi6250), had its
+bootloader unlocked in software on 2026-10-02. The unlock procedure and the boot
+contract that device exposes are documented separately:
+[ANE-LX2J bootloader unlock](ANE_LX2J_BOOTLOADER_UNLOCK_20261002.md) ·
+[日本語版](ANE_LX2J_BOOTLOADER_UNLOCK_20261002.ja.md).
+
 ## Target and safety boundary
 
 | Item | Value / result |

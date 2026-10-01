@@ -102,7 +102,11 @@ pub const DRIVE_FIRST_SECS: u64 = 50;
 /// recorded as codes and answered from the previous boot's segment by
 /// `usb2-live-blackbox-prev-probe-retired` and `-prev-probe-trb`.
 fn record_probe_outcome(retired: bool) {
-    let hwo = unsafe { super::DATA_PHASE_TRB_AFTER[0] } & TRB_HWO != 0;
+    // Read the TRB itself, not `DATA_PHASE_TRB_AFTER`: that copy is written on one timeout path
+    // only, so a run where no such timeout happened reports its initial value - "consumed" for a TRB
+    // nobody has touched. Sampling here, at the moment the outcome is recorded, is what makes the
+    // code mean what it says.
+    let hwo = unsafe { super::ep0::data_trb_still_owned() };
     crate::blackbox::record(
         if retired {
             crate::blackbox::CODE_PROBE_RETIRED
@@ -237,6 +241,21 @@ pub fn drive_polling_owner(seconds: u64) {
     // refused: 1 = it succeeded, 2 = the DSTS halt gate, 3 = the command came back
     // with a status error, 4 = the command never retired.
     let arm_stage = matches!(word, Some("usb2-live-arm-stage"));
+    // `usb2-live-rearm-stage`: why the most recent setup re-arm stopped, published from the drive's
+    // own window. A *new* word name rather than a share of `usb2-live-arm-stage`, which already
+    // exists with its own arm timing and window: sharing the name silently used its behaviour and
+    // produced no readout at all.
+    let rearm_stage = matches!(word, Some("usb2-live-rearm-stage"));
+    // `usb2-live-arm-rounds`: how many times EP0 was armed, i.e. how many SETUPs the controller has
+    // delivered. Independent of the setup buffer's contents, which cannot distinguish delivery because
+    // the host repeats the same request every attempt.
+    let arm_rounds = matches!(word, Some("usb2-live-arm-rounds"));
+    // `usb2-live-susphy`: the USB2 PHY's suspend bits as they stand between commands. The driver's own
+    // comment names a parked receive path as a candidate for a device that answers once and stops.
+    let susphy = matches!(word, Some("usb2-live-susphy"));
+    // `usb2-live-susphy-test`: clear GUSB2PHYCFG.SUSPHY, then report the delivery count. Settles the
+    // polarity disagreement between the databook and this driver's comment by measurement.
+    let susphy_test = matches!(word, Some("usb2-live-susphy-test"));
     // `usb2-live-precheck`: never arms, so nothing can wedge, and reads out the
     // gates `try_arm_setup()` consults before it will issue a command. Five fields
     // in one run because each digit is published as *short* marks (~0.27 s):
@@ -523,6 +542,44 @@ pub fn drive_polling_owner(seconds: u64) {
     // question a black box has to answer is "where did it stop", and that is a
     // handful of small numbers rather than a full dump.
     let blackbox_stage = matches!(word, Some("usb2-live-blackbox-stage"));
+    // `usb2-live-blackbox-times`: *when* four stages happened, in ms since the pull-up. The same
+    // clock the host's own timeline starts on, so a device record and a host capture can be read
+    // against each other instead of guessed at.
+    let blackbox_times = matches!(word, Some("usb2-live-blackbox-times"));
+    // `usb2-live-setup-bytes`: what the first setup packet of this boot actually contained, as two
+    // digits - the request class and the direction. The wire says the host gets no answer at all, so
+    // the first thing to rule out is that the eight bytes we answer from are not the ones it sent.
+    let setup_bytes = matches!(word, Some("usb2-live-setup-bytes"));
+    // `usb2-live-dtrb-addr`: whether the data stage's buffer address is usable as a 32-bit physical
+    // address. The command is accepted and nothing reaches the wire; this is the one part of that
+    // path the counters cannot see.
+    let dtrb_addr = matches!(word, Some("usb2-live-dtrb-addr"));
+    // `usb2-live-dtrb-size`: the production data TRB's length field. The host's completion says it
+    // transferred zero bytes while the reply built is 18; this says whether the TRB agrees with the
+    // reply or with the wire.
+    let dtrb_size = matches!(word, Some("usb2-live-dtrb-size"));
+    // `usb2-live-ep0-context`: the EP0 packet size actually programmed, and the speed the code read.
+    // Linux starts at 512 (SuperSpeed) and modifies after Connect Done on a USB2 link; a 512-byte
+    // EP0 on a high-speed link turns the host's data transaction into a babble - a protocol error
+    // with no valid data, which is what the wire shows.
+    let ep0_context = matches!(word, Some("usb2-live-ep0-context"));
+    // `usb2-live-dtrb-ctrl`: the data TRB's type nibble and HWO, read from the TRB itself.
+    let dtrb_ctrl = matches!(word, Some("usb2-live-dtrb-ctrl"));
+    // `usb2-live-setup-count`: how many of the host's attempts the handler actually saw. One means
+    // the controller stopped delivering setups after the first, which is what a stuck EP0 state
+    // machine looks like from this side.
+    let setup_count = matches!(word, Some("usb2-live-setup-count"));
+    // `usb2-live-gvnt0`: what reading GEVNTCOUNT0 back after the EHB write returned. "The write landed"
+    // is not something to assume on a register whose read was reported not to return.
+    let gvnt0 = matches!(word, Some("usb2-live-gvnt0"));
+    // `usb2-live-setup-late`: is the setup buffer still holding the first request, or has it changed?
+    // The handler saw one setup across three runs; this says whether that is the controller's doing or
+    // the poll's blindness.
+    let setup_late = matches!(word, Some("usb2-live-setup-late"));
+    // `usb2-live-events-acked`: how many event bytes the drive acknowledged. Zero means the
+    // acknowledgement never ran or found nothing; four or more means it found events the controller
+    // had posted and had never been told were consumed.
+    let events_acked = matches!(word, Some("usb2-live-events-acked"));
     // `usb2-live-blackbox-recent`: what *this* boot has written so far. Kept
     // separate from the previous-boot question so the two can be told apart while
     // the ring is being trusted.
@@ -568,6 +625,22 @@ pub fn drive_polling_owner(seconds: u64) {
     // for the data-stage stall, since re-issuing the same TRB later retires and issuing it
     // once, early, does not.
     let data_persist = matches!(word, Some("usb2-live-data-persist"));
+    // `usb2-live-data-gap{500,1000,1500}`: issue the production data TRB exactly once, that many ms
+    // after the drive began, with no retry window and no revocation. `data-late` fires at 2.5 s and
+    // *retries*, and a failed attempt revokes the outstanding transfer - which clears the TRB's own
+    // HWO. So this separates "the controller takes it when asked later" from "our revocation cleared
+    // the flag"; three points bracket where the transition sits.
+    let data_gap_ms: u64 = match word {
+        Some("usb2-live-data-gap500") => 500,
+        Some("usb2-live-data-gap1000") => 1000,
+        Some("usb2-live-data-gap1500") => 1500,
+        _ => 0,
+    };
+    let data_gap = data_gap_ms != 0;
+    // `usb2-live-data-rewrite`: at 1 s, write the production data TRB's own bytes back to it and
+    // issue nothing. `data-late` re-issues the *command*; this one only makes the controller look
+    // again, so the two together say which of the two stories is true.
+    let data_rewrite = matches!(word, Some("usb2-live-data-rewrite"));
     // `usb2-live-ioava-check`: is the DMA address the data stage is handed pointing at the
     // descriptor? The controller clears the TRB's HWO after the late re-issue, so it
     // fetched *something*, and the host's -71 says what it sent was malformed.
@@ -651,6 +724,20 @@ pub fn drive_polling_owner(seconds: u64) {
         Some("usb2-live-blackbox-read") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-pulse-cal") => PULSE_CAL_WINDOW_SECS,
         Some("usb2-live-blackbox-stage") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-blackbox-times") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-setup-bytes") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-dtrb-addr") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-dtrb-size") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-ep0-context") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-dtrb-ctrl") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-setup-count") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-gvnt0") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-setup-late") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-rearm-stage") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-arm-rounds") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-susphy") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-susphy-test") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-events-acked") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-blackbox-recent") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-blackbox-state") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-blackbox-count") => BLACKBOX_WINDOW_SECS,
@@ -666,6 +753,10 @@ pub fn drive_polling_owner(seconds: u64) {
         Some("usb2-live-data-alt") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-data-late") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-data-persist") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-data-gap500") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-data-gap1000") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-data-gap1500") => BLACKBOX_WINDOW_SECS,
+        Some("usb2-live-data-rewrite") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-ioava-check") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-data-status") => BLACKBOX_WINDOW_SECS,
         Some("usb2-live-blackbox-pstore") => BLACKBOX_WINDOW_SECS,
@@ -1000,6 +1091,20 @@ pub fn drive_polling_owner(seconds: u64) {
     let mut blackbox_read_field = 0u32;
     let mut pulse_cal_done = false;
     let mut blackbox_stage_field = 0u32;
+    let mut blackbox_times_field = 0;
+    let mut setup_bytes_field = 0;
+    let mut dtrb_addr_field = 0;
+    let mut dtrb_size_field = 0;
+    let mut ep0_context_field = 0;
+    let mut dtrb_ctrl_field = 0;
+    let mut setup_count_field = 0;
+    let mut gvnt0_field = 0;
+    let mut setup_late_field = 0;
+    let mut events_acked_field = 0;
+    let mut arm_stage_field = 0;
+    let mut arm_rounds_field = 0;
+    let mut susphy_field = 0;
+    let mut susphy_test_field = 0;
     let mut blackbox_recent_field = 0u32;
     let mut blackbox_state_field = 0u32;
     let mut blackbox_count_field = 0u32;
@@ -1014,6 +1119,8 @@ pub fn drive_polling_owner(seconds: u64) {
     let mut data_zero_done = false;
     let mut data_alt_done = false;
     let mut data_late_done = false;
+    let mut data_gap_done = false;
+    let mut data_rewrite_done = false;
     let mut data_persist_done = false;
     let mut ioava_check_field = 0u32;
     let mut data_status_done = false;
@@ -1111,6 +1218,18 @@ pub fn drive_polling_owner(seconds: u64) {
         // returns; the handoff's own arm window keeps it alive with a 200 ms
         // keepalive between attempts, which a tight polling loop cannot afford.
         usb_domain_keepalive();
+        // Acknowledge the events the controller has posted, every pass.
+        //
+        // The drain was removed from the *arm* loop on 2026-09-29 because `read(GEVNTCOUNT0)` did not
+        // return there, and the removal is why nothing in this driver has ever acknowledged the EP0
+        // ring. Without that acknowledgement the controller stops posting events and, being
+        // event-driven, does not advance its EP0 state machine: one setup delivered, then silence,
+        // while the host re-tries 26 to 54 times.
+        //
+        // The read returns at the handoff on this unit (measured: `usb2-live-gvnt0` reads the register
+        // back and gets zero), so the earlier measurement is context-specific rather than universal.
+        // This call site is the drive, which runs after the pull-up, not the arm loop.
+        unsafe { super::control::acknowledge_ep0_events() };
         if unsafe { poll_setup_buffer() } {
             consumed_any = true;
         }
@@ -1233,6 +1352,160 @@ pub fn drive_polling_owner(seconds: u64) {
             super::live_digit_words::publish(
                 "blackbox_stage",
                 &mut blackbox_stage_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if blackbox_times {
+            super::live_digit_words::publish(
+                "blackbox_times",
+                &mut blackbox_times_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if setup_bytes {
+            super::live_digit_words::publish(
+                "setup_bytes",
+                &mut setup_bytes_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if dtrb_addr {
+            super::live_digit_words::publish(
+                "dtrb_addr",
+                &mut dtrb_addr_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if dtrb_size {
+            super::live_digit_words::publish(
+                "dtrb_size",
+                &mut dtrb_size_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if ep0_context {
+            super::live_digit_words::publish(
+                "ep0_context",
+                &mut ep0_context_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if dtrb_ctrl {
+            super::live_digit_words::publish(
+                "dtrb_ctrl",
+                &mut dtrb_ctrl_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if setup_count {
+            super::live_digit_words::publish(
+                "setup_count",
+                &mut setup_count_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if gvnt0 {
+            super::live_digit_words::publish(
+                "gvnt0",
+                &mut gvnt0_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if setup_late {
+            super::live_digit_words::publish(
+                "setup_late",
+                &mut setup_late_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if events_acked {
+            super::live_digit_words::publish(
+                "events_acked",
+                &mut events_acked_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if rearm_stage {
+            super::live_digit_words::publish(
+                "rearm_stage",
+                &mut arm_stage_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if arm_rounds {
+            super::live_digit_words::publish(
+                "arm_rounds",
+                &mut arm_rounds_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if susphy {
+            super::live_digit_words::publish(
+                "susphy",
+                &mut susphy_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
+        }
+
+        if susphy_test {
+            super::live_digit_words::publish(
+                "susphy_test",
+                &mut susphy_test_field,
                 BLACKBOX_FIRST_MS,
                 BLACKBOX_STEP_MS,
                 entry,
@@ -1404,6 +1677,26 @@ pub fn drive_polling_owner(seconds: u64) {
             data_late_done = true;
             let retired = unsafe { super::ep0::retry_data_late() };
             record_probe_outcome(retired);
+        }
+
+        if data_gap
+            && !data_gap_done
+            && arch_counter()
+                >= entry.saturating_add(frequency.saturating_mul(data_gap_ms).saturating_div(1_000))
+        {
+            data_gap_done = true;
+            let started = unsafe { super::ep0::retry_data_once() };
+            record_probe_outcome(started);
+        }
+
+        if data_rewrite
+            && !data_rewrite_done
+            && arch_counter()
+                >= entry.saturating_add(frequency.saturating_mul(1_000).saturating_div(1_000))
+        {
+            data_rewrite_done = true;
+            let done_rewriting = unsafe { super::ep0::rewrite_data_trb() };
+            record_probe_outcome(done_rewriting);
         }
 
         if data_persist

@@ -22,7 +22,7 @@ pub(super) unsafe fn device_soft_reset() -> bool {
     // itself is where the boot stopped.
     crate::blackbox::record(
         crate::blackbox::CODE_USB_DWC3_RESET,
-        super::arch_counter(),
+        0,
         0,
         0,
     );
@@ -250,6 +250,72 @@ pub(super) unsafe fn wait_device_state(want_halted: bool) -> bool {
 /// buffer setup initializes the complete GEVNTCOUNT register with zero, while
 /// the Run/Stop halt contract consumes only the byte count and advances the
 /// software cursor just as Linux advances `ev_buf->lpos`.
+/// Clear Event Handler Busy: the one acknowledgement this driver has never made.
+///
+/// `DWC3_GEVNTCOUNT_EHB` is bit 31 of `GEVNTCOUNT0` (`core.h:68`). Linux writes it unconditionally when
+/// the gadget starts (`__dwc3_gadget_start`, gadget.c:2679) and again on the resume path (:4155); every
+/// other acknowledgement in this driver writes a *count*, and none of them sets it.
+///
+/// What it costs to leave it set: the controller posts one event and then stops advancing its
+/// event-driven EP0 state machine. Measured on this unit - the host re-tries its first control transfer
+/// 26 to 54 times per run, and the handler sees exactly **one** setup packet in three runs out of
+/// three; the data phase's STARTTRANSFER then never completes (its latch carries the timeout marker),
+/// its TRB is never fetched (HWO stays set), and not one byte reaches the wire, under every
+/// configuration the ~1700 recorded runs cover.
+/// How many event bytes this boot has acknowledged. Published by `usb2-live-events-acked`.
+static mut EVENTS_ACKED: u32 = 0;
+
+pub(super) fn events_acked() -> u32 {
+    unsafe { core::ptr::read(core::ptr::addr_of!(EVENTS_ACKED)) }
+}
+
+/// Acknowledge whatever events the controller has posted, without parsing their contents.
+///
+/// The count is read first, because `GEVNTCOUNT0` *does* return on this unit (measured by
+/// `usb2-live-gvnt0`, which reads it back and gets zero). The belief that this read hangs is what kept
+/// the acknowledgement unwritten for the EP0 ring.
+///
+/// Why this is expected to matter: the controller stops posting events - and, being event-driven, does
+/// not advance its EP0 state machine past the phase it is in - until software writes the consumed byte
+/// count back. Measured: the host re-tries its first control transfer 26 to 54 times per run and the
+/// handler sees exactly one setup, and the setup buffer never changes afterwards, so the controller
+/// really does go silent rather than the poll going blind.
+///
+/// Only the acknowledgement happens here. The events are not parsed, because the drive's polled path
+/// already advances the state machine from the setup buffer without the ring; what is missing is the
+/// part the ring is actually for.
+pub(super) unsafe fn acknowledge_ep0_events() -> u32 {
+    unsafe {
+        let count = read(GEVNTCOUNT0) & GEVNTCOUNT_MASK;
+        if count != 0 {
+            write(GEVNTCOUNT0, count);
+            super::EVENT_OFFSET = (super::EVENT_OFFSET + count as usize) % super::ep0_event_size();
+            EVENTS_ACKED = EVENTS_ACKED.saturating_add(count);
+            core::arch::asm!("dsb sy", options(nostack));
+        }
+        count
+    }
+}
+
+pub(super) unsafe fn clear_event_handler_busy() {
+    unsafe {
+        write(GEVNTCOUNT0, GEVNTCOUNT_EHB);
+        core::arch::asm!("dsb sy", options(nostack));
+        // Read it back and keep what came out. Writing to a register whose read does not return is
+        // exactly the case where "did the write land" cannot be assumed: this is a plain MMIO read of
+        // the same register, and it is the only way to tell a write that worked from one that was
+        // dropped. The value is published by `usb2-live-gvnt0`.
+        GEVNT0_AFTER_EHB = read(GEVNTCOUNT0);
+    }
+}
+
+/// `GEVNTCOUNT0` as read immediately after the EHB write, or `u32::MAX` if that code never ran.
+static mut GEVNT0_AFTER_EHB: u32 = u32::MAX;
+
+pub(super) fn gvnt0_after_ehb() -> u32 {
+    unsafe { core::ptr::read(core::ptr::addr_of!(GEVNT0_AFTER_EHB)) }
+}
+
 pub(super) unsafe fn acknowledge_events_while_halting() {
     unsafe {
         let count = read(GEVNTCOUNT0) & GEVNTCOUNT_MASK;
@@ -507,6 +573,20 @@ pub(super) unsafe fn run_stop_device(is_on: bool) -> bool {
 /// TRUE, so that leg is under 16 ms; this latch closes the other leg.
 pub(super) static PULLUP_TICK_MS: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Milliseconds since the pull-up was asserted, or `None` if it never was.
+///
+/// This - not the Connect Done event - is the epoch the host's own clock shares: the host starts
+/// counting when it *sees* the pull-up, which is what this latches. The two are far apart on this
+/// unit (the host's attach follows by tens of seconds), so using the wrong one would put every
+/// device record tens of seconds away from the host capture it is meant to be compared with.
+pub(super) fn ms_since_pullup() -> Option<u32> {
+    let tick = PULLUP_TICK_MS.load(core::sync::atomic::Ordering::Relaxed);
+    if tick == u32::MAX {
+        return None;
+    }
+    Some(now_ms().wrapping_sub(tick))
+}
 
 #[inline]
 fn now_ms() -> u32 {

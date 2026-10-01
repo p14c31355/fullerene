@@ -441,7 +441,10 @@ unsafe fn send_ep_command_result(
     // log read after a reset carries the command that never retired.
     crate::blackbox::record(
         crate::blackbox::CODE_USB_DATA_CMD,
-        super::arch_counter(),
+        // The stamp is the shared milliseconds-since-pull-up clock; `record` fills it. A raw
+        // `arch_counter()` here would make this record the only one on a different scale, which a
+        // reader comparing stages would silently misread.
+        0,
         0,
         0,
     );
@@ -474,14 +477,21 @@ unsafe fn send_ep_command_result(
         // the data-cmd word can (its latch + pending flags). Queue labels for the
         // routed runs are `fix-data-cmd*` / `fix-dirtrb-data-cmd*`; the five earlier
         // `data-cmd` samples (05:29-06:24) are the no-fix control family.
+        // 2026-10-01 02:10: THE DEFAULT. Every control phase - setup, data and status - is a command
+        // on the *EP0 command block*, which is number 0 (`core.h:151`, `DWC3_DEP_BASE(n)`). The
+        // gadget-side convention this project uses, `ep * 2 + dir`, gives EP0-IN the number 1, and
+        // that is a *different physical endpoint's* block. The data stage was being sent there: the
+        // command reported success, the controller never transmitted on EP0, and the wire says so -
+        // every one of the phone's 24 records for this device in a capture reads `len=0 cap=0`, i.e.
+        // not one byte of the 18-byte descriptor ever left the device, while the host abandons the
+        // transfer at 778 ms and then at 5 s.
+        //
+        // The routing was behind `usb2-live-ep0-physical` (and two later words) as an A/B, and its
+        // two samples were read host-side only and called inconclusive. The wire capture is the
+        // evidence that settles it, so the routing is now unconditional for the control phases.
         let endpoint = if endpoint == 1
             && (command_kind == DEPCMD_STARTTRANSFER || command_kind == DEPCMD_ENDTRANSFER)
-            && matches!(
-                option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT"),
-                Some("usb2-live-ep0-physical")
-                    | Some("usb2-live-data-cmd")
-                    | Some("usb2-live-trb-after-ep0")
-            ) {
+        {
             0
         } else {
             endpoint
@@ -775,10 +785,20 @@ pub(super) unsafe fn start_transfer(endpoint: usize, trb: *const Trb) -> bool {
     // Black box: which endpoint and which TRB the transfer is being started on.
     crate::blackbox::record(
         crate::blackbox::CODE_USB_DATA_CMD,
-        super::arch_counter(),
+        // The stamp is the shared milliseconds-since-pull-up clock; `record` fills it. A raw
+        // `arch_counter()` here would make this record the only one on a different scale, which a
+        // reader comparing stages would silently misread.
+        0,
         endpoint as u64,
         trb as u64,
     );
+    // Endpoint 1 is the data phase's own endpoint, so this code means exactly one thing: the moment
+    // the production data stage was issued. The `CODE_USB_DATA_CMD` record above is written by every
+    // endpoint command, including EP0 setup commands that run before the pull-up, and so cannot
+    // answer "when".
+    if endpoint == 1 {
+        crate::blackbox::record(crate::blackbox::CODE_USB_DATA_STAGE_START, 0, trb as u64, 0);
+    }
     let address = unsafe { dma_iova_for(trb as usize) };
     unsafe {
         // DWC3's STARTTRANSFER parameters are PAR0=address[63:32] and
