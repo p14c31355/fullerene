@@ -211,6 +211,10 @@ fn make_boot_info(platform: BootPlatform, dtb_address: Option<u64>) -> BootInfo 
 
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext) -> ! {
+    // Mark 6: the Rust entry is alive. The bootstrap's own marks stop at 5
+    // (EL1 configured); from here the marks follow this function's stages to
+    // the early-boot loop at 'c'.
+    unsafe { entry::ane_step_byte(b'6') };
     // The context lives at the top of the bootstrap stack. Copy it before
     // Rust starts using that stack for ordinary locals and call frames.
     let boot = entry::Aarch64BootContext::read(boot_context);
@@ -249,6 +253,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::init_at(early_uart_base as u64);
     }
     exceptions::install();
+    // Mark 7: the compiled-in console and the exception vectors are up - the
+    // first device access (the UART register write) and the fault path both
+    // survived. A run whose marks stop at 6 died in exactly that step.
+    unsafe { entry::ane_step_byte(b'7') };
     #[cfg(fullerene_aarch64_bramble)]
     {
         // XBL/ABL's secure watchdog can expire while the normal path is
@@ -678,6 +686,9 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         },
         dtb_address,
     );
+    // Mark 8: the bootloader's tree has been walked and the black box (ring
+    // plus both pstore mirrors) has been claimed at the addresses it names.
+    unsafe { entry::ane_step_byte(b'8') };
     let gicd_base = gicd_region.map(|region| region.base as usize);
     let gicr_base = gicr_region.map(|region| region.base as usize);
     let uart_region = if bramble { qcom_uart } else { pl011_uart };
@@ -789,6 +800,9 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         }
         None => uart::puts("ufs: no active qcom,ufshc platform contract\n"),
     }
+    // Mark 9: the UFS contract stage returned (this stage only reads the
+    // tree; a stop at 8 means the death was in the DT walk or the black box).
+    unsafe { entry::ane_step_byte(b'9') };
 
     uart::puts("arch: aarch64, exception vectors: ready\n");
     uart::put_hex("currentel: ", exceptions::current_el() as u64);
@@ -801,6 +815,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
 
     mmu::init();
     uart::puts("mmu: identity map and caches ready\n");
+    // Mark a: the MMU is live (identity map, caches on).
+    unsafe { entry::ane_step_byte(b'a') };
 
     #[cfg(feature = "aarch64-user-launchd")]
     let mut allocator_ready = false;
@@ -847,6 +863,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     let elapsed = timer::counter().wrapping_sub(before);
     uart::puts("timer: generic counter ready, ticks=");
     uart::put_hex_value(elapsed);
+    // Mark b: the timer works (the counter ran and a 10 ms delay measured).
+    unsafe { entry::ane_step_byte(b'b') };
 
     // The UFS platform/storage backend is a Bramble build opt-in. Flasks
     // enables the read-only attempt for `--android-init` images; the direct
@@ -919,6 +937,9 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::puts("launchd: allocator unavailable; refusing to start userspace\n");
     }
 
+    // Mark c: everything through the interrupt setup returned; from here the
+    // boot only waits. A run that stops at 'b' died inside the final setup.
+    unsafe { entry::ane_step_byte(b'c') };
     uart::puts("aarch64 early boot complete; waiting for timer irq / USB events\n");
     loop {
         // The controller-IRQ A/B gives the DWC3 SPI exclusive ownership of

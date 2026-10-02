@@ -12,6 +12,9 @@ contract that device exposes are documented separately:
 The port built on top of it (platform `ane`, the ramoops observation window, the
 boot ladder and the device scripts) is in [ANE-LX2J port](ANE_LX2J_PORT.md) ·
 [日本語版](ANE_LX2J_PORT.ja.md).
+The USB re-enumeration harness (bring-up sequence taken from vendor source,
+QEMU-verified) is tracked in [ANE USB harness plan](ANE_USB_HARNESS_PLAN.md) ·
+[日本語版](ANE_USB_HARNESS_PLAN.ja.md).
 
 ## Target and safety boundary
 
