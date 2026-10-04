@@ -309,7 +309,7 @@ fn set_written_total(value: u32) {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn cache_clean(address: usize, length: usize) {
+pub(crate) unsafe fn cache_clean(address: usize, length: usize) {
     let mut line = address & !(CACHE_LINE - 1);
     let end = address + length;
     while line < end {
@@ -322,7 +322,7 @@ unsafe fn cache_clean(address: usize, length: usize) {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-unsafe fn cache_clean(_address: usize, _length: usize) {}
+pub(crate) unsafe fn cache_clean(_address: usize, _length: usize) {}
 
 #[inline]
 fn read_u32(address: u64) -> u32 {
@@ -973,7 +973,25 @@ pub fn text_byte(byte: u8) {
     // reset then leaves the text behind) and needs no pstore machinery.
     #[cfg(fullerene_aarch64_ane)]
     unsafe {
-        let size = core::ptr::read_volatile((TEXT_BLOCK_BASE + 4) as *const u32);
+        // Header-independent second copy at a fixed offset: whatever state
+        // the block header is in (the loader tramples magic and size between
+        // boots), this path appends linearly from a per-boot counter, so a
+        // reader always finds this boot's log at a known address.
+        let n = core::ptr::addr_of!(FIXED_LOG_LEN).read();
+        if n < FIXED_LOG_CAP {
+            core::ptr::write_volatile(
+                (TEXT_BLOCK_BASE + FIXED_LOG_OFF + n as u64) as *mut u8,
+                byte,
+            );
+            core::ptr::addr_of_mut!(FIXED_LOG_LEN).write(n + 1);
+        }
+        let raw = core::ptr::read_volatile((TEXT_BLOCK_BASE + 4) as *const u32);
+        // The loader tramples the block header between boots (measured:
+        // magic and size both change run to run), so a garbage size would
+        // point this boot's append outside the log window - the log then
+        // survives nowhere a reader can see. Treat any out-of-range value
+        // as an empty block.
+        let size = if raw < TEXT_BLOCK_CAP { raw } else { 0 };
         if size < TEXT_BLOCK_CAP {
             core::ptr::write_volatile((TEXT_BLOCK_BASE + 12 + size as u64) as *mut u8, byte);
             core::ptr::write_volatile((TEXT_BLOCK_BASE + 4) as *mut u32, size + 1);
@@ -1017,8 +1035,23 @@ pub fn tee_flush() {
             );
             core::ptr::addr_of_mut!(TEXT_BLOCK_CLEANED).write(size);
         }
+        // The header-independent copy at FIXED_LOG_OFF needs the same drain
+        // while the data cache is on; it is what the ZB/ZK probes read.
+        let fixed = core::ptr::addr_of!(FIXED_LOG_LEN).read();
+        let fixed_cleaned = core::ptr::addr_of!(FIXED_LOG_CLEANED).read();
+        if fixed > fixed_cleaned {
+            cache_clean(
+                (TEXT_BLOCK_BASE + FIXED_LOG_OFF + fixed_cleaned as u64) as usize,
+                fixed - fixed_cleaned,
+            );
+            core::ptr::addr_of_mut!(FIXED_LOG_CLEANED).write(fixed);
+        }
     }
 }
+
+/// Bytes of the fixed log copy already cleaned by `tee_flush` this boot.
+#[cfg(fullerene_aarch64_ane)]
+static mut FIXED_LOG_CLEANED: usize = 0;
 
 /// Bytes of the private text block already cleaned by `tee_flush`. BSS zeroes
 /// it every boot; it is only ever read and written post-relocation.
@@ -1071,13 +1104,23 @@ const ANE_PSTORE_WINDOW: u64 = 0x10_0000;
 /// either side touches it during an ordinary boot. 56 KiB of text, ending
 /// 4 KiB below the marks so the two can never meet.
 #[cfg(fullerene_aarch64_ane)]
-pub const TEXT_BLOCK_BASE: u64 = 0x348d_0000;
-/// "FTLX" little-endian: the first four bytes of a live block.
+pub const TEXT_BLOCK_BASE: u64 = 0x348d_0000;/// "FTLX" little-endian: the first four bytes of a live block.
 #[cfg(fullerene_aarch64_ane)]
 pub const TEXT_BLOCK_MAGIC: u32 = 0x584c_5446;
 /// Text capacity of the block; header is magic/size/cap (12 bytes).
 #[cfg(fullerene_aarch64_ane)]
 pub const TEXT_BLOCK_CAP: u32 = 0xe000;
+/// Offset of the header-independent log copy inside the block. The header
+/// (magic/size/cap) is trampled by loader boots, so this copy appends from a
+/// per-boot counter instead and stays findable at a fixed address.
+#[cfg(fullerene_aarch64_ane)]
+const FIXED_LOG_OFF: u64 = 0x4000;
+/// Capacity of the fixed copy (the renderer's window is far smaller).
+#[cfg(fullerene_aarch64_ane)]
+const FIXED_LOG_CAP: usize = 0x1c00;
+/// Bytes written to the fixed copy this boot (BSS zeroes it every boot).
+#[cfg(fullerene_aarch64_ane)]
+static mut FIXED_LOG_LEN: usize = 0;
 
 /// The ANE-LX2J's first durable mark of a boot, written before any device
 /// register is touched.

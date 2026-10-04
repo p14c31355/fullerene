@@ -858,6 +858,18 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // t = the loader's instruction cache dropped, s = SCTLR_EL1 flipped
     // (MMU and instruction cache live, data cache left off on the ANE).
     mmu::init();
+    // ANE fingerprint: with our own identity map live, plant a known word at
+    // the private block's +0x20 so the next boot's screen probe (its ZK row
+    // reads this back) can tell whether the kernel's plain stores reach the
+    // region at all. The loader-side probe's own fingerprint already lands
+    // (its ZH row shows FTLX/FEED), so a missing KRNL here isolates the
+    // failure to the kernel's world.
+    #[cfg(fullerene_aarch64_ane)]
+    unsafe {
+        let p = 0x348d_0020 as *mut u32;
+        core::ptr::write_volatile(p, 0x4c4e_524b); // "KRNL" little-endian
+        core::ptr::write_volatile(p.add(1), 0x5445_5345); // "ESET"
+    }
     // Mark d stays retired: the in-init r/s pair already brackets the
     // SCTLR switch, so the post-return position is covered by e below.
     uart::puts("mmu: identity map and caches ready\n");
@@ -914,6 +926,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         let elapsed = timer::counter().wrapping_sub(before);
         uart::puts("timer: generic counter ready, ticks=");
         uart::put_hex_value(elapsed);
+        // Host-timed measurement hook: the run is timed host-side from the
+        // flash to the fallback window, so pairing cntfrq + uptime here with
+        // the heartbeat lines at the end yields the real counter frequency.
+        uart::put_hex(" cntfrq=", timer::frequency());
+        uart::put_hex(" up_ms=", timer::uptime_us() / 1_000);
     } else {
         uart::puts("timer: CNTFRQ_EL0 is zero; running without the generic counter\n");
     }
@@ -922,6 +939,70 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // block holds 16 bytes and the bring-up is currently stopped well before
     // this point (observed 2026-10-04: the run records end at a, h, or i).
     // Re-add a mark here once the timer stage is being reached.
+
+    // The loader arms the SP805 watchdog for the boot attempt; the OS is
+    // expected to take it over. Report its state once (read-only) - the feed
+    // itself runs from the timer IRQ.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        let wd = platform::ane::watchdog_state();
+        uart::put_hex("ane: sp805 load=", wd.load as u64);
+        uart::put_hex(" value=", wd.value as u64);
+        uart::put_hex(" ctrl=", wd.control as u64);
+        uart::put_hex(" lock=", wd.lock as u64);
+    }
+
+    // The USB bring-up runs once here: the vendor sequence ported into
+    // platform::ane, reported on the console the same boot. Cross-boot
+    // handoff turned out to be impossible - the loader re-initialises DRAM
+    // every boot (measured six times) - so the writer must also be the
+    // reporter. DCTL is the critical readback: SftDiscon stayed cleared
+    // only if there is a real attach for the host to see.
+    /// The ANE console mirror the platform self-reports use (tee -> durable
+    /// log), shared by the USB bring-up report and the device-side service.
+    #[cfg(fullerene_aarch64_ane)]
+    fn ane_log(label: &str, value: u64) {
+        uart::put_hex(label, value);
+        uart::puts("\n");
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        let usb = platform::ane::usb_bringup();
+        uart::put_hex("usb: abb=", usb.abb as u64);
+        uart::put_hex(" ppll0=", usb.ppll0.0 as u64);
+        uart::put_hex("->", usb.ppll0.1 as u64);
+        uart::puts("\n");
+        uart::put_hex("usb: gusbcfg=", usb.core[0] as u64);
+        uart::put_hex(" dcfg=", usb.core[1] as u64);
+        uart::put_hex(" dctl=", usb.core[2] as u64);
+        uart::put_hex(" gintsts=", usb.core[3] as u64);
+        uart::puts("\n");
+        uart::put_hex("usb: phy0=", usb.phy[0] as u64);
+        uart::put_hex(" phy4=", usb.phy[1] as u64);
+        uart::put_hex(" phy8=", usb.phy[2] as u64);
+        uart::put_hex(" phyc=", usb.phy[3] as u64);
+        uart::puts("\n");
+        // Same-boot on-screen report: the writer is also the reporter, so
+        // the USB readbacks above are painted on the panel by this boot.
+        // Every stage is also mirrored to this console (tee -> durable log)
+        // so the v7f reader can show where a silent stop happened.
+        //
+        // DISABLED (v13): the ane_fb runs above measured out the log channel
+        // and the panel in every build since v11 (v11d kept the log dead with
+        // no usb_dev in the image, so the fb path is the suspect). Re-enable
+        // once its writes are proven not to touch the kernel's own state.
+        // platform::ane_fb::report(&usb, ane_log);
+        // Device-side USB: answer the host's control transfers now that the
+        // link is up (EP0 + descriptors; fastboot bulk is the next stage).
+        platform::ane_usb_dev::init(ane_log);
+    }
+    // The usb report above is the newest text in the private block and sits
+    // behind plain stores; the loader's reset comes long after the last
+    // allocator flush, so the cache must drain now or the report dies with
+    // the boot. tee_flush is safe to call repeatedly (appends only new bytes).
+    #[cfg(fullerene_aarch64_ane)]
+    crate::blackbox::tee_flush();
 
     // The UFS platform/storage backend is a Bramble build opt-in. Flasks
     // enables the read-only attempt for `--android-init` images; the direct
@@ -1011,6 +1092,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // inside the IRQ handler in the log tail.
     uart::puts("ane: entering wait loop\n");
     loop {
+        // Serve the device-side USB control transfers in the same loop.
+        // The wait loop already wakes on the timer IRQ (the watchdog feed),
+        // so one poll pass per wake keeps the host's transfers answered.
+        #[cfg(fullerene_aarch64_ane)]
+        platform::ane_usb_dev::service(ane_log);
         // The controller-IRQ A/B gives the DWC3 SPI exclusive ownership of
         // the event ring.  Its exception path calls usb::poll() after the
         // GIC acknowledges that SPI; polling here as well would consume the

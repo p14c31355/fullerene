@@ -276,6 +276,18 @@ impl PhysicalFrameAllocator {
             core::ptr::addr_of!(__ufs_dma_end) as u64,
         ));
         unsafe { super::entry::ane_step_byte(b'k') };
+        // The ANE diagnostic tail: the FTLX log block (blackbox) and the
+        // mark/scratch page at 0x348DF000 live in an unused RAM tail that is
+        // in no reserved-memory node. stepmarks20's six-minute run proved
+        // that the frame allocator otherwise owns the page: it was handed out
+        // to the long-running timer/task work and the log read-out fell back
+        // to the stale pmsg banner. The zones are append-only diagnostics,
+        // so reserve the whole 64 KiB and keep it out of the pool for good.
+        #[cfg(fullerene_aarch64_ane)]
+        allocator.push_reserved(
+            AddressRange::new(crate::blackbox::TEXT_BLOCK_BASE, 0x1_0000)
+                .unwrap_or(AddressRange::EMPTY),
+        );
         if info.fdt_address != 0 {
             let mut reserved_regions = [fdt::Region { base: 0, size: 0 }; MAX_RESERVED_RANGES];
             let reserved_count =

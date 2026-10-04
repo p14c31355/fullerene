@@ -170,10 +170,14 @@ pub fn init() {
         sctlr &= !(1 << 19); // WXN would make the RW bootstrap blocks non-executable.
         #[cfg(fullerene_aarch64_ane)]
         {
-            // Data cache deliberately OFF on the ANE while the stale-line
-            // question is open: running uncached is deterministic, and it is
-            // the one state in which no cache content can influence the boot.
-            sctlr &= !(1 << 2);
+            // 2026-10-04: data cache turned ON for the measurement. With C=0
+            // (uncached Normal) the kernel's byte stores to the private log
+            // block landed only on even addresses - the ZH/ZB probe read back
+            // "46 00 4C 44 45 00 ..." for the log's "FULLERENE..." (odd bytes
+            // stale), while the loader-side probe's own stores at the same
+            // addresses were clean. Cacheable write-back is the one variable
+            // that differs, so C=1 plus the tee_flush's clean is the fix test.
+            sctlr |= 1 << 2;
         }
         sctlr |= 1 | (1 << 12); // MMU and instruction cache only.
         asm!(

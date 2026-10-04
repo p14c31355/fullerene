@@ -404,9 +404,21 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             use core::sync::atomic::{AtomicU32, Ordering};
             static HEARTBEATS: AtomicU32 = AtomicU32::new(0);
             let beats = HEARTBEATS.fetch_add(1, Ordering::Relaxed);
+            // Take over the loader's SP805 boot watchdog: feed it every 512th
+            // timer interrupt (tens of milliseconds now; about half a second
+            // once the counter frequency is corrected). A wedged kernel stops
+            // feeding and the loader's fallback still runs.
+            if beats % 512 == 0 {
+                super::platform::ane::watchdog_kick();
+            }
             if beats != 0 && beats % 10_000 == 0 {
                 uart::put_hex("hb: count=", beats as u64);
                 uart::put_hex(" hb: secs=", super::timer::uptime_us() / 1_000_000);
+                // The SP805's live countdown: a value that resets between
+                // beats proves the feed is reaching the watchdog.
+                let wd = super::platform::ane::watchdog_state();
+                uart::put_hex(" wd: ctrl=", wd.control as u64);
+                uart::put_hex(" wd: value=", wd.value as u64);
             }
         }
         #[cfg(all(
