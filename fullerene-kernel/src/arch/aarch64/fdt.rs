@@ -218,7 +218,12 @@ pub fn find_memory_regions(address: u64, out: &mut [Region]) -> usize {
 /// by early device bring-up to reject an arena that overlaps one of those
 /// reservations before a controller can receive its address.
 pub fn find_reserved_memory_regions(address: u64, out: &mut [Region]) -> usize {
+    // Mark l: the reserved-memory walk entry (k->l is the current wall).
+    unsafe { super::entry::ane_step_byte(b'l') };
     let mut states = [ReservedMemoryNodeState::new(); 16];
+    // Mark m: the 16-slot node-state scratch is up (if the screen stops at m,
+    // the walk's visitor frame is what the device cannot survive).
+    unsafe { super::entry::ane_step_byte(b'm') };
     let mut count = 0usize;
     let walk_result = walk_structure(address, |event| {
         match event {
@@ -278,6 +283,8 @@ pub fn find_reserved_memory_regions(address: u64, out: &mut [Region]) -> usize {
         }
         true
     });
+    // Mark n: the structure walk returned.
+    unsafe { super::entry::ane_step_byte(b'n') };
     if walk_result.is_some() { count } else { 0 }
 }
 

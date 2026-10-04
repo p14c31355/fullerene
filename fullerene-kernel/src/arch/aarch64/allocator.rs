@@ -38,6 +38,13 @@ static ALLOCATOR: BumpAllocator = BumpAllocator {
     next: AtomicUsize::new(0),
 };
 
+/// Print a step, then push the RAM tee into the pmsg zone immediately so the
+/// screen reader can see exactly how far the allocator entry got.
+fn trace(msg: &str) {
+    super::uart::puts(msg);
+    crate::blackbox::tee_flush();
+}
+
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let base = unsafe { core::ptr::addr_of_mut!(HEAP_STORAGE.0) as usize };
@@ -165,12 +172,22 @@ impl PhysicalFrameAllocator {
         {
             return None;
         }
+        unsafe { super::entry::ane_step_byte(b'h') };
+        // MMU and caches are up by now: flush the RAM tee into the pmsg zone
+        // instead of touching the pstore machinery on every console byte far
+        // earlier in the boot.
+        trace("alloc: enter\n");
+        unsafe { super::entry::ane_step_byte(b'f') };
         let count = (info.memory_map_size as usize)
             .checked_div(core::mem::size_of::<fdt::Region>())?
             .min(MAX_FRAME_RANGES);
+        trace("alloc: count ok\n");
+        unsafe { super::entry::ane_step_byte(b'g') };
         let regions = unsafe {
             core::slice::from_raw_parts(info.memory_map_address as *const fdt::Region, count)
         };
+        trace("alloc: slice ok\n");
+        unsafe { super::entry::ane_step_byte(b'i') };
         let mut allocator = Self {
             regions: [AddressRange::EMPTY; MAX_FRAME_RANGES],
             region_count: 0,
@@ -182,6 +199,7 @@ impl PhysicalFrameAllocator {
             released_count: 0,
             shared: [SharedFrame::EMPTY; MAX_SHARED_FRAMES],
         };
+        unsafe { super::entry::ane_step_byte(b'j') };
 
         // The linker image, DTB, and fixed USB DMA/trace sections must not be
         // handed to a future page-table or userspace allocator.
@@ -211,6 +229,7 @@ impl PhysicalFrameAllocator {
             core::ptr::addr_of!(__ufs_dma_start) as u64,
             core::ptr::addr_of!(__ufs_dma_end) as u64,
         ));
+        unsafe { super::entry::ane_step_byte(b'k') };
         if info.fdt_address != 0 {
             let mut reserved_regions = [fdt::Region { base: 0, size: 0 }; MAX_RESERVED_RANGES];
             let reserved_count =
@@ -221,12 +240,14 @@ impl PhysicalFrameAllocator {
                 );
             }
         }
+        unsafe { super::entry::ane_step_byte(b'l') };
         if let Some(header) = fdt::inspect(info.fdt_address) {
             allocator.push_reserved(
                 AddressRange::new(info.fdt_address, header.total_size as u64)
                     .unwrap_or(AddressRange::EMPTY),
             );
         }
+        unsafe { super::entry::ane_step_byte(b'm') };
 
         for region in regions {
             if let Some(range) = AddressRange::new(region.base, region.size) {
@@ -241,6 +262,7 @@ impl PhysicalFrameAllocator {
             .first()
             .map(|range| range.start)
             .unwrap_or(0);
+        unsafe { super::entry::ane_step_byte(b'n') };
         Some(allocator)
     }
 

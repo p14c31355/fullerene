@@ -937,6 +937,61 @@ pub fn append_text_log(code: u32) {
     }
 }
 
+/// Boot-time RAM tee: every console byte lands here until the first flush.
+///
+/// Plain RAM stores only - no cache maintenance, no pstore header juggling -
+/// so nothing in the tee path can fault before the kernel's own MMU is up.
+/// The ANE bring-up measured a regression at the 9->a mark (the first UART
+/// write after `mmu::init`) that appeared only once the tee wrote straight
+/// into the pmsg zone; this buffer keeps the log available without touching
+/// the pstore machinery pre-MMU.
+static mut TEE_RAM: [u8; TEE_CAP] = [0; TEE_CAP];
+static mut TEE_LEN: usize = 0;
+
+/// Capacity of the boot tee; the renderer's window is far smaller.
+const TEE_CAP: usize = 4096;
+
+pub fn text_byte(byte: u8) {
+    // Upper-case on the way in: the read-back font carries digits, A-F and
+    // the punctuation subset only, so folding letters keeps every log line
+    // renderable on the device's own screen console.
+    let byte = if byte.is_ascii_lowercase() {
+        byte - 32
+    } else {
+        byte
+    };
+    unsafe {
+        let len = core::ptr::addr_of!(TEE_LEN).read();
+        if len < TEE_CAP {
+            let buf = core::ptr::addr_of_mut!(TEE_RAM) as *mut u8;
+            buf.add(len).write(byte);
+            core::ptr::addr_of_mut!(TEE_LEN).write(len + 1);
+        }
+    }
+}
+
+static mut TEE_FLUSHED: usize = 0;
+
+/// Copy the RAM tee's unflushed tail into every ready durable text log. Call
+/// after the kernel's MMU and caches are up; the allocator's entry is the
+/// natural first point. Safe to call repeatedly - each call appends only the
+/// bytes written since the previous flush.
+pub fn tee_flush() {
+    let len = unsafe { core::ptr::addr_of!(TEE_LEN).read() };
+    let start = unsafe { core::ptr::addr_of!(TEE_FLUSHED).read() };
+    let (primary, alt) = pstore_ready();
+    for i in start..len {
+        let b = unsafe { (core::ptr::addr_of!(TEE_RAM) as *const u8).add(i).read() };
+        if primary {
+            append_text_byte((unsafe { PSTORE_BASE }) + PMSG_ZONE_OFFSET, b);
+        }
+        if alt {
+            append_text_byte((unsafe { PSTORE_ALT_BASE }) + PMSG_ZONE_OFFSET, b);
+        }
+    }
+    unsafe { core::ptr::addr_of_mut!(TEE_FLUSHED).write(len) };
+}
+
 /// Mark the start of a new boot's segment, so a reader can tell the previous boot's records
 /// from this one's. The ordinal is the number of segments already in the log plus one, which
 /// survives a reboot because the log does.

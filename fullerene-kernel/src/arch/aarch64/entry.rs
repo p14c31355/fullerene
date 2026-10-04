@@ -1,6 +1,6 @@
 use core::arch::{asm, global_asm};
 
-const BOOT_STACK_SIZE: usize = 64 * 1024;
+const BOOT_STACK_SIZE: usize = 1024 * 1024;
 
 /// Values captured from the bootloader before the normal Rust entry starts.
 /// The bootstrap shim only establishes a stack and branches to
@@ -61,7 +61,8 @@ global_asm!(
      11: bic x10, x10, #1\n\
      msr sctlr_el2, x10\n\
      isb\n\
-     7: adr x9, __aarch64_boot_stack_top\n\
+     7: adrp x9, __aarch64_boot_stack_top\n\
+     add x9, x9, :lo12:__aarch64_boot_stack_top\n\
          mov sp, x9\n\
          b aarch64_bootstrap\n\
      .size _start, . - _start\n\
@@ -278,17 +279,13 @@ extern "C" fn aarch64_bootstrap(x0: usize, x1: usize, x2: usize, x3: usize) -> !
     unsafe { ane_step_begin() };
     unsafe { ane_step_byte(b'1') };
     let (current_el, runtime_entry) = read_boot_state();
-    unsafe { ane_step_byte(b'2') };
     let relocation_delta = aarch64_apply_relocations(runtime_entry);
-    unsafe { ane_step_byte(b'3') };
     zero_bss();
-    unsafe { ane_step_byte(b'4') };
 
     // QEMU's virt machine can hand the kernel directly to EL1. Keep that
     // path and the EL2 transition in one assembly boundary: both must leave
     // CPACR_EL1 ready before Rust performs ordinary copies.
     unsafe { configure_el1(current_el & 0xc == 0x8) };
-    unsafe { ane_step_byte(b'5') };
 
     let context = Aarch64BootContext {
         x0,
@@ -308,7 +305,8 @@ fn read_boot_state() -> (usize, usize) {
     unsafe {
         asm!(
             "mrs {current_el}, CurrentEL",
-            "adr {runtime_entry}, _start",
+            "adrp {runtime_entry}, _start",
+            "add {runtime_entry}, {runtime_entry}, :lo12:_start",
             current_el = out(reg) current_el,
             runtime_entry = out(reg) runtime_entry,
             options(nomem, nostack, preserves_flags),

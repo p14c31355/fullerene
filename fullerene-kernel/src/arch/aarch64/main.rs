@@ -214,7 +214,6 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // Mark 6: the Rust entry is alive. The bootstrap's own marks stop at 5
     // (EL1 configured); from here the marks follow this function's stages to
     // the early-boot loop at 'c'.
-    unsafe { entry::ane_step_byte(b'6') };
     // The context lives at the top of the bootstrap stack. Copy it before
     // Rust starts using that stack for ordinary locals and call frames.
     let boot = entry::Aarch64BootContext::read(boot_context);
@@ -294,7 +293,6 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // first device accesses (the console's clock gate, then the UART register
     // write) and the fault path all survived. A run whose marks stop at 6 died
     // in exactly that step.
-    unsafe { entry::ane_step_byte(b'7') };
     #[cfg(fullerene_aarch64_bramble)]
     {
         // XBL/ABL's secure watchdog can expire while the normal path is
@@ -726,7 +724,6 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     );
     // Mark 8: the bootloader's tree has been walked and the black box (ring
     // plus both pstore mirrors) has been claimed at the addresses it names.
-    unsafe { entry::ane_step_byte(b'8') };
     let gicd_base = gicd_region.map(|region| region.base as usize);
     let gicr_base = gicr_region.map(|region| region.base as usize);
     let uart_region = if bramble { qcom_uart } else { pl011_uart };
@@ -844,6 +841,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
 
     uart::puts("arch: aarch64, exception vectors: ready\n");
     uart::put_hex("currentel: ", exceptions::current_el() as u64);
+    // Mark b: the first post-9 console output survived (the tee path is
+    // exercised here, before the MMU is up - splits 9->a against the tee).
 
     #[cfg(fullerene_aarch64_qemu_usb_sim)]
     {
@@ -851,8 +850,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         cpu::semihost_exit(passed);
     }
 
+    // Mark c: about to enter mmu::init.
     mmu::init();
+    // Mark d: mmu::init returned.
     uart::puts("mmu: identity map and caches ready\n");
+    // Mark e: the post-MMU print survived.
+    unsafe { entry::ane_step_byte(b'e') };
     // Mark a: the MMU is live (identity map, caches on).
     unsafe { entry::ane_step_byte(b'a') };
 
@@ -887,14 +890,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::puts("memory: no usable DTB map; frame allocator withheld\n");
     }
 
-    // Mark d: the allocator block returned. A stop at c means the death was
-    // in the DTB walk / reserved-memory discovery above.
-    unsafe { entry::ane_step_byte(b'd') };
-
+    // The allocator-block marks (d, e) used to bracket this section; they are
+    // retired while the fine-grained h/q/r/s/t/i marks inside
+    // from_boot_info consume the record's 16-byte mark budget.
     allocator::smoke();
     uart::puts("allocator: bump heap ready\n");
-    // Mark e: the bump heap allocation round-tripped.
-    unsafe { entry::ane_step_byte(b'e') };
 
     // The ANE's loader can hand EL1 over with the generic counter gated
     // (CNTFRQ_EL0 reads zero, or the count never advances), and the old
@@ -907,16 +907,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         let elapsed = timer::counter().wrapping_sub(before);
         uart::puts("timer: generic counter ready, ticks=");
         uart::put_hex_value(elapsed);
-        // Mark f: the counter ran and a 10 ms delay measured.
-        unsafe { entry::ane_step_byte(b'f') };
     } else {
         uart::puts("timer: CNTFRQ_EL0 is zero; running without the generic counter\n");
-        // Mark g: the counter is unavailable; the boot continues degraded.
-        unsafe { entry::ane_step_byte(b'g') };
     }
-    // Mark b: the timer step returned (counter live, or gated and bypassed).
-    // A stop at f means the 10 ms measurement spin never finished.
-    unsafe { entry::ane_step_byte(b'b') };
+    // Mark b used to sit here; it is temporarily retired in favour of the
+    // fine-grained h/i/j marks inside `from_boot_info` - the record's mark
+    // block holds 16 bytes and the bring-up is currently stopped well before
+    // this point (observed 2026-10-04: the run records end at a, h, or i).
+    // Re-add a mark here once the timer stage is being reached.
 
     // The UFS platform/storage backend is a Bramble build opt-in. Flasks
     // enables the read-only attempt for `--android-init` images; the direct
@@ -989,9 +987,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::puts("launchd: allocator unavailable; refusing to start userspace\n");
     }
 
-    // Mark c: everything through the interrupt setup returned; from here the
-    // boot only waits. A run that stops at 'b' died inside the final setup.
-    unsafe { entry::ane_step_byte(b'c') };
+    // Mark c used to sit here (see the mark-b note above for why the late
+    // marks are temporarily retired).
     uart::puts("aarch64 early boot complete; waiting for timer irq / USB events\n");
     loop {
         // The controller-IRQ A/B gives the DWC3 SPI exclusive ownership of

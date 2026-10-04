@@ -152,6 +152,9 @@ pub fn init_qcom_geni(base: u64) {
 }
 
 pub fn putc(byte: u8) {
+    // Tee first, device second: the durable log must exist even when the UART
+    // itself wedges (the failure this device keeps producing).
+    crate::blackbox::text_byte(byte);
     let uart_base = BASE.load(Ordering::Relaxed);
     match BACKEND.load(Ordering::Relaxed) {
         value if value == Backend::QcomGeni as u8 => unsafe {
