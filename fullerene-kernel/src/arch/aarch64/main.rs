@@ -228,11 +228,41 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // The ANE-LX2J has no console an outside observer can read, so the only
     // channel a failed bring-up leaves behind is reserved RAM (its device tree
     // carries a ramoops window; see `crate::blackbox`). Writing the mark before
-    // the UART - the first register write of the whole boot - is what lets a
-    // later boot tell "the loader entered us and the early bring-up died" from
-    // "the loader never entered us": an entry record exists, or nothing does.
+    // the console's clock gate and UART - the first register writes of the
+    // whole boot - is what lets a later boot tell "the loader entered us and
+    // the early bring-up died" from "the loader never entered us": an entry
+    // record exists, or nothing does.
     #[cfg(fullerene_aarch64_ane)]
     crate::blackbox::mark_entry();
+
+    // Carry the previous boot's bare-metal l1d USB trace into the black box.
+    //
+    // The l1d probe leaves 24 [step, value] entries at a fixed address in the
+    // same reserved window these marks live in. Its boot ends in a loader
+    // park, so nothing on the USB side can report what happened - this copy,
+    // taken before the console path can die, is what makes the failure point
+    // readable at all. Two entries per record: arg0/arg1 hold
+    // (step << 32 | value) each, 12 records for the 24 entries. Runs after
+    // mark_entry() so both the record ring and the text zone are armed, and
+    // before the clock gate/UART so it is on the surviving side of any
+    // console-path death.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        let trace = entry::StepMarks::L1D_TRACE_ADDRESS as *const u32;
+        for i in 0..12u32 {
+            let base = (i * 4) as usize;
+            let s0 = unsafe { core::ptr::read_volatile(trace.add(base)) } as u64;
+            let v0 = unsafe { core::ptr::read_volatile(trace.add(base + 1)) } as u64;
+            let s1 = unsafe { core::ptr::read_volatile(trace.add(base + 2)) } as u64;
+            let v1 = unsafe { core::ptr::read_volatile(trace.add(base + 3)) } as u64;
+            crate::blackbox::record(
+                crate::blackbox::CODE_L1D_TRACE,
+                i as u64,
+                (s0 << 32) | v0,
+                (s1 << 32) | v1,
+            );
+        }
+    }
 
     // Establish a compiled-in console before looking at any bootloader
     // pointer. A vendor trampoline can hand us an invalid or absent DTB;
@@ -240,6 +270,13 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // handoff failure into an invisible synchronous abort.
     let compiled_bramble = cfg!(fullerene_aarch64_bramble);
     let compiled_ane = cfg!(fullerene_aarch64_ane);
+    if compiled_ane {
+        // The console's clock gate first: a loader that ran a console has it
+        // open already, but nothing guarantees that across a handoff, and a
+        // closed gate makes the very next step (the first PL011 write) the
+        // last thing this boot does. See platform::ane::open_uart_clock_gate.
+        platform::ane::open_uart_clock_gate();
+    }
     let early_uart_base = if compiled_bramble {
         platform::bramble::UART_BASE
     } else if compiled_ane {
@@ -254,8 +291,9 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     }
     exceptions::install();
     // Mark 7: the compiled-in console and the exception vectors are up - the
-    // first device access (the UART register write) and the fault path both
-    // survived. A run whose marks stop at 6 died in exactly that step.
+    // first device accesses (the console's clock gate, then the UART register
+    // write) and the fault path all survived. A run whose marks stop at 6 died
+    // in exactly that step.
     unsafe { entry::ane_step_byte(b'7') };
     #[cfg(fullerene_aarch64_bramble)]
     {
@@ -849,21 +887,35 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::puts("memory: no usable DTB map; frame allocator withheld\n");
     }
 
+    // Mark d: the allocator block returned. A stop at c means the death was
+    // in the DTB walk / reserved-memory discovery above.
+    unsafe { entry::ane_step_byte(b'd') };
+
     allocator::smoke();
     uart::puts("allocator: bump heap ready\n");
+    // Mark e: the bump heap allocation round-tripped.
+    unsafe { entry::ane_step_byte(b'e') };
 
-    if !timer::init() {
-        uart::puts("timer: CNTFRQ_EL0 is zero; refusing to use the timer\n");
-        loop {
-            cpu::wait_for_event();
-        }
+    // The ANE's loader can hand EL1 over with the generic counter gated
+    // (CNTFRQ_EL0 reads zero, or the count never advances), and the old
+    // "refuse to use the timer" path parked the boot right here - observed
+    // 2026-10-04 as the first stop after the MMU fix (record: ...9a).
+    // Measure when the counter is alive; proceed either way.
+    if timer::init() {
+        let before = timer::counter();
+        timer::delay_ms(10);
+        let elapsed = timer::counter().wrapping_sub(before);
+        uart::puts("timer: generic counter ready, ticks=");
+        uart::put_hex_value(elapsed);
+        // Mark f: the counter ran and a 10 ms delay measured.
+        unsafe { entry::ane_step_byte(b'f') };
+    } else {
+        uart::puts("timer: CNTFRQ_EL0 is zero; running without the generic counter\n");
+        // Mark g: the counter is unavailable; the boot continues degraded.
+        unsafe { entry::ane_step_byte(b'g') };
     }
-    let before = timer::counter();
-    timer::delay_ms(10);
-    let elapsed = timer::counter().wrapping_sub(before);
-    uart::puts("timer: generic counter ready, ticks=");
-    uart::put_hex_value(elapsed);
-    // Mark b: the timer works (the counter ran and a 10 ms delay measured).
+    // Mark b: the timer step returned (counter live, or gated and bypassed).
+    // A stop at f means the 10 ms measurement spin never finished.
     unsafe { entry::ane_step_byte(b'b') };
 
     // The UFS platform/storage backend is a Bramble build opt-in. Flasks

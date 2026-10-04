@@ -881,23 +881,80 @@ fn page_descriptor(
     descriptor
 }
 
-fn is_mmio(physical: u64) -> bool {
-    const MMIO_RANGES: &[(u64, u64)] = &[
-        (0x0800_0000, 0x09ff_ffff),
-        (0x0010_0000, 0x001f_ffff),
-        (0x0080_0000, 0x009f_ffff),
-        (0x17a0_0000, 0x17c1_ffff),
-        (0x0a60_0000, 0x0a6f_ffff),
-        (0x1500_0000, 0x153f_ffff),
-        (0x0c20_0000, 0x0c3f_ffff),
-        (0x0c40_0000, 0x0e7f_ffff),
-    ];
+/// The active platform's Device aperture for the early identity map.
+///
+/// The tables live in the platform modules because the classification is a
+/// property of the SoC, not of the MMU: the same 2 MiB block can be a UART on
+/// one chip and DRAM on another.
+fn mmio_ranges() -> &'static [(u64, u64)] {
+    if cfg!(fullerene_aarch64_ane) {
+        super::platform::ane::MMIO_RANGES
+    } else if cfg!(fullerene_aarch64_bramble) {
+        super::platform::bramble::MMIO_RANGES
+    } else {
+        super::platform::qemu_virt::MMIO_RANGES
+    }
+}
+
+/// True when the 2 MiB identity block containing `physical` overlaps any
+/// Device range.
+fn in_mmio_ranges(ranges: &[(u64, u64)], physical: u64) -> bool {
     let block_end = physical.saturating_add(BLOCK_SIZE - 1);
-    if MMIO_RANGES
+    ranges
         .iter()
         .any(|(start, end)| physical <= *end && block_end >= *start)
-    {
-        return true;
+}
+
+fn is_mmio(physical: u64) -> bool {
+    in_mmio_ranges(mmio_ranges(), physical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::platform;
+    use super::*;
+
+    #[test]
+    fn ane_aperture_is_device_and_ram_stays_normal() {
+        let ranges = platform::ane::MMIO_RANGES;
+        for address in [
+            0xfdf0_2000u64, // PL011 console - the first post-MMU write
+            0xe862_0000,    // DSS VG0
+            0xe865_a000,    // DSS WCH0
+            0xff10_0000,    // susb controller window
+            0xfff3_5000,    // CRG
+            0xffff_ffff,    // top of the 32-bit aperture
+        ] {
+            assert!(
+                in_mmio_ranges(ranges, address),
+                "{address:#x} must be Device on hi6250"
+            );
+        }
+        for address in [
+            0x3100_0000u64, // graphic carveout - the visible scan surface
+            0x01ae_0000,    // the kernel's own embedded payload island
+            0x0800_0000,    // plain RAM below 0xE000_0000 (legacy list entry)
+            0x8000_0000,    // second RAM bank
+            0x3490_0000,    // carveout region inside RAM
+            0x1234_5678,    // ordinary low RAM
+        ] {
+            assert!(
+                !in_mmio_ranges(ranges, address),
+                "{address:#x} must stay Normal on hi6250"
+            );
+        }
     }
-    false
+
+    #[test]
+    fn bramble_and_qemu_tables_keep_their_peripherals() {
+        for ranges in [
+            platform::bramble::MMIO_RANGES,
+            platform::qemu_virt::MMIO_RANGES,
+        ] {
+            assert!(in_mmio_ranges(ranges, 0x0098_8000), "SM7250 UART");
+            assert!(in_mmio_ranges(ranges, 0x17a0_0000), "SM7250 GICD");
+            assert!(in_mmio_ranges(ranges, 0x0900_0000), "QEMU PL011");
+            assert!(in_mmio_ranges(ranges, 0x0800_0000), "QEMU GICD");
+        }
+    }
 }

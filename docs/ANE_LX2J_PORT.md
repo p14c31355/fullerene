@@ -86,26 +86,28 @@ on `fullerene_aarch64_ane`.
 | L2 | did the DT parse and the runtime start? | later stage codes |
 | L3 | did anything device-facing come up? | USB enumeration changes; console mirror content |
 
-`mark_entry()` is deliberately placed *before* the UART write - the first
-register access of the whole boot - so L0 is answerable even when everything
-after it dies.
+`mark_entry()` is deliberately placed *before* the first device register access -
+the console's clock gate, then the UART write - so L0 is answerable even when
+everything after it dies.
 
 ## Host-side preflight (no device needed)
 
 `ane_qemu_preflight.sh` runs the real Image on QEMU's generic ARM virt machine.
-QEMU does not model this board, and that is the point: the PL011 the kernel
-inits at `0xfdf02000` does not exist there, so its first register write is
-*rejected* and QEMU logs the address. Getting that far requires the entry stub,
+QEMU does not model this board, and that is the point: neither the console's
+clock gate (CRG+0x20 at `0xfff35020`) nor the PL011 the kernel inits at
+`0xfdf02000` exists there, so the first device register write is *rejected* and
+QEMU logs the address. Getting that far requires the entry stub,
 the static-PIE relocations, BSS zeroing, the Rust entry and `mark_entry` to have
 all completed - the mark's own accesses land in QEMU's unassigned low memory,
 which is silently swallowed rather than rejected, so the first *rejected* access
-is the UART's.
+is the first device write.
 
-Measured on the built image:
+Measured on the built image, two epochs (the gate was added 2026-10-03):
 
 ```text
-first rejected device access: 0xFDF02030      (PL011 CR, UART_BASE + 0x30)
-Data Abort  FAR 0xfdf02030  ELR 0x400d1724    (image loaded at 0x40080000)
+first rejected device access: 0xFFF35020      (CRG+0x20, console clock gate; current)
+first rejected device access: 0xFDF02030      (PL011 CR, UART_BASE + 0x30; before the gate)
+Data Abort  FAR 0xfdf02030  ELR 0x400d1724    (older build, image loaded at 0x40080000)
 ```
 
 `0x400d1724` is the `str wzr, [x8]` immediately after the inlined `mark_entry`

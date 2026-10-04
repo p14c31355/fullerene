@@ -3648,6 +3648,22 @@ pub unsafe fn refresh_usb_qmp_power() -> bool {
     ok
 }
 
+/// The early identity map's Device aperture: the shared list that served the
+/// Bramble (SM7250) and QEMU virt bring-ups (`mmu::is_mmio` before the
+/// per-platform split). ANE carries its own table
+/// (`platform::ane::MMIO_RANGES`) because several entries here name plain
+/// RAM on hi6250.
+pub const MMIO_RANGES: &[(u64, u64)] = &[
+    (0x0800_0000, 0x09ff_ffff),
+    (0x0010_0000, 0x001f_ffff),
+    (0x0080_0000, 0x009f_ffff),
+    (0x17a0_0000, 0x17c1_ffff),
+    (0x0a60_0000, 0x0a6f_ffff),
+    (0x1500_0000, 0x153f_ffff),
+    (0x0c20_0000, 0x0c3f_ffff),
+    (0x0c40_0000, 0x0e7f_ffff),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -105,6 +105,13 @@ impl StepMarks {
     /// at boot before anything could read it.
     pub const ADDRESS: usize = 0x348d_f000;
     pub const MAGIC: u32 = 0x4D45_4E41; // "ANEM" little-endian
+
+    /// Where the bare-metal l1d USB probe leaves its 24-entry [step, value]
+    /// trace (2 u32 per entry). Same reserved ramoops window, 0x1F000 below
+    /// the step-mark block, so the two never overlap and both survive a
+    /// reset. This address is a compile-time contract with the probe's device
+    /// build (`TRACE_BASE=0x348c0000` in ane_usb_l1d_probe.sh).
+    pub const L1D_TRACE_ADDRESS: usize = 0x348c_0000;
 }
 
 /// Marshal both readers' assumptions about the block layout into the build:
@@ -116,6 +123,84 @@ const _: () = assert!(core::mem::size_of::<StepMarks>() == 8 + STEP_MARKS_CAPACI
 /// a runaway loop cannot chew through the zone.
 #[cfg(fullerene_aarch64_ane)]
 const STEP_MARKS_CAPACITY: usize = 16;
+
+/// A fault taken before the kernel's own exception vectors exist must end in
+/// a park, not in the loader's recovery system.
+///
+/// `aarch64_rust_entry` installs the kernel vectors (`exceptions::install`)
+/// only after the console's clock gate and the UART are up - and that window
+/// is exactly where this port's early bring-up dies. A synchronous abort
+/// there is taken through whatever vectors the loader left behind, whose
+/// handlers end in the vendor rescue system (eRecovery). Measured on this
+/// handset, a boot that parks in WFE instead is answered by the loader with
+/// its fastboot window - the same end state the kernel's own fault path
+/// reaches via `exceptions::halt`. These vectors therefore exist only to
+/// park: installed before the first device access, and they append a fault
+/// byte ('F') to the step-mark block so the paint probe can show the death
+/// was a fault in this window rather than a silent stall.
+#[cfg(fullerene_aarch64_ane)]
+global_asm!(
+    ".section .text.ane_early_vectors,\"ax\"\n\
+     .balign 2048\n\
+     .global ane_early_vectors\n\
+     .type ane_early_vectors, %function\n\
+     ane_early_vectors:\n\
+     .rept 16\n\
+     b ane_early_vector_hang\n\
+     .space 124\n\
+     .endr\n\
+     .size ane_early_vectors, . - ane_early_vectors\n\
+     \n\
+     .global ane_early_vector_hang\n\
+     .type ane_early_vector_hang, %function\n\
+     ane_early_vector_hang:\n\
+     msr daifset, #0xf\n\
+     movz x19, #0xf000\n\
+     movk x19, #0x348d, lsl #16\n\
+     ldr w20, [x19, #4]\n\
+     cmp w20, #16\n\
+     b.hs 1f\n\
+     add x21, x19, x20\n\
+     mov w22, #0x46\n\
+     strb w22, [x21, #8]\n\
+     add w20, w20, #1\n\
+     str w20, [x19, #4]\n\
+     1: wfe\n\
+     b 1b\n\
+     .size ane_early_vector_hang, . - ane_early_vector_hang\n\
+     \n\
+     .global ane_install_early_vectors\n\
+     .type ane_install_early_vectors, %function\n\
+     ane_install_early_vectors:\n\
+     adrp x9, ane_early_vectors\n\
+     add x9, x9, :lo12:ane_early_vectors\n\
+     msr vbar_el1, x9\n\
+     mrs x10, CurrentEL\n\
+     cmp x10, #0x8\n\
+     b.ne 2f\n\
+     msr vbar_el2, x9\n\
+     2:\n\
+     isb\n\
+     ret\n\
+     .size ane_install_early_vectors, . - ane_install_early_vectors\n"
+);
+
+/// The fault byte above is an immediate store to the step-mark block; pin the
+/// Rust definition of the same block to it so the two cannot drift apart
+/// without breaking the build.
+#[cfg(fullerene_aarch64_ane)]
+const _: () = assert!(
+    StepMarks::ADDRESS == 0x348d_f000 && STEP_MARKS_CAPACITY == 16,
+    "ane_early_vector_hang in this file hardcodes the step-mark address and capacity"
+);
+
+#[cfg(fullerene_aarch64_ane)]
+unsafe extern "C" {
+    /// Install the park-only vectors above: VBAR_EL1 always, plus VBAR_EL2
+    /// when the loader handed over at EL2. Register-only, so it is safe
+    /// before relocation processing and before any device access.
+    fn ane_install_early_vectors();
+}
 
 /// Reset the ANE-LX2J's step-mark scratch to valid-and-empty, once per boot.
 ///
@@ -181,6 +266,15 @@ extern "C" fn aarch64_bootstrap(x0: usize, x1: usize, x2: usize, x3: usize) -> !
     // by the paint probe on a later boot: 1 = bootstrap reached, 2 = boot
     // state read, 3 = relocations applied, 4 = BSS cleared, 5 = EL1
     // configured, and the Rust entry (main.rs) continues at 6 through c.
+    //
+    // Park-only exception vectors first (see `ane_early_vectors` above):
+    // every device access below this point can fault, and the loader's own
+    // leftover vectors would answer such a fault with its recovery system
+    // (eRecovery) instead of its fastboot window.
+    #[cfg(fullerene_aarch64_ane)]
+    unsafe {
+        ane_install_early_vectors();
+    }
     unsafe { ane_step_begin() };
     unsafe { ane_step_byte(b'1') };
     let (current_el, runtime_entry) = read_boot_state();

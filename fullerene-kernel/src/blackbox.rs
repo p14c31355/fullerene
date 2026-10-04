@@ -246,6 +246,11 @@ pub const CODE_PROBE_NOT_RETIRED: u32 = 41;
 pub const CODE_PROBE_TRB_CONSUMED: u32 = 42;
 pub const CODE_PROBE_TRB_STILL_OWNED: u32 = 43;
 
+/// One record per two entries of the bare-metal l1d USB probe's 24-entry
+/// [step, value] trace, carried over before the console path can die.
+/// arg0 = (step_a << 32 | value_a), arg1 = (step_b << 32 | value_b).
+pub const CODE_L1D_TRACE: u32 = 96;
+
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Record {
