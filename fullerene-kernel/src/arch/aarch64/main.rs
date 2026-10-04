@@ -841,8 +841,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
 
     uart::puts("arch: aarch64, exception vectors: ready\n");
     uart::put_hex("currentel: ", exceptions::current_el() as u64);
-    // Mark b: the first post-9 console output survived (the tee path is
-    // exercised here, before the MMU is up - splits 9->a against the tee).
+    // Mark b was retired for stepmarks16: the 9->e splitter proved its point
+    // twice (stepmarks13/14), and the record's 16 slots now cover the GIC
+    // window (marks o/p). The console output above still exercises the tee
+    // path before the MMU is up.
 
     #[cfg(fullerene_aarch64_qemu_usb_sim)]
     {
@@ -850,9 +852,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         cpu::semihost_exit(passed);
     }
 
-    // Mark c: about to enter mmu::init.
+    // Mark c was retired with b (stepmarks16); the in-init q/r/t/s split
+    // below localises the flaky 9->e deaths: q = identity tables and user
+    // roots built, r = TTBR/MAIR/TCR written and the TLB invalidated,
+    // t = the loader's instruction cache dropped, s = SCTLR_EL1 flipped
+    // (MMU and instruction cache live, data cache left off on the ANE).
     mmu::init();
-    // Mark d: mmu::init returned.
+    // Mark d stays retired: the in-init r/s pair already brackets the
+    // SCTLR switch, so the post-return position is covered by e below.
     uart::puts("mmu: identity map and caches ready\n");
     // Mark e: the post-MMU print survived.
     unsafe { entry::ane_step_byte(b'e') };
@@ -971,11 +978,20 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // be live before launchd: native SLEEP and event deadlines are scheduler
     // waits, not architectural-counter spin loops. QEMU follows the same
     // ordering even though it has no physical Bramble handoff to perform.
+    // Mark o: about to bring up the interrupt controller. The ANE's is a
+    // memory-mapped GIC-400 (`arm,cortex-a9-gic`); the QEMU path's `msr
+    // ICC_*` sequence is an undefined instruction on this CPU and was the
+    // first post-timer death (stepmarks15: exception ELR at the msr).
+    unsafe { entry::ane_step_byte(b'o') };
     if bramble {
         platform::bramble::init_interrupt_controller(gicd_base, gicr_base);
+    } else if cfg!(fullerene_aarch64_ane) {
+        platform::ane::init_interrupt_controller(gicd_base, gicr_base);
     } else {
         platform::qemu_virt::init_interrupt_controller(gicd_base, gicr_base);
     }
+    // Mark p: the interrupt controller came back.
+    unsafe { entry::ane_step_byte(b'p') };
     timer::arm_ms(1);
     exceptions::enable_irqs();
     timer::mark_irq_ready();
@@ -990,6 +1006,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // Mark c used to sit here (see the mark-b note above for why the late
     // marks are temporarily retired).
     uart::puts("aarch64 early boot complete; waiting for timer irq / USB events\n");
+
+    // stepmarks18: one line that separates a pre-IRQ abort from an abort
+    // inside the IRQ handler in the log tail.
+    uart::puts("ane: entering wait loop\n");
     loop {
         // The controller-IRQ A/B gives the DWC3 SPI exclusive ownership of
         // the event ring.  Its exception path calls usb::poll() after the

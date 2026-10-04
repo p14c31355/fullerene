@@ -259,3 +259,17 @@ pub fn put_hex_value(value: u64) {
     }
     putc(b'\n');
 }
+
+/// Eight hex digits and no newline: the compact single-line form the ANE
+/// one-photo status report uses for 32-bit registers, where two values plus
+/// labels must fit one 45-character console line.
+pub fn put_hex32(label: &str, value: u32) {
+    puts(label);
+    for shift in (0..8).rev() {
+        let nibble = ((value >> (shift * 4)) & 0xf) as u8;
+        putc(match nibble {
+            0..=9 => b'0' + nibble,
+            _ => b'a' + (nibble - 10),
+        });
+    }
+}

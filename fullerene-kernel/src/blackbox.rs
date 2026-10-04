@@ -968,6 +968,17 @@ pub fn text_byte(byte: u8) {
             core::ptr::addr_of_mut!(TEE_LEN).write(len + 1);
         }
     }
+    // Mirror into the private durable block as well. Plain stores at a fixed
+    // absolute address, so this works before the MMU (the loader's fallback
+    // reset then leaves the text behind) and needs no pstore machinery.
+    #[cfg(fullerene_aarch64_ane)]
+    unsafe {
+        let size = core::ptr::read_volatile((TEXT_BLOCK_BASE + 4) as *const u32);
+        if size < TEXT_BLOCK_CAP {
+            core::ptr::write_volatile((TEXT_BLOCK_BASE + 12 + size as u64) as *mut u8, byte);
+            core::ptr::write_volatile((TEXT_BLOCK_BASE + 4) as *mut u32, size + 1);
+        }
+    }
 }
 
 static mut TEE_FLUSHED: usize = 0;
@@ -990,7 +1001,29 @@ pub fn tee_flush() {
         }
     }
     unsafe { core::ptr::addr_of_mut!(TEE_FLUSHED).write(len) };
+    // The private block's bytes were written plain; make the new range durable
+    // so the loader's fallback reset finishes with them already in RAM. Only
+    // the range written since the last flush is cleaned (BSS zeroes the
+    // watermark every boot, so this is a full clean exactly after the first
+    // flush that closes a pre-MMU stretch).
+    #[cfg(fullerene_aarch64_ane)]
+    unsafe {
+        let size = core::ptr::read_volatile((TEXT_BLOCK_BASE + 4) as *const u32);
+        let cleaned = core::ptr::addr_of!(TEXT_BLOCK_CLEANED).read();
+        if size > cleaned {
+            cache_clean(
+                (TEXT_BLOCK_BASE + 12 + cleaned as u64) as usize,
+                (size - cleaned) as usize,
+            );
+            core::ptr::addr_of_mut!(TEXT_BLOCK_CLEANED).write(size);
+        }
+    }
 }
+
+/// Bytes of the private text block already cleaned by `tee_flush`. BSS zeroes
+/// it every boot; it is only ever read and written post-relocation.
+#[cfg(fullerene_aarch64_ane)]
+static mut TEXT_BLOCK_CLEANED: u32 = 0;
 
 /// Mark the start of a new boot's segment, so a reader can tell the previous boot's records
 /// from this one's. The ordinal is the number of segments already in the log plus one, which
@@ -1025,6 +1058,26 @@ pub fn open_text_segment() -> u32 {
 /// end to end inside the 0x100000 reservation.
 #[cfg(fullerene_aarch64_ane)]
 const ANE_PSTORE_WINDOW: u64 = 0x10_0000;
+
+/// The private durable text block: the one-photo console's log source.
+///
+/// The pmsg zone cannot serve this: the Huawei-side fallback boots between
+/// ours zero its header (`start`/`size` reset; measured 2026-10-04 as the ZH
+/// row reading `sig ok / start 0 / size 0`, which also made the screen reader
+/// show the zone from its start and look frozen). This block lives in the
+/// ramoops console zone's unused tail - the same argument as the step-mark
+/// scratch 4 KiB above it: no pstore reader interprets the tail (the console
+/// mirror writes at most a kilobyte at the zone's start), and nothing on
+/// either side touches it during an ordinary boot. 56 KiB of text, ending
+/// 4 KiB below the marks so the two can never meet.
+#[cfg(fullerene_aarch64_ane)]
+pub const TEXT_BLOCK_BASE: u64 = 0x348d_0000;
+/// "FTLX" little-endian: the first four bytes of a live block.
+#[cfg(fullerene_aarch64_ane)]
+pub const TEXT_BLOCK_MAGIC: u32 = 0x584c_5446;
+/// Text capacity of the block; header is magic/size/cap (12 bytes).
+#[cfg(fullerene_aarch64_ane)]
+pub const TEXT_BLOCK_CAP: u32 = 0xe000;
 
 /// The ANE-LX2J's first durable mark of a boot, written before any device
 /// register is touched.

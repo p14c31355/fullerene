@@ -127,6 +127,9 @@ pub fn init() {
                 table_descriptor(core::ptr::addr_of!(L2_3) as u64),
             );
         }
+        // Mark q: the L1/L2 identity tables and every user-space root are
+        // built; the register programming below commits them.
+        super::entry::ane_step_byte(b'q');
         // QEMU places its DTB at 0x44000000; Bramble's normal DRAM load
         // address is 0x80080000 (DRAM base plus the arm64 Image text offset).
         // Mapping through 0xffffffff keeps both entry contracts identity
@@ -147,11 +150,32 @@ pub fn init() {
             "isb",
             options(nostack)
         );
+        // Mark r: TTBR0/MAIR/TCR are programmed and the TLB is invalidated.
+        super::entry::ane_step_byte(b'r');
+        // The loader handed over with its caches in an unknown state and the
+        // entry shim cleared SCTLR.M only, so every access until now bypassed
+        // the caches while stale lines from the loader's own boot can still
+        // sit at any address this kernel is about to reuse. Drop the
+        // instruction side wholesale before the switch; the data side stays
+        // disabled below (C = 0, ANE only) so a first cacheable access cannot
+        // hit an unknown stale line - the measured flaky death lives exactly
+        // in this window (stepmarks13: count 6, between r and s).
+        asm!("ic iallu", "dsb sy", "isb", options(nostack));
+        // Mark t: the loader's instruction-cache state is gone; the SCTLR
+        // write is next.
+        super::entry::ane_step_byte(b't');
 
         let mut sctlr: u64;
         asm!("mrs {sctlr}, SCTLR_EL1", sctlr = out(reg) sctlr, options(nomem, nostack));
         sctlr &= !(1 << 19); // WXN would make the RW bootstrap blocks non-executable.
-        sctlr |= 1 | (1 << 2) | (1 << 12); // MMU, data cache, instruction cache.
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            // Data cache deliberately OFF on the ANE while the stale-line
+            // question is open: running uncached is deterministic, and it is
+            // the one state in which no cache content can influence the boot.
+            sctlr &= !(1 << 2);
+        }
+        sctlr |= 1 | (1 << 12); // MMU and instruction cache only.
         asm!(
             "msr SCTLR_EL1, {sctlr}",
             "isb",
@@ -159,6 +183,9 @@ pub fn init() {
             options(nostack)
         );
         asm!("ic iallu", "dsb sy", "isb", options(nostack));
+        // Mark s: MMU and caches are enabled (SCTLR_EL1 written, I-cache
+        // invalidated) - the last statement of init.
+        super::entry::ane_step_byte(b's');
     }
 }
 

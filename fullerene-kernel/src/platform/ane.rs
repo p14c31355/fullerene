@@ -60,3 +60,39 @@ pub fn open_uart_clock_gate() {
 /// marked several plain RAM ranges as Device, giving the heap uncached,
 /// unaligned-faulting semantics.
 pub const MMIO_RANGES: &[(u64, u64)] = &[(0xE000_0000, 0xFFFF_FFFF)];
+
+/// `/interrupt-controller@e82b0000`: `compatible = "arm,cortex-a9-gic"` - the
+/// GIC-400 pair, memory-mapped only. There is no `ICC_*` system-register
+/// interface on this CPU: the QEMU-virt GICv3 path's `msr ICC_SRE_EL1` is an
+/// undefined instruction here, and it is exactly where the first boot that
+/// reached the interrupt bring-up died (exception dump: ELR at the msr).
+/// `reg` names both windows: distributor 0xe82b1000 (64 KiB) and the CPU
+/// interface 0xe82b2000 (4 KiB).
+pub const GICD_BASE: usize = 0xe82b_1000;
+pub const GICC_BASE: usize = 0xe82b_2000;
+
+/// Bring up the GICv2 pair. Read-modify-write only: the loader ran with these
+/// interrupts enabled, so nothing here configures the routing - it makes sure
+/// the groups, the priority mask and the CPU interface stayed open, then
+/// leaves the rest to the firmware state the LK handed over.
+pub fn init_interrupt_controller(gicd_base: Option<usize>, gicc_base: Option<usize>) {
+    let gicd = gicd_base.unwrap_or(GICD_BASE);
+    let gicc = gicc_base.unwrap_or(GICC_BASE);
+    unsafe {
+        // GICD_CTLR (0x000): bit 0 enables, bit 1 enables group 1.
+        let gicd_ctlr = core::ptr::read_volatile(gicd as *const u32);
+        core::ptr::write_volatile(gicd as *mut u32, gicd_ctlr | 0x3);
+        // GICC_CTLR (0x000) and GICC_PMR (0x004): enable, allow all priorities.
+        let gicc_ctlr = core::ptr::read_volatile(gicc as *const u32);
+        core::ptr::write_volatile(gicc as *mut u32, gicc_ctlr | 0x1);
+        core::ptr::write_volatile((gicc + 4) as *mut u32, 0xff);
+
+        // Timer PPI 30: level-configured (GICD_ICFGR1, two bits per PPI,
+        // 0b00 = level), a passable priority, and enabled. PPI registers are
+        // banked per CPU interface, so this reaches CPU 0's timer.
+        let icfgr1 = core::ptr::read_volatile((gicd + 0xc04) as *const u32);
+        core::ptr::write_volatile((gicd + 0xc04) as *mut u32, icfgr1 & !(0b11 << 28));
+        core::ptr::write_volatile((gicd + 0x400 + 30 * 4) as *mut u32, 0xa0);
+        core::ptr::write_volatile((gicd + 0x100) as *mut u32, 1 << 30);
+    }
+}

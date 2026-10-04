@@ -45,6 +45,47 @@ fn trace(msg: &str) {
     crate::blackbox::tee_flush();
 }
 
+/// The one-photo status report for the ANE port: the surviving marks and the
+/// CPU identity, in two short lines. Each line is flushed to the durable log
+/// as soon as it is printed. `stepmarks14` measured why no peripheral reads
+/// live here: the USB windows (0xff100000/0xff200000) are clock-gated by the
+/// loader at handoff, and a read of one stalls the bus - the boot died
+/// between the h mark and this report (count 0x0B, right at the first
+/// `read32`). Register reads over a bus this kernel does not own yet belong
+/// to the USB bring-up phase, not to early boot. The marks block is read
+/// through the same `entry::StepMarks` definition its writer uses.
+#[cfg(fullerene_aarch64_ane)]
+fn report() {
+    use super::entry::{StepMarks, STEP_MARKS_CAPACITY};
+    use super::uart::{put_hex32, putc, puts};
+
+    let marks = StepMarks::ADDRESS as *const StepMarks;
+    puts("R:M=");
+    let magic = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*marks).magic)) };
+    let count = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*marks).count)) };
+    let count = if magic == StepMarks::MAGIC {
+        count.min(STEP_MARKS_CAPACITY as u32)
+    } else {
+        putc(b'?');
+        0
+    };
+    for index in 0..count as usize {
+        let byte = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*marks).bytes[index])) };
+        putc(byte);
+    }
+    puts("\n");
+    crate::blackbox::tee_flush();
+
+    // CPU identity only - both are `mrs` reads, no bus traffic.
+    let sctlr: u64;
+    unsafe { core::arch::asm!("mrs {}, sctlr_el1", out(reg) sctlr, options(nomem, nostack)) };
+    let cntfrq: u64;
+    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) cntfrq, options(nomem, nostack)) };
+    put_hex32("R:V=", sctlr as u32);
+    put_hex32(" F=", cntfrq as u32);
+    puts("\n");
+    crate::blackbox::tee_flush();
+}
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let base = unsafe { core::ptr::addr_of_mut!(HEAP_STORAGE.0) as usize };
@@ -177,17 +218,22 @@ impl PhysicalFrameAllocator {
         // instead of touching the pstore machinery on every console byte far
         // earlier in the boot.
         trace("alloc: enter\n");
+        #[cfg(fullerene_aarch64_ane)]
+        report();
+        crate::blackbox::tee_flush();
         unsafe { super::entry::ane_step_byte(b'f') };
         let count = (info.memory_map_size as usize)
             .checked_div(core::mem::size_of::<fdt::Region>())?
             .min(MAX_FRAME_RANGES);
         trace("alloc: count ok\n");
-        unsafe { super::entry::ane_step_byte(b'g') };
+        // Mark g was retired (2026-10-04 evening) when the mmu q/r/s split
+        // took the record's 16-slot budget; the trace line stays for the
+        // log context a photo shows.
         let regions = unsafe {
             core::slice::from_raw_parts(info.memory_map_address as *const fdt::Region, count)
         };
         trace("alloc: slice ok\n");
-        unsafe { super::entry::ane_step_byte(b'i') };
+        // Mark i was retired with g (see the note at count ok above).
         let mut allocator = Self {
             regions: [AddressRange::EMPTY; MAX_FRAME_RANGES],
             region_count: 0,
@@ -199,7 +245,7 @@ impl PhysicalFrameAllocator {
             released_count: 0,
             shared: [SharedFrame::EMPTY; MAX_SHARED_FRAMES],
         };
-        unsafe { super::entry::ane_step_byte(b'j') };
+        // Mark j was retired with g (see the note at count ok above).
 
         // The linker image, DTB, and fixed USB DMA/trace sections must not be
         // handed to a future page-table or userspace allocator.
@@ -240,14 +286,16 @@ impl PhysicalFrameAllocator {
                 );
             }
         }
-        unsafe { super::entry::ane_step_byte(b'l') };
+        // The allocator-side l/m/n duplicates were retired here:
+        // fdt.rs's find_reserved_memory_regions now owns those three
+        // letters (walk entry, node scratch, walk return), so one letter
+        // narrates exactly one position again.
         if let Some(header) = fdt::inspect(info.fdt_address) {
             allocator.push_reserved(
                 AddressRange::new(info.fdt_address, header.total_size as u64)
                     .unwrap_or(AddressRange::EMPTY),
             );
         }
-        unsafe { super::entry::ane_step_byte(b'm') };
 
         for region in regions {
             if let Some(range) = AddressRange::new(region.base, region.size) {
@@ -262,7 +310,6 @@ impl PhysicalFrameAllocator {
             .first()
             .map(|range| range.start)
             .unwrap_or(0);
-        unsafe { super::entry::ane_step_byte(b'n') };
         Some(allocator)
     }
 

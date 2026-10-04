@@ -121,9 +121,10 @@ impl StepMarks {
 const _: () = assert!(core::mem::size_of::<StepMarks>() == 8 + STEP_MARKS_CAPACITY);
 
 /// How many marks the block holds; past it `ane_step_byte` stops writing so
-/// a runaway loop cannot chew through the zone.
+/// a runaway loop cannot chew through the zone. Readable by the kernel's own
+/// status report, so it is `pub(crate)`.
 #[cfg(fullerene_aarch64_ane)]
-const STEP_MARKS_CAPACITY: usize = 16;
+pub(crate) const STEP_MARKS_CAPACITY: usize = 16;
 
 /// A fault taken before the kernel's own exception vectors exist must end in
 /// a park, not in the loader's recovery system.
@@ -216,6 +217,14 @@ pub(crate) unsafe fn ane_step_begin() {
         let marks = StepMarks::ADDRESS as *mut StepMarks;
         core::ptr::write_volatile(core::ptr::addr_of_mut!((*marks).count), 0);
         core::ptr::write_volatile(core::ptr::addr_of_mut!((*marks).magic), StepMarks::MAGIC);
+
+        // Reset the private text block too, so the screen reader always shows
+        // THIS boot's log. Absolute addresses only - this runs before
+        // relocation processing, so no static may be touched.
+        let block = crate::blackbox::TEXT_BLOCK_BASE as *mut u8;
+        core::ptr::write_volatile(block.add(4) as *mut u32, 0);
+        core::ptr::write_volatile(block.add(8) as *mut u32, crate::blackbox::TEXT_BLOCK_CAP);
+        core::ptr::write_volatile(block as *mut u32, crate::blackbox::TEXT_BLOCK_MAGIC);
     }
 }
 

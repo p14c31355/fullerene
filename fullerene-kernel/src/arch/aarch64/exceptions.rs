@@ -255,6 +255,24 @@ pub(crate) fn enter_user(frame: &Aarch64TrapFrame) -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_exception_sync(frame: *mut Aarch64TrapFrame) {
     let frame = unsafe { &mut *frame };
+    // SError arrives through this same entry (all slots share one stub). Its
+    // syndrome lives in DISR_EL1 while ESR_EL1 keeps its previous value, so
+    // an SError presents as esr=0 with an ordinary instruction at elr. The
+    // write-back clears the pending interrupt and its sticky valid bit.
+    let disr: u64;
+    unsafe {
+        // DISR_EL1 by encoding (S3_0_C12_C1_1); LLVM rejects the symbolic
+        // name at this arch level.
+        asm!("mrs {disr}, S3_0_C12_C1_1", disr = out(reg) disr, options(nomem, nostack));
+    }
+    uart::put_hex("sync: disr=", disr);
+    if disr & (1 << 31) != 0 {
+        // DISR_EL1.A (bit 31) is the SError-valid flag.
+        uart::puts("aarch64 exception: serror (deferred interrupt)\n");
+        unsafe {
+            asm!("msr S3_0_C12_C1_1, {disr}", disr = in(reg) disr, options(nostack));
+        }
+    }
     #[cfg(fullerene_aarch64_bramble)]
     if super::usb::early_handoff_in_progress()
         && option_env!("FULLERENE_AARCH64_DEBUG_RETURN") == Some("1")
@@ -311,6 +329,29 @@ fn is_lower_el_abort(esr: u64) -> bool {
 extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
     let frame = unsafe { &mut *frame };
     let interrupt_id: u64;
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        // The ANE's GIC-400 is memory-mapped only: `mrs ICC_IAR1_EL1` is an
+        // undefined instruction there, and the first timer IRQ of stepmarks16
+        // died exactly on it. Acknowledge through GICC_IAR.
+        // stepmarks18: trace the first IRQ only, so the last printed line
+        // localises an abort inside the handler.
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static IRQ_TRACE: AtomicU32 = AtomicU32::new(0);
+        let irq_index = IRQ_TRACE.fetch_add(1, Ordering::Relaxed);
+        if irq_index < 3 {
+            uart::puts("irq: entered, acking\n");
+        }
+        interrupt_id = unsafe {
+            core::ptr::read_volatile(
+                (super::platform::ane::GICC_BASE + 0x0c) as *const u32,
+            ) as u64
+        };
+        if irq_index < 3 {
+            uart::put_hex("irq: id=", interrupt_id);
+        }
+    }
+    #[cfg(not(fullerene_aarch64_ane))]
     unsafe {
         asm!(
             "mrs {interrupt_id}, ICC_IAR1_EL1",
@@ -354,6 +395,20 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         super::timer::arm_ms(1);
         let _ = super::task::wake_event_timeouts(super::timer::uptime_us());
         super::fs::fire_timers(super::timer::uptime_us().saturating_mul(1_000));
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            // Survival beacon: one line roughly every ten seconds of uptime.
+            // The last beacon in the log tail says whether a silent stop was
+            // the loader's fallback timer (beacons run to ~the window time)
+            // or an internal stall (they stop early).
+            use core::sync::atomic::{AtomicU32, Ordering};
+            static HEARTBEATS: AtomicU32 = AtomicU32::new(0);
+            let beats = HEARTBEATS.fetch_add(1, Ordering::Relaxed);
+            if beats != 0 && beats % 10_000 == 0 {
+                uart::put_hex("hb: count=", beats as u64);
+                uart::put_hex(" hb: secs=", super::timer::uptime_us() / 1_000_000);
+            }
+        }
         #[cfg(all(
             fullerene_aarch64_bramble,
             any(
@@ -372,6 +427,23 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         // Linux DWC3 interrupt path and prevents an avoidable IRQ retrigger.
         unsafe { asm!("dsb sy", options(nostack)) };
     }
+    #[cfg(fullerene_aarch64_ane)]
+    unsafe {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static EOI_TRACE: AtomicU32 = AtomicU32::new(0);
+        let eoi_index = EOI_TRACE.fetch_add(1, Ordering::Relaxed);
+        if eoi_index < 3 {
+            uart::puts("irq: body done\n");
+        }
+        core::ptr::write_volatile(
+            (super::platform::ane::GICC_BASE + 0x10) as *mut u32,
+            interrupt_id as u32,
+        );
+        if eoi_index < 3 {
+            uart::puts("irq: eoi done\n");
+        }
+    }
+    #[cfg(not(fullerene_aarch64_ane))]
     unsafe {
         asm!(
             "msr ICC_EOIR1_EL1, {interrupt_id}",
