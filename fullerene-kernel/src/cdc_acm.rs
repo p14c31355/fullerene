@@ -60,24 +60,73 @@ pub const SET_CONTROL_LINE_STATE: u8 = 0x22;
 /// where nothing is left to read about why.
 pub const FUNCTION_DESCRIPTOR: [u8; 58] = [
     // --- control interface ---
-    9, 4, CONTROL_INTERFACE, 0, 1, CDC_CLASS_COMMUNICATIONS, CDC_SUBCLASS_ACM, CDC_PROTOCOL_AT, 0,
+    9,
+    4,
+    CONTROL_INTERFACE,
+    0,
+    1,
+    CDC_CLASS_COMMUNICATIONS,
+    CDC_SUBCLASS_ACM,
+    CDC_PROTOCOL_AT,
+    0,
     // Header functional descriptor, bcdCDC 1.10
-    5, FUNCTIONAL_DESCRIPTOR, 0x00, 0x10, 0x01,
+    5,
+    FUNCTIONAL_DESCRIPTOR,
+    0x00,
+    0x10,
+    0x01,
     // Call management: no call management over the data interface, data interface 1
-    5, FUNCTIONAL_DESCRIPTOR, 0x01, 0x00, DATA_INTERFACE,
+    5,
+    FUNCTIONAL_DESCRIPTOR,
+    0x01,
+    0x00,
+    DATA_INTERFACE,
     // ACM capabilities: line coding and control line state are supported, so the notification of
     // serial state is meaningful
-    4, FUNCTIONAL_DESCRIPTOR, 0x02, 0x02,
+    4,
+    FUNCTIONAL_DESCRIPTOR,
+    0x02,
+    0x02,
     // Union: interface 0 is the master, interface 1 the slave. Linux's cdc_acm refuses to bind
     // without this, because it is what tells it the two interfaces are one function.
-    5, FUNCTIONAL_DESCRIPTOR, 0x06, CONTROL_INTERFACE, DATA_INTERFACE,
+    5,
+    FUNCTIONAL_DESCRIPTOR,
+    0x06,
+    CONTROL_INTERFACE,
+    DATA_INTERFACE,
     // Notification endpoint: interrupt IN, 8 bytes, interval 16
-    7, 5, NOTIFICATION_ENDPOINT, 3, 0x08, 0x00, 0x10,
+    7,
+    5,
+    NOTIFICATION_ENDPOINT,
+    3,
+    0x08,
+    0x00,
+    0x10,
     // --- data interface ---
-    9, 4, DATA_INTERFACE, 0, 2, CDC_CLASS_DATA, 0, 0, 0,
+    9,
+    4,
+    DATA_INTERFACE,
+    0,
+    2,
+    CDC_CLASS_DATA,
+    0,
+    0,
+    0,
     // Bulk OUT then bulk IN, 64-byte packets, as the existing transport already runs them
-    7, 5, DATA_OUT_ENDPOINT, 2, 0x40, 0x00, 0,
-    7, 5, DATA_IN_ENDPOINT, 2, 0x40, 0x00, 0,
+    7,
+    5,
+    DATA_OUT_ENDPOINT,
+    2,
+    0x40,
+    0x00,
+    0,
+    7,
+    5,
+    DATA_IN_ENDPOINT,
+    2,
+    0x40,
+    0x00,
+    0,
 ];
 
 /// What a class-specific request on EP0 is, and what has to happen.
@@ -136,7 +185,9 @@ pub fn line_coding_rate(payload: &[u8]) -> Option<u32> {
     if payload.len() != 7 {
         return None;
     }
-    Some(u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]))
+    Some(u32::from_le_bytes([
+        payload[0], payload[1], payload[2], payload[3],
+    ]))
 }
 
 /// What the caller should do with a setup packet, in terms the EP0 path already speaks.
@@ -232,8 +283,8 @@ mod tests {
         let expected = [
             4, // interface, control
             0x24, 0x24, 0x24, 0x24, // four functional descriptors
-            5, // endpoint, notification
-            4, // interface, data
+            5,    // endpoint, notification
+            4,    // interface, data
             5, 5, // two endpoints
         ];
         assert_eq!(&kinds[..count], &expected[..]);
@@ -275,7 +326,11 @@ mod tests {
         assert_eq!(FUNCTION_DESCRIPTOR[control + 5], CDC_CLASS_COMMUNICATIONS);
         assert_eq!(FUNCTION_DESCRIPTOR[control + 6], CDC_SUBCLASS_ACM);
         assert_eq!(FUNCTION_DESCRIPTOR[control + 7], CDC_PROTOCOL_AT);
-        assert_eq!(FUNCTION_DESCRIPTOR[control + 4], 1, "one notification endpoint");
+        assert_eq!(
+            FUNCTION_DESCRIPTOR[control + 4],
+            1,
+            "one notification endpoint"
+        );
         let data = interfaces[1];
         assert_eq!(FUNCTION_DESCRIPTOR[data + 5], CDC_CLASS_DATA);
         assert_eq!(FUNCTION_DESCRIPTOR[data + 4], 2, "a bulk pair");
@@ -324,15 +379,24 @@ mod tests {
     fn dtr_is_read_from_wvalue() {
         assert_eq!(
             classify_with_value(0x21, SET_CONTROL_LINE_STATE, 0x0001),
-            ClassRequest::SetControlLineState { dtr: true, rts: false }
+            ClassRequest::SetControlLineState {
+                dtr: true,
+                rts: false
+            }
         );
         assert_eq!(
             classify_with_value(0x21, SET_CONTROL_LINE_STATE, 0x0003),
-            ClassRequest::SetControlLineState { dtr: true, rts: true }
+            ClassRequest::SetControlLineState {
+                dtr: true,
+                rts: true
+            }
         );
         assert_eq!(
             classify_with_value(0x21, SET_CONTROL_LINE_STATE, 0x0000),
-            ClassRequest::SetControlLineState { dtr: false, rts: false }
+            ClassRequest::SetControlLineState {
+                dtr: false,
+                rts: false
+            }
         );
     }
 
@@ -360,15 +424,24 @@ mod tests {
         // `SET_LINE_CODING` is deliberately unsupported until an OUT data stage can be armed: the
         // assertion pins that decision so it cannot drift into a silent "accepted".
         assert_eq!(
-            handle(&setup(0x21, SET_LINE_CODING, 0, CONTROL_INTERFACE, 7), &mut response),
+            handle(
+                &setup(0x21, SET_LINE_CODING, 0, CONTROL_INTERFACE, 7),
+                &mut response
+            ),
             Action::Unsupported
         );
         assert_eq!(
-            handle(&setup(0x21, SET_CONTROL_LINE_STATE, 1, CONTROL_INTERFACE, 0), &mut response),
+            handle(
+                &setup(0x21, SET_CONTROL_LINE_STATE, 1, CONTROL_INTERFACE, 0),
+                &mut response
+            ),
             Action::Dtr(true)
         );
         assert_eq!(
-            handle(&setup(0x21, SET_CONTROL_LINE_STATE, 0, CONTROL_INTERFACE, 0), &mut response),
+            handle(
+                &setup(0x21, SET_CONTROL_LINE_STATE, 0, CONTROL_INTERFACE, 0),
+                &mut response
+            ),
             Action::Dtr(false)
         );
     }
@@ -383,7 +456,10 @@ mod tests {
         );
         // A standard request, and an unknown class request.
         assert_eq!(
-            handle(&setup(0x80, 6, 0x0100, CONTROL_INTERFACE, 18), &mut response),
+            handle(
+                &setup(0x80, 6, 0x0100, CONTROL_INTERFACE, 18),
+                &mut response
+            ),
             Action::NotOurs
         );
         assert_eq!(

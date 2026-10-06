@@ -1889,13 +1889,25 @@ pub fn drive_polling_owner(seconds: u64) {
         }
 
         if prev_probe_retired {
-            super::live_digit_words::publish("prev_probe_retired", &mut prev_probe_retired_field,
-                BLACKBOX_FIRST_MS, BLACKBOX_STEP_MS, entry, frequency);
+            super::live_digit_words::publish(
+                "prev_probe_retired",
+                &mut prev_probe_retired_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
         }
 
         if prev_probe_trb {
-            super::live_digit_words::publish("prev_probe_trb", &mut prev_probe_trb_field,
-                BLACKBOX_FIRST_MS, BLACKBOX_STEP_MS, entry, frequency);
+            super::live_digit_words::publish(
+                "prev_probe_trb",
+                &mut prev_probe_trb_field,
+                BLACKBOX_FIRST_MS,
+                BLACKBOX_STEP_MS,
+                entry,
+                frequency,
+            );
         }
 
         if prev_stage {

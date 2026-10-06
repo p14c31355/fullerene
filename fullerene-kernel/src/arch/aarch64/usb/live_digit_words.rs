@@ -222,7 +222,8 @@ fn digit_of(name: &str, field: u32) -> u32 {
             }
         }
         "prev_probe_trb" => {
-            if crate::blackbox::previous_segment_contains(crate::blackbox::CODE_PROBE_TRB_CONSUMED) {
+            if crate::blackbox::previous_segment_contains(crate::blackbox::CODE_PROBE_TRB_CONSUMED)
+            {
                 1
             } else if crate::blackbox::previous_segment_contains(
                 crate::blackbox::CODE_PROBE_TRB_STILL_OWNED,
@@ -979,20 +980,6 @@ fn blackbox_read_digit(field: u32) -> u32 {
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /// `susphy_test`: clear `GUSB2PHYCFG.SUSPHY` and report how many SETUPs the controller then delivers.
 ///

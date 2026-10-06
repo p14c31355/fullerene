@@ -56,7 +56,7 @@ fn trace(msg: &str) {
 /// through the same `entry::StepMarks` definition its writer uses.
 #[cfg(fullerene_aarch64_ane)]
 fn report() {
-    use super::entry::{StepMarks, STEP_MARKS_CAPACITY};
+    use super::entry::{STEP_MARKS_CAPACITY, StepMarks};
     use super::uart::{put_hex32, putc, puts};
 
     let marks = StepMarks::ADDRESS as *const StepMarks;

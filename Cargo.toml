@@ -16,6 +16,15 @@ lto = true
 codegen-units = 1
 strip = "symbols"
 
+# The aarch64 kernel ships as a loadable Image whose size is what the
+# loader payload and the fastboot write see; its own code dominates the
+# text section, so the kernel crate alone runs at the size setting
+# (measured 2026-10-06: Image 1,836,101 -> 1,457,077 bytes, -20.6%, and
+# the result boots and completes the storage bring-up on the ANE).
+# Everything else in the workspace keeps opt-level 3.
+[profile.release.package.fullerene-kernel]
+opt-level = "s"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

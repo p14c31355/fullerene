@@ -118,7 +118,7 @@ pub fn service_deferred_platform() {
             );
         }
         TYPEC_IRQ_PENDING = false;
-        super::super::platform::gicv3::enable_spis(
+        super::super::platform::common::gicv3::enable_spis(
             super::super::platform::bramble::GICD_BASE,
             &[super::super::platform::bramble::usb_typec_parent_irq()],
         );

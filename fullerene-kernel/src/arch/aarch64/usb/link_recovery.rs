@@ -656,7 +656,7 @@ pub fn runstop_blips_fast(count: u32) {
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 pub(super) unsafe fn enable_gadget_controller_irq() {
     unsafe {
-        let _ = super::super::platform::gicv3::init(
+        let _ = super::super::platform::common::gicv3::init(
             super::super::platform::bramble::GICD_BASE,
             super::super::platform::bramble::GICR_BASE,
             Some(super::super::platform::bramble::USB_DWC3_IRQ),

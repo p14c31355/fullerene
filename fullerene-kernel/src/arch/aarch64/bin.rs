@@ -12,9 +12,9 @@ mod runtime;
 // the package's `src/` root, hence the relative path from here.
 #[path = "../../adb_wire.rs"]
 mod adb_wire;
-#[path = "../../cdc_acm.rs"]
-mod cdc_acm;
 #[path = "../../blackbox.rs"]
 mod blackbox;
+#[path = "../../cdc_acm.rs"]
+mod cdc_acm;
 
 pub(crate) use runtime::timer;

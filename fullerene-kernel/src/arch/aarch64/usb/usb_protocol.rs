@@ -946,7 +946,10 @@ mod tests {
         // asserted rather than trusted.
         assert_eq!(CONFIG_DESCRIPTOR[4], 2, "two interfaces");
         assert_eq!(&CONFIG_DESCRIPTOR[14..17], &[0x02, 0x02, 0x01]);
-        assert_eq!(CONFIG_DESCRIPTOR.len(), 9 + crate::cdc_acm::FUNCTION_DESCRIPTOR.len());
+        assert_eq!(
+            CONFIG_DESCRIPTOR.len(),
+            9 + crate::cdc_acm::FUNCTION_DESCRIPTOR.len()
+        );
         assert_eq!(
             &CONFIG_DESCRIPTOR[9..],
             &crate::cdc_acm::FUNCTION_DESCRIPTOR[..],

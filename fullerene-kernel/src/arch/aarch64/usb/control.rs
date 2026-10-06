@@ -20,12 +20,7 @@ pub(super) unsafe fn device_soft_reset() -> bool {
     // be observed from the host, so it is recorded before the write happens.
     // A record that is present here but missing at the next stage says the reset
     // itself is where the boot stopped.
-    crate::blackbox::record(
-        crate::blackbox::CODE_USB_DWC3_RESET,
-        0,
-        0,
-        0,
-    );
+    crate::blackbox::record(crate::blackbox::CODE_USB_DWC3_RESET, 0, 0, 0);
     unsafe {
         trace_event(TRACE_DWC3_RESET_BEGIN, 0, 0, 0, 0, 0);
         trace_event(TRACE_DEVICE_RESET, 0, 0, 0, 0, 0);

@@ -988,14 +988,32 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // Every stage is also mirrored to this console (tee -> durable log)
         // so the v7f reader can show where a silent stop happened.
         //
-        // DISABLED (v13): the ane_fb runs above measured out the log channel
-        // and the panel in every build since v11 (v11d kept the log dead with
-        // no usb_dev in the image, so the fb path is the suspect). Re-enable
-        // once its writes are proven not to touch the kernel's own state.
-        // platform::ane_fb::report(&usb, ane_log);
+        // Re-enabled for the full-screen canvas (2026-10-04): the log-channel
+        // and panel failures that disabled this at v13 turned out to be the
+        // stale-anchor scan and the uncached-store oddity, both since fixed,
+        // and the same C=1 change unlocked the EP0 enumeration. The canvas now
+        // lives in the DT's `graphic` reserve (0x31000000), which is also what
+        // covers the loader's unlock warning on the panel.
+        platform::ane_fb::report(&usb, ane_log);
         // Device-side USB: answer the host's control transfers now that the
         // link is up (EP0 + descriptors; fastboot bulk is the next stage).
         platform::ane_usb_dev::init(ane_log);
+        // The host enumerates from the moment the link is up: service the
+        // responder once before the storage work, and the storage waits
+        // service it too (see ane_dwmmc::spin_usb). Unanswered control
+        // requests piling up here were the v49/v52 "one request behind"
+        // enumeration break.
+        platform::ane_usb_dev::service(ane_log);
+        // Storage bring-up: phase A logged the loader's dwmmc1/CRG/PMIC
+        // state; phase B opens the clocks, releases the reset, powers the
+        // rails, then reads the controller identity (all painted on panel).
+        platform::ane_dwmmc::bringup(ane_log);
+        platform::ane_usb_dev::service(ane_log);
+        // eMMC (Arasan SDHCI @0xFF390000) phase 3: verify the inherited
+        // clocks/reset/rail, read the controller identity, run the vendor
+        // reset toggle + SDHCI software reset and clock re-init, then the
+        // first card commands (CMD0/CMD1).
+        platform::ane_emmc::probe(ane_log, 3);
     }
     // The usb report above is the newest text in the private block and sits
     // behind plain stores; the loader's reset comes long after the last
@@ -1097,6 +1115,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // so one poll pass per wake keeps the host's transfers answered.
         #[cfg(fullerene_aarch64_ane)]
         platform::ane_usb_dev::service(ane_log);
+        // The panel doubles as the debug channel: repaint the fastboot strip
+        // whenever its state changed, so a photo shows the last exchange.
+        #[cfg(fullerene_aarch64_ane)]
+        platform::ane_fb::draw_fb_diag(&platform::ane_usb_dev::diag());
         // The controller-IRQ A/B gives the DWC3 SPI exclusive ownership of
         // the event ring.  Its exception path calls usb::poll() after the
         // GIC acknowledges that SPI; polling here as well would consume the
@@ -1261,6 +1283,11 @@ fn init_bramble_usb_handoff() -> bool {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    // Durable note FIRST: if the console write below ever blocks, the log
+    // still carries the panic's source location.
+    if let Some(location) = info.location() {
+        crate::blackbox::panic_text(location.line() as u64, location.column() as u64);
+    }
     uart::puts("fullerene aarch64 panic\n");
     if let Some(location) = info.location() {
         uart::puts("panic: file=");
@@ -1268,5 +1295,12 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
         uart::put_hex("panic: line=", location.line() as u64);
         uart::put_hex("panic: column=", location.column() as u64);
     }
-    cpu::wait_forever();
+    // Do not park: reset straight into the loader's fastboot (reason
+    // BOOTLOADER). Parking lets the watchdog reset us without a reason,
+    // which feeds the loader's boot-fail counter and eventually its
+    // recovery fallback; landing in fastboot instead lets the window
+    // catcher reflash the device with no key combo. The catcher has an
+    // 8-hour window armed during the work sessions.
+    uart::puts("panic: resetting into loader fastboot\n");
+    platform::ane_usb_dev::panic_reset_to_bootloader();
 }

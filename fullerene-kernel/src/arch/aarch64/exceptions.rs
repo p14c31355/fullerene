@@ -343,9 +343,7 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             uart::puts("irq: entered, acking\n");
         }
         interrupt_id = unsafe {
-            core::ptr::read_volatile(
-                (super::platform::ane::GICC_BASE + 0x0c) as *const u32,
-            ) as u64
+            core::ptr::read_volatile((super::platform::ane::GICC_BASE + 0x0c) as *const u32) as u64
         };
         if irq_index < 3 {
             uart::put_hex("irq: id=", interrupt_id);
@@ -368,7 +366,21 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         // arrive immediately after Connect Done, and the UART transaction
         // is much slower than draining the event buffer. Keep diagnostics
         // for unexpected non-timer interrupts only.
-        uart::put_hex("aarch64 exception: irq id=", interrupt_id);
+        //
+        // The spurious id (0x3FF) arrives in storms (tens of thousands per
+        // second), and a UART write per hit both saturates the durable log
+        // and wastes most of the interrupt budget. Log each new small id
+        // once, the first few hits of anything, then a rate sample.
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static IRQ_LOG_SEEN: AtomicU32 = AtomicU32::new(0);
+        static IRQ_LOG_TOTAL: AtomicU32 = AtomicU32::new(0);
+        let id = interrupt_id as u32;
+        let total = IRQ_LOG_TOTAL.fetch_add(1, Ordering::Relaxed);
+        let bit = if id < 32 { 1u32 << id } else { 0 };
+        let is_new = bit != 0 && (IRQ_LOG_SEEN.fetch_or(bit, Ordering::Relaxed) & bit) == 0;
+        if is_new || total < 8 || total % 65536 == 0 {
+            uart::put_hex("aarch64 exception: irq id=", interrupt_id);
+        }
     }
     #[cfg(fullerene_aarch64_bramble)]
     if usb_irq {
@@ -377,7 +389,7 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             super::usb::handle_platform_irq(interrupt_id as u32);
             if interrupt_id as u32 == super::platform::bramble::usb_typec_parent_irq() {
                 unsafe {
-                    super::platform::gicv3::disable_spis(
+                    super::platform::common::gicv3::disable_spis(
                         super::platform::bramble::GICD_BASE,
                         &[interrupt_id as u32],
                     );
@@ -411,7 +423,12 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             if beats % 512 == 0 {
                 super::platform::ane::watchdog_kick();
             }
-            if beats != 0 && beats % 10_000 == 0 {
+            if beats != 0 && beats % 262_144 == 0 {
+                // (was % 10_000: the fixed log window is ~7 KiB and the
+                // beacons alone cycled it every couple of minutes, so a
+                // fresh boot's lines vanished before they could be read
+                // back overnight. 262144 beats leaves the boot section
+                // readable for well over an hour at the measured rate.)
                 uart::put_hex("hb: count=", beats as u64);
                 uart::put_hex(" hb: secs=", super::timer::uptime_us() / 1_000_000);
                 // The SP805's live countdown: a value that resets between

@@ -486,7 +486,7 @@ pub fn apply_usb_pm_qos(vote: UsbBusVote) -> UsbPmQosPolicy {
     let gicd = unsafe { USB_GICD_BASE };
     if gicd != 0 {
         unsafe {
-            let _ = super::gicv3::set_spi_usb_latency_policy(
+            let _ = super::common::gicv3::set_spi_usb_latency_policy(
                 gicd,
                 usb_controller_irq(),
                 policy.irq_affine,
@@ -1933,9 +1933,9 @@ pub fn set_usb_power_event_irq_enabled(enabled: bool) -> bool {
     }
     unsafe {
         if enabled {
-            super::gicv3::enable_spis(gicd, &[usb_power_event_irq()]);
+            super::common::gicv3::enable_spis(gicd, &[usb_power_event_irq()]);
         } else {
-            super::gicv3::disable_spis(gicd, &[usb_power_event_irq()]);
+            super::common::gicv3::disable_spis(gicd, &[usb_power_event_irq()]);
         }
     }
     true
@@ -2991,7 +2991,7 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
     } else {
         Some(usb_controller_irq())
     };
-    let gic_ready = super::gicv3::init(gicd, gicr, controller_irq);
+    let gic_ready = super::common::gicv3::init(gicd, gicr, controller_irq);
     unsafe {
         // DWC3 has five platform sources plus the Apps-SMMU global and up to
         // 80 context-bank fault lines. Keep the controller and SMMU fault
@@ -3043,7 +3043,7 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
         // child IRQ, so do not route its parent summary into the new GIC
         // owner. A role-changing cold-boot path must explicitly install the
         // child IRQ before adding this parent route.
-        super::gicv3::enable_spis(gicd, &spis[..count]);
+        super::common::gicv3::enable_spis(gicd, &spis[..count]);
     }
     if gic_ready {
         unsafe {

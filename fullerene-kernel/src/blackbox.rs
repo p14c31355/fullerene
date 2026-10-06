@@ -916,6 +916,46 @@ pub const PMSG_ZONE_OFFSET: u64 = 0x38_0000;
 #[cfg(fullerene_aarch64_ane)]
 pub const PMSG_ZONE_OFFSET: u64 = 0xE_0000;
 
+/// Panic-time durable note: plain stores only (no locks, no formatting
+/// machinery beyond digit division), so it survives whatever state the
+/// panic interrupted and lands in the same `oem log` stream. Renders as
+/// "PANIC L=<line> C=<col>".
+pub fn panic_text(line: u64, col: u64) {
+    for &b in b"PANIC L=" {
+        text_byte(b);
+    }
+    let mut div: u64 = 1;
+    while line / div >= 10 {
+        div *= 10;
+    }
+    let mut v = line;
+    loop {
+        text_byte(b'0' + (v / div) as u8);
+        v %= div;
+        if div == 1 {
+            break;
+        }
+        div /= 10;
+    }
+    for &b in b" C=" {
+        text_byte(b);
+    }
+    let mut div2: u64 = 1;
+    while col / div2 >= 10 {
+        div2 *= 10;
+    }
+    let mut v2 = col;
+    loop {
+        text_byte(b'0' + (v2 / div2) as u8);
+        v2 %= div2;
+        if div2 == 1 {
+            break;
+        }
+        div2 /= 10;
+    }
+    text_byte(b'\n');
+}
+
 /// Append one record to the durable text log, and keep the zone header consistent with it.
 ///
 /// The zone's `size` is the length of this log and `start` stays 0, so the driver's validity
@@ -1104,7 +1144,8 @@ const ANE_PSTORE_WINDOW: u64 = 0x10_0000;
 /// either side touches it during an ordinary boot. 56 KiB of text, ending
 /// 4 KiB below the marks so the two can never meet.
 #[cfg(fullerene_aarch64_ane)]
-pub const TEXT_BLOCK_BASE: u64 = 0x348d_0000;/// "FTLX" little-endian: the first four bytes of a live block.
+pub const TEXT_BLOCK_BASE: u64 = 0x348d_0000;
+/// "FTLX" little-endian: the first four bytes of a live block.
 #[cfg(fullerene_aarch64_ane)]
 pub const TEXT_BLOCK_MAGIC: u32 = 0x584c_5446;
 /// Text capacity of the block; header is magic/size/cap (12 bytes).
@@ -1114,13 +1155,21 @@ pub const TEXT_BLOCK_CAP: u32 = 0xe000;
 /// (magic/size/cap) is trampled by loader boots, so this copy appends from a
 /// per-boot counter instead and stays findable at a fixed address.
 #[cfg(fullerene_aarch64_ane)]
-const FIXED_LOG_OFF: u64 = 0x4000;
+pub(crate) const FIXED_LOG_OFF: u64 = 0x4000;
 /// Capacity of the fixed copy (the renderer's window is far smaller).
 #[cfg(fullerene_aarch64_ane)]
 const FIXED_LOG_CAP: usize = 0x1c00;
 /// Bytes written to the fixed copy this boot (BSS zeroes it every boot).
 #[cfg(fullerene_aarch64_ane)]
 static mut FIXED_LOG_LEN: usize = 0;
+
+/// Bytes this boot has written into the fixed copy. The copy spans more than
+/// a single boot's lines, and DRAM keeps older content, so a reader must stop
+/// at this length - otherwise it streams the previous kernels' stale tail.
+#[cfg(fullerene_aarch64_ane)]
+pub(crate) fn fixed_log_len() -> usize {
+    unsafe { core::ptr::addr_of!(FIXED_LOG_LEN).read() }
+}
 
 /// The ANE-LX2J's first durable mark of a boot, written before any device
 /// register is touched.
@@ -1702,9 +1751,9 @@ mod tests {
     //! cases that were ambiguous on the device can be asserted here instead.
 
     use super::{
-        append_text_byte, code_letter, letter_code, previous_segment_range, read_u32,
-        segment_count, segment_record_bytes, stamp_prefix, text_log_capacity, write_number,
-        write_text, write_u32, PMSG_ZONE_BYTES, PRZ_HEADER_BYTES, TEXT_LOG_MAX,
+        PMSG_ZONE_BYTES, PRZ_HEADER_BYTES, TEXT_LOG_MAX, append_text_byte, code_letter,
+        letter_code, previous_segment_range, read_u32, segment_count, segment_record_bytes,
+        stamp_prefix, text_log_capacity, write_number, write_text, write_u32,
     };
 
     /// The previous segment's record bytes, copied into a fixed array: this crate is no_std,
@@ -1729,7 +1778,11 @@ mod tests {
         assert_eq!(&out[..4], b"4242");
         assert!(write_number(&mut out, 0, u32::MAX) <= 10, "ten-digit cap");
         let mut tiny = [0u8; 2];
-        assert_eq!(write_number(&mut tiny, 0, 12345), 2, "truncates, never panics");
+        assert_eq!(
+            write_number(&mut tiny, 0, 12345),
+            2,
+            "truncates, never panics"
+        );
     }
 
     #[test]
@@ -1765,7 +1818,11 @@ mod tests {
             "ANE-LX2J pmsg zone"
         );
         // Bramble's is 0x80000, where TEXT_LOG_MAX is the tighter cap.
-        assert_eq!(text_log_capacity(0x8_0000), TEXT_LOG_MAX, "Bramble pmsg zone");
+        assert_eq!(
+            text_log_capacity(0x8_0000),
+            TEXT_LOG_MAX,
+            "Bramble pmsg zone"
+        );
     }
 
     /// `append_text_byte` must refuse to grow the log past the zone's data capacity.

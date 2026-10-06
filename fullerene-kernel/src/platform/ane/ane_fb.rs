@@ -21,14 +21,15 @@ use core::ptr;
 
 use super::ane::{self, UsbState};
 
-/// The loader's display reserve - the probe family's proven canvas.
-const CANVAS: usize = 0x01AE_3000;
-/// Canvas byte length (500 rows of 1080 px at 4 bytes each).
-const CANVAS_LEN: usize = 0x21_0000;
-/// The probe family's fixed fallback blit target (reserved graphic region).
-const FALLBACK: usize = 0x3100_0000;
+/// The full-screen canvas: the DT's `graphic` reserved region, 0x31000000,
+/// 0x1A40000 (26.2 MiB). The display controller scans this region out when
+/// it has no other buffer, so painting here is visible directly *and* it is
+/// what covers the loader's unlock warning on the panel.
+const CANVAS: usize = 0x3100_0000;
 const WIDTH: u32 = 1080;
-const HEIGHT: u32 = (CANVAS_LEN / (WIDTH as usize * 4)) as u32;
+const HEIGHT: u32 = 2340;
+/// 1080 x 2340 x 4 = 9.64 MiB - well inside the 26.2 MiB reserve.
+const CANVAS_LEN: usize = (WIDTH as usize) * (HEIGHT as usize) * 4;
 
 /// Opaque yellow - the probe family's measured text colour.
 const FG: u32 = 0xFFFF_FF00;
@@ -85,6 +86,11 @@ fn blit_ok(addr: u32) -> bool {
     if overlaps(0x0160_0000, 0x0190_0000) {
         return false;
     }
+    // Never copy the canvas onto itself (overlapping copy_nonoverlapping is
+    // UB, and one window register can hold exactly the canvas address).
+    if overlaps(CANVAS as u64, CANVAS as u64 + CANVAS_LEN as u64) {
+        return false;
+    }
     true
 }
 
@@ -130,16 +136,19 @@ impl Line {
     }
 
     fn draw(&self, canvas: &mut [u32], y: u32) {
+        // Clear the cell band first: the glyph renderer draws ink only (it
+        // never erases), so repainting a row over its previous content left
+        // old digits showing through as mojibake in the strip.
+        let x0 = TEXT_X as usize;
+        let x1 = (TEXT_X + LINE_CHARS as u32 * 8) as usize;
+        for row in y..(y + GLYPH_H).min(HEIGHT) {
+            let base = row as usize * WIDTH as usize;
+            for px in &mut canvas[base + x0..base + x1] {
+                *px = BG;
+            }
+        }
         lattice::font::render_text(
-            canvas,
-            WIDTH,
-            HEIGHT,
-            WIDTH,
-            TEXT_X,
-            y,
-            &self.buf,
-            FG,
-            GLYPH_H,
+            canvas, WIDTH, HEIGHT, WIDTH, TEXT_X, y, &self.buf, FG, GLYPH_H,
         );
     }
 }
@@ -264,10 +273,11 @@ pub fn report(usb: &UsbState, log: fn(&str, u64)) {
 
     log("fb: paint=", 1);
 
-    // Copy the canvas to every accepted target, then to the probe family's
-    // fixed fallback (0x31000000, the reserved graphic region) so the stats
-    // are visible even when the sweep accepts nothing. The flush makes the
-    // pixels reach DRAM while the boot still runs.
+    // The canvas IS the scanned-out region (the DT's `graphic` reserve), so
+    // painting it was already the visible step - and it is what covers the
+    // loader's unlock warning. The copies to accepted window targets remain
+    // for the layers the sweep finds. Make the canvas durable too: with the
+    // data cache on the panel would otherwise scan stale pixels.
     for &addr in &targets[..ok] {
         unsafe {
             ptr::copy_nonoverlapping(CANVAS as *const u8, addr as *mut u8, CANVAS_LEN);
@@ -276,8 +286,180 @@ pub fn report(usb: &UsbState, log: fn(&str, u64)) {
     }
     log("fb: blits=", ok as u64);
     unsafe {
-        ptr::copy_nonoverlapping(CANVAS as *const u8, FALLBACK as *mut u8, CANVAS_LEN);
-        crate::blackbox::cache_clean(FALLBACK, CANVAS_LEN);
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
     }
-    log("fb: fallback=", 1);
+    log("fb: flushed=", 1);
+}
+
+// ---- the fastboot live diagnostic strip -------------------------------------
+
+/// Where the strip starts (below the boot report's block).
+const DIAG_Y: u32 = TEXT_Y + 14 * LINE_PITCH;
+/// The strip is repainted only when the state fold changes.
+static mut DIAG_FOLD: u64 = 0;
+/// Strips rows to refresh (the line count plus a margin).
+const DIAG_ROWS: u32 = 9 * LINE_PITCH;
+
+/// Paint a bring-up data line below the diagnostic strip (rows 0..).
+///
+/// The panel is the fastest, most reliable channel on this board (USB and
+/// the durable log both need working machinery; a photo of the screen needs
+/// nothing). Callers paint one line per measured value; a hung boot leaves
+/// the last completed line visible for the photo.
+pub fn paint(row: u32, text: &[u8]) {
+    let canvas: &mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+    let y = DIAG_Y + (10 + row) * LINE_PITCH;
+    let mut buf = [b' '; LINE_CHARS];
+    let n = text.len().min(LINE_CHARS);
+    buf[..n].copy_from_slice(&text[..n]);
+    Line {
+        buf,
+        at: LINE_CHARS,
+    }
+    .draw(canvas, y);
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
+    }
+}
+
+/// Copy the whole canvas to every accepted scan-out window (the same blit
+/// `report` performs at boot). Bring-up code that paints after the report
+/// must call this once: the panel can be scanning a window target, and a
+/// canvas-only edit never reaches it.
+pub fn flush_panel() {
+    for &ch in CHANNELS.iter() {
+        for &w in WINDOWS.iter() {
+            let addr = unsafe { ptr::read_volatile((ch + w) as *const u32) };
+            if blit_ok(addr) {
+                unsafe {
+                    ptr::copy_nonoverlapping(CANVAS as *const u8, addr as *mut u8, CANVAS_LEN);
+                    crate::blackbox::cache_clean(addr as usize, CANVAS_LEN);
+                }
+            }
+        }
+    }
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
+    }
+}
+
+/// Repaint the fastboot diagnostic strip when the responder's state changed
+/// since the last paint. Called from the wait loop, so a photo of the panel
+/// shows the last exchange: FIFO layout, counters, registers.
+pub fn draw_fb_diag(d: &super::ane_usb_dev::FbDiag) {
+    let mut fold = 1u64;
+    for v in [
+        d.dptxfsiz1,
+        d.dtxfsts1,
+        d.gnptxfsiz,
+        d.grxfsiz,
+        d.tx_idx,
+        d.lk_diepctl1,
+        d.lk_doepctl1,
+        d.diepctl1,
+        d.doepctl1,
+        d.fb_len,
+        d.fb_disp,
+        d.fb_reply,
+        d.rx_entries,
+        d.ep1_bytes,
+        d.last_rxsts,
+        d.gintsts,
+        d.epint,
+    ] {
+        fold = fold.wrapping_mul(31).wrapping_add(v as u64);
+    }
+    fold = fold.wrapping_mul(31).wrapping_add(d.cmd_head);
+    if fold == unsafe { core::ptr::addr_of!(DIAG_FOLD).read() } {
+        return;
+    }
+    unsafe {
+        core::ptr::addr_of_mut!(DIAG_FOLD).write(fold);
+    }
+
+    let canvas: &mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+    let mut y = DIAG_Y;
+    Line::new()
+        .s(b"FB0 DPTX1=")
+        .x(d.dptxfsiz1)
+        .s(b" DTXF1=")
+        .x(d.dtxfsts1)
+        .draw(canvas, y);
+    y += LINE_PITCH;
+    Line::new()
+        .s(b"FB1 GRX=")
+        .x(d.grxfsiz)
+        .s(b" TXIDX=")
+        .x(d.tx_idx)
+        .draw(canvas, y);
+    y += LINE_PITCH;
+    Line::new()
+        .s(b"FB2 LKDIE=")
+        .x(d.lk_diepctl1)
+        .s(b" LKDOE=")
+        .x(d.lk_doepctl1)
+        .draw(canvas, y);
+    y += LINE_PITCH;
+    Line::new()
+        .s(b"FB3 DIEP=")
+        .x(d.diepctl1)
+        .s(b" DOEP=")
+        .x(d.doepctl1)
+        .draw(canvas, y);
+    y += LINE_PITCH;
+    Line::new()
+        .s(b"FB4 LEN=")
+        .x(d.fb_len)
+        .s(b" DSP=")
+        .x(d.fb_disp)
+        .s(b" RPLY=")
+        .x(d.fb_reply)
+        .draw(canvas, y);
+    y += LINE_PITCH;
+    Line::new()
+        .s(b"FB5 RXE=")
+        .x(d.rx_entries)
+        .s(b" RXD=")
+        .x(d.ep1_bytes)
+        .s(b" GSTS=")
+        .x(d.gintsts)
+        .draw(canvas, y);
+    y += LINE_PITCH;
+    Line::new()
+        .s(b"FB6 LAST=")
+        .x(d.last_rxsts)
+        .s(b" EPINT=")
+        .x(d.epint)
+        .draw(canvas, y);
+    y += LINE_PITCH;
+    Line::new()
+        .s(b"FB7 CMD=")
+        .x((d.cmd_head >> 32) as u32)
+        .x(d.cmd_head as u32)
+        .draw(canvas, y);
+
+    // Refresh the strip on every accepted scan-out window and make the
+    // canvas strip itself durable (the data cache is on).
+    let off = DIAG_Y as usize * WIDTH as usize * 4;
+    let bytes = DIAG_ROWS as usize * WIDTH as usize * 4;
+    for &ch in CHANNELS.iter() {
+        for &w in WINDOWS.iter() {
+            let addr = unsafe { ptr::read_volatile((ch + w) as *const u32) };
+            if blit_ok(addr) {
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        (CANVAS + off) as *const u8,
+                        (addr as usize + off) as *mut u8,
+                        bytes,
+                    );
+                    crate::blackbox::cache_clean(addr as usize + off, bytes);
+                }
+            }
+        }
+    }
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS + off, bytes);
+    }
 }

@@ -736,12 +736,7 @@ pub(super) fn arm_rounds() -> u32 {
 pub(super) unsafe fn try_arm_setup() -> bool {
     // Black box: arming EP0 is the last software step before the host can see
     // anything, so its entry and its result are both worth a record.
-    crate::blackbox::record(
-        crate::blackbox::CODE_USB_EP0_ARM,
-        0,
-        0,
-        0,
-    );
+    crate::blackbox::record(crate::blackbox::CODE_USB_EP0_ARM, 0, 0, 0);
     unsafe {
         if EP0_SETUP_ARMED || !ENDPOINTS_READY || EP0_STATE != Ep0State::Setup {
             return EP0_SETUP_ARMED;
@@ -1112,7 +1107,10 @@ pub(super) unsafe fn restart_control_after_reset() {
                     let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
                     let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
                     unsafe {
-                        EP0_CONTEXT = (max_packet as u16, if speed == DSTS_SUPERSPEED { 2 } else { 1 });
+                        EP0_CONTEXT = (
+                            max_packet as u16,
+                            if speed == DSTS_SUPERSPEED { 2 } else { 1 },
+                        );
                     }
                     write(DALEPENA, 0);
                     let rebuilt = send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0)
@@ -1195,9 +1193,12 @@ pub(super) unsafe fn restart_control_after_reset() {
         let mut dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
         let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
         let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
-                    unsafe {
-                        EP0_CONTEXT = (max_packet as u16, if speed == DSTS_SUPERSPEED { 2 } else { 1 });
-                    }
+        unsafe {
+            EP0_CONTEXT = (
+                max_packet as u16,
+                if speed == DSTS_SUPERSPEED { 2 } else { 1 },
+            );
+        }
         dcfg &= !DCFG_SPEED_MASK;
         dcfg |= if speed == DSTS_SUPERSPEED {
             DCFG_SUPERSPEED
@@ -1732,7 +1733,10 @@ pub(super) unsafe fn handle_setup() {
         // The one thing about the host's request that the device cannot fake: the bytes the
         // controller handed us. Every reply is built from these. Read as a copy: a `is_none()` call
         // on a `static mut` is a shared reference to it, which the toolchain rejects outright.
-        if matches!(core::ptr::read(core::ptr::addr_of!(FIRST_SETUP_BYTES)), None) {
+        if matches!(
+            core::ptr::read(core::ptr::addr_of!(FIRST_SETUP_BYTES)),
+            None
+        ) {
             FIRST_SETUP_BYTES = Some((packet[0], packet[1]));
         }
         SETUP_COUNT = SETUP_COUNT.saturating_add(1);
@@ -2102,9 +2106,12 @@ pub(super) unsafe fn process_event(raw: u32) {
                 // Linux's DWC3 gadget driver starts with the SuperSpeed EP0
                 // size and modifies it after Connect Done.
                 let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
-                    unsafe {
-                        EP0_CONTEXT = (max_packet as u16, if speed == DSTS_SUPERSPEED { 2 } else { 1 });
-                    }
+                unsafe {
+                    EP0_CONTEXT = (
+                        max_packet as u16,
+                        if speed == DSTS_SUPERSPEED { 2 } else { 1 },
+                    );
+                }
                 unsafe {
                     let first_connect = !ENDPOINTS_READY;
                     // A post-reset Connect Done (first_connect false) must not
